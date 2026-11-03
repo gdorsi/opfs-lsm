@@ -162,8 +162,7 @@ Ingest/compaction stay hidden. Collections may assume cross-tab read-your-writes
 ~~L0 compaction + reclaim~~ (`host/compact.ts`, threshold 4).
 
 ~~Interactive transactions (key OCC)~~ (`transaction()`, `ConflictError`).  
-~~Dexie/IDB microbench harness~~ (`pnpm bench` — Node/fake-idb, not OPFS).  
-~~Browser OPFS bench~~ (`pnpm bench:browser` — Chrome headless, local EngineHost+OPFS).  
+~~Browser OPFS bench~~ (`pnpm bench:browser` — Chrome headless, SharedWorker + OPFS; Node fake-idb speed bench removed).  
 ~~`db.view` snapshot~~; ~~`@opfs-lsm/collections`~~ (typed/compound indexes).  
 ~~`changes()`~~; ~~collections `orderBy` / index range~~.  
 ~~Bloom filter primitive~~ (TS + Rust).  

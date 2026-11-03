@@ -1,14 +1,13 @@
 /**
- * Fail when a batch is slower than Dexie, a browser warm get is slower
- * than Dexie, a solitary put is over 2x Dexie, or the kv JS gzip is not
- * under Dexie's. Node point get must be printed. It is not a win or a loss.
- * On fake-indexeddb that row is one WAL cursor replay plus cached gets.
+ * Fail when a SharedWorker browser batch is slower than Dexie, a warm get is
+ * slower than Dexie, a solitary put is over 2x Dexie, or the kv JS gzip is not
+ * under Dexie's.
  *
  *   pnpm bench:gate
- *   pnpm exec tsx scripts/bench-gate.ts --fixture node < log.txt
+ *   pnpm exec tsx scripts/bench-gate.ts --fixture browser < log.txt
  *
- * Node uses BENCH_N=500. The browser leg uses BENCH_N=50 and the SharedWorker.
- * Set BENCH_GATE_NODE_N or BENCH_GATE_BROWSER_N to override those counts.
+ * The browser leg uses BENCH_N=50 and the SharedWorker.
+ * Set BENCH_GATE_BROWSER_N to override that count.
  * The browser leg runs only when Chrome is on this machine.
  * BENCH_GATE_BROWSER=speed checks the ratios. BENCH_GATE_BROWSER=smoke
  * checks OPFS, the SharedWorker, and a finite post-ingest get. CI uses smoke
@@ -29,16 +28,6 @@ export type SpeedRule = {
 };
 
 export type Judgment = { failures: string[]; lines: string[] };
-
-export const NODE_SPEED_RULES: readonly SpeedRule[] = [
-  { name: "batch", kv: "kv one batch", other: "dexie bulkPut", maxRatio: 1 },
-  {
-    name: "solitary put",
-    kv: "kv solitary put",
-    other: "dexie solitary put",
-    maxRatio: 2,
-  },
-];
 
 export const BROWSER_SPEED_RULES: readonly SpeedRule[] = [
   { name: "batch", kv: "kv one batch", other: "dexie bulkPut", maxRatio: 1 },
@@ -103,21 +92,6 @@ export function judgeSpeed(
     }
   }
   return { failures, lines };
-}
-
-export function judgeNodeLog(text: string): Judgment {
-  const rows = parseBenchRows(text);
-  const speed = judgeSpeed(rows, NODE_SPEED_RULES);
-  const kv = rows.find((row) => row.label === "kv point get");
-  const other = rows.find((row) => row.label === "dexie point get");
-  if (!kv || !other) {
-    speed.failures.push('missing point get: need "kv point get" and "dexie point get"');
-    return speed;
-  }
-  speed.lines.push(
-    `point get: kv point get ${kv.ms.toFixed(1)} ms, dexie point get ${other.ms.toFixed(1)} ms`,
-  );
-  return speed;
 }
 
 export function judgeBrowserLog(text: string): Judgment {
@@ -195,10 +169,9 @@ function finish(label: string, judgment: Judgment): number {
 
 function runFixture(kind: string | undefined): number {
   const text = readFileSync(0, "utf8");
-  if (kind === "node") return finish("node", judgeNodeLog(text));
   if (kind === "browser") return finish("browser", judgeBrowserLog(text));
   if (kind === "bundle") return finish("bundle", judgeBundleText(text));
-  console.error("fixture kind must be node, browser, or bundle");
+  console.error("fixture kind must be browser or bundle");
   return 1;
 }
 
@@ -250,17 +223,6 @@ function gateLive(): number {
   if ((build.status ?? 1) !== 0) return build.status ?? 1;
 
   let failed = false;
-  const nodeEnv = {
-    ...process.env,
-    BENCH_N: process.env.BENCH_GATE_NODE_N ?? "500",
-  };
-  const node = runTsx("scripts/bench.ts", nodeEnv, 180_000);
-  process.stdout.write(node.output);
-  const nodeJudgment = judgeNodeLog(node.output);
-  if (node.status !== 0) {
-    nodeJudgment.failures.push(`node bench exited ${node.status}`);
-  }
-  if (finish("node", nodeJudgment) !== 0) failed = true;
 
   const bundle = runTsx("scripts/measure-bundle.ts", process.env, 60_000);
   process.stdout.write(bundle.output);

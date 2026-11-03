@@ -2,44 +2,25 @@
 
 Reference for the Dexie comparison that `pnpm bench:gate` checks. The gate remeasures on each run. This file records one host on 2026-11-03.
 
+The gate measures real Chrome on the SharedWorker path, plus JS gzip size. There is no Node `fake-indexeddb` speed leg. Those numbers are not trustworthy for the OPFS claim.
+
 ## Rules
 
 `pnpm bench:gate` fails when any of these is true.
 
-- `kv one batch` is slower than `dexie bulkPut`.
+- Browser `kv one batch` is slower than `dexie bulkPut`.
 - Browser `kv point get (warm)` is slower than `dexie point get`.
-- `kv solitary put` is over 2 times `dexie solitary put`.
+- Browser `kv solitary put` is over 2 times `dexie solitary put`.
 - The kv JS gzip size is greater than or equal to the Dexie JS gzip size. The wasm file is separate and is not part of that comparison.
 - A required row is missing, the browser log is not `OPFS=true` and `mode=SharedWorker`, or `kv point get (post-ingest)` has no finite time.
 
-Equal times pass. Node `kv point get` must be printed. It does not have to beat Dexie.
+Equal times pass.
 
-Node uses `BENCH_N=500`. The browser leg uses `BENCH_N=50` and the SharedWorker. `BENCH_LOCAL=1` opens the in-page engine and is not the gate path. Set `BENCH_GATE_NODE_N` or `BENCH_GATE_BROWSER_N` to change the counts.
+The browser leg uses `BENCH_N=50` and the SharedWorker. `BENCH_LOCAL=1` opens the in-page engine and is not the gate path. Set `BENCH_GATE_BROWSER_N` to change the count.
 
 ## Host
 
 The machine was an Apple M5 Max with 18 cores, on darwin. Node was v24.15.0. Chrome was 156.0.8078.80. Load average at the start was 2.37, 2.47, 2.35.
-
-## Node fake-indexeddb
-
-The command was `pnpm bench` with N=500. Five runs, each measuring kv, raw IndexedDB, and Dexie in that order. The median is the middle run. Times are milliseconds for the whole loop.
-
-| row | median ms | range ms |
-| --- | --- | --- |
-| kv solitary put | 22.1 | 22.0 to 22.6 |
-| kv one batch | 0.8 | 0.7 to 0.8 |
-| kv point get | 34.7 | 33.8 to 34.9 |
-| idb solitary put | 16.7 | 16.1 to 16.8 |
-| idb one transaction | 7.8 | 7.5 to 8.3 |
-| dexie solitary put | 27.6 | 27.2 to 28.5 |
-| dexie bulkPut | 7.8 | 7.8 to 8.3 |
-| dexie point get | 7.1 | 7.1 to 7.5 |
-
-Batch stays under Dexie by more than the 0.1 ms range. Solitary put stays under 2 times Dexie. Point get is slower than Dexie on every run. The gap is about 27 ms, and the range on each side is about 1 ms, so the loss is not noise.
-
-A separate run at N=5000, not included in the table, spent its samples in fake-indexeddb `_findRecords` under an IndexedDB cursor. A counter on the get loop showed 2 `openCursor` calls and 1 `get` for the whole loop at N=50, 200, 500, and 1000. The first get replays the WAL through `IdBWal.listRange` and `headSeq`. The rest hit the in-memory overlay. That one cursor walk is most of the 34.7 ms. Dexie point get is a point lookup, 7.1 ms median at N=500 and 128.1 ms at N=5000. The N=5000 kv get loop was 2955.2 ms, so the cursor walk gets slower faster than N.
-
-The batch row was not profiled on its own. It is 0.8 ms. Doubling it would still leave it under the 7.8 ms Dexie `bulkPut`.
 
 ## Browser SharedWorker
 
@@ -70,7 +51,7 @@ A separate N=2000 run, not part of the table, took 271.1 ms for kv solitary put 
 
 GitHub `ubuntu-latest` has Chrome, so the browser leg runs there. One run on 2026-11-03 lost the warm-get comparison. Warm get was 23.8 ms and Dexie point get was 16.3 ms. Batch still won, 1.7 ms versus 11.1 ms. Solitary put was 57.4 ms versus 43.3 ms, inside 2 times. The post-ingest row was 10.1 ms and the page exited 0, so the bytes were present.
 
-The speed ratios in this file are for the darwin host above. CI sets `BENCH_GATE_BROWSER=smoke`. That leg checks `OPFS=true`, `mode=SharedWorker`, and a finite post-ingest get. It does not apply the warm-get ratio. Node batch, the 2 times solitary-put limit, and the gzip compare still run on the runner. That same ubuntu run passed those three. Node batch was 4.6 ms versus Dexie `bulkPut` 6.2 ms. Node solitary put was 72.9 ms versus Dexie 80.8 ms. Node point get was 129.8 ms versus Dexie 43.5 ms.
+The speed ratios in this file are for the darwin host above. CI sets `BENCH_GATE_BROWSER=smoke`. That leg checks `OPFS=true`, `mode=SharedWorker`, and a finite post-ingest get. It does not apply the warm-get ratio. The gzip compare still runs on the runner.
 
 ## Bundle
 
@@ -86,9 +67,7 @@ The kv JS gzip is under the Dexie JS gzip. The wasm bytes stay out of that compa
 
 ## Prior single run
 
-These numbers are the single run from earlier on 2026-11-03, before Dexie point get existed on Node. They are not the five-run medians above.
-
-Node fake-indexeddb, N=500. kv solitary put 21.4 ms, idb solitary put 16.1 ms, Dexie solitary put 27.9 ms. kv one batch 0.7 ms, Dexie `bulkPut` 8.0 ms. kv point get 33.5 ms.
+These numbers are the single SharedWorker run from earlier on 2026-11-03. They are not the five-run medians above.
 
 Browser SharedWorker, N=50. kv solitary put 9.6 ms, Dexie solitary put 9.2 ms. kv one batch 0.4 ms, Dexie `bulkPut` 1.2 ms. kv warm get 1.4 ms, post-ingest get 2.1 ms, Dexie point get 3.1 ms. Ingest 14.1 ms.
 
