@@ -1,7 +1,7 @@
 import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
-import { KeyOverlay, resolveGet } from "./store/overlay.js";
+import { KeyOverlay } from "./store/overlay.js";
 
 export interface ViewSnapshot {
   /** WAL head seq pinned when the view opened. */
@@ -12,21 +12,7 @@ export interface ViewSnapshot {
   range(range?: Range): AsyncIterable<Entry>;
 }
 
-function cloneOverlay(src: KeyOverlay): KeyOverlay {
-  const out = new KeyOverlay();
-  out.applyOps(
-    src.entriesSorted().map((e) =>
-      e.kind === "put"
-        ? {
-            type: "put" as const,
-            key: e.key as never,
-            value: e.value as never,
-          }
-        : { type: "del" as const, key: e.key as never },
-    ),
-  );
-  return out;
-}
+export type PutEntry = { key: Uint8Array; value: Uint8Array };
 
 function compareForRange(a: Uint8Array, b: Uint8Array): number {
   const n = Math.min(a.length, b.length);
@@ -37,19 +23,65 @@ function compareForRange(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length;
 }
 
+function keysEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/** Lower bound index in a sorted put list. */
+export function lowerBoundPuts(puts: readonly PutEntry[], key: Uint8Array): number {
+  let lo = 0;
+  let hi = puts.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (compareForRange(puts[mid]!.key, key) < 0) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** WAL-over-SST live puts, sorted. Shared helper for Db cache and view pin. */
+export function mergePuts(sst: KeyOverlay, wal: KeyOverlay): PutEntry[] {
+  const merged = new KeyOverlay();
+  for (const e of sst.entriesSorted()) {
+    if (e.kind === "put") {
+      merged.applyOps([
+        { type: "put", key: e.key as never, value: e.value as never },
+      ]);
+    } else {
+      merged.applyOps([{ type: "del", key: e.key as never }]);
+    }
+  }
+  for (const e of wal.entriesSorted()) {
+    if (e.kind === "put") {
+      merged.applyOps([
+        { type: "put", key: e.key as never, value: e.value as never },
+      ]);
+    } else {
+      merged.applyOps([{ type: "del", key: e.key as never }]);
+    }
+  }
+  const puts: PutEntry[] = [];
+  for (const e of merged.entriesSorted()) {
+    if (e.kind === "put") puts.push({ key: e.key, value: e.value });
+  }
+  return puts;
+}
+
+/** Pinned put list: shallow-copied so later Db cache rebuilds do not alias. */
 export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
-  private readonly wal: KeyOverlay;
-  private readonly sst: KeyOverlay;
+  private readonly puts: PutEntry[];
 
   constructor(
     readonly walHead: number,
     readonly generation: number,
-    wal: KeyOverlay,
-    sst: KeyOverlay,
+    puts: readonly PutEntry[],
   ) {
-    this.wal = cloneOverlay(wal);
-    this.sst = cloneOverlay(sst);
+    this.puts = puts.slice();
   }
 
   private ensureOpen(): void {
@@ -63,45 +95,26 @@ export class ViewSnapshotImpl implements ViewSnapshot {
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
-    return resolveGet(checkKey(key), this.wal, this.sst);
+    const k = checkKey(key);
+    const i = lowerBoundPuts(this.puts, k);
+    const hit = this.puts[i];
+    if (!hit || !keysEqual(hit.key, k)) return undefined;
+    return new Uint8Array(hit.value);
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {
     this.ensureOpen();
-    const merged = new KeyOverlay();
-    merged.applyOps(
-      this.sst.entriesSorted().map((e) =>
-        e.kind === "put"
-          ? {
-              type: "put" as const,
-              key: e.key as never,
-              value: e.value as never,
-            }
-          : { type: "del" as const, key: e.key as never },
-      ),
-    );
-    merged.applyOps(
-      this.wal.entriesSorted().map((e) =>
-        e.kind === "put"
-          ? {
-              type: "put" as const,
-              key: e.key as never,
-              value: e.value as never,
-            }
-          : { type: "del" as const, key: e.key as never },
-      ),
-    );
     const start = range?.start ? checkKey(range.start) : undefined;
     const end = range?.endExclusive
       ? checkKey(range.endExclusive)
       : undefined;
+    let i = start ? lowerBoundPuts(this.puts, start) : 0;
     let n = 0;
-    for (const e of merged.entriesSorted()) {
+    for (; i < this.puts.length; i++) {
       this.ensureOpen();
-      if (e.kind === "del") continue;
-      if (start && compareForRange(e.key, start) < 0) continue;
-      if (end && compareForRange(e.key, end) >= 0) continue;
-      yield { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) };
+      const e = this.puts[i]!;
+      if (end && compareForRange(e.key, end) >= 0) return;
+      yield { key: new Uint8Array(e.key), value: new Uint8Array(e.value) };
       n++;
       if (range?.limit !== undefined && n >= range.limit) return;
     }

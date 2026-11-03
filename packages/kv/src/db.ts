@@ -32,7 +32,12 @@ import {
 } from "./store/generation.js";
 import { KeyOverlay, resolveGet } from "./store/overlay.js";
 import { SstLayer } from "./store/sst-layer.js";
-import { ViewSnapshotImpl, type ViewSnapshot } from "./view.js";
+import {
+  ViewSnapshotImpl,
+  mergePuts,
+  type PutEntry,
+  type ViewSnapshot,
+} from "./view.js";
 import {
   ChangeBus,
   type ChangeEvent,
@@ -205,6 +210,8 @@ class DbImpl implements Db {
     | { ingested: number; head: number; overlay: KeyOverlay }
     | undefined;
   private sstCache: { generation: number; layer: SstLayer } | undefined;
+  /** Merged WAL-over-SST puts; rebuilt when layers change. */
+  private sortedPuts: PutEntry[] | undefined;
   /** When true, next read revalidates against IDB/FS (cross-tab / ingest). */
   private layersStale = true;
   private readonly changeBus = new ChangeBus();
@@ -237,6 +244,7 @@ class DbImpl implements Db {
         } | null;
         if (!data || data.writerId === this.writerId) return;
         this.layersStale = true;
+        this.sortedPuts = undefined;
         if (data.kind === "append" || data.kind === "ingest") {
           this.changeBus.emit({
             kind: data.kind,
@@ -256,6 +264,7 @@ class DbImpl implements Db {
   private invalidateCaches(): void {
     this.walCache = undefined;
     this.sstCache = undefined;
+    this.sortedPuts = undefined;
     this.layersStale = true;
   }
 
@@ -278,9 +287,11 @@ class DbImpl implements Db {
     if (this.walCache && this.walCache.head === seq - 1) {
       this.walCache.overlay.applyOps(ops);
       this.walCache.head = seq;
+      this.sortedPuts = undefined;
     } else {
       // Gap vs cache — force a full WAL rebuild on next read.
       this.walCache = undefined;
+      this.sortedPuts = undefined;
       this.layersStale = true;
     }
     this.emitChange({ kind: "append", writerId: this.writerId, seq });
@@ -405,13 +416,13 @@ class DbImpl implements Db {
   }
 
   private async openViewSnapshot(): Promise<ViewSnapshotImpl> {
-    // Always revalidate so the pin matches current durable state.
-    this.layersStale = true;
     const { wal, sst } = await this.readLayers();
     const walHead = this.walCache?.head ?? 0;
     const generation = this.sstCache?.generation ?? 0;
-    // Pin a materialized overlay so later SST mutations cannot affect the view.
-    return new ViewSnapshotImpl(walHead, generation, wal, sst.asOverlay());
+    if (!this.sortedPuts) {
+      this.sortedPuts = mergePuts(sst.asOverlay(), wal);
+    }
+    return new ViewSnapshotImpl(walHead, generation, this.sortedPuts);
   }
 
   changes(listener: ChangeListener): () => void {

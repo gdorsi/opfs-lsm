@@ -13,8 +13,16 @@ export class KeyOverlay {
     string,
     { key: Uint8Array; kind: "put" | "del"; value?: Uint8Array }
   >();
+  private sorted:
+    | (
+        | { key: Uint8Array; kind: "put"; value: Uint8Array }
+        | { key: Uint8Array; kind: "del" }
+      )[]
+    | undefined;
 
   applyOps(ops: readonly CheckedOp[]): void {
+    if (ops.length === 0) return;
+    this.sorted = undefined;
     for (const op of ops) {
       const k = keyToString(op.key);
       if (op.type === "put") {
@@ -40,19 +48,21 @@ export class KeyOverlay {
     return { status: "value", value: e.value! };
   }
 
-  /** Snapshot entries for fake L0 encode (sorted). */
+  /** Snapshot entries for fake L0 encode (sorted). Cached until the next mutate. */
   entriesSorted(): (
     | { key: Uint8Array; kind: "put"; value: Uint8Array }
     | { key: Uint8Array; kind: "del" }
   )[] {
+    if (this.sorted) return this.sorted;
     const rows = [...this.map.values()];
     rows.sort((a, b) => compareBytes(a.key, b.key));
-    return rows.map((r) => {
+    this.sorted = rows.map((r) => {
       if (r.kind === "put") {
         return { key: r.key, kind: "put" as const, value: r.value! };
       }
       return { key: r.key, kind: "del" as const };
     });
+    return this.sorted;
   }
 }
 

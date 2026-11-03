@@ -44,6 +44,23 @@ One batch of 50 puts took 0.4 ms. Dexie `bulkPut` of the same 50 took 1.2 ms.
 
 50 solitary puts took 9.6 ms. 50 Dexie solitary puts took 9.2 ms. A solitary put stays near IDB, because each ack is one IndexedDB commit.
 
+## Collections vs Dexie
+
+`@opfs-lsm/collections` is tables and indexes on top of the same WAL and OPFS path. `pnpm bench:collections` runs the SharedWorker Chrome harness against a `users` table with an `email` index, then Dexie with `id, email`. Collections has no `bulkPut` yet, so the fair write comparison is solitary put. Each collections put also writes index keys in one OCC transaction, so it is heavier than a Dexie row put. Point get and `where("email", …)` are measured before and after ingest. The times below are median of 5 runs with `BENCH_N=50` on darwin.
+
+50 collections solitary puts took 47.1 ms. 50 Dexie solitary puts took 8.5 ms.
+
+50 warm collections gets by id took 0.3 ms. 50 Dexie point gets took 3.4 ms.
+
+50 collections `where("email", …)` took 1.1 ms. 50 Dexie `where("email").equals(…)` took 4.1 ms.
+
+50 post-ingest collections gets took 3.0 ms. 50 post-ingest `where` took 0.6 ms.
+
+```
+pnpm bench:collections
+BENCH_N=50 pnpm bench:collections
+```
+
 ## Clone and run
 
 `engines.node` in `package.json` is `>=22`. `.nvmrc` pins 24. `packageManager` is `pnpm@10.33.2`.
@@ -58,4 +75,5 @@ cd opfs-lsm
 pnpm install
 pnpm test
 pnpm bench:browser
+pnpm bench:collections
 ```
