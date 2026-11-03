@@ -32,6 +32,14 @@ async function report(payload: unknown): Promise<void> {
   }
 }
 
+function sameBytes(got: Uint8Array | undefined, expected: Uint8Array): boolean {
+  if (!got || got.byteLength !== expected.byteLength) return false;
+  for (let i = 0; i < expected.byteLength; i += 1) {
+    if (got[i] !== expected[i]) return false;
+  }
+  return true;
+}
+
 async function time(label: string, fn: () => Promise<void>): Promise<BenchRow> {
   const t0 = performance.now();
   await fn();
@@ -114,7 +122,10 @@ async function benchKv(): Promise<BenchRow[]> {
   rows.push(
     await time("kv point get (warm)", async () => {
       for (let i = 0; i < N; i++) {
-        await db.get(enc.encode(`k${i}`));
+        const got = await db.get(enc.encode(`k${i}`));
+        if (!sameBytes(got, enc.encode(`v${i}`))) {
+          throw new Error(`warm get missing k${i}`);
+        }
       }
     }),
   );
@@ -126,7 +137,10 @@ async function benchKv(): Promise<BenchRow[]> {
   rows.push(
     await time("kv point get (post-ingest)", async () => {
       for (let i = 0; i < N; i++) {
-        await db.get(enc.encode(`k${i}`));
+        const got = await db.get(enc.encode(`k${i}`));
+        if (!sameBytes(got, enc.encode(`v${i}`))) {
+          throw new Error(`post-ingest get missing k${i}`);
+        }
       }
     }),
   );
@@ -164,7 +178,10 @@ async function benchDexie(): Promise<BenchRow[]> {
   rows.push(
     await time("dexie point get", async () => {
       for (let i = 0; i < N; i++) {
-        await db.table("kv").get(`k${i}`);
+        const row = await db.table("kv").get(`k${i}`);
+        if (row?.value !== `v${i}`) {
+          throw new Error(`dexie point get missing k${i}`);
+        }
       }
     }),
   );

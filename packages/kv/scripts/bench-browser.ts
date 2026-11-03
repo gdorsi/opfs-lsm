@@ -3,6 +3,7 @@
  *
  *   pnpm --filter @opfs-lsm/kv build && pnpm bench:browser
  *   BENCH_N=100 pnpm bench:browser
+ *   BENCH_LOCAL=1 pnpm bench:browser
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -112,9 +113,9 @@ if (!address || typeof address === "string") {
   throw new Error("expected TCP listen address");
 }
 const { port } = address;
-// Prefer in-page EngineHost+OPFS for headless stability; SharedWorker via BENCH_SW=1.
-const sw = process.env.BENCH_SW === "1" ? "" : "&local=1";
-const target = `http://127.0.0.1:${port}/bench/browser.html?auto=1&n=${N}${sw}`;
+// SharedWorker is the default. BENCH_LOCAL=1 opens the page with local=1.
+const local = process.env.BENCH_LOCAL === "1" ? "&local=1" : "";
+const target = `http://127.0.0.1:${port}/bench/browser.html?auto=1&n=${N}${local}`;
 const profile = path.join(root, ".bench-chrome-profile");
 fs.rmSync(profile, { recursive: true, force: true });
 fs.mkdirSync(profile, { recursive: true });
