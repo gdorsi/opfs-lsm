@@ -1,0 +1,35 @@
+{
+  "name": "@opfs-lsm/kv",
+  "version": "0.0.1",
+  "description": "Browser KV: shared IDB WAL + OPFS LSM (SST ingest)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./shared-worker": {
+      "types": "./dist/host/shared-worker.d.ts",
+      "import": "./dist/host/shared-worker.js"
+    }
+  },
+  "files": ["dist", "wasm"],
+  "scripts": {
+    "build:wasm": "wasm-pack build ../../crates/engine-wasm --target web --out-dir ../../packages/kv/wasm --release",
+    "build": "pnpm run build:wasm && tsc -p tsconfig.json",
+    "test": "pnpm run build:wasm && vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run",
+    "bench": "tsx scripts/bench.ts",
+    "bench:browser": "tsx scripts/bench-browser.ts",
+    "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "dexie": "^4.0.11",
+    "fake-indexeddb": "^6.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

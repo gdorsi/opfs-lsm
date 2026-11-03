@@ -1,0 +1,3 @@
+# Keep generated wasm in git for cold-clone tests.
+!engine_wasm*
+!package.json

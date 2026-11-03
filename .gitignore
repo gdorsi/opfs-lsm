@@ -1,0 +1,9 @@
+/target
+**/target
+node_modules
+# packages/*/wasm  — committed so cold clones pass without Rust
+packages/*/dist
+crates/kv
+packages/kv/.bench-chrome-profile
+.DS_Store
+.scratch
