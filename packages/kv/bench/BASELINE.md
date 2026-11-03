@@ -66,6 +66,12 @@ A separate N=2000 run, not part of the table, took 271.1 ms for kv solitary put 
 
 `BENCH_LOCAL=1` with N=50 printed `mode=local EngineHost + BrowserFs (OPFS)` and `OPFS=true`, and the post-ingest get row was present. That run is not a gate run.
 
+## CI smoke
+
+GitHub `ubuntu-latest` has Chrome, so the browser leg runs there. One run on 2026-11-03 lost the warm-get comparison. Warm get was 23.8 ms and Dexie point get was 16.3 ms. Batch still won, 1.7 ms versus 11.1 ms. Solitary put was 57.4 ms versus 43.3 ms, inside 2 times. The post-ingest row was 10.1 ms and the page exited 0, so the bytes were present.
+
+The speed ratios in this file are for the darwin host above. CI sets `BENCH_GATE_BROWSER=smoke`. That leg checks `OPFS=true`, `mode=SharedWorker`, and a finite post-ingest get. It does not apply the warm-get ratio. Node batch, the 2 times solitary-put limit, and the gzip compare still run on the runner. That same ubuntu run passed those three. Node batch was 4.6 ms versus Dexie `bulkPut` 6.2 ms. Node solitary put was 72.9 ms versus Dexie 80.8 ms. Node point get was 129.8 ms versus Dexie 43.5 ms.
+
 ## Bundle
 
 The command was `pnpm exec tsx scripts/measure-bundle.ts` from `packages/kv`, after `tsc`. One run.

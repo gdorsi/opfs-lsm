@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   judgeBrowserLog,
+  judgeBrowserSmoke,
   judgeBundleText,
   judgeNodeLog,
   parseBenchRows,
@@ -92,6 +93,7 @@ dexie point get               7.1 ms
       "kv point get (warm)           9.0 ms",
     );
     expect(judgeBrowserLog(text).failures.join("\n")).toContain("warm get");
+    expect(judgeBrowserSmoke(text).failures).toEqual([]);
   });
 
   it("fails a browser log that never read an SST", () => {

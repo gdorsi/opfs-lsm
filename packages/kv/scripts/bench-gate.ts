@@ -10,6 +10,9 @@
  * Node uses BENCH_N=500. The browser leg uses BENCH_N=50 and the SharedWorker.
  * Set BENCH_GATE_NODE_N or BENCH_GATE_BROWSER_N to override those counts.
  * The browser leg runs only when Chrome is on this machine.
+ * BENCH_GATE_BROWSER=speed checks the ratios. BENCH_GATE_BROWSER=smoke
+ * checks OPFS, the SharedWorker, and a finite post-ingest get. CI uses smoke
+ * because a GitHub runner does not keep the warm-get ratio.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -118,18 +121,27 @@ export function judgeNodeLog(text: string): Judgment {
 }
 
 export function judgeBrowserLog(text: string): Judgment {
+  const speed = judgeSpeed(parseBenchRows(text), BROWSER_SPEED_RULES);
+  const smoke = judgeBrowserSmoke(text);
+  return {
+    failures: [...speed.failures, ...smoke.failures],
+    lines: [...speed.lines, ...smoke.lines],
+  };
+}
+
+export function judgeBrowserSmoke(text: string): Judgment {
   const rows = parseBenchRows(text);
-  const speed = judgeSpeed(rows, BROWSER_SPEED_RULES);
-  const failures = [...speed.failures];
+  const failures: string[] = [];
+  const lines: string[] = [];
   if (!text.includes("OPFS=true")) failures.push("missing OPFS=true");
   if (!text.includes("mode=SharedWorker")) failures.push("missing mode=SharedWorker");
   const post = rows.find((row) => row.label === "kv point get (post-ingest)");
   if (!post || !Number.isFinite(post.ms)) {
     failures.push('missing "kv point get (post-ingest)"');
   } else {
-    speed.lines.push(`post-ingest get: ${post.ms.toFixed(1)} ms`);
+    lines.push(`post-ingest get: ${post.ms.toFixed(1)} ms`);
   }
-  return { failures, lines: speed.lines };
+  return { failures, lines };
 }
 
 export function judgeBundleText(text: string): Judgment {
@@ -269,6 +281,11 @@ function gateLive(): number {
     return failed ? 1 : 0;
   }
 
+  const browserMode = process.env.BENCH_GATE_BROWSER ?? "speed";
+  if (browserMode !== "speed" && browserMode !== "smoke") {
+    console.error("BENCH_GATE_BROWSER must be speed or smoke");
+    return 1;
+  }
   const browserEnv = {
     ...process.env,
     BENCH_N: process.env.BENCH_GATE_BROWSER_N ?? "50",
@@ -277,7 +294,10 @@ function gateLive(): number {
   delete browserEnv.BENCH_SW;
   const browser = runTsx("scripts/bench-browser.ts", browserEnv, 180_000);
   process.stdout.write(browser.output);
-  const browserJudgment = judgeBrowserLog(browser.output);
+  const browserJudgment =
+    browserMode === "smoke"
+      ? judgeBrowserSmoke(browser.output)
+      : judgeBrowserLog(browser.output);
   if (browser.status !== 0) {
     browserJudgment.failures.push(`browser bench exited ${browser.status}`);
   }

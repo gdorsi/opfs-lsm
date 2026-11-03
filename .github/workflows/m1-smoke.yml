@@ -18,3 +18,5 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm bench:gate
+        env:
+          BENCH_GATE_BROWSER: smoke
