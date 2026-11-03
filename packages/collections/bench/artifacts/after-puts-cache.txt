@@ -1,0 +1,30 @@
+=== AFTER puts-cache 1 ===
+collections where email          1.1 ms  (45455 ops/s)
+profile where×50: viewOpen=0.0ms range=0.1ms get=0.2ms ids=50
+collections where (post-ingest)  0.5 ms  (100000 ops/s)
+profile where post×50: viewOpen=0.1ms range=0.1ms get=0.0ms
+dexie where email                4.6 ms  (10870 ops/s)
+=== AFTER puts-cache 2 ===
+collections where email          1.1 ms  (45455 ops/s)
+profile where×50: viewOpen=0.0ms range=0.1ms get=0.2ms ids=50
+collections where (post-ingest)  0.5 ms  (100000 ops/s)
+profile where post×50: viewOpen=0.0ms range=0.1ms get=0.2ms
+dexie where email                4.1 ms  (12195 ops/s)
+=== AFTER puts-cache 3 ===
+collections where email          1.0 ms  (50000 ops/s)
+profile where×50: viewOpen=0.0ms range=0.1ms get=0.2ms ids=50
+collections where (post-ingest)  0.6 ms  (83333 ops/s)
+profile where post×50: viewOpen=0.0ms range=0.0ms get=0.1ms
+dexie where email                3.8 ms  (13158 ops/s)
+=== AFTER puts-cache 4 ===
+collections where email          1.1 ms  (45455 ops/s)
+profile where×50: viewOpen=0.0ms range=0.0ms get=0.3ms ids=50
+collections where (post-ingest)  0.5 ms  (100000 ops/s)
+profile where post×50: viewOpen=0.2ms range=0.2ms get=0.0ms
+dexie where email                4.3 ms  (11628 ops/s)
+=== AFTER puts-cache 5 ===
+collections where email          1.0 ms  (50000 ops/s)
+profile where×50: viewOpen=0.0ms range=0.2ms get=0.0ms ids=50
+collections where (post-ingest)  0.6 ms  (83333 ops/s)
+profile where post×50: viewOpen=0.0ms range=0.0ms get=0.1ms
+dexie where email                3.8 ms  (13158 ops/s)

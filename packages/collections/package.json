@@ -12,14 +12,18 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench": "tsx scripts/bench-browser.ts",
+    "bench:browser": "tsx scripts/bench-browser.ts"
   },
   "license": "MIT",
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*"
   },
   "devDependencies": {
+    "dexie": "^4.0.11",
     "fake-indexeddb": "^6.0.0",
+    "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
   }
