@@ -2,11 +2,14 @@
   "name": "opfs-async",
   "private": true,
   "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "pnpm -r run build",
-    "test": "pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/collections test",
-    "test:kv": "pnpm --filter @opfs-lsm/kv test:unit",
-    "test:collections": "pnpm --filter @opfs-lsm/collections test",
+    "test": "pnpm -r run build && pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/collections test",
+    "test:kv": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/kv test:unit",
+    "test:collections": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/collections run build && pnpm --filter @opfs-lsm/collections test",
     "bench": "pnpm --filter @opfs-lsm/kv bench",
     "bench:browser": "pnpm --filter @opfs-lsm/kv bench:browser"
   },

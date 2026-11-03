@@ -1,6 +1,6 @@
 {
   "name": "@opfs-lsm/kv",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Browser KV: shared IDB WAL + OPFS LSM (SST ingest)",
   "type": "module",
   "exports": {
@@ -16,13 +16,18 @@
   "files": ["dist", "wasm"],
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/engine-wasm --target web --out-dir ../../packages/kv/wasm --release",
-    "build": "pnpm run build:wasm && tsc -p tsconfig.json",
-    "test": "pnpm run build:wasm && vitest run",
+    "build": "sh -c 'test -f wasm/engine_wasm_bg.wasm && test -f wasm/engine_wasm.js || pnpm run build:wasm' && tsc -p tsconfig.json",
+    "test": "pnpm run build && vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run",
     "bench": "tsx scripts/bench.ts",
     "bench:browser": "tsx scripts/bench-browser.ts",
-    "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts"
+    "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
+    "formal:kv": "tsx formal/run-all.ts",
+    "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
+    "formal:occ": "tsx formal/occ/check.ts",
+    "formal:view-pin": "tsx formal/view-pin/check.ts",
+    "formal:compact-preserve": "tsx formal/compact-preserve/check.ts"
   },
   "license": "MIT",
   "devDependencies": {
