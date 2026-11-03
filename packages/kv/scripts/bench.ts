@@ -30,6 +30,14 @@ async function resetIdb(name: string): Promise<void> {
   });
 }
 
+function sameBytes(got: Uint8Array | undefined, expected: Uint8Array): boolean {
+  if (!got || got.byteLength !== expected.byteLength) return false;
+  for (let i = 0; i < expected.byteLength; i += 1) {
+    if (got[i] !== expected[i]) return false;
+  }
+  return true;
+}
+
 async function benchKv(): Promise<void> {
   const { openDb, __resetMemoryFsForTests, MemoryFs } = await import(
     "../src/index.ts"
@@ -58,7 +66,10 @@ async function benchKv(): Promise<void> {
   });
   await time("kv point get", async () => {
     for (let i = 0; i < N; i++) {
-      await db.get(enc.encode(`k${i}`));
+      const got = await db.get(enc.encode(`k${i}`));
+      if (!sameBytes(got, enc.encode(`v${i}`))) {
+        throw new Error(`kv point get missing k${i}`);
+      }
     }
   });
   await db.close();
@@ -104,15 +115,10 @@ async function benchDexie(): Promise<void> {
     kv: {
       put(row: { key: string; value: string }): Promise<unknown>;
       bulkPut(rows: Array<{ key: string; value: string }>): Promise<unknown>;
+      get(key: string): Promise<{ key: string; value: string } | undefined>;
     };
   };
-  let Dexie: DexieCtor;
-  try {
-    ({ default: Dexie } = (await import("dexie")) as { default: DexieCtor });
-  } catch {
-    console.log("(dexie not installed — skip; pnpm add -D dexie --filter @opfs-lsm/kv)");
-    return;
-  }
+  const { default: Dexie } = (await import("dexie")) as { default: DexieCtor };
   await resetIdb("bench-dexie");
   const db = new Dexie("bench-dexie");
   db.version(1).stores({ kv: "key" });
@@ -126,6 +132,14 @@ async function benchDexie(): Promise<void> {
     await db.kv.bulkPut(
       Array.from({ length: N }, (_, i) => ({ key: `b${i}`, value: `v${i}` })),
     );
+  });
+  await time("dexie point get", async () => {
+    for (let i = 0; i < N; i++) {
+      const row = await db.kv.get(`k${i}`);
+      if (row?.value !== `v${i}`) {
+        throw new Error(`dexie point get missing k${i}`);
+      }
+    }
   });
   await db.close();
 }

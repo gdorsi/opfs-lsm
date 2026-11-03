@@ -22,6 +22,7 @@
     "test:unit": "vitest run",
     "bench": "tsx scripts/bench.ts",
     "bench:browser": "tsx scripts/bench-browser.ts",
+    "bench:gate": "tsx scripts/bench-gate.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
@@ -32,6 +33,7 @@
   "license": "MIT",
   "devDependencies": {
     "dexie": "^4.0.11",
+    "esbuild": "0.28.2",
     "fake-indexeddb": "^6.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",

@@ -32,7 +32,7 @@ In the browser, `workerUrl` is the SharedWorker module. `new URL("@opfs-lsm/kv/s
 
 ## Batch and warm gets beat Dexie
 
-Dexie is a library that stores rows in IndexedDB. The times below are wall time for 50 operations on one Chrome headless run. The host was darwin on 2026-11-03. The bench used the SharedWorker path, `BENCH_N=50` and `BENCH_SW=1`. Your machine will differ.
+Dexie is a library that stores rows in IndexedDB. The times below are wall time for 50 operations on one Chrome headless run. The host was darwin on 2026-11-03. The bench used the SharedWorker path and `BENCH_N=50`. Your machine will differ.
 
 One batch of 50 puts took 0.4 ms. Dexie `bulkPut` of the same 50 took 1.2 ms.
 
@@ -50,7 +50,7 @@ One batch of 50 puts took 0.4 ms. Dexie `bulkPut` of the same 50 took 1.2 ms.
 
 The wasm files are already in `packages/kv/wasm`. `pnpm test` typechecks with `tsc` and skips `wasm-pack` while `engine_wasm_bg.wasm` and `engine_wasm.js` are present. You need Rust and `wasm-pack` only when those files are missing.
 
-`pnpm bench:browser` starts headless Chrome. On macOS the script uses `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. Otherwise it uses `google-chrome` on `PATH`. Set `CHROME_PATH` when Chrome is somewhere else. The plain command uses the in-page engine. `BENCH_SW=1` uses the SharedWorker. The times above used that flag.
+`pnpm bench:browser` starts headless Chrome. On macOS the script uses `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. Otherwise it uses `google-chrome` on `PATH`. Set `CHROME_PATH` when Chrome is somewhere else. The plain command uses the SharedWorker. `BENCH_LOCAL=1` opens the page with `local=1` and uses the in-page engine. The times above used the SharedWorker.
 
 ```
 git clone https://github.com/gdorsi/opfs-lsm.git
