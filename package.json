@@ -12,7 +12,8 @@
     "test:kv": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/kv test:unit",
     "test:collections": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/collections run build && pnpm --filter @opfs-lsm/collections test",
     "bench": "pnpm --filter @opfs-lsm/kv bench",
-    "bench:browser": "pnpm --filter @opfs-lsm/kv bench:browser"
+    "bench:browser": "pnpm --filter @opfs-lsm/kv bench:browser",
+    "bench:gate": "pnpm --filter @opfs-lsm/kv bench:gate"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild"]

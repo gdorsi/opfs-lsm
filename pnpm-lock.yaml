@@ -29,6 +29,9 @@ importers:
       dexie:
         specifier: ^4.0.11
         version: 4.4.7
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       fake-indexeddb:
         specifier: ^6.0.0
         version: 6.2.7
