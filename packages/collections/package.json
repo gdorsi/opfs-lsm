@@ -1,6 +1,6 @@
 {
   "name": "@opfs-lsm/collections",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Dexie-shaped tables/indexes on @opfs-lsm/kv",
   "type": "module",
   "exports": {
