@@ -22,7 +22,12 @@
     "test:unit": "vitest run",
     "bench": "tsx scripts/bench.ts",
     "bench:browser": "tsx scripts/bench-browser.ts",
-    "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts"
+    "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
+    "formal:kv": "tsx formal/run-all.ts",
+    "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
+    "formal:occ": "tsx formal/occ/check.ts",
+    "formal:view-pin": "tsx formal/view-pin/check.ts",
+    "formal:compact-preserve": "tsx formal/compact-preserve/check.ts"
   },
   "license": "MIT",
   "devDependencies": {
