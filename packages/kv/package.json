@@ -20,7 +20,7 @@
     "test": "pnpm run build && vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run",
-    "bench": "tsx scripts/bench.ts",
+    "bench": "tsx scripts/bench-browser.ts",
     "bench:browser": "tsx scripts/bench-browser.ts",
     "bench:gate": "tsx scripts/bench-gate.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
