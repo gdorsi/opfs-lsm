@@ -1,0 +1,24 @@
+head 835d2aab227940afc481321fdd7c8e428fdb560c
+run https://github.com/gdorsi/opfs-lsm/actions/runs/41845078314
+conclusion success
+created 2026-11-04T14:11:25Z
+updated 2026-11-04T14:12:05Z
+wall_seconds 40
+node v24.22.1
+
+job test pass 25s
+pnpm test
+kv 15 files 53 tests, collections 3 files 10 tests
+
+job formal pass 14s
+pnpm --filter @opfs-lsm/kv formal:kv
+All 5 formal checks passed
+formal imports packages/kv/src through tsx, so this job does not run tsc
+
+job gate pass 27s
+job two-tab pass 36s
+
+combined_test_and_formal_seconds 39
+wall is the slowest of the four parallel jobs
+trunk_latest_wall_seconds 35
+budgets hold

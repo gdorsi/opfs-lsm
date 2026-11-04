@@ -1,0 +1,26 @@
+head b8e50f08ced6adf0a9d074bf66f13b31fd94db4d
+run https://github.com/gdorsi/opfs-lsm/actions/runs/41844465233
+event pull_request
+conclusion success
+created 2026-11-04T14:07:40Z
+updated 2026-11-04T14:08:24Z
+wall_seconds 44
+mergeStateStatus CLEAN after the run settled
+
+job formal pass 15s Node v24.22.2
+command pnpm --filter @opfs-lsm/kv formal:kv
+result All 5 formal checks passed
+
+job test pass 32s node v24.22.2
+command pnpm test
+result kv 15 files 53 tests, collections 3 files 10 tests
+pnpm test started about 16s after the job started
+
+job gate pass 18s
+job two-tab pass 33s
+
+combined_new_job_seconds 47
+trunk_latest_wall_seconds 35
+budget_wall trunk plus 8 minutes
+budget_new_jobs 6 minutes
+budgets hold
