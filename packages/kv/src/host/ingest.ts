@@ -6,7 +6,6 @@ import {
   publishL0,
   reclaimManifests,
 } from "../store/generation.js";
-import { foldRecords } from "../store/fold.js";
 import { maybeCompact } from "./compact.js";
 
 export type IngestResult = {
@@ -23,18 +22,16 @@ export async function ingestAll(
   wal: IdBWal,
   fs: AsyncFs,
 ): Promise<IngestResult> {
-  const records = await wal.listUningested();
+  const tail = await wal.listUningested();
   let generation: number;
   let ingestedThrough: number;
 
-  if (records.length === 0) {
+  if (!tail) {
     const cur = await loadLatestGeneration(fs);
     generation = cur?.generation ?? 0;
     ingestedThrough = await wal.getIngestedThrough();
   } else {
-    const entries = foldRecords(records);
-    const first = records[0]!.seq;
-    const last = records[records.length - 1]!.seq;
+    const { first, last, entries } = tail;
 
     const prev = await loadLatestGeneration(fs);
     generation = (prev?.generation ?? 0) + 1;

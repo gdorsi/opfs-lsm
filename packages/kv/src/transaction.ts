@@ -36,7 +36,7 @@ export type TxStore = {
 class TxImpl implements Transaction {
   private aborted = false;
   private finished = false;
-  private readonly reads = new Set<string>();
+  private readonly reads = new Map<string, Uint8Array>();
   private readonly writes = new Map<
     string,
     { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }
@@ -57,7 +57,7 @@ class TxImpl implements Transaction {
     await this.snapshotHead;
     const k = checkKey(key);
     const hex = keyToString(k);
-    this.reads.add(hex);
+    this.reads.set(hex, k);
     const local = this.writes.get(hex);
     if (local) {
       if (local.type === "del") return undefined;
@@ -95,7 +95,8 @@ class TxImpl implements Transaction {
     this.finished = true;
     if (this.writes.size === 0) return;
 
-    const watched = new Set<string>([...this.reads, ...this.writes.keys()]);
+    const watched = new Map(this.reads);
+    for (const [hex, w] of this.writes) watched.set(hex, w.key);
     const ops = [...this.writes.values()].map((w) =>
       w.type === "put"
         ? { type: "put" as const, key: w.key, value: w.value! }
@@ -107,7 +108,10 @@ class TxImpl implements Transaction {
       bytes += op.key.byteLength;
       if (op.type === "put") bytes += op.value.byteLength;
     }
-    await this.store.commit(checked, bytes, { snapshotHead, watched });
+    await this.store.commit(checked, bytes, {
+      snapshotHead,
+      watched: [...watched.values()],
+    });
   }
 }
 
