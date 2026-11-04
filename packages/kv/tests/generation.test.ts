@@ -98,6 +98,33 @@ describe("loadLatestGeneration", () => {
   });
 });
 
+describe("publishGeneration", () => {
+  it("keeps only the newest two manifests and the newest stays readable", async () => {
+    const fs = new MemoryFs();
+    const db = await openDb({
+      name: NAME,
+      writerId: "w1",
+      fs,
+      ingestPolicy: { maxBatches: 1e9, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+    });
+    for (let i = 0; i < 6; i++) {
+      await db.put(enc.encode(`k${i}`), enc.encode(`v${i}`));
+      await db.ingest();
+    }
+    const meta = await loadLatestGeneration(fs);
+    const names = [...(await fs.list("m"))].sort();
+    expect(names).toEqual(
+      [meta!.generation - 1, meta!.generation].map((g) =>
+        mft(g).slice("m/".length),
+      ),
+    );
+    for (let i = 0; i < 6; i++) {
+      expect(dec.decode((await db.get(enc.encode(`k${i}`)))!)).toBe(`v${i}`);
+    }
+    await db.close();
+  });
+});
+
 describe("installed generation", () => {
   it("keeps a newer generation when an older load finishes later", async () => {
     const inner = new MemoryFs();
