@@ -123,6 +123,23 @@ export interface Db {
    * Concurrent WAL writes that touch a read/written key cause ConflictError.
    */
   transaction<T>(body: (tx: Transaction) => Promise<T> | T): Promise<T>;
+  /**
+   * Read `keys` and write, in one IndexedDB transaction. `body` runs
+   * synchronously with the current values, in the order of `keys`. No other
+   * write can land between the reads and the commit, so there is no conflict.
+   */
+  update<T>(
+    keys: readonly Uint8Array[],
+    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+  ): Promise<T>;
+  /**
+   * Scan `range`, then point-read `follow(entry)` for each entry that returns a
+   * key, in one IndexedDB transaction. Every read sees the same state.
+   */
+  rangeFollow(
+    range: Range,
+    follow: (entry: Entry) => Uint8Array | undefined,
+  ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]>;
   range(range?: Range): AsyncIterable<Entry>;
   /**
    * Read-only snapshot: pinned WAL head + OPFS generation at open.
@@ -244,6 +261,33 @@ export async function openDb(options: OpenOptions): Promise<Db> {
     ownsIngestClient,
   );
   return db;
+}
+
+function valueOf(row: MemRow): Uint8Array | undefined {
+  return row.kind === "put" ? new Uint8Array(row.value!) : undefined;
+}
+
+function collectBatch(
+  build: (tx: BatchTx) => unknown,
+): readonly CheckedOp[] {
+  const ops: { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[] =
+    [];
+  const ret = build({
+    put: (key, value) => {
+      ops.push({ type: "put", key, value });
+    },
+    delete: (key) => {
+      ops.push({ type: "del", key });
+    },
+  });
+  if (
+    ret !== undefined &&
+    ret !== null &&
+    typeof (ret as { then?: unknown }).then === "function"
+  ) {
+    throw new ConstraintError("callback must not return a thenable");
+  }
+  return checkBatch(ops);
 }
 
 type Layers = {
@@ -396,30 +440,9 @@ class DbImpl implements Db {
 
   async batch(build: (tx: BatchTx) => void): Promise<void> {
     this.ensureOpen();
-    const ops: { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[] =
-      [];
-    const tx: BatchTx = {
-      put: (key, value) => {
-        ops.push({ type: "put", key, value });
-      },
-      delete: (key) => {
-        ops.push({ type: "del", key });
-      },
-    };
-    const ret = build(tx) as unknown;
-    if (
-      ret !== undefined &&
-      ret !== null &&
-      typeof (ret as { then?: unknown }).then === "function"
-    ) {
-      throw new ConstraintError("batch callback must not return a thenable");
-    }
-    const checked = checkBatch(ops);
+    const checked = collectBatch(build);
     if (checked.length === 0) return;
-    const seq = await this.wal.append(checked as CheckedOp[]);
-    this.emitChange({ kind: "append", writerId: this.writerId, seq });
-    this.broadcast("append", { seq });
-    this.scheduler.noteAppend(measureOpBytes(checked));
+    this.noteAppend(await this.wal.append(checked), measureOpBytes(checked));
   }
 
   transaction<T>(body: (tx: Transaction) => Promise<T> | T): Promise<T> {
@@ -429,14 +452,117 @@ class DbImpl implements Db {
         snapshotHead: () => this.wal.snapshotHead(),
         get: (key) => this.readKey(key),
         commit: async (ops, opBytes, guard) => {
-          const seq = await this.wal.append(ops, guard);
-          this.emitChange({ kind: "append", writerId: this.writerId, seq });
-          this.broadcast("append", { seq });
-          this.scheduler.noteAppend(opBytes);
+          this.noteAppend(await this.wal.append(ops, guard), opBytes);
         },
       },
       body,
     );
+  }
+
+  async update<T>(
+    keys: readonly Uint8Array[],
+    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+  ): Promise<T> {
+    this.ensureOpen();
+    const ks = keys.map(checkKey);
+    let loaded: Layers | undefined;
+    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
+      let missing: number | undefined;
+      let opBytes = 0;
+      const out = await this.wal.readThenAppend(ks, (rows, generation) => {
+        const layers = this.pointLayers(generation, loaded);
+        if (!layers && rows.some((row) => row === undefined)) {
+          missing = generation;
+          return undefined;
+        }
+        const values = rows.map((row, i) =>
+          row ? valueOf(row) : pointGetSst(layers!.readers, ks[i]!),
+        );
+        let result!: T;
+        const ops = collectBatch((tx) => {
+          result = body(values, tx);
+          return result;
+        });
+        opBytes = measureOpBytes(ops);
+        return { ops, result };
+      });
+      if (out) {
+        if (out.seq !== undefined) this.noteAppend(out.seq, opBytes);
+        return out.result;
+      }
+      loaded = await this.layersAt(missing!, true);
+    }
+    throw new CorruptDatabaseError(GENERATION_GONE);
+  }
+
+  async rangeFollow(
+    range: Range,
+    follow: (entry: Entry) => Uint8Array | undefined,
+  ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]> {
+    this.ensureOpen();
+    const bounds = boundsOf(range);
+    let loaded: Layers | undefined;
+    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
+      let missing: number | undefined;
+      const out = await this.wal.scanThenGet(bounds, (rows, generation) => {
+        const layers = [loaded, this.installed].find(
+          (l) => l?.generation === generation,
+        );
+        if (!layers) {
+          missing = generation;
+          return undefined;
+        }
+        const entries = [
+          ...mergeCursors(
+            [
+              arrayCursor(rows),
+              ...layers.readers.map((reader) => reader.cursor(bounds)),
+            ],
+            range.limit,
+          ),
+        ];
+        const picks = entries.map((entry) => {
+          const key = follow(entry);
+          return key === undefined ? undefined : checkKey(key);
+        });
+        const keys = picks.filter((k): k is CheckedKey => k !== undefined);
+        return {
+          keys,
+          finish: (found: readonly (MemRow | undefined)[]) => {
+            let j = 0;
+            return entries.map((entry, i) => {
+              const key = picks[i];
+              if (key === undefined) return { entry, value: undefined };
+              const row = found[j++];
+              return {
+                entry,
+                value: row ? valueOf(row) : pointGetSst(layers.readers, key),
+              };
+            });
+          },
+        };
+      });
+      if (out) return out;
+      loaded = await this.layersAt(missing!, false);
+    }
+    throw new CorruptDatabaseError(GENERATION_GONE);
+  }
+
+  /** Loaded readers a point read may use for `generation`: it or newer. */
+  private pointLayers(
+    generation: number,
+    loaded: Layers | undefined,
+  ): Layers | undefined {
+    for (const layers of [this.installed, loaded]) {
+      if (layers && layers.generation >= generation) return layers;
+    }
+    return undefined;
+  }
+
+  private noteAppend(seq: number, opBytes: number): void {
+    this.emitChange({ kind: "append", writerId: this.writerId, seq });
+    this.broadcast("append", { seq });
+    this.scheduler.noteAppend(opBytes);
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {

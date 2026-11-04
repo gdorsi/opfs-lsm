@@ -299,6 +299,89 @@ export class IdBWal {
     return seq;
   }
 
+  /**
+   * Read `keys` and the generation, let `decide` choose the batch, and write
+   * it, in one readwrite transaction. `decide` runs synchronously inside the
+   * transaction. Returning `undefined` writes nothing.
+   */
+  async readThenAppend<R>(
+    keys: readonly Uint8Array[],
+    decide: (
+      rows: readonly (MemRow | undefined)[],
+      generation: number,
+    ) => { readonly ops: readonly CheckedOp[]; readonly result: R } | undefined,
+  ): Promise<{ readonly seq: number | undefined; readonly result: R } | undefined> {
+    const tx = this.db.transaction([LOG_STORE, META_STORE], "readwrite");
+    const done = txDone(tx);
+    const log = tx.objectStore(LOG_STORE);
+    const meta = tx.objectStore(META_STORE);
+    const [head, gen, ...raws] = await Promise.all([
+      reqToPromise(meta.get(META_HEAD)),
+      reqToPromise(meta.get(META_GENERATION)),
+      ...keys.map((key) => reqToPromise(log.get(bufferOf(key)))),
+    ]);
+    let decision: ReturnType<typeof decide>;
+    try {
+      decision = decide(
+        raws.map((raw, i) =>
+          raw === undefined ? undefined : memRowFrom(bufferOf(keys[i]!), raw),
+        ),
+        num(gen),
+      );
+    } catch (err) {
+      tx.abort();
+      await done.catch(() => undefined);
+      throw err;
+    }
+    if (!decision || decision.ops.length === 0) {
+      await done;
+      return decision && { seq: undefined, result: decision.result };
+    }
+    const seq = num(head) + 1;
+    const at = Date.now();
+    for (const op of decision.ops) {
+      log.put(storedFromOp(op, seq, at), bufferOf(op.key));
+    }
+    meta.put(seq, META_HEAD);
+    await done;
+    return { seq, result: decision.result };
+  }
+
+  /**
+   * One readonly transaction: log rows in `bounds`, the generation, then the
+   * log rows for the keys `follow` picks from those rows. `follow` runs
+   * synchronously inside the transaction and returns undefined to give up.
+   */
+  async scanThenGet<R>(
+    bounds: ScanBounds | undefined,
+    follow: (
+      rows: readonly MemRow[],
+      generation: number,
+    ) => { readonly keys: readonly Uint8Array[]; readonly finish: (rows: readonly (MemRow | undefined)[]) => R } | undefined,
+  ): Promise<R | undefined> {
+    const tx = this.db.transaction([LOG_STORE, META_STORE], "readonly");
+    const done = txDone(tx);
+    const log = tx.objectStore(LOG_STORE);
+    const [gen, rows] = await Promise.all([
+      reqToPromise(tx.objectStore(META_STORE).get(META_GENERATION)),
+      drainLog(log, bounds),
+    ]);
+    const plan = follow(rows, num(gen));
+    if (!plan) {
+      await done;
+      return undefined;
+    }
+    const raws = await Promise.all(
+      plan.keys.map((key) => reqToPromise(log.get(bufferOf(key)))),
+    );
+    await done;
+    return plan.finish(
+      raws.map((raw, i) =>
+        raw === undefined ? undefined : memRowFrom(bufferOf(plan.keys[i]!), raw),
+      ),
+    );
+  }
+
   /** The log row for `key` and the generation, from one readonly transaction. */
   async memGet(key: Uint8Array): Promise<MemPoint> {
     const tx = this.db.transaction([LOG_STORE, META_STORE], "readonly");

@@ -78,19 +78,15 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   return { generation, runs };
 }
 
-async function listGenerations(fs: AsyncFs): Promise<number[]> {
-  const gens: number[] = [];
-  for (const name of await fs.list("m")) {
-    const n = Number(name.replace(/\.mft$/, ""));
-    if (Number.isFinite(n)) gens.push(n);
-  }
-  return gens;
-}
-
 export async function loadLatestGeneration(
   fs: AsyncFs,
 ): Promise<GenerationMeta | undefined> {
-  const gens = await listGenerations(fs);
+  const names = await fs.list("m");
+  const gens: number[] = [];
+  for (const name of names) {
+    const n = Number(name.replace(/\.mft$/, ""));
+    if (Number.isFinite(n)) gens.push(n);
+  }
   gens.sort((a, b) => b - a);
   for (const generation of gens) {
     const buf = await fs.read(genPath(generation), 0, 1 << 20);
@@ -105,11 +101,6 @@ export async function loadLatestGeneration(
   return undefined;
 }
 
-/**
- * Write the manifest, then delete manifests older than the previous one.
- * The previous one stays because a reader can list the next manifest
- * before its bytes are written and fall back to it.
- */
 export async function publishGeneration(
   fs: AsyncFs,
   generation: number,
@@ -119,14 +110,6 @@ export async function publishGeneration(
   const w = await fs.create(genPath(generation));
   await w.write(body);
   await w.finish();
-  for (const n of await listGenerations(fs)) {
-    if (n >= generation - 1) continue;
-    try {
-      await fs.remove(genPath(n));
-    } catch {
-      // best-effort
-    }
-  }
 }
 
 export async function publishL0(
