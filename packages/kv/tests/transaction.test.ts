@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ConflictError,
   MemoryFs,
@@ -122,6 +122,66 @@ describe("transaction OCC", () => {
     expect(dec.decode((await a.get(utf("k")))!)).toBe("from-b");
     await a.close();
     await b.close();
+  });
+
+  it("conflicts when the other writer's row was ingested before commit", async () => {
+    const fs = new MemoryFs();
+    const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+    const a = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
+    const b = await openDb({ name: "txn", writerId: "w2", fs, forceMemory: true, ingestPolicy: policy });
+    await a.put(utf("k"), utf("a"));
+
+    let proceed!: () => void;
+    const gate = new Promise<void>((r) => {
+      proceed = r;
+    });
+    const t1 = a.transaction(async (tx) => {
+      await tx.get(utf("k"));
+      await gate;
+      tx.put(utf("k"), utf("from-a"));
+    });
+    await b.put(utf("k"), utf("from-b"));
+    await b.ingest();
+    proceed();
+
+    await expect(t1).rejects.toBeInstanceOf(ConflictError);
+    expect(dec.decode((await a.get(utf("k")))!)).toBe("from-b");
+    await a.close();
+    await b.close();
+  });
+
+  it("after the retention window, an older txn conflicts and a new one commits", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const fs = new MemoryFs();
+      const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+      const db = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
+      await db.put(utf("x"), utf("0"));
+
+      let proceed!: () => void;
+      const gate = new Promise<void>((r) => {
+        proceed = r;
+      });
+      const old = db.transaction(async (tx) => {
+        await tx.get(utf("x"));
+        await gate;
+        tx.put(utf("x"), utf("old"));
+      });
+      await db.put(utf("y"), utf("1"));
+      vi.setSystemTime(Date.now() + 60_000);
+      await db.ingest();
+      proceed();
+      await expect(old).rejects.toBeInstanceOf(ConflictError);
+
+      await db.transaction(async (tx) => {
+        await tx.get(utf("x"));
+        tx.put(utf("x"), utf("new"));
+      });
+      expect(dec.decode((await db.get(utf("x")))!)).toBe("new");
+      await db.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("abort discards buffered writes", async () => {

@@ -10,6 +10,12 @@ const META_INGESTED = "ingestedThrough";
 /** The OPFS generation whose runs hold every seq <= ingestedThrough. */
 const META_GENERATION = "generation";
 /**
+ * Highest WAL seq deleted. Rows above it stay until they are ingested and
+ * older than WAL_RETAIN_MS, so a transaction can still check them for conflicts.
+ */
+const META_FLOOR = "walFloor";
+const WAL_RETAIN_MS = 10_000;
+/**
  * Schema v3: autoIncrement WAL + ingestedThrough + key-ordered memtable.
  * v2 databases keep wal and meta; upgrade backfills mem from the uningested tail.
  * Schema v4 adds meta.generation. The bump shuts out v3 code, which truncates
@@ -157,6 +163,14 @@ function openIdb(dbName: DbName): Promise<IDBDatabase> {
     };
     req.onerror = () => reject(req.error ?? new CommitError("idb open failed"));
   });
+}
+
+/** A database made before the floor was recorded deleted every ingested row. */
+async function readFloor(meta: IDBObjectStore): Promise<number> {
+  const floor = await reqToPromise(meta.get(META_FLOOR));
+  if (typeof floor === "number") return floor;
+  const ingested = await reqToPromise(meta.get(META_INGESTED));
+  return typeof ingested === "number" ? ingested : 0;
 }
 
 function generationOf(raw: unknown): number {
@@ -346,18 +360,27 @@ export class IdBWal {
     ops: readonly CheckedOp[],
     guard?: AppendGuard,
   ): Promise<number> {
-    const tx = this.db.transaction([WAL_STORE, MEM_STORE], "readwrite");
+    const tx = this.db.transaction(
+      [WAL_STORE, MEM_STORE, META_STORE],
+      "readwrite",
+    );
     const wal = tx.objectStore(WAL_STORE);
     const mem = tx.objectStore(MEM_STORE);
-    if (guard && (await touchesWatched(wal, guard))) {
-      tx.abort();
-      throw new ConflictError(
-        `conflict on key after wal seq ${guard.snapshotHead}`,
-      );
+    if (guard) {
+      const floor = await readFloor(tx.objectStore(META_STORE));
+      if (guard.snapshotHead < floor || (await touchesWatched(wal, guard))) {
+        tx.abort();
+        throw new ConflictError(
+          guard.snapshotHead < floor
+            ? `wal rows after seq ${guard.snapshotHead} were already deleted`
+            : `conflict on key after wal seq ${guard.snapshotHead}`,
+        );
+      }
     }
     const key = await reqToPromise(
       wal.add({
         writerId,
+        at: Date.now(),
         ops: encodeOps(ops),
       }),
     );
@@ -423,12 +446,18 @@ export class IdBWal {
     return { head, generation: generationOf(gen), rows };
   }
 
-  /** Highest autoIncrement seq currently in the WAL store, or 0 if empty. */
-  async headSeq(): Promise<number> {
-    const tx = this.db.transaction(WAL_STORE, "readonly");
-    const head = await readHead(tx.objectStore(WAL_STORE));
+  /**
+   * Transaction snapshot: the WAL head, or the floor when every row up to it
+   * was deleted. Every seq at or below the result is already applied.
+   */
+  async snapshotHead(): Promise<number> {
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
+    const [head, floor] = await Promise.all([
+      readHead(tx.objectStore(WAL_STORE)),
+      readFloor(tx.objectStore(META_STORE)),
+    ]);
     await txDone(tx);
-    return head;
+    return Math.max(head, floor);
   }
 
   /** All records with seq > ingestedThrough, ascending. */
@@ -488,20 +517,25 @@ export class IdBWal {
       await txDone(tx);
       return;
     }
-    const range = IDBKeyRange.bound(existing + 1, through);
-    await new Promise<void>((resolve, reject) => {
-      const req = wal.openCursor(range);
+    const cutoff = Date.now() - WAL_RETAIN_MS;
+    const prevFloor = await readFloor(metaStore);
+    const floor = await new Promise<number>((resolve, reject) => {
+      let deleted = prevFloor;
+      const req = wal.openCursor(IDBKeyRange.upperBound(through));
       req.onerror = () => reject(req.error ?? new CommitError("cursor failed"));
       req.onsuccess = () => {
         const cursor = req.result;
-        if (!cursor) {
-          resolve();
+        const at = (cursor?.value as { at?: unknown } | undefined)?.at;
+        if (!cursor || (typeof at === "number" && at >= cutoff)) {
+          resolve(deleted);
           return;
         }
+        deleted = cursor.key as number;
         cursor.delete();
         cursor.continue();
       };
     });
+    await reqToPromise(metaStore.put(floor, META_FLOOR));
     await deleteMemThrough(mem, through);
     await reqToPromise(metaStore.put(through, META_INGESTED));
     const cur = generationOf(await reqToPromise(metaStore.get(META_GENERATION)));
