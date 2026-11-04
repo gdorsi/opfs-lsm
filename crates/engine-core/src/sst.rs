@@ -1,4 +1,5 @@
-//! SST format — v1 (legacy single-block) decode + v2 (multi-block + Bloom) encode/decode.
+//! SST format. v1 (single block) and v2 (multi-block + Bloom) decode. v3 is
+//! v2 with a u64 seq after each record tag, and is what encode writes.
 //! Must stay byte-compatible with `packages/kv/src/store/sst.ts`.
 
 use crate::bloom::{bloom_add, create_bloom};
@@ -7,20 +8,28 @@ use crate::crc32::crc32;
 const MAGIC: u32 = 0x4f4c_5354; // OLST
 const VERSION_V1: u32 = 1;
 const VERSION_V2: u32 = 2;
+const VERSION_V3: u32 = 3;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 const BLOCK_TARGET: usize = 4 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// `seq` is the WAL seq that wrote the entry, or 0 when the SST predates v3.
 pub enum Entry {
-    Put { key: Vec<u8>, value: Vec<u8> },
-    Del { key: Vec<u8> },
+    Put { key: Vec<u8>, value: Vec<u8>, seq: u64 },
+    Del { key: Vec<u8>, seq: u64 },
 }
 
 impl Entry {
     pub fn key(&self) -> &[u8] {
         match self {
-            Entry::Put { key, .. } | Entry::Del { key } => key,
+            Entry::Put { key, .. } | Entry::Del { key, .. } => key,
+        }
+    }
+
+    pub fn seq(&self) -> u64 {
+        match self {
+            Entry::Put { seq, .. } | Entry::Del { seq, .. } => *seq,
         }
     }
 }
@@ -46,7 +55,7 @@ impl std::fmt::Display for SstError {
 impl std::error::Error for SstError {}
 
 fn entry_size(e: &Entry) -> usize {
-    let mut n = 1 + 4 + e.key().len();
+    let mut n = 1 + 8 + 4 + e.key().len();
     if let Entry::Put { value, .. } = e {
         n += 4 + value.len();
     }
@@ -74,9 +83,11 @@ fn read_u16(buf: &[u8], o: usize) -> u16 {
 fn write_records(out: &mut [u8], o: &mut usize, entries: &[&Entry]) {
     for e in entries {
         match e {
-            Entry::Put { key, value } => {
+            Entry::Put { key, value, seq } => {
                 out[*o] = TAG_PUT;
                 *o += 1;
+                out[*o..*o + 8].copy_from_slice(&seq.to_le_bytes());
+                *o += 8;
                 write_u32(out, o, key.len() as u32);
                 out[*o..*o + key.len()].copy_from_slice(key);
                 *o += key.len();
@@ -84,9 +95,11 @@ fn write_records(out: &mut [u8], o: &mut usize, entries: &[&Entry]) {
                 out[*o..*o + value.len()].copy_from_slice(value);
                 *o += value.len();
             }
-            Entry::Del { key } => {
+            Entry::Del { key, seq } => {
                 out[*o] = TAG_DEL;
                 *o += 1;
+                out[*o..*o + 8].copy_from_slice(&seq.to_le_bytes());
+                *o += 8;
                 write_u32(out, o, key.len() as u32);
                 out[*o..*o + key.len()].copy_from_slice(key);
                 *o += key.len();
@@ -95,7 +108,7 @@ fn write_records(out: &mut [u8], o: &mut usize, entries: &[&Entry]) {
     }
 }
 
-/// Encode SST v2 (multi-block + Bloom + block index).
+/// Encode SST v3 (multi-block + Bloom + block index, seq per record).
 pub fn encode_sst(entries: &[Entry]) -> Vec<u8> {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
     sorted.sort_by(|a, b| a.key().cmp(b.key()));
@@ -147,7 +160,7 @@ pub fn encode_sst(entries: &[Entry]) -> Vec<u8> {
     let mut out = vec![0u8; total];
     let mut o = 0usize;
     write_u32(&mut out, &mut o, MAGIC);
-    write_u32(&mut out, &mut o, VERSION_V2);
+    write_u32(&mut out, &mut o, VERSION_V3);
     write_u32(&mut out, &mut o, sorted.len() as u32);
     write_u32(&mut out, &mut o, blocks.len() as u32);
     write_u32(&mut out, &mut o, data_len as u32);
@@ -183,6 +196,7 @@ fn read_records(
     mut o: usize,
     end: usize,
     count: usize,
+    with_seq: bool,
 ) -> Result<Vec<Entry>, SstError> {
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
@@ -191,6 +205,14 @@ fn read_records(
         }
         let tag = buf[o];
         o += 1;
+        let mut seq = 0u64;
+        if with_seq {
+            if o + 8 > end {
+                return Err(SstError::Truncated);
+            }
+            seq = u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
+            o += 8;
+        }
         if o + 4 > end {
             return Err(SstError::Truncated);
         }
@@ -213,9 +235,9 @@ fn read_records(
                 }
                 let value = buf[o..o + val_len].to_vec();
                 o += val_len;
-                out.push(Entry::Put { key, value });
+                out.push(Entry::Put { key, value, seq });
             }
-            TAG_DEL => out.push(Entry::Del { key }),
+            TAG_DEL => out.push(Entry::Del { key, seq }),
             other => return Err(SstError::BadTag(other)),
         }
     }
@@ -227,10 +249,10 @@ fn read_records(
 
 fn decode_v1(buf: &[u8], crc_off: usize) -> Result<Vec<Entry>, SstError> {
     let count = read_u32(buf, 8) as usize;
-    read_records(buf, 12, crc_off, count)
+    read_records(buf, 12, crc_off, count, false)
 }
 
-fn decode_v2(buf: &[u8], crc_off: usize) -> Result<Vec<Entry>, SstError> {
+fn decode_v2(buf: &[u8], crc_off: usize, with_seq: bool) -> Result<Vec<Entry>, SstError> {
     if buf.len() < 28 {
         return Err(SstError::TooShort);
     }
@@ -271,7 +293,7 @@ fn decode_v2(buf: &[u8], crc_off: usize) -> Result<Vec<Entry>, SstError> {
             return Err(SstError::Truncated);
         }
         let count = read_u32(buf, start) as usize;
-        out.extend(read_records(buf, start + 4, end, count)?);
+        out.extend(read_records(buf, start + 4, end, count, with_seq)?);
     }
     if o != crc_off {
         return Err(SstError::TrailingGarbage);
@@ -299,7 +321,8 @@ pub fn decode_sst(buf: &[u8]) -> Result<Vec<Entry>, SstError> {
     }
     match version {
         VERSION_V1 => decode_v1(buf, crc_off),
-        VERSION_V2 => decode_v2(buf, crc_off),
+        VERSION_V2 => decode_v2(buf, crc_off, false),
+        VERSION_V3 => decode_v2(buf, crc_off, true),
         other => Err(SstError::BadVersion(other)),
     }
 }
@@ -309,31 +332,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trip_v2() {
+    fn round_trip_v3_keeps_seq() {
         let entries = vec![
-            Entry::Put {
-                key: b"b".to_vec(),
-                value: b"2".to_vec(),
-            },
-            Entry::Del {
-                key: b"a".to_vec(),
-            },
-            Entry::Put {
-                key: b"c".to_vec(),
-                value: b"3".to_vec(),
-            },
+            Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 },
+            Entry::Del { key: b"a".to_vec(), seq: 9 },
+            Entry::Put { key: b"c".to_vec(), value: b"3".to_vec(), seq: 1 << 40 },
         ];
         let bytes = encode_sst(&entries);
-        assert_eq!(read_u32(&bytes, 4), VERSION_V2);
+        assert_eq!(read_u32(&bytes, 4), VERSION_V3);
         let decoded = decode_sst(&bytes).unwrap();
-        assert_eq!(decoded[0], Entry::Del { key: b"a".to_vec() });
-        assert_eq!(
-            decoded[1],
-            Entry::Put {
-                key: b"b".to_vec(),
-                value: b"2".to_vec()
-            }
-        );
+        assert_eq!(decoded[0], Entry::Del { key: b"a".to_vec(), seq: 9 });
+        assert_eq!(decoded[1], Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 });
+        assert_eq!(decoded[2].seq(), 1 << 40);
     }
 
     #[test]
@@ -341,13 +351,13 @@ mod tests {
         let mut entries = Vec::new();
         for i in 0..200 {
             let key = format!("k{i:04}").into_bytes();
-            let value = vec![b'x'; 64];
-            entries.push(Entry::Put { key, value });
+            entries.push(Entry::Put { key, value: vec![b'x'; 64], seq: i });
         }
         let bytes = encode_sst(&entries);
         let block_count = read_u32(&bytes, 12);
         assert!(block_count > 1, "expected multiple blocks, got {block_count}");
         let decoded = decode_sst(&bytes).unwrap();
         assert_eq!(decoded.len(), 200);
+        assert_eq!(decoded[199].seq(), 199);
     }
 }

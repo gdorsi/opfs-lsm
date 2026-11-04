@@ -39,7 +39,7 @@ export async function maybeCompact(
     if (!buf) throw new Error(`compaction missing input ${path}`);
     blobs.push(buf);
   }
-  const merged = await mergeSsts(blobs, plan.bottom);
+  const { sst: merged, droppedSeq } = await mergeSsts(blobs, plan.bottom);
   const generation = meta.generation + 1;
   const output =
     merged.byteLength > 0
@@ -50,7 +50,11 @@ export async function maybeCompact(
         )
       : undefined;
   const runs = replaceRuns(meta.runs, plan.inputs, output);
-  await publishGeneration(fs, generation, runs);
+  await publishGeneration(fs, {
+    generation,
+    runs,
+    tombstoneSeq: Math.max(meta.tombstoneSeq, droppedSeq),
+  });
   await wal.raiseGeneration(generation);
   await reclaimRuns(fs, plan.inputs, runs);
   return { compacted: true, generation };

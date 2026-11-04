@@ -7,15 +7,16 @@
 export function decode_sst_js(buf: Uint8Array): Array<any>;
 
 /**
- * Encode entries from JS: `[{kind:'put'|'del', key:Uint8Array, value?:Uint8Array}, ...]`
+ * Encode entries from JS: `[{kind:'put'|'del', key:Uint8Array, value?:Uint8Array, seq?:number}, ...]`
  */
 export function encode_sst_js(entries: Array<any>): Uint8Array;
 
 /**
  * Merge newest-first SST blobs into one SST. `drop_tombstones` is for a
- * merge that includes the oldest run.
+ * merge that includes the oldest run. Returns `{sst, droppedSeq}`, where
+ * droppedSeq is the highest seq of a dropped tombstone, 0 when none.
  */
-export function merge_ssts_js(blobs: Array<any>, drop_tombstones: boolean): Uint8Array;
+export function merge_ssts_js(blobs: Array<any>, drop_tombstones: boolean): object;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 

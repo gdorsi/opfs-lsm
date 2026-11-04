@@ -15,8 +15,8 @@ export function foldRecords(records: readonly WalRecord[]): SstEntry[] {
       map.set(
         keyToString(op.key),
         op.type === "put"
-          ? { kind: "put", key: op.key, value: op.value }
-          : { kind: "del", key: op.key },
+          ? { kind: "put", key: op.key, value: op.value, seq: rec.seq }
+          : { kind: "del", key: op.key, seq: rec.seq },
       );
     }
   }

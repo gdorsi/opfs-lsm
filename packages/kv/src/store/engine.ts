@@ -10,7 +10,10 @@ type WasmMod = {
   default: (module_or_path?: unknown) => Promise<unknown>;
   encode_sst_js: (entries: unknown) => Uint8Array;
   decode_sst_js: (buf: Uint8Array) => unknown[];
-  merge_ssts_js: (blobs: unknown, dropTombstones: boolean) => Uint8Array;
+  merge_ssts_js: (
+    blobs: unknown,
+    dropTombstones: boolean,
+  ) => { sst: Uint8Array; droppedSeq: number };
 };
 
 let wasm: WasmMod | undefined;
@@ -77,8 +80,8 @@ export async function encodeSst(entries: readonly SstEntry[]): Promise<Uint8Arra
   if (!wasm) return sstTs.encodeSst(entries);
   const arr = entries.map((e) =>
     e.kind === "put"
-      ? { kind: "put", key: e.key, value: e.value }
-      : { kind: "del", key: e.key },
+      ? { kind: "put", key: e.key, value: e.value, seq: e.seq ?? 0 }
+      : { kind: "del", key: e.key, seq: e.seq ?? 0 },
   );
   return wasm.encode_sst_js(arr);
 }
@@ -90,6 +93,7 @@ export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
     kind: string;
     key: Uint8Array;
     value?: Uint8Array;
+    seq: number;
   }[];
   return rows.map((r) => {
     if (r.kind === "put") {
@@ -97,23 +101,31 @@ export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
         kind: "put" as const,
         key: new Uint8Array(r.key),
         value: new Uint8Array(r.value!),
+        seq: r.seq,
       };
     }
-    return { kind: "del" as const, key: new Uint8Array(r.key) };
+    return { kind: "del" as const, key: new Uint8Array(r.key), seq: r.seq };
   });
 }
 
+/**
+ * Merge newest-first runs. With `dropTombstones`, also returns the highest
+ * seq among the dropped tombstones, 0 when none was dropped.
+ */
 export async function mergeSsts(
   blobsNewestFirst: readonly Uint8Array[],
   dropTombstones: boolean,
-): Promise<Uint8Array> {
+): Promise<{ readonly sst: Uint8Array; readonly droppedSeq: number }> {
   await ensureEngine();
-  if (!wasm) {
-    const groups = blobsNewestFirst.map((blob) => sstTs.decodeSst(blob));
-    const merged = foldEntries(groups);
-    return sstTs.encodeSst(
-      dropTombstones ? merged.filter((e) => e.kind === "put") : merged,
-    );
+  if (wasm) return wasm.merge_ssts_js([...blobsNewestFirst], dropTombstones);
+  const merged = foldEntries(blobsNewestFirst.map((b) => sstTs.decodeSst(b)));
+  if (!dropTombstones) return { sst: sstTs.encodeSst(merged), droppedSeq: 0 };
+  let droppedSeq = 0;
+  for (const e of merged) {
+    if (e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
   }
-  return wasm.merge_ssts_js([...blobsNewestFirst], dropTombstones);
+  return {
+    sst: sstTs.encodeSst(merged.filter((e) => e.kind === "put")),
+    droppedSeq,
+  };
 }

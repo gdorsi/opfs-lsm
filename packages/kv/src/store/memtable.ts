@@ -2,9 +2,6 @@ import { compareBytes } from "../bytes.js";
 import type { CheckedOp } from "../check.js";
 import { lowerBoundKeys } from "./cursor.js";
 
-/** How long an ingested row stays, so a transaction can still see it conflict. */
-const RETAIN_MS = 10_000;
-
 /** The latest op for one user key, and the WAL seq that wrote it. */
 export type MemRow = {
   readonly key: Uint8Array;
@@ -19,24 +16,17 @@ export type WalRecord = {
 };
 
 /**
- * One tab's in-memory view of the WAL: exactly the records with seq in
- * (floor, appliedThrough], folded to one row per key, in key order. Records
+ * One tab's in-memory view of the WAL: the records above the installed
+ * SST generation's ingestedThrough, up to appliedThrough, folded to one row per key, in key order. Records
  * must be applied in seq order with no gaps, so every read sees the state
  * after one WAL prefix.
  */
 export class Memtable {
   private rows: MemRow[] = [];
   private applied = 0;
-  private dropped = 0;
-  private appliedAt: { seq: number; at: number }[] = [];
 
   get appliedThrough(): number {
     return this.applied;
-  }
-
-  /** Seqs at or below this may have left the table. A snapshot below it cannot be checked. */
-  get droppedThrough(): number {
-    return this.dropped;
   }
 
   /** The rows in key order. Callers that keep them past a write copy them. */
@@ -65,31 +55,21 @@ export class Memtable {
       else this.rows.splice(i, 0, row);
     }
     this.applied = record.seq;
-    this.appliedAt.push({ seq: record.seq, at: Date.now() });
     return true;
   }
 
   /**
-   * An SST now holds every seq <= `through`. Jump past seqs this table never
-   * read, and drop rows the SST covers once they are older than RETAIN_MS.
+   * The installed SST generation now holds every seq <= `through`. Drop the
+   * rows it covers, and jump past seqs this table never read.
    */
   advanceTo(through: number): void {
     if (through > this.applied) {
       this.rows = [];
-      this.appliedAt = [];
       this.applied = through;
-      this.dropped = through;
       return;
     }
-    const cutoff = Date.now() - RETAIN_MS;
-    let drop = this.dropped;
-    for (const { seq, at } of this.appliedAt) {
-      if (seq > through || at >= cutoff) break;
-      drop = seq;
+    if (this.rows.some((row) => row.seq <= through)) {
+      this.rows = this.rows.filter((row) => row.seq > through);
     }
-    if (drop === this.dropped) return;
-    this.rows = this.rows.filter((row) => row.seq > drop);
-    this.appliedAt = this.appliedAt.filter((a) => a.seq > drop);
-    this.dropped = drop;
   }
 }

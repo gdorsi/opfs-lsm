@@ -73,23 +73,23 @@ afterEach(async () => {
 describe("loadLatestGeneration", () => {
   it("skips an empty newest manifest and returns the older one", async () => {
     const fs = new MemoryFs();
-    await publishGeneration(fs, 1, ["l0/a.sst"]);
+    await publishGeneration(fs, { generation: 1, runs: ["l0/a.sst"], tombstoneSeq: 0 });
     const empty = await fs.create(mft(2));
     await empty.finish();
 
     const meta = await loadLatestGeneration(fs);
-    expect(meta).toEqual({ generation: 1, runs: ["l0/a.sst"] });
+    expect(meta).toEqual({ generation: 1, runs: ["l0/a.sst"], tombstoneSeq: 0 });
   });
 
   it("skips an undecodable newest manifest and returns the older one", async () => {
     const fs = new MemoryFs();
-    await publishGeneration(fs, 1, ["l0/a.sst"]);
+    await publishGeneration(fs, { generation: 1, runs: ["l0/a.sst"], tombstoneSeq: 0 });
     const torn = await fs.create(mft(2));
     await torn.write(new Uint8Array([1, 2, 3, 4]));
     await torn.finish();
 
     const meta = await loadLatestGeneration(fs);
-    expect(meta).toEqual({ generation: 1, runs: ["l0/a.sst"] });
+    expect(meta).toEqual({ generation: 1, runs: ["l0/a.sst"], tombstoneSeq: 0 });
   });
 
   it("returns undefined when every manifest is empty", async () => {

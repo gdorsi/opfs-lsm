@@ -6,7 +6,7 @@ import {
   type LayerCursor,
   type ScanBounds,
 } from "./cursor.js";
-import type { SstReader } from "./sst.js";
+import type { SstEntry, SstReader } from "./sst.js";
 import type { Entry } from "../db.js";
 
 type HeapItem = { key: Uint8Array; source: number };
@@ -90,18 +90,25 @@ export function pointGet(
   return pointGetSst(readers, key);
 }
 
-/** Newest run wins. A tombstone hides older puts. Bloom rejects skip the block. */
+/** The newest entry for `key`, tombstone included. Bloom rejects skip the block. */
+export function latestSstEntry(
+  readers: readonly SstReader[],
+  key: Uint8Array,
+): SstEntry | undefined {
+  for (const reader of readers) {
+    const hit = reader.get(key);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** Newest run wins. A tombstone hides older puts. */
 export function pointGetSst(
   readers: readonly SstReader[],
   key: Uint8Array,
 ): Uint8Array | undefined {
-  for (const reader of readers) {
-    const hit = reader.get(key);
-    if (!hit) continue;
-    if (hit.kind === "del") return undefined;
-    return new Uint8Array(hit.value);
-  }
-  return undefined;
+  const hit = latestSstEntry(readers, key);
+  return hit?.kind === "put" ? new Uint8Array(hit.value) : undefined;
 }
 
 export function lookupPin(
