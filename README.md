@@ -30,6 +30,23 @@ const found = await db.get(key);
 
 In the browser, `workerUrl` is the SharedWorker module. `new URL("@opfs-lsm/kv/shared-worker", import.meta.url)` is the URL this package exports.
 
+## Install the new generation after ingest
+
+Ingest publishes an OPFS generation, then deletes those rows from the shared memtable. The memtable is the key-ordered IndexedDB store written in the same transaction as the WAL ack.
+
+`get` reads the memtable first. On a miss, `get` reads SST files for the generation stored in `openGeneration`.
+
+`currentReaders` calls `loadLatestGeneration` on that read. It reuses the SST readers in `openGeneration` only when the generation number matches the manifest. A newer manifest replaces those readers.
+
+The SharedWorker posts a `generation` message on each connected port. The tab clears `openGeneration` when that message arrives. A BroadcastChannel `ingest` from another writer clears it too.
+
+```
+pnpm --filter @opfs-lsm/kv two-tab
+pnpm todo:example
+```
+
+`two-tab` finds Chrome the same way `pnpm bench:browser` does. A passing run prints `two-tab ok` and `mode=SharedWorker`. `pnpm todo:example` serves a todo list. Add a todo in one window. Click **Ingest**. The other window still lists that todo.
+
 ## Batch and warm gets beat Dexie
 
 Dexie is a library that stores rows in IndexedDB. The times below are wall time for 50 operations on one Chrome headless run. The host was darwin on 2026-11-03. The bench used the SharedWorker path and `BENCH_N=50`. Your machine will differ.
@@ -78,4 +95,6 @@ pnpm install
 pnpm test
 pnpm bench:browser
 pnpm bench:collections
+pnpm --filter @opfs-lsm/kv two-tab
+pnpm todo:example
 ```
