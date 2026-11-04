@@ -54,6 +54,24 @@ describe("collections", () => {
     expect(await users.get("1")).toBeUndefined();
   });
 
+  it("where skips an index key the doc no longer matches", async () => {
+    open = await openCollectionDb({
+      name: NAME,
+      forceMemory: true,
+      schema: {
+        tables: [{ name: "users", indexes: [{ name: "email", path: "email" }] }],
+      },
+    });
+    const users = open.table<User>("users");
+    await users.put({ id: "1", email: "new@x.com", name: "Ada" });
+    await open.kv.put(indexKey("users", "email", "old@x.com", "1"), new Uint8Array(0));
+
+    expect(await users.where("email", "old@x.com")).toEqual([]);
+    expect(await users.where("email", "new@x.com")).toEqual([
+      { id: "1", email: "new@x.com", name: "Ada" },
+    ]);
+  });
+
   it("where equality on string index", async () => {
     open = await openCollectionDb({
       name: NAME,

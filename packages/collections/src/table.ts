@@ -71,6 +71,12 @@ function readIndexValues(
   return out;
 }
 
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /** @deprecated use extractIndexRowId — kept for string-only tests */
 export function extractTrailingId(key: Uint8Array, arity = 1): string | undefined {
   return extractIndexRowId(key, arity);
@@ -256,8 +262,22 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
       const id = extractIndexRowId(entry.key, arity);
       if (id === undefined) continue;
       const doc = await this.get(id);
-      if (doc !== undefined) docs.push(doc);
+      if (doc !== undefined && this.stillIndexes(idx, id, doc, entry.key)) {
+        docs.push(doc);
+      }
     }
     return docs;
+  }
+
+  /** A concurrent put can leave an index key behind for a doc that moved on. */
+  private stillIndexes(
+    idx: IndexSpec,
+    id: string,
+    doc: T,
+    key: Uint8Array,
+  ): boolean {
+    const values = readIndexValues(doc, pathsOf(idx), idx.name);
+    if (values === undefined) return false;
+    return sameBytes(indexKey(this.name, idx.name, values, id), key);
   }
 }
