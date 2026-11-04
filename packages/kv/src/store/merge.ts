@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import type { MemRow } from "../idb/wal.js";
+import type { MemRow } from "./memtable.js";
 import {
   entryCursor,
   lowerBoundKeys,

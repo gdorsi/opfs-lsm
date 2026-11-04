@@ -1,71 +1,26 @@
-import { compareBytes } from "../bytes.js";
 import type { CheckedOp, DbName } from "../check.js";
-import { CommitError, ConflictError } from "../errors.js";
-import type { ScanBounds } from "../store/cursor.js";
-import type { SstEntry } from "../store/sst.js";
+import { CommitError } from "../errors.js";
+import type { WalRecord } from "../store/memtable.js";
 
-/**
- * The log: one row per user key holding its latest op and the seq that wrote
- * it. The `bySeq` index orders the same rows by seq, for ingest and for
- * deleting ingested rows.
- */
-const LOG_STORE = "mem";
-const BY_SEQ = "bySeq";
+/** One record per batch, keyed by seq. Holds only seqs above ingestedThrough. */
+const WAL_STORE = "wal";
 const META_STORE = "meta";
-/** Seq of the last committed batch. Every op in a batch shares its seq. */
+/** Seq of the last committed batch. */
 const META_HEAD = "head";
 const META_INGESTED = "ingestedThrough";
 /** The OPFS generation whose runs hold every seq <= ingestedThrough. */
 const META_GENERATION = "generation";
-/**
- * Highest seq whose rows were deleted. Ingested rows stay until they are
- * older than LOG_RETAIN_MS, so a transaction can still check them for conflicts.
- */
-const META_FLOOR = "walFloor";
-const LOG_RETAIN_MS = 10_000;
-/** The v4 and older append log. Schema v5 folds it into the log and drops it. */
-const LEGACY_WAL_STORE = "wal";
-const IDB_VERSION = 5;
+/** The v5 key-ordered log. Schema v6 rebuilds the WAL from it and drops it. */
+const LEGACY_MEM_STORE = "mem";
+const IDB_VERSION = 6;
 
-/** Commit only if no watched key was written after `snapshotHead`. */
-export type AppendGuard = {
-  readonly snapshotHead: number;
-  readonly watched: readonly Uint8Array[];
-};
-
-/** One latest op per user key. */
-export type MemRow = {
-  readonly key: Uint8Array;
-  readonly seq: number;
-  readonly kind: "put" | "del";
-  readonly value?: Uint8Array;
-};
-
-/** Consistent picture from one readonly transaction. */
-export type MemPin = {
+/** What a tab needs to bring its memtable up to the WAL head. */
+export type WalTail = {
   readonly head: number;
   readonly generation: number;
-  readonly rows: readonly MemRow[];
-};
-
-/** One log row and the generation that covers what the log no longer holds. */
-export type MemPoint = {
-  readonly row: MemRow | undefined;
-  readonly generation: number;
-};
-
-/** Rows to fold into one L0, in key order, and the seq range they span. */
-export type Uningested = {
-  readonly first: number;
-  readonly last: number;
-  readonly entries: readonly SstEntry[];
-};
-
-type StoredRow = {
-  seq: number;
-  kind: "put" | "del";
-  value?: ArrayBuffer;
-  at: number;
+  readonly ingestedThrough: number;
+  /** Every record above max(since, ingestedThrough), in seq order. */
+  readonly records: readonly WalRecord[];
 };
 
 function idbName(dbName: DbName): string {
@@ -78,78 +33,19 @@ function bufferOf(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer as ArrayBuffer;
 }
 
-function storedFromOp(op: CheckedOp, seq: number, at: number): StoredRow {
-  if (op.type === "put") {
-    return { seq, kind: "put", value: bufferOf(op.value), at };
-  }
-  return { seq, kind: "del", at };
-}
-
-function binaryKey(key: IDBValidKey): Uint8Array {
-  if (key instanceof ArrayBuffer) return new Uint8Array(key);
-  if (key instanceof Uint8Array) return new Uint8Array(key);
-  throw new CommitError("log key was not binary");
-}
-
-function memRowFrom(key: IDBValidKey, raw: unknown): MemRow {
-  const row = raw as StoredRow;
-  if (row.kind === "put") {
-    if (!row.value) throw new CommitError("corrupt log put");
-    return {
-      key: binaryKey(key),
-      seq: row.seq,
-      kind: "put",
-      value: new Uint8Array(row.value),
-    };
-  }
-  return { key: binaryKey(key), seq: row.seq, kind: "del" };
-}
-
-function keyRange(bounds?: ScanBounds): IDBKeyRange | null {
-  const start = bounds?.start ? bufferOf(bounds.start) : undefined;
-  const end = bounds?.endExclusive ? bufferOf(bounds.endExclusive) : undefined;
-  if (start && end) return IDBKeyRange.bound(start, end, false, true);
-  if (start) return IDBKeyRange.lowerBound(start);
-  if (end) return IDBKeyRange.upperBound(end, true);
-  return null;
-}
-
 function num(raw: unknown): number {
   return typeof raw === "number" ? raw : 0;
 }
 
-/**
- * Fold the legacy WAL's uningested tail into the log, then drop the WAL.
- * Head and floor start at the old WAL head, so no transaction from before
- * the upgrade can commit against rows the fold dropped.
- */
-function migrateLegacyWal(tx: IDBTransaction): void {
-  const wal = tx.objectStore(LEGACY_WAL_STORE);
-  const meta = tx.objectStore(META_STORE);
-  const log = tx.objectStore(LOG_STORE);
-  const ingestedReq = meta.get(META_INGESTED);
-  ingestedReq.onsuccess = () => {
-    let head = num(ingestedReq.result);
-    const cur = wal.openCursor(IDBKeyRange.lowerBound(head, true));
-    cur.onsuccess = () => {
-      const cursor = cur.result;
-      if (!cursor) {
-        meta.put(head, META_HEAD);
-        meta.put(head, META_FLOOR);
-        tx.db.deleteObjectStore(LEGACY_WAL_STORE);
-        return;
-      }
-      head = cursor.key as number;
-      const ops = (cursor.value as { ops: unknown }).ops;
-      for (const op of decodeLegacyOps(ops)) {
-        log.put(storedFromOp(op, head, 0), bufferOf(op.key));
-      }
-      cursor.continue();
-    };
-  };
+function encodeOps(ops: readonly CheckedOp[]): unknown {
+  return ops.map((op) =>
+    op.type === "put"
+      ? { type: "put", key: bufferOf(op.key), value: bufferOf(op.value) }
+      : { type: "del", key: bufferOf(op.key) },
+  );
 }
 
-function decodeLegacyOps(raw: unknown): CheckedOp[] {
+function decodeOps(raw: unknown): CheckedOp[] {
   if (!Array.isArray(raw)) throw new CommitError("corrupt wal ops");
   return raw.map((item) => {
     const row = item as { type: string; key: ArrayBuffer; value?: ArrayBuffer };
@@ -166,6 +62,57 @@ function decodeLegacyOps(raw: unknown): CheckedOp[] {
   });
 }
 
+/**
+ * Bring an older schema to v6. v2 to v4 already have a seq-keyed WAL. v5
+ * kept one row per key, so seqs whose rows were all overwritten are gone.
+ * Its uningested rows become one record right after ingestedThrough, which
+ * keeps the WAL gap-free. No tab holds a seq across an upgrade.
+ */
+function migrate(tx: IDBTransaction, oldVersion: number): void {
+  const db = tx.db;
+  const meta = tx.objectStore(META_STORE);
+  const wal = tx.objectStore(WAL_STORE);
+  const ingestedReq = meta.get(META_INGESTED);
+  ingestedReq.onsuccess = () => {
+    const through = num(ingestedReq.result);
+    if (oldVersion === 5 && db.objectStoreNames.contains(LEGACY_MEM_STORE)) {
+      const ops: unknown[] = [];
+      const cur = tx.objectStore(LEGACY_MEM_STORE).openCursor();
+      cur.onsuccess = () => {
+        const cursor = cur.result;
+        if (cursor) {
+          const row = cursor.value as {
+            seq: number;
+            kind: "put" | "del";
+            value?: ArrayBuffer;
+          };
+          if (row.seq > through) {
+            const op =
+              row.kind === "put"
+                ? { type: "put", key: cursor.key, value: row.value }
+                : { type: "del", key: cursor.key };
+            ops.push(op);
+          }
+          cursor.continue();
+          return;
+        }
+        if (ops.length > 0) wal.put({ ops, at: 0 }, through + 1);
+        meta.put(ops.length > 0 ? through + 1 : through, META_HEAD);
+        db.deleteObjectStore(LEGACY_MEM_STORE);
+      };
+      return;
+    }
+    if (db.objectStoreNames.contains(LEGACY_MEM_STORE)) {
+      db.deleteObjectStore(LEGACY_MEM_STORE);
+    }
+    const last = wal.openCursor(null, "prev");
+    last.onsuccess = () => {
+      const top = last.result ? (last.result.key as number) : 0;
+      meta.put(Math.max(top, through), META_HEAD);
+    };
+  };
+}
+
 function openIdb(dbName: DbName): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(idbName(dbName), IDB_VERSION);
@@ -179,11 +126,10 @@ function openIdb(dbName: DbName): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(META_STORE)) {
         db.createObjectStore(META_STORE);
       }
-      const log = db.objectStoreNames.contains(LOG_STORE)
-        ? tx.objectStore(LOG_STORE)
-        : db.createObjectStore(LOG_STORE);
-      if (!log.indexNames.contains(BY_SEQ)) log.createIndex(BY_SEQ, "seq");
-      if (db.objectStoreNames.contains(LEGACY_WAL_STORE)) migrateLegacyWal(tx);
+      if (!db.objectStoreNames.contains(WAL_STORE)) {
+        db.createObjectStore(WAL_STORE, { autoIncrement: true });
+      }
+      if (ev.oldVersion >= 2) migrate(tx, ev.oldVersion);
     };
     req.onsuccess = () => {
       const db = req.result;
@@ -209,13 +155,13 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
-function drainLog(
-  store: IDBObjectStore,
-  bounds?: ScanBounds,
-): Promise<MemRow[]> {
-  const out: MemRow[] = [];
+function readRecords(
+  wal: IDBObjectStore,
+  range: IDBKeyRange | null,
+): Promise<WalRecord[]> {
+  const out: WalRecord[] = [];
   return new Promise((resolve, reject) => {
-    const req = store.openCursor(keyRange(bounds));
+    const req = wal.openCursor(range);
     req.onerror = () => reject(req.error ?? new CommitError("cursor failed"));
     req.onsuccess = () => {
       const cursor = req.result;
@@ -223,27 +169,35 @@ function drainLog(
         resolve(out);
         return;
       }
-      out.push(memRowFrom(cursor.key, cursor.value));
+      out.push({
+        seq: cursor.key as number,
+        ops: decodeOps((cursor.value as { ops: unknown }).ops),
+      });
       cursor.continue();
     };
   });
 }
 
-async function writtenAfter(
-  log: IDBObjectStore,
-  guard: AppendGuard,
-): Promise<boolean> {
-  const rows = await Promise.all(
-    guard.watched.map((key) => reqToPromise(log.get(bufferOf(key)))),
-  );
-  return rows.some(
-    (raw) => raw !== undefined && (raw as StoredRow).seq > guard.snapshotHead,
-  );
+async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
+  const meta = tx.objectStore(META_STORE);
+  const [head, generation, ingestedThrough, records] = await Promise.all([
+    reqToPromise(meta.get(META_HEAD)).then(num),
+    reqToPromise(meta.get(META_GENERATION)).then(num),
+    reqToPromise(meta.get(META_INGESTED)).then(num),
+    readRecords(tx.objectStore(WAL_STORE), IDBKeyRange.lowerBound(since, true)),
+  ]);
+  return {
+    head,
+    generation,
+    ingestedThrough,
+    records: records.filter((r) => r.seq > ingestedThrough),
+  };
 }
 
 /**
- * One shared IDB database for every tab of a database name. The log is the
- * write-ahead log and the memtable at once. Ack = transaction complete.
+ * One shared IDB database for every tab of a database name. The WAL is the
+ * only durable copy of a write until ingest folds it into an SST. Each tab
+ * keeps its own memtable in memory. Ack = transaction complete.
  */
 export class IdBWal {
   private constructor(
@@ -252,82 +206,47 @@ export class IdBWal {
   ) {}
 
   static async open(dbName: DbName): Promise<IdBWal> {
-    const db = await openIdb(dbName);
-    return new IdBWal(dbName, db);
+    return new IdBWal(dbName, await openIdb(dbName));
   }
 
   close(): void {
     this.db.close();
   }
 
-  async getIngestedThrough(): Promise<number> {
-    const tx = this.db.transaction(META_STORE, "readonly");
-    const raw = await reqToPromise(tx.objectStore(META_STORE).get(META_INGESTED));
-    await txDone(tx);
-    return num(raw);
-  }
-
-  /**
-   * Write one batch under the next seq. A repeated key keeps the later op.
-   * With `guard`, the conflict check runs in this readwrite transaction, so
-   * no other write can land between the check and the commit.
-   */
-  async append(ops: readonly CheckedOp[], guard?: AppendGuard): Promise<number> {
-    const tx = this.db.transaction([LOG_STORE, META_STORE], "readwrite");
-    const log = tx.objectStore(LOG_STORE);
-    const meta = tx.objectStore(META_STORE);
-    const [head, floor] = await Promise.all([
-      reqToPromise(meta.get(META_HEAD)).then(num),
-      reqToPromise(meta.get(META_FLOOR)).then(num),
-    ]);
-    if (guard) {
-      const tooOld = guard.snapshotHead < floor;
-      if (tooOld || (await writtenAfter(log, guard))) {
-        tx.abort();
-        throw new ConflictError(
-          tooOld
-            ? `log rows after seq ${guard.snapshotHead} were already deleted`
-            : `conflict on key after seq ${guard.snapshotHead}`,
-        );
-      }
-    }
-    const seq = head + 1;
-    const at = Date.now();
-    for (const op of ops) log.put(storedFromOp(op, seq, at), bufferOf(op.key));
-    meta.put(seq, META_HEAD);
-    await txDone(tx);
-    return seq;
-  }
-
-  /**
-   * Read `keys` and the generation, let `decide` choose the batch, and write
-   * it, in one readwrite transaction. `decide` runs synchronously inside the
-   * transaction. Returning `undefined` writes nothing.
-   */
-  async readThenAppend<R>(
-    keys: readonly Uint8Array[],
-    decide: (
-      rows: readonly (MemRow | undefined)[],
-      generation: number,
-    ) => { readonly ops: readonly CheckedOp[]; readonly result: R } | undefined,
-  ): Promise<{ readonly seq: number | undefined; readonly result: R } | undefined> {
-    const tx = this.db.transaction([LOG_STORE, META_STORE], "readwrite");
+  /** The tail after `since`, from one readonly transaction. */
+  async tail(since: number): Promise<WalTail> {
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const done = txDone(tx);
-    const log = tx.objectStore(LOG_STORE);
-    const meta = tx.objectStore(META_STORE);
-    const [head, gen, ...raws] = await Promise.all([
-      reqToPromise(meta.get(META_HEAD)),
-      reqToPromise(meta.get(META_GENERATION)),
-      ...keys.map((key) => reqToPromise(log.get(bufferOf(key)))),
-    ]);
+    const tail = await readTail(tx, since);
+    await done;
+    return tail;
+  }
+
+  /**
+   * In one readwrite transaction, read the tail after `since`, let `decide`
+   * choose a batch, and append it under the next seq. `decide` runs
+   * synchronously inside the transaction. Returning undefined writes nothing,
+   * and a throw aborts the transaction and rethrows.
+   */
+  async appendAfter<R>(
+    since: number,
+    decide: (
+      tail: WalTail,
+    ) => { readonly ops: readonly CheckedOp[]; readonly result: R } | undefined,
+  ): Promise<
+    | {
+        readonly seq: number | undefined;
+        readonly ops: readonly CheckedOp[];
+        readonly result: R;
+      }
+    | undefined
+  > {
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+    const done = txDone(tx);
+    const tail = await readTail(tx, since);
     let decision: ReturnType<typeof decide>;
     try {
-      decision = decide(
-        raws.map((raw, i) =>
-          raw === undefined ? undefined : memRowFrom(bufferOf(keys[i]!), raw),
-        ),
-        num(gen),
-      );
+      decision = decide(tail);
     } catch (err) {
       tx.abort();
       await done.catch(() => undefined);
@@ -335,65 +254,16 @@ export class IdBWal {
     }
     if (!decision || decision.ops.length === 0) {
       await done;
-      return decision && { seq: undefined, result: decision.result };
+      return decision && { seq: undefined, ops: [], result: decision.result };
     }
-    const seq = num(head) + 1;
-    const at = Date.now();
-    for (const op of decision.ops) {
-      log.put(storedFromOp(op, seq, at), bufferOf(op.key));
-    }
-    meta.put(seq, META_HEAD);
-    await done;
-    return { seq, result: decision.result };
-  }
-
-  /**
-   * One readonly transaction: log rows in `bounds`, the generation, then the
-   * log rows for the keys `follow` picks from those rows. `follow` runs
-   * synchronously inside the transaction and returns undefined to give up.
-   */
-  async scanThenGet<R>(
-    bounds: ScanBounds | undefined,
-    follow: (
-      rows: readonly MemRow[],
-      generation: number,
-    ) => { readonly keys: readonly Uint8Array[]; readonly finish: (rows: readonly (MemRow | undefined)[]) => R } | undefined,
-  ): Promise<R | undefined> {
-    const tx = this.db.transaction([LOG_STORE, META_STORE], "readonly");
-    const done = txDone(tx);
-    const log = tx.objectStore(LOG_STORE);
-    const [gen, rows] = await Promise.all([
-      reqToPromise(tx.objectStore(META_STORE).get(META_GENERATION)),
-      drainLog(log, bounds),
-    ]);
-    const plan = follow(rows, num(gen));
-    if (!plan) {
-      await done;
-      return undefined;
-    }
-    const raws = await Promise.all(
-      plan.keys.map((key) => reqToPromise(log.get(bufferOf(key)))),
+    const seq = tail.head + 1;
+    tx.objectStore(WAL_STORE).add(
+      { ops: encodeOps(decision.ops), at: Date.now() },
+      seq,
     );
+    tx.objectStore(META_STORE).put(seq, META_HEAD);
     await done;
-    return plan.finish(
-      raws.map((raw, i) =>
-        raw === undefined ? undefined : memRowFrom(bufferOf(plan.keys[i]!), raw),
-      ),
-    );
-  }
-
-  /** The log row for `key` and the generation, from one readonly transaction. */
-  async memGet(key: Uint8Array): Promise<MemPoint> {
-    const tx = this.db.transaction([LOG_STORE, META_STORE], "readonly");
-    const [raw, gen] = await Promise.all([
-      reqToPromise(tx.objectStore(LOG_STORE).get(bufferOf(key))),
-      reqToPromise(tx.objectStore(META_STORE).get(META_GENERATION)),
-    ]);
-    await txDone(tx);
-    return {
-      row: raw === undefined ? undefined : memRowFrom(bufferOf(key), raw),
-      generation: num(gen),
-    };
+    return { seq, ops: decision.ops, result: decision.result };
   }
 
   /** The recorded generation. Undefined for a database made before it was recorded. */
@@ -415,106 +285,46 @@ export class IdBWal {
     await txDone(tx);
   }
 
-  /** Seq of the last committed batch. Every seq at or below it is applied. */
-  async snapshotHead(): Promise<number> {
+  async getIngestedThrough(): Promise<number> {
     const tx = this.db.transaction(META_STORE, "readonly");
-    const head = await reqToPromise(tx.objectStore(META_STORE).get(META_HEAD));
+    const raw = await reqToPromise(tx.objectStore(META_STORE).get(META_INGESTED));
     await txDone(tx);
-    return num(head);
+    return num(raw);
   }
 
-  /**
-   * One readonly transaction: head, generation, and log rows in key order.
-   * `bounds` restricts the rows. Head and generation are global.
-   */
-  async collectMem(bounds?: ScanBounds): Promise<MemPin> {
-    const tx = this.db.transaction([LOG_STORE, META_STORE], "readonly");
-    const meta = tx.objectStore(META_STORE);
-    const [head, gen, rows] = await Promise.all([
-      reqToPromise(meta.get(META_HEAD)),
-      reqToPromise(meta.get(META_GENERATION)),
-      drainLog(tx.objectStore(LOG_STORE), bounds),
-    ]);
-    await txDone(tx);
-    return { head: num(head), generation: num(gen), rows };
-  }
-
-  /** Rows written after ingestedThrough, from one readonly transaction. */
-  async listUningested(): Promise<Uningested | undefined> {
-    const tx = this.db.transaction([LOG_STORE, META_STORE], "readonly");
+  /** All records with seq > ingestedThrough, ascending. */
+  async listUningested(): Promise<WalRecord[]> {
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
+    const done = txDone(tx);
     const through = num(
       await reqToPromise(tx.objectStore(META_STORE).get(META_INGESTED)),
     );
-    const rows: MemRow[] = [];
-    await new Promise<void>((resolve, reject) => {
-      const req = tx
-        .objectStore(LOG_STORE)
-        .index(BY_SEQ)
-        .openCursor(IDBKeyRange.lowerBound(through, true));
-      req.onerror = () => reject(req.error ?? new CommitError("cursor failed"));
-      req.onsuccess = () => {
-        const cursor = req.result;
-        if (!cursor) {
-          resolve();
-          return;
-        }
-        rows.push(memRowFrom(cursor.primaryKey, cursor.value));
-        cursor.continue();
-      };
-    });
-    await txDone(tx);
-    if (rows.length === 0) return undefined;
-    const first = rows[0]!.seq;
-    const last = rows[rows.length - 1]!.seq;
-    rows.sort((a, b) => compareBytes(a.key, b.key));
-    const entries = rows.map((row): SstEntry =>
-      row.kind === "put"
-        ? { kind: "put", key: row.key, value: row.value! }
-        : { kind: "del", key: row.key },
+    const records = await readRecords(
+      tx.objectStore(WAL_STORE),
+      IDBKeyRange.lowerBound(through, true),
     );
-    return { first, last, entries };
+    await done;
+    return records;
   }
 
   /**
-   * Mark seqs <= through as ingested and record `generation` in the same
-   * transaction, so a reader never pairs a missing row with a generation that
-   * lacks it. Ingested rows older than LOG_RETAIN_MS are deleted in seq order,
-   * and the floor moves to the highest deleted seq.
+   * Mark seqs <= through as ingested, record `generation` in the same
+   * transaction, and delete those records. A tab that has not read them
+   * jumps to the SST for that generation.
    */
   async advanceIngested(through: number, generation: number): Promise<void> {
-    const tx = this.db.transaction([LOG_STORE, META_STORE], "readwrite");
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+    const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
-    const [existing, prevFloor, prevGen] = await Promise.all([
+    const [existing, prevGen] = await Promise.all([
       reqToPromise(meta.get(META_INGESTED)).then(num),
-      reqToPromise(meta.get(META_FLOOR)).then(num),
       reqToPromise(meta.get(META_GENERATION)).then(num),
     ]);
-    if (through < existing) {
-      await txDone(tx);
-      return;
+    if (through > existing) {
+      tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(through));
+      meta.put(through, META_INGESTED);
+      meta.put(Math.max(prevGen, generation), META_GENERATION);
     }
-    const cutoff = Date.now() - LOG_RETAIN_MS;
-    const floor = await new Promise<number>((resolve, reject) => {
-      let deleted = prevFloor;
-      const req = tx
-        .objectStore(LOG_STORE)
-        .index(BY_SEQ)
-        .openCursor(IDBKeyRange.upperBound(through));
-      req.onerror = () => reject(req.error ?? new CommitError("cursor failed"));
-      req.onsuccess = () => {
-        const cursor = req.result;
-        if (!cursor || (cursor.value as StoredRow).at >= cutoff) {
-          resolve(deleted);
-          return;
-        }
-        deleted = Math.max(deleted, (cursor.value as StoredRow).seq);
-        cursor.delete();
-        cursor.continue();
-      };
-    });
-    meta.put(through, META_INGESTED);
-    meta.put(floor, META_FLOOR);
-    meta.put(Math.max(prevGen, generation), META_GENERATION);
-    await txDone(tx);
+    await done;
   }
 }
