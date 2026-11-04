@@ -1,0 +1,30 @@
+=== AFTER stale-fix 1 ===
+collections where email          5.9 ms  (8475 ops/s)
+profile where×50: viewOpen=1.3ms range=2.7ms get=0.3ms ids=50
+collections where (post-ingest)  4.6 ms  (10870 ops/s)
+profile where post×50: viewOpen=2.4ms range=1.7ms get=0.0ms
+dexie where email                4.4 ms  (11364 ops/s)
+=== AFTER stale-fix 2 ===
+collections where email          6.3 ms  (7937 ops/s)
+profile where×50: viewOpen=2.0ms range=2.1ms get=0.3ms ids=50
+collections where (post-ingest)  4.5 ms  (11111 ops/s)
+profile where post×50: viewOpen=2.2ms range=2.2ms get=0.1ms
+dexie where email                3.6 ms  (13889 ops/s)
+=== AFTER stale-fix 3 ===
+collections where email          5.9 ms  (8475 ops/s)
+profile where×50: viewOpen=1.3ms range=3.1ms get=0.0ms ids=50
+collections where (post-ingest)  4.6 ms  (10870 ops/s)
+profile where post×50: viewOpen=2.3ms range=2.0ms get=0.1ms
+dexie where email                4.1 ms  (12195 ops/s)
+=== AFTER stale-fix 4 ===
+collections where email          5.8 ms  (8621 ops/s)
+profile where×50: viewOpen=2.2ms range=2.2ms get=0.3ms ids=50
+collections where (post-ingest)  4.4 ms  (11364 ops/s)
+profile where post×50: viewOpen=1.6ms range=2.3ms get=0.1ms
+dexie where email                4.6 ms  (10870 ops/s)
+=== AFTER stale-fix 5 ===
+collections where email          5.8 ms  (8621 ops/s)
+profile where×50: viewOpen=2.2ms range=2.1ms get=0.1ms ids=50
+collections where (post-ingest)  4.8 ms  (10417 ops/s)
+profile where post×50: viewOpen=1.4ms range=2.1ms get=0.4ms
+dexie where email                3.5 ms  (14286 ops/s)

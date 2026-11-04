@@ -2,9 +2,7 @@ import type { AsyncFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { crc32 } from "./crc32.js";
 import { encodeSst } from "./engine.js";
-import { KeyOverlay } from "./overlay.js";
-import { SstLayer } from "./sst-layer.js";
-import type { SstEntry } from "./sst.js";
+import { SstReader, type SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
@@ -15,7 +13,7 @@ const GEN_VERSION = 1;
 
 export type GenerationMeta = {
   readonly generation: number;
-  /** Paths relative to db root, overlay order newest first. */
+  /** Paths relative to db root, newest first. */
   readonly runs: readonly string[];
 };
 
@@ -109,14 +107,9 @@ export async function publishGeneration(
 export async function publishL0(
   fs: AsyncFs,
   name: string,
-  overlay: KeyOverlay,
+  entries: readonly SstEntry[],
 ): Promise<string> {
   const path = `${L0_PREFIX}${name}.sst`;
-  const entries: SstEntry[] = overlay.entriesSorted().map((e) =>
-    e.kind === "put"
-      ? { kind: "put" as const, key: e.key, value: e.value }
-      : { kind: "del" as const, key: e.key },
-  );
   const body = await encodeSst(entries);
   const w = await fs.create(path);
   await w.write(body);
@@ -136,25 +129,17 @@ export async function publishSst(
   return path;
 }
 
-/** Newest-first SST readers (Bloom/block point gets). */
-export async function loadSstLayer(
+/** Newest-first SST readers. Bloom and block index stay on the reader. Blocks do not. */
+export async function loadSstReaders(
   fs: AsyncFs,
   meta: GenerationMeta,
-): Promise<SstLayer> {
-  const blobs: Uint8Array[] = [];
+): Promise<SstReader[]> {
+  const readers: SstReader[] = [];
   for (const path of meta.runs) {
     const buf = await fs.read(path, 0, 1 << 26);
-    if (buf) blobs.push(buf);
+    if (buf) readers.push(new SstReader(buf));
   }
-  return SstLayer.fromBlobs(blobs);
-}
-
-/** Fully materialize SST runs into a KeyOverlay (transactions / ranges). */
-export async function loadSstOverlay(
-  fs: AsyncFs,
-  meta: GenerationMeta,
-): Promise<KeyOverlay> {
-  return (await loadSstLayer(fs, meta)).asOverlay();
+  return readers;
 }
 
 /** Delete run files that are in `drop` and not retained by `keep`. */

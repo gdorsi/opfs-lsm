@@ -44,7 +44,7 @@ export function initialState(): ModelState {
   };
 }
 
-/** Latest WAL put for KEY with seq > ingestedThrough — mirrors IdBWal.listUningested + overlay. */
+/** Latest WAL put for KEY with seq > ingestedThrough — the mem cell for that key. */
 export function walValue(s: ModelState): number | undefined {
   let v: number | undefined;
   for (const r of s.wal) {
@@ -54,8 +54,8 @@ export function walValue(s: ModelState): number | undefined {
 }
 
 /**
- * `resolveGet` for KEY: uningested WAL over SST
- * (`packages/kv/src/store/overlay.ts` + `Db.readLayers`).
+ * Point read for KEY: the uningested mem cell over SST
+ * (`pointGet` on the mem row, else newest SST reader).
  */
 export function resolveGet(s: ModelState): number | undefined {
   const local = walValue(s);

@@ -4,6 +4,7 @@
  */
 import type { SstEntry } from "./sst.js";
 import * as sstTs from "./sst.js";
+import { foldEntries } from "./fold.js";
 
 type WasmMod = {
   default: (module_or_path?: unknown) => Promise<unknown>;
@@ -111,26 +112,8 @@ export async function mergeSsts(
 ): Promise<Uint8Array> {
   await ensureEngine();
   if (!wasm) {
-    const { KeyOverlay } = await import("./overlay.js");
-    const overlay = new KeyOverlay();
-    for (let i = blobsNewestFirst.length - 1; i >= 0; i--) {
-      for (const e of sstTs.decodeSst(blobsNewestFirst[i]!)) {
-        if (e.kind === "put") {
-          overlay.applyOps([
-            { type: "put", key: e.key as never, value: e.value as never },
-          ]);
-        } else {
-          overlay.applyOps([{ type: "del", key: e.key as never }]);
-        }
-      }
-    }
-    return sstTs.encodeSst(
-      overlay.entriesSorted().map((e) =>
-        e.kind === "put"
-          ? { kind: "put" as const, key: e.key, value: e.value }
-          : { kind: "del" as const, key: e.key },
-      ),
-    );
+    const groups = blobsNewestFirst.map((blob) => sstTs.decodeSst(blob));
+    return sstTs.encodeSst(foldEntries(groups));
   }
   return wasm.merge_ssts_js([...blobsNewestFirst]);
 }

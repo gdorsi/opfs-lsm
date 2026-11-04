@@ -1,8 +1,8 @@
 /**
- * View pin: after openViewSnapshot, get must ignore later WAL appends.
- * Mirrors ViewSnapshotImpl (cloned overlays) vs live resolveGet.
+ * View pin: after the view opens, get must ignore later WAL appends.
+ * Mirrors ViewSnapshotImpl copying the drained mem rows.
  *
- * Sync: ViewSnapshotImpl must clone overlays in the constructor.
+ * Sync: the constructor must copy `rows` so later appends cannot mutate the pin.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -26,17 +26,13 @@ function initial(): State {
   return { live: undefined, pinned: "closed", nextVal: 1 };
 }
 
-function viewClonesInSource(): boolean {
+function viewPinsInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const src = fs.readFileSync(
     path.resolve(here, "../../src/view.ts"),
     "utf8",
   );
-  return (
-    src.includes("cloneOverlay") &&
-    /this\.wal\s*=\s*cloneOverlay\(wal\)/.test(src) &&
-    /this\.sst\s*=\s*cloneOverlay\(sst\)/.test(src)
-  );
+  return /this\.rows\s*=\s*rows\.slice\(\)/.test(src);
 }
 
 function enabled(s: State): Action[] {
@@ -55,8 +51,8 @@ function step(s: State, a: Action): State {
     case "append":
       return { ...s, live: s.nextVal, nextVal: s.nextVal + 1 };
     case "openView":
-      // Correct: pin current live. Broken (no clone): stay coupled to live.
-      if (!viewClonesInSource()) {
+      // Correct: pin current live. Broken (no row copy): stay coupled to live.
+      if (!viewPinsInSource()) {
         return { ...s, pinned: s.live }; // still copies number — need ref model
       }
       return { ...s, pinned: s.live };
@@ -72,13 +68,13 @@ function step(s: State, a: Action): State {
 }
 
 /**
- * When source does not clone, model treats pinned as always equal to live
- * (live binding). Numbers are copied on open — to model the bug we re-read
- * live on every viewGet when clone is missing.
+ * When source does not copy the drained rows, model treats pinned as always
+ * equal to live. Numbers are copied on open — to model the bug we re-read
+ * live on every viewGet when the pin copy is missing.
  */
 function viewSees(s: State): number | undefined {
   if (s.pinned === "closed") return undefined;
-  if (!viewClonesInSource()) return s.live;
+  if (!viewPinsInSource()) return s.live;
   return s.pinned === "closed" ? undefined : s.pinned;
 }
 
@@ -159,11 +155,11 @@ for (let i = 0; i < nodes.length; i++) {
   }
 }
 
-if (!viewClonesInSource()) {
-  console.error("FAIL ViewPin — view.ts no longer clones overlays on pin");
+if (!viewPinsInSource()) {
+  console.error("FAIL ViewPin — view.ts no longer copies mem rows on pin");
   process.exit(1);
 }
 
 console.log(
-  `PASS ViewPin — ${seen.size} states, cloneOverlay pin present in view.ts`,
+  `PASS ViewPin — ${seen.size} states, rows.slice() pin present in view.ts`,
 );

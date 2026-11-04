@@ -1,8 +1,10 @@
 /**
- * Every (WAL hit, SST hit) pair: resolveGet prefers WAL (incl. tombstones).
- * Runs against the real KeyOverlay + resolveGet.
+ * Every (mem hit, SST hit) pair: pointGet prefers the mem row (incl. tombstones).
+ * Runs against the real pointGet + SstReader.
  */
-import { KeyOverlay, resolveGet } from "../../src/store/overlay.js";
+import { encodeSst, SstReader } from "../../src/store/sst.js";
+import { pointGet } from "../../src/store/merge.js";
+import type { MemRow } from "../../src/idb/wal.js";
 
 type Kind = "miss" | "tomb" | "valueA" | "valueB";
 
@@ -10,22 +12,34 @@ const KEY = new Uint8Array([1]);
 const A = new Uint8Array([10]);
 const B = new Uint8Array([20]);
 
-function layer(kind: Kind): KeyOverlay {
-  const o = new KeyOverlay();
-  if (kind === "tomb") {
-    o.applyOps([{ type: "del", key: KEY as never }]);
-  } else if (kind === "valueA") {
-    o.applyOps([{ type: "put", key: KEY as never, value: A as never }]);
-  } else if (kind === "valueB") {
-    o.applyOps([{ type: "put", key: KEY as never, value: B as never }]);
-  }
-  return o;
+function memRow(kind: Kind): MemRow | undefined {
+  if (kind === "miss") return undefined;
+  if (kind === "tomb") return { key: KEY, seq: 1, kind: "del" };
+  return {
+    key: KEY,
+    seq: 1,
+    kind: "put",
+    value: kind === "valueA" ? A : B,
+  };
 }
 
-function expected(wal: Kind, sst: Kind): Uint8Array | undefined {
-  if (wal === "tomb") return undefined;
-  if (wal === "valueA") return A;
-  if (wal === "valueB") return B;
+function readers(kind: Kind): SstReader[] {
+  if (kind === "miss") return [];
+  const entry =
+    kind === "tomb"
+      ? { kind: "del" as const, key: KEY }
+      : {
+          kind: "put" as const,
+          key: KEY,
+          value: kind === "valueA" ? A : B,
+        };
+  return [new SstReader(encodeSst([entry]))];
+}
+
+function expected(mem: Kind, sst: Kind): Uint8Array | undefined {
+  if (mem === "tomb") return undefined;
+  if (mem === "valueA") return A;
+  if (mem === "valueB") return B;
   if (sst === "tomb") return undefined;
   if (sst === "valueA") return A;
   if (sst === "valueB") return B;
@@ -45,17 +59,17 @@ function eq(
 
 const KINDS: Kind[] = ["miss", "tomb", "valueA", "valueB"];
 let n = 0;
-for (const wal of KINDS) {
+for (const mem of KINDS) {
   for (const sst of KINDS) {
     n++;
-    const got = resolveGet(KEY, layer(wal), layer(sst));
-    const want = expected(wal, sst);
+    const got = pointGet(memRow(mem), readers(sst), KEY);
+    const want = expected(mem, sst);
     if (!eq(got, want)) {
       console.error(
-        `FAIL wal=${wal} sst=${sst} got=${got ? [...got] : "undef"} want=${want ? [...want] : "undef"}`,
+        `FAIL mem=${mem} sst=${sst} got=${got ? [...got] : "undef"} want=${want ? [...want] : "undef"}`,
       );
       process.exit(1);
     }
   }
 }
-console.log(`PASS WalOverSst — ${n} pairs on real resolveGet`);
+console.log(`PASS WalOverSst — ${n} pairs on real pointGet`);

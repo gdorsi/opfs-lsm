@@ -1,7 +1,16 @@
 import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
-import { KeyOverlay, resolveGet } from "./store/overlay.js";
+import type { MemRow } from "./idb/wal.js";
+import type { ScanBounds } from "./store/cursor.js";
+import {
+  arrayCursor,
+  lookupPin,
+  mergeCursors,
+  pointGet,
+  sliceRows,
+} from "./store/merge.js";
+import type { SstReader } from "./store/sst.js";
 
 export interface ViewSnapshot {
   /** WAL head seq pinned when the view opened. */
@@ -12,44 +21,34 @@ export interface ViewSnapshot {
   range(range?: Range): AsyncIterable<Entry>;
 }
 
-function cloneOverlay(src: KeyOverlay): KeyOverlay {
-  const out = new KeyOverlay();
-  out.applyOps(
-    src.entriesSorted().map((e) =>
-      e.kind === "put"
-        ? {
-            type: "put" as const,
-            key: e.key as never,
-            value: e.value as never,
-          }
-        : { type: "del" as const, key: e.key as never },
-    ),
-  );
-  return out;
+export function boundsOf(range?: Range): ScanBounds | undefined {
+  const start = range?.start ? checkKey(range.start) : undefined;
+  const endExclusive = range?.endExclusive
+    ? checkKey(range.endExclusive)
+    : undefined;
+  if (start && endExclusive) return { start, endExclusive };
+  if (start) return { start };
+  if (endExclusive) return { endExclusive };
+  return undefined;
 }
 
-function compareForRange(a: Uint8Array, b: Uint8Array): number {
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    const d = (a[i] ?? 0) - (b[i] ?? 0);
-    if (d !== 0) return d;
-  }
-  return a.length - b.length;
-}
-
+/**
+ * Pinned mem rows plus the SST readers opened for that generation.
+ * `rows.slice()` is the snapshot: later appends are not in the array.
+ */
 export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
-  private readonly wal: KeyOverlay;
-  private readonly sst: KeyOverlay;
+  private readonly rows: readonly MemRow[];
+  private readonly readers: readonly SstReader[];
 
   constructor(
     readonly walHead: number,
     readonly generation: number,
-    wal: KeyOverlay,
-    sst: KeyOverlay,
+    rows: readonly MemRow[],
+    readers: readonly SstReader[],
   ) {
-    this.wal = cloneOverlay(wal);
-    this.sst = cloneOverlay(sst);
+    this.rows = rows.slice();
+    this.readers = readers;
   }
 
   private ensureOpen(): void {
@@ -63,47 +62,23 @@ export class ViewSnapshotImpl implements ViewSnapshot {
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
-    return resolveGet(checkKey(key), this.wal, this.sst);
+    const k = checkKey(key);
+    return pointGet(lookupPin(this.rows, k), this.readers, k);
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {
     this.ensureOpen();
-    const merged = new KeyOverlay();
-    merged.applyOps(
-      this.sst.entriesSorted().map((e) =>
-        e.kind === "put"
-          ? {
-              type: "put" as const,
-              key: e.key as never,
-              value: e.value as never,
-            }
-          : { type: "del" as const, key: e.key as never },
-      ),
-    );
-    merged.applyOps(
-      this.wal.entriesSorted().map((e) =>
-        e.kind === "put"
-          ? {
-              type: "put" as const,
-              key: e.key as never,
-              value: e.value as never,
-            }
-          : { type: "del" as const, key: e.key as never },
-      ),
-    );
-    const start = range?.start ? checkKey(range.start) : undefined;
-    const end = range?.endExclusive
-      ? checkKey(range.endExclusive)
-      : undefined;
-    let n = 0;
-    for (const e of merged.entriesSorted()) {
+    const bounds = boundsOf(range);
+    const slice = sliceRows(this.rows, bounds);
+    for (const entry of mergeCursors(
+      [
+        arrayCursor(slice),
+        ...this.readers.map((reader) => reader.cursor(bounds)),
+      ],
+      range?.limit,
+    )) {
       this.ensureOpen();
-      if (e.kind === "del") continue;
-      if (start && compareForRange(e.key, start) < 0) continue;
-      if (end && compareForRange(e.key, end) >= 0) continue;
-      yield { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) };
-      n++;
-      if (range?.limit !== undefined && n >= range.limit) return;
+      yield entry;
     }
   }
 }

@@ -5,5 +5,7 @@ node_modules
 packages/*/dist
 crates/kv
 packages/kv/.bench-chrome-profile
+packages/collections/.bench-chrome-profile
+packages/kv/.arena-readpath
 .DS_Store
 .scratch

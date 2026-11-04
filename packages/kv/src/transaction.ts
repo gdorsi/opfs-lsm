@@ -7,13 +7,11 @@ import {
   type WriterId,
 } from "./check.js";
 import { ClosedError, ConflictError } from "./errors.js";
-import type { IdBWal } from "./idb/wal.js";
+import type { IdBWal, MemRow } from "./idb/wal.js";
 import type { AsyncFs } from "./opfs/async-fs.js";
-import {
-  loadLatestGeneration,
-  loadSstOverlay,
-} from "./store/generation.js";
-import { KeyOverlay, resolveGet } from "./store/overlay.js";
+import { loadLatestGeneration, loadSstReaders } from "./store/generation.js";
+import { lookupPin, pointGet } from "./store/merge.js";
+import type { SstReader } from "./store/sst.js";
 
 export interface Transaction {
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
@@ -29,9 +27,9 @@ type CommitHook = (
 
 /**
  * Snapshot-isolated interactive transaction with key-based OCC.
- * Reads see pinned generation + WAL ≤ snapshotHead + local buffer.
- * Commit fails with ConflictError if a concurrent WAL record after the
- * snapshot touches a key this txn read or wrote.
+ * Reads see the mem pin taken at start, plus SST readers listed after that
+ * pin, plus the local write buffer. Commit fails with ConflictError if a
+ * concurrent WAL record after the snapshot touches a key this txn read or wrote.
  */
 class TxImpl implements Transaction {
   private aborted = false;
@@ -41,29 +39,25 @@ class TxImpl implements Transaction {
     string,
     { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }
   >();
-  private sst = new KeyOverlay();
-  private walSnap = new KeyOverlay();
+  private snapshotHead = 0;
+  private rows: readonly MemRow[] = [];
+  private readers: readonly SstReader[] = [];
   private readonly ready: Promise<void>;
 
   constructor(
     private readonly wal: IdBWal,
     private readonly fs: AsyncFs,
-    private readonly snapshotHead: number,
     private readonly commitHook: CommitHook,
   ) {
     this.ready = this.loadSnapshot();
   }
 
   private async loadSnapshot(): Promise<void> {
+    const pin = await this.wal.collectMem();
+    this.snapshotHead = pin.head;
+    this.rows = pin.rows;
     const gen = await loadLatestGeneration(this.fs);
-    this.sst = gen ? await loadSstOverlay(this.fs, gen) : new KeyOverlay();
-    const through = await this.wal.getIngestedThrough();
-    const from = through + 1;
-    if (from <= this.snapshotHead) {
-      this.walSnap.applyRecords(
-        await this.wal.listRange(from, this.snapshotHead),
-      );
-    }
+    this.readers = gen ? await loadSstReaders(this.fs, gen) : [];
   }
 
   private ensureActive(): void {
@@ -82,7 +76,7 @@ class TxImpl implements Transaction {
       if (local.type === "del") return undefined;
       return new Uint8Array(local.value!);
     }
-    return resolveGet(k, this.walSnap, this.sst);
+    return pointGet(lookupPin(this.rows, k), this.readers, k);
   }
 
   put(key: Uint8Array, value: Uint8Array): void {
@@ -151,8 +145,7 @@ export async function runTransaction<T>(
   commitHook: CommitHook,
   body: (tx: Transaction) => Promise<T> | T,
 ): Promise<T> {
-  const snapshotHead = await wal.headSeq();
-  const tx = new TxImpl(wal, fs, snapshotHead, commitHook);
+  const tx = new TxImpl(wal, fs, commitHook);
   try {
     const result = await body(tx);
     if (!tx.wasAborted()) {
