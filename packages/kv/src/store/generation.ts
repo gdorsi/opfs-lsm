@@ -82,15 +82,23 @@ export async function loadLatestGeneration(
   fs: AsyncFs,
 ): Promise<GenerationMeta | undefined> {
   const names = await fs.list("m");
-  let best = -1;
+  const gens: number[] = [];
   for (const name of names) {
     const n = Number(name.replace(/\.mft$/, ""));
-    if (Number.isFinite(n) && n > best) best = n;
+    if (Number.isFinite(n)) gens.push(n);
   }
-  if (best < 0) return undefined;
-  const buf = await fs.read(genPath(best), 0, 1 << 20);
-  if (!buf || buf.byteLength === 0) return undefined;
-  return decodeGeneration(buf);
+  gens.sort((a, b) => b - a);
+  for (const generation of gens) {
+    const buf = await fs.read(genPath(generation), 0, 1 << 20);
+    if (!buf || buf.byteLength === 0) continue;
+    try {
+      return decodeGeneration(buf);
+    } catch (err) {
+      if (err instanceof CorruptDatabaseError) continue;
+      throw err;
+    }
+  }
+  return undefined;
 }
 
 export async function publishGeneration(
