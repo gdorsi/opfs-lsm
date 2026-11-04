@@ -251,16 +251,13 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     },
   ): Promise<T[]> {
     const arity = pathsOf(idx).length;
-    return this.db.view(async (snap) => {
-      const docs: T[] = [];
-      for await (const entry of snap.range(range)) {
-        const id = extractIndexRowId(entry.key, arity);
-        if (id === undefined) continue;
-        const bytes = await snap.get(this.pkBytes(id));
-        if (bytes === undefined) continue;
-        docs.push(decodeJson<T>(bytes));
-      }
-      return docs;
-    });
+    const docs: T[] = [];
+    for await (const entry of this.db.range(range)) {
+      const id = extractIndexRowId(entry.key, arity);
+      if (id === undefined) continue;
+      const doc = await this.get(id);
+      if (doc !== undefined) docs.push(doc);
+    }
+    return docs;
   }
 }

@@ -243,6 +243,7 @@ class DbImpl implements Db {
           seq?: number;
         } | null;
         if (!data || data.writerId === this.writerId) return;
+        if (data.kind === "ingest") this.openGeneration = undefined;
         if (data.kind === "append" || data.kind === "ingest") {
           this.changeBus.emit({
             kind: data.kind,
@@ -274,15 +275,17 @@ class DbImpl implements Db {
     this.changeBus.emit(event);
   }
 
-  /** List `m/`. Reload run bytes only when the generation number changed. */
+  /**
+   * SST runs for the generation this tab has installed.
+   * Replaced on local or foreign ingest — not a key overlay, the open files.
+   */
   private async currentReaders(): Promise<{
     generation: number;
     readers: readonly SstReader[];
   }> {
+    if (this.openGeneration) return this.openGeneration;
     const meta = await loadLatestGeneration(this.fs);
     const generation = meta?.generation ?? 0;
-    const open = this.openGeneration;
-    if (open && open.generation === generation) return open;
     const readers = meta ? await loadSstReaders(this.fs, meta) : [];
     const next = { generation, readers };
     this.openGeneration = next;
