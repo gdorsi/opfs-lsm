@@ -27,6 +27,8 @@ export type TableSchema = {
   indexes?: IndexSpec[];
 };
 
+const EMPTY = new Uint8Array(0);
+
 function pathsOf(spec: IndexSpec): readonly string[] {
   return typeof spec.path === "string" ? [spec.path] : spec.path;
 }
@@ -94,18 +96,12 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     return primaryKey(this.name, id);
   }
 
-  private indexWrites(
-    id: string,
-    doc: T,
-    mode: "put" | "del",
-  ): Array<{ key: Uint8Array; value: Uint8Array | null }> {
-    const out: Array<{ key: Uint8Array; value: Uint8Array | null }> = [];
+  private indexKeys(id: string, doc: T): Uint8Array[] {
+    const out: Uint8Array[] = [];
     for (const idx of this.indexes) {
-      const paths = pathsOf(idx);
-      const values = readIndexValues(doc, paths, idx.name);
+      const values = readIndexValues(doc, pathsOf(idx), idx.name);
       if (values === undefined) continue;
-      const key = indexKey(this.name, idx.name, values, id);
-      out.push({ key, value: mode === "put" ? new Uint8Array(0) : null });
+      out.push(indexKey(this.name, idx.name, values, id));
     }
     return out;
   }
@@ -118,41 +114,30 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
 
   async put(doc: T): Promise<string> {
     const id = requireString(doc[this.primaryKeyField], this.primaryKeyField);
-    const prevBytes = await this.db.get(this.pkBytes(id));
-    const writes: Array<{ key: Uint8Array; value: Uint8Array | null }> = [
-      { key: this.pkBytes(id), value: encodeJson(doc) },
-    ];
-
-    if (prevBytes !== undefined) {
-      const prev = decodeJson<T>(prevBytes);
-      writes.push(...this.indexWrites(id, prev, "del"));
-    }
-    writes.push(...this.indexWrites(id, doc, "put"));
-
-    await this.db.transaction(async (tx) => {
-      for (const w of writes) {
-        if (w.value === null) tx.delete(w.key);
-        else tx.put(w.key, w.value);
+    const pk = this.pkBytes(id);
+    const value = encodeJson(doc);
+    return this.db.update([pk], ([prevBytes], tx) => {
+      if (prevBytes !== undefined) {
+        for (const key of this.indexKeys(id, decodeJson<T>(prevBytes))) {
+          tx.delete(key);
+        }
       }
+      tx.put(pk, value);
+      for (const key of this.indexKeys(id, doc)) tx.put(key, EMPTY);
+      return id;
     });
-    return id;
   }
 
   async delete(id: string): Promise<boolean> {
-    const prevBytes = await this.db.get(this.pkBytes(id));
-    if (prevBytes === undefined) return false;
-    const prev = decodeJson<T>(prevBytes);
-    const writes = [
-      { key: this.pkBytes(id), value: null as Uint8Array | null },
-      ...this.indexWrites(id, prev, "del"),
-    ];
-    await this.db.transaction(async (tx) => {
-      for (const w of writes) {
-        if (w.value === null) tx.delete(w.key);
-        else tx.put(w.key, w.value);
+    const pk = this.pkBytes(id);
+    return this.db.update([pk], ([prevBytes], tx) => {
+      if (prevBytes === undefined) return false;
+      tx.delete(pk);
+      for (const key of this.indexKeys(id, decodeJson<T>(prevBytes))) {
+        tx.delete(key);
       }
+      return true;
     });
-    return true;
   }
 
   /**
@@ -251,12 +236,13 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     },
   ): Promise<T[]> {
     const arity = pathsOf(idx).length;
-    const docs: T[] = [];
-    for await (const entry of this.db.range(range)) {
+    const hits = await this.db.rangeFollow(range, (entry) => {
       const id = extractIndexRowId(entry.key, arity);
-      if (id === undefined) continue;
-      const doc = await this.get(id);
-      if (doc !== undefined) docs.push(doc);
+      return id === undefined ? undefined : this.pkBytes(id);
+    });
+    const docs: T[] = [];
+    for (const { value } of hits) {
+      if (value !== undefined) docs.push(decodeJson<T>(value));
     }
     return docs;
   }
