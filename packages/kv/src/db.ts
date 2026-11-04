@@ -426,7 +426,7 @@ class DbImpl implements Db {
     this.ensureOpen();
     return runTransaction(
       {
-        headSeq: () => this.wal.headSeq(),
+        snapshotHead: () => this.wal.snapshotHead(),
         get: (key) => this.readKey(key),
         commit: async (ops, opBytes, guard) => {
           const seq = await this.wal.append(this.writerId, ops, guard);
