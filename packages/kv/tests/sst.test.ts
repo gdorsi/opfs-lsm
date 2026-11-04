@@ -6,7 +6,7 @@ import {
   SstReader,
   SST_BLOCK_TARGET,
 } from "../src/store/sst.js";
-import { SstLayer } from "../src/store/sst-layer.js";
+import { pointGet } from "../src/store/merge.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
@@ -62,7 +62,7 @@ describe("sst v2", () => {
     expect(reader.get(utf("missing"))).toBeUndefined();
   });
 
-  it("SstLayer newest-first wins", () => {
+  it("newest run wins and a tombstone hides the older put", () => {
     const older = encodeSst([
       { kind: "put", key: utf("a"), value: utf("old") },
       { kind: "put", key: utf("b"), value: utf("1") },
@@ -71,13 +71,31 @@ describe("sst v2", () => {
       { kind: "put", key: utf("a"), value: utf("new") },
       { kind: "del", key: utf("b") },
     ]);
-    const layer = SstLayer.fromBlobs([newer, older]);
-    expect(layer.get(utf("a"))).toEqual({
-      status: "value",
-      value: utf("new"),
+    const readers = [new SstReader(newer), new SstReader(older)];
+    expect(pointGet(undefined, readers, utf("a"))).toEqual(utf("new"));
+    expect(pointGet(undefined, readers, utf("b"))).toBeUndefined();
+    expect(pointGet(undefined, readers, utf("c"))).toBeUndefined();
+  });
+
+  it("cursor seeks one block and stops before endExclusive", () => {
+    const entries = Array.from({ length: 80 }, (_, i) => ({
+      kind: "put" as const,
+      key: utf(`k${String(i).padStart(3, "0")}`),
+      value: utf(`v${i}`),
+    }));
+    const reader = new SstReader(encodeSst(entries, 200));
+    const cur = reader.cursor({
+      start: utf("k040"),
+      endExclusive: utf("k043"),
     });
-    expect(layer.get(utf("b"))).toEqual({ status: "tomb" });
-    expect(layer.get(utf("c"))).toEqual({ status: "miss" });
+    const got: string[] = [];
+    for (;;) {
+      const e = cur.peek();
+      if (!e) break;
+      got.push(new TextDecoder().decode(e.key));
+      cur.next();
+    }
+    expect(got).toEqual(["k040", "k041", "k042"]);
   });
 
   it("default block target constant is 4KiB", () => {

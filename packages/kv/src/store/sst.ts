@@ -1,6 +1,12 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import {
+  entryCursor,
+  lowerBoundKeys,
+  type LayerCursor,
+  type ScanBounds,
+} from "./cursor.js";
+import {
   bloomAdd,
   bloomMightContain,
   createBloom,
@@ -334,7 +340,6 @@ export class SstReader {
   private readonly bloom: BloomFilter | undefined;
   private readonly dataStart: number = 0;
   private readonly index: BlockIndexEntry[] = [];
-  private readonly blockCache = new Map<number, SstEntry[]>();
 
   constructor(buf: Uint8Array) {
     if (buf.byteLength < 16) throw new CorruptDatabaseError("sst too short");
@@ -369,7 +374,7 @@ export class SstReader {
     return bloomMightContain(this.bloom!, key);
   }
 
-  /** Point lookup without decoding every block. */
+  /** Point lookup without decoding every block. The block is not retained. */
   get(key: Uint8Array): SstEntry | undefined {
     if (this.version === VERSION_V1) {
       return sstGet(this.v1Entries!, key);
@@ -377,14 +382,18 @@ export class SstReader {
     if (!this.mightContain(key)) return undefined;
     const bi = this.findBlock(key);
     if (bi < 0) return undefined;
-    const entries = this.loadBlock(bi);
-    return sstGet(entries, key);
+    return sstGet(this.loadBlock(bi), key);
   }
 
-  /** Full decode (range / overlay materialization). */
-  entries(): SstEntry[] {
-    if (this.v1Entries) return this.v1Entries;
-    return decodeSst(this.buf);
+  /**
+   * Block-index seek. Decodes the current block into cursor-local state.
+   * Advances to the next block when the current one is exhausted.
+   */
+  cursor(bounds?: ScanBounds): LayerCursor {
+    if (this.version === VERSION_V1) {
+      return entryCursor(this.v1Entries ?? [], bounds);
+    }
+    return this.v2Cursor(bounds);
   }
 
   private findBlock(key: Uint8Array): number {
@@ -407,12 +416,74 @@ export class SstReader {
   }
 
   private loadBlock(i: number): SstEntry[] {
-    const cached = this.blockCache.get(i);
-    if (cached) return cached;
-    const entries = decodeBlock(this.buf, this.view, this.dataStart, this.index[i]!);
-    this.blockCache.set(i, entries);
-    return entries;
+    return decodeBlock(this.buf, this.view, this.dataStart, this.index[i]!);
   }
+
+  private v2Cursor(bounds?: ScanBounds): LayerCursor {
+    const index = this.index;
+    let bi = seekBlock(index, bounds?.start);
+    let slots: SstEntry[] = [];
+    let i = 0;
+    const load = () => {
+      if (bi >= index.length) {
+        slots = [];
+        i = 0;
+        return;
+      }
+      const block = index[bi]!;
+      if (
+        bounds?.endExclusive &&
+        compareBytes(block.firstKey, bounds.endExclusive) >= 0
+      ) {
+        bi = index.length;
+        slots = [];
+        i = 0;
+        return;
+      }
+      slots = this.loadBlock(bi);
+      i = bounds?.start ? lowerBoundKeys(slots, bounds.start) : 0;
+    };
+    load();
+    return {
+      peek() {
+        while (true) {
+          if (i < slots.length) {
+            const e = slots[i]!;
+            if (
+              bounds?.endExclusive &&
+              compareBytes(e.key, bounds.endExclusive) >= 0
+            ) {
+              return undefined;
+            }
+            return e.kind === "put"
+              ? { key: e.key, kind: "put" as const, value: e.value }
+              : { key: e.key, kind: "del" as const };
+          }
+          bi += 1;
+          load();
+          if (bi >= index.length && i >= slots.length) return undefined;
+        }
+      },
+      next() {
+        i += 1;
+      },
+    };
+  }
+}
+
+function seekBlock(
+  index: readonly BlockIndexEntry[],
+  start: Uint8Array | undefined,
+): number {
+  if (start === undefined) return 0;
+  let lo = 0;
+  let hi = index.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (compareBytes(index[mid]!.lastKey, start) < 0) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /** Point lookup in a decoded (sorted) SST. */

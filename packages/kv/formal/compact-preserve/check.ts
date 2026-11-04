@@ -1,8 +1,8 @@
 /**
  * Compaction merge (newest-first runs) preserves per-key visibility.
- * Mirrors SstLayer.get / mergeSsts apply order (oldest→newest so newer wins).
+ * Mirrors pointGetSst (newest reader first) and foldEntries (oldest group first).
  *
- * Sync: SstLayer.get must walk readers newest-first; asOverlay oldest-first apply.
+ * Sync: pointGetSst walks readers newest-first; foldEntries applies oldest first.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -23,7 +23,7 @@ function layerGet(runsNewestFirst: readonly Run[], key: string): Entry {
   return undefined;
 }
 
-/** mergeSsts / asOverlay: apply oldest first so newer wins. */
+/** foldEntries: apply oldest first so newer wins. */
 function mergeCorrect(runsNewestFirst: readonly Run[]): Run {
   const out: Run = {};
   for (let i = runsNewestFirst.length - 1; i >= 0; i--) {
@@ -41,15 +41,19 @@ function mergeBroken(runsNewestFirst: readonly Run[]): Run {
 
 function newestFirstInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const src = fs.readFileSync(
-    path.resolve(here, "../../src/store/sst-layer.ts"),
+  const merge = fs.readFileSync(
+    path.resolve(here, "../../src/store/merge.ts"),
     "utf8",
   );
-  // get: for (const reader of this.readers) — readers are newest-first
-  // asOverlay: for (let i = this.readers.length - 1; i >= 0; i--)
+  const fold = fs.readFileSync(
+    path.resolve(here, "../../src/store/fold.ts"),
+    "utf8",
+  );
+  // pointGetSst: for (const reader of readers) — readers are newest-first
+  // foldEntries: for (let i = groups.length - 1; i >= 0; i--)
   return (
-    /for\s*\(\s*const\s+reader\s+of\s+this\.readers\s*\)/.test(src) &&
-    /for\s*\(\s*let\s+i\s*=\s*this\.readers\.length\s*-\s*1/.test(src)
+    /for\s*\(\s*const\s+reader\s+of\s+readers\s*\)/.test(merge) &&
+    /for\s*\(\s*let\s+i\s*=\s*groups\.length\s*-\s*1/.test(fold)
   );
 }
 
@@ -106,11 +110,11 @@ for (const runs of allRuns(2)) {
 
 if (!newestFirstInSource()) {
   console.error(
-    "FAIL CompactPreserve — sst-layer.ts no longer newest-first get / oldest-first apply",
+    "FAIL CompactPreserve — merge.ts / fold.ts no longer newest-first get / oldest-first apply",
   );
   process.exit(1);
 }
 
 console.log(
-  `PASS CompactPreserve — ${cases} run lists, newest-first merge order in sst-layer.ts`,
+  `PASS CompactPreserve — ${cases} run lists, newest-first pointGetSst and oldest-first foldEntries`,
 );

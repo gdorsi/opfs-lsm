@@ -1,8 +1,8 @@
 /**
- * View pin: after openViewSnapshot, get must ignore later WAL appends.
- * Mirrors ViewSnapshotImpl (shallow-copied put list) vs live Db cache.
+ * View pin: after the view opens, get must ignore later WAL appends.
+ * Mirrors ViewSnapshotImpl copying the drained mem rows.
  *
- * Sync: ViewSnapshotImpl must copy the put list in the constructor.
+ * Sync: the constructor must copy `rows` so later appends cannot mutate the pin.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -32,10 +32,7 @@ function viewPinsInSource(): boolean {
     path.resolve(here, "../../src/view.ts"),
     "utf8",
   );
-  return (
-    src.includes("puts.slice()") &&
-    /this\.puts\s*=\s*puts\.slice\(\)/.test(src)
-  );
+  return /this\.rows\s*=\s*rows\.slice\(\)/.test(src);
 }
 
 function enabled(s: State): Action[] {
@@ -54,7 +51,7 @@ function step(s: State, a: Action): State {
     case "append":
       return { ...s, live: s.nextVal, nextVal: s.nextVal + 1 };
     case "openView":
-      // Correct: pin current live. Broken (no put-list copy): stay coupled to live.
+      // Correct: pin current live. Broken (no row copy): stay coupled to live.
       if (!viewPinsInSource()) {
         return { ...s, pinned: s.live }; // still copies number — need ref model
       }
@@ -71,7 +68,7 @@ function step(s: State, a: Action): State {
 }
 
 /**
- * When source does not pin a put-list copy, model treats pinned as always
+ * When source does not copy the drained rows, model treats pinned as always
  * equal to live. Numbers are copied on open — to model the bug we re-read
  * live on every viewGet when the pin copy is missing.
  */
@@ -159,10 +156,10 @@ for (let i = 0; i < nodes.length; i++) {
 }
 
 if (!viewPinsInSource()) {
-  console.error("FAIL ViewPin — view.ts no longer copies puts on pin");
+  console.error("FAIL ViewPin — view.ts no longer copies mem rows on pin");
   process.exit(1);
 }
 
 console.log(
-  `PASS ViewPin — ${seen.size} states, puts.slice() pin present in view.ts`,
+  `PASS ViewPin — ${seen.size} states, rows.slice() pin present in view.ts`,
 );

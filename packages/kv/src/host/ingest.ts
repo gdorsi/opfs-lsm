@@ -5,7 +5,7 @@ import {
   publishGeneration,
   publishL0,
 } from "../store/generation.js";
-import { KeyOverlay } from "../store/overlay.js";
+import { foldRecords } from "../store/fold.js";
 import { maybeCompact } from "./compact.js";
 
 export type IngestResult = {
@@ -31,14 +31,13 @@ export async function ingestAll(
     generation = cur?.generation ?? 0;
     ingestedThrough = await wal.getIngestedThrough();
   } else {
-    const folded = new KeyOverlay();
-    folded.applyRecords(records);
+    const entries = foldRecords(records);
     const first = records[0]!.seq;
     const last = records[records.length - 1]!.seq;
 
     const prev = await loadLatestGeneration(fs);
     generation = (prev?.generation ?? 0) + 1;
-    const l0Path = await publishL0(fs, `${first}-${last}`, folded);
+    const l0Path = await publishL0(fs, `${first}-${last}`, entries);
     const runs = [l0Path, ...(prev?.runs ?? [])];
     await publishGeneration(fs, generation, runs);
     await wal.advanceIngested(last);

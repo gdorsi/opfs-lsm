@@ -1,6 +1,6 @@
 /**
- * Classic Bloom filter (double hashing). Ready for multi-block SST footers;
- * point gets still load full SST overlays today, so this is not on the hot path yet.
+ * Classic Bloom filter (double hashing). A v2 point get consults it before
+ * decoding the one block that might hold the key.
  */
 
 const FNV_OFFSET = 2166136261;

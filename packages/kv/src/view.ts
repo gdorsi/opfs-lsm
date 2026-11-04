@@ -1,7 +1,16 @@
 import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
-import { KeyOverlay } from "./store/overlay.js";
+import type { MemRow } from "./idb/wal.js";
+import type { ScanBounds } from "./store/cursor.js";
+import {
+  arrayCursor,
+  lookupPin,
+  mergeCursors,
+  pointGet,
+  sliceRows,
+} from "./store/merge.js";
+import type { SstReader } from "./store/sst.js";
 
 export interface ViewSnapshot {
   /** WAL head seq pinned when the view opened. */
@@ -12,76 +21,34 @@ export interface ViewSnapshot {
   range(range?: Range): AsyncIterable<Entry>;
 }
 
-export type PutEntry = { key: Uint8Array; value: Uint8Array };
-
-function compareForRange(a: Uint8Array, b: Uint8Array): number {
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    const d = (a[i] ?? 0) - (b[i] ?? 0);
-    if (d !== 0) return d;
-  }
-  return a.length - b.length;
+export function boundsOf(range?: Range): ScanBounds | undefined {
+  const start = range?.start ? checkKey(range.start) : undefined;
+  const endExclusive = range?.endExclusive
+    ? checkKey(range.endExclusive)
+    : undefined;
+  if (start && endExclusive) return { start, endExclusive };
+  if (start) return { start };
+  if (endExclusive) return { endExclusive };
+  return undefined;
 }
 
-function keysEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
-/** Lower bound index in a sorted put list. */
-export function lowerBoundPuts(puts: readonly PutEntry[], key: Uint8Array): number {
-  let lo = 0;
-  let hi = puts.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (compareForRange(puts[mid]!.key, key) < 0) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
-/** WAL-over-SST live puts, sorted. Shared helper for Db cache and view pin. */
-export function mergePuts(sst: KeyOverlay, wal: KeyOverlay): PutEntry[] {
-  const merged = new KeyOverlay();
-  for (const e of sst.entriesSorted()) {
-    if (e.kind === "put") {
-      merged.applyOps([
-        { type: "put", key: e.key as never, value: e.value as never },
-      ]);
-    } else {
-      merged.applyOps([{ type: "del", key: e.key as never }]);
-    }
-  }
-  for (const e of wal.entriesSorted()) {
-    if (e.kind === "put") {
-      merged.applyOps([
-        { type: "put", key: e.key as never, value: e.value as never },
-      ]);
-    } else {
-      merged.applyOps([{ type: "del", key: e.key as never }]);
-    }
-  }
-  const puts: PutEntry[] = [];
-  for (const e of merged.entriesSorted()) {
-    if (e.kind === "put") puts.push({ key: e.key, value: e.value });
-  }
-  return puts;
-}
-
-/** Pinned put list: shallow-copied so later Db cache rebuilds do not alias. */
+/**
+ * Pinned mem rows plus the SST readers opened for that generation.
+ * `rows.slice()` is the snapshot: later appends are not in the array.
+ */
 export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
-  private readonly puts: PutEntry[];
+  private readonly rows: readonly MemRow[];
+  private readonly readers: readonly SstReader[];
 
   constructor(
     readonly walHead: number,
     readonly generation: number,
-    puts: readonly PutEntry[],
+    rows: readonly MemRow[],
+    readers: readonly SstReader[],
   ) {
-    this.puts = puts.slice();
+    this.rows = rows.slice();
+    this.readers = readers;
   }
 
   private ensureOpen(): void {
@@ -96,27 +63,22 @@ export class ViewSnapshotImpl implements ViewSnapshot {
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
     const k = checkKey(key);
-    const i = lowerBoundPuts(this.puts, k);
-    const hit = this.puts[i];
-    if (!hit || !keysEqual(hit.key, k)) return undefined;
-    return new Uint8Array(hit.value);
+    return pointGet(lookupPin(this.rows, k), this.readers, k);
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {
     this.ensureOpen();
-    const start = range?.start ? checkKey(range.start) : undefined;
-    const end = range?.endExclusive
-      ? checkKey(range.endExclusive)
-      : undefined;
-    let i = start ? lowerBoundPuts(this.puts, start) : 0;
-    let n = 0;
-    for (; i < this.puts.length; i++) {
+    const bounds = boundsOf(range);
+    const slice = sliceRows(this.rows, bounds);
+    for (const entry of mergeCursors(
+      [
+        arrayCursor(slice),
+        ...this.readers.map((reader) => reader.cursor(bounds)),
+      ],
+      range?.limit,
+    )) {
       this.ensureOpen();
-      const e = this.puts[i]!;
-      if (end && compareForRange(e.key, end) >= 0) return;
-      yield { key: new Uint8Array(e.key), value: new Uint8Array(e.value) };
-      n++;
-      if (range?.limit !== undefined && n >= range.limit) return;
+      yield entry;
     }
   }
 }
