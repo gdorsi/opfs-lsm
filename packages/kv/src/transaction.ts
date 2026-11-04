@@ -7,7 +7,12 @@ import {
   type CheckedOp,
 } from "./check.js";
 import { ClosedError } from "./errors.js";
-import type { AppendGuard } from "./idb/wal.js";
+
+/** Commit only if no watched key was written after `snapshotHead`. */
+export type AppendGuard = {
+  readonly snapshotHead: number;
+  readonly watched: readonly Uint8Array[];
+};
 
 export interface Transaction {
   get(key: Uint8Array): Promise<Uint8Array | undefined>;

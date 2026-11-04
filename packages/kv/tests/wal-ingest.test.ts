@@ -51,6 +51,23 @@ describe("shared IDB WAL", () => {
     const b = await openDb({ name: "notes", writerId: "w2", fs });
     await a.put(utf("k"), utf("a"));
     await b.put(utf("k"), utf("b"));
+    await a.sync();
+    expect(new TextDecoder().decode((await a.get(utf("k")))!)).toBe("b");
+    await a.close();
+    await b.close();
+  });
+
+  it("another tab's write arrives without sync", async () => {
+    const fs = new MemoryFs();
+    const a = await openDb({ name: "notes", writerId: "w1", fs });
+    const b = await openDb({ name: "notes", writerId: "w2", fs });
+    const arrived = new Promise<void>((resolve) => {
+      a.changes((ev) => {
+        if (ev.writerId === "w2") resolve();
+      });
+    });
+    await b.put(utf("k"), utf("b"));
+    await arrived;
     expect(new TextDecoder().decode((await a.get(utf("k")))!)).toBe("b");
     await a.close();
     await b.close();
