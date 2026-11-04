@@ -12,6 +12,7 @@ import {
 import {
   ClosedError,
   ConstraintError,
+  CorruptDatabaseError,
   StorageUnavailableError,
 } from "./errors.js";
 import { runTransaction, type Transaction } from "./transaction.js";
@@ -34,7 +35,8 @@ import { openBrowserFs } from "./opfs/browser-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
 import {
   loadLatestGeneration,
-  loadSstReaders,
+  loadRuns,
+  loadSstReader,
 } from "./store/generation.js";
 import {
   arrayCursor,
@@ -192,7 +194,6 @@ export async function openDb(options: OpenOptions): Promise<Db> {
   let fs = options.fs;
   let ingest = options.ingest;
   let ownsIngestClient = false;
-  let dropInstalled: (() => void) | undefined;
 
   const callerChoseStorage =
     options.forceMemory === true || fs !== undefined || ingest !== undefined;
@@ -221,9 +222,7 @@ export async function openDb(options: OpenOptions): Promise<Db> {
       type: "module",
       name: `opfs-lsm:${name}`,
     });
-    ingest = createPortIngestClient(worker.port, (dbName) => {
-      if (dbName === name) dropInstalled?.();
-    });
+    ingest = createPortIngestClient(worker.port);
     ownsIngestClient = true;
   } else {
     if (!fs) fs = defaultMemoryFs(name);
@@ -231,6 +230,9 @@ export async function openDb(options: OpenOptions): Promise<Db> {
   }
 
   const wal = await IdBWal.open(name);
+  if ((await wal.recordedGeneration()) === undefined) {
+    await wal.raiseGeneration((await loadLatestGeneration(fs))?.generation ?? 0);
+  }
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const db = new DbImpl(
     name,
@@ -241,17 +243,25 @@ export async function openDb(options: OpenOptions): Promise<Db> {
     policy,
     ownsIngestClient,
   );
-  if (useBrowser) dropInstalled = () => db.dropInstalledGeneration();
   return db;
 }
+
+type Layers = {
+  readonly generation: number;
+  readonly readers: readonly SstReader[];
+};
+
+const GENERATION_RETRIES = 8;
+const GENERATION_GONE =
+  "SST files for the recorded generation stayed missing after retries";
 
 class DbImpl implements Db {
   private closed = false;
   private readonly scheduler: IngestScheduler<{ generation: number }>;
-  /** Parsed SST runs for the manifest number last listed. Not a key map. */
-  private openGeneration:
-    | { readonly generation: number; readonly readers: readonly SstReader[] }
-    | undefined;
+  /** The newest generation loaded. Not a key map. */
+  private installed: Layers | undefined;
+  /** Parsed run files by path. Paths are immutable, so a hit never goes stale. */
+  private runs = new Map<string, SstReader>();
   private readonly changeBus = new ChangeBus();
   private readonly bus: BroadcastChannel | undefined;
   private readonly onBusMessage: ((ev: MessageEvent) => void) | undefined;
@@ -267,7 +277,6 @@ class DbImpl implements Db {
   ) {
     this.scheduler = new IngestScheduler(policy, async () => {
       const result = await this.ingestClient.ingest(this.name);
-      this.dropInstalledGeneration();
       this.emitChange({ kind: "ingest", writerId: this.writerId });
       this.broadcast("ingest");
       return result;
@@ -281,7 +290,6 @@ class DbImpl implements Db {
           seq?: number;
         } | null;
         if (!data || data.writerId === this.writerId) return;
-        if (data.kind === "ingest") this.dropInstalledGeneration();
         if (data.kind === "append" || data.kind === "ingest") {
           this.changeBus.emit({
             kind: data.kind,
@@ -313,44 +321,53 @@ class DbImpl implements Db {
     this.changeBus.emit(event);
   }
 
-  private async currentReaders(): Promise<{
-    generation: number;
-    readers: readonly SstReader[];
-  }> {
-    const meta = await loadLatestGeneration(this.fs);
-    const generation = meta?.generation ?? 0;
-    const cached = this.openGeneration;
-    if (cached && cached.generation === generation) return cached;
-    const readers = meta ? await loadSstReaders(this.fs, meta) : [];
-    const installed = this.openGeneration;
-    if (installed && generation < installed.generation) return installed;
-    const next = { generation, readers };
-    this.openGeneration = next;
-    return next;
-  }
-
-  dropInstalledGeneration(): void {
-    this.openGeneration = undefined;
-  }
-
   /**
-   * Mem rows first, then the manifest. A clear that committed before the
-   * collect is paired with a generation published before that clear.
+   * Readers for exactly `generation`, or, with `newerOk`, for a newer loaded
+   * one. Newer is safe for a point read: it returns a newer acked value. A
+   * scan needs exactly the pinned generation, or it can see half of a batch
+   * that landed after its mem pin. Undefined when a newer publish already
+   * removed the files.
    */
+  private async layersAt(
+    generation: number,
+    newerOk: boolean,
+  ): Promise<Layers | undefined> {
+    const installed = this.installed;
+    if (
+      installed &&
+      (installed.generation === generation ||
+        (newerOk && installed.generation > generation))
+    ) {
+      return installed;
+    }
+    const paths = await loadRuns(this.fs, generation);
+    if (!paths) return undefined;
+    const readers: SstReader[] = [];
+    for (const path of paths) {
+      const reader = this.runs.get(path) ?? (await loadSstReader(this.fs, path));
+      if (!reader) return undefined;
+      readers.push(reader);
+    }
+    const layers = { generation, readers };
+    const latest = this.installed;
+    if (!latest || latest.generation < generation) {
+      this.installed = layers;
+      this.runs = new Map(paths.map((path, i) => [path, readers[i]!]));
+      return layers;
+    }
+    return newerOk ? latest : layers;
+  }
+
   private async openScan(bounds?: ScanBounds): Promise<{
     head: number;
-    generation: number;
     rows: readonly MemRow[];
-    readers: readonly SstReader[];
-  }> {
-    const pin = await this.wal.collectMem(bounds);
-    const opened = await this.currentReaders();
-    return {
-      head: pin.head,
-      generation: opened.generation,
-      rows: pin.rows,
-      readers: opened.readers,
-    };
+  } & Layers> {
+    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
+      const pin = await this.wal.collectMem(bounds);
+      const layers = await this.layersAt(pin.generation, false);
+      if (layers) return { head: pin.head, rows: pin.rows, ...layers };
+    }
+    throw new CorruptDatabaseError(GENERATION_GONE);
   }
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
@@ -359,11 +376,14 @@ class DbImpl implements Db {
   }
 
   private async readKey(k: CheckedKey): Promise<Uint8Array | undefined> {
-    const row = await this.wal.memGet(k);
-    if (row?.kind === "del") return undefined;
-    if (row?.kind === "put") return new Uint8Array(row.value!);
-    const { readers } = await this.currentReaders();
-    return pointGetSst(readers, k);
+    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
+      const { row, generation } = await this.wal.memGet(k);
+      if (row?.kind === "del") return undefined;
+      if (row?.kind === "put") return new Uint8Array(row.value!);
+      const layers = await this.layersAt(generation, true);
+      if (layers) return pointGetSst(layers.readers, k);
+    }
+    throw new CorruptDatabaseError(GENERATION_GONE);
   }
 
   put(key: Uint8Array, value: Uint8Array): Promise<void> {
@@ -463,7 +483,8 @@ class DbImpl implements Db {
     this.closed = true;
     this.scheduler.close();
     this.changeBus.clear();
-    this.dropInstalledGeneration();
+    this.installed = undefined;
+    this.runs.clear();
     if (this.bus && this.onBusMessage) {
       this.bus.removeEventListener("message", this.onBusMessage);
       this.bus.close();

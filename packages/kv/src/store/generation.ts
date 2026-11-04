@@ -137,17 +137,40 @@ export async function publishSst(
   return path;
 }
 
-/** Newest-first SST readers. Bloom and block index stay on the reader. Blocks do not. */
-export async function loadSstReaders(
+/** Run paths of `generation`, or undefined when a newer publish removed its manifest. */
+export async function loadRuns(
   fs: AsyncFs,
-  meta: GenerationMeta,
-): Promise<SstReader[]> {
-  const readers: SstReader[] = [];
-  for (const path of meta.runs) {
-    const buf = await fs.read(path, 0, 1 << 26);
-    if (buf) readers.push(new SstReader(buf));
+  generation: number,
+): Promise<readonly string[] | undefined> {
+  if (generation === 0) return [];
+  const buf = await fs.read(genPath(generation), 0, 1 << 20);
+  if (!buf || buf.byteLength === 0) return undefined;
+  return decodeGeneration(buf).runs;
+}
+
+/** Undefined when the run file is gone. Run files never change once written. */
+export async function loadSstReader(
+  fs: AsyncFs,
+  path: string,
+): Promise<SstReader | undefined> {
+  const buf = await fs.read(path, 0, 1 << 26);
+  return buf ? new SstReader(buf) : undefined;
+}
+
+/** Delete manifests older than `keepFrom`. Call after IDB records `keepFrom`. */
+export async function reclaimManifests(
+  fs: AsyncFs,
+  keepFrom: number,
+): Promise<void> {
+  for (const name of await fs.list("m")) {
+    const n = Number(name.replace(/\.mft$/, ""));
+    if (!Number.isFinite(n) || n >= keepFrom) continue;
+    try {
+      await fs.remove(genPath(n));
+    } catch {
+      // best-effort
+    }
   }
-  return readers;
 }
 
 /** Delete run files that are in `drop` and not retained by `keep`. */

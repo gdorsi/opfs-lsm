@@ -42,7 +42,7 @@ describe("memtable reads", () => {
     });
     await db.put(enc.encode("a"), enc.encode("1"));
     const other = await IdBWal.open(checkDbName(NAME));
-    const row = await other.memGet(enc.encode("a"));
+    const { row } = await other.memGet(enc.encode("a"));
     other.close();
     expect(row?.kind).toBe("put");
     expect(row?.value && dec.decode(row.value)).toBe("1");

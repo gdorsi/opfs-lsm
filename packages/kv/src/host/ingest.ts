@@ -4,6 +4,7 @@ import {
   loadLatestGeneration,
   publishGeneration,
   publishL0,
+  reclaimManifests,
 } from "../store/generation.js";
 import { foldRecords } from "../store/fold.js";
 import { maybeCompact } from "./compact.js";
@@ -40,14 +41,15 @@ export async function ingestAll(
     const l0Path = await publishL0(fs, `${first}-${last}`, entries);
     const runs = [l0Path, ...(prev?.runs ?? [])];
     await publishGeneration(fs, generation, runs);
-    await wal.advanceIngested(last);
+    await wal.advanceIngested(last, generation);
     ingestedThrough = last;
   }
 
-  const compact = await maybeCompact(fs);
+  const compact = await maybeCompact(fs, wal);
   if (compact.compacted) {
     generation = compact.generation;
   }
+  await reclaimManifests(fs, (await wal.recordedGeneration()) ?? 0);
 
   return { generation, ingestedThrough, compacted: compact.compacted };
 }

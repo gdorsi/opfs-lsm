@@ -78,33 +78,4 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     await a.close();
   });
 
-  it("forwards a generation message to onGeneration", async () => {
-    const fs = new MemoryFs();
-    const host = new EngineHost(() => fs);
-    const { port1, port2 } = new MessageChannel();
-    attachEngineHostPort(port1, host, (name, generation) => {
-      port1.postMessage({ type: "generation", name, generation });
-    });
-    const seen = Promise.withResolvers<{ name: string; generation: number }>();
-    const ingest = createPortIngestClient(port2, (name, generation) => {
-      seen.resolve({ name, generation });
-    });
-    const a = await openDb({
-      name: "port-db",
-      writerId: "w1",
-      fs,
-      ingest,
-      ingestPolicy: { maxBatches: 1e9, maxDelayMs: 60_000, maxBytes: 1 << 30 },
-    });
-    await a.put(utf("k"), utf("v"));
-    await a.ingest();
-    await expect(seen.promise).resolves.toEqual({
-      name: "port-db",
-      generation: 1,
-    });
-    await a.close();
-    ingest.close();
-    port1.close();
-    port2.close();
-  });
 });

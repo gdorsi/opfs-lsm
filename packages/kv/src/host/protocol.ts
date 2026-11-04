@@ -13,11 +13,6 @@ export type HostToClient =
       readonly id: number;
       readonly message: string;
     }
-  | {
-      readonly type: "generation";
-      readonly name: string;
-      readonly generation: number;
-    }
   | { readonly type: "pong"; readonly id: number };
 
 export type IngestClient = {
