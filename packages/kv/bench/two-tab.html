@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>@opfs-lsm/kv two-tab proof</title>
+    <style>
+      body {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin: 2rem;
+        background: #0f1115;
+        color: #e8eaed;
+      }
+      button {
+        font: inherit;
+        padding: 0.5rem 1rem;
+        cursor: pointer;
+      }
+      pre {
+        white-space: pre-wrap;
+        background: #1a1d24;
+        padding: 1rem;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Two-tab generation proof</h1>
+    <p id="status">idle</p>
+    <button id="run" type="button">Run</button>
+    <pre id="out"></pre>
+    <script type="module" src="./two-tab-main.ts"></script>
+  </body>
+</html>
