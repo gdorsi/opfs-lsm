@@ -4,6 +4,8 @@ import {
   __resetMemoryFsForTests,
   openDb,
 } from "../src/index.js";
+import { checkDbName } from "../src/check.js";
+import { IdBWal } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import {
   loadLatestGeneration,
@@ -149,9 +151,11 @@ describe("installed generation", () => {
       { kind: "put", key, value: enc.encode("new") },
     ]);
     await publishGeneration(inner, 2, [newer]);
+    const wal = await IdBWal.open(checkDbName(NAME));
+    await wal.raiseGeneration(2);
+    wal.close();
     expect(dec.decode((await db.get(key))!)).toBe("new");
 
-    await inner.remove(mft(2));
     gate.release();
 
     expect(dec.decode((await pending)!)).toBe("new");

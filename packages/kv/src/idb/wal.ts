@@ -7,11 +7,15 @@ const WAL_STORE = "wal";
 const META_STORE = "meta";
 const MEM_STORE = "mem";
 const META_INGESTED = "ingestedThrough";
+/** The OPFS generation whose runs hold every seq <= ingestedThrough. */
+const META_GENERATION = "generation";
 /**
  * Schema v3: autoIncrement WAL + ingestedThrough + key-ordered memtable.
  * v2 databases keep wal and meta; upgrade backfills mem from the uningested tail.
+ * Schema v4 adds meta.generation. The bump shuts out v3 code, which truncates
+ * mem without recording the generation that holds those rows.
  */
-const IDB_VERSION = 3;
+const IDB_VERSION = 4;
 
 /** Commit only if no WAL record after `snapshotHead` touches a watched key. */
 export type AppendGuard = {
@@ -36,8 +40,14 @@ export type MemRow = {
 /** Consistent picture from one readonly transaction. */
 export type MemPin = {
   readonly head: number;
-  readonly ingestedThrough: number;
+  readonly generation: number;
   readonly rows: readonly MemRow[];
+};
+
+/** One mem row and the generation that covers what mem no longer holds. */
+export type MemPoint = {
+  readonly row: MemRow | undefined;
+  readonly generation: number;
 };
 
 type StoredMem = {
@@ -140,9 +150,17 @@ function openIdb(dbName: DbName): Promise<IDBDatabase> {
       }
       if (oldVersion >= 2 && oldVersion < 3) backfillMem(tx);
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     req.onerror = () => reject(req.error ?? new CommitError("idb open failed"));
   });
+}
+
+function generationOf(raw: unknown): number {
+  return typeof raw === "number" ? raw : 0;
 }
 
 function reqToPromise<T>(req: IDBRequest<T>): Promise<T> {
@@ -353,19 +371,41 @@ export class IdBWal {
     return key;
   }
 
-  /** Primary-key read of the uningested cell for `key`. */
-  async memGet(key: Uint8Array): Promise<MemRow | undefined> {
-    const tx = this.db.transaction(MEM_STORE, "readonly");
-    const store = tx.objectStore(MEM_STORE);
-    const raw = await reqToPromise(store.get(bufferOf(key)));
+  /** The uningested cell for `key` and the generation, from one readonly transaction. */
+  async memGet(key: Uint8Array): Promise<MemPoint> {
+    const tx = this.db.transaction([MEM_STORE, META_STORE], "readonly");
+    const rawP = reqToPromise(tx.objectStore(MEM_STORE).get(bufferOf(key)));
+    const genP = reqToPromise(tx.objectStore(META_STORE).get(META_GENERATION));
+    const [raw, gen] = await Promise.all([rawP, genP]);
     await txDone(tx);
-    if (raw === undefined) return undefined;
-    return memRowFrom(bufferOf(key), raw);
+    return {
+      row: raw === undefined ? undefined : memRowFrom(bufferOf(key), raw),
+      generation: generationOf(gen),
+    };
+  }
+
+  /** The recorded generation. Undefined for a database made before it was recorded. */
+  async recordedGeneration(): Promise<number | undefined> {
+    const tx = this.db.transaction(META_STORE, "readonly");
+    const raw = await reqToPromise(tx.objectStore(META_STORE).get(META_GENERATION));
+    await txDone(tx);
+    return typeof raw === "number" ? raw : undefined;
+  }
+
+  /** Record `generation` unless a newer one is already recorded. */
+  async raiseGeneration(generation: number): Promise<void> {
+    const tx = this.db.transaction(META_STORE, "readwrite");
+    const meta = tx.objectStore(META_STORE);
+    const raw = await reqToPromise(meta.get(META_GENERATION));
+    if (typeof raw !== "number" || generation > raw) {
+      meta.put(Math.max(generationOf(raw), generation), META_GENERATION);
+    }
+    await txDone(tx);
   }
 
   /**
-   * One readonly transaction: WAL head, ingestedThrough, and mem rows in key order.
-   * `bounds` restricts the mem cursor. Head and ingestedThrough are global.
+   * One readonly transaction: WAL head, generation, and mem rows in key order.
+   * `bounds` restricts the mem cursor. Head and generation are global.
    * The requests are issued in one turn so they share a snapshot.
    */
   async collectMem(bounds?: ScanBounds): Promise<MemPin> {
@@ -374,21 +414,13 @@ export class IdBWal {
       "readonly",
     );
     const headP = readHead(tx.objectStore(WAL_STORE));
-    const ingestedP = reqToPromise(
-      tx.objectStore(META_STORE).get(META_INGESTED),
+    const genP = reqToPromise(
+      tx.objectStore(META_STORE).get(META_GENERATION),
     );
     const rowsP = drainMem(tx.objectStore(MEM_STORE), bounds);
-    const [head, ingestedRaw, rows] = await Promise.all([
-      headP,
-      ingestedP,
-      rowsP,
-    ]);
+    const [head, gen, rows] = await Promise.all([headP, genP, rowsP]);
     await txDone(tx);
-    return {
-      head,
-      ingestedThrough: typeof ingestedRaw === "number" ? ingestedRaw : 0,
-      rows,
-    };
+    return { head, generation: generationOf(gen), rows };
   }
 
   /** Highest autoIncrement seq currently in the WAL store, or 0 if empty. */
@@ -439,9 +471,10 @@ export class IdBWal {
   /**
    * Mark seqs <= through as ingested, delete those WAL rows, and delete mem
    * rows whose stored seq is still <= through. A row rewritten to a higher
-   * seq stays.
+   * seq stays. `generation` is recorded in the same transaction, so a reader
+   * never sees truncated mem paired with a generation that lacks those rows.
    */
-  async advanceIngested(through: number): Promise<void> {
+  async advanceIngested(through: number, generation: number): Promise<void> {
     const tx = this.db.transaction(
       [WAL_STORE, META_STORE, MEM_STORE],
       "readwrite",
@@ -471,6 +504,10 @@ export class IdBWal {
     });
     await deleteMemThrough(mem, through);
     await reqToPromise(metaStore.put(through, META_INGESTED));
+    const cur = generationOf(await reqToPromise(metaStore.get(META_GENERATION)));
+    await reqToPromise(
+      metaStore.put(Math.max(cur, generation), META_GENERATION),
+    );
     await txDone(tx);
   }
 }
