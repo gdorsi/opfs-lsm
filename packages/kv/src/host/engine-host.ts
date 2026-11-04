@@ -61,7 +61,6 @@ export class EngineHost {
 export function attachEngineHostPort(
   port: MessagePort,
   host: EngineHost,
-  onGeneration?: (name: string, generation: number) => void,
 ): () => void {
   const onMessage = async (ev: MessageEvent<ClientToHost>) => {
     const msg = ev.data;
@@ -74,7 +73,6 @@ export function attachEngineHostPort(
         case "ingest": {
           const { generation } = await host.ingest(msg.name);
           reply({ type: "ingest-ok", id: msg.id, generation });
-          onGeneration?.(msg.name, generation);
           return;
         }
         default: {
@@ -96,10 +94,7 @@ export function attachEngineHostPort(
 }
 
 /** Tab-side client over a MessagePort. */
-export function createPortIngestClient(
-  port: MessagePort,
-  onGeneration?: (name: string, generation: number) => void,
-): IngestClient {
+export function createPortIngestClient(port: MessagePort): IngestClient {
   let nextId = 1;
   const pending = new Map<
     number,
@@ -128,9 +123,6 @@ export function createPortIngestClient(
         }
         return;
       }
-      case "generation":
-        onGeneration?.(msg.name, msg.generation);
-        return;
       case "pong":
         return;
       default: {

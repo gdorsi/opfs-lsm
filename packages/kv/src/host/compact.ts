@@ -1,3 +1,4 @@
+import type { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { mergeSsts, planL0Compaction } from "../store/engine.js";
 import {
@@ -5,7 +6,6 @@ import {
   publishGeneration,
   publishSst,
   reclaimRuns,
-  type GenerationMeta,
 } from "../store/generation.js";
 
 export type CompactResult = {
@@ -15,9 +15,13 @@ export type CompactResult = {
 
 /**
  * If L0 count ≥ threshold, merge all L0 runs into one `sst/` file, publish a
- * new generation, and reclaim the replaced L0 files.
+ * new generation, record it in IDB, then reclaim the replaced L0 files.
+ * Tabs read runs by the IDB generation, so the files go only after it moves.
  */
-export async function maybeCompact(fs: AsyncFs): Promise<CompactResult> {
+export async function maybeCompact(
+  fs: AsyncFs,
+  wal: IdBWal,
+): Promise<CompactResult> {
   const meta = await loadLatestGeneration(fs);
   if (!meta) return { compacted: false, generation: 0 };
 
@@ -44,17 +48,8 @@ export async function maybeCompact(fs: AsyncFs): Promise<CompactResult> {
   const newRuns = [outPath, ...plan.keep];
   const generation = meta.generation + 1;
   await publishGeneration(fs, generation, newRuns);
+  await wal.raiseGeneration(generation);
   await reclaimRuns(fs, plan.inputs, newRuns);
 
   return { compacted: true, generation };
-}
-
-export async function compactUntilQuiet(fs: AsyncFs): Promise<GenerationMeta | undefined> {
-  let last = await loadLatestGeneration(fs);
-  for (let i = 0; i < 8; i++) {
-    const r = await maybeCompact(fs);
-    if (!r.compacted) break;
-    last = await loadLatestGeneration(fs);
-  }
-  return last;
 }
