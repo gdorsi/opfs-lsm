@@ -180,6 +180,7 @@ export async function openDb(options: OpenOptions): Promise<Db> {
   let fs = options.fs;
   let ingest = options.ingest;
   let ownsIngestClient = false;
+  let dropInstalled: (() => void) | undefined;
 
   const useBrowser =
     !options.forceMemory && !fs && !ingest && canUseBrowserOpfs();
@@ -195,7 +196,9 @@ export async function openDb(options: OpenOptions): Promise<Db> {
       type: "module",
       name: `opfs-lsm:${name}`,
     });
-    ingest = createPortIngestClient(worker.port);
+    ingest = createPortIngestClient(worker.port, (dbName) => {
+      if (dbName === name) dropInstalled?.();
+    });
     ownsIngestClient = true;
   } else {
     if (!fs) fs = defaultMemoryFs(name);
@@ -204,7 +207,17 @@ export async function openDb(options: OpenOptions): Promise<Db> {
 
   const wal = await IdBWal.open(name);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
-  return new DbImpl(name, writerId, wal, fs, ingest, policy, ownsIngestClient);
+  const db = new DbImpl(
+    name,
+    writerId,
+    wal,
+    fs,
+    ingest,
+    policy,
+    ownsIngestClient,
+  );
+  if (useBrowser) dropInstalled = () => db.dropInstalledGeneration();
+  return db;
 }
 
 class DbImpl implements Db {
@@ -229,7 +242,7 @@ class DbImpl implements Db {
   ) {
     this.scheduler = new IngestScheduler(policy, async () => {
       const result = await this.ingestClient.ingest(this.name);
-      this.openGeneration = undefined;
+      this.dropInstalledGeneration();
       this.emitChange({ kind: "ingest", writerId: this.writerId });
       this.broadcast("ingest");
       return result;
@@ -243,7 +256,7 @@ class DbImpl implements Db {
           seq?: number;
         } | null;
         if (!data || data.writerId === this.writerId) return;
-        if (data.kind === "ingest") this.openGeneration = undefined;
+        if (data.kind === "ingest") this.dropInstalledGeneration();
         if (data.kind === "append" || data.kind === "ingest") {
           this.changeBus.emit({
             kind: data.kind,
@@ -275,21 +288,22 @@ class DbImpl implements Db {
     this.changeBus.emit(event);
   }
 
-  /**
-   * SST runs for the generation this tab has installed.
-   * Replaced on local or foreign ingest — not a key overlay, the open files.
-   */
   private async currentReaders(): Promise<{
     generation: number;
     readers: readonly SstReader[];
   }> {
-    if (this.openGeneration) return this.openGeneration;
     const meta = await loadLatestGeneration(this.fs);
     const generation = meta?.generation ?? 0;
+    const cached = this.openGeneration;
+    if (cached && cached.generation === generation) return cached;
     const readers = meta ? await loadSstReaders(this.fs, meta) : [];
     const next = { generation, readers };
     this.openGeneration = next;
     return next;
+  }
+
+  dropInstalledGeneration(): void {
+    this.openGeneration = undefined;
   }
 
   /**
@@ -418,7 +432,7 @@ class DbImpl implements Db {
     this.closed = true;
     this.scheduler.close();
     this.changeBus.clear();
-    this.openGeneration = undefined;
+    this.dropInstalledGeneration();
     if (this.bus && this.onBusMessage) {
       this.bus.removeEventListener("message", this.onBusMessage);
       this.bus.close();
