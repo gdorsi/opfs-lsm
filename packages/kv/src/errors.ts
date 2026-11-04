@@ -3,7 +3,8 @@ export type ErrorCode =
   | "closed"
   | "corrupt"
   | "constraint"
-  | "conflict";
+  | "conflict"
+  | "unavailable";
 
 export class OpfsLsmError extends Error {
   constructor(
@@ -48,5 +49,12 @@ export class ConflictError extends OpfsLsmError {
   constructor(message = "transaction conflict") {
     super("conflict", message);
     this.name = "ConflictError";
+  }
+}
+
+export class StorageUnavailableError extends OpfsLsmError {
+  constructor(message: string) {
+    super("unavailable", message);
+    this.name = "StorageUnavailableError";
   }
 }

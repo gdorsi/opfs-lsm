@@ -30,6 +30,16 @@ const found = await db.get(key);
 
 In the browser, `workerUrl` is the SharedWorker module. `new URL("@opfs-lsm/kv/shared-worker", import.meta.url)` is the URL this package exports.
 
+## A page without OPFS throws
+
+A browser page opens OPFS when `SharedWorker` and `navigator.storage.getDirectory` both exist. `allowEphemeral: true` does not change that. The call still opens OPFS.
+
+If either one is missing, and the call passes neither `fs`, `ingest`, nor `forceMemory`, `openDb` throws `StorageUnavailableError`. The previous behavior opened an in-memory database and dropped every write when the page closed.
+
+Pass `allowEphemeral: true` when that in-memory database is what you want. The data lasts for the page. A reload drops it.
+
+`forceMemory: true` selects the in-memory database even when OPFS is available. Node, and any other runtime with no `document`, still opens the in-memory database when you omit `fs` and `ingest`.
+
 ## Batch and warm gets beat Dexie
 
 Dexie is a library that stores rows in IndexedDB. The times below are wall time for 50 operations on one Chrome headless run. The host was darwin on 2026-11-03. The bench used the SharedWorker path and `BENCH_N=50`. Your machine will differ.
