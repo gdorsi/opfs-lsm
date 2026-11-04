@@ -8,7 +8,11 @@ import {
   type DbName,
   type WriterId,
 } from "./check.js";
-import { ClosedError, ConstraintError } from "./errors.js";
+import {
+  ClosedError,
+  ConstraintError,
+  StorageUnavailableError,
+} from "./errors.js";
 import { runTransaction, type Transaction } from "./transaction.js";
 import {
   EngineHost,
@@ -56,7 +60,8 @@ export type OpenOptions = {
   /**
    * SST/generation filesystem used for **reads** on this tab.
    * Must match what the ingest host publishes to.
-   * Omit in the browser to use OPFS; omit in Node/tests to use MemoryFs.
+   * Omit in the browser to use OPFS when SharedWorker and
+   * navigator.storage.getDirectory exist. Omit in Node to use MemoryFs.
    */
   readonly fs?: AsyncFs;
   /**
@@ -78,6 +83,12 @@ export type OpenOptions = {
    * Useful for unit tests under jsdom.
    */
   readonly forceMemory?: boolean;
+  /**
+   * Use MemoryFs when this page has no SharedWorker or OPFS.
+   * Data lives only until the page closes. Ignored when OPFS can open,
+   * and ignored in Node, which already defaults to MemoryFs.
+   */
+  readonly allowEphemeral?: boolean;
 };
 
 export type Range = {
@@ -182,8 +193,21 @@ export async function openDb(options: OpenOptions): Promise<Db> {
   let ownsIngestClient = false;
   let dropInstalled: (() => void) | undefined;
 
-  const useBrowser =
-    !options.forceMemory && !fs && !ingest && canUseBrowserOpfs();
+  const callerChoseStorage =
+    options.forceMemory === true || fs !== undefined || ingest !== undefined;
+  const browserOpfs = canUseBrowserOpfs();
+  const useBrowser = !callerChoseStorage && browserOpfs;
+
+  if (
+    typeof document !== "undefined" &&
+    !callerChoseStorage &&
+    !browserOpfs &&
+    options.allowEphemeral !== true
+  ) {
+    throw new StorageUnavailableError(
+      "browser openDb needs SharedWorker and navigator.storage.getDirectory. Pass allowEphemeral: true to keep data in memory for this page only, or pass fs, ingest, or forceMemory.",
+    );
+  }
 
   if (useBrowser) {
     if (!options.workerUrl) {
