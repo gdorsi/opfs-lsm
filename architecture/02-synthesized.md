@@ -23,7 +23,7 @@ await db.batch((tx) => {
   for (const row of rows) tx.put(row.key, row.value);
 });
 
-// Merges shared uningested WAL + OPFS SSTs. No SharedWorker hop for the get.
+// Memtable first, then SST readers for the installed generation. No SharedWorker hop for the get.
 const v = await db.get(key);
 
 await db.view(async (snap) => {
@@ -45,7 +45,7 @@ Docs: **ack ⇒ durable in shared IDB and visible to other tabs via WAL reads; i
 | Layer | Language | Owns |
 |---|---|---|
 | `engine-core` | Rust → WASM | memtable ops, WAL record codec, SST build/read, compaction merge, manifest/generation codec, ingest merge (WAL batch → L0 keys) |
-| `@opfs-lsm/kv` | TypeScript | public API; **per-tab IDB WAL** adapter; OPFS SST adapter; tab reader; SharedWorker host for ingest/compact/reclaim |
+| `@opfs-lsm/kv` | TypeScript | public API; shared IDB WAL and memtable adapter; OPFS SST adapter; tab reader; SharedWorker host for ingest, compact, and reclaim |
 
 Rust does not call IDB or OPFS. Shell feeds bytes / intents; same discipline as before.
 
@@ -74,24 +74,27 @@ SharedWorker
 
 ### Ack and visibility
 
-1. `batch` → **IDB `add` (autoIncrement)** → resolve.  
-2. Other tabs’ `get` merges `listUningested()` over SSTs → **see the write**.  
-3. Background / explicit ingest: SharedWorker folds WAL prefix → L0 + generation, sets `ingestedThrough`, deletes those rows.  
-4. After ingest, the same keys are served from SST only.
+1. `batch` appends to the shared autoIncrement WAL and updates the memtable in that IndexedDB transaction. The ack resolves when the transaction commits.
+2. Another tab's `get` reads the memtable first. On a miss, `get` reads SST files for the generation that `currentReaders` installed.
+3. Background or explicit ingest runs in the SharedWorker. It folds the uningested WAL into an L0 SST, publishes a generation, sets `ingestedThrough`, and deletes those WAL rows and memtable rows.
+4. After ingest, each tab clears `openGeneration` before the next SST read. `currentReaders` calls `loadLatestGeneration` and opens the new SST readers.
+
+The SharedWorker posts a `generation` message on each connected port. `createPortIngestClient` clears `openGeneration` when that message arrives. A BroadcastChannel `ingest` from another writer clears it too. `currentReaders` reuses SST readers only when `openGeneration` already has the manifest's generation number. A newer manifest replaces them.
 
 ### Persistence guaranteed
 
-- **After ack:** durable + cross-tab visible in shared IndexedDB WAL.  
-- **After ingest:** also in OPFS generation + L0/SST; WAL truncated.  
-- **Not after ack alone:** present on OPFS (until ingest).
+- **After ack.** The write is durable and visible to other tabs from the shared IndexedDB WAL and memtable.
+- **After ingest.** The write is also in the OPFS generation and its SST files. The ingested WAL rows and memtable rows are gone.
+- **Not after ack alone.** The write is not on OPFS until ingest.
 
 ### Storage layout
 
 **IndexedDB** (per origin, **one IDB database per logical `openDb` name**):
 
 ```
-wal store:  autoIncrement seq → { writerId?, ops: put|del[] }
-meta store: ingestedThrough → number
+wal store: autoIncrement seq to { optional writerId, ops: put or delete }
+mem store: user key to the latest put or delete, in the same transaction as the WAL ack
+meta store: ingestedThrough to a number
 ```
 
 **Decided:** one shared autoIncrement WAL. IDB assigns global seq; no per-tab `nextSeq`. `writerId` is optional metadata. Ingest advances a single `ingestedThrough` and deletes `seq ∈ (old, through]`.
@@ -108,12 +111,14 @@ Immutable publish only; no `keepExistingData`.
 
 ### Reads (where they happen)
 
-**In the tab** (façade thread or its dedicated WebWorker — prefer dedicated WebWorker so UI stays light):
+Reads run in the tab, on the page thread or in its dedicated WebWorker.
 
-1. Shared uningested IDB WAL overlay (newest, global seq).  
-2. SST overlay for pinned `generation` via OPFS `getFile` + `slice`.  
+1. The key-ordered IndexedDB memtable holds the newest write for each key.
+2. SST readers for the installed generation come from OPFS `getFile` and `slice`. `currentReaders` stores them on `openGeneration`.
 
-SharedWorker is **not** on the `get` path. It may push `generation` bumps on a port for cache invalidation (`changes()`).
+`loadLatestGeneration` lists `m/*.mft` from newest to oldest. It skips an empty file or a manifest that fails to decode. It returns the newest manifest that decodes.
+
+The SharedWorker is not on the `get` path.
 
 ### Public surface
 
