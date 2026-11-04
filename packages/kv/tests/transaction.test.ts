@@ -83,6 +83,47 @@ describe("transaction OCC", () => {
     await b.close();
   });
 
+  it("reads an ingested key and commits on top of it", async () => {
+    const db = await openDb({
+      name: "txn",
+      writerId: "w1",
+      fs: new MemoryFs(),
+      forceMemory: true,
+      ingestPolicy: { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+    });
+    await db.put(utf("n"), utf("1"));
+    await db.ingest();
+    await db.transaction(async (tx) => {
+      const cur = await tx.get(utf("n"));
+      tx.put(utf("n"), utf(String(Number(dec.decode(cur!)) + 1)));
+    });
+    expect(dec.decode((await db.get(utf("n")))!)).toBe("2");
+    await db.close();
+  });
+
+  it("conflicts when another writer touches a written key", async () => {
+    const fs = new MemoryFs();
+    const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+    const a = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
+    const b = await openDb({ name: "txn", writerId: "w2", fs, forceMemory: true, ingestPolicy: policy });
+
+    let proceed!: () => void;
+    const gate = new Promise<void>((r) => {
+      proceed = r;
+    });
+    const t1 = a.transaction(async (tx) => {
+      tx.put(utf("k"), utf("from-a"));
+      await gate;
+    });
+    await b.put(utf("k"), utf("from-b"));
+    proceed();
+
+    await expect(t1).rejects.toBeInstanceOf(ConflictError);
+    expect(dec.decode((await a.get(utf("k")))!)).toBe("from-b");
+    await a.close();
+    await b.close();
+  });
+
   it("abort discards buffered writes", async () => {
     const fs = new MemoryFs();
     const db = await openDb({

@@ -21,7 +21,7 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 |---|---|
 | `host/ingest.ts`, `idb/wal.ts` (`listUningested`, `advanceIngested`) | full suite (or at least `formal:ingest-visibility`) |
 | `store/overlay.ts` `resolveGet`, `db.ts` `readLayers`/`get` | `formal:wal-over-sst` + ingest |
-| `transaction.ts` OCC | `formal:occ` |
+| `idb/wal.ts` guarded append (OCC) | `formal:occ` |
 | `view.ts`, `db.ts` `openViewSnapshot` | `formal:view-pin` |
 | `store/sst-layer.ts`, `store/engine.ts` `mergeSsts`, `host/compact.ts` | `formal:compact-preserve` |
 | Unknown / several areas | **`formal:kv`** (all) |
@@ -55,7 +55,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 ## Reading failures
 
 - **NoLostAcks:** path with `advanceIngested` before `publishGeneration` and `resolveGet` undefined.
-- **OccSafety:** `tx.commit` → `ok` while a concurrent append touched a watched key (or the reverse); or `transaction.ts` lost `ConflictError`/`watched.has`.
+- **OccSafety:** `tx.commit` → `ok` while a concurrent append touched a watched key (or the reverse); or `idb/wal.ts` lost `ConflictError`/`watched.has`.
 - **ViewPin:** `view.get` sees a post-pin append; or `cloneOverlay` removed from `view.ts`.
 - **CompactPreserve:** before/after merge disagree; or `sst-layer.ts` no longer newest-first `get`.
 - **Modeling error:** path impossible in TS, or parser/source-sync out of date — fix the formal files, do not weaken the property.

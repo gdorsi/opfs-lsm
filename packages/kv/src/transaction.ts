@@ -3,15 +3,11 @@ import {
   checkBatch,
   checkKey,
   checkValue,
+  type CheckedKey,
   type CheckedOp,
-  type WriterId,
 } from "./check.js";
-import { ClosedError, ConflictError } from "./errors.js";
-import type { IdBWal, MemRow } from "./idb/wal.js";
-import type { AsyncFs } from "./opfs/async-fs.js";
-import { loadLatestGeneration, loadSstReaders } from "./store/generation.js";
-import { lookupPin, pointGet } from "./store/merge.js";
-import type { SstReader } from "./store/sst.js";
+import { ClosedError } from "./errors.js";
+import type { AppendGuard } from "./idb/wal.js";
 
 export interface Transaction {
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
@@ -20,16 +16,22 @@ export interface Transaction {
   abort(): void;
 }
 
-type CommitHook = (
-  ops: readonly CheckedOp[],
-  opBytes: number,
-) => Promise<void>;
+export type TxStore = {
+  headSeq(): Promise<number>;
+  get(key: CheckedKey): Promise<Uint8Array | undefined>;
+  commit(
+    ops: readonly CheckedOp[],
+    opBytes: number,
+    guard: AppendGuard,
+  ): Promise<void>;
+};
 
 /**
- * Snapshot-isolated interactive transaction with key-based OCC.
- * Reads see the mem pin taken at start, plus SST readers listed after that
- * pin, plus the local write buffer. Commit fails with ConflictError if a
- * concurrent WAL record after the snapshot touches a key this txn read or wrote.
+ * Interactive transaction with key-based OCC.
+ * The snapshot is the WAL head at start. Reads see the latest acked value.
+ * Commit fails with ConflictError if a WAL record after the head touches a
+ * key this txn read or wrote, so a committed txn read only values at or
+ * before the head.
  */
 class TxImpl implements Transaction {
   private aborted = false;
@@ -39,25 +41,10 @@ class TxImpl implements Transaction {
     string,
     { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }
   >();
-  private snapshotHead = 0;
-  private rows: readonly MemRow[] = [];
-  private readers: readonly SstReader[] = [];
-  private readonly ready: Promise<void>;
+  private readonly snapshotHead: Promise<number>;
 
-  constructor(
-    private readonly wal: IdBWal,
-    private readonly fs: AsyncFs,
-    private readonly commitHook: CommitHook,
-  ) {
-    this.ready = this.loadSnapshot();
-  }
-
-  private async loadSnapshot(): Promise<void> {
-    const pin = await this.wal.collectMem();
-    this.snapshotHead = pin.head;
-    this.rows = pin.rows;
-    const gen = await loadLatestGeneration(this.fs);
-    this.readers = gen ? await loadSstReaders(this.fs, gen) : [];
+  constructor(private readonly store: TxStore) {
+    this.snapshotHead = store.headSeq();
   }
 
   private ensureActive(): void {
@@ -67,7 +54,7 @@ class TxImpl implements Transaction {
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureActive();
-    await this.ready;
+    await this.snapshotHead;
     const k = checkKey(key);
     const hex = keyToString(k);
     this.reads.add(hex);
@@ -76,7 +63,7 @@ class TxImpl implements Transaction {
       if (local.type === "del") return undefined;
       return new Uint8Array(local.value!);
     }
-    return pointGet(lookupPin(this.rows, k), this.readers, k);
+    return this.store.get(k);
   }
 
   put(key: Uint8Array, value: Uint8Array): void {
@@ -104,25 +91,11 @@ class TxImpl implements Transaction {
 
   async commit(): Promise<void> {
     this.ensureActive();
-    await this.ready;
+    const snapshotHead = await this.snapshotHead;
     this.finished = true;
     if (this.writes.size === 0) return;
 
     const watched = new Set<string>([...this.reads, ...this.writes.keys()]);
-    const newer = await this.wal.listRange(
-      this.snapshotHead + 1,
-      Number.MAX_SAFE_INTEGER,
-    );
-    for (const rec of newer) {
-      for (const op of rec.ops) {
-        if (watched.has(keyToString(op.key))) {
-          throw new ConflictError(
-            `conflict on key after wal seq ${this.snapshotHead}`,
-          );
-        }
-      }
-    }
-
     const ops = [...this.writes.values()].map((w) =>
       w.type === "put"
         ? { type: "put" as const, key: w.key, value: w.value! }
@@ -134,18 +107,15 @@ class TxImpl implements Transaction {
       bytes += op.key.byteLength;
       if (op.type === "put") bytes += op.value.byteLength;
     }
-    await this.commitHook(checked, bytes);
+    await this.store.commit(checked, bytes, { snapshotHead, watched });
   }
 }
 
 export async function runTransaction<T>(
-  wal: IdBWal,
-  fs: AsyncFs,
-  _writerId: WriterId,
-  commitHook: CommitHook,
+  store: TxStore,
   body: (tx: Transaction) => Promise<T> | T,
 ): Promise<T> {
-  const tx = new TxImpl(wal, fs, commitHook);
+  const tx = new TxImpl(store);
   try {
     const result = await body(tx);
     if (!tx.wasAborted()) {
