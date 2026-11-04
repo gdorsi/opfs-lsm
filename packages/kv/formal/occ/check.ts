@@ -65,8 +65,8 @@ function occCheckPresentInSource(): boolean {
   );
   return (
     /throw\s+new\s+ConflictError/.test(src) &&
-    /lowerBound\(guard\.snapshotHead,\s*true\)/.test(src) &&
-    /watched\.has/.test(src)
+    /\.seq\s*>\s*guard\.snapshotHead/.test(src) &&
+    /guard\.watched\.map/.test(src)
   );
 }
 

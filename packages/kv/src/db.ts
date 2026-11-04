@@ -416,7 +416,7 @@ class DbImpl implements Db {
     }
     const checked = checkBatch(ops);
     if (checked.length === 0) return;
-    const seq = await this.wal.append(this.writerId, checked as CheckedOp[]);
+    const seq = await this.wal.append(checked as CheckedOp[]);
     this.emitChange({ kind: "append", writerId: this.writerId, seq });
     this.broadcast("append", { seq });
     this.scheduler.noteAppend(measureOpBytes(checked));
@@ -429,7 +429,7 @@ class DbImpl implements Db {
         snapshotHead: () => this.wal.snapshotHead(),
         get: (key) => this.readKey(key),
         commit: async (ops, opBytes, guard) => {
-          const seq = await this.wal.append(this.writerId, ops, guard);
+          const seq = await this.wal.append(ops, guard);
           this.emitChange({ kind: "append", writerId: this.writerId, seq });
           this.broadcast("append", { seq });
           this.scheduler.noteAppend(opBytes);
