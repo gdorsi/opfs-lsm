@@ -297,6 +297,8 @@ class DbImpl implements Db {
     const cached = this.openGeneration;
     if (cached && cached.generation === generation) return cached;
     const readers = meta ? await loadSstReaders(this.fs, meta) : [];
+    const installed = this.openGeneration;
+    if (installed && generation < installed.generation) return installed;
     const next = { generation, readers };
     this.openGeneration = next;
     return next;
