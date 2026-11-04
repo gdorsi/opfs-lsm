@@ -27,33 +27,14 @@ export function encode_sst_js(entries) {
 }
 
 /**
- * @returns {number}
- */
-export function l0_compact_threshold() {
-    const ret = wasm.l0_compact_threshold();
-    return ret >>> 0;
-}
-
-/**
- * Merge newest-first SST blobs into one SST.
+ * Merge newest-first SST blobs into one SST. `drop_tombstones` is for a
+ * merge that includes the oldest run.
  * @param {Array<any>} blobs
+ * @param {boolean} drop_tombstones
  * @returns {Uint8Array}
  */
-export function merge_ssts_js(blobs) {
-    const ret = wasm.merge_ssts_js(blobs);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return takeFromExternrefTable0(ret[0]);
-}
-
-/**
- * Returns null if below threshold; else `{ inputs: string[], keep: string[] }`.
- * @param {Array<any>} runs
- * @returns {any}
- */
-export function plan_l0_compaction_js(runs) {
-    const ret = wasm.plan_l0_compaction_js(runs);
+export function merge_ssts_js(blobs, drop_tombstones) {
+    const ret = wasm.merge_ssts_js(blobs, drop_tombstones);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }

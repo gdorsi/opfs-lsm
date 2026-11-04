@@ -10,11 +10,7 @@ type WasmMod = {
   default: (module_or_path?: unknown) => Promise<unknown>;
   encode_sst_js: (entries: unknown) => Uint8Array;
   decode_sst_js: (buf: Uint8Array) => unknown[];
-  merge_ssts_js: (blobs: unknown) => Uint8Array;
-  plan_l0_compaction_js: (
-    runs: unknown,
-  ) => { inputs: string[]; keep: string[] } | null;
-  l0_compact_threshold: () => number;
+  merge_ssts_js: (blobs: unknown, dropTombstones: boolean) => Uint8Array;
 };
 
 let wasm: WasmMod | undefined;
@@ -109,32 +105,15 @@ export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
 
 export async function mergeSsts(
   blobsNewestFirst: readonly Uint8Array[],
+  dropTombstones: boolean,
 ): Promise<Uint8Array> {
   await ensureEngine();
   if (!wasm) {
     const groups = blobsNewestFirst.map((blob) => sstTs.decodeSst(blob));
-    return sstTs.encodeSst(foldEntries(groups));
+    const merged = foldEntries(groups);
+    return sstTs.encodeSst(
+      dropTombstones ? merged.filter((e) => e.kind === "put") : merged,
+    );
   }
-  return wasm.merge_ssts_js([...blobsNewestFirst]);
-}
-
-export async function planL0Compaction(
-  runs: readonly string[],
-): Promise<{ inputs: string[]; keep: string[] } | undefined> {
-  await ensureEngine();
-  if (!wasm) {
-    const l0 = runs.filter((p) => p.startsWith("l0/"));
-    if (l0.length < 4) return undefined;
-    return {
-      inputs: [...l0],
-      keep: runs.filter((p) => !p.startsWith("l0/")),
-    };
-  }
-  const plan = wasm.plan_l0_compaction_js([...runs]);
-  return plan ?? undefined;
-}
-
-export async function l0CompactThreshold(): Promise<number> {
-  await ensureEngine();
-  return wasm?.l0_compact_threshold() ?? 4;
+  return wasm.merge_ssts_js([...blobsNewestFirst], dropTombstones);
 }

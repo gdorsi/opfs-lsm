@@ -6,7 +6,6 @@ import { SstReader, type SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
-const SST_PREFIX = "sst/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
 const GEN_VERSION = 1;
@@ -125,12 +124,11 @@ export async function publishL0(
   return path;
 }
 
-export async function publishSst(
+export async function publishRun(
   fs: AsyncFs,
-  name: string,
+  path: string,
   body: Uint8Array,
 ): Promise<string> {
-  const path = `${SST_PREFIX}${name}.sst`;
   const w = await fs.create(path);
   await w.write(body);
   await w.finish();

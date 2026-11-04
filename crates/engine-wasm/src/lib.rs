@@ -1,13 +1,6 @@
-use engine_core::{
-    decode_sst, encode_sst, merge_sst_bytes, plan_l0_compaction, Entry, L0_COMPACT_THRESHOLD,
-};
+use engine_core::{decode_sst, encode_sst, merge_sst_bytes, Entry};
 use js_sys::{Array, Uint8Array};
 use wasm_bindgen::prelude::*;
-
-#[wasm_bindgen]
-pub fn l0_compact_threshold() -> usize {
-    L0_COMPACT_THRESHOLD
-}
 
 /// Encode entries from JS: `[{kind:'put'|'del', key:Uint8Array, value?:Uint8Array}, ...]`
 #[wasm_bindgen]
@@ -65,44 +58,15 @@ pub fn decode_sst_js(buf: Uint8Array) -> Result<Array, JsValue> {
     Ok(out)
 }
 
-/// Merge newest-first SST blobs into one SST.
+/// Merge newest-first SST blobs into one SST. `drop_tombstones` is for a
+/// merge that includes the oldest run.
 #[wasm_bindgen]
-pub fn merge_ssts_js(blobs: Array) -> Result<Uint8Array, JsValue> {
+pub fn merge_ssts_js(blobs: Array, drop_tombstones: bool) -> Result<Uint8Array, JsValue> {
     let mut vecs = Vec::with_capacity(blobs.length() as usize);
     for i in 0..blobs.length() {
         let u = Uint8Array::new(&blobs.get(i));
         vecs.push(u.to_vec());
     }
-    let out = merge_sst_bytes(&vecs).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let out = merge_sst_bytes(&vecs, drop_tombstones).map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(Uint8Array::from(out.as_slice()))
-}
-
-/// Returns null if below threshold; else `{ inputs: string[], keep: string[] }`.
-#[wasm_bindgen]
-pub fn plan_l0_compaction_js(runs: Array) -> Result<JsValue, JsValue> {
-    let mut paths = Vec::with_capacity(runs.length() as usize);
-    for i in 0..runs.length() {
-        let s = runs
-            .get(i)
-            .as_string()
-            .ok_or_else(|| JsValue::from_str("run path must be string"))?;
-        paths.push(s);
-    }
-    match plan_l0_compaction(&paths) {
-        None => Ok(JsValue::NULL),
-        Some(plan) => {
-            let obj = js_sys::Object::new();
-            let inputs = Array::new();
-            for p in plan.inputs {
-                inputs.push(&JsValue::from_str(&p));
-            }
-            let keep = Array::new();
-            for p in plan.keep {
-                keep.push(&JsValue::from_str(&p));
-            }
-            js_sys::Reflect::set(&obj, &"inputs".into(), &inputs)?;
-            js_sys::Reflect::set(&obj, &"keep".into(), &keep)?;
-            Ok(obj.into())
-        }
-    }
 }

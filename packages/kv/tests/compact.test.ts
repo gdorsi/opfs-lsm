@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 describe("L0 compaction", () => {
-  it("merges four L0 runs into sst/ and keeps keys readable", async () => {
+  it("merges four L0 runs into L1 and keeps keys readable", async () => {
     const fs = new MemoryFs();
     const db = await openDb({
       name: "compact",
@@ -39,7 +39,7 @@ describe("L0 compaction", () => {
     }
 
     const paths = fs.publishedPaths();
-    expect(paths.some((p) => p.startsWith("sst/"))).toBe(true);
+    expect(paths.some((p) => p.startsWith("l1/"))).toBe(true);
     // L0 inputs should have been reclaimed
     const l0Left = paths.filter((p) => p.startsWith("l0/"));
     expect(l0Left.length).toBe(0);
