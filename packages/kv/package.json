@@ -22,6 +22,7 @@
     "test:unit": "vitest run",
     "bench": "tsx scripts/bench-browser.ts",
     "bench:browser": "tsx scripts/bench-browser.ts",
+    "two-tab": "pnpm run build && tsx scripts/two-tab.ts",
     "bench:gate": "tsx scripts/bench-gate.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",
