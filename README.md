@@ -88,4 +88,7 @@ pnpm install
 pnpm test
 pnpm bench:browser
 pnpm bench:collections
+pnpm todo:example
 ```
+
+`pnpm todo:example` serves a two-window todo list that shares one database name over a SharedWorker.
