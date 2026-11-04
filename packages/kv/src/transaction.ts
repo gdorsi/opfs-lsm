@@ -17,7 +17,7 @@ export interface Transaction {
 }
 
 export type TxStore = {
-  headSeq(): Promise<number>;
+  snapshotHead(): Promise<number>;
   get(key: CheckedKey): Promise<Uint8Array | undefined>;
   commit(
     ops: readonly CheckedOp[],
@@ -44,7 +44,7 @@ class TxImpl implements Transaction {
   private readonly snapshotHead: Promise<number>;
 
   constructor(private readonly store: TxStore) {
-    this.snapshotHead = store.headSeq();
+    this.snapshotHead = store.snapshotHead();
   }
 
   private ensureActive(): void {
