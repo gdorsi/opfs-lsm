@@ -7,7 +7,7 @@ import type { ClientToHost, HostToClient, IngestClient } from "./protocol.js";
 export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 
 /**
- * Sole OPFS publisher + ingest owner. Runs in the SharedWorker in production;
+ * OPFS publisher + ingest owner. Runs in the SharedWorker in production;
  * tests use the same class in-process or behind a MessagePort.
  */
 export class EngineHost {
@@ -45,7 +45,21 @@ export class EngineHost {
     return next;
   }
 
-  private async runIngest(dbName: DbName): Promise<{ generation: number }> {
+  /**
+   * Two SharedWorkers can serve one database, for example two builds whose
+   * script URLs differ. A Web Lock per name keeps their ingests apart.
+   */
+  private runIngest(dbName: DbName): Promise<{ generation: number }> {
+    const locks = (globalThis as { navigator?: { locks?: LockManager } })
+      .navigator?.locks;
+    if (!locks) return this.ingestUnlocked(dbName);
+    // The DOM lib types the callback's promise as the result, unwrapped at runtime.
+    return locks.request(`opfs-lsm-ingest/${dbName}`, () =>
+      this.ingestUnlocked(dbName),
+    ) as unknown as Promise<{ generation: number }>;
+  }
+
+  private async ingestUnlocked(dbName: DbName): Promise<{ generation: number }> {
     const fs = await this.fsFor(dbName);
     const wal = await IdBWal.open(dbName);
     try {
