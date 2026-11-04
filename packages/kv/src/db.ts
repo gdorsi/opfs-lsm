@@ -4,6 +4,7 @@ import {
   checkDbName,
   checkKey,
   newWriterId,
+  type CheckedKey,
   type CheckedOp,
   type DbName,
   type WriterId,
@@ -354,7 +355,10 @@ class DbImpl implements Db {
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
-    const k = checkKey(key);
+    return this.readKey(checkKey(key));
+  }
+
+  private async readKey(k: CheckedKey): Promise<Uint8Array | undefined> {
     const row = await this.wal.memGet(k);
     if (row?.kind === "del") return undefined;
     if (row?.kind === "put") return new Uint8Array(row.value!);
@@ -401,14 +405,15 @@ class DbImpl implements Db {
   transaction<T>(body: (tx: Transaction) => Promise<T> | T): Promise<T> {
     this.ensureOpen();
     return runTransaction(
-      this.wal,
-      this.fs,
-      this.writerId,
-      async (ops, opBytes) => {
-        const seq = await this.wal.append(this.writerId, ops);
-        this.emitChange({ kind: "append", writerId: this.writerId, seq });
-        this.broadcast("append", { seq });
-        this.scheduler.noteAppend(opBytes);
+      {
+        headSeq: () => this.wal.headSeq(),
+        get: (key) => this.readKey(key),
+        commit: async (ops, opBytes, guard) => {
+          const seq = await this.wal.append(this.writerId, ops, guard);
+          this.emitChange({ kind: "append", writerId: this.writerId, seq });
+          this.broadcast("append", { seq });
+          this.scheduler.noteAppend(opBytes);
+        },
       },
       body,
     );

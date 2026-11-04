@@ -1,5 +1,6 @@
+import { keyToString } from "../bytes.js";
 import type { CheckedOp, DbName, WriterId } from "../check.js";
-import { CommitError } from "../errors.js";
+import { CommitError, ConflictError } from "../errors.js";
 import type { ScanBounds } from "../store/cursor.js";
 
 const WAL_STORE = "wal";
@@ -11,6 +12,12 @@ const META_INGESTED = "ingestedThrough";
  * v2 databases keep wal and meta; upgrade backfills mem from the uningested tail.
  */
 const IDB_VERSION = 3;
+
+/** Commit only if no WAL record after `snapshotHead` touches a watched key. */
+export type AppendGuard = {
+  readonly snapshotHead: number;
+  readonly watched: ReadonlySet<string>;
+};
 
 export type WalRecord = {
   readonly seq: number;
@@ -256,6 +263,31 @@ function deleteMemThrough(
   });
 }
 
+function touchesWatched(
+  wal: IDBObjectStore,
+  guard: AppendGuard,
+): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const req = wal.openCursor(IDBKeyRange.lowerBound(guard.snapshotHead, true));
+    req.onerror = () => reject(req.error ?? new CommitError("cursor failed"));
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve(false);
+        return;
+      }
+      const value = cursor.value as { ops: unknown };
+      for (const op of decodeOps(value.ops)) {
+        if (guard.watched.has(keyToString(op.key))) {
+          resolve(true);
+          return;
+        }
+      }
+      cursor.continue();
+    };
+  });
+}
+
 /**
  * One shared IDB database for every tab of a database name.
  * `wal` is the seq log (OCC, ingest cursor). `mem` is one row per user key,
@@ -288,11 +320,23 @@ export class IdBWal {
    * Append one batch. Seq assigned by IDB autoIncrement.
    * Each op upserts `mem` under the user key in this same transaction.
    * A repeated key in the batch keeps the later op.
+   * With `guard`, the conflict scan runs in this readwrite transaction, so no
+   * other append can land between the scan and the add.
    */
-  async append(writerId: WriterId, ops: readonly CheckedOp[]): Promise<number> {
+  async append(
+    writerId: WriterId,
+    ops: readonly CheckedOp[],
+    guard?: AppendGuard,
+  ): Promise<number> {
     const tx = this.db.transaction([WAL_STORE, MEM_STORE], "readwrite");
     const wal = tx.objectStore(WAL_STORE);
     const mem = tx.objectStore(MEM_STORE);
+    if (guard && (await touchesWatched(wal, guard))) {
+      tx.abort();
+      throw new ConflictError(
+        `conflict on key after wal seq ${guard.snapshotHead}`,
+      );
+    }
     const key = await reqToPromise(
       wal.add({
         writerId,

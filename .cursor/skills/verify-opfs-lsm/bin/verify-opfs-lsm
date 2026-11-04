@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# Drive real-Chrome proofs for @opfs-lsm/kv and @opfs-lsm/collections.
+# Usage: verify-opfs-lsm <doctor|launch|drive|cleanup> [args]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ARTIFACTS="${VERIFY_OPFS_ARTIFACTS:-$SKILL_DIR/artifacts}"
+CHROME_MAC="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+die() { echo "verify-opfs-lsm: $*" >&2; exit 1; }
+
+chrome_bin() {
+  if [[ -n "${CHROME_PATH:-}" ]]; then
+    echo "$CHROME_PATH"
+    return
+  fi
+  if [[ -x "$CHROME_MAC" ]]; then
+    echo "$CHROME_MAC"
+    return
+  fi
+  if command -v google-chrome >/dev/null 2>&1; then
+    command -v google-chrome
+    return
+  fi
+  return 1
+}
+
+cmd_doctor() {
+  local ok=1
+  echo "root=$ROOT"
+
+  if ! command -v node >/dev/null 2>&1; then
+    echo "node: MISSING"
+    ok=0
+  else
+    local major
+    major="$(node -p 'process.versions.node.split(".")[0]')"
+    if (( major < 22 )); then
+      echo "node: $(node -v) (need >=22)"
+      ok=0
+    else
+      echo "node: $(node -v)"
+    fi
+  fi
+
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "pnpm: MISSING"
+    ok=0
+  else
+    echo "pnpm: $(pnpm -v)"
+  fi
+
+  local chrome
+  if chrome="$(chrome_bin)"; then
+    echo "chrome: $chrome"
+  else
+    echo "chrome: MISSING (set CHROME_PATH)"
+    ok=0
+  fi
+
+  if [[ ! -f "$ROOT/packages/kv/wasm/engine_wasm_bg.wasm" || ! -f "$ROOT/packages/kv/wasm/engine_wasm.js" ]]; then
+    echo "wasm: MISSING under packages/kv/wasm (need Rust + wasm-pack to rebuild)"
+    ok=0
+  else
+    echo "wasm: present"
+  fi
+
+  if [[ ! -f "$ROOT/packages/kv/dist/index.js" || ! -f "$ROOT/packages/kv/dist/host/shared-worker.js" ]]; then
+    echo "kv dist: MISSING (run: verify-opfs-lsm launch)"
+    ok=0
+  else
+    echo "kv dist: present"
+  fi
+
+  if [[ ! -f "$ROOT/packages/collections/dist/index.js" ]]; then
+    echo "collections dist: MISSING (run: verify-opfs-lsm launch)"
+    ok=0
+  else
+    echo "collections dist: present"
+  fi
+
+  if [[ ! -d "$ROOT/node_modules" ]]; then
+    echo "node_modules: MISSING (run: pnpm install)"
+    ok=0
+  else
+    echo "node_modules: present"
+  fi
+
+  # Fixed profile dirs collide if two benches share one checkout.
+  if [[ -d "$ROOT/packages/kv/.bench-chrome-profile" ]]; then
+    echo "warn: packages/kv/.bench-chrome-profile exists (another kv bench may be running)"
+  fi
+  if [[ -d "$ROOT/packages/collections/.bench-chrome-profile" ]]; then
+    echo "warn: packages/collections/.bench-chrome-profile exists (another collections bench may be running)"
+  fi
+
+  if (( ok == 0 )); then
+    die "doctor failed"
+  fi
+  echo "doctor: ok"
+}
+
+cmd_launch() {
+  cd "$ROOT"
+  if [[ ! -d node_modules ]]; then
+    pnpm install
+  fi
+  pnpm --filter @opfs-lsm/kv build
+  pnpm --filter @opfs-lsm/collections build
+  cmd_doctor
+}
+
+stamp_dir() {
+  local feature="$1"
+  local run_id="${VERIFY_OPFS_RUN_ID:-$(date +%Y%m%dT%H%M%S)-$$}"
+  local dir="$ARTIFACTS/$feature/$run_id"
+  mkdir -p "$dir"
+  echo "$dir"
+}
+
+run_capture() {
+  local feature="$1"
+  shift
+  local dir
+  dir="$(stamp_dir "$feature")"
+  echo "evidence=$dir"
+  echo "cwd=$ROOT" >"$dir/meta.txt"
+  echo "cmd=$*" >>"$dir/meta.txt"
+  echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$dir/meta.txt"
+  set +e
+  (
+    cd "$ROOT"
+    "$@"
+  ) > >(tee "$dir/stdout.txt") 2> >(tee "$dir/stderr.txt" >&2)
+  local code=$?
+  set -e
+  echo "exit=$code" >>"$dir/meta.txt"
+  echo "finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$dir/meta.txt"
+  echo "$code" >"$dir/exit_code.txt"
+  if (( code != 0 )); then
+    die "drive failed (exit $code); evidence kept at $dir"
+  fi
+  echo "drive: ok evidence=$dir"
+}
+
+cmd_drive() {
+  local feature="${1:-}"
+  [[ -n "$feature" ]] || die "usage: verify-opfs-lsm drive <two-tab|kv-bench|collections-bench|two-tab-nobc|two-tab-local>"
+  cmd_doctor >/dev/null
+
+  case "$feature" in
+    two-tab)
+      run_capture two-tab pnpm --filter @opfs-lsm/kv two-tab
+      ;;
+    two-tab-nobc)
+      run_capture two-tab-nobc env TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+      ;;
+    two-tab-local)
+      run_capture two-tab-local env TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+      ;;
+    kv-bench)
+      # Fixed profile path: refuse if already present.
+      if [[ -d "$ROOT/packages/kv/.bench-chrome-profile" ]]; then
+        die "refuse: packages/kv/.bench-chrome-profile exists; cleanup or wait"
+      fi
+      run_capture kv-bench env BENCH_N="${BENCH_N:-50}" pnpm bench:browser
+      ;;
+    collections-bench)
+      if [[ -d "$ROOT/packages/collections/.bench-chrome-profile" ]]; then
+        die "refuse: packages/collections/.bench-chrome-profile exists; cleanup or wait"
+      fi
+      run_capture collections-bench env BENCH_N="${BENCH_N:-50}" pnpm bench:collections
+      ;;
+    *)
+      die "unknown feature: $feature"
+      ;;
+  esac
+}
+
+cmd_cleanup() {
+  # Only remove verification scratch left by interrupted runs. Never touch artifacts/.
+  rm -rf "$ROOT/packages/kv/.bench-chrome-profile"
+  rm -rf "$ROOT/packages/collections/.bench-chrome-profile"
+  # Harnesses already kill their own Chrome and close ephemeral servers.
+  # Do not kill by process name.
+  echo "cleanup: removed fixed bench profiles (if any)"
+  echo "cleanup: artifacts preserved under $ARTIFACTS"
+}
+
+usage() {
+  cat <<'EOF'
+verify-opfs-lsm — real-Chrome proofs for @opfs-lsm
+
+  verify-opfs-lsm doctor
+  verify-opfs-lsm launch
+  verify-opfs-lsm drive <two-tab|kv-bench|collections-bench|two-tab-nobc|two-tab-local>
+  verify-opfs-lsm cleanup
+
+Env:
+  CHROME_PATH            Chrome binary override
+  BENCH_N                ops for benches (default 50 via this helper)
+  VERIFY_OPFS_ARTIFACTS  evidence root (default: skill artifacts/)
+  VERIFY_OPFS_RUN_ID     fixed run folder name under a feature
+EOF
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    doctor) cmd_doctor "$@" ;;
+    launch) cmd_launch "$@" ;;
+    drive) cmd_drive "$@" ;;
+    cleanup) cmd_cleanup "$@" ;;
+    -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 2 ;;
+    *) die "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"

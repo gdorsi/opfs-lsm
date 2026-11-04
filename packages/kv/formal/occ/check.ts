@@ -1,8 +1,8 @@
 /**
  * Exhaustive OCC: commit conflicts iff a WAL record after snapshotHead
- * touches a key the txn read or wrote. Mirrors transaction.ts TxImpl.commit.
+ * touches a key the txn read or wrote. Mirrors the guarded IdBWal.append in idb/wal.ts.
  *
- * Sync: requires ConflictError path still present in transaction.ts.
+ * Sync: requires the ConflictError path still present in idb/wal.ts.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -60,12 +60,12 @@ function wouldConflict(s: State, tx: Tx): boolean {
 function occCheckPresentInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const src = fs.readFileSync(
-    path.resolve(here, "../../src/transaction.ts"),
+    path.resolve(here, "../../src/idb/wal.ts"),
     "utf8",
   );
   return (
     /throw\s+new\s+ConflictError/.test(src) &&
-    /listRange\([\s\S]*snapshotHead\s*\+\s*1/.test(src) &&
+    /lowerBound\(guard\.snapshotHead,\s*true\)/.test(src) &&
     /watched\.has/.test(src)
   );
 }
@@ -261,11 +261,11 @@ for (let i = 0; i < nodes.length; i++) {
 
 if (!occCheckPresentInSource()) {
   console.error(
-    "FAIL OccSafety — transaction.ts no longer has the OCC ConflictError check",
+    "FAIL OccSafety — idb/wal.ts no longer has the OCC ConflictError check",
   );
   process.exit(1);
 }
 
 console.log(
-  `PASS OccSafety — ${states} states, ConflictError check present in transaction.ts`,
+  `PASS OccSafety — ${states} states, ConflictError check present in idb/wal.ts`,
 );
