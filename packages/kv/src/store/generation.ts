@@ -143,7 +143,7 @@ export async function loadLatestGeneration(
   }
   gens.sort((a, b) => b - a);
   for (const generation of gens) {
-    const buf = await fs.read(genPath(generation), 0, 1 << 20);
+    const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
     if (!buf || buf.byteLength === 0) continue;
     try {
       return decodeGeneration(buf);
@@ -202,7 +202,7 @@ export async function loadGeneration(
   generation: number,
 ): Promise<GenerationMeta | undefined> {
   if (generation === 0) return { generation, runs: [], tombstoneSeq: 0 };
-  const buf = await fs.read(genPath(generation), 0, 1 << 20);
+  const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
   if (!buf || buf.byteLength === 0) return undefined;
   return decodeGeneration(buf);
 }
@@ -212,7 +212,7 @@ export async function loadSstReader(
   fs: AsyncFs,
   path: string,
 ): Promise<SstReader | undefined> {
-  const buf = await fs.read(path, 0, 1 << 26);
+  const buf = await fs.read(path, 0, Number.POSITIVE_INFINITY);
   return buf ? new SstReader(buf) : undefined;
 }
 

@@ -128,4 +128,18 @@ describe("loadLatestGeneration", () => {
     await empty.finish();
     expect(await loadLatestGeneration(fs)).toBeUndefined();
   });
+
+  it("returns the newest manifest when it is larger than 1 MiB", async () => {
+    const fs = new MemoryFs();
+    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0 });
+    const key = (c: number) => new Uint8Array(8 * 1024).fill(c);
+    const runs = Array.from({ length: 100 }, (_, i) => ({
+      path: `l1/r${i}-4194304.sst`,
+      range: { smallest: key(i * 2), largest: key(i * 2 + 1) },
+    }));
+    await publishGeneration(fs, { generation: 2, runs, tombstoneSeq: 0 });
+    const meta = await loadLatestGeneration(fs);
+    expect(meta?.generation).toBe(2);
+    expect(meta?.runs).toHaveLength(100);
+  });
 });
