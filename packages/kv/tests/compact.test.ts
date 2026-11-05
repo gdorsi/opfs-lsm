@@ -86,13 +86,13 @@ describe("L0 compaction", () => {
     await vi.waitFor(() => expect(merging).toBe(true));
     await db.put(utf("k0"), utf("newer"));
     await host.ingest("compact", Number.POSITIVE_INFINITY);
-    expect((await loadLatestGeneration(fs))!.runs.filter((p) => p.startsWith("l0/"))).toHaveLength(5);
+    expect((await loadLatestGeneration(fs))!.runs.filter((r) => r.path.startsWith("l0/"))).toHaveLength(5);
 
     release();
     await host.ingest("compact", Number.POSITIVE_INFINITY, true);
     const runs = (await loadLatestGeneration(fs))!.runs;
-    expect(runs[0]).toMatch(/^l0\//);
-    expect(runs.slice(1).every((p) => p.startsWith("l1/"))).toBe(true);
+    expect(runs[0]!.path).toMatch(/^l0\//);
+    expect(runs.slice(1).every((r) => r.path.startsWith("l1/"))).toBe(true);
     await db.ingest();
     expect(new TextDecoder().decode(await db.get(utf("k0")))).toBe("newer");
     expect(new TextDecoder().decode(await db.get(utf("k3")))).toBe("v3");

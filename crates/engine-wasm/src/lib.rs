@@ -63,20 +63,29 @@ pub fn decode_sst_js(buf: Uint8Array) -> Result<Array, JsValue> {
     Ok(out)
 }
 
-/// Merge newest-first SST blobs into one SST. `drop_tombstones` is for a
-/// merge that includes the oldest run. Returns `{sst, droppedSeq}`, where
-/// droppedSeq is the highest seq of a dropped tombstone, 0 when none.
+/// Merge newest-first SST blobs into SSTs of about `target_bytes`, in key
+/// order. `drop_tombstones` is for a merge nothing older overlaps. Returns
+/// `{ssts, droppedSeq}`, where droppedSeq is the highest seq of a dropped
+/// tombstone, 0 when none.
 #[wasm_bindgen]
-pub fn merge_ssts_js(blobs: Array, drop_tombstones: bool) -> Result<js_sys::Object, JsValue> {
+pub fn merge_ssts_js(
+    blobs: Array,
+    drop_tombstones: bool,
+    target_bytes: f64,
+) -> Result<js_sys::Object, JsValue> {
     let mut vecs = Vec::with_capacity(blobs.length() as usize);
     for i in 0..blobs.length() {
         let u = Uint8Array::new(&blobs.get(i));
         vecs.push(u.to_vec());
     }
-    let (out, dropped) =
-        merge_sst_bytes(&vecs, drop_tombstones).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let (out, dropped) = merge_sst_bytes(&vecs, drop_tombstones, target_bytes as usize)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let runs = Array::new();
+    for run in &out {
+        runs.push(&Uint8Array::from(run.as_slice()));
+    }
     let obj = js_sys::Object::new();
-    js_sys::Reflect::set(&obj, &"sst".into(), &Uint8Array::from(out.as_slice()))?;
+    js_sys::Reflect::set(&obj, &"ssts".into(), &runs)?;
     js_sys::Reflect::set(&obj, &"droppedSeq".into(), &JsValue::from_f64(dropped as f64))?;
     Ok(obj)
 }

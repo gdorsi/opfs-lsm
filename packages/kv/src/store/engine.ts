@@ -13,7 +13,8 @@ type WasmMod = {
   merge_ssts_js: (
     blobs: unknown,
     dropTombstones: boolean,
-  ) => { sst: Uint8Array; droppedSeq: number };
+    targetBytes: number,
+  ) => { ssts: Uint8Array[]; droppedSeq: number };
 };
 
 let wasm: WasmMod | undefined;
@@ -109,23 +110,38 @@ export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
 }
 
 /**
- * Merge newest-first runs. With `dropTombstones`, also returns the highest
- * seq among the dropped tombstones, 0 when none was dropped.
+ * Merge newest-first runs into runs of about `targetBytes`, in key order.
+ * With `dropTombstones`, also returns the highest seq among the dropped
+ * tombstones, 0 when none was dropped.
  */
 export async function mergeSsts(
   blobsNewestFirst: readonly Uint8Array[],
   dropTombstones: boolean,
-): Promise<{ readonly sst: Uint8Array; readonly droppedSeq: number }> {
+  targetBytes = Number.MAX_SAFE_INTEGER,
+): Promise<{ readonly ssts: readonly Uint8Array[]; readonly droppedSeq: number }> {
   await ensureEngine();
-  if (wasm) return wasm.merge_ssts_js([...blobsNewestFirst], dropTombstones);
-  const merged = foldEntries(blobsNewestFirst.map((b) => sstTs.decodeSst(b)));
-  if (!dropTombstones) return { sst: sstTs.encodeSst(merged), droppedSeq: 0 };
-  let droppedSeq = 0;
-  for (const e of merged) {
-    if (e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
+  if (wasm) {
+    return wasm.merge_ssts_js([...blobsNewestFirst], dropTombstones, targetBytes);
   }
-  return {
-    sst: sstTs.encodeSst(merged.filter((e) => e.kind === "put")),
-    droppedSeq,
-  };
+  let entries = foldEntries(blobsNewestFirst.map((b) => sstTs.decodeSst(b)));
+  let droppedSeq = 0;
+  if (dropTombstones) {
+    for (const e of entries) {
+      if (e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
+    }
+    entries = entries.filter((e) => e.kind === "put");
+  }
+  const ssts: Uint8Array[] = [];
+  let start = 0;
+  let size = 0;
+  for (let i = 0; i < entries.length; i++) {
+    size += sstTs.entryRecordSize(entries[i]!);
+    if (size >= targetBytes) {
+      ssts.push(sstTs.encodeSst(entries.slice(start, i + 1)));
+      start = i + 1;
+      size = 0;
+    }
+  }
+  if (start < entries.length) ssts.push(sstTs.encodeSst(entries.slice(start)));
+  return { ssts, droppedSeq };
 }

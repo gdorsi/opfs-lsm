@@ -56,7 +56,7 @@ impl std::fmt::Display for SstError {
 
 impl std::error::Error for SstError {}
 
-fn entry_size(e: &Entry) -> usize {
+pub(crate) fn entry_size(e: &Entry) -> usize {
     let mut n = 1 + 8 + 4 + e.key().len();
     if let Entry::Put { value, .. } = e {
         n += 4 + value.len();

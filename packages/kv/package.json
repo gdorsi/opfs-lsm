@@ -25,6 +25,7 @@
     "two-tab": "pnpm run build && tsx scripts/two-tab.ts",
     "bench:gate": "tsx scripts/bench-gate.ts",
     "bench:aged": "tsx scripts/aged.ts",
+    "bench:compaction": "tsx scripts/compaction-cost.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",

@@ -49,7 +49,7 @@ type BlockIndexEntry = {
   length: number;
 };
 
-function entryRecordSize(e: SstEntry): number {
+export function entryRecordSize(e: SstEntry): number {
   let n = 1 + 8 + 4 + e.key.byteLength;
   if (e.kind === "put") n += 4 + e.value.byteLength;
   return n;
@@ -394,8 +394,25 @@ export class SstReader {
     );
   }
 
+  /** The smallest and largest key, or undefined for an empty run. */
+  get range(): { smallest: Uint8Array; largest: Uint8Array } | undefined {
+    if (this.version === VERSION_V1) {
+      const entries = this.v1Entries!;
+      if (entries.length === 0) return undefined;
+      return { smallest: entries[0]!.key, largest: entries[entries.length - 1]!.key };
+    }
+    const first = this.index[0];
+    const last = this.index[this.index.length - 1];
+    if (!first || !last || this.index.every((ix) => ix.length <= 4)) return undefined;
+    return { smallest: first.firstKey, largest: last.lastKey };
+  }
+
   mightContain(key: Uint8Array): boolean {
     if (this.version === VERSION_V1) return true;
+    const first = this.index[0];
+    const last = this.index[this.index.length - 1];
+    if (first && compareBytes(key, first.firstKey) < 0) return false;
+    if (last && compareBytes(key, last.lastKey) > 0) return false;
     return bloomMightContain(this.bloom!, key);
   }
 

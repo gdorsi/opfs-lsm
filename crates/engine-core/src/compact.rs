@@ -1,16 +1,20 @@
 //! SST merge for compaction (newest-first inputs).
 
-use crate::sst::{decode_sst, encode_sst, Entry, SstError};
+use crate::sst::{decode_sst, encode_sst, entry_size, Entry, SstError};
 use std::collections::BTreeMap;
 
 /// Merge SST files. `sst_bytes` is newest-first. Newer entries win.
 /// `drop_tombstones` is for a merge that includes the oldest run, where no
 /// older value is left for a tombstone to hide. Also returns the highest seq
 /// among the dropped tombstones, 0 when none was dropped.
+/// Merge newest-first runs into runs of about `target_bytes` each, split at
+/// key boundaries. Returns the runs in key order and the highest seq of a
+/// dropped tombstone.
 pub fn merge_sst_bytes(
     sst_bytes: &[Vec<u8>],
     drop_tombstones: bool,
-) -> Result<(Vec<u8>, u64), SstError> {
+    target_bytes: usize,
+) -> Result<(Vec<Vec<u8>>, u64), SstError> {
     let mut map: BTreeMap<Vec<u8>, Entry> = BTreeMap::new();
     for bytes in sst_bytes.iter().rev() {
         for e in decode_sst(bytes)? {
@@ -28,7 +32,21 @@ pub fn merge_sst_bytes(
             !drop
         })
         .collect();
-    Ok((encode_sst(&entries), dropped))
+    let mut runs = Vec::new();
+    let mut start = 0;
+    let mut size = 0;
+    for (i, e) in entries.iter().enumerate() {
+        size += entry_size(e);
+        if size >= target_bytes {
+            runs.push(encode_sst(&entries[start..=i]));
+            start = i + 1;
+            size = 0;
+        }
+    }
+    if start < entries.len() {
+        runs.push(encode_sst(&entries[start..]));
+    }
+    Ok((runs, dropped))
 }
 
 #[cfg(test)]
@@ -43,8 +61,8 @@ mod tests {
     fn newer_wins() {
         let older = encode_sst(&[put(b"k", b"old", 1)]);
         let newer = encode_sst(&[put(b"k", b"new", 2)]);
-        let (out, dropped) = merge_sst_bytes(&[newer, older], false).unwrap();
-        assert_eq!(decode_sst(&out).unwrap(), vec![put(b"k", b"new", 2)]);
+        let (out, dropped) = merge_sst_bytes(&[newer, older], false, usize::MAX).unwrap();
+        assert_eq!(decode_sst(&out[0]).unwrap(), vec![put(b"k", b"new", 2)]);
         assert_eq!(dropped, 0);
     }
 
@@ -52,13 +70,26 @@ mod tests {
     fn bottom_merge_drops_tombstones() {
         let older = encode_sst(&[put(b"a", b"1", 1), put(b"b", b"1", 1)]);
         let newer = encode_sst(&[Entry::Del { key: b"a".to_vec(), seq: 5 }]);
-        let (kept, _) = merge_sst_bytes(&[newer.clone(), older.clone()], false).unwrap();
+        let (kept, _) = merge_sst_bytes(&[newer.clone(), older.clone()], false, usize::MAX).unwrap();
         assert_eq!(
-            decode_sst(&kept).unwrap(),
+            decode_sst(&kept[0]).unwrap(),
             vec![Entry::Del { key: b"a".to_vec(), seq: 5 }, put(b"b", b"1", 1)]
         );
-        let (out, dropped) = merge_sst_bytes(&[newer, older], true).unwrap();
-        assert_eq!(decode_sst(&out).unwrap(), vec![put(b"b", b"1", 1)]);
+        let (out, dropped) = merge_sst_bytes(&[newer, older], true, usize::MAX).unwrap();
+        assert_eq!(decode_sst(&out[0]).unwrap(), vec![put(b"b", b"1", 1)]);
         assert_eq!(dropped, 5);
+    }
+
+    #[test]
+    fn splits_output_at_key_boundaries() {
+        let entries: Vec<Entry> = (0..100u64)
+            .map(|i| put(format!("k{i:03}").as_bytes(), &[b'x'; 50], i))
+            .collect();
+        let (out, _) = merge_sst_bytes(&[encode_sst(&entries)], false, 1000).unwrap();
+        assert!(out.len() > 1);
+        let back: Vec<Entry> = out.iter().flat_map(|r| decode_sst(r).unwrap()).collect();
+        assert_eq!(back, entries);
+        let (none, _) = merge_sst_bytes(&[encode_sst(&[Entry::Del { key: b"a".to_vec(), seq: 1 }])], true, 1000).unwrap();
+        assert!(none.is_empty());
     }
 }

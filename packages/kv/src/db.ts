@@ -441,14 +441,14 @@ class DbImpl implements Db {
     const meta = await loadGeneration(this.fs, generation);
     if (!meta) return undefined;
     const readers: SstReader[] = [];
-    for (const path of meta.runs) {
+    for (const { path } of meta.runs) {
       const reader = this.runs.get(path) ?? (await loadSstReader(this.fs, path));
       if (!reader) return undefined;
       readers.push(reader);
     }
     const layers = {
       generation,
-      paths: meta.runs,
+      paths: meta.runs.map((r) => r.path),
       readers,
       tombstoneSeq: meta.tombstoneSeq,
     };

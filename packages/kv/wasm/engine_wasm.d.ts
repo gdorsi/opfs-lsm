@@ -12,11 +12,12 @@ export function decode_sst_js(buf: Uint8Array): Array<any>;
 export function encode_sst_js(entries: Array<any>): Uint8Array;
 
 /**
- * Merge newest-first SST blobs into one SST. `drop_tombstones` is for a
- * merge that includes the oldest run. Returns `{sst, droppedSeq}`, where
- * droppedSeq is the highest seq of a dropped tombstone, 0 when none.
+ * Merge newest-first SST blobs into SSTs of about `target_bytes`, in key
+ * order. `drop_tombstones` is for a merge nothing older overlaps. Returns
+ * `{ssts, droppedSeq}`, where droppedSeq is the highest seq of a dropped
+ * tombstone, 0 when none.
  */
-export function merge_ssts_js(blobs: Array<any>, drop_tombstones: boolean): object;
+export function merge_ssts_js(blobs: Array<any>, drop_tombstones: boolean, target_bytes: number): object;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -24,7 +25,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly decode_sst_js: (a: any) => [number, number, number];
     readonly encode_sst_js: (a: any) => [number, number, number];
-    readonly merge_ssts_js: (a: any, b: number) => [number, number, number];
+    readonly merge_ssts_js: (a: any, b: number, c: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
