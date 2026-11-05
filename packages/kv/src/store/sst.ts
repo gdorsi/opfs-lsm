@@ -13,6 +13,7 @@ import {
   type BloomFilter,
 } from "./bloom.js";
 import { crc32 } from "./crc32.js";
+import { lz4Decompress } from "./lz4.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). */
 export const SST_MAGIC = 0x4f4c5354;
@@ -24,30 +25,34 @@ const VERSION_V3 = 3;
 const VERSION_V4 = 4;
 /** v4's sections with the Bloom filter and index after the data and a fixed footer. */
 const VERSION_V5 = 5;
-const FOOTER_BYTES = 40;
+/** v5 with a codec field in the footer. */
+const VERSION_V6 = 6;
+const FOOTER_V5 = 40;
+const FOOTER_BYTES = 44;
+
+/**
+ * How a run stores its data blocks. An LZ4 block is a u32 uncompressed
+ * length followed by LZ4 block-format bytes.
+ */
+export type SstCodec = "raw" | "lz4";
+const CODECS: readonly SstCodec[] = ["raw", "lz4"];
 
 function isBlockVersion(version: number): boolean {
-  return (
-    version === VERSION_V2 ||
-    version === VERSION_V3 ||
-    version === VERSION_V4 ||
-    version === VERSION_V5
-  );
+  return version >= VERSION_V2 && version <= VERSION_V6;
 }
 
 /**
- * v5 keeps its magic and version in the last 8 bytes. Older versions keep
- * them in the first 8. v2 to v4 end with a block length, which is never 5,
- * then the CRC. A v1 run passes for v5 only if its CRC equals the magic.
+ * v5 and v6 keep their magic and version in the last 8 bytes. Older
+ * versions keep them in the first 8. v2 to v4 end with a block length,
+ * which is 4 or at least 9, then the CRC. A v1 run passes for v5 or v6 only
+ * if its CRC equals the magic.
  */
 function sstVersion(buf: Uint8Array, view: DataView): number {
   const n = buf.byteLength;
-  if (
-    n >= FOOTER_BYTES &&
-    view.getUint32(n - 4, true) === SST_MAGIC &&
-    view.getUint32(n - 8, true) === VERSION_V5
-  ) {
-    return VERSION_V5;
+  if (n >= FOOTER_V5 && view.getUint32(n - 4, true) === SST_MAGIC) {
+    const version = view.getUint32(n - 8, true);
+    const footer = version === VERSION_V6 ? FOOTER_BYTES : FOOTER_V5;
+    if ((version === VERSION_V5 || version === VERSION_V6) && n >= footer) return version;
   }
   const magic = view.getUint32(0, true);
   if (magic !== SST_MAGIC) {
@@ -149,14 +154,14 @@ function readRecords(
 }
 
 /**
- * Encode SST v5:
+ * Encode SST v6 with raw blocks. LZ4 blocks come only from the wasm encoder.
  *   data blocks (each: u32 count | records of u8 tag | u64 seq | key | value?)
  *   bloom bits
  *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
- *   footer, 40 bytes:
+ *   footer, 44 bytes:
  *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
- *     u32 bloomHashCount | u32 indexOffset | u32 indexLen
- *     u32 crc32 of every byte before it | u32 version=5 | u32 magic
+ *     u32 bloomHashCount | u32 indexOffset | u32 indexLen | u32 codec
+ *     u32 crc32 of every byte before it | u32 version=6 | u32 magic
  */
 export function encodeSst(
   entries: readonly SstEntry[],
@@ -239,12 +244,13 @@ export function encodeSst(
     bloom.hashCount,
     indexOffset,
     indexSize,
+    CODECS.indexOf("raw"),
   ]) {
     view.setUint32(o, field, true);
     o += 4;
   }
   view.setUint32(o, crc32(out.subarray(0, o)), true);
-  view.setUint32(o + 4, VERSION_V5, true);
+  view.setUint32(o + 4, VERSION_V6, true);
   view.setUint32(o + 8, SST_MAGIC, true);
   return out;
 }
@@ -265,10 +271,11 @@ type BlockLayout = {
   dataStart: number;
   indexStart: number;
   indexEnd: number;
+  codec: SstCodec;
 };
 
 function parseBlockLayout(buf: Uint8Array, version: number): BlockLayout {
-  if (version === VERSION_V5) return parseV5Layout(buf);
+  if (version >= VERSION_V5) return parseFooterLayout(buf, version);
   if (buf.byteLength < 32) throw new CorruptDatabaseError("sst v2 too short");
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const crcOff = buf.byteLength - 4;
@@ -293,21 +300,26 @@ function parseBlockLayout(buf: Uint8Array, version: number): BlockLayout {
     dataStart,
     indexStart,
     indexEnd: crcOff,
+    codec: "raw",
   };
 }
 
-function parseV5Layout(buf: Uint8Array): BlockLayout {
+/** v5 and v6 share a footer. v6 adds the codec after the index length. */
+function parseFooterLayout(buf: Uint8Array, version: number): BlockLayout {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const footer = buf.byteLength - FOOTER_BYTES;
+  const fields = version === VERSION_V6 ? 8 : 7;
+  const footer = buf.byteLength - (fields + 3) * 4;
   const field = (i: number) => view.getUint32(footer + 4 * i, true);
   const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen] =
     [0, 1, 2, 3, 4, 5, 6].map(field) as [number, number, number, number, number, number, number];
   if (indexOffset !== bloomOffset + bloomLen || indexOffset + indexLen !== footer) {
-    throw new CorruptDatabaseError("sst v5 sections OOB");
+    throw new CorruptDatabaseError("sst footer sections OOB");
   }
+  const codec = fields === 8 ? CODECS[field(7)] : "raw";
+  if (!codec) throw new CorruptDatabaseError(`unsupported sst codec ${field(7)}`);
   return {
     view,
-    crcOff: footer + 28,
+    crcOff: footer + 4 * fields,
     entryCount,
     blockCount,
     dataLen: bloomOffset,
@@ -315,6 +327,7 @@ function parseV5Layout(buf: Uint8Array): BlockLayout {
     dataStart: 0,
     indexStart: indexOffset,
     indexEnd: footer,
+    codec,
   };
 }
 
@@ -352,11 +365,18 @@ function decodeBlock(
   dataStart: number,
   ix: BlockIndexEntry,
   withSeq: boolean,
+  codec: SstCodec,
 ): SstEntry[] {
   const start = dataStart + ix.offset;
   const end = start + ix.length;
-  const count = view.getUint32(start, true);
-  return readRecords(buf, view, start + 4, end, count, withSeq);
+  if (end > buf.byteLength || ix.length < 4) throw new CorruptDatabaseError("sst block OOB");
+  if (codec === "raw") {
+    return readRecords(buf, view, start + 4, end, view.getUint32(start, true), withSeq);
+  }
+  const block = lz4Decompress(buf.subarray(start + 4, end), view.getUint32(start, true));
+  if (block.byteLength < 4) throw new CorruptDatabaseError("sst block too short");
+  const blockView = new DataView(block.buffer);
+  return readRecords(block, blockView, 4, block.byteLength, blockView.getUint32(0, true), withSeq);
 }
 
 export function decodeSst(buf: Uint8Array): SstEntry[] {
@@ -391,7 +411,9 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   );
   const out: SstEntry[] = [];
   for (const ix of index) {
-    out.push(...decodeBlock(buf, meta.view, meta.dataStart, ix, version >= VERSION_V3));
+    out.push(
+      ...decodeBlock(buf, meta.view, meta.dataStart, ix, version >= VERSION_V3, meta.codec),
+    );
   }
   if (out.length !== meta.entryCount) {
     throw new CorruptDatabaseError("sst v2 entry count mismatch");
@@ -413,6 +435,8 @@ export class SstReader {
   private readonly bloom: BloomFilter | undefined;
   private readonly dataStart: number = 0;
   private readonly index: BlockIndexEntry[] = [];
+  private readonly entryCount: number = 0;
+  private readonly codec: SstCodec = "raw";
 
   constructor(buf: Uint8Array) {
     if (buf.byteLength < 16) throw new CorruptDatabaseError("sst too short");
@@ -429,6 +453,8 @@ export class SstReader {
     const meta = parseBlockLayout(buf, this.version);
     this.bloom = meta.bloom;
     this.dataStart = meta.dataStart;
+    this.entryCount = meta.entryCount;
+    this.codec = meta.codec;
     this.index = readBlockIndex(
       buf,
       meta.view,
@@ -447,7 +473,7 @@ export class SstReader {
     }
     const first = this.index[0];
     const last = this.index[this.index.length - 1];
-    if (!first || !last || this.index.every((ix) => ix.length <= 4)) return undefined;
+    if (!first || !last || this.entryCount === 0) return undefined;
     return { smallest: first.firstKey, largest: last.lastKey };
   }
 
@@ -508,6 +534,7 @@ export class SstReader {
       this.dataStart,
       this.index[i]!,
       this.version >= VERSION_V3,
+      this.codec,
     );
   }
 

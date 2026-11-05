@@ -23,6 +23,10 @@ const V3_FIXTURE =
 const V4_FIXTURE =
   "54534c4f0400000002000000010000002500000007000000080000008d008209207040000200000001070000000000000001000000610100000031020900000000000000010000006201000000610100000062000000002500000074971cb3";
 
+/** The same two entries, written by the v5 encoder, before the footer had a codec. */
+const V5_FIXTURE =
+  "020000000107000000000000000100000061010000003102090000000000000001000000628d0082092070400001000000610100000062000000002500000002000000010000002500000008000000070000002d00000012000000ee9a880b0500000054534c4f";
+
 const hex = (s: string) => Uint8Array.from(s.match(/../g)!.map((h) => parseInt(h, 16)));
 
 describe("sst", () => {
@@ -51,11 +55,16 @@ describe("sst", () => {
     expect(new SstReader(hex(V4_FIXTURE)).get(utf("a"))?.seq).toBe(7);
   });
 
+  it("reads a v5 run with its seqs", () => {
+    expect(decodeSst(hex(V5_FIXTURE)).map((e) => e.seq)).toEqual([7, 9]);
+    expect(new SstReader(hex(V5_FIXTURE)).get(utf("b"))?.kind).toBe("del");
+  });
+
   it("writes the data first and the footer last", () => {
     const body = encodeSst([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     expect(view.getUint32(0, true)).toBe(1); // first block's record count
-    expect(view.getUint32(body.byteLength - 8, true)).toBe(5); // version
+    expect(view.getUint32(body.byteLength - 8, true)).toBe(6); // version
     expect(view.getUint32(body.byteLength - 4, true)).toBe(0x4f4c5354); // magic
   });
 
@@ -105,7 +114,7 @@ describe("sst", () => {
     }));
     const body = encodeSst(entries, 256);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    expect(view.getUint32(body.byteLength - 36, true)).toBeGreaterThan(1); // blockCount
+    expect(view.getUint32(body.byteLength - 40, true)).toBeGreaterThan(1); // blockCount
     expect(decodeSst(body)).toHaveLength(200);
   });
 

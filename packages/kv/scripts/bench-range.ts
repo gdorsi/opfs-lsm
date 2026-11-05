@@ -1,7 +1,8 @@
 /**
  * Time `db.range` over a leveled layout shaped like the todo example: three
  * key prefixes (`todo/`, `idx/oldest/`, `idx/title/`), a few overlapping L0
- * runs, and disjoint L1 and L2 runs of about 4 MiB.
+ * runs, and disjoint L1 and L2 runs of about 4 MiB. L2 runs use LZ4, as
+ * compaction writes them. Also times point gets and opening the database.
  *
  *   pnpm bench:range
  *   TODOS=1000000 ITERS=2000 pnpm bench:range
@@ -45,7 +46,7 @@ function rowsFor(i: number, seq: number): SstEntry[] {
   ];
 }
 
-async function cut(entries: SstEntry[]): Promise<Uint8Array[]> {
+async function cut(entries: SstEntry[], codec: "raw" | "lz4"): Promise<Uint8Array[]> {
   entries.sort((a, b) => compareBytes(a.key, b.key));
   const out: Uint8Array[] = [];
   let start = 0;
@@ -53,7 +54,7 @@ async function cut(entries: SstEntry[]): Promise<Uint8Array[]> {
   for (let i = 0; i < entries.length; i++) {
     size += entryRecordSize(entries[i]!);
     if (size >= TARGET_RUN_BYTES || i === entries.length - 1) {
-      out.push(await encodeSst(entries.slice(start, i + 1)));
+      out.push(await encodeSst(entries.slice(start, i + 1), codec));
       start = i + 1;
       size = 0;
     }
@@ -78,8 +79,8 @@ for (const [i, group] of l0.entries()) {
   await publishRun(fs, path, body);
   runs.push(runMeta(path, body));
 }
-for (const [level, entries] of [[1, l1], [2, l2]] as const) {
-  for (const [i, body] of (await cut(entries)).entries()) {
+for (const [level, entries, codec] of [[1, l1, "raw"], [2, l2, "lz4"]] as const) {
+  for (const [i, body] of (await cut(entries, codec)).entries()) {
     const path = levelRunPath(level, `c1.${i}`, body.byteLength);
     await publishRun(fs, path, body);
     runs.push(runMeta(path, body));
@@ -88,7 +89,11 @@ for (const [level, entries] of [[1, l1], [2, l2]] as const) {
 await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0 });
 
 __resetMemoryFsForTests(name);
+const openStart = performance.now();
 const db = await openDb({ name, fs, forceMemory: true });
+const openMs = performance.now() - openStart;
+const runBytes = runs.reduce((n, r) => n + (r.path.match(/-(\d+)\.sst$/) ? Number(RegExp.$1) : 0), 0);
+console.log(JSON.stringify({ todos, label: "open", openMs, runMiB: runBytes / 2 ** 20 }));
 const levels = runs.reduce<Record<string, number>>((n, r) => {
   const l = r.path.slice(0, 2);
   n[l] = (n[l] ?? 0) + 1;
@@ -134,5 +139,27 @@ for (const s of scenarios) {
   const row = summarize(s.label, samples);
   console.error(`  ${formatUs(row)}  rows=${rows}`);
   console.log(JSON.stringify({ todos, label: s.label, p50: row.p50, p99: row.p99, rows }));
+}
+seed = 5;
+const hitKeys = Array.from({ length: iters + 200 }, () => {
+  const i = rand(todos);
+  return enc.encode(`idx/oldest/${pad(1_700_000_000_000 + i, 13)}/${pad(i, 8)}`);
+});
+const missKeys = hitKeys.map((k) => Uint8Array.of(...k, 0x21));
+for (const [label, keys] of [["get hit", hitKeys], ["get miss", missKeys]] as const) {
+  const samples = new Float64Array(iters);
+  let rows = 0;
+  for (let i = 0; i < keys.length; i++) {
+    const t = performance.now();
+    const v = await db.get(keys[i]!);
+    const d = performance.now() - t;
+    if (i >= 200) {
+      samples[i - 200] = d;
+      rows += v ? 1 : 0;
+    }
+  }
+  const row = summarize(label, samples);
+  console.error(`  ${formatUs(row)}  rows=${rows}`);
+  console.log(JSON.stringify({ todos, label, p50: row.p50, p99: row.p99, rows }));
 }
 await db.close();
