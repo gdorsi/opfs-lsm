@@ -29,7 +29,7 @@ A database named `<name>` lives in two places:
 
 ```
 IndexedDB  "opfs-lsm-wal/<name>"
-  ├── wal    seq -> { ops, at }        one record per acked batch
+  ├── wal    seq -> ops[]              one record per acked batch
   └── meta   "head"            -> seq  last committed batch
              "ingestedThrough" -> seq  every seq <= this is in an SST
              "generation"      -> n    the manifest tabs should read
@@ -59,31 +59,41 @@ The WAL is the IndexedDB database `opfs-lsm-wal/<name>`, schema version 6
 ## WAL records
 
 Each acked `put`, `delete`, `batch`, or `update` appends exactly one record to
-the `wal` store. The record's key is its seq. Its value is:
+the `wal` store. The record's key is its seq. Its value is the encoded ops:
 
 ```
-{
-  ops: [ { type: "put", key: ArrayBuffer, value: ArrayBuffer }
-       | { type: "del", key: ArrayBuffer } ],
-  at:  number          // Date.now() at append, for debugging
-}
+[ { type: "put", key: ArrayBuffer, value: ArrayBuffer }
+| { type: "del", key: ArrayBuffer } ]
 ```
 
-The engine copies each key and value into its own `ArrayBuffer` before the write. The browser's
-structured clone stores them as they are.
+Records written earlier wrap that array as `{ ops }`, and the oldest of those also carry an
+`at` timestamp that nothing reads. The reader takes the array when the value is one, and `ops`
+when the value is still wrapped. The engine copies each key and value into its own `ArrayBuffer`
+before the write. The browser's structured clone stores them as they are.
 
 ## Append
 
-An append is one `readwrite` transaction over `wal` and `meta`:
+`put`, `delete`, and `batch` append without reading the tail. One `readwrite` transaction over
+`wal` and `meta`:
 
-1. Read `head`, `generation` and `ingestedThrough`, plus every record above the tab's
-   `appliedThrough`.
-2. Apply those records to the tab's memtable, so the tab is caught up before it decides.
-3. Run the caller's plan synchronously.
-4. `add` the batch at `head + 1` and `put` the new `head`.
+1. Read `head`.
+2. `add` the encoded ops with no key. The store's key generator assigns the seq.
+3. If that key is not past `head`, abort. A migrated database can hold a head ahead of its
+   generator until one explicit-key append raises it. The caller then appends with `appendAfter`.
+4. Otherwise `put` the new `head`.
 
-IndexedDB serializes `readwrite` transactions on the same stores. So no other tab can append
-between step 1 and step 4, and seqs stay gap-free without any other coordination.
+IndexedDB serializes `readwrite` transactions on the same stores, so two tabs cannot take the
+same key. Aborting a transaction reverts the key generator, so an append that aborts does not
+consume a seq. Committed seqs stay gapless.
+
+The record joins this tab's memtable after `complete`, and the ack resolves only after that.
+If the seq is not the next one, another tab appended first: the tab reads the WAL tail, applies
+every record through its own, and then resolves. At the ack, the writer sees its own write and
+every earlier one.
+
+`update` still uses `appendAfter`. That transaction reads the tail, applies it to the memtable,
+runs the synchronous body, and `add`s the batch at `head + 1`. The read and the write stay in
+one transaction.
 
 The ack is the transaction's `complete` event. The write is durable from that point, at the
 durability IndexedDB gives the transaction. The engine uses the browser's default durability. In
@@ -380,11 +390,14 @@ levels. Writes that commit during the callback are invisible to it.
 After its own append commits, a tab posts `{ kind: "append", seq, ops }` on the BroadcastChannel
 `opfs-lsm-layers/<name>`. Every other tab applies the record to its memtable when the message
 arrives. If the record doesn't follow that tab's `appliedThrough`, the tab reads the WAL tail
-instead.
+instead. The ingest host listens on the same channel and counts those op bytes.
 
 So a tab sees another tab's write a moment after that write's ack, not at it. `db.sync()` closes
 that gap. It reads the WAL tail in one transaction and applies everything acked before the call.
-Every append already catches the tab up inside its own IndexedDB transaction before the plan runs.
+A blind append does that catch-up after its own commit, before its ack, when its seq is not the
+next one. `update` catches up inside its transaction, before the body runs. If `close()` runs
+after the commit and before the broadcast, the put still resolves: the channel is already closed,
+other tabs catch up on `sync`, and the host measures the WAL again on the next open.
 
 ## Installing a generation
 
@@ -405,19 +418,39 @@ Ingest moves WAL records into an L0 run. It runs in the SharedWorker's `EngineHo
 
 ## When it runs
 
-Every tab applies every record. Each tab counts the key and value bytes of the records it has
-applied above the installed generation's `ingestedThrough` (`Memtable.walBytes`). So every tab
-sees the same record take that count past the limit, and each one asks the host to flush
-through that seq. The limit is `maxWalBytes` in `ingest-policy.ts`, 4 MiB by default.
+The ingest host owns the trigger. Per database it keeps an `IngestWatch`:
 
-The count is over the WAL as written, not the folded memtable. Overwrites of the same keys and
-deletes leave the memtable about the same size, but they still grow the WAL that every tab reads
-when it opens. So the WAL stays near the limit however the writes are batched. Before this, the
-limits were 4 MiB of memtable bytes or 10,000 records. Overwrite batches of 9,000 ops then grew
-the WAL to 39 MiB with no flush.
+- `maxWalBytes`, the smallest limit any open tab asked for
+- `pendingBytes`, op bytes heard on the broadcast or measured from the WAL, and not yet folded
+- `triggerAt`, the `pendingBytes` level that starts an ingest
+- `state`, `idle` or `ingesting`
+- `watchers`, how many tabs hold the watch
 
-A request for seqs that are already ingested does nothing. So however many tabs ask for the
-same flush, it runs once. A later multiple of the limit retries a flush that failed.
+`openDb` sends `watch` with the tab's `IngestPolicy`. The call resolves once the host is
+listening. The host then measures the uningested WAL in the background and
+ingests if that measurement is at the limit, so a database left over the limit by a closed or
+busy tab catches up on open. `close` sends `unwatch`. At zero watchers the host closes its
+channel and drops the watch. Until then it keeps the smallest limit it has seen.
+
+Each append broadcast adds the key and value bytes of its ops to `pendingBytes`. When
+`pendingBytes` reaches `triggerAt` and the watch is idle, the host folds every uningested
+record. One ingest runs at a time. When it finishes, the host subtracts the folded bytes and
+checks again. The default limit is 4 MiB (`maxWalBytes` in `ingest-policy.ts`).
+
+The count is the bytes of the ops as written. Overwrites and deletes grow it the same way new
+keys do, so the WAL that every open replays stays near the limit whatever the batch shape.
+IndexedDB stays the source of truth. The count only decides when to ingest, and every ingest
+reads the WAL. A missed broadcast, or an `unwatch` that arrives before a tab's last append,
+delays the fold until the next crossing or the next open, which measures again. A fold that
+finds nothing waiting sets `pendingBytes` back to 0, so a count that ran ahead of the WAL does
+not ingest in a loop.
+
+A failed ingest is logged. `triggerAt` becomes `pendingBytes + maxWalBytes`, so the retry waits
+for another limit of writes. The next `watch` sets `triggerAt` back to the limit and measures
+the WAL, so opening the database retries at once.
+
+`db.ingest()` still asks the host to fold through the end of the log and waits for the
+compaction that starts. A request for seqs that are already ingested writes nothing.
 
 ## Steps
 
@@ -538,7 +571,8 @@ Files that no manifest lists are never deleted on startup today. They only take 
 # Assumptions about the platform
 
 - IndexedDB serializes `readwrite` transactions that share a store, across tabs and workers.
-  Seq assignment depends on this.
+  Seq assignment depends on this. Aborting a transaction reverts the WAL store's key generator,
+  which keeps a blind append gapless when it aborts.
 - An OPFS `createWritable().close()` publishes the whole file atomically, and never shows a
   partial file to readers.
 - A SharedWorker with the same URL and name is shared by every tab of the origin. If two
