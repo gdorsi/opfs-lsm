@@ -7,6 +7,7 @@ import {
   openDb,
   type ChangeEvent,
 } from "../src/index.js";
+import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 
 const enc = new TextEncoder();
@@ -60,15 +61,19 @@ describe("L0 compaction", () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     let merging = false;
-    const read = fs.read.bind(fs);
-    fs.read = async (path, offset, length) => {
-      if (length === 1 << 30) {
-        merging = true;
-        await gate;
-      }
-      return read(path, offset, length);
+    const hostFs: AsyncFs = {
+      read: async (path, offset, length) => {
+        if (path.endsWith(".sst")) {
+          merging = true;
+          await gate;
+        }
+        return fs.read(path, offset, length);
+      },
+      list: (dir) => fs.list(dir),
+      remove: (path) => fs.remove(path),
+      create: (path) => fs.create(path),
     };
-    const host = new EngineHost(() => fs);
+    const host = new EngineHost(() => hostFs);
     const db = await openDb({
       name: "compact",
       writerId: "w1",

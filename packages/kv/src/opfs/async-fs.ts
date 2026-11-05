@@ -7,6 +7,7 @@ export interface FileWriter {
 }
 
 export interface AsyncFs {
+  /** At most `length` bytes from `offset`. Pass Infinity to read to the end. */
   read(
     path: string,
     offset: number,

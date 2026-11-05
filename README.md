@@ -85,7 +85,7 @@ The other benches run from `packages/kv`. Each prints its own rows and checks th
 
 | command | what it measures |
 | --- | --- |
-| `pnpm bench:latency` | Each of 100k puts under the default ingest policy, then hit and miss gets across the resulting runs. Prints p50 to p99.9, max, and the count over 1 ms. `BENCH_QUERY=val=100` sets the value size. `BENCH_QUERY=maxBatches=1000000000` keeps the memtable large. Keep N times the value size under 64 MiB with it, because the final flush then writes one run and tabs read at most 64 MiB of a run. |
+| `pnpm bench:latency` | Each of 100k puts under the default ingest policy, then hit and miss gets across the resulting runs. Prints p50 to p99.9, max, and the count over 1 ms. `BENCH_QUERY=val=100` sets the value size. `BENCH_QUERY=maxBatches=1000000000` keeps the memtable large. |
 | `pnpm bench:floors` | Raw IndexedDB puts at each durability, and OPFS sync-handle appends from a dedicated WebWorker with and without `flush()`. No kv code runs, so this is the floor for a WAL commit. |
 | `pnpm bench:batch` | 1000-key batches as the memtable grows to 130k rows with flushing off. |
 | `pnpm bench:memtable` | The memtable in Node: insert, `advanceTo`, get, a 100-row scan, and a view snapshot, at 10k and 130k rows. |

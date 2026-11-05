@@ -39,7 +39,7 @@ export async function mergeNextStep(
 
   const blobs: Uint8Array[] = [];
   for (const { path } of plan.inputs) {
-    const buf = await fs.read(path, 0, 1 << 30);
+    const buf = await fs.read(path, 0, Number.POSITIVE_INFINITY);
     if (!buf) throw new Error(`compaction missing input ${path}`);
     blobs.push(buf);
   }
