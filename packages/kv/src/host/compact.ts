@@ -11,6 +11,7 @@ import {
   type RunMeta,
 } from "../store/generation.js";
 import {
+  codecForLevel,
   levelRunPath,
   planCompaction,
   replaceRuns,
@@ -43,7 +44,12 @@ export async function mergeNextStep(
     if (!buf) throw new Error(`compaction missing input ${path}`);
     blobs.push(buf);
   }
-  const { ssts, droppedSeq } = await mergeSsts(blobs, plan.bottom, TARGET_RUN_BYTES);
+  const { ssts, droppedSeq } = await mergeSsts(
+    blobs,
+    plan.bottom,
+    TARGET_RUN_BYTES,
+    codecForLevel(plan.outputLevel),
+  );
   const outputs: RunMeta[] = [];
   for (const [i, sst] of ssts.entries()) {
     const name = `c${meta.generation + 1}.${i}`;

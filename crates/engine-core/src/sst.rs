@@ -1,8 +1,9 @@
 //! SST format. v1 (single block) and v2 (multi-block + Bloom) decode. v3 is
 //! v2 with a u64 seq after each record tag. v4 is v3 with u32 Bloom header
-//! fields, so a filter can pass 64 KiB. v5 is what encode writes: v4's
-//! sections with the Bloom filter and index after the data, and a fixed
-//! footer at the end.
+//! fields, so a filter can pass 64 KiB. v5 is v4's sections with the Bloom
+//! filter and index after the data, and a fixed footer at the end. v6 is
+//! what encode writes: v5 with a codec field in the footer, so data blocks
+//! can be LZ4-compressed.
 //! Must stay byte-compatible with `packages/kv/src/store/sst.ts`.
 
 use crate::bloom::{bloom_add, create_bloom};
@@ -14,10 +15,30 @@ const VERSION_V2: u32 = 2;
 const VERSION_V3: u32 = 3;
 const VERSION_V4: u32 = 4;
 const VERSION_V5: u32 = 5;
-const FOOTER_BYTES: usize = 40;
+const VERSION_V6: u32 = 6;
+const FOOTER_V5: usize = 40;
+const FOOTER_BYTES: usize = 44;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 const BLOCK_TARGET: usize = 4 * 1024;
+
+/// How a run stores its data blocks. An LZ4 block is a u32 uncompressed
+/// length followed by the LZ4 block-format bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codec {
+    Raw = 0,
+    Lz4 = 1,
+}
+
+impl Codec {
+    fn from_u32(v: u32) -> Result<Codec, SstError> {
+        match v {
+            0 => Ok(Codec::Raw),
+            1 => Ok(Codec::Lz4),
+            other => Err(SstError::BadCodec(other)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// `seq` is the WAL seq that wrote the entry, or 0 when the SST predates v3.
@@ -50,6 +71,8 @@ pub enum SstError {
     BadTag(u8),
     TrailingGarbage,
     CountMismatch,
+    BadCodec(u32),
+    BadBlock,
 }
 
 impl std::fmt::Display for SstError {
@@ -109,12 +132,12 @@ fn write_records(out: &mut [u8], o: &mut usize, entries: &[&Entry]) {
     }
 }
 
-/// Encode SST v5:
-///   data blocks | bloom bits | block index | footer (40 bytes)
+/// Encode SST v6:
+///   data blocks | bloom bits | block index | footer (44 bytes)
 /// The footer is u32 entry count, block count, bloom offset, bloom length,
-/// bloom hash count, index offset, index length, then a u32 CRC of every
-/// byte before it, u32 version 5 and u32 magic.
-pub fn encode_sst(entries: &[Entry]) -> Vec<u8> {
+/// bloom hash count, index offset, index length, codec, then a u32 CRC of
+/// every byte before it, u32 version 6 and u32 magic.
+pub fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
     sorted.sort_by(|a, b| a.key().cmp(b.key()));
 
@@ -149,10 +172,18 @@ pub fn encode_sst(entries: &[Entry]) -> Vec<u8> {
         let mut o = 0usize;
         write_u32(&mut blob, &mut o, block.len() as u32);
         write_records(&mut blob, &mut o, block);
+        let blob = match codec {
+            Codec::Raw => blob,
+            Codec::Lz4 => {
+                let mut packed = (size as u32).to_le_bytes().to_vec();
+                packed.extend(lz4_flex::block::compress(&blob));
+                packed
+            }
+        };
         let first = block.first().map(|e| e.key().to_vec()).unwrap_or_default();
         let last = block.last().map(|e| e.key().to_vec()).unwrap_or_default();
-        index.push((first, last, data_len as u32, size as u32));
-        data_len += size;
+        index.push((first, last, data_len as u32, blob.len() as u32));
+        data_len += blob.len();
         block_blobs.push(blob);
     }
 
@@ -191,12 +222,13 @@ pub fn encode_sst(entries: &[Entry]) -> Vec<u8> {
         bloom.hash_count as usize,
         index_offset,
         index_size,
+        codec as usize,
     ] {
         write_u32(&mut out, &mut o, field as u32);
     }
     let sum = crc32(&out[..o]);
     write_u32(&mut out, &mut o, sum);
-    write_u32(&mut out, &mut o, VERSION_V5);
+    write_u32(&mut out, &mut o, VERSION_V6);
     write_u32(&mut out, &mut o, MAGIC);
     debug_assert_eq!(o, out.len());
     out
@@ -274,6 +306,7 @@ struct Layout {
     index_start: usize,
     index_end: usize,
     crc_off: usize,
+    codec: Codec,
 }
 
 fn legacy_layout(buf: &[u8], version: u32) -> Result<Layout, SstError> {
@@ -299,11 +332,14 @@ fn legacy_layout(buf: &[u8], version: u32) -> Result<Layout, SstError> {
         index_start,
         index_end: crc_off,
         crc_off,
+        codec: Codec::Raw,
     })
 }
 
-fn v5_layout(buf: &[u8]) -> Result<Layout, SstError> {
-    let footer = buf.len() - FOOTER_BYTES;
+/// v5 and v6 share a footer. v6 adds the codec field after the index length.
+fn footer_layout(buf: &[u8], version: u32) -> Result<Layout, SstError> {
+    let fields = if version == VERSION_V6 { 8 } else { 7 };
+    let footer = buf.len() - (fields + 3) * 4;
     let field = |i: usize| read_u32(buf, footer + 4 * i) as usize;
     let (bloom_offset, bloom_len, index_offset, index_len) = (field(2), field(3), field(5), field(6));
     if index_offset != bloom_offset + bloom_len || index_offset + index_len != footer {
@@ -316,12 +352,13 @@ fn v5_layout(buf: &[u8]) -> Result<Layout, SstError> {
         data_len: bloom_offset,
         index_start: index_offset,
         index_end: footer,
-        crc_off: footer + 28,
+        crc_off: footer + 4 * fields,
+        codec: if version == VERSION_V6 { Codec::from_u32(field(7) as u32)? } else { Codec::Raw },
     })
 }
 
 fn decode_blocks(buf: &[u8], layout: &Layout, with_seq: bool) -> Result<Vec<Entry>, SstError> {
-    let Layout { entry_count, block_count, data_start, data_len, index_start, index_end, .. } =
+    let Layout { entry_count, block_count, data_start, data_len, index_start, index_end, codec, .. } =
         *layout;
     let mut o = index_start;
     let mut out = Vec::with_capacity(entry_count);
@@ -349,8 +386,27 @@ fn decode_blocks(buf: &[u8], layout: &Layout, with_seq: bool) -> Result<Vec<Entr
         if end > data_start + data_len {
             return Err(SstError::Truncated);
         }
-        let count = read_u32(buf, start) as usize;
-        out.extend(read_records(buf, start + 4, end, count, with_seq)?);
+        let unpacked;
+        let block = match codec {
+            Codec::Raw => &buf[start..end],
+            Codec::Lz4 => {
+                if length < 4 {
+                    return Err(SstError::Truncated);
+                }
+                let size = read_u32(buf, start) as usize;
+                unpacked = lz4_flex::block::decompress(&buf[start + 4..end], size)
+                    .map_err(|_| SstError::BadBlock)?;
+                if unpacked.len() != size {
+                    return Err(SstError::BadBlock);
+                }
+                &unpacked[..]
+            }
+        };
+        if block.len() < 4 {
+            return Err(SstError::Truncated);
+        }
+        let count = read_u32(block, 0) as usize;
+        out.extend(read_records(block, 4, block.len(), count, with_seq)?);
     }
     if o != index_end {
         return Err(SstError::TrailingGarbage);
@@ -361,13 +417,18 @@ fn decode_blocks(buf: &[u8], layout: &Layout, with_seq: bool) -> Result<Vec<Entr
     Ok(out)
 }
 
-/// v5 keeps its magic and version in the last 8 bytes. Older versions keep
-/// them in the first 8. v2 to v4 end with a block length, which is never 5,
-/// then the CRC. A v1 run passes for v5 only if its CRC equals the magic.
+/// v5 and v6 keep their magic and version in the last 8 bytes. Older
+/// versions keep them in the first 8. v2 to v4 end with a block length,
+/// which is 4 or at least 9, then the CRC. A v1 run passes for v5 or v6 only
+/// if its CRC equals the magic.
 fn sst_version(buf: &[u8]) -> Result<u32, SstError> {
     let n = buf.len();
-    if n >= FOOTER_BYTES && read_u32(buf, n - 4) == MAGIC && read_u32(buf, n - 8) == VERSION_V5 {
-        return Ok(VERSION_V5);
+    if n >= FOOTER_V5 && read_u32(buf, n - 4) == MAGIC {
+        let version = read_u32(buf, n - 8);
+        let footer = if version == VERSION_V6 { FOOTER_BYTES } else { FOOTER_V5 };
+        if (version == VERSION_V5 || version == VERSION_V6) && n >= footer {
+            return Ok(version);
+        }
     }
     let magic = read_u32(buf, 0);
     if magic != MAGIC {
@@ -384,7 +445,7 @@ pub fn decode_sst(buf: &[u8]) -> Result<Vec<Entry>, SstError> {
     let layout = match version {
         VERSION_V1 => None,
         VERSION_V2 | VERSION_V3 | VERSION_V4 => Some(legacy_layout(buf, version)?),
-        VERSION_V5 => Some(v5_layout(buf)?),
+        VERSION_V5 | VERSION_V6 => Some(footer_layout(buf, version)?),
         other => return Err(SstError::BadVersion(other)),
     };
     let crc_off = layout.as_ref().map_or(buf.len() - 4, |l| l.crc_off);
@@ -408,8 +469,8 @@ mod tests {
             Entry::Del { key: b"a".to_vec(), seq: 9 },
             Entry::Put { key: b"c".to_vec(), value: b"3".to_vec(), seq: 1 << 40 },
         ];
-        let bytes = encode_sst(&entries);
-        assert_eq!(read_u32(&bytes, bytes.len() - 8), VERSION_V5);
+        let bytes = encode_sst(&entries, Codec::Raw);
+        assert_eq!(read_u32(&bytes, bytes.len() - 8), VERSION_V6);
         let decoded = decode_sst(&bytes).unwrap();
         assert_eq!(decoded[0], Entry::Del { key: b"a".to_vec(), seq: 9 });
         assert_eq!(decoded[1], Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 });
@@ -430,10 +491,68 @@ mod tests {
         assert_eq!(decoded[1], Entry::Del { key: b"b".to_vec(), seq: 9 });
     }
 
+    /// The same two entries, as the v5 encoder wrote them, before the footer had a codec.
+    const V5_FIXTURE: &str = "020000000107000000000000000100000061010000003102090000000000000001000000628d0082092070400001000000610100000062000000002500000002000000010000002500000008000000070000002d00000012000000ee9a880b0500000054534c4f";
+
+    #[test]
+    fn reads_v5() {
+        let decoded = decode_sst(&hex(V5_FIXTURE)).unwrap();
+        assert_eq!(decoded[0], Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 });
+        assert_eq!(decoded[1], Entry::Del { key: b"b".to_vec(), seq: 9 });
+    }
+
+    fn todo_rows(n: u64) -> Vec<Entry> {
+        (0..n)
+            .map(|i| Entry::Put {
+                key: format!("todo/{i:013}").into_bytes(),
+                value: format!("{{\"title\":\"buy milk {}\",\"done\":false}}", i % 7).into_bytes(),
+                seq: i,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lz4_round_trips_and_shrinks_the_run() {
+        let entries = todo_rows(2_000);
+        let raw = encode_sst(&entries, Codec::Raw);
+        let packed = encode_sst(&entries, Codec::Lz4);
+        assert_eq!(read_u32(&packed, packed.len() - 16), Codec::Lz4 as u32);
+        assert!(packed.len() * 2 < raw.len(), "{} vs {}", packed.len(), raw.len());
+        assert_eq!(decode_sst(&packed).unwrap(), decode_sst(&raw).unwrap());
+    }
+
+    #[test]
+    fn lz4_round_trips_an_empty_run() {
+        assert_eq!(decode_sst(&encode_sst(&[], Codec::Lz4)).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn rejects_a_corrupt_lz4_block_even_with_a_matching_crc() {
+        let mut bytes = encode_sst(&todo_rows(200), Codec::Lz4);
+        for b in &mut bytes[4..40] {
+            *b = 0xff;
+        }
+        let crc_off = bytes.len() - 12;
+        let sum = crc32(&bytes[..crc_off]);
+        bytes[crc_off..crc_off + 4].copy_from_slice(&sum.to_le_bytes());
+        assert!(decode_sst(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_an_unknown_codec() {
+        let mut bytes = encode_sst(&todo_rows(3), Codec::Raw);
+        let at = bytes.len() - 16;
+        bytes[at] = 9;
+        let crc_off = bytes.len() - 12;
+        let sum = crc32(&bytes[..crc_off]);
+        bytes[crc_off..crc_off + 4].copy_from_slice(&sum.to_le_bytes());
+        assert_eq!(decode_sst(&bytes), Err(SstError::BadCodec(9)));
+    }
+
     #[test]
     fn data_comes_first_and_the_footer_last() {
         let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 }];
-        let bytes = encode_sst(&entries);
+        let bytes = encode_sst(&entries, Codec::Raw);
         assert_eq!(read_u32(&bytes, 0), 1, "first block's record count");
         assert_eq!(read_u32(&bytes, bytes.len() - 4), MAGIC);
     }
@@ -441,7 +560,7 @@ mod tests {
     #[test]
     fn rejects_a_flipped_data_byte() {
         let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 }];
-        let mut bytes = encode_sst(&entries);
+        let mut bytes = encode_sst(&entries, Codec::Raw);
         bytes[5] ^= 0xff;
         assert_eq!(decode_sst(&bytes), Err(SstError::CrcMismatch));
     }
@@ -453,7 +572,7 @@ mod tests {
             let key = format!("k{i:04}").into_bytes();
             entries.push(Entry::Put { key, value: vec![b'x'; 64], seq: i });
         }
-        let bytes = encode_sst(&entries);
+        let bytes = encode_sst(&entries, Codec::Raw);
         let block_count = read_u32(&bytes, bytes.len() - FOOTER_BYTES + 4);
         assert!(block_count > 1, "expected multiple blocks, got {block_count}");
         let decoded = decode_sst(&bytes).unwrap();
@@ -466,7 +585,7 @@ mod tests {
         let entries: Vec<Entry> = (0..60_000u64)
             .map(|i| Entry::Put { key: format!("k{i:08}").into_bytes(), value: b"v".to_vec(), seq: i })
             .collect();
-        let bytes = encode_sst(&entries);
+        let bytes = encode_sst(&entries, Codec::Raw);
         assert!(read_u32(&bytes, bytes.len() - FOOTER_BYTES + 12) > u16::MAX as u32);
         assert_eq!(decode_sst(&bytes).unwrap().len(), 60_000);
     }

@@ -48,6 +48,7 @@ import {
   runLevels,
   type RunLevel,
 } from "./store/merge.js";
+import { ensureEngine } from "./store/engine.js";
 import type { SstReader } from "./store/sst.js";
 import {
   ViewSnapshotImpl,
@@ -213,6 +214,8 @@ export function prefixBound(prefix: Uint8Array): {
 
 export async function openDb(options: OpenOptions): Promise<Db> {
   const name = checkDbName(options.name);
+  // Reads unpack LZ4 blocks faster once wasm loads. Until then they use the JS decoder.
+  void ensureEngine();
   const policy: IngestPolicy = {
     ...DEFAULT_INGEST_POLICY,
     ...options.ingestPolicy,

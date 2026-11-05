@@ -123,14 +123,14 @@ scanning.
 
 # SST file format
 
-Runs use SST version 5. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
+Runs use SST version 6. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
 TypeScript reader in `packages/kv/src/store/sst.ts` reads it, and there is a byte-compatible
-TypeScript encoder for when wasm doesn't load.
+TypeScript encoder for when wasm doesn't load. That encoder writes only raw blocks.
 
 The layout follows the LevelDB and RocksDB convention. Data blocks come first, the bloom filter
 and block index follow them, and a fixed-size footer at the end of the file says where each
 section is. A writer can produce the sections in that order without knowing the key count up
-front, and a reader can find the footer as the last 40 bytes of any file.
+front, and a reader can find the footer as the last 44 bytes of any file.
 
 A run is four sections, back to back. N is the block count.
 
@@ -147,7 +147,7 @@ A run is four sections, back to back. N is the block count.
 | ...                                                                        |
 | index entry N-1        (describes data block N-1)                          |
 ------------------------------------------------------------------------------
-| footer                 (40 bytes)                                          |
+| footer                 (44 bytes)                                          |
 ==============================================================================
 ```
 
@@ -165,6 +165,16 @@ A block holds the records for a run of keys, about 4 KiB of them.
 | ...                                                                        |
 | record count - 1                                                           |
 ```
+
+The footer's codec says how every block in the file is stored. With codec 0 (raw) a block is
+stored as above. With codec 1 (LZ4) it is stored packed:
+
+```
+| u32 unpacked length                                                        |
+| LZ4 block-format bytes of the block above                                  |
+```
+
+Index offsets and lengths, the bloom offset and the CRC all refer to the stored bytes.
 
 ### Record
 
@@ -190,21 +200,22 @@ There is one index entry per data block, in the same order as the blocks.
 | u32 block length                                                           |
 ```
 
-### Footer (40 bytes)
+### Footer (44 bytes)
 
 Every footer field is a u32, so each one sits at a fixed position from the end of the file.
 
 ```
 <----------------------------------- 4 bytes ----------------------------------->
-| entry count                                                                   |  end - 40
-| block count                                                                   |  end - 36
-| bloom offset    also the length of the data section                           |  end - 32
-| bloom length                                                                  |  end - 28
-| bloom hash count                                                              |  end - 24
-| index offset                                                                  |  end - 20
-| index length                                                                  |  end - 16
+| entry count                                                                   |  end - 44
+| block count                                                                   |  end - 40
+| bloom offset    also the length of the data section                           |  end - 36
+| bloom length                                                                  |  end - 32
+| bloom hash count                                                              |  end - 28
+| index offset                                                                  |  end - 24
+| index length                                                                  |  end - 20
+| codec           0 = raw, 1 = LZ4                                              |  end - 16
 | crc32 (IEEE) of every byte before this field                                  |  end - 12
-| version = 5                                                                   |  end - 8
+| version = 6                                                                   |  end - 8
 | magic "OLST" (0x4f4c5354)                                                     |  end - 4
 ```
 
@@ -212,18 +223,53 @@ Entries are sorted by key, with one entry per key. Blocks are cut at about 4 KiB
 bloom filter uses 10 bits per key and 7 hashes, which gives about a 1% false-positive rate. Its
 hashes are FNV-1a and a 32-bit mix of it, combined by double hashing.
 
-Versions 1 to 4 still decode. They keep the magic and version in the first 8 bytes and a header
-before the data, and they end with a bare CRC:
+Versions 1 to 5 still decode. Version 5 is version 6 without the codec field, so its footer is
+40 bytes and its blocks are raw. Versions 1 to 4 keep the magic and version in the first 8 bytes
+and a header before the data, and they end with a bare CRC:
 - Version 1 is a single block with no bloom filter.
 - Version 2 added blocks, the bloom filter and the block index.
 - Version 3 added the per-record seq.
 - Version 4 widened the bloom header fields to u32, so a filter can pass 64 KiB.
 - Version 5 moved the bloom filter and index behind the data and the metadata into the footer.
+- Version 6 added the codec field.
 
 A reader checks the last 8 bytes first. In a version 2 to 4 file, those bytes are the last
-block's length and the CRC. A block length is never 5, so these files can't be mistaken for
-version 5. A version 1 file ends with record bytes and the CRC, so it would be misread only
-if its CRC happened to equal the magic, a 1 in 2^32 chance.
+block's length and the CRC. A block length is 4 or at least 9, never 5 or 6, so these files
+can't be mistaken for version 5 or 6. A version 1 file ends with record bytes and the CRC, so it
+would be misread only if its CRC happened to equal the magic, a 1 in 2^32 chance.
+
+## Compression
+
+Runs in L2 and deeper use LZ4. L0 and L1 runs stay raw. `codecForLevel` in `levels.ts` makes
+the choice, and only compaction writes L2 runs, so flushes never pay to compress. L2 and below
+hold nearly all of the data, so they are where the bytes are.
+
+The reason is memory. Every tab holds every run's bytes, and blocks stay packed in memory until a
+read reaches them. LZ4 decodes fast enough that a get barely notices. It also adds the least
+code to the wasm module of the pure-Rust codecs we tried. On todo-shaped data, a 4 KiB block:
+
+| Codec | Ratio | Decode | Added to wasm, gzipped |
+|---|---|---|---|
+| LZ4 (`lz4_flex`) | 3.25x | 0.8 µs | 5 KB |
+| Snappy (`snap`) | 3.49x | 1.4 µs | 6 KB |
+| Deflate (`miniz_oxide`) | 4.84x | 8 µs | 18 KB |
+| Zstd (`ruzstd`) | 3.62x | 8 µs | 58 KB |
+
+Reads decode LZ4 blocks in wasm once the module loads. `openDb` starts loading it without
+waiting. Before it loads, and wherever wasm doesn't load, a TypeScript decoder in `lz4.ts` does
+the work about 3x slower.
+
+Measured with `pnpm bench:range` (todo-shaped layout in memory, Node) against raw L2 runs:
+
+| | 100k todos, raw | 100k todos, LZ4 | 1M todos, raw | 1M todos, LZ4 |
+|---|---|---|---|---|
+| Run bytes per tab | 27.6 MiB | 10.1 MiB | 275.7 MiB | 99.5 MiB |
+| `openDb` | 6.9 ms | 4.7 ms | 290 ms | 87 ms |
+| Get that hits L2, p50 | 5.9 µs | 7.4 µs | 6.5 µs | 7.9 µs |
+| Page of 256 todos, p50 | 113 µs | 125 µs | 111 µs | 135 µs |
+
+Gets that miss cost the same, because the bloom filter rejects them before any block is read.
+
 
 ## Reading a run
 
@@ -233,7 +279,8 @@ A point get:
 
 1. Rejects the key if it falls outside the run's first and last keys.
 2. Rejects it if the bloom filter says no.
-3. Binary-searches the block index, decodes that one block and searches it.
+3. Binary-searches the block index, decodes that one block (unpacking it first if the run
+   uses LZ4) and searches it.
 
 Tabs don't check the CRC when they read. That check runs in the SharedWorker, which decodes
 every input run in full before compacting it. Skipping it on the main thread cut tab open time
@@ -357,7 +404,9 @@ Compaction keeps a leveled layout (`packages/kv/src/store/levels.ts`, `host/comp
 | L1 | Disjoint, sorted by key | 40 MiB |
 | Ln | Disjoint, sorted by key | 40 MiB × 10^(n−1) |
 
-Levels are created as they fill. There is no maximum depth.
+Levels are created as they fill. There is no maximum depth. Budgets count bytes on disk, which
+are packed from L2 down, so an LZ4 level holds about 3x more records than its budget in raw
+bytes.
 
 ## Planning
 
@@ -375,9 +424,9 @@ the merge drop tombstones, because no older value is left for them to hide.
 The merge runs in wasm (`crates/engine-core/src/compact.rs`). It decodes every input and checks
 each CRC. It folds the inputs into a `BTreeMap`, with newer runs winning, and drops tombstones if
 the plan is `bottom`. Then it cuts the output into runs of `TARGET_RUN_BYTES`, 4 MiB of records.
-A run closes on the first entry that takes it to 4 MiB or more. So full runs are a little over
-4 MiB on disk once the bloom filter and block index are added, and the last run of a merge holds
-whatever is left over.
+A run closes on the first entry that takes it to 4 MiB or more. So full raw runs are a little
+over 4 MiB on disk once the bloom filter and block index are added. LZ4 runs hold the same
+4 MiB of records in fewer bytes. The last run of a merge holds whatever is left over.
 
 All the inputs are in memory at once. The fixed run size is what bounds one step to about
 11 runs at a level ratio of 10.

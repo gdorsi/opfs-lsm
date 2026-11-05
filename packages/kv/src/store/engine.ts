@@ -2,18 +2,21 @@
  * WASM engine-core bridge. Falls back to the TS SST codec if wasm is missing
  * (e.g. before `pnpm run build:wasm`).
  */
-import type { SstEntry } from "./sst.js";
+import type { SstCodec, SstEntry } from "./sst.js";
 import * as sstTs from "./sst.js";
 import { foldEntries } from "./fold.js";
+import { useLz4Decoder } from "./lz4.js";
 
 type WasmMod = {
   default: (module_or_path?: unknown) => Promise<unknown>;
-  encode_sst_js: (entries: unknown) => Uint8Array;
+  encode_sst_js: (entries: unknown, lz4: boolean) => Uint8Array;
   decode_sst_js: (buf: Uint8Array) => unknown[];
+  lz4_decompress_js: (src: Uint8Array, size: number) => Uint8Array;
   merge_ssts_js: (
     blobs: unknown,
     dropTombstones: boolean,
     targetBytes: number,
+    lz4: boolean,
   ) => { ssts: Uint8Array[]; droppedSeq: number };
 };
 
@@ -67,6 +70,8 @@ export async function ensureEngine(): Promise<void> {
   if (!initOnce) {
     initOnce = (async () => {
       wasm = await loadWasm();
+      const mod = wasm;
+      if (mod) useLz4Decoder((src, size) => mod.lz4_decompress_js(src, size));
     })();
   }
   await initOnce;
@@ -76,7 +81,11 @@ export function engineUsingWasm(): boolean {
   return wasm !== undefined;
 }
 
-export async function encodeSst(entries: readonly SstEntry[]): Promise<Uint8Array> {
+/** Without wasm, every run is written raw: readers take either codec. */
+export async function encodeSst(
+  entries: readonly SstEntry[],
+  codec: SstCodec = "raw",
+): Promise<Uint8Array> {
   await ensureEngine();
   if (!wasm) return sstTs.encodeSst(entries);
   const arr = entries.map((e) =>
@@ -84,7 +93,7 @@ export async function encodeSst(entries: readonly SstEntry[]): Promise<Uint8Arra
       ? { kind: "put", key: e.key, value: e.value, seq: e.seq ?? 0 }
       : { kind: "del", key: e.key, seq: e.seq ?? 0 },
   );
-  return wasm.encode_sst_js(arr);
+  return wasm.encode_sst_js(arr, codec === "lz4");
 }
 
 export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
@@ -110,7 +119,8 @@ export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
 }
 
 /**
- * Merge newest-first runs into runs of about `targetBytes`, in key order.
+ * Merge newest-first runs into runs of about `targetBytes`, in key order,
+ * written with `codec` (raw without wasm).
  * With `dropTombstones`, also returns the highest seq among the dropped
  * tombstones, 0 when none was dropped.
  */
@@ -118,10 +128,11 @@ export async function mergeSsts(
   blobsNewestFirst: readonly Uint8Array[],
   dropTombstones: boolean,
   targetBytes = Number.MAX_SAFE_INTEGER,
+  codec: SstCodec = "raw",
 ): Promise<{ readonly ssts: readonly Uint8Array[]; readonly droppedSeq: number }> {
   await ensureEngine();
   if (wasm) {
-    return wasm.merge_ssts_js([...blobsNewestFirst], dropTombstones, targetBytes);
+    return wasm.merge_ssts_js([...blobsNewestFirst], dropTombstones, targetBytes, codec === "lz4");
   }
   let entries = foldEntries(blobsNewestFirst.map((b) => sstTs.decodeSst(b)));
   let droppedSeq = 0;

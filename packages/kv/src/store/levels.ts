@@ -1,5 +1,6 @@
 import { compareBytes } from "../bytes.js";
 import type { KeyRange, RunMeta } from "./generation.js";
+import type { SstCodec } from "./sst.js";
 
 /**
  * Leveled layout. A generation lists the L0 runs newest first, then each
@@ -13,6 +14,15 @@ export const LEVEL_RATIO = 10;
 export const L1_TARGET_BYTES = 40 * 1024 * 1024;
 /** Compaction cuts its output into runs of about this size. */
 export const TARGET_RUN_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Runs from L2 down hold nearly all the data and are rewritten only by
+ * compaction, so they pay LZ4's encode cost off the flush path. L0 and L1
+ * hold the recent writes and stay raw.
+ */
+export function codecForLevel(level: number): SstCodec {
+  return level >= 2 ? "lz4" : "raw";
+}
 
 export type CompactionPlan = {
   /** In manifest order, so newest first. */

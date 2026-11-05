@@ -16,10 +16,11 @@ export function decode_sst_js(buf) {
 /**
  * Encode entries from JS: `[{kind:'put'|'del', key:Uint8Array, value?:Uint8Array, seq?:number}, ...]`
  * @param {Array<any>} entries
+ * @param {boolean} lz4
  * @returns {Uint8Array}
  */
-export function encode_sst_js(entries) {
-    const ret = wasm.encode_sst_js(entries);
+export function encode_sst_js(entries, lz4) {
+    const ret = wasm.encode_sst_js(entries, lz4);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -27,17 +28,38 @@ export function encode_sst_js(entries) {
 }
 
 /**
+ * Unpack one LZ4 block of exactly `size` bytes. Reads call this per block,
+ * so it takes and returns plain bytes.
+ * @param {Uint8Array | number[]} src
+ * @param {number} size
+ * @returns {Uint8Array}
+ */
+export function lz4_decompress_js(src, size) {
+    const val2 = +size;
+    const ptr0 = passArray8ToWasm0(src, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.lz4_decompress_js(ptr0, len0, val2);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
+}
+
+/**
  * Merge newest-first SST blobs into SSTs of about `target_bytes`, in key
- * order. `drop_tombstones` is for a merge nothing older overlaps. Returns
+ * order, with LZ4 blocks when `lz4` is set. `drop_tombstones` is for a merge nothing older overlaps. Returns
  * `{ssts, droppedSeq}`, where droppedSeq is the highest seq of a dropped
  * tombstone, 0 when none.
  * @param {Array<any>} blobs
  * @param {boolean} drop_tombstones
  * @param {number} target_bytes
+ * @param {boolean} lz4
  * @returns {object}
  */
-export function merge_ssts_js(blobs, drop_tombstones, target_bytes) {
-    const ret = wasm.merge_ssts_js(blobs, drop_tombstones, target_bytes);
+export function merge_ssts_js(blobs, drop_tombstones, target_bytes, lz4) {
+    const ret = wasm.merge_ssts_js(blobs, drop_tombstones, target_bytes, lz4);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -174,6 +196,13 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {
