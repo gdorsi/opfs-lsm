@@ -266,6 +266,40 @@ export class IdBWal {
     return { seq, ops: decision.ops, result: decision.result };
   }
 
+  /**
+   * Append `ops` under the key IndexedDB assigns, with no read before the
+   * add. An aborted transaction gives its key back, so committed seqs stay
+   * gapless. Undefined when the assigned key is not past the head, which a
+   * migrated database can hold until one explicit-key append raises its
+   * key generator; the caller then appends with `appendAfter`.
+   */
+  async append(ops: readonly CheckedOp[]): Promise<number | undefined> {
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+    const done = txDone(tx);
+    const meta = tx.objectStore(META_STORE);
+    const head = meta.get(META_HEAD);
+    const add = tx.objectStore(WAL_STORE).add({ ops: encodeOps(ops), at: Date.now() });
+    let seq: number | undefined;
+    let stale = false;
+    add.onsuccess = () => {
+      const key = add.result as number;
+      if (key <= num(head.result)) {
+        stale = true;
+        tx.abort();
+        return;
+      }
+      seq = key;
+      meta.put(key, META_HEAD);
+    };
+    try {
+      await done;
+    } catch (err) {
+      if (stale) return undefined;
+      throw err;
+    }
+    return seq;
+  }
+
   /** The recorded generation. Undefined for a database made before it was recorded. */
   async recordedGeneration(): Promise<number | undefined> {
     const tx = this.db.transaction(META_STORE, "readonly");
