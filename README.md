@@ -1,18 +1,16 @@
-# @opfs-lsm/kv
+# opfs-lsm
 
-`@opfs-lsm/kv` is a key-value store for the browser. You open a database with `openDb`. The promise from `put` or `batch` is the ack. When that promise resolves, the write is durable.
+A simple, fast and flexible k/v storage for the browsers.
 
-## A SharedWorker publishes the sealed files
+`@opfs-lsm/kv` stores byte keys and values. The promise from `put` or `batch` is the ack. When that promise resolves, the write is in the shared IndexedDB write-ahead log (WAL). Sorted SST files in the Origin Private File System (OPFS) hold sealed data after ingest. Every tab of an origin can open the same name. A SharedWorker turns the WAL into SST files.
 
-IndexedDB is the database the browser keeps for this site. This store uses it as a write-ahead log, called a WAL. The WAL is the ordered list of puts and deletes. One WAL exists per `openDb` name, and every tab that opened that name appends to it. IndexedDB assigns the sequence numbers.
+`@opfs-lsm/collections` builds tables and secondary indexes on the same WAL and OPFS path. Its table API is Dexie-shaped: `put`, `get`, `where`, and `orderBy` over JSON rows.
 
-OPFS is the Origin Private File System, a private set of files for this site. The sealed data lives there as SST files. An SST is a sorted string table, an immutable file of keys and values, sorted by key.
+The storage layout, consistency rules, and ingest path are in [docs/design.md](docs/design.md).
 
-A SharedWorker publishes those SST files. A SharedWorker is one script that every tab of this origin can share. It is not a dedicated WebWorker, and it is not a ServiceWorker. Tabs append to the IndexedDB WAL. Each tab keeps a memtable in memory, which holds the WAL records that are not yet in an SST. A get reads that memtable and the SST files, and does not touch IndexedDB. The SharedWorker is not on that path.
+## `@opfs-lsm/kv`
 
-## The ack is an IndexedDB commit
-
-`put` and `batch` ack when the shared IndexedDB WAL commits. The tab that wrote reads its write as soon as the ack resolves. Other tabs receive it over a BroadcastChannel a moment later. Call `db.sync()` when a tab must see every write that another tab acked before the call. Ingest publishes the committed rows to an OPFS SST. Ingest is not required for the ack. Until ingest runs, the rows are in IndexedDB and not yet in an SST.
+### Open a database
 
 ```ts
 import { openDb } from "@opfs-lsm/kv";
@@ -28,70 +26,125 @@ await db.put(key, value);
 const found = await db.get(key);
 ```
 
-In the browser, `workerUrl` is the SharedWorker module. `new URL("@opfs-lsm/kv/shared-worker", import.meta.url)` is the URL this package exports.
+`workerUrl` is the SharedWorker module this package exports. In Node, or under `forceMemory: true`, the call uses an in-memory filesystem and a local ingest host instead.
 
-## A page without OPFS throws
+If the page has no SharedWorker or OPFS, and you pass neither `fs`, `ingest`, nor `forceMemory`, `openDb` throws `StorageUnavailableError`. Pass `allowEphemeral: true` when you want an in-memory database that lasts only for the page.
 
-A browser page opens OPFS when `SharedWorker` and `navigator.storage.getDirectory` both exist. `allowEphemeral: true` does not change that. The call still opens OPFS.
+### `OpenOptions`
 
-If either one is missing, and the call passes neither `fs`, `ingest`, nor `forceMemory`, `openDb` throws `StorageUnavailableError`. The previous behavior opened an in-memory database and dropped every write when the page closed.
+| Option | Role |
+| --- | --- |
+| `name` | Database name. Tabs that share this name share one WAL. |
+| `workerUrl` | SharedWorker script URL for browser default wiring. |
+| `fs` | Filesystem used for SST reads on this tab. Omit to use OPFS in the browser. |
+| `ingest` | Ingest client. Omit when `workerUrl` is set. |
+| `ingestPolicy` | When the memtable flushes to an OPFS run. |
+| `writerId` | Stable writer id for tests. Default is a random UUID. |
+| `forceMemory` | Use MemoryFs even when OPFS is available. |
+| `allowEphemeral` | Use MemoryFs when the page cannot open OPFS. |
 
-Pass `allowEphemeral: true` when that in-memory database is what you want. The data lasts for the page. A reload drops it.
+### `Db`
 
-`forceMemory: true` selects the in-memory database even when OPFS is available. Node, and any other runtime with no `document`, still opens the in-memory database when you omit `fs` and `ingest`.
+Keys and values are `Uint8Array`.
 
-## Batch and warm gets beat Dexie
+| Method | Role |
+| --- | --- |
+| `get(key)` | Point read from the memtable and SST files. Does not touch IndexedDB. |
+| `put(key, value)` | Append one put. Resolves on WAL ack. |
+| `delete(key)` | Append one delete. Resolves on WAL ack. |
+| `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack. |
+| `transaction(body)` | Interactive snapshot plus write buffer with key-based OCC. Concurrent WAL writes on a read or written key throw `ConflictError`. |
+| `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
+| `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). |
+| `rangeFollow(range, follow)` | Scan a range, then point-read follow keys, in one IndexedDB transaction. |
+| `view(body)` | Read-only snapshot pinned to the WAL head and OPFS generation at open. |
+| `changes(listener)` | Subscribe to durable WAL appends and ingest generation bumps. Returns unsubscribe. |
+| `sync()` | Catch up to every write acked before the call from any tab. |
+| `ingest()` | Flush the memtable now and wait for the compaction it starts. |
+| `close()` | Close this tab's handle. |
 
-Dexie is a library that stores rows in IndexedDB. The times below are wall time for 50 operations on one Chrome headless run. The host was darwin on 2026-11-03. The bench used the SharedWorker path and `BENCH_N=50`. Your machine will differ.
+```ts
+await db.batch((tx) => {
+  tx.put(key, value);
+  tx.delete(oldKey);
+});
 
-One batch of 50 puts took 0.4 ms. Dexie `bulkPut` of the same 50 took 1.2 ms.
+await db.transaction(async (tx) => {
+  const cur = await tx.get(key);
+  if (cur === undefined) tx.put(key, value);
+});
 
-50 warm gets took 1.4 ms. Those gets read keys just written, before ingest. 50 Dexie point gets took 3.1 ms.
-
-50 post-ingest gets took 2.1 ms. Ingest had published the keys to an OPFS SST. That time was still under the Dexie point get.
-
-## A solitary put stays near IndexedDB
-
-50 solitary puts took 9.6 ms. 50 Dexie solitary puts took 9.2 ms. A solitary put stays near IDB, because each ack is one IndexedDB commit.
-
-## Collections vs Dexie
-
-`@opfs-lsm/collections` is tables and indexes on top of the same WAL and OPFS path. `pnpm bench:collections` runs the SharedWorker Chrome harness against a `users` table with an `email` index, then Dexie with `id, email`. Collections has no `bulkPut` yet, so the fair write comparison is solitary put. Each collections put also writes index keys in one OCC transaction, so it is heavier than a Dexie row put. Point get and `where("email", …)` are measured before and after ingest. The times below are median of 5 runs with `BENCH_N=50` on darwin.
-
-Uningested rows live in each tab's memtable. Gets, prefix ranges, and `where` read that memtable and the SST readers in memory.
-
-50 collections solitary puts took about 47 ms. 50 Dexie solitary puts took about 8.5 ms.
-
-50 collections gets by id took 3.7 ms (median). 50 Dexie point gets took 3.0 ms.
-
-50 collections `where("email", …)` took 11.5 ms (median). 50 Dexie `where("email").equals(…)` took 3.2 ms. Each collections where is one mem range cursor plus a point get.
-
-50 post-ingest collections `where` took 15.3 ms (median).
-
+await db.sync();
+await db.ingest();
 ```
-pnpm bench:collections
-BENCH_N=50 pnpm bench:collections
+
+Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, the error classes (`StorageUnavailableError`, `ConflictError`, and others), and the SharedWorker entry `@opfs-lsm/kv/shared-worker`.
+
+## `@opfs-lsm/collections`
+
+### Open a collection database
+
+```ts
+import { openCollectionDb } from "@opfs-lsm/collections";
+
+const db = await openCollectionDb({
+  name: "app",
+  workerUrl: new URL("@opfs-lsm/kv/shared-worker", import.meta.url),
+  schema: {
+    tables: [
+      {
+        name: "users",
+        primaryKey: "id",
+        indexes: [
+          { name: "email", path: "email" },
+          { name: "byOrg", path: ["orgId", "createdAt"] },
+        ],
+      },
+    ],
+  },
+});
+
+const users = db.table<{
+  id: string;
+  email: string;
+  orgId: string;
+  createdAt: number;
+}>("users");
+
+await users.put({
+  id: "u1",
+  email: "a@example.com",
+  orgId: "acme",
+  createdAt: Date.now(),
+});
+
+const row = await users.get("u1");
+const byEmail = await users.where("email", "a@example.com");
 ```
+
+`OpenCollectionOptions` is `OpenOptions` from `@opfs-lsm/kv` plus a required `schema`. `CollectionDb` exposes `table(name)`, `ingest()`, `close()`, and the underlying `kv` handle.
+
+### `Table`
+
+Rows are JSON objects. The primary key field defaults to `"id"` and must be a string.
+
+| Method | Role |
+| --- | --- |
+| `get(id)` | Load one row by primary key. |
+| `put(doc)` | Upsert one row and refresh its index keys. |
+| `putMany(docs)` | Upsert many rows in one read+write transaction. Chunk to about 1,000 rows. |
+| `update(id, mutate)` | Read-modify-write one row. Must keep the primary key. |
+| `delete(id)` | Delete one row and its index keys. |
+| `clear()` | Delete every row and index entry in chunks. Returns the row count. |
+| `where(index, value)` | Equality or compound-prefix lookup on a declared index. |
+| `orderBy(index, opts?)` | Walk an index in key order. Optional `from`, `toExclusive`, `limit`. |
+| `page(index, opts)` | One cursor page of an index. Pass `next` from the previous call as `after`. |
+
+An index `path` is a field name, a dot path, or a compound list such as `["orgId", "createdAt"]`. Set `multiEntry: true` to index each element of an array-valued path.
 
 ## Clone and run
 
 `engines.node` in `package.json` is `>=22`. `.nvmrc` pins 24. `packageManager` is `pnpm@10.33.2`.
-
-The wasm files are already in `packages/kv/wasm`. `pnpm test` typechecks with `tsc` and skips `wasm-pack` while `engine_wasm_bg.wasm` and `engine_wasm.js` are present. You need Rust and `wasm-pack` only when those files are missing.
-
-`pnpm bench:browser` starts headless Chrome. On macOS the script uses `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. Otherwise it uses `google-chrome` on `PATH`. Set `CHROME_PATH` when Chrome is somewhere else. The plain command uses the SharedWorker. `BENCH_LOCAL=1` opens the page with `local=1` and uses the in-page engine. The times above used the SharedWorker.
-
-The other benches run from `packages/kv`. Each prints its own rows and checks the results it reads.
-
-| command | what it measures |
-| --- | --- |
-| `pnpm bench:latency` | Each of 100k puts under the default ingest policy, then hit and miss gets across the resulting runs. Prints p50 to p99.9, max, and the count over 1 ms. `BENCH_QUERY=val=100` sets the value size. `BENCH_QUERY=maxWalBytes=1099511627776` keeps the memtable large. |
-| `pnpm bench:floors` | Raw IndexedDB puts at each durability, and OPFS sync-handle appends from a dedicated WebWorker with and without `flush()`. No kv code runs, so this is the floor for a WAL commit. |
-| `pnpm bench:batch` | 1000-key batches as the memtable grows to 130k rows with flushing off. |
-| `pnpm bench:memtable` | The memtable in Node: insert, `advanceTo`, get, a 100-row scan, and a view snapshot, at 10k and 130k rows. |
-| `pnpm bench:wasm` | The wasm codec in Node: encode, decode, and a 4-run merge of runs at the compaction target size. |
-
-The Chrome benches send COOP and COEP headers, so `performance.now()` has 5 µs steps. Compare two builds by running each bench at least 5 times, alternating between them.
 
 ```
 git clone https://github.com/gdorsi/opfs-lsm.git
@@ -104,6 +157,4 @@ pnpm todo:example
 pnpm automerge:example
 ```
 
-`pnpm todo:example` serves a two-window todo list built on `@opfs-lsm/collections` that shares one database name over a SharedWorker. It can seed tens of thousands of random todos, then filter, sort, and page through them without loading the whole range.
-
-`pnpm automerge:example` serves the Automerge todo app at `http://127.0.0.1:4174`. Storage is `@opfs-lsm/kv`. `AUTOMERGE_PORT` sets the port. A second window on the same URL shares that database. `openDb` awaits `sync()` before it resolves, so a cold `loadRange` sees every write acked before that open. A live tab can still miss a write until the BroadcastChannel lands. If a load needs those writes, call `sync()` once on that database before the read.
+`pnpm test` typechecks and runs the unit suites. `pnpm bench:browser` starts headless Chrome against the SharedWorker path. Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`.
