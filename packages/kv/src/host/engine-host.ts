@@ -40,6 +40,13 @@ type IngestWatch = {
 /** The `append` messages tabs post on `layersChannel` (see `DbImpl.broadcast`). */
 type AppendHint = { readonly kind: string; readonly ops?: readonly CheckedOp[] };
 
+/** Background pending-byte read. `rows` stays 0: the host does not list the WAL. */
+export type WatchScan = {
+  ms: number;
+  rows: number;
+  bytes: number;
+};
+
 /**
  * OPFS publisher + ingest owner. Runs in the SharedWorker in production;
  * tests use the same class in-process or behind a MessagePort.
@@ -105,23 +112,32 @@ export class EngineHost {
 
   /**
    * Ingest `name` on the host's own once its WAL passes `maxWalBytes`, with
-   * no tab asking. Measures the WAL already waiting in the background and
-   * ingests it if needed, so a reopened database catches up.
+   * no tab asking. Reads the byte counter in the background and ingests
+   * when a reopened database is already over the limit.
    */
-  watch(name: string, maxWalBytes: number): void {
+  watch(name: string, maxWalBytes: number, onScan?: (scan: WatchScan) => void): void {
     const dbName = checkDbName(name);
     const watch = this.watches.get(dbName) ?? this.startWatch(dbName, maxWalBytes);
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, maxWalBytes);
     watch.triggerAt = watch.maxWalBytes;
-    void this.withWal(dbName, (wal) => wal.listUningested()).then(
-      (records) => {
-        const waiting = records.reduce((n, r) => n + opsBytes(r.ops), 0);
+    const scanAt = onScan ? performance.now() : 0;
+    void this.withWal(dbName, (wal) => wal.uningestedBytes()).then(
+      (waiting) => {
+        if (onScan) {
+          onScan({
+            ms: performance.now() - scanAt,
+            rows: 0,
+            bytes: waiting,
+          });
+        }
         watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
         this.maybeIngest(dbName, watch);
       },
-      (err: unknown) =>
-        console.error(`opfs-lsm: reading the WAL of ${dbName} failed`, err),
+      (err: unknown) => {
+        if (isClosedDatabase(err)) return;
+        console.error(`opfs-lsm: reading the WAL of ${dbName} failed`, err);
+      },
     );
   }
 
@@ -253,6 +269,15 @@ function announceGeneration(dbName: DbName): void {
   bus.close();
 }
 
+function isClosedDatabase(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "name" in err &&
+    (err as { name: string }).name === "InvalidStateError"
+  );
+}
+
 function withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
   const locks = (globalThis as { navigator?: { locks?: LockManager } })
     .navigator?.locks;
@@ -284,7 +309,20 @@ export function attachEngineHostPort(
           return;
         }
         case "watch":
-          host.watch(msg.name, msg.maxWalBytes);
+          host.watch(
+            msg.name,
+            msg.maxWalBytes,
+            msg.trace
+              ? (scan) =>
+                  reply({
+                    type: "watch-trace",
+                    id: msg.id,
+                    ms: scan.ms,
+                    rows: scan.rows,
+                    bytes: scan.bytes,
+                  })
+              : undefined,
+          );
           reply({ type: "watch-ok", id: msg.id });
           return;
         case "unwatch":
@@ -309,7 +347,10 @@ export function attachEngineHostPort(
 }
 
 /** Tab-side client over a MessagePort. */
-export function createPortIngestClient(port: MessagePort): IngestClient {
+export function createPortIngestClient(
+  port: MessagePort,
+  onWatchScan?: (scan: WatchScan) => void,
+): IngestClient {
   let nextId = 1;
   const pending = new Map<
     number,
@@ -318,6 +359,10 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
 
   const onMessage = (ev: MessageEvent<HostToClient>) => {
     const msg = ev.data;
+    if (msg.type === "watch-trace") {
+      onWatchScan?.(msg);
+      return;
+    }
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
@@ -340,7 +385,13 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
     async watch(name, policy) {
-      await request({ type: "watch", id: nextId++, name, maxWalBytes: policy.maxWalBytes });
+      await request({
+        type: "watch",
+        id: nextId++,
+        name,
+        maxWalBytes: policy.maxWalBytes,
+        ...(onWatchScan ? { trace: true } : {}),
+      });
     },
     unwatch(name) {
       const msg: ClientToHost = { type: "unwatch", name };

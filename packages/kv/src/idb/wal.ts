@@ -1,4 +1,4 @@
-import type { CheckedOp, DbName } from "../check.js";
+import { opsBytes, type CheckedOp, type DbName } from "../check.js";
 import { CommitError } from "../errors.js";
 import type { WalRecord } from "../store/memtable.js";
 
@@ -10,7 +10,13 @@ const META_HEAD = "head";
 const META_INGESTED = "ingestedThrough";
 /** The OPFS generation whose runs hold every seq <= ingestedThrough. */
 const META_GENERATION = "generation";
+const META_PENDING = "pendingBytes";
 const IDB_VERSION = 1;
+
+export type WalReadProfile = {
+  ms: number;
+  rows: number;
+};
 
 /** What a tab needs to bring its memtable up to the WAL head. */
 export type WalTail = {
@@ -96,27 +102,25 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
-function readRecords(
+/** Keys and values in one shot. A per-row cursor clones each value on its own turn. */
+async function readRecords(
   wal: IDBObjectStore,
   range: IDBKeyRange | null,
 ): Promise<WalRecord[]> {
+  const [keys, values] = await Promise.all([
+    reqToPromise(wal.getAllKeys(range)),
+    reqToPromise(wal.getAll(range)),
+  ]);
+  if (keys.length !== values.length) {
+    throw new CommitError("wal keys and values differ");
+  }
   const out: WalRecord[] = [];
-  return new Promise((resolve, reject) => {
-    const req = wal.openCursor(range);
-    req.onerror = () => reject(req.error ?? new CommitError("cursor failed"));
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) {
-        resolve(out);
-        return;
-      }
-      out.push({
-        seq: cursor.key as number,
-        ops: decodeOps(cursor.value),
-      });
-      cursor.continue();
-    };
-  });
+  for (let i = 0; i < keys.length; i++) {
+    const seq = keys[i];
+    if (typeof seq !== "number") throw new CommitError("wal key is not a seq");
+    out.push({ seq, ops: decodeOps(values[i]) });
+  }
+  return out;
 }
 
 async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
@@ -155,11 +159,16 @@ export class IdBWal {
   }
 
   /** The tail after `since`, from one readonly transaction. */
-  async tail(since: number): Promise<WalTail> {
+  async tail(since: number, profile?: WalReadProfile): Promise<WalTail> {
+    const started = profile ? performance.now() : 0;
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const done = txDone(tx);
     const tail = await readTail(tx, since);
     await done;
+    if (profile) {
+      profile.ms = performance.now() - started;
+      profile.rows = tail.records.length;
+    }
     return tail;
   }
 
@@ -184,7 +193,9 @@ export class IdBWal {
   > {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
-    const tail = await readTail(tx, since);
+    const meta = tx.objectStore(META_STORE);
+    const pendingReq = reqToPromise(meta.get(META_PENDING));
+    const [tail, pendingRaw] = await Promise.all([readTail(tx, since), pendingReq]);
     let decision: ReturnType<typeof decide>;
     try {
       decision = decide(tail);
@@ -198,11 +209,9 @@ export class IdBWal {
       return decision && { seq: undefined, ops: [], result: decision.result };
     }
     const seq = tail.head + 1;
-    tx.objectStore(WAL_STORE).add(
-      encodeOps(decision.ops),
-      seq,
-    );
-    tx.objectStore(META_STORE).put(seq, META_HEAD);
+    tx.objectStore(WAL_STORE).add(encodeOps(decision.ops), seq);
+    meta.put(seq, META_HEAD);
+    meta.put(num(pendingRaw) + opsBytes(decision.ops), META_PENDING);
     await done;
     return { seq, ops: decision.ops, result: decision.result };
   }
@@ -219,6 +228,8 @@ export class IdBWal {
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
     const head = meta.get(META_HEAD);
+    const pending = meta.get(META_PENDING);
+    const bytes = opsBytes(ops);
     const add = tx.objectStore(WAL_STORE).add(encodeOps(ops));
     let seq: number | undefined;
     let stale = false;
@@ -231,6 +242,7 @@ export class IdBWal {
       }
       seq = key;
       meta.put(key, META_HEAD);
+      meta.put(num(pending.result) + bytes, META_PENDING);
     };
     try {
       await done;
@@ -267,6 +279,38 @@ export class IdBWal {
     return num(raw);
   }
 
+  /** Bytes still in the WAL. A database with no counter is scanned once and stored. */
+  async uningestedBytes(): Promise<number> {
+    const known = await this.pendingBytes();
+    if (known !== undefined) return known;
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+    const done = txDone(tx);
+    const meta = tx.objectStore(META_STORE);
+    const [raw, through, records] = await Promise.all([
+      reqToPromise(meta.get(META_PENDING)),
+      reqToPromise(meta.get(META_INGESTED)).then(num),
+      readRecords(tx.objectStore(WAL_STORE), null),
+    ]);
+    if (typeof raw === "number") {
+      await done;
+      return raw;
+    }
+    let bytes = 0;
+    for (const record of records) {
+      if (record.seq > through) bytes += opsBytes(record.ops);
+    }
+    meta.put(bytes, META_PENDING);
+    await done;
+    return bytes;
+  }
+
+  private async pendingBytes(): Promise<number | undefined> {
+    const tx = this.db.transaction(META_STORE, "readonly");
+    const raw = await reqToPromise(tx.objectStore(META_STORE).get(META_PENDING));
+    await txDone(tx);
+    return typeof raw === "number" ? raw : undefined;
+  }
+
   /** All records with seq > ingestedThrough, ascending. */
   async listUningested(): Promise<WalRecord[]> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
@@ -287,18 +331,24 @@ export class IdBWal {
    * transaction, and delete those records. A tab that has not read them
    * jumps to the SST for that generation.
    */
-  async advanceIngested(through: number, generation: number): Promise<void> {
+  async advanceIngested(
+    through: number,
+    generation: number,
+    foldedBytes: number,
+  ): Promise<void> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
-    const [existing, prevGen] = await Promise.all([
+    const [existing, prevGen, pending] = await Promise.all([
       reqToPromise(meta.get(META_INGESTED)).then(num),
       reqToPromise(meta.get(META_GENERATION)).then(num),
+      reqToPromise(meta.get(META_PENDING)).then(num),
     ]);
     if (through > existing) {
       tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(through));
       meta.put(through, META_INGESTED);
       meta.put(Math.max(prevGen, generation), META_GENERATION);
+      meta.put(Math.max(0, pending - foldedBytes), META_PENDING);
     }
     await done;
   }
