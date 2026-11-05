@@ -96,7 +96,7 @@ function migrate(tx: IDBTransaction, oldVersion: number): void {
           cursor.continue();
           return;
         }
-        if (ops.length > 0) wal.put({ ops, at: 0 }, through + 1);
+        if (ops.length > 0) wal.put({ ops }, through + 1);
         meta.put(ops.length > 0 ? through + 1 : through, META_HEAD);
         db.deleteObjectStore(LEGACY_MEM_STORE);
       };
@@ -258,7 +258,7 @@ export class IdBWal {
     }
     const seq = tail.head + 1;
     tx.objectStore(WAL_STORE).add(
-      { ops: encodeOps(decision.ops), at: Date.now() },
+      { ops: encodeOps(decision.ops) },
       seq,
     );
     tx.objectStore(META_STORE).put(seq, META_HEAD);
@@ -278,7 +278,7 @@ export class IdBWal {
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
     const head = meta.get(META_HEAD);
-    const add = tx.objectStore(WAL_STORE).add({ ops: encodeOps(ops), at: Date.now() });
+    const add = tx.objectStore(WAL_STORE).add({ ops: encodeOps(ops) });
     let seq: number | undefined;
     let stale = false;
     add.onsuccess = () => {

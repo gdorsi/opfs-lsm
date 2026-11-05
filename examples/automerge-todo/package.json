@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
     "test": "tsx --test src/storage.test.ts",
+    "bench": "pnpm --filter @opfs-lsm/kv build && tsx scripts/bench.ts",
     "preview": "vite preview"
   },
   "dependencies": {
