@@ -65,7 +65,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | ViewPin | `ViewSnapshotImpl`, `openViewSnapshot` |
 | CompactPreserve | `SstLayer.get` / `asOverlay`, `mergeSsts` order |
 
-**Sync commit:** `c4fba9055823ac7c304c5467b03e5dcdd338a428` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
+**Sync commit:** `6d9f543dcf288b5e1cf6618b2e0e18563fe5ef84` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
 ## Intentional product change
 
