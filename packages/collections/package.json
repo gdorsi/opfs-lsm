@@ -15,7 +15,8 @@
     "test": "vitest run",
     "bench": "tsx scripts/bench-browser.ts",
     "bench:browser": "tsx scripts/bench-browser.ts",
-    "bench:search": "tsx scripts/bench-search.ts"
+    "bench:search": "tsx scripts/bench-search.ts",
+    "bench:index-runs": "tsx scripts/bench-index-runs.ts"
   },
   "license": "MIT",
   "dependencies": {

@@ -16,9 +16,11 @@ export const L1_TARGET_BYTES = 40 * 1024 * 1024;
 export const TARGET_RUN_BYTES = 4 * 1024 * 1024;
 
 /**
- * Runs from L2 down hold nearly all the data and are rewritten only by
- * compaction, so they pay LZ4's encode cost off the flush path. L0 and L1
- * hold the recent writes and stay raw.
+ * L0 and L1 hold the recent writes and stay raw to keep reading them fast.
+ * An LZ4 block costs a decompress on every read. A get pays about 70% more
+ * and a 256-row page about 25% more. Runs from L2 down hold nearly all the
+ * data, so LZ4 saves the most memory there. Encode cost is not the reason.
+ * A 4.3 MB flush run encodes in about the same time raw or LZ4.
  */
 export function codecForLevel(level: number): SstCodec {
   return level >= 2 ? "lz4" : "raw";

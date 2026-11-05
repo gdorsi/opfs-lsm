@@ -2,8 +2,8 @@ import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import {
   entryCursor,
-  lowerBoundKeys,
   type LayerCursor,
+  type LayerEntry,
   type ScanBounds,
 } from "./cursor.js";
 import {
@@ -27,6 +27,8 @@ const VERSION_V4 = 4;
 const VERSION_V5 = 5;
 /** v5 with a codec field in the footer. */
 const VERSION_V6 = 6;
+/** v6 with each block's common key prefix stored once and varint record lengths. */
+const VERSION_V7 = 7;
 const FOOTER_V5 = 40;
 const FOOTER_BYTES = 44;
 
@@ -38,21 +40,21 @@ export type SstCodec = "raw" | "lz4";
 const CODECS: readonly SstCodec[] = ["raw", "lz4"];
 
 function isBlockVersion(version: number): boolean {
-  return version >= VERSION_V2 && version <= VERSION_V6;
+  return version >= VERSION_V2 && version <= VERSION_V7;
 }
 
 /**
- * v5 and v6 keep their magic and version in the last 8 bytes. Older
+ * v5 to v7 keep their magic and version in the last 8 bytes. Older
  * versions keep them in the first 8. v2 to v4 end with a block length,
- * which is 4 or at least 9, then the CRC. A v1 run passes for v5 or v6 only
- * if its CRC equals the magic.
+ * which is 4 or at least 9, then the CRC. A v1 run passes for v5 to v7
+ * only if its CRC equals the magic.
  */
 function sstVersion(buf: Uint8Array, view: DataView): number {
   const n = buf.byteLength;
   if (n >= FOOTER_V5 && view.getUint32(n - 4, true) === SST_MAGIC) {
     const version = view.getUint32(n - 8, true);
-    const footer = version === VERSION_V6 ? FOOTER_BYTES : FOOTER_V5;
-    if ((version === VERSION_V5 || version === VERSION_V6) && n >= footer) return version;
+    const footer = version >= VERSION_V6 ? FOOTER_BYTES : FOOTER_V5;
+    if (version >= VERSION_V5 && version <= VERSION_V7 && n >= footer) return version;
   }
   const magic = view.getUint32(0, true);
   if (magic !== SST_MAGIC) {
@@ -65,6 +67,22 @@ const TAG_DEL = 2;
 
 /** Target encoded size per data block (v2). */
 export const SST_BLOCK_TARGET = 4 * 1024;
+
+/**
+ * A v7 block stores the offset of every `OFFSET_STRIDE`th record after
+ * the first, so a get binary-searches them and walks at most
+ * `OFFSET_STRIDE - 1` records. `crates/engine-core/src/sst.rs` uses the
+ * same stride.
+ */
+export const OFFSET_STRIDE = 4;
+
+/**
+ * Bytes of a v7 block's offset table: a u16 per sampled record. Only a
+ * block of one record can pass the u16 range, and it has no table.
+ */
+function offsetTableBytes(count: number): number {
+  return count > 1 ? 2 * Math.floor((count - 1) / OFFSET_STRIDE) : 0;
+}
 
 /** `seq` is the WAL seq that wrote the entry. Runs older than v3 read as 0. */
 export type SstEntry =
@@ -83,105 +101,312 @@ type BlockIndexEntry = {
   length: number;
 };
 
+/**
+ * An entry's size as a v6 record. v7 records are never larger, so runs are
+ * cut by it without encoding them.
+ */
 export function entryRecordSize(e: SstEntry): number {
   let n = 1 + 8 + 4 + e.key.byteLength;
   if (e.kind === "put") n += 4 + e.value.byteLength;
   return n;
 }
 
-function writeRecords(
-  out: Uint8Array,
-  view: DataView,
-  o: number,
-  entries: readonly SstEntry[],
-): number {
-  for (const e of entries) {
-    out[o++] = e.kind === "put" ? TAG_PUT : TAG_DEL;
-    view.setBigUint64(o, BigInt(e.seq ?? 0), true);
-    o += 8;
-    view.setUint32(o, e.key.byteLength, true);
-    o += 4;
-    out.set(e.key, o);
-    o += e.key.byteLength;
-    if (e.kind === "put") {
-      view.setUint32(o, e.value.byteLength, true);
-      o += 4;
-      out.set(e.value, o);
-      o += e.value.byteLength;
+function varintLen(v: number): number {
+  let n = 1;
+  while (v >= 0x80) {
+    v = Math.floor(v / 0x80);
+    n++;
+  }
+  return n;
+}
+
+function writeVarint(out: Uint8Array, o: number, v: number): number {
+  while (v >= 0x80) {
+    out[o++] = (v & 0x7f) | 0x80;
+    v = Math.floor(v / 0x80);
+  }
+  out[o++] = v;
+  return o;
+}
+
+function commonPrefix(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.byteLength, b.byteLength);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i;
+}
+
+/**
+ * A v7 record's bytes besides its key suffix. The suffix length varint is
+ * sized from the whole key, an upper bound that stays fixed as the
+ * block prefix shrinks, so a block is sized from running sums.
+ * `crates/engine-core/src/sst.rs` sizes blocks the same way.
+ */
+function recordOverhead(e: SstEntry): number {
+  const n = 1 + 8 + varintLen(e.key.byteLength);
+  return e.kind === "put" ? n + varintLen(e.value.byteLength) + e.value.byteLength : n;
+}
+
+/**
+ * Cut sorted entries into blocks of at most `target` v7 bytes, or one
+ * entry. A block's prefix shrinks as keys join it, so its size is
+ * recomputed from running key and overhead sums at each entry.
+ */
+function splitBlocks(sorted: readonly SstEntry[], target: number): SstEntry[][] {
+  const blocks: SstEntry[][] = [];
+  let start = 0;
+  let keys = 0;
+  let overhead = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const e = sorted[i]!;
+    if (i > start) {
+      const p = commonPrefix(sorted[start]!.key, e.key);
+      const n = i + 1 - start;
+      const size =
+        4 + varintLen(p) + p + overhead + recordOverhead(e) + keys + e.key.byteLength - n * p + offsetTableBytes(n);
+      if (size > target) {
+        blocks.push(sorted.slice(start, i));
+        start = i;
+        keys = 0;
+        overhead = 0;
+      }
     }
+    keys += e.key.byteLength;
+    overhead += recordOverhead(e);
+  }
+  if (start < sorted.length || blocks.length === 0) blocks.push(sorted.slice(start));
+  return blocks;
+}
+
+/**
+ * One v7 data block before compression:
+ *   u32 count | varint prefixLen | prefix | count records | u16 offsets
+ * The prefix is the longest one shared by every key in the block, which
+ * for sorted keys is the first and last key's. `offsets[j]` is where
+ * record `(j + 1) * OFFSET_STRIDE` starts, from the start of the block.
+ */
+function encodeBlock(block: readonly SstEntry[]): Uint8Array {
+  const first = block[0]?.key;
+  const p = first ? commonPrefix(first, block[block.length - 1]!.key) : 0;
+  let size = 4 + varintLen(p) + p + offsetTableBytes(block.length);
+  for (const e of block) {
+    const s = e.key.byteLength - p;
+    size += 1 + 8 + varintLen(s) + s;
+    if (e.kind === "put") size += varintLen(e.value.byteLength) + e.value.byteLength;
+  }
+  const out = new Uint8Array(size);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, block.length, true);
+  let o = writeVarint(out, 4, p);
+  if (first) out.set(first.subarray(0, p), o);
+  o += p;
+  let table = size - offsetTableBytes(block.length);
+  for (let i = 0; i < block.length; i++) {
+    if (i > 0 && i % OFFSET_STRIDE === 0) {
+      view.setUint16(table, o, true);
+      table += 2;
+    }
+    o = writeRecord(out, view, o, block[i]!, p);
+  }
+  return out;
+}
+
+/** u8 tag | u64 seq | varint suffixLen | suffix | (put) varint valLen | value */
+function writeRecord(out: Uint8Array, view: DataView, o: number, e: SstEntry, prefixLen: number): number {
+  out[o++] = e.kind === "put" ? TAG_PUT : TAG_DEL;
+  view.setBigUint64(o, BigInt(e.seq ?? 0), true);
+  o = writeVarint(out, o + 8, e.key.byteLength - prefixLen);
+  out.set(e.key.subarray(prefixLen), o);
+  o += e.key.byteLength - prefixLen;
+  if (e.kind === "put") {
+    o = writeVarint(out, o, e.value.byteLength);
+    out.set(e.value, o);
+    o += e.value.byteLength;
   }
   return o;
 }
 
-function readRecords(
-  buf: Uint8Array,
-  view: DataView,
-  start: number,
-  end: number,
-  count: number,
-  withSeq: boolean,
-): SstEntry[] {
-  const out: SstEntry[] = [];
-  let o = start;
-  for (let i = 0; i < count; i++) {
-    if (o >= end) throw new CorruptDatabaseError("sst truncated");
-    const tag = buf[o++]!;
-    let seq = 0;
-    if (withSeq) {
-      seq = Number(view.getBigUint64(o, true));
-      o += 8;
-    }
-    const keyLen = view.getUint32(o, true);
-    o += 4;
-    if (o + keyLen > end) throw new CorruptDatabaseError("sst key OOB");
-    const key = buf.slice(o, o + keyLen);
-    o += keyLen;
-    if (tag === TAG_PUT) {
-      const valLen = view.getUint32(o, true);
-      o += 4;
-      if (o + valLen > end) throw new CorruptDatabaseError("sst value OOB");
-      const value = buf.slice(o, o + valLen);
-      o += valLen;
-      out.push({ kind: "put", key, value, seq });
-    } else if (tag === TAG_DEL) {
-      out.push({ kind: "del", key, seq });
-    } else {
-      throw new CorruptDatabaseError(`bad sst tag ${tag}`);
-    }
-  }
-  if (o !== end) throw new CorruptDatabaseError("sst block trailing");
-  return out;
+/**
+ * How a version lays out its records. v1 and v2 have no seq. v3 to v6 have
+ * a u64 seq and u32 lengths. v7 has a u64 seq, varint lengths, and a key
+ * prefix shared by the block, so a record holds only the key's suffix.
+ */
+type RecordFormat = { readonly seq: boolean; readonly prefixed: boolean };
+const FORMAT_V1: RecordFormat = { seq: false, prefixed: false };
+const FORMAT_V3: RecordFormat = { seq: true, prefixed: false };
+const FORMAT_V7: RecordFormat = { seq: true, prefixed: true };
+
+function recordFormat(version: number): RecordFormat {
+  if (version >= VERSION_V7) return FORMAT_V7;
+  return version >= VERSION_V3 ? FORMAT_V3 : FORMAT_V1;
 }
 
 /**
- * Encode SST v6 with raw blocks. LZ4 blocks come only from the wasm encoder.
- *   data blocks (each: u32 count | records of u8 tag | u64 seq | key | value?)
+ * Walks the records of one block in place. `next` reads the record at `o`
+ * into the fields, so a reader copies out only what it keeps. Keys are the
+ * block's `prefixLen` bytes at `prefixAt`, then the record's suffix.
+ */
+class RecordWalker {
+  tag = 0;
+  seqAt = 0;
+  keyAt = 0;
+  keyLen = 0;
+  valAt = 0;
+  valLen = 0;
+  private readonly seqBytes: number;
+  private readonly varint: boolean;
+  private prefix: Uint8Array | undefined;
+
+  constructor(
+    readonly fmt: RecordFormat,
+    readonly buf: Uint8Array,
+    readonly view: DataView,
+    public o: number,
+    readonly end: number,
+    readonly count: number,
+    readonly prefixAt: number,
+    readonly prefixLen: number,
+    readonly start: number,
+  ) {
+    this.seqBytes = fmt.seq ? 8 : 0;
+    this.varint = fmt.prefixed;
+  }
+
+  /**
+   * One unpacked block: u32 count, then for v7 a varint prefix length and
+   * the prefix. A v7 walker's `end` is where the offset table starts.
+   */
+  static ofBlock(b: BlockBytes, fmt: RecordFormat): RecordWalker {
+    const count = b.view.getUint32(b.start, true);
+    const w = new RecordWalker(fmt, b.buf, b.view, b.start + 4, b.end, count, 0, 0, b.start);
+    if (!fmt.prefixed) return w;
+    const p = w.len();
+    const end = b.end - offsetTableBytes(count);
+    if (w.o + p > end) throw new CorruptDatabaseError("sst prefix OOB");
+    return new RecordWalker(fmt, b.buf, b.view, w.o + p, end, count, w.o, p, b.start);
+  }
+
+  /** Where record `j * OFFSET_STRIDE` starts, for `j >= 1`, from a v7 block's offset table. */
+  sampleAt(j: number): number {
+    const o = this.start + this.view.getUint16(this.end + 2 * (j - 1), true);
+    if (o <= this.prefixAt + this.prefixLen || o >= this.end) throw new CorruptDatabaseError("sst offset OOB");
+    return o;
+  }
+
+  /** Reads the record at `o`. Gets walk a block with this, so lengths under 128 skip `len`. */
+  next(): void {
+    const buf = this.buf;
+    let o = this.o;
+    if (o >= this.end) throw new CorruptDatabaseError("sst truncated");
+    const tag = buf[o]!;
+    this.seqAt = o + 1;
+    o += 1 + this.seqBytes;
+    let n = buf[o]!;
+    if (this.varint && n < 0x80) o++;
+    else {
+      this.o = o;
+      n = this.len();
+      o = this.o;
+    }
+    this.keyAt = o;
+    this.keyLen = n;
+    o += n;
+    if (tag === TAG_PUT) {
+      n = buf[o]!;
+      if (this.varint && n < 0x80) o++;
+      else {
+        this.o = o;
+        n = this.len();
+        o = this.o;
+      }
+      this.valAt = o;
+      this.valLen = n;
+      o += n;
+    } else if (tag === TAG_DEL) {
+      this.valLen = 0;
+    } else {
+      throw new CorruptDatabaseError(`bad sst tag ${tag}`);
+    }
+    if (o > this.end) throw new CorruptDatabaseError("sst record OOB");
+    this.tag = tag;
+    this.o = o;
+  }
+
+  seq(): number {
+    return this.seqBytes ? Number(this.view.getBigUint64(this.seqAt, true)) : 0;
+  }
+
+  key(): Uint8Array {
+    const { buf, prefixLen, keyAt, keyLen } = this;
+    if (prefixLen === 0) return buf.slice(keyAt, keyAt + keyLen);
+    // The record's own bytes always sit before its suffix, so one slice
+    // copies the suffix at the right place, then the prefix overwrites the
+    // head. Two block copies beat a byte loop and a fresh subarray per key.
+    const k = buf.slice(keyAt - prefixLen, keyAt + keyLen);
+    k.set((this.prefix ??= buf.subarray(this.prefixAt, this.prefixAt + prefixLen)));
+    return k;
+  }
+
+  value(): Uint8Array {
+    return this.buf.slice(this.valAt, this.valAt + this.valLen);
+  }
+
+  entry(): SstEntry {
+    const key = this.key();
+    const seq = this.seq();
+    return this.tag === TAG_PUT ? { kind: "put", key, value: this.value(), seq } : { kind: "del", key, seq };
+  }
+
+  /** Every remaining record, checking the block holds nothing after them. */
+  entries(): SstEntry[] {
+    const out: SstEntry[] = new Array(this.count);
+    for (let i = 0; i < this.count; i++) {
+      this.next();
+      out[i] = this.entry();
+    }
+    if (this.o !== this.end) throw new CorruptDatabaseError("sst block trailing");
+    return out;
+  }
+
+  private len(): number {
+    const { buf, end } = this;
+    if (!this.varint) {
+      if (this.o + 4 > end) throw new CorruptDatabaseError("sst truncated");
+      const v = this.view.getUint32(this.o, true);
+      this.o += 4;
+      return v;
+    }
+    let v = 0;
+    for (let shift = 0; shift < 35; shift += 7) {
+      if (this.o >= end) throw new CorruptDatabaseError("sst truncated");
+      const b = buf[this.o++]!;
+      v += (b & 0x7f) * 2 ** shift;
+      if (b < 0x80) {
+        if (v > 0xffffffff) break;
+        return v;
+      }
+    }
+    throw new CorruptDatabaseError("sst bad varint");
+  }
+}
+
+/**
+ * Encode SST v7 with raw blocks. LZ4 blocks come only from the wasm encoder.
+ *   data blocks (see `encodeBlock`)
  *   bloom bits
  *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
  *   footer, 44 bytes:
  *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
  *     u32 bloomHashCount | u32 indexOffset | u32 indexLen | u32 codec
- *     u32 crc32 of every byte before it | u32 version=6 | u32 magic
+ *     u32 crc32 of every byte before it | u32 version=7 | u32 magic
  */
 export function encodeSst(
   entries: readonly SstEntry[],
   blockTarget = SST_BLOCK_TARGET,
 ): Uint8Array {
+  if (blockTarget > 0xffff) throw new RangeError("a block's offsets are u16, so its target must fit one");
   const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
-  const blocks: SstEntry[][] = [];
-  let cur: SstEntry[] = [];
-  let curSize = 4; // block count header
-  for (const e of sorted) {
-    const need = entryRecordSize(e);
-    if (cur.length > 0 && curSize + need > blockTarget) {
-      blocks.push(cur);
-      cur = [];
-      curSize = 4;
-    }
-    cur.push(e);
-    curSize += need;
-  }
-  if (cur.length > 0 || blocks.length === 0) blocks.push(cur);
+  const blocks = splitBlocks(sorted, blockTarget);
 
   const bloom = createBloom(Math.max(1, sorted.length));
   for (const e of sorted) bloomAdd(bloom, e.key);
@@ -190,19 +415,15 @@ export function encodeSst(
   const index: BlockIndexEntry[] = [];
   let dataLen = 0;
   for (const block of blocks) {
-    const size = 4 + block.reduce((n, e) => n + entryRecordSize(e), 0);
-    const blob = new Uint8Array(size);
-    const view = new DataView(blob.buffer);
-    view.setUint32(0, block.length, true);
-    writeRecords(blob, view, 4, block);
+    const blob = encodeBlock(block);
     index.push({
       firstKey: block[0]?.key ?? new Uint8Array(0),
       lastKey: block[block.length - 1]?.key ?? new Uint8Array(0),
       offset: dataLen,
-      length: size,
+      length: blob.byteLength,
     });
     blockBlobs.push(blob);
-    dataLen += size;
+    dataLen += blob.byteLength;
   }
 
   let indexSize = 0;
@@ -250,14 +471,13 @@ export function encodeSst(
     o += 4;
   }
   view.setUint32(o, crc32(out.subarray(0, o)), true);
-  view.setUint32(o + 4, VERSION_V6, true);
+  view.setUint32(o + 4, VERSION_V7, true);
   view.setUint32(o + 8, SST_MAGIC, true);
   return out;
 }
 
 function decodeSstV1(buf: Uint8Array, view: DataView, crcOff: number): SstEntry[] {
-  const count = view.getUint32(8, true);
-  return readRecords(buf, view, 12, crcOff, count, false);
+  return new RecordWalker(FORMAT_V1, buf, view, 12, crcOff, view.getUint32(8, true), 0, 0, 0).entries();
 }
 
 type BlockLayout = {
@@ -304,10 +524,10 @@ function parseBlockLayout(buf: Uint8Array, version: number): BlockLayout {
   };
 }
 
-/** v5 and v6 share a footer. v6 adds the codec after the index length. */
+/** v5 to v7 share a footer. v6 adds the codec after the index length. */
 function parseFooterLayout(buf: Uint8Array, version: number): BlockLayout {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const fields = version === VERSION_V6 ? 8 : 7;
+  const fields = version >= VERSION_V6 ? 8 : 7;
   const footer = buf.byteLength - (fields + 3) * 4;
   const field = (i: number) => view.getUint32(footer + 4 * i, true);
   const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen] =
@@ -378,61 +598,74 @@ function blockBytes(
   return { buf: block, view: new DataView(block.buffer), start: 0, end: block.byteLength };
 }
 
-function decodeBlock(b: BlockBytes, withSeq: boolean): SstEntry[] {
-  return readRecords(b.buf, b.view, b.start + 4, b.end, b.view.getUint32(b.start, true), withSeq);
-}
-
-/** `buf[at, at + len)` compared with `key`, like `compareBytes`. */
-function compareAt(buf: Uint8Array, at: number, len: number, key: Uint8Array): number {
-  const n = Math.min(len, key.byteLength);
+/** `buf[at, at + len)` compared with `key` from `from` on, like `compareBytes`. */
+function compareAt(buf: Uint8Array, at: number, len: number, key: Uint8Array, from: number): number {
+  const keyLen = key.byteLength - from;
+  const n = Math.min(len, keyLen);
   for (let i = 0; i < n; i++) {
-    const d = buf[at + i]! - key[i]!;
+    const d = buf[at + i]! - key[from + i]!;
     if (d !== 0) return d;
   }
-  return len - key.byteLength;
+  return len - keyLen;
 }
 
 /**
- * The record for `key` in one block, or undefined. Walks the records in
- * place and copies out only the match, so a get doesn't build every record
- * in the block.
+ * Moves `w` to the first record whose suffix is not below `key` from
+ * `w.prefixLen` on, and returns how many records are left from there.
+ * A v7 block binary-searches its sampled records, then walks at most
+ * `OFFSET_STRIDE` records. Older blocks walk from the start.
  */
-function findInBlock(b: BlockBytes, key: Uint8Array, withSeq: boolean): SstEntry | undefined {
-  const { buf, view, end } = b;
-  const count = view.getUint32(b.start, true);
-  let o = b.start + 4;
-  for (let i = 0; i < count; i++) {
-    if (o >= end) throw new CorruptDatabaseError("sst truncated");
-    const tag = buf[o++]!;
-    const seqAt = o;
-    if (withSeq) o += 8;
-    if (o + 4 > end) throw new CorruptDatabaseError("sst truncated");
-    const keyLen = view.getUint32(o, true);
-    o += 4;
-    if (o + keyLen > end) throw new CorruptDatabaseError("sst key OOB");
-    const keyAt = o;
-    const c = compareAt(buf, keyAt, keyLen, key);
-    o += keyLen;
-    let valLen = 0;
-    if (tag === TAG_PUT) {
-      if (o + 4 > end) throw new CorruptDatabaseError("sst truncated");
-      valLen = view.getUint32(o, true);
-      o += 4;
-      if (o + valLen > end) throw new CorruptDatabaseError("sst value OOB");
-    } else if (tag !== TAG_DEL) {
-      throw new CorruptDatabaseError(`bad sst tag ${tag}`);
+function seekSuffix(w: RecordWalker, key: Uint8Array): number {
+  const p = w.prefixLen;
+  let i = 0;
+  if (w.fmt.prefixed && w.count > OFFSET_STRIDE) {
+    const first = w.o;
+    let lo = 0;
+    let hi = ((w.count - 1) / OFFSET_STRIDE) | 0;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      w.o = w.sampleAt(mid);
+      w.next();
+      if (compareAt(w.buf, w.keyAt, w.keyLen, key, p) < 0) lo = mid;
+      else hi = mid - 1;
     }
-    if (c > 0) return undefined;
-    if (c === 0) {
-      const seq = withSeq ? Number(view.getBigUint64(seqAt, true)) : 0;
-      const k = buf.slice(keyAt, keyAt + keyLen);
-      return tag === TAG_PUT
-        ? { kind: "put", key: k, value: buf.slice(o, o + valLen), seq }
-        : { kind: "del", key: k, seq };
-    }
-    o += valLen;
+    w.o = lo === 0 ? first : w.sampleAt(lo);
+    i = lo * OFFSET_STRIDE;
   }
-  return undefined;
+  for (; i < w.count; i++) {
+    const at = w.o;
+    w.next();
+    if (compareAt(w.buf, w.keyAt, w.keyLen, key, p) >= 0) {
+      w.o = at;
+      return w.count - i;
+    }
+  }
+  return 0;
+}
+
+/** Like `seekSuffix`, for a `key` that may not share the block's prefix. */
+function seekInBlock(w: RecordWalker, key: Uint8Array): number {
+  const p = w.prefixLen;
+  const n = Math.min(p, key.byteLength);
+  for (let i = 0; i < n; i++) {
+    const d = w.buf[w.prefixAt + i]! - key[i]!;
+    if (d !== 0) return d > 0 ? w.count : 0;
+  }
+  return key.byteLength < p ? w.count : seekSuffix(w, key);
+}
+
+/**
+ * The record for `key` in one block, or undefined. Checks the block prefix
+ * once, then compares suffixes in place and copies out only the match.
+ */
+function findInBlock(b: BlockBytes, key: Uint8Array, fmt: RecordFormat): SstEntry | undefined {
+  const w = RecordWalker.ofBlock(b, fmt);
+  const p = w.prefixLen;
+  if (key.byteLength < p) return undefined;
+  for (let i = 0; i < p; i++) if (w.buf[w.prefixAt + i] !== key[i]) return undefined;
+  if (seekSuffix(w, key) === 0) return undefined;
+  w.next();
+  return compareAt(w.buf, w.keyAt, w.keyLen, key, p) === 0 ? w.entry() : undefined;
 }
 
 export function decodeSst(buf: Uint8Array): SstEntry[] {
@@ -468,7 +701,7 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   const out: SstEntry[] = [];
   for (const ix of index) {
     out.push(
-      ...decodeBlock(blockBytes(buf, meta.view, meta.dataStart, ix, meta.codec), version >= VERSION_V3),
+      ...RecordWalker.ofBlock(blockBytes(buf, meta.view, meta.dataStart, ix, meta.codec), recordFormat(version)).entries(),
     );
   }
   if (out.length !== meta.entryCount) {
@@ -487,6 +720,7 @@ export class SstReader {
   private readonly buf: Uint8Array;
   private readonly view: DataView;
   private readonly version: number;
+  private readonly fmt: RecordFormat;
   private readonly v1Entries: SstEntry[] | undefined;
   private readonly bloom: BloomFilter | undefined;
   private readonly dataStart: number = 0;
@@ -499,6 +733,7 @@ export class SstReader {
     this.buf = buf;
     this.view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     this.version = sstVersion(buf, this.view);
+    this.fmt = recordFormat(this.version);
     if (this.version === VERSION_V1) {
       this.v1Entries = decodeSst(buf);
       return;
@@ -550,7 +785,7 @@ export class SstReader {
     if (!this.mightContain(key)) return undefined;
     const bi = this.findBlock(key);
     if (bi < 0) return undefined;
-    return findInBlock(this.blockBytes(bi), key, this.version >= VERSION_V3);
+    return findInBlock(this.blockBytes(bi), key, this.fmt);
   }
 
   /**
@@ -587,57 +822,44 @@ export class SstReader {
     return blockBytes(this.buf, this.view, this.dataStart, this.index[i]!, this.codec);
   }
 
-  private loadBlock(i: number): SstEntry[] {
-    return decodeBlock(this.blockBytes(i), this.version >= VERSION_V3);
-  }
-
+  /**
+   * Walks blocks in place. The first block seeks to `bounds.start` with
+   * its offset table. Each record is copied out once, when it is reached.
+   */
   private v2Cursor(bounds?: ScanBounds): LayerCursor {
     const index = this.index;
-    let bi = seekBlock(index, bounds?.start);
-    let slots: SstEntry[] = [];
-    let i = 0;
-    const load = () => {
-      if (bi >= index.length) {
-        slots = [];
-        i = 0;
-        return;
-      }
-      const block = index[bi]!;
-      if (
-        bounds?.endExclusive &&
-        compareBytes(block.firstKey, bounds.endExclusive) >= 0
-      ) {
-        bi = index.length;
-        slots = [];
-        i = 0;
-        return;
-      }
-      slots = this.loadBlock(bi);
-      i = bounds?.start ? lowerBoundKeys(slots, bounds.start) : 0;
-    };
-    load();
-    return {
-      peek() {
-        while (true) {
-          if (i < slots.length) {
-            const e = slots[i]!;
-            if (
-              bounds?.endExclusive &&
-              compareBytes(e.key, bounds.endExclusive) >= 0
-            ) {
-              return undefined;
-            }
-            return e.kind === "put"
-              ? { key: e.key, kind: "put" as const, value: e.value }
-              : { key: e.key, kind: "del" as const };
-          }
-          bi += 1;
-          load();
-          if (bi >= index.length && i >= slots.length) return undefined;
+    const end = bounds?.endExclusive;
+    let seek = bounds?.start;
+    let bi = seekBlock(index, seek);
+    let w: RecordWalker | undefined;
+    let left = 0;
+    let cur: LayerEntry | undefined;
+    const advance = () => {
+      while (left === 0) {
+        if (bi >= index.length || (end && compareBytes(index[bi]!.firstKey, end) >= 0)) {
+          cur = undefined;
+          return;
         }
-      },
+        w = RecordWalker.ofBlock(this.blockBytes(bi++), this.fmt);
+        left = seek ? seekInBlock(w, seek) : w.count;
+        seek = undefined;
+      }
+      w!.next();
+      left--;
+      const key = w!.key();
+      if (end && compareBytes(key, end) >= 0) {
+        left = 0;
+        bi = index.length;
+        cur = undefined;
+      } else {
+        cur = w!.tag === TAG_PUT ? { key, kind: "put", value: w!.value() } : { key, kind: "del" };
+      }
+    };
+    advance();
+    return {
+      peek: () => cur,
       next() {
-        i += 1;
+        if (cur) advance();
       },
     };
   }

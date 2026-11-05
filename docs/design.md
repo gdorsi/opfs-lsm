@@ -123,7 +123,7 @@ scanning.
 
 # SST file format
 
-Runs use SST version 6. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
+Runs use SST version 7. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
 TypeScript reader in `packages/kv/src/store/sst.ts` reads it, and there is a byte-compatible
 TypeScript encoder for when wasm doesn't load. That encoder writes only raw blocks.
 
@@ -157,14 +157,39 @@ filter ends where the index starts and the index ends where the footer starts.
 
 ### Data block
 
-A block holds the records for a run of keys, about 4 KiB of them.
+A block holds the records for a run of keys, at most 4 KiB of them.
 
 ```
 | u32 record count                                                           |
+| varint prefix length                                                       |
+| prefix          prefix length bytes                                        |
 | record 0                                                                   |
 | ...                                                                        |
 | record count - 1                                                           |
+| u16 offset of record 4                              from the block start   |
+| u16 offset of record 8                                                     |
+| ...             one per 4th record after record 0, (count - 1) / 4 of them |
 ```
+
+The prefix is the longest one that every key in the block shares. Keys are sorted, so it is the
+common prefix of the first and last key. A block with one key stores the whole key as its prefix.
+A key is the prefix followed by its record's suffix.
+
+The offset table lets a reader binary-search a block. Every record holds a whole suffix against
+the one block prefix, so a reader can compare any record from its offset alone. A reader finds
+the table from the record count and the block's length. Offsets are u16 because a block of two
+or more records is at most 4 KiB. A block of one record can be larger, and it has no table.
+The stride of 4 came from a sweep over 1, 4, 8, 16 and 32 with
+`pnpm --filter @opfs-lsm/collections bench:index-runs`. It was the largest stride whose LZ4 gets
+on UUID ids matched version 6. Stride 8 saves 1.4% of the index bytes and made those gets about
+5% slower.
+
+The shared prefix is for collections' index keys. Each one starts with `i/`, the table and the
+index name, so neighbours repeat about 20 bytes. One prefix per block keeps nearly all of that
+saving. LevelDB-style restart points every 16 keys saved less on the same data, because the
+part that repeats is the same for the whole block.
+
+Varints are unsigned LEB128 and at most 5 bytes.
 
 The footer's codec says how every block in the file is stored. With codec 0 (raw) a block is
 stored as above. With codec 1 (LZ4) it is stored packed:
@@ -181,9 +206,9 @@ Index offsets and lengths, the bloom offset and the CRC all refer to the stored 
 ```
 | u8 tag          1 = put, 2 = delete                                        |
 | u64 seq         the WAL seq that wrote the key                             |
-| u32 key length                                                             |
-| key             key length bytes                                           |
-| u32 value length                                    (puts only)            |
+| varint suffix length                                                       |
+| suffix          the key after the block's prefix                           |
+| varint value length                                 (puts only)            |
 | value           value length bytes                  (puts only)            |
 ```
 
@@ -215,16 +240,20 @@ Every footer field is a u32, so each one sits at a fixed position from the end o
 | index length                                                                  |  end - 20
 | codec           0 = raw, 1 = LZ4                                              |  end - 16
 | crc32 (IEEE) of every byte before this field                                  |  end - 12
-| version = 6                                                                   |  end - 8
+| version = 7                                                                   |  end - 8
 | magic "OLST" (0x4f4c5354)                                                     |  end - 4
 ```
 
-Entries are sorted by key, with one entry per key. Blocks are cut at about 4 KiB of records. The
-bloom filter uses 10 bits per key and 7 hashes, which gives about a 1% false-positive rate. Its
+Entries are sorted by key, with one entry per key. A block ends before the record that would
+take its encoded size, offset table included, past 4 KiB. Adding a key can shorten the prefix,
+which lengthens every suffix, so the writer recomputes the size from running sums of key lengths
+and other record bytes. It sizes each suffix length varint from the whole key, so the Rust and TypeScript
+encoders cut blocks in the same places. The bloom filter uses 10 bits per key and 7 hashes, which gives about a 1% false-positive rate. Its
 hashes are FNV-1a and a 32-bit mix of it, combined by double hashing.
 
-Versions 1 to 5 still decode. Version 5 is version 6 without the codec field, so its footer is
-40 bytes and its blocks are raw. Versions 1 to 4 keep the magic and version in the first 8 bytes
+Versions 1 to 6 still decode. Version 6 is version 7 with u32 lengths and whole keys in every
+record, and no prefix in its blocks. Version 5 is version 6 without the codec field, so its
+footer is 40 bytes and its blocks are raw. Versions 1 to 4 keep the magic and version in the first 8 bytes
 and a header before the data, and they end with a bare CRC:
 - Version 1 is a single block with no bloom filter.
 - Version 2 added blocks, the bloom filter and the block index.
@@ -232,17 +261,19 @@ and a header before the data, and they end with a bare CRC:
 - Version 4 widened the bloom header fields to u32, so a filter can pass 64 KiB.
 - Version 5 moved the bloom filter and index behind the data and the metadata into the footer.
 - Version 6 added the codec field.
+- Version 7 added the block prefix, varint lengths and the offset table.
 
 A reader checks the last 8 bytes first. In a version 2 to 4 file, those bytes are the last
 block's length and the CRC. A block length is 4 or at least 9, never 5 or 6, so these files
-can't be mistaken for version 5 or 6. A version 1 file ends with record bytes and the CRC, so it
+can't be mistaken for version 5 to 7. A version 1 file ends with record bytes and the CRC, so it
 would be misread only if its CRC happened to equal the magic, a 1 in 2^32 chance.
 
 ## Compression
 
 Runs in L2 and deeper use LZ4. L0 and L1 runs stay raw. `codecForLevel` in `levels.ts` makes
-the choice, and only compaction writes L2 runs, so flushes never pay to compress. L2 and below
-hold nearly all of the data, so they are where the bytes are.
+the choice. L0 and L1 hold the recent writes, and an LZ4 block costs a decompress on every read
+of it. L2 and below hold nearly all of the data, so they are where the bytes are. Encode cost
+is not the reason. A 4.3 MB flush run encodes in 51.7 ms raw and 52.7 ms with LZ4.
 
 The reason is memory. Every tab holds every run's bytes, and blocks stay packed in memory until a
 read reaches them. LZ4 decodes fast enough that a get barely notices. It also adds the least
@@ -281,8 +312,9 @@ A point get:
 2. Rejects it if the bloom filter says no.
 3. Binary-searches the block index for the one block that could hold the key, unpacking it
    first if the run uses LZ4.
-4. Walks that block's records, comparing each key in place, and copies out only the record
-   that matches. It stops at the first key past the one it wants.
+4. Checks the block's prefix against the key once. Then it binary-searches the offset table,
+   comparing suffixes in place, and walks at most 4 records from the last one not past the key.
+   It copies out only the record that matches.
 
 A get used to decode the whole block into objects and then search them. Walking it in place
 cut a get that hits L2 from 7.7 µs to 4.0 µs, measured with `pnpm bench:follow` at 100k todos.
@@ -332,8 +364,10 @@ ordered by key and then by source, newest first. For each key the newest source 
 tombstones are dropped. Each L0 run is its own source, because L0 runs overlap. Each deeper
 level is one source (`RunLevel` in `store/merge.ts`): its runs never overlap, so the level
 cursor binary-searches the runs' largest keys for the start key and opens one run at a time,
-in key order, stopping at the first run that starts at or past the end key. A run cursor decodes
-its first block as soon as it opens, so a scan only pays for the runs it reaches.
+in key order, stopping at the first run that starts at or past the end key. A run cursor reads
+its first block as soon as it is created, so a scan only pays for the runs it reaches. It seeks to the
+start key with the block's offset table, then walks records in place and copies out each one
+when it reaches it.
 
 The bloom filters play no part in a scan. They answer whether one exact key is present.
 
@@ -435,10 +469,11 @@ the merge drop tombstones, because no older value is left for them to hide.
 
 The merge runs in wasm (`crates/engine-core/src/compact.rs`). It decodes every input and checks
 each CRC. It folds the inputs into a `BTreeMap`, with newer runs winning, and drops tombstones if
-the plan is `bottom`. Then it cuts the output into runs of `TARGET_RUN_BYTES`, 4 MiB of records.
-A run closes on the first entry that takes it to 4 MiB or more. So full raw runs are a little
-over 4 MiB on disk once the bloom filter and block index are added. LZ4 runs hold the same
-4 MiB of records in fewer bytes. The last run of a merge holds whatever is left over.
+the plan is `bottom`. Then it cuts the output into runs of `TARGET_RUN_BYTES`, 4 MiB of records
+counted at their version 6 size, which is the key and value plus 17 bytes. A run closes on the
+first entry that takes it to 4 MiB or more. Version 7 stores the same records in fewer bytes, so
+a full raw run is under 4 MiB on disk when its blocks share long prefixes, as index keys do. LZ4
+runs are smaller again. The last run of a merge holds whatever is left over.
 
 All the inputs are in memory at once. The fixed run size is what bounds one step to about
 11 runs at a level ratio of 10.
