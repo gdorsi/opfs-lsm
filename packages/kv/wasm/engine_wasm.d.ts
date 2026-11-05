@@ -19,9 +19,9 @@ export function lz4_decompress_js(src: Uint8Array | number[], size: number): Uin
 
 /**
  * Merge newest-first SST blobs into SSTs of about `target_bytes`, in key
- * order, with LZ4 blocks when `lz4` is set. `drop_tombstones` is for a merge nothing older overlaps. Returns
- * `{ssts, droppedSeq}`, where droppedSeq is the highest seq of a dropped
- * tombstone, 0 when none.
+ * order, with LZ4 blocks when `lz4` is set. `drop_tombstones` is for a
+ * merge nothing older overlaps. Returns `{ssts, droppedSeq}`, where
+ * droppedSeq is the highest seq of a dropped tombstone, 0 when none.
  */
 export function merge_ssts_js(blobs: Array<any>, drop_tombstones: boolean, target_bytes: number, lz4: boolean): object;
 
