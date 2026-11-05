@@ -22,9 +22,38 @@ const VERSION_V2 = 2;
 const VERSION_V3 = 3;
 /** v3 with u32 Bloom header fields, so a filter can pass 64 KiB. */
 const VERSION_V4 = 4;
+/** v4's sections with the Bloom filter and index after the data and a fixed footer. */
+const VERSION_V5 = 5;
+const FOOTER_BYTES = 40;
 
 function isBlockVersion(version: number): boolean {
-  return version === VERSION_V2 || version === VERSION_V3 || version === VERSION_V4;
+  return (
+    version === VERSION_V2 ||
+    version === VERSION_V3 ||
+    version === VERSION_V4 ||
+    version === VERSION_V5
+  );
+}
+
+/**
+ * v5 keeps its magic and version in the last 8 bytes. Older versions keep
+ * them in the first 8. v2 to v4 end with a block length, which is never 5,
+ * then the CRC. A v1 run passes for v5 only if its CRC equals the magic.
+ */
+function sstVersion(buf: Uint8Array, view: DataView): number {
+  const n = buf.byteLength;
+  if (
+    n >= FOOTER_BYTES &&
+    view.getUint32(n - 4, true) === SST_MAGIC &&
+    view.getUint32(n - 8, true) === VERSION_V5
+  ) {
+    return VERSION_V5;
+  }
+  const magic = view.getUint32(0, true);
+  if (magic !== SST_MAGIC) {
+    throw new CorruptDatabaseError(`bad sst magic ${magic.toString(16)}`);
+  }
+  return view.getUint32(4, true);
 }
 const TAG_PUT = 1;
 const TAG_DEL = 2;
@@ -120,13 +149,14 @@ function readRecords(
 }
 
 /**
- * Encode SST v4: multi-block data + Bloom + block index.
- * Layout:
- *   u32 magic | u32 version=4 | u32 entryCount | u32 blockCount | u32 dataLen
- *   u32 bloomHashCount | u32 bloomByteLen | bloom
+ * Encode SST v5:
  *   data blocks (each: u32 count | records of u8 tag | u64 seq | key | value?)
+ *   bloom bits
  *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
- *   u32 crc32
+ *   footer, 40 bytes:
+ *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
+ *     u32 bloomHashCount | u32 indexOffset | u32 indexLen
+ *     u32 crc32 of every byte before it | u32 version=5 | u32 magic
  */
 export function encodeSst(
   entries: readonly SstEntry[],
@@ -175,41 +205,17 @@ export function encodeSst(
     indexSize += 4 + ix.firstKey.byteLength + 4 + ix.lastKey.byteLength + 8;
   }
 
-  const header = 20; // magic..dataLen
-  const bloomHeader = 8;
-  const total =
-    header +
-    bloomHeader +
-    bloom.bits.byteLength +
-    dataLen +
-    indexSize +
-    4;
-
-  const out = new Uint8Array(total);
+  const out = new Uint8Array(dataLen + bloom.bits.byteLength + indexSize + FOOTER_BYTES);
   const view = new DataView(out.buffer);
   let o = 0;
-  view.setUint32(o, SST_MAGIC, true);
-  o += 4;
-  view.setUint32(o, VERSION_V4, true);
-  o += 4;
-  view.setUint32(o, sorted.length, true);
-  o += 4;
-  view.setUint32(o, blocks.length, true);
-  o += 4;
-  view.setUint32(o, dataLen, true);
-  o += 4;
-  view.setUint32(o, bloom.hashCount, true);
-  o += 4;
-  view.setUint32(o, bloom.bits.byteLength, true);
-  o += 4;
-  out.set(bloom.bits, o);
-  o += bloom.bits.byteLength;
-
   for (const blob of blockBlobs) {
     out.set(blob, o);
     o += blob.byteLength;
   }
+  out.set(bloom.bits, o);
+  o += bloom.bits.byteLength;
 
+  const indexOffset = o;
   for (const ix of index) {
     view.setUint32(o, ix.firstKey.byteLength, true);
     o += 4;
@@ -225,8 +231,21 @@ export function encodeSst(
     o += 4;
   }
 
-  const sum = crc32(out.subarray(0, o));
-  view.setUint32(o, sum, true);
+  for (const field of [
+    sorted.length,
+    blocks.length,
+    dataLen,
+    bloom.bits.byteLength,
+    bloom.hashCount,
+    indexOffset,
+    indexSize,
+  ]) {
+    view.setUint32(o, field, true);
+    o += 4;
+  }
+  view.setUint32(o, crc32(out.subarray(0, o)), true);
+  view.setUint32(o + 4, VERSION_V5, true);
+  view.setUint32(o + 8, SST_MAGIC, true);
   return out;
 }
 
@@ -235,8 +254,9 @@ function decodeSstV1(buf: Uint8Array, view: DataView, crcOff: number): SstEntry[
   return readRecords(buf, view, 12, crcOff, count, false);
 }
 
-function parseV2Meta(buf: Uint8Array, version: number): {
+type BlockLayout = {
   view: DataView;
+  /** Where the CRC is stored. It covers every byte before it. */
   crcOff: number;
   entryCount: number;
   blockCount: number;
@@ -244,7 +264,11 @@ function parseV2Meta(buf: Uint8Array, version: number): {
   bloom: BloomFilter;
   dataStart: number;
   indexStart: number;
-} {
+  indexEnd: number;
+};
+
+function parseBlockLayout(buf: Uint8Array, version: number): BlockLayout {
+  if (version === VERSION_V5) return parseV5Layout(buf);
   if (buf.byteLength < 32) throw new CorruptDatabaseError("sst v2 too short");
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const crcOff = buf.byteLength - 4;
@@ -268,14 +292,37 @@ function parseV2Meta(buf: Uint8Array, version: number): {
     bloom: { bits: bloomBits, hashCount: bloomHashCount },
     dataStart,
     indexStart,
+    indexEnd: crcOff,
   };
 }
 
-function readV2Index(
+function parseV5Layout(buf: Uint8Array): BlockLayout {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const footer = buf.byteLength - FOOTER_BYTES;
+  const field = (i: number) => view.getUint32(footer + 4 * i, true);
+  const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen] =
+    [0, 1, 2, 3, 4, 5, 6].map(field) as [number, number, number, number, number, number, number];
+  if (indexOffset !== bloomOffset + bloomLen || indexOffset + indexLen !== footer) {
+    throw new CorruptDatabaseError("sst v5 sections OOB");
+  }
+  return {
+    view,
+    crcOff: footer + 28,
+    entryCount,
+    blockCount,
+    dataLen: bloomOffset,
+    bloom: { bits: buf.slice(bloomOffset, indexOffset), hashCount: bloomHashCount },
+    dataStart: 0,
+    indexStart: indexOffset,
+    indexEnd: footer,
+  };
+}
+
+function readBlockIndex(
   buf: Uint8Array,
   view: DataView,
   indexStart: number,
-  crcOff: number,
+  indexEnd: number,
   blockCount: number,
 ): BlockIndexEntry[] {
   const index: BlockIndexEntry[] = [];
@@ -295,7 +342,7 @@ function readV2Index(
     o += 4;
     index.push({ firstKey, lastKey, offset, length });
   }
-  if (o !== crcOff) throw new CorruptDatabaseError("sst v2 index trailing");
+  if (o !== indexEnd) throw new CorruptDatabaseError("sst v2 index trailing");
   return index;
 }
 
@@ -317,11 +364,7 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
     throw new CorruptDatabaseError("sst too short");
   }
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const magic = view.getUint32(0, true);
-  if (magic !== SST_MAGIC) {
-    throw new CorruptDatabaseError(`bad sst magic ${magic.toString(16)}`);
-  }
-  const version = view.getUint32(4, true);
+  const version = sstVersion(buf, view);
   const crcOff = buf.byteLength - 4;
 
   if (version === VERSION_V1) {
@@ -335,15 +378,15 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
     throw new CorruptDatabaseError(`unsupported sst version ${version}`);
   }
 
-  const meta = parseV2Meta(buf, version);
+  const meta = parseBlockLayout(buf, version);
   if (crc32(buf.subarray(0, meta.crcOff)) !== meta.view.getUint32(meta.crcOff, true)) {
     throw new CorruptDatabaseError("sst crc mismatch");
   }
-  const index = readV2Index(
+  const index = readBlockIndex(
     buf,
     meta.view,
     meta.indexStart,
-    meta.crcOff,
+    meta.indexEnd,
     meta.blockCount,
   );
   const out: SstEntry[] = [];
@@ -375,11 +418,7 @@ export class SstReader {
     if (buf.byteLength < 16) throw new CorruptDatabaseError("sst too short");
     this.buf = buf;
     this.view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    const magic = this.view.getUint32(0, true);
-    if (magic !== SST_MAGIC) {
-      throw new CorruptDatabaseError(`bad sst magic ${magic.toString(16)}`);
-    }
-    this.version = this.view.getUint32(4, true);
+    this.version = sstVersion(buf, this.view);
     if (this.version === VERSION_V1) {
       this.v1Entries = decodeSst(buf);
       return;
@@ -387,14 +426,14 @@ export class SstReader {
     if (!isBlockVersion(this.version)) {
       throw new CorruptDatabaseError(`unsupported sst version ${this.version}`);
     }
-    const meta = parseV2Meta(buf, this.version);
+    const meta = parseBlockLayout(buf, this.version);
     this.bloom = meta.bloom;
     this.dataStart = meta.dataStart;
-    this.index = readV2Index(
+    this.index = readBlockIndex(
       buf,
       meta.view,
       meta.indexStart,
-      meta.crcOff,
+      meta.indexEnd,
       meta.blockCount,
     );
   }

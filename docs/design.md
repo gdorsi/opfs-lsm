@@ -123,32 +123,41 @@ scanning.
 
 # SST file format
 
-Runs use SST version 4. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
+Runs use SST version 5. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
 TypeScript reader in `packages/kv/src/store/sst.ts` reads it, and there is a byte-compatible
 TypeScript encoder for when wasm doesn't load.
 
+The layout follows the LevelDB and RocksDB convention. Data blocks come first, the bloom filter
+and block index follow them, and a fixed-size footer at the end of the file says where each
+section is. A writer can produce the sections in that order without knowing the key count up
+front, and a reader can find the footer as the last 40 bytes of any file.
+
 ```
 <------------------------------------------- 4 bytes ------------------------------------------->
-============================================ Header ==============================================
-| magic "OLST" (0x4f4c5354)                                                                      |
-| version = 4                                                                                    |
-| entry count                                                                                    |
-| block count                                                                                    |
-| data length                                                                                    |
-| bloom hash count                                                                               |
-| bloom byte length                                                                              |
-============================================= Bloom ==============================================
-| bloom bits (bloom byte length bytes)                                                           |
 ========================================== Data blocks ===========================================
 | block 0: u32 record count, then records                                                        |
 | block 1 ...                                                                                    |
+============================================= Bloom ==============================================
+| bloom bits (bloom length bytes)                                                                |
 ========================================== Block index ===========================================
 | per block: u32 first key length | first key | u32 last key length | last key                   |
-|            u32 block offset (from the start of the data section) | u32 block length            |
-============================================ Footer ==============================================
-| crc32 (IEEE) of every byte before it                                                           |
+|            u32 block offset (from the start of the file) | u32 block length                    |
+======================================= Footer (40 bytes) ========================================
+| entry count                                                                                    |
+| block count                                                                                    |
+| bloom offset (also the length of the data section)                                             |
+| bloom length                                                                                   |
+| bloom hash count                                                                               |
+| index offset                                                                                   |
+| index length                                                                                   |
+| crc32 (IEEE) of every byte before this field                                                   |
+| version = 5                                                                                    |
+| magic "OLST" (0x4f4c5354)                                                                      |
 ==================================================================================================
 ```
+
+The sections are contiguous. A reader rejects the file unless the bloom filter ends where the
+index starts and the index ends where the footer starts.
 
 A record is:
 
@@ -163,9 +172,18 @@ Entries are sorted by key, with one entry per key. Blocks are cut at about 4 KiB
 bloom filter uses 10 bits per key and 7 hashes, which gives about a 1% false-positive rate. Its
 hashes are FNV-1a and a 32-bit mix of it, combined by double hashing.
 
-Versions 1 to 3 still decode. Version 1 is a single block with no bloom filter. Version 2 added
-blocks and the bloom filter. Version 3 added the per-record seq. Version 4 widened the bloom
-header fields to u32, so a filter can pass 64 KiB.
+Versions 1 to 4 still decode. They keep the magic and version in the first 8 bytes and a header
+before the data, and they end with a bare CRC:
+- Version 1 is a single block with no bloom filter.
+- Version 2 added blocks, the bloom filter and the block index.
+- Version 3 added the per-record seq.
+- Version 4 widened the bloom header fields to u32, so a filter can pass 64 KiB.
+- Version 5 moved the bloom filter and index behind the data and the metadata into the footer.
+
+A reader checks the last 8 bytes first. In a version 2 to 4 file, those bytes are the last
+block's length and the CRC. A block length is never 5, so these files can't be mistaken for
+version 5. A version 1 file ends with record bytes and the CRC, so it would be misread only
+if its CRC happened to equal the magic, a 1 in 2^32 chance.
 
 ## Reading a run
 

@@ -19,6 +19,10 @@ const V2_FIXTURE =
 const V3_FIXTURE =
   "54534c4f03000000020000000100000025000000070008008d008209207040000200000001070000000000000001000000610100000031020900000000000000010000006201000000610100000062000000002500000028972ab1";
 
+/** The same two entries, written by the v4 encoder, before the Bloom filter and index moved behind the data. */
+const V4_FIXTURE =
+  "54534c4f0400000002000000010000002500000007000000080000008d008209207040000200000001070000000000000001000000610100000031020900000000000000010000006201000000610100000062000000002500000074971cb3";
+
 const hex = (s: string) => Uint8Array.from(s.match(/../g)!.map((h) => parseInt(h, 16)));
 
 describe("sst", () => {
@@ -40,6 +44,19 @@ describe("sst", () => {
   it("reads a v3 run with its seqs", () => {
     expect(decodeSst(hex(V3_FIXTURE)).map((e) => e.seq)).toEqual([7, 9]);
     expect(new SstReader(hex(V3_FIXTURE)).get(utf("b"))?.seq).toBe(9);
+  });
+
+  it("reads a v4 run with its seqs", () => {
+    expect(decodeSst(hex(V4_FIXTURE)).map((e) => e.seq)).toEqual([7, 9]);
+    expect(new SstReader(hex(V4_FIXTURE)).get(utf("a"))?.seq).toBe(7);
+  });
+
+  it("writes the data first and the footer last", () => {
+    const body = encodeSst([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
+    const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
+    expect(view.getUint32(0, true)).toBe(1); // first block's record count
+    expect(view.getUint32(body.byteLength - 8, true)).toBe(5); // version
+    expect(view.getUint32(body.byteLength - 4, true)).toBe(0x4f4c5354); // magic
   });
 
   it("round-trips each entry's seq", () => {
@@ -76,7 +93,7 @@ describe("sst", () => {
 
   it("rejects corrupt crc", () => {
     const body = encodeSst([{ kind: "put", key: utf("a"), value: utf("1") }]);
-    body[body.byteLength - 1] ^= 0xff;
+    body[5] ^= 0xff;
     expect(() => decodeSst(body)).toThrow(CorruptDatabaseError);
   });
 
@@ -88,8 +105,7 @@ describe("sst", () => {
     }));
     const body = encodeSst(entries, 256);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    expect(view.getUint32(4, true)).toBe(4); // version
-    expect(view.getUint32(12, true)).toBeGreaterThan(1); // blockCount
+    expect(view.getUint32(body.byteLength - 36, true)).toBeGreaterThan(1); // blockCount
     expect(decodeSst(body)).toHaveLength(200);
   });
 
