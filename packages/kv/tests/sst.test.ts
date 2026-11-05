@@ -6,7 +6,7 @@ import {
   SstReader,
   SST_BLOCK_TARGET,
 } from "../src/store/sst.js";
-import { pointGet } from "../src/store/merge.js";
+import { pointGet, runLevels } from "../src/store/merge.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
@@ -136,6 +136,26 @@ describe("sst", () => {
     expect(reader.get(utf("missing"))).toBeUndefined();
   });
 
+  it("get finds what a full decode holds, for every key and gap", async () => {
+    const { encodeSst: encodeWasm } = await import("../src/store/engine.js");
+    const { sstGet } = await import("../src/store/sst.js");
+    const rows = Array.from({ length: 900 }, (_, i) =>
+      i % 7 === 3
+        ? { kind: "del" as const, key: utf(`k${String(i * 2).padStart(5, "0")}`), seq: i + 1 }
+        : { kind: "put" as const, key: utf(`k${String(i * 2).padStart(5, "0")}`), value: utf("v".repeat(i % 50)), seq: i + 1 },
+    );
+    const runs = [encodeSst(rows), await encodeWasm(rows, "lz4"), hex(V2_FIXTURE), hex(V5_FIXTURE)];
+    const probes = [utf(""), utf("a"), utf("b"), utf("c"), utf("k"), utf("z")];
+    for (let i = 0; i <= 1800; i++) probes.push(utf(`k${String(i).padStart(5, "0")}`), utf(`k${String(i).padStart(5, "0")}x`));
+    const show = (e: ReturnType<typeof sstGet>) =>
+      e && `${new TextDecoder().decode(e.key)}:${e.kind}:${e.seq}:${e.kind === "put" ? e.value.byteLength : ""}`;
+    for (const body of runs) {
+      const all = decodeSst(body);
+      const reader = new SstReader(body);
+      for (const k of probes) expect(show(reader.get(k))).toBe(show(sstGet(all, k)));
+    }
+  });
+
   it("newest run wins and a tombstone hides the older put", () => {
     const older = encodeSst([
       { kind: "put", key: utf("a"), value: utf("old") },
@@ -145,10 +165,10 @@ describe("sst", () => {
       { kind: "put", key: utf("a"), value: utf("new") },
       { kind: "del", key: utf("b") },
     ]);
-    const readers = [new SstReader(newer), new SstReader(older)];
-    expect(pointGet(undefined, readers, utf("a"))).toEqual(utf("new"));
-    expect(pointGet(undefined, readers, utf("b"))).toBeUndefined();
-    expect(pointGet(undefined, readers, utf("c"))).toBeUndefined();
+    const levels = runLevels(["l0/2-2.sst", "l0/1-1.sst"], [new SstReader(newer), new SstReader(older)]);
+    expect(pointGet(undefined, levels, utf("a"))).toEqual(utf("new"));
+    expect(pointGet(undefined, levels, utf("b"))).toBeUndefined();
+    expect(pointGet(undefined, levels, utf("c"))).toBeUndefined();
   });
 
   it("cursor seeks one block and stops before endExclusive", () => {

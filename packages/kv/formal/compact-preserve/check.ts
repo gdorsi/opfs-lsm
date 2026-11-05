@@ -1,8 +1,8 @@
 /**
  * Compaction merge (newest-first runs) preserves per-key visibility.
- * Mirrors pointGetSst (newest reader first) and foldEntries (oldest group first).
+ * Mirrors pointGetSst (newest level first) and foldEntries (oldest group first).
  *
- * Sync: pointGetSst walks readers newest-first; foldEntries applies oldest first.
+ * Sync: latestSstEntry walks levels newest-first; foldEntries applies oldest first.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -49,10 +49,10 @@ function newestFirstInSource(): boolean {
     path.resolve(here, "../../src/store/fold.ts"),
     "utf8",
   );
-  // pointGetSst: for (const reader of readers) — readers are newest-first
+  // latestSstEntry: for (const level of levels), levels are newest-first
   // foldEntries: for (let i = groups.length - 1; i >= 0; i--)
   return (
-    /for\s*\(\s*const\s+reader\s+of\s+readers\s*\)/.test(merge) &&
+    /function latestSstEntry[\s\S]*?for\s*\(\s*const\s+level\s+of\s+levels\s*\)/.test(merge) &&
     /for\s*\(\s*let\s+i\s*=\s*groups\.length\s*-\s*1/.test(fold)
   );
 }
@@ -116,5 +116,5 @@ if (!newestFirstInSource()) {
 }
 
 console.log(
-  `PASS CompactPreserve — ${cases} run lists, newest-first pointGetSst and oldest-first foldEntries`,
+  `PASS CompactPreserve — ${cases} run lists, newest-first latestSstEntry and oldest-first foldEntries`,
 );

@@ -567,7 +567,7 @@ class DbImpl implements Db {
 
   private readKey(k: CheckedKey): Uint8Array | undefined {
     const row = this.mem.get(k);
-    return row ? valueOf(row) : pointGetSst(this.installed.readers, k);
+    return row ? valueOf(row) : pointGetSst(this.installed.levels, k);
   }
 
   /**
@@ -578,7 +578,7 @@ class DbImpl implements Db {
   private lastWriteSeq(key: Uint8Array): number {
     const row = this.mem.get(key);
     if (row) return row.seq;
-    const hit = latestSstEntry(this.installed.readers, key);
+    const hit = latestSstEntry(this.installed.levels, key);
     return hit ? (hit.seq ?? 0) : this.installed.tombstoneSeq;
   }
 
@@ -686,7 +686,6 @@ class DbImpl implements Db {
       this.mem.appliedThrough,
       this.installed.generation,
       this.mem.pin(),
-      this.installed.readers,
       this.installed.levels,
     );
     try {

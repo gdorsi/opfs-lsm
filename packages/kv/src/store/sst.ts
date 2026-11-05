@@ -359,24 +359,80 @@ function readBlockIndex(
   return index;
 }
 
-function decodeBlock(
+/** One block's unpacked bytes: a u32 record count at `start`, then records up to `end`. */
+type BlockBytes = { buf: Uint8Array; view: DataView; start: number; end: number };
+
+function blockBytes(
   buf: Uint8Array,
   view: DataView,
   dataStart: number,
   ix: BlockIndexEntry,
-  withSeq: boolean,
   codec: SstCodec,
-): SstEntry[] {
+): BlockBytes {
   const start = dataStart + ix.offset;
   const end = start + ix.length;
   if (end > buf.byteLength || ix.length < 4) throw new CorruptDatabaseError("sst block OOB");
-  if (codec === "raw") {
-    return readRecords(buf, view, start + 4, end, view.getUint32(start, true), withSeq);
-  }
+  if (codec === "raw") return { buf, view, start, end };
   const block = lz4Decompress(buf.subarray(start + 4, end), view.getUint32(start, true));
   if (block.byteLength < 4) throw new CorruptDatabaseError("sst block too short");
-  const blockView = new DataView(block.buffer);
-  return readRecords(block, blockView, 4, block.byteLength, blockView.getUint32(0, true), withSeq);
+  return { buf: block, view: new DataView(block.buffer), start: 0, end: block.byteLength };
+}
+
+function decodeBlock(b: BlockBytes, withSeq: boolean): SstEntry[] {
+  return readRecords(b.buf, b.view, b.start + 4, b.end, b.view.getUint32(b.start, true), withSeq);
+}
+
+/** `buf[at, at + len)` compared with `key`, like `compareBytes`. */
+function compareAt(buf: Uint8Array, at: number, len: number, key: Uint8Array): number {
+  const n = Math.min(len, key.byteLength);
+  for (let i = 0; i < n; i++) {
+    const d = buf[at + i]! - key[i]!;
+    if (d !== 0) return d;
+  }
+  return len - key.byteLength;
+}
+
+/**
+ * The record for `key` in one block, or undefined. Walks the records in
+ * place and copies out only the match, so a get doesn't build every record
+ * in the block.
+ */
+function findInBlock(b: BlockBytes, key: Uint8Array, withSeq: boolean): SstEntry | undefined {
+  const { buf, view, end } = b;
+  const count = view.getUint32(b.start, true);
+  let o = b.start + 4;
+  for (let i = 0; i < count; i++) {
+    if (o >= end) throw new CorruptDatabaseError("sst truncated");
+    const tag = buf[o++]!;
+    const seqAt = o;
+    if (withSeq) o += 8;
+    if (o + 4 > end) throw new CorruptDatabaseError("sst truncated");
+    const keyLen = view.getUint32(o, true);
+    o += 4;
+    if (o + keyLen > end) throw new CorruptDatabaseError("sst key OOB");
+    const keyAt = o;
+    const c = compareAt(buf, keyAt, keyLen, key);
+    o += keyLen;
+    let valLen = 0;
+    if (tag === TAG_PUT) {
+      if (o + 4 > end) throw new CorruptDatabaseError("sst truncated");
+      valLen = view.getUint32(o, true);
+      o += 4;
+      if (o + valLen > end) throw new CorruptDatabaseError("sst value OOB");
+    } else if (tag !== TAG_DEL) {
+      throw new CorruptDatabaseError(`bad sst tag ${tag}`);
+    }
+    if (c > 0) return undefined;
+    if (c === 0) {
+      const seq = withSeq ? Number(view.getBigUint64(seqAt, true)) : 0;
+      const k = buf.slice(keyAt, keyAt + keyLen);
+      return tag === TAG_PUT
+        ? { kind: "put", key: k, value: buf.slice(o, o + valLen), seq }
+        : { kind: "del", key: k, seq };
+    }
+    o += valLen;
+  }
+  return undefined;
 }
 
 export function decodeSst(buf: Uint8Array): SstEntry[] {
@@ -412,7 +468,7 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   const out: SstEntry[] = [];
   for (const ix of index) {
     out.push(
-      ...decodeBlock(buf, meta.view, meta.dataStart, ix, version >= VERSION_V3, meta.codec),
+      ...decodeBlock(blockBytes(buf, meta.view, meta.dataStart, ix, meta.codec), version >= VERSION_V3),
     );
   }
   if (out.length !== meta.entryCount) {
@@ -486,7 +542,7 @@ export class SstReader {
     return bloomMightContain(this.bloom!, key);
   }
 
-  /** Point lookup without decoding every block. The block is not retained. */
+  /** Point lookup that reads one block in place. The block is not retained. */
   get(key: Uint8Array): SstEntry | undefined {
     if (this.version === VERSION_V1) {
       return sstGet(this.v1Entries!, key);
@@ -494,7 +550,7 @@ export class SstReader {
     if (!this.mightContain(key)) return undefined;
     const bi = this.findBlock(key);
     if (bi < 0) return undefined;
-    return sstGet(this.loadBlock(bi), key);
+    return findInBlock(this.blockBytes(bi), key, this.version >= VERSION_V3);
   }
 
   /**
@@ -527,15 +583,12 @@ export class SstReader {
     return -1;
   }
 
+  private blockBytes(i: number): BlockBytes {
+    return blockBytes(this.buf, this.view, this.dataStart, this.index[i]!, this.codec);
+  }
+
   private loadBlock(i: number): SstEntry[] {
-    return decodeBlock(
-      this.buf,
-      this.view,
-      this.dataStart,
-      this.index[i]!,
-      this.version >= VERSION_V3,
-      this.codec,
-    );
+    return decodeBlock(this.blockBytes(i), this.version >= VERSION_V3);
   }
 
   private v2Cursor(bounds?: ScanBounds): LayerCursor {
