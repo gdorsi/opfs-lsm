@@ -34,7 +34,7 @@ export type CompactionPlan = {
   readonly bottom: boolean;
 };
 
-/** 0 for L0, n for Ln, undefined for runs written before levels existed. */
+/** 0 for L0, n for Ln. Undefined when the path has no `l<n>/` prefix. */
 export function levelOf(path: string): number | undefined {
   const m = /^l(\d+)\//.exec(path);
   return m ? Number(m[1]) : undefined;
@@ -92,13 +92,6 @@ export function planCompaction(
       bottom: !below.some((r) => overlaps(r.range, range)),
     };
   };
-
-  const legacy = inLevel(undefined);
-  if (legacy.length > 0) {
-    const deeper = runs.filter((r) => levelOf(r.path) !== 0);
-    const deepest = Math.max(1, ...deeper.map((r) => levelOf(r.path) ?? 0));
-    return plan(deeper, deepest);
-  }
 
   const l0 = inLevel(0);
   if (l0.length >= L0_RUNS_TO_COMPACT) {

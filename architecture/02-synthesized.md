@@ -166,6 +166,6 @@ Ingest/compaction stay hidden. Collections may assume cross-tab read-your-writes
 ~~`db.view` snapshot~~; ~~`@opfs-lsm/collections`~~ (typed/compound indexes).  
 ~~`changes()`~~; ~~collections `orderBy` / index range~~.  
 ~~Bloom filter primitive~~ (TS + Rust).  
-~~SST v2~~ multi-block + Bloom + block index; ~~`SstReader` / `SstLayer`~~ lazy point gets on the hot path. v1 decode kept.
+~~SST~~ one format (version 1): multi-block, Bloom, block index, shared key prefix; ~~`SstReader` / `SstLayer`~~ lazy point gets on the hot path.
 
 Next: collections live queries on `changes()`; SST block cache tuning / prefix compression.

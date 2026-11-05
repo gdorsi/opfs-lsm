@@ -53,13 +53,6 @@ describe("planCompaction", () => {
     expect(plan?.outputLevel).toBe(2);
     expect(planCompaction(runs.slice(1), 1000)).toBeUndefined();
   });
-
-  it("folds runs from before levels into the deepest level", () => {
-    const plan = planCompaction([run("l0/9.sst", "a"), run("l1/c5-10.sst"), run("sst/c2-4.sst")]);
-    expect(paths(plan)).toEqual(["l1/c5-10.sst", "sst/c2-4.sst"]);
-    expect(plan?.outputLevel).toBe(1);
-    expect(plan?.bottom).toBe(true);
-  });
 });
 
 describe("replaceRuns", () => {

@@ -53,7 +53,7 @@ file. L0 names carry the seq range instead.
 
 # Write-ahead log
 
-The WAL is the IndexedDB database `opfs-lsm-wal/<name>`, schema version 6
+The WAL is the IndexedDB database `opfs-lsm-wal/<name>`, schema version 1
 (`packages/kv/src/idb/wal.ts`).
 
 ## WAL records
@@ -66,10 +66,8 @@ the `wal` store. The record's key is its seq. Its value is the encoded ops:
 | { type: "del", key: ArrayBuffer } ]
 ```
 
-Records written earlier wrap that array as `{ ops }`, and the oldest of those also carry an
-`at` timestamp that nothing reads. The reader takes the array when the value is one, and `ops`
-when the value is still wrapped. The engine copies each key and value into its own `ArrayBuffer`
-before the write. The browser's structured clone stores them as they are.
+The reader accepts only that array. The engine copies each key and value into its own
+`ArrayBuffer` before the write. The browser's structured clone stores them as they are.
 
 ## Append
 
@@ -78,8 +76,8 @@ before the write. The browser's structured clone stores them as they are.
 
 1. Read `head`.
 2. `add` the encoded ops with no key. The store's key generator assigns the seq.
-3. If that key is not past `head`, abort. A migrated database can hold a head ahead of its
-   generator until one explicit-key append raises it. The caller then appends with `appendAfter`.
+3. If that key is not past `head`, abort. The caller then appends with `appendAfter`, which
+   writes an explicit key and moves the generator forward.
 4. Otherwise `put` the new `head`.
 
 IndexedDB serializes `readwrite` transactions on the same stores, so two tabs cannot take the
@@ -133,7 +131,7 @@ scanning.
 
 # SST file format
 
-Runs use SST version 7. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
+Runs use SST version 1. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
 TypeScript reader in `packages/kv/src/store/sst.ts` reads it, and there is a byte-compatible
 TypeScript encoder for when wasm doesn't load. That encoder writes only raw blocks.
 
@@ -191,7 +189,7 @@ the table from the record count and the block's length. Offsets are u16 because 
 or more records is at most 4 KiB. A block of one record can be larger, and it has no table.
 The stride of 4 came from a sweep over 1, 4, 8, 16 and 32 with
 `pnpm --filter @opfs-lsm/collections bench:index-runs`. It was the largest stride whose LZ4 gets
-on UUID ids matched version 6. Stride 8 saves 1.4% of the index bytes and made those gets about
+on UUID ids matched a run that stored every key in full. Stride 8 saves 1.4% of the index bytes and made those gets about
 5% slower.
 
 The shared prefix is for collections' index keys. Each one starts with `i/`, the table and the
@@ -250,7 +248,7 @@ Every footer field is a u32, so each one sits at a fixed position from the end o
 | index length                                                                  |  end - 20
 | codec           0 = raw, 1 = LZ4                                              |  end - 16
 | crc32 (IEEE) of every byte before this field                                  |  end - 12
-| version = 7                                                                   |  end - 8
+| version = 1                                                                   |  end - 8
 | magic "OLST" (0x4f4c5354)                                                     |  end - 4
 ```
 
@@ -261,22 +259,7 @@ and other record bytes. It sizes each suffix length varint from the whole key, s
 encoders cut blocks in the same places. The bloom filter uses 10 bits per key and 7 hashes, which gives about a 1% false-positive rate. Its
 hashes are FNV-1a and a 32-bit mix of it, combined by double hashing.
 
-Versions 1 to 6 still decode. Version 6 is version 7 with u32 lengths and whole keys in every
-record, and no prefix in its blocks. Version 5 is version 6 without the codec field, so its
-footer is 40 bytes and its blocks are raw. Versions 1 to 4 keep the magic and version in the first 8 bytes
-and a header before the data, and they end with a bare CRC:
-- Version 1 is a single block with no bloom filter.
-- Version 2 added blocks, the bloom filter and the block index.
-- Version 3 added the per-record seq.
-- Version 4 widened the bloom header fields to u32, so a filter can pass 64 KiB.
-- Version 5 moved the bloom filter and index behind the data and the metadata into the footer.
-- Version 6 added the codec field.
-- Version 7 added the block prefix, varint lengths and the offset table.
-
-A reader checks the last 8 bytes first. In a version 2 to 4 file, those bytes are the last
-block's length and the CRC. A block length is 4 or at least 9, never 5 or 6, so these files
-can't be mistaken for version 5 to 7. A version 1 file ends with record bytes and the CRC, so it
-would be misread only if its CRC happened to equal the magic, a 1 in 2^32 chance.
+A reader requires the last 8 bytes to be version 1 and the magic. Any other version is rejected.
 
 ## Compression
 
@@ -340,7 +323,7 @@ one generation:
 
 ```
 u32 magic "OLGN" (0x4f4c474e)
-u32 version = 3
+u32 version = 1
 u64 generation
 u64 tombstoneSeq
 u32 run count
@@ -501,8 +484,8 @@ the merge drop tombstones, because no older value is left for them to hide.
 The merge runs in wasm (`crates/engine-core/src/compact.rs`). It decodes every input and checks
 each CRC. It folds the inputs into a `BTreeMap`, with newer runs winning, and drops tombstones if
 the plan is `bottom`. Then it cuts the output into runs of `TARGET_RUN_BYTES`, 4 MiB of records
-counted at their version 6 size, which is the key and value plus 17 bytes. A run closes on the
-first entry that takes it to 4 MiB or more. Version 7 stores the same records in fewer bytes, so
+counted as tag, seq, and u32 key and value lengths: the key and value plus 17 bytes. A run closes on the
+first entry that takes it to 4 MiB or more. On-disk records use varints and a shared prefix, so
 a full raw run is under 4 MiB on disk when its blocks share long prefixes, as index keys do. LZ4
 runs are smaller again. The last run of a merge holds whatever is left over.
 

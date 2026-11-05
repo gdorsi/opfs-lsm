@@ -90,7 +90,7 @@ function expectReaderAgreesWithDecode(body: Uint8Array): void {
   for (const bounds of ranges) expect(drain(reader.cursor(bounds))).toEqual(asLayer(bounds));
 }
 
-describe("sst v7", () => {
+describe("sst format", () => {
   beforeAll(async () => {
     await ensureEngine();
     expect(engineUsingWasm()).toBe(true);
@@ -112,10 +112,10 @@ describe("sst v7", () => {
     });
   }
 
-  it("stores the multi-index workload in less than half the v6 record bytes", () => {
+  it("stores the multi-index workload in less than half the whole-key record bytes", () => {
     const entries = indexWorkload(2_000).filter((e) => e.key[0] === 0x69);
-    const v6 = entries.reduce((n, e) => n + 1 + 8 + 4 + e.key.byteLength + (e.kind === "put" ? 4 + e.value.byteLength : 0), 0);
-    expect(encodeSst(entries).byteLength).toBeLessThan(v6 / 2);
+    const wholeKey = entries.reduce((n, e) => n + 1 + 8 + 4 + e.key.byteLength + (e.kind === "put" ? 4 + e.value.byteLength : 0), 0);
+    expect(encodeSst(entries).byteLength).toBeLessThan(wholeKey / 2);
   });
 
   it("fills blocks to the target in encoded bytes", () => {

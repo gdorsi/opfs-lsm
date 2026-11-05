@@ -1,7 +1,6 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import {
-  entryCursor,
   type LayerCursor,
   type LayerEntry,
   type ScanBounds,
@@ -15,21 +14,9 @@ import {
 import { crc32 } from "./crc32.js";
 import { lz4Decompress } from "./lz4.js";
 
-/** Magic ASCII "OLST" (opfs-lsm SST). */
+/** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 export const SST_MAGIC = 0x4f4c5354;
-const VERSION_V1 = 1;
-const VERSION_V2 = 2;
-/** v2 layout, with a u64 seq after each record's tag. */
-const VERSION_V3 = 3;
-/** v3 with u32 Bloom header fields, so a filter can pass 64 KiB. */
-const VERSION_V4 = 4;
-/** v4's sections with the Bloom filter and index after the data and a fixed footer. */
-const VERSION_V5 = 5;
-/** v5 with a codec field in the footer. */
-const VERSION_V6 = 6;
-/** v6 with each block's common key prefix stored once and varint record lengths. */
-const VERSION_V7 = 7;
-const FOOTER_V5 = 40;
+const VERSION = 1;
 const FOOTER_BYTES = 44;
 
 /**
@@ -39,37 +26,14 @@ const FOOTER_BYTES = 44;
 export type SstCodec = "raw" | "lz4";
 const CODECS: readonly SstCodec[] = ["raw", "lz4"];
 
-function isBlockVersion(version: number): boolean {
-  return version >= VERSION_V2 && version <= VERSION_V7;
-}
-
-/**
- * v5 to v7 keep their magic and version in the last 8 bytes. Older
- * versions keep them in the first 8. v2 to v4 end with a block length,
- * which is 4 or at least 9, then the CRC. A v1 run passes for v5 to v7
- * only if its CRC equals the magic.
- */
-function sstVersion(buf: Uint8Array, view: DataView): number {
-  const n = buf.byteLength;
-  if (n >= FOOTER_V5 && view.getUint32(n - 4, true) === SST_MAGIC) {
-    const version = view.getUint32(n - 8, true);
-    const footer = version >= VERSION_V6 ? FOOTER_BYTES : FOOTER_V5;
-    if (version >= VERSION_V5 && version <= VERSION_V7 && n >= footer) return version;
-  }
-  const magic = view.getUint32(0, true);
-  if (magic !== SST_MAGIC) {
-    throw new CorruptDatabaseError(`bad sst magic ${magic.toString(16)}`);
-  }
-  return view.getUint32(4, true);
-}
 const TAG_PUT = 1;
 const TAG_DEL = 2;
 
-/** Target encoded size per data block (v2). */
+/** Target encoded size of one data block. */
 export const SST_BLOCK_TARGET = 4 * 1024;
 
 /**
- * A v7 block stores the offset of every `OFFSET_STRIDE`th record after
+ * A block stores the offset of every `OFFSET_STRIDE`th record after
  * the first, so a get binary-searches them and walks at most
  * `OFFSET_STRIDE - 1` records. `crates/engine-core/src/sst.rs` uses the
  * same stride.
@@ -77,14 +41,14 @@ export const SST_BLOCK_TARGET = 4 * 1024;
 export const OFFSET_STRIDE = 4;
 
 /**
- * Bytes of a v7 block's offset table: a u16 per sampled record. Only a
+ * Bytes of a block's offset table: a u16 per sampled record. Only a
  * block of one record can pass the u16 range, and it has no table.
  */
 function offsetTableBytes(count: number): number {
   return count > 1 ? 2 * Math.floor((count - 1) / OFFSET_STRIDE) : 0;
 }
 
-/** `seq` is the WAL seq that wrote the entry. Runs older than v3 read as 0. */
+/** `seq` is the WAL seq that wrote the entry. Encode treats a missing seq as 0. */
 export type SstEntry =
   | {
       readonly kind: "put";
@@ -102,8 +66,9 @@ type BlockIndexEntry = {
 };
 
 /**
- * An entry's size as a v6 record. v7 records are never larger, so runs are
- * cut by it without encoding them.
+ * Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
+ * records use varints and a shared prefix, so they are never larger.
+ * Compaction cuts runs by this without encoding them.
  */
 export function entryRecordSize(e: SstEntry): number {
   let n = 1 + 8 + 4 + e.key.byteLength;
@@ -137,7 +102,7 @@ function commonPrefix(a: Uint8Array, b: Uint8Array): number {
 }
 
 /**
- * A v7 record's bytes besides its key suffix. The suffix length varint is
+ * A record's bytes besides its key suffix. The suffix length varint is
  * sized from the whole key, an upper bound that stays fixed as the
  * block prefix shrinks, so a block is sized from running sums.
  * `crates/engine-core/src/sst.rs` sizes blocks the same way.
@@ -148,7 +113,7 @@ function recordOverhead(e: SstEntry): number {
 }
 
 /**
- * Cut sorted entries into blocks of at most `target` v7 bytes, or one
+ * Cut sorted entries into blocks of at most `target` encoded bytes, or one
  * entry. A block's prefix shrinks as keys join it, so its size is
  * recomputed from running key and overhead sums at each entry.
  */
@@ -179,7 +144,7 @@ function splitBlocks(sorted: readonly SstEntry[], target: number): SstEntry[][] 
 }
 
 /**
- * One v7 data block before compression:
+ * One data block before compression:
  *   u32 count | varint prefixLen | prefix | count records | u16 offsets
  * The prefix is the longest one shared by every key in the block, which
  * for sorted keys is the first and last key's. `offsets[j]` is where
@@ -227,21 +192,6 @@ function writeRecord(out: Uint8Array, view: DataView, o: number, e: SstEntry, pr
 }
 
 /**
- * How a version lays out its records. v1 and v2 have no seq. v3 to v6 have
- * a u64 seq and u32 lengths. v7 has a u64 seq, varint lengths, and a key
- * prefix shared by the block, so a record holds only the key's suffix.
- */
-type RecordFormat = { readonly seq: boolean; readonly prefixed: boolean };
-const FORMAT_V1: RecordFormat = { seq: false, prefixed: false };
-const FORMAT_V3: RecordFormat = { seq: true, prefixed: false };
-const FORMAT_V7: RecordFormat = { seq: true, prefixed: true };
-
-function recordFormat(version: number): RecordFormat {
-  if (version >= VERSION_V7) return FORMAT_V7;
-  return version >= VERSION_V3 ? FORMAT_V3 : FORMAT_V1;
-}
-
-/**
  * Walks the records of one block in place. `next` reads the record at `o`
  * into the fields, so a reader copies out only what it keeps. Keys are the
  * block's `prefixLen` bytes at `prefixAt`, then the record's suffix.
@@ -253,12 +203,9 @@ class RecordWalker {
   keyLen = 0;
   valAt = 0;
   valLen = 0;
-  private readonly seqBytes: number;
-  private readonly varint: boolean;
   private prefix: Uint8Array | undefined;
 
   constructor(
-    readonly fmt: RecordFormat,
     readonly buf: Uint8Array,
     readonly view: DataView,
     public o: number,
@@ -267,26 +214,22 @@ class RecordWalker {
     readonly prefixAt: number,
     readonly prefixLen: number,
     readonly start: number,
-  ) {
-    this.seqBytes = fmt.seq ? 8 : 0;
-    this.varint = fmt.prefixed;
-  }
+  ) {}
 
   /**
-   * One unpacked block: u32 count, then for v7 a varint prefix length and
-   * the prefix. A v7 walker's `end` is where the offset table starts.
+   * One unpacked block: u32 count, varint prefix length, prefix, then
+   * records. `end` is where the offset table starts.
    */
-  static ofBlock(b: BlockBytes, fmt: RecordFormat): RecordWalker {
+  static ofBlock(b: BlockBytes): RecordWalker {
     const count = b.view.getUint32(b.start, true);
-    const w = new RecordWalker(fmt, b.buf, b.view, b.start + 4, b.end, count, 0, 0, b.start);
-    if (!fmt.prefixed) return w;
+    const w = new RecordWalker(b.buf, b.view, b.start + 4, b.end, count, 0, 0, b.start);
     const p = w.len();
     const end = b.end - offsetTableBytes(count);
     if (w.o + p > end) throw new CorruptDatabaseError("sst prefix OOB");
-    return new RecordWalker(fmt, b.buf, b.view, w.o + p, end, count, w.o, p, b.start);
+    return new RecordWalker(b.buf, b.view, w.o + p, end, count, w.o, p, b.start);
   }
 
-  /** Where record `j * OFFSET_STRIDE` starts, for `j >= 1`, from a v7 block's offset table. */
+  /** Where record `j * OFFSET_STRIDE` starts, for `j >= 1`, from the block's offset table. */
   sampleAt(j: number): number {
     const o = this.start + this.view.getUint16(this.end + 2 * (j - 1), true);
     if (o <= this.prefixAt + this.prefixLen || o >= this.end) throw new CorruptDatabaseError("sst offset OOB");
@@ -300,9 +243,9 @@ class RecordWalker {
     if (o >= this.end) throw new CorruptDatabaseError("sst truncated");
     const tag = buf[o]!;
     this.seqAt = o + 1;
-    o += 1 + this.seqBytes;
+    o += 9;
     let n = buf[o]!;
-    if (this.varint && n < 0x80) o++;
+    if (n < 0x80) o++;
     else {
       this.o = o;
       n = this.len();
@@ -313,7 +256,7 @@ class RecordWalker {
     o += n;
     if (tag === TAG_PUT) {
       n = buf[o]!;
-      if (this.varint && n < 0x80) o++;
+      if (n < 0x80) o++;
       else {
         this.o = o;
         n = this.len();
@@ -333,7 +276,7 @@ class RecordWalker {
   }
 
   seq(): number {
-    return this.seqBytes ? Number(this.view.getBigUint64(this.seqAt, true)) : 0;
+    return Number(this.view.getBigUint64(this.seqAt, true));
   }
 
   key(): Uint8Array {
@@ -370,12 +313,6 @@ class RecordWalker {
 
   private len(): number {
     const { buf, end } = this;
-    if (!this.varint) {
-      if (this.o + 4 > end) throw new CorruptDatabaseError("sst truncated");
-      const v = this.view.getUint32(this.o, true);
-      this.o += 4;
-      return v;
-    }
     let v = 0;
     for (let shift = 0; shift < 35; shift += 7) {
       if (this.o >= end) throw new CorruptDatabaseError("sst truncated");
@@ -391,14 +328,14 @@ class RecordWalker {
 }
 
 /**
- * Encode SST v7 with raw blocks. LZ4 blocks come only from the wasm encoder.
+ * Encode SST version 1 with raw blocks. LZ4 blocks come only from the wasm encoder.
  *   data blocks (see `encodeBlock`)
  *   bloom bits
  *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
  *   footer, 44 bytes:
  *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
  *     u32 bloomHashCount | u32 indexOffset | u32 indexLen | u32 codec
- *     u32 crc32 of every byte before it | u32 version=7 | u32 magic
+ *     u32 crc32 of every byte before it | u32 version=1 | u32 magic
  */
 export function encodeSst(
   entries: readonly SstEntry[],
@@ -471,13 +408,9 @@ export function encodeSst(
     o += 4;
   }
   view.setUint32(o, crc32(out.subarray(0, o)), true);
-  view.setUint32(o + 4, VERSION_V7, true);
+  view.setUint32(o + 4, VERSION, true);
   view.setUint32(o + 8, SST_MAGIC, true);
   return out;
-}
-
-function decodeSstV1(buf: Uint8Array, view: DataView, crcOff: number): SstEntry[] {
-  return new RecordWalker(FORMAT_V1, buf, view, 12, crcOff, view.getUint32(8, true), 0, 0, 0).entries();
 }
 
 type BlockLayout = {
@@ -494,52 +427,26 @@ type BlockLayout = {
   codec: SstCodec;
 };
 
-function parseBlockLayout(buf: Uint8Array, version: number): BlockLayout {
-  if (version >= VERSION_V5) return parseFooterLayout(buf, version);
-  if (buf.byteLength < 32) throw new CorruptDatabaseError("sst v2 too short");
+/** Footer is 8 u32 fields, then CRC, version, and magic. Rejects any other version. */
+function parseFooter(buf: Uint8Array): BlockLayout {
+  if (buf.byteLength < FOOTER_BYTES) throw new CorruptDatabaseError("sst too short");
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const crcOff = buf.byteLength - 4;
-  const entryCount = view.getUint32(8, true);
-  const blockCount = view.getUint32(12, true);
-  const dataLen = view.getUint32(16, true);
-  const wide = version >= VERSION_V4;
-  const bloomHashCount = wide ? view.getUint32(20, true) : view.getUint16(20, true);
-  const bloomByteLen = wide ? view.getUint32(24, true) : view.getUint16(22, true);
-  const bloomStart = wide ? 28 : 24;
-  const bloomBits = buf.slice(bloomStart, bloomStart + bloomByteLen);
-  const dataStart = bloomStart + bloomByteLen;
-  const indexStart = dataStart + dataLen;
-  if (indexStart > crcOff) throw new CorruptDatabaseError("sst v2 data OOB");
-  return {
-    view,
-    crcOff,
-    entryCount,
-    blockCount,
-    dataLen,
-    bloom: { bits: bloomBits, hashCount: bloomHashCount },
-    dataStart,
-    indexStart,
-    indexEnd: crcOff,
-    codec: "raw",
-  };
-}
-
-/** v5 to v7 share a footer. v6 adds the codec after the index length. */
-function parseFooterLayout(buf: Uint8Array, version: number): BlockLayout {
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const fields = version >= VERSION_V6 ? 8 : 7;
-  const footer = buf.byteLength - (fields + 3) * 4;
+  const magic = view.getUint32(buf.byteLength - 4, true);
+  if (magic !== SST_MAGIC) throw new CorruptDatabaseError(`bad sst magic ${magic.toString(16)}`);
+  const version = view.getUint32(buf.byteLength - 8, true);
+  if (version !== VERSION) throw new CorruptDatabaseError(`unsupported sst version ${version}`);
+  const footer = buf.byteLength - FOOTER_BYTES;
   const field = (i: number) => view.getUint32(footer + 4 * i, true);
-  const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen] =
-    [0, 1, 2, 3, 4, 5, 6].map(field) as [number, number, number, number, number, number, number];
+  const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen, codecId] =
+    [0, 1, 2, 3, 4, 5, 6, 7].map(field) as [number, number, number, number, number, number, number, number];
   if (indexOffset !== bloomOffset + bloomLen || indexOffset + indexLen !== footer) {
     throw new CorruptDatabaseError("sst footer sections OOB");
   }
-  const codec = fields === 8 ? CODECS[field(7)] : "raw";
-  if (!codec) throw new CorruptDatabaseError(`unsupported sst codec ${field(7)}`);
+  const codec = CODECS[codecId];
+  if (!codec) throw new CorruptDatabaseError(`unsupported sst codec ${codecId}`);
   return {
     view,
-    crcOff: footer + 4 * fields,
+    crcOff: footer + 32,
     entryCount,
     blockCount,
     dataLen: bloomOffset,
@@ -575,7 +482,7 @@ function readBlockIndex(
     o += 4;
     index.push({ firstKey, lastKey, offset, length });
   }
-  if (o !== indexEnd) throw new CorruptDatabaseError("sst v2 index trailing");
+  if (o !== indexEnd) throw new CorruptDatabaseError("sst index trailing");
   return index;
 }
 
@@ -612,13 +519,13 @@ function compareAt(buf: Uint8Array, at: number, len: number, key: Uint8Array, fr
 /**
  * Moves `w` to the first record whose suffix is not below `key` from
  * `w.prefixLen` on, and returns how many records are left from there.
- * A v7 block binary-searches its sampled records, then walks at most
- * `OFFSET_STRIDE` records. Older blocks walk from the start.
+ * A block binary-searches its sampled records, then walks at most
+ * `OFFSET_STRIDE` records.
  */
 function seekSuffix(w: RecordWalker, key: Uint8Array): number {
   const p = w.prefixLen;
   let i = 0;
-  if (w.fmt.prefixed && w.count > OFFSET_STRIDE) {
+  if (w.count > OFFSET_STRIDE) {
     const first = w.o;
     let lo = 0;
     let hi = ((w.count - 1) / OFFSET_STRIDE) | 0;
@@ -658,8 +565,8 @@ function seekInBlock(w: RecordWalker, key: Uint8Array): number {
  * The record for `key` in one block, or undefined. Checks the block prefix
  * once, then compares suffixes in place and copies out only the match.
  */
-function findInBlock(b: BlockBytes, key: Uint8Array, fmt: RecordFormat): SstEntry | undefined {
-  const w = RecordWalker.ofBlock(b, fmt);
+function findInBlock(b: BlockBytes, key: Uint8Array): SstEntry | undefined {
+  const w = RecordWalker.ofBlock(b);
   const p = w.prefixLen;
   if (key.byteLength < p) return undefined;
   for (let i = 0; i < p; i++) if (w.buf[w.prefixAt + i] !== key[i]) return undefined;
@@ -669,25 +576,7 @@ function findInBlock(b: BlockBytes, key: Uint8Array, fmt: RecordFormat): SstEntr
 }
 
 export function decodeSst(buf: Uint8Array): SstEntry[] {
-  if (buf.byteLength < 16) {
-    throw new CorruptDatabaseError("sst too short");
-  }
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const version = sstVersion(buf, view);
-  const crcOff = buf.byteLength - 4;
-
-  if (version === VERSION_V1) {
-    if (crc32(buf.subarray(0, crcOff)) !== view.getUint32(crcOff, true)) {
-      throw new CorruptDatabaseError("sst crc mismatch");
-    }
-    return decodeSstV1(buf, view, crcOff);
-  }
-
-  if (!isBlockVersion(version)) {
-    throw new CorruptDatabaseError(`unsupported sst version ${version}`);
-  }
-
-  const meta = parseBlockLayout(buf, version);
+  const meta = parseFooter(buf);
   if (crc32(buf.subarray(0, meta.crcOff)) !== meta.view.getUint32(meta.crcOff, true)) {
     throw new CorruptDatabaseError("sst crc mismatch");
   }
@@ -700,12 +589,10 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   );
   const out: SstEntry[] = [];
   for (const ix of index) {
-    out.push(
-      ...RecordWalker.ofBlock(blockBytes(buf, meta.view, meta.dataStart, ix, meta.codec), recordFormat(version)).entries(),
-    );
+    out.push(...RecordWalker.ofBlock(blockBytes(buf, meta.view, meta.dataStart, ix, meta.codec)).entries());
   }
   if (out.length !== meta.entryCount) {
-    throw new CorruptDatabaseError("sst v2 entry count mismatch");
+    throw new CorruptDatabaseError("sst entry count mismatch");
   }
   return out;
 }
@@ -719,29 +606,16 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
 export class SstReader {
   private readonly buf: Uint8Array;
   private readonly view: DataView;
-  private readonly version: number;
-  private readonly fmt: RecordFormat;
-  private readonly v1Entries: SstEntry[] | undefined;
-  private readonly bloom: BloomFilter | undefined;
-  private readonly dataStart: number = 0;
-  private readonly index: BlockIndexEntry[] = [];
-  private readonly entryCount: number = 0;
-  private readonly codec: SstCodec = "raw";
+  private readonly bloom: BloomFilter;
+  private readonly dataStart: number;
+  private readonly index: BlockIndexEntry[];
+  private readonly entryCount: number;
+  private readonly codec: SstCodec;
 
   constructor(buf: Uint8Array) {
-    if (buf.byteLength < 16) throw new CorruptDatabaseError("sst too short");
     this.buf = buf;
-    this.view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    this.version = sstVersion(buf, this.view);
-    this.fmt = recordFormat(this.version);
-    if (this.version === VERSION_V1) {
-      this.v1Entries = decodeSst(buf);
-      return;
-    }
-    if (!isBlockVersion(this.version)) {
-      throw new CorruptDatabaseError(`unsupported sst version ${this.version}`);
-    }
-    const meta = parseBlockLayout(buf, this.version);
+    const meta = parseFooter(buf);
+    this.view = meta.view;
     this.bloom = meta.bloom;
     this.dataStart = meta.dataStart;
     this.entryCount = meta.entryCount;
@@ -757,11 +631,6 @@ export class SstReader {
 
   /** The smallest and largest key, or undefined for an empty run. */
   get range(): { smallest: Uint8Array; largest: Uint8Array } | undefined {
-    if (this.version === VERSION_V1) {
-      const entries = this.v1Entries!;
-      if (entries.length === 0) return undefined;
-      return { smallest: entries[0]!.key, largest: entries[entries.length - 1]!.key };
-    }
     const first = this.index[0];
     const last = this.index[this.index.length - 1];
     if (!first || !last || this.entryCount === 0) return undefined;
@@ -769,23 +638,19 @@ export class SstReader {
   }
 
   mightContain(key: Uint8Array): boolean {
-    if (this.version === VERSION_V1) return true;
     const first = this.index[0];
     const last = this.index[this.index.length - 1];
     if (first && compareBytes(key, first.firstKey) < 0) return false;
     if (last && compareBytes(key, last.lastKey) > 0) return false;
-    return bloomMightContain(this.bloom!, key);
+    return bloomMightContain(this.bloom, key);
   }
 
   /** Point lookup that reads one block in place. The block is not retained. */
   get(key: Uint8Array): SstEntry | undefined {
-    if (this.version === VERSION_V1) {
-      return sstGet(this.v1Entries!, key);
-    }
     if (!this.mightContain(key)) return undefined;
     const bi = this.findBlock(key);
     if (bi < 0) return undefined;
-    return findInBlock(this.blockBytes(bi), key, this.fmt);
+    return findInBlock(this.blockBytes(bi), key);
   }
 
   /**
@@ -793,10 +658,7 @@ export class SstReader {
    * Advances to the next block when the current one is exhausted.
    */
   cursor(bounds?: ScanBounds): LayerCursor {
-    if (this.version === VERSION_V1) {
-      return entryCursor(this.v1Entries ?? [], bounds);
-    }
-    return this.v2Cursor(bounds);
+    return this.blockCursor(bounds);
   }
 
   private findBlock(key: Uint8Array): number {
@@ -826,7 +688,7 @@ export class SstReader {
    * Walks blocks in place. The first block seeks to `bounds.start` with
    * its offset table. Each record is copied out once, when it is reached.
    */
-  private v2Cursor(bounds?: ScanBounds): LayerCursor {
+  private blockCursor(bounds?: ScanBounds): LayerCursor {
     const index = this.index;
     const end = bounds?.endExclusive;
     let seek = bounds?.start;
@@ -840,7 +702,7 @@ export class SstReader {
           cur = undefined;
           return;
         }
-        w = RecordWalker.ofBlock(this.blockBytes(bi++), this.fmt);
+        w = RecordWalker.ofBlock(this.blockBytes(bi++));
         left = seek ? seekInBlock(w, seek) : w.count;
         seek = undefined;
       }

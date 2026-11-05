@@ -8,11 +8,7 @@ const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-const GEN_VERSION_V1 = 1;
-/** v1 plus a u64 tombstoneSeq after the generation. */
-const GEN_VERSION_V2 = 2;
-/** v2 plus each run's key range. */
-const GEN_VERSION = 3;
+const GEN_VERSION = 1;
 
 export type KeyRange = {
   readonly smallest: Uint8Array;
@@ -22,7 +18,7 @@ export type KeyRange = {
 export type RunMeta = {
   /** Relative to the db root. Names the level and byte size, see levels.ts. */
   readonly path: string;
-  /** Undefined for a run listed before manifests recorded ranges. */
+  /** Undefined for an empty run, which has no keys. */
   readonly range?: KeyRange;
 };
 
@@ -83,7 +79,7 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
 }
 
 export function decodeGeneration(buf: Uint8Array): GenerationMeta {
-  if (buf.byteLength < 24) {
+  if (buf.byteLength < 32) {
     throw new CorruptDatabaseError("generation too short");
   }
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -91,16 +87,13 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     throw new CorruptDatabaseError("bad generation magic");
   }
   const version = view.getUint32(4, true);
-  if (version !== GEN_VERSION_V1 && version !== GEN_VERSION_V2 && version !== GEN_VERSION) {
+  if (version !== GEN_VERSION) {
     throw new CorruptDatabaseError("bad generation version");
   }
   const generation = Number(view.getBigUint64(8, true));
   let o = 16;
-  let tombstoneSeq = 0;
-  if (version >= GEN_VERSION_V2) {
-    tombstoneSeq = Number(view.getBigUint64(o, true));
-    o += 8;
-  }
+  const tombstoneSeq = Number(view.getBigUint64(o, true));
+  o += 8;
   const runCount = view.getUint32(o, true);
   o += 4;
   const crcOff = buf.byteLength - 4;
@@ -121,7 +114,7 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     o += 2;
     const path = dec.decode(buf.subarray(o, o + len));
     o += len;
-    if (version >= GEN_VERSION && buf[o++] === 1) {
+    if (buf[o++] === 1) {
       const smallest = key();
       runs.push({ path, range: { smallest, largest: key() } });
     } else {

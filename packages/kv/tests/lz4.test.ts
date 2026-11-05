@@ -141,8 +141,19 @@ describe("compaction codec", () => {
   });
 
   it("writes raw runs into L1", async () => {
-    const { out, bytes } = await stepFrom("legacy.sst");
-    expect(out.startsWith("l1/")).toBe(true);
+    const fs = new MemoryFs();
+    const runs = [];
+    for (let i = 0; i < 4; i++) {
+      const body = await encodeSst(todoRows(i * 2_000));
+      const path = `l0/${i}.sst`;
+      await publishRun(fs, path, body);
+      runs.push(runMeta(path, body));
+    }
+    await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0 });
+    const step = await mergeNextStep(fs);
+    const out = step!.outputs[0]!;
+    const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
+    expect(out.path.startsWith("l1/")).toBe(true);
     expect(codecOf(bytes)).toBe(0);
   });
 });

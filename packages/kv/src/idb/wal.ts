@@ -10,9 +10,7 @@ const META_HEAD = "head";
 const META_INGESTED = "ingestedThrough";
 /** The OPFS generation whose runs hold every seq <= ingestedThrough. */
 const META_GENERATION = "generation";
-/** The v5 key-ordered log. Schema v6 rebuilds the WAL from it and drops it. */
-const LEGACY_MEM_STORE = "mem";
-const IDB_VERSION = 6;
+const IDB_VERSION = 1;
 
 /** What a tab needs to bring its memtable up to the WAL head. */
 export type WalTail = {
@@ -45,11 +43,6 @@ function encodeOps(ops: readonly CheckedOp[]): unknown {
   );
 }
 
-/** A record is its encoded ops. Records written before that wrap them as `{ ops }`. */
-function recordOps(value: unknown): unknown {
-  return Array.isArray(value) ? value : (value as { ops?: unknown } | null)?.ops;
-}
-
 function decodeOps(raw: unknown): CheckedOp[] {
   if (!Array.isArray(raw)) throw new CommitError("corrupt wal ops");
   return raw.map((item) => {
@@ -67,74 +60,17 @@ function decodeOps(raw: unknown): CheckedOp[] {
   });
 }
 
-/**
- * Bring an older schema to v6. v2 to v4 already have a seq-keyed WAL. v5
- * kept one row per key, so seqs whose rows were all overwritten are gone.
- * Its uningested rows become one record right after ingestedThrough, which
- * keeps the WAL gap-free. No tab holds a seq across an upgrade.
- */
-function migrate(tx: IDBTransaction, oldVersion: number): void {
-  const db = tx.db;
-  const meta = tx.objectStore(META_STORE);
-  const wal = tx.objectStore(WAL_STORE);
-  const ingestedReq = meta.get(META_INGESTED);
-  ingestedReq.onsuccess = () => {
-    const through = num(ingestedReq.result);
-    if (oldVersion === 5 && db.objectStoreNames.contains(LEGACY_MEM_STORE)) {
-      const ops: unknown[] = [];
-      const cur = tx.objectStore(LEGACY_MEM_STORE).openCursor();
-      cur.onsuccess = () => {
-        const cursor = cur.result;
-        if (cursor) {
-          const row = cursor.value as {
-            seq: number;
-            kind: "put" | "del";
-            value?: ArrayBuffer;
-          };
-          if (row.seq > through) {
-            const op =
-              row.kind === "put"
-                ? { type: "put", key: cursor.key, value: row.value }
-                : { type: "del", key: cursor.key };
-            ops.push(op);
-          }
-          cursor.continue();
-          return;
-        }
-        if (ops.length > 0) wal.put(ops, through + 1);
-        meta.put(ops.length > 0 ? through + 1 : through, META_HEAD);
-        db.deleteObjectStore(LEGACY_MEM_STORE);
-      };
-      return;
-    }
-    if (db.objectStoreNames.contains(LEGACY_MEM_STORE)) {
-      db.deleteObjectStore(LEGACY_MEM_STORE);
-    }
-    const last = wal.openCursor(null, "prev");
-    last.onsuccess = () => {
-      const top = last.result ? (last.result.key as number) : 0;
-      meta.put(Math.max(top, through), META_HEAD);
-    };
-  };
-}
-
 function openIdb(dbName: DbName): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(idbName(dbName), IDB_VERSION);
-    req.onupgradeneeded = (ev) => {
+    req.onupgradeneeded = () => {
       const db = req.result;
-      const tx = req.transaction;
-      if (!tx) throw new CommitError("missing upgrade transaction");
-      if (ev.oldVersion > 0 && ev.oldVersion < 2) {
-        for (const name of [...db.objectStoreNames]) db.deleteObjectStore(name);
-      }
       if (!db.objectStoreNames.contains(META_STORE)) {
         db.createObjectStore(META_STORE);
       }
       if (!db.objectStoreNames.contains(WAL_STORE)) {
         db.createObjectStore(WAL_STORE, { autoIncrement: true });
       }
-      if (ev.oldVersion >= 2) migrate(tx, ev.oldVersion);
     };
     req.onsuccess = () => {
       const db = req.result;
@@ -176,7 +112,7 @@ function readRecords(
       }
       out.push({
         seq: cursor.key as number,
-        ops: decodeOps(recordOps(cursor.value)),
+        ops: decodeOps(cursor.value),
       });
       cursor.continue();
     };
@@ -274,9 +210,9 @@ export class IdBWal {
   /**
    * Append `ops` under the key IndexedDB assigns, with no read before the
    * add. An aborted transaction gives its key back, so committed seqs stay
-   * gapless. Undefined when the assigned key is not past the head, which a
-   * migrated database can hold until one explicit-key append raises its
-   * key generator; the caller then appends with `appendAfter`.
+   * gapless. Undefined when the assigned key is not past the head. The
+   * caller then appends with `appendAfter`, which writes an explicit key
+   * and moves the generator forward.
    */
   async append(ops: readonly CheckedOp[]): Promise<number | undefined> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
@@ -305,7 +241,7 @@ export class IdBWal {
     return seq;
   }
 
-  /** The recorded generation. Undefined for a database made before it was recorded. */
+  /** The recorded generation. Undefined until an ingest records one. */
   async recordedGeneration(): Promise<number | undefined> {
     const tx = this.db.transaction(META_STORE, "readonly");
     const raw = await reqToPromise(tx.objectStore(META_STORE).get(META_GENERATION));
