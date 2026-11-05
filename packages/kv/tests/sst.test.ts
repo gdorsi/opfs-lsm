@@ -11,34 +11,6 @@ import { pointGet, runLevels } from "../src/store/merge.js";
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 
-/** Two entries (put a=1, del b) written by the v2 encoder, before records carried a seq. */
-const V2_FIXTURE =
-  "54534c4f02000000020000000100000015000000070008008d008209207040000200000001010000006101000000310201000000620100000061010000006200000000150000001e2bc0b9";
-
-/** The same two entries with seqs 7 and 9, written by the v3 encoder, before Bloom header fields were u32. */
-const V3_FIXTURE =
-  "54534c4f03000000020000000100000025000000070008008d008209207040000200000001070000000000000001000000610100000031020900000000000000010000006201000000610100000062000000002500000028972ab1";
-
-/** The same two entries, written by the v4 encoder, before the Bloom filter and index moved behind the data. */
-const V4_FIXTURE =
-  "54534c4f0400000002000000010000002500000007000000080000008d008209207040000200000001070000000000000001000000610100000031020900000000000000010000006201000000610100000062000000002500000074971cb3";
-
-/** The same two entries, written by the v5 encoder, before the footer had a codec. */
-const V5_FIXTURE =
-  "020000000107000000000000000100000061010000003102090000000000000001000000628d0082092070400001000000610100000062000000002500000002000000010000002500000008000000070000002d00000012000000ee9a880b0500000054534c4f";
-
-/** The same two entries, written by the v6 encoder, before blocks shared a key prefix. */
-const V6_FIXTURE =
-  "020000000107000000000000000100000061010000003102090000000000000001000000628d0082092070400001000000610100000062000000002500000002000000010000002500000008000000070000002d0000001200000000000000fa1fe8830600000054534c4f";
-
-const drainKeys = (r: SstReader) => {
-  const c = r.cursor();
-  const out: string[] = [];
-  for (let e = c.peek(); e; c.next(), e = c.peek()) out.push(new TextDecoder().decode(e.key));
-  return out;
-};
-const hex = (s: string) => Uint8Array.from(s.match(/../g)!.map((h) => parseInt(h, 16)));
-
 describe("sst", () => {
   it("reads back a run whose Bloom filter is over 64 KiB", () => {
     const n = 60_000;
@@ -55,32 +27,11 @@ describe("sst", () => {
     expect(reader.get(utf("k00060000"))).toBeUndefined();
   });
 
-  it("reads a v3 run with its seqs", () => {
-    expect(decodeSst(hex(V3_FIXTURE)).map((e) => e.seq)).toEqual([7, 9]);
-    expect(new SstReader(hex(V3_FIXTURE)).get(utf("b"))?.seq).toBe(9);
-  });
-
-  it("reads a v4 run with its seqs", () => {
-    expect(decodeSst(hex(V4_FIXTURE)).map((e) => e.seq)).toEqual([7, 9]);
-    expect(new SstReader(hex(V4_FIXTURE)).get(utf("a"))?.seq).toBe(7);
-  });
-
-  it("reads a v5 run with its seqs", () => {
-    expect(decodeSst(hex(V5_FIXTURE)).map((e) => e.seq)).toEqual([7, 9]);
-    expect(new SstReader(hex(V5_FIXTURE)).get(utf("b"))?.kind).toBe("del");
-  });
-
-  it("reads a v6 run with its seqs", () => {
-    expect(decodeSst(hex(V6_FIXTURE)).map((e) => e.seq)).toEqual([7, 9]);
-    expect(new SstReader(hex(V6_FIXTURE)).get(utf("a"))?.seq).toBe(7);
-    expect(drainKeys(new SstReader(hex(V6_FIXTURE)))).toEqual(["a", "b"]);
-  });
-
   it("writes the data first and the footer last", () => {
     const body = encodeSst([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     expect(view.getUint32(0, true)).toBe(1); // first block's record count
-    expect(view.getUint32(body.byteLength - 8, true)).toBe(7); // version
+    expect(view.getUint32(body.byteLength - 8, true)).toBe(1); // version
     expect(view.getUint32(body.byteLength - 4, true)).toBe(0x4f4c5354); // magic
   });
 
@@ -93,13 +44,12 @@ describe("sst", () => {
     expect(new SstReader(body).get(utf("b"))).toEqual({ kind: "del", key: utf("b"), seq: 2 ** 40 });
   });
 
-  it("reads a v2 run, with seq 0", () => {
-    const body = hex(V2_FIXTURE);
-    expect(decodeSst(body)).toEqual([
-      { kind: "put", key: utf("a"), value: utf("1"), seq: 0 },
-      { kind: "del", key: utf("b"), seq: 0 },
-    ]);
-    expect(new SstReader(body).get(utf("a"))?.seq).toBe(0);
+  it("rejects a footer whose version is not 1", () => {
+    const body = encodeSst([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
+    const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
+    view.setUint32(body.byteLength - 8, 7, true);
+    expect(() => decodeSst(body)).toThrow(/unsupported sst version 7/);
+    expect(() => new SstReader(body)).toThrow(/unsupported sst version 7/);
   });
 
   it("round-trips puts and deletes", () => {
@@ -160,7 +110,7 @@ describe("sst", () => {
         ? { kind: "del" as const, key: utf(`k${String(i * 2).padStart(5, "0")}`), seq: i + 1 }
         : { kind: "put" as const, key: utf(`k${String(i * 2).padStart(5, "0")}`), value: utf("v".repeat(i % 50)), seq: i + 1 },
     );
-    const runs = [encodeSst(rows), await encodeWasm(rows, "lz4"), hex(V2_FIXTURE), hex(V5_FIXTURE)];
+    const runs = [encodeSst(rows), await encodeWasm(rows, "lz4")];
     const probes = [utf(""), utf("a"), utf("b"), utf("c"), utf("k"), utf("z")];
     for (let i = 0; i <= 1800; i++) probes.push(utf(`k${String(i).padStart(5, "0")}`), utf(`k${String(i).padStart(5, "0")}x`));
     const show = (e: ReturnType<typeof sstGet>) =>

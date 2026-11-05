@@ -1,29 +1,19 @@
-//! SST format. v1 (single block) and v2 (multi-block + Bloom) decode. v3 is
-//! v2 with a u64 seq after each record tag. v4 is v3 with u32 Bloom header
-//! fields, so a filter can pass 64 KiB. v5 is v4's sections with the Bloom
-//! filter and index after the data, and a fixed footer at the end. v6 is v5
-//! with a codec field in the footer, so data blocks can be LZ4-compressed.
-//! v7 is what encode writes: v6 with each block's common key prefix stored
-//! once and varint lengths in its records.
+//! SST format, version 1. Data blocks first, then the bloom filter, the
+//! block index, and a 44-byte footer. Each block stores its shared key
+//! prefix once; records hold the suffix and use varint lengths. Magic and
+//! version sit in the last 8 bytes.
 //! Must stay byte-compatible with `packages/kv/src/store/sst.ts`.
 
 use crate::bloom::{bloom_add, create_bloom};
 use crate::crc32::crc32;
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
-const VERSION_V1: u32 = 1;
-const VERSION_V2: u32 = 2;
-const VERSION_V3: u32 = 3;
-const VERSION_V4: u32 = 4;
-const VERSION_V5: u32 = 5;
-const VERSION_V6: u32 = 6;
-const VERSION_V7: u32 = 7;
-const FOOTER_V5: usize = 40;
+const VERSION: u32 = 1;
 const FOOTER_BYTES: usize = 44;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 const BLOCK_TARGET: usize = 4 * 1024;
-/// A v7 block stores the offset of every `OFFSET_STRIDE`th record after
+/// A block stores the offset of every `OFFSET_STRIDE`th record after
 /// the first, so a get binary-searches them and walks at most
 /// `OFFSET_STRIDE - 1` records. `packages/kv/src/store/sst.ts` uses the
 /// same stride.
@@ -31,7 +21,7 @@ const OFFSET_STRIDE: usize = 4;
 
 const _: () = assert!(BLOCK_TARGET <= u16::MAX as usize, "a block's offsets are u16");
 
-/// Bytes of a v7 block's offset table: a u16 per sampled record. Only a
+/// Bytes of a block's offset table: a u16 per sampled record. Only a
 /// block of one record can pass the u16 range, and it has no table.
 fn offset_table_bytes(count: usize) -> usize {
     2 * (count.saturating_sub(1) / OFFSET_STRIDE)
@@ -56,7 +46,7 @@ impl Codec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// `seq` is the WAL seq that wrote the entry, or 0 when the SST predates v3.
+/// `seq` is the WAL seq that wrote the entry.
 pub enum Entry {
     Put { key: Vec<u8>, value: Vec<u8>, seq: u64 },
     Del { key: Vec<u8>, seq: u64 },
@@ -98,8 +88,9 @@ impl std::fmt::Display for SstError {
 
 impl std::error::Error for SstError {}
 
-/// An entry's size as a v6 record. v7 records are never larger, so
-/// compaction uses it to cut runs without encoding them.
+/// Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
+/// records use varints and a shared prefix, so they are never larger.
+/// Compaction cuts runs by this without encoding them.
 pub(crate) fn entry_size(e: &Entry) -> usize {
     let mut n = 1 + 8 + 4 + e.key().len();
     if let Entry::Put { value, .. } = e {
@@ -117,6 +108,7 @@ fn read_u32(buf: &[u8], o: usize) -> u32 {
     u32::from_le_bytes(buf[o..o + 4].try_into().unwrap())
 }
 
+#[cfg(test)]
 fn read_u16(buf: &[u8], o: usize) -> u16 {
     u16::from_le_bytes(buf[o..o + 2].try_into().unwrap())
 }
@@ -159,7 +151,7 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
-/// A v7 record's bytes besides its key suffix. The suffix length varint is
+/// A record's bytes besides its key suffix. The suffix length varint is
 /// sized from the whole key, an upper bound that stays fixed as the
 /// block prefix shrinks, so a block is sized from running sums.
 /// `packages/kv/src/store/sst.ts` sizes blocks the same way.
@@ -171,7 +163,7 @@ fn record_overhead(e: &Entry) -> usize {
     }
 }
 
-/// Cut sorted entries into blocks of at most `BLOCK_TARGET` v7 bytes, or one
+/// Cut sorted entries into blocks of at most `BLOCK_TARGET` encoded bytes, or one
 /// entry. A block's prefix shrinks as keys join it, so its size is
 /// recomputed from running key and overhead sums at each entry.
 fn split_blocks<'a>(sorted: &'a [&'a Entry]) -> Vec<&'a [&'a Entry]> {
@@ -200,7 +192,7 @@ fn split_blocks<'a>(sorted: &'a [&'a Entry]) -> Vec<&'a [&'a Entry]> {
     blocks
 }
 
-/// One v7 data block before compression:
+/// One data block before compression:
 ///   u32 count | varint prefixLen | prefix | count records | u16 offsets
 /// The prefix is the longest one shared by every key in the block, which
 /// for sorted keys is the first and last key's. `offsets[j]` is where
@@ -243,11 +235,11 @@ fn write_record(out: &mut Vec<u8>, e: &Entry, prefix_len: usize) {
     }
 }
 
-/// Encode SST v7:
+/// Encode SST version 1:
 ///   data blocks | bloom bits | block index | footer (44 bytes)
 /// The footer is u32 entry count, block count, bloom offset, bloom length,
 /// bloom hash count, index offset, index length, codec, then a u32 CRC of
-/// every byte before it, u32 version 7 and u32 magic.
+/// every byte before it, u32 version 1 and u32 magic.
 pub fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
     sorted.sort_by(|a, b| a.key().cmp(b.key()));
@@ -320,37 +312,10 @@ pub fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
     }
     let sum = crc32(&out[..o]);
     write_u32(&mut out, &mut o, sum);
-    write_u32(&mut out, &mut o, VERSION_V7);
+    write_u32(&mut out, &mut o, VERSION);
     write_u32(&mut out, &mut o, MAGIC);
     debug_assert_eq!(o, out.len());
     out
-}
-
-/// How a version lays out its records. v1 and v2 have no seq. v3 to v6
-/// have a u64 seq and u32 lengths. v7 has a u64 seq, varint lengths, and a
-/// key prefix shared by the block, so a record holds only the key's suffix.
-#[derive(Clone, Copy)]
-struct RecordFormat {
-    seq: bool,
-    prefixed: bool,
-}
-
-impl RecordFormat {
-    fn of(version: u32) -> RecordFormat {
-        RecordFormat { seq: version >= VERSION_V3, prefixed: version >= VERSION_V7 }
-    }
-
-    fn read_len(self, buf: &[u8], o: &mut usize, end: usize) -> Result<usize, SstError> {
-        if self.prefixed {
-            return read_varint(buf, o, end);
-        }
-        if *o + 4 > end {
-            return Err(SstError::Truncated);
-        }
-        let v = read_u32(buf, *o) as usize;
-        *o += 4;
-        Ok(v)
-    }
 }
 
 /// `count` records in `buf[o..end]`, each key after `prefix`.
@@ -359,7 +324,6 @@ fn read_records(
     mut o: usize,
     end: usize,
     count: usize,
-    fmt: RecordFormat,
     prefix: &[u8],
 ) -> Result<Vec<Entry>, SstError> {
     let mut out = Vec::with_capacity(count);
@@ -369,15 +333,12 @@ fn read_records(
         }
         let tag = buf[o];
         o += 1;
-        let mut seq = 0u64;
-        if fmt.seq {
-            if o + 8 > end {
-                return Err(SstError::Truncated);
-            }
-            seq = u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
-            o += 8;
+        if o + 8 > end {
+            return Err(SstError::Truncated);
         }
-        let key_len = fmt.read_len(buf, &mut o, end)?;
+        let seq = u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
+        o += 8;
+        let key_len = read_varint(buf, &mut o, end)?;
         if o + key_len > end {
             return Err(SstError::Truncated);
         }
@@ -387,7 +348,7 @@ fn read_records(
         o += key_len;
         match tag {
             TAG_PUT => {
-                let val_len = fmt.read_len(buf, &mut o, end)?;
+                let val_len = read_varint(buf, &mut o, end)?;
                 if o + val_len > end {
                     return Err(SstError::Truncated);
                 }
@@ -405,36 +366,26 @@ fn read_records(
     Ok(out)
 }
 
-/// One unpacked data block: u32 count, then for v7 a varint prefix length
-/// and the prefix, then the records, then v7's offset table, which a full
-/// decode skips.
-fn read_block(block: &[u8], fmt: RecordFormat) -> Result<Vec<Entry>, SstError> {
+/// One unpacked data block: u32 count, varint prefix length, prefix,
+/// records, then the offset table, which a full decode skips.
+fn read_block(block: &[u8]) -> Result<Vec<Entry>, SstError> {
     if block.len() < 4 {
         return Err(SstError::Truncated);
     }
     let count = read_u32(block, 0) as usize;
     let mut o = 4;
-    let mut end = block.len();
-    let mut prefix: &[u8] = &[];
-    if fmt.prefixed {
-        end = end.checked_sub(offset_table_bytes(count)).ok_or(SstError::Truncated)?;
-        let p = read_varint(block, &mut o, end)?;
-        if o + p > end {
-            return Err(SstError::Truncated);
-        }
-        prefix = &block[o..o + p];
-        o += p;
+    let end = block.len().checked_sub(offset_table_bytes(count)).ok_or(SstError::Truncated)?;
+    let p = read_varint(block, &mut o, end)?;
+    if o + p > end {
+        return Err(SstError::Truncated);
     }
-    read_records(block, o, end, count, fmt, prefix)
+    let prefix = &block[o..o + p];
+    o += p;
+    read_records(block, o, end, count, prefix)
 }
 
-fn decode_v1(buf: &[u8], crc_off: usize) -> Result<Vec<Entry>, SstError> {
-    let count = read_u32(buf, 8) as usize;
-    read_records(buf, 12, crc_off, count, RecordFormat::of(VERSION_V1), &[])
-}
-
-/// Where the sections of a multi-block run are. `crc_off` holds the CRC of
-/// every byte before it.
+/// Where the sections of a run are. `crc_off` holds the CRC of every byte
+/// before it.
 #[derive(Clone, Copy)]
 struct Layout {
     entry_count: usize,
@@ -447,37 +398,12 @@ struct Layout {
     codec: Codec,
 }
 
-fn legacy_layout(buf: &[u8], version: u32) -> Result<Layout, SstError> {
-    if buf.len() < 32 {
+/// Footer is 8 u32 fields, then CRC, version, and magic.
+fn footer_layout(buf: &[u8]) -> Result<Layout, SstError> {
+    if buf.len() < FOOTER_BYTES {
         return Err(SstError::TooShort);
     }
-    let crc_off = buf.len() - 4;
-    let data_len = read_u32(buf, 16) as usize;
-    let data_start = if version >= VERSION_V4 {
-        28 + read_u32(buf, 24) as usize
-    } else {
-        24 + read_u16(buf, 22) as usize
-    };
-    let index_start = data_start + data_len;
-    if index_start > crc_off {
-        return Err(SstError::Truncated);
-    }
-    Ok(Layout {
-        entry_count: read_u32(buf, 8) as usize,
-        block_count: read_u32(buf, 12) as usize,
-        data_start,
-        data_len,
-        index_start,
-        index_end: crc_off,
-        crc_off,
-        codec: Codec::Raw,
-    })
-}
-
-/// v5 to v7 share a footer. v6 adds the codec field after the index length.
-fn footer_layout(buf: &[u8], version: u32) -> Result<Layout, SstError> {
-    let fields = if version >= VERSION_V6 { 8 } else { 7 };
-    let footer = buf.len() - (fields + 3) * 4;
+    let footer = buf.len() - FOOTER_BYTES;
     let field = |i: usize| read_u32(buf, footer + 4 * i) as usize;
     let (bloom_offset, bloom_len, index_offset, index_len) = (field(2), field(3), field(5), field(6));
     if index_offset != bloom_offset + bloom_len || index_offset + index_len != footer {
@@ -490,12 +416,12 @@ fn footer_layout(buf: &[u8], version: u32) -> Result<Layout, SstError> {
         data_len: bloom_offset,
         index_start: index_offset,
         index_end: footer,
-        crc_off: footer + 4 * fields,
-        codec: if fields == 8 { Codec::from_u32(field(7) as u32)? } else { Codec::Raw },
+        crc_off: footer + 32,
+        codec: Codec::from_u32(field(7) as u32)?,
     })
 }
 
-fn decode_blocks(buf: &[u8], layout: &Layout, fmt: RecordFormat) -> Result<Vec<Entry>, SstError> {
+fn decode_blocks(buf: &[u8], layout: &Layout) -> Result<Vec<Entry>, SstError> {
     let Layout { entry_count, block_count, data_start, data_len, index_start, index_end, codec, .. } =
         *layout;
     let mut o = index_start;
@@ -540,7 +466,7 @@ fn decode_blocks(buf: &[u8], layout: &Layout, fmt: RecordFormat) -> Result<Vec<E
                 &unpacked[..]
             }
         };
-        out.extend(read_block(block, fmt)?);
+        out.extend(read_block(block)?);
     }
     if o != index_end {
         return Err(SstError::TrailingGarbage);
@@ -551,45 +477,23 @@ fn decode_blocks(buf: &[u8], layout: &Layout, fmt: RecordFormat) -> Result<Vec<E
     Ok(out)
 }
 
-/// v5 to v7 keep their magic and version in the last 8 bytes. Older
-/// versions keep them in the first 8. v2 to v4 end with a block length,
-/// which is 4 or at least 9, then the CRC. A v1 run passes for v5 to v7
-/// only if its CRC equals the magic.
-fn sst_version(buf: &[u8]) -> Result<u32, SstError> {
-    let n = buf.len();
-    if n >= FOOTER_V5 && read_u32(buf, n - 4) == MAGIC {
-        let version = read_u32(buf, n - 8);
-        let footer = if version >= VERSION_V6 { FOOTER_BYTES } else { FOOTER_V5 };
-        if (VERSION_V5..=VERSION_V7).contains(&version) && n >= footer {
-            return Ok(version);
-        }
+pub fn decode_sst(buf: &[u8]) -> Result<Vec<Entry>, SstError> {
+    if buf.len() < FOOTER_BYTES {
+        return Err(SstError::TooShort);
     }
-    let magic = read_u32(buf, 0);
+    let magic = read_u32(buf, buf.len() - 4);
     if magic != MAGIC {
         return Err(SstError::BadMagic(magic));
     }
-    Ok(read_u32(buf, 4))
-}
-
-pub fn decode_sst(buf: &[u8]) -> Result<Vec<Entry>, SstError> {
-    if buf.len() < 16 {
-        return Err(SstError::TooShort);
+    let version = read_u32(buf, buf.len() - 8);
+    if version != VERSION {
+        return Err(SstError::BadVersion(version));
     }
-    let version = sst_version(buf)?;
-    let layout = match version {
-        VERSION_V1 => None,
-        VERSION_V2 | VERSION_V3 | VERSION_V4 => Some(legacy_layout(buf, version)?),
-        VERSION_V5 | VERSION_V6 | VERSION_V7 => Some(footer_layout(buf, version)?),
-        other => return Err(SstError::BadVersion(other)),
-    };
-    let crc_off = layout.as_ref().map_or(buf.len() - 4, |l| l.crc_off);
-    if read_u32(buf, crc_off) != crc32(&buf[..crc_off]) {
+    let layout = footer_layout(buf)?;
+    if read_u32(buf, layout.crc_off) != crc32(&buf[..layout.crc_off]) {
         return Err(SstError::CrcMismatch);
     }
-    match layout {
-        None => decode_v1(buf, crc_off),
-        Some(layout) => decode_blocks(buf, &layout, RecordFormat::of(version)),
-    }
+    decode_blocks(buf, &layout)
 }
 
 #[cfg(test)]
@@ -604,45 +508,11 @@ mod tests {
             Entry::Put { key: b"c".to_vec(), value: b"3".to_vec(), seq: 1 << 40 },
         ];
         let bytes = encode_sst(&entries, Codec::Raw);
-        assert_eq!(read_u32(&bytes, bytes.len() - 8), VERSION_V7);
+        assert_eq!(read_u32(&bytes, bytes.len() - 8), VERSION);
         let decoded = decode_sst(&bytes).unwrap();
         assert_eq!(decoded[0], Entry::Del { key: b"a".to_vec(), seq: 9 });
         assert_eq!(decoded[1], Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 });
         assert_eq!(decoded[2].seq(), 1 << 40);
-    }
-
-    /// Put a=1 at seq 7 and delete b at seq 9, as the v4 encoder wrote them.
-    const V4_FIXTURE: &str = "54534c4f0400000002000000010000002500000007000000080000008d008209207040000200000001070000000000000001000000610100000031020900000000000000010000006201000000610100000062000000002500000074971cb3";
-
-    fn hex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
-    }
-
-    #[test]
-    fn reads_v4() {
-        let decoded = decode_sst(&hex(V4_FIXTURE)).unwrap();
-        assert_eq!(decoded[0], Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 });
-        assert_eq!(decoded[1], Entry::Del { key: b"b".to_vec(), seq: 9 });
-    }
-
-    /// The same two entries, as the v5 encoder wrote them, before the footer had a codec.
-    const V5_FIXTURE: &str = "020000000107000000000000000100000061010000003102090000000000000001000000628d0082092070400001000000610100000062000000002500000002000000010000002500000008000000070000002d00000012000000ee9a880b0500000054534c4f";
-
-    #[test]
-    fn reads_v5() {
-        let decoded = decode_sst(&hex(V5_FIXTURE)).unwrap();
-        assert_eq!(decoded[0], Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 });
-        assert_eq!(decoded[1], Entry::Del { key: b"b".to_vec(), seq: 9 });
-    }
-
-    /// The same two entries, as the v6 encoder wrote them, with u32 lengths and whole keys.
-    const V6_FIXTURE: &str = "020000000107000000000000000100000061010000003102090000000000000001000000628d0082092070400001000000610100000062000000002500000002000000010000002500000008000000070000002d0000001200000000000000fa1fe8830600000054534c4f";
-
-    #[test]
-    fn reads_v6() {
-        let decoded = decode_sst(&hex(V6_FIXTURE)).unwrap();
-        assert_eq!(decoded[0], Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 });
-        assert_eq!(decoded[1], Entry::Del { key: b"b".to_vec(), seq: 9 });
     }
 
     fn put(key: &[u8], value: &[u8], seq: u64) -> Entry {
@@ -711,10 +581,10 @@ mod tests {
         assert!(count > OFFSET_STRIDE, "{count} records");
         let table = length - offset_table_bytes(count);
         let p = block[4] as usize;
-        let records = read_records(block, 5 + p, table, count, RecordFormat::of(VERSION_V7), &block[5..5 + p]).unwrap();
+        let records = read_records(block, 5 + p, table, count, &block[5..5 + p]).unwrap();
         for j in 1..=(count - 1) / OFFSET_STRIDE {
             let at = read_u16(block, table + 2 * (j - 1)) as usize;
-            let one = read_records(block, at, table, count - j * OFFSET_STRIDE, RecordFormat::of(VERSION_V7), &block[5..5 + p]).unwrap();
+            let one = read_records(block, at, table, count - j * OFFSET_STRIDE, &block[5..5 + p]).unwrap();
             assert_eq!(one[0], records[j * OFFSET_STRIDE], "offset {j}");
         }
     }

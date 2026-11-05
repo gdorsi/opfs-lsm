@@ -18,7 +18,6 @@ import {
 
 const NAME = "generation-coherence";
 const enc = new TextEncoder();
-const dec = new TextDecoder();
 const utf = (s: string) => enc.encode(s);
 
 function mft(generation: number): string {
@@ -74,10 +73,6 @@ afterEach(async () => {
   await wipe();
 });
 
-/** Generation 7, runs l0/3-4.sst and l1/c5-900.sst, tombstoneSeq 2, written by the v2 encoder. */
-const V2_MANIFEST =
-  "4e474c4f0200000007000000000000000200000000000000020000000a006c302f332d342e7373740d006c312f63352d3930302e7373748fcc5d1c";
-
 describe("manifest", () => {
   it("round-trips each run's key range", () => {
     const meta = {
@@ -89,15 +84,6 @@ describe("manifest", () => {
       tombstoneSeq: 4,
     };
     expect(decodeGeneration(encodeGeneration(meta))).toEqual(meta);
-  });
-
-  it("reads a v2 manifest with unbounded runs", () => {
-    const body = Uint8Array.from(V2_MANIFEST.match(/../g)!.map((h) => parseInt(h, 16)));
-    expect(decodeGeneration(body)).toEqual({
-      generation: 7,
-      runs: [{ path: "l0/3-4.sst" }, { path: "l1/c5-900.sst" }],
-      tombstoneSeq: 2,
-    });
   });
 });
 
