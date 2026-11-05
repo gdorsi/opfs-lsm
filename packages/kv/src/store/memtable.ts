@@ -21,12 +21,28 @@ export type WalRecord = {
  * must be applied in seq order with no gaps, so every read sees the state
  * after one WAL prefix.
  */
+function rowBytes(row: MemRow): number {
+  return row.key.byteLength + (row.value?.byteLength ?? 0);
+}
+
 export class Memtable {
   private rows: MemRow[] = [];
   private applied = 0;
+  private ingested = 0;
+  private size = 0;
 
   get appliedThrough(): number {
     return this.applied;
+  }
+
+  /** Key and value bytes of the rows. */
+  get bytes(): number {
+    return this.size;
+  }
+
+  /** WAL records applied since the installed generation's ingestedThrough. */
+  get records(): number {
+    return this.applied - this.ingested;
   }
 
   /** The rows in key order. Callers that keep them past a write copy them. */
@@ -51,8 +67,13 @@ export class Memtable {
           : { key: op.key, seq: record.seq, kind: "del" };
       const i = lowerBoundKeys(this.rows, op.key);
       const at = this.rows[i];
-      if (at && compareBytes(at.key, op.key) === 0) this.rows[i] = row;
-      else this.rows.splice(i, 0, row);
+      if (at && compareBytes(at.key, op.key) === 0) {
+        this.size -= rowBytes(at);
+        this.rows[i] = row;
+      } else {
+        this.rows.splice(i, 0, row);
+      }
+      this.size += rowBytes(row);
     }
     this.applied = record.seq;
     return true;
@@ -63,13 +84,16 @@ export class Memtable {
    * rows it covers, and jump past seqs this table never read.
    */
   advanceTo(through: number): void {
+    this.ingested = Math.max(this.ingested, through);
     if (through > this.applied) {
       this.rows = [];
+      this.size = 0;
       this.applied = through;
       return;
     }
     if (this.rows.some((row) => row.seq <= through)) {
       this.rows = this.rows.filter((row) => row.seq > through);
+      this.size = this.rows.reduce((n, row) => n + rowBytes(row), 0);
     }
   }
 }

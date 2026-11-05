@@ -30,7 +30,7 @@ describe("L0 compaction", () => {
       writerId: "w1",
       fs,
       forceMemory: true,
-      ingestPolicy: { maxBatches: 10_000, maxBytes: 1 << 30, maxDelayMs: 60_000 },
+      ingestPolicy: { maxBatches: 10_000, maxBytes: 1 << 30 },
     });
 
     for (let i = 0; i < 4; i++) {

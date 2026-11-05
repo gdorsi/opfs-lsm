@@ -36,7 +36,7 @@ if (NOBC) {
   });
 }
 
-const quiet = { maxBatches: 1e9, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+const quiet = { maxBatches: 1e9, maxBytes: 1 << 30 };
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 

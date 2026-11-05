@@ -7,7 +7,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const utf = (s: string) => enc.encode(s);
 const text = (b: Uint8Array | undefined) => (b ? dec.decode(b) : undefined);
-const quiet = { maxBatches: 1e9, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+const quiet = { maxBatches: 1e9, maxBytes: 1 << 30 };
 
 function wipe(): Promise<void> {
   return new Promise((resolve, reject) => {

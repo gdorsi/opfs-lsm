@@ -156,7 +156,7 @@ Ingest/compaction stay hidden. Collections may assume cross-tab read-your-writes
 
 ~~Binary SST + generation~~ done (`store/sst.ts`, CRC footers).  
 ~~Browser `openDb` + SharedWorker export~~ done (`workerUrl` + `@opfs-lsm/kv/shared-worker`).  
-~~Ingest triggers~~ done (`ingestPolicy`: maxBatches / maxBytes / maxDelayMs).
+~~Ingest triggers~~ done (`ingestPolicy`: maxBatches / maxBytes, checked on the memtable every tab holds).
 
 ~~Rust `engine-core` + WASM SST/merge~~ (`crates/engine-core`, `crates/engine-wasm`).  
 ~~L0 compaction + reclaim~~ (`host/compact.ts`, threshold 4).

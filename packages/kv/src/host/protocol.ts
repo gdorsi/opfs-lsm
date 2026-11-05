@@ -1,5 +1,10 @@
 export type ClientToHost =
-  | { readonly type: "ingest"; readonly id: number; readonly name: string }
+  | {
+      readonly type: "ingest";
+      readonly id: number;
+      readonly name: string;
+      readonly through: number;
+    }
   | { readonly type: "ping"; readonly id: number };
 
 export type HostToClient =
@@ -16,6 +21,7 @@ export type HostToClient =
   | { readonly type: "pong"; readonly id: number };
 
 export type IngestClient = {
-  ingest(name: string): Promise<{ generation: number }>;
+  /** Flush every WAL record through `through`. A no-op when they are already in OPFS. */
+  ingest(name: string, through: number): Promise<{ generation: number }>;
   close(): void;
 };

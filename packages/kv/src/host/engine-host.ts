@@ -29,12 +29,12 @@ export class EngineHost {
    * Serialize ingest per database name. Opens a fresh IdBWal handle for the
    * shared WAL, publishes L0/generation via AsyncFs, advances ingestedThrough.
    */
-  ingest(name: string): Promise<{ generation: number }> {
+  ingest(name: string, through: number): Promise<{ generation: number }> {
     const dbName = checkDbName(name);
     const prev = this.ingestChain.get(dbName) ?? Promise.resolve();
     const next = prev
       .catch(() => undefined)
-      .then(() => this.runIngest(dbName));
+      .then(() => this.runIngest(dbName, through));
     this.ingestChain.set(
       dbName,
       next.then(
@@ -49,21 +49,27 @@ export class EngineHost {
    * Two SharedWorkers can serve one database, for example two builds whose
    * script URLs differ. A Web Lock per name keeps their ingests apart.
    */
-  private runIngest(dbName: DbName): Promise<{ generation: number }> {
+  private runIngest(
+    dbName: DbName,
+    through: number,
+  ): Promise<{ generation: number }> {
     const locks = (globalThis as { navigator?: { locks?: LockManager } })
       .navigator?.locks;
-    if (!locks) return this.ingestUnlocked(dbName);
+    if (!locks) return this.ingestUnlocked(dbName, through);
     // The DOM lib types the callback's promise as the result, unwrapped at runtime.
     return locks.request(`opfs-lsm-ingest/${dbName}`, () =>
-      this.ingestUnlocked(dbName),
+      this.ingestUnlocked(dbName, through),
     ) as unknown as Promise<{ generation: number }>;
   }
 
-  private async ingestUnlocked(dbName: DbName): Promise<{ generation: number }> {
+  private async ingestUnlocked(
+    dbName: DbName,
+    through: number,
+  ): Promise<{ generation: number }> {
     const fs = await this.fsFor(dbName);
     const wal = await IdBWal.open(dbName);
     try {
-      const result = await ingestAll(wal, fs);
+      const result = await ingestAll(wal, fs, through);
       return { generation: result.generation };
     } finally {
       wal.close();
@@ -85,7 +91,7 @@ export function attachEngineHostPort(
           reply({ type: "pong", id: msg.id });
           return;
         case "ingest": {
-          const { generation } = await host.ingest(msg.name);
+          const { generation } = await host.ingest(msg.name, msg.through);
           reply({ type: "ingest-ok", id: msg.id, generation });
           return;
         }
@@ -150,11 +156,11 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
   port.start?.();
 
   return {
-    ingest(name: string) {
+    ingest(name: string, through: number) {
       const id = nextId++;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        const msg: ClientToHost = { type: "ingest", id, name };
+        const msg: ClientToHost = { type: "ingest", id, name, through };
         port.postMessage(msg);
       });
     },
@@ -168,7 +174,7 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
 
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
-    ingest: (name) => host.ingest(name),
+    ingest: (name, through) => host.ingest(name, through),
     close: () => undefined,
   };
 }

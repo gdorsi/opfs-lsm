@@ -20,13 +20,17 @@ export type IngestResult = {
 
 /**
  * Fold the shared uningested WAL into one L0, publish generation, advance
- * ingestedThrough, then maybe compact L0→sst.
+ * ingestedThrough, then maybe compact L0→sst. Folds nothing when every seq
+ * through `through` is already ingested, so tabs that ask for the same
+ * flush get one L0.
  */
 export async function ingestAll(
   wal: IdBWal,
   fs: AsyncFs,
+  through = Number.POSITIVE_INFINITY,
 ): Promise<IngestResult> {
-  const records = await wal.listUningested();
+  const records =
+    (await wal.getIngestedThrough()) >= through ? [] : await wal.listUningested();
   let generation: number;
   let ingestedThrough: number;
 

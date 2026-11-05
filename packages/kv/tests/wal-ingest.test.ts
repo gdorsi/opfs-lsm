@@ -123,4 +123,25 @@ describe("batch + prefixBound", () => {
     expect(keys).toEqual(["note/1", "note/2"]);
     await db.close();
   });
+
+  it("range reads one state while writes and an ingest land mid-scan", async () => {
+    const db = await openDb({ name: "notes2", writerId: "w1" });
+    await db.batch((tx) => {
+      tx.put(utf("note/1"), utf("x"));
+      tx.put(utf("note/3"), utf("z"));
+    });
+    await db.ingest();
+    await db.put(utf("note/2"), utf("y"));
+    const seen: string[] = [];
+    for await (const e of db.range(prefixBound(utf("note/")))) {
+      seen.push(`${new TextDecoder().decode(e.key)}=${new TextDecoder().decode(e.value)}`);
+      if (seen.length === 1) {
+        await db.put(utf("note/1b"), utf("new"));
+        await db.delete(utf("note/3"));
+        await db.ingest();
+      }
+    }
+    expect(seen).toEqual(["note/1=x", "note/2=y", "note/3=z"]);
+    await db.close();
+  });
 });

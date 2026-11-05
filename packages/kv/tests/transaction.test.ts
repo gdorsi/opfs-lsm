@@ -32,7 +32,7 @@ describe("transaction OCC", () => {
       writerId: "w1",
       fs,
       forceMemory: true,
-      ingestPolicy: { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+      ingestPolicy: { maxBatches: 10_000, maxBytes: 1 << 30 },
     });
     await db.put(utf("n"), utf("1"));
     await db.transaction(async (tx) => {
@@ -51,14 +51,14 @@ describe("transaction OCC", () => {
       writerId: "w1",
       fs,
       forceMemory: true,
-      ingestPolicy: { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+      ingestPolicy: { maxBatches: 10_000, maxBytes: 1 << 30 },
     });
     const b = await openDb({
       name: "txn",
       writerId: "w2",
       fs,
       forceMemory: true,
-      ingestPolicy: { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+      ingestPolicy: { maxBatches: 10_000, maxBytes: 1 << 30 },
     });
     await a.put(utf("k"), utf("a"));
 
@@ -89,7 +89,7 @@ describe("transaction OCC", () => {
       writerId: "w1",
       fs: new MemoryFs(),
       forceMemory: true,
-      ingestPolicy: { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+      ingestPolicy: { maxBatches: 10_000, maxBytes: 1 << 30 },
     });
     await db.put(utf("n"), utf("1"));
     await db.ingest();
@@ -103,7 +103,7 @@ describe("transaction OCC", () => {
 
   it("conflicts when another writer touches a written key", async () => {
     const fs = new MemoryFs();
-    const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+    const policy = { maxBatches: 10_000, maxBytes: 1 << 30 };
     const a = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
     const b = await openDb({ name: "txn", writerId: "w2", fs, forceMemory: true, ingestPolicy: policy });
 
@@ -126,7 +126,7 @@ describe("transaction OCC", () => {
 
   it("conflicts when the other writer's row was ingested before commit", async () => {
     const fs = new MemoryFs();
-    const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+    const policy = { maxBatches: 10_000, maxBytes: 1 << 30 };
     const a = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
     const b = await openDb({ name: "txn", writerId: "w2", fs, forceMemory: true, ingestPolicy: policy });
     await a.put(utf("k"), utf("a"));
@@ -152,7 +152,7 @@ describe("transaction OCC", () => {
 
   it("a long txn commits across an ingest that did not touch its keys", async () => {
     const fs = new MemoryFs();
-    const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+    const policy = { maxBatches: 10_000, maxBytes: 1 << 30 };
     const db = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
     await db.put(utf("x"), utf("0"));
 
@@ -175,7 +175,7 @@ describe("transaction OCC", () => {
 
   it("conflicts when the competing delete's tombstone was compacted away", async () => {
     const fs = new MemoryFs();
-    const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+    const policy = { maxBatches: 10_000, maxBytes: 1 << 30 };
     const db = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
     await db.put(utf("x"), utf("0"));
     await db.ingest();
@@ -208,7 +208,7 @@ describe("transaction OCC", () => {
       writerId: "w1",
       fs,
       forceMemory: true,
-      ingestPolicy: { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+      ingestPolicy: { maxBatches: 10_000, maxBytes: 1 << 30 },
     });
     await db.put(utf("k"), utf("keep"));
     await db.transaction(async (tx) => {
