@@ -21,8 +21,18 @@ afterEach(async () => {
   __resetMemoryFsForTests("lock-db");
 });
 
+/** Cross-host exclusion is the Web Lock. Node 22 has no LockManager. */
+function hasWebLocks(): boolean {
+  return (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks !== undefined;
+}
+
 describe("ingest across two hosts", () => {
-  it("never loses a write when two SharedWorkers ingest at once", async () => {
+  it("never loses a write when two SharedWorkers ingest at once", async (ctx) => {
+    if (!hasWebLocks()) {
+      ctx.skip(
+        "navigator.locks is missing, so two hosts are not serialized. Node 24 and CI have the Web Lock API; Node 22 does not.",
+      );
+    }
     const fs = new MemoryFs();
     const policy = { maxWalBytes: 1e12 };
     const a = await openHarnessDb({
