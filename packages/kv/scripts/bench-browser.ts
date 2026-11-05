@@ -4,6 +4,7 @@
  *   pnpm --filter @opfs-lsm/kv build && pnpm bench:browser
  *   BENCH_N=100 pnpm bench:browser
  *   BENCH_LOCAL=1 pnpm bench:browser
+ *   BENCH_PAGE=latency BENCH_N=100000 pnpm bench:browser
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -16,6 +17,8 @@ import ts from "typescript";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const N = Number(process.env.BENCH_N ?? 200);
+const PAGE = process.env.BENCH_PAGE ?? "browser";
+const QUERY = process.env.BENCH_QUERY ? `&${process.env.BENCH_QUERY}` : "";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -100,6 +103,9 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, {
       "content-type": contentType(filePath),
       "cache-control": "no-store",
+      // Cross-origin isolation lifts performance.now() from 100 µs to 5 µs steps.
+      "cross-origin-opener-policy": "same-origin",
+      "cross-origin-embedder-policy": "require-corp",
     });
     res.end(body);
   });
@@ -115,7 +121,7 @@ if (!address || typeof address === "string") {
 const { port } = address;
 // SharedWorker is the default. BENCH_LOCAL=1 opens the page with local=1.
 const local = process.env.BENCH_LOCAL === "1" ? "&local=1" : "";
-const target = `http://127.0.0.1:${port}/bench/browser.html?auto=1&n=${N}${local}`;
+const target = `http://127.0.0.1:${port}/bench/${PAGE}.html?auto=1&n=${N}${local}${QUERY}`;
 const profile = path.join(root, ".bench-chrome-profile");
 fs.rmSync(profile, { recursive: true, force: true });
 fs.mkdirSync(profile, { recursive: true });
@@ -148,7 +154,7 @@ chrome.stdout?.on("data", (d: Buffer) => {
   if (process.env.BENCH_VERBOSE) process.stdout.write(d);
 });
 
-const timeoutMs = 120_000;
+const timeoutMs = Number(process.env.BENCH_TIMEOUT_MS ?? 120_000);
 const timed = Promise.race([
   resultsPromise,
   sleep(timeoutMs).then(() => {

@@ -23,6 +23,7 @@
     "bench": "tsx scripts/bench-browser.ts",
     "bench:browser": "tsx scripts/bench-browser.ts",
     "two-tab": "pnpm run build && tsx scripts/two-tab.ts",
+    "bench:latency": "BENCH_PAGE=latency BENCH_N=${BENCH_N:-100000} BENCH_TIMEOUT_MS=900000 tsx scripts/bench-browser.ts",
     "bench:gate": "tsx scripts/bench-gate.ts",
     "bench:aged": "tsx scripts/aged.ts",
     "bench:compaction": "tsx scripts/compaction-cost.ts",
