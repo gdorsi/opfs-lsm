@@ -23,6 +23,19 @@ const FOOTER_BYTES: usize = 44;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 const BLOCK_TARGET: usize = 4 * 1024;
+/// A v7 block stores the offset of every `OFFSET_STRIDE`th record after
+/// the first, so a get binary-searches them and walks at most
+/// `OFFSET_STRIDE - 1` records. `packages/kv/src/store/sst.ts` uses the
+/// same stride.
+const OFFSET_STRIDE: usize = 4;
+
+const _: () = assert!(BLOCK_TARGET <= u16::MAX as usize, "a block's offsets are u16");
+
+/// Bytes of a v7 block's offset table: a u16 per sampled record. Only a
+/// block of one record can pass the u16 range, and it has no table.
+fn offset_table_bytes(count: usize) -> usize {
+    2 * (count.saturating_sub(1) / OFFSET_STRIDE)
+}
 
 /// How a run stores its data blocks. An LZ4 block is a u32 uncompressed
 /// length followed by the LZ4 block-format bytes.
@@ -169,8 +182,8 @@ fn split_blocks<'a>(sorted: &'a [&'a Entry]) -> Vec<&'a [&'a Entry]> {
         if i > start {
             let p = common_prefix(sorted[start].key(), e.key());
             let n = i + 1 - start;
-            let size =
-                4 + varint_len(p) + p + overhead + record_overhead(e) + keys + e.key().len() - n * p;
+            let size = 4 + varint_len(p) + p + overhead + record_overhead(e) + keys + e.key().len() - n * p
+                + offset_table_bytes(n);
             if size > BLOCK_TARGET {
                 blocks.push(&sorted[start..i]);
                 start = i;
@@ -188,9 +201,10 @@ fn split_blocks<'a>(sorted: &'a [&'a Entry]) -> Vec<&'a [&'a Entry]> {
 }
 
 /// One v7 data block before compression:
-///   u32 count | varint prefixLen | prefix | count records
+///   u32 count | varint prefixLen | prefix | count records | u16 offsets
 /// The prefix is the longest one shared by every key in the block, which
-/// for sorted keys is the first and last key's.
+/// for sorted keys is the first and last key's. `offsets[j]` is where
+/// record `(j + 1) * OFFSET_STRIDE` starts, from the start of the block.
 fn encode_block(block: &[&Entry]) -> Vec<u8> {
     let p = match (block.first(), block.last()) {
         (Some(a), Some(b)) => common_prefix(a.key(), b.key()),
@@ -202,9 +216,14 @@ fn encode_block(block: &[&Entry]) -> Vec<u8> {
     if let Some(first) = block.first() {
         out.extend_from_slice(&first.key()[..p]);
     }
-    for e in block {
+    let mut offsets = Vec::with_capacity(offset_table_bytes(block.len()));
+    for (i, e) in block.iter().enumerate() {
+        if i > 0 && i % OFFSET_STRIDE == 0 {
+            offsets.extend_from_slice(&(out.len() as u16).to_le_bytes());
+        }
         write_record(&mut out, e, p);
     }
+    out.extend_from_slice(&offsets);
     out
 }
 
@@ -387,23 +406,26 @@ fn read_records(
 }
 
 /// One unpacked data block: u32 count, then for v7 a varint prefix length
-/// and the prefix, then the records.
+/// and the prefix, then the records, then v7's offset table, which a full
+/// decode skips.
 fn read_block(block: &[u8], fmt: RecordFormat) -> Result<Vec<Entry>, SstError> {
     if block.len() < 4 {
         return Err(SstError::Truncated);
     }
     let count = read_u32(block, 0) as usize;
     let mut o = 4;
+    let mut end = block.len();
     let mut prefix: &[u8] = &[];
     if fmt.prefixed {
-        let p = read_varint(block, &mut o, block.len())?;
-        if o + p > block.len() {
+        end = end.checked_sub(offset_table_bytes(count)).ok_or(SstError::Truncated)?;
+        let p = read_varint(block, &mut o, end)?;
+        if o + p > end {
             return Err(SstError::Truncated);
         }
         prefix = &block[o..o + p];
         o += p;
     }
-    read_records(block, o, block.len(), count, fmt, prefix)
+    read_records(block, o, end, count, fmt, prefix)
 }
 
 fn decode_v1(buf: &[u8], crc_off: usize) -> Result<Vec<Entry>, SstError> {
@@ -675,6 +697,34 @@ mod tests {
         assert!(blocks > 1);
         assert!(data_len / blocks > BLOCK_TARGET * 9 / 10, "{} bytes per block", data_len / blocks);
         assert!(data_len / blocks <= BLOCK_TARGET);
+    }
+
+    #[test]
+    fn offsets_point_at_every_stride_th_record() {
+        let entries = index_rows(3_000);
+        let bytes = encode_sst(&entries, Codec::Raw);
+        let index_start = read_u32(&bytes, bytes.len() - FOOTER_BYTES + 4 * 5) as usize;
+        let o = index_start + 4 + read_u32(&bytes, index_start) as usize;
+        let length = read_u32(&bytes, o + 4 + read_u32(&bytes, o) as usize + 4) as usize;
+        let block = &bytes[..length];
+        let count = read_u32(block, 0) as usize;
+        assert!(count > OFFSET_STRIDE, "{count} records");
+        let table = length - offset_table_bytes(count);
+        let p = block[4] as usize;
+        let records = read_records(block, 5 + p, table, count, RecordFormat::of(VERSION_V7), &block[5..5 + p]).unwrap();
+        for j in 1..=(count - 1) / OFFSET_STRIDE {
+            let at = read_u16(block, table + 2 * (j - 1)) as usize;
+            let one = read_records(block, at, table, count - j * OFFSET_STRIDE, RecordFormat::of(VERSION_V7), &block[5..5 + p]).unwrap();
+            assert_eq!(one[0], records[j * OFFSET_STRIDE], "offset {j}");
+        }
+    }
+
+    #[test]
+    fn a_record_past_u16_offsets_gets_a_block_of_its_own() {
+        let big = vec![7u8; 70_000];
+        round_trip(vec![put(b"a", b"1", 1), put(b"b", &big, 2), put(b"c", b"3", 3)]);
+        let bytes = encode_sst(&[put(b"a", b"1", 1), put(b"b", &big, 2), put(b"c", b"3", 3)], Codec::Raw);
+        assert_eq!(read_u32(&bytes, bytes.len() - FOOTER_BYTES + 4), 3, "one block per entry");
     }
 
     #[test]
