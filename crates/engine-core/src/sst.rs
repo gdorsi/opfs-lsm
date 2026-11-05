@@ -147,8 +147,9 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
 }
 
 /// A v7 record's bytes besides its key suffix. The suffix length varint is
-/// sized from the whole key, an upper bound that keeps block splitting O(1)
-/// per entry. `packages/kv/src/store/sst.ts` sizes blocks the same way.
+/// sized from the whole key, an upper bound that stays fixed as the
+/// block prefix shrinks, so a block is sized from running sums.
+/// `packages/kv/src/store/sst.ts` sizes blocks the same way.
 fn record_overhead(e: &Entry) -> usize {
     let n = 1 + 8 + varint_len(e.key().len());
     match e {

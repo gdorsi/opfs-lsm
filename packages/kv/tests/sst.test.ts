@@ -27,6 +27,16 @@ const V4_FIXTURE =
 const V5_FIXTURE =
   "020000000107000000000000000100000061010000003102090000000000000001000000628d0082092070400001000000610100000062000000002500000002000000010000002500000008000000070000002d00000012000000ee9a880b0500000054534c4f";
 
+/** The same two entries, written by the v6 encoder, before blocks shared a key prefix. */
+const V6_FIXTURE =
+  "020000000107000000000000000100000061010000003102090000000000000001000000628d0082092070400001000000610100000062000000002500000002000000010000002500000008000000070000002d0000001200000000000000fa1fe8830600000054534c4f";
+
+const drainKeys = (r: SstReader) => {
+  const c = r.cursor();
+  const out: string[] = [];
+  for (let e = c.peek(); e; c.next(), e = c.peek()) out.push(new TextDecoder().decode(e.key));
+  return out;
+};
 const hex = (s: string) => Uint8Array.from(s.match(/../g)!.map((h) => parseInt(h, 16)));
 
 describe("sst", () => {
@@ -60,11 +70,17 @@ describe("sst", () => {
     expect(new SstReader(hex(V5_FIXTURE)).get(utf("b"))?.kind).toBe("del");
   });
 
+  it("reads a v6 run with its seqs", () => {
+    expect(decodeSst(hex(V6_FIXTURE)).map((e) => e.seq)).toEqual([7, 9]);
+    expect(new SstReader(hex(V6_FIXTURE)).get(utf("a"))?.seq).toBe(7);
+    expect(drainKeys(new SstReader(hex(V6_FIXTURE)))).toEqual(["a", "b"]);
+  });
+
   it("writes the data first and the footer last", () => {
     const body = encodeSst([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     expect(view.getUint32(0, true)).toBe(1); // first block's record count
-    expect(view.getUint32(body.byteLength - 8, true)).toBe(6); // version
+    expect(view.getUint32(body.byteLength - 8, true)).toBe(7); // version
     expect(view.getUint32(body.byteLength - 4, true)).toBe(0x4f4c5354); // magic
   });
 
