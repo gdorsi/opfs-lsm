@@ -1,9 +1,9 @@
-import { checkDbName, type DbName } from "../check.js";
+import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { loadLatestGeneration } from "../store/generation.js";
 import { installStep, mergeNextStep } from "./compact.js";
-import { ingestAll } from "./ingest.js";
+import { ingestAll, type IngestResult } from "./ingest.js";
 import {
   layersChannel,
   type ClientToHost,
@@ -15,6 +15,30 @@ export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
+
+/**
+ * What the host knows about one database's WAL waiting for ingest. Appends
+ * arrive as BroadcastChannel hints, so `pendingBytes` can drift from the
+ * WAL. Every ingest reads the WAL itself, and every watch measures it again.
+ */
+type IngestWatch = {
+  /** The smallest limit any watching tab asked for. */
+  maxWalBytes: number;
+  /** Op bytes heard or measured and not yet folded into a run. */
+  pendingBytes: number;
+  /**
+   * The `pendingBytes` level that starts an ingest. A failure raises it by
+   * `maxWalBytes`, so a retry waits for more writes instead of looping.
+   */
+  triggerAt: number;
+  state: "idle" | "ingesting";
+  /** Open tabs that asked for this watch. The bus closes at zero. */
+  watchers: number;
+  bus: BroadcastChannel | undefined;
+};
+
+/** The `append` messages tabs post on `layersChannel` (see `DbImpl.broadcast`). */
+type AppendHint = { readonly kind: string; readonly ops?: readonly CheckedOp[] };
 
 /**
  * OPFS publisher + ingest owner. Runs in the SharedWorker in production;
@@ -31,6 +55,7 @@ export class EngineHost {
   private readonly chains = new Map<string, Promise<unknown>>();
   private readonly compactions = new Map<string, Promise<void>>();
   private readonly compactAgain = new Set<string>();
+  private readonly watches = new Map<DbName, IngestWatch>();
 
   constructor(private readonly fsFactory: FsFactory) {}
 
@@ -54,17 +79,107 @@ export class EngineHost {
     settle = false,
   ): Promise<{ generation: number }> {
     const dbName = checkDbName(name);
-    const fs = await this.fsFor(dbName);
-    const { generation } = await this.exclusive(dbName, () =>
-      this.withWal(dbName, (wal) => ingestAll(wal, fs, through)),
-    );
+    const { generation } = await this.fold(dbName, through);
     const compaction = this.compact(dbName);
     if (!settle) {
       compaction.catch(() => undefined);
       return { generation };
     }
     await compaction;
+    const fs = await this.fsFor(dbName);
     return { generation: (await loadLatestGeneration(fs))?.generation ?? 0 };
+  }
+
+  private async fold(dbName: DbName, through: number): Promise<IngestResult> {
+    const fs = await this.fsFor(dbName);
+    const result = await this.exclusive(dbName, () =>
+      this.withWal(dbName, (wal) => ingestAll(wal, fs, through)),
+    );
+    const watch = this.watches.get(dbName);
+    if (watch) {
+      watch.pendingBytes = Math.max(0, watch.pendingBytes - result.foldedBytes);
+      watch.triggerAt = watch.maxWalBytes;
+    }
+    return result;
+  }
+
+  /**
+   * Ingest `name` on the host's own once its WAL passes `maxWalBytes`, with
+   * no tab asking. Measures the WAL already waiting in the background and
+   * ingests it if needed, so a reopened database catches up.
+   */
+  watch(name: string, maxWalBytes: number): void {
+    const dbName = checkDbName(name);
+    const watch = this.watches.get(dbName) ?? this.startWatch(dbName, maxWalBytes);
+    watch.watchers += 1;
+    watch.maxWalBytes = Math.min(watch.maxWalBytes, maxWalBytes);
+    watch.triggerAt = watch.maxWalBytes;
+    void this.withWal(dbName, (wal) => wal.listUningested()).then(
+      (records) => {
+        const waiting = records.reduce((n, r) => n + opsBytes(r.ops), 0);
+        watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
+        this.maybeIngest(dbName, watch);
+      },
+      (err: unknown) =>
+        console.error(`opfs-lsm: reading the WAL of ${dbName} failed`, err),
+    );
+  }
+
+  unwatch(name: string): void {
+    const dbName = checkDbName(name);
+    const watch = this.watches.get(dbName);
+    if (!watch || --watch.watchers > 0) return;
+    watch.bus?.close();
+    this.watches.delete(dbName);
+  }
+
+  private startWatch(dbName: DbName, maxWalBytes: number): IngestWatch {
+    const watch: IngestWatch = {
+      maxWalBytes,
+      pendingBytes: 0,
+      triggerAt: maxWalBytes,
+      state: "idle",
+      watchers: 0,
+      bus: undefined,
+    };
+    if (typeof BroadcastChannel !== "undefined") {
+      watch.bus = new BroadcastChannel(layersChannel(dbName));
+      watch.bus.onmessage = (ev: MessageEvent<AppendHint | null>) => {
+        if (ev.data?.kind !== "append" || !ev.data.ops) return;
+        watch.pendingBytes += opsBytes(ev.data.ops);
+        this.maybeIngest(dbName, watch);
+      };
+    }
+    this.watches.set(dbName, watch);
+    return watch;
+  }
+
+  /** One ingest in flight per watch; it checks again when it finishes. */
+  private maybeIngest(dbName: DbName, watch: IngestWatch): void {
+    if (
+      watch.state !== "idle" ||
+      watch.pendingBytes < watch.triggerAt ||
+      this.watches.get(dbName) !== watch
+    ) {
+      return;
+    }
+    watch.state = "ingesting";
+    void (async () => {
+      try {
+        const { foldedBytes } = await this.fold(dbName, Number.POSITIVE_INFINITY);
+        if (foldedBytes > 0) announceGeneration(dbName);
+        // Nothing was waiting, so the count was ahead of the WAL. Without
+        // this, it would stay over the trigger and ingest in a loop.
+        else watch.pendingBytes = 0;
+        this.compact(dbName).catch(() => undefined);
+      } catch (err) {
+        console.error(`opfs-lsm: ingest of ${dbName} failed`, err);
+        watch.triggerAt = watch.pendingBytes + watch.maxWalBytes;
+      } finally {
+        watch.state = "idle";
+      }
+      this.maybeIngest(dbName, watch);
+    })();
   }
 
   private exclusive<T>(dbName: DbName, fn: () => Promise<T>): Promise<T> {
@@ -168,6 +283,13 @@ export function attachEngineHostPort(
           reply({ type: "ingest-ok", id: msg.id, generation });
           return;
         }
+        case "watch":
+          host.watch(msg.name, msg.maxWalBytes);
+          reply({ type: "watch-ok", id: msg.id });
+          return;
+        case "unwatch":
+          host.unwatch(msg.name);
+          return;
         default: {
           const _exhaustive: never = msg;
           void _exhaustive;
@@ -191,51 +313,38 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
   let nextId = 1;
   const pending = new Map<
     number,
-    {
-      resolve: (v: { generation: number }) => void;
-      reject: (e: Error) => void;
-    }
+    { resolve: (v: HostToClient) => void; reject: (e: Error) => void }
   >();
 
   const onMessage = (ev: MessageEvent<HostToClient>) => {
     const msg = ev.data;
-    switch (msg.type) {
-      case "ingest-ok": {
-        const p = pending.get(msg.id);
-        if (p) {
-          pending.delete(msg.id);
-          p.resolve({ generation: msg.generation });
-        }
-        return;
-      }
-      case "err": {
-        const p = pending.get(msg.id);
-        if (p) {
-          pending.delete(msg.id);
-          p.reject(new Error(msg.message));
-        }
-        return;
-      }
-      case "pong":
-        return;
-      default: {
-        const _exhaustive: never = msg;
-        void _exhaustive;
-      }
-    }
+    const p = pending.get(msg.id);
+    if (!p) return;
+    pending.delete(msg.id);
+    if (msg.type === "err") p.reject(new Error(msg.message));
+    else p.resolve(msg);
   };
   const listener = onMessage as unknown as EventListener;
   port.addEventListener("message", listener);
   port.start?.();
 
+  const request = (msg: ClientToHost & { id: number }) =>
+    new Promise<HostToClient>((resolve, reject) => {
+      pending.set(msg.id, { resolve, reject });
+      port.postMessage(msg);
+    });
+
   return {
-    ingest(name: string, through: number, settle = false) {
-      const id = nextId++;
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        const msg: ClientToHost = { type: "ingest", id, name, through, settle };
-        port.postMessage(msg);
-      });
+    async ingest(name: string, through: number, settle = false) {
+      const res = await request({ type: "ingest", id: nextId++, name, through, settle });
+      return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
+    },
+    async watch(name, policy) {
+      await request({ type: "watch", id: nextId++, name, maxWalBytes: policy.maxWalBytes });
+    },
+    unwatch(name) {
+      const msg: ClientToHost = { type: "unwatch", name };
+      port.postMessage(msg);
     },
     close() {
       port.removeEventListener("message", listener);
@@ -248,6 +357,8 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
     ingest: (name, through, settle) => host.ingest(name, through, settle),
+    watch: async (name, policy) => host.watch(name, policy.maxWalBytes),
+    unwatch: (name) => host.unwatch(name),
     close: () => undefined,
   };
 }

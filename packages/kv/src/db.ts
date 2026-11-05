@@ -23,7 +23,7 @@ import {
 } from "./host/engine-host.js";
 import { layersChannel, type IngestClient } from "./host/protocol.js";
 import { IdBWal, type WalTail } from "./idb/wal.js";
-import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
+import { Memtable, type MemRow } from "./store/memtable.js";
 import type { ScanBounds } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import type { AsyncFs } from "./opfs/async-fs.js";
@@ -80,7 +80,7 @@ export type HarnessOpenOptions = OpenOptions & {
   readonly ingest?: IngestClient;
   /** Stable writer id (tests / debugging). Default: random UUID. */
   readonly writerId?: string;
-  /** When the memtable flushes to an OPFS run. */
+  /** When the ingest host flushes the WAL to an OPFS run. */
   readonly ingestPolicy?: Partial<IngestPolicy>;
   /**
    * Force the Node/test path (MemoryFs + local host) even in a browser.
@@ -114,8 +114,8 @@ export interface Db {
   delete(key: Uint8Array): Promise<void>;
   /**
    * `build` runs synchronously. Promise resolves after the shared IDB WAL
-   * commit. Other tabs see the write on their next get. The memtable flushes
-   * to OPFS per ingestPolicy.
+   * commit. Other tabs see the write on their next get. The ingest host
+   * flushes the WAL to OPFS per ingestPolicy.
    */
   batch(build: (tx: BatchTx) => void): Promise<void>;
   /**
@@ -264,10 +264,10 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     wal,
     fs,
     ingest,
-    policy,
     ownsIngestClient,
   );
   await db.sync();
+  await ingest.watch(name, policy);
   return db;
 }
 
@@ -326,7 +326,6 @@ const GENERATION_GONE =
  */
 class DbImpl implements Db {
   private closed = false;
-  private flushing: Promise<unknown> = Promise.resolve();
   private readonly mem = new Memtable();
   private installed: Layers = {
     generation: 0,
@@ -351,7 +350,6 @@ class DbImpl implements Db {
     private readonly wal: IdBWal,
     private readonly fs: AsyncFs,
     private readonly ingestClient: IngestClient,
-    private readonly policy: IngestPolicy,
     private readonly ownsIngestClient: boolean,
   ) {
     if (typeof BroadcastChannel !== "undefined") {
@@ -364,7 +362,7 @@ class DbImpl implements Db {
   private onMessage(data: BusMessage | null): void {
     if (this.closed || !data || data.writerId === this.writerId) return;
     if (data.kind === "append" && data.seq !== undefined && data.ops) {
-      if (!this.apply({ seq: data.seq, ops: data.ops })) {
+      if (!this.mem.apply({ seq: data.seq, ops: data.ops })) {
         void this.sync().catch(() => undefined);
       }
     } else {
@@ -382,53 +380,12 @@ class DbImpl implements Db {
   }
 
   private broadcast(message: BusMessage): void {
+    if (this.closed) return;
     this.bus?.postMessage(message);
   }
 
   private emitChange(event: ChangeEvent): void {
     this.changeBus.emit(event);
-  }
-
-  /** Ask the ingest host to flush every record through `through`. */
-  private flush(
-    through: number,
-    settle = false,
-  ): Promise<{ generation: number }> {
-    const before = this.installed.generation;
-    const run = this.flushing
-      .catch(() => undefined)
-      .then(async () => {
-        const result = await this.ingestClient.ingest(
-          this.name,
-          through,
-          settle,
-        );
-        if (result.generation !== before) {
-          this.emitChange({ kind: "ingest", writerId: this.writerId });
-          this.broadcast({ kind: "ingest", writerId: this.writerId });
-        }
-        void this.sync().catch(() => undefined);
-        return result;
-      });
-    this.flushing = run;
-    return run;
-  }
-
-  /**
-   * Apply `record` to the memtable. The record that takes the waiting WAL
-   * bytes past a multiple of the limit is the same in every tab, so each tab
-   * asks for the same flush and the host runs it once. Later multiples retry
-   * a flush that failed.
-   */
-  private apply(record: WalRecord): boolean {
-    const was = { seq: this.mem.appliedThrough, walBytes: this.mem.walBytes };
-    if (!this.mem.apply(record)) return false;
-    if (this.mem.appliedThrough === was.seq || this.closed) return true;
-    const { maxWalBytes } = this.policy;
-    if (Math.floor(this.mem.walBytes / maxWalBytes) > Math.floor(was.walBytes / maxWalBytes)) {
-      void this.flush(record.seq).catch(() => undefined);
-    }
-    return true;
   }
 
   /** Readers for exactly `generation`, loading them when needed. */
@@ -482,7 +439,7 @@ class DbImpl implements Db {
       this.mem.advanceTo(tail.ingestedThrough);
     }
     for (const record of tail.records) {
-      if (!this.apply(record)) {
+      if (!this.mem.apply(record)) {
         throw new CommitError(`wal gap before seq ${record.seq}`);
       }
     }
@@ -540,7 +497,7 @@ class DbImpl implements Db {
       });
       if (out) {
         if (out.seq !== undefined) {
-          if (!this.apply({ seq: out.seq, ops: out.ops })) await this.sync();
+          if (!this.mem.apply({ seq: out.seq, ops: out.ops })) await this.sync();
           this.emitChange({ kind: "append", writerId: this.writerId, seq: out.seq });
           this.broadcast({
             kind: "append",
@@ -655,7 +612,16 @@ class DbImpl implements Db {
 
   async ingest(): Promise<{ generation: number }> {
     this.ensureOpen();
-    const result = await this.flush(Number.POSITIVE_INFINITY, true);
+    const before = this.installed.generation;
+    const result = await this.ingestClient.ingest(
+      this.name,
+      Number.POSITIVE_INFINITY,
+      true,
+    );
+    if (result.generation !== before) {
+      this.emitChange({ kind: "ingest", writerId: this.writerId });
+      this.broadcast({ kind: "ingest", writerId: this.writerId });
+    }
     await this.sync();
     return result;
   }
@@ -668,6 +634,7 @@ class DbImpl implements Db {
       this.bus.removeEventListener("message", this.onBusMessage);
       this.bus.close();
     }
+    this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
     this.wal.close();
   }

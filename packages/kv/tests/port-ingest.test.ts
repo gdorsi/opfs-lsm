@@ -1,14 +1,16 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EngineHost,
   MemoryFs,
   attachEngineHostPort,
+  createLocalIngestClient,
   createPortIngestClient
 } from "../src/index.js";
 import {
   openHarnessDb,
   __resetMemoryFsForTests
 } from "../src/testing.js";
+import { loadLatestGeneration } from "../src/store/generation.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
@@ -61,6 +63,31 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     port2.close();
   });
 
+  it("the host behind the port ingests once the WAL passes maxWalBytes", async () => {
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, host);
+    const ingest = createPortIngestClient(port2);
+    const db = await openHarnessDb({
+      name: "port-db",
+      writerId: "w1",
+      fs,
+      ingest,
+      ingestPolicy: { maxWalBytes: 100 },
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    await db.put(utf("k"), new Uint8Array(150));
+    await vi.waitFor(
+      async () => expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1),
+      { timeout: 2000, interval: 5 },
+    );
+    await db.close();
+    ingest.close();
+    port1.close();
+    port2.close();
+  });
+
   it("serializes concurrent ingest calls on one host", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
@@ -68,10 +95,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
       name: "port-db",
       writerId: "w1",
       fs,
-      ingest: {
-        ingest: (n) => host.ingest(n),
-        close: () => undefined,
-      },
+      ingest: createLocalIngestClient(host),
     });
     await a.put(utf("a"), utf("1"));
     const [g1, g2] = await Promise.all([a.ingest(), a.ingest()]);

@@ -15,24 +15,6 @@ function seqs(rows: readonly MemRow[]): number[] {
 }
 
 describe("Memtable", () => {
-  it("counts the op bytes of records above ingestedThrough, overwrites and deletes included", () => {
-    const mem = new Memtable();
-    const k = new TextEncoder().encode("key") as CheckedKey;
-    const v = new Uint8Array(7) as CheckedValue;
-    const put: CheckedOp = { type: "put", key: k, value: v };
-    const del: CheckedOp = { type: "del", key: k };
-    mem.apply({ seq: 1, ops: [put] });
-    mem.apply({ seq: 2, ops: [put, put] });
-    mem.apply({ seq: 3, ops: [del] });
-    expect(mem.walBytes).toBe(10 + 20 + 3);
-    mem.advanceTo(2);
-    expect(mem.walBytes).toBe(3);
-    mem.advanceTo(5);
-    expect(mem.walBytes).toBe(0);
-    mem.apply({ seq: 6, ops: [put] });
-    expect(mem.walBytes).toBe(10);
-  });
-
   it("matches a sorted map through writes, pins, and drops", () => {
     let seed = 11;
     const rand = (n: number) => {
