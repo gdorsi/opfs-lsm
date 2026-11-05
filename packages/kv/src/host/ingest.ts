@@ -9,6 +9,9 @@ import {
 import { foldRecords } from "../store/fold.js";
 import { maybeCompact } from "./compact.js";
 
+/** One L0 merge plus a cascade through every level a real database reaches. */
+const MAX_COMPACTION_STEPS = 8;
+
 export type IngestResult = {
   readonly generation: number;
   readonly ingestedThrough: number;
@@ -45,11 +48,14 @@ export async function ingestAll(
     ingestedThrough = last;
   }
 
-  const compact = await maybeCompact(fs, wal);
-  if (compact.compacted) {
+  let compacted = false;
+  for (let step = 0; step < MAX_COMPACTION_STEPS; step++) {
+    const compact = await maybeCompact(fs, wal);
+    if (!compact.compacted) break;
+    compacted = true;
     generation = compact.generation;
   }
   await reclaimManifests(fs, (await wal.recordedGeneration()) ?? 0);
 
-  return { generation, ingestedThrough, compacted: compact.compacted };
+  return { generation, ingestedThrough, compacted };
 }

@@ -11,17 +11,11 @@ export function decode_sst_js(buf: Uint8Array): Array<any>;
  */
 export function encode_sst_js(entries: Array<any>): Uint8Array;
 
-export function l0_compact_threshold(): number;
-
 /**
- * Merge newest-first SST blobs into one SST.
+ * Merge newest-first SST blobs into one SST. `drop_tombstones` is for a
+ * merge that includes the oldest run.
  */
-export function merge_ssts_js(blobs: Array<any>): Uint8Array;
-
-/**
- * Returns null if below threshold; else `{ inputs: string[], keep: string[] }`.
- */
-export function plan_l0_compaction_js(runs: Array<any>): any;
+export function merge_ssts_js(blobs: Array<any>, drop_tombstones: boolean): Uint8Array;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -29,9 +23,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly decode_sst_js: (a: any) => [number, number, number];
     readonly encode_sst_js: (a: any) => [number, number, number];
-    readonly l0_compact_threshold: () => number;
-    readonly merge_ssts_js: (a: any) => [number, number, number];
-    readonly plan_l0_compaction_js: (a: any) => [number, number, number];
+    readonly merge_ssts_js: (a: any, b: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

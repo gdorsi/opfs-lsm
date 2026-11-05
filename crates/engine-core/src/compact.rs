@@ -1,83 +1,51 @@
-//! Compaction planning and SST merge (newest-first inputs).
+//! SST merge for compaction (newest-first inputs).
 
 use crate::sst::{decode_sst, encode_sst, Entry, SstError};
 use std::collections::BTreeMap;
 
-/// Provisional: compact when this many L0 runs are named in the generation.
-pub const L0_COMPACT_THRESHOLD: usize = 4;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactionPlan {
-    /// L0 paths to merge (as listed newest-first in the generation).
-    pub inputs: Vec<String>,
-    /// Paths to keep untouched (non-L0 runs), newest-first order preserved.
-    pub keep: Vec<String>,
-}
-
-/// If `runs` (newest-first) has enough `l0/` entries, plan merging all of them.
-pub fn plan_l0_compaction(runs: &[String]) -> Option<CompactionPlan> {
-    let l0: Vec<String> = runs
-        .iter()
-        .filter(|p| p.starts_with("l0/"))
-        .cloned()
-        .collect();
-    if l0.len() < L0_COMPACT_THRESHOLD {
-        return None;
-    }
-    let keep: Vec<String> = runs
-        .iter()
-        .filter(|p| !p.starts_with("l0/"))
-        .cloned()
-        .collect();
-    Some(CompactionPlan { inputs: l0, keep })
-}
-
-/// Merge SST files. `sst_bytes` is newest-first (same order as generation L0 list).
-/// Newer entries win; tombstones are kept (needed if older levels exist).
-pub fn merge_sst_bytes(sst_bytes: &[Vec<u8>]) -> Result<Vec<u8>, SstError> {
-    // Apply oldest first so newer overwrites in the map.
+/// Merge SST files. `sst_bytes` is newest-first. Newer entries win.
+/// `drop_tombstones` is for a merge that includes the oldest run, where no
+/// older value is left for a tombstone to hide.
+pub fn merge_sst_bytes(sst_bytes: &[Vec<u8>], drop_tombstones: bool) -> Result<Vec<u8>, SstError> {
     let mut map: BTreeMap<Vec<u8>, Entry> = BTreeMap::new();
     for bytes in sst_bytes.iter().rev() {
         for e in decode_sst(bytes)? {
-            let key = e.key().to_vec();
-            map.insert(key, e);
+            map.insert(e.key().to_vec(), e);
         }
     }
-    let entries: Vec<Entry> = map.into_values().collect();
+    let entries: Vec<Entry> = map
+        .into_values()
+        .filter(|e| !(drop_tombstones && matches!(e, Entry::Del { .. })))
+        .collect();
     Ok(encode_sst(&entries))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sst::Entry;
 
-    #[test]
-    fn newer_wins() {
-        let older = encode_sst(&[Entry::Put {
-            key: b"k".to_vec(),
-            value: b"old".to_vec(),
-        }]);
-        let newer = encode_sst(&[Entry::Put {
-            key: b"k".to_vec(),
-            value: b"new".to_vec(),
-        }]);
-        // newest-first
-        let out = merge_sst_bytes(&[newer, older]).unwrap();
-        let decoded = decode_sst(&out).unwrap();
-        assert_eq!(
-            decoded,
-            vec![Entry::Put {
-                key: b"k".to_vec(),
-                value: b"new".to_vec()
-            }]
-        );
+    fn put(k: &[u8], v: &[u8]) -> Entry {
+        Entry::Put { key: k.to_vec(), value: v.to_vec() }
     }
 
     #[test]
-    fn plan_threshold() {
-        let runs: Vec<String> = (0..4).map(|i| format!("l0/{i}.sst")).collect();
-        assert!(plan_l0_compaction(&runs).is_some());
-        assert!(plan_l0_compaction(&runs[..3]).is_none());
+    fn newer_wins() {
+        let older = encode_sst(&[put(b"k", b"old")]);
+        let newer = encode_sst(&[put(b"k", b"new")]);
+        let out = merge_sst_bytes(&[newer, older], false).unwrap();
+        assert_eq!(decode_sst(&out).unwrap(), vec![put(b"k", b"new")]);
+    }
+
+    #[test]
+    fn bottom_merge_drops_tombstones() {
+        let older = encode_sst(&[put(b"a", b"1"), put(b"b", b"1")]);
+        let newer = encode_sst(&[Entry::Del { key: b"a".to_vec() }]);
+        let kept = merge_sst_bytes(&[newer.clone(), older.clone()], false).unwrap();
+        assert_eq!(
+            decode_sst(&kept).unwrap(),
+            vec![Entry::Del { key: b"a".to_vec() }, put(b"b", b"1")]
+        );
+        let dropped = merge_sst_bytes(&[newer, older], true).unwrap();
+        assert_eq!(decode_sst(&dropped).unwrap(), vec![put(b"b", b"1")]);
     }
 }
