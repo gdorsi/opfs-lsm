@@ -84,7 +84,8 @@ export class Memtable {
    * rows it covers, and jump past seqs this table never read.
    */
   advanceTo(through: number): void {
-    this.ingested = Math.max(this.ingested, through);
+    if (through <= this.ingested) return;
+    this.ingested = through;
     if (through > this.applied) {
       this.rows = [];
       this.size = 0;
