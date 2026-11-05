@@ -4,14 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Todos</title>
-    <script type="importmap">
-      {
-        "imports": {
-          "@opfs-lsm/kv": "../../packages/kv/dist/index.js",
-          "@opfs-lsm/collections": "../../packages/collections/dist/index.js"
-        }
-      }
-    </script>
     <style>
       :root {
         font-family: system-ui, sans-serif;
@@ -127,57 +119,14 @@
     </style>
   </head>
   <body>
-    <main>
-      <h1>Todos</h1>
-      <p class="lede">Shared list. Open a second window to see the same rows.</p>
-      <p id="status" aria-live="polite">opening</p>
-      <p id="generation"></p>
-      <p id="progress"></p>
-      <p id="error" role="alert"></p>
-      <form id="add" class="row">
-        <label for="title">New todo</label>
-        <input id="title" name="title" type="text" autocomplete="off" required />
-        <button type="submit">Add</button>
-      </form>
-      <form id="generate" class="row">
-        <label for="count">Generate random todos</label>
-        <input
-          id="count"
-          name="count"
-          type="number"
-          inputmode="numeric"
-          min="1"
-          step="1"
-          value="1000"
-        />
-        <button id="generate-button" type="submit">Generate</button>
-      </form>
-      <div class="toolbar">
-        <input
-          id="filter"
-          type="search"
-          autocomplete="off"
-          placeholder="Filter todos"
-          aria-label="Filter todos"
-        />
-        <select id="sort" aria-label="Sort todos">
-          <option value="newest">Newest first</option>
-          <option value="oldest">Oldest first</option>
-          <option value="title">Title A–Z</option>
-        </select>
-        <button id="clear" type="button">Clear all</button>
-      </div>
-      <nav class="pager" aria-label="Pages">
-        <button id="prev" type="button">Prev</button>
-        <span id="page" aria-live="polite">Page 1</span>
-        <button id="next" type="button">Next</button>
-      </nav>
-      <ul id="list"></ul>
-      <p class="actions">
-        <button id="ingest" type="button">Ingest</button>
-        <button id="other" type="button">Open second window</button>
-      </p>
-    </main>
-    <script type="module" src="./main.js"></script>
+    <!-- Static shell painted while the store opens the database (module-level
+         top-level await) and reads the first page. React replaces it wholesale. -->
+    <div id="root">
+      <main>
+        <h1>Todos</h1>
+        <p id="status" aria-live="polite">opening</p>
+      </main>
+    </div>
+    <script type="module" src="./main.tsx"></script>
   </body>
 </html>
