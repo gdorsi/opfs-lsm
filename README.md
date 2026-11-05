@@ -8,11 +8,11 @@ IndexedDB is the database the browser keeps for this site. This store uses it as
 
 OPFS is the Origin Private File System, a private set of files for this site. The sealed data lives there as SST files. An SST is a sorted string table, an immutable file of keys and values, sorted by key.
 
-A SharedWorker publishes those SST files. A SharedWorker is one script that every tab of this origin can share. It is not a dedicated WebWorker, and it is not a ServiceWorker. Tabs append to the IndexedDB WAL and read both that WAL and the SST files. A get stays in the tab. The SharedWorker is not on that path.
+A SharedWorker publishes those SST files. A SharedWorker is one script that every tab of this origin can share. It is not a dedicated WebWorker, and it is not a ServiceWorker. Tabs append to the IndexedDB WAL. Each tab keeps a memtable in memory, which holds the WAL records that are not yet in an SST. A get reads that memtable and the SST files, and does not touch IndexedDB. The SharedWorker is not on that path.
 
 ## The ack is an IndexedDB commit
 
-`put` and `batch` ack when the shared IndexedDB WAL commits. Another tab can read that write on its next get. Ingest publishes the committed rows to an OPFS SST. Ingest is not required for the ack. Until ingest runs, the rows are in IndexedDB and not yet in an SST.
+`put` and `batch` ack when the shared IndexedDB WAL commits. The tab that wrote reads its write as soon as the ack resolves. Other tabs receive it over a BroadcastChannel a moment later. Call `db.sync()` when a tab must see every write that another tab acked before the call. Ingest publishes the committed rows to an OPFS SST. Ingest is not required for the ack. Until ingest runs, the rows are in IndexedDB and not yet in an SST.
 
 ```ts
 import { openDb } from "@opfs-lsm/kv";
@@ -58,7 +58,7 @@ One batch of 50 puts took 0.4 ms. Dexie `bulkPut` of the same 50 took 1.2 ms.
 
 `@opfs-lsm/collections` is tables and indexes on top of the same WAL and OPFS path. `pnpm bench:collections` runs the SharedWorker Chrome harness against a `users` table with an `email` index, then Dexie with `id, email`. Collections has no `bulkPut` yet, so the fair write comparison is solitary put. Each collections put also writes index keys in one OCC transaction, so it is heavier than a Dexie row put. Point get and `where("email", …)` are measured before and after ingest. The times below are median of 5 runs with `BENCH_N=50` on darwin.
 
-Uningested rows live in a key-ordered IndexedDB memtable written in the same transaction as the WAL ack. Gets and prefix ranges read that store (and SST block cursors after ingest). There is no tab-local overlay cache of the WAL.
+Uningested rows live in each tab's memtable. Gets, prefix ranges, and `where` read that memtable and the SST readers in memory.
 
 50 collections solitary puts took about 47 ms. 50 Dexie solitary puts took about 8.5 ms.
 

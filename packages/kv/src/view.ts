@@ -1,7 +1,7 @@
 import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
-import type { MemRow } from "./idb/wal.js";
+import type { MemRow } from "./store/memtable.js";
 import type { ScanBounds } from "./store/cursor.js";
 import {
   arrayCursor,

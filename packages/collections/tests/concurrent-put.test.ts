@@ -36,6 +36,7 @@ it("racing puts of one doc from two tabs leave exactly one index key, for the fi
     ),
   );
 
+  await Promise.all([kvA.sync(), kvB.sync()]);
   const final = await tabs[0]!.get("1");
   const keys: Uint8Array[] = [];
   for await (const e of kvA.range(prefixBound(indexPrefix("users", "email")))) {

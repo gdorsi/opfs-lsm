@@ -65,27 +65,22 @@ function observedFs(inner: MemoryFs) {
 
 describe("generation recorded in IndexedDB", () => {
   it("a view pinned before a batch sees none of it after ingest", async () => {
-    const o = observedFs(new MemoryFs());
-    const db = await openDb({ name: NAME, writerId: "w1", fs: o.fs, ingestPolicy: quiet });
+    const db = await openDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), ingestPolicy: quiet });
     await db.put(utf("z"), utf("0"));
     await db.ingest();
     await db.put(utf("a"), utf("1"));
 
-    o.holdNextManifestRead();
-    const seen = db.view(async (snap) => [
-      text(await snap.get(utf("a"))),
-      text(await snap.get(utf("b"))),
-    ]);
-    await o.isHeld;
-    await db.batch((tx) => {
-      tx.put(utf("a"), utf("2"));
-      tx.put(utf("b"), utf("2"));
+    const seen = await db.view(async (snap) => {
+      await db.batch((tx) => {
+        tx.put(utf("a"), utf("2"));
+        tx.put(utf("b"), utf("2"));
+      });
+      await db.ingest();
+      return [text(await snap.get(utf("a"))), text(await snap.get(utf("b")))];
     });
-    await db.ingest();
-    expect(text(await db.get(utf("b")))).toBe("2");
-    o.release();
 
-    expect(await seen).toEqual(["1", undefined]);
+    expect(seen).toEqual(["1", undefined]);
+    expect(text(await db.get(utf("b")))).toBe("2");
     await db.close();
   });
 

@@ -41,11 +41,6 @@ describe("memtable reads", () => {
       ingestPolicy: { maxBatches: 1e9, maxDelayMs: 60_000, maxBytes: 1 << 30 },
     });
     await db.put(enc.encode("a"), enc.encode("1"));
-    const other = await IdBWal.open(checkDbName(NAME));
-    const { row } = await other.memGet(enc.encode("a"));
-    other.close();
-    expect(row?.kind).toBe("put");
-    expect(row?.value && dec.decode(row.value)).toBe("1");
     expect(dec.decode(await db.get(enc.encode("a")))).toBe("1");
     expect(dec.decode(await db.get(enc.encode("a")))).toBe("1");
     await db.put(enc.encode("a"), enc.encode("2"));

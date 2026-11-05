@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryFs, __resetMemoryFsForTests, openDb, prefixBound } from "../src/index.js";
+import { checkBatch, checkDbName } from "../src/check.js";
+import { IdBWal } from "../src/idb/wal.js";
 
 const NAME = "update";
 const enc = new TextEncoder();
@@ -50,6 +52,23 @@ describe("update", () => {
     expect(seen).toEqual(["1", undefined]);
     await writer.close();
     await reader.close();
+  });
+
+  it("sees a write that was never broadcast", async () => {
+    const fs = new MemoryFs();
+    const db = await openDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: quiet });
+    await db.put(utf("n"), utf("1"));
+    const silent = await IdBWal.open(checkDbName(NAME));
+    await silent.appendAfter(0, () => ({
+      ops: checkBatch([{ type: "put", key: utf("n"), value: utf("5") }]),
+      result: undefined,
+    }));
+    silent.close();
+    await db.update([utf("n")], ([cur], tx) => {
+      tx.put(utf("n"), utf(String(Number(text(cur)) + 1)));
+    });
+    expect(text(await db.get(utf("n")))).toBe("6");
+    await db.close();
   });
 
   it("writes nothing when the body throws", async () => {

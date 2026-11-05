@@ -11,18 +11,25 @@ import {
 } from "./check.js";
 import {
   ClosedError,
+  CommitError,
+  ConflictError,
   ConstraintError,
   CorruptDatabaseError,
   StorageUnavailableError,
 } from "./errors.js";
-import { runTransaction, type Transaction } from "./transaction.js";
+import {
+  runTransaction,
+  type AppendGuard,
+  type Transaction,
+} from "./transaction.js";
 import {
   EngineHost,
   createLocalIngestClient,
   createPortIngestClient,
 } from "./host/engine-host.js";
 import type { IngestClient } from "./host/protocol.js";
-import { IdBWal, type MemRow } from "./idb/wal.js";
+import { IdBWal, type WalTail } from "./idb/wal.js";
+import { Memtable, type MemRow } from "./store/memtable.js";
 import type { ScanBounds } from "./store/cursor.js";
 import {
   DEFAULT_INGEST_POLICY,
@@ -42,6 +49,7 @@ import {
   arrayCursor,
   mergeCursors,
   pointGetSst,
+  sliceRows,
 } from "./store/merge.js";
 import type { SstReader } from "./store/sst.js";
 import {
@@ -152,6 +160,11 @@ export interface Db {
    * Returns an unsubscribe function.
    */
   changes(listener: ChangeListener): () => void;
+  /**
+   * Catch up to every write acked before the call, from any tab. Other tabs'
+   * writes otherwise arrive over BroadcastChannel, a moment after their ack.
+   */
+  sync(): Promise<void>;
   /** Force ingest now (awaits host). */
   ingest(): Promise<{ generation: number }>;
   close(): Promise<void>;
@@ -260,6 +273,7 @@ export async function openDb(options: OpenOptions): Promise<Db> {
     policy,
     ownsIngestClient,
   );
+  await db.sync();
   return db;
 }
 
@@ -292,20 +306,38 @@ function collectBatch(
 
 type Layers = {
   readonly generation: number;
+  readonly paths: readonly string[];
   readonly readers: readonly SstReader[];
+};
+
+type BusMessage = {
+  readonly kind: "append" | "ingest";
+  readonly writerId: string;
+  readonly seq?: number;
+  readonly ops?: readonly CheckedOp[];
 };
 
 const GENERATION_RETRIES = 8;
 const GENERATION_GONE =
   "SST files for the recorded generation stayed missing after retries";
 
+/**
+ * Reads come from this tab's memtable over the installed SST generation and
+ * touch no IndexedDB. The memtable is always an exact WAL prefix, and the
+ * installed generation never holds seqs past it, so every read sees the
+ * state after one WAL prefix. Other tabs' writes arrive over BroadcastChannel.
+ */
 class DbImpl implements Db {
   private closed = false;
   private readonly scheduler: IngestScheduler<{ generation: number }>;
-  /** The newest generation loaded. Not a key map. */
-  private installed: Layers | undefined;
+  private readonly mem = new Memtable();
+  private installed: Layers = { generation: 0, paths: [], readers: [] };
+  /** The newest generation loaded and not yet installed. */
+  private loaded: Layers | undefined;
   /** Parsed run files by path. Paths are immutable, so a hit never goes stale. */
   private runs = new Map<string, SstReader>();
+  private syncing: Promise<void> | undefined;
+  private syncAgain = false;
   private readonly changeBus = new ChangeBus();
   private readonly bus: BroadcastChannel | undefined;
   private readonly onBusMessage: ((ev: MessageEvent) => void) | undefined;
@@ -322,67 +354,49 @@ class DbImpl implements Db {
     this.scheduler = new IngestScheduler(policy, async () => {
       const result = await this.ingestClient.ingest(this.name);
       this.emitChange({ kind: "ingest", writerId: this.writerId });
-      this.broadcast("ingest");
+      this.broadcast({ kind: "ingest", writerId: this.writerId });
+      void this.sync().catch(() => undefined);
       return result;
     });
     if (typeof BroadcastChannel !== "undefined") {
       this.bus = new BroadcastChannel(`opfs-lsm-layers/${name}`);
-      this.onBusMessage = (ev: MessageEvent) => {
-        const data = ev.data as {
-          kind?: "append" | "ingest";
-          writerId?: string;
-          seq?: number;
-        } | null;
-        if (!data || data.writerId === this.writerId) return;
-        if (data.kind === "append" || data.kind === "ingest") {
-          this.changeBus.emit({
-            kind: data.kind,
-            writerId: data.writerId ?? "unknown",
-            ...(data.seq !== undefined ? { seq: data.seq } : {}),
-          });
-        }
-      };
+      this.onBusMessage = (ev: MessageEvent) => this.onMessage(ev.data);
       this.bus.addEventListener("message", this.onBusMessage);
     }
+  }
+
+  private onMessage(data: BusMessage | null): void {
+    if (this.closed || !data || data.writerId === this.writerId) return;
+    if (data.kind === "append" && data.seq !== undefined && data.ops) {
+      if (!this.mem.apply({ seq: data.seq, ops: data.ops })) {
+        void this.sync().catch(() => undefined);
+      }
+    } else {
+      void this.sync().catch(() => undefined);
+    }
+    this.changeBus.emit({
+      kind: data.kind,
+      writerId: data.writerId,
+      ...(data.seq !== undefined ? { seq: data.seq } : {}),
+    });
   }
 
   private ensureOpen(): void {
     if (this.closed) throw new ClosedError("database is closed");
   }
 
-  private broadcast(
-    kind: "append" | "ingest",
-    extra?: { seq?: number },
-  ): void {
-    this.bus?.postMessage({
-      kind,
-      writerId: this.writerId,
-      ...extra,
-    });
+  private broadcast(message: BusMessage): void {
+    this.bus?.postMessage(message);
   }
 
   private emitChange(event: ChangeEvent): void {
     this.changeBus.emit(event);
   }
 
-  /**
-   * Readers for exactly `generation`, or, with `newerOk`, for a newer loaded
-   * one. Newer is safe for a point read: it returns a newer acked value. A
-   * scan needs exactly the pinned generation, or it can see half of a batch
-   * that landed after its mem pin. Undefined when a newer publish already
-   * removed the files.
-   */
-  private async layersAt(
-    generation: number,
-    newerOk: boolean,
-  ): Promise<Layers | undefined> {
-    const installed = this.installed;
-    if (
-      installed &&
-      (installed.generation === generation ||
-        (newerOk && installed.generation > generation))
-    ) {
-      return installed;
+  /** Readers for exactly `generation`, loading them when needed. */
+  private async load(generation: number): Promise<Layers | undefined> {
+    for (const layers of [this.installed, this.loaded]) {
+      if (layers?.generation === generation) return layers;
     }
     const paths = await loadRuns(this.fs, generation);
     if (!paths) return undefined;
@@ -392,42 +406,128 @@ class DbImpl implements Db {
       if (!reader) return undefined;
       readers.push(reader);
     }
-    const layers = { generation, readers };
-    const latest = this.installed;
-    if (!latest || latest.generation < generation) {
-      this.installed = layers;
-      this.runs = new Map(paths.map((path, i) => [path, readers[i]!]));
-      return layers;
+    const layers = { generation, paths, readers };
+    if (!this.loaded || this.loaded.generation < generation) {
+      this.loaded = layers;
     }
-    return newerOk ? latest : layers;
+    return layers;
   }
 
-  private async openScan(bounds?: ScanBounds): Promise<{
-    head: number;
-    rows: readonly MemRow[];
-  } & Layers> {
+  /**
+   * Apply `tail` to the memtable. Synchronous, so it can run inside an
+   * IndexedDB transaction. Returns the generation to load when the tail
+   * needs one this tab does not have yet.
+   */
+  private catchUp(tail: WalTail): number | undefined {
+    const behind = tail.ingestedThrough > this.mem.appliedThrough;
+    if (tail.generation !== this.installed.generation) {
+      const layers =
+        this.loaded?.generation === tail.generation ? this.loaded : undefined;
+      if (layers) {
+        this.installed = layers;
+        this.loaded = undefined;
+        this.runs = new Map(
+          layers.paths.map((path, i) => [path, layers.readers[i]!]),
+        );
+      } else if (behind) {
+        return tail.generation;
+      }
+    }
+    if (this.installed.generation === tail.generation) {
+      this.mem.advanceTo(tail.ingestedThrough);
+    }
+    for (const record of tail.records) {
+      if (!this.mem.apply(record)) {
+        throw new CommitError(`wal gap before seq ${record.seq}`);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Catch up to everything acked before the call, and install the current
+   * generation. Reads after it resolves see other tabs' acked writes.
+   */
+  async sync(): Promise<void> {
+    this.ensureOpen();
+    if (this.syncing) {
+      this.syncAgain = true;
+      return this.syncing;
+    }
+    this.syncing = (async () => {
+      try {
+        do {
+          this.syncAgain = false;
+          await this.syncOnce();
+        } while (this.syncAgain);
+      } finally {
+        this.syncing = undefined;
+      }
+    })();
+    return this.syncing;
+  }
+
+  private async syncOnce(): Promise<void> {
     for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
-      const pin = await this.wal.collectMem(bounds);
-      const layers = await this.layersAt(pin.generation, false);
-      if (layers) return { head: pin.head, rows: pin.rows, ...layers };
+      const tail = await this.wal.tail(this.mem.appliedThrough);
+      if (this.closed) return;
+      if (tail.generation !== this.installed.generation) {
+        await this.load(tail.generation);
+      }
+      if (this.catchUp(tail) === undefined) return;
     }
     throw new CorruptDatabaseError(GENERATION_GONE);
+  }
+
+  /**
+   * In one readwrite transaction, catch the memtable up, let `plan` choose a
+   * batch against it, and append. The batch joins the memtable at its seq,
+   * so this tab reads its own write as soon as the ack resolves.
+   */
+  private async write<R>(
+    plan: () => { readonly ops: readonly CheckedOp[]; readonly result: R },
+  ): Promise<R> {
+    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
+      let missing: number | undefined;
+      const out = await this.wal.appendAfter(this.mem.appliedThrough, (tail) => {
+        missing = this.catchUp(tail);
+        return missing === undefined ? plan() : undefined;
+      });
+      if (out) {
+        if (out.seq !== undefined) {
+          if (!this.mem.apply({ seq: out.seq, ops: out.ops })) await this.sync();
+          this.emitChange({ kind: "append", writerId: this.writerId, seq: out.seq });
+          this.broadcast({
+            kind: "append",
+            writerId: this.writerId,
+            seq: out.seq,
+            ops: out.ops,
+          });
+          this.scheduler.noteAppend(measureOpBytes(out.ops));
+        }
+        return out.result;
+      }
+      if (missing !== undefined) await this.load(missing);
+    }
+    throw new CorruptDatabaseError(GENERATION_GONE);
+  }
+
+  private readKey(k: CheckedKey): Uint8Array | undefined {
+    const row = this.mem.get(k);
+    return row ? valueOf(row) : pointGetSst(this.installed.readers, k);
+  }
+
+  private conflicts(guard: AppendGuard): boolean {
+    if (guard.snapshotHead < this.mem.droppedThrough) return true;
+    return guard.watched.some((key) => {
+      const row = this.mem.get(key);
+      return row !== undefined && row.seq > guard.snapshotHead;
+    });
   }
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
     return this.readKey(checkKey(key));
-  }
-
-  private async readKey(k: CheckedKey): Promise<Uint8Array | undefined> {
-    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
-      const { row, generation } = await this.wal.memGet(k);
-      if (row?.kind === "del") return undefined;
-      if (row?.kind === "put") return new Uint8Array(row.value!);
-      const layers = await this.layersAt(generation, true);
-      if (layers) return pointGetSst(layers.readers, k);
-    }
-    throw new CorruptDatabaseError(GENERATION_GONE);
   }
 
   put(key: Uint8Array, value: Uint8Array): Promise<void> {
@@ -440,59 +540,46 @@ class DbImpl implements Db {
 
   async batch(build: (tx: BatchTx) => void): Promise<void> {
     this.ensureOpen();
-    const checked = collectBatch(build);
-    if (checked.length === 0) return;
-    this.noteAppend(await this.wal.append(checked), measureOpBytes(checked));
+    const ops = collectBatch(build);
+    if (ops.length === 0) return;
+    await this.write(() => ({ ops, result: undefined }));
   }
 
   transaction<T>(body: (tx: Transaction) => Promise<T> | T): Promise<T> {
     this.ensureOpen();
     return runTransaction(
       {
-        snapshotHead: () => this.wal.snapshotHead(),
-        get: (key) => this.readKey(key),
-        commit: async (ops, opBytes, guard) => {
-          this.noteAppend(await this.wal.append(ops, guard), opBytes);
-        },
+        snapshotHead: async () => this.mem.appliedThrough,
+        get: async (key) => this.readKey(key),
+        commit: (ops, _opBytes, guard) =>
+          this.write(() => {
+            if (this.conflicts(guard)) {
+              throw new ConflictError(
+                `conflict on key after seq ${guard.snapshotHead}`,
+              );
+            }
+            return { ops, result: undefined };
+          }),
       },
       body,
     );
   }
 
-  async update<T>(
+  update<T>(
     keys: readonly Uint8Array[],
     body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
-    let loaded: Layers | undefined;
-    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
-      let missing: number | undefined;
-      let opBytes = 0;
-      const out = await this.wal.readThenAppend(ks, (rows, generation) => {
-        const layers = this.pointLayers(generation, loaded);
-        if (!layers && rows.some((row) => row === undefined)) {
-          missing = generation;
-          return undefined;
-        }
-        const values = rows.map((row, i) =>
-          row ? valueOf(row) : pointGetSst(layers!.readers, ks[i]!),
-        );
-        let result!: T;
-        const ops = collectBatch((tx) => {
-          result = body(values, tx);
-          return result;
-        });
-        opBytes = measureOpBytes(ops);
-        return { ops, result };
+    return this.write(() => {
+      const values = ks.map((k) => this.readKey(k));
+      let result!: T;
+      const ops = collectBatch((tx) => {
+        result = body(values, tx);
+        return result;
       });
-      if (out) {
-        if (out.seq !== undefined) this.noteAppend(out.seq, opBytes);
-        return out.result;
-      }
-      loaded = await this.layersAt(missing!, true);
-    }
-    throw new CorruptDatabaseError(GENERATION_GONE);
+      return { ops, result };
+    });
   }
 
   async rangeFollow(
@@ -500,92 +587,40 @@ class DbImpl implements Db {
     follow: (entry: Entry) => Uint8Array | undefined,
   ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]> {
     this.ensureOpen();
-    const bounds = boundsOf(range);
-    let loaded: Layers | undefined;
-    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
-      let missing: number | undefined;
-      const out = await this.wal.scanThenGet(bounds, (rows, generation) => {
-        const layers = [loaded, this.installed].find(
-          (l) => l?.generation === generation,
-        );
-        if (!layers) {
-          missing = generation;
-          return undefined;
-        }
-        const entries = [
-          ...mergeCursors(
-            [
-              arrayCursor(rows),
-              ...layers.readers.map((reader) => reader.cursor(bounds)),
-            ],
-            range.limit,
-          ),
-        ];
-        const picks = entries.map((entry) => {
-          const key = follow(entry);
-          return key === undefined ? undefined : checkKey(key);
-        });
-        const keys = picks.filter((k): k is CheckedKey => k !== undefined);
-        return {
-          keys,
-          finish: (found: readonly (MemRow | undefined)[]) => {
-            let j = 0;
-            return entries.map((entry, i) => {
-              const key = picks[i];
-              if (key === undefined) return { entry, value: undefined };
-              const row = found[j++];
-              return {
-                entry,
-                value: row ? valueOf(row) : pointGetSst(layers.readers, key),
-              };
-            });
-          },
-        };
+    const out: { entry: Entry; value: Uint8Array | undefined }[] = [];
+    for (const entry of this.scan(range)) {
+      const key = follow(entry);
+      out.push({
+        entry,
+        value: key === undefined ? undefined : this.readKey(checkKey(key)),
       });
-      if (out) return out;
-      loaded = await this.layersAt(missing!, false);
     }
-    throw new CorruptDatabaseError(GENERATION_GONE);
+    return out;
   }
 
-  /** Loaded readers a point read may use for `generation`: it or newer. */
-  private pointLayers(
-    generation: number,
-    loaded: Layers | undefined,
-  ): Layers | undefined {
-    for (const layers of [this.installed, loaded]) {
-      if (layers && layers.generation >= generation) return layers;
-    }
-    return undefined;
-  }
-
-  private noteAppend(seq: number, opBytes: number): void {
-    this.emitChange({ kind: "append", writerId: this.writerId, seq });
-    this.broadcast("append", { seq });
-    this.scheduler.noteAppend(opBytes);
-  }
-
-  async *range(range?: Range): AsyncIterable<Entry> {
-    this.ensureOpen();
+  private scan(range?: Range): Generator<Entry> {
     const bounds = boundsOf(range);
-    const scan = await this.openScan(bounds);
-    yield* mergeCursors(
+    return mergeCursors(
       [
-        arrayCursor(scan.rows),
-        ...scan.readers.map((reader) => reader.cursor(bounds)),
+        arrayCursor(sliceRows(this.mem.sorted, bounds)),
+        ...this.installed.readers.map((reader) => reader.cursor(bounds)),
       ],
       range?.limit,
     );
   }
 
+  async *range(range?: Range): AsyncIterable<Entry> {
+    this.ensureOpen();
+    yield* [...this.scan(range)];
+  }
+
   async view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T> {
     this.ensureOpen();
-    const scan = await this.openScan();
     const snap = new ViewSnapshotImpl(
-      scan.head,
-      scan.generation,
-      scan.rows,
-      scan.readers,
+      this.mem.appliedThrough,
+      this.installed.generation,
+      this.mem.sorted,
+      this.installed.readers,
     );
     try {
       return await body(snap);
@@ -601,7 +636,9 @@ class DbImpl implements Db {
 
   async ingest(): Promise<{ generation: number }> {
     this.ensureOpen();
-    return this.scheduler.flush();
+    const result = await this.scheduler.flush();
+    await this.sync();
+    return result;
   }
 
   async close(): Promise<void> {
@@ -609,8 +646,6 @@ class DbImpl implements Db {
     this.closed = true;
     this.scheduler.close();
     this.changeBus.clear();
-    this.installed = undefined;
-    this.runs.clear();
     if (this.bus && this.onBusMessage) {
       this.bus.removeEventListener("message", this.onBusMessage);
       this.bus.close();
