@@ -47,7 +47,7 @@ async function run(): Promise<void> {
   const db: Db = await openDb({
     name: NAME,
     workerUrl: new URL("../dist/host/shared-worker.js", import.meta.url),
-    ingestPolicy: { maxBatches: 1e9, maxBytes: 2 ** 40 },
+    ingestPolicy: { maxWalBytes: 2 ** 40 },
   });
   const batches = Math.floor(ROWS / BATCH);
   const perStep = Math.max(1, Math.floor(batches / STEPS));

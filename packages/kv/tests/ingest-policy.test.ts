@@ -7,6 +7,8 @@ import {
   openDb,
   type IngestPolicy,
 } from "../src/index.js";
+import { checkDbName, opsBytes } from "../src/check.js";
+import { IdBWal } from "../src/idb/wal.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 
 const enc = new TextEncoder();
@@ -51,8 +53,8 @@ async function settle(): Promise<void> {
 }
 
 describe("ingest policy", () => {
-  it("flushes once when the memtable passes maxBytes, whichever tab wrote", async () => {
-    const { fs, a, b, requests } = await twoTabs({ maxBatches: 1e9, maxBytes: 100 });
+  it("flushes once when the waiting WAL passes maxWalBytes, whichever tab wrote", async () => {
+    const { fs, a, b, requests } = await twoTabs({ maxWalBytes: 100 });
     await a.put(utf("a"), new Uint8Array(60));
     await settle();
     expect(await loadLatestGeneration(fs)).toBeUndefined();
@@ -75,7 +77,7 @@ describe("ingest policy", () => {
       writerId: "a",
       fs,
       ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxBatches: 1e9, maxBytes: 1e9 },
+      ingestPolicy: { maxWalBytes: 1e9 },
     });
     await db.put(utf("a"), utf("1"));
     expect((await host.ingest(NAME, 1)).generation).toBe(1);
@@ -85,16 +87,37 @@ describe("ingest policy", () => {
     await db.close();
   });
 
-  it("flushes after maxBatches records that overwrite one key", async () => {
-    const { fs, a, b } = await twoTabs({ maxBatches: 3, maxBytes: 1e9 });
-    await a.put(utf("k"), utf("1"));
-    await b.put(utf("k"), utf("2"));
+  it("counts overwrites of one key, which leave the memtable the same size", async () => {
+    const { fs, a, b } = await twoTabs({ maxWalBytes: 20 });
+    await a.put(utf("k"), utf("1".repeat(8)));
+    await b.put(utf("k"), utf("2".repeat(8)));
     await settle();
     expect(await loadLatestGeneration(fs)).toBeUndefined();
-    await a.put(utf("k"), utf("3"));
+    await a.put(utf("k"), utf("3".repeat(8)));
     await settle();
     expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1);
-    expect(new TextDecoder().decode(await b.get(utf("k")))).toBe("3");
+    expect(new TextDecoder().decode(await b.get(utf("k")))).toBe("3".repeat(8));
+    await a.close();
+    await b.close();
+  });
+
+  it("keeps the waiting WAL under the limit plus one batch, for overwrites and deletes", async () => {
+    const limit = 4_000;
+    const { a, b } = await twoTabs({ maxWalBytes: limit });
+    const keys = Array.from({ length: 50 }, (_, i) => utf(`key/${String(i).padStart(4, "0")}`));
+    const wal = await IdBWal.open(checkDbName(NAME));
+    let largest = 0;
+    for (let round = 0; round < 40; round++) {
+      await a.batch((tx) => {
+        for (const k of keys) round % 2 ? tx.delete(k) : tx.put(k, new Uint8Array(40));
+      });
+      await settle();
+      const waiting = (await wal.tail(0)).records.reduce((n, r) => n + opsBytes(r.ops), 0);
+      largest = Math.max(largest, waiting);
+    }
+    wal.close();
+    expect(largest).toBeLessThanOrEqual(limit + 50 * 48);
+    expect(await b.get(keys[0]!)).toBeUndefined();
     await a.close();
     await b.close();
   });

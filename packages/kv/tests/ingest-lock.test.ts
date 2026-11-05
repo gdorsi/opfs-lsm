@@ -22,7 +22,7 @@ afterEach(async () => {
 describe("ingest across two hosts", () => {
   it("never loses a write when two SharedWorkers ingest at once", async () => {
     const fs = new MemoryFs();
-    const policy = { maxBatches: 1e9, maxBytes: 1e12 };
+    const policy = { maxWalBytes: 1e12 };
     const a = await openDb({
       name: "lock-db",
       writerId: "a",

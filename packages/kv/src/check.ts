@@ -50,6 +50,13 @@ export function checkValue(bytes: Uint8Array): CheckedValue {
   return new Uint8Array(bytes) as CheckedValue;
 }
 
+/** Key and value bytes of a batch's ops, as the batch limit counts them. */
+export function opsBytes(ops: readonly CheckedOp[]): number {
+  let bytes = 0;
+  for (const op of ops) bytes += op.key.byteLength + (op.type === "put" ? op.value.byteLength : 0);
+  return bytes;
+}
+
 export function checkBatch(
   ops: readonly { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[],
 ): readonly CheckedOp[] {

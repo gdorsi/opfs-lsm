@@ -70,9 +70,7 @@ describe("public API", () => {
       forceMemory: true,
       writerId: "w1",
       ingestPolicy: {
-        maxBatches: 1_000_000_000,
-        
-        maxBytes: 1 << 30,
+        maxWalBytes: 1 << 30,
       },
     });
     closeDb = () => db.close();

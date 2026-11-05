@@ -7,8 +7,8 @@ const params = new URLSearchParams(location.search);
 const N = Number(params.get("n") ?? 100_000);
 const VALUE_BYTES = Number(params.get("val") ?? 1024);
 const AUTO = params.has("auto");
-/** Raise to keep the memtable large, e.g. `maxBatches=1000000000`. */
-const MAX_BATCHES = params.get("maxBatches");
+/** Raise to keep the memtable large, e.g. `maxWalBytes=1099511627776`. */
+const MAX_WAL_BYTES = params.get("maxWalBytes");
 const NAME = "bench-latency";
 
 function log(line: string): void {
@@ -60,7 +60,7 @@ async function run(): Promise<void> {
   const { openDb, openBrowserFs } = await import("../dist/index.js");
   const { loadLatestGeneration } = await import("../dist/store/generation.js");
   await resetStorage();
-  log(`N=${N}  value=${VALUE_BYTES} B  maxBatches=${MAX_BATCHES ?? "default"}  isolated=${crossOriginIsolated}  mode=SharedWorker`);
+  log(`N=${N}  value=${VALUE_BYTES} B  maxWalBytes=${MAX_WAL_BYTES ?? "default"}  isolated=${crossOriginIsolated}  mode=SharedWorker`);
 
   const enc = new TextEncoder();
   const key = (i: number) => enc.encode(`user:${String(i).padStart(8, "0")}`);
@@ -68,7 +68,7 @@ async function run(): Promise<void> {
   const options = {
     name: NAME,
     workerUrl: new URL("../dist/host/shared-worker.js", import.meta.url),
-    ...(MAX_BATCHES ? { ingestPolicy: { maxBatches: Number(MAX_BATCHES), maxBytes: 2 ** 40 } } : {}),
+    ...(MAX_WAL_BYTES ? { ingestPolicy: { maxWalBytes: Number(MAX_WAL_BYTES) } } : {}),
   };
   const fs = await openBrowserFs(NAME);
   const runs = async () => (await loadLatestGeneration(fs))?.runs.length ?? 0;

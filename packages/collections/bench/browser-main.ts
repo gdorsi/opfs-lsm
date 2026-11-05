@@ -84,7 +84,7 @@ async function benchCollections(): Promise<BenchRow[]> {
         },
       ],
     },
-    ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
+    ingestPolicy: { maxWalBytes: 1 << 30 },
   };
 
   if (LOCAL) {
