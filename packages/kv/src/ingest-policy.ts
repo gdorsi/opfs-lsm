@@ -1,7 +1,8 @@
 /**
- * When to flush the WAL into an L0 run. Every tab applies every WAL record,
- * so every tab sees the record that takes the WAL past the limit and asks
- * the ingest host to flush through it. The host flushes once.
+ * When to flush the WAL into an L0 run. The ingest host counts the appends
+ * tabs announce, and measures the WAL whenever a tab opens the database, so
+ * ingest does not depend on any tab staying open or responsive. When tabs
+ * pass different limits, the host uses the smallest.
  */
 export type IngestPolicy = {
   /**

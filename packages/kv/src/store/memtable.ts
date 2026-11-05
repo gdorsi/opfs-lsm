@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import { opsBytes, type CheckedOp } from "../check.js";
+import type { CheckedOp } from "../check.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
 
 /** The latest op for one user key, and the WAL seq that wrote it. */
@@ -87,9 +87,6 @@ export class Memtable extends Chunks {
   private owned: boolean[] = [true];
   private applied = 0;
   private ingested = 0;
-  /** Seq and op bytes of each applied record above `ingested`, oldest first. */
-  private pending: { readonly seq: number; readonly bytes: number }[] = [];
-  private pendingBytes = 0;
 
   constructor() {
     super([[]], [new Uint8Array(0)]);
@@ -97,14 +94,6 @@ export class Memtable extends Chunks {
 
   get appliedThrough(): number {
     return this.applied;
-  }
-
-  /**
-   * Op bytes of the WAL records applied since the installed generation's
-   * ingestedThrough. Overwrites and deletes add to it.
-   */
-  get walBytes(): number {
-    return this.pendingBytes;
   }
 
   /** The rows as they are now. Later writes don't change what it reads. */
@@ -125,9 +114,6 @@ export class Memtable extends Chunks {
       );
     }
     this.applied = record.seq;
-    const bytes = opsBytes(record.ops);
-    this.pending.push({ seq: record.seq, bytes });
-    this.pendingBytes += bytes;
     return true;
   }
 
@@ -160,12 +146,6 @@ export class Memtable extends Chunks {
   advanceTo(through: number): void {
     if (through <= this.ingested) return;
     this.ingested = through;
-    let drop = 0;
-    while (drop < this.pending.length && this.pending[drop]!.seq <= through) {
-      this.pendingBytes -= this.pending[drop]!.bytes;
-      drop += 1;
-    }
-    this.pending.splice(0, drop);
     const keep =
       through > this.applied ? [] : this.range().filter((row) => row.seq > through);
     this.applied = Math.max(this.applied, through);
