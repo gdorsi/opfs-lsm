@@ -380,6 +380,7 @@ class DbImpl implements Db {
   }
 
   private broadcast(message: BusMessage): void {
+    if (this.closed) return;
     this.bus?.postMessage(message);
   }
 
