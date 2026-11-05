@@ -68,6 +68,22 @@ const TAG_DEL = 2;
 /** Target encoded size per data block (v2). */
 export const SST_BLOCK_TARGET = 4 * 1024;
 
+/**
+ * A v7 block stores the offset of every `OFFSET_STRIDE`th record after
+ * the first, so a get binary-searches them and walks at most
+ * `OFFSET_STRIDE - 1` records. `crates/engine-core/src/sst.rs` uses the
+ * same stride.
+ */
+export const OFFSET_STRIDE = 4;
+
+/**
+ * Bytes of a v7 block's offset table: a u16 per sampled record. Only a
+ * block of one record can pass the u16 range, and it has no table.
+ */
+function offsetTableBytes(count: number): number {
+  return count > 1 ? 2 * Math.floor((count - 1) / OFFSET_STRIDE) : 0;
+}
+
 /** `seq` is the WAL seq that wrote the entry. Runs older than v3 read as 0. */
 export type SstEntry =
   | {
@@ -146,7 +162,8 @@ function splitBlocks(sorted: readonly SstEntry[], target: number): SstEntry[][] 
     if (i > start) {
       const p = commonPrefix(sorted[start]!.key, e.key);
       const n = i + 1 - start;
-      const size = 4 + varintLen(p) + p + overhead + recordOverhead(e) + keys + e.key.byteLength - n * p;
+      const size =
+        4 + varintLen(p) + p + overhead + recordOverhead(e) + keys + e.key.byteLength - n * p + offsetTableBytes(n);
       if (size > target) {
         blocks.push(sorted.slice(start, i));
         start = i;
@@ -163,14 +180,15 @@ function splitBlocks(sorted: readonly SstEntry[], target: number): SstEntry[][] 
 
 /**
  * One v7 data block before compression:
- *   u32 count | varint prefixLen | prefix | count records
+ *   u32 count | varint prefixLen | prefix | count records | u16 offsets
  * The prefix is the longest one shared by every key in the block, which
- * for sorted keys is the first and last key's.
+ * for sorted keys is the first and last key's. `offsets[j]` is where
+ * record `(j + 1) * OFFSET_STRIDE` starts, from the start of the block.
  */
 function encodeBlock(block: readonly SstEntry[]): Uint8Array {
   const first = block[0]?.key;
   const p = first ? commonPrefix(first, block[block.length - 1]!.key) : 0;
-  let size = 4 + varintLen(p) + p;
+  let size = 4 + varintLen(p) + p + offsetTableBytes(block.length);
   for (const e of block) {
     const s = e.key.byteLength - p;
     size += 1 + 8 + varintLen(s) + s;
@@ -182,7 +200,14 @@ function encodeBlock(block: readonly SstEntry[]): Uint8Array {
   let o = writeVarint(out, 4, p);
   if (first) out.set(first.subarray(0, p), o);
   o += p;
-  for (const e of block) o = writeRecord(out, view, o, e, p);
+  let table = size - offsetTableBytes(block.length);
+  for (let i = 0; i < block.length; i++) {
+    if (i > 0 && i % OFFSET_STRIDE === 0) {
+      view.setUint16(table, o, true);
+      table += 2;
+    }
+    o = writeRecord(out, view, o, block[i]!, p);
+  }
   return out;
 }
 
@@ -245,14 +270,18 @@ class RecordWalker {
     this.varint = fmt.prefixed;
   }
 
-  /** One unpacked block: u32 count, then for v7 a varint prefix length and the prefix. */
+  /**
+   * One unpacked block: u32 count, then for v7 a varint prefix length and
+   * the prefix. A v7 walker's `end` is where the offset table starts.
+   */
   static ofBlock(b: BlockBytes, fmt: RecordFormat): RecordWalker {
     const count = b.view.getUint32(b.start, true);
     const w = new RecordWalker(fmt, b.buf, b.view, b.start + 4, b.end, count, 0, 0);
     if (!fmt.prefixed) return w;
     const p = w.len();
-    if (w.o + p > b.end) throw new CorruptDatabaseError("sst prefix OOB");
-    return new RecordWalker(fmt, b.buf, b.view, w.o + p, b.end, count, w.o, p);
+    const end = b.end - offsetTableBytes(count);
+    if (w.o + p > end) throw new CorruptDatabaseError("sst prefix OOB");
+    return new RecordWalker(fmt, b.buf, b.view, w.o + p, end, count, w.o, p);
   }
 
   /** Reads the record at `o`. Gets walk a block with this, so lengths under 128 skip `len`. */
@@ -358,12 +387,13 @@ class RecordWalker {
  *   footer, 44 bytes:
  *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
  *     u32 bloomHashCount | u32 indexOffset | u32 indexLen | u32 codec
- *     u32 crc32 of every byte before it | u32 version=6 | u32 magic
+ *     u32 crc32 of every byte before it | u32 version=7 | u32 magic
  */
 export function encodeSst(
   entries: readonly SstEntry[],
   blockTarget = SST_BLOCK_TARGET,
 ): Uint8Array {
+  if (blockTarget > 0xffff) throw new RangeError("a block's offsets are u16, so its target must fit one");
   const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
   const blocks = splitBlocks(sorted, blockTarget);
 
@@ -571,13 +601,37 @@ function compareAt(buf: Uint8Array, at: number, len: number, key: Uint8Array, fr
 /**
  * The record for `key` in one block, or undefined. Checks the block prefix
  * once, then compares suffixes in place and copies out only the match.
+ * A v7 block binary-searches its sampled records first, then walks at
+ * most `OFFSET_STRIDE` records from the last sampled one not past `key`.
  */
 function findInBlock(b: BlockBytes, key: Uint8Array, fmt: RecordFormat): SstEntry | undefined {
   const w = RecordWalker.ofBlock(b, fmt);
   const p = w.prefixLen;
   if (key.byteLength < p) return undefined;
   for (let i = 0; i < p; i++) if (w.buf[w.prefixAt + i] !== key[i]) return undefined;
-  for (let i = 0; i < w.count; i++) {
+  let walk = w.count;
+  if (fmt.prefixed && w.count > OFFSET_STRIDE) {
+    const first = w.o;
+    const at = (j: number) => {
+      const o = b.start + b.view.getUint16(w.end + 2 * (j - 1), true);
+      if (o <= first || o >= w.end) throw new CorruptDatabaseError("sst offset OOB");
+      return o;
+    };
+    let lo = 0;
+    let hi = (w.count - 1) / OFFSET_STRIDE | 0;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      w.o = at(mid);
+      w.next();
+      const c = compareAt(w.buf, w.keyAt, w.keyLen, key, p);
+      if (c === 0) return w.entry();
+      if (c < 0) lo = mid;
+      else hi = mid - 1;
+    }
+    w.o = lo === 0 ? first : at(lo);
+    walk = Math.min(OFFSET_STRIDE, w.count - lo * OFFSET_STRIDE);
+  }
+  for (let i = 0; i < walk; i++) {
     w.next();
     const c = compareAt(w.buf, w.keyAt, w.keyLen, key, p);
     if (c > 0) return undefined;

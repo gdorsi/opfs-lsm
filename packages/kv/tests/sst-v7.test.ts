@@ -50,6 +50,14 @@ const EDGE_CASES: Record<string, SstEntry[]> = {
     put(new Uint8Array(300).fill(0xff), new Uint8Array(200).fill(7), 2 ** 40),
     put(new Uint8Array(301).fill(0xff), new Uint8Array(20_000).fill(9)),
   ],
+  "a record past u16 offsets between small ones": [
+    put(utf("a"), utf("1")),
+    put(utf("b"), new Uint8Array(70_000).fill(5), 2),
+    ...Array.from({ length: 40 }, (_, i) => put(utf(`c${String(i).padStart(3, "0")}`), utf("v"), 3 + i)),
+  ],
+  "keys that differ only past the sampled records": Array.from({ length: 200 }, (_, i) =>
+    put(cat(new Uint8Array(40).fill(0x61), utf(String(i * 3).padStart(5, "0"))), new Uint8Array(0), i + 1),
+  ),
 };
 
 function drain(c: LayerCursor): string[] {
