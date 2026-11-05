@@ -2,8 +2,8 @@ import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import {
   entryCursor,
-  lowerBoundKeys,
   type LayerCursor,
+  type LayerEntry,
   type ScanBounds,
 } from "./cursor.js";
 import {
@@ -255,6 +255,7 @@ class RecordWalker {
   valLen = 0;
   private readonly seqBytes: number;
   private readonly varint: boolean;
+  private prefix: Uint8Array | undefined;
 
   constructor(
     readonly fmt: RecordFormat,
@@ -265,6 +266,7 @@ class RecordWalker {
     readonly count: number,
     readonly prefixAt: number,
     readonly prefixLen: number,
+    readonly start: number,
   ) {
     this.seqBytes = fmt.seq ? 8 : 0;
     this.varint = fmt.prefixed;
@@ -276,12 +278,19 @@ class RecordWalker {
    */
   static ofBlock(b: BlockBytes, fmt: RecordFormat): RecordWalker {
     const count = b.view.getUint32(b.start, true);
-    const w = new RecordWalker(fmt, b.buf, b.view, b.start + 4, b.end, count, 0, 0);
+    const w = new RecordWalker(fmt, b.buf, b.view, b.start + 4, b.end, count, 0, 0, b.start);
     if (!fmt.prefixed) return w;
     const p = w.len();
     const end = b.end - offsetTableBytes(count);
     if (w.o + p > end) throw new CorruptDatabaseError("sst prefix OOB");
-    return new RecordWalker(fmt, b.buf, b.view, w.o + p, end, count, w.o, p);
+    return new RecordWalker(fmt, b.buf, b.view, w.o + p, end, count, w.o, p, b.start);
+  }
+
+  /** Where record `j * OFFSET_STRIDE` starts, for `j >= 1`, from a v7 block's offset table. */
+  sampleAt(j: number): number {
+    const o = this.start + this.view.getUint16(this.end + 2 * (j - 1), true);
+    if (o <= this.prefixAt + this.prefixLen || o >= this.end) throw new CorruptDatabaseError("sst offset OOB");
+    return o;
   }
 
   /** Reads the record at `o`. Gets walk a block with this, so lengths under 128 skip `len`. */
@@ -330,20 +339,22 @@ class RecordWalker {
   key(): Uint8Array {
     const { buf, prefixLen, keyAt, keyLen } = this;
     if (prefixLen === 0) return buf.slice(keyAt, keyAt + keyLen);
-    // A byte loop beats two subarray views and set() for keys this short.
-    const k = new Uint8Array(prefixLen + keyLen);
-    const prefixAt = this.prefixAt;
-    for (let i = 0; i < prefixLen; i++) k[i] = buf[prefixAt + i]!;
-    for (let i = 0; i < keyLen; i++) k[prefixLen + i] = buf[keyAt + i]!;
+    // The record's own bytes always sit before its suffix, so one slice
+    // copies the suffix at the right place, then the prefix overwrites the
+    // head. Two block copies beat a byte loop and a fresh subarray per key.
+    const k = buf.slice(keyAt - prefixLen, keyAt + keyLen);
+    k.set((this.prefix ??= buf.subarray(this.prefixAt, this.prefixAt + prefixLen)));
     return k;
+  }
+
+  value(): Uint8Array {
+    return this.buf.slice(this.valAt, this.valAt + this.valLen);
   }
 
   entry(): SstEntry {
     const key = this.key();
     const seq = this.seq();
-    return this.tag === TAG_PUT
-      ? { kind: "put", key, value: this.buf.slice(this.valAt, this.valAt + this.valLen), seq }
-      : { kind: "del", key, seq };
+    return this.tag === TAG_PUT ? { kind: "put", key, value: this.value(), seq } : { kind: "del", key, seq };
   }
 
   /** Every remaining record, checking the block holds nothing after them. */
@@ -466,7 +477,7 @@ export function encodeSst(
 }
 
 function decodeSstV1(buf: Uint8Array, view: DataView, crcOff: number): SstEntry[] {
-  return new RecordWalker(FORMAT_V1, buf, view, 12, crcOff, view.getUint32(8, true), 0, 0).entries();
+  return new RecordWalker(FORMAT_V1, buf, view, 12, crcOff, view.getUint32(8, true), 0, 0, 0).entries();
 }
 
 type BlockLayout = {
@@ -599,45 +610,62 @@ function compareAt(buf: Uint8Array, at: number, len: number, key: Uint8Array, fr
 }
 
 /**
+ * Moves `w` to the first record whose suffix is not below `key` from
+ * `w.prefixLen` on, and returns how many records are left from there.
+ * A v7 block binary-searches its sampled records, then walks at most
+ * `OFFSET_STRIDE` records. Older blocks walk from the start.
+ */
+function seekSuffix(w: RecordWalker, key: Uint8Array): number {
+  const p = w.prefixLen;
+  let i = 0;
+  if (w.fmt.prefixed && w.count > OFFSET_STRIDE) {
+    const first = w.o;
+    let lo = 0;
+    let hi = ((w.count - 1) / OFFSET_STRIDE) | 0;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      w.o = w.sampleAt(mid);
+      w.next();
+      if (compareAt(w.buf, w.keyAt, w.keyLen, key, p) < 0) lo = mid;
+      else hi = mid - 1;
+    }
+    w.o = lo === 0 ? first : w.sampleAt(lo);
+    i = lo * OFFSET_STRIDE;
+  }
+  for (; i < w.count; i++) {
+    const at = w.o;
+    w.next();
+    if (compareAt(w.buf, w.keyAt, w.keyLen, key, p) >= 0) {
+      w.o = at;
+      return w.count - i;
+    }
+  }
+  return 0;
+}
+
+/** Like `seekSuffix`, for a `key` that may not share the block's prefix. */
+function seekInBlock(w: RecordWalker, key: Uint8Array): number {
+  const p = w.prefixLen;
+  const n = Math.min(p, key.byteLength);
+  for (let i = 0; i < n; i++) {
+    const d = w.buf[w.prefixAt + i]! - key[i]!;
+    if (d !== 0) return d > 0 ? w.count : 0;
+  }
+  return key.byteLength < p ? w.count : seekSuffix(w, key);
+}
+
+/**
  * The record for `key` in one block, or undefined. Checks the block prefix
  * once, then compares suffixes in place and copies out only the match.
- * A v7 block binary-searches its sampled records first, then walks at
- * most `OFFSET_STRIDE` records from the last sampled one not past `key`.
  */
 function findInBlock(b: BlockBytes, key: Uint8Array, fmt: RecordFormat): SstEntry | undefined {
   const w = RecordWalker.ofBlock(b, fmt);
   const p = w.prefixLen;
   if (key.byteLength < p) return undefined;
   for (let i = 0; i < p; i++) if (w.buf[w.prefixAt + i] !== key[i]) return undefined;
-  let walk = w.count;
-  if (fmt.prefixed && w.count > OFFSET_STRIDE) {
-    const first = w.o;
-    const at = (j: number) => {
-      const o = b.start + b.view.getUint16(w.end + 2 * (j - 1), true);
-      if (o <= first || o >= w.end) throw new CorruptDatabaseError("sst offset OOB");
-      return o;
-    };
-    let lo = 0;
-    let hi = (w.count - 1) / OFFSET_STRIDE | 0;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      w.o = at(mid);
-      w.next();
-      const c = compareAt(w.buf, w.keyAt, w.keyLen, key, p);
-      if (c === 0) return w.entry();
-      if (c < 0) lo = mid;
-      else hi = mid - 1;
-    }
-    w.o = lo === 0 ? first : at(lo);
-    walk = Math.min(OFFSET_STRIDE, w.count - lo * OFFSET_STRIDE);
-  }
-  for (let i = 0; i < walk; i++) {
-    w.next();
-    const c = compareAt(w.buf, w.keyAt, w.keyLen, key, p);
-    if (c > 0) return undefined;
-    if (c === 0) return w.entry();
-  }
-  return undefined;
+  if (seekSuffix(w, key) === 0) return undefined;
+  w.next();
+  return compareAt(w.buf, w.keyAt, w.keyLen, key, p) === 0 ? w.entry() : undefined;
 }
 
 export function decodeSst(buf: Uint8Array): SstEntry[] {
@@ -794,57 +822,44 @@ export class SstReader {
     return blockBytes(this.buf, this.view, this.dataStart, this.index[i]!, this.codec);
   }
 
-  private loadBlock(i: number): SstEntry[] {
-    return RecordWalker.ofBlock(this.blockBytes(i), this.fmt).entries();
-  }
-
+  /**
+   * Walks blocks in place. The first block seeks to `bounds.start` with
+   * its offset table. Each record is copied out once, when it is reached.
+   */
   private v2Cursor(bounds?: ScanBounds): LayerCursor {
     const index = this.index;
-    let bi = seekBlock(index, bounds?.start);
-    let slots: SstEntry[] = [];
-    let i = 0;
-    const load = () => {
-      if (bi >= index.length) {
-        slots = [];
-        i = 0;
-        return;
-      }
-      const block = index[bi]!;
-      if (
-        bounds?.endExclusive &&
-        compareBytes(block.firstKey, bounds.endExclusive) >= 0
-      ) {
-        bi = index.length;
-        slots = [];
-        i = 0;
-        return;
-      }
-      slots = this.loadBlock(bi);
-      i = bounds?.start ? lowerBoundKeys(slots, bounds.start) : 0;
-    };
-    load();
-    return {
-      peek() {
-        while (true) {
-          if (i < slots.length) {
-            const e = slots[i]!;
-            if (
-              bounds?.endExclusive &&
-              compareBytes(e.key, bounds.endExclusive) >= 0
-            ) {
-              return undefined;
-            }
-            return e.kind === "put"
-              ? { key: e.key, kind: "put" as const, value: e.value }
-              : { key: e.key, kind: "del" as const };
-          }
-          bi += 1;
-          load();
-          if (bi >= index.length && i >= slots.length) return undefined;
+    const end = bounds?.endExclusive;
+    let seek = bounds?.start;
+    let bi = seekBlock(index, seek);
+    let w: RecordWalker | undefined;
+    let left = 0;
+    let cur: LayerEntry | undefined;
+    const advance = () => {
+      while (left === 0) {
+        if (bi >= index.length || (end && compareBytes(index[bi]!.firstKey, end) >= 0)) {
+          cur = undefined;
+          return;
         }
-      },
+        w = RecordWalker.ofBlock(this.blockBytes(bi++), this.fmt);
+        left = seek ? seekInBlock(w, seek) : w.count;
+        seek = undefined;
+      }
+      w!.next();
+      left--;
+      const key = w!.key();
+      if (end && compareBytes(key, end) >= 0) {
+        left = 0;
+        bi = index.length;
+        cur = undefined;
+      } else {
+        cur = w!.tag === TAG_PUT ? { key, kind: "put", value: w!.value() } : { key, kind: "del" };
+      }
+    };
+    advance();
+    return {
+      peek: () => cur,
       next() {
-        i += 1;
+        if (cur) advance();
       },
     };
   }
