@@ -53,7 +53,6 @@ Keys and values are `Uint8Array`.
 | `put(key, value)` | Append one put. Resolves on WAL ack. |
 | `delete(key)` | Append one delete. Resolves on WAL ack. |
 | `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack. |
-| `transaction(body)` | Interactive snapshot plus write buffer with key-based OCC. Concurrent WAL writes on a read or written key throw `ConflictError`. |
 | `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
 | `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). |
 | `rangeFollow(range, follow)` | Scan a range, then point-read follow keys, in one IndexedDB transaction. |
@@ -67,11 +66,6 @@ Keys and values are `Uint8Array`.
 await db.batch((tx) => {
   tx.put(key, value);
   tx.delete(oldKey);
-});
-
-await db.transaction(async (tx) => {
-  const cur = await tx.get(key);
-  if (cur === undefined) tx.put(key, value);
 });
 
 await db.sync();
