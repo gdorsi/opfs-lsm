@@ -166,11 +166,23 @@ A block holds the records for a run of keys, at most 4 KiB of them.
 | record 0                                                                   |
 | ...                                                                        |
 | record count - 1                                                           |
+| u16 offset of record 4                              from the block start   |
+| u16 offset of record 8                                                     |
+| ...             one per 4th record after record 0, (count - 1) / 4 of them |
 ```
 
 The prefix is the longest one that every key in the block shares. Keys are sorted, so it is the
 common prefix of the first and last key. A block with one key stores the whole key as its prefix.
 A key is the prefix followed by its record's suffix.
+
+The offset table lets a reader binary-search a block. Every record holds a whole suffix against
+the one block prefix, so a reader can compare any record from its offset alone. A reader finds
+the table from the record count and the block's length. Offsets are u16 because a block of two
+or more records is at most 4 KiB. A block of one record can be larger, and it has no table.
+The stride of 4 came from a sweep over 1, 4, 8, 16 and 32 with
+`pnpm --filter @opfs-lsm/collections bench:index-runs`. It was the largest stride whose LZ4 gets
+on UUID ids matched version 6. Stride 8 saves 1.4% of the index bytes and made those gets about
+5% slower.
 
 The shared prefix is for collections' index keys. Each one starts with `i/`, the table and the
 index name, so neighbours repeat about 20 bytes. One prefix per block keeps nearly all of that
@@ -233,9 +245,9 @@ Every footer field is a u32, so each one sits at a fixed position from the end o
 ```
 
 Entries are sorted by key, with one entry per key. A block ends before the record that would
-take its encoded size past 4 KiB. Adding a key can shorten the prefix, which lengthens every
-suffix, so the writer recomputes the size from running sums of key lengths and other record
-bytes. It sizes each suffix length varint from the whole key, so the Rust and TypeScript
+take its encoded size, offset table included, past 4 KiB. Adding a key can shorten the prefix,
+which lengthens every suffix, so the writer recomputes the size from running sums of key lengths
+and other record bytes. It sizes each suffix length varint from the whole key, so the Rust and TypeScript
 encoders cut blocks in the same places. The bloom filter uses 10 bits per key and 7 hashes, which gives about a 1% false-positive rate. Its
 hashes are FNV-1a and a 32-bit mix of it, combined by double hashing.
 
@@ -249,7 +261,7 @@ and a header before the data, and they end with a bare CRC:
 - Version 4 widened the bloom header fields to u32, so a filter can pass 64 KiB.
 - Version 5 moved the bloom filter and index behind the data and the metadata into the footer.
 - Version 6 added the codec field.
-- Version 7 added the block prefix and varint lengths.
+- Version 7 added the block prefix, varint lengths and the offset table.
 
 A reader checks the last 8 bytes first. In a version 2 to 4 file, those bytes are the last
 block's length and the CRC. A block length is 4 or at least 9, never 5 or 6, so these files
@@ -261,7 +273,7 @@ would be misread only if its CRC happened to equal the magic, a 1 in 2^32 chance
 Runs in L2 and deeper use LZ4. L0 and L1 runs stay raw. `codecForLevel` in `levels.ts` makes
 the choice. L0 and L1 hold the recent writes, and an LZ4 block costs a decompress on every read
 of it. L2 and below hold nearly all of the data, so they are where the bytes are. Encode cost
-is not the reason: a 4.3 MB flush run encodes in 51.7 ms raw and 52.7 ms with LZ4.
+is not the reason. A 4.3 MB flush run encodes in 51.7 ms raw and 52.7 ms with LZ4.
 
 The reason is memory. Every tab holds every run's bytes, and blocks stay packed in memory until a
 read reaches them. LZ4 decodes fast enough that a get barely notices. It also adds the least
@@ -300,9 +312,9 @@ A point get:
 2. Rejects it if the bloom filter says no.
 3. Binary-searches the block index for the one block that could hold the key, unpacking it
    first if the run uses LZ4.
-4. Checks the block's prefix against the key once. Then it walks the records, comparing each
-   suffix in place, and copies out only the record that matches. It stops at the first key past
-   the one it wants.
+4. Checks the block's prefix against the key once. Then it binary-searches the offset table,
+   comparing suffixes in place, and walks at most 4 records from the last one not past the key.
+   It copies out only the record that matches.
 
 A get used to decode the whole block into objects and then search them. Walking it in place
 cut a get that hits L2 from 7.7 µs to 4.0 µs, measured with `pnpm bench:follow` at 100k todos.
@@ -352,8 +364,10 @@ ordered by key and then by source, newest first. For each key the newest source 
 tombstones are dropped. Each L0 run is its own source, because L0 runs overlap. Each deeper
 level is one source (`RunLevel` in `store/merge.ts`): its runs never overlap, so the level
 cursor binary-searches the runs' largest keys for the start key and opens one run at a time,
-in key order, stopping at the first run that starts at or past the end key. A run cursor decodes
-its first block as soon as it opens, so a scan only pays for the runs it reaches.
+in key order, stopping at the first run that starts at or past the end key. A run cursor reads
+its first block as soon as it is created, so a scan only pays for the runs it reaches. It seeks to the
+start key with the block's offset table, then walks records in place and copies out each one
+when it reaches it.
 
 The bloom filters play no part in a scan. They answer whether one exact key is present.
 
