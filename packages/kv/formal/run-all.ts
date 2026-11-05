@@ -12,7 +12,6 @@ const kvRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checks = [
   "formal/ingest-visibility/check.ts",
   "formal/wal-over-sst/check.ts",
-  "formal/occ/check.ts",
   "formal/view-pin/check.ts",
   "formal/compact-preserve/check.ts",
 ] as const;

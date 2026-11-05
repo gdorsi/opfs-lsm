@@ -46,7 +46,7 @@ try {
     path.join(outDir, "dexie.js"),
   );
   const kv = await bundle(
-    'export { openDb, prefixBound, ConflictError } from "./dist/index.js";\n',
+    'export { openDb, prefixBound, ClosedError } from "./dist/index.js";\n',
     "kv-entry.ts",
     path.join(outDir, "kv.js"),
   );

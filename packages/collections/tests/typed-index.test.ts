@@ -1,13 +1,7 @@
+import { openHarnessCollectionDb } from "../src/testing.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { __resetMemoryFsForTests } from "@opfs-lsm/kv";
-import {
-  decodeOrderFloat64,
-  encodeOrderFloat64,
-  extractIndexRowId,
-  indexKey,
-  openCollectionDb,
-  type CollectionDb,
-} from "../src/index.js";
+import { __resetMemoryFsForTests } from "@opfs-lsm/kv/testing";
+import { decodeOrderFloat64, encodeOrderFloat64, extractIndexRowId, indexKey, type CollectionDb } from "../src/index.js";
 
 const NAME = "typed-index-test";
 let open: CollectionDb | undefined;
@@ -59,7 +53,7 @@ describe("order-preserving float64", () => {
 describe("typed + compound indexes", () => {
   it("indexes numbers and booleans", async () => {
     type Row = { id: string; age: number; active: boolean };
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {
@@ -90,7 +84,7 @@ describe("typed + compound indexes", () => {
 
   it("supports compound indexes and prefix where", async () => {
     type Note = { id: string; orgId: string; createdAt: number; title: string };
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {

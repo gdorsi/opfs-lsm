@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   EngineHost,
   MemoryFs,
-  __resetMemoryFsForTests,
   attachEngineHostPort,
-  createPortIngestClient,
-  openDb,
+  createPortIngestClient
 } from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
@@ -33,7 +35,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     attachEngineHostPort(port1, host);
     const ingest = createPortIngestClient(port2);
 
-    const a = await openDb({
+    const a = await openHarnessDb({
       name: "port-db",
       writerId: "w1",
       fs,
@@ -43,7 +45,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     const { generation } = await a.ingest();
     expect(generation).toBe(1);
 
-    const b = await openDb({
+    const b = await openHarnessDb({
       name: "port-db",
       writerId: "w2",
       fs,
@@ -62,7 +64,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
   it("serializes concurrent ingest calls on one host", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
-    const a = await openDb({
+    const a = await openHarnessDb({
       name: "port-db",
       writerId: "w1",
       fs,

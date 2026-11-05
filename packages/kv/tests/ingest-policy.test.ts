@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   EngineHost,
   MemoryFs,
-  __resetMemoryFsForTests,
   createLocalIngestClient,
-  openDb,
-  type IngestPolicy,
+  type IngestPolicy
 } from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 import { checkDbName, opsBytes } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
@@ -29,7 +31,7 @@ async function twoTabs(policy: IngestPolicy) {
   let requests = 0;
   const open = (writerId: string) => {
     const inner = createLocalIngestClient(host);
-    return openDb({
+    return openHarnessDb({
       name: NAME,
       writerId,
       fs,
@@ -72,7 +74,7 @@ describe("ingest policy", () => {
   it("a second request for the same flush publishes nothing new", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
       writerId: "a",
       fs,

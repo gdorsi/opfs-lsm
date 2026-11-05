@@ -8,6 +8,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    },
     "./shared-worker": {
       "types": "./dist/host/shared-worker.d.ts",
       "import": "./dist/host/shared-worker.js"
@@ -36,7 +40,6 @@
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
-    "formal:occ": "tsx formal/occ/check.ts",
     "formal:view-pin": "tsx formal/view-pin/check.ts",
     "formal:compact-preserve": "tsx formal/compact-preserve/check.ts"
   },

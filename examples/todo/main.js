@@ -7,8 +7,7 @@ import {
   deleteTodo,
   generateTodos,
   readPage,
-  toggleTodo,
-} from "./model.mjs";
+  toggleTodo } from "./model.mjs";
 
 const params = new URLSearchParams(location.search);
 const dbName = params.get("name") ?? "todos";
@@ -38,8 +37,7 @@ const state = {
   sort: "newest",
   pages: [undefined],
   index: 0,
-  next: undefined,
-};
+  next: undefined };
 
 let ticket = 0;
 let chain = Promise.resolve();
@@ -51,7 +49,6 @@ statusEl.textContent = "opening";
 
 const db = await openCollectionDb({
   name: dbName,
-  workerUrl: new URL("./worker.js", import.meta.url),
   schema: TODO_SCHEMA,
 }).catch((err) => {
   showError(err);
@@ -92,8 +89,7 @@ if (db && todos) {
         await generateTodos(todos, count, {
           onProgress: (done, total) => {
             progressEl.textContent = `generated ${done} / ${total}`;
-          },
-        });
+          } });
         progressEl.textContent = `generated ${count} todos`;
       } finally {
         generateButton.disabled = false;
@@ -195,8 +191,7 @@ async function refresh() {
     after,
     sort: state.sort,
     filter: state.filter,
-    pageSize: PAGE_SIZE,
-  });
+    pageSize: PAGE_SIZE });
   if (mine !== ticket) return;
   paint(page);
 }

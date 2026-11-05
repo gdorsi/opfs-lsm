@@ -1,6 +1,8 @@
+import { openHarnessCollectionDb } from "../src/testing.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { __resetMemoryFsForTests, prefixBound } from "@opfs-lsm/kv";
-import { indexPrefix, MAX_INDEX_KEYS_PER_ROW, openCollectionDb, type CollectionDb } from "../src/index.js";
+import { prefixBound } from "@opfs-lsm/kv";
+import { __resetMemoryFsForTests } from "@opfs-lsm/kv/testing";
+import { indexPrefix, MAX_INDEX_KEYS_PER_ROW, type CollectionDb } from "../src/index.js";
 
 const NAME = "multi-entry-test";
 let open: CollectionDb | undefined;
@@ -28,7 +30,7 @@ afterEach(async () => {
 type Note = { id: string; terms: string[]; createdAt: number; title?: string };
 
 async function notes() {
-  open = await openCollectionDb({
+  open = await openHarnessCollectionDb({
     name: NAME,
     forceMemory: true,
     schema: {

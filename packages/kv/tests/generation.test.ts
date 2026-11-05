@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  MemoryFs,
-  __resetMemoryFsForTests,
-  openDb,
+  MemoryFs
 } from "../src/index.js";
+import {
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 import { checkDbName } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";

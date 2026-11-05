@@ -39,8 +39,7 @@ export function kvStorage(db: Db): StorageAdapterInterface {
     },
     close() {
       return db.close();
-    },
-  };
+    } };
 }
 
 const REMOVE_BATCH = 1000;

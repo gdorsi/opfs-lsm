@@ -15,13 +15,15 @@
 import "fake-indexeddb/auto";
 import {
   MemoryFs,
-  __resetMemoryFsForTests,
   encodeSst,
   ensureEngine,
-  openDb,
   type Db,
   type SstEntry,
 } from "@opfs-lsm/kv";
+import {
+  __resetMemoryFsForTests,
+  openHarnessDb,
+} from "@opfs-lsm/kv/testing";
 // Internal kv helpers, to lay runs out without the write path.
 import { publishGeneration, publishRun, runMeta, type RunMeta } from "../../kv/dist/store/generation.js";
 import { levelRunPath, TARGET_RUN_BYTES } from "../../kv/dist/store/levels.js";
@@ -139,7 +141,7 @@ for (const [level, entries, codec] of [[1, l1, "raw"], [2, l2, "lz4"]] as const)
 await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0 });
 
 __resetMemoryFsForTests(name);
-const kv = await openDb({ name, fs, forceMemory: true });
+const kv = await openHarnessDb({ name, fs, forceMemory: true });
 const table = new CollectionDb(kv, SCHEMA).table<Todo>("todos");
 const levels = runs.reduce<Record<string, number>>((n, r) => {
   const l = r.path.slice(0, 2);

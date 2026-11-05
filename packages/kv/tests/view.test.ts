@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, __resetMemoryFsForTests } from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 
 const NAME = "view-test";
 const enc = new TextEncoder();
@@ -25,7 +28,7 @@ afterEach(() => {
 
 describe("view snapshot", () => {
   it("pins WAL head so later puts are invisible", async () => {
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "w1",
@@ -52,7 +55,7 @@ describe("view snapshot", () => {
   });
 
   it("closes snapshot after callback", async () => {
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "w1",
@@ -68,7 +71,7 @@ describe("view snapshot", () => {
   });
 
   it("keeps its rows while later writes split the memtable", async () => {
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "w1",

@@ -2,7 +2,8 @@ import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { ClosedError, ConstraintError, openDb } from "@opfs-lsm/kv";
+import { ClosedError, ConstraintError } from "@opfs-lsm/kv";
+import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import { decodeKey, encodeKey, kvStorage } from "./storage.ts";
 
 const SEED = 0x5eed;
@@ -97,7 +98,7 @@ test("codec prefix iff and round-trip", () => {
 });
 
 test("save, load, loadRange, and caller-buffer alias", async () => {
-  const db = await openDb({ name: dbName(), forceMemory: true });
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const storage = kvStorage(db);
   const doc = "doc";
   try {
@@ -149,7 +150,7 @@ test("save, load, loadRange, and caller-buffer alias", async () => {
 });
 
 test("removeRange clears 2501 keys and a second call is a no-op", async () => {
-  const db = await openDb({ name: dbName(), forceMemory: true });
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const storage = kvStorage(db);
   try {
     for (let i = 0; i < 2501; i++) {
@@ -168,7 +169,7 @@ test("removeRange clears 2501 keys and a second call is a no-op", async () => {
 });
 
 test("key over 8 KiB rejects ConstraintError and a sibling write lands", async () => {
-  const db = await openDb({ name: dbName(), forceMemory: true });
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const storage = kvStorage(db);
   try {
     await assert.rejects(
@@ -183,7 +184,7 @@ test("key over 8 KiB rejects ConstraintError and a sibling write lands", async (
 });
 
 test("close twice resolves and later calls reject ClosedError", async () => {
-  const db = await openDb({ name: dbName(), forceMemory: true });
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const storage = kvStorage(db);
   await storage.close();
   await storage.close();
@@ -199,8 +200,8 @@ test("close twice resolves and later calls reject ClosedError", async () => {
 
 test("second handle misses a save until it syncs", async () => {
   const name = dbName();
-  const a = await openDb({ name, forceMemory: true });
-  const b = await openDb({ name, forceMemory: true });
+  const a = await openHarnessDb({ name, forceMemory: true });
+  const b = await openHarnessDb({ name, forceMemory: true });
   const storageA = kvStorage(a);
   const storageB = kvStorage(b);
   try {

@@ -13,7 +13,6 @@ import ReactDOM from "react-dom/client"
 import { App } from "./App.tsx"
 import { kvStorage } from "./storage.ts"
 import type { State } from "./types.ts"
-import workerUrl from "./worker.ts?worker&url"
 import "./index.css"
 
 declare global {
@@ -30,7 +29,7 @@ try {
     new URLSearchParams(document.location.search).get("name") ?? "automerge-todo"
   const repo = new Repo({
     network: [new BroadcastChannelNetworkAdapter()],
-    storage: kvStorage(await openDb({ name, workerUrl })),
+    storage: kvStorage(await openDb({ name })),
   })
 
   const rootDocUrl = `${document.location.hash.substring(1)}`

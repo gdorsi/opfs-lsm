@@ -3,7 +3,6 @@ export type ErrorCode =
   | "closed"
   | "corrupt"
   | "constraint"
-  | "conflict"
   | "unavailable";
 
 export class OpfsLsmError extends Error {
@@ -41,14 +40,6 @@ export class CorruptDatabaseError extends OpfsLsmError {
   constructor(message: string) {
     super("corrupt", message);
     this.name = "CorruptDatabaseError";
-  }
-}
-
-/** Optimistic concurrency failure — retry the transaction. */
-export class ConflictError extends OpfsLsmError {
-  constructor(message = "transaction conflict") {
-    super("conflict", message);
-    this.name = "ConflictError";
   }
 }
 

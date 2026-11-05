@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MemoryFs, __resetMemoryFsForTests, openDb } from "../src/index.js";
+import {
+  MemoryFs
+} from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 
 const NAME = "generation-idb";
@@ -65,7 +71,7 @@ function observedFs(inner: MemoryFs) {
 
 describe("generation recorded in IndexedDB", () => {
   it("a view pinned before a batch sees none of it after ingest", async () => {
-    const db = await openDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), ingestPolicy: quiet });
     await db.put(utf("z"), utf("0"));
     await db.ingest();
     await db.put(utf("a"), utf("1"));
@@ -86,7 +92,7 @@ describe("generation recorded in IndexedDB", () => {
 
   it("keeps only the recorded generation's manifest and every key reads back", async () => {
     const inner = new MemoryFs();
-    const db = await openDb({ name: NAME, writerId: "w1", fs: inner, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, ingestPolicy: quiet });
     for (let i = 0; i < 6; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
       await db.ingest();
@@ -100,7 +106,7 @@ describe("generation recorded in IndexedDB", () => {
 
   it("a get after ingest does not list OPFS", async () => {
     const o = observedFs(new MemoryFs());
-    const db = await openDb({ name: NAME, writerId: "w1", fs: o.fs, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: o.fs, ingestPolicy: quiet });
     for (let i = 0; i < 20; i++) await db.put(utf(`k${i}`), utf(`v${i}`));
     await db.ingest();
     const before = o.lists();

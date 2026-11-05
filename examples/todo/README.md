@@ -40,7 +40,7 @@ You can also serve the repo root with any static file server after `pnpm --filte
 
 `main.js` is the DOM layer: open the database, wire buttons, render rows. It imports `openCollectionDb` from `@opfs-lsm/collections`; the import map in `index.html` points both `@opfs-lsm/kv` and `@opfs-lsm/collections` at their built files. `CollectionDb` wraps the kv database, so the page subscribes to `db.kv.changes`, calls `db.ingest`, and passes `db.table("todos")` into the model.
 
-`worker.js` imports `packages/kv/dist/host/shared-worker.js`. That file is the `@opfs-lsm/kv/shared-worker` export. A module worker does not use the page import map, so the worker names the built file directly. `openCollectionDb` forwards `worker.js` as `workerUrl`.
+`openCollectionDb` asks `@opfs-lsm/kv` to start its SharedWorker. The worker script is `packages/kv/dist/host/shared-worker.js`, resolved from the package via `import.meta.url`.
 
 `model.mjs` is headless: no DOM access and no package import. It owns the table schema, derived sort fields, title generation, filter matching, paging, and bulk operations. Its only contract is a collections `Table` shape: `put`, `putMany`, `update`, `delete`, `clear`, and `page`. The page passes the real table; the tests pass a plain in-memory fake.
 

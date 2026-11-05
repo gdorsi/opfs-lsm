@@ -1,6 +1,7 @@
+import { openHarnessCollectionDb } from "../src/testing.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { __resetMemoryFsForTests } from "@opfs-lsm/kv";
-import { openCollectionDb, type CollectionDb } from "../src/index.js";
+import { __resetMemoryFsForTests } from "@opfs-lsm/kv/testing";
+import { type CollectionDb } from "../src/index.js";
 import { extractIndexRowId, indexKey } from "../src/index.js";
 
 const NAME = "collections-test";
@@ -36,7 +37,7 @@ type User = { id: string; email: string; name: string };
 
 describe("collections", () => {
   it("put/get/delete by primary key", async () => {
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {
@@ -55,7 +56,7 @@ describe("collections", () => {
   });
 
   it("where equality on string index", async () => {
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {
@@ -72,7 +73,7 @@ describe("collections", () => {
   });
 
   it("updates index entries when email changes", async () => {
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {
@@ -95,7 +96,7 @@ describe("collections", () => {
   });
 
   it("putMany upserts, update moves indexes, clear removes rows", async () => {
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {

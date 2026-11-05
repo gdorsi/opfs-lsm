@@ -17,7 +17,14 @@
  */
 import "fake-indexeddb/auto";
 import { formatUs, summarize } from "../bench/stats.ts";
-import { MemoryFs, __resetMemoryFsForTests, openDb, type Db } from "../src/index.js";
+import {
+  MemoryFs,
+  type Db
+} from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 import { encodeSst, ensureEngine } from "../src/store/engine.js";
 import { publishGeneration, publishRun, runMeta, type RunMeta } from "../src/store/generation.js";
 import { levelRunPath, TARGET_RUN_BYTES } from "../src/store/levels.js";
@@ -132,7 +139,7 @@ for (const [level, entries, codec] of [[1, l1, "raw"], [2, l2, l2Codec]] as cons
 await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0 });
 
 __resetMemoryFsForTests(name);
-const db = await openDb({ name, fs, forceMemory: true });
+const db = await openHarnessDb({ name, fs, forceMemory: true });
 const levels = runs.reduce<Record<string, number>>((n, r) => {
   const l = r.path.slice(0, 2);
   n[l] = (n[l] ?? 0) + 1;

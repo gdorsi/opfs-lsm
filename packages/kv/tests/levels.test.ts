@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MemoryFs, __resetMemoryFsForTests, decodeSst, openDb } from "../src/index.js";
+import {
+  MemoryFs,
+  decodeSst
+} from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 import { loadLatestGeneration, type RunMeta } from "../src/store/generation.js";
 import { planCompaction, replaceRuns, type CompactionPlan } from "../src/store/levels.js";
 
@@ -83,7 +90,7 @@ describe("bottom compaction", () => {
 
   it("leaves no tombstone on disk and deleted keys stay deleted", async () => {
     const fs = new MemoryFs();
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
       fs,
       forceMemory: true,

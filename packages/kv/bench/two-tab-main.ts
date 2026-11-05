@@ -109,6 +109,7 @@ function modeLabel(): string {
 
 async function openHandle(
   mod: typeof import("../dist/index.js"),
+  testing: typeof import("../dist/testing.js"),
   writerId: string,
   shared?: {
     fs: Awaited<ReturnType<typeof mod.openBrowserFs>>;
@@ -116,7 +117,7 @@ async function openHandle(
   },
 ): Promise<Handle> {
   if (shared) {
-    return mod.openDb({
+    return testing.openHarnessDb({
       name: DB_NAME,
       writerId,
       fs: shared.fs,
@@ -124,10 +125,9 @@ async function openHandle(
       ingestPolicy: quiet,
     });
   }
-  return mod.openDb({
+  return testing.openHarnessDb({
     name: DB_NAME,
     writerId,
-    workerUrl: new URL("../dist/host/shared-worker.js", import.meta.url),
     ingestPolicy: quiet,
   });
 }
@@ -315,13 +315,14 @@ async function run(): Promise<void> {
   statusEl.textContent = "running";
   out.textContent = "";
   const mod = await import("../dist/index.js");
+  const testing = await import("../dist/testing.js");
   if (LOCAL) {
     const fs = await mod.openBrowserFs(DB_NAME);
     const host = new mod.EngineHost(() => fs);
     const ingest = mod.createLocalIngestClient(host);
     const shared = { fs, ingest };
-    const self = await openHandle(mod, "tab-a", shared);
-    const otherDb = await openHandle(mod, "tab-b", shared);
+    const self = await openHandle(mod, testing, "tab-a", shared);
+    const otherDb = await openHandle(mod, testing, "tab-b", shared);
     const other: OtherTab = {
       async put(key, value) {
         await otherDb.put(enc.encode(key), enc.encode(value));
@@ -341,7 +342,7 @@ async function run(): Promise<void> {
   }
 
   if (ROLE === "b") {
-    const db = await openHandle(mod, "tab-b");
+    const db = await openHandle(mod, testing, "tab-b");
     log("mode=" + modeLabel());
     log("tab B ready");
     const ready = await fetch("/peer/ready", { method: "POST" });
@@ -350,7 +351,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  const db = await openHandle(mod, "tab-a");
+  const db = await openHandle(mod, testing, "tab-a");
   await scenario(db, await remoteOther());
   await db.close();
 }

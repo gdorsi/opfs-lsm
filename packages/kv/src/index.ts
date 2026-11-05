@@ -1,7 +1,6 @@
 export {
   openDb,
   prefixBound,
-  __resetMemoryFsForTests,
   type OpenOptions,
   type Db,
   type BatchTx,
@@ -18,10 +17,8 @@ export {
   CommitError,
   ClosedError,
   CorruptDatabaseError,
-  ConflictError,
   StorageUnavailableError,
 } from "./errors.js";
-export type { Transaction } from "./transaction.js";
 export {
   EngineHost,
   attachEngineHostPort,
@@ -43,4 +40,3 @@ export {
   engineUsingWasm,
   ensureEngine,
 } from "./store/engine.js";
-

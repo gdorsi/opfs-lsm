@@ -63,7 +63,9 @@ function user(i: number): User {
 }
 
 async function benchCollections(): Promise<BenchRow[]> {
-  const { openCollectionDb } = await import("@opfs-lsm/collections");
+  const { openHarnessCollectionDb } = await import(
+    "@opfs-lsm/collections/testing"
+  );
   const {
     openBrowserFs,
     EngineHost,
@@ -73,35 +75,36 @@ async function benchCollections(): Promise<BenchRow[]> {
   await resetIdb("opfs-lsm-wal/bench-collections");
   await clearOpfs();
 
-  const openOpts: Parameters<typeof openCollectionDb>[0] = {
+  const schema = {
+    tables: [
+      {
+        name: "users",
+        indexes: [{ name: "email", path: "email" }],
+      },
+    ],
+  };
+
+  let openOpts = {
     name: "bench-collections",
     writerId: "bench",
-    schema: {
-      tables: [
-        {
-          name: "users",
-          indexes: [{ name: "email", path: "email" }],
-        },
-      ],
-    },
+    schema,
     ingestPolicy: { maxWalBytes: 1 << 30 },
   };
 
   if (LOCAL) {
     const fs = await openBrowserFs("bench-collections");
     const host = new EngineHost(() => fs);
-    openOpts.fs = fs;
-    openOpts.ingest = createLocalIngestClient(host);
+    openOpts = {
+      ...openOpts,
+      fs,
+      ingest: createLocalIngestClient(host),
+    };
     log("mode=local EngineHost + BrowserFs (OPFS)");
   } else {
-    openOpts.workerUrl = new URL(
-      "/packages/kv/dist/host/shared-worker.js",
-      location.origin,
-    );
     log("mode=SharedWorker + BrowserFs (OPFS)");
   }
 
-  const db = await openCollectionDb(openOpts);
+  const db = await openHarnessCollectionDb(openOpts);
   const users = db.table<User>("users");
   const rows: BenchRow[] = [];
 
