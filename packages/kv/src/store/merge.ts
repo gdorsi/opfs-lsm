@@ -3,9 +3,11 @@ import type { MemRow } from "./memtable.js";
 import {
   entryCursor,
   type LayerCursor,
+  type ScanBounds,
 } from "./cursor.js";
 import type { SstEntry, SstReader } from "./sst.js";
 import type { Entry } from "../db.js";
+import { levelOf } from "./levels.js";
 
 type HeapItem = { key: Uint8Array; source: number };
 
@@ -107,6 +109,82 @@ export function pointGetSst(
 ): Uint8Array | undefined {
   const hit = latestSstEntry(readers, key);
   return hit?.kind === "put" ? new Uint8Array(hit.value) : undefined;
+}
+
+/**
+ * Runs whose key ranges never overlap, in key order: one level from L1
+ * down, or a single L0 run. A scan opens only the runs it reaches.
+ */
+export class RunLevel {
+  private readonly runs: SstReader[] = [];
+  private readonly smallest: Uint8Array[] = [];
+  private readonly largest: Uint8Array[] = [];
+
+  constructor(readers: readonly SstReader[]) {
+    for (const reader of readers) {
+      const range = reader.range;
+      if (!range) continue;
+      this.runs.push(reader);
+      this.smallest.push(range.smallest);
+      this.largest.push(range.largest);
+    }
+  }
+
+  cursor(bounds?: ScanBounds): LayerCursor {
+    const { runs, smallest, largest } = this;
+    const end = bounds?.endExclusive;
+    let r = 0;
+    if (bounds?.start) {
+      let hi = runs.length;
+      while (r < hi) {
+        const mid = (r + hi) >> 1;
+        if (compareBytes(largest[mid]!, bounds.start) < 0) r = mid + 1;
+        else hi = mid;
+      }
+    }
+    const open = () =>
+      r < runs.length && !(end && compareBytes(smallest[r]!, end) >= 0)
+        ? runs[r]!.cursor(bounds)
+        : undefined;
+    let cur = open();
+    return {
+      peek() {
+        while (cur) {
+          const e = cur.peek();
+          if (e) return e;
+          r += 1;
+          cur = open();
+        }
+        return undefined;
+      },
+      next() {
+        cur?.next();
+      },
+    };
+  }
+}
+
+/**
+ * The scan sources of a manifest's runs, newest first: each L0 run alone,
+ * then one RunLevel per deeper level. A run with no level may overlap any
+ * other, so it stands alone too.
+ */
+export function runLevels(
+  paths: readonly string[],
+  readers: readonly SstReader[],
+): RunLevel[] {
+  const out: RunLevel[] = [];
+  let i = 0;
+  while (i < readers.length) {
+    const level = levelOf(paths[i]!);
+    let j = i + 1;
+    if (level !== undefined && level > 0) {
+      while (j < readers.length && levelOf(paths[j]!) === level) j++;
+    }
+    out.push(new RunLevel(readers.slice(i, j)));
+    i = j;
+  }
+  return out;
 }
 
 export function arrayCursor(rows: readonly MemRow[]): LayerCursor {
