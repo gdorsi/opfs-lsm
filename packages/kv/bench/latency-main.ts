@@ -1,4 +1,5 @@
 import type { Db } from "../dist/index.js";
+import { formatMs, summarize, type Stats } from "./stats.ts";
 
 const out = document.getElementById("out")!;
 const runBtn = document.getElementById("run") as HTMLButtonElement;
@@ -9,17 +10,6 @@ const AUTO = params.has("auto");
 /** Raise to keep the memtable large, e.g. `maxBatches=1000000000`. */
 const MAX_BATCHES = params.get("maxBatches");
 const NAME = "bench-latency";
-
-type Stats = {
-  readonly label: string;
-  readonly n: number;
-  readonly p50: number;
-  readonly p90: number;
-  readonly p99: number;
-  readonly p999: number;
-  readonly max: number;
-  readonly over1ms: number;
-};
 
 function log(line: string): void {
   out.textContent += line + "\n";
@@ -34,28 +24,6 @@ async function report(payload: unknown): Promise<void> {
   });
 }
 
-function stats(label: string, samples: Float64Array): Stats {
-  const s = Float64Array.from(samples).sort();
-  const q = (p: number) => s[Math.min(s.length - 1, Math.floor(p * s.length))]!;
-  let over1ms = 0;
-  for (const x of s) if (x > 1) over1ms++;
-  const row = {
-    label,
-    n: s.length,
-    p50: q(0.5),
-    p90: q(0.9),
-    p99: q(0.99),
-    p999: q(0.999),
-    max: s[s.length - 1]!,
-    over1ms,
-  };
-  const ms = (x: number) => x.toFixed(3).padStart(8);
-  log(
-    `${label.padEnd(18)} p50 ${ms(row.p50)}  p90 ${ms(row.p90)}  p99 ${ms(row.p99)}  p99.9 ${ms(row.p999)}  max ${ms(row.max)}  >1ms ${over1ms}`,
-  );
-  return row;
-}
-
 async function timeEach(
   label: string,
   count: number,
@@ -67,7 +35,9 @@ async function timeEach(
     await op(i);
     samples[i] = performance.now() - t;
   }
-  return stats(label, samples);
+  const row = summarize(label, samples);
+  log(formatMs(row));
+  return row;
 }
 
 async function resetStorage(): Promise<void> {
