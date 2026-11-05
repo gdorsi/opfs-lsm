@@ -1,44 +1,74 @@
-import { openDb, prefixBound } from "@opfs-lsm/kv";
+import { openCollectionDb } from "@opfs-lsm/collections";
 import {
-  TODO_PREFIX,
+  PAGE_SIZE,
+  TODO_SCHEMA,
+  clearTodos,
   createTodo,
-  decodeTodo,
-  encodeTodo,
-  idFromKey,
-  sortTodos,
-  todoKey,
+  deleteTodo,
+  generateTodos,
+  readPage,
+  toggleTodo,
 } from "./model.mjs";
 
 const params = new URLSearchParams(location.search);
 const dbName = params.get("name") ?? "todos";
-const encoder = new TextEncoder();
 
 const statusEl = byId("status");
 const errorEl = byId("error");
 const listEl = byId("list");
 const generationEl = byId("generation");
+const progressEl = byId("progress");
 const formEl = byId("add");
 const titleInput = byId("title");
+const generateForm = byId("generate");
+const countInput = byId("count");
+const generateButton = byId("generate-button");
+const clearButton = byId("clear");
+const filterInput = byId("filter");
+const sortSelect = byId("sort");
+const prevButton = byId("prev");
+const nextButton = byId("next");
+const pageEl = byId("page");
 const ingestButton = byId("ingest");
 const otherButton = byId("other");
 
+/** `pages` is the cursor stack: pages[n] is the first key of page n. */
+const state = {
+  filter: "",
+  sort: "newest",
+  pages: [undefined],
+  index: 0,
+  next: undefined,
+};
+
 let ticket = 0;
 let chain = Promise.resolve();
+let busy = 0;
+let changeTimer;
+let filterTimer;
 
 statusEl.textContent = "opening";
 
-const db = await openDb({
+const db = await openCollectionDb({
   name: dbName,
   workerUrl: new URL("./worker.js", import.meta.url),
+  schema: TODO_SCHEMA,
 }).catch((err) => {
   showError(err);
   statusEl.textContent = "not open";
   return null;
 });
 
-if (db) {
-  db.changes(() => {
-    refresh().catch(showError);
+const todos = db?.table("todos");
+
+if (db && todos) {
+  db.kv.changes(() => {
+    // A bulk write refreshes once when it finishes, not per batch.
+    if (busy > 0) return;
+    clearTimeout(changeTimer);
+    changeTimer = setTimeout(() => {
+      refresh().catch(showError);
+    }, 50);
   });
 
   formEl.addEventListener("submit", (event) => {
@@ -46,7 +76,78 @@ if (db) {
     const todo = createTodo(titleInput.value);
     if (!todo) return;
     titleInput.value = "";
-    run(() => db.put(todoKey(todo.id), encodeTodo(todo)));
+    resetPages();
+    run(() => todos.put(todo));
+  });
+
+  generateForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const count = readCount();
+    countInput.value = String(count);
+    resetPages();
+    generateButton.disabled = true;
+    clearButton.disabled = true;
+    run(async () => {
+      try {
+        await generateTodos(todos, count, {
+          onProgress: (done, total) => {
+            progressEl.textContent = `generated ${done} / ${total}`;
+          },
+        });
+        progressEl.textContent = `generated ${count} todos`;
+      } finally {
+        generateButton.disabled = false;
+        clearButton.disabled = false;
+      }
+    });
+  });
+
+  clearButton.addEventListener("click", () => {
+    resetPages();
+    generateButton.disabled = true;
+    clearButton.disabled = true;
+    run(async () => {
+      try {
+        progressEl.textContent = "clearing";
+        const removed = await clearTodos(todos);
+        progressEl.textContent = `cleared ${removed} todos`;
+      } finally {
+        generateButton.disabled = false;
+        clearButton.disabled = false;
+      }
+    });
+  });
+
+  filterInput.addEventListener("input", () => {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => {
+      state.filter = filterInput.value;
+      resetPages();
+      refresh().catch(showError);
+    }, 120);
+  });
+
+  sortSelect.addEventListener("change", () => {
+    state.sort = sortSelect.value;
+    resetPages();
+    refresh().catch(showError);
+  });
+
+  prevButton.addEventListener("click", () => {
+    if (state.index === 0) return;
+    state.index -= 1;
+    refresh().catch(showError);
+  });
+
+  nextButton.addEventListener("click", () => {
+    const next = state.next;
+    if (!next) return;
+    // Consume the cursor so a double click cannot push the same page twice.
+    state.next = undefined;
+    state.pages.length = state.index + 1;
+    state.pages.push(next);
+    state.index += 1;
+    refresh().catch(showError);
   });
 
   ingestButton.addEventListener("click", () => {
@@ -64,61 +165,68 @@ if (db) {
 }
 
 function run(fn) {
-  const job = chain.then(fn).then(() => refresh());
-  chain = job.then(
-    () => {
+  busy += 1;
+  const job = chain.then(async () => {
+    try {
+      await fn();
       errorEl.textContent = "";
-    },
-    (err) => {
+    } catch (err) {
       showError(err);
-      return refresh().catch(showError);
-    },
-  );
-  return chain;
+    } finally {
+      busy -= 1;
+      await refresh().catch(showError);
+    }
+  });
+  chain = job;
+  return job;
+}
+
+function resetPages() {
+  state.pages = [undefined];
+  state.index = 0;
+  state.next = undefined;
 }
 
 async function refresh() {
+  if (!todos) return;
   const mine = ++ticket;
-  const todos = await readTodos();
-  if (mine !== ticket) return;
-  paint(todos);
-}
-
-async function readTodos() {
-  const bounds = prefixBound(encoder.encode(TODO_PREFIX));
-  const todos = [];
-  for await (const entry of db.range(bounds)) {
-    const id = idFromKey(entry.key);
-    if (!id) continue;
-    const todo = decodeTodo(id, entry.value);
-    if (todo) todos.push(todo);
-  }
-  return sortTodos(todos);
-}
-
-async function toggle(id) {
-  await db.transaction(async (tx) => {
-    const current = await tx.get(todoKey(id));
-    if (!current) return;
-    const todo = decodeTodo(id, current);
-    if (!todo) return;
-    tx.put(todoKey(id), encodeTodo({ ...todo, done: !todo.done }));
+  const after = state.pages[state.index];
+  const page = await readPage(todos, {
+    after,
+    sort: state.sort,
+    filter: state.filter,
+    pageSize: PAGE_SIZE,
   });
+  if (mine !== ticket) return;
+  paint(page);
 }
 
-function paint(todos) {
-  const count = todos.length;
+function paint(page) {
+  state.next = page.next;
+  const count = page.todos.length;
   const noun = count === 1 ? "item" : "items";
-  statusEl.textContent = `db ${dbName}, ${count} ${noun}`;
+  const filter = state.filter.trim();
+  const filterNote = filter ? `, filter “${filter}”` : "";
+  statusEl.dataset.sort = state.sort;
+  statusEl.textContent = `db ${dbName}, page ${state.index + 1}, ${count} ${noun}${filterNote}`;
+
+  pageEl.textContent = `Page ${state.index + 1}`;
+  prevButton.disabled = state.index === 0;
+  nextButton.disabled = !page.next;
+
   listEl.replaceChildren();
   if (count === 0) {
     const empty = document.createElement("li");
     empty.id = "empty";
-    empty.textContent = "No todos yet.";
+    empty.textContent = filter
+      ? `No todos match “${filter}”.`
+      : state.index === 0
+        ? "No todos yet."
+        : "No todos on this page.";
     listEl.append(empty);
     return;
   }
-  for (const todo of todos) {
+  for (const todo of page.todos) {
     listEl.append(renderTodo(todo));
   }
 }
@@ -132,7 +240,7 @@ function renderTodo(todo) {
   box.type = "checkbox";
   box.checked = todo.done;
   box.addEventListener("change", () => {
-    run(() => toggle(todo.id));
+    run(() => toggleTodo(todos, todo));
   });
 
   const title = document.createElement("span");
@@ -145,11 +253,17 @@ function renderTodo(todo) {
   remove.textContent = "Delete";
   remove.setAttribute("aria-label", `Delete ${todo.title}`);
   remove.addEventListener("click", () => {
-    run(() => db.delete(todoKey(todo.id)));
+    run(() => deleteTodo(todos, todo));
   });
 
   item.append(label, remove);
   return item;
+}
+
+function readCount() {
+  const value = Math.trunc(Number(countInput.value));
+  if (!Number.isFinite(value)) return 1000;
+  return Math.max(1, value);
 }
 
 function showError(err) {
