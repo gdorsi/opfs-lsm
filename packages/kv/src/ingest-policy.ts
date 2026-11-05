@@ -9,9 +9,9 @@ export type IngestPolicy = {
 };
 
 export const DEFAULT_INGEST_POLICY: IngestPolicy = {
-  maxBatches: 32,
-  maxBytes: 256 * 1024,
-  maxDelayMs: 50,
+  maxBatches: 10_000,
+  maxBytes: 4 * 1024 * 1024,
+  maxDelayMs: 30_000,
 };
 
 export class IngestScheduler<T> {
