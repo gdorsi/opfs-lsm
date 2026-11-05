@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
     "test": "tsx --test src/storage.test.ts",
+    "bench:load": "tsx scripts/bench-load.ts",
     "preview": "vite preview"
   },
   "dependencies": {
