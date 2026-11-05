@@ -9,3 +9,4 @@ packages/collections/.bench-chrome-profile
 packages/kv/.arena-readpath
 .DS_Store
 .scratch
+examples/todo/dist
