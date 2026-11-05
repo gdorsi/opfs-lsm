@@ -93,4 +93,47 @@ describe("collections", () => {
     const key = indexKey("users", "email", "a@x.com", "42");
     expect(extractIndexRowId(key, 1)).toBe("42");
   });
+
+  it("putMany upserts, update moves indexes, clear removes rows", async () => {
+    open = await openCollectionDb({
+      name: NAME,
+      forceMemory: true,
+      schema: {
+        tables: [{ name: "users", indexes: [{ name: "email", path: "email" }] }],
+      },
+    });
+    const users = open.table<User>("users");
+
+    await users.putMany([
+      { id: "1", email: "a@x.com", name: "Ada" },
+      { id: "2", email: "b@x.com", name: "Bob" },
+    ]);
+    expect((await users.where("email", "a@x.com")).map((u) => u.id)).toEqual([
+      "1",
+    ]);
+
+    const updated = await users.update("1", (u) => ({
+      ...u,
+      email: "c@x.com",
+      name: "Ada L",
+    }));
+    expect(updated?.email).toBe("c@x.com");
+    expect(await users.where("email", "a@x.com")).toEqual([]);
+    expect((await users.where("email", "c@x.com")).map((u) => u.id)).toEqual([
+      "1",
+    ]);
+    expect(await users.update("missing", (u) => u)).toBeUndefined();
+
+    await users.putMany([{ id: "2", email: "z@x.com", name: "Bob" }]);
+    expect(await users.where("email", "b@x.com")).toEqual([]);
+    expect((await users.where("email", "z@x.com")).map((u) => u.id)).toEqual([
+      "2",
+    ]);
+
+    expect(await users.clear()).toBe(2);
+    expect(await users.get("1")).toBeUndefined();
+    expect(await users.get("2")).toBeUndefined();
+    expect(await users.where("email", "b@x.com")).toEqual([]);
+    expect(await users.where("email", "c@x.com")).toEqual([]);
+  });
 });

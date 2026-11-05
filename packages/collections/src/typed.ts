@@ -8,6 +8,8 @@ const TAG_NUM = 0x10;
 const TAG_STR = 0x20;
 const TAG_BIN = 0x21;
 
+const encoder = new TextEncoder();
+
 /** Order-preserving big-endian float64 (sortable as unsigned bytes). */
 export function encodeOrderFloat64(n: number): Uint8Array {
   const buf = new ArrayBuffer(8);
@@ -32,6 +34,34 @@ export function decodeOrderFloat64(u: Uint8Array, offset = 0): number {
   return new DataView(copy.buffer, copy.byteOffset, 8).getFloat64(0, false);
 }
 
+/**
+ * Lexicographic, prefix-safe UTF-8 encoding: `0x00` becomes `0x00 0xff` and
+ * the value ends with `0x00 0x00`. Byte order of the result is the byte order
+ * of the original string, so `orderBy` on a string index is A–Z (not
+ * length-first).
+ */
+function encodeSortedString(body: Uint8Array): Uint8Array {
+  let zeros = 0;
+  for (let i = 0; i < body.byteLength; i++) {
+    if (body[i] === 0) zeros += 1;
+  }
+  const out = new Uint8Array(1 + body.byteLength + zeros + 2);
+  out[0] = TAG_STR;
+  let o = 1;
+  for (let i = 0; i < body.byteLength; i++) {
+    const b = body[i]!;
+    if (b === 0) {
+      out[o++] = 0;
+      out[o++] = 0xff;
+    } else {
+      out[o++] = b;
+    }
+  }
+  out[o++] = 0;
+  out[o] = 0;
+  return out;
+}
+
 export function encodeTyped(value: IndexValue): Uint8Array {
   if (value === null) return new Uint8Array([TAG_NULL]);
   if (value === false) return new Uint8Array([TAG_FALSE]);
@@ -46,13 +76,9 @@ export function encodeTyped(value: IndexValue): Uint8Array {
     return out;
   }
   if (typeof value === "string") {
-    const body = new TextEncoder().encode(value);
+    const body = encoder.encode(value);
     if (body.byteLength > 0xffff) throw new RangeError("string too long");
-    const out = new Uint8Array(1 + 2 + body.byteLength);
-    out[0] = TAG_STR;
-    new DataView(out.buffer).setUint16(1, body.byteLength, true);
-    out.set(body, 3);
-    return out;
+    return encodeSortedString(body);
   }
   if (value instanceof Uint8Array) {
     if (value.byteLength > 0xffff) throw new RangeError("bytes too long");
@@ -74,7 +100,25 @@ export function skipTyped(buf: Uint8Array, offset: number): number {
     if (offset + 9 > buf.byteLength) throw new RangeError("truncated number");
     return offset + 9;
   }
-  if (tag === TAG_STR || tag === TAG_BIN) {
+  if (tag === TAG_STR) {
+    let i = offset + 1;
+    while (i + 1 < buf.byteLength) {
+      const b = buf[i];
+      if (b !== 0) {
+        i += 1;
+        continue;
+      }
+      const next = buf[i + 1];
+      if (next === 0) return i + 2;
+      if (next === 0xff) {
+        i += 2;
+        continue;
+      }
+      throw new RangeError("bad string escape");
+    }
+    throw new RangeError("truncated string");
+  }
+  if (tag === TAG_BIN) {
     if (offset + 3 > buf.byteLength) throw new RangeError("truncated len");
     const len = new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint16(
       offset + 1,

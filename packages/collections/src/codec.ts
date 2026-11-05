@@ -48,9 +48,14 @@ export function concatBytes(...parts: Uint8Array[]): Uint8Array {
 const T_PREFIX = enc.encode("t/");
 const I_PREFIX = enc.encode("i/");
 
+/** Prefix shared by every primary key in `table` (no id segment). */
+export function tablePrefix(table: string): Uint8Array {
+  return concatBytes(T_PREFIX, encodeString(table));
+}
+
 /** Primary key: t/ + table + id (length-prefixed segments). */
 export function primaryKey(table: string, id: string): Uint8Array {
-  return concatBytes(T_PREFIX, encodeString(table), encodeString(id));
+  return concatBytes(tablePrefix(table), encodeString(id));
 }
 
 function encodeIndexValuePart(

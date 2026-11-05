@@ -103,4 +103,4 @@ pnpm bench:collections
 pnpm todo:example
 ```
 
-`pnpm todo:example` serves a two-window todo list that shares one database name over a SharedWorker.
+`pnpm todo:example` serves a two-window todo list built on `@opfs-lsm/collections` that shares one database name over a SharedWorker. It can seed tens of thousands of random todos, then filter, sort, and page through them without loading the whole range.

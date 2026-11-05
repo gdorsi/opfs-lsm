@@ -6,6 +6,7 @@ import {
   indexKey,
   indexPrefix,
   primaryKey,
+  tablePrefix,
   type IndexValue,
 } from "./codec.js";
 import { normalizeIndexValues } from "./typed.js";
@@ -28,6 +29,22 @@ export type TableSchema = {
 };
 
 const EMPTY = new Uint8Array(0);
+/** Primary rows removed per batch in `clear`. 4 ops each keeps this under limits. */
+const CLEAR_CHUNK = 1000;
+
+function afterKey(key: Uint8Array): Uint8Array {
+  const out = new Uint8Array(key.length + 1);
+  out.set(key);
+  return out;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
 
 function pathsOf(spec: IndexSpec): readonly string[] {
   return typeof spec.path === "string" ? [spec.path] : spec.path;
@@ -114,18 +131,152 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
 
   async put(doc: T): Promise<string> {
     const id = requireString(doc[this.primaryKeyField], this.primaryKeyField);
-    const pk = this.pkBytes(id);
-    const value = encodeJson(doc);
-    return this.db.update([pk], ([prevBytes], tx) => {
-      if (prevBytes !== undefined) {
-        for (const key of this.indexKeys(id, decodeJson<T>(prevBytes))) {
-          tx.delete(key);
-        }
+    await this.putMany([doc]);
+    return id;
+  }
+
+  /**
+   * Upsert `docs` (ids must be unique) in one read+write transaction. The
+   * caller chunks to stay under the kv batch limits; 1,000 rows is safe.
+   */
+  async putMany(docs: readonly T[]): Promise<void> {
+    if (docs.length === 0) return;
+    const ids: string[] = [];
+    const pks: Uint8Array[] = [];
+    const values: Uint8Array[] = [];
+    const seen = new Set<string>();
+    for (const doc of docs) {
+      const id = requireString(doc[this.primaryKeyField], this.primaryKeyField);
+      if (seen.has(id)) {
+        throw new Error(`putMany requires unique ids: ${id}`);
       }
-      tx.put(pk, value);
-      for (const key of this.indexKeys(id, doc)) tx.put(key, EMPTY);
-      return id;
+      seen.add(id);
+      ids.push(id);
+      pks.push(this.pkBytes(id));
+      values.push(encodeJson(doc));
+    }
+    await this.db.update(pks, (prevValues, tx) => {
+      for (let i = 0; i < docs.length; i++) {
+        const prev = prevValues[i];
+        const id = ids[i]!;
+        if (prev !== undefined) {
+          for (const key of this.indexKeys(id, decodeJson<T>(prev))) {
+            tx.delete(key);
+          }
+        }
+        tx.put(pks[i]!, values[i]!);
+        for (const key of this.indexKeys(id, docs[i]!)) tx.put(key, EMPTY);
+      }
     });
+  }
+
+  /**
+   * Read-modify-write one row in a single transaction. `mutate` runs
+   * synchronously and must keep the primary key. Only index keys that changed
+   * are rewritten, so toggling a non-indexed field touches one row.
+   */
+  async update(id: string, mutate: (doc: T) => T): Promise<T | undefined> {
+    const pk = this.pkBytes(id);
+    return this.db.update([pk], ([prevBytes], tx) => {
+      if (prevBytes === undefined) return undefined;
+      const prev = decodeJson<T>(prevBytes);
+      const next = mutate(prev);
+      if (next[this.primaryKeyField] !== id) {
+        throw new Error("update must not change the primary key");
+      }
+      tx.put(pk, encodeJson(next));
+      const before = this.indexKeys(id, prev);
+      const after = this.indexKeys(id, next);
+      for (const key of before) {
+        if (!after.some((other) => sameBytes(other, key))) tx.delete(key);
+      }
+      for (const key of after) {
+        if (!before.some((other) => sameBytes(other, key))) tx.put(key, EMPTY);
+      }
+      return next;
+    });
+  }
+
+  /**
+   * Read one cursor page of an index, in index key order. `after` is the
+   * `next` from the previous call (inclusive first key). `next` is the first
+   * key this call did not consume, so callers can page without rescanning.
+   */
+  async page(
+    indexName: string,
+    opts: { readonly after?: Uint8Array; readonly limit: number },
+  ): Promise<{ readonly docs: T[]; readonly next?: Uint8Array }> {
+    const idx = this.requireIndex(indexName);
+    const arity = pathsOf(idx).length;
+    const limit = Math.trunc(opts.limit);
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new RangeError(`limit must be a positive integer: ${opts.limit}`);
+    }
+
+    const whole = prefixBound(indexPrefix(this.name, indexName));
+    const start = opts.after ?? whole.start;
+    const hits = await this.db.rangeFollow(
+      {
+        start,
+        ...(whole.endExclusive !== undefined
+          ? { endExclusive: whole.endExclusive }
+          : {}),
+        limit: limit + 1,
+      },
+      (entry) => {
+        const id = extractIndexRowId(entry.key, arity);
+        return id === undefined ? undefined : this.pkBytes(id);
+      },
+    );
+
+    const docs: T[] = [];
+    const take = Math.min(limit, hits.length);
+    for (let i = 0; i < take; i++) {
+      const value = hits[i]!.value;
+      if (value !== undefined) docs.push(decodeJson<T>(value));
+    }
+    const next = hits[limit]?.entry.key;
+    return next === undefined ? { docs } : { docs, next };
+  }
+
+  /**
+   * Delete every row and its index entries in chunks. Returns the row count.
+   * Index rows whose primary row is already gone are left alone.
+   */
+  async clear(): Promise<number> {
+    const whole = prefixBound(tablePrefix(this.name));
+    let removed = 0;
+    let start = whole.start;
+    for (;;) {
+      const entries: { key: Uint8Array; value: Uint8Array }[] = [];
+      for await (const entry of this.db.range({
+        start,
+        ...(whole.endExclusive !== undefined
+          ? { endExclusive: whole.endExclusive }
+          : {}),
+        limit: CLEAR_CHUNK,
+      })) {
+        entries.push(entry);
+      }
+      if (entries.length === 0) return removed;
+
+      await this.db.batch((tx) => {
+        for (const entry of entries) {
+          tx.delete(entry.key);
+          let doc: T;
+          try {
+            doc = decodeJson<T>(entry.value);
+          } catch {
+            continue;
+          }
+          const id = doc[this.primaryKeyField];
+          if (typeof id !== "string") continue;
+          for (const key of this.indexKeys(id, doc)) tx.delete(key);
+        }
+      });
+      removed += entries.length;
+      start = afterKey(entries[entries.length - 1]!.key);
+    }
   }
 
   async delete(id: string): Promise<boolean> {
@@ -166,7 +317,7 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
   }
 
   /**
-   * Walk an index in key order (typed value encoding order).
+   * Walk an index in key order: numbers by value, strings lexicographically.
    * Optional `from` / `toExclusive` are index values (or compound prefixes).
    */
   async orderBy(
