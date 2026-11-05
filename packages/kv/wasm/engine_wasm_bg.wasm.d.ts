@@ -3,7 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const decode_sst_js: (a: any) => [number, number, number];
 export const encode_sst_js: (a: any) => [number, number, number];
-export const merge_ssts_js: (a: any, b: number) => [number, number, number];
+export const merge_ssts_js: (a: any, b: number, c: number) => [number, number, number];
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_free: (a: number, b: number, c: number) => void;

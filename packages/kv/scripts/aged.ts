@@ -44,7 +44,7 @@ const meta = await loadLatestGeneration(fs);
 let sstBytes = 0;
 let tombstones = 0;
 const readers: SstReader[] = [];
-for (const path of meta?.runs ?? []) {
+for (const { path } of meta?.runs ?? []) {
   const buf = (await fs.read(path, 0, 1 << 30))!;
   sstBytes += buf.byteLength;
   tombstones += (await decodeSst(buf)).filter((e) => e.kind === "del").length;

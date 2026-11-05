@@ -7,17 +7,20 @@ import {
   publishRun,
   reclaimManifests,
   reclaimRuns,
+  runMeta,
+  type RunMeta,
 } from "../store/generation.js";
 import {
   levelRunPath,
   planCompaction,
   replaceRuns,
+  TARGET_RUN_BYTES,
 } from "../store/levels.js";
 
-/** A merged run written to OPFS and not yet in any generation. */
+/** Merged runs written to OPFS and not yet in any generation. */
 export type CompactionOutput = {
   readonly inputs: readonly string[];
-  readonly output: string | undefined;
+  readonly outputs: readonly RunMeta[];
   readonly droppedSeq: number;
 };
 
@@ -35,25 +38,20 @@ export async function mergeNextStep(
   if (!plan) return undefined;
 
   const blobs: Uint8Array[] = [];
-  for (const path of plan.inputs) {
+  for (const { path } of plan.inputs) {
     const buf = await fs.read(path, 0, 1 << 30);
     if (!buf) throw new Error(`compaction missing input ${path}`);
     blobs.push(buf);
   }
-  const { sst: merged, droppedSeq } = await mergeSsts(blobs, plan.bottom);
-  const output =
-    merged.byteLength > 0
-      ? await publishRun(
-          fs,
-          levelRunPath(
-            plan.outputLevel,
-            `c${meta.generation + 1}`,
-            merged.byteLength,
-          ),
-          merged,
-        )
-      : undefined;
-  return { inputs: plan.inputs, output, droppedSeq };
+  const { ssts, droppedSeq } = await mergeSsts(blobs, plan.bottom, TARGET_RUN_BYTES);
+  const outputs: RunMeta[] = [];
+  for (const [i, sst] of ssts.entries()) {
+    const name = `c${meta.generation + 1}.${i}`;
+    const path = levelRunPath(plan.outputLevel, name, sst.byteLength);
+    await publishRun(fs, path, sst);
+    outputs.push(runMeta(path, sst));
+  }
+  return { inputs: plan.inputs.map((r) => r.path), outputs, droppedSeq };
 }
 
 /**
@@ -67,10 +65,11 @@ export async function installStep(
   step: CompactionOutput,
 ): Promise<number> {
   const meta = await loadLatestGeneration(fs);
-  if (!meta || !step.inputs.every((p) => meta.runs.includes(p))) {
+  const live = new Set(meta?.runs.map((r) => r.path));
+  if (!meta || !step.inputs.every((p) => live.has(p))) {
     throw new Error("compaction inputs left the latest generation");
   }
-  const runs = replaceRuns(meta.runs, step.inputs, step.output);
+  const runs = replaceRuns(meta.runs, step.inputs, step.outputs);
   const generation = meta.generation + 1;
   await publishGeneration(fs, {
     generation,
@@ -78,7 +77,7 @@ export async function installStep(
     tombstoneSeq: Math.max(meta.tombstoneSeq, step.droppedSeq),
   });
   await wal.raiseGeneration(generation);
-  await reclaimRuns(fs, step.inputs, runs);
+  await reclaimRuns(fs, step.inputs, runs.map((r) => r.path));
   await reclaimManifests(fs, generation);
   return generation;
 }

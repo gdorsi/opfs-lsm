@@ -1,44 +1,69 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryFs, __resetMemoryFsForTests, decodeSst, openDb } from "../src/index.js";
-import { loadLatestGeneration } from "../src/store/generation.js";
-import { planCompaction } from "../src/store/levels.js";
+import { loadLatestGeneration, type RunMeta } from "../src/store/generation.js";
+import { planCompaction, replaceRuns, type CompactionPlan } from "../src/store/levels.js";
+
+const enc = new TextEncoder();
+
+const run = (path: string, smallest?: string, largest?: string): RunMeta =>
+  smallest === undefined
+    ? { path }
+    : { path, range: { smallest: enc.encode(smallest), largest: enc.encode(largest ?? smallest) } };
+const paths = (plan: CompactionPlan | undefined) => plan?.inputs.map((r) => r.path);
 
 describe("planCompaction", () => {
-  const l0 = (n: number) => Array.from({ length: n }, (_, i) => `l0/${10 - i}.sst`);
+  const l0 = (n: number) => Array.from({ length: n }, (_, i) => run(`l0/${10 - i}.sst`, "c", "f"));
 
   it("leaves fewer than four L0 runs alone", () => {
-    expect(planCompaction([...l0(3), "l1/c1-100.sst"])).toBeUndefined();
+    expect(planCompaction([...l0(3), run("l1/c1-100.sst", "a", "z")])).toBeUndefined();
   });
 
-  it("merges four L0 runs with L1 into L1, at the bottom when nothing is older", () => {
-    expect(planCompaction([...l0(4), "l1/c1-100.sst"])).toEqual({
-      inputs: [...l0(4), "l1/c1-100.sst"],
-      outputLevel: 1,
-      bottom: true,
-    });
-    expect(planCompaction([...l0(4), "l1/c1-100.sst", "l2/c0-900.sst"])?.bottom).toBe(false);
+  it("merges four L0 runs with only the L1 runs they overlap", () => {
+    const l1 = [run("l1/a-100.sst", "a", "b"), run("l1/b-100.sst", "d", "e"), run("l1/c-100.sst", "x", "z")];
+    const plan = planCompaction([...l0(4), ...l1]);
+    expect(paths(plan)).toEqual([...l0(4).map((r) => r.path), "l1/b-100.sst"]);
+    expect(plan?.outputLevel).toBe(1);
+    expect(plan?.bottom).toBe(true);
   });
 
-  it("pushes an oversized level into the next one", () => {
-    expect(planCompaction(["l1/c5-2000.sst", "l2/c3-9000.sst"], 1000)).toEqual({
-      inputs: ["l1/c5-2000.sst", "l2/c3-9000.sst"],
-      outputLevel: 2,
-      bottom: true,
-    });
-    expect(planCompaction(["l1/c5-900.sst", "l2/c3-9000.sst"], 1000)).toBeUndefined();
+  it("is a bottom merge only when no deeper run overlaps the inputs", () => {
+    const l1 = run("l1/a-100.sst", "c", "d");
+    expect(planCompaction([...l0(4), l1, run("l2/a-900.sst", "x", "z")])?.bottom).toBe(true);
+    expect(planCompaction([...l0(4), l1, run("l2/a-900.sst", "e", "g")])?.bottom).toBe(false);
+    expect(planCompaction([...l0(4), l1, run("l2/a-900.sst")])?.bottom).toBe(false);
+  });
+
+  it("pushes the oversized level's run with the least overlap below it", () => {
+    const runs = [
+      run("l1/a-600.sst", "a", "f"),
+      run("l1/b-600.sst", "g", "m"),
+      run("l2/a-5000.sst", "a", "c"),
+      run("l2/b-100.sst", "h", "i"),
+      run("l2/c-100.sst", "j", "k"),
+    ];
+    const plan = planCompaction(runs, 1000);
+    expect(paths(plan)).toEqual(["l1/b-600.sst", "l2/b-100.sst", "l2/c-100.sst"]);
+    expect(plan?.outputLevel).toBe(2);
+    expect(planCompaction(runs.slice(1), 1000)).toBeUndefined();
   });
 
   it("folds runs from before levels into the deepest level", () => {
-    expect(planCompaction(["l0/9.sst", "l1/c5-10.sst", "sst/c2-4.sst"])).toEqual({
-      inputs: ["l1/c5-10.sst", "sst/c2-4.sst"],
-      outputLevel: 1,
-      bottom: true,
-    });
+    const plan = planCompaction([run("l0/9.sst", "a"), run("l1/c5-10.sst"), run("sst/c2-4.sst")]);
+    expect(paths(plan)).toEqual(["l1/c5-10.sst", "sst/c2-4.sst"]);
+    expect(plan?.outputLevel).toBe(1);
+    expect(plan?.bottom).toBe(true);
+  });
+});
+
+describe("replaceRuns", () => {
+  it("keeps L0 order, then sorts each level by key", () => {
+    const runs = [run("l0/2.sst", "a", "z"), run("l0/1.sst", "a", "z"), run("l1/b-1.sst", "m", "n"), run("l2/a-1.sst", "a", "b")];
+    const out = replaceRuns(runs, ["l0/1.sst"], [run("l1/a-1.sst", "c", "d"), run("l1/c-1.sst", "x", "y")]);
+    expect(out.map((r) => r.path)).toEqual(["l0/2.sst", "l1/a-1.sst", "l1/b-1.sst", "l1/c-1.sst", "l2/a-1.sst"]);
   });
 });
 
 const NAME = "levels";
-const enc = new TextEncoder();
 
 function wipe(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -73,7 +98,7 @@ describe("bottom compaction", () => {
     }
     const runs = (await loadLatestGeneration(fs))!.runs;
     expect(runs).toHaveLength(1);
-    const entries = await decodeSst((await fs.read(runs[0]!, 0, 1 << 30))!);
+    const entries = await decodeSst((await fs.read(runs[0]!.path, 0, 1 << 30))!);
     expect(entries.map((e) => e.kind)).toEqual(["put"]);
     expect(await db.get(enc.encode("a"))).toBeUndefined();
     expect(new TextDecoder().decode((await db.get(enc.encode("b")))!)).toBe("1");

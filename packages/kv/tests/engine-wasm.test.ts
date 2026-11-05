@@ -37,8 +37,25 @@ describe("engine WASM", () => {
           value: utf("v"),
         })),
       );
-    const { sst } = await mergeSsts([await half(0), await half(30_000)], false);
-    expect(await decodeSst(sst)).toHaveLength(60_000);
-    expect(new SstReader(sst).get(utf("k00059999"))?.kind).toBe("put");
+    const { ssts } = await mergeSsts([await half(0), await half(30_000)], false);
+    expect(ssts).toHaveLength(1);
+    expect(await decodeSst(ssts[0]!)).toHaveLength(60_000);
+    expect(new SstReader(ssts[0]!).get(utf("k00059999"))?.kind).toBe("put");
+  });
+
+  it("cuts merge output into runs of about the target size, in key order", async () => {
+    await ensureEngine();
+    const body = await encodeSst(
+      Array.from({ length: 1000 }, (_, i) => ({
+        kind: "put" as const,
+        key: utf(`k${String(i).padStart(4, "0")}`),
+        value: new Uint8Array(100),
+      })),
+    );
+    const { ssts } = await mergeSsts([body], false, 16 * 1024);
+    expect(ssts.length).toBeGreaterThan(5);
+    const keys = (await Promise.all(ssts.map((s) => decodeSst(s)))).flat().map((e) => new TextDecoder().decode(e.key));
+    expect(keys).toEqual(Array.from({ length: 1000 }, (_, i) => `k${String(i).padStart(4, "0")}`));
+    for (const s of ssts.slice(0, -1)) expect(s.byteLength).toBeLessThan(20 * 1024);
   });
 });
