@@ -71,7 +71,7 @@ describe("public API", () => {
       writerId: "w1",
       ingestPolicy: {
         maxBatches: 1_000_000_000,
-        maxDelayMs: 60_000,
+        
         maxBytes: 1 << 30,
       },
     });

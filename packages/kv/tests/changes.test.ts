@@ -32,7 +32,7 @@ describe("changes()", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxBatches: 1e9, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
     });
     const events: ChangeEvent[] = [];
     const stop = db.changes((e) => events.push(e));
@@ -58,13 +58,13 @@ describe("changes()", () => {
       name: NAME,
       forceMemory: true,
       writerId: "wa",
-      ingestPolicy: { maxBatches: 1e9, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
     });
     const b = await openDb({
       name: NAME,
       forceMemory: true,
       writerId: "wb",
-      ingestPolicy: { maxBatches: 1e9, maxDelayMs: 60_000, maxBytes: 1 << 30 },
+      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
     });
 
     const events: ChangeEvent[] = [];

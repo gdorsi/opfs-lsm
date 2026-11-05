@@ -1,74 +1,101 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   EngineHost,
   MemoryFs,
   __resetMemoryFsForTests,
   createLocalIngestClient,
   openDb,
+  type IngestPolicy,
 } from "../src/index.js";
-import { IngestScheduler } from "../src/ingest-policy.js";
+import { loadLatestGeneration } from "../src/store/generation.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
-
-async function deleteIdb(name: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
+const NAME = "policy";
 
 afterEach(async () => {
-  vi.useRealTimers();
-  await deleteIdb("policy");
-  __resetMemoryFsForTests("policy");
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
+    req.onsuccess = req.onerror = req.onblocked = () => resolve();
+  });
+  __resetMemoryFsForTests(NAME);
 });
 
+async function twoTabs(policy: IngestPolicy) {
+  const fs = new MemoryFs();
+  const host = new EngineHost(() => fs);
+  let requests = 0;
+  const open = (writerId: string) => {
+    const inner = createLocalIngestClient(host);
+    return openDb({
+      name: NAME,
+      writerId,
+      fs,
+      ingestPolicy: policy,
+      ingest: {
+        ingest: (name, through) => {
+          requests += 1;
+          return inner.ingest(name, through);
+        },
+        close: () => inner.close(),
+      },
+    });
+  };
+  const a = await open("a");
+  const b = await open("b");
+  return { fs, a, b, requests: () => requests };
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 5));
+}
+
 describe("ingest policy", () => {
-  it("auto-ingests when maxBatches is reached", async () => {
+  it("flushes once when the memtable passes maxBytes, whichever tab wrote", async () => {
+    const { fs, a, b, requests } = await twoTabs({ maxBatches: 1e9, maxBytes: 100 });
+    await a.put(utf("a"), new Uint8Array(60));
+    await settle();
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    await b.put(utf("b"), new Uint8Array(60));
+    await b.put(utf("c"), new Uint8Array(1));
+    await settle();
+    expect(requests()).toBe(2);
+    const gen = await loadLatestGeneration(fs);
+    expect(gen?.runs).toHaveLength(1);
+    expect((await a.get(utf("c")))?.byteLength).toBe(1);
+    await a.close();
+    await b.close();
+  });
+
+  it("a second request for the same flush publishes nothing new", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
-    let calls = 0;
-    const inner = createLocalIngestClient(host);
-    const ingest = {
-      ingest: async (name: string) => {
-        calls += 1;
-        return inner.ingest(name);
-      },
-      close: () => inner.close(),
-    };
     const db = await openDb({
-      name: "policy",
-      writerId: "w1",
+      name: NAME,
+      writerId: "a",
       fs,
-      ingest,
-      forceMemory: true,
-      ingestPolicy: { maxBatches: 2, maxBytes: 1 << 30, maxDelayMs: 60_000 },
+      ingest: createLocalIngestClient(host),
+      ingestPolicy: { maxBatches: 1e9, maxBytes: 1e9 },
     });
     await db.put(utf("a"), utf("1"));
-    expect(calls).toBe(0);
+    expect((await host.ingest(NAME, 1)).generation).toBe(1);
     await db.put(utf("b"), utf("2"));
-    await db.ingest();
-    expect(calls).toBeGreaterThanOrEqual(1);
-    const v = await db.get(utf("a"));
-    expect(v && new TextDecoder().decode(v)).toBe("1");
+    expect((await host.ingest(NAME, 1)).generation).toBe(1);
+    expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1);
     await db.close();
   });
 
-  it("IngestScheduler fires after maxDelayMs", async () => {
-    vi.useFakeTimers();
-    let calls = 0;
-    const sched = new IngestScheduler({ maxBatches: 100, maxBytes: 1 << 30, maxDelayMs: 50 }, async () => {
-      calls += 1;
-      return { generation: calls };
-    });
-    sched.noteAppend(10);
-    expect(calls).toBe(0);
-    await vi.advanceTimersByTimeAsync(50);
-    await Promise.resolve();
-    expect(calls).toBe(1);
-    sched.close();
+  it("flushes after maxBatches records that overwrite one key", async () => {
+    const { fs, a, b } = await twoTabs({ maxBatches: 3, maxBytes: 1e9 });
+    await a.put(utf("k"), utf("1"));
+    await b.put(utf("k"), utf("2"));
+    await settle();
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    await a.put(utf("k"), utf("3"));
+    await settle();
+    expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1);
+    expect(new TextDecoder().decode(await b.get(utf("k")))).toBe("3");
+    await a.close();
+    await b.close();
   });
 });
