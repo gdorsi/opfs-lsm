@@ -1,5 +1,6 @@
 //! SST format. v1 (single block) and v2 (multi-block + Bloom) decode. v3 is
-//! v2 with a u64 seq after each record tag, and is what encode writes.
+//! v2 with a u64 seq after each record tag. v4 is v3 with u32 Bloom header
+//! fields, so a filter can pass 64 KiB, and is what encode writes.
 //! Must stay byte-compatible with `packages/kv/src/store/sst.ts`.
 
 use crate::bloom::{bloom_add, create_bloom};
@@ -9,6 +10,7 @@ const MAGIC: u32 = 0x4f4c_5354; // OLST
 const VERSION_V1: u32 = 1;
 const VERSION_V2: u32 = 2;
 const VERSION_V3: u32 = 3;
+const VERSION_V4: u32 = 4;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 const BLOCK_TARGET: usize = 4 * 1024;
@@ -65,11 +67,6 @@ fn entry_size(e: &Entry) -> usize {
 fn write_u32(buf: &mut [u8], o: &mut usize, v: u32) {
     buf[*o..*o + 4].copy_from_slice(&v.to_le_bytes());
     *o += 4;
-}
-
-fn write_u16(buf: &mut [u8], o: &mut usize, v: u16) {
-    buf[*o..*o + 2].copy_from_slice(&v.to_le_bytes());
-    *o += 2;
 }
 
 fn read_u32(buf: &[u8], o: usize) -> u32 {
@@ -156,16 +153,16 @@ pub fn encode_sst(entries: &[Entry]) -> Vec<u8> {
         index_size += 4 + first.len() + 4 + last.len() + 8;
     }
 
-    let total = 20 + 4 + bloom.bits.len() + data_len + index_size + 4;
+    let total = 20 + 8 + bloom.bits.len() + data_len + index_size + 4;
     let mut out = vec![0u8; total];
     let mut o = 0usize;
     write_u32(&mut out, &mut o, MAGIC);
-    write_u32(&mut out, &mut o, VERSION_V3);
+    write_u32(&mut out, &mut o, VERSION_V4);
     write_u32(&mut out, &mut o, sorted.len() as u32);
     write_u32(&mut out, &mut o, blocks.len() as u32);
     write_u32(&mut out, &mut o, data_len as u32);
-    write_u16(&mut out, &mut o, bloom.hash_count as u16);
-    write_u16(&mut out, &mut o, bloom.bits.len() as u16);
+    write_u32(&mut out, &mut o, bloom.hash_count as u32);
+    write_u32(&mut out, &mut o, bloom.bits.len() as u32);
     out[o..o + bloom.bits.len()].copy_from_slice(&bloom.bits);
     o += bloom.bits.len();
 
@@ -252,15 +249,19 @@ fn decode_v1(buf: &[u8], crc_off: usize) -> Result<Vec<Entry>, SstError> {
     read_records(buf, 12, crc_off, count, false)
 }
 
-fn decode_v2(buf: &[u8], crc_off: usize, with_seq: bool) -> Result<Vec<Entry>, SstError> {
-    if buf.len() < 28 {
+fn decode_v2(buf: &[u8], crc_off: usize, version: u32) -> Result<Vec<Entry>, SstError> {
+    if buf.len() < 32 {
         return Err(SstError::TooShort);
     }
+    let with_seq = version >= VERSION_V3;
     let entry_count = read_u32(buf, 8) as usize;
     let block_count = read_u32(buf, 12) as usize;
     let data_len = read_u32(buf, 16) as usize;
-    let bloom_byte_len = read_u16(buf, 22) as usize;
-    let data_start = 24 + bloom_byte_len;
+    let data_start = if version >= VERSION_V4 {
+        28 + read_u32(buf, 24) as usize
+    } else {
+        24 + read_u16(buf, 22) as usize
+    };
     let index_start = data_start + data_len;
     if index_start > crc_off {
         return Err(SstError::Truncated);
@@ -321,8 +322,7 @@ pub fn decode_sst(buf: &[u8]) -> Result<Vec<Entry>, SstError> {
     }
     match version {
         VERSION_V1 => decode_v1(buf, crc_off),
-        VERSION_V2 => decode_v2(buf, crc_off, false),
-        VERSION_V3 => decode_v2(buf, crc_off, true),
+        VERSION_V2 | VERSION_V3 | VERSION_V4 => decode_v2(buf, crc_off, version),
         other => Err(SstError::BadVersion(other)),
     }
 }
@@ -332,14 +332,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trip_v3_keeps_seq() {
+    fn round_trip_keeps_seq() {
         let entries = vec![
             Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 },
             Entry::Del { key: b"a".to_vec(), seq: 9 },
             Entry::Put { key: b"c".to_vec(), value: b"3".to_vec(), seq: 1 << 40 },
         ];
         let bytes = encode_sst(&entries);
-        assert_eq!(read_u32(&bytes, 4), VERSION_V3);
+        assert_eq!(read_u32(&bytes, 4), VERSION_V4);
         let decoded = decode_sst(&bytes).unwrap();
         assert_eq!(decoded[0], Entry::Del { key: b"a".to_vec(), seq: 9 });
         assert_eq!(decoded[1], Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 });
@@ -359,5 +359,15 @@ mod tests {
         let decoded = decode_sst(&bytes).unwrap();
         assert_eq!(decoded.len(), 200);
         assert_eq!(decoded[199].seq(), 199);
+    }
+
+    #[test]
+    fn bloom_past_64_kib() {
+        let entries: Vec<Entry> = (0..60_000u64)
+            .map(|i| Entry::Put { key: format!("k{i:08}").into_bytes(), value: b"v".to_vec(), seq: i })
+            .collect();
+        let bytes = encode_sst(&entries);
+        assert!(read_u32(&bytes, 24) > u16::MAX as u32);
+        assert_eq!(decode_sst(&bytes).unwrap().len(), 60_000);
     }
 }
