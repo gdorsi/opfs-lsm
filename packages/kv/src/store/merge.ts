@@ -2,9 +2,7 @@ import { compareBytes } from "../bytes.js";
 import type { MemRow } from "./memtable.js";
 import {
   entryCursor,
-  lowerBoundKeys,
   type LayerCursor,
-  type ScanBounds,
 } from "./cursor.js";
 import type { SstEntry, SstReader } from "./sst.js";
 import type { Entry } from "../db.js";
@@ -109,28 +107,6 @@ export function pointGetSst(
 ): Uint8Array | undefined {
   const hit = latestSstEntry(readers, key);
   return hit?.kind === "put" ? new Uint8Array(hit.value) : undefined;
-}
-
-export function lookupPin(
-  rows: readonly MemRow[],
-  key: Uint8Array,
-): MemRow | undefined {
-  const i = lowerBoundKeys(rows, key);
-  const row = rows[i];
-  if (!row || compareBytes(row.key, key) !== 0) return undefined;
-  return row;
-}
-
-export function sliceRows(
-  rows: readonly MemRow[],
-  bounds?: ScanBounds,
-): readonly MemRow[] {
-  if (!bounds?.start && !bounds?.endExclusive) return rows;
-  const start = bounds.start ? lowerBoundKeys(rows, bounds.start) : 0;
-  const end = bounds.endExclusive
-    ? lowerBoundKeys(rows, bounds.endExclusive)
-    : rows.length;
-  return rows.slice(start, end);
 }
 
 export function arrayCursor(rows: readonly MemRow[]): LayerCursor {

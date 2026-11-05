@@ -45,7 +45,6 @@ import {
   latestSstEntry,
   mergeCursors,
   pointGetSst,
-  sliceRows,
 } from "./store/merge.js";
 import type { SstReader } from "./store/sst.js";
 import {
@@ -656,7 +655,7 @@ class DbImpl implements Db {
     const bounds = boundsOf(range);
     return mergeCursors(
       [
-        arrayCursor(sliceRows(this.mem.sorted, bounds)),
+        arrayCursor(this.mem.range(bounds)),
         ...this.installed.readers.map((reader) => reader.cursor(bounds)),
       ],
       range?.limit,
@@ -676,7 +675,7 @@ class DbImpl implements Db {
     const snap = new ViewSnapshotImpl(
       this.mem.appliedThrough,
       this.installed.generation,
-      this.mem.sorted,
+      this.mem.pin(),
       this.installed.readers,
     );
     try {

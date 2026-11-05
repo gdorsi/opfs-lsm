@@ -26,13 +26,21 @@ function initial(): State {
   return { live: undefined, pinned: "closed", nextVal: 1 };
 }
 
+/**
+ * The pin holds when db.ts hands the view `mem.pin()`, `pin()` marks every
+ * chunk shared, and a write copies a shared chunk before it changes it.
+ */
 function viewPinsInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const src = fs.readFileSync(
-    path.resolve(here, "../../src/view.ts"),
-    "utf8",
+  const read = (file: string) =>
+    fs.readFileSync(path.resolve(here, "../../src", file), "utf8");
+  const db = read("db.ts");
+  const mem = read("store/memtable.ts");
+  return (
+    /new ViewSnapshotImpl\([^)]*this\.mem\.pin\(\)/s.test(db) &&
+    /pin\(\)[^{]*\{\s*this\.owned\.fill\(false\)/.test(mem) &&
+    /if \(!this\.owned\[c\]\) \{\s*this\.chunks\[c\] = this\.chunks\[c\]!\.slice\(\);/.test(mem)
   );
-  return /this\.rows\s*=\s*rows\.slice\(\)/.test(src);
 }
 
 function enabled(s: State): Action[] {
@@ -156,10 +164,10 @@ for (let i = 0; i < nodes.length; i++) {
 }
 
 if (!viewPinsInSource()) {
-  console.error("FAIL ViewPin — view.ts no longer copies mem rows on pin");
+  console.error("FAIL ViewPin — the memtable pin no longer isolates the view from later writes");
   process.exit(1);
 }
 
 console.log(
-  `PASS ViewPin — ${seen.size} states, rows.slice() pin present in view.ts`,
+  `PASS ViewPin — ${seen.size} states, copy-on-write memtable pin present`,
 );

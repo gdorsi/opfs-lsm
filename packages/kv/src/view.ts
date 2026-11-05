@@ -1,14 +1,12 @@
 import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
-import type { MemRow } from "./store/memtable.js";
+import type { MemRows } from "./store/memtable.js";
 import type { ScanBounds } from "./store/cursor.js";
 import {
   arrayCursor,
-  lookupPin,
   mergeCursors,
   pointGet,
-  sliceRows,
 } from "./store/merge.js";
 import type { SstReader } from "./store/sst.js";
 
@@ -32,22 +30,19 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
   return undefined;
 }
 
-/**
- * Pinned mem rows plus the SST readers opened for that generation.
- * `rows.slice()` is the snapshot: later appends are not in the array.
- */
+/** Pinned memtable rows plus the SST readers opened for that generation. */
 export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
-  private readonly rows: readonly MemRow[];
+  private readonly rows: MemRows;
   private readonly readers: readonly SstReader[];
 
   constructor(
     readonly walHead: number,
     readonly generation: number,
-    rows: readonly MemRow[],
+    rows: MemRows,
     readers: readonly SstReader[],
   ) {
-    this.rows = rows.slice();
+    this.rows = rows;
     this.readers = readers;
   }
 
@@ -63,13 +58,13 @@ export class ViewSnapshotImpl implements ViewSnapshot {
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
     const k = checkKey(key);
-    return pointGet(lookupPin(this.rows, k), this.readers, k);
+    return pointGet(this.rows.get(k), this.readers, k);
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {
     this.ensureOpen();
     const bounds = boundsOf(range);
-    const slice = sliceRows(this.rows, bounds);
+    const slice = this.rows.range(bounds);
     for (const entry of mergeCursors(
       [
         arrayCursor(slice),
