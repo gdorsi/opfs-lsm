@@ -9,7 +9,6 @@ import {
   pointGet,
   type RunLevel,
 } from "./store/merge.js";
-import type { SstReader } from "./store/sst.js";
 
 export interface ViewSnapshot {
   /** WAL head seq pinned when the view opened. */
@@ -35,18 +34,15 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
   private readonly rows: MemRows;
-  private readonly readers: readonly SstReader[];
   private readonly levels: readonly RunLevel[];
 
   constructor(
     readonly walHead: number,
     readonly generation: number,
     rows: MemRows,
-    readers: readonly SstReader[],
     levels: readonly RunLevel[],
   ) {
     this.rows = rows;
-    this.readers = readers;
     this.levels = levels;
   }
 
@@ -62,7 +58,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
     const k = checkKey(key);
-    return pointGet(this.rows.get(k), this.readers, k);
+    return pointGet(this.rows.get(k), this.levels, k);
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {

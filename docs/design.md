@@ -279,8 +279,13 @@ A point get:
 
 1. Rejects the key if it falls outside the run's first and last keys.
 2. Rejects it if the bloom filter says no.
-3. Binary-searches the block index, decodes that one block (unpacking it first if the run
-   uses LZ4) and searches it.
+3. Binary-searches the block index for the one block that could hold the key, unpacking it
+   first if the run uses LZ4.
+4. Walks that block's records, comparing each key in place, and copies out only the record
+   that matches. It stops at the first key past the one it wants.
+
+A get used to decode the whole block into objects and then search them. Walking it in place
+cut a get that hits L2 from 7.7 µs to 4.0 µs, measured with `pnpm bench:follow` at 100k todos.
 
 Tabs don't check the CRC when they read. That check runs in the SharedWorker, which decodes
 every input run in full before compacting it. Skipping it on the main thread cut tab open time
@@ -316,9 +321,11 @@ the newest file in `m/`. A manifest becomes visible only once IndexedDB records 
 
 # Reads
 
-`get` reads the memtable first. On a miss, it walks the installed runs in manifest order
-(`pointGetSst` in `store/merge.ts`). It doesn't touch IndexedDB, and it doesn't wait on the
-SharedWorker.
+`get` reads the memtable first. On a miss, it asks the installed levels newest first
+(`pointGetSst` in `store/merge.ts`) and stops at the first one that holds the key. Each L0 run
+is a level of its own. A deeper level binary-searches its runs' key ranges and asks only the one
+run whose range holds the key, so a get costs one probe per level, not one per run. It doesn't
+touch IndexedDB, and it doesn't wait on the SharedWorker.
 
 `range` merges a cursor over the memtable with one cursor per scan source, using a min-heap
 ordered by key and then by source, newest first. For each key the newest source wins, and
@@ -330,8 +337,8 @@ its first block as soon as it opens, so a scan only pays for the runs it reaches
 
 The bloom filters play no part in a scan. They answer whether one exact key is present.
 
-A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the run
-readers. Writes that commit during the callback are invisible to it.
+A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the
+levels. Writes that commit during the callback are invisible to it.
 
 # Multi-tab coordination
 

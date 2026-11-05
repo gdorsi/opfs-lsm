@@ -29,6 +29,7 @@
     "bench:wasm": "tsx scripts/bench-wasm.ts",
     "bench:memtable": "tsx scripts/bench-memtable.ts",
     "bench:range": "tsx scripts/bench-range.ts",
+    "bench:follow": "tsx scripts/bench-follow.ts",
     "bench:gate": "tsx scripts/bench-gate.ts",
     "bench:aged": "tsx scripts/aged.ts",
     "bench:compaction": "tsx scripts/compaction-cost.ts",

@@ -78,25 +78,25 @@ function pushPeek(
 
 /**
  * `mem` is the row from the key-ordered mem store, or undefined on miss.
- * Readers are newest-first. Returned bytes are a fresh Uint8Array.
+ * Levels are newest-first. Returned bytes are a fresh Uint8Array.
  */
 export function pointGet(
   mem: MemRow | undefined,
-  readers: readonly SstReader[],
+  levels: readonly RunLevel[],
   key: Uint8Array,
 ): Uint8Array | undefined {
   if (mem?.kind === "del") return undefined;
   if (mem?.kind === "put") return new Uint8Array(mem.value!);
-  return pointGetSst(readers, key);
+  return pointGetSst(levels, key);
 }
 
-/** The newest entry for `key`, tombstone included. Bloom rejects skip the block. */
+/** The newest entry for `key`, tombstone included. Each level asks at most one run. */
 export function latestSstEntry(
-  readers: readonly SstReader[],
+  levels: readonly RunLevel[],
   key: Uint8Array,
 ): SstEntry | undefined {
-  for (const reader of readers) {
-    const hit = reader.get(key);
+  for (const level of levels) {
+    const hit = level.get(key);
     if (hit) return hit;
   }
   return undefined;
@@ -104,16 +104,17 @@ export function latestSstEntry(
 
 /** Newest run wins. A tombstone hides older puts. */
 export function pointGetSst(
-  readers: readonly SstReader[],
+  levels: readonly RunLevel[],
   key: Uint8Array,
 ): Uint8Array | undefined {
-  const hit = latestSstEntry(readers, key);
+  const hit = latestSstEntry(levels, key);
   return hit?.kind === "put" ? new Uint8Array(hit.value) : undefined;
 }
 
 /**
  * Runs whose key ranges never overlap, in key order: one level from L1
- * down, or a single L0 run. A scan opens only the runs it reaches.
+ * down, or a single L0 run. A scan opens only the runs it reaches, and a
+ * get asks only the run whose range holds the key.
  */
 export class RunLevel {
   private readonly runs: SstReader[] = [];
@@ -130,18 +131,28 @@ export class RunLevel {
     }
   }
 
-  cursor(bounds?: ScanBounds): LayerCursor {
-    const { runs, smallest, largest } = this;
-    const end = bounds?.endExclusive;
-    let r = 0;
-    if (bounds?.start) {
-      let hi = runs.length;
-      while (r < hi) {
-        const mid = (r + hi) >> 1;
-        if (compareBytes(largest[mid]!, bounds.start) < 0) r = mid + 1;
-        else hi = mid;
-      }
+  /** The first run whose largest key is at or after `key`. */
+  private seek(key: Uint8Array): number {
+    let lo = 0;
+    let hi = this.runs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (compareBytes(this.largest[mid]!, key) < 0) lo = mid + 1;
+      else hi = mid;
     }
+    return lo;
+  }
+
+  get(key: Uint8Array): SstEntry | undefined {
+    const r = this.seek(key);
+    if (r >= this.runs.length || compareBytes(this.smallest[r]!, key) > 0) return undefined;
+    return this.runs[r]!.get(key);
+  }
+
+  cursor(bounds?: ScanBounds): LayerCursor {
+    const { runs, smallest } = this;
+    const end = bounds?.endExclusive;
+    let r = bounds?.start ? this.seek(bounds.start) : 0;
     const open = () =>
       r < runs.length && !(end && compareBytes(smallest[r]!, end) >= 0)
         ? runs[r]!.cursor(bounds)

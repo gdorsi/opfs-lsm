@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
-import { mergeCursors, runLevels } from "../src/store/merge.js";
+import { latestSstEntry, mergeCursors, runLevels } from "../src/store/merge.js";
 import { encodeSst, SstReader, type SstEntry } from "../src/store/sst.js";
 
 const enc = new TextEncoder();
@@ -54,6 +54,17 @@ describe("runLevels", () => {
         const got = scan(levels.map((l) => l.cursor(b)), limit);
         expect(got).toEqual(want);
       }
+    }
+  });
+
+  it("gets the same entry as asking every run newest first", () => {
+    const { paths, readers } = layout();
+    const levels = runLevels(paths, readers);
+    const show = (e: ReturnType<typeof latestSstEntry>) =>
+      e && `${dec.decode(e.key)}:${e.kind}:${e.kind === "put" ? dec.decode(e.value) : ""}`;
+    for (let i = -2; i < 125; i++) {
+      const want = readers.map((r) => r.get(key(i))).find((e) => e !== undefined);
+      expect(show(latestSstEntry(levels, key(i)))).toEqual(show(want));
     }
   });
 

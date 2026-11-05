@@ -1,9 +1,9 @@
 /**
  * Every (mem hit, SST hit) pair: pointGet prefers the mem row (incl. tombstones).
- * Runs against the real pointGet + SstReader.
+ * Runs against the real pointGet over a one-run level.
  */
 import { encodeSst, SstReader } from "../../src/store/sst.js";
-import { pointGet } from "../../src/store/merge.js";
+import { pointGet, runLevels } from "../../src/store/merge.js";
 import type { MemRow } from "../../src/idb/wal.js";
 
 type Kind = "miss" | "tomb" | "valueA" | "valueB";
@@ -33,7 +33,7 @@ function readers(kind: Kind): SstReader[] {
           key: KEY,
           value: kind === "valueA" ? A : B,
         };
-  return [new SstReader(encodeSst([entry]))];
+  return runLevels(["l0/1-1.sst"], [new SstReader(encodeSst([entry]))]);
 }
 
 function expected(mem: Kind, sst: Kind): Uint8Array | undefined {
