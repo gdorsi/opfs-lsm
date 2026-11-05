@@ -9,7 +9,7 @@ import {
   tablePrefix,
   type IndexValue,
 } from "./codec.js";
-import { normalizeIndexValues } from "./typed.js";
+import { encodeTyped, normalizeIndexValues } from "./typed.js";
 
 export type IndexSpec = {
   /** Index name used in `where(name, value)`. */
@@ -19,7 +19,17 @@ export type IndexSpec = {
    * `["orgId", "createdAt"]`.
    */
   path: string | readonly string[];
+  /**
+   * Index each element of an array-valued path, like IndexedDB's
+   * `multiEntry`. A row gets one key per distinct combination of elements,
+   * so `path: ["tags", "createdAt"]` keys a row once per tag, each tag's rows
+   * in `createdAt` order. A row with an empty array gets no key.
+   */
+  multiEntry?: boolean;
 };
+
+/** Index keys one row may produce, so one combination can't blow the batch limits. */
+export const MAX_INDEX_KEYS_PER_ROW = 1_000;
 
 export type TableSchema = {
   name: string;
@@ -76,16 +86,35 @@ function asIndexValue(raw: unknown, label: string): IndexValue {
   throw new TypeError(`${label} must be null|boolean|number|string|Uint8Array`);
 }
 
-function readIndexValues(
-  doc: Record<string, unknown>,
-  paths: readonly string[],
-  indexName: string,
-): IndexValue[] | undefined {
-  const out: IndexValue[] = [];
-  for (const path of paths) {
+/**
+ * The index values `doc` is keyed under: one list per key, one value per
+ * path. Empty when a path is missing, or when a multi-entry path is an empty
+ * array.
+ */
+function readIndexValues(doc: Record<string, unknown>, spec: IndexSpec): IndexValue[][] {
+  let rows: IndexValue[][] = [[]];
+  for (const path of pathsOf(spec)) {
     const raw = getPath(doc, path);
-    if (raw === undefined) return undefined;
-    out.push(asIndexValue(raw, `index ${indexName}.${path}`));
+    if (raw === undefined) return [];
+    const label = `index ${spec.name}.${path}`;
+    const choices = spec.multiEntry && Array.isArray(raw) ? distinct(raw, label) : [asIndexValue(raw, label)];
+    rows = rows.flatMap((row) => choices.map((v) => [...row, v]));
+    if (rows.length > MAX_INDEX_KEYS_PER_ROW) {
+      throw new RangeError(`index ${spec.name} gives one row more than ${MAX_INDEX_KEYS_PER_ROW} keys`);
+    }
+  }
+  return rows;
+}
+
+function distinct(raw: readonly unknown[], label: string): IndexValue[] {
+  const out: IndexValue[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    const v = asIndexValue(item, label);
+    const id = encodeTyped(v).join(",");
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(v);
   }
   return out;
 }
@@ -116,9 +145,9 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
   private indexKeys(id: string, doc: T): Uint8Array[] {
     const out: Uint8Array[] = [];
     for (const idx of this.indexes) {
-      const values = readIndexValues(doc, pathsOf(idx), idx.name);
-      if (values === undefined) continue;
-      out.push(indexKey(this.name, idx.name, values, id));
+      for (const values of readIndexValues(doc, idx)) {
+        out.push(indexKey(this.name, idx.name, values, id));
+      }
     }
     return out;
   }
@@ -201,10 +230,16 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
    * Read one cursor page of an index, in index key order. `after` is the
    * `next` from the previous call (inclusive first key). `next` is the first
    * key this call did not consume, so callers can page without rescanning.
+   * `value` limits the page to keys equal to it, or starting with it for a
+   * compound index, as in `where`.
    */
   async page(
     indexName: string,
-    opts: { readonly after?: Uint8Array; readonly limit: number },
+    opts: {
+      readonly after?: Uint8Array;
+      readonly limit: number;
+      readonly value?: IndexValue | readonly IndexValue[];
+    },
   ): Promise<{ readonly docs: T[]; readonly next?: Uint8Array }> {
     const idx = this.requireIndex(indexName);
     const arity = pathsOf(idx).length;
@@ -212,8 +247,13 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     if (!Number.isInteger(limit) || limit < 1) {
       throw new RangeError(`limit must be a positive integer: ${opts.limit}`);
     }
+    this.checkBoundArity(indexName, arity, opts.value);
 
-    const whole = prefixBound(indexPrefix(this.name, indexName));
+    const whole = prefixBound(
+      opts.value === undefined
+        ? indexPrefix(this.name, indexName)
+        : indexPrefix(this.name, indexName, opts.value),
+    );
     const start = opts.after ?? whole.start;
     const hits = await this.db.rangeFollow(
       {

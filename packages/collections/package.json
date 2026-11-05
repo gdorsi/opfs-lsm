@@ -14,7 +14,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "bench": "tsx scripts/bench-browser.ts",
-    "bench:browser": "tsx scripts/bench-browser.ts"
+    "bench:browser": "tsx scripts/bench-browser.ts",
+    "bench:search": "tsx scripts/bench-search.ts"
   },
   "license": "MIT",
   "dependencies": {
