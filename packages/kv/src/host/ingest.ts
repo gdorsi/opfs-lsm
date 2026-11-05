@@ -1,3 +1,4 @@
+import { opsBytes } from "../check.js";
 import type { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import {
@@ -11,6 +12,8 @@ import { foldRecords } from "../store/fold.js";
 export type IngestResult = {
   readonly generation: number;
   readonly ingestedThrough: number;
+  /** Op bytes of the WAL records this call folded into the new L0. */
+  readonly foldedBytes: number;
 };
 
 /**
@@ -28,6 +31,7 @@ export async function ingestAll(
     (await wal.getIngestedThrough()) >= through ? [] : await wal.listUningested();
   let generation: number;
   let ingestedThrough: number;
+  let foldedBytes = 0;
 
   if (records.length === 0) {
     const cur = await loadLatestGeneration(fs);
@@ -48,8 +52,9 @@ export async function ingestAll(
     });
     await wal.advanceIngested(last, generation);
     ingestedThrough = last;
+    for (const r of records) foldedBytes += opsBytes(r.ops);
   }
 
   await reclaimManifests(fs, (await wal.recordedGeneration()) ?? 0);
-  return { generation, ingestedThrough };
+  return { generation, ingestedThrough, foldedBytes };
 }
