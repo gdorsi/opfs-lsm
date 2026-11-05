@@ -482,6 +482,17 @@ class DbImpl implements Db {
   }
 
   /**
+   * Join this tab's committed record to the memtable before the ack
+   * resolves. A gap means another tab appended first: catch up, which
+   * reads the record too.
+   */
+  private async landed(seq: number, ops: readonly CheckedOp[]): Promise<void> {
+    if (!this.mem.apply({ seq, ops }) && !this.closed) await this.sync();
+    this.emitChange({ kind: "append", writerId: this.writerId, seq });
+    this.broadcast({ kind: "append", writerId: this.writerId, seq, ops });
+  }
+
+  /**
    * In one readwrite transaction, catch the memtable up, let `plan` choose a
    * batch against it, and append. The batch joins the memtable at its seq,
    * so this tab reads its own write as soon as the ack resolves.
@@ -496,16 +507,7 @@ class DbImpl implements Db {
         return missing === undefined ? plan() : undefined;
       });
       if (out) {
-        if (out.seq !== undefined) {
-          if (!this.mem.apply({ seq: out.seq, ops: out.ops })) await this.sync();
-          this.emitChange({ kind: "append", writerId: this.writerId, seq: out.seq });
-          this.broadcast({
-            kind: "append",
-            writerId: this.writerId,
-            seq: out.seq,
-            ops: out.ops,
-          });
-        }
+        if (out.seq !== undefined) await this.landed(out.seq, out.ops);
         return out.result;
       }
       if (missing !== undefined) await this.load(missing);
@@ -535,7 +537,9 @@ class DbImpl implements Db {
     this.ensureOpen();
     const ops = collectBatch(build);
     if (ops.length === 0) return;
-    await this.write(() => ({ ops, result: undefined }));
+    const seq = await this.wal.append(ops);
+    if (seq === undefined) await this.write(() => ({ ops, result: undefined }));
+    else await this.landed(seq, ops);
   }
 
   update<T>(
