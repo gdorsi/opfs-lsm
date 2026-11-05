@@ -66,4 +66,34 @@ describe("view snapshot", () => {
     await expect(leaked!.get(enc.encode("a"))).rejects.toThrow(/closed/);
     await db.close();
   });
+
+  it("keeps its rows while later writes split the memtable", async () => {
+    const db = await openDb({
+      name: NAME,
+      forceMemory: true,
+      writerId: "w1",
+      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
+    });
+    const key = (i: number) => enc.encode(`k${String(i).padStart(5, "0")}`);
+    await db.batch((tx) => {
+      for (let i = 0; i < 3000; i += 2) tx.put(key(i), enc.encode("old"));
+    });
+    const seen = await db.view(async (snap) => {
+      await db.batch((tx) => {
+        for (let i = 0; i < 3000; i++) tx.put(key(i), enc.encode("new"));
+      });
+      const rows: string[] = [];
+      for await (const e of snap.range({ start: key(1000), endExclusive: key(1010) })) {
+        rows.push(`${dec.decode(e.key)}=${dec.decode(e.value)}`);
+      }
+      return { rows, odd: await snap.get(key(1001)), even: await snap.get(key(2998)) };
+    });
+    expect(seen.rows).toEqual(
+      [1000, 1002, 1004, 1006, 1008].map((i) => `k${String(i).padStart(5, "0")}=old`),
+    );
+    expect(seen.odd).toBeUndefined();
+    expect(dec.decode(seen.even!)).toBe("old");
+    expect(dec.decode((await db.get(key(1001)))!)).toBe("new");
+    await db.close();
+  });
 });

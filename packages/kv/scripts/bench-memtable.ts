@@ -7,7 +7,6 @@
  */
 import { formatUs, summarize } from "../bench/stats.ts";
 import type { CheckedKey, CheckedValue } from "../src/check.js";
-import { sliceRows } from "../src/store/merge.js";
 import { Memtable } from "../src/store/memtable.js";
 
 const sizes = (process.env.ROWS ?? "10000,130000").split(",").map(Number);
@@ -37,7 +36,8 @@ for (const rows of sizes) {
       advance[i - (rows - tail)] = performance.now() - a;
     }
   }
-  if (mem.sorted.length !== rows) throw new Error(`memtable holds ${mem.sorted.length} of ${rows}`);
+  const held = mem.range().length;
+  if (held !== rows) throw new Error(`memtable holds ${held} of ${rows}`);
 
   const probes = 20_000;
   const hit = new Float64Array(probes);
@@ -52,13 +52,13 @@ for (const rows of sizes) {
     if (mem.get(keyOf(rows + 1 + i))) throw new Error(`get found ${rows + 1 + i}`);
     miss[i] = performance.now() - t;
     t = performance.now();
-    sliceRows(mem.sorted, { start: keyOf(k), endExclusive: keyOf(k + 100) });
+    mem.range({ start: keyOf(k), endExclusive: keyOf(k + 100) });
     scan[i] = performance.now() - t;
   }
   const snapshot = new Float64Array(200);
   for (let i = 0; i < snapshot.length; i++) {
     const t = performance.now();
-    mem.sorted.slice();
+    mem.pin();
     snapshot[i] = performance.now() - t;
   }
 
