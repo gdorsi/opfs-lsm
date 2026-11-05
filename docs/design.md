@@ -233,10 +233,15 @@ the newest file in `m/`. A manifest becomes visible only once IndexedDB records 
 (`pointGetSst` in `store/merge.ts`). It doesn't touch IndexedDB, and it doesn't wait on the
 SharedWorker.
 
-`range` merges a cursor over the memtable with one cursor per run, using a min-heap ordered by
-key and then by source, newest first. For each key the newest source wins, and tombstones are
-dropped. Each run cursor seeks its block index to the start key. A cursor is still opened on
-every run, even when the run's key range can't overlap the scan.
+`range` merges a cursor over the memtable with one cursor per scan source, using a min-heap
+ordered by key and then by source, newest first. For each key the newest source wins, and
+tombstones are dropped. Each L0 run is its own source, because L0 runs overlap. Each deeper
+level is one source (`RunLevel` in `store/merge.ts`): its runs never overlap, so the level
+cursor binary-searches the runs' largest keys for the start key and opens one run at a time,
+in key order, stopping at the first run that starts at or past the end key. A run cursor decodes
+its first block as soon as it opens, so a scan only pays for the runs it reaches.
+
+The bloom filters play no part in a scan. They answer whether one exact key is present.
 
 A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the run
 readers. Writes that commit during the callback are invisible to it.
@@ -418,7 +423,6 @@ Files that no manifest lists are never deleted on startup today. They only take 
 # Known limits of this design
 
 - Each tab keeps every live run file in memory. Tab memory grows with the size of the database.
-- `range` opens a cursor on every run, including runs whose key ranges can't overlap the scan.
 - The leftover run of a merge can be tiny, and the planner rarely picks a tiny run on its own,
   so small runs can stay around.
 - A tab sees another tab's writes over BroadcastChannel, so its reads can lag the ack by a

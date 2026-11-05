@@ -28,6 +28,7 @@
     "bench:batch": "BENCH_PAGE=batch BENCH_N=${BENCH_N:-130000} BENCH_TIMEOUT_MS=900000 tsx scripts/bench-browser.ts",
     "bench:wasm": "tsx scripts/bench-wasm.ts",
     "bench:memtable": "tsx scripts/bench-memtable.ts",
+    "bench:range": "tsx scripts/bench-range.ts",
     "bench:gate": "tsx scripts/bench-gate.ts",
     "bench:aged": "tsx scripts/aged.ts",
     "bench:compaction": "tsx scripts/compaction-cost.ts",

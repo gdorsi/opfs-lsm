@@ -45,6 +45,8 @@ import {
   latestSstEntry,
   mergeCursors,
   pointGetSst,
+  runLevels,
+  type RunLevel,
 } from "./store/merge.js";
 import type { SstReader } from "./store/sst.js";
 import {
@@ -303,6 +305,8 @@ type Layers = {
   readonly generation: number;
   readonly paths: readonly string[];
   readonly readers: readonly SstReader[];
+  /** The readers as scan sources, newest first. */
+  readonly levels: readonly RunLevel[];
   readonly tombstoneSeq: number;
 };
 
@@ -331,6 +335,7 @@ class DbImpl implements Db {
     generation: 0,
     paths: [],
     readers: [],
+    levels: [],
     tombstoneSeq: 0,
   };
   /** The newest generation loaded and not yet installed. */
@@ -445,10 +450,12 @@ class DbImpl implements Db {
       if (!reader) return undefined;
       readers.push(reader);
     }
+    const paths = meta.runs.map((r) => r.path);
     const layers = {
       generation,
-      paths: meta.runs.map((r) => r.path),
+      paths,
       readers,
+      levels: runLevels(paths, readers),
       tombstoneSeq: meta.tombstoneSeq,
     };
     if (!this.loaded || this.loaded.generation < generation) {
@@ -656,7 +663,7 @@ class DbImpl implements Db {
     return mergeCursors(
       [
         arrayCursor(this.mem.range(bounds)),
-        ...this.installed.readers.map((reader) => reader.cursor(bounds)),
+        ...this.installed.levels.map((level) => level.cursor(bounds)),
       ],
       range?.limit,
     );
@@ -677,6 +684,7 @@ class DbImpl implements Db {
       this.installed.generation,
       this.mem.pin(),
       this.installed.readers,
+      this.installed.levels,
     );
     try {
       return await body(snap);

@@ -7,6 +7,7 @@ import {
   arrayCursor,
   mergeCursors,
   pointGet,
+  type RunLevel,
 } from "./store/merge.js";
 import type { SstReader } from "./store/sst.js";
 
@@ -35,15 +36,18 @@ export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
   private readonly rows: MemRows;
   private readonly readers: readonly SstReader[];
+  private readonly levels: readonly RunLevel[];
 
   constructor(
     readonly walHead: number,
     readonly generation: number,
     rows: MemRows,
     readers: readonly SstReader[],
+    levels: readonly RunLevel[],
   ) {
     this.rows = rows;
     this.readers = readers;
+    this.levels = levels;
   }
 
   private ensureOpen(): void {
@@ -68,7 +72,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     for (const entry of mergeCursors(
       [
         arrayCursor(slice),
-        ...this.readers.map((reader) => reader.cursor(bounds)),
+        ...this.levels.map((level) => level.cursor(bounds)),
       ],
       range?.limit,
     )) {
