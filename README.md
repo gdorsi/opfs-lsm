@@ -81,6 +81,18 @@ The wasm files are already in `packages/kv/wasm`. `pnpm test` typechecks with `t
 
 `pnpm bench:browser` starts headless Chrome. On macOS the script uses `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. Otherwise it uses `google-chrome` on `PATH`. Set `CHROME_PATH` when Chrome is somewhere else. The plain command uses the SharedWorker. `BENCH_LOCAL=1` opens the page with `local=1` and uses the in-page engine. The times above used the SharedWorker.
 
+The other benches run from `packages/kv`. Each prints its own rows and checks the results it reads.
+
+| command | what it measures |
+| --- | --- |
+| `pnpm bench:latency` | Each of 100k puts under the default ingest policy, then hit and miss gets across the resulting runs. Prints p50 to p99.9, max, and the count over 1 ms. `BENCH_QUERY=val=100` sets the value size. `BENCH_QUERY=maxBatches=1000000000` keeps the memtable large. Keep N times the value size under 64 MiB with it, because the final flush then writes one run and tabs read at most 64 MiB of a run. |
+| `pnpm bench:floors` | Raw IndexedDB puts at each durability, and OPFS sync-handle appends from a dedicated WebWorker with and without `flush()`. No kv code runs, so this is the floor for a WAL commit. |
+| `pnpm bench:batch` | 1000-key batches as the memtable grows to 130k rows with flushing off. |
+| `pnpm bench:memtable` | The memtable in Node: insert, `advanceTo`, get, a 100-row scan, and a view snapshot, at 10k and 130k rows. |
+| `pnpm bench:wasm` | The wasm codec in Node: encode, decode, and a 4-run merge of runs at the compaction target size. |
+
+The Chrome benches send COOP and COEP headers, so `performance.now()` has 5 µs steps. Compare two builds by running each bench at least 5 times, alternating between them.
+
 ```
 git clone https://github.com/gdorsi/opfs-lsm.git
 cd opfs-lsm
