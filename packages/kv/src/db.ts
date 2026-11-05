@@ -27,7 +27,7 @@ import {
   createLocalIngestClient,
   createPortIngestClient,
 } from "./host/engine-host.js";
-import type { IngestClient } from "./host/protocol.js";
+import { layersChannel, type IngestClient } from "./host/protocol.js";
 import { IdBWal, type WalTail } from "./idb/wal.js";
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import type { ScanBounds } from "./store/cursor.js";
@@ -161,7 +161,7 @@ export interface Db {
    * writes otherwise arrive over BroadcastChannel, a moment after their ack.
    */
   sync(): Promise<void>;
-  /** Force ingest now (awaits host). */
+  /** Flush the memtable now and wait for the compaction it starts. */
   ingest(): Promise<{ generation: number }>;
   close(): Promise<void>;
 }
@@ -354,7 +354,7 @@ class DbImpl implements Db {
     private readonly ownsIngestClient: boolean,
   ) {
     if (typeof BroadcastChannel !== "undefined") {
-      this.bus = new BroadcastChannel(`opfs-lsm-layers/${name}`);
+      this.bus = new BroadcastChannel(layersChannel(name));
       this.onBusMessage = (ev: MessageEvent) => this.onMessage(ev.data);
       this.bus.addEventListener("message", this.onBusMessage);
     }
@@ -389,12 +389,19 @@ class DbImpl implements Db {
   }
 
   /** Ask the ingest host to flush every record through `through`. */
-  private flush(through: number): Promise<{ generation: number }> {
+  private flush(
+    through: number,
+    settle = false,
+  ): Promise<{ generation: number }> {
     const before = this.installed.generation;
     const run = this.flushing
       .catch(() => undefined)
       .then(async () => {
-        const result = await this.ingestClient.ingest(this.name, through);
+        const result = await this.ingestClient.ingest(
+          this.name,
+          through,
+          settle,
+        );
         if (result.generation !== before) {
           this.emitChange({ kind: "ingest", writerId: this.writerId });
           this.broadcast({ kind: "ingest", writerId: this.writerId });
@@ -686,7 +693,7 @@ class DbImpl implements Db {
 
   async ingest(): Promise<{ generation: number }> {
     this.ensureOpen();
-    const result = await this.flush(Number.POSITIVE_INFINITY);
+    const result = await this.flush(Number.POSITIVE_INFINITY, true);
     await this.sync();
     return result;
   }

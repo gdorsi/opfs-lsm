@@ -7,20 +7,15 @@ import {
   reclaimManifests,
 } from "../store/generation.js";
 import { foldRecords } from "../store/fold.js";
-import { maybeCompact } from "./compact.js";
-
-/** One L0 merge plus a cascade through every level a real database reaches. */
-const MAX_COMPACTION_STEPS = 8;
 
 export type IngestResult = {
   readonly generation: number;
   readonly ingestedThrough: number;
-  readonly compacted: boolean;
 };
 
 /**
- * Fold the shared uningested WAL into one L0, publish generation, advance
- * ingestedThrough, then maybe compact L0→sst. Folds nothing when every seq
+ * Fold the shared uningested WAL into one L0, publish generation, and
+ * advance ingestedThrough. Compaction runs separately. Folds nothing when every seq
  * through `through` is already ingested, so tabs that ask for the same
  * flush get one L0.
  */
@@ -55,14 +50,6 @@ export async function ingestAll(
     ingestedThrough = last;
   }
 
-  let compacted = false;
-  for (let step = 0; step < MAX_COMPACTION_STEPS; step++) {
-    const compact = await maybeCompact(fs, wal);
-    if (!compact.compacted) break;
-    compacted = true;
-    generation = compact.generation;
-  }
   await reclaimManifests(fs, (await wal.recordedGeneration()) ?? 0);
-
-  return { generation, ingestedThrough, compacted };
+  return { generation, ingestedThrough };
 }
