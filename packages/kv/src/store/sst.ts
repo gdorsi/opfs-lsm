@@ -248,9 +248,6 @@ function parseV2Meta(buf: Uint8Array, version: number): {
   if (buf.byteLength < 32) throw new CorruptDatabaseError("sst v2 too short");
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const crcOff = buf.byteLength - 4;
-  if (crc32(buf.subarray(0, crcOff)) !== view.getUint32(crcOff, true)) {
-    throw new CorruptDatabaseError("sst crc mismatch");
-  }
   const entryCount = view.getUint32(8, true);
   const blockCount = view.getUint32(12, true);
   const dataLen = view.getUint32(16, true);
@@ -339,6 +336,9 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   }
 
   const meta = parseV2Meta(buf, version);
+  if (crc32(buf.subarray(0, meta.crcOff)) !== meta.view.getUint32(meta.crcOff, true)) {
+    throw new CorruptDatabaseError("sst crc mismatch");
+  }
   const index = readV2Index(
     buf,
     meta.view,
@@ -356,7 +356,12 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   return out;
 }
 
-/** Lazy SST reader: Bloom + block index, decode one block per miss. */
+/**
+ * Lazy SST reader: Bloom + block index, decode one block per miss. It skips
+ * the footer CRC, which costs a pass over the whole file on the tab's main
+ * thread at every new generation. Compaction decodes each run in full, and
+ * that decode checks the CRC.
+ */
 export class SstReader {
   private readonly buf: Uint8Array;
   private readonly view: DataView;
