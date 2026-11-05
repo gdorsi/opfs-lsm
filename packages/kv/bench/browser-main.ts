@@ -87,7 +87,7 @@ async function benchKv(): Promise<BenchRow[]> {
   } = {
     name: "bench-opfs",
     writerId: "bench",
-    ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
+    ingestPolicy: { maxWalBytes: 1 << 30 },
   };
 
   if (LOCAL) {

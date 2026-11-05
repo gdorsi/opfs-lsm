@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import type { CheckedOp } from "../check.js";
+import { opsBytes, type CheckedOp } from "../check.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
 
 /** The latest op for one user key, and the WAL seq that wrote it. */
@@ -24,10 +24,6 @@ export interface MemRows {
 
 /** Rows per chunk after a split. A chunk splits when it passes twice this. */
 const CHUNK_ROWS = 512;
-
-function rowBytes(row: MemRow): number {
-  return row.key.byteLength + (row.value?.byteLength ?? 0);
-}
 
 /**
  * The chunk that holds `key` or would. `firsts[i]` is the first key of
@@ -91,7 +87,9 @@ export class Memtable extends Chunks {
   private owned: boolean[] = [true];
   private applied = 0;
   private ingested = 0;
-  private size = 0;
+  /** Seq and op bytes of each applied record above `ingested`, oldest first. */
+  private pending: { readonly seq: number; readonly bytes: number }[] = [];
+  private pendingBytes = 0;
 
   constructor() {
     super([[]], [new Uint8Array(0)]);
@@ -101,14 +99,12 @@ export class Memtable extends Chunks {
     return this.applied;
   }
 
-  /** Key and value bytes of the rows. */
-  get bytes(): number {
-    return this.size;
-  }
-
-  /** WAL records applied since the installed generation's ingestedThrough. */
-  get records(): number {
-    return this.applied - this.ingested;
+  /**
+   * Op bytes of the WAL records applied since the installed generation's
+   * ingestedThrough. Overwrites and deletes add to it.
+   */
+  get walBytes(): number {
+    return this.pendingBytes;
   }
 
   /** The rows as they are now. Later writes don't change what it reads. */
@@ -129,6 +125,9 @@ export class Memtable extends Chunks {
       );
     }
     this.applied = record.seq;
+    const bytes = opsBytes(record.ops);
+    this.pending.push({ seq: record.seq, bytes });
+    this.pendingBytes += bytes;
     return true;
   }
 
@@ -142,12 +141,10 @@ export class Memtable extends Chunks {
     const i = lowerBoundKeys(rows, row.key);
     const at = rows[i];
     if (at && compareBytes(at.key, row.key) === 0) {
-      this.size -= rowBytes(at);
       rows[i] = row;
     } else {
       rows.splice(i, 0, row);
     }
-    this.size += rowBytes(row);
     if (rows.length > 2 * CHUNK_ROWS) {
       const tail = rows.splice(CHUNK_ROWS);
       this.chunks.splice(c + 1, 0, tail);
@@ -163,6 +160,12 @@ export class Memtable extends Chunks {
   advanceTo(through: number): void {
     if (through <= this.ingested) return;
     this.ingested = through;
+    let drop = 0;
+    while (drop < this.pending.length && this.pending[drop]!.seq <= through) {
+      this.pendingBytes -= this.pending[drop]!.bytes;
+      drop += 1;
+    }
+    this.pending.splice(0, drop);
     const keep =
       through > this.applied ? [] : this.range().filter((row) => row.seq > through);
     this.applied = Math.max(this.applied, through);
@@ -176,6 +179,5 @@ export class Memtable extends Chunks {
     if (this.chunks.length === 0) this.chunks.push([]);
     this.firsts[0] = new Uint8Array(0);
     this.owned = this.chunks.map(() => true);
-    this.size = keep.reduce((n, row) => n + rowBytes(row), 0);
   }
 }

@@ -38,7 +38,7 @@ describe("memtable reads", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
+      ingestPolicy: { maxWalBytes: 1 << 30 },
     });
     await db.put(enc.encode("a"), enc.encode("1"));
     expect(dec.decode(await db.get(enc.encode("a")))).toBe("1");
@@ -53,7 +53,7 @@ describe("memtable reads", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
+      ingestPolicy: { maxWalBytes: 1 << 30 },
     });
     await db.put(enc.encode("k"), enc.encode("v"));
     await db.ingest();
@@ -100,7 +100,7 @@ describe("memtable reads", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
+      ingestPolicy: { maxWalBytes: 1 << 30 },
     });
     expect(dec.decode((await db.get(enc.encode("a")))!)).toBe("old");
     await db.close();
@@ -113,9 +113,7 @@ describe("memtable reads", () => {
     attachEngineHostPort(port1, host);
     const ingest = createPortIngestClient(port2);
     const policy = {
-      maxBatches: 1e9,
-      
-      maxBytes: 1 << 30,
+      maxWalBytes: 1 << 30,
     };
     const a = await openDb({
       name: NAME,

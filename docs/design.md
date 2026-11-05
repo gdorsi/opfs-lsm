@@ -373,14 +373,19 @@ Ingest moves WAL records into an L0 run. It runs in the SharedWorker's `EngineHo
 
 ## When it runs
 
-Every tab applies every record. So every tab sees the same record push the memtable past a
-limit, and each one asks the host to flush through that seq. The limits are in
-`ingest-policy.ts`:
-- `maxBytes` defaults to 4 MiB of key and value bytes.
-- `maxBatches` defaults to 10,000 records.
+Every tab applies every record. Each tab counts the key and value bytes of the records it has
+applied above the installed generation's `ingestedThrough` (`Memtable.walBytes`). So every tab
+sees the same record take that count past the limit, and each one asks the host to flush
+through that seq. The limit is `maxWalBytes` in `ingest-policy.ts`, 4 MiB by default.
+
+The count is over the WAL as written, not the folded memtable. Overwrites of the same keys and
+deletes leave the memtable about the same size, but they still grow the WAL that every tab reads
+when it opens. So the WAL stays near the limit however the writes are batched. Before this, the
+limits were 4 MiB of memtable bytes or 10,000 records. Overwrite batches of 9,000 ops then grew
+the WAL to 39 MiB with no flush.
 
 A request for seqs that are already ingested does nothing. So however many tabs ask for the
-same flush, it runs once. A later multiple of a limit retries a flush that failed.
+same flush, it runs once. A later multiple of the limit retries a flush that failed.
 
 ## Steps
 

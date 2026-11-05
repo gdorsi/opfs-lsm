@@ -149,7 +149,7 @@ describe("batch + prefixBound", () => {
 describe("ingest", () => {
   it("a flush larger than one run stays readable from another tab", async () => {
     const fs = new MemoryFs();
-    const policy = { maxBatches: 1e9, maxBytes: 2 ** 40 };
+    const policy = { maxWalBytes: 2 ** 40 };
     const a = await openDb({ name: "notes", writerId: "w1", fs, ingestPolicy: policy });
     const value = (i: number) => new Uint8Array(1 << 20).fill(i);
     for (let i = 0; i < 70; i++) await a.put(utf(`k${String(i).padStart(2, "0")}`), value(i));

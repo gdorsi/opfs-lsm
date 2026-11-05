@@ -25,7 +25,7 @@ afterEach(() => __resetMemoryFsForTests(NAME));
 
 it("racing puts of one doc from two tabs leave exactly one index key, for the final doc", async () => {
   const fs = new MemoryFs();
-  const policy = { maxBatches: 10_000, maxBytes: 1 << 30 };
+  const policy = { maxWalBytes: 1 << 30 };
   const kvA = await openDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: policy });
   const kvB = await openDb({ name: NAME, writerId: "b", fs, forceMemory: true, ingestPolicy: policy });
   const tabs = [kvA, kvB].map((kv) => new CollectionDb(kv, schema).table<User>("users"));

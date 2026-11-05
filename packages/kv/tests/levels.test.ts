@@ -87,7 +87,7 @@ describe("bottom compaction", () => {
       name: NAME,
       fs,
       forceMemory: true,
-      ingestPolicy: { maxBatches: 1e9, maxBytes: 2 ** 40 },
+      ingestPolicy: { maxWalBytes: 2 ** 40 },
     });
     await db.put(enc.encode("a"), enc.encode("1"));
     await db.put(enc.encode("b"), enc.encode("1"));

@@ -29,7 +29,7 @@ describe("view snapshot", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
+      ingestPolicy: { maxWalBytes: 1 << 30 },
     });
     await db.put(enc.encode("a"), enc.encode("1"));
 
@@ -56,7 +56,7 @@ describe("view snapshot", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
+      ingestPolicy: { maxWalBytes: 1 << 30 },
     });
     let leaked: { get(key: Uint8Array): Promise<Uint8Array | undefined> } | undefined;
     await db.view(async (snap) => {
@@ -72,7 +72,7 @@ describe("view snapshot", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxBatches: 1e9, maxBytes: 1 << 30 },
+      ingestPolicy: { maxWalBytes: 1 << 30 },
     });
     const key = (i: number) => enc.encode(`k${String(i).padStart(5, "0")}`);
     await db.batch((tx) => {

@@ -35,7 +35,7 @@ describe("L0 compaction", () => {
       writerId: "w1",
       fs,
       forceMemory: true,
-      ingestPolicy: { maxBatches: 10_000, maxBytes: 1 << 30 },
+      ingestPolicy: { maxWalBytes: 1 << 30 },
     });
 
     for (let i = 0; i < 4; i++) {
@@ -79,7 +79,7 @@ describe("L0 compaction", () => {
       writerId: "w1",
       fs,
       ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxBatches: 1e9, maxBytes: 1e12 },
+      ingestPolicy: { maxWalBytes: 1e12 },
     });
     const events: ChangeEvent[] = [];
     db.changes((e) => events.push(e));

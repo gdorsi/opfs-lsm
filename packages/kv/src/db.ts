@@ -421,20 +421,17 @@ class DbImpl implements Db {
   }
 
   /**
-   * Apply `record` to the memtable. The record that takes the memtable past
-   * a multiple of a policy limit is the same in every tab, so each tab asks
-   * for the same flush and the host runs it once. Later multiples retry a
-   * flush that failed.
+   * Apply `record` to the memtable. The record that takes the waiting WAL
+   * bytes past a multiple of the limit is the same in every tab, so each tab
+   * asks for the same flush and the host runs it once. Later multiples retry
+   * a flush that failed.
    */
   private apply(record: WalRecord): boolean {
-    const was = { seq: this.mem.appliedThrough, bytes: this.mem.bytes };
+    const was = { seq: this.mem.appliedThrough, walBytes: this.mem.walBytes };
     if (!this.mem.apply(record)) return false;
     if (this.mem.appliedThrough === was.seq || this.closed) return true;
-    const { maxBytes, maxBatches } = this.policy;
-    if (
-      Math.floor(this.mem.bytes / maxBytes) > Math.floor(was.bytes / maxBytes) ||
-      this.mem.records % maxBatches === 0
-    ) {
+    const { maxWalBytes } = this.policy;
+    if (Math.floor(this.mem.walBytes / maxWalBytes) > Math.floor(was.walBytes / maxWalBytes)) {
       void this.flush(record.seq).catch(() => undefined);
     }
     return true;

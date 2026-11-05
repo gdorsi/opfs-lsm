@@ -23,7 +23,7 @@ const db = await openDb({
   name,
   fs,
   forceMemory: true,
-  ingestPolicy: { maxBatches: 1e9, maxBytes: 2 ** 40 },
+  ingestPolicy: { maxWalBytes: 2 ** 40 },
 });
 const live = new Map<number, number>();
 const value = new Uint8Array(100);
