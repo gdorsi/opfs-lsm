@@ -1,9 +1,5 @@
-import type {
-  AsyncFs,
-  Db,
-  IngestClient,
-  OpenOptions,
-} from "../dist/index.js";
+import type { AsyncFs, Db, IngestClient } from "../dist/index.js";
+import type { HarnessOpenOptions } from "../dist/testing.js";
 
 const out = document.getElementById("out")!;
 const runBtn = document.getElementById("run") as HTMLButtonElement;
@@ -70,8 +66,8 @@ async function clearOpfs(): Promise<void> {
 
 async function benchKv(): Promise<BenchRow[]> {
   const mod = await import("../dist/index.js");
+  const { openHarnessDb } = await import("../dist/testing.js");
   const {
-    openDb,
     openBrowserFs,
     EngineHost,
     createLocalIngestClient,
@@ -80,11 +76,7 @@ async function benchKv(): Promise<BenchRow[]> {
   await clearOpfs();
   const enc = new TextEncoder();
 
-  const opts: OpenOptions & {
-    fs?: AsyncFs;
-    ingest?: IngestClient;
-    workerUrl?: URL;
-  } = {
+  let opts: HarnessOpenOptions = {
     name: "bench-opfs",
     writerId: "bench",
     ingestPolicy: { maxWalBytes: 1 << 30 },
@@ -93,15 +85,17 @@ async function benchKv(): Promise<BenchRow[]> {
   if (LOCAL) {
     const fs = await openBrowserFs("bench-opfs");
     const host = new EngineHost(() => fs);
-    opts.fs = fs;
-    opts.ingest = createLocalIngestClient(host);
+    opts = {
+      ...opts,
+      fs,
+      ingest: createLocalIngestClient(host),
+    };
     log("mode=local EngineHost + BrowserFs (OPFS)");
   } else {
-    opts.workerUrl = new URL("../dist/host/shared-worker.js", import.meta.url);
     log("mode=SharedWorker + BrowserFs (OPFS)");
   }
 
-  const db: Db = await openDb(opts);
+  const db: Db = await openHarnessDb(opts);
   const rows: BenchRow[] = [];
   rows.push(
     await time("kv solitary put", async () => {

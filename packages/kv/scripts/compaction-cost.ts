@@ -1,5 +1,11 @@
 import "fake-indexeddb/auto";
-import { MemoryFs, __resetMemoryFsForTests, openDb } from "../src/index.js";
+import {
+  MemoryFs
+} from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 
 const totalMiB = Number(process.env.TOTAL_MIB ?? 120);
@@ -49,7 +55,7 @@ fs.create = async (path) => {
   };
 };
 
-const db = await openDb({ name, fs, forceMemory: true });
+const db = await openHarnessDb({ name, fs, forceMemory: true });
 const model = new Map<number, number>();
 let userBytes = 0;
 const started = performance.now();

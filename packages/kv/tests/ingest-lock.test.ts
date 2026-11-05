@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   EngineHost,
   MemoryFs,
-  __resetMemoryFsForTests,
-  createLocalIngestClient,
-  openDb,
+  createLocalIngestClient
 } from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -23,14 +25,14 @@ describe("ingest across two hosts", () => {
   it("never loses a write when two SharedWorkers ingest at once", async () => {
     const fs = new MemoryFs();
     const policy = { maxWalBytes: 1e12 };
-    const a = await openDb({
+    const a = await openHarnessDb({
       name: "lock-db",
       writerId: "a",
       fs,
       ingest: createLocalIngestClient(new EngineHost(() => fs)),
       ingestPolicy: policy,
     });
-    const b = await openDb({
+    const b = await openHarnessDb({
       name: "lock-db",
       writerId: "b",
       fs,
@@ -42,7 +44,7 @@ describe("ingest across two hosts", () => {
       await b.put(utf(`b${round}`), utf(`${round}`));
       await Promise.all([a.ingest(), b.ingest()]);
     }
-    const fresh = await openDb({
+    const fresh = await openHarnessDb({
       name: "lock-db",
       writerId: "c",
       fs,

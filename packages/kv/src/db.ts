@@ -57,32 +57,33 @@ import {
 export type { ViewSnapshot } from "./view.js";
 export type { ChangeEvent, ChangeListener, ChangeKind } from "./changes.js";
 
+/** Public open options. Apps pass a database name; the library owns the rest. */
 export type OpenOptions = {
   readonly name: string;
+};
+
+/**
+ * Harness / test open options (`openHarnessDb` in `@opfs-lsm/kv/testing`).
+ * Not part of the app-facing API.
+ */
+export type HarnessOpenOptions = OpenOptions & {
   /**
-   * SST/generation filesystem used for **reads** on this tab.
+   * SST/generation filesystem used for reads on this tab.
    * Must match what the ingest host publishes to.
-   * Omit in the browser to use OPFS when SharedWorker and
-   * navigator.storage.getDirectory exist. Omit in Node to use MemoryFs.
+   * Omit in the browser to use OPFS. Omit in Node to use MemoryFs.
    */
   readonly fs?: AsyncFs;
   /**
-   * Ingest client. Omit in the browser when `workerUrl` is set (SharedWorker).
+   * Ingest client. Omit in the browser for the package SharedWorker.
    * Omit in Node/tests for an in-process EngineHost.
    */
   readonly ingest?: IngestClient;
-  /**
-   * SharedWorker script URL for browser default wiring.
-   * Example: `new URL("@opfs-lsm/kv/shared-worker", import.meta.url)`
-   */
-  readonly workerUrl?: string | URL;
   /** Stable writer id (tests / debugging). Default: random UUID. */
   readonly writerId?: string;
   /** When the memtable flushes to an OPFS run. */
   readonly ingestPolicy?: Partial<IngestPolicy>;
   /**
    * Force the Node/test path (MemoryFs + local host) even in a browser.
-   * Useful for unit tests under jsdom.
    */
   readonly forceMemory?: boolean;
   /**
@@ -200,7 +201,17 @@ export function prefixBound(prefix: Uint8Array): {
   return end === undefined ? { start } : { start, endExclusive: end };
 }
 
+/** SharedWorker script shipped next to this module in `dist/`. */
+function sharedWorkerUrl(): URL {
+  return new URL("./host/shared-worker.js", import.meta.url);
+}
+
 export async function openDb(options: OpenOptions): Promise<Db> {
+  return openDbWith(options);
+}
+
+/** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
+export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const name = checkDbName(options.name);
   // Reads unpack LZ4 blocks faster once wasm loads. Until then they use the JS decoder.
   void ensureEngine();
@@ -225,18 +236,13 @@ export async function openDb(options: OpenOptions): Promise<Db> {
     options.allowEphemeral !== true
   ) {
     throw new StorageUnavailableError(
-      "browser openDb needs SharedWorker and navigator.storage.getDirectory. Pass allowEphemeral: true to keep data in memory for this page only, or pass fs, ingest, or forceMemory.",
+      "browser openDb needs SharedWorker and navigator.storage.getDirectory",
     );
   }
 
   if (useBrowser) {
-    if (!options.workerUrl) {
-      throw new ConstraintError(
-        'browser openDb requires workerUrl (SharedWorker module URL), e.g. new URL("@opfs-lsm/kv/shared-worker", import.meta.url)',
-      );
-    }
     fs = await openBrowserFs(name);
-    const worker = new SharedWorker(options.workerUrl, {
+    const worker = new SharedWorker(sharedWorkerUrl(), {
       type: "module",
       name: `opfs-lsm:${name}`,
     });

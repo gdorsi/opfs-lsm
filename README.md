@@ -15,10 +15,7 @@ The storage layout, consistency rules, and ingest path are in [docs/design.md](d
 ```ts
 import { openDb } from "@opfs-lsm/kv";
 
-const db = await openDb({
-  name: "notes",
-  workerUrl: new URL("@opfs-lsm/kv/shared-worker", import.meta.url),
-});
+const db = await openDb({ name: "notes" });
 
 const key = new TextEncoder().encode("hello");
 const value = new TextEncoder().encode("world");
@@ -26,22 +23,15 @@ await db.put(key, value);
 const found = await db.get(key);
 ```
 
-`workerUrl` is the SharedWorker module this package exports. In Node, or under `forceMemory: true`, the call uses an in-memory filesystem and a local ingest host instead.
-
-If the page has no SharedWorker or OPFS, and you pass neither `fs`, `ingest`, nor `forceMemory`, `openDb` throws `StorageUnavailableError`. Pass `allowEphemeral: true` when you want an in-memory database that lasts only for the page.
+In the browser, `openDb` opens OPFS and starts the package SharedWorker. In Node it uses an in-memory filesystem and a local ingest host. If the page has no SharedWorker or OPFS, `openDb` throws `StorageUnavailableError`.
 
 ### `OpenOptions`
 
 | Option | Role |
 | --- | --- |
 | `name` | Database name. Tabs that share this name share one WAL. |
-| `workerUrl` | SharedWorker script URL for browser default wiring. |
-| `fs` | Filesystem used for SST reads on this tab. Omit to use OPFS in the browser. |
-| `ingest` | Ingest client. Omit when `workerUrl` is set. |
-| `ingestPolicy` | When the memtable flushes to an OPFS run. |
-| `writerId` | Stable writer id for tests. Default is a random UUID. |
-| `forceMemory` | Use MemoryFs even when OPFS is available. |
-| `allowEphemeral` | Use MemoryFs when the page cannot open OPFS. |
+
+Harness knobs used by tests and benches (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`.
 
 ### `Db`
 
@@ -72,7 +62,7 @@ await db.sync();
 await db.ingest();
 ```
 
-Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, the error classes (`StorageUnavailableError`, `ClosedError`, and others), and the SharedWorker entry `@opfs-lsm/kv/shared-worker`.
+Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, and the error classes (`StorageUnavailableError`, `ClosedError`, and others). The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
 
 ## `@opfs-lsm/collections`
 
@@ -83,7 +73,6 @@ import { openCollectionDb } from "@opfs-lsm/collections";
 
 const db = await openCollectionDb({
   name: "app",
-  workerUrl: new URL("@opfs-lsm/kv/shared-worker", import.meta.url),
   schema: {
     tables: [
       {

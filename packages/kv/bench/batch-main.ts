@@ -39,14 +39,13 @@ async function resetStorage(): Promise<void> {
 
 async function run(): Promise<void> {
   out.textContent = "";
-  const { openDb } = await import("../dist/index.js");
+  const { openHarnessDb } = await import("../dist/testing.js");
   await resetStorage();
   log(`rows=${ROWS}  batch=${BATCH} new keys  value=${VALUE_BYTES} B  no flush  isolated=${crossOriginIsolated}`);
   const enc = new TextEncoder();
   const value = new Uint8Array(VALUE_BYTES).fill(7);
-  const db: Db = await openDb({
+  const db: Db = await openHarnessDb({
     name: NAME,
-    workerUrl: new URL("../dist/host/shared-worker.js", import.meta.url),
     ingestPolicy: { maxWalBytes: 2 ** 40 },
   });
   const batches = Math.floor(ROWS / BATCH);

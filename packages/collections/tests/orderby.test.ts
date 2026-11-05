@@ -1,6 +1,7 @@
+import { openHarnessCollectionDb } from "../src/testing.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { __resetMemoryFsForTests } from "@opfs-lsm/kv";
-import { openCollectionDb, type CollectionDb } from "../src/index.js";
+import { __resetMemoryFsForTests } from "@opfs-lsm/kv/testing";
+import { type CollectionDb } from "../src/index.js";
 
 const NAME = "orderby-test";
 let open: CollectionDb | undefined;
@@ -35,7 +36,7 @@ type Note = { id: string; orgId: string; createdAt: number; title: string };
 
 describe("orderBy", () => {
   it("returns index order and supports range + limit", async () => {
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {
@@ -70,7 +71,7 @@ describe("orderBy", () => {
   });
 
   it("orders compound indexes", async () => {
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {
@@ -95,7 +96,7 @@ describe("orderBy", () => {
   });
 
   it("orders strings lexicographically, not by length", async () => {
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {
@@ -143,7 +144,7 @@ describe("orderBy", () => {
   });
 
   it("pages an index with an opaque cursor", async () => {
-    open = await openCollectionDb({
+    open = await openHarnessCollectionDb({
       name: NAME,
       forceMemory: true,
       schema: {

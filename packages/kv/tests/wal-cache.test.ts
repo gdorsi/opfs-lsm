@@ -5,10 +5,12 @@ import {
   EngineHost,
   MemoryFs,
   attachEngineHostPort,
-  createPortIngestClient,
-  openDb,
-  __resetMemoryFsForTests,
+  createPortIngestClient
 } from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 
 const NAME = "wal-cache-test";
 const enc = new TextEncoder();
@@ -34,7 +36,7 @@ afterEach(() => {
 
 describe("memtable reads", () => {
   it("serves repeated gets without losing visibility", async () => {
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "w1",
@@ -49,7 +51,7 @@ describe("memtable reads", () => {
   });
 
   it("invalidates after ingest so SST still serves values", async () => {
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "w1",
@@ -96,7 +98,7 @@ describe("memtable reads", () => {
       };
     });
 
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "w1",
@@ -115,14 +117,14 @@ describe("memtable reads", () => {
     const policy = {
       maxWalBytes: 1 << 30,
     };
-    const a = await openDb({
+    const a = await openHarnessDb({
       name: NAME,
       writerId: "w1",
       fs,
       ingest,
       ingestPolicy: policy,
     });
-    const b = await openDb({
+    const b = await openHarnessDb({
       name: NAME,
       writerId: "w2",
       fs,

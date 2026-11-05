@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { openDb, StorageUnavailableError } from "../src/index.js";
 import {
+  openHarnessDb,
   __resetMemoryFsForTests,
-  openDb,
-  StorageUnavailableError,
-} from "../src/index.js";
+} from "../src/testing.js";
 
 const NAME = "open-policy";
 const enc = new TextEncoder();
@@ -63,7 +63,7 @@ async function deleteIdb(): Promise<void> {
 }
 
 async function roundTrip(): Promise<void> {
-  const db = await openDb({ name: NAME, writerId: "w" });
+  const db = await openDb({ name: NAME });
   await db.put(enc.encode("k"), enc.encode("v"));
   const got = await db.get(enc.encode("k"));
   expect(got && dec.decode(got)).toBe("v");
@@ -96,9 +96,8 @@ describe("openDb storage policy", () => {
 
   it("keeps the page in memory when allowEphemeral is set and OPFS is missing", async () => {
     installDocument();
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
-      writerId: "w",
       allowEphemeral: true,
     });
     await db.put(enc.encode("k"), enc.encode("v"));
@@ -110,9 +109,8 @@ describe("openDb storage policy", () => {
   it("forceMemory selects memory even when OPFS capabilities exist", async () => {
     installDocument();
     installCaps(() => Promise.reject(new Error("opfs-getDirectory")));
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
-      writerId: "w",
       forceMemory: true,
     });
     await db.put(enc.encode("k"), enc.encode("v"));
@@ -125,10 +123,9 @@ describe("openDb storage policy", () => {
     installDocument();
     installCaps(() => Promise.reject(new Error("opfs-getDirectory")));
     await expect(
-      openDb({
+      openHarnessDb({
         name: NAME,
         allowEphemeral: true,
-        workerUrl: "http://127.0.0.1/shared-worker.js",
       }),
     ).rejects.toThrow("opfs-getDirectory");
   });

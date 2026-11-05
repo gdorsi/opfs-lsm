@@ -1,7 +1,6 @@
 export {
   openDb,
   prefixBound,
-  __resetMemoryFsForTests,
   type OpenOptions,
   type Db,
   type BatchTx,
@@ -41,4 +40,3 @@ export {
   engineUsingWasm,
   ensureEngine,
 } from "./store/engine.js";
-

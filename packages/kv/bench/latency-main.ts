@@ -57,7 +57,8 @@ async function resetStorage(): Promise<void> {
 
 async function run(): Promise<void> {
   out.textContent = "";
-  const { openDb, openBrowserFs } = await import("../dist/index.js");
+  const { openBrowserFs } = await import("../dist/index.js");
+  const { openHarnessDb } = await import("../dist/testing.js");
   const { loadLatestGeneration } = await import("../dist/store/generation.js");
   await resetStorage();
   log(`N=${N}  value=${VALUE_BYTES} B  maxWalBytes=${MAX_WAL_BYTES ?? "default"}  isolated=${crossOriginIsolated}  mode=SharedWorker`);
@@ -67,7 +68,6 @@ async function run(): Promise<void> {
   const value = new Uint8Array(VALUE_BYTES).fill(7);
   const options = {
     name: NAME,
-    workerUrl: new URL("../dist/host/shared-worker.js", import.meta.url),
     ...(MAX_WAL_BYTES ? { ingestPolicy: { maxWalBytes: Number(MAX_WAL_BYTES) } } : {}),
   };
   const fs = await openBrowserFs(NAME);
@@ -83,13 +83,13 @@ async function run(): Promise<void> {
     if (!got || got.byteLength !== VALUE_BYTES) throw new Error(`get missing ${k}`);
   };
 
-  let db: Db = await openDb(options);
+  let db: Db = await openHarnessDb(options);
   const rows: Stats[] = [];
   rows.push(await timeEach("put", N, (i) => db.put(key(order[i]!), value)));
   await db.close();
 
   const t = performance.now();
-  db = await openDb(options);
+  db = await openHarnessDb(options);
   log(`reopen ${(performance.now() - t).toFixed(1)} ms with ${await runs()} runs`);
   rows.push(
     await timeEach("get hit", N, async (i) => expectValue(await db.get(key(probe(i))), probe(i))),

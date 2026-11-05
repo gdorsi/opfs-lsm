@@ -12,7 +12,13 @@
  */
 import "fake-indexeddb/auto";
 import { formatUs, summarize } from "../bench/stats.ts";
-import { MemoryFs, __resetMemoryFsForTests, openDb } from "../src/index.js";
+import {
+  MemoryFs
+} from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 import { encodeSst, ensureEngine } from "../src/store/engine.js";
 import { publishGeneration, publishRun, runMeta, type RunMeta } from "../src/store/generation.js";
 import { levelRunPath, TARGET_RUN_BYTES } from "../src/store/levels.js";
@@ -90,7 +96,7 @@ await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0 });
 
 __resetMemoryFsForTests(name);
 const openStart = performance.now();
-const db = await openDb({ name, fs, forceMemory: true });
+const db = await openHarnessDb({ name, fs, forceMemory: true });
 const openMs = performance.now() - openStart;
 const runBytes = runs.reduce((n, r) => n + (r.path.match(/-(\d+)\.sst$/) ? Number(RegExp.$1) : 0), 0);
 console.log(JSON.stringify({ todos, label: "open", openMs, runMiB: runBytes / 2 ** 20 }));

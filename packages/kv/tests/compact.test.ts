@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EngineHost,
   MemoryFs,
-  __resetMemoryFsForTests,
   createLocalIngestClient,
-  openDb,
-  type ChangeEvent,
+  type ChangeEvent
 } from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 
@@ -30,7 +32,7 @@ afterEach(async () => {
 describe("L0 compaction", () => {
   it("merges four L0 runs into L1 and keeps keys readable", async () => {
     const fs = new MemoryFs();
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: "compact",
       writerId: "w1",
       fs,
@@ -74,7 +76,7 @@ describe("L0 compaction", () => {
       create: (path) => fs.create(path),
     };
     const host = new EngineHost(() => hostFs);
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: "compact",
       writerId: "w1",
       fs,

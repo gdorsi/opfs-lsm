@@ -1,5 +1,12 @@
 import "fake-indexeddb/auto";
-import { MemoryFs, __resetMemoryFsForTests, decodeSst, openDb } from "../src/index.js";
+import {
+  MemoryFs,
+  decodeSst
+} from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 import { SstReader } from "../src/store/sst.js";
 
@@ -19,7 +26,7 @@ const rand = (n: number) => {
 
 __resetMemoryFsForTests(name);
 const fs = new MemoryFs();
-const db = await openDb({
+const db = await openHarnessDb({
   name,
   fs,
   forceMemory: true,

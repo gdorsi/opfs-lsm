@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { MemoryFs, __resetMemoryFsForTests, openDb } from "../src/index.js";
+import {
+  MemoryFs
+} from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 
 const NAME = "log-upgrade";
 const enc = new TextEncoder();
@@ -51,7 +57,7 @@ function seedV4(): Promise<void> {
 
 it("a v4 database keeps its uningested writes and continues the seq after upgrade", async () => {
   await seedV4();
-  const db = await openDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), forceMemory: true });
+  const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), forceMemory: true });
   expect(dec.decode((await db.get(enc.encode("a")))!)).toBe("2");
   expect(await db.get(enc.encode("b"))).toBeUndefined();
   expect(await db.get(enc.encode("gone"))).toBeUndefined();
@@ -85,7 +91,7 @@ function seedV5(): Promise<void> {
 
 it("a v5 database keeps its uningested rows and stays writable after upgrade", async () => {
   await seedV5();
-  const db = await openDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), forceMemory: true });
+  const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), forceMemory: true });
   expect(dec.decode((await db.get(enc.encode("a")))!)).toBe("2");
   expect(await db.get(enc.encode("b"))).toBeUndefined();
   expect(await db.get(enc.encode("gone"))).toBeUndefined();

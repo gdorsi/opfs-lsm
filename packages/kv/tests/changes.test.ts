@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  openDb,
-  __resetMemoryFsForTests,
-  type ChangeEvent,
+  type ChangeEvent
 } from "../src/index.js";
+import {
+  openHarnessDb,
+  __resetMemoryFsForTests
+} from "../src/testing.js";
 
 const NAME = "changes-test";
 const enc = new TextEncoder();
@@ -28,7 +30,7 @@ afterEach(() => {
 
 describe("changes()", () => {
   it("notifies local appends and ingest", async () => {
-    const db = await openDb({
+    const db = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "w1",
@@ -54,13 +56,13 @@ describe("changes()", () => {
   it("receives appends from another writer on the same db name", async () => {
     if (typeof BroadcastChannel === "undefined") return;
 
-    const a = await openDb({
+    const a = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "wa",
       ingestPolicy: { maxWalBytes: 1 << 30 },
     });
-    const b = await openDb({
+    const b = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "wb",

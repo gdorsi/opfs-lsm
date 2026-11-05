@@ -10,11 +10,16 @@ const dec = new TextDecoder();
 type Api = {
   openDb: typeof import("@opfs-lsm/kv").openDb;
   ClosedError: typeof import("@opfs-lsm/kv").ClosedError;
-  MemoryFs: typeof import("@opfs-lsm/kv").MemoryFs;
-  __resetMemoryFsForTests: typeof import("@opfs-lsm/kv").__resetMemoryFsForTests;
+};
+
+type TestingApi = {
+  openHarnessDb: typeof import("@opfs-lsm/kv/testing").openHarnessDb;
+  __resetMemoryFsForTests: typeof import("@opfs-lsm/kv/testing").__resetMemoryFsForTests;
+  MemoryFs: typeof import("@opfs-lsm/kv/testing").MemoryFs;
 };
 
 let api: Api;
+let testing: TestingApi;
 let closeDb: (() => Promise<void>) | undefined;
 
 function exportFile(spec: string): string {
@@ -46,25 +51,29 @@ beforeAll(async () => {
   expect(entry.endsWith("/dist/index.js")).toBe(true);
   expect(existsSync(entry)).toBe(true);
   api = (await import(entry)) as Api;
+  const testingEntry = exportFile("@opfs-lsm/kv/testing");
+  expect(testingEntry.endsWith("/dist/testing.js")).toBe(true);
+  testing = (await import(testingEntry)) as TestingApi;
 });
 
 afterEach(async () => {
   await closeDb?.();
   closeDb = undefined;
-  api?.__resetMemoryFsForTests(NAME);
+  testing?.__resetMemoryFsForTests(NAME);
   await wipe();
 });
 
 describe("public API", () => {
-  it("resolves the SharedWorker export from the package exports map", () => {
+  it("resolves the SharedWorker and testing exports from the package exports map", () => {
     const worker = exportFile("@opfs-lsm/kv/shared-worker");
     expect(existsSync(worker)).toBe(true);
     expect(worker.endsWith("/dist/host/shared-worker.js")).toBe(true);
+    expect(typeof api.openDb).toBe("function");
   });
 
-  it("runs put, get, batch, transaction, view, changes, ingest, and close", async () => {
-    const fs = new api.MemoryFs();
-    const db = await api.openDb({
+  it("runs put, get, batch, update, view, changes, ingest, and close", async () => {
+    const fs = new testing.MemoryFs();
+    const db = await testing.openHarnessDb({
       name: NAME,
       fs,
       forceMemory: true,
