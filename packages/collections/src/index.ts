@@ -4,7 +4,7 @@ export {
   type CollectionSchema,
   type OpenCollectionOptions,
 } from "./database.js";
-export { Table, type TableSchema, type IndexSpec } from "./table.js";
+export { MAX_INDEX_KEYS_PER_ROW, Table, type TableSchema, type IndexSpec } from "./table.js";
 export {
   primaryKey,
   indexKey,
