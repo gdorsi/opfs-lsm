@@ -12,16 +12,10 @@ import {
 import {
   ClosedError,
   CommitError,
-  ConflictError,
   ConstraintError,
   CorruptDatabaseError,
   StorageUnavailableError,
 } from "./errors.js";
-import {
-  runTransaction,
-  type AppendGuard,
-  type Transaction,
-} from "./transaction.js";
 import {
   EngineHost,
   createLocalIngestClient,
@@ -42,7 +36,6 @@ import {
 } from "./store/generation.js";
 import {
   arrayCursor,
-  latestSstEntry,
   mergeCursors,
   pointGetSst,
   runLevels,
@@ -124,11 +117,6 @@ export interface Db {
    * to OPFS per ingestPolicy.
    */
   batch(build: (tx: BatchTx) => void): Promise<void>;
-  /**
-   * Interactive transaction: snapshot + write buffer + key-based OCC.
-   * Concurrent WAL writes that touch a read/written key cause ConflictError.
-   */
-  transaction<T>(body: (tx: Transaction) => Promise<T> | T): Promise<T>;
   /**
    * Read `keys` and write, in one IndexedDB transaction. `body` runs
    * synchronously with the current values, in the order of `keys`. No other
@@ -567,24 +555,6 @@ class DbImpl implements Db {
     return row ? valueOf(row) : pointGetSst(this.installed.levels, k);
   }
 
-  /**
-   * The seq of the last write to `key` this tab can see, from the memtable or
-   * else the installed runs. A key with no entry may have lost its tombstone
-   * to a bottom compaction, so it reports the highest dropped tombstone seq.
-   */
-  private lastWriteSeq(key: Uint8Array): number {
-    const row = this.mem.get(key);
-    if (row) return row.seq;
-    const hit = latestSstEntry(this.installed.levels, key);
-    return hit ? (hit.seq ?? 0) : this.installed.tombstoneSeq;
-  }
-
-  private conflicts(guard: AppendGuard): boolean {
-    return guard.watched.some(
-      (key) => this.lastWriteSeq(key) > guard.snapshotHead,
-    );
-  }
-
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
     return this.readKey(checkKey(key));
@@ -603,26 +573,6 @@ class DbImpl implements Db {
     const ops = collectBatch(build);
     if (ops.length === 0) return;
     await this.write(() => ({ ops, result: undefined }));
-  }
-
-  transaction<T>(body: (tx: Transaction) => Promise<T> | T): Promise<T> {
-    this.ensureOpen();
-    return runTransaction(
-      {
-        snapshotHead: async () => this.mem.appliedThrough,
-        get: async (key) => this.readKey(key),
-        commit: (ops, _opBytes, guard) =>
-          this.write(() => {
-            if (this.conflicts(guard)) {
-              throw new ConflictError(
-                `conflict on key after seq ${guard.snapshotHead}`,
-              );
-            }
-            return { ops, result: undefined };
-          }),
-      },
-      body,
-    );
   }
 
   update<T>(

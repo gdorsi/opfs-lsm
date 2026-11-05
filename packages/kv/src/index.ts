@@ -18,10 +18,8 @@ export {
   CommitError,
   ClosedError,
   CorruptDatabaseError,
-  ConflictError,
   StorageUnavailableError,
 } from "./errors.js";
-export type { Transaction } from "./transaction.js";
 export {
   EngineHost,
   attachEngineHostPort,

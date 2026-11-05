@@ -58,7 +58,7 @@ The WAL is the IndexedDB database `opfs-lsm-wal/<name>`, schema version 6
 
 ## WAL records
 
-Each acked `put`, `delete`, `batch`, `transaction` or `update` appends exactly one record to
+Each acked `put`, `delete`, `batch`, or `update` appends exactly one record to
 the `wal` store. The record's key is its seq. Its value is:
 
 ```
@@ -79,7 +79,7 @@ An append is one `readwrite` transaction over `wal` and `meta`:
 1. Read `head`, `generation` and `ingestedThrough`, plus every record above the tab's
    `appliedThrough`.
 2. Apply those records to the tab's memtable, so the tab is caught up before it decides.
-3. Run the caller's plan synchronously. A transaction's conflict check runs here.
+3. Run the caller's plan synchronously.
 4. `add` the batch at `head + 1` and `put` the new `head`.
 
 IndexedDB serializes `readwrite` transactions on the same stores. So no other tab can append
@@ -345,8 +345,7 @@ Runs are listed with L0 first, newest first. Every deeper level follows in order
 sorted by smallest key. Reads use that order directly, so the first hit wins.
 
 `tombstoneSeq` is the highest seq of any delete that a bottom-level compaction dropped. A key
-that has no entry at all may have been deleted at any seq up to it. Transactions use it for
-conflict checks (see **Transactions**).
+that has no entry at all may have been deleted at any seq up to it.
 
 The generation the tabs should read is the one recorded in IndexedDB `meta.generation`, not
 the newest file in `m/`. A manifest becomes visible only once IndexedDB records it.
@@ -385,8 +384,7 @@ instead.
 
 So a tab sees another tab's write a moment after that write's ack, not at it. `db.sync()` closes
 that gap. It reads the WAL tail in one transaction and applies everything acked before the call.
-Every append already catches the tab up inside its own transaction, so a transaction's conflict
-check always runs against the latest state.
+Every append already catches the tab up inside its own IndexedDB transaction before the plan runs.
 
 ## Installing a generation
 
@@ -492,14 +490,7 @@ the plan stays valid. To install, under the exclusive section, the host:
 
 A pass runs up to 8 steps, and a request that arrives during a pass starts another one.
 
-# Transactions
-
-`db.transaction` is optimistic (`packages/kv/src/transaction.ts`). The snapshot is the tab's
-`appliedThrough` at the start. Reads see the latest acked value, and writes are buffered. At
-commit, inside the append's IndexedDB transaction and after the catch-up, the tab checks every
-key the transaction read or wrote. If any of those keys was last written at a seq above the
-snapshot, the commit throws `ConflictError`. The last-write seq of a key comes from the
-memtable, then the runs. A key with no entry at all reports `tombstoneSeq`.
+# Updates
 
 `db.update(keys, body)` reads and writes inside one IndexedDB transaction, so it can't conflict.
 `body` must be synchronous.

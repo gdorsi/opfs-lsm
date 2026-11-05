@@ -72,7 +72,7 @@ await db.sync();
 await db.ingest();
 ```
 
-Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, the error classes (`StorageUnavailableError`, `ConflictError`, and others), and the SharedWorker entry `@opfs-lsm/kv/shared-worker`.
+Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, the error classes (`StorageUnavailableError`, `ClosedError`, and others), and the SharedWorker entry `@opfs-lsm/kv/shared-worker`.
 
 ## `@opfs-lsm/collections`
 

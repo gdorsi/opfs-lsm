@@ -88,8 +88,7 @@ describe("public API", () => {
     });
     expect(dec.decode((await db.get(enc.encode("b")))!)).toBe("2");
 
-    await db.transaction(async (tx) => {
-      const cur = await tx.get(enc.encode("a"));
+    await db.update([enc.encode("a")], ([cur], tx) => {
       tx.put(enc.encode("a"), enc.encode(`${dec.decode(cur!)}!`));
     });
     expect(dec.decode((await db.get(enc.encode("a")))!)).toBe("1!");
