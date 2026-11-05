@@ -20,6 +20,12 @@ const VERSION_V1 = 1;
 const VERSION_V2 = 2;
 /** v2 layout, with a u64 seq after each record's tag. */
 const VERSION_V3 = 3;
+/** v3 with u32 Bloom header fields, so a filter can pass 64 KiB. */
+const VERSION_V4 = 4;
+
+function isBlockVersion(version: number): boolean {
+  return version === VERSION_V2 || version === VERSION_V3 || version === VERSION_V4;
+}
 const TAG_PUT = 1;
 const TAG_DEL = 2;
 
@@ -114,10 +120,10 @@ function readRecords(
 }
 
 /**
- * Encode SST v3: multi-block data + Bloom + block index.
+ * Encode SST v4: multi-block data + Bloom + block index.
  * Layout:
- *   u32 magic | u32 version=3 | u32 entryCount | u32 blockCount | u32 dataLen
- *   u16 bloomHashCount | u16 bloomByteLen | bloom
+ *   u32 magic | u32 version=4 | u32 entryCount | u32 blockCount | u32 dataLen
+ *   u32 bloomHashCount | u32 bloomByteLen | bloom
  *   data blocks (each: u32 count | records of u8 tag | u64 seq | key | value?)
  *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
  *   u32 crc32
@@ -170,7 +176,7 @@ export function encodeSst(
   }
 
   const header = 20; // magic..dataLen
-  const bloomHeader = 4;
+  const bloomHeader = 8;
   const total =
     header +
     bloomHeader +
@@ -184,7 +190,7 @@ export function encodeSst(
   let o = 0;
   view.setUint32(o, SST_MAGIC, true);
   o += 4;
-  view.setUint32(o, VERSION_V3, true);
+  view.setUint32(o, VERSION_V4, true);
   o += 4;
   view.setUint32(o, sorted.length, true);
   o += 4;
@@ -192,10 +198,10 @@ export function encodeSst(
   o += 4;
   view.setUint32(o, dataLen, true);
   o += 4;
-  view.setUint16(o, bloom.hashCount, true);
-  o += 2;
-  view.setUint16(o, bloom.bits.byteLength, true);
-  o += 2;
+  view.setUint32(o, bloom.hashCount, true);
+  o += 4;
+  view.setUint32(o, bloom.bits.byteLength, true);
+  o += 4;
   out.set(bloom.bits, o);
   o += bloom.bits.byteLength;
 
@@ -229,7 +235,7 @@ function decodeSstV1(buf: Uint8Array, view: DataView, crcOff: number): SstEntry[
   return readRecords(buf, view, 12, crcOff, count, false);
 }
 
-function parseV2Meta(buf: Uint8Array): {
+function parseV2Meta(buf: Uint8Array, version: number): {
   view: DataView;
   crcOff: number;
   entryCount: number;
@@ -239,7 +245,7 @@ function parseV2Meta(buf: Uint8Array): {
   dataStart: number;
   indexStart: number;
 } {
-  if (buf.byteLength < 28) throw new CorruptDatabaseError("sst v2 too short");
+  if (buf.byteLength < 32) throw new CorruptDatabaseError("sst v2 too short");
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const crcOff = buf.byteLength - 4;
   if (crc32(buf.subarray(0, crcOff)) !== view.getUint32(crcOff, true)) {
@@ -248,10 +254,12 @@ function parseV2Meta(buf: Uint8Array): {
   const entryCount = view.getUint32(8, true);
   const blockCount = view.getUint32(12, true);
   const dataLen = view.getUint32(16, true);
-  const bloomHashCount = view.getUint16(20, true);
-  const bloomByteLen = view.getUint16(22, true);
-  const bloomBits = buf.slice(24, 24 + bloomByteLen);
-  const dataStart = 24 + bloomByteLen;
+  const wide = version >= VERSION_V4;
+  const bloomHashCount = wide ? view.getUint32(20, true) : view.getUint16(20, true);
+  const bloomByteLen = wide ? view.getUint32(24, true) : view.getUint16(22, true);
+  const bloomStart = wide ? 28 : 24;
+  const bloomBits = buf.slice(bloomStart, bloomStart + bloomByteLen);
+  const dataStart = bloomStart + bloomByteLen;
   const indexStart = dataStart + dataLen;
   if (indexStart > crcOff) throw new CorruptDatabaseError("sst v2 data OOB");
   return {
@@ -326,11 +334,11 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
     return decodeSstV1(buf, view, crcOff);
   }
 
-  if (version !== VERSION_V2 && version !== VERSION_V3) {
+  if (!isBlockVersion(version)) {
     throw new CorruptDatabaseError(`unsupported sst version ${version}`);
   }
 
-  const meta = parseV2Meta(buf);
+  const meta = parseV2Meta(buf, version);
   const index = readV2Index(
     buf,
     meta.view,
@@ -340,7 +348,7 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   );
   const out: SstEntry[] = [];
   for (const ix of index) {
-    out.push(...decodeBlock(buf, meta.view, meta.dataStart, ix, version === VERSION_V3));
+    out.push(...decodeBlock(buf, meta.view, meta.dataStart, ix, version >= VERSION_V3));
   }
   if (out.length !== meta.entryCount) {
     throw new CorruptDatabaseError("sst v2 entry count mismatch");
@@ -371,10 +379,10 @@ export class SstReader {
       this.v1Entries = decodeSst(buf);
       return;
     }
-    if (this.version !== VERSION_V2 && this.version !== VERSION_V3) {
+    if (!isBlockVersion(this.version)) {
       throw new CorruptDatabaseError(`unsupported sst version ${this.version}`);
     }
-    const meta = parseV2Meta(buf);
+    const meta = parseV2Meta(buf, this.version);
     this.bloom = meta.bloom;
     this.dataStart = meta.dataStart;
     this.index = readV2Index(
@@ -438,7 +446,7 @@ export class SstReader {
       this.view,
       this.dataStart,
       this.index[i]!,
-      this.version === VERSION_V3,
+      this.version >= VERSION_V3,
     );
   }
 

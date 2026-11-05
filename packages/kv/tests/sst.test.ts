@@ -15,7 +15,33 @@ const utf = (s: string) => enc.encode(s);
 const V2_FIXTURE =
   "54534c4f02000000020000000100000015000000070008008d008209207040000200000001010000006101000000310201000000620100000061010000006200000000150000001e2bc0b9";
 
+/** The same two entries with seqs 7 and 9, written by the v3 encoder, before Bloom header fields were u32. */
+const V3_FIXTURE =
+  "54534c4f03000000020000000100000025000000070008008d008209207040000200000001070000000000000001000000610100000031020900000000000000010000006201000000610100000062000000002500000028972ab1";
+
+const hex = (s: string) => Uint8Array.from(s.match(/../g)!.map((h) => parseInt(h, 16)));
+
 describe("sst", () => {
+  it("reads back a run whose Bloom filter is over 64 KiB", () => {
+    const n = 60_000;
+    const entries = Array.from({ length: n }, (_, i) => ({
+      kind: "put" as const,
+      key: utf(`k${String(i).padStart(8, "0")}`),
+      value: utf("v"),
+      seq: i + 1,
+    }));
+    const body = encodeSst(entries);
+    expect(decodeSst(body)).toHaveLength(n);
+    const reader = new SstReader(body);
+    expect(reader.get(utf("k00059999"))?.seq).toBe(n);
+    expect(reader.get(utf("k00060000"))).toBeUndefined();
+  });
+
+  it("reads a v3 run with its seqs", () => {
+    expect(decodeSst(hex(V3_FIXTURE)).map((e) => e.seq)).toEqual([7, 9]);
+    expect(new SstReader(hex(V3_FIXTURE)).get(utf("b"))?.seq).toBe(9);
+  });
+
   it("round-trips each entry's seq", () => {
     const body = encodeSst([
       { kind: "put", key: utf("a"), value: utf("1"), seq: 7 },
@@ -26,7 +52,7 @@ describe("sst", () => {
   });
 
   it("reads a v2 run, with seq 0", () => {
-    const body = Uint8Array.from(V2_FIXTURE.match(/../g)!.map((h) => parseInt(h, 16)));
+    const body = hex(V2_FIXTURE);
     expect(decodeSst(body)).toEqual([
       { kind: "put", key: utf("a"), value: utf("1"), seq: 0 },
       { kind: "del", key: utf("b"), seq: 0 },
@@ -62,7 +88,7 @@ describe("sst", () => {
     }));
     const body = encodeSst(entries, 256);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    expect(view.getUint32(4, true)).toBe(3); // version
+    expect(view.getUint32(4, true)).toBe(4); // version
     expect(view.getUint32(12, true)).toBeGreaterThan(1); // blockCount
     expect(decodeSst(body)).toHaveLength(200);
   });
