@@ -42,8 +42,11 @@ export async function ingestAll(
     const prev = await loadLatestGeneration(fs);
     generation = (prev?.generation ?? 0) + 1;
     const l0Path = await publishL0(fs, `${first}-${last}`, entries);
-    const runs = [l0Path, ...(prev?.runs ?? [])];
-    await publishGeneration(fs, generation, runs);
+    await publishGeneration(fs, {
+      generation,
+      runs: [l0Path, ...(prev?.runs ?? [])],
+      tombstoneSeq: prev?.tombstoneSeq ?? 0,
+    });
     await wal.advanceIngested(last, generation);
     ingestedThrough = last;
   }

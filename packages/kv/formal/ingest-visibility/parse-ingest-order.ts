@@ -24,9 +24,9 @@ export function ingestSourcePath(): string {
 
 export function parseIngestOrder(source: string): IngestStep[] {
   const nonEmpty = source.match(
-    /if\s*\(\s*records\.length\s*===\s*0\s*\)\s*\{[\s\S]*?\}\s*else\s*\{([\s\S]*?)\n\s*\}/,
+    /\n( *)if\s*\(\s*records\.length\s*===\s*0\s*\)\s*\{[\s\S]*?\}\s*else\s*\{([\s\S]*?)\n\1\}/,
   );
-  const body = nonEmpty?.[1] ?? source;
+  const body = nonEmpty?.[2] ?? source;
   const steps: IngestStep[] = [];
   for (const hit of body.matchAll(STEP_RE)) {
     const name = hit[0].match(NAME_RE)?.[1] as IngestStep | undefined;

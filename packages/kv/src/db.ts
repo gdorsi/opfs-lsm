@@ -41,12 +41,13 @@ import type { AsyncFs } from "./opfs/async-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
 import {
+  loadGeneration,
   loadLatestGeneration,
-  loadRuns,
   loadSstReader,
 } from "./store/generation.js";
 import {
   arrayCursor,
+  latestSstEntry,
   mergeCursors,
   pointGetSst,
   sliceRows,
@@ -308,6 +309,7 @@ type Layers = {
   readonly generation: number;
   readonly paths: readonly string[];
   readonly readers: readonly SstReader[];
+  readonly tombstoneSeq: number;
 };
 
 type BusMessage = {
@@ -331,7 +333,12 @@ class DbImpl implements Db {
   private closed = false;
   private readonly scheduler: IngestScheduler<{ generation: number }>;
   private readonly mem = new Memtable();
-  private installed: Layers = { generation: 0, paths: [], readers: [] };
+  private installed: Layers = {
+    generation: 0,
+    paths: [],
+    readers: [],
+    tombstoneSeq: 0,
+  };
   /** The newest generation loaded and not yet installed. */
   private loaded: Layers | undefined;
   /** Parsed run files by path. Paths are immutable, so a hit never goes stale. */
@@ -398,15 +405,20 @@ class DbImpl implements Db {
     for (const layers of [this.installed, this.loaded]) {
       if (layers?.generation === generation) return layers;
     }
-    const paths = await loadRuns(this.fs, generation);
-    if (!paths) return undefined;
+    const meta = await loadGeneration(this.fs, generation);
+    if (!meta) return undefined;
     const readers: SstReader[] = [];
-    for (const path of paths) {
+    for (const path of meta.runs) {
       const reader = this.runs.get(path) ?? (await loadSstReader(this.fs, path));
       if (!reader) return undefined;
       readers.push(reader);
     }
-    const layers = { generation, paths, readers };
+    const layers = {
+      generation,
+      paths: meta.runs,
+      readers,
+      tombstoneSeq: meta.tombstoneSeq,
+    };
     if (!this.loaded || this.loaded.generation < generation) {
       this.loaded = layers;
     }
@@ -517,12 +529,22 @@ class DbImpl implements Db {
     return row ? valueOf(row) : pointGetSst(this.installed.readers, k);
   }
 
+  /**
+   * The seq of the last write to `key` this tab can see, from the memtable or
+   * else the installed runs. A key with no entry may have lost its tombstone
+   * to a bottom compaction, so it reports the highest dropped tombstone seq.
+   */
+  private lastWriteSeq(key: Uint8Array): number {
+    const row = this.mem.get(key);
+    if (row) return row.seq;
+    const hit = latestSstEntry(this.installed.readers, key);
+    return hit ? (hit.seq ?? 0) : this.installed.tombstoneSeq;
+  }
+
   private conflicts(guard: AppendGuard): boolean {
-    if (guard.snapshotHead < this.mem.droppedThrough) return true;
-    return guard.watched.some((key) => {
-      const row = this.mem.get(key);
-      return row !== undefined && row.seq > guard.snapshotHead;
-    });
+    return guard.watched.some(
+      (key) => this.lastWriteSeq(key) > guard.snapshotHead,
+    );
   }
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {

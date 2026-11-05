@@ -8,12 +8,19 @@ const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-const GEN_VERSION = 1;
+const GEN_VERSION_V1 = 1;
+/** v1 plus a u64 tombstoneSeq after the generation. */
+const GEN_VERSION = 2;
 
 export type GenerationMeta = {
   readonly generation: number;
   /** Paths relative to db root, newest first. */
   readonly runs: readonly string[];
+  /**
+   * The highest seq of any tombstone a bottom compaction dropped. A key with
+   * no entry may have been deleted at any seq up to this one.
+   */
+  readonly tombstoneSeq: number;
 };
 
 function genPath(generation: number): string {
@@ -23,7 +30,7 @@ function genPath(generation: number): string {
 export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const enc = new TextEncoder();
   const paths = meta.runs.map((p) => enc.encode(p));
-  let size = 4 + 4 + 8 + 4;
+  let size = 4 + 4 + 8 + 8 + 4;
   for (const p of paths) size += 2 + p.byteLength;
   size += 4;
   const out = new Uint8Array(size);
@@ -34,6 +41,8 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   view.setUint32(o, GEN_VERSION, true);
   o += 4;
   view.setBigUint64(o, BigInt(meta.generation), true);
+  o += 8;
+  view.setBigUint64(o, BigInt(meta.tombstoneSeq), true);
   o += 8;
   view.setUint32(o, paths.length, true);
   o += 4;
@@ -55,18 +64,25 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   if (view.getUint32(0, true) !== GEN_MAGIC) {
     throw new CorruptDatabaseError("bad generation magic");
   }
-  if (view.getUint32(4, true) !== GEN_VERSION) {
+  const version = view.getUint32(4, true);
+  if (version !== GEN_VERSION_V1 && version !== GEN_VERSION) {
     throw new CorruptDatabaseError("bad generation version");
   }
   const generation = Number(view.getBigUint64(8, true));
-  const runCount = view.getUint32(16, true);
+  let o = 16;
+  let tombstoneSeq = 0;
+  if (version === GEN_VERSION) {
+    tombstoneSeq = Number(view.getBigUint64(o, true));
+    o += 8;
+  }
+  const runCount = view.getUint32(o, true);
+  o += 4;
   const crcOff = buf.byteLength - 4;
   if (crc32(buf.subarray(0, crcOff)) !== view.getUint32(crcOff, true)) {
     throw new CorruptDatabaseError("generation crc mismatch");
   }
   const dec = new TextDecoder();
   const runs: string[] = [];
-  let o = 20;
   for (let i = 0; i < runCount; i++) {
     const len = view.getUint16(o, true);
     o += 2;
@@ -74,7 +90,7 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     o += len;
   }
   if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
-  return { generation, runs };
+  return { generation, runs, tombstoneSeq };
 }
 
 export async function loadLatestGeneration(
@@ -102,11 +118,10 @@ export async function loadLatestGeneration(
 
 export async function publishGeneration(
   fs: AsyncFs,
-  generation: number,
-  runs: readonly string[],
+  meta: GenerationMeta,
 ): Promise<void> {
-  const body = encodeGeneration({ generation, runs: [...runs] });
-  const w = await fs.create(genPath(generation));
+  const body = encodeGeneration(meta);
+  const w = await fs.create(genPath(meta.generation));
   await w.write(body);
   await w.finish();
 }
@@ -135,15 +150,15 @@ export async function publishRun(
   return path;
 }
 
-/** Run paths of `generation`, or undefined when a newer publish removed its manifest. */
-export async function loadRuns(
+/** The manifest of `generation`, or undefined when a newer publish removed it. */
+export async function loadGeneration(
   fs: AsyncFs,
   generation: number,
-): Promise<readonly string[] | undefined> {
-  if (generation === 0) return [];
+): Promise<GenerationMeta | undefined> {
+  if (generation === 0) return { generation, runs: [], tombstoneSeq: 0 };
   const buf = await fs.read(genPath(generation), 0, 1 << 20);
   if (!buf || buf.byteLength === 0) return undefined;
-  return decodeGeneration(buf).runs;
+  return decodeGeneration(buf);
 }
 
 /** Undefined when the run file is gone. Run files never change once written. */

@@ -150,38 +150,55 @@ describe("transaction OCC", () => {
     await b.close();
   });
 
-  it("after the retention window, an older txn conflicts and a new one commits", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const fs = new MemoryFs();
-      const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
-      const db = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
-      await db.put(utf("x"), utf("0"));
+  it("a long txn commits across an ingest that did not touch its keys", async () => {
+    const fs = new MemoryFs();
+    const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+    const db = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
+    await db.put(utf("x"), utf("0"));
 
-      let proceed!: () => void;
-      const gate = new Promise<void>((r) => {
-        proceed = r;
-      });
-      const old = db.transaction(async (tx) => {
-        await tx.get(utf("x"));
-        await gate;
-        tx.put(utf("x"), utf("old"));
-      });
-      await db.put(utf("y"), utf("1"));
-      vi.setSystemTime(Date.now() + 60_000);
+    let proceed!: () => void;
+    const gate = new Promise<void>((r) => {
+      proceed = r;
+    });
+    const old = db.transaction(async (tx) => {
+      await tx.get(utf("x"));
+      await gate;
+      tx.put(utf("x"), utf("old"));
+    });
+    await db.put(utf("y"), utf("1"));
+    await db.ingest();
+    proceed();
+    await old;
+    expect(dec.decode((await db.get(utf("x")))!)).toBe("old");
+    await db.close();
+  });
+
+  it("conflicts when the competing delete's tombstone was compacted away", async () => {
+    const fs = new MemoryFs();
+    const policy = { maxBatches: 10_000, maxDelayMs: 60_000, maxBytes: 1 << 30 };
+    const db = await openDb({ name: "txn", writerId: "w1", fs, forceMemory: true, ingestPolicy: policy });
+    await db.put(utf("x"), utf("0"));
+    await db.ingest();
+
+    let proceed!: () => void;
+    const gate = new Promise<void>((r) => {
+      proceed = r;
+    });
+    const old = db.transaction(async (tx) => {
+      await tx.get(utf("x"));
+      await gate;
+      tx.put(utf("x"), utf("old"));
+    });
+    await db.delete(utf("x"));
+    for (let i = 0; i < 4; i++) {
+      await db.put(utf(`pad${i}`), utf("p"));
       await db.ingest();
-      proceed();
-      await expect(old).rejects.toBeInstanceOf(ConflictError);
-
-      await db.transaction(async (tx) => {
-        await tx.get(utf("x"));
-        tx.put(utf("x"), utf("new"));
-      });
-      expect(dec.decode((await db.get(utf("x")))!)).toBe("new");
-      await db.close();
-    } finally {
-      vi.useRealTimers();
     }
+    expect(await fs.list("l1")).toHaveLength(1);
+    proceed();
+    await expect(old).rejects.toBeInstanceOf(ConflictError);
+    expect(await db.get(utf("x"))).toBeUndefined();
+    await db.close();
   });
 
   it("abort discards buffered writes", async () => {

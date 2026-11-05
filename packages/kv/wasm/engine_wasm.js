@@ -14,7 +14,7 @@ export function decode_sst_js(buf) {
 }
 
 /**
- * Encode entries from JS: `[{kind:'put'|'del', key:Uint8Array, value?:Uint8Array}, ...]`
+ * Encode entries from JS: `[{kind:'put'|'del', key:Uint8Array, value?:Uint8Array, seq?:number}, ...]`
  * @param {Array<any>} entries
  * @returns {Uint8Array}
  */
@@ -28,10 +28,11 @@ export function encode_sst_js(entries) {
 
 /**
  * Merge newest-first SST blobs into one SST. `drop_tombstones` is for a
- * merge that includes the oldest run.
+ * merge that includes the oldest run. Returns `{sst, droppedSeq}`, where
+ * droppedSeq is the highest seq of a dropped tombstone, 0 when none.
  * @param {Array<any>} blobs
  * @param {boolean} drop_tombstones
- * @returns {Uint8Array}
+ * @returns {object}
  */
 export function merge_ssts_js(blobs, drop_tombstones) {
     const ret = wasm.merge_ssts_js(blobs, drop_tombstones);
@@ -43,6 +44,12 @@ export function merge_ssts_js(blobs, drop_tombstones) {
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg___wbindgen_number_get_934b640d0889af78: function(arg0, arg1) {
+            const obj = arg1;
+            const ret = typeof(obj) === 'number' ? obj : undefined;
+            getDataViewMemory0().setFloat64((arg0 >>> 0) + 8 * 1, isLikeNone(ret) ? 0 : ret, true);
+            getDataViewMemory0().setInt32((arg0 >>> 0) + 4 * 0, !isLikeNone(ret), true);
+        },
         __wbg___wbindgen_string_get_7ce8eee7fd327545: function(arg0, arg1) {
             const obj = arg1;
             const ret = typeof(obj) === 'string' ? obj : undefined;
@@ -97,7 +104,12 @@ function __wbg_get_imports() {
             const ret = Reflect.set(arg0, arg1, arg2);
             return ret;
         }, arguments); },
-        __wbindgen_generic_0000000000000001: function(arg0, arg1) {
+        __wbindgen_generic_0000000000000001: function(arg0) {
+            // Cast intrinsic for `F64 -> Externref`.
+            const ret = arg0;
+            return ret;
+        },
+        __wbindgen_generic_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
             return ret;

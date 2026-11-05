@@ -18,15 +18,23 @@ import { crc32 } from "./crc32.js";
 export const SST_MAGIC = 0x4f4c5354;
 const VERSION_V1 = 1;
 const VERSION_V2 = 2;
+/** v2 layout, with a u64 seq after each record's tag. */
+const VERSION_V3 = 3;
 const TAG_PUT = 1;
 const TAG_DEL = 2;
 
 /** Target encoded size per data block (v2). */
 export const SST_BLOCK_TARGET = 4 * 1024;
 
+/** `seq` is the WAL seq that wrote the entry. Runs older than v3 read as 0. */
 export type SstEntry =
-  | { readonly kind: "put"; readonly key: Uint8Array; readonly value: Uint8Array }
-  | { readonly kind: "del"; readonly key: Uint8Array };
+  | {
+      readonly kind: "put";
+      readonly key: Uint8Array;
+      readonly value: Uint8Array;
+      readonly seq?: number;
+    }
+  | { readonly kind: "del"; readonly key: Uint8Array; readonly seq?: number };
 
 type BlockIndexEntry = {
   firstKey: Uint8Array;
@@ -36,7 +44,7 @@ type BlockIndexEntry = {
 };
 
 function entryRecordSize(e: SstEntry): number {
-  let n = 1 + 4 + e.key.byteLength;
+  let n = 1 + 8 + 4 + e.key.byteLength;
   if (e.kind === "put") n += 4 + e.value.byteLength;
   return n;
 }
@@ -49,6 +57,8 @@ function writeRecords(
 ): number {
   for (const e of entries) {
     out[o++] = e.kind === "put" ? TAG_PUT : TAG_DEL;
+    view.setBigUint64(o, BigInt(e.seq ?? 0), true);
+    o += 8;
     view.setUint32(o, e.key.byteLength, true);
     o += 4;
     out.set(e.key, o);
@@ -69,12 +79,18 @@ function readRecords(
   start: number,
   end: number,
   count: number,
+  withSeq: boolean,
 ): SstEntry[] {
   const out: SstEntry[] = [];
   let o = start;
   for (let i = 0; i < count; i++) {
     if (o >= end) throw new CorruptDatabaseError("sst truncated");
     const tag = buf[o++]!;
+    let seq = 0;
+    if (withSeq) {
+      seq = Number(view.getBigUint64(o, true));
+      o += 8;
+    }
     const keyLen = view.getUint32(o, true);
     o += 4;
     if (o + keyLen > end) throw new CorruptDatabaseError("sst key OOB");
@@ -86,9 +102,9 @@ function readRecords(
       if (o + valLen > end) throw new CorruptDatabaseError("sst value OOB");
       const value = buf.slice(o, o + valLen);
       o += valLen;
-      out.push({ kind: "put", key, value });
+      out.push({ kind: "put", key, value, seq });
     } else if (tag === TAG_DEL) {
-      out.push({ kind: "del", key });
+      out.push({ kind: "del", key, seq });
     } else {
       throw new CorruptDatabaseError(`bad sst tag ${tag}`);
     }
@@ -98,11 +114,11 @@ function readRecords(
 }
 
 /**
- * Encode SST v2: multi-block data + Bloom + block index.
+ * Encode SST v3: multi-block data + Bloom + block index.
  * Layout:
- *   u32 magic | u32 version=2 | u32 entryCount | u32 blockCount | u32 dataLen
+ *   u32 magic | u32 version=3 | u32 entryCount | u32 blockCount | u32 dataLen
  *   u16 bloomHashCount | u16 bloomByteLen | bloom
- *   data blocks (each: u32 count | records)
+ *   data blocks (each: u32 count | records of u8 tag | u64 seq | key | value?)
  *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
  *   u32 crc32
  */
@@ -168,7 +184,7 @@ export function encodeSst(
   let o = 0;
   view.setUint32(o, SST_MAGIC, true);
   o += 4;
-  view.setUint32(o, VERSION_V2, true);
+  view.setUint32(o, VERSION_V3, true);
   o += 4;
   view.setUint32(o, sorted.length, true);
   o += 4;
@@ -210,7 +226,7 @@ export function encodeSst(
 
 function decodeSstV1(buf: Uint8Array, view: DataView, crcOff: number): SstEntry[] {
   const count = view.getUint32(8, true);
-  return readRecords(buf, view, 12, crcOff, count);
+  return readRecords(buf, view, 12, crcOff, count, false);
 }
 
 function parseV2Meta(buf: Uint8Array): {
@@ -283,11 +299,12 @@ function decodeBlock(
   view: DataView,
   dataStart: number,
   ix: BlockIndexEntry,
+  withSeq: boolean,
 ): SstEntry[] {
   const start = dataStart + ix.offset;
   const end = start + ix.length;
   const count = view.getUint32(start, true);
-  return readRecords(buf, view, start + 4, end, count);
+  return readRecords(buf, view, start + 4, end, count, withSeq);
 }
 
 export function decodeSst(buf: Uint8Array): SstEntry[] {
@@ -309,7 +326,7 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
     return decodeSstV1(buf, view, crcOff);
   }
 
-  if (version !== VERSION_V2) {
+  if (version !== VERSION_V2 && version !== VERSION_V3) {
     throw new CorruptDatabaseError(`unsupported sst version ${version}`);
   }
 
@@ -323,7 +340,7 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   );
   const out: SstEntry[] = [];
   for (const ix of index) {
-    out.push(...decodeBlock(buf, meta.view, meta.dataStart, ix));
+    out.push(...decodeBlock(buf, meta.view, meta.dataStart, ix, version === VERSION_V3));
   }
   if (out.length !== meta.entryCount) {
     throw new CorruptDatabaseError("sst v2 entry count mismatch");
@@ -354,7 +371,7 @@ export class SstReader {
       this.v1Entries = decodeSst(buf);
       return;
     }
-    if (this.version !== VERSION_V2) {
+    if (this.version !== VERSION_V2 && this.version !== VERSION_V3) {
       throw new CorruptDatabaseError(`unsupported sst version ${this.version}`);
     }
     const meta = parseV2Meta(buf);
@@ -416,7 +433,13 @@ export class SstReader {
   }
 
   private loadBlock(i: number): SstEntry[] {
-    return decodeBlock(this.buf, this.view, this.dataStart, this.index[i]!);
+    return decodeBlock(
+      this.buf,
+      this.view,
+      this.dataStart,
+      this.index[i]!,
+      this.version === VERSION_V3,
+    );
   }
 
   private v2Cursor(bounds?: ScanBounds): LayerCursor {
