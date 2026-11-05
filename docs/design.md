@@ -132,40 +132,80 @@ and block index follow them, and a fixed-size footer at the end of the file says
 section is. A writer can produce the sections in that order without knowing the key count up
 front, and a reader can find the footer as the last 40 bytes of any file.
 
-```
-<------------------------------------------- 4 bytes ------------------------------------------->
-========================================== Data blocks ===========================================
-| block 0: u32 record count, then records                                                        |
-| block 1 ...                                                                                    |
-============================================= Bloom ==============================================
-| bloom bits (bloom length bytes)                                                                |
-========================================== Block index ===========================================
-| per block: u32 first key length | first key | u32 last key length | last key                   |
-|            u32 block offset (from the start of the file) | u32 block length                    |
-======================================= Footer (40 bytes) ========================================
-| entry count                                                                                    |
-| block count                                                                                    |
-| bloom offset (also the length of the data section)                                             |
-| bloom length                                                                                   |
-| bloom hash count                                                                               |
-| index offset                                                                                   |
-| index length                                                                                   |
-| crc32 (IEEE) of every byte before this field                                                   |
-| version = 5                                                                                    |
-| magic "OLST" (0x4f4c5354)                                                                      |
-==================================================================================================
-```
-
-The sections are contiguous. A reader rejects the file unless the bloom filter ends where the
-index starts and the index ends where the footer starts.
-
-A record is:
+A run is four sections, back to back. N is the block count.
 
 ```
-u8  tag          1 = put, 2 = delete
-u64 seq          the WAL seq that wrote it
-u32 key length,   key bytes
-u32 value length, value bytes      (puts only)
+================================== SST file ==================================
+| data block 0                                                               |
+| data block 1                                                               |
+| ...                                                                        |
+| data block N-1                                                             |
+------------------------------------------------------------------------------
+| bloom bits                                                                 |
+------------------------------------------------------------------------------
+| index entry 0          (describes data block 0)                            |
+| ...                                                                        |
+| index entry N-1        (describes data block N-1)                          |
+------------------------------------------------------------------------------
+| footer                 (40 bytes)                                          |
+==============================================================================
+```
+
+The data, bloom and index sections vary in size. The footer records where each one starts and
+how long it is. A reader rejects the file unless the sections are contiguous, meaning the bloom
+filter ends where the index starts and the index ends where the footer starts.
+
+### Data block
+
+A block holds the records for a run of keys, about 4 KiB of them.
+
+```
+| u32 record count                                                           |
+| record 0                                                                   |
+| ...                                                                        |
+| record count - 1                                                           |
+```
+
+### Record
+
+```
+| u8 tag          1 = put, 2 = delete                                        |
+| u64 seq         the WAL seq that wrote the key                             |
+| u32 key length                                                             |
+| key             key length bytes                                           |
+| u32 value length                                    (puts only)            |
+| value           value length bytes                  (puts only)            |
+```
+
+### Index entry
+
+There is one index entry per data block, in the same order as the blocks.
+
+```
+| u32 first key length                                                       |
+| first key       the block's smallest key                                   |
+| u32 last key length                                                        |
+| last key        the block's largest key                                    |
+| u32 block offset                                    from the start of file |
+| u32 block length                                                           |
+```
+
+### Footer (40 bytes)
+
+Every footer field is a u32, so each one sits at a fixed position from the end of the file.
+
+```
+<----------------------------------- 4 bytes ----------------------------------->
+| entry count                                                                   |  end - 40
+| block count                                                                   |  end - 36
+| bloom offset    also the length of the data section                           |  end - 32
+| bloom length                                                                  |  end - 28
+| bloom hash count                                                              |  end - 24
+| index offset                                                                  |  end - 20
+| index length                                                                  |  end - 16
+| crc32 (IEEE) of every byte before this field                                  |  end - 12
+| version = 5                                                                   |  end - 8
+| magic "OLST" (0x4f4c5354)                                                     |  end - 4
 ```
 
 Entries are sorted by key, with one entry per key. Blocks are cut at about 4 KiB of records. The
@@ -188,7 +228,7 @@ if its CRC happened to equal the magic, a 1 in 2^32 chance.
 ## Reading a run
 
 A tab reads a whole run file into memory once, and keeps it for as long as the run stays in its
-installed generation. `SstReader` parses only the header, the bloom filter and the block index.
+installed generation. `SstReader` parses only the footer, the bloom filter and the block index.
 A point get:
 
 1. Rejects the key if it falls outside the run's first and last keys.
