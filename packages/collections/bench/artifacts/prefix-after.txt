@@ -1,0 +1,47 @@
+# bench-index-runs on 98e6c22 (v7 SSTs). load ~2 on 18 cores, node v24.21.0, Apple Silicon.
+
+## ids=uuid rows=20000 entries=116812 index entries=96812 sst version=7
+run                     bytes  blocks  B/entry
+all raw               9139005    2156     78.2
+all lz4               6352779    2156     54.4
+index-only raw        5105930    1181     52.7
+index-only lz4        4457532    1181     46.0
+timings (ms) over 7 rounds after 1 warmup, codecs alternating, every count asserted
+op                       median      min      max
+10000 gets lz4            42.20    35.82    43.31
+10000 gets raw            14.92    14.19    18.07
+decode ts lz4             33.80    31.58    36.60
+decode ts raw             34.08    31.34    37.74
+decode wasm lz4          134.94   126.12   136.67
+decode wasm raw          128.19   126.51   128.82
+index scan lz4             8.22     7.12     9.16
+index scan raw             7.60     7.19     7.91
+
+## ids=short rows=20000 entries=116826 index entries=96826 sst version=7
+run                     bytes  blocks  B/entry
+all raw               4445015    1049     38.0
+all lz4               2069485    1049     17.7
+index-only raw        1820918     410     18.8
+index-only lz4        1116562     410     11.5
+timings (ms) over 7 rounds after 1 warmup, codecs alternating, every count asserted
+op                       median      min      max
+10000 gets lz4            34.88    33.83    37.06
+10000 gets raw            21.26    18.59    25.12
+decode ts lz4             20.75    18.14    24.33
+decode ts raw             21.10    19.64    26.48
+decode wasm lz4          123.59   119.55   131.29
+decode wasm raw          124.52   121.60   129.68
+index scan lz4             5.07     2.29     5.61
+index scan raw             4.95     2.03     7.87
+
+## Notes
+Limiter for slower gets: the in-block linear walk. Records walked per get (10k index-key probes, raw):
+  short ids: v6 42.8 records at 30.3 ns/record, v7 124.9 records at 14.4 ns/record (blocks 1908 -> 1049)
+  uuid ids:  v6 25.3 records, v7 42.1 records (blocks 3025 -> 2156)
+A 4 KiB block holds about 3x more short-id index records in v7. The walker was tightened from
+~16 to ~9 ns/record (profiled with --cpu-prof), which does not offset 3x the records.
+Tried a 2 KiB v7 block target (not committed): short-id raw gets 16.9 ms, lz4 gets 24.3 ms, back at
+or under v6, with index-only raw bytes unchanged. But uuid all-lz4 grew to 6969172 bytes, over the
+v6 6818889, so it fails the lz4 bytes bar.
+Alternating A/B (3 invocations x 7 rounds per side) agreed with these medians: scans and decode within
+range, gets raw short 14.9-17.7 -> 21.4-21.9 ms, gets lz4 uuid 34.4-35.5 -> 37.8-41.9 ms.
