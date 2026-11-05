@@ -15,7 +15,8 @@
     "bench:browser": "pnpm --filter @opfs-lsm/kv bench:browser",
     "bench:collections": "pnpm --filter @opfs-lsm/collections bench:browser",
     "bench:gate": "pnpm --filter @opfs-lsm/kv bench:gate",
-    "todo:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && node examples/todo/serve.mjs"
+    "todo:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && node examples/todo/serve.mjs",
+    "automerge:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/example-automerge dev"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild"]

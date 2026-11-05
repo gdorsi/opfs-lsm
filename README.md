@@ -101,6 +101,9 @@ pnpm test
 pnpm bench:browser
 pnpm bench:collections
 pnpm todo:example
+pnpm automerge:example
 ```
 
 `pnpm todo:example` serves a two-window todo list built on `@opfs-lsm/collections` that shares one database name over a SharedWorker. It can seed tens of thousands of random todos, then filter, sort, and page through them without loading the whole range.
+
+`pnpm automerge:example` serves the Automerge todo app at `http://127.0.0.1:4174`. Storage is `@opfs-lsm/kv`. `AUTOMERGE_PORT` sets the port. A second window on the same URL shares that database. `openDb` awaits `sync()` before it resolves, so a cold `loadRange` sees every write acked before that open. A live tab can still miss a write until the BroadcastChannel lands. If a load needs those writes, call `sync()` once on that database before the read.
