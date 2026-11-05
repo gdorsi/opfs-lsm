@@ -45,6 +45,11 @@ function encodeOps(ops: readonly CheckedOp[]): unknown {
   );
 }
 
+/** A record is its encoded ops. Records written before that wrap them as `{ ops }`. */
+function recordOps(value: unknown): unknown {
+  return Array.isArray(value) ? value : (value as { ops?: unknown } | null)?.ops;
+}
+
 function decodeOps(raw: unknown): CheckedOp[] {
   if (!Array.isArray(raw)) throw new CommitError("corrupt wal ops");
   return raw.map((item) => {
@@ -96,7 +101,7 @@ function migrate(tx: IDBTransaction, oldVersion: number): void {
           cursor.continue();
           return;
         }
-        if (ops.length > 0) wal.put({ ops }, through + 1);
+        if (ops.length > 0) wal.put(ops, through + 1);
         meta.put(ops.length > 0 ? through + 1 : through, META_HEAD);
         db.deleteObjectStore(LEGACY_MEM_STORE);
       };
@@ -171,7 +176,7 @@ function readRecords(
       }
       out.push({
         seq: cursor.key as number,
-        ops: decodeOps((cursor.value as { ops: unknown }).ops),
+        ops: decodeOps(recordOps(cursor.value)),
       });
       cursor.continue();
     };
@@ -258,7 +263,7 @@ export class IdBWal {
     }
     const seq = tail.head + 1;
     tx.objectStore(WAL_STORE).add(
-      { ops: encodeOps(decision.ops) },
+      encodeOps(decision.ops),
       seq,
     );
     tx.objectStore(META_STORE).put(seq, META_HEAD);
@@ -278,7 +283,7 @@ export class IdBWal {
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
     const head = meta.get(META_HEAD);
-    const add = tx.objectStore(WAL_STORE).add({ ops: encodeOps(ops) });
+    const add = tx.objectStore(WAL_STORE).add(encodeOps(ops));
     let seq: number | undefined;
     let stale = false;
     add.onsuccess = () => {

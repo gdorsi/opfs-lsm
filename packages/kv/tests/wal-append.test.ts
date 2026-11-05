@@ -67,6 +67,36 @@ describe("blind writes", () => {
     await reopened.close();
   });
 
+  it("read records written with the { ops } wrapper", async () => {
+    await (await open("w0")).close();
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open(IDB);
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction(["wal", "meta"], "readwrite");
+        const key = enc.encode("old").slice().buffer;
+        const value = enc.encode("v").slice().buffer;
+        tx.objectStore("wal").put({ ops: [{ type: "put", key, value }], at: 123 }, 1);
+        tx.objectStore("meta").put(1, "head");
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+
+    const db = await open("w1");
+    expect(text(await db.get(enc.encode("old")))).toBe("v");
+    await db.put(enc.encode("new"), enc.encode("w"));
+    await db.close();
+    const reopened = await open("w2");
+    expect(text(await reopened.get(enc.encode("old")))).toBe("v");
+    expect(text(await reopened.get(enc.encode("new")))).toBe("w");
+    await reopened.close();
+  });
+
   it("read their own write and every earlier one at the ack when another tab appended first", async () => {
     const one = await open("w1");
     const two = await open("w2");
