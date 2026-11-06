@@ -7,6 +7,7 @@ import * as sstTs from "./sst.js";
 import { foldEntries } from "./fold.js";
 import { useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
+import { CorruptDatabaseError } from "../errors.js";
 
 type WasmMod = {
   default: (module_or_path?: unknown) => Promise<unknown>;
@@ -75,7 +76,13 @@ export async function ensureEngine(): Promise<void> {
       const mod = wasm;
       if (mod) {
         useLz4Decoder((src, size) => mod.lz4_decompress_js(src, size));
-        useBlockScanner((framed, lz4, patterns) => mod.scan_block_contains_js(framed, lz4, patterns));
+        useBlockScanner((framed, lz4, patterns) => {
+          try {
+            return mod.scan_block_contains_js(framed, lz4, patterns);
+          } catch (err) {
+            throw new CorruptDatabaseError(`sst block corrupt: ${String(err)}`);
+          }
+        });
       }
     })();
   }

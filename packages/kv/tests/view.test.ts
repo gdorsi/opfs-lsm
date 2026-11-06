@@ -180,4 +180,19 @@ describe("view scanRuns with a filter", () => {
     expect(both).toEqual(["", "a"]);
     await db.close();
   });
+
+  it("hands out bytes that own their buffer", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    await db.put(enc.encode("a"), enc.encode(" red apple"));
+    await db.put(enc.encode("b"), enc.encode(" red pear"));
+    await db.ingest();
+    await db.put(enc.encode("c"), enc.encode(" red plum"));
+    const owned = await db.view((snap) =>
+      snap.scanRuns(undefined, { valueContains: [enc.encode(" red")] }).flatMap((s) =>
+        [...s].flatMap((e) => [e.key, e.value]).map((b) => b.byteOffset === 0 && b.buffer.byteLength === b.byteLength),
+      ),
+    );
+    expect(owned).toEqual([true, true, true, true, true, true]);
+    await db.close();
+  });
 });
