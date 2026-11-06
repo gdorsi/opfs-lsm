@@ -394,9 +394,10 @@ scan of live puts per source (the memtable, each L0 run, each deeper level), and
 them. A key can appear in several scans, and an older scan can hold a value that a newer source
 overwrote or deleted, so the caller confirms a hit with `get` on the same view. In exchange, it
 skips the merge heap. With a `filter` of `valueContains` byte strings, a run keeps only the puts
-whose value holds all of them. With wasm loaded, each block is unpacked and matched there
-(`scan_block_contains_js`, `store/block-scan.ts`), and only the hits cross back. Without wasm, the
-run's cursor does the same work key by key.
+whose value holds all of them. With wasm loaded, each block is matched there
+(`scan_block_contains_js`, `store/block-scan.ts`), and only the hits cross back. An LZ4 block is
+unpacked in that call; a raw block is read in place. Without wasm, the run's cursor does the same
+work key by key.
 
 `db.rangeFollow(range, follow)` scans a range and point-reads the key that `follow` returns for
 each entry. Every read sees the same state, because the scan and the reads run in one task with no
