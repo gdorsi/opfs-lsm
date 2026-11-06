@@ -400,8 +400,9 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 
 /// The puts of one data block of a run, as the block index frames it (`codec`
 /// says whether it is a u32 length plus LZ4 bytes or raw), whose value
-/// contains every pattern. Records are read in place and a miss allocates
-/// nothing. Hits come back packed: `u32 key_len, u32 value_len, key, value`,
+/// contains every pattern. Records are read in place, so a raw block that
+/// misses allocates nothing. An LZ4 block is unpacked first, and that unpack is
+/// most of the cost of a miss. Hits come back packed: `u32 key_len, u32 value_len, key, value`,
 /// little-endian, in key order.
 pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]]) -> Result<Vec<u8>, SstError> {
     let unpacked;
