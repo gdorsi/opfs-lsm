@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
+  "entry": [
+    "packages/*/bench/**/*.ts",
+    "packages/*/scripts/**/*.ts",
+    "packages/*/formal/**/check.ts",
+    "packages/*/formal/run-all.ts",
+    "examples/*/bench/**/*.ts",
+    "examples/*/scripts/**/*.ts"
+  ],
+  "ignoreBinaries": [
+    "wasm-pack"
+  ],
+  "ignoreExports": [
+    {
+      "file": "packages/kv/src/store/engine.ts",
+      "exports": [
+        "encodeSst",
+        "decodeSst"
+      ]
+    }
+  ],
+  "usedClassMembers": [
+    "page",
+    "clear",
+    "orderBy",
+    "uningestedBytes"
+  ]
+}

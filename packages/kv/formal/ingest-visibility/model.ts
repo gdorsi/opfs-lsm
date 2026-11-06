@@ -1,8 +1,5 @@
 import type { IngestStep } from "./parse-ingest-order.js";
 
-/** One key — enough to state visibility; values are write sequence numbers. */
-export const KEY = "k";
-
 export type WalRec = { seq: number; value: number };
 
 export type ModelState = {
@@ -45,7 +42,7 @@ export function initialState(): ModelState {
 }
 
 /** Latest WAL put for KEY with seq > ingestedThrough — the mem cell for that key. */
-export function walValue(s: ModelState): number | undefined {
+function walValue(s: ModelState): number | undefined {
   let v: number | undefined;
   for (const r of s.wal) {
     if (r.seq > s.ingestedThrough) v = r.value;

@@ -24,7 +24,7 @@ import {
   type TodoStore,
 } from "./model.ts";
 
-export const DB_NAME = new URLSearchParams(location.search).get("name") ?? "todos";
+const DB_NAME = new URLSearchParams(location.search).get("name") ?? "todos";
 
 let openError: unknown;
 const db = await openCollectionDb({

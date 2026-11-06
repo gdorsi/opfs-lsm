@@ -5,15 +5,11 @@ import {
 import {
   __resetMemoryFsForTests
 } from "../src/testing.js";
-import { checkDbName } from "../src/check.js";
-import { IdBWal } from "../src/idb/wal.js";
-import type { AsyncFs } from "../src/opfs/async-fs.js";
 import {
   decodeGeneration,
   encodeGeneration,
   loadLatestGeneration,
   publishGeneration,
-  publishL0,
 } from "../src/store/generation.js";
 
 const NAME = "generation-coherence";
@@ -32,37 +28,6 @@ function wipe(): Promise<void> {
     req.onblocked = () => resolve();
   });
 }
-
-function holdFirstL0(inner: MemoryFs): AsyncFs & {
-  started: Promise<void>;
-  release(): void;
-} {
-  let hold = true;
-  let releaseHold!: () => void;
-  const held = new Promise<void>((resolve) => {
-    releaseHold = resolve;
-  });
-  let markStarted!: () => void;
-  const started = new Promise<void>((resolve) => {
-    markStarted = resolve;
-  });
-  return {
-    started,
-    release: () => releaseHold(),
-    async read(path, offset, length) {
-      if (hold && path.startsWith("l0/")) {
-        hold = false;
-        markStarted();
-        await held;
-      }
-      return inner.read(path, offset, length);
-    },
-    list: (dir) => inner.list(dir),
-    remove: (path) => inner.remove(path),
-    create: (path) => inner.create(path),
-  };
-}
-
 beforeEach(async () => {
   __resetMemoryFsForTests(NAME);
   await wipe();

@@ -17,12 +17,12 @@ const NAME_RE = /(publishL0|publishGeneration|advanceIngested)/;
  * Read the call order of the three durability steps from `ingestAll`.
  * Points at `packages/kv/src/host/ingest.ts`.
  */
-export function ingestSourcePath(): string {
+function ingestSourcePath(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(here, "../../src/host/ingest.ts");
 }
 
-export function parseIngestOrder(source: string): IngestStep[] {
+function parseIngestOrder(source: string): IngestStep[] {
   const nonEmpty = source.match(
     /\n( *)if\s*\(\s*records\.length\s*===\s*0\s*\)\s*\{[\s\S]*?\}\s*else\s*\{([\s\S]*?)\n\1\}/,
   );

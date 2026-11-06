@@ -25,7 +25,6 @@ import {
 import { layersChannel, type IngestClient } from "./host/protocol.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { Memtable, type MemRow } from "./store/memtable.js";
-import type { ScanBounds } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import type { AsyncFs } from "./opfs/async-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";

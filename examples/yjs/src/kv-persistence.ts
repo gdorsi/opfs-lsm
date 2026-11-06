@@ -102,12 +102,12 @@ export class KvPersistence {
   }
 }
 
-export const DEFAULT_TRIM_SIZE = 500;
+const DEFAULT_TRIM_SIZE = 500;
 
 const textEncoder = new TextEncoder();
 
 /** `y` + u16 name length + UTF-8 name. The length keeps "a" from prefixing "a/b". */
-export function docPrefix(name: string): Uint8Array {
+function docPrefix(name: string): Uint8Array {
   const bytes = textEncoder.encode(name);
   if (bytes.byteLength > 0xffff) throw new Error("document name longer than 65535 bytes");
   const out = new Uint8Array(3 + bytes.byteLength);
