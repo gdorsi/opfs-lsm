@@ -132,6 +132,25 @@ function asIndexValue(raw: unknown, label: string): IndexValue {
 }
 
 /**
+ * Sort value to put in the search key. The row is JSON, and JSON stores `-0`
+ * as `0`, but those two numbers encode to different keys. A key built from
+ * the caller's `-0` is invisible to a later read of the stored `0`. Bytes do
+ * not survive JSON, so they cannot be a sort value either.
+ */
+function sortAsStored(raw: IndexValue, label: string): IndexValue {
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) throw new TypeError(`${label} number must be finite`);
+    return raw === 0 ? 0 : raw;
+  }
+  if (raw === null || typeof raw === "boolean" || typeof raw === "string") return raw;
+  if (raw instanceof Uint8Array) {
+    throw new TypeError(`${label} must be a JSON null, boolean, number, or string`);
+  }
+  const _exhaustive: never = raw;
+  throw new TypeError(`${label} is not a stored sort value: ${String(_exhaustive)}`);
+}
+
+/**
  * The index values `doc` is keyed under: one list per key, one value per
  * path. Empty when a path is missing, or when a multi-entry path is an empty
  * array.
@@ -206,7 +225,8 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     const text = getPath(doc, spec.path);
     const sort = getPath(doc, spec.sortBy);
     if (typeof text !== "string" || sort === undefined) return undefined;
-    const key = searchKey(this.name, asIndexValue(sort, `search.${spec.sortBy}`), id);
+    const label = `search.${spec.sortBy}`;
+    const key = searchKey(this.name, sortAsStored(asIndexValue(sort, label), label), id);
     return { key, value: encoder.encode(` ${wordsOf(text).join(" ")}`) };
   }
 
