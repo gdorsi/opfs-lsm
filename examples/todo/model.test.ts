@@ -6,17 +6,13 @@ import {
   createTodo,
   deleteTodo,
   generateTodos,
-  matchesFilter,
-  MAX_BATCH_OPS,
-  MAX_TERM_LENGTH,
-  MAX_TERM_WORDS,
   normalizeFilter,
   readPage,
-  searchTerms,
   toggleTodo,
   type ReadPageOptions,
   type Todo,
   type TodoStore,
+  wordsOf,
 } from "./model.ts";
 
 const MAX_TIME = 10 ** 15 - 1;
@@ -29,7 +25,6 @@ const INDEXES = {
     cmp: (a: Todo, b: Todo) =>
       a.titleSort < b.titleSort ? -1 : a.titleSort > b.titleSort ? 1 : 0,
   },
-  byTermNewest: { field: "newest", cmp: (a: Todo, b: Todo) => a.newest - b.newest },
 };
 
 /**
@@ -42,15 +37,19 @@ function fakeTable(
   const rows = new Map<string, Todo>();
   for (const todo of initial) rows.set(todo.id, { ...todo });
 
-  function ordered(indexName: string, value?: string): Todo[] {
+  function ordered(indexName: string): Todo[] {
     const spec = INDEXES[indexName as keyof typeof INDEXES];
     if (!spec) throw new Error(`unknown index: ${indexName}`);
-    if ((indexName === "byTermNewest") !== (value !== undefined)) {
-      throw new Error(`value is for byTermNewest only: ${indexName}`);
-    }
-    return [...rows.values()]
-      .filter((todo) => value === undefined || todo.terms.includes(value))
-      .sort((a, b) => spec.cmp(a, b) || a.id.localeCompare(b.id));
+    return [...rows.values()].sort((a, b) => spec.cmp(a, b) || a.id.localeCompare(b.id));
+  }
+
+  /** Cursor page of `sorted`, starting at the row whose id is `after`. */
+  function cursorPage(sorted: Todo[], after: string | undefined, limit: number) {
+    const start = after === undefined ? 0 : sorted.findIndex((todo) => todo.id === after);
+    if (start < 0) throw new Error(`cursor not found: ${String(after)}`);
+    const docs = sorted.slice(start, start + limit).map((todo) => ({ ...todo }));
+    const next = sorted[start + limit];
+    return { docs, next: next?.id };
   }
 
   return {
@@ -79,15 +78,21 @@ function fakeTable(
       rows.clear();
       return count;
     },
-    async page(indexName, { after, limit, value }: { after?: string; limit: number; value?: string }) {
-      const sorted = ordered(indexName, value);
-      const start =
-        after === undefined ? 0 : sorted.findIndex((todo) => todo.id === after);
-      if (start < 0) throw new Error(`cursor not found: ${String(after)}`);
-      const docs = sorted.slice(start, start + limit).map((todo) => ({ ...todo }));
+    async page(indexName, { after, limit }: { after?: string; limit: number }) {
+      const { docs, next } = cursorPage(ordered(indexName), after, limit);
       this.read += docs.length;
-      const next = sorted[start + limit];
-      return next === undefined ? { docs } : { docs, next: next.id };
+      return next === undefined ? { docs } : { docs, next };
+    },
+    async search(text, { after, limit }: { after?: string; limit: number }) {
+      const wanted = wordsOf(text);
+      if (wanted.length === 0) throw new RangeError("search text has no words");
+      const matches = ordered("byNewest").filter((todo) => {
+        const words = wordsOf(todo.title);
+        return wanted.every((w) => words.some((t) => t.startsWith(w)));
+      });
+      const { docs, next } = cursorPage(matches, after, limit);
+      this.read += docs.length;
+      return next === undefined ? { docs } : { docs, next };
     },
   };
 }
@@ -124,27 +129,13 @@ test("createTodo trims the title, rejects a blank one, and derives sort fields",
     createdAt: 10,
     newest: MAX_TIME - 10,
     titleSort: "buy milk",
-    terms: ["b", "bu", "buy", "m", "mi", "mil", "milk"],
   });
   assert.equal(createTodo("   ", 10, "a"), null);
 });
 
-test("a filter matches when each of its words starts a title word, ignoring case", () => {
+test("a filter is trimmed and lowercased", () => {
   assert.equal(normalizeFilter("  BUTTER "), "butter");
-  assert.equal(matchesFilter({ title: "Peanut butter" }, "butter"), true);
-  assert.equal(matchesFilter({ title: "Peanut butter" }, "but pea"), true);
-  assert.equal(matchesFilter({ title: "Peanut butter" }, "nut"), false);
-  assert.equal(matchesFilter({ title: "Peanut butter" }, "jam"), false);
-  assert.equal(matchesFilter({ title: "Peanut-butter, crunchy" }, "crunchy"), true);
-  assert.equal(matchesFilter({ title: "anything" }, ""), true);
-});
-
-test("searchTerms caps each word's prefixes and the words per title", () => {
-  const long = "a".repeat(MAX_TERM_LENGTH + 5);
-  assert.deepEqual(searchTerms(long), Array.from({ length: MAX_TERM_LENGTH }, (_, i) => long.slice(0, i + 1)));
-  const many = Array.from({ length: MAX_TERM_WORDS + 10 }, (_, i) => `w${i}x`).join(" ");
-  assert.ok(searchTerms(many).includes(`w${MAX_TERM_WORDS - 1}x`));
-  assert.ok(!searchTerms(many).includes(`w${MAX_TERM_WORDS}x`));
+  assert.equal(normalizeFilter("   "), "");
 });
 
 test("readPage walks every row once, newest first", async () => {
@@ -230,7 +221,7 @@ test("readPage with a filter reads newest first whatever the sort", async () => 
   }
 });
 
-test("readPage pages by the longest filter word and checks the others", async () => {
+test("readPage requires every filter word to start a title word", async () => {
   const table = fakeTable([
     createTodo("buy oat milk", 1, "a")!,
     createTodo("buy milk", 2, "b")!,
@@ -239,7 +230,7 @@ test("readPage pages by the longest filter word and checks the others", async ()
   ]);
   const page = await readPage(table, { filter: "milk bu", pageSize: 10 });
   assert.deepEqual(page.todos.map((t) => t.id), ["b", "a"]);
-  assert.equal(table.read, 4);
+  assert.equal(table.read, 2);
 });
 
 test("readPage returns an empty page when nothing matches", async () => {
@@ -292,18 +283,17 @@ test("generateTodos writes every row in batches with repeatable titles", async (
   assert.deepEqual(titles, todos.map((todo) => todo.title));
 });
 
-test("generateTodos keeps each batch under kv's ops limit", async () => {
+test("generateTodos writes in batches of chunkSize rows", async () => {
   const table = fakeTable();
-  const batches: number[] = [];
+  const sizes: number[] = [];
   const putMany = table.putMany.bind(table);
   table.putMany = async (docs) => {
-    batches.push(docs.reduce((n, d) => n + 4 + d.terms.length, 0));
+    sizes.push(docs.length);
     return putMany(docs);
   };
-  await generateTodos(table, 3000, { seed: 3 });
-  assert.equal(table.rows.size, 3000);
-  assert.ok(batches.length > 3, `${batches.length} batches`);
-  for (const ops of batches) assert.ok(ops <= MAX_BATCH_OPS, `${ops} ops`);
+  await generateTodos(table, 2500, { seed: 3, chunkSize: 1000 });
+  assert.equal(table.rows.size, 2500);
+  assert.deepEqual(sizes, [1000, 1000, 500]);
 });
 
 test("clearTodos deletes every row", async () => {

@@ -17,16 +17,6 @@ const MAX_TIME = 10 ** 15 - 1;
 export const PAGE_SIZE = 50;
 /** Most rows per `table.putMany` when seeding. */
 export const GENERATE_CHUNK = 1000;
-/**
- * kv's ops per batch. A new todo writes its row, three sort index keys and
- * one key per search term, so seeding cuts batches by ops, not rows.
- */
-export const MAX_BATCH_OPS = 10_000;
-const opsFor = (todo: Todo) => 4 + todo.terms.length;
-/** Search terms are word prefixes up to this length. Longer words match on their first 12 letters, then on the title. */
-export const MAX_TERM_LENGTH = 12;
-/** Words of a title that get search terms, so a long title stays under collections' keys-per-row limit. */
-export const MAX_TERM_WORDS = 40;
 
 export type Todo = {
   id: string;
@@ -35,15 +25,14 @@ export type Todo = {
   createdAt: number;
   newest: number;
   titleSort: string;
-  /** Every prefix of every title word, lowercased, for `byTermNewest`. */
-  terms: string[];
 };
 
 /**
- * `newest`, `titleSort` and `terms` are derived fields: collections indexes
- * read plain document fields, so each sort needs its own comparable column.
- * `byTermNewest` is multi-entry: it keys a todo once per term, newest first,
- * so a search reads only the todos that match.
+ * `newest` and `titleSort` are derived fields: collections indexes read plain
+ * document fields, so each sort needs its own comparable column. `search`
+ * gives each todo one extra key holding its lowercased title words, scanned
+ * newest first by `table.search`, so a put costs one key, not one per word
+ * and per prefix.
  */
 export const TODO_SCHEMA: CollectionSchema = {
   tables: [
@@ -54,8 +43,8 @@ export const TODO_SCHEMA: CollectionSchema = {
         { name: "byNewest", path: "newest" },
         { name: "byOldest", path: "createdAt" },
         { name: "byTitle", path: "titleSort" },
-        { name: "byTermNewest", path: ["terms", "newest"], multiEntry: true },
       ],
+      search: { path: "title", sortBy: "newest" },
     },
   ],
 };
@@ -82,7 +71,12 @@ export interface TodoStore<Cursor = unknown> {
   clear(): Promise<number>;
   page(
     indexName: string,
-    opts: { readonly after?: Cursor; readonly limit: number; readonly value?: string },
+    opts: { readonly after?: Cursor; readonly limit: number },
+  ): Promise<{ readonly docs: readonly Todo[]; readonly next?: Cursor }>;
+  /** One page of todos where each word of `text` starts a title word, newest first. */
+  search(
+    text: string,
+    opts: { readonly after?: Cursor; readonly limit: number },
   ): Promise<{ readonly docs: readonly Todo[]; readonly next?: Cursor }>;
 }
 
@@ -107,7 +101,6 @@ export function createTodo(
     createdAt: now,
     newest: MAX_TIME - now,
     titleSort: trimmed.toLowerCase(),
-    terms: searchTerms(trimmed),
   };
 }
 
@@ -116,35 +109,17 @@ export function wordsOf(text: string): string[] {
   return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 0);
 }
 
-/** Each prefix of each word, up to `MAX_TERM_LENGTH` letters, so typing "mil" finds "milk". */
-export function searchTerms(title: string): string[] {
-  const out = new Set<string>();
-  for (const word of wordsOf(title).slice(0, MAX_TERM_WORDS)) {
-    for (let i = 1; i <= Math.min(word.length, MAX_TERM_LENGTH); i++) out.add(word.slice(0, i));
-  }
-  return [...out];
-}
-
 export function normalizeFilter(filter: string): string {
   return typeof filter === "string" ? filter.trim().toLowerCase() : "";
 }
 
-/** Every word of the filter starts some word of the title, ignoring case. */
-export function matchesFilter(todo: { title: string }, normalized: string): boolean {
-  const wanted = wordsOf(normalized);
-  if (wanted.length === 0) return true;
-  const words = wordsOf(todo.title);
-  return wanted.every((w) => words.some((t) => t.startsWith(w)));
-}
-
 /**
  * One page in `sort` order, starting at `after` (the `next` from the previous
- * page). A chunk is at most one page, so filling the page always lands exactly
- * on a chunk boundary and `next` never skips an unconsumed row.
+ * page). `next` is the first key the call did not consume, so pages neither
+ * skip nor repeat rows.
  *
- * With a filter, the page reads `byTermNewest` for the filter's longest word,
- * so it touches only todos with a word starting that way, newest first, and
- * `sort` doesn't apply. The other filter words are checked on each todo.
+ * With a filter, the page is `table.search`: todos where each filter word
+ * starts a title word, newest first, and `sort` doesn't apply.
  */
 export async function readPage<Cursor>(
   table: TodoStore<Cursor>,
@@ -166,26 +141,18 @@ export async function readPage<Cursor>(
   }
 
   const normalized = normalizeFilter(filter);
-  const term = wordsOf(normalized)
-    .reduce((a, b) => (b.length > a.length ? b : a), "")
-    .slice(0, MAX_TERM_LENGTH);
-  const index = term ? "byTermNewest" : SORTS[sort as SortKey];
-  const todos: Todo[] = [];
-  let cursor = after;
-
-  for (;;) {
-    const page = await table.page(index, {
-      ...(cursor !== undefined ? { after: cursor } : {}),
-      ...(term ? { value: term } : {}),
+  if (wordsOf(normalized).length > 0) {
+    const page = await table.search(normalized, {
+      ...(after !== undefined ? { after } : {}),
       limit: pageSize,
     });
-    for (const todo of page.docs) {
-      if (matchesFilter(todo, normalized)) todos.push(todo);
-    }
-    if (todos.length >= pageSize) return { todos, next: page.next };
-    if (page.next === undefined) return { todos, next: undefined };
-    cursor = page.next;
+    return { todos: [...page.docs], next: page.next };
   }
+  const page = await table.page(SORTS[sort as SortKey], {
+    ...(after !== undefined ? { after } : {}),
+    limit: pageSize,
+  });
+  return { todos: [...page.docs], next: page.next };
 }
 
 function mulberry32(seed: number): () => number {
@@ -260,17 +227,13 @@ export async function generateTodos<Cursor>(
   const start = Math.max(0, now - total + 1);
 
   let rows: Todo[] = [];
-  let ops = 0;
   for (let i = 0; i < total; i++) {
-    const todo = createTodo(titleFromPicker(pick, rng), start + i, `${runId}-${i.toString(36)}`)!;
-    if (rows.length === chunkSize || ops + opsFor(todo) > MAX_BATCH_OPS) {
+    if (rows.length === chunkSize) {
       await table.putMany(rows);
       if (onProgress) onProgress(i, total);
       rows = [];
-      ops = 0;
     }
-    rows.push(todo);
-    ops += opsFor(todo);
+    rows.push(createTodo(titleFromPicker(pick, rng), start + i, `${runId}-${i.toString(36)}`)!);
   }
   await table.putMany(rows);
   if (onProgress) onProgress(total, total);
