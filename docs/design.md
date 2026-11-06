@@ -29,7 +29,7 @@ A database named `<name>` lives in two places:
 
 ```
 IndexedDB  "opfs-lsm-wal/<name>"
-  ├── wal    seq -> ops[]              one record per acked batch
+  ├── wal    seq -> bytes              one record per acked batch
   └── meta   "head"            -> seq  last committed batch
              "ingestedThrough" -> seq  every seq <= this is in an SST
              "generation"      -> n    the manifest tabs should read
@@ -59,15 +59,18 @@ The WAL is the IndexedDB database `opfs-lsm-wal/<name>`, schema version 1
 ## WAL records
 
 Each acked `put`, `delete`, `batch`, or `update` appends exactly one record to
-the `wal` store. The record's key is its seq. Its value is the encoded ops:
+the `wal` store. The record's key is its seq. Its value is one `ArrayBuffer` holding the
+batch's ops back to back, little-endian:
 
 ```
-[ { type: "put", key: ArrayBuffer, value: ArrayBuffer }
-| { type: "del", key: ArrayBuffer } ]
+per op:  u8 type (0 put, 1 del) | u32 keyLen | key | put only: u32 valueLen | value
 ```
 
-The reader accepts only that array. The engine copies each key and value into its own
-`ArrayBuffer` before the write. The browser's structured clone stores them as they are.
+Reading a WAL row costs per row and per JS object IndexedDB deserializes. One buffer per row is
+the fewest objects a row can be. The decoder hands out keys and values as views into the row's
+buffer. A row holds one batch, so the views keep nothing else alive. Nothing decoded from the
+WAL is sent with `postMessage`, where a view would clone its whole buffer. A row that is not an
+`ArrayBuffer`, or ends inside an op, throws `corrupt wal row`.
 
 ## Append
 
@@ -103,6 +106,25 @@ power loss.
 After an ingest, the host deletes every record at or below the new `ingestedThrough` and sets
 `ingestedThrough` and `generation`, all in one transaction. So the WAL holds only seqs that are
 not yet in an SST.
+
+## Reading the tail
+
+`openDb`, `sync`, a catch-up after an append, and ingest all read the same way: one transaction
+reads `head` and `ingestedThrough` from `meta`, then every record in `(max(since,
+ingestedThrough), head]`. `since` is the caller's `appliedThrough`, 0 on open, so every open
+replays the whole uningested WAL into a new memtable on the tab's main thread. `maxWalBytes`
+bounds that replay (see [When it runs](#when-it-runs)).
+
+The read issues one `getAll` per 25,000 seqs, all in flight in the same transaction. Seqs are
+gapless above `ingestedThrough`, so a value's position in its range gives its seq and no
+`getAllKeys` pass is needed. A range that returns fewer values than it spans has a gap, and the
+read throws `wal gap` rather than shift the seqs after it.
+
+`getAllRecords` returns keys and values in one request, but Chrome deserializes each value when
+`.value` is first read. The time it saves comes back in decode, so the engine does not use it.
+On the yjs bench (250k rows) the ranged `getAll` read takes about 360 to 520 ms with object
+rows. The old `getAllKeys` plus `getAll` pair took about 670 ms, and byte rows cut the open by
+another third. The measurements are in `docs/research/kv-wal-optimization.md`.
 
 # Memtable
 
