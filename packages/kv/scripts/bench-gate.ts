@@ -254,7 +254,7 @@ function gateLive(): number {
   };
   delete browserEnv.BENCH_LOCAL;
   delete browserEnv.BENCH_SW;
-  const browser = runTsx("scripts/bench-browser.ts", browserEnv, 180_000);
+  const browser = runTsx("scripts/bench-browser.ts", browserEnv, 300_000);
   process.stdout.write(browser.output);
   const browserJudgment =
     browserMode === "smoke"

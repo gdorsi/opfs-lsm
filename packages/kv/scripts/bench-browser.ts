@@ -11,7 +11,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
-import { setTimeout as sleep } from "node:timers/promises";
 import ts from "typescript";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -66,21 +65,52 @@ function transpileTs(source: string, fileName: string): string {
   return result.outputText;
 }
 
-let resolveResults!: (body: string) => void;
-const resultsPromise = new Promise<string>((resolve) => {
-  resolveResults = resolve;
-});
+/** How one Chrome launch ended. */
+type Outcome =
+  | { kind: "result"; body: string }
+  | { kind: "chrome-exit"; code: number | null; signal: NodeJS.Signals | null }
+  | { kind: "network-crash" }
+  | { kind: "timeout" };
+
+/** Chrome's log line when its network service process dies. */
+const NETWORK_CRASH = "Network service crashed or was terminated";
+const MAX_ATTEMPTS = 2;
+const TRAIL_LINES = 20;
+
+/** The launch in flight: what the page sent and how to end the launch. */
+let attempt: {
+  startedAt: number;
+  trail: string[];
+  settle: (outcome: Outcome) => void;
+} | null = null;
+
+function note(line: string): void {
+  if (!attempt) return;
+  attempt.trail.push(`+${Date.now() - attempt.startedAt}ms ${line}`);
+  if (attempt.trail.length > TRAIL_LINES) attempt.trail.shift();
+}
+
+async function readBody(req: http.IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
+}
 
 const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/bench-results") {
-    const chunks: Buffer[] = [];
-    for await (const c of req) chunks.push(c as Buffer);
-    const body = Buffer.concat(chunks).toString("utf8");
+    const body = await readBody(req);
     res.writeHead(200, { "content-type": "application/json" });
     res.end('{"ok":true}');
-    resolveResults(body);
+    attempt?.settle({ kind: "result", body });
     return;
   }
+  if (req.method === "POST" && req.url === "/bench-progress") {
+    note(`page: ${await readBody(req)}`);
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  note(`${req.method} ${req.url}`);
 
   const urlPath = req.url === "/" ? "/bench/browser.html" : (req.url ?? "/");
   const filePath = safeJoin(root, urlPath);
@@ -123,70 +153,92 @@ const { port } = address;
 const local = process.env.BENCH_LOCAL === "1" ? "&local=1" : "";
 const target = `http://127.0.0.1:${port}/bench/${PAGE}.html?auto=1&n=${N}${local}${QUERY}`;
 const profile = path.join(root, ".bench-chrome-profile");
-fs.rmSync(profile, { recursive: true, force: true });
-fs.mkdirSync(profile, { recursive: true });
+const timeoutMs = Number(process.env.BENCH_TIMEOUT_MS ?? 120_000);
 
 console.log(`Serving ${root}`);
 console.log(`Opening ${target}`);
 
-const chrome: ChildProcess = spawn(
-  chromePath(),
-  [
-    "--headless=new",
-    "--disable-gpu",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-extensions",
-    "--enable-features=FileSystemAccessAPI",
-    `--user-data-dir=${profile}`,
-    // Real wall clock — do not use virtual-time-budget (starves IDB/OPFS).
-    target,
-  ],
-  { stdio: ["ignore", "pipe", "pipe"] },
-);
+/** Launch Chrome on a fresh profile and wait for the first way the launch ends. */
+async function launch(): Promise<{ outcome: Outcome; trail: string[]; stderr: string }> {
+  fs.rmSync(profile, { recursive: true, force: true });
+  fs.mkdirSync(profile, { recursive: true });
 
-let stderr = "";
-chrome.stderr?.on("data", (d: Buffer) => {
-  stderr += d.toString();
-  if (process.env.BENCH_VERBOSE) process.stderr.write(d);
-});
-chrome.stdout?.on("data", (d: Buffer) => {
-  if (process.env.BENCH_VERBOSE) process.stdout.write(d);
-});
+  const chrome: ChildProcess = spawn(
+    chromePath(),
+    [
+      "--headless=new",
+      "--disable-gpu",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-extensions",
+      "--enable-features=FileSystemAccessAPI",
+      `--user-data-dir=${profile}`,
+      // Real wall clock — do not use virtual-time-budget (starves IDB/OPFS).
+      target,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
 
-const timeoutMs = Number(process.env.BENCH_TIMEOUT_MS ?? 120_000);
-const timed = Promise.race([
-  resultsPromise,
-  sleep(timeoutMs).then(() => {
-    throw new Error(
-      `bench timed out after ${timeoutMs}ms\nChrome stderr (tail):\n${stderr.slice(-4000)}`,
-    );
-  }),
-]);
-
-let exitCode = 0;
-try {
-  const raw = await timed;
-  const parsed = JSON.parse(raw) as {
-    error?: string;
-    log?: string;
-  };
-  if (parsed.error) {
-    console.error(parsed.error);
-    exitCode = 1;
-  } else {
-    console.log(parsed.log ?? JSON.stringify(parsed, null, 2));
-  }
-} catch (err) {
-  console.error(err instanceof Error ? err.message : err);
-  exitCode = 1;
-} finally {
-  try {
-    chrome.kill("SIGKILL");
-  } catch {
-    /* ignore */
-  }
-  server.close();
-  // Headless Chrome can keep the event loop alive via open handles.
-  process.exit(exitCode);
+  const trail: string[] = [];
+  let stderr = "";
+  const outcome = await new Promise<Outcome>((resolve) => {
+    let settled = false;
+    const settle = (o: Outcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      attempt = null;
+      resolve(o);
+    };
+    const timer = setTimeout(() => settle({ kind: "timeout" }), timeoutMs);
+    attempt = { startedAt: Date.now(), trail, settle };
+    chrome.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+      if (process.env.BENCH_VERBOSE) process.stderr.write(d);
+      // The restarted service does not resend the page's lost requests, so
+      // this launch can no longer report.
+      if (stderr.includes(NETWORK_CRASH)) settle({ kind: "network-crash" });
+    });
+    chrome.stdout?.on("data", (d: Buffer) => {
+      if (process.env.BENCH_VERBOSE) process.stdout.write(d);
+    });
+    chrome.on("exit", (code, signal) => settle({ kind: "chrome-exit", code, signal }));
+  });
+  chrome.kill("SIGKILL");
+  return { outcome, trail, stderr };
 }
+
+function describe(outcome: Exclude<Outcome, { kind: "result" }>): string {
+  switch (outcome.kind) {
+    case "timeout":
+      return `bench timed out after ${timeoutMs}ms`;
+    case "chrome-exit":
+      return `Chrome exited (code ${outcome.code}, signal ${outcome.signal}) before the page reported`;
+    case "network-crash":
+      return "Chrome's network service crashed before the page reported";
+  }
+}
+
+let exitCode = 1;
+for (let n = 1; n <= MAX_ATTEMPTS; n++) {
+  const { outcome, trail, stderr } = await launch();
+  if (outcome.kind === "result") {
+    const parsed = JSON.parse(outcome.body) as { error?: string; log?: string };
+    if (parsed.error) {
+      console.error(parsed.error);
+    } else {
+      console.log(parsed.log ?? JSON.stringify(parsed, null, 2));
+      exitCode = 0;
+    }
+    break;
+  }
+  console.error(describe(outcome));
+  console.error(`Last requests and page lines (attempt ${n}):`);
+  console.error(trail.length > 0 ? trail.join("\n") : "(none: the page never loaded)");
+  console.error(`Chrome stderr (tail):\n${stderr.slice(-4000)}`);
+  if (outcome.kind !== "network-crash") break;
+  if (n < MAX_ATTEMPTS) console.error("Relaunching Chrome once on a fresh profile.");
+}
+server.close();
+// Headless Chrome can keep the event loop alive via open handles.
+process.exit(exitCode);

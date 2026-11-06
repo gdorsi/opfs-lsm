@@ -13,6 +13,7 @@ type BenchRow = { label: string; ms: number; ops: number };
 
 function log(line: string): void {
   out.textContent += line + "\n";
+  if (AUTO) void fetch("/bench-progress", { method: "POST", body: line }).catch(() => {});
 }
 
 async function report(payload: unknown): Promise<void> {
