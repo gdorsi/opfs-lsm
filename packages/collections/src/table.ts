@@ -12,7 +12,7 @@ import {
   tablePrefix,
   type IndexValue,
 } from "./codec.js";
-import { diffEntries, type IndexEntry } from "./entries.js";
+import { compareBytes, diffEntries, type IndexEntry } from "./entries.js";
 import { encodeTyped, normalizeIndexValues } from "./typed.js";
 
 export type IndexSpec = {
@@ -71,6 +71,28 @@ function wordsOf(text: string): string[] {
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter((w) => w.length > 0);
+}
+
+/** Entries of key-ordered scans that pass `keep`, in key order, each key once. */
+function* mergeMatches(
+  scans: readonly Iterable<{ readonly key: Uint8Array; readonly value: Uint8Array }>[],
+  keep: (value: Uint8Array) => boolean,
+): Generator<Uint8Array> {
+  const heads = scans.map((scan) => {
+    const it = scan[Symbol.iterator]();
+    const advance = (): { key: Uint8Array } | undefined => {
+      for (let r = it.next(); !r.done; r = it.next()) if (keep(r.value.value)) return r.value;
+      return undefined;
+    };
+    return { advance, head: advance() };
+  });
+  for (;;) {
+    let min: Uint8Array | undefined;
+    for (const h of heads) if (h.head && (min === undefined || compareBytes(h.head.key, min) < 0)) min = h.head.key;
+    if (min === undefined) return;
+    for (const h of heads) if (h.head && compareBytes(h.head.key, min) === 0) h.head = h.advance();
+    yield min;
+  }
 }
 
 /** True when a word of `value` (words joined by single spaces, with a leading space) starts with `token`. */
@@ -470,6 +492,8 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
    * reads see one snapshot, so a put that commits during the call is invisible.
    * Cost is a scan of the search keys until a page fills: a common word returns
    * in microseconds, a word that matches nothing reads every key of the table.
+   * The scan reads each kv source on its own and confirms every hit with a get,
+   * so a miss does not pay for the k-way merge.
    */
   async search(
     text: string,
@@ -488,16 +512,18 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
       start: opts.after ?? whole.start,
       ...(whole.endExclusive !== undefined ? { endExclusive: whole.endExclusive } : {}),
     };
+    const matches = (value: Uint8Array) => tokens.every((t) => hasWordPrefix(value, t));
     return this.db.view(async (snap) => {
       const ids: string[] = [];
       let next: Uint8Array | undefined;
-      for await (const entry of snap.range(range)) {
-        if (!tokens.every((t) => hasWordPrefix(entry.value, t))) continue;
+      for (const key of mergeMatches(snap.scanRuns(range), matches)) {
+        const current = await snap.get(key);
+        if (current === undefined || !matches(current)) continue;
         if (ids.length === limit) {
-          next = entry.key;
+          next = key;
           break;
         }
-        const id = extractSearchRowId(entry.key);
+        const id = extractSearchRowId(key);
         if (id !== undefined) ids.push(id);
       }
       const rows = await Promise.all(ids.map((id) => snap.get(this.pkBytes(id))));
