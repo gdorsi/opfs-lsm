@@ -1,7 +1,35 @@
 //! SST merge for compaction (newest-first inputs).
 
 use crate::sst::{decode_sst, encode_sst, entry_size, Codec, Entry, SstError};
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::binary_heap::{BinaryHeap, PeekMut};
+
+/// The next entry of input `run`. Ordered so the max-heap pops the smallest
+/// key first and, for one key, the newest run first.
+struct Head {
+    entry: Entry,
+    run: usize,
+}
+
+impl Ord for Head {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.entry.key().cmp(self.entry.key()).then(other.run.cmp(&self.run))
+    }
+}
+
+impl PartialOrd for Head {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Head {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Head {}
 
 /// Merge newest-first runs into runs of about `target_bytes` each, split at
 /// key boundaries and written with `codec`. Newer entries win.
@@ -14,36 +42,50 @@ pub fn merge_sst_bytes(
     target_bytes: usize,
     codec: Codec,
 ) -> Result<(Vec<Vec<u8>>, u64), SstError> {
-    let mut map: BTreeMap<Vec<u8>, Entry> = BTreeMap::new();
-    for bytes in sst_bytes.iter().rev() {
-        for e in decode_sst(bytes)? {
-            map.insert(e.key().to_vec(), e);
+    let mut inputs = sst_bytes
+        .iter()
+        .map(|bytes| decode_sst(bytes).map(Vec::into_iter))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut heap = BinaryHeap::with_capacity(inputs.len());
+    for (run, input) in inputs.iter_mut().enumerate() {
+        if let Some(entry) = input.next() {
+            heap.push(Head { entry, run });
         }
     }
+
     let mut dropped = 0u64;
-    let entries: Vec<Entry> = map
-        .into_values()
-        .filter(|e| {
-            let drop = drop_tombstones && matches!(e, Entry::Del { .. });
-            if drop {
-                dropped = dropped.max(e.seq());
-            }
-            !drop
-        })
-        .collect();
     let mut runs = Vec::new();
-    let mut start = 0;
+    let mut pending = Vec::new();
     let mut size = 0;
-    for (i, e) in entries.iter().enumerate() {
-        size += entry_size(e);
+    while let Some(Head { entry, run }) = heap.pop() {
+        if let Some(next) = inputs[run].next() {
+            heap.push(Head { entry: next, run });
+        }
+        while let Some(mut shadowed) = heap.peek_mut() {
+            if shadowed.entry.key() != entry.key() {
+                break;
+            }
+            match inputs[shadowed.run].next() {
+                Some(next) => shadowed.entry = next,
+                None => {
+                    PeekMut::pop(shadowed);
+                }
+            }
+        }
+        if drop_tombstones && matches!(entry, Entry::Del { .. }) {
+            dropped = dropped.max(entry.seq());
+            continue;
+        }
+        size += entry_size(&entry);
+        pending.push(entry);
         if size >= target_bytes {
-            runs.push(encode_sst(&entries[start..=i], codec));
-            start = i + 1;
+            runs.push(encode_sst(&pending, codec));
+            pending.clear();
             size = 0;
         }
     }
-    if start < entries.len() {
-        runs.push(encode_sst(&entries[start..], codec));
+    if !pending.is_empty() {
+        runs.push(encode_sst(&pending, codec));
     }
     Ok((runs, dropped))
 }
@@ -90,6 +132,22 @@ mod tests {
         assert_eq!(back, entries);
         let (none, _) = merge_sst_bytes(&[encode_sst(&[Entry::Del { key: b"a".to_vec(), seq: 1 }], Codec::Raw)], true, 1000, Codec::Raw).unwrap();
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn newest_of_many_overlapping_runs_wins() {
+        let runs: Vec<Vec<Entry>> = (0..3u64)
+            .map(|r| (0..30u64).filter(|i| i % (r + 1) == 0).map(|i| put(format!("k{i:02}").as_bytes(), &[b'0' + r as u8], 10 - r)).collect())
+            .collect();
+        let blobs: Vec<Vec<u8>> = runs.iter().map(|r| encode_sst(r, Codec::Raw)).collect();
+        let (out, _) = merge_sst_bytes(&blobs, false, 200, Codec::Raw).unwrap();
+        let back: Vec<Entry> = out.iter().flat_map(|r| decode_sst(r).unwrap()).collect();
+        let want: Vec<Entry> = (0..30u64).map(|i| put(format!("k{i:02}").as_bytes(), b"0", 10)).collect();
+        assert_eq!(back, want);
+        let (reversed, _) = merge_sst_bytes(&blobs.iter().rev().cloned().collect::<Vec<_>>(), false, usize::MAX, Codec::Raw).unwrap();
+        let newest = |i: u64| [2u64, 1, 0].into_iter().find(|r| i % (r + 1) == 0).unwrap();
+        let want: Vec<Entry> = (0..30u64).map(|i| put(format!("k{i:02}").as_bytes(), &[b'0' + newest(i) as u8], 10 - newest(i))).collect();
+        assert_eq!(decode_sst(&reversed[0]).unwrap(), want);
     }
 
     #[test]
