@@ -10,3 +10,4 @@ packages/kv/.arena-readpath
 .DS_Store
 .scratch
 examples/todo/dist
+examples/rich-text/dist

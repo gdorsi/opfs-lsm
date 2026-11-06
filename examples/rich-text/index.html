@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rich Text + KV</title>
+    <style>
+      :root {
+        font-family: system-ui, sans-serif;
+        color: #1c1915;
+        background: #f6f4ef;
+      }
+      body { margin: 0; }
+      main {
+        max-width: 48rem;
+        margin: 2rem auto;
+        padding: 0 1rem 3rem;
+      }
+      h1 { font-size: 1.4rem; margin: 0 0 0.25rem; }
+      .lede, .meta { margin: 0.25rem 0; color: #4a453d; }
+      .error { color: #9b1c1c; min-height: 1.4em; }
+      .editor-shell {
+        margin-top: 1rem;
+        background: #fff;
+        border: 1px solid #d8d2c8;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+        padding: 0.5rem;
+        border-bottom: 1px solid #e6e0d6;
+        background: #faf8f4;
+      }
+      .toolbar button {
+        font: inherit;
+        font-size: 0.9rem;
+        padding: 0.25rem 0.5rem;
+        border: 1px solid #d0c9be;
+        background: #fff;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .toolbar button.is-active { background: #1c1915; color: #fff; border-color: #1c1915; }
+      .ProseMirror {
+        min-height: 16rem;
+        padding: 1rem;
+        outline: none;
+      }
+      .ProseMirror p { margin: 0.5rem 0; }
+      .ProseMirror h1, .ProseMirror h2, .ProseMirror h3 { margin: 0.75rem 0 0.25rem; }
+      .ProseMirror ul, .ProseMirror ol { padding-left: 1.5rem; }
+      .ProseMirror blockquote {
+        margin: 0.5rem 0;
+        padding-left: 0.75rem;
+        border-left: 3px solid #d0c9be;
+        color: #4a453d;
+      }
+      .ProseMirror pre {
+        background: #1c1915;
+        color: #f6f4ef;
+        padding: 0.75rem;
+        border-radius: 6px;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
