@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "oxc",
+    "vitest"
+  ],
+  "categories": {
+    "correctness": "error"
+  },
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/wasm/**",
+    "target/**",
+    ".scratch/**",
+    ".claude/**",
+    ".agents/**"
+  ],
+  "rules": {
+    "vitest/no-conditional-expect": "off",
+    "vitest/no-standalone-expect": "off"
+  }
+}

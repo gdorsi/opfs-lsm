@@ -1,4 +1,4 @@
-import type { AsyncFs, Db, IngestClient } from "../dist/index.js";
+import type { Db } from "../dist/index.js";
 import type { HarnessOpenOptions } from "../dist/testing.js";
 
 const out = document.getElementById("out")!;

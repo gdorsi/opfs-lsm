@@ -1,6 +1,6 @@
 import { ConstraintError } from "./errors.js";
 
-export const LIMITS = {
+const LIMITS = {
   keyBytes: 8 * 1024,
   valueBytes: 16 * 1024 * 1024,
   batchOps: 10_000,

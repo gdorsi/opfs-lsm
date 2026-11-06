@@ -1,7 +1,7 @@
 /** One derived kv entry of a row: an index key with an empty value, or the search key with its text. */
 export type IndexEntry = { readonly key: Uint8Array; readonly value: Uint8Array };
 
-export function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   if (a.byteLength !== b.byteLength) return false;
   for (let i = 0; i < a.byteLength; i++) {
     if (a[i] !== b[i]) return false;
