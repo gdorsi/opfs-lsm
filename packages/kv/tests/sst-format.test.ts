@@ -66,12 +66,15 @@ function drain(c: LayerCursor): string[] {
   return out;
 }
 
+/** `toEqual` walks typed arrays element by element, which is too slow for thousands of entries. */
+const show = (e: SstEntry | undefined) => (e ? `${[...e.key]}:${e.kind}:${e.seq}:${e.kind === "put" ? [...e.value] : ""}` : "none");
+
 function expectReaderAgreesWithDecode(body: Uint8Array): void {
   const all = decodeSst(body);
   const reader = new SstReader(body);
-  for (const e of all) expect(reader.get(e.key)).toEqual(e);
-  for (const e of all) expect(reader.get(cat(e.key, Uint8Array.of(0)))).toEqual(sstGet(all, cat(e.key, Uint8Array.of(0))));
-  expect(reader.get(utf("i/"))).toEqual(sstGet(all, utf("i/")));
+  expect(all.map((e) => show(reader.get(e.key)))).toEqual(all.map(show));
+  const misses = [...all.map((e) => cat(e.key, Uint8Array.of(0))), utf("i/")];
+  expect(misses.map((k) => show(reader.get(k)))).toEqual(misses.map((k) => show(sstGet(all, k))));
   const asLayer = (bounds: ScanBounds) =>
     all
       .filter(
@@ -106,7 +109,7 @@ describe("sst format", () => {
     it(`SstReader get and cursor agree with decodeSst: ${name}`, async () => {
       const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
       for (const body of [encodeSst(entries), await encodeWasm(entries, "lz4")]) {
-        expect(decodeSst(body)).toEqual(sorted.map((e) => ({ ...e, seq: e.seq ?? 0 })));
+        expect(decodeSst(body).map(show)).toEqual(sorted.map((e) => show({ ...e, seq: e.seq ?? 0 })));
         expectReaderAgreesWithDecode(body);
       }
     });
