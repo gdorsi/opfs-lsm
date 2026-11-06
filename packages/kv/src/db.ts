@@ -326,9 +326,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const syncAt = trace ? performance.now() : 0;
   await db.sync();
   span(trace, "sync", performance.now() - syncAt);
-  const watchAt = trace ? performance.now() : 0;
-  await ingest.watch(name, policy);
-  span(trace, "watch", performance.now() - watchAt);
+  ingest.watch(name, policy);
   span(trace, "open", performance.now() - openAt);
   return db;
 }

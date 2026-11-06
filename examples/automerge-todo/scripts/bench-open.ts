@@ -76,7 +76,6 @@ const PHASES = [
   "wal-read",
   "memtable",
   "sst",
-  "watch",
   "wasm",
   "host-scan",
   "gap",
@@ -216,7 +215,7 @@ function report(state: Published): void {
   console.log(`ua ${state.userAgent}`);
   console.log("");
   console.log(
-    "open ms is the wall clock from openDb to ready. wal-read sits inside sync and includes the IndexedDB cursor and decode. host-scan and wasm can finish after open returns. gap is open minus opfs, worker-ctor, idb-open, generation, sync, and watch.",
+    "open ms is the wall clock from openDb to ready. wal-read sits inside sync and includes the IndexedDB cursor and decode. host-scan and wasm can finish after open returns. gap is open minus opfs, worker-ctor, idb-open, generation, and sync.",
   );
   for (const result of state.results) {
     console.log("");
