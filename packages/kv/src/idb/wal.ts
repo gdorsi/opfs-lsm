@@ -102,41 +102,51 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
-/** Keys and values in one shot. A per-row cursor clones each value on its own turn. */
+/** Seqs per `getAll`. Every chunk of a read is in flight at once. */
+const READ_CHUNK = 25_000;
+
+/**
+ * Records with `after < seq <= head`, ascending. Committed seqs are gapless
+ * above ingestedThrough, so a value's position in its range gives its seq,
+ * and no `getAllKeys` pass is needed. A short range is a gap and throws, the
+ * way `catchUp` throws on one. IDB read cost is per row, and ranges in flight
+ * together read faster than one `getAll` over the whole tail.
+ * `getAllRecords` is not used: Chrome defers deserializing its values to the
+ * first `.value` read, so the time it saves comes back in decode.
+ */
 async function readRecords(
   wal: IDBObjectStore,
-  range: IDBKeyRange | null,
+  after: number,
+  head: number,
 ): Promise<WalRecord[]> {
-  const [keys, values] = await Promise.all([
-    reqToPromise(wal.getAllKeys(range)),
-    reqToPromise(wal.getAll(range)),
-  ]);
-  if (keys.length !== values.length) {
-    throw new CommitError("wal keys and values differ");
+  const chunks: Promise<WalRecord[]>[] = [];
+  for (let lo = after + 1; lo <= head; lo += READ_CHUNK) {
+    const hi = Math.min(head, lo + READ_CHUNK - 1);
+    chunks.push(
+      reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi))).then((values) => {
+        if (values.length !== hi - lo + 1) {
+          throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
+        }
+        return values.map((value, i) => ({ seq: lo + i, ops: decodeOps(value) }));
+      }),
+    );
   }
-  const out: WalRecord[] = [];
-  for (let i = 0; i < keys.length; i++) {
-    const seq = keys[i];
-    if (typeof seq !== "number") throw new CommitError("wal key is not a seq");
-    out.push({ seq, ops: decodeOps(values[i]) });
-  }
-  return out;
+  return (await Promise.all(chunks)).flat();
 }
 
 async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
   const meta = tx.objectStore(META_STORE);
-  const [head, generation, ingestedThrough, records] = await Promise.all([
+  const [head, generation, ingestedThrough] = await Promise.all([
     reqToPromise(meta.get(META_HEAD)).then(num),
     reqToPromise(meta.get(META_GENERATION)).then(num),
     reqToPromise(meta.get(META_INGESTED)).then(num),
-    readRecords(tx.objectStore(WAL_STORE), IDBKeyRange.lowerBound(since, true)),
   ]);
-  return {
+  const records = await readRecords(
+    tx.objectStore(WAL_STORE),
+    Math.max(since, ingestedThrough),
     head,
-    generation,
-    ingestedThrough,
-    records: records.filter((r) => r.seq > ingestedThrough),
-  };
+  );
+  return { head, generation, ingestedThrough, records };
 }
 
 /**
@@ -286,18 +296,18 @@ export class IdBWal {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
-    const [raw, through, records] = await Promise.all([
+    const [raw, through, head] = await Promise.all([
       reqToPromise(meta.get(META_PENDING)),
       reqToPromise(meta.get(META_INGESTED)).then(num),
-      readRecords(tx.objectStore(WAL_STORE), null),
+      reqToPromise(meta.get(META_HEAD)).then(num),
     ]);
     if (typeof raw === "number") {
       await done;
       return raw;
     }
     let bytes = 0;
-    for (const record of records) {
-      if (record.seq > through) bytes += opsBytes(record.ops);
+    for (const record of await readRecords(tx.objectStore(WAL_STORE), through, head)) {
+      bytes += opsBytes(record.ops);
     }
     meta.put(bytes, META_PENDING);
     await done;
@@ -315,13 +325,12 @@ export class IdBWal {
   async listUningested(): Promise<WalRecord[]> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const done = txDone(tx);
-    const through = num(
-      await reqToPromise(tx.objectStore(META_STORE).get(META_INGESTED)),
-    );
-    const records = await readRecords(
-      tx.objectStore(WAL_STORE),
-      IDBKeyRange.lowerBound(through, true),
-    );
+    const meta = tx.objectStore(META_STORE);
+    const [through, head] = await Promise.all([
+      reqToPromise(meta.get(META_INGESTED)).then(num),
+      reqToPromise(meta.get(META_HEAD)).then(num),
+    ]);
+    const records = await readRecords(tx.objectStore(WAL_STORE), through, head);
     await done;
     return records;
   }
