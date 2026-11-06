@@ -55,7 +55,7 @@ import {
   type ChangeListener,
 } from "./changes.js";
 
-export type { ViewSnapshot } from "./view.js";
+export type { ScanFilter, ViewSnapshot } from "./view.js";
 export type { ChangeEvent, ChangeListener, ChangeKind } from "./changes.js";
 
 /** Public open options. Apps pass a database name; the library owns the rest. */

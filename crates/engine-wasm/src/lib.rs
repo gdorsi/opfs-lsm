@@ -1,4 +1,4 @@
-use engine_core::{decode_sst, encode_sst, merge_sst_bytes, Codec, Entry};
+use engine_core::{decode_sst, encode_sst, merge_sst_bytes, scan_block_contains, Codec, Entry};
 use js_sys::{Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 
@@ -50,6 +50,29 @@ pub fn lz4_decompress_js(src: &[u8], size: usize) -> Result<Vec<u8>, JsValue> {
         Ok(out) if out.len() == size => Ok(out),
         _ => Err(JsValue::from_str("lz4 block corrupt")),
     }
+}
+
+/// The puts of one data block, as the run's block index frames it, whose value
+/// contains every pattern. `patterns` is each pattern as a little-endian u32
+/// length then its bytes. Hits come back as `u32 key_len, u32 value_len, key,
+/// value` records in key order.
+#[wasm_bindgen]
+pub fn scan_block_contains_js(framed: &[u8], lz4: bool, patterns: &[u8]) -> Result<Vec<u8>, JsValue> {
+    let mut pats: Vec<&[u8]> = Vec::new();
+    let mut o = 0;
+    while o < patterns.len() {
+        if o + 4 > patterns.len() {
+            return Err(JsValue::from_str("patterns truncated"));
+        }
+        let n = u32::from_le_bytes(patterns[o..o + 4].try_into().unwrap()) as usize;
+        o += 4;
+        if o + n > patterns.len() {
+            return Err(JsValue::from_str("patterns truncated"));
+        }
+        pats.push(&patterns[o..o + n]);
+        o += n;
+    }
+    scan_block_contains(framed, codec(lz4), &pats).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 /// Decode SST bytes to JS array of entries.
