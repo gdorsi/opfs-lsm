@@ -73,7 +73,6 @@ function wordsOf(text: string): string[] {
     .filter((w) => w.length > 0);
 }
 
-/** True when a word of `value` (words joined by single spaces, with a leading space) starts with `token`. */
 /** Entries of key-ordered scans that pass `keep`, in key order, each key once. */
 function* mergeMatches(
   scans: readonly Iterable<{ readonly key: Uint8Array; readonly value: Uint8Array }>[],
@@ -96,6 +95,7 @@ function* mergeMatches(
   }
 }
 
+/** True when a word of `value` (words joined by single spaces, with a leading space) starts with `token`. */
 function hasWordPrefix(value: Uint8Array, token: Uint8Array): boolean {
   const last = value.byteLength - token.byteLength;
   outer: for (let i = 1; i <= last; i++) {
