@@ -31,39 +31,74 @@ function idbName(dbName: DbName): string {
   return `opfs-lsm-wal/${dbName}`;
 }
 
-function bufferOf(bytes: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer as ArrayBuffer;
-}
-
 function num(raw: unknown): number {
   return typeof raw === "number" ? raw : 0;
 }
 
-function encodeOps(ops: readonly CheckedOp[]): unknown {
-  return ops.map((op) =>
-    op.type === "put"
-      ? { type: "put", key: bufferOf(op.key), value: bufferOf(op.value) }
-      : { type: "del", key: bufferOf(op.key) },
-  );
+const OP_PUT = 0;
+const OP_DEL = 1;
+
+/**
+ * A WAL row is one ArrayBuffer: per op, a type byte, a u32 key length, the
+ * key, and for a put a u32 value length and the value (little-endian).
+ * IndexedDB clones one buffer per row instead of an array of op objects with
+ * a buffer per key and value.
+ */
+function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
+  let size = 0;
+  for (const op of ops) {
+    size += 5 + op.key.byteLength + (op.type === "put" ? 4 + op.value.byteLength : 0);
+  }
+  const out = new Uint8Array(size);
+  const view = new DataView(out.buffer);
+  let at = 0;
+  for (const op of ops) {
+    view.setUint8(at, op.type === "put" ? OP_PUT : OP_DEL);
+    view.setUint32(at + 1, op.key.byteLength, true);
+    out.set(op.key, at + 5);
+    at += 5 + op.key.byteLength;
+    if (op.type === "put") {
+      view.setUint32(at, op.value.byteLength, true);
+      out.set(op.value, at + 4);
+      at += 4 + op.value.byteLength;
+    }
+  }
+  return out.buffer;
 }
 
+/** Keys and values are views into the row's buffer, which nothing else holds. */
 function decodeOps(raw: unknown): CheckedOp[] {
-  if (!Array.isArray(raw)) throw new CommitError("corrupt wal ops");
-  return raw.map((item) => {
-    const row = item as { type: string; key: ArrayBuffer; value?: ArrayBuffer };
-    const key = new Uint8Array(row.key) as CheckedOp["key"];
-    if (row.type === "put" && row.value) {
-      const value = new Uint8Array(row.value) as Extract<
-        CheckedOp,
-        { type: "put" }
-      >["value"];
-      return { type: "put" as const, key, value };
+  if (!(raw instanceof ArrayBuffer)) throw new CommitError("corrupt wal row: not bytes");
+  const bytes = new Uint8Array(raw);
+  const view = new DataView(raw);
+  const ops: CheckedOp[] = [];
+  let at = 0;
+  const take = (length: number): Uint8Array => {
+    if (at + length > bytes.byteLength) throw new CommitError("corrupt wal row: truncated");
+    const out = bytes.subarray(at, at + length);
+    at += length;
+    return out;
+  };
+  const u32 = (): number => {
+    if (at + 4 > bytes.byteLength) throw new CommitError("corrupt wal row: truncated");
+    const n = view.getUint32(at, true);
+    at += 4;
+    return n;
+  };
+  while (at < bytes.byteLength) {
+    const type = view.getUint8(at);
+    at += 1;
+    const key = take(u32()) as CheckedOp["key"];
+    if (type === OP_PUT) {
+      const value = take(u32()) as Extract<CheckedOp, { type: "put" }>["value"];
+      ops.push({ type: "put", key, value });
+    } else if (type === OP_DEL) {
+      ops.push({ type: "del", key });
+    } else {
+      throw new CommitError(`corrupt wal op ${type}`);
     }
-    if (row.type === "del") return { type: "del" as const, key };
-    throw new CommitError(`corrupt wal op ${row.type}`);
-  });
+  }
+  return ops;
 }
 
 function openIdb(dbName: DbName): Promise<IDBDatabase> {
