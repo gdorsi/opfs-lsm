@@ -2,7 +2,14 @@ import { openHarnessCollectionDb } from "../src/testing.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prefixBound } from "@opfs-lsm/kv";
 import { __resetMemoryFsForTests } from "@opfs-lsm/kv/testing";
-import { searchPrefix, type CollectionDb } from "../src/index.js";
+import {
+  extractSearchRowId,
+  indexKey,
+  primaryKey,
+  searchKey,
+  searchPrefix,
+  type CollectionDb,
+} from "../src/index.js";
 
 const NAME = "search-test";
 let open: CollectionDb | undefined;
@@ -38,6 +45,10 @@ async function notes() {
         {
           name: "notes",
           indexes: [{ name: "byRank", path: "rank" }],
+          search: { path: "title", sortBy: "rank" },
+        },
+        {
+          name: "other",
           search: { path: "title", sortBy: "rank" },
         },
         { name: "plain" },
@@ -134,6 +145,79 @@ describe("table search", () => {
     await t.put({ id: "a", title: "bread", rank: 2 });
     expect((await t.search("milk", { limit: 10 })).docs).toEqual([]);
     expect(ids((await t.search("bread", { limit: 10 })).docs)).toEqual(["a"]);
+    expect(await searchRows()).toBe(1);
+    // Same sort key: the value at that key has to change, not a second key.
+    await t.put({ id: "a", title: "butter", rank: 2 });
+    expect((await t.search("bread", { limit: 10 })).docs).toEqual([]);
+    expect(ids((await t.search("butter", { limit: 10 })).docs)).toEqual(["a"]);
+    expect(await searchRows()).toBe(1);
+  });
+
+  it("uses the sort value JSON stores, so -0 does not leave a stale key", async () => {
+    const t = await notes();
+    await t.put({ id: "a", title: "milk", rank: -0 });
+    expect((await t.get("a"))?.rank).toBe(0);
+    expect(ids((await t.search("milk", { limit: 10 })).docs)).toEqual(["a"]);
+    await t.update("a", (d) => ({ ...d, title: "bread" }));
+    expect(ids((await t.search("milk", { limit: 10 })).docs)).toEqual([]);
+    expect(ids((await t.search("bread", { limit: 10 })).docs)).toEqual(["a"]);
+    expect(await searchRows()).toBe(1);
+    await t.delete("a");
+    expect(await searchRows()).toBe(0);
+    await t.put({ id: "a", title: "milk", rank: -0 });
+    await t.put({ id: "a", title: "bread", rank: 2 });
+    expect(ids((await t.search("milk", { limit: 10 })).docs)).toEqual([]);
+    expect(await searchRows()).toBe(1);
+  });
+
+  it("rejects a byte sort, because the stored row would not round-trip it", async () => {
+    await notes();
+    const bytes = open!.table<{ id: string; title: string; rank: Uint8Array }>("notes");
+    await expect(
+      bytes.put({ id: "a", title: "milk", rank: new Uint8Array([1, 2, 3]) }),
+    ).rejects.toThrow(/JSON null, boolean, number, or string/);
+    expect(await searchRows()).toBe(0);
+    expect(await open!.table<Note>("notes").get("a")).toBeUndefined();
+  });
+
+  it("pages past a matching search key whose primary row is gone", async () => {
+    const t = await notes();
+    await t.putMany([
+      { id: "a", title: "milk", rank: 1 },
+      { id: "b", title: "milk", rank: 2 },
+      { id: "c", title: "milk", rank: 3 },
+      { id: "d", title: "milk", rank: 4 },
+      { id: "e", title: "milk", rank: 5 },
+    ]);
+    await open!.kv.delete(primaryKey("notes", "a"));
+    await open!.kv.delete(primaryKey("notes", "b"));
+    const seen: string[] = [];
+    const lengths: number[] = [];
+    let after: Uint8Array | undefined;
+    for (let guard = 0; guard < 8; guard++) {
+      const page = await t.search("milk", { limit: 2, ...(after ? { after } : {}) });
+      lengths.push(page.docs.length);
+      seen.push(...ids(page.docs));
+      if (page.next === undefined) break;
+      after = page.next;
+    }
+    expect(seen).toEqual(["c", "d", "e"]);
+    expect(lengths.some((n) => n < 2)).toBe(true);
+  });
+
+  it("keeps search keys on the s/ prefix, one table at a time", () => {
+    const key = searchKey("notes", -1, "a/b");
+    expect(extractSearchRowId(key)).toBe("a/b");
+    expect(key[0]).toBe(0x73);
+    expect(primaryKey("notes", "a/b")[0]).toBe(0x74);
+    expect(indexKey("notes", "byRank", -1, "a/b")[0]).toBe(0x69);
+  });
+
+  it("does not return rows from another table", async () => {
+    const t = await notes();
+    await t.put({ id: "a", title: "milk", rank: 1 });
+    await open!.table<Note>("other").put({ id: "b", title: "milk", rank: 0 });
+    expect(ids((await t.search("milk", { limit: 10 })).docs)).toEqual(["a"]);
     expect(await searchRows()).toBe(1);
   });
 
