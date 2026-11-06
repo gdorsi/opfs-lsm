@@ -50,9 +50,9 @@ export async function ingestAll(
       runs: [l0, ...(prev?.runs ?? [])],
       tombstoneSeq: prev?.tombstoneSeq ?? 0,
     });
-    await wal.advanceIngested(last, generation);
-    ingestedThrough = last;
     for (const r of records) foldedBytes += opsBytes(r.ops);
+    await wal.advanceIngested(last, generation, foldedBytes);
+    ingestedThrough = last;
   }
 
   await reclaimManifests(fs, (await wal.recordedGeneration()) ?? 0);

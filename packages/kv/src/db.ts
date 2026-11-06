@@ -20,9 +20,10 @@ import {
   EngineHost,
   createLocalIngestClient,
   createPortIngestClient,
+  type WatchScan,
 } from "./host/engine-host.js";
 import { layersChannel, type IngestClient } from "./host/protocol.js";
-import { IdBWal, type WalTail } from "./idb/wal.js";
+import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { Memtable, type MemRow } from "./store/memtable.js";
 import type { ScanBounds } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
@@ -92,7 +93,39 @@ export type HarnessOpenOptions = OpenOptions & {
    * and ignored in Node, which already defaults to MemoryFs.
    */
   readonly allowEphemeral?: boolean;
+  /**
+   * When set, open records phase durations here. The host scan and wasm
+   * init can append after the open promise resolves.
+   */
+  readonly trace?: OpenTrace;
 };
+
+/** One timed piece of open. `endedAt` is `performance.now()` on this thread. */
+export type OpenSpan = {
+  phase: string;
+  ms: number;
+  rows?: number;
+  bytes?: number;
+  endedAt: number;
+};
+
+export type OpenTrace = {
+  spans: OpenSpan[];
+};
+
+function span(
+  trace: OpenTrace | undefined,
+  phase: string,
+  ms: number,
+  extra?: { rows?: number; bytes?: number },
+): void {
+  if (!trace) return;
+  trace.spans.push({ phase, ms, endedAt: performance.now(), ...extra });
+}
+
+function recordWatchScan(trace: OpenTrace, scan: WatchScan): void {
+  span(trace, "host-scan", scan.ms, { rows: scan.rows, bytes: scan.bytes });
+}
 
 export type Range = {
   readonly start?: Uint8Array;
@@ -212,9 +245,18 @@ export async function openDb(options: OpenOptions): Promise<Db> {
 
 /** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
 export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
+  const trace = options.trace;
+  const openAt = trace ? performance.now() : 0;
   const name = checkDbName(options.name);
   // Reads unpack LZ4 blocks faster once wasm loads. Until then they use the JS decoder.
-  void ensureEngine();
+  const wasmAt = trace ? performance.now() : 0;
+  const engine = ensureEngine();
+  if (trace) {
+    void engine.then(
+      () => span(trace, "wasm", performance.now() - wasmAt),
+      () => span(trace, "wasm-error", performance.now() - wasmAt),
+    );
+  }
   const policy: IngestPolicy = {
     ...DEFAULT_INGEST_POLICY,
     ...options.ingestPolicy,
@@ -241,22 +283,36 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   }
 
   if (useBrowser) {
+    const opfsAt = trace ? performance.now() : 0;
     fs = await openBrowserFs(name);
+    span(trace, "opfs", performance.now() - opfsAt);
+    const workerAt = trace ? performance.now() : 0;
     const worker = new SharedWorker(sharedWorkerUrl(), {
       type: "module",
       name: `opfs-lsm:${name}`,
     });
-    ingest = createPortIngestClient(worker.port);
+    span(trace, "worker-ctor", performance.now() - workerAt);
+    ingest = createPortIngestClient(
+      worker.port,
+      trace ? (scan) => recordWatchScan(trace, scan) : undefined,
+    );
     ownsIngestClient = true;
   } else {
     if (!fs) fs = defaultMemoryFs(name);
     if (!ingest) ingest = localIngest(name, fs);
   }
 
+  const idbAt = trace ? performance.now() : 0;
   const wal = await IdBWal.open(name);
+  span(trace, "idb-open", performance.now() - idbAt);
+  const generationAt = trace ? performance.now() : 0;
   if ((await wal.recordedGeneration()) === undefined) {
-    await wal.raiseGeneration((await loadLatestGeneration(fs))?.generation ?? 0);
+    const manifestAt = performance.now();
+    const latest = await loadLatestGeneration(fs);
+    span(trace, "manifest", performance.now() - manifestAt);
+    await wal.raiseGeneration(latest?.generation ?? 0);
   }
+  span(trace, "generation", performance.now() - generationAt);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const db = new DbImpl(
     name,
@@ -265,9 +321,15 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     fs,
     ingest,
     ownsIngestClient,
+    trace,
   );
+  const syncAt = trace ? performance.now() : 0;
   await db.sync();
+  span(trace, "sync", performance.now() - syncAt);
+  const watchAt = trace ? performance.now() : 0;
   await ingest.watch(name, policy);
+  span(trace, "watch", performance.now() - watchAt);
+  span(trace, "open", performance.now() - openAt);
   return db;
 }
 
@@ -351,6 +413,7 @@ class DbImpl implements Db {
     private readonly fs: AsyncFs,
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
+    private readonly trace?: OpenTrace,
   ) {
     if (typeof BroadcastChannel !== "undefined") {
       this.bus = new BroadcastChannel(layersChannel(name));
@@ -471,12 +534,30 @@ class DbImpl implements Db {
 
   private async syncOnce(): Promise<void> {
     for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
-      const tail = await this.wal.tail(this.mem.appliedThrough);
+      const profile: WalReadProfile | undefined = this.trace
+        ? { ms: 0, rows: 0 }
+        : undefined;
+      const tail = await this.wal.tail(this.mem.appliedThrough, profile);
+      if (profile) {
+        span(this.trace, "wal-read", profile.ms, { rows: profile.rows });
+      }
       if (this.closed) return;
+      const sstAt = this.trace ? performance.now() : 0;
       if (tail.generation !== this.installed.generation) {
         await this.load(tail.generation);
       }
-      if (this.catchUp(tail) === undefined) return;
+      if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
+      const memAt = this.trace ? performance.now() : 0;
+      const missing = this.catchUp(tail);
+      if (this.trace) {
+        span(
+          this.trace,
+          "memtable",
+          performance.now() - memAt,
+          profile ? { rows: profile.rows } : undefined,
+        );
+      }
+      if (missing === undefined) return;
     }
     throw new CorruptDatabaseError(GENERATION_GONE);
   }

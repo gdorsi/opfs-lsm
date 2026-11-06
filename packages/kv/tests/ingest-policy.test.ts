@@ -12,7 +12,7 @@ import {
   openHarnessDb,
   __resetMemoryFsForTests
 } from "../src/testing.js";
-import { checkDbName, opsBytes } from "../src/check.js";
+import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 
@@ -116,6 +116,56 @@ describe("ingest policy", () => {
     expect((await a.get(utf("c")))?.byteLength).toBe(1);
     await a.close();
     await b.close();
+  });
+
+  it("a reopened database uses the stored WAL size", async () => {
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const writer = await open(host, fs, "a", { maxWalBytes: 1 << 30 });
+    await writer.put(utf("a"), new Uint8Array(40));
+    await writer.close();
+
+    const under = await open(host, fs, "b", { maxWalBytes: 100 });
+    await settle();
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    expect((await under.get(utf("a")))?.byteLength).toBe(40);
+    await under.close();
+
+    const more = await open(host, fs, "c", { maxWalBytes: 1 << 30 });
+    await more.put(utf("b"), new Uint8Array(80));
+    await more.close();
+    const over = await open(host, fs, "d", { maxWalBytes: 50 });
+    await vi.waitFor(
+      async () => expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1),
+      WAIT,
+    );
+    expect((await over.get(utf("a")))?.byteLength).toBe(40);
+    expect((await over.get(utf("b")))?.byteLength).toBe(80);
+    await over.close();
+  });
+
+  it("drops only the folded bytes from the WAL counter", async () => {
+    const wal = await IdBWal.open(checkDbName(NAME));
+    expect(await wal.uningestedBytes()).toBe(0);
+    const first = {
+      type: "put" as const,
+      key: checkKey(utf("a")),
+      value: checkValue(new Uint8Array(10)),
+    };
+    const second = {
+      type: "put" as const,
+      key: checkKey(utf("b")),
+      value: checkValue(new Uint8Array(4)),
+    };
+    const seq = await wal.append([first]);
+    expect(seq).toBe(1);
+    expect(await wal.uningestedBytes()).toBe(opsBytes([first]));
+    const next = await wal.append([second]);
+    expect(next).toBe(2);
+    await wal.advanceIngested(seq ?? 0, 1, opsBytes([first]));
+    expect(await wal.uningestedBytes()).toBe(opsBytes([second]));
+    expect((await wal.listUningested()).map((record) => record.seq)).toEqual([2]);
+    wal.close();
   });
 
   it("a second request for the same flush publishes nothing new", async () => {

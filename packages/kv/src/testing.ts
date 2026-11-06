@@ -5,6 +5,8 @@ export {
   openDbWith as openHarnessDb,
   __resetMemoryFsForTests,
   type HarnessOpenOptions,
+  type OpenSpan,
+  type OpenTrace,
 } from "./db.js";
 export {
   EngineHost,

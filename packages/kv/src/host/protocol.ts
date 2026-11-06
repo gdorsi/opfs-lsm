@@ -18,6 +18,8 @@ export type ClientToHost =
       readonly id: number;
       readonly name: string;
       readonly maxWalBytes: number;
+      /** Ask the host to report the background WAL scan. Open does not wait for it. */
+      readonly trace?: boolean;
     }
   | { readonly type: "unwatch"; readonly name: string }
   | { readonly type: "ping"; readonly id: number };
@@ -34,6 +36,13 @@ export type HostToClient =
       readonly message: string;
     }
   | { readonly type: "watch-ok"; readonly id: number }
+  | {
+      readonly type: "watch-trace";
+      readonly id: number;
+      readonly ms: number;
+      readonly rows: number;
+      readonly bytes: number;
+    }
   | { readonly type: "pong"; readonly id: number };
 
 export type IngestClient = {
