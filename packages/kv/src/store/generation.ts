@@ -2,7 +2,7 @@ import type { AsyncFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { crc32 } from "./crc32.js";
 import { encodeSst } from "./engine.js";
-import { SstReader, type SstEntry } from "./sst.js";
+import { sstKeyRange, type SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
@@ -160,7 +160,7 @@ export async function publishGeneration(
 
 /** The manifest entry for a run file with these bytes. */
 export function runMeta(path: string, body: Uint8Array): RunMeta {
-  const range = new SstReader(body).range;
+  const range = sstKeyRange(body);
   return range ? { path, range } : { path };
 }
 
@@ -200,15 +200,6 @@ export async function loadGeneration(
   return decodeGeneration(buf);
 }
 
-/** Undefined when the run file is gone. Run files never change once written. */
-export async function loadSstReader(
-  fs: AsyncFs,
-  path: string,
-): Promise<SstReader | undefined> {
-  const buf = await fs.read(path, 0, Number.POSITIVE_INFINITY);
-  return buf ? new SstReader(buf) : undefined;
-}
-
 /** Delete manifests older than `keepFrom`. Call after IDB records `keepFrom`. */
 export async function reclaimManifests(
   fs: AsyncFs,
@@ -225,19 +216,53 @@ export async function reclaimManifests(
   }
 }
 
-/** Delete run files that are in `drop` and not retained by `keep`. */
+/**
+ * Remove each path in `drop` that `keep` does not retain and no tab holds
+ * open. Returns the paths still there, for the host to retry. A missing file
+ * counts as removed, so a rerun after a crash converges.
+ */
 export async function reclaimRuns(
   fs: AsyncFs,
-  drop: readonly string[],
+  drop: Iterable<string>,
   keep: readonly string[],
-): Promise<void> {
+): Promise<string[]> {
   const retained = new Set(keep);
-  for (const path of drop) {
+  const held: string[] = [];
+  for (const path of new Set(drop)) {
     if (retained.has(path)) continue;
+    let removed = false;
     try {
-      await fs.remove(path);
+      removed = await fs.removeUnlessOpen(path);
     } catch {
-      // best-effort
+      // Retried on the next tick like a held file.
     }
+    if (!removed) held.push(path);
   }
+  return held;
+}
+
+/**
+ * The runs of every manifest from `from` on. A tab reads the generation
+ * IndexedDB records, which can trail the newest manifest after a crash
+ * between publishing one and recording it, so both stay.
+ */
+export async function liveRuns(fs: AsyncFs, from: number): Promise<string[]> {
+  const out: string[] = [];
+  for (const name of await fs.list("m")) {
+    const n = Number(name.replace(/\.mft$/, ""));
+    if (!Number.isFinite(n) || n < from) continue;
+    const meta = await loadGeneration(fs, n).catch(() => undefined);
+    for (const run of meta?.runs ?? []) out.push(run.path);
+  }
+  return out;
+}
+
+/** Every run file on disk, from the `l<n>/` directories. */
+export async function listRuns(fs: AsyncFs): Promise<string[]> {
+  const out: string[] = [];
+  for (const dir of await fs.list("")) {
+    if (!/^l\d+$/.test(dir)) continue;
+    for (const name of await fs.list(dir)) out.push(`${dir}/${name}`);
+  }
+  return out;
 }

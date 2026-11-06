@@ -11,7 +11,10 @@
 import "fake-indexeddb/auto";
 import { encodeSst, engineUsingWasm, ensureEngine, prefixBound, decodeSst as wasmDecodeSst, type Db, type SstEntry } from "@opfs-lsm/kv";
 // Internal kv reader, to time reads without the generation layer.
-import { decodeSst, SstReader } from "../../kv/dist/store/sst.js";
+import { decodeSst, sstKeyRange } from "../../kv/dist/store/sst.js";
+import { bytesFile, SstReader } from "../../kv/dist/store/sst-reader.js";
+import { PageCache } from "../../kv/dist/store/page-cache.js";
+import { Miss, settle } from "../../kv/dist/store/cursor.js";
 import { compareBytes } from "../../kv/dist/bytes.js";
 import { indexPrefix, Table, type TableSchema } from "../src/index.js";
 
@@ -79,11 +82,22 @@ const version = (b: Uint8Array) => view(b).getUint32(b.byteLength - 8, true);
 const blockCount = (b: Uint8Array) => view(b).getUint32(b.byteLength - 40, true);
 const createdAt = prefixBound(indexPrefix("todos", "byCreatedAt"));
 
-function scan(reader: SstReader): number {
+/** A cold reader: its first reads load the run's layout and pages. */
+const readerOf = (b: Uint8Array) => new SstReader(bytesFile(b), new PageCache(), sstKeyRange(b));
+
+async function scan(reader: SstReader): Promise<number> {
   const c = reader.cursor(createdAt);
   let n = 0;
-  for (let e = c.peek(); e; c.next(), e = c.peek()) n += e.key.byteLength > 0 ? 1 : 0;
-  return n;
+  for (;;) {
+    const e = c.peek();
+    if (e instanceof Miss) {
+      await e.ready;
+      continue;
+    }
+    if (!e) return n;
+    n += e.key.byteLength > 0 ? 1 : 0;
+    c.next();
+  }
 }
 
 async function bench(ids: IdShape): Promise<void> {
@@ -114,16 +128,20 @@ async function bench(ids: IdShape): Promise<void> {
     );
   }
 
-  const getAll = (reader: SstReader) => {
+  const getAll = async (reader: SstReader) => {
     let hits = 0;
-    for (const k of probes) if (reader.get(k)?.kind === "put") hits++;
+    for (const k of probes) {
+      let e = reader.get(k);
+      if (e instanceof Miss) e = await settle(() => reader.get(k));
+      if (e?.kind === "put") hits++;
+    }
     return hits;
   };
   const ops: Record<string, (b: Uint8Array) => boolean | Promise<boolean>> = {
     "decode ts": (b) => decodeSst(b).length === entries.length,
     "decode wasm": async (b) => (await wasmDecodeSst(b)).length === entries.length,
-    "index scan": (b) => scan(new SstReader(b)) === rows,
-    [`${gets} gets`]: (b) => getAll(new SstReader(b)) === gets,
+    "index scan": async (b) => (await scan(readerOf(b))) === rows,
+    [`${gets} gets`]: async (b) => (await getAll(readerOf(b))) === gets,
   };
 
   const ms = new Map<string, number[]>();

@@ -45,16 +45,14 @@ describe("L0 compaction", () => {
       await db.ingest();
     }
 
-    const paths = fs.publishedPaths();
-    expect(paths.some((p) => p.startsWith("l1/"))).toBe(true);
-    // L0 inputs should have been reclaimed
-    const l0Left = paths.filter((p) => p.startsWith("l0/"));
-    expect(l0Left.length).toBe(0);
-
+    expect(fs.publishedPaths().some((p) => p.startsWith("l1/"))).toBe(true);
     for (let i = 0; i < 4; i++) {
       const v = await db.get(utf(`k${i}`));
       expect(v && new TextDecoder().decode(v)).toBe(`v${i}`);
     }
+
+    await db.ingest();
+    expect(fs.publishedPaths().filter((p) => p.startsWith("l0/"))).toEqual([]);
     await db.close();
   });
 
@@ -73,6 +71,8 @@ describe("L0 compaction", () => {
       },
       list: (dir) => fs.list(dir),
       remove: (path) => fs.remove(path),
+    open: (path) => fs.open(path),
+    removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
       create: (path) => fs.create(path),
     };
     const host = new EngineHost(() => hostFs);

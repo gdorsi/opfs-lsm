@@ -6,7 +6,6 @@ import {
   publishGeneration,
   publishRun,
   reclaimManifests,
-  reclaimRuns,
   runMeta,
   type RunMeta,
 } from "../store/generation.js";
@@ -61,9 +60,9 @@ export async function mergeNextStep(
 }
 
 /**
- * Swap the step's inputs for its output in the latest generation, record
- * the generation in IDB, then reclaim the inputs. Tabs read runs by the IDB
- * generation, so the files go only after it moves. Run under the ingest lock.
+ * Swap the step's inputs for its output in the latest generation and record
+ * the generation in IDB. The inputs stay on disk: tabs may still read them,
+ * so the host retires them (see `EngineHost.reclaim`). Run under the ingest lock.
  */
 export async function installStep(
   fs: AsyncFs,
@@ -83,7 +82,6 @@ export async function installStep(
     tombstoneSeq: Math.max(meta.tombstoneSeq, step.droppedSeq),
   });
   await wal.raiseGeneration(generation);
-  await reclaimRuns(fs, step.inputs, runs.map((r) => r.path));
   await reclaimManifests(fs, generation);
   return generation;
 }
