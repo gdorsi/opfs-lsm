@@ -10,7 +10,7 @@ anything I reasoned out without a source is marked **(inferred)**.
 
 ## Summary and ranked recommendation
 
-The engine already has good point checks: about 5,300 lines of vitest unit tests over
+The engine already has good point checks: 3,318 lines of vitest unit tests over
 `MemoryFs` and `fake-indexeddb`, four small exhaustive models (`formal:kv`), and a real-Chrome
 two-tab drive in CI. None of these generates long random histories, injects faults, crashes the
 engine at every write, or checks the database against an oracle afterwards. Those four
@@ -80,12 +80,12 @@ merge order.
 
 | Asset | What it covers | Gap |
 |---|---|---|
-| `packages/kv/tests/*.test.ts` (31 files) | Example-based unit tests: SST format, LZ4, bloom, memtable, WAL append/read/ingest, view, update, compaction, generation, close race | Hand-picked cases. Two tests use a seeded LCG (`lz4.test.ts`, `memtable.test.ts`). No random histories, no oracle, no fault injection. `sst.test.ts` has one "rejects corrupt crc" case. `wal-read.test.ts` has two corrupt-row cases. |
+| `packages/kv/tests/*.test.ts` (29 files) | Example-based unit tests: SST format, LZ4, bloom, memtable, WAL append/read/ingest, view, update, compaction, generation, close race | Hand-picked cases. Two tests use a seeded LCG (`lz4.test.ts`, `memtable.test.ts`). No random histories, no oracle, no fault injection. `sst.test.ts` has one "rejects corrupt crc" case. `wal-read.test.ts` has two corrupt-row cases. |
 | `packages/kv/formal/` (`formal:kv`) | NoLostAcks, WalOverSst, ViewPin, CompactPreserve as exhaustive BFS over tiny domains, plus source-sync guards (`.agents/skills/verify-kv/SKILL.md`) | The skill states its own bounds: 1 key and 2 appends for ingest, at most 2 runs for compaction. It omits crashes, multi-tab, reclaim against a view, and `pendingBytes`. Its "Not covered yet" list is the right next target list. |
 | `verify-opfs-lsm` drives (`two-tab`, `kv-bench`, …) | Real Chrome, SharedWorker, OPFS, cross-tab visibility (`docs/verification.md`) | Happy path only. Nothing kills a tab or the SharedWorker mid-write. |
 | CI (`.github/workflows/m1-smoke.yml`) | `bench:gate`, `two-tab`, `pnpm test`, `formal:kv` per PR | No nightly or long-running job. No seed sweep. |
 | `packages/kv/src/check.ts` | Input validation (key, value and batch limits, db name) | Despite the name, it does not check database integrity. |
-| `crates/engine-core` | 31 `#[test]`s (encode/decode, compact, bloom) | No fuzz target or property test for decoding untrusted bytes. |
+| `crates/engine-core` | 26 `#[test]`s (encode/decode, crc, compact, bloom) | No fuzz target or property test for decoding untrusted bytes. |
 | Seams | `AsyncFs` is injectable (`HarnessOpenOptions.fs`, `src/db.ts:70`) | The WAL is hard-wired to the global `indexedDB` (`src/idb/wal.ts:106`, `IdBWal.open` at `src/db.ts:307`). `BroadcastChannel`, Web Locks, timers and `crypto.randomUUID` are globals too. A deterministic simulator needs these four behind seams. |
 | Collections | Unit tests per feature | No invariant that every index entry matches a row and every row has its index entries. Rows and index entries are written in one `db.update`/`db.batch` (`packages/collections/src/table.ts:285,390`), so such a check is exact. |
 
