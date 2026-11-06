@@ -51,6 +51,7 @@ type Handle = {
       get(key: Uint8Array): Promise<Uint8Array | undefined>;
     }) => Promise<T>,
   ): Promise<T>;
+  sync(): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -147,6 +148,7 @@ async function scenario(self: Handle, other: OtherTab): Promise<void> {
   log(`warm seed generation=${seeded.generation}`);
 
   await other.put("k", "v");
+  await self.sync();
 
   const pin = await self.view(async (snap) => {
     const before = text(await snap.get(enc.encode("k")));
@@ -237,6 +239,7 @@ async function servePeer(db: Handle): Promise<void> {
           });
           break;
         case "get": {
+          await db.sync();
           const got = text(await db.get(enc.encode(cmd.key)));
           await postResult({
             id: cmd.id,
@@ -328,6 +331,7 @@ async function run(): Promise<void> {
         await otherDb.put(enc.encode(key), enc.encode(value));
       },
       async get(key) {
+        await otherDb.sync();
         return text(await otherDb.get(enc.encode(key)));
       },
       async ingest() {

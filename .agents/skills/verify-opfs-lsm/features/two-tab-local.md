@@ -25,7 +25,7 @@ Preconditions:
 
 ## Gotchas
 
-- On main this drive exits 1. The page reports `pinned get before ingest was null`. CI does not run it. The pass policy is [docs/verification.md](../../../../docs/verification.md).
+- CI does not run this drive.
 - Exactly one page is expected. Seeing `tabs=2` means the wrong drive ran.
 - Changes to SharedWorker port protocol are not covered here — use `two-tab` for that.
 - Still uses real OPFS BrowserFs in Chrome; it is not a MemoryFs unit test.
