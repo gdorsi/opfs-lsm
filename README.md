@@ -122,8 +122,11 @@ Rows are JSON objects. The primary key field defaults to `"id"` and must be a st
 | `where(index, value)` | Equality or compound-prefix lookup on a declared index. |
 | `orderBy(index, opts?)` | Walk an index in key order. Optional `from`, `toExclusive`, `limit`. |
 | `page(index, opts)` | One cursor page of an index. Pass `next` from the previous call as `after`. |
+| `search(text, opts)` | Word-prefix text search, one cursor page, in `search.sortBy` order. Needs a `search` spec on the table. |
 
 An index `path` is a field name, a dot path, or a compound list such as `["orgId", "createdAt"]`. Set `multiEntry: true` to index each element of an array-valued path.
+
+For text search, give the table `search: { path: "title", sortBy: "newest" }`. A row then gets one extra key holding its lowercased words, so a put costs one key more, not one per word and per prefix as a `multiEntry` term index does. `table.search("mil bre", { limit: 50 })` returns rows with, for every word typed, a word that starts with it (case-insensitive, letters and digits), ordered by `sortBy` ascending. Store a descending number to get newest first, and treat `sortBy` as immutable: changing it moves the row's key. A search reads the search keys until a page fills: a common word returns in microseconds, and a word that matches nothing reads every row of the table (about 60 ms per 100,000 rows, about 1 s per million in `docs/research/multi-entry-index-alternatives.md`).
 
 ## Clone and run
 
