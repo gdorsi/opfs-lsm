@@ -25,6 +25,14 @@ export function lz4_decompress_js(src: Uint8Array | number[], size: number): Uin
  */
 export function merge_ssts_js(blobs: Array<any>, drop_tombstones: boolean, target_bytes: number, lz4: boolean): object;
 
+/**
+ * The puts of one data block, as the run's block index frames it, whose value
+ * contains every pattern. `patterns` is each pattern as a little-endian u32
+ * length then its bytes. Hits come back as `u32 key_len, u32 value_len, key,
+ * value` records in key order.
+ */
+export function scan_block_contains_js(framed: Uint8Array | number[], lz4: boolean, patterns: Uint8Array | number[]): Uint8Array;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -33,6 +41,7 @@ export interface InitOutput {
     readonly encode_sst_js: (a: any, b: number) => [number, number, number];
     readonly lz4_decompress_js: (a: number, b: number, c: number) => [number, number, number, number];
     readonly merge_ssts_js: (a: any, b: number, c: number, d: number) => [number, number, number];
+    readonly scan_block_contains_js: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

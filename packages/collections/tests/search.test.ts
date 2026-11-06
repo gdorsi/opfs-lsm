@@ -262,6 +262,23 @@ describe("table search", () => {
     expect(ids((await t.search("milk", { limit: 10 })).docs)).toEqual(["c", "b"]);
   });
 
+  it("drops a hit the memtable overwrote, and finds one it added, over an older run", async () => {
+    const t = await notes();
+    await t.putMany([
+      { id: "a", title: "milk", rank: 1 },
+      { id: "b", title: "milk", rank: 2 },
+      { id: "c", title: "bread", rank: 3 },
+    ]);
+    await open!.ingest();
+    await t.put({ id: "a", title: "bread", rank: 1 });
+    await t.put({ id: "c", title: "milk", rank: 3 });
+    expect(ids((await t.search("milk", { limit: 10 })).docs)).toEqual(["b", "c"]);
+    await open!.ingest();
+    await t.put({ id: "b", title: "bread", rank: 2 });
+    expect(ids((await t.search("milk", { limit: 10 })).docs)).toEqual(["c"]);
+    expect(ids((await t.search("bread", { limit: 10 })).docs)).toEqual(["a", "b"]);
+  });
+
   it("needs a search spec and valid arguments", async () => {
     const t = await notes();
     await expect(open!.table("plain").search("x", { limit: 1 })).rejects.toThrow(/no search spec/);

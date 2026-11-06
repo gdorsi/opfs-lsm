@@ -9,6 +9,12 @@ export function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
+export function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return a[i]! < b[i]! ? -1 : 1;
+  return a.length - b.length;
+}
+
 function keyId(key: Uint8Array): string {
   return String.fromCharCode(...key);
 }

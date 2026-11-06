@@ -37,3 +37,21 @@ export function keyToString(key: Uint8Array): string {
   }
   return s;
 }
+
+/** True when `hay` holds `needle` as a contiguous run of bytes. */
+export function containsBytes(hay: Uint8Array, needle: Uint8Array): boolean {
+  const first = needle[0];
+  if (first === undefined) return true;
+  const last = hay.length - needle.length;
+  for (let i = hay.indexOf(first); i >= 0 && i <= last; i = hay.indexOf(first, i + 1)) {
+    let j = 1;
+    while (j < needle.length && hay[i + j] === needle[j]) j++;
+    if (j === needle.length) return true;
+  }
+  return false;
+}
+
+export function containsAll(hay: Uint8Array, needles: readonly Uint8Array[]): boolean {
+  for (const needle of needles) if (!containsBytes(hay, needle)) return false;
+  return true;
+}

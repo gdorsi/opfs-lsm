@@ -7,6 +7,7 @@ export {
   type Entry,
   type Range,
   type ViewSnapshot,
+  type ScanFilter,
   type ChangeEvent,
   type ChangeListener,
   type ChangeKind,

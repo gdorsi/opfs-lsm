@@ -384,6 +384,97 @@ fn read_block(block: &[u8]) -> Result<Vec<Entry>, SstError> {
     read_records(block, o, end, count, prefix)
 }
 
+/// True when `hay` holds `needle` as a contiguous run of bytes.
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    let Some((&first, rest)) = needle.split_first() else { return true };
+    let mut from = 0;
+    while let Some(i) = hay[from..].iter().position(|&b| b == first) {
+        let at = from + i + 1;
+        if hay.len() >= at + rest.len() && &hay[at..at + rest.len()] == rest {
+            return true;
+        }
+        from = at;
+    }
+    false
+}
+
+/// The puts of one data block of a run, as the block index frames it (`codec`
+/// says whether it is a u32 length plus LZ4 bytes or raw), whose value
+/// contains every pattern. Records are read in place, so a raw block that
+/// misses allocates nothing. An LZ4 block is unpacked first, and that unpack is
+/// most of the cost of a miss. Hits come back packed: `u32 key_len, u32 value_len, key, value`,
+/// little-endian, in key order.
+pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]]) -> Result<Vec<u8>, SstError> {
+    let unpacked;
+    let block = match codec {
+        Codec::Raw => framed,
+        Codec::Lz4 => {
+            if framed.len() < 4 {
+                return Err(SstError::Truncated);
+            }
+            let size = read_u32(framed, 0) as usize;
+            unpacked = lz4_flex::block::decompress(&framed[4..], size).map_err(|_| SstError::BadBlock)?;
+            if unpacked.len() != size {
+                return Err(SstError::BadBlock);
+            }
+            &unpacked[..]
+        }
+    };
+    if block.len() < 4 {
+        return Err(SstError::Truncated);
+    }
+    let count = read_u32(block, 0) as usize;
+    let end = block.len().checked_sub(offset_table_bytes(count)).ok_or(SstError::Truncated)?;
+    let mut o = 4;
+    let prefix_len = read_varint(block, &mut o, end)?;
+    if o + prefix_len > end {
+        return Err(SstError::Truncated);
+    }
+    let prefix = &block[o..o + prefix_len];
+    o += prefix_len;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        if o >= end {
+            return Err(SstError::Truncated);
+        }
+        let tag = block[o];
+        o += 1;
+        if o + 8 > end {
+            return Err(SstError::Truncated);
+        }
+        o += 8;
+        let key_len = read_varint(block, &mut o, end)?;
+        if o + key_len > end {
+            return Err(SstError::Truncated);
+        }
+        let suffix = &block[o..o + key_len];
+        o += key_len;
+        match tag {
+            TAG_PUT => {
+                let val_len = read_varint(block, &mut o, end)?;
+                if o + val_len > end {
+                    return Err(SstError::Truncated);
+                }
+                let value = &block[o..o + val_len];
+                o += val_len;
+                if patterns.iter().all(|p| contains(value, p)) {
+                    out.extend_from_slice(&((prefix.len() + suffix.len()) as u32).to_le_bytes());
+                    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                    out.extend_from_slice(prefix);
+                    out.extend_from_slice(suffix);
+                    out.extend_from_slice(value);
+                }
+            }
+            TAG_DEL => {}
+            other => return Err(SstError::BadTag(other)),
+        }
+    }
+    if o != end {
+        return Err(SstError::TrailingGarbage);
+    }
+    Ok(out)
+}
+
 /// Where the sections of a run are. `crc_off` holds the CRC of every byte
 /// before it.
 #[derive(Clone, Copy)]
@@ -513,6 +604,66 @@ mod tests {
         assert_eq!(decoded[0], Entry::Del { key: b"a".to_vec(), seq: 9 });
         assert_eq!(decoded[1], Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 });
         assert_eq!(decoded[2].seq(), 1 << 40);
+    }
+
+    fn hits(packed: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut o = 0;
+        while o < packed.len() {
+            let (k, v) = (read_u32(packed, o) as usize, read_u32(packed, o + 4) as usize);
+            o += 8;
+            out.push((packed[o..o + k].to_vec(), packed[o + k..o + k + v].to_vec()));
+            o += k + v;
+        }
+        out
+    }
+
+    #[test]
+    fn a_block_scan_returns_the_puts_whose_value_has_every_pattern() {
+        let mut entries: Vec<Entry> = (0..400u64)
+            .map(|i| put(format!("s/t/{i:08}").as_bytes(), format!(" word{} common{}", i % 7, i % 3).as_bytes(), i + 1))
+            .collect();
+        entries.push(Entry::Del { key: b"s/t/zzdel".to_vec(), seq: 999 });
+        let want = |pats: &[&[u8]]| -> Vec<(Vec<u8>, Vec<u8>)> {
+            entries
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::Put { key, value, .. } if pats.iter().all(|p| contains(value, p)) => Some((key.clone(), value.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        for codec in [Codec::Raw, Codec::Lz4] {
+            let sst = encode_sst(&entries, codec);
+            let layout = footer_layout(&sst).unwrap();
+            let mut o = layout.index_start;
+            let mut got: Vec<Vec<(Vec<u8>, Vec<u8>)>> = vec![vec![]; 4];
+            for _ in 0..layout.block_count {
+                let first = read_u32(&sst, o) as usize;
+                o += 4 + first;
+                let last = read_u32(&sst, o) as usize;
+                o += 4 + last;
+                let (offset, length) = (read_u32(&sst, o) as usize, read_u32(&sst, o + 4) as usize);
+                o += 8;
+                let framed = &sst[offset..offset + length];
+                for (i, pats) in [&[b" word3".as_slice()][..], &[b" word3", b" common0"], &[b" nope"], &[]].iter().enumerate() {
+                    got[i].extend(hits(&scan_block_contains(framed, codec, pats).unwrap()));
+                }
+            }
+            assert!(layout.block_count > 1, "{codec:?} spans several blocks");
+            assert_eq!(got[0], want(&[b" word3"]), "{codec:?}");
+            assert_eq!(got[1], want(&[b" word3", b" common0"]), "{codec:?}");
+            assert!(got[2].is_empty(), "{codec:?}");
+            assert_eq!(got[3].len(), 400, "no patterns keeps every put, and no tombstone");
+        }
+    }
+
+    #[test]
+    fn contains_matches_overlapping_starts() {
+        assert!(contains(b"aab", b"ab"));
+        assert!(contains(b" a a ab", b" ab"));
+        assert!(!contains(b"ab", b"abc"));
+        assert!(contains(b"", b""));
     }
 
     fn put(key: &[u8], value: &[u8], seq: u64) -> Entry {

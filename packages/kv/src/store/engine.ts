@@ -6,12 +6,15 @@ import type { SstCodec, SstEntry } from "./sst.js";
 import * as sstTs from "./sst.js";
 import { foldEntries } from "./fold.js";
 import { useLz4Decoder } from "./lz4.js";
+import { useBlockScanner } from "./block-scan.js";
+import { CorruptDatabaseError } from "../errors.js";
 
 type WasmMod = {
   default: (module_or_path?: unknown) => Promise<unknown>;
   encode_sst_js: (entries: unknown, lz4: boolean) => Uint8Array;
   decode_sst_js: (buf: Uint8Array) => unknown[];
   lz4_decompress_js: (src: Uint8Array, size: number) => Uint8Array;
+  scan_block_contains_js: (framed: Uint8Array, lz4: boolean, patterns: Uint8Array) => Uint8Array;
   merge_ssts_js: (
     blobs: unknown,
     dropTombstones: boolean,
@@ -71,7 +74,16 @@ export async function ensureEngine(): Promise<void> {
     initOnce = (async () => {
       wasm = await loadWasm();
       const mod = wasm;
-      if (mod) useLz4Decoder((src, size) => mod.lz4_decompress_js(src, size));
+      if (mod) {
+        useLz4Decoder((src, size) => mod.lz4_decompress_js(src, size));
+        useBlockScanner((framed, lz4, patterns) => {
+          try {
+            return mod.scan_block_contains_js(framed, lz4, patterns);
+          } catch (err) {
+            throw new CorruptDatabaseError(`sst block corrupt: ${String(err)}`);
+          }
+        });
+      }
     })();
   }
   await initOnce;

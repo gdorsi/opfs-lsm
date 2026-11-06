@@ -100,3 +100,99 @@ describe("view snapshot", () => {
     await db.close();
   });
 });
+
+describe("view scanRuns", () => {
+  async function seeded() {
+    const db = await openHarnessDb({
+      name: NAME,
+      forceMemory: true,
+      writerId: "w1",
+      ingestPolicy: { maxWalBytes: 1 << 30 },
+    });
+    await db.put(enc.encode("a"), enc.encode("old"));
+    await db.put(enc.encode("b"), enc.encode("old"));
+    await db.put(enc.encode("c"), enc.encode("old"));
+    await db.ingest();
+    await db.put(enc.encode("b"), enc.encode("new"));
+    await db.delete(enc.encode("c"));
+    await db.put(enc.encode("d"), enc.encode("mem"));
+    return db;
+  }
+  const pairs = (rows: Iterable<{ key: Uint8Array; value: Uint8Array }>) =>
+    [...rows].map((r) => `${dec.decode(r.key)}=${dec.decode(r.value)}`);
+
+  it("returns one key-ordered scan per source, unmerged, puts only", async () => {
+    const db = await seeded();
+    const scans = await db.view((snap) => snap.scanRuns().map(pairs));
+    expect(scans.map((s) => s.join(","))).toEqual(["b=new,d=mem", "a=old,b=old,c=old"]);
+    await db.close();
+  });
+
+  it("honours range bounds in every source", async () => {
+    const db = await seeded();
+    const scans = await db.view((snap) =>
+      snap.scanRuns({ start: enc.encode("b"), endExclusive: enc.encode("d") }).map(pairs),
+    );
+    expect(scans.map((s) => s.join(","))).toEqual(["b=new", "b=old,c=old"]);
+    await db.close();
+  });
+
+  it("merging the scans newest first gives what range gives only after dropping shadowed keys", async () => {
+    const db = await seeded();
+    const merged = await db.view(async (snap) => {
+      const seen = new Map<string, string>();
+      for (const scan of snap.scanRuns()) {
+        for (const e of scan) if (!seen.has(dec.decode(e.key))) seen.set(dec.decode(e.key), dec.decode(e.value));
+      }
+      const live: string[] = [];
+      for (const k of [...seen.keys()].sort()) if ((await snap.get(enc.encode(k))) !== undefined) live.push(`${k}=${seen.get(k)}`);
+      const range: string[] = [];
+      for await (const e of snap.range()) range.push(`${dec.decode(e.key)}=${dec.decode(e.value)}`);
+      return { live, range };
+    });
+    expect(merged.live).toEqual(merged.range);
+    await db.close();
+  });
+
+  it("closes with the snapshot", async () => {
+    const db = await seeded();
+    const snap = await db.view((s) => s);
+    expect(() => snap.scanRuns()).toThrow(/closed/);
+    await db.close();
+  });
+});
+
+describe("view scanRuns with a filter", () => {
+  it("yields only puts whose value holds every pattern, in each source", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    await db.put(enc.encode("a"), enc.encode(" red apple"));
+    await db.put(enc.encode("b"), enc.encode(" green apple"));
+    await db.ingest();
+    await db.put(enc.encode("c"), enc.encode(" red pear"));
+    await db.put(enc.encode("d"), enc.encode(" blue"));
+    const scans = await db.view((snap) =>
+      snap.scanRuns(undefined, { valueContains: [enc.encode(" red")] }).map((s) => [...s].map((e) => dec.decode(e.key)).join(",")),
+    );
+    expect(scans).toEqual(["c", "a"]);
+    const both = await db.view((snap) =>
+      snap.scanRuns(undefined, { valueContains: [enc.encode(" red"), enc.encode(" apple")] }).map((s) => [...s].map((e) => dec.decode(e.key)).join(",")),
+    );
+    expect(both).toEqual(["", "a"]);
+    await db.close();
+  });
+
+  it("hands out bytes that own their buffer", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    await db.put(enc.encode("a"), enc.encode(" red apple"));
+    await db.put(enc.encode("b"), enc.encode(" red pear"));
+    await db.ingest();
+    await db.put(enc.encode("c"), enc.encode(" red plum"));
+    const owned = await db.view((snap) =>
+      snap.scanRuns(undefined, { valueContains: [enc.encode(" red")] }).flatMap((s) =>
+        [...s].flatMap((e) => [e.key, e.value]).map((b) => b.byteOffset === 0 && b.buffer.byteLength === b.byteLength),
+      ),
+    );
+    expect(owned).toEqual([true, true, true, true, true, true]);
+    await db.close();
+  });
+});

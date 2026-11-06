@@ -3,6 +3,7 @@ import {
   decodeJson,
   encodeJson,
   extractIndexRowId,
+  concatBytes,
   extractSearchRowId,
   indexKey,
   indexPrefix,
@@ -12,7 +13,7 @@ import {
   tablePrefix,
   type IndexValue,
 } from "./codec.js";
-import { diffEntries, type IndexEntry } from "./entries.js";
+import { compareBytes, diffEntries, type IndexEntry } from "./entries.js";
 import { encodeTyped, normalizeIndexValues } from "./typed.js";
 
 export type IndexSpec = {
@@ -63,6 +64,10 @@ export type TableSchema = {
 };
 
 const EMPTY = new Uint8Array(0);
+const SPACE = 0x20;
+
+/** A search value holds ` word word`, so a word that starts with `token` is the bytes ` token`. */
+const wordStart = (token: Uint8Array): Uint8Array => concatBytes(new Uint8Array([SPACE]), token);
 const encoder = new TextEncoder();
 
 /** Lowercased words (letters and digits) of `text`, in order. */
@@ -71,6 +76,22 @@ function wordsOf(text: string): string[] {
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter((w) => w.length > 0);
+}
+
+/** Keys of key-ordered scans, in key order, each key once. */
+function* mergeKeys(scans: readonly Iterable<{ readonly key: Uint8Array }>[]): Generator<Uint8Array> {
+  const its = scans.map((scan) => scan[Symbol.iterator]());
+  const heads = its.map((it) => it.next());
+  for (;;) {
+    let min: Uint8Array | undefined;
+    for (const h of heads) if (!h.done && (min === undefined || compareBytes(h.value.key, min) < 0)) min = h.value.key;
+    if (min === undefined) return;
+    for (let i = 0; i < heads.length; i++) {
+      const h = heads[i]!;
+      if (!h.done && compareBytes(h.value.key, min) === 0) heads[i] = its[i]!.next();
+    }
+    yield min;
+  }
 }
 
 /** True when a word of `value` (words joined by single spaces, with a leading space) starts with `token`. */
@@ -470,6 +491,9 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
    * reads see one snapshot, so a put that commits during the call is invisible.
    * Cost is a scan of the search keys until a page fills: a common word returns
    * in microseconds, a word that matches nothing reads every key of the table.
+   * kv matches each source on its own, a run inside wasm, and only hits come
+   * back. Every hit is confirmed with a get, so a source that holds an
+   * overwritten value cannot return a stale row.
    */
   async search(
     text: string,
@@ -488,16 +512,18 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
       start: opts.after ?? whole.start,
       ...(whole.endExclusive !== undefined ? { endExclusive: whole.endExclusive } : {}),
     };
+    const matches = (value: Uint8Array) => tokens.every((t) => hasWordPrefix(value, t));
     return this.db.view(async (snap) => {
       const ids: string[] = [];
       let next: Uint8Array | undefined;
-      for await (const entry of snap.range(range)) {
-        if (!tokens.every((t) => hasWordPrefix(entry.value, t))) continue;
+      for (const key of mergeKeys(snap.scanRuns(range, { valueContains: tokens.map(wordStart) }))) {
+        const current = await snap.get(key);
+        if (current === undefined || !matches(current)) continue;
         if (ids.length === limit) {
-          next = entry.key;
+          next = key;
           break;
         }
-        const id = extractSearchRowId(entry.key);
+        const id = extractSearchRowId(key);
         if (id !== undefined) ids.push(id);
       }
       const rows = await Promise.all(ids.map((id) => snap.get(this.pkBytes(id))));
