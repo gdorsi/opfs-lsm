@@ -298,3 +298,37 @@ Bench, `DOCS=5000 RUNS=3`, medians, kv-wal:
 y-indexeddb in the same runs: 941–961 cold, 953–1074 warm. kv-sst did not change (it has
 nothing in the WAL). Recommendation 2 (fewer, larger rows) is still the larger win left.
 
+## Follow-up: byte rows and a 1 MiB ingest limit
+
+Two more changes, measured on the same bench (`DOCS=5000 RUNS=3`, 250,000 updates, headless
+Chrome 156).
+
+**WAL rows as bytes.** `encodeOps` writes a batch as one `ArrayBuffer` (per op: type byte,
+u32 key length, key, u32 value length, value). `decodeOps` hands out `subarray` views into it.
+A row holds one batch, and nothing decoded from the WAL crosses `postMessage`, so the views
+keep no extra memory alive. Rows in the old object format now throw `corrupt wal row: not
+bytes`.
+
+| kv-wal (auto ingest off) | open cold / warm | all cold / warm |
+|---|---|---|
+| ranged `getAll`, object rows | 524 / 483 | 698 / 663 |
+| ranged `getAll`, byte rows | **351 / 353** | **527 / 599** |
+
+That is a third off the open, more than section 2's ~20% for one `getAll` over the whole
+tail.
+
+**Default `maxWalBytes` 4 MiB → 1 MiB.** The bench's `kv` shape runs kv's default policy, and
+`WAL_BYTES` overrides it. The WAL rows column is what the host had not ingested yet when the
+write settled.
+
+| `maxWalBytes` | WAL rows left | open cold / warm | all cold / warm | write 50k docs |
+|---|---|---|---|---|
+| 4 MiB | 29,912 | 71 / 91 | 243 / 266 | 48.1 s |
+| **1 MiB** | 7,919 | **44 / 39** | **231 / 219** | 49.9 s |
+| 256 KiB | 22 | 39 / 25 | 219 / 195 | 52.5 s |
+
+1 MiB holds the open near 40 ms. 256 KiB saves little more open time for four times as many
+ingests and L0 compactions. Write time grows a few percent per step, which is close to
+run-to-run noise. Recommendation 2 (packing many records per row) was not pursued: with a
+1 MiB WAL, the open is already about 20% of a 5,000-doc load.
+

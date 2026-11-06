@@ -3,7 +3,7 @@
  *
  *   pnpm --filter @opfs-lsm/example-yjs bench:load
  *
- * Query: docs, runs, concurrency, edits. The page writes docs * 10 documents
+ * Query: docs, runs, concurrency, edits, shapes (comma list), walBytes. The page writes docs * 10 documents
  * to each storage once, then reloads the page `runs` times. Each reload opens
  * fresh storage and loads the same `docs` documents, picked at random from the
  * set, cold and then warm. The driver reads window.__BENCH when every run is in.
@@ -12,6 +12,9 @@
  * `edits` transactions, so it is stored as `edits` updates. Every load must
  * return the title and body that were written.
  *
+ * kv uses kv's default ingest policy (or maxWalBytes = walBytes), so the host
+ * ingests during the write and the WAL holds at most that many bytes. The
+ * write waits for that ingest to settle before the reload.
  * kv-wal keeps every update in the WAL (a huge maxWalBytes stops auto ingest).
  * kv-sst calls db.ingest() after the write, so loads read SSTs.
  * idb is y-indexeddb: one IndexedDB database per document, its default.
@@ -21,7 +24,7 @@ import { IndexeddbPersistence } from "y-indexeddb"
 import * as Y from "yjs"
 import { KvPersistence } from "../src/kv-persistence.ts"
 
-type Shape = "kv-wal" | "kv-sst" | "idb"
+type Shape = "kv" | "kv-wal" | "kv-sst" | "idb"
 
 type LoadPass = {
   pass: "cold" | "warm"
@@ -51,14 +54,17 @@ type BenchState = {
   runs: number
   concurrency: number
   edits: number
+  shapes: Shape[]
+  walBytes: number | null
   writes: WriteResult[]
   loads: { shape: Shape; run: number; order: number; passes: LoadPass[] }[]
   nextRun: number
 }
 
-const SHAPES: Shape[] = ["kv-wal", "kv-sst", "idb"]
 const NO_AUTO_INGEST = Number.MAX_SAFE_INTEGER
 const params = new URLSearchParams(location.search)
+const SHAPES = (params.get("shapes") ?? "kv,kv-wal,kv-sst,idb").split(",") as Shape[]
+const WAL_BYTES = params.get("walBytes") ? Number(params.get("walBytes")) : null
 const DOCS = Number(params.get("docs") ?? 5000)
 const TOTAL = DOCS * 10
 const RUNS = Number(params.get("runs") ?? 3)
@@ -145,7 +151,11 @@ function dbName(shape: Shape): string {
 async function openKv(shape: Shape): Promise<Db> {
   return openDb({
     name: dbName(shape),
-    ingestPolicy: { maxWalBytes: NO_AUTO_INGEST },
+    ...(shape !== "kv"
+      ? { ingestPolicy: { maxWalBytes: NO_AUTO_INGEST } }
+      : WAL_BYTES !== null
+        ? { ingestPolicy: { maxWalBytes: WAL_BYTES } }
+        : {}),
   } as Parameters<typeof openDb>[0])
 }
 
@@ -296,6 +306,22 @@ function idbCount(database: string, store: string): Promise<number> {
   })
 }
 
+/** Resolves once the WAL row count has not changed for a second. */
+async function walSettled(database: string): Promise<void> {
+  let last = -1
+  let stableSince = performance.now()
+  for (;;) {
+    const rows = await idbCount(database, "wal")
+    if (rows !== last) {
+      last = rows
+      stableSince = performance.now()
+    } else if (performance.now() - stableSince >= 1000) {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
 async function populate(shape: Shape): Promise<WriteResult> {
   status(`write ${shape}: ${TOTAL} docs`)
   const started = performance.now()
@@ -317,6 +343,12 @@ async function populate(shape: Shape): Promise<WriteResult> {
   })
   const writeMs = performance.now() - started
   let ingestMs = 0
+  if (shape === "kv") {
+    status(`write ${shape}: waiting for auto ingest to settle`)
+    const settleStarted = performance.now()
+    await walSettled(`opfs-lsm-wal/${dbName(shape)}`)
+    ingestMs = performance.now() - settleStarted
+  }
   if (shape === "kv-sst" && db) {
     status(`write ${shape}: ingest`)
     const ingestStarted = performance.now()
@@ -341,7 +373,14 @@ function loadState(): BenchState | undefined {
   const raw = sessionStorage.getItem(STATE_KEY)
   if (!raw) return undefined
   const state = JSON.parse(raw) as BenchState
-  if (state.docs !== DOCS || state.runs !== RUNS || state.concurrency !== CONCURRENCY || state.edits !== EDITS) {
+  if (
+    state.docs !== DOCS ||
+    state.runs !== RUNS ||
+    state.concurrency !== CONCURRENCY ||
+    state.edits !== EDITS ||
+    state.shapes.join() !== SHAPES.join() ||
+    state.walBytes !== WAL_BYTES
+  ) {
     return undefined
   }
   return state
@@ -360,7 +399,7 @@ async function main(): Promise<void> {
   if (!state) {
     const writes: WriteResult[] = []
     for (const shape of SHAPES) writes.push(await populate(shape))
-    state = { docs: DOCS, total: TOTAL, runs: RUNS, concurrency: CONCURRENCY, edits: EDITS, writes, loads: [], nextRun: 0 }
+    state = { docs: DOCS, total: TOTAL, runs: RUNS, concurrency: CONCURRENCY, edits: EDITS, shapes: SHAPES, walBytes: WAL_BYTES, writes, loads: [], nextRun: 0 }
     saveState(state)
     status(`wrote ${TOTAL} docs x ${SHAPES.length}, reloading for cold load`)
     location.reload()

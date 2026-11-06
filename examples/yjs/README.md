@@ -4,7 +4,7 @@
 
 ## Load bench
 
-Loads `DOCS` random documents out of a set of `DOCS * 10`, on kv (WAL and SST) and on y-indexeddb, cold and warm:
+Loads `DOCS` random documents out of a set of `DOCS * 10`, cold and warm, on kv with its default ingest policy (`kv`), kv with everything still in the WAL (`kv-wal`) or everything in SSTs (`kv-sst`), and y-indexeddb:
 
 ```sh
 pnpm bench:yjs                     # DOCS=5000 RUNS=3: 5,000 of 50,000 docs
