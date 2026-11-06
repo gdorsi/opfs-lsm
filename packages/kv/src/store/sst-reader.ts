@@ -255,7 +255,7 @@ export async function openMeta(file: RunFile): Promise<Sized<RunLayout>> {
  * key, u32 offset, u32 length) in one pass, checking blocks are contiguous
  * and end at `dataLen`.
  */
-export function packIndex(raw: Uint8Array, blockCount: number, dataLen: number): RunIndex {
+function packIndex(raw: Uint8Array, blockCount: number, dataLen: number): RunIndex {
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const sepBytes = new Uint8Array(raw.byteLength);
   const sepEnd = new Uint32Array(blockCount);
@@ -313,7 +313,7 @@ function separatorLength(prevLast: Uint8Array, first: Uint8Array): number {
 }
 
 /** The last block whose separator is <= `key`, or -1 when `key` sorts before every block. */
-export function findBlock(index: RunIndex, key: Uint8Array): number {
+function findBlock(index: RunIndex, key: Uint8Array): number {
   const { sepBytes, sepEnd } = index;
   let lo = 0;
   let hi = sepEnd.length;

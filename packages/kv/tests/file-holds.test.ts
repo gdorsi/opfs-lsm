@@ -200,7 +200,7 @@ describe.each(fsKinds)("%s open files", (_kind, makeFs) => {
     const file = (await fs.open("l1/a-5.sst"))!;
     expect(file.size).toBe(5);
     expect(dec.decode(await file.read(1, 3))).toBe("ell");
-    await expect(file.read(3, 3)).rejects.toThrow();
+    await expect(file.read(3, 3)).rejects.toThrow(/short read/);
     file.close();
   });
 

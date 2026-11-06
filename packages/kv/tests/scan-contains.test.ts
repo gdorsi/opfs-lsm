@@ -64,6 +64,15 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
     await expect(drain(readerOfBytes(sst).scanContains(pats(" w3")))).rejects.toThrow(CorruptDatabaseError);
   });
 
+  it("hands each scan hit its own buffer", async () => {
+    const rows = await drain(readerOfBytes(await encodeSst(entries, codec)).scanContains(pats(" w3")));
+    expect(rows.length).toBeGreaterThan(1);
+    const owned = rows.flatMap((e) => [e.key, e.value!]).map((b) => b.byteOffset === 0 && b.buffer.byteLength === b.byteLength);
+    expect(owned.every(Boolean)).toBe(true);
+    const buffers = new Set(rows.flatMap((e) => [e.key.buffer, e.value!.buffer]));
+    expect(buffers.size).toBe(owned.length);
+  });
+
   it("walks every run of a level in key order", async () => {
     const half = entries.length >> 1;
     const lo = readerOfBytes(await encodeSst(entries.slice(0, half), codec));

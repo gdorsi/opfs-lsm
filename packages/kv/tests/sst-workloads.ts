@@ -4,7 +4,7 @@ const enc = new TextEncoder();
 export const utf = (s: string) => enc.encode(s);
 
 /** u16le length + UTF-8, as collections encodes key segments. */
-export const seg = (s: string) => {
+const seg = (s: string) => {
   const body = utf(s);
   return Uint8Array.of(body.byteLength & 0xff, body.byteLength >> 8, ...body);
 };
@@ -34,7 +34,7 @@ export function indexWorkload(rows: number): SstEntry[] {
   return out;
 }
 
-export const put = (key: Uint8Array, value: Uint8Array, seq = 1): SstEntry => ({ kind: "put", key, value, seq });
+const put = (key: Uint8Array, value: Uint8Array, seq = 1): SstEntry => ({ kind: "put", key, value, seq });
 
 export const EDGE_CASES: Record<string, SstEntry[]> = {
   "empty run": [],
