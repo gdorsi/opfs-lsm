@@ -122,7 +122,7 @@ Removes only `packages/kv/.bench-chrome-profile` and `packages/collections/.benc
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-Formal properties (NoLostAcks, OCC, etc.): use `.agents/skills/verify-kv/SKILL.md`, not this skill.
+Formal properties (NoLostAcks, WalOverSst, ViewPin, CompactPreserve): use `.agents/skills/verify-kv/SKILL.md`, not this skill.
 
 ## Feature map
 

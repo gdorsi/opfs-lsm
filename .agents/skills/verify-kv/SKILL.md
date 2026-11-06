@@ -1,6 +1,6 @@
 ---
 name: verify-kv
-description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility across ingest, WAL-over-SST reads, view pins, and compaction merge. Use when changing ingest, WAL, resolveGet/readLayers, view snapshots, SST layer merge/compaction, or any bug where get/view can disagree with a successful put."
+description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility across ingest, WAL-over-SST reads, view pins, and compaction merge. Use when changing ingest, WAL, pointGet, view snapshots, SST merge/compaction, or any bug where get/view can disagree with a successful put."
 ---
 
 # Verify @opfs-lsm/kv (formal suite)
@@ -19,14 +19,14 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | Change touches | Run |
 |---|---|
 | `host/ingest.ts`, `idb/wal.ts` (`listUningested`, `advanceIngested`) | full suite (or at least `formal:ingest-visibility`) |
-| `store/overlay.ts` `resolveGet`, `db.ts` `readLayers`/`get` | `formal:wal-over-sst` + ingest |
-| `view.ts`, `db.ts` `openViewSnapshot` | `formal:view-pin` |
-| `store/sst-layer.ts`, `store/engine.ts` `mergeSsts`, `host/compact.ts` | `formal:compact-preserve` |
+| `store/merge.ts` `pointGet`, `db.ts` `readKey` / `get` | `formal:wal-over-sst` + ingest |
+| `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
+| `store/merge.ts` `latestSstEntry`, `store/fold.ts` `foldEntries`, `store/engine.ts` `mergeSsts`, `host/compact.ts` | `formal:compact-preserve` |
 | Unknown / several areas | **`formal:kv`** (all) |
 
 ## Tool and why
 
-Small exhaustive TypeScript checkers (BFS or full finite domains) plus source-sync guards where the model encodes product await/check order. No JVM — uses repo `tsx`/`pnpm`. Ingest step order is **parsed from** `ingest.ts`. View / compact checks also assert the relevant control flow still exists in source so a missing `cloneOverlay` fails the suite.
+Small exhaustive TypeScript checkers (BFS or full finite domains) plus source-sync guards where the model encodes product await/check order. No JVM — uses repo `tsx`/`pnpm`. Ingest step order is **parsed from** `ingest.ts`. View and compact checks also assert the relevant control flow still exists in source, so a missing `mem.pin()` copy or a reversed `latestSstEntry` / `foldEntries` loop fails the suite.
 
 ## Command
 
@@ -43,7 +43,7 @@ Exit `0` = all selected checks pass. Failures print a shortest path (or countere
 | Check | Bound |
 |---|---|
 | NoLostAcks | 1 key, ≤2 appends, one in-flight ingest; omits compact, multi-tab cache, crash |
-| WalOverSst | 1 key; all WAL×SST hit kinds (`miss`/`tomb`/two values) on **real** `resolveGet` |
+| WalOverSst | 1 key; all WAL×SST hit kinds (`miss`/`tomb`/two values) on **real** `pointGet` |
 | ViewPin | ≤3 appends; models pin vs live binding; omits SST generation bump mid-view |
 | CompactPreserve | ≤2 runs, keys `{a,b}`, cell ∈ {miss, put1, put2, del}; omits Bloom false negatives, reclaim races |
 
@@ -51,21 +51,21 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 
 ## Reading failures
 
-- **NoLostAcks:** path with `advanceIngested` before `publishGeneration` and `resolveGet` undefined.
-- **ViewPin:** `view.get` sees a post-pin append; or `cloneOverlay` removed from `view.ts`.
-- **CompactPreserve:** before/after merge disagree; or `sst-layer.ts` no longer newest-first `get`.
+- **NoLostAcks:** path with `advanceIngested` before `publishGeneration` and model `resolveGet` undefined.
+- **ViewPin:** `view.get` sees a post-pin append; or `db.ts` no longer passes `this.mem.pin()` into `ViewSnapshotImpl`, or `memtable.ts` drops the copy-on-write pin.
+- **CompactPreserve:** before/after merge disagree; or `merge.ts` / `fold.ts` no longer newest-first get / oldest-first apply.
 - **Modeling error:** path impossible in TS, or parser/source-sync out of date — fix the formal files, do not weaken the property.
 
 ## Coverage record
 
 | Check | Code |
 |---|---|
-| NoLostAcks | `ingestAll`, `publishL0`/`publishGeneration`/`advanceIngested`, `resolveGet`, `readLayers` |
-| WalOverSst | `KeyOverlay`, `resolveGet` |
-| ViewPin | `ViewSnapshotImpl`, `openViewSnapshot` |
-| CompactPreserve | `SstLayer.get` / `asOverlay`, `mergeSsts` order |
+| NoLostAcks | `ingestAll` order: `publishL0`, `publishGeneration`, `advanceIngested` |
+| WalOverSst | `pointGet` |
+| ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
+| CompactPreserve | `latestSstEntry`, `foldEntries` (TypeScript path of `mergeSsts`) |
 
-**Sync commit:** `6d9f543dcf288b5e1cf6618b2e0e18563fe5ef84` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
+**Sync commit:** `682b4d8a8118065340ea30d9bd83142d264fb2a3` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
 ## Intentional product change
 
@@ -78,6 +78,7 @@ Drift without recheck → `/maintain-formal-verification-skill`.
 
 ## Not covered yet (next targets)
 
-- Multi-tab `layersStale` / BroadcastChannel vs SST generation bump.
+- Multi-tab BroadcastChannel versus an SST generation bump.
 - Crash between `publishGeneration` and `advanceIngested` (recovery).
-- `maybeCompact` reclaim vs open view pin (generation lifetime).
+- Compaction reclaim versus an open view pin (generation lifetime).
+- `pendingBytes` on the WAL and in `EngineHost` (the ingest trigger). The checks do not model it.

@@ -6,7 +6,7 @@ A simple, fast and flexible k/v storage for the browsers.
 
 `@opfs-lsm/collections` builds tables and secondary indexes on the same WAL and OPFS path. Its table API is Dexie-shaped: `put`, `get`, `where`, and `orderBy` over JSON rows.
 
-The storage layout, consistency rules, and ingest path are in [docs/design.md](docs/design.md).
+The storage layout, consistency rules, and ingest path are in [docs/design.md](docs/design.md). How to verify a change is in [docs/verification.md](docs/verification.md).
 
 ## `@opfs-lsm/kv`
 
@@ -140,4 +140,4 @@ pnpm todo:example
 pnpm automerge:example
 ```
 
-`pnpm test` typechecks and runs the unit suites. `pnpm bench:browser` starts headless Chrome against the SharedWorker path. Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`.
+`pnpm test` typechecks and runs the unit suites. `pnpm bench:browser` starts headless Chrome against the SharedWorker path. Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
