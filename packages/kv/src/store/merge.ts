@@ -149,6 +149,19 @@ export class RunLevel {
     return this.runs[r]!.get(key);
   }
 
+  /** The puts in `bounds` whose value holds every pattern, in key order. */
+  *scanContains(
+    patterns: readonly Uint8Array[],
+    bounds?: ScanBounds,
+  ): Generator<{ key: Uint8Array; value: Uint8Array }> {
+    const { runs, smallest } = this;
+    const end = bounds?.endExclusive;
+    for (let r = bounds?.start ? this.seek(bounds.start) : 0; r < runs.length; r++) {
+      if (end && compareBytes(smallest[r]!, end) >= 0) return;
+      yield* runs[r]!.scanContains(patterns, bounds);
+    }
+  }
+
   cursor(bounds?: ScanBounds): LayerCursor {
     const { runs, smallest } = this;
     const end = bounds?.endExclusive;

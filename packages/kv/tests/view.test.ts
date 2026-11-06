@@ -161,3 +161,23 @@ describe("view scanRuns", () => {
     await db.close();
   });
 });
+
+describe("view scanRuns with a filter", () => {
+  it("yields only puts whose value holds every pattern, in each source", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    await db.put(enc.encode("a"), enc.encode(" red apple"));
+    await db.put(enc.encode("b"), enc.encode(" green apple"));
+    await db.ingest();
+    await db.put(enc.encode("c"), enc.encode(" red pear"));
+    await db.put(enc.encode("d"), enc.encode(" blue"));
+    const scans = await db.view((snap) =>
+      snap.scanRuns(undefined, { valueContains: [enc.encode(" red")] }).map((s) => [...s].map((e) => dec.decode(e.key)).join(",")),
+    );
+    expect(scans).toEqual(["c", "a"]);
+    const both = await db.view((snap) =>
+      snap.scanRuns(undefined, { valueContains: [enc.encode(" red"), enc.encode(" apple")] }).map((s) => [...s].map((e) => dec.decode(e.key)).join(",")),
+    );
+    expect(both).toEqual(["", "a"]);
+    await db.close();
+  });
+});

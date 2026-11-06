@@ -3,6 +3,7 @@ import {
   decodeJson,
   encodeJson,
   extractIndexRowId,
+  concatBytes,
   extractSearchRowId,
   indexKey,
   indexPrefix,
@@ -63,6 +64,10 @@ export type TableSchema = {
 };
 
 const EMPTY = new Uint8Array(0);
+const SPACE = 0x20;
+
+/** A search value holds ` word word`, so a word that starts with `token` is the bytes ` token`. */
+const wordStart = (token: Uint8Array): Uint8Array => concatBytes(new Uint8Array([SPACE]), token);
 const encoder = new TextEncoder();
 
 /** Lowercased words (letters and digits) of `text`, in order. */
@@ -73,24 +78,18 @@ function wordsOf(text: string): string[] {
     .filter((w) => w.length > 0);
 }
 
-/** Entries of key-ordered scans that pass `keep`, in key order, each key once. */
-function* mergeMatches(
-  scans: readonly Iterable<{ readonly key: Uint8Array; readonly value: Uint8Array }>[],
-  keep: (value: Uint8Array) => boolean,
-): Generator<Uint8Array> {
-  const heads = scans.map((scan) => {
-    const it = scan[Symbol.iterator]();
-    const advance = (): { key: Uint8Array } | undefined => {
-      for (let r = it.next(); !r.done; r = it.next()) if (keep(r.value.value)) return r.value;
-      return undefined;
-    };
-    return { advance, head: advance() };
-  });
+/** Keys of key-ordered scans, in key order, each key once. */
+function* mergeKeys(scans: readonly Iterable<{ readonly key: Uint8Array }>[]): Generator<Uint8Array> {
+  const its = scans.map((scan) => scan[Symbol.iterator]());
+  const heads = its.map((it) => it.next());
   for (;;) {
     let min: Uint8Array | undefined;
-    for (const h of heads) if (h.head && (min === undefined || compareBytes(h.head.key, min) < 0)) min = h.head.key;
+    for (const h of heads) if (!h.done && (min === undefined || compareBytes(h.value.key, min) < 0)) min = h.value.key;
     if (min === undefined) return;
-    for (const h of heads) if (h.head && compareBytes(h.head.key, min) === 0) h.head = h.advance();
+    for (let i = 0; i < heads.length; i++) {
+      const h = heads[i]!;
+      if (!h.done && compareBytes(h.value.key, min) === 0) heads[i] = its[i]!.next();
+    }
     yield min;
   }
 }
@@ -492,8 +491,9 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
    * reads see one snapshot, so a put that commits during the call is invisible.
    * Cost is a scan of the search keys until a page fills: a common word returns
    * in microseconds, a word that matches nothing reads every key of the table.
-   * The scan reads each kv source on its own and confirms every hit with a get,
-   * so a miss does not pay for the k-way merge.
+   * kv matches each source on its own, a run inside wasm, and only hits come
+   * back. Every hit is confirmed with a get, so a source that holds an
+   * overwritten value cannot return a stale row.
    */
   async search(
     text: string,
@@ -516,7 +516,7 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     return this.db.view(async (snap) => {
       const ids: string[] = [];
       let next: Uint8Array | undefined;
-      for (const key of mergeMatches(snap.scanRuns(range), matches)) {
+      for (const key of mergeKeys(snap.scanRuns(range, { valueContains: tokens.map(wordStart) }))) {
         const current = await snap.get(key);
         if (current === undefined || !matches(current)) continue;
         if (ids.length === limit) {

@@ -1,4 +1,4 @@
-import { compareBytes } from "../bytes.js";
+import { compareBytes, containsAll } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import {
   type LayerCursor,
@@ -13,6 +13,7 @@ import {
 } from "./bloom.js";
 import { crc32 } from "./crc32.js";
 import { lz4Decompress } from "./lz4.js";
+import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 export const SST_MAGIC = 0x4f4c5354;
@@ -659,6 +660,41 @@ export class SstReader {
    */
   cursor(bounds?: ScanBounds): LayerCursor {
     return this.blockCursor(bounds);
+  }
+
+  /**
+   * The puts in `bounds` whose value holds every pattern, in key order. With
+   * the wasm engine each block is decoded and matched there and only hits cross
+   * back. Without it the cursor does the same work key by key.
+   */
+  *scanContains(
+    patterns: readonly Uint8Array[],
+    bounds?: ScanBounds,
+  ): Generator<{ key: Uint8Array; value: Uint8Array }> {
+    const scan = blockScanner();
+    if (!scan) {
+      const cursor = this.blockCursor(bounds);
+      for (let e = cursor.peek(); e; cursor.next(), e = cursor.peek()) {
+        if (e.kind === "put" && containsAll(e.value!, patterns)) yield { key: e.key, value: e.value! };
+      }
+      return;
+    }
+    const packed = packPatterns(patterns);
+    const { index } = this;
+    const start = bounds?.start;
+    const end = bounds?.endExclusive;
+    for (let bi = seekBlock(index, start); bi < index.length; bi++) {
+      const ix = index[bi]!;
+      if (end && compareBytes(ix.firstKey, end) >= 0) return;
+      const from = this.dataStart + ix.offset;
+      if (from + ix.length > this.buf.byteLength || ix.length < 4) throw new CorruptDatabaseError("sst block OOB");
+      const hits = scan(this.buf.subarray(from, from + ix.length), this.codec === "lz4", packed);
+      for (const hit of unpackHits(hits)) {
+        if (start && compareBytes(hit.key, start) < 0) continue;
+        if (end && compareBytes(hit.key, end) >= 0) return;
+        yield hit;
+      }
+    }
   }
 
   private findBlock(key: Uint8Array): number {

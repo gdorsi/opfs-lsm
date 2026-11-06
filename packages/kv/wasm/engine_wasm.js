@@ -65,6 +65,38 @@ export function merge_ssts_js(blobs, drop_tombstones, target_bytes, lz4) {
     }
     return takeFromExternrefTable0(ret[0]);
 }
+
+/**
+ * The puts of one data block, as the run's block index frames it, whose value
+ * contains every pattern. `patterns` is each pattern as a little-endian u32
+ * length then its bytes. Hits come back as `u32 key_len, u32 value_len, key,
+ * value` records in key order.
+ * @param {Uint8Array | number[]} framed
+ * @param {boolean} lz4
+ * @param {Uint8Array | number[]} patterns
+ * @returns {Uint8Array}
+ */
+export function scan_block_contains_js(framed, lz4, patterns) {
+    const val3 = +lz4;
+    let ptr0, len0, ptr1, len1;
+    try {
+        ptr0 = passArray8ToWasm0(framed, wasm.__wbindgen_malloc);
+        len0 = WASM_VECTOR_LEN;
+        ptr1 = passArray8ToWasm0(patterns, wasm.__wbindgen_malloc);
+        len1 = WASM_VECTOR_LEN;
+    } catch (e) {
+        if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
+        if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+        throw e;
+    }
+    const ret = wasm.scan_block_contains_js(ptr0, len0, val3, ptr1, len1);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v4 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v4;
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,

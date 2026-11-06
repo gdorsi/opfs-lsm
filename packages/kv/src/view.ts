@@ -1,3 +1,4 @@
+import { containsAll } from "./bytes.js";
 import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
@@ -9,6 +10,11 @@ import {
   pointGet,
   type RunLevel,
 } from "./store/merge.js";
+
+/** Keeps only puts whose value contains every one of these byte strings. */
+export interface ScanFilter {
+  readonly valueContains: readonly Uint8Array[];
+}
 
 export interface ViewSnapshot {
   /** WAL head seq pinned when the view opened. */
@@ -22,9 +28,11 @@ export interface ViewSnapshot {
    * each deeper level), not merged. A key can show up in several scans, and an
    * older scan can hold a value a newer source overwrote or deleted, so a caller
    * confirms a hit with `get` on this snapshot. In exchange, a scan that only
-   * filters skips the merge heap.
+   * filters skips the merge heap. With a `filter`, each scan yields only the
+   * puts that pass it, and a run is matched inside the wasm engine, one block at
+   * a time, so a block with no hit costs no allocation.
    */
-  scanRuns(range?: Range): Iterable<Entry>[];
+  scanRuns(range?: Range, filter?: ScanFilter): Iterable<Entry>[];
 }
 
 export function boundsOf(range?: Range): ScanBounds | undefined {
@@ -69,24 +77,35 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     return pointGet(this.rows.get(k), this.levels, k);
   }
 
-  scanRuns(range?: Range): Iterable<Entry>[] {
+  scanRuns(range?: Range, filter?: ScanFilter): Iterable<Entry>[] {
     this.ensureOpen();
     const bounds = boundsOf(range);
+    const patterns = filter?.valueContains;
     return [
-      this.livePuts(arrayCursor(this.rows.range(bounds)), true),
-      ...this.levels.map((level) => this.livePuts(level.cursor(bounds), false)),
+      this.livePuts(arrayCursor(this.rows.range(bounds)), true, patterns),
+      ...this.levels.map((level) =>
+        patterns
+          ? this.guarded(level.scanContains(patterns, bounds))
+          : this.livePuts(level.cursor(bounds), false),
+      ),
     ];
   }
 
+  private *guarded(entries: Iterable<Entry>): Generator<Entry> {
+    for (const entry of entries) {
+      this.ensureOpen();
+      yield entry;
+    }
+  }
+
   /** An SST cursor already hands out fresh bytes. Memtable bytes are shared, so copy those. */
-  private *livePuts(cursor: LayerCursor, copy: boolean): Generator<Entry> {
+  private *livePuts(cursor: LayerCursor, copy: boolean, patterns?: readonly Uint8Array[]): Generator<Entry> {
     for (let e = cursor.peek(); e; cursor.next(), e = cursor.peek()) {
       this.ensureOpen();
-      if (e.kind === "put") {
-        yield copy
-          ? { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) }
-          : { key: e.key, value: e.value! };
-      }
+      if (e.kind !== "put" || (patterns && !containsAll(e.value!, patterns))) continue;
+      yield copy
+        ? { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) }
+        : { key: e.key, value: e.value! };
     }
   }
 
