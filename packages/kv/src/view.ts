@@ -30,7 +30,7 @@ export interface ViewSnapshot {
    * confirms a hit with `get` on this snapshot. In exchange, a scan that only
    * filters skips the merge heap. With a `filter`, each scan yields only the
    * puts that pass it, and a run is matched inside the wasm engine, one block at
-   * a time, so a block with no hit costs no allocation.
+   * a time, and only the hits cross back.
    */
   scanRuns(range?: Range, filter?: ScanFilter): Iterable<Entry>[];
 }
