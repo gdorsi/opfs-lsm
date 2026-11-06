@@ -101,7 +101,7 @@ describe("view snapshot", () => {
   });
 });
 
-describe("view scanRuns", () => {
+describe("range with valueContains", () => {
   async function seeded() {
     const db = await openHarnessDb({
       name: NAME,
@@ -109,75 +109,64 @@ describe("view scanRuns", () => {
       writerId: "w1",
       ingestPolicy: { maxWalBytes: 1 << 30 },
     });
-    await db.put(enc.encode("a"), enc.encode("old"));
-    await db.put(enc.encode("b"), enc.encode("old"));
-    await db.put(enc.encode("c"), enc.encode("old"));
+    await db.put(enc.encode("a"), enc.encode(" red apple"));
+    await db.put(enc.encode("b"), enc.encode(" red pear"));
+    await db.put(enc.encode("c"), enc.encode(" red plum"));
+    await db.put(enc.encode("e"), enc.encode(" red fig"));
+    await db.put(enc.encode("f"), enc.encode(" blue"));
     await db.ingest();
-    await db.put(enc.encode("b"), enc.encode("new"));
+    await db.put(enc.encode("b"), enc.encode(" green pear"));
     await db.delete(enc.encode("c"));
-    await db.put(enc.encode("d"), enc.encode("mem"));
+    await db.put(enc.encode("d"), enc.encode(" red kiwi"));
+    await db.put(enc.encode("e"), enc.encode(" red fig ripe"));
     return db;
   }
-  const pairs = (rows: Iterable<{ key: Uint8Array; value: Uint8Array }>) =>
-    [...rows].map((r) => `${dec.decode(r.key)}=${dec.decode(r.value)}`);
+  const red = [enc.encode(" red")];
+  const pairs = async (rows: AsyncIterable<{ key: Uint8Array; value: Uint8Array }>) => {
+    const out: string[] = [];
+    for await (const r of rows) out.push(`${dec.decode(r.key)}=${dec.decode(r.value)}`);
+    return out;
+  };
 
-  it("returns one key-ordered scan per source, unmerged, puts only", async () => {
+  it("yields each matching key once with its current value, in key order", async () => {
     const db = await seeded();
-    const scans = await db.view((snap) => snap.scanRuns().map(pairs));
-    expect(scans.map((s) => s.join(","))).toEqual(["b=new,d=mem", "a=old,b=old,c=old"]);
+    const want = ["a= red apple", "d= red kiwi", "e= red fig ripe"];
+    expect(await pairs(db.range({ valueContains: red }))).toEqual(want);
+    expect(await db.view((snap) => pairs(snap.range({ valueContains: red })))).toEqual(want);
     await db.close();
   });
 
-  it("honours range bounds in every source", async () => {
+  it("honours bounds, and limit counts matches", async () => {
     const db = await seeded();
-    const scans = await db.view((snap) =>
-      snap.scanRuns({ start: enc.encode("b"), endExclusive: enc.encode("d") }).map(pairs),
-    );
-    expect(scans.map((s) => s.join(","))).toEqual(["b=new", "b=old,c=old"]);
+    expect(await pairs(db.range({ start: enc.encode("b"), endExclusive: enc.encode("e"), valueContains: red }))).toEqual([
+      "d= red kiwi",
+    ]);
+    expect(await pairs(db.range({ limit: 2, valueContains: red }))).toEqual(["a= red apple", "d= red kiwi"]);
     await db.close();
   });
 
-  it("merging the scans newest first gives what range gives only after dropping shadowed keys", async () => {
+  it("keeps only values that hold every pattern", async () => {
     const db = await seeded();
-    const merged = await db.view(async (snap) => {
-      const seen = new Map<string, string>();
-      for (const scan of snap.scanRuns()) {
-        for (const e of scan) if (!seen.has(dec.decode(e.key))) seen.set(dec.decode(e.key), dec.decode(e.value));
-      }
-      const live: string[] = [];
-      for (const k of [...seen.keys()].sort()) if ((await snap.get(enc.encode(k))) !== undefined) live.push(`${k}=${seen.get(k)}`);
-      const range: string[] = [];
-      for await (const e of snap.range()) range.push(`${dec.decode(e.key)}=${dec.decode(e.value)}`);
-      return { live, range };
+    expect(await pairs(db.range({ valueContains: [enc.encode(" red"), enc.encode(" fig")] }))).toEqual(["e= red fig ripe"]);
+    await db.close();
+  });
+
+  it("sees the view's snapshot, not later writes", async () => {
+    const db = await seeded();
+    const got = await db.view(async (snap) => {
+      await db.put(enc.encode("a"), enc.encode(" blue apple"));
+      await db.put(enc.encode("g"), enc.encode(" red grape"));
+      return pairs(snap.range({ valueContains: red }));
     });
-    expect(merged.live).toEqual(merged.range);
+    expect(got).toEqual(["a= red apple", "d= red kiwi", "e= red fig ripe"]);
+    expect(await pairs(db.range({ valueContains: red }))).toEqual(["d= red kiwi", "e= red fig ripe", "g= red grape"]);
     await db.close();
   });
 
   it("closes with the snapshot", async () => {
     const db = await seeded();
     const snap = await db.view((s) => s);
-    expect(() => snap.scanRuns()).toThrow(/closed/);
-    await db.close();
-  });
-});
-
-describe("view scanRuns with a filter", () => {
-  it("yields only puts whose value holds every pattern, in each source", async () => {
-    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
-    await db.put(enc.encode("a"), enc.encode(" red apple"));
-    await db.put(enc.encode("b"), enc.encode(" green apple"));
-    await db.ingest();
-    await db.put(enc.encode("c"), enc.encode(" red pear"));
-    await db.put(enc.encode("d"), enc.encode(" blue"));
-    const scans = await db.view((snap) =>
-      snap.scanRuns(undefined, { valueContains: [enc.encode(" red")] }).map((s) => [...s].map((e) => dec.decode(e.key)).join(",")),
-    );
-    expect(scans).toEqual(["c", "a"]);
-    const both = await db.view((snap) =>
-      snap.scanRuns(undefined, { valueContains: [enc.encode(" red"), enc.encode(" apple")] }).map((s) => [...s].map((e) => dec.decode(e.key)).join(",")),
-    );
-    expect(both).toEqual(["", "a"]);
+    await expect(pairs(snap.range({ valueContains: red }))).rejects.toThrow(/closed/);
     await db.close();
   });
 });

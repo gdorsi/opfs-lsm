@@ -6,7 +6,8 @@ import {
   ensureEngine,
   mergeSsts,
 } from "../src/store/engine.js";
-import { SstReader } from "../src/store/sst.js";
+import { settle } from "../src/store/cursor.js";
+import { readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
@@ -40,7 +41,8 @@ describe("engine WASM", () => {
     const { ssts } = await mergeSsts([await half(0), await half(30_000)], false);
     expect(ssts).toHaveLength(1);
     expect(await decodeSst(ssts[0]!)).toHaveLength(60_000);
-    expect(new SstReader(ssts[0]!).get(utf("k00059999"))?.kind).toBe("put");
+    const reader = readerOfBytes(ssts[0]!);
+    expect((await settle(() => reader.get(utf("k00059999"))))?.kind).toBe("put");
   });
 
   it("cuts merge output into runs of about the target size, in key order", async () => {

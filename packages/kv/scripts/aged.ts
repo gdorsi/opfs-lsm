@@ -8,7 +8,11 @@ import {
   __resetMemoryFsForTests
 } from "../src/testing.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
-import { SstReader } from "../src/store/sst.js";
+import { bloomMightContain } from "../src/store/bloom.js";
+import { settle } from "../src/store/cursor.js";
+import { PageCache } from "../src/store/page-cache.js";
+import { sstKeyRange } from "../src/store/sst.js";
+import { bytesFile, openMeta, SstReader, type RunLayout } from "../src/store/sst-reader.js";
 
 const flushEvery = Number(process.env.FLUSH_EVERY ?? 32);
 const batches = Number(process.env.BATCHES ?? 20_000);
@@ -50,20 +54,24 @@ await db.ingest();
 const meta = await loadLatestGeneration(fs);
 let sstBytes = 0;
 let tombstones = 0;
-const readers: SstReader[] = [];
+const cache = new PageCache();
+const readers: { reader: SstReader; layout: RunLayout }[] = [];
 for (const { path } of meta?.runs ?? []) {
   const buf = (await fs.read(path, 0, 1 << 30))!;
   sstBytes += buf.byteLength;
   tombstones += (await decodeSst(buf)).filter((e) => e.kind === "del").length;
-  readers.push(new SstReader(buf));
+  readers.push({
+    reader: new SstReader(bytesFile(buf), cache, sstKeyRange(buf)),
+    layout: (await openMeta(bytesFile(buf))).value,
+  });
 }
 let probes = 0;
 for (let k = 0; k < keys; k++) {
   const key = enc.encode(`k${k}`);
-  for (const r of readers) {
-    if (!r.mightContain(key)) continue;
+  for (const { reader, layout } of readers) {
+    if (!bloomMightContain(layout.bloom, key)) continue;
     probes++;
-    if (r.get(key)) break;
+    if (await settle(() => reader.get(key))) break;
   }
 }
 const liveBytes = live.size * (100 + 5);

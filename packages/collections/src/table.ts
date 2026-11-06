@@ -13,7 +13,7 @@ import {
   tablePrefix,
   type IndexValue,
 } from "./codec.js";
-import { compareBytes, diffEntries, type IndexEntry } from "./entries.js";
+import { diffEntries, type IndexEntry } from "./entries.js";
 import { encodeTyped, normalizeIndexValues } from "./typed.js";
 
 export type IndexSpec = {
@@ -76,22 +76,6 @@ function wordsOf(text: string): string[] {
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter((w) => w.length > 0);
-}
-
-/** Keys of key-ordered scans, in key order, each key once. */
-function* mergeKeys(scans: readonly Iterable<{ readonly key: Uint8Array }>[]): Generator<Uint8Array> {
-  const its = scans.map((scan) => scan[Symbol.iterator]());
-  const heads = its.map((it) => it.next());
-  for (;;) {
-    let min: Uint8Array | undefined;
-    for (const h of heads) if (!h.done && (min === undefined || compareBytes(h.value.key, min) < 0)) min = h.value.key;
-    if (min === undefined) return;
-    for (let i = 0; i < heads.length; i++) {
-      const h = heads[i]!;
-      if (!h.done && compareBytes(h.value.key, min) === 0) heads[i] = its[i]!.next();
-    }
-    yield min;
-  }
 }
 
 /** True when a word of `value` (words joined by single spaces, with a leading space) starts with `token`. */
@@ -491,9 +475,8 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
    * reads see one snapshot, so a put that commits during the call is invisible.
    * Cost is a scan of the search keys until a page fills: a common word returns
    * in microseconds, a word that matches nothing reads every key of the table.
-   * kv matches each source on its own, a run inside wasm, and only hits come
-   * back. Every hit is confirmed with a get, so a source that holds an
-   * overwritten value cannot return a stale row.
+   * kv matches runs inside wasm and yields each key once with its current
+   * value, so an overwritten value cannot return a stale row.
    */
   async search(
     text: string,
@@ -512,13 +495,11 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
       start: opts.after ?? whole.start,
       ...(whole.endExclusive !== undefined ? { endExclusive: whole.endExclusive } : {}),
     };
-    const matches = (value: Uint8Array) => tokens.every((t) => hasWordPrefix(value, t));
     return this.db.view(async (snap) => {
       const ids: string[] = [];
       let next: Uint8Array | undefined;
-      for (const key of mergeKeys(snap.scanRuns(range, { valueContains: tokens.map(wordStart) }))) {
-        const current = await snap.get(key);
-        if (current === undefined || !matches(current)) continue;
+      for await (const { key, value } of snap.range({ ...range, valueContains: tokens.map(wordStart) })) {
+        if (!tokens.every((t) => hasWordPrefix(value, t))) continue;
         if (ids.length === limit) {
           next = key;
           break;

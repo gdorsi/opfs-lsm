@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
+import { settle } from "../src/store/cursor.js";
 import { latestSstEntry, mergeCursors, runLevels } from "../src/store/merge.js";
-import { encodeSst, SstReader, type SstEntry } from "../src/store/sst.js";
+import { encodeSst, type SstEntry } from "../src/store/sst.js";
+import type { SstReader } from "../src/store/sst-reader.js";
+import { collect, readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -13,7 +16,7 @@ function run(keys: number[], tag: string): SstReader {
       ? { kind: "del", key: key(i), seq: 1 }
       : { kind: "put", key: key(i), value: enc.encode(`${tag}${i}`), seq: 1 },
   );
-  return new SstReader(encodeSst(entries, 64));
+  return readerOfBytes(encodeSst(entries, 64));
 }
 
 /** Newest first: two overlapping L0 runs, then L1 and L2 cut into disjoint runs with gaps. */
@@ -36,12 +39,12 @@ function range(from: number, to: number, step: number): number[] {
   return out;
 }
 
-function scan(cursors: Parameters<typeof mergeCursors>[0], limit?: number): string[] {
-  return [...mergeCursors(cursors, limit)].map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
+async function scan(cursors: Parameters<typeof mergeCursors>[0], limit?: number): Promise<string[]> {
+  return (await collect(mergeCursors(cursors, limit))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
 }
 
 describe("runLevels", () => {
-  it("scans the same rows as one cursor per run, for every bound", () => {
+  it("scans the same rows as one cursor per run, for every bound", async () => {
     const { paths, readers } = layout();
     const levels = runLevels(paths, readers);
     expect(levels).toHaveLength(4);
@@ -50,27 +53,28 @@ describe("runLevels", () => {
     ), ...range(0, 125, 6).map((a) => ({ start: key(a) }))];
     for (const b of bounds) {
       for (const limit of [undefined, 1, 7]) {
-        const want = scan(readers.map((r) => r.cursor(b)), limit);
-        const got = scan(levels.map((l) => l.cursor(b)), limit);
+        const want = await scan(readers.map((r) => r.cursor(b)), limit);
+        const got = await scan(levels.map((l) => l.cursor(b)), limit);
         expect(got).toEqual(want);
       }
     }
   });
 
-  it("gets the same entry as asking every run newest first", () => {
+  it("gets the same entry as asking every run newest first", async () => {
     const { paths, readers } = layout();
     const levels = runLevels(paths, readers);
-    const show = (e: ReturnType<typeof latestSstEntry>) =>
+    const show = (e: SstEntry | undefined) =>
       e && `${dec.decode(e.key)}:${e.kind}:${e.kind === "put" ? dec.decode(e.value) : ""}`;
     for (let i = -2; i < 125; i++) {
-      const want = readers.map((r) => r.get(key(i))).find((e) => e !== undefined);
-      expect(show(latestSstEntry(levels, key(i)))).toEqual(show(want));
+      const all = await Promise.all(readers.map((r) => settle(() => r.get(key(i)))));
+      const want = all.find((e) => e !== undefined);
+      expect(show(await settle(() => latestSstEntry(levels, key(i))))).toEqual(show(want));
     }
   });
 
-  it("keeps runs in key order inside a level", () => {
+  it("keeps runs in key order inside a level", async () => {
     const { paths, readers } = layout();
-    const rows = scan(runLevels(paths, readers).map((l) => l.cursor()));
+    const rows = await scan(runLevels(paths, readers).map((l) => l.cursor()));
     const keys = rows.map((r) => enc.encode(r.split("=")[0]!));
     for (let i = 1; i < keys.length; i++) expect(compareBytes(keys[i - 1]!, keys[i]!)).toBeLessThan(0);
   });

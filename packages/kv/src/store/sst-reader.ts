@@ -1,10 +1,19 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
-import type { AsyncFs } from "../opfs/async-fs.js";
+import type { KeyRange } from "./generation.js";
+import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomMightContain, type BloomFilter } from "./bloom.js";
-import { Miss, type Maybe } from "./cursor.js";
-import { metaKey, pageKey, type PageCache, type Sized } from "./page-cache.js";
-import { blockBytes, findInBlock, readFooter, type SstCodec, type SstEntry } from "./sst.js";
+import { filterCursor, Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanBounds } from "./cursor.js";
+import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
+import {
+  BlockEntries,
+  blockBytes,
+  findInBlock,
+  readFooter,
+  type BlockBytes,
+  type SstCodec,
+  type SstEntry,
+} from "./sst.js";
 
 /**
  * Bytes of one cache page: whole adjacent blocks, so `page.subarray` hands
@@ -15,24 +24,16 @@ export const PAGE_TARGET = 32 * 1024;
 /** One read covers the footer, Bloom and index of a ~4 MB run. */
 const TAIL_GUESS = 128 * 1024;
 
-/** An immutable run file of known size. */
+/** An immutable run file of known size. `OpenFile` is one. */
 export type RunFile = {
   readonly size: number;
   /** Exactly `length` bytes at `offset`. */
   read(offset: number, length: number): Promise<Uint8Array>;
 };
 
-/** `path` read through `fs`, rejecting a read that returns fewer bytes than asked. */
-export function runFile(fs: AsyncFs, path: string, size: number): RunFile {
-  return {
-    size,
-    async read(offset, length) {
-      const buf = await fs.read(path, offset, length);
-      if (!buf) throw new CorruptDatabaseError(`sst missing: ${path}`);
-      if (buf.byteLength !== length) throw new CorruptDatabaseError(`sst short read: ${path}`);
-      return buf;
-    },
-  };
+/** A run file whose bytes are already in memory, for tests and benches. */
+export function bytesFile(buf: Uint8Array): RunFile {
+  return { size: buf.byteLength, read: async (offset, length) => buf.subarray(offset, offset + length) };
 }
 
 /**
@@ -53,7 +54,7 @@ export type RunIndex = {
   readonly last: Uint8Array;
 };
 
-export type RunMeta = {
+export type RunLayout = {
   readonly bloom: BloomFilter;
   readonly index: RunIndex;
   readonly codec: SstCodec;
@@ -63,21 +64,24 @@ export type RunMeta = {
 type Page = { readonly buf: Uint8Array; readonly view: DataView };
 
 /**
- * A run read on demand. It holds no bytes itself: its metadata and pages
+ * A run read on demand. It holds no bytes itself: its layout and pages
  * are entries in `cache`, looked up per call, so the cache's budget covers
- * everything the run costs.
+ * everything the run costs. Every read is sync while its bytes are
+ * resident and returns a `Miss` otherwise.
  */
 export class SstReader {
   private readonly runId: number;
 
+  /** `range` is undefined for a run with no keys. */
   constructor(
     private readonly file: RunFile,
     private readonly cache: PageCache,
+    readonly range: KeyRange | undefined,
   ) {
     this.runId = cache.nextRunId();
   }
 
-  /** Misses at most twice on a cold run: metadata, then the page. */
+  /** Misses at most twice on a cold run: layout, then the page. */
   get(key: Uint8Array): Maybe<SstEntry | undefined> {
     const meta = this.meta();
     if (meta instanceof Miss) return meta;
@@ -87,12 +91,41 @@ export class SstReader {
     const b = findBlock(index, key);
     if (b < 0) return undefined;
     const p = pageOfBlock(index, b);
-    const page = this.page(meta, p);
+    const page = this.page(meta, p, "main");
     if (page instanceof Miss) return page;
-    const from = index.blockStart[index.pageFirst[p]!]!;
-    const at = index.blockStart[b]! - from;
+    const at = index.blockStart[b]! - index.blockStart[index.pageFirst[p]!]!;
     const length = index.blockStart[b + 1]! - index.blockStart[b]!;
     return findInBlock(blockBytes(page.buf, page.view, 0, { offset: at, length }, meta.codec), key);
+  }
+
+  /** Every entry in `bounds`, in key order. */
+  cursor(bounds?: ScanBounds): LayerCursor {
+    return this.blocks(bounds, (block, seek) => {
+      const walk = new BlockEntries(block(), seek);
+      return () => walk.next();
+    });
+  }
+
+  /**
+   * The puts in `bounds` whose value holds every pattern, in key order.
+   * With the wasm engine each block is decoded and matched there and only
+   * hits cross back. Without it the cursor does the same work key by key.
+   */
+  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds): LayerCursor {
+    const scan = blockScanner();
+    if (!scan) return filterCursor(this.cursor(bounds), patterns);
+    const packed = packPatterns(patterns);
+    const start = bounds?.start;
+    return this.blocks(bounds, (_block, _seek, framed, lz4) => {
+      const hits = unpackHits(scan(framed, lz4, packed));
+      return () => {
+        for (let h = hits.next(); !h.done; h = hits.next()) {
+          if (start && compareBytes(h.value.key, start) < 0) continue;
+          return { key: h.value.key, kind: "put", value: h.value.value };
+        }
+        return undefined;
+      };
+    });
   }
 
   /** Drops this run's cached bytes. */
@@ -100,13 +133,87 @@ export class SstReader {
     this.cache.dropRun(this.runId);
   }
 
-  private meta(): Maybe<RunMeta> {
+  /**
+   * A cursor over the blocks that may hold keys in `bounds`. Entering a
+   * block calls `open` with its bytes, as decoded bytes on demand and as
+   * stored, and the returned function yields that block's entries.
+   * Scans admit pages to probation. Only entering a block can miss, and a
+   * miss leaves the cursor where it was.
+   */
+  private blocks(
+    bounds: ScanBounds | undefined,
+    open: (
+      block: () => BlockBytes,
+      seek: Uint8Array | undefined,
+      framed: Uint8Array,
+      lz4: boolean,
+    ) => () => LayerEntry | undefined,
+  ): LayerCursor {
+    const end = bounds?.endExclusive;
+    let seek = bounds?.start;
+    let b = -1;
+    // The page the cursor is in. Looking it up again per block would count
+    // as reuse and promote every page a single scan passes.
+    let at: { p: number; page: Page } | undefined;
+    let take: (() => LayerEntry | undefined) | undefined;
+    let cur: LayerEntry | undefined | null = null;
+    const peek = (): LayerEntry | undefined | Miss => {
+      if (cur !== null) return cur;
+      for (;;) {
+        const e = take?.();
+        if (e) {
+          cur = end && compareBytes(e.key, end) >= 0 ? undefined : e;
+          return cur;
+        }
+        take = undefined;
+        const meta = this.meta();
+        if (meta instanceof Miss) return meta;
+        const { index } = meta;
+        if (b < 0) b = seek ? Math.max(0, findBlock(index, seek)) : 0;
+        const sepFrom = b === 0 ? 0 : index.sepEnd[b - 1]!;
+        if (
+          meta.entryCount === 0 ||
+          b >= index.sepEnd.length ||
+          (end && compareSep(index.sepBytes, sepFrom, index.sepEnd[b]!, end) >= 0)
+        ) {
+          cur = undefined;
+          return cur;
+        }
+        const p = pageOfBlock(index, b);
+        if (at?.p !== p) {
+          const page = this.page(meta, p, "probation");
+          if (page instanceof Miss) return page;
+          at = { p, page };
+        }
+        const { page } = at;
+        const offset = index.blockStart[b]! - index.blockStart[index.pageFirst[p]!]!;
+        const length = index.blockStart[b + 1]! - index.blockStart[b]!;
+        if (length < 4) throw new CorruptDatabaseError("sst block OOB");
+        take = open(
+          () => blockBytes(page.buf, page.view, 0, { offset, length }, meta.codec),
+          seek,
+          page.buf.subarray(offset, offset + length),
+          meta.codec === "lz4",
+        );
+        b += 1;
+        seek = undefined;
+      }
+    };
+    return {
+      peek,
+      next() {
+        if (cur) cur = null;
+      },
+    };
+  }
+
+  private meta(): Maybe<RunLayout> {
     return this.cache.lookup(metaKey(this.runId), "meta", () => openMeta(this.file));
   }
 
-  private page(meta: RunMeta, p: number): Maybe<Page> {
+  private page(meta: RunLayout, p: number, admit: Admit): Maybe<Page> {
     const { blockStart, pageFirst } = meta.index;
-    return this.cache.lookup(pageKey(this.runId, p), "main", async (): Promise<Sized<Page>> => {
+    return this.cache.lookup(pageKey(this.runId, p), admit, async (): Promise<Sized<Page>> => {
       const from = blockStart[pageFirst[p]!]!;
       const to = blockStart[pageFirst[p + 1]!]!;
       const buf = await this.file.read(from, to - from);
@@ -117,10 +224,10 @@ export class SstReader {
 
 /**
  * Reads the footer, Bloom and index with one read when they fit in
- * `TAIL_GUESS`, else a second read for the rest. Skips the CRC, as the
- * whole-file reader does: compaction checks it.
+ * `TAIL_GUESS`, else a second read for the rest. Skips the CRC, which
+ * would cost a pass over the whole file: compaction checks it.
  */
-export async function openMeta(file: RunFile): Promise<Sized<RunMeta>> {
+export async function openMeta(file: RunFile): Promise<Sized<RunLayout>> {
   const tail = await file.read(file.size - Math.min(file.size, TAIL_GUESS), Math.min(file.size, TAIL_GUESS));
   const f = readFooter(tail, file.size);
   const need = file.size - f.dataLen;

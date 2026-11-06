@@ -25,24 +25,24 @@ import {
 import { layersChannel, type IngestClient } from "./host/protocol.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { Memtable, type MemRow } from "./store/memtable.js";
-import type { ScanBounds } from "./store/cursor.js";
+import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
-import { loadGeneration, loadLatestGeneration } from "./store/generation.js";
 import {
-  arrayCursor,
-  mergeCursors,
-  pointGetSst,
-  runLevels,
-  type RunLevel,
-} from "./store/merge.js";
+  loadGeneration,
+  loadLatestGeneration,
+  type RunMeta,
+} from "./store/generation.js";
+import { pointGetSst, runLevels, type RunLevel } from "./store/merge.js";
 import { ensureEngine } from "./store/engine.js";
-import { SstReader } from "./store/sst.js";
+import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
+import { SstReader } from "./store/sst-reader.js";
 import {
   ViewSnapshotImpl,
   boundsOf,
+  scanLayers,
   type ViewSnapshot,
 } from "./view.js";
 import {
@@ -51,13 +51,23 @@ import {
   type ChangeListener,
 } from "./changes.js";
 
-export type { ScanFilter, ViewSnapshot } from "./view.js";
+export type { ViewSnapshot } from "./view.js";
 export type { ChangeEvent, ChangeListener, ChangeKind } from "./changes.js";
 
 /** Public open options. Apps pass a database name; the library owns the rest. */
 export type OpenOptions = {
   readonly name: string;
+  /**
+   * Bytes of run files this tab keeps in memory: cached data pages plus
+   * each run's Bloom filter and block index. Default 256 MiB, at least
+   * 1 MiB. It does not cover the memtable, the wasm heap, or values handed
+   * to the caller. Each `openDb` has its own budget.
+   */
+  readonly memoryBudget?: number;
 };
+
+/** Below this, one page per merge source may not fit. */
+const MIN_MEMORY_BUDGET = 1024 * 1024;
 
 /**
  * Harness / test open options (`openHarnessDb` in `@opfs-lsm/kv/testing`).
@@ -127,6 +137,12 @@ export type Range = {
   readonly start?: Uint8Array;
   readonly endExclusive?: Uint8Array;
   readonly limit?: number;
+  /**
+   * Keep only puts whose current value contains every one of these byte
+   * strings. Runs are matched inside the wasm engine one block at a time, so
+   * a block with no match costs no JS per row. `limit` counts matches.
+   */
+  readonly valueContains?: readonly Uint8Array[];
 };
 
 export type Entry = { readonly key: Uint8Array; readonly value: Uint8Array };
@@ -311,11 +327,15 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   }
   span(trace, "generation", performance.now() - generationAt);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
+  const cache = new PageCache(
+    Math.max(MIN_MEMORY_BUDGET, options.memoryBudget ?? DEFAULT_BUDGET),
+  );
   const db = new DbImpl(
     name,
     writerId,
     wal,
     fs,
+    cache,
     ingest,
     ownsIngestClient,
     trace,
@@ -422,6 +442,7 @@ class DbImpl implements Db {
     readonly writerId: WriterId,
     private readonly wal: IdBWal,
     private readonly fs: AsyncFs,
+    private readonly cache: PageCache,
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     private readonly trace?: OpenTrace,
@@ -476,7 +497,7 @@ class DbImpl implements Db {
     const openNext = async (): Promise<void> => {
       while (next < paths.length && !gone) {
         const i = next++;
-        runs[i] = await this.openRun(paths[i]!);
+        runs[i] = await this.openRun(meta.runs[i]!);
         if (!runs[i]) gone = true;
       }
     };
@@ -508,25 +529,19 @@ class DbImpl implements Db {
 
   /**
    * The open run at `path`, counted for one more `Layers`. Undefined when
-   * the file is gone, which the generation retries handle.
+   * the file is gone, which the generation retries handle. Reads no run
+   * bytes: the reader loads its layout and pages on first use.
    */
-  private async openRun(path: string): Promise<Run | undefined> {
+  private async openRun({ path, range }: RunMeta): Promise<Run | undefined> {
     let run = this.runs.get(path);
     if (!run) {
       const file = await this.fs.open(path);
       if (!file) return undefined;
-      let body: Uint8Array;
-      try {
-        body = await file.read(0, file.size);
-      } catch (err) {
-        file.close();
-        throw err;
-      }
       run = this.runs.get(path);
       if (run) {
         file.close();
       } else {
-        run = { path, file, reader: new SstReader(body), layers: 0 };
+        run = { path, file, reader: new SstReader(file, this.cache, range), layers: 0 };
         this.runs.set(path, run);
       }
     }
@@ -546,6 +561,7 @@ class DbImpl implements Db {
     for (const run of runs) {
       if (--run.layers > 0) continue;
       this.runs.delete(run.path);
+      run.reader.close();
       run.file.close();
     }
   }
@@ -647,34 +663,84 @@ class DbImpl implements Db {
   /**
    * In one readwrite transaction, catch the memtable up, let `plan` choose a
    * batch against it, and append. The batch joins the memtable at its seq,
-   * so this tab reads its own write as soon as the ack resolves.
+   * so this tab reads its own write as soon as the ack resolves. Awaiting
+   * inside the transaction would commit it, so `warm` loads what `plan`
+   * reads before each attempt, and a `plan` that still misses appends
+   * nothing and is retried.
    */
   private async write<R>(
-    plan: () => { readonly ops: readonly CheckedOp[]; readonly result: R },
+    plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
+    warm?: () => Promise<unknown>,
   ): Promise<R> {
-    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < GENERATION_RETRIES; ) {
+      await warm?.();
       let missing: number | undefined;
+      let miss: Miss | undefined;
       const out = await this.wal.appendAfter(this.mem.appliedThrough, (tail) => {
         missing = this.catchUp(tail);
-        return missing === undefined ? plan() : undefined;
+        if (missing !== undefined) return undefined;
+        const planned = plan();
+        if (!(planned instanceof Miss)) return planned;
+        miss = planned;
+        return undefined;
       });
       if (out) {
         if (out.seq !== undefined) await this.landed(out.seq, out.ops);
         return out.result;
       }
+      if (miss) {
+        // The next warm reads again and surfaces a real failure.
+        await miss.ready.catch(() => undefined);
+        continue;
+      }
+      attempt++;
       if (missing !== undefined) await this.load(missing);
     }
     throw new CorruptDatabaseError(GENERATION_GONE);
   }
 
-  private readKey(k: CheckedKey): Uint8Array | undefined {
-    const row = this.mem.get(k);
-    return row ? valueOf(row) : pointGetSst(this.installed.levels, k);
+  /**
+   * Runs `attempt` over the installed levels until it stops missing. While
+   * it waits it holds those levels, so a generation installed meanwhile
+   * cannot let the host delete the files it is reading.
+   */
+  private async settleInstalled<T>(
+    attempt: (levels: readonly RunLevel[]) => Maybe<T>,
+  ): Promise<T> {
+    const layers = this.installed;
+    const first = attempt(layers.levels);
+    if (!(first instanceof Miss)) return first;
+    this.retain(layers);
+    try {
+      await first.ready;
+      return await settle(() => attempt(layers.levels));
+    } finally {
+      this.release(layers);
+    }
+  }
+
+  /** Every key read, or one Miss for all the bytes they lack. */
+  private readKeys(
+    ks: readonly CheckedKey[],
+    levels: readonly RunLevel[],
+  ): Maybe<(Uint8Array | undefined)[]> {
+    const values: (Uint8Array | undefined)[] = [];
+    let misses: Miss[] | undefined;
+    for (const k of ks) {
+      const row = this.mem.get(k);
+      const v = row ? valueOf(row) : pointGetSst(levels, k);
+      if (v instanceof Miss) (misses ??= []).push(v);
+      else values.push(v);
+    }
+    return misses ? allMissed(misses) : values;
   }
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
-    return this.readKey(checkKey(key));
+    const k = checkKey(key);
+    const row = this.mem.get(k);
+    if (row) return valueOf(row);
+    return this.settleInstalled((levels) => pointGetSst(levels, k));
   }
 
   put(key: Uint8Array, value: Uint8Array): Promise<void> {
@@ -694,21 +760,22 @@ class DbImpl implements Db {
     else await this.landed(seq, ops);
   }
 
-  update<T>(
+  async update<T>(
     keys: readonly Uint8Array[],
     body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
     return this.write(() => {
-      const values = ks.map((k) => this.readKey(k));
+      const values = this.readKeys(ks, this.installed.levels);
+      if (values instanceof Miss) return values;
       let result!: T;
       const ops = collectBatch((tx) => {
         result = body(values, tx);
         return result;
       });
       return { ops, result };
-    });
+    }, () => this.settleInstalled((levels) => this.readKeys(ks, levels)));
   }
 
   async rangeFollow(
@@ -716,34 +783,36 @@ class DbImpl implements Db {
     follow: (entry: Entry) => Uint8Array | undefined,
   ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]> {
     this.ensureOpen();
-    const out: { entry: Entry; value: Uint8Array | undefined }[] = [];
-    for (const entry of this.scan(range)) {
-      const key = follow(entry);
-      out.push({
-        entry,
-        value: key === undefined ? undefined : this.readKey(checkKey(key)),
-      });
-    }
-    return out;
-  }
-
-  private scan(range?: Range): Generator<Entry> {
     const bounds = boundsOf(range);
-    return mergeCursors(
-      [
-        arrayCursor(this.mem.range(bounds)),
-        ...this.installed.levels.map((level) => level.cursor(bounds)),
-      ],
-      range?.limit,
-    );
+    const rows = this.mem.pin();
+    const layers = this.installed;
+    this.retain(layers);
+    try {
+      const out: { entry: Entry; value: Uint8Array | undefined }[] = [];
+      for await (const entry of scanLayers(rows.range(bounds), layers.levels, bounds, range)) {
+        const key = follow(entry);
+        let value: Uint8Array | undefined;
+        if (key !== undefined) {
+          const k = checkKey(key);
+          const row = rows.get(k);
+          const got = row ? valueOf(row) : pointGetSst(layers.levels, k);
+          value = got instanceof Miss ? await settle(() => pointGetSst(layers.levels, k)) : got;
+        }
+        out.push({ entry, value });
+      }
+      return out;
+    } finally {
+      this.release(layers);
+    }
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {
     this.ensureOpen();
+    const bounds = boundsOf(range);
     const layers = this.installed;
     this.retain(layers);
     try {
-      for (const entry of this.scan(range)) {
+      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, bounds, range)) {
         this.ensureOpen();
         yield entry;
       }

@@ -1,4 +1,4 @@
-import { compareBytes } from "../bytes.js";
+import { compareBytes, containsAll } from "../bytes.js";
 
 export type LayerEntry = {
   readonly key: Uint8Array;
@@ -12,9 +12,14 @@ export type ScanBounds = {
   readonly endExclusive?: Uint8Array;
 };
 
-/** In-order cursor. `peek` is idempotent. `next` drops the peeked entry. */
+/**
+ * In-order cursor. `peek` is idempotent. `next` drops the peeked entry and
+ * is only legal after a `peek` that returned one. `peek` returns a Miss when
+ * the next entry's bytes are not resident: the cursor has not moved, and
+ * peeking again after `ready` resolves continues from the same place.
+ */
 export interface LayerCursor {
-  peek(): LayerEntry | undefined;
+  peek(): LayerEntry | undefined | Miss;
   next(): void;
 }
 
@@ -68,6 +73,27 @@ export class Miss {
 }
 
 export type Maybe<T> = T | Miss;
+
+/** One Miss that is ready when all of `misses` are. */
+export function allMissed(misses: readonly Miss[]): Miss {
+  return misses.length === 1 ? misses[0]! : new Miss(Promise.all(misses.map((m) => m.ready)).then(() => undefined));
+}
+
+/** The puts of `cursor` whose value holds every pattern. */
+export function filterCursor(cursor: LayerCursor, patterns: readonly Uint8Array[]): LayerCursor {
+  return {
+    peek() {
+      for (;;) {
+        const e = cursor.peek();
+        if (!e || e instanceof Miss || (e.kind === "put" && containsAll(e.value!, patterns))) return e;
+        cursor.next();
+      }
+    },
+    next() {
+      cursor.next();
+    },
+  };
+}
 
 /**
  * Re-runs a sync read until it stops missing. Terminates because the

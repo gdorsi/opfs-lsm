@@ -1,19 +1,9 @@
-import { compareBytes, containsAll } from "../bytes.js";
+import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
-import {
-  type LayerCursor,
-  type LayerEntry,
-  type ScanBounds,
-} from "./cursor.js";
-import {
-  bloomAdd,
-  bloomMightContain,
-  createBloom,
-  type BloomFilter,
-} from "./bloom.js";
+import type { LayerEntry } from "./cursor.js";
+import { bloomAdd, createBloom, type BloomFilter } from "./bloom.js";
 import { crc32 } from "./crc32.js";
 import { lz4Decompress } from "./lz4.js";
-import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 export const SST_MAGIC = 0x4f4c5354;
@@ -621,183 +611,40 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
 }
 
 /**
- * Lazy SST reader: Bloom + block index, decode one block per miss. It skips
- * the footer CRC, which costs a pass over the whole file on the tab's main
- * thread at every new generation. Compaction decodes each run in full, and
- * that decode checks the CRC.
+ * The smallest and largest key of a whole run file, or undefined for an
+ * empty run. The manifest stores it, so a tab routes reads without opening
+ * the run.
  */
-export class SstReader {
-  private readonly buf: Uint8Array;
-  private readonly view: DataView;
-  private readonly bloom: BloomFilter;
-  private readonly dataStart: number;
-  private readonly index: BlockIndexEntry[];
-  private readonly entryCount: number;
-  private readonly codec: SstCodec;
-
-  constructor(buf: Uint8Array) {
-    this.buf = buf;
-    const meta = parseFooter(buf);
-    this.view = meta.view;
-    this.bloom = meta.bloom;
-    this.dataStart = meta.dataStart;
-    this.entryCount = meta.entryCount;
-    this.codec = meta.codec;
-    this.index = readBlockIndex(
-      buf,
-      meta.view,
-      meta.indexStart,
-      meta.indexEnd,
-      meta.blockCount,
-    );
-  }
-
-  /** The smallest and largest key, or undefined for an empty run. */
-  get range(): { smallest: Uint8Array; largest: Uint8Array } | undefined {
-    const first = this.index[0];
-    const last = this.index[this.index.length - 1];
-    if (!first || !last || this.entryCount === 0) return undefined;
-    return { smallest: first.firstKey, largest: last.lastKey };
-  }
-
-  mightContain(key: Uint8Array): boolean {
-    const first = this.index[0];
-    const last = this.index[this.index.length - 1];
-    if (first && compareBytes(key, first.firstKey) < 0) return false;
-    if (last && compareBytes(key, last.lastKey) > 0) return false;
-    return bloomMightContain(this.bloom, key);
-  }
-
-  /** Point lookup that reads one block in place. The block is not retained. */
-  get(key: Uint8Array): SstEntry | undefined {
-    if (!this.mightContain(key)) return undefined;
-    const bi = this.findBlock(key);
-    if (bi < 0) return undefined;
-    return findInBlock(this.blockBytes(bi), key);
-  }
-
-  /**
-   * Block-index seek. Decodes the current block into cursor-local state.
-   * Advances to the next block when the current one is exhausted.
-   */
-  cursor(bounds?: ScanBounds): LayerCursor {
-    return this.blockCursor(bounds);
-  }
-
-  /**
-   * The puts in `bounds` whose value holds every pattern, in key order. With
-   * the wasm engine each block is decoded and matched there and only hits cross
-   * back. Without it the cursor does the same work key by key.
-   */
-  *scanContains(
-    patterns: readonly Uint8Array[],
-    bounds?: ScanBounds,
-  ): Generator<{ key: Uint8Array; value: Uint8Array }> {
-    const scan = blockScanner();
-    if (!scan) {
-      const cursor = this.blockCursor(bounds);
-      for (let e = cursor.peek(); e; cursor.next(), e = cursor.peek()) {
-        if (e.kind === "put" && containsAll(e.value!, patterns)) yield { key: e.key, value: e.value! };
-      }
-      return;
-    }
-    const packed = packPatterns(patterns);
-    const { index } = this;
-    const start = bounds?.start;
-    const end = bounds?.endExclusive;
-    for (let bi = seekBlock(index, start); bi < index.length; bi++) {
-      const ix = index[bi]!;
-      if (end && compareBytes(ix.firstKey, end) >= 0) return;
-      const from = this.dataStart + ix.offset;
-      if (from + ix.length > this.buf.byteLength || ix.length < 4) throw new CorruptDatabaseError("sst block OOB");
-      const hits = scan(this.buf.subarray(from, from + ix.length), this.codec === "lz4", packed);
-      for (const hit of unpackHits(hits)) {
-        if (start && compareBytes(hit.key, start) < 0) continue;
-        if (end && compareBytes(hit.key, end) >= 0) return;
-        yield hit;
-      }
-    }
-  }
-
-  private findBlock(key: Uint8Array): number {
-    let lo = 0;
-    let hi = this.index.length - 1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      const ix = this.index[mid]!;
-      if (compareBytes(key, ix.firstKey) < 0) {
-        hi = mid - 1;
-        continue;
-      }
-      if (compareBytes(key, ix.lastKey) > 0) {
-        lo = mid + 1;
-        continue;
-      }
-      return mid;
-    }
-    return -1;
-  }
-
-  private blockBytes(i: number): BlockBytes {
-    return blockBytes(this.buf, this.view, this.dataStart, this.index[i]!, this.codec);
-  }
-
-  /**
-   * Walks blocks in place. The first block seeks to `bounds.start` with
-   * its offset table. Each record is copied out once, when it is reached.
-   */
-  private blockCursor(bounds?: ScanBounds): LayerCursor {
-    const index = this.index;
-    const end = bounds?.endExclusive;
-    let seek = bounds?.start;
-    let bi = seekBlock(index, seek);
-    let w: RecordWalker | undefined;
-    let left = 0;
-    let cur: LayerEntry | undefined;
-    const advance = () => {
-      while (left === 0) {
-        if (bi >= index.length || (end && compareBytes(index[bi]!.firstKey, end) >= 0)) {
-          cur = undefined;
-          return;
-        }
-        w = RecordWalker.ofBlock(this.blockBytes(bi++));
-        left = seek ? seekInBlock(w, seek) : w.count;
-        seek = undefined;
-      }
-      w!.next();
-      left--;
-      const key = w!.key();
-      if (end && compareBytes(key, end) >= 0) {
-        left = 0;
-        bi = index.length;
-        cur = undefined;
-      } else {
-        cur = w!.tag === TAG_PUT ? { key, kind: "put", value: w!.value() } : { key, kind: "del" };
-      }
-    };
-    advance();
-    return {
-      peek: () => cur,
-      next() {
-        if (cur) advance();
-      },
-    };
-  }
+export function sstKeyRange(buf: Uint8Array): { smallest: Uint8Array; largest: Uint8Array } | undefined {
+  const meta = parseFooter(buf);
+  if (meta.entryCount === 0) return undefined;
+  const index = readBlockIndex(buf, meta.view, meta.indexStart, meta.indexEnd, meta.blockCount);
+  const first = index[0];
+  const last = index[index.length - 1];
+  return first && last ? { smallest: first.firstKey, largest: last.lastKey } : undefined;
 }
 
-function seekBlock(
-  index: readonly BlockIndexEntry[],
-  start: Uint8Array | undefined,
-): number {
-  if (start === undefined) return 0;
-  let lo = 0;
-  let hi = index.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (compareBytes(index[mid]!.lastKey, start) < 0) lo = mid + 1;
-    else hi = mid;
+/**
+ * The records of one block in key order, from the first key at or after
+ * `seek`. Each entry's key and value are copied out once, when reached.
+ */
+export class BlockEntries {
+  private readonly w: RecordWalker;
+  private left: number;
+
+  constructor(b: BlockBytes, seek?: Uint8Array) {
+    this.w = RecordWalker.ofBlock(b);
+    this.left = seek ? seekInBlock(this.w, seek) : this.w.count;
   }
-  return lo;
+
+  next(): LayerEntry | undefined {
+    if (this.left === 0) return undefined;
+    this.left--;
+    const w = this.w;
+    w.next();
+    const key = w.key();
+    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value() } : { key, kind: "del" };
+  }
 }
 
 /** Point lookup in a decoded (sorted) SST. */

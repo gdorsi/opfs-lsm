@@ -2,7 +2,7 @@ import type { AsyncFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { crc32 } from "./crc32.js";
 import { encodeSst } from "./engine.js";
-import { SstReader, type SstEntry } from "./sst.js";
+import { sstKeyRange, type SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
@@ -160,7 +160,7 @@ export async function publishGeneration(
 
 /** The manifest entry for a run file with these bytes. */
 export function runMeta(path: string, body: Uint8Array): RunMeta {
-  const range = new SstReader(body).range;
+  const range = sstKeyRange(body);
   return range ? { path, range } : { path };
 }
 

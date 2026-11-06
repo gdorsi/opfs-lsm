@@ -319,9 +319,12 @@ Gets that miss cost the same, because the bloom filter rejects them before any b
 
 ## Reading a run
 
-A tab reads a whole run file into memory once, and keeps it for as long as the run stays in its
-installed generation. `SstReader` parses only the footer, the bloom filter and the block index.
-A point get:
+A tab holds each run of its installed generation open and reads it on demand
+(`SstReader` in `store/sst-reader.ts`). Opening a run reads nothing. The first read loads the
+footer, the bloom filter and the block index, and each later read loads the 32 KB page of whole
+blocks it needs. All of it lives in one per-tab `PageCache` capped by `openDb({ memoryBudget })`
+(256 MiB by default). A read is synchronous while its bytes are cached and returns a `Miss`
+otherwise. The caller awaits it and reads again. A point get:
 
 1. Rejects the key if it falls outside the run's first and last keys.
 2. Rejects it if the bloom filter says no.
@@ -378,8 +381,9 @@ ordered by key and then by source, newest first. For each key the newest source 
 tombstones are dropped. Each L0 run is its own source, because L0 runs overlap. Each deeper
 level is one source (`RunLevel` in `store/merge.ts`): its runs never overlap, so the level
 cursor binary-searches the runs' largest keys for the start key and opens one run at a time,
-in key order, stopping at the first run that starts at or past the end key. A run cursor reads
-its first block as soon as it is created, so a scan only pays for the runs it reaches. It seeks to the
+in key order, stopping at the first run that starts at or past the end key. Routing uses the key
+ranges in the manifest, so a scan only pays for the runs it reaches. The merge peeks every source
+before it awaits, so a cold scan loads all its first pages in one parallel round. It seeks to the
 start key with the block's offset table, then walks records in place and copies out each one
 when it reaches it.
 

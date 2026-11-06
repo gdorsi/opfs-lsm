@@ -5,7 +5,10 @@
  *   ROWS=200000 pnpm exec tsx scripts/bench-scan-split.ts
  */
 import { encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
-import { SstReader, type SstEntry } from "../src/store/sst.js";
+import { Miss, type LayerCursor } from "../src/store/cursor.js";
+import { PageCache } from "../src/store/page-cache.js";
+import { sstKeyRange, type SstEntry } from "../src/store/sst.js";
+import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { lz4Decompress } from "../src/store/lz4.js";
 
 const rows = Number(process.env.ROWS ?? 200_000);
@@ -29,12 +32,29 @@ const entries: SstEntry[] = Array.from({ length: rows }, (_, i) => ({
 const sst = await encodeSst(entries);
 console.error(`rows=${rows} sst=${(sst.byteLength / 2 ** 20).toFixed(1)} MiB`);
 
-const time = (name: string, f: () => number) => {
+// A budget above the run, so after the first pass every scan is warm.
+const reader = new SstReader(bytesFile(sst), new PageCache(4 * sst.byteLength), sstKeyRange(sst));
+
+/** Calls `f` on each entry of `c`, waiting out misses. */
+async function each(c: LayerCursor, f: (value: Uint8Array | undefined) => void): Promise<void> {
+  for (;;) {
+    const e = c.peek();
+    if (e instanceof Miss) {
+      await e.ready;
+      continue;
+    }
+    if (!e) return;
+    f(e.value);
+    c.next();
+  }
+}
+
+const time = async (name: string, f: () => Promise<number>) => {
   const ms: number[] = [];
   let n = 0;
   for (let i = 0; i < 7; i++) {
     const t = performance.now();
-    n = f();
+    n = await f();
     if (i >= 2) ms.push(performance.now() - t);
   }
   ms.sort((a, b) => a - b);
@@ -49,25 +69,25 @@ const has = (v: Uint8Array) => {
   }
   return false;
 };
-time("cursor scan, copies, no match", () => {
-  const c = new SstReader(sst).cursor();
+await time("cursor scan, copies, no match", async () => {
   let n = 0;
-  for (let e = c.peek(); e; c.next(), e = c.peek()) n++;
+  await each(reader.cursor(), () => n++);
   return n;
 });
-time("cursor scan + byte match", () => {
-  const c = new SstReader(sst).cursor();
+await time("cursor scan + byte match", async () => {
   let n = 0;
-  for (let e = c.peek(); e; c.next(), e = c.peek()) if (e.value && has(e.value)) n++;
+  await each(reader.cursor(), (v) => {
+    if (v && has(v)) n++;
+  });
   return n;
 });
-time("scanContains in wasm, miss", () => {
+await time("scanContains in wasm, miss", async () => {
   let n = 0;
-  for (const _ of new SstReader(sst).scanContains([token])) n++;
+  await each(reader.scanContains([token]), () => n++);
   return n;
 });
-time("scanContains in wasm, common word", () => {
+await time("scanContains in wasm, common word", async () => {
   let n = 0;
-  for (const _ of new SstReader(sst).scanContains([enc.encode(" alpha")])) n++;
+  await each(reader.scanContains([enc.encode(" alpha")]), () => n++);
   return n;
 });

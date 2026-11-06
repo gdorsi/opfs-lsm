@@ -1,25 +1,21 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { encodeSst as encodeWasm, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
-import { decodeSst, encodeSst, SstReader, sstGet, type SstEntry } from "../src/store/sst.js";
-import type { LayerCursor, ScanBounds } from "../src/store/cursor.js";
+import { decodeSst, encodeSst, sstGet, type SstEntry } from "../src/store/sst.js";
+import { settle, type ScanBounds } from "../src/store/cursor.js";
 import { compareBytes } from "../src/bytes.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
-
-function drain(c: LayerCursor): string[] {
-  const out: string[] = [];
-  for (let e = c.peek(); e; c.next(), e = c.peek()) out.push(`${[...e.key]}:${e.kind}:${e.value ? [...e.value] : ""}`);
-  return out;
-}
+import { drain, readerOfBytes } from "./runs.js";
 
 /** `toEqual` walks typed arrays element by element, which is too slow for thousands of entries. */
 const show = (e: SstEntry | undefined) => (e ? `${[...e.key]}:${e.kind}:${e.seq}:${e.kind === "put" ? [...e.value] : ""}` : "none");
 
-function expectReaderAgreesWithDecode(body: Uint8Array): void {
+async function expectReaderAgreesWithDecode(body: Uint8Array): Promise<void> {
   const all = decodeSst(body);
-  const reader = new SstReader(body);
-  expect(all.map((e) => show(reader.get(e.key)))).toEqual(all.map(show));
+  const reader = readerOfBytes(body);
+  const get = (k: Uint8Array) => settle(() => reader.get(k));
+  expect((await Promise.all(all.map((e) => get(e.key)))).map(show)).toEqual(all.map(show));
   const misses = [...all.map((e) => cat(e.key, Uint8Array.of(0))), utf("i/")];
-  expect(misses.map((k) => show(reader.get(k)))).toEqual(misses.map((k) => show(sstGet(all, k))));
+  expect((await Promise.all(misses.map(get))).map(show)).toEqual(misses.map((k) => show(sstGet(all, k))));
   const asLayer = (bounds: ScanBounds) =>
     all
       .filter(
@@ -35,7 +31,10 @@ function expectReaderAgreesWithDecode(body: Uint8Array): void {
     ranges.push({ start: third }, { endExclusive: twoThirds }, { start: third, endExclusive: twoThirds });
     ranges.push({ start: cat(third, Uint8Array.of(0)), endExclusive: cat(twoThirds, Uint8Array.of(0)) });
   }
-  for (const bounds of ranges) expect(drain(reader.cursor(bounds))).toEqual(asLayer(bounds));
+  for (const bounds of ranges) {
+    const got = (await drain(reader.cursor(bounds))).map((e) => `${[...e.key]}:${e.kind}:${e.value ? [...e.value] : ""}`);
+    expect(got).toEqual(asLayer(bounds));
+  }
 }
 
 describe("sst format", () => {
@@ -55,7 +54,7 @@ describe("sst format", () => {
       const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
       for (const body of [encodeSst(entries), await encodeWasm(entries, "lz4")]) {
         expect(decodeSst(body).map(show)).toEqual(sorted.map((e) => show({ ...e, seq: e.seq ?? 0 })));
-        expectReaderAgreesWithDecode(body);
+        await expectReaderAgreesWithDecode(body);
       }
     });
   }
