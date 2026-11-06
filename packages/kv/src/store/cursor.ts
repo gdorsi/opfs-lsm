@@ -57,3 +57,26 @@ export function entryCursor(
     },
   };
 }
+
+/**
+ * Bytes a sync read needs and does not have yet. The read has already
+ * started; once `ready` resolves, the same call hits. A value rather than
+ * an exception, so a merge holding several sources keeps their positions.
+ */
+export class Miss {
+  constructor(readonly ready: Promise<void>) {}
+}
+
+export type Maybe<T> = T | Miss;
+
+/**
+ * Re-runs a sync read until it stops missing. Terminates because the
+ * bytes a Miss fills stay pinned until the retry touches them.
+ */
+export async function settle<T>(attempt: () => Maybe<T>): Promise<T> {
+  for (;;) {
+    const r = attempt();
+    if (!(r instanceof Miss)) return r;
+    await r.ready;
+  }
+}

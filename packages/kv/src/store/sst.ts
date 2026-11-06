@@ -428,34 +428,56 @@ type BlockLayout = {
   codec: SstCodec;
 };
 
-/** Footer is 8 u32 fields, then CRC, version, and magic. Rejects any other version. */
-function parseFooter(buf: Uint8Array): BlockLayout {
-  if (buf.byteLength < FOOTER_BYTES) throw new CorruptDatabaseError("sst too short");
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const magic = view.getUint32(buf.byteLength - 4, true);
+/** The footer's fields. Offsets are from the start of the file. */
+export type SstFooter = {
+  entryCount: number;
+  blockCount: number;
+  /** Data blocks are `[0, dataLen)`; the Bloom bits start here. */
+  dataLen: number;
+  bloomHashCount: number;
+  indexStart: number;
+  /** Where the footer starts, which is also where the index ends. */
+  indexEnd: number;
+  codec: SstCodec;
+};
+
+/**
+ * Footer is 8 u32 fields, then CRC, version, and magic. Rejects any other
+ * version. `tail` is the last `tail.byteLength` bytes of a `fileSize`-byte run.
+ */
+export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
+  if (tail.byteLength < FOOTER_BYTES || fileSize < tail.byteLength) throw new CorruptDatabaseError("sst too short");
+  const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+  const magic = view.getUint32(tail.byteLength - 4, true);
   if (magic !== SST_MAGIC) throw new CorruptDatabaseError(`bad sst magic ${magic.toString(16)}`);
-  const version = view.getUint32(buf.byteLength - 8, true);
+  const version = view.getUint32(tail.byteLength - 8, true);
   if (version !== VERSION) throw new CorruptDatabaseError(`unsupported sst version ${version}`);
-  const footer = buf.byteLength - FOOTER_BYTES;
-  const field = (i: number) => view.getUint32(footer + 4 * i, true);
+  const at = tail.byteLength - FOOTER_BYTES;
+  const field = (i: number) => view.getUint32(at + 4 * i, true);
   const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen, codecId] =
     [0, 1, 2, 3, 4, 5, 6, 7].map(field) as [number, number, number, number, number, number, number, number];
+  const footer = fileSize - FOOTER_BYTES;
   if (indexOffset !== bloomOffset + bloomLen || indexOffset + indexLen !== footer) {
     throw new CorruptDatabaseError("sst footer sections OOB");
   }
   const codec = CODECS[codecId];
   if (!codec) throw new CorruptDatabaseError(`unsupported sst codec ${codecId}`);
+  return { entryCount, blockCount, dataLen: bloomOffset, bloomHashCount, indexStart: indexOffset, indexEnd: footer, codec };
+}
+
+function parseFooter(buf: Uint8Array): BlockLayout {
+  const f = readFooter(buf, buf.byteLength);
   return {
-    view,
-    crcOff: footer + 32,
-    entryCount,
-    blockCount,
-    dataLen: bloomOffset,
-    bloom: { bits: buf.slice(bloomOffset, indexOffset), hashCount: bloomHashCount },
+    view: new DataView(buf.buffer, buf.byteOffset, buf.byteLength),
+    crcOff: f.indexEnd + 32,
+    entryCount: f.entryCount,
+    blockCount: f.blockCount,
+    dataLen: f.dataLen,
+    bloom: { bits: buf.slice(f.dataLen, f.indexStart), hashCount: f.bloomHashCount },
     dataStart: 0,
-    indexStart: indexOffset,
-    indexEnd: footer,
-    codec,
+    indexStart: f.indexStart,
+    indexEnd: f.indexEnd,
+    codec: f.codec,
   };
 }
 
@@ -488,13 +510,13 @@ function readBlockIndex(
 }
 
 /** One block's unpacked bytes: a u32 record count at `start`, then records up to `end`. */
-type BlockBytes = { buf: Uint8Array; view: DataView; start: number; end: number };
+export type BlockBytes = { buf: Uint8Array; view: DataView; start: number; end: number };
 
-function blockBytes(
+export function blockBytes(
   buf: Uint8Array,
   view: DataView,
   dataStart: number,
-  ix: BlockIndexEntry,
+  ix: { readonly offset: number; readonly length: number },
   codec: SstCodec,
 ): BlockBytes {
   const start = dataStart + ix.offset;
@@ -566,7 +588,7 @@ function seekInBlock(w: RecordWalker, key: Uint8Array): number {
  * The record for `key` in one block, or undefined. Checks the block prefix
  * once, then compares suffixes in place and copies out only the match.
  */
-function findInBlock(b: BlockBytes, key: Uint8Array): SstEntry | undefined {
+export function findInBlock(b: BlockBytes, key: Uint8Array): SstEntry | undefined {
   const w = RecordWalker.ofBlock(b);
   const p = w.prefixLen;
   if (key.byteLength < p) return undefined;
