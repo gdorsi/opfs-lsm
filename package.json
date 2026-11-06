@@ -15,6 +15,7 @@
     "bench:browser": "pnpm --filter @opfs-lsm/kv bench:browser",
     "bench:collections": "pnpm --filter @opfs-lsm/collections bench:browser",
     "bench:gate": "pnpm --filter @opfs-lsm/kv bench:gate",
+    "bench:yjs": "pnpm --filter @opfs-lsm/example-yjs bench:load",
     "todo:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && pnpm --filter @opfs-lsm/example-todo dev",
     "todo:example:build": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && pnpm --filter @opfs-lsm/example-todo build && pnpm --filter @opfs-lsm/example-todo preview",
     "automerge:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/example-automerge dev",

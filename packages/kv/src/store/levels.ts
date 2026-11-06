@@ -10,7 +10,7 @@ import type { SstCodec } from "./sst.js";
  */
 export const L0_RUNS_TO_COMPACT = 4;
 export const LEVEL_RATIO = 10;
-/** Ten flushes of the default 4 MiB memtable. */
+/** Ten compaction-sized runs (`TARGET_RUN_BYTES`). */
 export const L1_TARGET_BYTES = 40 * 1024 * 1024;
 /** Compaction cuts its output into runs of about this size. */
 export const TARGET_RUN_BYTES = 4 * 1024 * 1024;
