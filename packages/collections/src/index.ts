@@ -4,11 +4,20 @@ export {
   type CollectionSchema,
   type OpenCollectionOptions,
 } from "./database.js";
-export { MAX_INDEX_KEYS_PER_ROW, Table, type TableSchema, type IndexSpec } from "./table.js";
+export {
+  MAX_INDEX_KEYS_PER_ROW,
+  Table,
+  type TableSchema,
+  type IndexSpec,
+  type SearchSpec,
+} from "./table.js";
 export {
   primaryKey,
   indexKey,
   indexPrefix,
+  searchKey,
+  searchPrefix,
+  extractSearchRowId,
   encodeJson,
   decodeJson,
   extractIndexRowId,

@@ -3,9 +3,12 @@ import {
   decodeJson,
   encodeJson,
   extractIndexRowId,
+  extractSearchRowId,
   indexKey,
   indexPrefix,
   primaryKey,
+  searchKey,
+  searchPrefix,
   tablePrefix,
   type IndexValue,
 } from "./codec.js";
@@ -31,14 +34,56 @@ export type IndexSpec = {
 /** Index keys one row may produce, so one combination can't blow the batch limits. */
 export const MAX_INDEX_KEYS_PER_ROW = 1_000;
 
+/**
+ * Word-prefix text search over one string field. kv has no per-term keys: each
+ * row gets one extra key `s/<table>/<sortBy>/<id>` whose value is the
+ * normalised text, written in the same batch as the row, and `Table.search`
+ * scans those keys in `sortBy` order. A put costs one key more instead of one
+ * per word and per prefix.
+ */
+export type SearchSpec = {
+  /** Dot-path of the string field to search. */
+  path: string;
+  /**
+   * Dot-path of the field results are ordered by, ascending, and paged by.
+   * Store a descending number (like `Number.MAX_SAFE_INTEGER - createdAt`) for
+   * newest first. Treat it as immutable: changing it moves the row's key.
+   */
+  sortBy: string;
+};
+
 export type TableSchema = {
   name: string;
   /** Primary key field (string). Defaults to "id". */
   primaryKey?: string;
   indexes?: IndexSpec[];
+  /** Enables `Table.search`. */
+  search?: SearchSpec;
 };
 
 const EMPTY = new Uint8Array(0);
+const encoder = new TextEncoder();
+/** One search-document entry: key and normalised text value. */
+type SearchEntry = { key: Uint8Array; value: Uint8Array };
+
+/** Lowercased words (letters and digits) of `text`, in order. */
+function wordsOf(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length > 0);
+}
+
+/** True when a word of `value` (words joined by single spaces, with a leading space) starts with `token`. */
+function hasWordPrefix(value: Uint8Array, token: Uint8Array): boolean {
+  const last = value.byteLength - token.byteLength;
+  outer: for (let i = 1; i <= last; i++) {
+    if (value[i] !== token[0] || value[i - 1] !== 0x20) continue;
+    for (let j = 1; j < token.byteLength; j++) if (value[i + j] !== token[j]) continue outer;
+    return true;
+  }
+  return false;
+}
 /** Primary rows removed per batch in `clear`. 4 ops each keeps this under limits. */
 const CLEAR_CHUNK = 1000;
 
@@ -87,6 +132,25 @@ function asIndexValue(raw: unknown, label: string): IndexValue {
 }
 
 /**
+ * Sort value to put in the search key. The row is JSON, and JSON stores `-0`
+ * as `0`, but those two numbers encode to different keys. A key built from
+ * the caller's `-0` is invisible to a later read of the stored `0`. Bytes do
+ * not survive JSON, so they cannot be a sort value either.
+ */
+function sortAsStored(raw: IndexValue, label: string): IndexValue {
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) throw new TypeError(`${label} number must be finite`);
+    return raw === 0 ? 0 : raw;
+  }
+  if (raw === null || typeof raw === "boolean" || typeof raw === "string") return raw;
+  if (raw instanceof Uint8Array) {
+    throw new TypeError(`${label} must be a JSON null, boolean, number, or string`);
+  }
+  const _exhaustive: never = raw;
+  throw new TypeError(`${label} is not a stored sort value: ${String(_exhaustive)}`);
+}
+
+/**
  * The index values `doc` is keyed under: one list per key, one value per
  * path. Empty when a path is missing, or when a multi-entry path is an empty
  * array.
@@ -128,6 +192,7 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
   readonly name: string;
   readonly primaryKeyField: string;
   readonly indexes: readonly IndexSpec[];
+  readonly searchSpec: SearchSpec | undefined;
 
   constructor(
     private readonly db: Db,
@@ -136,6 +201,7 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     this.name = schema.name;
     this.primaryKeyField = schema.primaryKey ?? "id";
     this.indexes = schema.indexes ?? [];
+    this.searchSpec = schema.search;
   }
 
   private pkBytes(id: string): Uint8Array {
@@ -150,6 +216,18 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
       }
     }
     return out;
+  }
+
+  /** The search-document entry of `doc`, or undefined when the text or sort field is missing. */
+  private searchEntry(id: string, doc: T): SearchEntry | undefined {
+    const spec = this.searchSpec;
+    if (spec === undefined) return undefined;
+    const text = getPath(doc, spec.path);
+    const sort = getPath(doc, spec.sortBy);
+    if (typeof text !== "string" || sort === undefined) return undefined;
+    const label = `search.${spec.sortBy}`;
+    const key = searchKey(this.name, sortAsStored(asIndexValue(sort, label), label), id);
+    return { key, value: encoder.encode(` ${wordsOf(text).join(" ")}`) };
   }
 
   async get(id: string): Promise<T | undefined> {
@@ -188,13 +266,20 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
       for (let i = 0; i < docs.length; i++) {
         const prev = prevValues[i];
         const id = ids[i]!;
+        const next = this.searchEntry(id, docs[i]!);
         if (prev !== undefined) {
-          for (const key of this.indexKeys(id, decodeJson<T>(prev))) {
+          const old = decodeJson<T>(prev);
+          for (const key of this.indexKeys(id, old)) {
             tx.delete(key);
+          }
+          const oldSearch = this.searchEntry(id, old);
+          if (oldSearch !== undefined && (next === undefined || !sameBytes(oldSearch.key, next.key))) {
+            tx.delete(oldSearch.key);
           }
         }
         tx.put(pks[i]!, values[i]!);
         for (const key of this.indexKeys(id, docs[i]!)) tx.put(key, EMPTY);
+        if (next !== undefined) tx.put(next.key, next.value);
       }
     });
   }
@@ -221,6 +306,17 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
       }
       for (const key of after) {
         if (!before.some((other) => sameBytes(other, key))) tx.put(key, EMPTY);
+      }
+      const oldSearch = this.searchEntry(id, prev);
+      const newSearch = this.searchEntry(id, next);
+      if (oldSearch !== undefined && (newSearch === undefined || !sameBytes(oldSearch.key, newSearch.key))) {
+        tx.delete(oldSearch.key);
+      }
+      if (
+        newSearch !== undefined &&
+        (oldSearch === undefined || !sameBytes(oldSearch.key, newSearch.key) || !sameBytes(oldSearch.value, newSearch.value))
+      ) {
+        tx.put(newSearch.key, newSearch.value);
       }
       return next;
     });
@@ -312,6 +408,8 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
           const id = doc[this.primaryKeyField];
           if (typeof id !== "string") continue;
           for (const key of this.indexKeys(id, doc)) tx.delete(key);
+          const search = this.searchEntry(id, doc);
+          if (search !== undefined) tx.delete(search.key);
         }
       });
       removed += entries.length;
@@ -324,9 +422,12 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     return this.db.update([pk], ([prevBytes], tx) => {
       if (prevBytes === undefined) return false;
       tx.delete(pk);
-      for (const key of this.indexKeys(id, decodeJson<T>(prevBytes))) {
+      const prev = decodeJson<T>(prevBytes);
+      for (const key of this.indexKeys(id, prev)) {
         tx.delete(key);
       }
+      const search = this.searchEntry(id, prev);
+      if (search !== undefined) tx.delete(search.key);
       return true;
     });
   }
@@ -395,6 +496,51 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
       start,
       ...(endExclusive !== undefined ? { endExclusive } : {}),
       ...(opts?.limit !== undefined ? { limit: opts.limit } : {}),
+    });
+  }
+
+  /**
+   * Rows whose search field has, for every word of `text`, a word starting with
+   * it (case-insensitive, letters and digits). One cursor page in `sortBy`
+   * order: `after` is the `next` of the previous call (inclusive first key),
+   * `next` is the first matching key this call did not consume. Scan and row
+   * reads see one snapshot, so a put that commits during the call is invisible.
+   * Cost is a scan of the search keys until a page fills: a common word returns
+   * in microseconds, a word that matches nothing reads every key of the table.
+   */
+  async search(
+    text: string,
+    opts: { readonly limit: number; readonly after?: Uint8Array },
+  ): Promise<{ readonly docs: T[]; readonly next?: Uint8Array }> {
+    if (this.searchSpec === undefined) throw new Error(`table ${this.name} has no search spec`);
+    const limit = Math.trunc(opts.limit);
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new RangeError(`limit must be a positive integer: ${opts.limit}`);
+    }
+    const tokens = wordsOf(text).map((w) => encoder.encode(w));
+    if (tokens.length === 0) throw new RangeError("search text has no words");
+
+    const whole = prefixBound(searchPrefix(this.name));
+    const range = {
+      start: opts.after ?? whole.start,
+      ...(whole.endExclusive !== undefined ? { endExclusive: whole.endExclusive } : {}),
+    };
+    return this.db.view(async (snap) => {
+      const ids: string[] = [];
+      let next: Uint8Array | undefined;
+      for await (const entry of snap.range(range)) {
+        if (!tokens.every((t) => hasWordPrefix(entry.value, t))) continue;
+        if (ids.length === limit) {
+          next = entry.key;
+          break;
+        }
+        const id = extractSearchRowId(entry.key);
+        if (id !== undefined) ids.push(id);
+      }
+      const rows = await Promise.all(ids.map((id) => snap.get(this.pkBytes(id))));
+      const docs: T[] = [];
+      for (const bytes of rows) if (bytes !== undefined) docs.push(decodeJson<T>(bytes));
+      return next === undefined ? { docs } : { docs, next };
     });
   }
 

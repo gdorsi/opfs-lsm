@@ -47,6 +47,7 @@ export function concatBytes(...parts: Uint8Array[]): Uint8Array {
 
 const T_PREFIX = enc.encode("t/");
 const I_PREFIX = enc.encode("i/");
+const S_PREFIX = enc.encode("s/");
 
 /** Prefix shared by every primary key in `table` (no id segment). */
 export function tablePrefix(table: string): Uint8Array {
@@ -95,6 +96,28 @@ export function indexPrefix(
     encodeString(index),
     encodeIndexValuePart(value),
   );
+}
+
+/** Search-document key: s/ + table + typed sort value + id. One per row of a table with `search`. */
+export function searchKey(table: string, sort: IndexValue, id: string): Uint8Array {
+  return concatBytes(S_PREFIX, encodeString(table), encodeCompound([sort]), encodeString(id));
+}
+
+/** Prefix shared by every search-document key of `table`. */
+export function searchPrefix(table: string): Uint8Array {
+  return concatBytes(S_PREFIX, encodeString(table));
+}
+
+/** The primary id at the end of a search-document key. */
+export function extractSearchRowId(key: Uint8Array): string | undefined {
+  try {
+    let o = 2; // skip s/
+    o = decodeString(key, o).next; // table
+    o = skipTyped(key, o); // sort value
+    return decodeString(key, o).value;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
