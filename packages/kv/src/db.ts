@@ -27,14 +27,10 @@ import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { Memtable, type MemRow } from "./store/memtable.js";
 import type { ScanBounds } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
-import type { AsyncFs } from "./opfs/async-fs.js";
+import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
-import {
-  loadGeneration,
-  loadLatestGeneration,
-  loadSstReader,
-} from "./store/generation.js";
+import { loadGeneration, loadLatestGeneration } from "./store/generation.js";
 import {
   arrayCursor,
   mergeCursors,
@@ -43,7 +39,7 @@ import {
   type RunLevel,
 } from "./store/merge.js";
 import { ensureEngine } from "./store/engine.js";
-import type { SstReader } from "./store/sst.js";
+import { SstReader } from "./store/sst.js";
 import {
   ViewSnapshotImpl,
   boundsOf,
@@ -359,14 +355,30 @@ function collectBatch(
   return checkBatch(ops);
 }
 
+/** An open run file and the number of `Layers` that list it. */
+type Run = {
+  readonly path: string;
+  readonly file: OpenFile;
+  readonly reader: SstReader;
+  layers: number;
+};
+
+/**
+ * One generation's runs. `refs` counts its holders: the `installed` and
+ * `loaded` slots, each open view, and each live `range()` iterator. The
+ * last release lets go of its runs, so the host may delete their files.
+ */
 type Layers = {
   readonly generation: number;
-  readonly paths: readonly string[];
-  readonly readers: readonly SstReader[];
+  readonly runs: readonly Run[];
   /** The readers as scan sources, newest first. */
   readonly levels: readonly RunLevel[];
   readonly tombstoneSeq: number;
+  refs: number;
 };
+
+/** Runs opened at once while loading a generation. */
+const OPEN_CONCURRENCY = 16;
 
 type BusMessage = {
   readonly kind: "append" | "ingest";
@@ -390,15 +402,15 @@ class DbImpl implements Db {
   private readonly mem = new Memtable();
   private installed: Layers = {
     generation: 0,
-    paths: [],
-    readers: [],
+    runs: [],
     levels: [],
     tombstoneSeq: 0,
+    refs: 1,
   };
   /** The newest generation loaded and not yet installed. */
   private loaded: Layers | undefined;
-  /** Parsed run files by path. Paths are immutable, so a hit never goes stale. */
-  private runs = new Map<string, SstReader>();
+  /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
+  private readonly runs = new Map<string, Run>();
   private syncing: Promise<void> | undefined;
   private syncAgain = false;
   private readonly changeBus = new ChangeBus();
@@ -450,31 +462,92 @@ class DbImpl implements Db {
     this.changeBus.emit(event);
   }
 
-  /** Readers for exactly `generation`, loading them when needed. */
-  private async load(generation: number): Promise<Layers | undefined> {
+  /** Make `generation` the installed or loaded one, opening its runs when needed. */
+  private async load(generation: number): Promise<void> {
     for (const layers of [this.installed, this.loaded]) {
-      if (layers?.generation === generation) return layers;
+      if (layers?.generation === generation) return;
     }
     const meta = await loadGeneration(this.fs, generation);
-    if (!meta) return undefined;
-    const readers: SstReader[] = [];
-    for (const { path } of meta.runs) {
-      const reader = this.runs.get(path) ?? (await loadSstReader(this.fs, path));
-      if (!reader) return undefined;
-      readers.push(reader);
-    }
+    if (!meta) return;
     const paths = meta.runs.map((r) => r.path);
-    const layers = {
-      generation,
-      paths,
-      readers,
-      levels: runLevels(paths, readers),
-      tombstoneSeq: meta.tombstoneSeq,
+    const runs: (Run | undefined)[] = [];
+    let next = 0;
+    let gone = false;
+    const openNext = async (): Promise<void> => {
+      while (next < paths.length && !gone) {
+        const i = next++;
+        runs[i] = await this.openRun(paths[i]!);
+        if (!runs[i]) gone = true;
+      }
     };
-    if (!this.loaded || this.loaded.generation < generation) {
-      this.loaded = layers;
+    const settled = await Promise.allSettled(
+      Array.from({ length: Math.min(OPEN_CONCURRENCY, paths.length) }, openNext),
+    );
+    const held = runs.filter((r) => r !== undefined);
+    const failed = settled.find((r) => r.status === "rejected");
+    if (
+      failed ||
+      held.length < paths.length ||
+      this.closed ||
+      generation === this.installed.generation ||
+      (this.loaded && this.loaded.generation >= generation)
+    ) {
+      this.dropRuns(held);
+      if (failed) throw failed.reason;
+      return;
     }
-    return layers;
+    if (this.loaded) this.release(this.loaded);
+    this.loaded = {
+      generation,
+      runs: held,
+      levels: runLevels(paths, held.map((r) => r.reader)),
+      tombstoneSeq: meta.tombstoneSeq,
+      refs: 1,
+    };
+  }
+
+  /**
+   * The open run at `path`, counted for one more `Layers`. Undefined when
+   * the file is gone, which the generation retries handle.
+   */
+  private async openRun(path: string): Promise<Run | undefined> {
+    let run = this.runs.get(path);
+    if (!run) {
+      const file = await this.fs.open(path);
+      if (!file) return undefined;
+      let body: Uint8Array;
+      try {
+        body = await file.read(0, file.size);
+      } catch (err) {
+        file.close();
+        throw err;
+      }
+      run = this.runs.get(path);
+      if (run) {
+        file.close();
+      } else {
+        run = { path, file, reader: new SstReader(body), layers: 0 };
+        this.runs.set(path, run);
+      }
+    }
+    run.layers += 1;
+    return run;
+  }
+
+  private retain(layers: Layers): void {
+    layers.refs += 1;
+  }
+
+  private release(layers: Layers): void {
+    if (--layers.refs === 0) this.dropRuns(layers.runs);
+  }
+
+  private dropRuns(runs: readonly Run[]): void {
+    for (const run of runs) {
+      if (--run.layers > 0) continue;
+      this.runs.delete(run.path);
+      run.file.close();
+    }
   }
 
   /**
@@ -488,11 +561,9 @@ class DbImpl implements Db {
       const layers =
         this.loaded?.generation === tail.generation ? this.loaded : undefined;
       if (layers) {
+        this.release(this.installed);
         this.installed = layers;
         this.loaded = undefined;
-        this.runs = new Map(
-          layers.paths.map((path, i) => [path, layers.readers[i]!]),
-        );
       } else if (behind) {
         return tail.generation;
       }
@@ -544,6 +615,7 @@ class DbImpl implements Db {
       const sstAt = this.trace ? performance.now() : 0;
       if (tail.generation !== this.installed.generation) {
         await this.load(tail.generation);
+        if (this.closed) return;
       }
       if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
       const memAt = this.trace ? performance.now() : 0;
@@ -668,24 +740,37 @@ class DbImpl implements Db {
 
   async *range(range?: Range): AsyncIterable<Entry> {
     this.ensureOpen();
-    for (const entry of this.scan(range)) {
-      this.ensureOpen();
-      yield entry;
+    const layers = this.installed;
+    this.retain(layers);
+    try {
+      for (const entry of this.scan(range)) {
+        this.ensureOpen();
+        yield entry;
+      }
+    } finally {
+      this.release(layers);
     }
   }
 
   async view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T> {
     this.ensureOpen();
+    const layers = this.installed;
+    this.retain(layers);
     const snap = new ViewSnapshotImpl(
       this.mem.appliedThrough,
-      this.installed.generation,
+      layers.generation,
       this.mem.pin(),
-      this.installed.levels,
+      layers.levels,
+      () => {
+        this.retain(layers);
+        return () => this.release(layers);
+      },
     );
     try {
       return await body(snap);
     } finally {
       snap.close();
+      this.release(layers);
     }
   }
 
@@ -721,5 +806,8 @@ class DbImpl implements Db {
     this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
     this.wal.close();
+    this.release(this.installed);
+    if (this.loaded) this.release(this.loaded);
+    this.loaded = undefined;
   }
 }

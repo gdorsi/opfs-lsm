@@ -1,5 +1,6 @@
-import type { AsyncFs, FileWriter } from "./async-fs.js";
+import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
+import { CorruptDatabaseError } from "../errors.js";
 
 function splitPath(path: string): string[] {
   return path.split("/").filter((p) => p.length > 0 && p !== ".");
@@ -32,9 +33,67 @@ async function getFileHandle(
 /**
  * Async OPFS adapter rooted at `opfs-lsm/<dbName>/`.
  * Publish = createWritable (no keepExistingData) + close.
+ * An open file is a shared Web Lock per path, held across tabs and workers
+ * of the origin, so the host deletes a run only when no reader holds it.
  */
 export class BrowserFs implements AsyncFs {
-  constructor(private readonly root: FileSystemDirectoryHandle) {}
+  constructor(
+    private readonly root: FileSystemDirectoryHandle,
+    private readonly dbName: DbName,
+  ) {}
+
+  private lockName(path: string): string {
+    return `opfs-lsm:${this.dbName}:run:${path}`;
+  }
+
+  async open(path: string): Promise<OpenFile | undefined> {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    await new Promise<void>((granted, failed) => {
+      navigator.locks
+        .request(this.lockName(path), { mode: "shared" }, () => {
+          granted();
+          return held;
+        })
+        .catch(failed);
+    });
+    let file: File;
+    try {
+      file = await (await getFileHandle(this.root, path, false)).getFile();
+    } catch (err) {
+      release();
+      if (isNotFound(err)) return undefined;
+      throw err;
+    }
+    return {
+      size: file.size,
+      read: async (offset, length) => {
+        if (offset + length > file.size) {
+          throw new CorruptDatabaseError(`short read: ${path}`);
+        }
+        return new Uint8Array(
+          await file.slice(offset, offset + length).arrayBuffer(),
+        );
+      },
+      close: release,
+    };
+  }
+
+  async removeUnlessOpen(path: string): Promise<boolean> {
+    return await navigator.locks.request(
+      this.lockName(path),
+      { mode: "exclusive", ifAvailable: true },
+      async (lock) => {
+        if (!lock) return false;
+        try {
+          await this.remove(path);
+        } catch (err) {
+          if (!isNotFound(err)) throw err;
+        }
+        return true;
+      },
+    );
+  }
 
   async read(
     path: string,
@@ -127,5 +186,5 @@ export async function openBrowserFs(name: string): Promise<BrowserFs> {
   const root = await navigator.storage.getDirectory();
   const lsm = await root.getDirectoryHandle("opfs-lsm", { create: true });
   const db = await lsm.getDirectoryHandle(dbName, { create: true });
-  return new BrowserFs(db);
+  return new BrowserFs(db, dbName);
 }

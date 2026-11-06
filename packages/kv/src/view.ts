@@ -46,7 +46,11 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
   return undefined;
 }
 
-/** Pinned memtable rows plus the SST readers opened for that generation. */
+/**
+ * Pinned memtable rows plus the SST readers opened for that generation.
+ * `hold` keeps those readers open and returns its release, so a `range`
+ * iterator that outlives the view callback still reads open files.
+ */
 export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
   private readonly rows: MemRows;
@@ -57,6 +61,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     readonly generation: number,
     rows: MemRows,
     levels: readonly RunLevel[],
+    private readonly hold: () => () => void,
   ) {
     this.rows = rows;
     this.levels = levels;
@@ -113,15 +118,20 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     this.ensureOpen();
     const bounds = boundsOf(range);
     const slice = this.rows.range(bounds);
-    for (const entry of mergeCursors(
-      [
-        arrayCursor(slice),
-        ...this.levels.map((level) => level.cursor(bounds)),
-      ],
-      range?.limit,
-    )) {
-      this.ensureOpen();
-      yield entry;
+    const release = this.hold();
+    try {
+      for (const entry of mergeCursors(
+        [
+          arrayCursor(slice),
+          ...this.levels.map((level) => level.cursor(bounds)),
+        ],
+        range?.limit,
+      )) {
+        this.ensureOpen();
+        yield entry;
+      }
+    } finally {
+      release();
     }
   }
 }

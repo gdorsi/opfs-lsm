@@ -56,6 +56,8 @@ function observedFs(inner: MemoryFs) {
       return inner.list(dir);
     },
     remove: (path) => inner.remove(path),
+    open: (path) => inner.open(path),
+    removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
     create: (path) => inner.create(path),
   };
   return {

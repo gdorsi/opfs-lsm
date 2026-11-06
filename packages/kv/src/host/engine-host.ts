@@ -1,7 +1,12 @@
 import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
-import { loadLatestGeneration } from "../store/generation.js";
+import {
+  listRuns,
+  liveRuns,
+  loadLatestGeneration,
+  reclaimRuns,
+} from "../store/generation.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestAll, type IngestResult } from "./ingest.js";
 import {
@@ -63,6 +68,12 @@ export class EngineHost {
   private readonly compactions = new Map<string, Promise<void>>();
   private readonly compactAgain = new Set<string>();
   private readonly watches = new Map<DbName, IngestWatch>();
+  /**
+   * Run files out of every live generation that a tab still held at the
+   * last try. A cache of what the manifests and directories say: a missing
+   * entry means this host has not swept that database yet.
+   */
+  private readonly retired = new Map<DbName, Set<string>>();
 
   constructor(private readonly fsFactory: FsFactory) {}
 
@@ -250,14 +261,35 @@ export class EngineHost {
 
   private async compactPass(dbName: DbName): Promise<void> {
     const fs = await this.fsFor(dbName);
+    if (this.retired.get(dbName)?.size !== 0) {
+      await this.exclusive(dbName, () =>
+        this.withWal(dbName, (wal) => this.reclaim(dbName, fs, wal)),
+      );
+    }
     for (let i = 0; i < MAX_COMPACTION_STEPS; i++) {
       const step = await mergeNextStep(fs);
       if (!step) return;
       await this.exclusive(dbName, () =>
-        this.withWal(dbName, (wal) => installStep(fs, wal, step)),
+        this.withWal(dbName, async (wal) => {
+          await installStep(fs, wal, step);
+          for (const path of step.inputs) this.retired.get(dbName)!.add(path);
+          await this.reclaim(dbName, fs, wal);
+        }),
       );
       announceGeneration(dbName);
     }
+  }
+
+  /**
+   * Remove the retired runs no tab holds. The first call for a database
+   * retires every run file outside the live generations, which also
+   * collects what a crash left behind. Needs the ingest and compaction
+   * locks, so no run being written is mistaken for an orphan.
+   */
+  private async reclaim(dbName: DbName, fs: AsyncFs, wal: IdBWal): Promise<void> {
+    const retired = this.retired.get(dbName) ?? new Set(await listRuns(fs));
+    const keep = await liveRuns(fs, (await wal.recordedGeneration()) ?? 0);
+    this.retired.set(dbName, new Set(await reclaimRuns(fs, retired, keep)));
   }
 }
 
