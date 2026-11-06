@@ -12,7 +12,7 @@ Minimal React + [Tiptap](https://tiptap.dev/) example that persists a rich-text 
 - `save(doc)` → `db.put(key, JSON.stringify(doc))` (durable WAL append).
 - `onChange()` → `db.changes(...)` so another tab’s commit can trigger `sync()` + reload.
 
-The editor (`App.tsx`) debounces saves and ignores remote reloads while applying them.
+The editor (`App.tsx`) debounces saves, flushes a pending save on unload and unmount, and will not apply a remote reload over an edit that has not been written yet.
 
 ## Run
 

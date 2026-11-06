@@ -1,16 +1,62 @@
 import { EditorContent, useEditor, type JSONContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useEffect, useRef, useState } from "react";
+import { createDebouncedSave, type DebouncedSave } from "./debounced-save";
 import type { DocumentStore } from "./kv-document-store";
 
 type SaveState = "idle" | "loading" | "saving" | "saved" | "error";
 
-export function App({ store }: { store: DocumentStore }) {
+/** `flush` returns true while a save is running; the database must stay open. */
+export type AppShutdown = {
+  flush: () => boolean;
+};
+
+export function App({
+  store,
+  shutdown,
+}: {
+  store: DocumentStore;
+  shutdown: AppShutdown;
+}) {
   const [saveState, setSaveState] = useState<SaveState>("loading");
   const [error, setError] = useState("");
-  const saveTimer = useRef<number | undefined>(undefined);
   const lastSaved = useRef<string>("");
   const applyingRemote = useRef(false);
+  const alive = useRef(true);
+  const storeRef = useRef(store);
+  storeRef.current = store;
+  const saving = useRef<DebouncedSave<JSONContent> | null>(null);
+
+  let debounced = saving.current;
+  if (debounced === null) {
+    debounced = createDebouncedSave({
+      delayMs: 300,
+      save: async (json) => {
+        await storeRef.current.save(json);
+        lastSaved.current = JSON.stringify(json);
+        if (!alive.current || saving.current?.hasPending()) return;
+        setError("");
+        setSaveState("saved");
+      },
+      onError: (err) => {
+        if (!alive.current) {
+          console.error(err);
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
+        setSaveState("error");
+      },
+    });
+    saving.current = debounced;
+  }
+  // Assigned during render so a refresh before effects still flushes.
+  shutdown.flush = () => saving.current?.flush() ?? false;
+
+  function onError(err: unknown) {
+    if (!alive.current) return;
+    setError(err instanceof Error ? err.message : String(err));
+    setSaveState("error");
+  }
 
   const editor = useEditor({
     extensions: [StarterKit],
@@ -23,31 +69,17 @@ export function App({ store }: { store: DocumentStore }) {
     onUpdate: ({ editor }) => {
       if (applyingRemote.current) return;
       const json = editor.getJSON();
-      const serialized = JSON.stringify(json);
-      if (serialized === lastSaved.current) return;
-      window.clearTimeout(saveTimer.current);
+      if (JSON.stringify(json) === lastSaved.current) return;
+      setError("");
       setSaveState("saving");
-      saveTimer.current = window.setTimeout(() => {
-        void persist(json).catch(onError);
-      }, 300);
+      saving.current?.push(json);
     },
   });
-
-  function onError(err: unknown) {
-    setError(err instanceof Error ? err.message : String(err));
-    setSaveState("error");
-  }
-
-  async function persist(json: JSONContent) {
-    await store.save(json);
-    lastSaved.current = JSON.stringify(json);
-    setError("");
-    setSaveState("saved");
-  }
 
   async function loadIntoEditor() {
     if (!editor) return;
     const doc = await store.load();
+    if (!alive.current || !editor) return;
     const json = (doc as JSONContent | null) ?? {
       type: "doc",
       content: [{ type: "paragraph" }],
@@ -64,6 +96,14 @@ export function App({ store }: { store: DocumentStore }) {
   }
 
   useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      saving.current?.flush();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!editor) return;
     void loadIntoEditor().catch(onError);
   }, [editor]);
@@ -71,11 +111,14 @@ export function App({ store }: { store: DocumentStore }) {
   useEffect(() => {
     if (!editor) return;
     return store.onChange(() => {
-      // Another tab wrote; sync WAL tail then reload if content differs.
+      // Own puts notify too. Skip them, and skip remote updates while a
+      // local edit has not been written yet.
       void (async () => {
+        if (saving.current?.busy()) return;
         await store.sync();
+        if (!alive.current || saving.current?.busy()) return;
         const doc = await store.load();
-        if (!doc) return;
+        if (!alive.current || !doc) return;
         const serialized = JSON.stringify(doc);
         if (serialized === lastSaved.current) return;
         applyingRemote.current = true;

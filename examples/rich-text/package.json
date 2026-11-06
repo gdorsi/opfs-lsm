@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview",
-    "check": "tsc -p tsconfig.json"
+    "check": "tsc -p tsconfig.json",
+    "test": "node --experimental-strip-types --test debounced-save.test.ts"
   },
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*",

@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
+import { App, type AppShutdown } from "./App";
 import { openDocumentStore } from "./kv-document-store";
 
 const rootEl = document.getElementById("root")!;
@@ -11,14 +11,18 @@ async function boot() {
   const docId = params.get("doc") ?? "default";
 
   const store = await openDocumentStore({ dbName, docId });
+  const shutdown: AppShutdown = {
+    flush: () => false,
+  };
 
   window.addEventListener("beforeunload", () => {
-    void store.close();
+    // close() aborts the IndexedDB transaction a flush just started.
+    if (!shutdown.flush()) void store.close();
   });
 
   createRoot(rootEl).render(
     <StrictMode>
-      <App store={store} />
+      <App store={store} shutdown={shutdown} />
     </StrictMode>,
   );
 }
