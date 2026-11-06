@@ -38,5 +38,6 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior, 
 - [Two-tab SharedWorker visibility](./two-tab.md) — peer put/get/ingest across two tabs.
 - [KV OPFS put/get/ingest bench](./kv-bench.md) — solitary put, batch, warm get, ingest, post-ingest get vs Dexie.
 - [Collections table and email index](./collections-bench.md) — put, get by id, `where("email")`, post-ingest where vs Dexie.
+- [Automerge big document, kv vs IndexedDB](./automerge-bench.md) — write and cold-load one big doc through Automerge Repo on kv, IndexedDB and in-memory storage.
 - [Two-tab without BroadcastChannel](./two-tab-nobc.md) — same scenario with BC silenced.
 - [Two-tab local EngineHost](./two-tab-local.md) — one page, two handles, no SharedWorker.

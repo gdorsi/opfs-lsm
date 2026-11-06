@@ -55,6 +55,7 @@ Read `features/README.md`, then the feature file. Drive through the helper so st
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive kv-bench
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive collections-bench
+.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive automerge-bench
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-nobc
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-local
 ```
@@ -68,6 +69,7 @@ Harness mapping (repo-native; do not invent a second browser stack):
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `kv-bench` | `BENCH_N=50 pnpm bench:browser` (override with `BENCH_N`) |
 | `collections-bench` | `BENCH_N=50 pnpm bench:collections` |
+| `automerge-bench` | `BENCH_RUNS=1 BENCH_LOADS=2 BENCH_WORKLOADS=trace:100,data/moby-dick.automerge pnpm --filter @opfs-lsm/example-automerge bench:big-doc` |
 
 Stable proof strings (from harness stdout, not DOM coordinates):
 
@@ -75,6 +77,7 @@ Stable proof strings (from harness stdout, not DOM coordinates):
 - Two-tab local: `tabs=1`, `mode=local EngineHost`, `two-tab ok`, exit `0`.
 - KV bench: lines `kv solitary put`, `kv one batch`, `kv point get (warm)`, `kv ingest → OPFS`, `kv point get (post-ingest)`, exit `0` (no `kv FAILED`).
 - Collections bench: `collections solitary put`, `collections get by id`, `collections where email`, exit `0`.
+- Automerge bench: one `== <workload>` table per workload with `kv`, `idb` and `mem` columns, each followed by `checks: goodLoads N/N, errors 0`, exit `0`.
 
 Pages (served only while a drive runs): `#run` / `#out` in `packages/kv/bench/two-tab.html`, `packages/kv/bench/browser.html`, `packages/collections/bench/browser.html`. Auto mode uses `?auto=1`; agents should not click `Run` unless debugging a hung auto session.
 
