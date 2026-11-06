@@ -1,4 +1,4 @@
-import { prefixBound, type Db } from "@opfs-lsm/kv";
+import { prefixBound, type BatchTx, type Db } from "@opfs-lsm/kv";
 import {
   decodeJson,
   encodeJson,
@@ -12,6 +12,7 @@ import {
   tablePrefix,
   type IndexValue,
 } from "./codec.js";
+import { diffEntries, type IndexEntry } from "./entries.js";
 import { encodeTyped, normalizeIndexValues } from "./typed.js";
 
 export type IndexSpec = {
@@ -63,8 +64,6 @@ export type TableSchema = {
 
 const EMPTY = new Uint8Array(0);
 const encoder = new TextEncoder();
-/** One search-document entry: key and normalised text value. */
-type SearchEntry = { key: Uint8Array; value: Uint8Array };
 
 /** Lowercased words (letters and digits) of `text`, in order. */
 function wordsOf(text: string): string[] {
@@ -91,14 +90,6 @@ function afterKey(key: Uint8Array): Uint8Array {
   const out = new Uint8Array(key.length + 1);
   out.set(key);
   return out;
-}
-
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.byteLength !== b.byteLength) return false;
-  for (let i = 0; i < a.byteLength; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
 }
 
 function pathsOf(spec: IndexSpec): readonly string[] {
@@ -208,26 +199,34 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     return primaryKey(this.name, id);
   }
 
-  private indexKeys(id: string, doc: T): Uint8Array[] {
-    const out: Uint8Array[] = [];
+  /** Every derived entry of `doc`: its index keys, and its search key when the text and sort fields exist. */
+  private entriesOf(id: string, doc: T): IndexEntry[] {
+    const out: IndexEntry[] = [];
     for (const idx of this.indexes) {
       for (const values of readIndexValues(doc, idx)) {
-        out.push(indexKey(this.name, idx.name, values, id));
+        out.push({ key: indexKey(this.name, idx.name, values, id), value: EMPTY });
+      }
+    }
+    const spec = this.searchSpec;
+    if (spec !== undefined) {
+      const text = getPath(doc, spec.path);
+      const sort = getPath(doc, spec.sortBy);
+      if (typeof text === "string" && sort !== undefined) {
+        const label = `search.${spec.sortBy}`;
+        out.push({
+          key: searchKey(this.name, sortAsStored(asIndexValue(sort, label), label), id),
+          value: encoder.encode(` ${wordsOf(text).join(" ")}`),
+        });
       }
     }
     return out;
   }
 
-  /** The search-document entry of `doc`, or undefined when the text or sort field is missing. */
-  private searchEntry(id: string, doc: T): SearchEntry | undefined {
-    const spec = this.searchSpec;
-    if (spec === undefined) return undefined;
-    const text = getPath(doc, spec.path);
-    const sort = getPath(doc, spec.sortBy);
-    if (typeof text !== "string" || sort === undefined) return undefined;
-    const label = `search.${spec.sortBy}`;
-    const key = searchKey(this.name, sortAsStored(asIndexValue(sort, label), label), id);
-    return { key, value: encoder.encode(` ${wordsOf(text).join(" ")}`) };
+  /** Write the row's derived entries that changed from `before` to `after`. */
+  private writeEntries(tx: BatchTx, before: readonly IndexEntry[], after: readonly IndexEntry[]): void {
+    const { remove, write } = diffEntries(before, after);
+    for (const key of remove) tx.delete(key);
+    for (const entry of write) tx.put(entry.key, entry.value);
   }
 
   async get(id: string): Promise<T | undefined> {
@@ -266,20 +265,9 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
       for (let i = 0; i < docs.length; i++) {
         const prev = prevValues[i];
         const id = ids[i]!;
-        const next = this.searchEntry(id, docs[i]!);
-        if (prev !== undefined) {
-          const old = decodeJson<T>(prev);
-          for (const key of this.indexKeys(id, old)) {
-            tx.delete(key);
-          }
-          const oldSearch = this.searchEntry(id, old);
-          if (oldSearch !== undefined && (next === undefined || !sameBytes(oldSearch.key, next.key))) {
-            tx.delete(oldSearch.key);
-          }
-        }
+        const before = prev === undefined ? [] : this.entriesOf(id, decodeJson<T>(prev));
         tx.put(pks[i]!, values[i]!);
-        for (const key of this.indexKeys(id, docs[i]!)) tx.put(key, EMPTY);
-        if (next !== undefined) tx.put(next.key, next.value);
+        this.writeEntries(tx, before, this.entriesOf(id, docs[i]!));
       }
     });
   }
@@ -299,25 +287,7 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
         throw new Error("update must not change the primary key");
       }
       tx.put(pk, encodeJson(next));
-      const before = this.indexKeys(id, prev);
-      const after = this.indexKeys(id, next);
-      for (const key of before) {
-        if (!after.some((other) => sameBytes(other, key))) tx.delete(key);
-      }
-      for (const key of after) {
-        if (!before.some((other) => sameBytes(other, key))) tx.put(key, EMPTY);
-      }
-      const oldSearch = this.searchEntry(id, prev);
-      const newSearch = this.searchEntry(id, next);
-      if (oldSearch !== undefined && (newSearch === undefined || !sameBytes(oldSearch.key, newSearch.key))) {
-        tx.delete(oldSearch.key);
-      }
-      if (
-        newSearch !== undefined &&
-        (oldSearch === undefined || !sameBytes(oldSearch.key, newSearch.key) || !sameBytes(oldSearch.value, newSearch.value))
-      ) {
-        tx.put(newSearch.key, newSearch.value);
-      }
+      this.writeEntries(tx, this.entriesOf(id, prev), this.entriesOf(id, next));
       return next;
     });
   }
@@ -407,9 +377,7 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
           }
           const id = doc[this.primaryKeyField];
           if (typeof id !== "string") continue;
-          for (const key of this.indexKeys(id, doc)) tx.delete(key);
-          const search = this.searchEntry(id, doc);
-          if (search !== undefined) tx.delete(search.key);
+          for (const derived of this.entriesOf(id, doc)) tx.delete(derived.key);
         }
       });
       removed += entries.length;
@@ -422,12 +390,7 @@ export class Table<T extends Record<string, unknown> = Record<string, unknown>> 
     return this.db.update([pk], ([prevBytes], tx) => {
       if (prevBytes === undefined) return false;
       tx.delete(pk);
-      const prev = decodeJson<T>(prevBytes);
-      for (const key of this.indexKeys(id, prev)) {
-        tx.delete(key);
-      }
-      const search = this.searchEntry(id, prev);
-      if (search !== undefined) tx.delete(search.key);
+      for (const derived of this.entriesOf(id, decodeJson<T>(prevBytes))) tx.delete(derived.key);
       return true;
     });
   }
