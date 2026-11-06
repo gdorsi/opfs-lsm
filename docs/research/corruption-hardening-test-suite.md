@@ -59,6 +59,23 @@ Items 1 to 4 are a few days of work on Node with no browser. They cover the comp
 bug corrupts data: ingest, compaction install, reclaim, memtable `advanceTo`, view pins, and the
 merge order.
 
+## Decisions (2026-11-06)
+
+1. **Crash contract.** Losing recent acked writes on crash or power loss is acceptable; it is
+   outside the engine's control. Corruption is not: after any crash the database must open, and
+   its state must be the fold of a prefix of the log. A test that reaches a non-prefix state or
+   an unopenable database has found a bug, not an accepted limit. This makes
+   [Risks to target first](#risks-to-target-first) items 1 and 2 bugs to fix if confirmed.
+2. **SST CRC in tabs stays skipped.** The engine does not defend against tampering, and data in
+   the browser is untrusted anyway. Decoder fuzzing therefore requires no hang, crash or
+   out-of-bounds read on corrupt bytes; a wrong answer from a corrupt SST read in a tab is
+   accepted.
+3. **Seams live in the test harness first.** Change production code only when a harness-side
+   approach is not feasible or would make tests flaky. For the WAL, try replacing
+   `globalThis.indexedDB` with a fault-injecting wrapper over `fake-indexeddb` before adding a
+   constructor parameter.
+4. **New dev dependencies are fine:** fast-check, `cargo fuzz`, Jazzer.js, StrykerJS.
+
 ## What exists today
 
 | Asset | What it covers | Gap |
