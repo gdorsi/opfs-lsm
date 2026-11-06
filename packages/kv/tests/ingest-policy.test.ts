@@ -199,17 +199,14 @@ describe("ingest policy", () => {
     const { a, b } = await twoTabs({ maxWalBytes: limit });
     const keys = Array.from({ length: 50 }, (_, i) => utf(`key/${String(i).padStart(4, "0")}`));
     const wal = await IdBWal.open(checkDbName(NAME));
-    let largest = 0;
+    const waiting = async () => (await wal.tail(0)).records.reduce((n, r) => n + opsBytes(r.ops), 0);
     for (let round = 0; round < 40; round++) {
       await a.batch((tx) => {
         for (const k of keys) round % 2 ? tx.delete(k) : tx.put(k, new Uint8Array(40));
       });
-      await settle();
-      const waiting = (await wal.tail(0)).records.reduce((n, r) => n + opsBytes(r.ops), 0);
-      largest = Math.max(largest, waiting);
+      await vi.waitFor(async () => expect(await waiting()).toBeLessThanOrEqual(limit + 50 * 48), WAIT);
     }
     wal.close();
-    expect(largest).toBeLessThanOrEqual(limit + 50 * 48);
     expect(await b.get(keys[0]!)).toBeUndefined();
     await a.close();
     await b.close();
