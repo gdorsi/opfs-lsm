@@ -8,6 +8,7 @@
     "test": "tsx --test src/storage.test.ts",
     "bench:load": "tsx scripts/bench-load.ts",
     "bench:open": "tsx scripts/bench-open.ts",
+    "bench:big-doc": "pnpm --filter @opfs-lsm/kv build && tsx scripts/bench-big-doc.ts",
     "preview": "vite preview"
   },
   "dependencies": {

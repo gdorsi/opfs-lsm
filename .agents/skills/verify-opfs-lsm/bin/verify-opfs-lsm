@@ -146,7 +146,7 @@ run_capture() {
 
 cmd_drive() {
   local feature="${1:-}"
-  [[ -n "$feature" ]] || die "usage: verify-opfs-lsm drive <two-tab|kv-bench|collections-bench|two-tab-nobc|two-tab-local>"
+  [[ -n "$feature" ]] || die "usage: verify-opfs-lsm drive <two-tab|kv-bench|collections-bench|automerge-bench|two-tab-nobc|two-tab-local>"
   cmd_doctor >/dev/null
 
   case "$feature" in
@@ -172,6 +172,12 @@ cmd_drive() {
       fi
       run_capture collections-bench env BENCH_N="${BENCH_N:-50}" pnpm bench:collections
       ;;
+    automerge-bench)
+      run_capture automerge-bench env \
+        BENCH_RUNS="${BENCH_RUNS:-1}" BENCH_LOADS="${BENCH_LOADS:-2}" \
+        BENCH_WORKLOADS="${BENCH_WORKLOADS:-trace:100,data/moby-dick.automerge}" \
+        pnpm --filter @opfs-lsm/example-automerge bench:big-doc
+      ;;
     *)
       die "unknown feature: $feature"
       ;;
@@ -194,12 +200,14 @@ verify-opfs-lsm — real-Chrome proofs for @opfs-lsm
 
   verify-opfs-lsm doctor
   verify-opfs-lsm launch
-  verify-opfs-lsm drive <two-tab|kv-bench|collections-bench|two-tab-nobc|two-tab-local>
+  verify-opfs-lsm drive <two-tab|kv-bench|collections-bench|automerge-bench|two-tab-nobc|two-tab-local>
   verify-opfs-lsm cleanup
 
 Env:
   CHROME_PATH            Chrome binary override
   BENCH_N                ops for benches (default 50 via this helper)
+  BENCH_RUNS / BENCH_LOADS / BENCH_WORKLOADS
+                         automerge-bench size (defaults 1 / 2 / trace:100,data/moby-dick.automerge)
   VERIFY_OPFS_ARTIFACTS  evidence root (default: skill artifacts/)
   VERIFY_OPFS_RUN_ID     fixed run folder name under a feature
 EOF

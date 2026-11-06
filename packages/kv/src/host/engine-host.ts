@@ -316,14 +316,12 @@ export function attachEngineHostPort(
               ? (scan) =>
                   reply({
                     type: "watch-trace",
-                    id: msg.id,
                     ms: scan.ms,
                     rows: scan.rows,
                     bytes: scan.bytes,
                   })
               : undefined,
           );
-          reply({ type: "watch-ok", id: msg.id });
           return;
         case "unwatch":
           host.unwatch(msg.name);
@@ -384,14 +382,14 @@ export function createPortIngestClient(
       const res = await request({ type: "ingest", id: nextId++, name, through, settle });
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
-    async watch(name, policy) {
-      await request({
+    watch(name, policy) {
+      const msg: ClientToHost = {
         type: "watch",
-        id: nextId++,
         name,
         maxWalBytes: policy.maxWalBytes,
         ...(onWatchScan ? { trace: true } : {}),
-      });
+      };
+      port.postMessage(msg);
     },
     unwatch(name) {
       const msg: ClientToHost = { type: "unwatch", name };
@@ -408,7 +406,7 @@ export function createPortIngestClient(
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
     ingest: (name, through, settle) => host.ingest(name, through, settle),
-    watch: async (name, policy) => host.watch(name, policy.maxWalBytes),
+    watch: (name, policy) => host.watch(name, policy.maxWalBytes),
     unwatch: (name) => host.unwatch(name),
     close: () => undefined,
   };

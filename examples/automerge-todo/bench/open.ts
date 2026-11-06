@@ -111,7 +111,6 @@ const PHASES = [
   "wal-read",
   "memtable",
   "sst",
-  "watch",
   "wasm",
   "wasm-error",
   "host-scan",
@@ -453,7 +452,7 @@ function phasesOf(spans: readonly OpenSpan[]): Record<string, number | null> {
 }
 
 function gapMs(openMs: number, phases: Record<string, number | null>): number {
-  const parts = ["opfs", "worker-ctor", "idb-open", "generation", "sync", "watch"];
+  const parts = ["opfs", "worker-ctor", "idb-open", "generation", "sync"];
   let sum = 0;
   for (const part of parts) sum += phases[part] ?? 0;
   return openMs - sum;

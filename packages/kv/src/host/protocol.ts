@@ -15,7 +15,6 @@ export type ClientToHost =
     }
   | {
       readonly type: "watch";
-      readonly id: number;
       readonly name: string;
       readonly maxWalBytes: number;
       /** Ask the host to report the background WAL scan. Open does not wait for it. */
@@ -35,10 +34,8 @@ export type HostToClient =
       readonly id: number;
       readonly message: string;
     }
-  | { readonly type: "watch-ok"; readonly id: number }
   | {
       readonly type: "watch-trace";
-      readonly id: number;
       readonly ms: number;
       readonly rows: number;
       readonly bytes: number;
@@ -58,9 +55,8 @@ export type IngestClient = {
   /**
    * Have the host ingest `name` on its own once the WAL waiting for ingest
    * passes `policy.maxWalBytes`, starting with what is already waiting.
-   * Resolves once the host listens for appends, before that first ingest.
    */
-  watch(name: string, policy: IngestPolicy): Promise<void>;
+  watch(name: string, policy: IngestPolicy): void;
   /** This tab no longer needs the host to watch `name`. */
   unwatch(name: string): void;
   close(): void;
