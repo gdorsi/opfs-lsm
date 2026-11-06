@@ -24,6 +24,7 @@ Formal model checkers live under `verify-kv` and are not listed here.
 
 - Capture stdout that includes both the action lines and the final ok / timing lines.
 - Require exit code `0` and the feature-specific proof strings in the feature file.
+- `two-tab-local`, `two-tab-nobc`, and `collections-bench` fail on main. The m1-smoke workflow omits them. Match [docs/verification.md](../../../../docs/verification.md) before calling that failure a regression.
 - Record the feature id and the helper command in `meta.txt` (the helper writes this).
 - Report an unreachable path with the unmet precondition (missing Chrome, missing dist, locked profile).
 - Do not claim SharedWorker proof from a `TWO_TAB_LOCAL=1` or `MemoryFs` run.

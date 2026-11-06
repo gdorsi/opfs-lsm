@@ -26,5 +26,6 @@ Preconditions:
 
 ## Gotchas
 
-- This is not a substitute for the default `two-tab` proof when BroadcastChannel behavior is under change — run both if BC wiring changed.
+- On main this drive exits 1 with `pinned get before ingest was null`, before `two-tab ok`. CI does not run it. The pass policy is [docs/verification.md](../../../../docs/verification.md).
+- Run this together with `two-tab` when BroadcastChannel wiring changed. The default `two-tab` drive is the SharedWorker proof.
 - Local EngineHost + nobc is a different combination; this feature drive uses SharedWorker with `TWO_TAB_NOBC=1` only.

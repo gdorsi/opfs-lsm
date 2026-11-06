@@ -4,7 +4,7 @@ The collections bench opens a `users` table with an `email` index on `@opfs-lsm/
 
 ## Sub-features
 
-- `collections-put` solitary-puts N user rows (primary + index keys in one OCC transaction).
+- `collections-put` solitary-puts N user rows (primary key and index keys in one `update`).
 - `collections-get-id` gets each user by id.
 - `collections-where-email` equality-looks up each email before ingest.
 - `collections-ingest` publishes to OPFS.
@@ -30,6 +30,7 @@ Preconditions:
 
 ## Gotchas
 
+- On main the page fails before the timed rows: `Failed to resolve module specifier '@opfs-lsm/collections/testing'`. The import map in `packages/collections/bench/browser.html` has no entry for that specifier. CI does not run this drive. The pass policy is [docs/verification.md](../../../../docs/verification.md).
 - Fixed profile under `packages/collections/.bench-chrome-profile` — one collections bench per checkout at a time.
 - Collections solitary put is heavier than Dexie row put (index keys in the same transaction); do not treat a slower put row as a functional failure.
 - Build both `@opfs-lsm/kv` and `@opfs-lsm/collections` before driving; the helper `launch` does both.
