@@ -33,7 +33,7 @@ pnpm --filter @opfs-lsm/kv build
 pnpm --filter @opfs-lsm/collections build
 ```
 
-Chrome: macOS default `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, else `google-chrome` on `PATH`, else `CHROME_PATH`.
+Chrome: `CHROME_PATH` when set, else `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, else `google-chrome` on `PATH`.
 
 Teardown is per-drive (Chrome kill + server close inside the harness). After the session, run `cleanup` for any leftover fixed bench profiles.
 
