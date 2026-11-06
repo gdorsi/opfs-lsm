@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { containsAll } from "../src/bytes.js";
+import { CorruptDatabaseError } from "../src/errors.js";
 import { encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { useBlockScanner } from "../src/store/block-scan.js";
 import { RunLevel } from "../src/store/merge.js";
@@ -54,6 +55,13 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
     } finally {
       useBlockScanner(prev);
     }
+  });
+
+  it("reports a corrupt block as CorruptDatabaseError", async () => {
+    const sst = await encodeSst(entries, codec);
+    const head = new DataView(sst.buffer, sst.byteOffset);
+    head.setUint32(0, head.getUint32(0, true) + 1, true);
+    expect(() => [...new SstReader(sst).scanContains(pats(" w3"))]).toThrow(CorruptDatabaseError);
   });
 
   it("walks every run of a level in key order", async () => {
