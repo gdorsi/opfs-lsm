@@ -418,7 +418,8 @@ channel and drops the watch. Until then it keeps the smallest limit it has seen.
 Each append broadcast adds the key and value bytes of its ops to `pendingBytes`. When
 `pendingBytes` reaches `triggerAt` and the watch is idle, the host folds every uningested
 record. One ingest runs at a time. When it finishes, the host subtracts the folded bytes and
-checks again. The default limit is 4 MiB (`maxWalBytes` in `ingest-policy.ts`).
+checks again. The default limit is 1 MiB (`maxWalBytes` in `ingest-policy.ts`). Every
+open replays the WAL up to the limit, so the limit is an open-time budget.
 
 The count is the bytes of the ops as written. Overwrites and deletes grow it the same way new
 keys do, so the WAL that every open replays stays near the limit whatever the batch shape.

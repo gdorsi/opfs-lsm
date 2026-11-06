@@ -6,7 +6,9 @@
  *   DOCS=500 RUNS=5 pnpm --filter @opfs-lsm/example-yjs bench:load
  *
  * Env: DOCS (default 5000), RUNS (3), CONCURRENCY (20), EDITS (updates per
- * document, 5), BENCH_TIMEOUT_MS, BENCH_OUT (write the raw JSON there).
+ * document, 5), SHAPES (comma list of kv,kv-wal,kv-sst,idb), WAL_BYTES (the kv
+ * shape's maxWalBytes; default is kv's own policy), BENCH_TIMEOUT_MS,
+ * BENCH_OUT (write the raw JSON there).
  */
 import http from "node:http"
 import fs from "node:fs"
@@ -20,6 +22,8 @@ const docs = Number(process.env.DOCS ?? 5000)
 const runs = Number(process.env.RUNS ?? 3)
 const concurrency = Number(process.env.CONCURRENCY ?? 20)
 const edits = Number(process.env.EDITS ?? 5)
+const shapesParam = process.env.SHAPES ? `&shapes=${process.env.SHAPES}` : ""
+const walBytesParam = process.env.WAL_BYTES ? `&walBytes=${process.env.WAL_BYTES}` : ""
 const timeoutMs = Number(process.env.BENCH_TIMEOUT_MS ?? 30 * 60 * 1000)
 const exampleDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -51,6 +55,8 @@ type BenchState = {
   runs: number
   concurrency: number
   edits: number
+  shapes: string[]
+  walBytes: number | null
   writes: WriteResult[]
   loads: { shape: string; run: number; order: number; passes: LoadPass[] }[]
   nextRun: number
@@ -167,10 +173,13 @@ function ms(n: number): string {
 }
 
 function report(state: BenchState): void {
-  const shapes = ["kv-wal", "kv-sst", "idb"]
-  console.log(`docs=${state.docs} of total=${state.total} runs=${state.runs} concurrency=${state.concurrency} edits=${state.edits}`)
+  const shapes = state.shapes
+  console.log(
+    `docs=${state.docs} of total=${state.total} runs=${state.runs} concurrency=${state.concurrency} edits=${state.edits} kv maxWalBytes=${state.walBytes ?? "default"}`,
+  )
   console.log("")
   console.log(`write ${state.total} docs, once per shape`)
+  console.log("ingest ms is db.ingest() for kv-sst, and the wait for auto ingest to settle for kv.")
   console.log("shape        write ms  ingest ms   updates  update B    files B  wal rows")
   for (const shape of shapes) {
     const row = state.writes.find((write) => write.shape === shape)
@@ -232,7 +241,7 @@ async function main(): Promise<number> {
   const port = await freePort()
   const debugPort = await freePort()
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "yjs-load-bench-"))
-  const pageUrl = `http://127.0.0.1:${port}/bench/?auto=1&docs=${docs}&runs=${runs}&concurrency=${concurrency}&edits=${edits}`
+  const pageUrl = `http://127.0.0.1:${port}/bench/?auto=1&docs=${docs}&runs=${runs}&concurrency=${concurrency}&edits=${edits}${shapesParam}${walBytesParam}`
   const vite = spawn(
     "pnpm",
     ["exec", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"],
