@@ -1,0 +1,23 @@
+{
+  "name": "@opfs-lsm/example-yjs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "tsx --test src/kv-persistence.test.ts",
+    "bench:load": "pnpm --filter @opfs-lsm/kv build && tsx scripts/bench-load.ts"
+  },
+  "dependencies": {
+    "@opfs-lsm/kv": "workspace:*",
+    "y-indexeddb": "^9.0.12",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "fake-indexeddb": "^6.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.6",
+    "vite-plugin-wasm": "^3.6.0"
+  }
+}

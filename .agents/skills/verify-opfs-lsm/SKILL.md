@@ -56,6 +56,7 @@ Read `features/README.md`, then the feature file. Drive through the helper so st
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive kv-bench
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive collections-bench
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive automerge-bench
+.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive yjs-bench
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-nobc
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-local
 ```
@@ -70,6 +71,7 @@ Harness mapping (repo-native; do not invent a second browser stack):
 | `kv-bench` | `BENCH_N=50 pnpm bench:browser` (override with `BENCH_N`) |
 | `collections-bench` | `BENCH_N=50 pnpm bench:collections` |
 | `automerge-bench` | `BENCH_RUNS=1 BENCH_LOADS=2 BENCH_WORKLOADS=trace:100,data/moby-dick.automerge pnpm --filter @opfs-lsm/example-automerge bench:big-doc` |
+| `yjs-bench` | `DOCS=100 RUNS=1 pnpm --filter @opfs-lsm/example-yjs bench:load` |
 
 Stable proof strings (from harness stdout, not DOM coordinates):
 
@@ -78,6 +80,7 @@ Stable proof strings (from harness stdout, not DOM coordinates):
 - KV bench: lines `kv solitary put`, `kv one batch`, `kv point get (warm)`, `kv ingest → OPFS`, `kv point get (post-ingest)`, exit `0` (no `kv FAILED`).
 - Collections bench: `collections solitary put`, `collections get by id`, `collections where email`, exit `0`.
 - Automerge bench: one `== <workload>` table per workload with `kv`, `idb` and `mem` columns, each followed by `checks: goodLoads N/N, errors 0`, exit `0`.
+- Yjs bench: `load <DOCS> random docs of <DOCS*10>` table with `kv-wal`, `kv-sst`, `idb` cold and warm rows, every `checked` equal to DOCS, exit `0`.
 
 Pages (served only while a drive runs): `#run` / `#out` in `packages/kv/bench/two-tab.html`, `packages/kv/bench/browser.html`, `packages/collections/bench/browser.html`. Auto mode uses `?auto=1`; agents should not click `Run` unless debugging a hung auto session.
 
