@@ -19,8 +19,8 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, `foldEntries`, `mergeSsts`) | `formal:compact-preserve`, plus `kv-bench` for a real post-ingest get |
 | `openDb`, the SharedWorker, or cross-tab visibility | `drive two-tab` |
 | `examples/automerge-todo/src/storage.ts`, or a kv change claimed to speed up Automerge | `drive automerge-bench`. For a performance claim, rerun with `BENCH_RUNS=5` and compare medians and ranges. |
-| BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. See [Failures already on main](#failures-already-on-main). |
-| In-page `EngineHost` | `drive two-tab-local`. See [Failures already on main](#failures-already-on-main). |
+| BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
+| In-page `EngineHost` | `drive two-tab-local`. |
 | Collections `put`, `get`, or `where` | `drive collections-bench`. See [Failures already on main](#failures-already-on-main). |
 | Any TypeScript behavior | `pnpm test` |
 
@@ -119,15 +119,13 @@ That workflow leaves out `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collectio
 
 ## Failures already on main
 
-The feature files still describe the intended proof (exit 0 and the strings above). On `main` these three drives miss that bar. A log that matches the text below is the baseline. Treat it as a new regression only when the error text changes, or when the diff is the path that drive exists to prove.
+The feature files still describe the intended proof (exit 0 and the strings above). On `main` this drive misses that bar. A log that matches the text below is the baseline. Treat it as a new regression only when the error text changes, or when the diff is the path that drive exists to prove.
 
 | Drive | Result on main | CI |
 | --- | --- | --- |
-| `two-tab-local` | Exit 1. The page reports `pinned get before ingest was null`. | Absent |
-| `two-tab-nobc` | Exit 1. Same message, before `two-tab ok`. `view()` pins the tab memtable, and this drive silences the BroadcastChannel that copies a peer append into that memtable. | Absent |
 | `collections-bench` | Exit 1. The page reports `Failed to resolve module specifier '@opfs-lsm/collections/testing'`. `packages/collections/bench/browser.html` has no import-map entry for that specifier. `packages/collections/dist/testing.js` is present after `launch`. | Absent |
 
-`two-tab` and `kv-bench` meet the pass bar above. Require them when the matching row in [Pick the check](#pick-the-check) applies.
+`two-tab`, `two-tab-nobc`, `two-tab-local` and `kv-bench` meet the pass bar above. Require them when the matching row in [Pick the check](#pick-the-check) applies.
 
 ## Refresh a skill
 
