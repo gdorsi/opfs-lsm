@@ -147,7 +147,8 @@ export interface Db {
   delete(key: Uint8Array): Promise<void>;
   /**
    * `build` runs synchronously. Promise resolves after the shared IDB WAL
-   * commit. Other tabs see the write on their next get. The ingest host
+   * commit. Other tabs see the write when its BroadcastChannel message
+   * arrives, a moment after the ack, or after their next `sync()`. The ingest host
    * flushes the WAL to OPFS per ingestPolicy.
    */
   batch(build: (tx: BatchTx) => void): Promise<void>;
