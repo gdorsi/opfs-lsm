@@ -138,7 +138,7 @@ function txDone(tx: IDBTransaction): Promise<void> {
 }
 
 /** Seqs per `getAll`. Every chunk of a read is in flight at once. */
-const READ_CHUNK = 25_000;
+export const WAL_READ_CHUNK = 25_000;
 
 /**
  * Records with `after < seq <= head`, ascending. Committed seqs are gapless
@@ -155,8 +155,8 @@ async function readRecords(
   head: number,
 ): Promise<WalRecord[]> {
   const chunks: Promise<WalRecord[]>[] = [];
-  for (let lo = after + 1; lo <= head; lo += READ_CHUNK) {
-    const hi = Math.min(head, lo + READ_CHUNK - 1);
+  for (let lo = after + 1; lo <= head; lo += WAL_READ_CHUNK) {
+    const hi = Math.min(head, lo + WAL_READ_CHUNK - 1);
     chunks.push(
       reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi))).then((values) => {
         if (values.length !== hi - lo + 1) {
