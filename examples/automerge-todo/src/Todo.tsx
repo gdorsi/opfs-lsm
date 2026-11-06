@@ -44,7 +44,7 @@ export const Todo = ({ url, onDestroy, filter }: TodoProps) => {
           className="w-4 h-4 flex-none cursor-pointer"
           type="checkbox"
           checked={todo.completed}
-          onChange={e => {
+          onChange={() => {
             changeTodo(t => {
               t.completed = !t.completed
             })
@@ -56,7 +56,7 @@ export const Todo = ({ url, onDestroy, filter }: TodoProps) => {
           className="flex-1 mx-1 p-1"
           ref={contentInput}
           value={content}
-          onFocus={e => setEditing(true)}
+          onFocus={() => setEditing(true)}
           onBlur={e => {
             const newContent = e.target.value.trim()
             if (newContent.length === 0) {
@@ -92,7 +92,7 @@ export const Todo = ({ url, onDestroy, filter }: TodoProps) => {
             "font-extrabold text-danger-500"
           )}
           style={{ cursor: "pointer" }}
-          onClick={e => onDestroy(url)}
+          onClick={() => onDestroy(url)}
         />
       </li>
     )

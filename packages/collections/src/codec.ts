@@ -9,7 +9,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /** Encode a string as u16le length + UTF-8 (primary / trailing id segment). */
-export function encodeString(s: string): Uint8Array {
+function encodeString(s: string): Uint8Array {
   const body = enc.encode(s);
   if (body.byteLength > 0xffff) {
     throw new RangeError("string too long for key segment");
@@ -20,7 +20,7 @@ export function encodeString(s: string): Uint8Array {
   return out;
 }
 
-export function decodeString(
+function decodeString(
   buf: Uint8Array,
   offset = 0,
 ): { value: string; next: number } {

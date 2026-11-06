@@ -169,4 +169,23 @@ describe("range with valueContains", () => {
     await expect(pairs(snap.range({ valueContains: red }))).rejects.toThrow(/closed/);
     await db.close();
   });
+
+  it("hands out bytes that own their buffer", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    await db.put(enc.encode("a"), enc.encode(" red apple"));
+    await db.put(enc.encode("b"), enc.encode(" red pear"));
+    await db.ingest();
+    await db.put(enc.encode("c"), enc.encode(" red plum"));
+    const owned = await db.view(async (snap) => {
+      const flags: boolean[] = [];
+      for await (const e of snap.range({ valueContains: [enc.encode(" red")] })) {
+        for (const b of [e.key, e.value]) {
+          flags.push(b.byteOffset === 0 && b.buffer.byteLength === b.byteLength);
+        }
+      }
+      return flags;
+    });
+    expect(owned).toEqual([true, true, true, true, true, true]);
+    await db.close();
+  });
 });

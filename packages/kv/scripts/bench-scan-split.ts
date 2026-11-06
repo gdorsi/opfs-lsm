@@ -1,15 +1,15 @@
 /**
  * Where does a full scan of one run spend its time? Search-shaped keys
- * (about 60 B) and values (about 30 B), LZ4 blocks, no IndexedDB.
+ * (about 60 B) and values (about 30 B), no IndexedDB. Blocks are raw, as L0
+ * and L1 write them. CODEC=lz4 measures the blocks of L2 and deeper.
  *
- *   ROWS=200000 pnpm exec tsx scripts/bench-scan-split.ts
+ *   ROWS=200000 CODEC=raw pnpm exec tsx scripts/bench-scan-split.ts
  */
 import { encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { Miss, type LayerCursor } from "../src/store/cursor.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { sstKeyRange, type SstEntry } from "../src/store/sst.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import { lz4Decompress } from "../src/store/lz4.js";
 
 const rows = Number(process.env.ROWS ?? 200_000);
 await ensureEngine();
@@ -29,8 +29,8 @@ const entries: SstEntry[] = Array.from({ length: rows }, (_, i) => ({
   value: enc.encode(` ${Array.from({ length: 2 + rand(4) }, () => W[rand(W.length)]).join(" ")}`),
   seq: i + 1,
 }));
-const sst = await encodeSst(entries);
-console.error(`rows=${rows} sst=${(sst.byteLength / 2 ** 20).toFixed(1)} MiB`);
+const sst = await encodeSst(entries, process.env.CODEC === "lz4" ? "lz4" : "raw");
+console.error(`rows=${rows} codec=${process.env.CODEC === "lz4" ? "lz4" : "raw"} sst=${(sst.byteLength / 2 ** 20).toFixed(1)} MiB`);
 
 // A budget above the run, so after the first pass every scan is warm.
 const reader = new SstReader(bytesFile(sst), new PageCache(4 * sst.byteLength), sstKeyRange(sst));

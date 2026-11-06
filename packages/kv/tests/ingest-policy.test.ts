@@ -204,7 +204,10 @@ describe("ingest policy", () => {
     const waiting = async () => (await wal.tail(0)).records.reduce((n, r) => n + opsBytes(r.ops), 0);
     for (let round = 0; round < 40; round++) {
       await a.batch((tx) => {
-        for (const k of keys) round % 2 ? tx.delete(k) : tx.put(k, new Uint8Array(40));
+        for (const k of keys) {
+          if (round % 2) tx.delete(k);
+          else tx.put(k, new Uint8Array(40));
+        }
       });
       await vi.waitFor(async () => expect(await waiting()).toBeLessThanOrEqual(limit + 50 * 48), WAIT);
     }

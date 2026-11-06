@@ -6,7 +6,7 @@ import { crc32 } from "./crc32.js";
 import { lz4Decompress } from "./lz4.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
-export const SST_MAGIC = 0x4f4c5354;
+const SST_MAGIC = 0x4f4c5354;
 const VERSION = 1;
 const FOOTER_BYTES = 44;
 
@@ -29,7 +29,7 @@ export const SST_BLOCK_TARGET = 4 * 1024;
  * `OFFSET_STRIDE - 1` records. `crates/engine-core/src/sst.rs` uses the
  * same stride.
  */
-export const OFFSET_STRIDE = 4;
+const OFFSET_STRIDE = 4;
 
 /**
  * Bytes of a block's offset table: a u16 per sampled record. Only a

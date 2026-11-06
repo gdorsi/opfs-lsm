@@ -42,7 +42,7 @@ export function* unpackHits(hits: Uint8Array): Generator<{ key: Uint8Array; valu
     const valueLen = view.getUint32(o + 4, true);
     o += 8;
     if (o + keyLen + valueLen > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
-    yield { key: hits.subarray(o, o + keyLen), value: hits.subarray(o + keyLen, o + keyLen + valueLen) };
+    yield { key: hits.slice(o, o + keyLen), value: hits.slice(o + keyLen, o + keyLen + valueLen) };
     o += keyLen + valueLen;
   }
 }

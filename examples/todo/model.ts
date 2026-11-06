@@ -8,7 +8,7 @@
  * in-memory fake in `model.test.ts`.
  */
 
-import type { CollectionSchema, Table } from "@opfs-lsm/collections";
+import type { CollectionSchema } from "@opfs-lsm/collections";
 
 /** Latest creation time the 15-digit derived rank supports. */
 const MAX_TIME = 10 ** 15 - 1;
@@ -16,7 +16,7 @@ const MAX_TIME = 10 ** 15 - 1;
 /** Rows per page in the example UI. */
 export const PAGE_SIZE = 50;
 /** Most rows per `table.putMany` when seeding. */
-export const GENERATE_CHUNK = 1000;
+const GENERATE_CHUNK = 1000;
 
 export type Todo = {
   id: string;
@@ -188,11 +188,6 @@ function titleFromPicker(pick: () => string, rng: () => number): string {
   const first = words[0];
   words[0] = first.charAt(0).toUpperCase() + first.slice(1);
   return words.join(" ");
-}
-
-/** 2 to 5 random words, first one capitalized. */
-export function randomTitle(rng: () => number): string {
-  return titleFromPicker(wordPicker(rng), rng);
 }
 
 /**

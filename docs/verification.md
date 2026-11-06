@@ -24,6 +24,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | In-page `EngineHost` | `drive two-tab-local`. |
 | Collections `put`, `get`, or `where` | `drive collections-bench`. See [Failures already on main](#failures-already-on-main). |
 | Any TypeScript behavior | `pnpm test` |
+| Any TypeScript or JavaScript source, including a removed export | `pnpm static` (oxlint, then `fallow dead-code`) |
 
 `pendingBytes` and the example load/open benches have no check. See [Gaps](#gaps).
 
@@ -66,6 +67,7 @@ A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is 
 | `kv-bench` | `mode=SharedWorker + BrowserFs (OPFS)`, `kv solitary put`, `kv one batch`, `kv point get (warm)`, `kv ingest → OPFS`, `kv point get (post-ingest)`. Stdout has no `kv FAILED` line. |
 | `collections-bench` | `mode=SharedWorker + BrowserFs (OPFS)`, `collections solitary put`, `collections get by id`, `collections where email` |
 | `automerge-bench` | An `== <workload>` table per workload with `kv`, `idb` and `mem` columns, each followed by `checks: goodLoads N/N, errors 0` |
+| `yjs-bench` | A `load` table with `kv`, `kv-wal`, `kv-sst` and `idb` rows for `cold` and `warm`, and every `checked` equal to `DOCS` |
 
 Evidence stays after cleanup:
 
@@ -108,6 +110,14 @@ pnpm test
 
 Exit 0. The root script checks that `README.md` still contains its required phrases, builds the workspace, and runs the `@opfs-lsm/kv` and `@opfs-lsm/collections` unit suites.
 
+## Run the static checks
+
+```sh
+pnpm static
+```
+
+Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
+
 ## What CI runs
 
 [`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs on pull requests and on pushes to `main`:
@@ -115,9 +125,10 @@ Exit 0. The root script checks that `README.md` still contains its required phra
 - `pnpm bench:gate` with `BENCH_GATE_BROWSER=smoke`
 - `pnpm --filter @opfs-lsm/kv two-tab`
 - `pnpm test`
+- `pnpm lint` and `pnpm deadcode` (the same two steps as `pnpm static`)
 - `pnpm --filter @opfs-lsm/kv formal:kv`
 
-That workflow leaves out `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collections-bench`, `automerge-bench`, `bench:load`, and `bench:open`. `bench:gate` is the performance smoke. It is separate from `kv-bench`.
+That workflow leaves out `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collections-bench`, `automerge-bench`, `yjs-bench`, `bench:load`, and `bench:open`. `bench:gate` is the performance smoke. It is separate from `kv-bench`.
 
 ## Failures already on main
 

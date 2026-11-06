@@ -8,10 +8,10 @@ import type { SstCodec } from "./sst.js";
  * level from L1 down never overlap. Each run's level and byte size are in
  * its path and its key range is in the manifest, so planning reads no files.
  */
-export const L0_RUNS_TO_COMPACT = 4;
-export const LEVEL_RATIO = 10;
+const L0_RUNS_TO_COMPACT = 4;
+const LEVEL_RATIO = 10;
 /** Ten compaction-sized runs (`TARGET_RUN_BYTES`). */
-export const L1_TARGET_BYTES = 40 * 1024 * 1024;
+const L1_TARGET_BYTES = 40 * 1024 * 1024;
 /** Compaction cuts its output into runs of about this size. */
 export const TARGET_RUN_BYTES = 4 * 1024 * 1024;
 
@@ -40,7 +40,7 @@ export function levelOf(path: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-export function sizeOf(path: string): number {
+function sizeOf(path: string): number {
   const m = /-(\d+)\.sst$/.exec(path);
   return m ? Number(m[1]) : 0;
 }

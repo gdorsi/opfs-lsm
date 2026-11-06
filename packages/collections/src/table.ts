@@ -179,11 +179,6 @@ function distinct(raw: readonly unknown[], label: string): IndexValue[] {
   return out;
 }
 
-/** @deprecated use extractIndexRowId — kept for string-only tests */
-export function extractTrailingId(key: Uint8Array, arity = 1): string | undefined {
-  return extractIndexRowId(key, arity);
-}
-
 export class Table<T extends Record<string, unknown> = Record<string, unknown>> {
   readonly name: string;
   readonly primaryKeyField: string;

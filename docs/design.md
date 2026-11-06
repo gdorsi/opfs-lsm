@@ -32,6 +32,7 @@ IndexedDB  "opfs-lsm-wal/<name>"
   ├── wal    seq -> bytes              one record per acked batch
   └── meta   "head"            -> seq  last committed batch
              "ingestedThrough" -> seq  every seq <= this is in an SST
+             "pendingBytes"    -> n    op bytes of the records above ingestedThrough
              "generation"      -> n    the manifest tabs should read
 
 OPFS  opfs-lsm/<name>/
@@ -81,7 +82,7 @@ WAL is sent with `postMessage`, where a view would clone its whole buffer. A row
 2. `add` the encoded ops with no key. The store's key generator assigns the seq.
 3. If that key is not past `head`, abort. The caller then appends with `appendAfter`, which
    writes an explicit key and moves the generator forward.
-4. Otherwise `put` the new `head`.
+4. Otherwise `put` the new `head`, and `put` `pendingBytes` raised by the op bytes of the batch.
 
 IndexedDB serializes `readwrite` transactions on the same stores, so two tabs cannot take the
 same key. Aborting a transaction reverts the key generator, so an append that aborts does not
@@ -103,9 +104,9 @@ power loss.
 
 ## Truncation
 
-After an ingest, the host deletes every record at or below the new `ingestedThrough` and sets
-`ingestedThrough` and `generation`, all in one transaction. So the WAL holds only seqs that are
-not yet in an SST.
+After an ingest, the host deletes every record at or below the new `ingestedThrough`, sets
+`ingestedThrough` and `generation`, and lowers `pendingBytes` by the bytes it folded, all in one
+transaction. So the WAL holds only seqs that are not yet in an SST.
 
 ## Reading the tail
 
@@ -305,7 +306,7 @@ Reads decode LZ4 blocks in wasm once the module loads. `openDb` starts loading i
 waiting. Before it loads, and wherever wasm doesn't load, a TypeScript decoder in `lz4.ts` does
 the work about 3x slower.
 
-Measured with `pnpm bench:range` (todo-shaped layout in memory, Node) against raw L2 runs:
+Measured with `pnpm --filter @opfs-lsm/kv bench:range` (todo-shaped layout in memory, Node) against raw L2 runs:
 
 | | 100k todos, raw | 100k todos, LZ4 | 1M todos, raw | 1M todos, LZ4 |
 |---|---|---|---|---|
@@ -335,7 +336,7 @@ otherwise. The caller awaits it and reads again. A point get:
    It copies out only the record that matches.
 
 A get used to decode the whole block into objects and then search them. Walking it in place
-cut a get that hits L2 from 7.7 µs to 4.0 µs, measured with `pnpm bench:follow` at 100k todos.
+cut a get that hits L2 from 7.7 µs to 4.0 µs, measured with `pnpm --filter @opfs-lsm/kv bench:follow` at 100k todos.
 
 Tabs don't check the CRC when they read. That check runs in the SharedWorker, which decodes
 every input run in full before compacting it. Skipping it on the main thread cut tab open time
@@ -392,6 +393,17 @@ The bloom filters play no part in a scan. They answer whether one exact key is p
 A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the
 levels. Writes that commit during the callback are invisible to it.
 
+`range({ valueContains })` keeps only live puts whose current value holds every pattern, each
+key once, newest source first. Each source filters on its own: the memtable in JavaScript, each
+run inside the wasm engine one block at a time (`scan_block_contains_js`, `store/block-scan.ts`),
+and only the hits cross back. An LZ4 block is unpacked in that call; a raw block is read in
+place. A newer source that holds the key with a non-matching value or a tombstone drops the
+older hit. Without wasm, the run's cursor does the same filter key by key.
+
+`db.rangeFollow(range, follow)` scans a range and point-reads the key that `follow` returns for
+each entry. Every read sees the same state, because the scan and the reads run in one task with no
+await between them.
+
 # Multi-tab coordination
 
 ## Seeing other tabs' writes
@@ -417,8 +429,9 @@ manifest and runs outside the transaction, then tries again, up to 8 times. A ru
 disappear between the manifest read and the run read, when a newer compaction reclaims it. A
 retry picks up the newer generation.
 
-After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the same channel.
-Tabs respond by calling `sync`.
+After a flush that it started itself or a compaction step, the host posts `{ kind: "ingest" }`
+on the same channel. After `db.ingest()`, the calling tab posts it if the generation moved. Tabs
+respond by calling `sync`.
 
 # Ingest
 
@@ -430,15 +443,16 @@ Ingest moves WAL records into an L0 run. It runs in the SharedWorker's `EngineHo
 The ingest host owns the trigger. Per database it keeps an `IngestWatch`:
 
 - `maxWalBytes`, the smallest limit any open tab asked for
-- `pendingBytes`, op bytes heard on the broadcast or measured from the WAL, and not yet folded
+- `pendingBytes`, op bytes heard on the broadcast or read from the WAL's `pendingBytes`
+  counter, and not yet folded
 - `triggerAt`, the `pendingBytes` level that starts an ingest
 - `state`, `idle` or `ingesting`
 - `watchers`, how many tabs hold the watch
 
 `openDb` sends `watch` with the tab's `IngestPolicy`. The call resolves once the host is
-listening. The host then measures the uningested WAL in the background and
-ingests if that measurement is at the limit, so a database left over the limit by a closed or
-busy tab catches up on open. `close` sends `unwatch`. At zero watchers the host closes its
+listening. The host then reads the WAL's `pendingBytes` counter in the background and
+ingests if it is at the limit, so a database left over the limit by a closed or busy tab
+catches up on open. A database with no counter yet is scanned once and the result stored. `close` sends `unwatch`. At zero watchers the host closes its
 channel and drops the watch. Until then it keeps the smallest limit it has seen.
 
 Each append broadcast adds the key and value bytes of its ops to `pendingBytes`. When
@@ -451,15 +465,15 @@ The count is the bytes of the ops as written. Overwrites and deletes grow it the
 keys do, so the WAL that every open replays stays near the limit whatever the batch shape.
 IndexedDB stays the source of truth. The count only decides when to ingest, and every ingest
 reads the WAL. A missed broadcast, or an `unwatch` that arrives before a tab's last append,
-delays the fold until the next crossing or the next open, which measures again. A fold that
+delays the fold until the next crossing or the next open, which reads the counter again. A fold that
 finds nothing waiting sets `pendingBytes` back to 0, so a count that ran ahead of the WAL does
 not ingest in a loop.
 
 A failed ingest is logged. `triggerAt` becomes `pendingBytes + maxWalBytes`, so the retry waits
-for another limit of writes. The next `watch` sets `triggerAt` back to the limit and measures
-the WAL, so opening the database retries at once.
+for another limit of writes. The next `watch` sets `triggerAt` back to the limit and reads
+the counter, so opening the database retries at once.
 
-`db.ingest()` still asks the host to fold through the end of the log and waits for the
+`db.ingest()` asks the host to fold through the end of the log and waits for the
 compaction that starts. A request for seqs that are already ingested writes nothing.
 
 ## Steps
@@ -509,8 +523,9 @@ the merge drop tombstones, because no older value is left for them to hide.
 ## Merging
 
 The merge runs in wasm (`crates/engine-core/src/compact.rs`). It decodes every input and checks
-each CRC. It folds the inputs into a `BTreeMap`, with newer runs winning, and drops tombstones if
-the plan is `bottom`. Then it cuts the output into runs of `TARGET_RUN_BYTES`, 4 MiB of records
+each CRC. It merges the decoded inputs with a min-heap on key and then on run, so the newest run wins
+each key and a later entry for a key in one run wins over an earlier one. It drops tombstones
+if the plan is `bottom`. Then it cuts the output into runs of `TARGET_RUN_BYTES`, 4 MiB of records
 counted as tag, seq, and u32 key and value lengths: the key and value plus 17 bytes. A run closes on the
 first entry that takes it to 4 MiB or more. On-disk records use varints and a shared prefix, so
 a full raw run is under 4 MiB on disk when its blocks share long prefixes, as index keys do. LZ4
@@ -538,6 +553,9 @@ A pass runs up to 8 steps, and a request that arrives during a pass starts anoth
 `db.update(keys, body)` reads and writes inside one IndexedDB transaction, so it can't conflict.
 `body` must be synchronous.
 
+`db.changes(listener)` reports every append and every ingest, from this tab and from other tabs.
+It is fed by the same BroadcastChannel and by the tab's own commits (`changes.ts`).
+
 # Limits
 
 From `packages/kv/src/check.ts`:
@@ -555,13 +573,15 @@ From `packages/kv/src/check.ts`:
 | Work | Thread | Language |
 |---|---|---|
 | Append, memtable, point get, range merge, SST reader, bloom checks | Each tab's main thread | TypeScript |
+| Unpack an LZ4 block, match a filtered scan inside a block | Each tab's main thread | wasm, with TypeScript fallbacks |
 | Fold WAL into L0, encode SSTs | SharedWorker | TypeScript fold, wasm encode |
 | Compaction merge and split | SharedWorker | wasm |
 | CRC-32 check on decode | SharedWorker | wasm (slicing-by-8, 4 streams) |
 
-The tab reads with TypeScript so a `get` never crosses into wasm or posts a message. The bulk
-byte work, meaning encode, decode and merge, runs in wasm off the main thread. If the wasm module
-fails to load, TypeScript fallbacks for all of them run instead.
+The tab reads with TypeScript so a `get` never posts a message. A get that lands in an LZ4 block
+calls wasm to unpack that one block. The bulk byte work, meaning encode, decode and merge, runs in
+wasm off the main thread. If the wasm module fails to load, TypeScript fallbacks for all of them
+run instead, except that encode then writes raw blocks only.
 
 # Crash behavior
 
@@ -585,9 +605,9 @@ Files that no manifest lists are never deleted on startup today. They only take 
   which keeps a blind append gapless when it aborts.
 - An OPFS `createWritable().close()` publishes the whole file atomically, and never shows a
   partial file to readers.
-- A SharedWorker with the same URL and name is shared by every tab of the origin. If two
-  different URLs serve one database, the Web Locks keep them from writing manifests at the same
-  time.
+- A SharedWorker with the same URL and name is shared by every tab of the origin. `openDb` names
+  it `opfs-lsm:<name>`, so each database gets its own. If two different URLs serve one database,
+  the Web Locks keep them from writing manifests at the same time.
 - BroadcastChannel delivers messages in order from one sender, but may deliver them late. The
   engine tolerates lost or late messages, because the WAL tail is always the source of truth.
 

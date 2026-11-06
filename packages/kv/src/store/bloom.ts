@@ -30,7 +30,7 @@ export type BloomFilter = {
 };
 
 /** ~1% false-positive with 10 bits/key → k ≈ 7. */
-export function bloomParams(
+function bloomParams(
   keyCount: number,
   bitsPerKey = 10,
 ): { bitCount: number; hashCount: number } {

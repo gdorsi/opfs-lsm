@@ -8,10 +8,6 @@ export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length;
 }
 
-export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return compareBytes(a, b) === 0;
-}
-
 /** Smallest key strictly after every key that starts with `prefix`. */
 export function successor(prefix: Uint8Array): Uint8Array | undefined {
   const out = new Uint8Array(prefix);
@@ -25,10 +21,6 @@ export function successor(prefix: Uint8Array): Uint8Array | undefined {
   return undefined;
 }
 
-export function copyBytes(src: Uint8Array): Uint8Array {
-  return new Uint8Array(src);
-}
-
 export function keyToString(key: Uint8Array): string {
   // Stable map key for in-memory overlays (hex).
   let s = "";
@@ -39,7 +31,7 @@ export function keyToString(key: Uint8Array): string {
 }
 
 /** True when `hay` holds `needle` as a contiguous run of bytes. */
-export function containsBytes(hay: Uint8Array, needle: Uint8Array): boolean {
+function containsBytes(hay: Uint8Array, needle: Uint8Array): boolean {
   const first = needle[0];
   if (first === undefined) return true;
   const last = hay.length - needle.length;

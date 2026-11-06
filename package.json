@@ -8,6 +8,9 @@
   "scripts": {
     "build": "pnpm -r run build",
     "check:readme": "node scripts/check-readme.mjs",
+    "lint": "oxlint",
+    "deadcode": "fallow dead-code",
+    "static": "pnpm lint && pnpm deadcode",
     "test": "node scripts/check-readme.mjs && pnpm -r run build && pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/collections test",
     "test:kv": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/kv test:unit",
     "test:collections": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/collections run build && pnpm --filter @opfs-lsm/collections test",
@@ -23,5 +26,9 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "fallow": "^3.40.0",
+    "oxlint": "^1.92.0"
   }
 }
