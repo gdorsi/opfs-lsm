@@ -483,11 +483,14 @@ class DbImpl implements Db {
     this.changeBus.emit(event);
   }
 
-  /** Make `generation` the installed or loaded one, opening its runs when needed. */
+  /**
+   * Make `generation` the loaded one, opening its runs when needed.
+   * Generations only grow, so one at or below the installed one is stale
+   * and never loaded.
+   */
   private async load(generation: number): Promise<void> {
-    for (const layers of [this.installed, this.loaded]) {
-      if (layers?.generation === generation) return;
-    }
+    if (generation <= this.installed.generation) return;
+    if (this.loaded && this.loaded.generation >= generation) return;
     const meta = await loadGeneration(this.fs, generation);
     if (!meta) return;
     const paths = meta.runs.map((r) => r.path);
@@ -510,7 +513,7 @@ class DbImpl implements Db {
       failed ||
       held.length < paths.length ||
       this.closed ||
-      generation === this.installed.generation ||
+      generation <= this.installed.generation ||
       (this.loaded && this.loaded.generation >= generation)
     ) {
       this.dropRuns(held);
@@ -573,7 +576,9 @@ class DbImpl implements Db {
    */
   private catchUp(tail: WalTail): number | undefined {
     const behind = tail.ingestedThrough > this.mem.appliedThrough;
-    if (tail.generation !== this.installed.generation) {
+    // A tail read before a newer generation was installed: its records are
+    // still a WAL prefix, but its generation and ingestedThrough are stale.
+    if (tail.generation > this.installed.generation) {
       const layers =
         this.loaded?.generation === tail.generation ? this.loaded : undefined;
       if (layers) {
@@ -583,6 +588,10 @@ class DbImpl implements Db {
       } else if (behind) {
         return tail.generation;
       }
+    }
+    if (this.loaded && this.loaded.generation <= this.installed.generation) {
+      this.release(this.loaded);
+      this.loaded = undefined;
     }
     if (this.installed.generation === tail.generation) {
       this.mem.advanceTo(tail.ingestedThrough);
