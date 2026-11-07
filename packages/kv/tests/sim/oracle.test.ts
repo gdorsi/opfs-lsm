@@ -1,0 +1,63 @@
+import { describe, expect, it } from "vitest";
+import { Oracle, Reader } from "./oracle.js";
+
+const utf = (s: string) => new TextEncoder().encode(s);
+
+describe("oracle", () => {
+  it("folds the log prefix by prefix", () => {
+    const o = new Oracle();
+    o.append([{ type: "put", key: utf("a"), value: utf("1") }]);
+    o.append([
+      { type: "put", key: utf("b"), value: utf("2") },
+      { type: "del", key: utf("a") },
+    ]);
+    o.append([{ type: "put", key: utf("a"), value: utf("3") }]);
+    expect(o.valueAt(utf("a"), 0)).toBeUndefined();
+    expect(o.valueAt(utf("a"), 1)).toEqual(utf("1"));
+    expect(o.valueAt(utf("a"), 2)).toBeUndefined();
+    expect(o.stateAt(3).map((e) => [e.key, e.value])).toEqual([
+      [utf("a"), utf("3")],
+      [utf("b"), utf("2")],
+    ]);
+    expect(o.rangeAt({ start: utf("b") }, 1)).toEqual([]);
+  });
+
+  it("keeps the last op when a batch writes a key twice", () => {
+    const o = new Oracle();
+    o.append([
+      { type: "put", key: utf("a"), value: utf("1") },
+      { type: "del", key: utf("a") },
+    ]);
+    expect(o.valueAt(utf("a"))).toBeUndefined();
+  });
+
+  it("rejects a read older than the reader's own ack", () => {
+    const o = new Oracle();
+    const r = new Reader(o);
+    r.acked(o.append([{ type: "put", key: utf("a"), value: utf("1") }]));
+    expect(() => r.get(utf("a"), undefined)).toThrow(/not a prefix/);
+    r.get(utf("a"), utf("1"));
+  });
+
+  it("rejects a reader going backwards", () => {
+    const o = new Oracle();
+    o.append([{ type: "put", key: utf("a"), value: utf("1") }]);
+    o.append([{ type: "put", key: utf("a"), value: utf("2") }]);
+    const r = new Reader(o);
+    r.get(utf("a"), utf("2"));
+    expect(() => r.get(utf("a"), utf("1"))).toThrow(/not a prefix/);
+  });
+
+  it("rejects a view whose reads come from two prefixes", () => {
+    const o = new Oracle();
+    o.append([{ type: "put", key: utf("a"), value: utf("1") }]);
+    o.append([{ type: "put", key: utf("b"), value: utf("2") }]);
+    const r = new Reader(o);
+    const v = r.view();
+    v.get(utf("b"), undefined); // p = 0 or 1
+    expect(() => v.get(utf("a"), utf("1"))).not.toThrow(); // p = 1
+    expect(() => v.range({}, [{ key: utf("a"), value: utf("1") }, { key: utf("b"), value: utf("2") }])).toThrow(
+      /not one prefix at or after 0/,
+    );
+  });
+});

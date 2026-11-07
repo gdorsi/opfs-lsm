@@ -1,0 +1,395 @@
+import { compareBytes, keyToString } from "../../src/bytes.js";
+import type { AsyncFs } from "../../src/opfs/async-fs.js";
+import { engineUsingWasm } from "../../src/store/engine.js";
+import {
+  decodeGeneration,
+  listRuns,
+  type GenerationMeta,
+  type RunMeta,
+} from "../../src/store/generation.js";
+import { codecForLevel, levelOf } from "../../src/store/levels.js";
+import { decodeSst, readFooter, type SstEntry } from "../../src/store/sst.js";
+import { show, type OracleEntry } from "./oracle.js";
+
+/**
+ * The analogue of SQLite's `PRAGMA integrity_check` for one database: walks
+ * IndexedDB `meta` and `wal`, the recorded manifest, and every run it lists,
+ * and checks the on-disk rules of docs/design.md. It reads through its own
+ * decoders where the engine's are private (WAL rows), so a bug in the
+ * engine's reader does not hide a bug in its writer.
+ *
+ * Call it on a quiet database: no ingest or compaction in flight.
+ */
+export type DatabaseReport = {
+  readonly head: number;
+  readonly ingestedThrough: number;
+  readonly generation: number | undefined;
+  /** Runs of the recorded manifest, in manifest order. */
+  readonly runs: readonly string[];
+  /** Run files no manifest at or after the recorded one lists. Allowed (design.md, "Crash behavior"). */
+  readonly orphans: readonly string[];
+  /** Manifests older than the recorded one. Reclaim is best-effort, so allowed. */
+  readonly staleManifests: readonly number[];
+  /** Live entries of the runs plus the WAL, newest wins, in key order. */
+  readonly state: readonly OracleEntry[];
+  /** Every broken rule. Empty for a healthy database. */
+  readonly problems: readonly string[];
+};
+
+/** IndexedDB layout from docs/design.md, "Storage layout" (`src/idb/wal.ts`). */
+const walName = (name: string) => `opfs-lsm-wal/${name}`;
+
+type Meta = {
+  head: number;
+  ingestedThrough: number;
+  generation: number | undefined;
+  pendingBytes: number | undefined;
+};
+
+export async function checkDatabase(fs: AsyncFs, name: string): Promise<DatabaseReport> {
+  const problems: string[] = [];
+  const meta = await walMeta(name);
+  const { head, ingestedThrough, generation } = meta;
+
+  // --- WAL: keys are exactly (ingestedThrough, head], every row decodes.
+  const rows = await walRows(name);
+  if (ingestedThrough > head) problems.push(`ingestedThrough ${ingestedThrough} past head ${head}`);
+  const keys = rows.map((r) => r.seq);
+  const expected = Array.from({ length: Math.max(0, head - ingestedThrough) }, (_, i) => ingestedThrough + 1 + i);
+  if (keys.join(",") !== expected.join(",")) {
+    problems.push(`wal keys [${span(keys)}], expected (${ingestedThrough}, ${head}]`);
+  }
+  const wal: { seq: number; ops: WalOp[] }[] = [];
+  let walBytes = 0;
+  for (const { seq, raw } of rows) {
+    try {
+      const ops = decodeWalRow(raw);
+      if (ops.length === 0) problems.push(`wal row ${seq} has no ops`);
+      for (const op of ops) walBytes += op.key.byteLength + (op.value?.byteLength ?? 0);
+      wal.push({ seq, ops });
+    } catch (err) {
+      problems.push(`wal row ${seq}: ${(err as Error).message}`);
+    }
+  }
+  if (meta.pendingBytes !== undefined && meta.pendingBytes !== walBytes) {
+    problems.push(`pendingBytes ${meta.pendingBytes}, wal holds ${walBytes} op bytes`);
+  }
+
+  // --- Manifests.
+  if (generation === undefined) problems.push("meta.generation is not recorded");
+  const recorded = generation ?? 0;
+  const manifests = new Map<number, GenerationMeta>();
+  const staleManifests: number[] = [];
+  for (const file of await fs.list("m")) {
+    const n = Number(file.replace(/\.mft$/, ""));
+    if (!/^\d{16}\.mft$/.test(file) || !Number.isSafeInteger(n)) {
+      problems.push(`unexpected manifest file m/${file}`);
+      continue;
+    }
+    if (n < recorded) {
+      staleManifests.push(n);
+      continue;
+    }
+    const buf = await fs.read(`m/${file}`, 0, Number.POSITIVE_INFINITY);
+    try {
+      const decoded = decodeGeneration(buf ?? new Uint8Array(0));
+      if (decoded.generation !== n) problems.push(`m/${file} holds generation ${decoded.generation}`);
+      manifests.set(n, decoded);
+    } catch (err) {
+      problems.push(`m/${file}: ${(err as Error).message}`);
+    }
+  }
+  const current: GenerationMeta | undefined =
+    recorded === 0 ? { generation: 0, runs: [], tombstoneSeq: 0 } : manifests.get(recorded);
+  if (!current) problems.push(`recorded generation ${recorded} has no readable manifest`);
+  if (current && current.tombstoneSeq > ingestedThrough) {
+    problems.push(`tombstoneSeq ${current.tombstoneSeq} past ingestedThrough ${ingestedThrough}`);
+  }
+
+  // --- Runs of the recorded manifest.
+  const runs = current?.runs ?? [];
+  const decoded: (SstEntry[] | undefined)[] = [];
+  for (const run of runs) decoded.push(await checkRun(fs, run, recorded, ingestedThrough, problems));
+  checkOrder(runs, decoded, problems);
+
+  // --- Orphans: run files that no manifest from the recorded one on lists.
+  const live = new Set<string>();
+  for (const m of manifests.values()) for (const r of m.runs) live.add(r.path);
+  const orphans = (await listRuns(fs)).filter((p) => !live.has(p)).sort();
+
+  // --- The state a reader should see: runs oldest first, then the WAL.
+  const state = new Map<string, { key: Uint8Array; value: Uint8Array | undefined }>();
+  for (let i = decoded.length - 1; i >= 0; i--) {
+    for (const e of decoded[i] ?? []) {
+      state.set(keyToString(e.key), { key: e.key, value: e.kind === "put" ? e.value : undefined });
+    }
+  }
+  for (const { ops } of wal) {
+    for (const op of ops) state.set(keyToString(op.key), { key: op.key, value: op.value });
+  }
+  const live_: OracleEntry[] = [];
+  for (const { key, value } of state.values()) if (value !== undefined) live_.push({ key, value });
+  live_.sort((a, b) => compareBytes(a.key, b.key));
+
+  return {
+    head,
+    ingestedThrough,
+    generation,
+    runs: runs.map((r) => r.path),
+    orphans,
+    staleManifests: staleManifests.sort((a, b) => a - b),
+    state: live_,
+    problems,
+  };
+}
+
+const L0_NAME = /^l0\/(\d+)-(\d+)\.sst$/;
+const LEVEL_NAME = /^l(\d+)\/c(\d+)\.(\d+)-(\d+)\.sst$/;
+
+/** One run: it exists, decodes with a good CRC, is sorted, and matches its name and manifest entry. */
+async function checkRun(
+  fs: AsyncFs,
+  run: RunMeta,
+  generation: number,
+  ingestedThrough: number,
+  problems: string[],
+): Promise<SstEntry[] | undefined> {
+  const { path } = run;
+  const bad = (msg: string) => problems.push(`${path}: ${msg}`);
+  const buf = await fs.read(path, 0, Number.POSITIVE_INFINITY);
+  if (!buf) {
+    bad("missing");
+    return undefined;
+  }
+  let entries: SstEntry[];
+  let codec: string;
+  try {
+    entries = decodeSst(buf);
+    codec = readFooter(buf, buf.byteLength).codec;
+  } catch (err) {
+    bad((err as Error).message);
+    return undefined;
+  }
+  for (let i = 1; i < entries.length; i++) {
+    if (compareBytes(entries[i - 1]!.key, entries[i]!.key) >= 0) {
+      bad(`keys not strictly increasing at entry ${i} (${show(entries[i]!.key)})`);
+      break;
+    }
+  }
+  const first = entries[0];
+  const last = entries[entries.length - 1];
+  if (!first || !last) {
+    if (run.range) bad("manifest gives a range for an empty run");
+    else bad("empty run listed");
+  } else if (
+    !run.range ||
+    compareBytes(run.range.smallest, first.key) !== 0 ||
+    compareBytes(run.range.largest, last.key) !== 0
+  ) {
+    bad(`manifest range does not match keys ${show(first.key)}..${show(last.key)}`);
+  }
+  for (const e of entries) {
+    const seq = e.seq ?? 0;
+    if (seq < 1 || seq > ingestedThrough) {
+      bad(`${show(e.key)} has seq ${seq}, past ingestedThrough ${ingestedThrough}`);
+      break;
+    }
+  }
+
+  const level = levelOf(path);
+  if (level === 0) {
+    const m = L0_NAME.exec(path);
+    if (!m) {
+      bad("L0 name is not <first>-<last>.sst");
+    } else {
+      const [lo, hi] = [Number(m[1]), Number(m[2])];
+      if (lo > hi) bad("L0 name has first > last");
+      const out = entries.find((e) => (e.seq ?? 0) < lo || (e.seq ?? 0) > hi);
+      if (out) bad(`${show(out.key)} has seq ${out.seq} outside the name's ${lo}-${hi}`);
+    }
+    if (codec !== "raw") bad(`L0 codec ${codec}`);
+  } else if (level !== undefined) {
+    const m = LEVEL_NAME.exec(path);
+    if (!m) {
+      bad("level name is not c<gen>.<i>-<bytes>.sst");
+    } else {
+      if (Number(m[4]) !== buf.byteLength) bad(`name says ${m[4]} bytes, file has ${buf.byteLength}`);
+      if (Number(m[2]) > generation) bad(`written by generation ${m[2]}, after recorded ${generation}`);
+    }
+    const want = engineUsingWasm() ? codecForLevel(level) : "raw";
+    if (codec !== want) bad(`codec ${codec}, level ${level} uses ${want}`);
+  } else {
+    bad("path names no level");
+  }
+  return entries;
+}
+
+/**
+ * Manifest order (design.md, "Manifest format"): L0 newest first, then each
+ * level by smallest key with no overlap. Reads take the first hit, so every
+ * key's seqs must fall along that order.
+ */
+function checkOrder(
+  runs: readonly RunMeta[],
+  decoded: readonly (SstEntry[] | undefined)[],
+  problems: string[],
+): void {
+  let prevLevel = 0;
+  let prevL0: { path: string; lo: number; hi: number } | undefined;
+  let prevInLevel: RunMeta | undefined;
+  const seen = new Set<string>();
+  for (const run of runs) {
+    const level = levelOf(run.path) ?? Number.POSITIVE_INFINITY;
+    if (level < prevLevel) problems.push(`${run.path} listed after a deeper level`);
+    if (level !== prevLevel) prevInLevel = undefined;
+    prevLevel = level;
+    // The same L0 path twice is the documented crash leftover; reads stay correct.
+    if (seen.has(run.path) && level === 0) continue;
+    seen.add(run.path);
+    if (level === 0) {
+      const m = L0_NAME.exec(run.path);
+      if (!m) continue;
+      const cur = { path: run.path, lo: Number(m[1]), hi: Number(m[2]) };
+      // A re-fold after a crash starts at the same seq and reaches at least as far.
+      if (prevL0 && !(prevL0.lo > cur.hi || (prevL0.lo === cur.lo && prevL0.hi >= cur.hi))) {
+        problems.push(`L0 ${cur.path} is not newest first after ${prevL0.path}`);
+      }
+      prevL0 = cur;
+    } else if (prevInLevel) {
+      const a = prevInLevel.range;
+      const b = run.range;
+      if (!a || !b || compareBytes(a.largest, b.smallest) >= 0) {
+        problems.push(`L${level} runs overlap or are out of order: ${prevInLevel.path}, ${run.path}`);
+      }
+    }
+    if (level !== 0) prevInLevel = run;
+  }
+
+  // Each key: seqs must not rise along manifest order, or an older entry shadows a newer one.
+  const newest = new Map<string, { seq: number; path: string }>();
+  runs.forEach((run, i) => {
+    for (const e of decoded[i] ?? []) {
+      const id = keyToString(e.key);
+      const seq = e.seq ?? 0;
+      const prior = newest.get(id);
+      if (prior && seq > prior.seq) {
+        problems.push(`${show(e.key)}: seq ${seq} in ${run.path} under a newer seq ${prior.seq} from ${prior.path}`);
+      }
+      if (!prior || seq < prior.seq) newest.set(id, { seq, path: run.path });
+    }
+  });
+}
+
+type WalOp = { key: Uint8Array; value: Uint8Array | undefined };
+
+/** design.md, "WAL records": per op, u8 type | u32 keyLen | key | put: u32 valueLen | value. */
+function decodeWalRow(raw: unknown): WalOp[] {
+  if (!(raw instanceof ArrayBuffer)) throw new Error("not an ArrayBuffer");
+  const bytes = new Uint8Array(raw);
+  const view = new DataView(raw);
+  const ops: WalOp[] = [];
+  let at = 0;
+  const take = (n: number) => {
+    if (at + n > bytes.byteLength) throw new Error("truncated");
+    const out = bytes.slice(at, at + n);
+    at += n;
+    return out;
+  };
+  const u32 = () => {
+    if (at + 4 > bytes.byteLength) throw new Error("truncated");
+    const n = view.getUint32(at, true);
+    at += 4;
+    return n;
+  };
+  while (at < bytes.byteLength) {
+    const type = bytes[at++];
+    const key = take(u32());
+    if (type === 0) ops.push({ key, value: take(u32()) });
+    else if (type === 1) ops.push({ key, value: undefined });
+    else throw new Error(`op type ${type}`);
+  }
+  return ops;
+}
+
+function span(keys: readonly number[]): string {
+  if (keys.length <= 6) return keys.join(",");
+  return `${keys.slice(0, 3).join(",")},…,${keys.slice(-3).join(",")} (${keys.length})`;
+}
+
+// --- Raw IndexedDB access for the checker and for tests that damage a WAL.
+
+function openRaw(name: string): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(walName(name));
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function done(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+function result<T>(req: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** Run `fn` over the `wal` and `meta` stores in one transaction. */
+export async function walStore<T>(
+  name: string,
+  mode: IDBTransactionMode,
+  fn: (wal: IDBObjectStore, meta: IDBObjectStore) => IDBRequest<T> | Promise<T> | T,
+): Promise<T> {
+  const db = await openRaw(name);
+  try {
+    if (!db.objectStoreNames.contains("wal") || !db.objectStoreNames.contains("meta")) {
+      throw new Error(`${walName(name)} has no wal/meta stores`);
+    }
+    const tx = db.transaction(["wal", "meta"], mode);
+    const finished = done(tx);
+    const out = fn(tx.objectStore("wal"), tx.objectStore("meta"));
+    const value = out instanceof IDBRequest ? await result(out) : await out;
+    await finished;
+    return value;
+  } finally {
+    db.close();
+  }
+}
+
+export function walMeta(name: string): Promise<Meta> {
+  return walStore(name, "readonly", async (_wal, meta) => {
+    const [head, ingested, generation, pending] = await Promise.all(
+      ["head", "ingestedThrough", "generation", "pendingBytes"].map((k) => result(meta.get(k))),
+    );
+    const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+    return {
+      head: num(head) ?? 0,
+      ingestedThrough: num(ingested) ?? 0,
+      generation: num(generation),
+      pendingBytes: num(pending),
+    };
+  });
+}
+
+function walRows(name: string): Promise<{ seq: number; raw: unknown }[]> {
+  return walStore(name, "readonly", async (wal) => {
+    const [keys, values] = await Promise.all([result(wal.getAllKeys()), result(wal.getAll())]);
+    return keys.map((k, i) => ({ seq: Number(k), raw: values[i] }));
+  });
+}
+
+export function deleteWal(name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.deleteDatabase(walName(name));
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+    req.onblocked = () => resolve();
+  });
+}

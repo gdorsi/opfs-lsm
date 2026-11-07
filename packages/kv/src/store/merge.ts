@@ -282,6 +282,7 @@ export async function* mergeCursors(
   const merge = new Merge(cursors);
   let yielded = 0;
   for (;;) {
+    if (limit !== undefined && yielded >= limit) return;
     let w = merge.next();
     while (w instanceof Miss) {
       await w.ready;
@@ -294,7 +295,6 @@ export async function* mergeCursors(
       value: new Uint8Array(w.entry.value!),
     };
     yielded += 1;
-    if (limit !== undefined && yielded >= limit) return;
   }
 }
 
@@ -324,6 +324,7 @@ export async function* scanMatching(
   ]);
   let yielded = 0;
   for (;;) {
+    if (limit !== undefined && yielded >= limit) return;
     let w = merge.next();
     while (w instanceof Miss) {
       await w.ready;
@@ -343,7 +344,6 @@ export async function* scanMatching(
     }
     yield { key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) };
     yielded += 1;
-    if (limit !== undefined && yielded >= limit) return;
   }
 }
 
