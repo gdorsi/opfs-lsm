@@ -21,9 +21,9 @@ async function open() {
 describe("model suite regressions", () => {
   // Found by model.test.ts, seed -2023477141, shrunk to:
   //   [view[range {}] with put "" 0a before read 0, view[range {"limit":0}]]
-  // `mergeCursors` and `scanMatching` check the limit after yielding, so
-  // `limit: 0` yields one entry. The generator draws limits from 1 until this is fixed.
-  it.fails("range with limit 0 returns nothing", async () => {
+  // `mergeCursors` and `scanMatching` checked the limit after yielding, so
+  // `limit: 0` yielded one entry.
+  it("range with limit 0 returns nothing", async () => {
     const db = await open();
     await db.put(utf("a"), utf("1"));
     const out = [];

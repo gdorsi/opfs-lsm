@@ -156,8 +156,7 @@ const rangeArb: fc.Arbitrary<RangeSpec> = fc.record(
   {
     start: keyArb,
     end: keyArb,
-    // limit 0 returns one entry: see regressions.test.ts.
-    limit: fc.integer({ min: 1, max: 4 }),
+    limit: fc.integer({ min: 0, max: 4 }),
     contains: fc.constantFrom("a", "b", "v1", "."),
   },
   { requiredKeys: [] },
