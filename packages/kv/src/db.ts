@@ -234,11 +234,6 @@ export function prefixBound(prefix: Uint8Array): {
   return end === undefined ? { start } : { start, endExclusive: end };
 }
 
-/** SharedWorker script shipped next to this module in `dist/`. */
-function sharedWorkerUrl(): URL {
-  return new URL("./host/shared-worker.js", import.meta.url);
-}
-
 export async function openDb(options: OpenOptions): Promise<Db> {
   return openDbWith(options);
 }
@@ -287,10 +282,14 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     fs = await openBrowserFs(name);
     span(trace, "opfs", performance.now() - opfsAt);
     const workerAt = trace ? performance.now() : 0;
-    const worker = new SharedWorker(sharedWorkerUrl(), {
-      type: "module",
-      name: `opfs-lsm:${name}`,
-    });
+    // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
+    // only emit a worker chunk for this exact shape. Built in a helper, Vite
+    // treated it as a plain asset and inlined the unbundled entry as a
+    // data: URL whose relative imports could not resolve.
+    const worker = new SharedWorker(
+      new URL("./host/shared-worker.js", import.meta.url),
+      { type: "module", name: `opfs-lsm:${name}` },
+    );
     span(trace, "worker-ctor", performance.now() - workerAt);
     ingest = createPortIngestClient(
       worker.port,
