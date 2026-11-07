@@ -31,7 +31,7 @@ In the browser, `openDb` opens OPFS and starts the package SharedWorker. In Node
 | --- | --- |
 | `name` | Database name. Tabs that share this name share one WAL. |
 
-Harness knobs used by tests and benches (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`.
+Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`.
 
 ### `Db`
 
@@ -137,10 +137,9 @@ git clone https://github.com/gdorsi/opfs-lsm.git
 cd opfs-lsm
 pnpm install
 pnpm test
-pnpm bench:browser
-pnpm bench:collections
+pnpm bench kv/
 pnpm todo:example
 pnpm automerge:example
 ```
 
-`pnpm test` typechecks and runs the unit suites. `pnpm bench:browser` starts headless Chrome against the SharedWorker path. Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
+`pnpm test` typechecks and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, collections against Dexie, and the Yjs and Automerge adapters against their IndexedDB counterparts. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).

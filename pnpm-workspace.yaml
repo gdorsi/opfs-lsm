@@ -1,4 +1,5 @@
 packages:
+  - "bench"
   - "packages/*"
   - "examples/automerge-todo"
   - "examples/todo"

@@ -4,8 +4,9 @@ node_modules
 # packages/*/wasm  — committed so cold clones pass without Rust
 packages/*/dist
 crates/kv
-packages/kv/.bench-chrome-profile
-packages/collections/.bench-chrome-profile
+bench/.out
+bench/.data
+bench/results
 packages/kv/.arena-readpath
 .DS_Store
 .scratch

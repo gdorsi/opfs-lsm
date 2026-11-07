@@ -1,13 +1,13 @@
 ---
 name: verify-opfs-lsm
-description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/collections — SharedWorker two-tab visibility, OPFS put/get/ingest benches, and collections table/index benches. Use when changing openDb, SharedWorker ingest, WAL/SST visibility across tabs, collections put/get/where, or any claim that MemoryFs unit tests alone cannot prove."
+description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/collections — SharedWorker two-tab visibility and the bench/ suite (kv vs IndexedDB, collections vs Dexie, Automerge and Yjs adapters, every read checked). Use when changing openDb, SharedWorker ingest, WAL/SST visibility across tabs, collections put/get/where, the Automerge or Yjs adapters, or any claim that MemoryFs unit tests alone cannot prove."
 ---
 
 # Verify @opfs-lsm (real Chrome)
 
 This skill proves browser behavior the way a integrating developer hits it: headless Chrome, IndexedDB WAL, OPFS SST files, SharedWorker ingest. It does **not** replace the formal suite in `verify-kv` (`pnpm --filter @opfs-lsm/kv formal:kv`). Use both: formal for exhaustive small models, this skill for the real stack.
 
-Primary surface: repo-native Chrome harnesses under `packages/kv` and `packages/collections`. There is no product UI, CLI, or long-lived server. Secondary surfaces (unit tests with `MemoryFs`, formal checkers) are out of scope here.
+Primary surface: repo-native Chrome harnesses: the two-tab proof in `packages/kv` and the benchmark suite in `bench/`. There is no product UI, CLI, or long-lived server. Secondary surfaces (unit tests with `MemoryFs`, formal checkers) are out of scope here.
 
 Helper (always prefer this over raw `pnpm` so evidence lands in one place):
 
@@ -35,7 +35,7 @@ pnpm --filter @opfs-lsm/collections build
 
 Chrome: `CHROME_PATH` when set, else `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, else `google-chrome` on `PATH`.
 
-Teardown is per-drive (Chrome kill + server close inside the harness). After the session, run `cleanup` for any leftover fixed bench profiles.
+Teardown is per-drive (Chrome kill + server close inside the harness). Every harness uses a fresh temp Chrome profile.
 
 ## Doctor
 
@@ -45,7 +45,7 @@ Read-only health check. Run first whenever a drive fails or the checkout looks s
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm doctor
 ```
 
-Require: `doctor: ok`. Warnings about `.bench-chrome-profile` mean another bench may own that fixed path — do not start a second `kv-bench` or `collections-bench` in the same checkout.
+Require: `doctor: ok`.
 
 ## Drive
 
@@ -53,10 +53,11 @@ Read `features/README.md`, then the feature file. Drive through the helper so st
 
 ```sh
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab
-.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive kv-bench
-.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive collections-bench
-.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive automerge-bench
-.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive yjs-bench
+.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench kv/
+.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench table/
+.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench automerge/
+.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench yjs/
+.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench-smoke
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-nobc
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-local
 ```
@@ -68,21 +69,16 @@ Harness mapping (repo-native; do not invent a second browser stack):
 | `two-tab` | `pnpm --filter @opfs-lsm/kv two-tab` |
 | `two-tab-nobc` | `TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
-| `kv-bench` | `BENCH_N=50 pnpm bench:browser` (override with `BENCH_N`) |
-| `collections-bench` | `BENCH_N=50 pnpm bench:collections` |
-| `automerge-bench` | `BENCH_RUNS=1 BENCH_LOADS=2 BENCH_WORKLOADS=trace:100,data/moby-dick.automerge pnpm --filter @opfs-lsm/example-automerge bench:big-doc` |
-| `yjs-bench` | `DOCS=100 RUNS=1 pnpm --filter @opfs-lsm/example-yjs bench:load` |
+| `bench <args…>` | `pnpm bench <args…>`: a selector (`kv/`, `table/`, `automerge/`, `yjs/`, or one workload such as `kv/fillrandom`) plus optional `--size`, `--reps`, `--contenders` |
+| `bench-smoke` | `pnpm bench:smoke` |
 
 Stable proof strings (from harness stdout, not DOM coordinates):
 
 - Two-tab SharedWorker: `tabs=2`, `mode=SharedWorker`, `two-tab ok`, exit `0`.
 - Two-tab local: `tabs=1`, `mode=local EngineHost`, `two-tab ok`, exit `0`.
-- KV bench: lines `kv solitary put`, `kv one batch`, `kv point get (warm)`, `kv ingest → OPFS`, `kv point get (post-ingest)`, exit `0` (no `kv FAILED`).
-- Collections bench: `collections solitary put`, `collections get by id`, `collections where email`, exit `0`.
-- Automerge bench: one `== <workload>` table per workload with `kv`, `idb` and `mem` columns, each followed by `checks: goodLoads N/N, errors 0`, exit `0`.
-- Yjs bench: `load <DOCS> random docs of <DOCS*10>` table with `kv`, `kv-wal`, `kv-sst`, `idb` cold and warm rows, every `checked` equal to DOCS, exit `0`.
+- Bench and bench-smoke: one `## <family>/<workload>: <title>` section per workload with a row per contender, no `## Failed runs` section, exit `0`. Every read is checked against a model, so exit `0` means every value was right.
 
-Pages (served only while a drive runs): `#run` / `#out` in `packages/kv/bench/two-tab.html`, `packages/kv/bench/browser.html`, `packages/collections/bench/browser.html`. Auto mode uses `?auto=1`; agents should not click `Run` unless debugging a hung auto session.
+Pages (served only while a drive runs): `#run` / `#out` in `packages/kv/proof/two-tab.html`. Auto mode uses `?auto=1`; agents should not click `Run` unless debugging a hung auto session. The bench pages are built into `bench/.out` and driven by `bench/cli.ts`.
 
 ## Evidence
 
@@ -103,7 +99,7 @@ Proof standards:
 - Exercise the SharedWorker + OPFS path (default harness). `MemoryFs`, `forceMemory`, and vitest alone do not count as browser proof.
 - Capture the action log and the resulting assertions the harness already prints (`two-tab ok`, post-ingest gets), not only exit code.
 - Side effects the harness checks: cross-tab get after put, pinned view across peer ingest, range after ingest, warm and post-ingest point gets. Do not stub IndexedDB/OPFS/SharedWorker.
-- Timing rows are evidence of a completed path; they are not a performance gate unless the feature file says so (`bench:gate` is separate).
+- Timing rows are evidence of a completed path. A performance claim needs `--reps 5` or more and `node bench/cli.ts compare` (see `features/bench.md`).
 
 ## Cleanup
 
@@ -111,12 +107,12 @@ Proof standards:
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-Removes only `packages/kv/.bench-chrome-profile` and `packages/collections/.bench-chrome-profile`. Does **not** delete `artifacts/`. Does **not** kill Chrome by process name — harnesses already `SIGKILL` the child they spawned. If a drive was interrupted mid-Chrome, run `cleanup`, then `doctor`, then retry one feature.
+Removes nothing on disk: every harness uses a fresh temp profile. Does **not** delete `artifacts/`. Does **not** kill Chrome by process name — harnesses already `SIGKILL` the child they spawned. If a drive was interrupted mid-Chrome, run `cleanup`, then `doctor`, then retry one feature.
 
 ## Isolation
 
-- `two-tab` uses a unique tmp Chrome profile and ephemeral ports — parallel two-tab runs are fine.
-- `kv-bench` / `collections-bench` use a **fixed** `.bench-chrome-profile` under that package. The helper refuses to start if the profile directory already exists. Never double-drive those benches in one checkout.
+- `two-tab` and `bench` each use a unique tmp Chrome profile and ephemeral ports — parallel runs do not collide on disk.
+- Run benches one at a time anyway, so a second Chrome does not skew the timings.
 - Do not attach to a Chrome the user already has open for this origin; always use the harness-spawned headless instance.
 
 ## Helpers
