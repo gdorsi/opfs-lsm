@@ -1,5 +1,6 @@
 /**
- * Test and bench harness. Apps should import from `@opfs-lsm/kv` only.
+ * Test harness. bench/ also uses `readStats` and `settle`. Apps should import
+ * from `@opfs-lsm/kv` only.
  */
 export {
   openDbWith as openHarnessDb,
@@ -14,6 +15,13 @@ export {
   createPortIngestClient,
 } from "./host/engine-host.js";
 export type { IngestClient } from "./host/protocol.js";
+export {
+  readStats,
+  settle,
+  type IoCount,
+  type IoCounters,
+  type KvStats,
+} from "./stats.js";
 export type { AsyncFs } from "./opfs/async-fs.js";
 export { MemoryFs } from "./opfs/memory-fs.js";
 export { openBrowserFs } from "./opfs/browser-fs.js";

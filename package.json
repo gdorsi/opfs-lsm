@@ -14,18 +14,18 @@
     "test": "node scripts/check-readme.mjs && pnpm -r run build && pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/collections test",
     "test:kv": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/kv test:unit",
     "test:collections": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/collections run build && pnpm --filter @opfs-lsm/collections test",
-    "bench": "pnpm --filter @opfs-lsm/kv bench",
-    "bench:browser": "pnpm --filter @opfs-lsm/kv bench:browser",
-    "bench:collections": "pnpm --filter @opfs-lsm/collections bench:browser",
-    "bench:gate": "pnpm --filter @opfs-lsm/kv bench:gate",
-    "bench:yjs": "pnpm --filter @opfs-lsm/example-yjs bench:load",
+    "bench": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && node bench/cli.ts run",
+    "bench:smoke": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && node bench/cli.ts smoke",
+    "bench:size": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && node bench/cli.ts size",
     "todo:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && pnpm --filter @opfs-lsm/example-todo dev",
     "todo:example:build": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && pnpm --filter @opfs-lsm/example-todo build && pnpm --filter @opfs-lsm/example-todo preview",
     "automerge:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/example-automerge dev",
     "rich-text:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/example-rich-text dev"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "devDependencies": {
     "fallow": "^3.40.0",

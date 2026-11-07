@@ -11,7 +11,7 @@ if (!existsSync(readmePath)) {
 }
 
 const text = readFileSync(readmePath, "utf8");
-const required = ["openDb", "ack", "Dexie", "pnpm test", "pnpm bench:browser"];
+const required = ["openDb", "ack", "Dexie", "pnpm test", "pnpm bench"];
 const missing = required.filter((phrase) => !text.includes(phrase));
 
 if (missing.length > 0) {

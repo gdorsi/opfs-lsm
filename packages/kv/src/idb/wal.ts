@@ -190,6 +190,11 @@ async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
  * keeps its own memtable in memory. Ack = transaction complete.
  */
 export class IdBWal {
+  /** WAL records this handle committed. Test and bench only. */
+  appendedRecords = 0;
+  /** Encoded bytes of those records, excluding meta puts. */
+  appendedBytes = 0;
+
   private constructor(
     readonly dbName: DbName,
     private readonly db: IDBDatabase,
@@ -254,10 +259,13 @@ export class IdBWal {
       return decision && { seq: undefined, ops: [], result: decision.result };
     }
     const seq = tail.head + 1;
-    tx.objectStore(WAL_STORE).add(encodeOps(decision.ops), seq);
+    const record = encodeOps(decision.ops);
+    tx.objectStore(WAL_STORE).add(record, seq);
     meta.put(seq, META_HEAD);
     meta.put(num(pendingRaw) + opsBytes(decision.ops), META_PENDING);
     await done;
+    this.appendedRecords += 1;
+    this.appendedBytes += record.byteLength;
     return { seq, ops: decision.ops, result: decision.result };
   }
 
@@ -275,7 +283,8 @@ export class IdBWal {
     const head = meta.get(META_HEAD);
     const pending = meta.get(META_PENDING);
     const bytes = opsBytes(ops);
-    const add = tx.objectStore(WAL_STORE).add(encodeOps(ops));
+    const record = encodeOps(ops);
+    const add = tx.objectStore(WAL_STORE).add(record);
     let seq: number | undefined;
     let stale = false;
     add.onsuccess = () => {
@@ -295,6 +304,8 @@ export class IdBWal {
       if (stale) return undefined;
       throw err;
     }
+    this.appendedRecords += 1;
+    this.appendedBytes += record.byteLength;
     return seq;
   }
 

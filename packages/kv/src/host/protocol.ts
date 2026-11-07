@@ -1,4 +1,20 @@
 import type { IngestPolicy } from "../ingest-policy.js";
+import type { IoCounters } from "../opfs/counting-fs.js";
+
+/** What the host counted for one database since it started. Test and bench only. */
+export type HostStats = {
+  /** Flush (l0), compaction outputs (lN), manifests (m), compaction input reads. */
+  fs: IoCounters;
+  /** Ingests that folded at least one WAL record into an L0 run. */
+  flushes: number;
+  /** Compaction steps installed. */
+  compactionSteps: number;
+  /** Σ IngestResult.foldedBytes. */
+  foldedBytes: number;
+  generation: number;
+  /** From the latest manifest, levels with at least one run. */
+  layout: { level: number; runs: number; bytes: number }[];
+};
 
 /** The BroadcastChannel where tabs share appends and new generations. */
 export function layersChannel(name: string): string {
@@ -21,6 +37,7 @@ export type ClientToHost =
       readonly trace?: boolean;
     }
   | { readonly type: "unwatch"; readonly name: string }
+  | { readonly type: "stats"; readonly id: number; readonly name: string }
   | { readonly type: "ping"; readonly id: number };
 
 export type HostToClient =
@@ -40,6 +57,7 @@ export type HostToClient =
       readonly rows: number;
       readonly bytes: number;
     }
+  | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats }
   | { readonly type: "pong"; readonly id: number };
 
 export type IngestClient = {
@@ -59,5 +77,7 @@ export type IngestClient = {
   watch(name: string, policy: IngestPolicy): void;
   /** This tab no longer needs the host to watch `name`. */
   unwatch(name: string): void;
+  /** Host counters for `name`. Test and bench only. */
+  stats(name: string): Promise<HostStats>;
   close(): void;
 };
