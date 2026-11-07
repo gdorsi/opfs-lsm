@@ -1,5 +1,7 @@
 # Collections where email — profile notes
 
+These notes record an older profile. `openViewSnapshot`, `layersStale`, and `KeyOverlay` are gone. `Table.where` reads with `db.rangeFollow`.
+
 Claim: `where("email", …)` for 50 equality lookups on SharedWorker Chrome.
 
 Machine: darwin, load ~1.4 on 18 cores, one-run ballpark then 5-run medians.

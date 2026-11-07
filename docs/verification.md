@@ -120,13 +120,13 @@ Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
 
 ## What CI runs
 
-[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs on pull requests and on pushes to `main`:
+[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs five jobs on pull requests and on pushes to `main`:
 
-- `pnpm bench:gate` with `BENCH_GATE_BROWSER=smoke`
-- `pnpm --filter @opfs-lsm/kv two-tab`
-- `pnpm test`
-- `pnpm lint` and `pnpm deadcode` (the same two steps as `pnpm static`)
-- `pnpm --filter @opfs-lsm/kv formal:kv`
+- `gate`: `pnpm bench:gate` with `BENCH_GATE_BROWSER=smoke`
+- `two-tab`: `pnpm --filter @opfs-lsm/kv two-tab`
+- `test`: `pnpm test`
+- `static`: `pnpm lint` and `pnpm deadcode` (oxlint, then fallow; the same two steps as `pnpm static`)
+- `formal`: `pnpm --filter @opfs-lsm/kv formal:kv`
 
 That workflow leaves out `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collections-bench`, `automerge-bench`, `yjs-bench`, `bench:load`, and `bench:open`. `bench:gate` is the performance smoke. It is separate from `kv-bench`.
 
