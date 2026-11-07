@@ -2,7 +2,7 @@
 
 A simple, fast and flexible k/v storage for the browsers.
 
-`@opfs-lsm/kv` stores byte keys and values. The promise from `put` or `batch` is the ack. When that promise resolves, the write is in the shared IndexedDB write-ahead log (WAL). Sorted SST files in the Origin Private File System (OPFS) hold sealed data after ingest. Every tab of an origin can open the same name. A SharedWorker turns the WAL into SST files.
+`@opfs-lsm/kv` stores byte keys and values. The promise from `put` or `batch` is the ack. When that promise resolves, the write is one byte row in the shared IndexedDB write-ahead log (WAL). Sorted SST files in the Origin Private File System (OPFS) hold sealed data after ingest. Every tab of an origin can open the same name. Each name has its own SharedWorker, `opfs-lsm:<name>`, which flushes the WAL into SST files once uningested key and value bytes reach 1 MiB.
 
 `@opfs-lsm/collections` builds tables and secondary indexes on the same WAL and OPFS path. Its table API is Dexie-shaped: `put`, `get`, `where`, and `orderBy` over JSON rows.
 
@@ -23,15 +23,16 @@ await db.put(key, value);
 const found = await db.get(key);
 ```
 
-In the browser, `openDb` opens OPFS and starts the package SharedWorker. In Node it uses an in-memory filesystem and a local ingest host. If the page has no SharedWorker or OPFS, `openDb` throws `StorageUnavailableError`.
+In the browser, `openDb` opens OPFS and starts that SharedWorker. In Node it uses an in-memory filesystem and a local ingest host. If the page has no SharedWorker or OPFS, `openDb` throws `StorageUnavailableError`.
 
 ### `OpenOptions`
 
 | Option | Role |
 | --- | --- |
 | `name` | Database name. Tabs that share this name share one WAL. |
+| `memoryBudget` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
 
-Harness knobs used by tests and benches (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`.
+Harness knobs used by tests and benches (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB flush.
 
 ### `Db`
 
@@ -44,9 +45,9 @@ Keys and values are `Uint8Array`.
 | `delete(key)` | Append one delete. Resolves on WAL ack. |
 | `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack. |
 | `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
-| `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). |
-| `rangeFollow(range, follow)` | Scan a range, then point-read follow keys, in one IndexedDB transaction. |
-| `view(body)` | Read-only snapshot pinned to the WAL head and OPFS generation at open. |
+| `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `valueContains` keeps live puts whose current value holds every pattern. |
+| `rangeFollow(range, follow)` | Scan a range, then point-read each follow key, on the memtable and SST generation pinned for the call. |
+| `view(body)` | Read-only snapshot pinned to the WAL head and the installed OPFS generation when the view opens. |
 | `changes(listener)` | Subscribe to durable WAL appends and ingest generation bumps. Returns unsubscribe. |
 | `sync()` | Catch up to every write acked before the call from any tab. |
 | `ingest()` | Flush the memtable now and wait for the compaction it starts. |
@@ -118,7 +119,7 @@ Rows are JSON objects. The primary key field defaults to `"id"` and must be a st
 | `putMany(docs)` | Upsert many rows in one read+write transaction. Chunk to about 1,000 rows. |
 | `update(id, mutate)` | Read-modify-write one row. Must keep the primary key. |
 | `delete(id)` | Delete one row and its index keys. |
-| `clear()` | Delete every row and index entry in chunks. Returns the row count. |
+| `clear()` | Delete every row and its index entries in chunks. Returns the row count. |
 | `where(index, value)` | Equality or compound-prefix lookup on a declared index. |
 | `orderBy(index, opts?)` | Walk an index in key order. Optional `from`, `toExclusive`, `limit`. |
 | `page(index, opts)` | One cursor page of an index. Pass `next` from the previous call as `after`. |
@@ -126,7 +127,7 @@ Rows are JSON objects. The primary key field defaults to `"id"` and must be a st
 
 An index `path` is a field name, a dot path, or a compound list such as `["orgId", "createdAt"]`. Set `multiEntry: true` to index each element of an array-valued path.
 
-For text search, give the table `search: { path: "title", sortBy: "newest" }`. A row then gets one extra key holding its lowercased words, so a put costs one key more, not one per word and per prefix as a `multiEntry` term index does. `table.search("mil bre", { limit: 50 })` returns rows with, for every word typed, a word that starts with it (case-insensitive, letters and digits), ordered by `sortBy` ascending. Store a descending number to get newest first, and treat `sortBy` as immutable: changing it moves the row's key. A search reads the search keys until a page fills: a common word returns in microseconds, and a word that matches nothing reads every row of the table (about 60 ms per 100,000 rows, about 1 s per million in `docs/research/multi-entry-index-alternatives.md`).
+For text search, give the table `search: { path: "title", sortBy: "newest" }`. A row then gets one extra key holding its lowercased words, so a put costs one key more, not one per word and per prefix as a `multiEntry` term index does. `table.search("mil bre", { limit: 50 })` returns rows with, for every word typed, a word that starts with it (case-insensitive, letters and digits), ordered by `sortBy` ascending. Store a descending number to get newest first, and treat `sortBy` as immutable: changing it moves the row's key. A search reads the search keys until a page fills: a common word returns in microseconds, and a word that matches nothing reads every search key of the table.
 
 ## Clone and run
 
