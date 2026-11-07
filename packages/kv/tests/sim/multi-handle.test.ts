@@ -12,9 +12,7 @@ import { installSeams, multiCommandsArb, runWorld } from "./multi.js";
  * Replay a failure with the seed, path and replayPath it prints:
  *   KV_MODEL_SEED=<seed> KV_MODEL_PATH=<path> KV_MODEL_REPLAY=<replayPath> pnpm exec vitest run tests/sim/multi-handle.test.ts
  * Sweep longer:     KV_MODEL_RUNS=2000 pnpm exec vitest run tests/sim/multi-handle.test.ts
- * Add KV_SIM_HOLD_OPENS=1 for the command that stalls a handle's run opens
- * (off until the stale-generation regression is fixed), KV_SIM_TRACE=1 to
- * print every scheduled task and op.
+ * Add KV_SIM_TRACE=1 to print every scheduled task and op.
  */
 const env = process.env;
 const RUNS = Number(env.KV_MODEL_RUNS ?? 100);

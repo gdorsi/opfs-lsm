@@ -662,27 +662,15 @@ class CompactCmd implements Cmd {
   toString = () => `host compact${waitTag(this.wait)}`;
 }
 
-/** Lose the next `n` BroadcastChannel deliveries. The WAL tail is the source of truth. */
 /** Hold the slot's run opens (see `World.hold`). */
-/**
- * Off by default: with it, the suite finds the stale-generation bug in
- * regressions.test.ts ("a stale catch-up never installs an older
- * generation") within a few hundred runs. Turn it on by default once that
- * is fixed. Off, the command is generated but skipped, so seeds and replay
- * paths mean the same either way.
- */
-const HOLD_OPENS = process.env.KV_SIM_HOLD_OPENS === "1";
-
 class HoldOpensCmd extends SlotCmd {
-  override check(m: Readonly<Model>): boolean {
-    return HOLD_OPENS && super.check(m);
-  }
   async run(_m: Model, w: World): Promise<void> {
     w.hold(`s${w.slots[this.slot]!.id}`);
   }
   name = () => "hold run opens";
 }
 
+/** Lose the next `n` BroadcastChannel deliveries. The WAL tail is the source of truth. */
 class DropCmd implements Cmd {
   constructor(private readonly n: number) {}
   check = () => true;

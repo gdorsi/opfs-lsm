@@ -47,7 +47,7 @@ describe("model suite regressions", () => {
   // increment read "c1" instead of "c2" and committed at seq 9: a lost
   // update.
   // Reduced below: the stale `sync` installs generation 1 over generation 2.
-  it.fails("a stale catch-up never installs an older generation", async () => {
+  it("a stale catch-up never installs an older generation", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
     // Without BroadcastChannel, nothing but these calls moves either tab.
