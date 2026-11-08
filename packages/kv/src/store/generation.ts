@@ -8,7 +8,8 @@ const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-const GEN_VERSION = 1;
+/** Version 2 added `through`. Version 1 manifests read with `through` 0. */
+const GEN_VERSION = 2;
 
 export type KeyRange = {
   readonly smallest: Uint8Array;
@@ -31,7 +32,15 @@ export type GenerationMeta = {
    * no entry may have been deleted at any seq up to this one.
    */
   readonly tombstoneSeq: number;
+  /**
+   * The runs hold every seq of the log up to this one and none past it: the
+   * manifest is the fold of one log prefix (design.md, "Recovery").
+   */
+  readonly through: number;
 };
+
+/** The empty database: no runs, no seqs. */
+export const GENERATION_ZERO: GenerationMeta = { generation: 0, runs: [], tombstoneSeq: 0, through: 0 };
 
 function genPath(generation: number): string {
   return `${GEN_PREFIX}${String(generation).padStart(16, "0")}.mft`;
@@ -40,7 +49,7 @@ function genPath(generation: number): string {
 export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const enc = new TextEncoder();
   const paths = meta.runs.map((r) => enc.encode(r.path));
-  let size = 4 + 4 + 8 + 8 + 4;
+  let size = 4 + 4 + 8 + 8 + 8 + 4;
   meta.runs.forEach((r, i) => {
     size += 2 + paths[i]!.byteLength + 1;
     if (r.range) size += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
@@ -56,6 +65,8 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   view.setBigUint64(o, BigInt(meta.generation), true);
   o += 8;
   view.setBigUint64(o, BigInt(meta.tombstoneSeq), true);
+  o += 8;
+  view.setBigUint64(o, BigInt(meta.through), true);
   o += 8;
   view.setUint32(o, paths.length, true);
   o += 4;
@@ -87,13 +98,19 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     throw new CorruptDatabaseError("bad generation magic");
   }
   const version = view.getUint32(4, true);
-  if (version !== GEN_VERSION) {
+  if (version !== 1 && version !== GEN_VERSION) {
     throw new CorruptDatabaseError("bad generation version");
   }
   const generation = Number(view.getBigUint64(8, true));
   let o = 16;
   const tombstoneSeq = Number(view.getBigUint64(o, true));
   o += 8;
+  let through = 0;
+  if (version === GEN_VERSION) {
+    if (buf.byteLength < 40) throw new CorruptDatabaseError("generation too short");
+    through = Number(view.getBigUint64(o, true));
+    o += 8;
+  }
   const runCount = view.getUint32(o, true);
   o += 4;
   const crcOff = buf.byteLength - 4;
@@ -122,28 +139,53 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     }
   }
   if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
-  return { generation, runs, tombstoneSeq };
+  return { generation, runs, tombstoneSeq, through };
+}
+
+/** The numbers of the manifest files in `m/`, newest first. */
+export async function manifestNumbers(fs: AsyncFs): Promise<number[]> {
+  const gens: number[] = [];
+  for (const name of await fs.list("m")) {
+    const n = Number(name.replace(/\.mft$/, ""));
+    if (Number.isSafeInteger(n)) gens.push(n);
+  }
+  return gens.sort((a, b) => b - a);
+}
+
+/**
+ * Manifest `generation`, or undefined when it is missing, empty (created
+ * and never closed) or does not decode.
+ */
+export async function readManifest(
+  fs: AsyncFs,
+  generation: number,
+): Promise<GenerationMeta | undefined> {
+  if (generation === 0) return GENERATION_ZERO;
+  const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
+  if (!buf || buf.byteLength === 0) return undefined;
+  try {
+    return decodeGeneration(buf);
+  } catch (err) {
+    if (err instanceof CorruptDatabaseError) return undefined;
+    throw err;
+  }
+}
+
+/** True when every run `meta` lists is on disk and not empty. */
+export async function isIntact(fs: AsyncFs, meta: GenerationMeta): Promise<boolean> {
+  for (const run of meta.runs) {
+    const head = await fs.read(run.path, 0, 1);
+    if (!head || head.byteLength === 0) return false;
+  }
+  return true;
 }
 
 export async function loadLatestGeneration(
   fs: AsyncFs,
 ): Promise<GenerationMeta | undefined> {
-  const names = await fs.list("m");
-  const gens: number[] = [];
-  for (const name of names) {
-    const n = Number(name.replace(/\.mft$/, ""));
-    if (Number.isFinite(n)) gens.push(n);
-  }
-  gens.sort((a, b) => b - a);
-  for (const generation of gens) {
-    const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
-    if (!buf || buf.byteLength === 0) continue;
-    try {
-      return decodeGeneration(buf);
-    } catch (err) {
-      if (err instanceof CorruptDatabaseError) continue;
-      throw err;
-    }
+  for (const generation of await manifestNumbers(fs)) {
+    const meta = await readManifest(fs, generation);
+    if (meta) return meta;
   }
   return undefined;
 }
@@ -194,7 +236,7 @@ export async function loadGeneration(
   fs: AsyncFs,
   generation: number,
 ): Promise<GenerationMeta | undefined> {
-  if (generation === 0) return { generation, runs: [], tombstoneSeq: 0 };
+  if (generation === 0) return GENERATION_ZERO;
   const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
   if (!buf || buf.byteLength === 0) return undefined;
   return decodeGeneration(buf);
@@ -242,20 +284,17 @@ export async function reclaimRuns(
 }
 
 /**
- * The runs of every manifest from `from` on. A tab reads the generation
- * IndexedDB records, which can trail the newest manifest after a crash
- * between publishing one and recording it, so both stay. A manifest that
- * fails to read throws: its runs may be live, so nothing may be swept.
+ * The runs of the recorded generation. A manifest past it is left by a
+ * crash between publishing it and recording it: the next ingest or
+ * compaction builds on the recorded one, and recovery adopts a manifest
+ * only when all its runs are on disk, so its runs may go. A read that fails
+ * throws, and a manifest that is gone throws too: nothing may be swept
+ * against it.
  */
-export async function liveRuns(fs: AsyncFs, from: number): Promise<string[]> {
-  const out: string[] = [];
-  for (const name of await fs.list("m")) {
-    const n = Number(name.replace(/\.mft$/, ""));
-    if (!Number.isFinite(n) || n < from) continue;
-    const meta = await loadGeneration(fs, n);
-    for (const run of meta?.runs ?? []) out.push(run.path);
-  }
-  return out;
+export async function liveRuns(fs: AsyncFs, recorded: number): Promise<string[]> {
+  const meta = await loadGeneration(fs, recorded);
+  if (!meta) throw new CorruptDatabaseError(`manifest ${recorded} is gone`);
+  return meta.runs.map((run) => run.path);
 }
 
 /** Every run file on disk, from the `l<n>/` directories. */

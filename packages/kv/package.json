@@ -41,7 +41,8 @@
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
     "formal:view-pin": "tsx formal/view-pin/check.ts",
-    "formal:compact-preserve": "tsx formal/compact-preserve/check.ts"
+    "formal:compact-preserve": "tsx formal/compact-preserve/check.ts",
+    "formal:power-loss": "tsx formal/power-loss/check.ts"
   },
   "license": "MIT",
   "devDependencies": {

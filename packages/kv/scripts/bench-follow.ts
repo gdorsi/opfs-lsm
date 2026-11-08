@@ -136,7 +136,7 @@ for (const [level, entries, codec] of [[1, l1, "raw"], [2, l2, l2Codec]] as cons
     runs.push(runMeta(path, body));
   }
 }
-await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0 });
+await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 0 });
 
 __resetMemoryFsForTests(name);
 const db = await openHarnessDb({ name, fs, forceMemory: true });

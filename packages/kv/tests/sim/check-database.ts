@@ -53,13 +53,17 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
   const meta = await walMeta(name);
   const { head, ingestedThrough, generation } = meta;
 
-  // --- WAL: keys are exactly (ingestedThrough, head], every row decodes.
+  // --- WAL: keys are (ingestedThrough, head] with no gap, and may start
+  // lower: the last ingest's records stay until the next one (design.md,
+  // "Truncation"). Every row decodes. Only the rows above ingestedThrough
+  // are uningested.
   const rows = await walRows(name);
   if (ingestedThrough > head) problems.push(`ingestedThrough ${ingestedThrough} past head ${head}`);
   const keys = rows.map((r) => r.seq);
-  const expected = Array.from({ length: Math.max(0, head - ingestedThrough) }, (_, i) => ingestedThrough + 1 + i);
+  const low = Math.min(keys[0] ?? ingestedThrough + 1, ingestedThrough + 1) - 1;
+  const expected = Array.from({ length: Math.max(0, head - low) }, (_, i) => low + 1 + i);
   if (keys.join(",") !== expected.join(",")) {
-    problems.push(`wal keys [${span(keys)}], expected (${ingestedThrough}, ${head}]`);
+    problems.push(`wal keys [${span(keys)}], expected (${ingestedThrough}, ${head}] and a gapless run below`);
   }
   const wal: { seq: number; ops: WalOp[] }[] = [];
   let walBytes = 0;
@@ -67,6 +71,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     try {
       const ops = decodeWalRow(raw);
       if (ops.length === 0) problems.push(`wal row ${seq} has no ops`);
+      if (seq <= ingestedThrough) continue;
       for (const op of ops) walBytes += op.key.byteLength + (op.value?.byteLength ?? 0);
       wal.push({ seq, ops });
     } catch (err) {
@@ -109,16 +114,24 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     }
   }
   const current: GenerationMeta | undefined =
-    recorded === 0 ? { generation: 0, runs: [], tombstoneSeq: 0 } : manifests.get(recorded);
+    recorded === 0 ? { generation: 0, runs: [], tombstoneSeq: 0, through: 0 } : manifests.get(recorded);
   if (!current) problems.push(`recorded generation ${recorded} has no readable manifest`);
-  if (current && current.tombstoneSeq > ingestedThrough) {
-    problems.push(`tombstoneSeq ${current.tombstoneSeq} past ingestedThrough ${ingestedThrough}`);
+  if (current && current.tombstoneSeq > current.through) {
+    problems.push(`tombstoneSeq ${current.tombstoneSeq} past the manifest's through ${current.through}`);
+  }
+  if (current && current.through > ingestedThrough) {
+    problems.push(`manifest through ${current.through} past ingestedThrough ${ingestedThrough}`);
+  }
+  // A manifest past the recorded one must not hold seqs past the head: a
+  // reopen would adopt it (design.md, "Recovery").
+  for (const m of manifests.values()) {
+    if (m.generation > recorded && m.through > head) problems.push(`manifest ${m.generation} through ${m.through} past head ${head}`);
   }
 
   // --- Runs of the recorded manifest.
   const runs = current?.runs ?? [];
   const decoded: (SstEntry[] | undefined)[] = [];
-  for (const run of runs) decoded.push(await checkRun(fs, run, recorded, ingestedThrough, problems));
+  for (const run of runs) decoded.push(await checkRun(fs, run, recorded, current?.through ?? 0, problems));
   checkOrder(runs, decoded, problems);
 
   // --- Orphans: run files that no manifest from the recorded one on lists.
@@ -161,7 +174,7 @@ async function checkRun(
   fs: AsyncFs,
   run: RunMeta,
   generation: number,
-  ingestedThrough: number,
+  through: number,
   problems: string[],
 ): Promise<SstEntry[] | undefined> {
   const { path } = run;
@@ -200,8 +213,8 @@ async function checkRun(
   }
   for (const e of entries) {
     const seq = e.seq ?? 0;
-    if (seq < 1 || seq > ingestedThrough) {
-      bad(`${show(e.key)} has seq ${seq}, past ingestedThrough ${ingestedThrough}`);
+    if (seq < 1 || seq > through) {
+      bad(`${show(e.key)} has seq ${seq}, past the manifest's through ${through}`);
       break;
     }
   }
@@ -253,15 +266,13 @@ function checkOrder(
     if (level < prevLevel) problems.push(`${run.path} listed after a deeper level`);
     if (level !== prevLevel) prevInLevel = undefined;
     prevLevel = level;
-    // The same L0 path twice is the documented crash leftover; reads stay correct.
-    if (seen.has(run.path) && level === 0) continue;
+    if (seen.has(run.path)) problems.push(`${run.path} listed twice`);
     seen.add(run.path);
     if (level === 0) {
       const m = L0_NAME.exec(run.path);
       if (!m) continue;
       const cur = { path: run.path, lo: Number(m[1]), hi: Number(m[2]) };
-      // A re-fold after a crash starts at the same seq and reaches at least as far.
-      if (prevL0 && !(prevL0.lo > cur.hi || (prevL0.lo === cur.lo && prevL0.hi >= cur.hi))) {
+      if (prevL0 && !(prevL0.lo > cur.hi)) {
         problems.push(`L0 ${cur.path} is not newest first after ${prevL0.path}`);
       }
       prevL0 = cur;

@@ -9,7 +9,6 @@ import { installFaultWal, traceWal } from "./fault-wal.js";
 import {
   checkCrashState,
   describeCut,
-  powerBugClass,
   powerCuts,
   processCut,
   runSteps,
@@ -27,9 +26,7 @@ import { Oracle } from "./oracle.js";
  * - process crash: every cut `k` of the global order. The database opens
  *   and holds exactly the committed log, so every acked write survives;
  * - power loss: every pair (IndexedDB prefix, OPFS prefix). The database
- *   opens and holds some log prefix. Pairs in a known bug class
- *   (`powerBugClass`) are skipped by default and pinned by the `it.fails`
- *   tests below; `KV_CRASH_POWER_ALL=1` checks them too.
+ *   opens and holds some log prefix (design.md, "Recovery").
  *
  * Fixed workloads cover ingest, compaction install and reclaim; random
  * histories reuse the single-handle commands of model.test.ts.
@@ -39,7 +36,6 @@ import { Oracle } from "./oracle.js";
  */
 const env = process.env;
 const RUNS = Number(env.KV_CRASH_RUNS ?? 15);
-const POWER_ALL = env.KV_CRASH_POWER_ALL === "1";
 /** Power-loss pairs drawn per random history. */
 const PAIRS = Number(env.KV_CRASH_PAIRS ?? 40);
 const replay = env.KV_MODEL_SEED
@@ -126,19 +122,8 @@ async function checkAll(ops: readonly DurableOp[], log: Oracle, cuts: readonly C
   return cuts.length;
 }
 
-async function knownBugFree(ops: readonly DurableOp[], cuts: readonly Cut[]): Promise<Cut[]> {
-  if (POWER_ALL) return [...cuts];
-  const out: Cut[] = [];
-  for (const cut of cuts) {
-    const bug = await powerBugClass(ops, cut);
-    if (bug === undefined) out.push(cut);
-    else counts[bug]++;
-  }
-  return out;
-}
-
 /** States checked, printed with KV_CRASH_REPORT=1. */
-const counts = { process: 0, power: 0, "idb-ahead": 0, "opfs-ahead": 0 };
+const counts = { process: 0, power: 0 };
 afterAll(() => {
   if (env.KV_CRASH_REPORT) console.log(`crash states checked: ${JSON.stringify(counts)}`);
 });
@@ -206,17 +191,15 @@ async function randomHistory(cmds: Iterable<fc.AsyncCommand<Model, Sut, false>>,
   const ops = [...faults.ops];
   const log = model.oracle;
   await checkAll(ops, log, allProcessCuts(ops), "process");
-  const cuts = await knownBugFree(ops, powerCuts(ops, PAIRS, mulberry32(seed)));
-  await checkAll(ops, log, cuts, "power");
+  await checkAll(ops, log, powerCuts(ops, PAIRS, mulberry32(seed)), "power");
 }
 
 describe("power loss: every (IndexedDB prefix, OPFS prefix) pair", () => {
-  it.each(WORKLOADS)(`%s: reopens to a log prefix${POWER_ALL ? "" : " (known bug classes skipped)"}`, async (_name, steps) => {
+  it.each(WORKLOADS)("%s: reopens to a log prefix", async (_name, steps) => {
     const { ops, log } = await trace(steps);
-    const cuts = await knownBugFree(ops, powerCuts(ops, 5_000, mulberry32(1)));
-    expect(cuts.length).toBeGreaterThan(0);
-    await checkAll(ops, log, cuts, "power");
-  });
+    const cuts = powerCuts(ops, 5_000, mulberry32(1));
+    await expect(checkAll(ops, log, cuts, "power")).resolves.toBe(cuts.length);
+  }, 120_000);
 });
 
 /** Cut the trace of `steps` where `pick` says, from the ops' descriptions. */
@@ -235,25 +218,35 @@ const through = (list: string[], text: string) => {
 };
 
 describe("risks to target first (research note)", () => {
-  // Risk 1. Found by "power loss … ingest" with KV_CRASH_POWER_ALL=1.
-  // Ingest step 5 deletes the WAL records and records generation 1 in one
+  // Risk 1. Ingest records generation 1 and ingestedThrough 1 in one
   // IndexedDB commit. Under power loss that commit can survive while the
   // L0 run and manifest 1, published before it through OPFS, do not. The
-  // recorded generation has no manifest, every open retries 8 times and
-  // throws CorruptDatabaseError(GENERATION_GONE), and seq 1 exists nowhere.
-  it.fails("risk 1: an ingest whose IndexedDB commit outlives its OPFS files leaves a database that opens", async () => {
+  // recorded generation has no manifest. It used to fail every open with
+  // GENERATION_GONE, with seq 1 nowhere. Now the open records generation 0
+  // again, and seq 1, which the WAL keeps until the next ingest, survives.
+  it("risk 1: an ingest whose IndexedDB commit outlives its OPFS files leaves a database that opens", async () => {
     const { ops, log, cut } = await cutOf([put("a", "a1"), ingest], (idb) => ({
-      idb: idb.length, // raiseGeneration 0, append seq 1, advanceIngested through 1 gen 1
+      idb: idb.length, // the first open, append seq 1, advanceIngested through 1 gen 1
       opfs: 0, // l0/1-1.sst and m/1 lost
     }));
     await expect(checkCrashState(ops, log, cut, "power")).resolves.toBeUndefined();
+    const t = new Traced(`risk1-${++runs}`);
+    try {
+      await t.load(ops, cut);
+      const db = await t.open();
+      expect(new TextDecoder().decode((await db.get(new TextEncoder().encode("a")))!), "seq 1 survives").toBe("a1");
+      await db.close();
+    } finally {
+      await t.dispose();
+    }
   });
 
   // Risk 2. Compaction install raises `generation` to 5 in IndexedDB, then
   // removes manifest 4 and the input runs from OPFS. Under power loss the
   // removals can survive and the raise not: IndexedDB records generation 4,
-  // whose manifest is gone. Same for the manifest reclaim after an ingest.
-  it.fails("risk 2: compaction reclaim that outlives its generation raise leaves a database that opens", async () => {
+  // whose manifest is gone. The open records manifest 5 instead: OPFS
+  // removed manifest 4 after it published 5.
+  it("risk 2: compaction reclaim that outlives its generation raise leaves a database that opens", async () => {
     const { ops, log, cut } = await cutOf(COMPACTION, (idb, opfs) => ({
       idb: through(idb, "raiseGeneration 5") - 1,
       opfs: through(opfs, "remove l0/7-7.sst"),
@@ -262,11 +255,12 @@ describe("risks to target first (research note)", () => {
   });
 
   // Risk 3, process crash between manifest 1 and its IndexedDB update. The
-  // next ingest re-folds seqs 1..2 into the same path and lists it twice
-  // (design.md, "Crash behavior"). Three more flushes compact the duplicated
-  // input, and reclaim removes the path listed twice. Checked as one of the
-  // process crash points above too; spelled out here.
-  it("risk 3: a run listed twice after a crash compacts and reclaims cleanly", async () => {
+  // next ingest builds on the recorded generation 0, not on manifest 1, so
+  // it re-folds seqs 1..2 into the same path (same bytes) and lists it once
+  // (design.md, "Crash behavior"). Two more flushes compact, and reclaim
+  // removes the leftovers. Checked as one of the process crash points
+  // above too; spelled out here.
+  it("risk 3: a re-fold after a crash lists its run once, compacts and reclaims cleanly", async () => {
     const { ops, log, cut } = await cutOf(
       [put("a", "a1"), put("b", "b1"), ingest],
       (idb, opfs) => ({ idb: through(idb, "append seq 2"), opfs: through(opfs, "publish m/0000000000000001.mft") }),
@@ -278,9 +272,9 @@ describe("risks to target first (research note)", () => {
       let db = await t.open();
       await db.ingest();
       const listed = (await checkDatabase(t.fs, t.name)).runs;
-      expect(listed, "the re-fold lists l0/1-2.sst twice").toEqual(["l0/1-2.sst", "l0/1-2.sst"]);
-      // Two more flushes make four L0 entries, one path twice: compaction.
-      for (const [i, key] of ["c", "d"].entries()) {
+      expect(listed, "the re-fold lists l0/1-2.sst once").toEqual(["l0/1-2.sst"]);
+      // Three more flushes make four L0 runs: compaction.
+      for (const [i, key] of ["c", "d", "e"].entries()) {
         await db.put(new TextEncoder().encode(key), new TextEncoder().encode(`${key}${i}`));
         log.append([{ type: "put", key: new TextEncoder().encode(key), value: new TextEncoder().encode(`${key}${i}`) }]);
         await db.ingest();
@@ -292,7 +286,7 @@ describe("risks to target first (research note)", () => {
       expect(report.orphans).toEqual([]);
       expect(report.runs.every((p) => p.startsWith("l1/")), `compacted into L1: ${report.runs.join(", ")}`).toBe(true);
       const decode = (b: Uint8Array) => new TextDecoder().decode(b);
-      expect(report.state.map((e) => `${decode(e.key)}=${decode(e.value)}`)).toEqual(["a=a1", "b=b1", "c=c0", "d=d1"]);
+      expect(report.state.map((e) => `${decode(e.key)}=${decode(e.value)}`)).toEqual(["a=a1", "b=b1", "c=c0", "d=d1", "e=e2"]);
       db = await t.open();
       expect(decode((await db.get(new TextEncoder().encode("b")))!)).toBe("b1");
       await db.close();
@@ -381,14 +375,14 @@ async function until(cond: () => boolean): Promise<void> {
 }
 
 describe("power loss: OPFS ahead of IndexedDB (found by this suite)", () => {
-  // Found by "power loss … ingest" with KV_CRASH_POWER_ALL=1: IndexedDB
-  // keeps seq 1 (a=a1) and loses the rest; OPFS keeps manifest 2 with
-  // l0/3-4.sst (del a, c=c1) and l0/1-2.sst (a=a1, b=b1). The database
-  // opens at seq 1. Recovery's ingest builds on the newest manifest file
-  // (design.md: "The next ingest builds on the newest manifest file"), so
-  // manifest 3 lists l0/1-1.sst, l0/3-4.sst, l0/1-2.sst: a=a1, b=b1, c=c1,
-  // the fold of no log prefix (seq 3 deleted a before seq 4 wrote c).
-  it.fails("the next ingest after a power loss builds only on writes the log kept", async () => {
+  // IndexedDB keeps seq 1 (a=a1) and loses the rest; OPFS keeps manifest 2
+  // with l0/3-4.sst (del a, c=c1) and l0/1-2.sst (a=a1, b=b1). The open
+  // used to read seq 1 over generation 0, and the next ingest built on the
+  // newest manifest file: manifest 3 listed l0/1-1.sst, l0/3-4.sst,
+  // l0/1-2.sst, a=a1, b=b1, c=c1, the fold of no log prefix. Now the open
+  // records manifest 2, which holds seqs past the WAL head, and moves the
+  // head to 4: the database is fold(log[1..4]).
+  it("the next ingest after a power loss builds only on writes the log kept", async () => {
     const { ops, log, cut } = await cutOf(
       [put("a", "a1"), put("b", "b1"), ingest, del("a"), put("c", "c1"), ingest],
       (idb, opfs) => ({ idb: through(idb, "append seq 1"), opfs: through(opfs, "publish m/0000000000000002.mft") }),
@@ -396,13 +390,11 @@ describe("power loss: OPFS ahead of IndexedDB (found by this suite)", () => {
     await expect(checkCrashState(ops, log, cut, "power")).resolves.toBeUndefined();
   });
 
-  // Found the same way, with IndexedDB losing every commit. Open records
-  // the newest manifest file (`raiseGeneration(latest)`), whose run
-  // l0/1-2.sst holds seqs 1..2, with a WAL head of 0. New writes reuse
-  // seqs 1 and 2, and their flush writes l0/1-2.sst again: run paths are no
-  // longer immutable, the old run's b=b1 is overwritten, and the manifest
-  // lists the new file twice.
-  it.fails("writes after IndexedDB lost everything never overwrite a run OPFS kept", async () => {
+  // IndexedDB loses every commit. The open used to record the newest
+  // manifest with a WAL head of 0, so new writes reused seqs 1 and 2 and
+  // their flush overwrote l0/1-2.sst, losing b=b1. Now recording the
+  // manifest moves the head to 2, its highest seq.
+  it("writes after IndexedDB lost everything never overwrite a run OPFS kept", async () => {
     const { ops, cut } = await cutOf([put("a", "a1"), put("b", "b1"), ingest], (_idb, opfs) => ({ idb: 0, opfs: opfs.length }));
     const t = new Traced(`reuse-${++runs}`);
     const enc = new TextEncoder();
@@ -428,14 +420,13 @@ describe("power loss: OPFS ahead of IndexedDB (found by this suite)", () => {
 describe("crash leftovers", () => {
   // Risk 6 (unbounded orphans). Found by "process crash … compaction":
   // crash after manifest 5 (compaction output) is published and before
-  // IndexedDB records it. A fresh host's first pass sweeps: manifests 4 and
-  // 5 both list live runs, so nothing goes. The next ingest builds
-  // manifest 6 on manifest 5 and reclaims manifest 4, which alone listed
-  // the four L0 inputs. Nothing retires them: the host's `retired` set
-  // holds only compaction inputs it installed itself, and the next sweep
-  // happens only when a new host starts. One crash leaks one step's inputs
-  // per host lifetime.
-  it.fails("a host that swept after a crash still reclaims runs the crash left behind", async () => {
+  // IndexedDB records it. The fresh host's first sweep used to keep the runs
+  // of every manifest from the recorded one on, so manifest 5's output
+  // stayed; the next ingest then removed manifest 5, and nothing retired
+  // its output until another host started. The sweep now keeps only the
+  // recorded manifest's runs: a manifest past it is a crash leftover that
+  // nothing builds on (design.md, "Recovery").
+  it("a host that swept after a crash still reclaims runs the crash left behind", async () => {
     const { ops, cut } = await cutOf(COMPACTION, (idb, opfs) => ({
       idb: through(idb, "raiseGeneration 5") - 1,
       opfs: through(opfs, "publish m/0000000000000005.mft"),
