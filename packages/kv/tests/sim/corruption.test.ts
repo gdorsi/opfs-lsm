@@ -354,15 +354,14 @@ describe("a corrupt manifest: CRC-checked everywhere", () => {
  * A power loss cannot tear a manifest (OPFS publishes a file whole), and
  * OPFS keeps its writes in order, so a recorded manifest that is on disk
  * but fails its CRC, or lists a run that is gone while no newer intact
- * manifest takes its place, is corruption, not a power loss. Today both
- * become silent, permanent loss of the whole database (R1, R2). The
+ * manifest takes its place, is corruption, not a power loss. R2 throws
+ * CorruptDatabaseError and deletes nothing. R1 still becomes silent,
+ * permanent loss of the whole database. The
  * research note, technique 10: "A missing or corrupt run throws
  * CorruptDatabaseError. It must never be skipped silently", and "The engine
  * must not 'fix' a gap by deleting data".
  *
- * Candidate fix: in `choose`, tell a manifest file that is missing or empty
- * (power loss: rule 3 as today) from one that is present and fails to
- * decode (throw CorruptDatabaseError, record nothing). For a present,
+ * Candidate fix for R1: for a present,
  * decodable recorded manifest with a missing run, fall back only to a
  * manifest whose `through` reaches `ingestedThrough` (the compaction
  * power-loss row of design.md's table, which loses nothing); else throw.
@@ -393,29 +392,16 @@ describe("recovery never turns corruption into data loss (reported, not fixed)",
     expect((await walMeta(f.name)).generation).toBe(0);
   });
 
-  // R2: the recorded manifest fails its CRC. `openDb` throws
-  // CorruptDatabaseError, as it should, but the SharedWorker's next flush
-  // (any `db.ingest()`, or another tab's writes past `maxWalBytes`)
-  // reconciles without trusting it: `readManifest` maps the CRC error to
-  // "missing", rule 3 finds no other intact manifest and records generation
-  // 0, the WAL is dropped, and the sweep deletes every run file. One flipped
-  // bit in a manifest erases the database.
-  it.fails("R2: a manifest that fails its CRC is never replaced, and no run is deleted", async () => {
+  // R2: the recorded manifest fails its CRC. `openDb` and the SharedWorker's
+  // next flush both throw CorruptDatabaseError, and nothing is recorded or
+  // swept.
+  it("R2: a manifest that fails its CRC is never replaced, and no run is deleted", async () => {
     const f = await standard();
     await corruptFile(f.fs, await recorded(f), flipAt(() => 50));
     const before = await runFiles(f);
     await new EngineHost(() => f.fs).ingest(f.name, Number.POSITIVE_INFINITY, true).catch(() => undefined);
     expect(await runFiles(f)).toEqual(before);
     expect((await walMeta(f.name)).generation).not.toBe(0);
-  });
-
-  it("R2 today: the host's flush records generation 0 and deletes every run", async () => {
-    const f = await standard();
-    await corruptFile(f.fs, await recorded(f), flipAt(() => 50));
-    await new EngineHost(() => f.fs).ingest(f.name, Number.POSITIVE_INFINITY, true);
-    expect((await walMeta(f.name)).generation).toBe(0);
-    expect(await runFiles(f)).toEqual([]);
-    expect(await survivors(f)).toBe(0);
   });
 });
 
