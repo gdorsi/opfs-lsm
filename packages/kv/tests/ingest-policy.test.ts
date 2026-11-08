@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   EngineHost,
   MemoryFs,
@@ -147,7 +147,17 @@ describe("ingest policy", () => {
   });
 
   it("drops only the folded bytes from the WAL counter", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    // Its own database: a host from an earlier test may still be ingesting
+    // NAME, and recovery would pair that host's manifests with this WAL.
+    const name = `${NAME}-counter`;
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve) => {
+          const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
+          req.onsuccess = req.onerror = req.onblocked = () => resolve();
+        }),
+    );
+    const wal = await IdBWal.open(checkDbName(name));
     expect(await wal.uningestedBytes()).toBe(0);
     const first = {
       type: "put" as const,

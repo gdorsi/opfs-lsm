@@ -1,7 +1,5 @@
 import { compareBytes } from "../../src/bytes.js";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { decodeGeneration } from "../../src/store/generation.js";
-import { decodeSst } from "../../src/store/sst.js";
 import { openHarnessDb } from "../../src/testing.js";
 import type { Db } from "../../src/index.js";
 import { checkDatabase, decodeWalRow, deleteWal, type DatabaseReport } from "./check-database.js";
@@ -28,8 +26,8 @@ import { Oracle, show, type OracleEntry, type OracleOp } from "./oracle.js";
  *
  * After the reopen, recovery runs: a fresh host flushes, compacts and
  * reclaims, and the files must pass `checkDatabase` with no orphans. Then
- * one more write and ingest, which builds on the newest manifest file
- * (design.md, "Crash behavior"), must read back.
+ * one more write and ingest, which builds on the recorded manifest
+ * (design.md, "Recovery"), must read back.
  */
 
 /**
@@ -229,46 +227,6 @@ function metaAt(ops: readonly DurableOp[], count: number): Map<string, number> {
 
 function headAt(ops: readonly DurableOp[], count: number): number {
   return metaAt(ops, count).get("head") ?? 0;
-}
-
-/**
- * The known power-loss bug a cut falls in, from the crash state alone:
- * - "idb-ahead": IndexedDB records a generation whose manifest or runs
- *   OPFS lost (or removed): the database does not open (risks 1 and 2);
- * - "opfs-ahead": OPFS keeps a manifest, at or after the recorded one, with
- *   a run holding seqs past the WAL head IndexedDB kept: the next open or
- *   ingest builds on writes the log lost.
- * Undefined for a cut in neither class, which must recover like any other.
- */
-export async function powerBugClass(ops: readonly DurableOp[], cut: Cut): Promise<"idb-ahead" | "opfs-ahead" | undefined> {
-  const meta = metaAt(ops, cut.idb);
-  const generation = meta.get("generation");
-  const head = meta.get("head") ?? 0;
-  const fs = await materializeFs(ops, cut.opfs);
-  const manifest = async (n: number) => {
-    const buf = await fs.read(`m/${String(n).padStart(16, "0")}.mft`, 0, Number.POSITIVE_INFINITY);
-    if (!buf || buf.byteLength === 0) return undefined;
-    try {
-      return decodeGeneration(buf);
-    } catch {
-      return undefined;
-    }
-  };
-  if (generation !== undefined && generation > 0) {
-    const m = await manifest(generation);
-    if (!m) return "idb-ahead";
-    for (const run of m.runs) if (!(await fs.read(run.path, 0, 0))) return "idb-ahead";
-  }
-  for (const file of await fs.list("m")) {
-    const n = Number(file.replace(/\.mft$/, ""));
-    if (n < (generation ?? 0)) continue;
-    for (const run of (await manifest(n))?.runs ?? []) {
-      const buf = await fs.read(run.path, 0, Number.POSITIVE_INFINITY);
-      if (!buf || buf.byteLength === 0) continue;
-      if (decodeSst(buf).some((e) => (e.seq ?? 0) > head)) return "opfs-ahead";
-    }
-  }
-  return undefined;
 }
 
 let states = 0;

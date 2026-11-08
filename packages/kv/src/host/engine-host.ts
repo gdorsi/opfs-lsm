@@ -1,11 +1,12 @@
 import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
+import { reconcile } from "../recover.js";
 import { CountingFs } from "../opfs/counting-fs.js";
 import {
   listRuns,
   liveRuns,
-  loadLatestGeneration,
+  loadGeneration,
   reclaimRuns,
 } from "../store/generation.js";
 import { levelOf } from "../store/levels.js";
@@ -85,6 +86,12 @@ export class EngineHost {
    * entry means this host has not swept that database yet.
    */
   private readonly retired = new Map<DbName, Set<string>>();
+  /**
+   * Per database, the generation this host last published or found intact,
+   * so `reconcile` checks a recorded manifest's runs once, not on every
+   * flush. A tab that records another generation makes the host check again.
+   */
+  private readonly trusted = new Map<DbName, number>();
 
   constructor(private readonly fsFactory: FsFactory) {}
 
@@ -109,13 +116,15 @@ export class EngineHost {
   }
 
   /**
-   * What this host counted for `name` since it started. The manifest read
-   * for `generation` and `layout` bypasses the counters.
+   * What this host counted for `name` since it started. `generation` and
+   * `layout` describe the recorded generation; their manifest read bypasses
+   * the counters.
    */
   async stats(name: string): Promise<HostStats> {
     const dbName = checkDbName(name);
     const fs = await this.fsFor(dbName);
-    const latest = await loadLatestGeneration(fs.inner);
+    const recorded = await this.withWal(dbName, async (wal) => (await wal.recordedGeneration()) ?? 0);
+    const latest = await loadGeneration(fs.inner, recorded);
     const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
     for (const run of latest?.runs ?? []) {
       const level = levelOf(run.path) ?? 0;
@@ -150,15 +159,21 @@ export class EngineHost {
       return { generation };
     }
     await compaction;
-    const fs = await this.fsFor(dbName);
-    return { generation: (await loadLatestGeneration(fs))?.generation ?? 0 };
+    return {
+      generation: await this.withWal(dbName, async (wal) => (await wal.recordedGeneration()) ?? 0),
+    };
+  }
+
+  private trust(dbName: DbName): (generation: number) => boolean {
+    return (generation) => this.trusted.get(dbName) === generation;
   }
 
   private async fold(dbName: DbName, through: number): Promise<IngestResult> {
     const fs = await this.fsFor(dbName);
     const result = await this.exclusive(dbName, () =>
-      this.withWal(dbName, (wal) => ingestAll(wal, fs, through)),
+      this.withWal(dbName, (wal) => ingestAll(wal, fs, through, this.trust(dbName))),
     );
+    this.trusted.set(dbName, result.generation);
     const counts = this.countsFor(dbName);
     counts.foldedBytes += result.foldedBytes;
     if (result.foldedBytes > 0) counts.flushes += 1;
@@ -316,11 +331,15 @@ export class EngineHost {
       );
     }
     for (let i = 0; i < MAX_COMPACTION_STEPS; i++) {
-      const step = await mergeNextStep(fs);
+      const meta = await this.withWal(dbName, (wal) => wal.meta());
+      const base = await loadGeneration(fs, meta.generation ?? 0);
+      // Gone when a flush installed a newer generation since: plan again.
+      if (!base) continue;
+      const step = await mergeNextStep(fs, base, meta.top);
       if (!step) return;
       await this.exclusive(dbName, () =>
         this.withWal(dbName, async (wal) => {
-          await installStep(fs, wal, step);
+          this.trusted.set(dbName, await installStep(fs, wal, step, this.trust(dbName)));
           for (const path of step.inputs) this.retired.get(dbName)!.add(path);
           await this.reclaim(dbName, fs, wal);
         }),
@@ -334,11 +353,15 @@ export class EngineHost {
    * Remove the retired runs no tab holds. The first call for a database
    * retires every run file outside the live generations, which also
    * collects what a crash left behind. Needs the ingest and compaction
-   * locks, so no run being written is mistaken for an orphan.
+   * locks, so no run being written is mistaken for an orphan. Reconciles
+   * first: after a power loss the recorded manifest can be gone, and
+   * sweeping against it would remove the runs recovery needs.
    */
   private async reclaim(dbName: DbName, fs: AsyncFs, wal: IdBWal): Promise<void> {
+    const { generation } = await reconcile(wal, fs, this.trust(dbName));
+    this.trusted.set(dbName, generation);
     const retired = this.retired.get(dbName) ?? new Set(await listRuns(fs));
-    const keep = await liveRuns(fs, (await wal.recordedGeneration()) ?? 0);
+    const keep = await liveRuns(fs, generation);
     this.retired.set(dbName, new Set(await reclaimRuns(fs, retired, keep)));
   }
 }

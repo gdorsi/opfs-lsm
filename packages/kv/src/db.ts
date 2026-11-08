@@ -24,6 +24,7 @@ import {
 } from "./host/engine-host.js";
 import { layersChannel, type IngestClient } from "./host/protocol.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
+import { reconcile } from "./recover.js";
 import { Memtable, type MemRow } from "./store/memtable.js";
 import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
@@ -33,7 +34,6 @@ import { openBrowserFs } from "./opfs/browser-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
 import {
   loadGeneration,
-  loadLatestGeneration,
   type RunMeta,
 } from "./store/generation.js";
 import { pointGetSst, runLevels, type RunLevel } from "./store/merge.js";
@@ -336,12 +336,9 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const wal = await IdBWal.open(name);
   span(trace, "idb-open", performance.now() - idbAt);
   const generationAt = trace ? performance.now() : 0;
-  if ((await wal.recordedGeneration()) === undefined) {
-    const manifestAt = performance.now();
-    const latest = await loadLatestGeneration(tabFs);
-    span(trace, "manifest", performance.now() - manifestAt);
-    await wal.raiseGeneration(latest?.generation ?? 0);
-  }
+  // Pair the WAL with a manifest before the first read or write. The
+  // recorded manifest's runs are checked by the first sync, which loads them.
+  await reconcile(wal, tabFs, TRUST_RECORDED);
   span(trace, "generation", performance.now() - generationAt);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
@@ -426,6 +423,8 @@ type BusMessage = {
 };
 
 const GENERATION_RETRIES = 8;
+const TRUST_RECORDED = (): boolean => true;
+const CHECK_RECORDED = (): boolean => false;
 const GENERATION_GONE =
   "SST files for the recorded generation stayed missing after retries";
 
@@ -672,8 +671,20 @@ class DbImpl implements Db {
         );
       }
       if (missing === undefined) return;
+      await this.repair();
     }
     throw new CorruptDatabaseError(GENERATION_GONE);
+  }
+
+  /**
+   * The recorded generation did not load. Usually a newer one replaced it
+   * and the next tail names that one. After a power loss its manifest or
+   * runs can be gone for good: `reconcile` then records one that pairs
+   * with the WAL (design.md, "Recovery"). It changes nothing while
+   * IndexedDB names a generation other than the one found broken.
+   */
+  private async repair(): Promise<void> {
+    await reconcile(this.wal, this.fs, CHECK_RECORDED);
   }
 
   /**
@@ -721,7 +732,10 @@ class DbImpl implements Db {
         continue;
       }
       attempt++;
-      if (missing !== undefined) await this.load(missing);
+      if (missing !== undefined) {
+        await this.load(missing);
+        if (this.loaded?.generation !== missing) await this.repair();
+      }
     }
     throw new CorruptDatabaseError(GENERATION_GONE);
   }

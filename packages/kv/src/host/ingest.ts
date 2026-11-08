@@ -1,8 +1,10 @@
 import { opsBytes } from "../check.js";
+import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
+import { reconcile } from "../recover.js";
 import {
-  loadLatestGeneration,
+  loadGeneration,
   publishGeneration,
   publishL0,
   reclaimManifests,
@@ -21,12 +23,19 @@ export type IngestResult = {
  * advance ingestedThrough. Compaction runs separately. Folds nothing when every seq
  * through `through` is already ingested, so tabs that ask for the same
  * flush get one L0.
+ *
+ * Builds on the recorded generation, never on a newer manifest file: one
+ * that IndexedDB has not recorded is left by a crash, and its seqs are
+ * either still in the WAL or were adopted by `reconcile`. `trust` names a
+ * generation the caller knows is intact (see `reconcile`).
  */
 export async function ingestAll(
   wal: IdBWal,
   fs: AsyncFs,
   through = Number.POSITIVE_INFINITY,
+  trust: (generation: number) => boolean = () => false,
 ): Promise<IngestResult> {
+  const base = await reconcile(wal, fs, trust);
   const records =
     (await wal.getIngestedThrough()) >= through ? [] : await wal.listUningested();
   let generation: number;
@@ -34,21 +43,22 @@ export async function ingestAll(
   let foldedBytes = 0;
 
   if (records.length === 0) {
-    const cur = await loadLatestGeneration(fs);
-    generation = cur?.generation ?? 0;
+    generation = base.generation;
     ingestedThrough = await wal.getIngestedThrough();
   } else {
     const entries = foldRecords(records);
     const first = records[0]!.seq;
     const last = records[records.length - 1]!.seq;
 
-    const prev = await loadLatestGeneration(fs);
-    generation = (prev?.generation ?? 0) + 1;
+    const prev = await loadGeneration(fs, base.generation);
+    if (!prev) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
+    generation = base.top + 1;
     const l0 = await publishL0(fs, `${first}-${last}`, entries);
     await publishGeneration(fs, {
       generation,
-      runs: [l0, ...(prev?.runs ?? [])],
-      tombstoneSeq: prev?.tombstoneSeq ?? 0,
+      runs: [l0, ...prev.runs],
+      tombstoneSeq: prev.tombstoneSeq,
+      through: last,
     });
     for (const r of records) foldedBytes += opsBytes(r.ops);
     await wal.advanceIngested(last, generation, foldedBytes);

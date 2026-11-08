@@ -34,6 +34,7 @@ IndexedDB  "opfs-lsm-wal/<name>"
              "ingestedThrough" -> seq  every seq <= this is in an SST
              "pendingBytes"    -> n    op bytes of the records above ingestedThrough
              "generation"      -> n    the manifest tabs should read
+             "topGeneration"   -> n    highest manifest number recovery has seen
 
 OPFS  opfs-lsm/<name>/
   ├── m/<generation, 16 digits>.mft    manifests, newest wins
@@ -44,7 +45,9 @@ OPFS  opfs-lsm/<name>/
 ```
 
 A **run** is one SST file. A **generation** is one numbered manifest that lists the live runs. A
-**seq** is the position of a batch in the log. Seqs start at 1 and have no gaps.
+**seq** is the position of a batch in the log. Seqs start at 1 and have no gaps, except where a
+power loss lost them from both stores (see [Recovery](#recovery)). A seq is never handed out
+twice, and a manifest number never names two different manifests.
 
 Run paths are immutable. A path is written once and never rewritten with different contents.
 This lets every tab cache a parsed run by its path, with no invalidation.
@@ -104,9 +107,13 @@ power loss.
 
 ## Truncation
 
-After an ingest, the host deletes every record at or below the new `ingestedThrough`, sets
-`ingestedThrough` and `generation`, and lowers `pendingBytes` by the bytes it folded, all in one
-transaction. So the WAL holds only seqs that are not yet in an SST.
+After an ingest, the host sets `ingestedThrough` and `generation`, lowers `pendingBytes` by the
+bytes it folded, and deletes every record at or below the *previous* `ingestedThrough`, all in
+one transaction. So the WAL holds the seqs that are not yet in an SST, plus the seqs the last
+ingest folded. Those stay until the next ingest: under a power loss this commit can survive
+while the new run and manifest do not, and then recovery replays them over the previous
+manifest (see [Recovery](#recovery)). They cost IndexedDB space, about one `maxWalBytes`, and
+nothing else: no read touches a record at or below `ingestedThrough`.
 
 ## Reading the tail
 
@@ -120,6 +127,8 @@ The read issues one `getAll` per 25,000 seqs, all in flight in the same transact
 gapless above `ingestedThrough`, so a value's position in its range gives its seq and no
 `getAllKeys` pass is needed. A range that returns fewer values than it spans has a gap, and the
 read throws `wal gap` rather than shift the seqs after it.
+
+Before the first read, `openDb` pairs the WAL with a manifest (see [Recovery](#recovery)).
 
 `getAllRecords` returns keys and values in one request, but Chrome deserializes each value when
 `.value` is first read. The time it saves comes back in decode, so the engine does not use it.
@@ -349,9 +358,10 @@ one generation:
 
 ```
 u32 magic "OLGN" (0x4f4c474e)
-u32 version = 1
+u32 version = 2
 u64 generation
 u64 tombstoneSeq
+u64 through                  version 2 only
 u32 run count
 per run:
   u16 path length, path (UTF-8, relative to the database root)
@@ -366,8 +376,16 @@ sorted by smallest key. Reads use that order directly, so the first hit wins.
 `tombstoneSeq` is the highest seq of any delete that a bottom-level compaction dropped. A key
 that has no entry at all may have been deleted at any seq up to it.
 
+`through` is the seq the manifest's runs reach: they hold the fold of every seq of the log up to
+it, and no seq past it. An ingest sets it to the last seq it folded, and a compaction keeps its
+base's. Recovery uses it to pair a manifest with the WAL. A version 1 manifest has no `through`
+and reads as `through` 0. Recovery then never prefers it over the WAL, and the first ingest
+writes a version 2 manifest.
+
 The generation the tabs should read is the one recorded in IndexedDB `meta.generation`, not
-the newest file in `m/`. A manifest becomes visible only once IndexedDB records it.
+the newest file in `m/`. A manifest becomes visible only once IndexedDB records it. New
+manifests number one past the highest number in use, meaning the newest file in `m/`, the
+recorded generation, and `meta.topGeneration`. Numbers can skip.
 
 # Reads
 
@@ -427,7 +445,9 @@ append. `catchUp` keeps one rule: the installed generation never holds a seq pas
 `appliedThrough`. If the tail names a generation the tab hasn't loaded, the tab loads its
 manifest and runs outside the transaction, then tries again, up to 8 times. A run file can
 disappear between the manifest read and the run read, when a newer compaction reclaims it. A
-retry picks up the newer generation.
+retry picks up the newer generation. Before each retry, the tab reconciles (see [Recovery](#recovery)). That
+changes nothing unless IndexedDB still names the generation that did not load, which only
+happens after a power loss.
 
 After a flush that it started itself or a compaction step, the host posts `{ kind: "ingest" }`
 on the same channel. After `db.ingest()`, the calling tab posts it if the generation moved. Tabs
@@ -480,13 +500,18 @@ compaction that starts. A request for seqs that are already ingested writes noth
 
 Under the exclusive section for the database:
 
-1. Read every WAL record above `ingestedThrough`.
-2. Fold them to the last op per key, in key order, keeping each op's seq.
-3. Write `l0/<first>-<last>.sst`.
-4. Write manifest `N + 1`, listing the new run in front of the runs of manifest `N`.
-5. In one IndexedDB transaction, delete the records through `<last>`, set
-   `ingestedThrough = <last>` and raise `generation` to `N + 1`.
-6. Delete the manifests older than the recorded generation.
+1. Reconcile (see [Recovery](#recovery)). In a running database this reads `meta` and lists
+   `m/`, and changes nothing. The recorded generation is `G`, and the highest number in use is
+   `top`.
+2. Read every WAL record above `ingestedThrough`.
+3. Fold them to the last op per key, in key order, keeping each op's seq.
+4. Write `l0/<first>-<last>.sst`.
+5. Write manifest `top + 1` with `through = <last>`, listing the new run in front of the runs
+   of manifest `G`. It builds on the recorded generation, never on a newer manifest file: one
+   that IndexedDB has not recorded was left by a crash.
+6. In one IndexedDB transaction, set `ingestedThrough = <last>`, raise `generation` to
+   `top + 1`, and delete the records at or below the previous `ingestedThrough`.
+7. Delete the manifests older than the recorded generation.
 
 The exclusive section is a promise chain inside the host plus a Web Lock named
 `opfs-lsm-ingest/<name>`. The lock covers the case of two SharedWorkers serving the same
@@ -540,11 +565,15 @@ The merge itself runs without the ingest lock. It holds only `opfs-lsm-compact/<
 flushes keep going while it runs. A flush meanwhile only adds L0 runs in front of the inputs, so
 the plan stays valid. To install, under the exclusive section, the host:
 
-1. Checks that every input is still in the latest manifest.
-2. Writes manifest `N + 1`, with the inputs replaced by the outputs and `tombstoneSeq` raised
-   to the highest dropped tombstone.
-3. Raises IndexedDB `generation` to `N + 1`.
+1. Reconciles, and checks that every input is still in the recorded manifest `G`.
+2. Writes manifest `top + 1`, with the inputs replaced by the outputs, `tombstoneSeq` raised
+   to the highest dropped tombstone, and `G`'s `through`.
+3. Raises IndexedDB `generation` to `top + 1`.
 4. Deletes the input runs that the new manifest doesn't list.
+
+The merge plans on the recorded generation too, and names its outputs
+`c<top + 1>.<i>`, past every manifest number in use, so an output never overwrites a run that a
+manifest on disk lists.
 
 A pass runs up to 8 steps, and a request that arrives during a pass starts another one.
 
@@ -583,20 +612,111 @@ calls wasm to unpack that one block. The bulk byte work, meaning encode, decode 
 wasm off the main thread. If the wasm module fails to load, TypeScript fallbacks for all of them
 run instead, except that encode then writes raw blocks only.
 
+# Recovery
+
+Writes go to two stores, and nothing orders one against the other on disk. IndexedDB commits
+with the default (relaxed) durability, so `complete` means the OS has the write, not the disk.
+OPFS's `close()` swaps a file into place with no fsync. After a power loss, each store keeps a
+prefix of its own completed writes, and the two prefixes are independent. Acked writes may be
+lost (see the goals at the top). The database must still open, and read the fold of one prefix
+of the log.
+
+## The invariant
+
+The write order keeps two facts true at every prefix of each store:
+
+1. **Every intact manifest is a log prefix.** A manifest is intact when every run it lists is
+   on disk. An intact manifest's runs hold the fold of exactly the seqs `1..through` of the log,
+   leaving out seqs that a power loss lost from both stores. A run is written before any
+   manifest lists it, and run paths are never reused for other writes, so an intact manifest
+   always shows the runs it was written with.
+2. **WAL records are log entries.** `head` never moves down, so a seq is never handed out
+   twice. Recovery moves `head` past every seq that any manifest on disk names, so a manifest
+   that is not intact now cannot become intact later with other writes in its runs. New
+   manifests number past `topGeneration`, so a number IndexedDB still holds after a later power
+   loss never names a different manifest.
+
+So any intact manifest `M`, followed by WAL records `through + 1..head` with no gap, is a log
+prefix: `fold(log[1..head])`. Without those records, `M` alone is `fold(log[1..through])`.
+
+## The rule
+
+`reconcile` (`src/recover.ts`) picks the manifest to record:
+
+1. **OPFS kept seqs that IndexedDB lost.** The newest intact manifest numbered past the recorded
+   one whose `through` is past `head`. It is a longer prefix than the WAL. Recording it moves
+   `head` to its `through` before any of its seqs can be handed out again.
+2. **Otherwise the recorded manifest**, if it is intact.
+3. **Otherwise IndexedDB recorded a manifest that OPFS lost**, or recorded none: the newest
+   intact manifest, or the empty generation 0.
+
+Recording a manifest (`IdBWal.adopt`) is one IndexedDB transaction, and it writes only if
+`meta` still reads what reconcile read. The transaction pairs the manifest with the WAL:
+
+- If `through` is at or past `ingestedThrough`, the manifest holds every folded seq.
+  `ingestedThrough` becomes `through`.
+- If `through` is below `ingestedThrough` and the WAL still holds every seq above `through`,
+  those seqs are uningested again. These are the records [Truncation](#truncation) keeps.
+- Otherwise no record can follow the manifest. Every record is dropped, and `ingestedThrough`
+  moves to `head`. The database is the manifest alone, and the seqs between are lost.
+
+In the same transaction, `head` moves past the highest `through` of any manifest on disk, and
+`topGeneration` past every manifest number seen.
+
+In a running database neither rule 1 nor rule 3 applies. A manifest's `through` is at most the
+head when it is written, and `head` never moves down. Reclaim never removes the recorded
+manifest or its runs. A manifest newer than the recorded one exists only between a publish and
+its IndexedDB commit, or after a crash between them. Its seqs are still in the WAL, so it is
+ignored, and the next ingest or compaction numbers past it.
+
+## Who reconciles
+
+- `openDb`, before the first sync. It trusts the recorded manifest's runs, because the sync
+  opens them anyway. On a healthy database this costs one `meta` read, which replaces the
+  `generation` read open already did, and one listing of `m/`.
+- `sync` and appends, when the recorded generation does not load. Usually a newer generation
+  replaced it, and reconcile changes nothing, because IndexedDB no longer names the broken one.
+  After a power loss, reconcile records a manifest that loads.
+- The host, at the start of every ingest, compaction install and sweep, under the ingest lock.
+  The host checks a recorded manifest's runs once and then trusts the generations it published
+  itself. A sweep keeps only the recorded manifest's runs. A newer manifest is a crash leftover:
+  nothing builds on it, and recovery only records a manifest whose runs are all on disk.
+
+Every tab writes only after its open reconciled, so no new seq can collide with a seq that a
+manifest holds.
+
 # Crash behavior
 
 Each step writes new files before it points anything at them, and deletes files only after
-nothing points at them:
+nothing points at them. A **process crash** (a tab or the SharedWorker killed, the OS keeps
+every completed write) stops both stores at one point of the global order:
 
 | Crash after | State on reopen |
 |---|---|
 | Append, before `complete` | The batch isn't in the WAL. The caller never got an ack. |
 | L0 run written, before its manifest | The run is in no manifest and is garbage. The records are still in the WAL. |
-| Manifest written, before the IndexedDB update | `generation` still names the old manifest, so tabs ignore the new one, and the records are still in the WAL. The next ingest builds on the newest manifest file, so the orphaned L0 stays listed under a new L0 that holds the same rows at the same seqs. If no record arrived in between, both runs have the same path and the manifest lists it twice. Reads stay correct either way. |
+| Manifest written, before the IndexedDB update | `generation` still names the old manifest, so tabs ignore the new one, and the records are still in the WAL. Its `through` is at most `head`, so reconcile leaves it. The next ingest builds on the recorded manifest and numbers past the leftover. It re-folds the same seqs, usually into the same path with the same bytes. The next sweep removes the leftover's other runs, and reclaim removes the manifest once a newer one is recorded. |
 | IndexedDB updated, before reclaim | Old manifests and input runs stay on disk until a later ingest or compaction removes them. |
 | Compaction outputs written, before install | The outputs are in no manifest. They are garbage. |
 
-Files that no manifest lists are never deleted on startup today. They only take up space.
+Every acked write survives a process crash. A new host's first sweep removes every run file that
+the recorded manifest doesn't list.
+
+Under a **power loss**, IndexedDB keeps commits `1..i` and OPFS keeps file operations `1..o`,
+for any `i` and `o`:
+
+| IndexedDB kept | OPFS kept | Reopen |
+|---|---|---|
+| An ingest's commit | Not its run or manifest | The recorded manifest is gone (rule 3). The previous manifest is intact, and the WAL still holds the seqs that ingest folded, so they are uningested again. Nothing is lost. If OPFS lost more than one ingest, the WAL is dropped, and the database is the newest intact manifest. |
+| Not a compaction's `generation` raise | Its new manifest, and the removal of the old one and its inputs | The recorded manifest is gone. OPFS removed it only after publishing the new one, which is intact and has the same `through` (rule 3). Nothing is lost. |
+| Some appends, not the ingest that followed | That ingest's manifest, or later ones | The manifest holds seqs past `head` (rule 1). It is recorded and `head` moves to its `through`. The database is a longer prefix than the WAL held. |
+| Nothing (a new IndexedDB) | Some manifests | Rule 3 records the newest intact one, and `head` moves past its seqs, so new writes never reuse a seq or a run path. |
+| Commits past what OPFS kept, in any mix | Any prefix | One of the rows above. The database opens as an intact manifest plus the WAL records that follow it with no gap. |
+
+`pnpm --filter @opfs-lsm/kv formal:power-loss` checks the rule on a model of both stores. It
+covers every workload of up to six appends, ingests and compactions, every pair of prefixes,
+and a second power loss at every pair of the recovery's own writes.
+`tests/sim/crash-enum.test.ts` checks every pair on the real code.
 
 # Assumptions about the platform
 
@@ -605,6 +725,10 @@ Files that no manifest lists are never deleted on startup today. They only take 
   which keeps a blind append gapless when it aborts.
 - An OPFS `createWritable().close()` publishes the whole file atomically, and never shows a
   partial file to readers.
+- Each store keeps the order of its own completed writes across a power loss, so what survives
+  is a prefix of them. Nothing orders IndexedDB against OPFS (see [Recovery](#recovery)). Both
+  are inferred, not documented (`docs/research/corruption-hardening-test-suite.md`,
+  "Browser durability facts").
 - A SharedWorker with the same URL and name is shared by every tab of the origin. `openDb` names
   it `opfs-lsm:<name>`, so each database gets its own. If two different URLs serve one database,
   the Web Locks keep them from writing manifests at the same time.

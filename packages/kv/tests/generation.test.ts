@@ -1,3 +1,4 @@
+import { crc32 } from "../src/store/crc32.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   MemoryFs
@@ -47,31 +48,45 @@ describe("manifest", () => {
         { path: "l1/c2.0-10.sst" },
       ],
       tombstoneSeq: 4,
+      through: 9,
     };
     expect(decodeGeneration(encodeGeneration(meta))).toEqual(meta);
+  });
+
+  it("reads a version 1 manifest, which has no through, as through 0", () => {
+    const meta = { generation: 2, runs: [{ path: "l0/1-1.sst" }], tombstoneSeq: 1, through: 7 };
+    const v2 = encodeGeneration(meta);
+    // Version 1: the same fields without the u64 through after tombstoneSeq.
+    const v1 = new Uint8Array(v2.byteLength - 8);
+    v1.set(v2.subarray(0, 24));
+    v1.set(v2.subarray(32, v2.byteLength - 4), 24);
+    const view = new DataView(v1.buffer);
+    view.setUint32(4, 1, true);
+    view.setUint32(v1.byteLength - 4, crc32(v1.subarray(0, v1.byteLength - 4)), true);
+    expect(decodeGeneration(v1)).toEqual({ ...meta, through: 0 });
   });
 });
 
 describe("loadLatestGeneration", () => {
   it("skips an empty newest manifest and returns the older one", async () => {
     const fs = new MemoryFs();
-    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0 });
+    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
     const empty = await fs.create(mft(2));
     await empty.finish();
 
     const meta = await loadLatestGeneration(fs);
-    expect(meta).toEqual({ generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0 });
+    expect(meta).toEqual({ generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
   });
 
   it("skips an undecodable newest manifest and returns the older one", async () => {
     const fs = new MemoryFs();
-    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0 });
+    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
     const torn = await fs.create(mft(2));
     await torn.write(new Uint8Array([1, 2, 3, 4]));
     await torn.finish();
 
     const meta = await loadLatestGeneration(fs);
-    expect(meta).toEqual({ generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0 });
+    expect(meta).toEqual({ generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
   });
 
   it("returns undefined when every manifest is empty", async () => {
@@ -83,13 +98,13 @@ describe("loadLatestGeneration", () => {
 
   it("returns the newest manifest when it is larger than 1 MiB", async () => {
     const fs = new MemoryFs();
-    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0 });
+    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
     const key = (c: number) => new Uint8Array(8 * 1024).fill(c);
     const runs = Array.from({ length: 100 }, (_, i) => ({
       path: `l1/r${i}-4194304.sst`,
       range: { smallest: key(i * 2), largest: key(i * 2 + 1) },
     }));
-    await publishGeneration(fs, { generation: 2, runs, tombstoneSeq: 0 });
+    await publishGeneration(fs, { generation: 2, runs, tombstoneSeq: 0, through: 0 });
     const meta = await loadLatestGeneration(fs);
     expect(meta?.generation).toBe(2);
     expect(meta?.runs).toHaveLength(100);

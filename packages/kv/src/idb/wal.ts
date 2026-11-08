@@ -2,7 +2,11 @@ import { opsBytes, type CheckedOp, type DbName } from "../check.js";
 import { CommitError } from "../errors.js";
 import type { WalRecord } from "../store/memtable.js";
 
-/** One record per batch, keyed by seq. Holds only seqs above ingestedThrough. */
+/**
+ * One record per batch, keyed by seq. Holds the seqs above ingestedThrough,
+ * and the seqs the last ingest folded, kept until the next one (design.md,
+ * "Truncation").
+ */
 const WAL_STORE = "wal";
 const META_STORE = "meta";
 /** Seq of the last committed batch. */
@@ -11,7 +15,23 @@ const META_INGESTED = "ingestedThrough";
 /** The OPFS generation whose runs hold every seq <= ingestedThrough. */
 const META_GENERATION = "generation";
 const META_PENDING = "pendingBytes";
+/**
+ * The highest manifest number recovery has seen. Recovery can record an
+ * older manifest than the one IndexedDB named; new manifests number past
+ * this, so a number is never reused for other runs.
+ */
+const META_TOP = "topGeneration";
 const IDB_VERSION = 1;
+
+/** The `meta` keys that say which log prefix the WAL and the manifest hold. */
+export type WalMeta = {
+  readonly head: number;
+  readonly ingestedThrough: number;
+  /** Undefined until an open or an ingest records one. */
+  readonly generation: number | undefined;
+  /** The highest manifest number recovery has seen, 0 for none. */
+  readonly top: number;
+};
 
 export type WalReadProfile = {
   ms: number;
@@ -311,10 +331,93 @@ export class IdBWal {
 
   /** The recorded generation. Undefined until an ingest records one. */
   async recordedGeneration(): Promise<number | undefined> {
+    return (await this.meta()).generation;
+  }
+
+  async meta(): Promise<WalMeta> {
     const tx = this.db.transaction(META_STORE, "readonly");
-    const raw = await reqToPromise(tx.objectStore(META_STORE).get(META_GENERATION));
+    const meta = tx.objectStore(META_STORE);
+    const [head, ingestedThrough, generation, top] = await Promise.all([
+      reqToPromise(meta.get(META_HEAD)).then(num),
+      reqToPromise(meta.get(META_INGESTED)).then(num),
+      reqToPromise(meta.get(META_GENERATION)),
+      reqToPromise(meta.get(META_TOP)).then(num),
+    ]);
     await txDone(tx);
-    return typeof raw === "number" ? raw : undefined;
+    return {
+      head,
+      ingestedThrough,
+      generation: typeof generation === "number" ? generation : undefined,
+      top,
+    };
+  }
+
+  /**
+   * Pair the WAL with manifest `generation`, whose runs hold the log
+   * through seq `through` (design.md, "Recovery"). `head` moves up to at
+   * least `floor`, and `topGeneration` to at least `top`. Writes nothing and
+   * returns false unless `meta` still reads `expect`. Then, in one
+   * transaction:
+   * - `through` at or past `ingestedThrough`: the manifest holds every
+   *   folded seq, and the WAL records above it follow it.
+   *   `ingestedThrough` moves to `through`.
+   * - `through` below it, and the WAL still holds every seq above
+   *   `through`: those seqs are uningested again.
+   * - Otherwise no record can follow the manifest: the seqs between it and
+   *   the WAL are gone from both stores, or `head` had to move past seqs
+   *   the WAL never held. Every record is dropped and `ingestedThrough`
+   *   moves to the new `head`: the database is the manifest alone.
+   * `head` never moves down, so a seq is never reused.
+   */
+  async adopt(
+    expect: WalMeta,
+    generation: number,
+    through: number,
+    floor = through,
+    top = generation,
+  ): Promise<boolean> {
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+    const done = txDone(tx);
+    const meta = tx.objectStore(META_STORE);
+    const wal = tx.objectStore(WAL_STORE);
+    const [head, ingested, recorded, knownTop] = await Promise.all([
+      reqToPromise(meta.get(META_HEAD)).then(num),
+      reqToPromise(meta.get(META_INGESTED)).then(num),
+      reqToPromise(meta.get(META_GENERATION)),
+      reqToPromise(meta.get(META_TOP)).then(num),
+    ]);
+    if (
+      head !== expect.head ||
+      knownTop !== expect.top ||
+      ingested !== expect.ingestedThrough ||
+      (typeof recorded === "number" ? recorded : undefined) !== expect.generation
+    ) {
+      await done;
+      return false;
+    }
+    const above =
+      head > through
+        ? await reqToPromise(wal.getAll(IDBKeyRange.bound(through + 1, head)))
+        : [];
+    const nextHead = Math.max(head, through, floor);
+    let nextIngested = through;
+    let bytes = 0;
+    if (nextHead === head && (through >= ingested || above.length === head - through)) {
+      wal.delete(IDBKeyRange.upperBound(Math.min(ingested, through)));
+      for (const value of above) bytes += opsBytes(decodeOps(value));
+    } else {
+      // No record can follow the manifest: drop them all, and start the
+      // WAL past every seq handed out.
+      nextIngested = nextHead;
+      wal.delete(IDBKeyRange.upperBound(head));
+    }
+    meta.put(nextHead, META_HEAD);
+    meta.put(nextIngested, META_INGESTED);
+    meta.put(generation, META_GENERATION);
+    meta.put(Math.max(knownTop, top, generation), META_TOP);
+    meta.put(bytes, META_PENDING);
+    await done;
+    return true;
   }
 
   /** Record `generation` unless a newer one is already recorded. */
@@ -382,9 +485,12 @@ export class IdBWal {
   }
 
   /**
-   * Mark seqs <= through as ingested, record `generation` in the same
-   * transaction, and delete those records. A tab that has not read them
-   * jumps to the SST for that generation.
+   * Mark seqs <= through as ingested and record `generation` in the same
+   * transaction. A tab that has not read them jumps to the SST for that
+   * generation. Deletes the records the previous ingest folded: the ones
+   * this ingest folded stay until the next, so a power loss that keeps this
+   * commit and loses the new manifest can still recover them (design.md,
+   * "Recovery").
    */
   async advanceIngested(
     through: number,
@@ -400,7 +506,7 @@ export class IdBWal {
       reqToPromise(meta.get(META_PENDING)).then(num),
     ]);
     if (through > existing) {
-      tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(through));
+      tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(existing));
       meta.put(through, META_INGESTED);
       meta.put(Math.max(prevGen, generation), META_GENERATION);
       meta.put(Math.max(0, pending - foldedBytes), META_PENDING);
