@@ -70,7 +70,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | CompactPreserve | `latestSstEntry`, `foldEntries` (TypeScript path of `mergeSsts`) |
 | PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestAll` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim`, `openDb` and `syncOnce` repair (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
 
-**Sync commit:** `682b4d8a8118065340ea30d9bd83142d264fb2a3` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
+**Sync commit:** `4f56f230900213d955efb7ec3552441bb83b1d6c` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
 ## Intentional product change
 
