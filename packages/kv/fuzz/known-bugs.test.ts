@@ -41,16 +41,22 @@ async function tabGet(buf: Uint8Array, key: Uint8Array) {
   return settle(() => reader.get(key));
 }
 
-/** The call must end in bounds and throw only CorruptDatabaseError. */
+/**
+ * The call must end in bounds and throw only CorruptDatabaseError. A GC
+ * during the call can hide an allocation from `bounded`, which would let a
+ * pinned bug pass, so the call runs a few times and any broken rule counts.
+ */
 async function corruptWithinBounds(what: string, fn: () => unknown): Promise<void> {
-  await bounded(what, async () => {
-    try {
-      await fn();
-    } catch (err) {
-      if (err instanceof CorruptDatabaseError) return;
-      throw new RuleBroken(`${what} threw ${err instanceof Error ? `${err.name}: ${err.message}` : `a ${typeof err}`}`);
-    }
-  });
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await bounded(what, async () => {
+      try {
+        await fn();
+      } catch (err) {
+        if (err instanceof CorruptDatabaseError) return;
+        throw new RuleBroken(`${what} threw ${err instanceof Error ? `${err.name}: ${err.message}` : `a ${typeof err}`}`);
+      }
+    });
+  }
 }
 
 describe("known decoder bugs (reported, not fixed)", () => {

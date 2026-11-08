@@ -70,11 +70,14 @@ function tsOutcome<T>(what: string, fn: () => T): Outcome<T> {
 
 /**
  * KW1: a varint near 2^32 wraps `o + len` on wasm32 and the slice after it
- * panics. Skipped (unless `KV_FUZZ_KNOWN=1`) so the run goes on.
+ * panics. wasm32 keeps only the low 4 bits of the fifth byte, so any fifth
+ * byte with low nibble 0xf reads as at least 0xf0000000. Skipped (unless
+ * `KV_FUZZ_KNOWN=1`) so the run goes on.
  */
 function hugeVarint(b: Uint8Array): boolean {
   for (let i = 0; i + 4 < b.byteLength; i++) {
-    if (b[i + 4] === 0x0f && b[i]! >= 0x80 && b[i + 1]! >= 0x80 && b[i + 2]! >= 0x80 && b[i + 3]! >= 0x80) return true;
+    const fifth = b[i + 4]!;
+    if (fifth < 0x80 && (fifth & 0x0f) === 0x0f && b[i]! >= 0x80 && b[i + 1]! >= 0x80 && b[i + 2]! >= 0x80 && b[i + 3]! >= 0x80) return true;
   }
   return false;
 }
