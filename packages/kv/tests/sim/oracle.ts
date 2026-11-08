@@ -55,6 +55,11 @@ export class Oracle {
     return seq;
   }
 
+  /** Every key any batch wrote. */
+  keys(): Uint8Array[] {
+    return [...this.versions.values()].map((v) => v.key);
+  }
+
   /** The value of `key` after `log[1..p]`. */
   valueAt(key: Uint8Array, p = this.head): Uint8Array | undefined {
     const history = this.versions.get(keyToString(key))?.history;

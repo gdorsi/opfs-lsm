@@ -29,7 +29,6 @@ export class Model {
 
 /** The system under test: one handle, its host, and the files they share. */
 export class Sut {
-  readonly fs = new MemoryFs();
   /** While set, the host's run reads wait: a compaction stalls before its merge. */
   private gate: { readonly opened: Promise<void>; readonly open: () => void } | undefined;
   readonly host = new EngineHost(() => this.hostFs());
@@ -40,6 +39,7 @@ export class Sut {
   constructor(
     readonly name: string,
     private readonly maxWalBytes: number,
+    readonly fs: AsyncFs = new MemoryFs(),
   ) {}
 
   /** The host ingests on its own once the WAL passes `maxWalBytes`, racing every command. */
@@ -457,7 +457,7 @@ export function expectEntries(got: readonly OracleEntry[], want: readonly Oracle
 }
 
 /** `replayPath` is the replayPath a failure prints in a comment after its counterexample. */
-export const commandsArb = (replayPath?: string) => fc.commands<Model, Sut, false>(
+export const commandsArb = (replayPath?: string, maxCommands = 80) => fc.commands<Model, Sut, false>(
   [
     fc.array(opArb, { minLength: 1, maxLength: 1 }).map((ops) => new BatchCmd(ops)),
     fc.array(opArb, { minLength: 1, maxLength: 1 }).map((ops) => new BatchCmd(ops)),
@@ -488,5 +488,5 @@ export const commandsArb = (replayPath?: string) => fc.commands<Model, Sut, fals
     fc.constant(new ReopenCmd()),
     fc.constant(new CheckCmd()),
   ],
-  { maxCommands: 80, size: "max", ...(replayPath ? { replayPath } : {}) },
+  { maxCommands, size: "max", ...(replayPath ? { replayPath } : {}) },
 );
