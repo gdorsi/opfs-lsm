@@ -181,7 +181,7 @@ function sourceSync(): string[] {
   need("recover.ts", /Math\.max\(numbers\[0\] \?\? 0, meta\.top, meta\.generation \?\? 0\)/, "new manifests number past every number in use");
   need("recover.ts", /m\.through > meta\.head && \(await isIntact\(fs, m\)\)/, "reconcile adopts an intact manifest past the head first");
   need("host/engine-host.ts", /reconcile\(wal, fs, this\.trust\(dbName\)\)[\s\S]*liveRuns\(fs, generation\)/, "reclaim sweeps against the reconciled generation's runs");
-  need("db.ts", /await reconcile\(wal, fs, TRUST_RECORDED\);[\s\S]*await db\.sync\(\)/, "openDb reconciles before the first sync");
+  need("db.ts", /await reconcile\(wal, tabFs, TRUST_RECORDED\);[\s\S]*await db\.sync\(\)/, "openDb reconciles before the first sync");
   need("db.ts", /holdingFiles\(this\.name, async \(\) => \{\s*for \([^)]*\) \{\s*const step = await this\.catchUpOnce\(\);\s*if \(step === "done"\) return;\s*if \(step === "gone"\) gone = await this\.repairGone\(gone\);/, "sync retries under the reclaim lock and repairs when the recorded generation does not load");
   need("db.ts", /private async repairGone[\s\S]*?await this\.repair\(\);/, "a load that finds files gone under the lock repairs");
   need("host/engine-host.ts", /ingestAll\(wal, fs, through, this\.trust\(dbName\)\);\s*[^\n]*\n\s*await unlessHeld\(dbName, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");

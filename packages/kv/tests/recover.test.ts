@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
+import { CorruptDatabaseError } from "../src/errors.js";
 import { IdBWal } from "../src/idb/wal.js";
 import { MemoryFs } from "../src/index.js";
 import { reconcile } from "../src/recover.js";
@@ -34,6 +35,16 @@ async function manifest(fs: MemoryFs, generation: number, through: number, runs:
   const meta = { generation, runs: runs.map((path) => ({ path })), tombstoneSeq: 0, through };
   await publishGeneration(fs, meta);
   return meta;
+}
+
+/** Flip one byte of the newest manifest, as a disk fault would and a power loss cannot. */
+async function flipByte(fs: MemoryFs, dir: string): Promise<void> {
+  const path = dir + (await fs.list("m")).sort().at(-1)!;
+  const buf = (await fs.read(path, 0, Number.POSITIVE_INFINITY))!;
+  buf[buf.byteLength >> 1]! ^= 0xff;
+  const w = await fs.create(path);
+  await w.write(buf);
+  await w.finish();
 }
 
 const seqs = async (wal: IdBWal) => (await wal.listUningested()).map((r) => r.seq);
@@ -152,6 +163,32 @@ describe("reconcile", () => {
     await fs.remove(broken.runs[0]!.path);
     expect((await reconcile(wal, fs, trustAll)).generation).toBe(1);
     expect(await wal.meta()).toMatchObject({ head: 5, ingestedThrough: 5, generation: 1 });
+    wal.close();
+  });
+
+  it("refuses a recorded manifest that does not decode, and writes nothing", async () => {
+    const wal = await walWith(2);
+    const fs = new MemoryFs();
+    await manifest(fs, 1, 1, ["l0/1-1.sst"]);
+    await manifest(fs, 2, 2, ["l0/1-1.sst", "l0/2-2.sst"]);
+    await wal.advanceIngested(2, 2, 0);
+    await flipByte(fs, "m/");
+    const before = await wal.meta();
+    await expect(reconcile(wal, fs, trustNone)).rejects.toThrow(CorruptDatabaseError);
+    expect(await wal.meta()).toEqual(before);
+    wal.close();
+  });
+
+  it("refuses a manifest that does not decode before the newest intact one when the recorded one is gone", async () => {
+    const wal = await walWith(3);
+    const fs = new MemoryFs();
+    await manifest(fs, 1, 1, ["l0/1-1.sst"]);
+    await manifest(fs, 2, 2, ["l0/1-1.sst", "l0/2-2.sst"]);
+    await wal.advanceIngested(3, 3, 0);
+    await flipByte(fs, "m/");
+    const before = await wal.meta();
+    await expect(reconcile(wal, fs, trustNone)).rejects.toThrow(CorruptDatabaseError);
+    expect(await wal.meta()).toEqual(before);
     wal.close();
   });
 

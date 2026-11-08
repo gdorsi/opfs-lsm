@@ -32,7 +32,7 @@ In the browser, `openDb` opens OPFS and starts that SharedWorker. In Node it use
 | `name` | Database name. Tabs that share this name share one WAL. |
 | `memoryBudget` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
 
-Harness knobs used by tests and benches (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB flush.
+Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB flush.
 
 ### `Db`
 
@@ -138,10 +138,9 @@ git clone https://github.com/gdorsi/opfs-lsm.git
 cd opfs-lsm
 pnpm install
 pnpm test
-pnpm bench:browser
-pnpm bench:collections
+pnpm bench kv/
 pnpm todo:example
 pnpm automerge:example
 ```
 
-`pnpm test` typechecks and runs the unit suites. `pnpm bench:browser` starts headless Chrome against the SharedWorker path. Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
+`pnpm test` typechecks and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, collections against Dexie, and the Yjs and Automerge adapters against their IndexedDB counterparts. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).

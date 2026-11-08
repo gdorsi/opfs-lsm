@@ -13,21 +13,18 @@
       "import": "./dist/testing.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "bench": "tsx scripts/bench-browser.ts",
-    "bench:browser": "tsx scripts/bench-browser.ts",
-    "bench:search": "tsx scripts/bench-search.ts",
-    "bench:index-runs": "tsx scripts/bench-index-runs.ts"
+    "test": "vitest run"
   },
   "license": "MIT",
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*"
   },
   "devDependencies": {
-    "dexie": "^4.0.11",
     "fake-indexeddb": "^6.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
