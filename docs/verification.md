@@ -14,12 +14,13 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | Change | Run |
 | --- | --- |
 | WAL append or ack, `ingestAll`, `listUningested`, `advanceIngested` | `pnpm --filter @opfs-lsm/kv formal:kv` (or at least `formal:ingest-visibility` and `formal:power-loss`) |
-| The write order of ingest, compaction install or reclaim, `reconcile`, `IdBWal.adopt`, manifest numbering, or the open path | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below) |
+| The write order of ingest, compaction install or reclaim, `reconcile`, `IdBWal.adopt`, manifest numbering, or the open path | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `kill-chrome --minutes 10` |
 | Generation loading in `db.ts` (`syncOnce`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |
 | Point get versus SST, including tombstones (`pointGet`, `readKey`) | `formal:wal-over-sst`. Add `kv-bench` when the OPFS read after ingest changed. |
 | `view()` or the memtable pin | `formal:view-pin` |
 | SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, `foldEntries`, `mergeSsts`) | `formal:compact-preserve`, plus `kv-bench` for a real post-ingest get |
 | `openDb`, the SharedWorker, or cross-tab visibility | `drive two-tab` |
+| `BrowserFs` (`createWritable`, removes, file locks), the SharedWorker port, or any Web Lock | `kill-chrome --minutes 10` (see [Kill real Chrome](#kill-real-chrome)) |
 | `examples/automerge-todo/src/storage.ts`, or a kv change claimed to speed up Automerge | `drive automerge-bench`. For a performance claim, rerun with `BENCH_RUNS=5` and compare medians and ranges. |
 | `examples/yjs/src/kv-persistence.ts`, or a kv change claimed to speed up Yjs | `drive yjs-bench`. For a performance claim, rerun with `DOCS=5000 RUNS=5` (a 50k set) and compare medians and ranges. |
 | BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
@@ -85,6 +86,80 @@ Evidence stays after cleanup:
 `VERIFY_OPFS_ARTIFACTS` overrides the root. `VERIFY_OPFS_RUN_ID` fixes the run folder name.
 
 `cleanup` removes `packages/kv/.bench-chrome-profile` and `packages/collections/.bench-chrome-profile`. It prints `cleanup: removed fixed bench profiles (if any)` and `cleanup: artifacts preserved under ...`, and exits 0. `kv-bench` and `collections-bench` refuse to start while that profile directory exists.
+
+## Kill real Chrome
+
+`packages/kv/scripts/kill-chrome.ts` kills Chrome under load and checks the database after a relaunch. MemoryFs and fake-indexeddb cannot show the platform facts the design leans on. This loop shows them on the Chrome it runs.
+
+```sh
+pnpm --filter @opfs-lsm/kv kill-chrome                         # the probes, then 20 iterations, random seed
+pnpm --filter @opfs-lsm/kv kill-chrome --minutes 30 --keep-going
+pnpm --filter @opfs-lsm/kv kill-chrome --seed <seed> --from <iteration> --iterations 1 --kinds <kind> --no-probes   # replay
+pnpm --filter @opfs-lsm/kv kill-chrome --probes-only
+pnpm --filter @opfs-lsm/kv kill-chrome --inspect <db> --profile <kept profile> --port <port>   # dump a kept database's files
+```
+
+Each iteration opens 2 or 3 tabs on one database, on one Chrome profile. Each tab runs a seeded workload of puts, deletes and batches over 192 keys with `maxWalBytes` of 1, 4 or 16 KiB, so the SharedWorker ingests and compacts many times a second. A tab has one write in flight at a time. It reports each ack (attempt and seq) over a CDP binding as soon as the ack resolves. The workload is a function of (seed, iteration, tab), so the harness can regenerate every attempt a tab made. At a seeded time the harness does one of these, in turn:
+
+| Kind | What it does |
+| --- | --- |
+| `page-crash` | `Page.crash` on one tab |
+| `close-worker` | `Target.closeTarget` on the SharedWorker |
+| `kill-renderer` | `kill -9` of one renderer process (a tab, the SharedWorker, or both) |
+| `kill-browser` | `kill -9` of the browser process |
+| `browser-crash` | `Browser.crash` |
+| `quota` | `Storage.overrideQuotaForOrigin` at or just above the usage, `ingest()` from a tab, the quota restored, `ingest()` again |
+
+After the browser process dies, the harness waits up to 10 s for Chrome's helpers (the storage service among them) to exit on their own before it kills what is left, so it never kills the storage service mid-write by itself.
+
+When Chrome survives the kill, the other tabs finish their write in flight and close. Then every Web Lock whose name starts with `opfs-lsm` must come free within 20 s, and a new tab must open the database and `ingest()` through a SharedWorker. Chrome is then closed and relaunched on the same profile. A fresh tab opens the database, which runs recovery. It runs `checkDatabase` while holding the compaction and ingest locks (in the host's order), so no ingest, compaction or reclaim runs during the check. Then it reads the whole range and `get`s every key. It writes once, `ingest()`s through the new SharedWorker, and checks again.
+
+A pass means all of these hold:
+
+- The database opens, and `checkDatabase` reports no problem, before and after the ingest.
+- `range()` and every `get` equal the state `checkDatabase` folds from the files.
+- No ack is lost: every seq the harness saw acked is at or below the recovered `head`.
+- The state is the fold of the log through `head`. Seqs the harness saw acked hold their own writes. Every other seq up to `head` holds an attempt a killed tab had in flight, in that tab's order, after its last seen ack. The harness tries every such assignment (`verify` in the script) and needs one whose fold equals the read state.
+- After the restarted SharedWorker ingests, the state is unchanged apart from the new write, `head` moved by one, and the generation went up.
+
+A process kill is not a power loss, so this is the stronger of the two crash levels in the research note: acked writes survive. The database persists across iterations, so later kills hit a database that earlier kills already crashed. It is replaced every 8 iterations (`--rotate`) and after a failure.
+
+Before the loop, four probes check single facts:
+
+| Probe | Pass |
+| --- | --- |
+| `tab-locks` | A tab holds the reclaim lock (shared), a run lock (shared) and the ingest lock. After `Page.crash`, another tab gets each one at once. |
+| `worker-locks` | The SharedWorker takes the ingest and compaction locks (through a DevTools `Runtime.evaluate`). `Target.closeTarget` removes it from `Target.getTargets`. Both locks come free, and a new tab gets a new SharedWorker that ingests, both while the old client tab is still open and after it closed. |
+| `writable-tab-crash` | A tab writes 64 KiB to a file and closes the writer, then writes 8 MiB through a second `createWritable` without closing it. After `Page.crash`, the file still holds the first 64 KiB. |
+| `writable-browser-kill` | The same, with `kill -9` of the browser and a relaunch. |
+
+Before the workload, under the quota and around the check, the loop lists the origin's IndexedDB databases and notes any that vanished, or an `indexedDB.open` that failed.
+
+On failure the loop prints the seed, the iteration, the kind, the kill time, the reason and a replay command, writes the evidence (plan, failure, notes, harness log, Chrome stderr) to `--artifacts` (default `$TMPDIR/opfs-kill-chrome`), keeps the profile, and exits 1. Real Chrome does not replay a schedule, so a replay runs the same workload, kind and kill time, not the same interleaving. Run it a few times. A summary at the end prints the iterations per kind, the most orphans and swap files seen, and the errors `ingest()` gave under quota.
+
+What the loop showed on Chrome 156 on macOS (CI runs it on Linux):
+
+- An IndexedDB commit that fired `complete` survives `Page.crash`, `kill -9` of a renderer or of the browser, and `Browser.crash`, unless Chrome then throws away its whole IndexedDB store (below).
+- An OPFS `createWritable` that a tab or the browser abandons leaves the target file as it was, and recovery opens every state these kills leave.
+- Web Locks of a crashed tab and of a closed SharedWorker are released at once.
+- `Target.closeTarget` closes a SharedWorker. A new tab gets a new one, and it ingests.
+- `Storage.overrideQuotaForOrigin` makes OPFS writes fail. Ingest fails, the database stays clean, and ingest works again once the quota is back.
+
+What it does not show:
+
+- Power loss. A process kill keeps whatever reached the OS, so the loop never sees a write lost after its ack, or IndexedDB and OPFS reaching disk out of order. `crash-enum.test.ts` and `formal:power-loss` model that. The loop cannot.
+- Unacked writes. A write the harness never saw acked may be in the log or not. Losing one is allowed, so the loop cannot tell a lost unacked write from one that never committed.
+- Interleavings it does not hit. Kill times are seeded, but scheduling inside Chrome is not.
+- Quota on IndexedDB. Chrome 156 applies `Storage.overrideQuotaForOrigin` to OPFS writes only. IndexedDB commits and `navigator.storage.estimate()` ignore it, so a WAL append never meets a quota error here.
+- Other browsers.
+
+Four behaviours it found:
+
+- After `kill -9` of the browser or `Browser.crash`, Chrome sometimes damages its own IndexedDB store for the origin: the LevelDB directory gets a `corruption_info.json` ("Internal error opening backing store for indexedDB.open.") and `CURRENT` names a `MANIFEST` file that is gone. In 13 of 149 browser kills, a later launch failed `indexedDB.open` with that `UnknownError`, and then Chrome deleted every IndexedDB database of the origin. OPFS was untouched. Once, Chrome kept failing every `indexedDB.open` on that profile for the rest of the run instead. To the engine a deleted WAL is an IndexedDB power loss: recovery records the newest intact manifest and moves `head` past it, so the database is a log prefix and only the WAL tail is lost. Every such iteration since the harness drains Chrome's helpers passed. Two iterations from before the drain lost data after such a wipe, and are not explained (research note, "Phase 5 results"). An `openDb` that meets the failed open rejects with the raw `UnknownError`, not an `OpfsLsmError`.
+
+- After `kill -9` of the browser mid-`createWritable`, the writer's swap file stays in OPFS as `<name>.crswap`, visible to directory listings. Chrome does not remove it after a relaunch. In a level directory, reclaim takes it for an orphan run and removes it. In `m/` the engine skips the name and nothing removes it, so each browser crash during a manifest write leaks one file. `checkDatabase` lists these as `swapFiles`, not as problems. The loop prints `swap files in the database directory` when it sees one, and the summary prints the most it saw.
+- While DevTools is attached to the SharedWorker, a tab that opens the database after `Target.closeTarget` gets no working SharedWorker, and its `ingest()` never settles. Detached, a new one starts. The `worker-locks` probe detaches before it closes the worker.
+- Under the OPFS quota, `ingest()` rejects in the tab with a plain `Error` whose message is Chrome's `QuotaExceededError` text. The host's `QuotaExceededError` is not an `OpfsLsmError`, so the port carries no code and the class is lost. It is loud, and nothing is corrupt, but no typed error says the storage is full.
 
 ## Run the formal suite
 
@@ -200,16 +275,22 @@ Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
 
 ## What CI runs
 
-[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs six jobs on pull requests and on pushes to `main`:
+[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs seven jobs on pull requests and on pushes to `main`:
 
 - `gate`: `pnpm bench:gate` with `BENCH_GATE_BROWSER=smoke`
 - `two-tab`: `pnpm --filter @opfs-lsm/kv two-tab`
+- `kill-chrome`: `pnpm --filter @opfs-lsm/kv kill-chrome --seed 1 --iterations 6`, the probes and each kill kind once (about a minute)
 - `test`: `pnpm test`
 - `static`: `pnpm lint` and `pnpm deadcode` (oxlint, then fallow; the same two steps as `pnpm static`)
 - `formal`: `pnpm --filter @opfs-lsm/kv formal:kv`
 - `rust`: `cargo test -p engine-core`, which includes the corrupt-input properties
 
-That workflow leaves out cargo fuzz, Jazzer.js, `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collections-bench`, `automerge-bench`, `yjs-bench`, `bench:load`, and `bench:open`. `bench:gate` is the performance smoke. It is separate from `kv-bench`.
+[`.github/workflows/nightly.yml`](../.github/workflows/nightly.yml) runs every night and on demand (`workflow_dispatch`, with `minutes` and `seed` inputs):
+
+- `kill-chrome`: 30 minutes of the kill loop with `--keep-going` and a random seed. The evidence of a failure is uploaded as `kill-chrome-evidence`.
+- `seed-sweep`: random seeds and more runs for the seeded suites, one job each: `KV_MODEL_RUNS=2000` on `model.test.ts` and on `multi-handle.test.ts`, `KV_CRASH_RUNS=300 KV_CRASH_PAIRS=200` on `crash-enum.test.ts`, and `KV_FUZZ_RUNS=50000` on `fuzz/`. With no `KV_MODEL_SEED` or `KV_FUZZ_SEED`, fast-check draws a seed and prints it, with the path, on a failure. Replay it with the commands in [Run the unit tests](#run-the-unit-tests) and [Fuzz the decoders](#fuzz-the-decoders).
+
+The pull request workflow leaves out cargo fuzz, Jazzer.js, `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collections-bench`, `automerge-bench`, `yjs-bench`, `bench:load`, and `bench:open`. `bench:gate` is the performance smoke. It is separate from `kv-bench`.
 
 ## Failures already on main
 
