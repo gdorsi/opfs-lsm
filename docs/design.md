@@ -292,6 +292,8 @@ encoders cut blocks in the same places. The bloom filter uses 10 bits per key an
 hashes are FNV-1a and a 32-bit mix of it, combined by double hashing.
 
 A reader requires the last 8 bytes to be version 1 and the magic. Any other version is rejected.
+A reader also rejects a footer that names more than 32 bloom hashes, or more blocks than the index
+has room for at 16 bytes each, before either sets a loop count or an allocation.
 
 ## Compression
 
@@ -311,9 +313,11 @@ code to the wasm module of the pure-Rust codecs we tried. On todo-shaped data, a
 | Deflate (`miniz_oxide`) | 4.84x | 8 µs | 18 KB |
 | Zstd (`ruzstd`) | 3.62x | 8 µs | 58 KB |
 
-Reads decode LZ4 blocks in wasm once the module loads. `openDb` starts loading it without
+An LZ4 block unpacks to at most 255 bytes per compressed byte, so both decoders reject a block
+whose u32 size claims more (plus 16) before they allocate for it. Reads decode LZ4 blocks in wasm once the module loads. `openDb` starts loading it without
 waiting. Before it loads, and wherever wasm doesn't load, a TypeScript decoder in `lz4.ts` does
-the work about 3x slower.
+the work about 3x slower. A wasm trap (a panic, or an allocation wasm memory cannot grow to)
+does not unwind, so after one the context drops wasm and uses the TypeScript codec.
 
 Measured with `pnpm --filter @opfs-lsm/kv bench:range` (todo-shaped layout in memory, Node) against raw L2 runs:
 
@@ -692,7 +696,30 @@ prefix: `fold(log[1..head])`. Without those records, `M` alone is `fold(log[1..t
    `head` to its `through` before any of its seqs can be handed out again.
 2. **Otherwise the recorded manifest**, if it is intact.
 3. **Otherwise IndexedDB recorded a manifest that OPFS lost**, or recorded none: the newest
-   intact manifest, or the empty generation 0.
+   intact manifest, or the empty generation 0. A manifest file that is missing or empty counts
+   as lost: OPFS can leave a file created and never closed.
+
+### Corruption is not a power loss
+
+A power loss cannot tear a manifest, because OPFS publishes a file whole. OPFS also keeps its
+own writes in order, and the host removes a run only after every older manifest that lists it,
+and never a run of the recorded manifest. So a power loss never leaves the recorded manifest on disk with a run missing, or a manifest that fails to
+decode. Those states are corruption. Recovery refuses them rather than lose data that is still
+on disk: it throws `CorruptDatabaseError` and writes nothing, so no WAL record is dropped and no
+sweep runs against a stand-in.
+
+- **The recorded manifest is there but does not decode** (bad CRC, magic or length): refuse.
+  Only a missing or empty file takes rule 3.
+- **The recorded manifest decodes but lists a run that is gone:** an intact manifest whose
+  `through` is at or past `ingestedThrough` may stand in, because it and the WAL still hold every
+  seq (the old manifest of a compaction, or its new one). Otherwise refuse.
+- **Rule 3 meets a manifest that does not decode before an intact one:** refuse. It may be the
+  newest state.
+
+`openDb`, a tab's repair, and the host's ingest, compaction install and sweep all reconcile
+first, so each of them refuses too, and the database stays as it is on disk for an app or a person
+to recover. A leftover manifest numbered past an intact recorded one is still ignored when it
+does not decode (rule 1 skips it).
 
 Recording a manifest (`IdBWal.adopt`) is one IndexedDB transaction, and it writes only if
 `meta` still reads what reconcile read. The transaction pairs the manifest with the WAL:
@@ -759,7 +786,10 @@ for any `i` and `o`:
 
 `pnpm --filter @opfs-lsm/kv formal:power-loss` checks the rule on a model of both stores. It
 covers every workload of up to six appends, ingests and compactions, every pair of prefixes,
-and a second power loss at every pair of the recovery's own writes.
+and a second power loss at every pair of the recovery's own writes. No power-loss state reaches a
+refusal. It also removes each run of the recorded manifest after every workload: open refuses
+and nothing writes, unless a manifest holds every ingested seq, which then stands in with every
+acked write.
 `tests/sim/crash-enum.test.ts` checks every pair on the real code.
 
 # Assumptions about the platform

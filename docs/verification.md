@@ -98,11 +98,12 @@ Exit 0. The log ends with `All 5 formal checks passed`. Each check prints a `PAS
 - `PASS WalOverSst` (on real `pointGet`)
 - `PASS ViewPin` (copy-on-write memtable pin present)
 - `PASS CompactPreserve` (`latestSstEntry` newest-first, `foldEntries` oldest-first)
-- `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, five `broken variant caught` lines show the model fails each known wrong design.
+- `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, six `broken variant caught` lines show the model fails each known wrong design.
+- `PASS CorruptRefuse` (a run of the recorded manifest removed after every workload: open refuses and nothing writes, unless a manifest that holds every ingested seq stands in)
 
 The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:power-loss`. `formal:power-loss` runs every workload twice: with reclaim, and with a tab holding the reclaim lock throughout, so the host removes no manifest or run. `FORMAL_POWER_CMDS` (default 6) and `FORMAL_POWER_CRASHES` (default 2) widen the power-loss bound; 7 commands or 3 crashes take about 11 s. Each exits 0 on a pass. A failure prints a shortest path or a counterexample and exits non-zero.
 
-The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `0e34b2e00478119e96eec08b4ee93434308f8800`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
+The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `7f3a256e2d968dd591309d944321d975020b3561`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
 
 `pendingBytes` is outside the model. A pass says nothing about the ingest trigger.
 
@@ -164,7 +165,7 @@ KV_CORRUPT_REPORT=1 pnpm exec vitest run tests/sim/corruption.test.ts   # prints
 ENGINE_PROP_CASES=100000 cargo test --release -p engine-core --test corrupt_inputs
 ```
 
-`pnpm test` runs 1,000 cases per mutation property, 300 per differential property, and a tenth of those for the slower ones. With the end-to-end file they take about 1 s. `KV_FUZZ_RUNS` and `ENGINE_PROP_CASES` scale them. `KV_FUZZ_REPORT=1` prints how often each target ran and each known bug skipped an input.
+`pnpm test` runs 1,000 cases per mutation property, 300 per differential property, and a tenth of those for the slower ones. With the end-to-end file they take about 1 s. `KV_FUZZ_RUNS` and `ENGINE_PROP_CASES` scale them. `KV_FUZZ_REPORT=1` prints how often each target ran.
 
 cargo fuzz needs `rustup toolchain install nightly` and `cargo install cargo-fuzz`. Jazzer.js is a dev dependency of `@opfs-lsm/kv`, with prebuilt binaries for macOS, Linux and Windows. Before a change to a decoder or the on-disk format, run each target for 10 minutes or more. A pass prints `Done N runs` and leaves no `crash-*` file.
 
@@ -173,21 +174,21 @@ Corpora: the seeds are files the engine wrote (a database through ingest and com
 - `packages/kv/fuzz/corpus/<target>/` for Jazzer.js. A finding lands in `packages/kv/fuzz/.build/crash-*`. Replay it with `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> 0 <file>`.
 - `crates/engine-core/fuzz/corpus/<target>/` for cargo fuzz. A finding lands in `crates/engine-core/fuzz/artifacts/<target>/`. Replay it with `cargo +nightly fuzz run <target> <file>`.
 
-Known bugs are reported, not fixed. Each is pinned by a test that states the rule: `it.fails` in `packages/kv/fuzz/known-bugs.test.ts` and `tests/sim/corruption.test.ts`, and `#[ignore]` in `corrupt_inputs.rs` (`cargo test -p engine-core -- --ignored`). The fuzzers skip inputs that reach a known bug, so a long run keeps finding new ones. `KV_FUZZ_KNOWN=1` (TypeScript) and `ENGINE_FUZZ_KNOWN=1` (Rust) feed them too. When a fix lands, its pinned test starts to fail. Drop the `.fails` or `#[ignore]`, and delete the clause that skips it (`KNOWN` and `knownError` in `targets.ts`, `knownWasmBug` in `differential.test.ts`, `known_bug` in `corrupt.rs`).
+Each bug the fuzzers found is kept as a regression test reduced to one input: `packages/kv/fuzz/findings.test.ts`, the recovery cases in `tests/sim/corruption.test.ts`, and the KB tests in `corrupt_inputs.rs`. None is open, so the fuzzers skip no input. To report a new bug before it is fixed, pin it with `it.fails` (or `#[ignore]`) and, if a long run must keep going, skip the inputs that reach it in `targets.ts` or `corrupt.rs`, with a clause that names it.
 
-### What the engine does with a corrupt file today
+### What the engine does with a corrupt file
 
-| File | Checked by | Corrupt bytes today |
+| File | Checked by | Corrupt bytes |
 | --- | --- | --- |
-| L0 or L1 run (raw) | Tabs: none. Compaction: CRC. | A tab read fails with `CorruptDatabaseError` when the structure breaks, or answers wrong when only data bytes changed. Compaction refuses the run and stops compacting that level until the run is gone. With wasm it throws the Rust error as a bare string, not `CorruptDatabaseError` (KW2). A flipped bit in the footer's block count makes a tab allocate up to 32 GiB (KT2). A footer bloom hash count near 2^32 makes each get take minutes (KT1). |
-| L2+ run (LZ4) | Tabs: none. Compaction: CRC. | A changed compressed byte fails the read with `CorruptDatabaseError`. A corrupt block size grows the tab's wasm memory by up to 4 GiB, for good (KB1). A filtered scan over a block with a varint near 2^32 panics in wasm (KW1). After about 4,000 panics every wasm call in that context fails (KW3). |
-| Recorded manifest | CRC, everywhere | `openDb` throws `CorruptDatabaseError`. Then the SharedWorker's next flush reconciles, treats the manifest as missing, records generation 0, drops the WAL, and its sweep deletes every run. The database is erased (R2). A manifest written on purpose with a valid CRC and a bad length throws `RangeError` (KT4). |
+| L0 or L1 run (raw) | Tabs: none. Compaction: CRC. | A tab read fails with `CorruptDatabaseError` when the structure breaks, or answers wrong when only data bytes changed. A footer that names more than 32 bloom hashes, or more blocks than its index can hold, fails before it sets a loop or an allocation. Compaction refuses the run with `CorruptDatabaseError` and stops compacting that level until the run is gone. |
+| L2+ run (LZ4) | Tabs: none. Compaction: CRC. | A changed compressed byte fails the read with `CorruptDatabaseError`. A block size past 255 times the compressed bytes fails before it is allocated. No input panics in wasm; after any wasm trap the context drops wasm and reads with the TypeScript codec. |
+| Recorded manifest | CRC, everywhere | `openDb`, and the SharedWorker's next flush, compaction or sweep, throw `CorruptDatabaseError` and change nothing (design.md, "Corruption is not a power loss"). A manifest written on purpose with a valid CRC and a bad length throws `CorruptDatabaseError` too. An empty file is a power loss: recovery records the newest intact manifest. |
 | Manifest past the recorded one | CRC, recovery | Ignored. |
-| A run of the recorded generation, missing | | `openDb` records generation 0, drops the WAL, and reads an empty database (R1). |
+| A run of the recorded generation, missing | recovery | `openDb` and the host throw `CorruptDatabaseError`, and no file or WAL record is deleted. When an intact manifest holds every ingested seq (a compaction's old or new manifest), it is recorded instead and nothing is lost. |
 | WAL row above `ingestedThrough` | none | A row cut short, a row that is not an `ArrayBuffer`, or a missing row fails `openDb` with `CommitError` (`corrupt wal row`, `wal gap`). A row changed into other valid ops reads as those ops. |
 | WAL `meta` | none | A value that is not a number reads as 0. With `head` 0 a tab misses the WAL tail. With `generation` naming no manifest, recovery records the intact one and loses nothing. |
 
-Bugs reached only by bytes written on purpose, with a valid CRC: KB2 (`decode_sst` reserves the footer's entry count: an abort natively, a panic in wasm) and KT3 (`decodeSst` without wasm throws `RangeError` on a bad index). Over the SharedWorker port, every host error reaches the tab as a plain `Error` (`createPortIngestClient`), so a tab never sees `CorruptDatabaseError` from a host-side failure.
+Over the SharedWorker port, a host error keeps its class: the port carries the `OpfsLsmError` code, and the tab rethrows `CorruptDatabaseError`, `CommitError` and the others (`errorOfCode`). Any other error arrives as a plain `Error`.
 
 ## Run the static checks
 
