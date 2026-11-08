@@ -5,7 +5,10 @@ import { MemoryFs } from "../src/index.js";
 import { decodeSst as decodeWasm, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { publishGeneration, publishRun, runMeta } from "../src/store/generation.js";
 import { lz4DecompressJs, useLz4Decoder } from "../src/store/lz4.js";
-import { decodeSst, SstReader, type SstEntry } from "../src/store/sst.js";
+import { settle } from "../src/store/cursor.js";
+import { decodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
+import type { SstReader } from "../src/store/sst-reader.js";
+import { drain, readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -61,19 +64,15 @@ describe("LZ4 runs", () => {
     expect(show(decodeSst(packed))).toEqual(want);
     expect(show(await decodeWasm(packed))).toEqual(want);
 
-    const a = new SstReader(raw);
-    const b = new SstReader(packed);
-    expect(b.range).toEqual(a.range);
+    const a = readerOfBytes(raw);
+    const b = readerOfBytes(packed);
+    expect(sstKeyRange(packed)).toEqual(sstKeyRange(raw));
     const keys = Array.from({ length: 703 }, (_, i) => key(i - 1));
-    expect(show(keys.map((k) => b.get(k)))).toEqual(show(keys.map((k) => a.get(k))));
-    const scan = (r: SstReader, start?: Uint8Array) => {
-      const out = [];
-      const c = r.cursor(start ? { start } : undefined);
-      for (let e = c.peek(); e; c.next(), e = c.peek()) out.push(e);
-      return show(out);
-    };
-    expect(scan(b)).toEqual(scan(a));
-    expect(scan(b, key(333))).toEqual(scan(a, key(333)));
+    const gets = (r: SstReader) => Promise.all(keys.map((k) => settle(() => r.get(k))));
+    expect(show(await gets(b))).toEqual(show(await gets(a)));
+    const scan = async (r: SstReader, start?: Uint8Array) => show(await drain(r.cursor(start ? { start } : undefined)));
+    expect(await scan(b)).toEqual(await scan(a));
+    expect(await scan(b, key(333))).toEqual(await scan(a, key(333)));
   });
 
   it("read back the same rows with the JS decoder", async () => {
@@ -85,7 +84,8 @@ describe("LZ4 runs", () => {
     expect(wasmDecoder).toBeDefined();
     try {
       expect(show(decodeSst(packed))).toEqual(want);
-      expect(show([new SstReader(packed).get(key(5))])).toEqual(show([decodeSst(packed)[5]]));
+      const reader = readerOfBytes(packed);
+      expect(show([await settle(() => reader.get(key(5)))])).toEqual(show([decodeSst(packed)[5]]));
     } finally {
       useLz4Decoder(wasmDecoder);
     }
@@ -94,16 +94,21 @@ describe("LZ4 runs", () => {
   it("read back an empty run", async () => {
     const packed = await encodeSst([], "lz4");
     expect(decodeSst(packed)).toEqual([]);
-    expect(new SstReader(packed).range).toBeUndefined();
+    expect(sstKeyRange(packed)).toBeUndefined();
+    expect(await drain(readerOfBytes(packed).cursor())).toEqual([]);
   });
 
   it("throw CorruptDatabaseError on a mangled block, with either decoder", async () => {
     const packed = await encodeSst(mixedRows(), "lz4");
     packed.fill(0xff, 4, 64);
-    expect(() => new SstReader(packed).get(key(1))).toThrow(CorruptDatabaseError);
+    const get = () => {
+      const reader = readerOfBytes(packed);
+      return settle(() => reader.get(key(1)));
+    };
+    await expect(get()).rejects.toThrow(CorruptDatabaseError);
     const wasmDecoder = useLz4Decoder(lz4DecompressJs);
     try {
-      expect(() => new SstReader(packed).get(key(1))).toThrow(CorruptDatabaseError);
+      await expect(get()).rejects.toThrow(CorruptDatabaseError);
     } finally {
       useLz4Decoder(wasmDecoder);
     }

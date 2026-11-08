@@ -25,28 +25,25 @@ import {
 import { layersChannel, type IngestClient } from "./host/protocol.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { Memtable, type MemRow } from "./store/memtable.js";
+import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
-import type { AsyncFs } from "./opfs/async-fs.js";
+import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { CountingFs } from "./opfs/counting-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
 import {
   loadGeneration,
   loadLatestGeneration,
-  loadSstReader,
+  type RunMeta,
 } from "./store/generation.js";
-import {
-  arrayCursor,
-  mergeCursors,
-  pointGetSst,
-  runLevels,
-  type RunLevel,
-} from "./store/merge.js";
+import { pointGetSst, runLevels, type RunLevel } from "./store/merge.js";
 import { ensureEngine } from "./store/engine.js";
-import type { SstReader } from "./store/sst.js";
+import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
+import { SstReader } from "./store/sst-reader.js";
 import {
   ViewSnapshotImpl,
   boundsOf,
+  scanLayers,
   type ViewSnapshot,
 } from "./view.js";
 import {
@@ -55,13 +52,23 @@ import {
   type ChangeListener,
 } from "./changes.js";
 
-export type { ScanFilter, ViewSnapshot } from "./view.js";
+export type { ViewSnapshot } from "./view.js";
 export type { ChangeEvent, ChangeListener, ChangeKind } from "./changes.js";
 
 /** Public open options. Apps pass a database name; the library owns the rest. */
 export type OpenOptions = {
   readonly name: string;
+  /**
+   * Bytes of run files this tab keeps in memory: cached data pages plus
+   * each run's Bloom filter and block index. Default 256 MiB, at least
+   * 1 MiB. It does not cover the memtable, the wasm heap, or values handed
+   * to the caller. Each `openDb` has its own budget.
+   */
+  readonly memoryBudget?: number;
 };
+
+/** Below this, one page per merge source may not fit. */
+const MIN_MEMORY_BUDGET = 1024 * 1024;
 
 /**
  * Harness / test open options (`openHarnessDb` in `@opfs-lsm/kv/testing`).
@@ -131,6 +138,12 @@ export type Range = {
   readonly start?: Uint8Array;
   readonly endExclusive?: Uint8Array;
   readonly limit?: number;
+  /**
+   * Keep only puts whose current value contains every one of these byte
+   * strings. Runs are matched inside the wasm engine one block at a time, so
+   * a block with no match costs no JS per row. `limit` counts matches.
+   */
+  readonly valueContains?: readonly Uint8Array[];
 };
 
 export type Entry = { readonly key: Uint8Array; readonly value: Uint8Array };
@@ -331,11 +344,15 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   }
   span(trace, "generation", performance.now() - generationAt);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
+  const cache = new PageCache(
+    Math.max(MIN_MEMORY_BUDGET, options.memoryBudget ?? DEFAULT_BUDGET),
+  );
   const db = new DbImpl(
     name,
     writerId,
     wal,
     tabFs,
+    cache,
     ingest,
     ownsIngestClient,
     trace,
@@ -376,14 +393,30 @@ function collectBatch(
   return checkBatch(ops);
 }
 
+/** An open run file and the number of `Layers` that list it. */
+type Run = {
+  readonly path: string;
+  readonly file: OpenFile;
+  readonly reader: SstReader;
+  layers: number;
+};
+
+/**
+ * One generation's runs. `refs` counts its holders: the `installed` and
+ * `loaded` slots, each open view, and each live `range()` iterator. The
+ * last release lets go of its runs, so the host may delete their files.
+ */
 type Layers = {
   readonly generation: number;
-  readonly paths: readonly string[];
-  readonly readers: readonly SstReader[];
+  readonly runs: readonly Run[];
   /** The readers as scan sources, newest first. */
   readonly levels: readonly RunLevel[];
   readonly tombstoneSeq: number;
+  refs: number;
 };
+
+/** Runs opened at once while loading a generation. */
+const OPEN_CONCURRENCY = 16;
 
 type BusMessage = {
   readonly kind: "append" | "ingest";
@@ -407,15 +440,15 @@ class DbImpl implements Db {
   private readonly mem = new Memtable();
   private installed: Layers = {
     generation: 0,
-    paths: [],
-    readers: [],
+    runs: [],
     levels: [],
     tombstoneSeq: 0,
+    refs: 1,
   };
   /** The newest generation loaded and not yet installed. */
   private loaded: Layers | undefined;
-  /** Parsed run files by path. Paths are immutable, so a hit never goes stale. */
-  private runs = new Map<string, SstReader>();
+  /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
+  private readonly runs = new Map<string, Run>();
   private syncing: Promise<void> | undefined;
   private syncAgain = false;
   private readonly changeBus = new ChangeBus();
@@ -427,6 +460,7 @@ class DbImpl implements Db {
     readonly writerId: WriterId,
     private readonly wal: IdBWal,
     private readonly fs: AsyncFs,
+    private readonly cache: PageCache,
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     private readonly trace?: OpenTrace,
@@ -467,31 +501,90 @@ class DbImpl implements Db {
     this.changeBus.emit(event);
   }
 
-  /** Readers for exactly `generation`, loading them when needed. */
-  private async load(generation: number): Promise<Layers | undefined> {
-    for (const layers of [this.installed, this.loaded]) {
-      if (layers?.generation === generation) return layers;
-    }
+  /**
+   * Make `generation` the loaded one, opening its runs when needed.
+   * Generations only grow, so one at or below the installed one is stale
+   * and never loaded.
+   */
+  private async load(generation: number): Promise<void> {
+    if (generation <= this.installed.generation) return;
+    if (this.loaded && this.loaded.generation >= generation) return;
     const meta = await loadGeneration(this.fs, generation);
-    if (!meta) return undefined;
-    const readers: SstReader[] = [];
-    for (const { path } of meta.runs) {
-      const reader = this.runs.get(path) ?? (await loadSstReader(this.fs, path));
-      if (!reader) return undefined;
-      readers.push(reader);
-    }
+    if (!meta) return;
     const paths = meta.runs.map((r) => r.path);
-    const layers = {
-      generation,
-      paths,
-      readers,
-      levels: runLevels(paths, readers),
-      tombstoneSeq: meta.tombstoneSeq,
+    const runs: (Run | undefined)[] = [];
+    let next = 0;
+    let gone = false;
+    const openNext = async (): Promise<void> => {
+      while (next < paths.length && !gone) {
+        const i = next++;
+        runs[i] = await this.openRun(meta.runs[i]!);
+        if (!runs[i]) gone = true;
+      }
     };
-    if (!this.loaded || this.loaded.generation < generation) {
-      this.loaded = layers;
+    const settled = await Promise.allSettled(
+      Array.from({ length: Math.min(OPEN_CONCURRENCY, paths.length) }, openNext),
+    );
+    const held = runs.filter((r) => r !== undefined);
+    const failed = settled.find((r) => r.status === "rejected");
+    if (
+      failed ||
+      held.length < paths.length ||
+      this.closed ||
+      generation <= this.installed.generation ||
+      (this.loaded && this.loaded.generation >= generation)
+    ) {
+      this.dropRuns(held);
+      if (failed) throw failed.reason;
+      return;
     }
-    return layers;
+    if (this.loaded) this.release(this.loaded);
+    this.loaded = {
+      generation,
+      runs: held,
+      levels: runLevels(paths, held.map((r) => r.reader)),
+      tombstoneSeq: meta.tombstoneSeq,
+      refs: 1,
+    };
+  }
+
+  /**
+   * The open run at `path`, counted for one more `Layers`. Undefined when
+   * the file is gone, which the generation retries handle. Reads no run
+   * bytes: the reader loads its layout and pages on first use.
+   */
+  private async openRun({ path, range }: RunMeta): Promise<Run | undefined> {
+    let run = this.runs.get(path);
+    if (!run) {
+      const file = await this.fs.open(path);
+      if (!file) return undefined;
+      run = this.runs.get(path);
+      if (run) {
+        file.close();
+      } else {
+        run = { path, file, reader: new SstReader(file, this.cache, range), layers: 0 };
+        this.runs.set(path, run);
+      }
+    }
+    run.layers += 1;
+    return run;
+  }
+
+  private retain(layers: Layers): void {
+    layers.refs += 1;
+  }
+
+  private release(layers: Layers): void {
+    if (--layers.refs === 0) this.dropRuns(layers.runs);
+  }
+
+  private dropRuns(runs: readonly Run[]): void {
+    for (const run of runs) {
+      if (--run.layers > 0) continue;
+      this.runs.delete(run.path);
+      run.reader.close();
+      run.file.close();
+    }
   }
 
   /**
@@ -501,18 +594,22 @@ class DbImpl implements Db {
    */
   private catchUp(tail: WalTail): number | undefined {
     const behind = tail.ingestedThrough > this.mem.appliedThrough;
-    if (tail.generation !== this.installed.generation) {
+    // A tail read before a newer generation was installed: its records are
+    // still a WAL prefix, but its generation and ingestedThrough are stale.
+    if (tail.generation > this.installed.generation) {
       const layers =
         this.loaded?.generation === tail.generation ? this.loaded : undefined;
       if (layers) {
+        this.release(this.installed);
         this.installed = layers;
         this.loaded = undefined;
-        this.runs = new Map(
-          layers.paths.map((path, i) => [path, layers.readers[i]!]),
-        );
       } else if (behind) {
         return tail.generation;
       }
+    }
+    if (this.loaded && this.loaded.generation <= this.installed.generation) {
+      this.release(this.loaded);
+      this.loaded = undefined;
     }
     if (this.installed.generation === tail.generation) {
       this.mem.advanceTo(tail.ingestedThrough);
@@ -561,6 +658,7 @@ class DbImpl implements Db {
       const sstAt = this.trace ? performance.now() : 0;
       if (tail.generation !== this.installed.generation) {
         await this.load(tail.generation);
+        if (this.closed) return;
       }
       if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
       const memAt = this.trace ? performance.now() : 0;
@@ -592,34 +690,84 @@ class DbImpl implements Db {
   /**
    * In one readwrite transaction, catch the memtable up, let `plan` choose a
    * batch against it, and append. The batch joins the memtable at its seq,
-   * so this tab reads its own write as soon as the ack resolves.
+   * so this tab reads its own write as soon as the ack resolves. Awaiting
+   * inside the transaction would commit it, so `warm` loads what `plan`
+   * reads before each attempt, and a `plan` that still misses appends
+   * nothing and is retried.
    */
   private async write<R>(
-    plan: () => { readonly ops: readonly CheckedOp[]; readonly result: R },
+    plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
+    warm?: () => Promise<unknown>,
   ): Promise<R> {
-    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < GENERATION_RETRIES; ) {
+      await warm?.();
       let missing: number | undefined;
+      let miss: Miss | undefined;
       const out = await this.wal.appendAfter(this.mem.appliedThrough, (tail) => {
         missing = this.catchUp(tail);
-        return missing === undefined ? plan() : undefined;
+        if (missing !== undefined) return undefined;
+        const planned = plan();
+        if (!(planned instanceof Miss)) return planned;
+        miss = planned;
+        return undefined;
       });
       if (out) {
         if (out.seq !== undefined) await this.landed(out.seq, out.ops);
         return out.result;
       }
+      if (miss) {
+        // The next warm reads again and surfaces a real failure.
+        await miss.ready.catch(() => undefined);
+        continue;
+      }
+      attempt++;
       if (missing !== undefined) await this.load(missing);
     }
     throw new CorruptDatabaseError(GENERATION_GONE);
   }
 
-  private readKey(k: CheckedKey): Uint8Array | undefined {
-    const row = this.mem.get(k);
-    return row ? valueOf(row) : pointGetSst(this.installed.levels, k);
+  /**
+   * Runs `attempt` over the installed levels until it stops missing. While
+   * it waits it holds those levels, so a generation installed meanwhile
+   * cannot let the host delete the files it is reading.
+   */
+  private async settleInstalled<T>(
+    attempt: (levels: readonly RunLevel[]) => Maybe<T>,
+  ): Promise<T> {
+    const layers = this.installed;
+    const first = attempt(layers.levels);
+    if (!(first instanceof Miss)) return first;
+    this.retain(layers);
+    try {
+      await first.ready;
+      return await settle(() => attempt(layers.levels));
+    } finally {
+      this.release(layers);
+    }
+  }
+
+  /** Every key read, or one Miss for all the bytes they lack. */
+  private readKeys(
+    ks: readonly CheckedKey[],
+    levels: readonly RunLevel[],
+  ): Maybe<(Uint8Array | undefined)[]> {
+    const values: (Uint8Array | undefined)[] = [];
+    let misses: Miss[] | undefined;
+    for (const k of ks) {
+      const row = this.mem.get(k);
+      const v = row ? valueOf(row) : pointGetSst(levels, k);
+      if (v instanceof Miss) (misses ??= []).push(v);
+      else values.push(v);
+    }
+    return misses ? allMissed(misses) : values;
   }
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
-    return this.readKey(checkKey(key));
+    const k = checkKey(key);
+    const row = this.mem.get(k);
+    if (row) return valueOf(row);
+    return this.settleInstalled((levels) => pointGetSst(levels, k));
   }
 
   put(key: Uint8Array, value: Uint8Array): Promise<void> {
@@ -639,21 +787,22 @@ class DbImpl implements Db {
     else await this.landed(seq, ops);
   }
 
-  update<T>(
+  async update<T>(
     keys: readonly Uint8Array[],
     body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
     return this.write(() => {
-      const values = ks.map((k) => this.readKey(k));
+      const values = this.readKeys(ks, this.installed.levels);
+      if (values instanceof Miss) return values;
       let result!: T;
       const ops = collectBatch((tx) => {
         result = body(values, tx);
         return result;
       });
       return { ops, result };
-    });
+    }, () => this.settleInstalled((levels) => this.readKeys(ks, levels)));
   }
 
   async rangeFollow(
@@ -661,48 +810,63 @@ class DbImpl implements Db {
     follow: (entry: Entry) => Uint8Array | undefined,
   ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]> {
     this.ensureOpen();
-    const out: { entry: Entry; value: Uint8Array | undefined }[] = [];
-    for (const entry of this.scan(range)) {
-      const key = follow(entry);
-      out.push({
-        entry,
-        value: key === undefined ? undefined : this.readKey(checkKey(key)),
-      });
-    }
-    return out;
-  }
-
-  private scan(range?: Range): Generator<Entry> {
     const bounds = boundsOf(range);
-    return mergeCursors(
-      [
-        arrayCursor(this.mem.range(bounds)),
-        ...this.installed.levels.map((level) => level.cursor(bounds)),
-      ],
-      range?.limit,
-    );
+    const rows = this.mem.pin();
+    const layers = this.installed;
+    this.retain(layers);
+    try {
+      const out: { entry: Entry; value: Uint8Array | undefined }[] = [];
+      for await (const entry of scanLayers(rows.range(bounds), layers.levels, bounds, range)) {
+        const key = follow(entry);
+        let value: Uint8Array | undefined;
+        if (key !== undefined) {
+          const k = checkKey(key);
+          const row = rows.get(k);
+          const got = row ? valueOf(row) : pointGetSst(layers.levels, k);
+          value = got instanceof Miss ? await settle(() => pointGetSst(layers.levels, k)) : got;
+        }
+        out.push({ entry, value });
+      }
+      return out;
+    } finally {
+      this.release(layers);
+    }
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {
     this.ensureOpen();
-    for (const entry of this.scan(range)) {
-      this.ensureOpen();
-      yield entry;
+    const bounds = boundsOf(range);
+    const layers = this.installed;
+    this.retain(layers);
+    try {
+      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, bounds, range)) {
+        this.ensureOpen();
+        yield entry;
+      }
+    } finally {
+      this.release(layers);
     }
   }
 
   async view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T> {
     this.ensureOpen();
+    const layers = this.installed;
+    this.retain(layers);
     const snap = new ViewSnapshotImpl(
       this.mem.appliedThrough,
-      this.installed.generation,
+      layers.generation,
       this.mem.pin(),
-      this.installed.levels,
+      layers.levels,
+      () => {
+        this.retain(layers);
+        return () => this.release(layers);
+      },
     );
     try {
       return await body(snap);
     } finally {
       snap.close();
+      this.release(layers);
     }
   }
 
@@ -738,5 +902,8 @@ class DbImpl implements Db {
     this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
     this.wal.close();
+    this.release(this.installed);
+    if (this.loaded) this.release(this.loaded);
+    this.loaded = undefined;
   }
 }

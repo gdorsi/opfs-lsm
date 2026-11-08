@@ -1,80 +1,21 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { encodeSst as encodeWasm, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
-import { decodeSst, encodeSst, SstReader, sstGet, type SstEntry } from "../src/store/sst.js";
-import type { LayerCursor, ScanBounds } from "../src/store/cursor.js";
+import { decodeSst, encodeSst, sstGet, type SstEntry } from "../src/store/sst.js";
+import { settle, type ScanBounds } from "../src/store/cursor.js";
 import { compareBytes } from "../src/bytes.js";
-
-const enc = new TextEncoder();
-const utf = (s: string) => enc.encode(s);
-
-/** u16le length + UTF-8, as collections encodes key segments. */
-const seg = (s: string) => {
-  const body = utf(s);
-  return Uint8Array.of(body.byteLength & 0xff, body.byteLength >> 8, ...body);
-};
-const cat = (...parts: Uint8Array[]) => Uint8Array.from(parts.flatMap((p) => [...p]));
-
-/**
- * A primary row and one key per index, shaped like collections' keys:
- * `i/` + table + index + typed value(s) + id, with an empty value.
- */
-function indexWorkload(rows: number): SstEntry[] {
-  const out: SstEntry[] = [];
-  let seq = 1;
-  for (let i = 0; i < rows; i++) {
-    const id = seg(`row-${(i * 7919) % rows}`);
-    const ts = new Uint8Array(9);
-    ts[0] = 0x20;
-    new DataView(ts.buffer).setFloat64(1, 1_700_000_000_000 + i * 1000);
-    const index = (name: string, ...value: Uint8Array[]) =>
-      out.push({ kind: "put", key: cat(utf("i/"), seg("todos"), seg(name), ...value, id), value: new Uint8Array(0), seq: seq++ });
-    out.push({ kind: "put", key: cat(utf("t/"), seg("todos"), id), value: utf(`{"title":"buy milk ${i}"}`), seq: seq++ });
-    index("byDone", Uint8Array.of(0x10, i % 4 === 0 ? 1 : 0));
-    index("byCreatedAt", ts);
-    index("byOrgCreated", seg(`org-${i % 40}`), ts);
-    for (const tag of ["home", "work", "urgent"].slice(0, 1 + (i % 3))) index("byTag", seg(tag));
-    if (i % 11 === 0) out.push({ kind: "del", key: cat(utf("i/"), seg("todos"), seg("byGone"), id), seq: seq++ });
-  }
-  return out;
-}
-
-const put = (key: Uint8Array, value: Uint8Array, seq = 1): SstEntry => ({ kind: "put", key, value, seq });
-
-const EDGE_CASES: Record<string, SstEntry[]> = {
-  "empty run": [],
-  "single key": [put(utf("only"), utf("v"))],
-  "empty key": [put(new Uint8Array(0), utf("first")), put(utf("a"), new Uint8Array(0), 2)],
-  "no common prefix": [put(utf("apple"), utf("1")), put(utf("mango"), utf("2")), { kind: "del", key: utf("zebra"), seq: 3 }],
-  "one key prefixes the next": [put(utf("ab"), utf("1")), put(utf("abc"), utf("2")), put(utf("abcd"), utf("3"))],
-  "lengths past one varint byte": [
-    put(new Uint8Array(300).fill(0xff), new Uint8Array(200).fill(7), 2 ** 40),
-    put(new Uint8Array(301).fill(0xff), new Uint8Array(20_000).fill(9)),
-  ],
-  "a record past u16 offsets between small ones": [
-    put(utf("a"), utf("1")),
-    put(utf("b"), new Uint8Array(70_000).fill(5), 2),
-    ...Array.from({ length: 40 }, (_, i) => put(utf(`c${String(i).padStart(3, "0")}`), utf("v"), 3 + i)),
-  ],
-  "keys that differ only past the sampled records": Array.from({ length: 200 }, (_, i) =>
-    put(cat(new Uint8Array(40).fill(0x61), utf(String(i * 3).padStart(5, "0"))), new Uint8Array(0), i + 1),
-  ),
-};
-
-function drain(c: LayerCursor): string[] {
-  const out: string[] = [];
-  for (let e = c.peek(); e; c.next(), e = c.peek()) out.push(`${[...e.key]}:${e.kind}:${e.value ? [...e.value] : ""}`);
-  return out;
-}
+import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
+import { drain, readerOfBytes } from "./runs.js";
 
 /** `toEqual` walks typed arrays element by element, which is too slow for thousands of entries. */
 const show = (e: SstEntry | undefined) => (e ? `${[...e.key]}:${e.kind}:${e.seq}:${e.kind === "put" ? [...e.value] : ""}` : "none");
 
-function expectReaderAgreesWithDecode(body: Uint8Array): void {
+async function expectReaderAgreesWithDecode(body: Uint8Array): Promise<void> {
   const all = decodeSst(body);
-  const reader = new SstReader(body);
-  expect(all.map((e) => show(reader.get(e.key)))).toEqual(all.map(show));
+  const reader = readerOfBytes(body);
+  const get = (k: Uint8Array) => settle(() => reader.get(k));
+  expect((await Promise.all(all.map((e) => get(e.key)))).map(show)).toEqual(all.map(show));
   const misses = [...all.map((e) => cat(e.key, Uint8Array.of(0))), utf("i/")];
-  expect(misses.map((k) => show(reader.get(k)))).toEqual(misses.map((k) => show(sstGet(all, k))));
+  expect((await Promise.all(misses.map(get))).map(show)).toEqual(misses.map((k) => show(sstGet(all, k))));
   const asLayer = (bounds: ScanBounds) =>
     all
       .filter(
@@ -90,7 +31,10 @@ function expectReaderAgreesWithDecode(body: Uint8Array): void {
     ranges.push({ start: third }, { endExclusive: twoThirds }, { start: third, endExclusive: twoThirds });
     ranges.push({ start: cat(third, Uint8Array.of(0)), endExclusive: cat(twoThirds, Uint8Array.of(0)) });
   }
-  for (const bounds of ranges) expect(drain(reader.cursor(bounds))).toEqual(asLayer(bounds));
+  for (const bounds of ranges) {
+    const got = (await drain(reader.cursor(bounds))).map((e) => `${[...e.key]}:${e.kind}:${e.value ? [...e.value] : ""}`);
+    expect(got).toEqual(asLayer(bounds));
+  }
 }
 
 describe("sst format", () => {
@@ -110,7 +54,7 @@ describe("sst format", () => {
       const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
       for (const body of [encodeSst(entries), await encodeWasm(entries, "lz4")]) {
         expect(decodeSst(body).map(show)).toEqual(sorted.map((e) => show({ ...e, seq: e.seq ?? 0 })));
-        expectReaderAgreesWithDecode(body);
+        await expectReaderAgreesWithDecode(body);
       }
     });
   }

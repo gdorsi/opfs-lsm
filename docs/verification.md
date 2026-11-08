@@ -140,6 +140,16 @@ pnpm test
 
 Exit 0. The root script checks that `README.md` still contains its required phrases, builds the workspace, and runs the `@opfs-lsm/kv` and `@opfs-lsm/collections` unit suites.
 
+The kv suite includes a model-based test (`packages/kv/tests/sim/model.test.ts`): random histories of writes, reads, views, ingests, compactions and reopens on one handle, checked against a log-prefix oracle, with `checkDatabase` (`tests/sim/check-database.ts`) walking the WAL, manifest and runs after every run. It runs 100 + 25 histories by default. For a longer sweep, or to replay a failure from the seed, path and `replayPath` it prints:
+
+```sh
+cd packages/kv
+KV_MODEL_RUNS=2000 pnpm exec vitest run tests/sim/model.test.ts
+KV_MODEL_SEED=<seed> KV_MODEL_PATH=<path> KV_MODEL_REPLAY=<replayPath> pnpm exec vitest run tests/sim/model.test.ts
+```
+
+`tests/sim/multi-handle.test.ts` does the same over three handles that share one host, one MemoryFs and one fake-indexeddb, with handles opening and closing. Ops of different handles overlap, and an `fc.scheduler` picks the order of BroadcastChannel deliveries (which can also be dropped), file calls and pauses inside views and ranges (`tests/sim/multi.ts`). The recorded history is checked seq-exactly by `tests/sim/history.ts`: every read is a log prefix, each handle's prefix never goes back, read-your-writes at ack, `sync()` and open are barriers, a view reads one prefix, and an `update` reads exactly the state before its own seq, so concurrent increments lose nothing. It does not check that a handle sees another handle's write without `sync()`, because the design does not promise it. It runs 100 + 100 histories by default (a few seconds) and takes the same `KV_MODEL_*` variables; `KV_SIM_TRACE=1` prints every scheduled task and op. A command stalls a handle's run opens, so a slow catch-up can finish after a newer generation was installed.
+
 ## Run the static checks
 
 ```sh
@@ -150,12 +160,12 @@ Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
 
 ## What CI runs
 
-[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs on pull requests and on pushes to `main`:
+[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs five jobs on pull requests and on pushes to `main`:
 
 - `bench`: `pnpm bench:size --check`, then `pnpm bench:smoke`
 - `two-tab`: `pnpm --filter @opfs-lsm/kv two-tab`
 - `test`: `pnpm test`
-- `static`: `pnpm lint` and `pnpm deadcode` (the same two steps as `pnpm static`)
+- `static`: `pnpm lint` and `pnpm deadcode` (oxlint, then fallow; the same two steps as `pnpm static`)
 - `formal`: `pnpm --filter @opfs-lsm/kv formal:kv`
 
 That workflow leaves out `two-tab-nobc`, `two-tab-local`, and full-size `pnpm bench` runs. The smoke proves every workload and contender still runs and reads correct values. It does not measure speed.

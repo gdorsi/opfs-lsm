@@ -1,4 +1,4 @@
-import type { AsyncFs, FileWriter } from "./async-fs.js";
+import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
 
 /** Calls and bytes for one path class. */
 export type IoCount = { calls: number; bytes: number };
@@ -10,9 +10,9 @@ export type IoCount = { calls: number; bytes: number };
 export type IoCounters = {
   /** Bytes of files that finished. `calls` counts files, not write calls. */
   written: Record<string, IoCount>;
-  /** Bytes `read` returned. */
+  /** Bytes `read` and open-file reads returned. */
   read: Record<string, IoCount>;
-  /** `remove` calls. Bytes when the size is known, else 0. */
+  /** Files `remove` or `removeUnlessOpen` deleted. Bytes when the size is known, else 0. */
   removed: Record<string, IoCount>;
 };
 
@@ -69,6 +69,20 @@ export class CountingFs implements AsyncFs {
     return out;
   }
 
+  async open(path: string): Promise<OpenFile | undefined> {
+    const file = await this.inner.open(path);
+    if (!file) return undefined;
+    return {
+      size: file.size,
+      read: async (offset: number, length: number) => {
+        const out = await file.read(offset, length);
+        add(this.counters.read, path, out.byteLength);
+        return out;
+      },
+      close: () => file.close(),
+    };
+  }
+
   list(dir: string): Promise<readonly string[]> {
     return this.inner.list(dir);
   }
@@ -77,6 +91,15 @@ export class CountingFs implements AsyncFs {
     await this.inner.remove(path);
     add(this.counters.removed, path, this.sizeOf(path) ?? 0);
     this.sizes.delete(path);
+  }
+
+  async removeUnlessOpen(path: string): Promise<boolean> {
+    const removed = await this.inner.removeUnlessOpen(path);
+    if (removed) {
+      add(this.counters.removed, path, this.sizeOf(path) ?? 0);
+      this.sizes.delete(path);
+    }
+    return removed;
   }
 
   async create(path: string): Promise<FileWriter> {

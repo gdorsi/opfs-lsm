@@ -79,6 +79,8 @@ function l0Fs() {
     read: (path, offset, length) => inner.read(path, offset, length),
     list: (dir) => inner.list(dir),
     remove: (path) => inner.remove(path),
+    open: (path) => inner.open(path),
+    removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
     create: async (path) => {
       if (!path.startsWith("l0/")) return inner.create(path);
       if (state.fail) throw new Error("disk full");

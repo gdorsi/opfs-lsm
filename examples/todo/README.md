@@ -28,7 +28,7 @@ The page can also seed a large random dataset, filter it, sort it, and page thro
 
 4. Seed data, filter, sort, and page.
 
-   Type a count in **Generate random todos** and click **Generate**. Titles are 2 to 5 random words. Generation writes 500 rows per batch and reports progress. **Filter todos** narrows the list to todos where each typed word starts a word of the title, ignoring case, so "mil" finds "Buy milk" but "lk" doesn't. It resets to page 1, and search results are newest first. The sort selector switches between **Newest first**, **Oldest first**, and **Title A–Z** when no filter is set. **Prev**/**Next** move through the cursor stack; returning to an earlier page does not rescan from the start of the database. **Clear all** deletes the seeded rows in batches.
+   Type a count in **Generate random todos** and click **Generate**. Titles are 2 to 5 random words. Generation writes 1,000 rows per batch and reports progress. **Filter todos** narrows the list to todos where each typed word starts a word of the title, ignoring case, so "mil" finds "Buy milk" but "lk" doesn't. It resets to page 1, and search results are newest first. The sort selector switches between **Newest first**, **Oldest first**, and **Title A–Z** when no filter is set. **Prev**/**Next** move through the cursor stack; returning to an earlier page does not rescan from the start of the database. **Clear all** deletes the seeded rows in batches.
 
 5. Click **Ingest** in either window.
 
@@ -52,7 +52,7 @@ The table is `todos`, primary key `id`. Collections stores a row at `t/` plus ta
 
 `Table.put`, `putMany`, `delete`, and `clear` maintain the index entries in the same transaction as the primary row, so a row and its indexes cannot drift. `Table.update` compares index keys and rewrites only the ones that changed, so toggling `done` touches the primary value alone.
 
-`readPage` picks the index for the requested sort and calls `table.page(index, { after, limit })`. A chunk is at most one page, so filling a page always lands on a chunk boundary, even with a filter. `next` is the first index key the call did not consume, so pages neither skip nor repeat rows. With a filter, `readPage` calls `table.search(filter, { after, limit })`: one cursor page of todos where each filter word starts a title word, newest first, scanned from the search keys. A common word fills a page in microseconds; a filter that matches nothing reads every search key (about 60 ms per 100,000 todos).
+`readPage` calls `table.page(index, { after, limit })` for the requested sort. `limit` is the page size. `next` is the first index key the call did not consume, so pages neither skip nor repeat rows. With a filter, `readPage` calls `table.search(filter, { after, limit })`: one cursor page of todos where each filter word starts a title word, newest first. A common word fills a page in microseconds; a filter that matches nothing reads every search key.
 
 `generateTodos` chunks `table.putMany` at 1,000 rows. `clearTodos` calls `table.clear`, which removes primary and index rows in batches under the kv limits (10,000 ops and 8 MiB).
 
@@ -62,4 +62,4 @@ The table is `todos`, primary key `id`. Collections stores a row at `t/` plus ta
 pnpm --filter @opfs-lsm/example-todo test
 ```
 
-Runs `tsx --test model.test.ts`. The command exits 0. It does not open a browser. It covers the derived sort fields, filter matching, cursor paging across chunks, all three sort orders, generation, clear, and toggle. The table is an in-memory fake, so no build is needed. The same model can drive a headless benchmark by passing a real `Table` from `openCollectionDb`.
+Runs `tsx --test model.test.ts`. The command exits 0. It does not open a browser. It covers the derived sort fields, filter matching, cursor paging, all three sort orders, generation, clear, and toggle. The table is an in-memory fake, so no build is needed. The same model can drive a headless benchmark by passing a real `Table` from `openCollectionDb`.

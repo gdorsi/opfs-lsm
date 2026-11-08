@@ -2,9 +2,12 @@
  * Every (mem hit, SST hit) pair: pointGet prefers the mem row (incl. tombstones).
  * Runs against the real pointGet over a one-run level.
  */
-import { encodeSst, SstReader } from "../../src/store/sst.js";
-import { pointGet, runLevels } from "../../src/store/merge.js";
-import type { MemRow } from "../../src/idb/wal.js";
+import { encodeSst, sstKeyRange } from "../../src/store/sst.js";
+import { pointGet, runLevels, type RunLevel } from "../../src/store/merge.js";
+import { settle } from "../../src/store/cursor.js";
+import { PageCache } from "../../src/store/page-cache.js";
+import { bytesFile, SstReader } from "../../src/store/sst-reader.js";
+import type { MemRow } from "../../src/store/memtable.js";
 
 type Kind = "miss" | "tomb" | "valueA" | "valueB";
 
@@ -23,7 +26,7 @@ function memRow(kind: Kind): MemRow | undefined {
   };
 }
 
-function readers(kind: Kind): SstReader[] {
+function readers(kind: Kind): RunLevel[] {
   if (kind === "miss") return [];
   const entry =
     kind === "tomb"
@@ -33,7 +36,8 @@ function readers(kind: Kind): SstReader[] {
           key: KEY,
           value: kind === "valueA" ? A : B,
         };
-  return runLevels(["l0/1-1.sst"], [new SstReader(encodeSst([entry]))]);
+  const body = encodeSst([entry]);
+  return runLevels(["l0/1-1.sst"], [new SstReader(bytesFile(body), new PageCache(), sstKeyRange(body))]);
 }
 
 function expected(mem: Kind, sst: Kind): Uint8Array | undefined {
@@ -62,7 +66,8 @@ let n = 0;
 for (const mem of KINDS) {
   for (const sst of KINDS) {
     n++;
-    const got = pointGet(memRow(mem), readers(sst), KEY);
+    const levels = readers(sst);
+    const got = await settle(() => pointGet(memRow(mem), levels, KEY));
     const want = expected(mem, sst);
     if (!eq(got, want)) {
       console.error(

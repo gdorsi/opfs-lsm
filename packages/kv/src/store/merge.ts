@@ -1,11 +1,18 @@
 import { compareBytes } from "../bytes.js";
 import type { MemRow } from "./memtable.js";
 import {
+  allMissed,
   entryCursor,
+  filterCursor,
+  lowerBoundKeys,
+  Miss,
   type LayerCursor,
+  type LayerEntry,
+  type Maybe,
   type ScanBounds,
 } from "./cursor.js";
-import type { SstEntry, SstReader } from "./sst.js";
+import type { SstEntry } from "./sst.js";
+import type { SstReader } from "./sst-reader.js";
 import type { Entry } from "../db.js";
 import { levelOf } from "./levels.js";
 
@@ -67,15 +74,6 @@ class MinHeap {
   }
 }
 
-function pushPeek(
-  heap: MinHeap,
-  cursors: readonly LayerCursor[],
-  source: number,
-): void {
-  const e = cursors[source]!.peek();
-  if (e) heap.push({ key: e.key, source });
-}
-
 /**
  * `mem` is the row from the key-ordered mem store, or undefined on miss.
  * Levels are newest-first. Returned bytes are a fresh Uint8Array.
@@ -84,17 +82,21 @@ export function pointGet(
   mem: MemRow | undefined,
   levels: readonly RunLevel[],
   key: Uint8Array,
-): Uint8Array | undefined {
+): Maybe<Uint8Array | undefined> {
   if (mem?.kind === "del") return undefined;
   if (mem?.kind === "put") return new Uint8Array(mem.value!);
   return pointGetSst(levels, key);
 }
 
-/** The newest entry for `key`, tombstone included. Each level asks at most one run. */
+/**
+ * The newest entry for `key`, tombstone included. Each level asks at most
+ * one run. A newer level must answer before an older one can, so this
+ * stops at the first level that misses.
+ */
 export function latestSstEntry(
   levels: readonly RunLevel[],
   key: Uint8Array,
-): SstEntry | undefined {
+): Maybe<SstEntry | undefined> {
   for (const level of levels) {
     const hit = level.get(key);
     if (hit) return hit;
@@ -106,15 +108,17 @@ export function latestSstEntry(
 export function pointGetSst(
   levels: readonly RunLevel[],
   key: Uint8Array,
-): Uint8Array | undefined {
+): Maybe<Uint8Array | undefined> {
   const hit = latestSstEntry(levels, key);
+  if (hit instanceof Miss) return hit;
   return hit?.kind === "put" ? new Uint8Array(hit.value) : undefined;
 }
 
 /**
  * Runs whose key ranges never overlap, in key order: one level from L1
- * down, or a single L0 run. A scan opens only the runs it reaches, and a
- * get asks only the run whose range holds the key.
+ * down, or a single L0 run. Routes by the key range each run's manifest
+ * entry records, so routing reads no run bytes. A scan opens only the runs
+ * it reaches, and a get asks only the run whose range holds the key.
  */
 export class RunLevel {
   private readonly runs: SstReader[] = [];
@@ -143,32 +147,29 @@ export class RunLevel {
     return lo;
   }
 
-  get(key: Uint8Array): SstEntry | undefined {
+  get(key: Uint8Array): Maybe<SstEntry | undefined> {
     const r = this.seek(key);
     if (r >= this.runs.length || compareBytes(this.smallest[r]!, key) > 0) return undefined;
     return this.runs[r]!.get(key);
   }
 
-  /** The puts in `bounds` whose value holds every pattern, in key order. */
-  *scanContains(
-    patterns: readonly Uint8Array[],
-    bounds?: ScanBounds,
-  ): Generator<{ key: Uint8Array; value: Uint8Array }> {
-    const { runs, smallest } = this;
-    const end = bounds?.endExclusive;
-    for (let r = bounds?.start ? this.seek(bounds.start) : 0; r < runs.length; r++) {
-      if (end && compareBytes(smallest[r]!, end) >= 0) return;
-      yield* runs[r]!.scanContains(patterns, bounds);
-    }
+  cursor(bounds?: ScanBounds): LayerCursor {
+    return this.concat(bounds, (run) => run.cursor(bounds));
   }
 
-  cursor(bounds?: ScanBounds): LayerCursor {
+  /** The puts in `bounds` whose value holds every pattern, in key order. */
+  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds): LayerCursor {
+    return this.concat(bounds, (run) => run.scanContains(patterns, bounds));
+  }
+
+  /** One cursor per run that `bounds` reaches, opened as the previous one ends. */
+  private concat(bounds: ScanBounds | undefined, cursorOf: (run: SstReader) => LayerCursor): LayerCursor {
     const { runs, smallest } = this;
     const end = bounds?.endExclusive;
     let r = bounds?.start ? this.seek(bounds.start) : 0;
     const open = () =>
       r < runs.length && !(end && compareBytes(smallest[r]!, end) >= 0)
-        ? runs[r]!.cursor(bounds)
+        ? cursorOf(runs[r]!)
         : undefined;
     let cur = open();
     return {
@@ -213,45 +214,145 @@ export function runLevels(
 
 export function arrayCursor(rows: readonly MemRow[]): LayerCursor {
   return entryCursor(
-    rows.map((row) => {
-      if (row.kind === "put" && row.value) {
-        return { key: row.key, kind: "put" as const, value: row.value };
-      }
-      return { key: row.key, kind: "del" as const };
-    }),
+    rows.map((row) =>
+      row.kind === "put" && row.value
+        ? { key: row.key, kind: "put" as const, value: row.value }
+        : { key: row.key, kind: "del" as const },
+    ),
   );
+}
+
+/** The newest entry for one key and the source it came from. */
+type Winner = { readonly entry: LayerEntry; readonly source: number };
+
+/**
+ * A heap merge of `cursors`, newest (smallest index) first, one key at a
+ * time. `next` is sync until a cursor misses, and a miss leaves the merge
+ * where it was. The sources a step moved are re-peeked together at the
+ * start of the next step, the first step peeks every source, so a cold
+ * merge gathers every source's miss into one parallel round of reads.
+ */
+class Merge {
+  private readonly heap = new MinHeap();
+  private pending: number[];
+
+  constructor(private readonly cursors: readonly LayerCursor[]) {
+    this.pending = cursors.map((_, i) => i);
+  }
+
+  next(): Maybe<Winner | undefined> {
+    const { cursors, heap } = this;
+    if (this.pending.length > 0) {
+      let misses: Miss[] | undefined;
+      let waiting: number[] | undefined;
+      for (const source of this.pending) {
+        const e = cursors[source]!.peek();
+        if (e instanceof Miss) {
+          (misses ??= []).push(e);
+          (waiting ??= []).push(source);
+        } else if (e) {
+          heap.push({ key: e.key, source });
+        }
+      }
+      this.pending = waiting ?? [];
+      if (misses) return allMissed(misses);
+    }
+    const top = heap.pop();
+    if (!top) return undefined;
+    const entry = cursors[top.source]!.peek() as LayerEntry;
+    cursors[top.source]!.next();
+    this.pending.push(top.source);
+    while (heap.length > 0 && compareBytes(heap.peek()!.key, entry.key) === 0) {
+      const dup = heap.pop()!;
+      cursors[dup.source]!.next();
+      this.pending.push(dup.source);
+    }
+    return { entry, source: top.source };
+  }
 }
 
 /**
  * `cursors[0]` is newest. Yields live puts only, up to `limit`.
- * Tombstones are not counted and not yielded.
+ * Tombstones are not counted and not yielded. Awaits only on a miss.
  */
-export function* mergeCursors(
+export async function* mergeCursors(
   cursors: readonly LayerCursor[],
   limit?: number,
-): Generator<Entry> {
-  const heap = new MinHeap();
-  for (let s = 0; s < cursors.length; s++) pushPeek(heap, cursors, s);
+): AsyncGenerator<Entry> {
+  const merge = new Merge(cursors);
   let yielded = 0;
-  while (heap.length > 0) {
-    const top = heap.pop()!;
-    const winner = cursors[top.source]!.peek()!;
-    cursors[top.source]!.next();
-    pushPeek(heap, cursors, top.source);
-    while (
-      heap.length > 0 &&
-      compareBytes(heap.peek()!.key, winner.key) === 0
-    ) {
-      const dup = heap.pop()!;
-      cursors[dup.source]!.next();
-      pushPeek(heap, cursors, dup.source);
+  for (;;) {
+    if (limit !== undefined && yielded >= limit) return;
+    let w = merge.next();
+    while (w instanceof Miss) {
+      await w.ready;
+      w = merge.next();
     }
-    if (winner.kind === "del") continue;
+    if (!w) return;
+    if (w.entry.kind === "del") continue;
     yield {
-      key: new Uint8Array(winner.key),
-      value: new Uint8Array(winner.value!),
+      key: new Uint8Array(w.entry.key),
+      value: new Uint8Array(w.entry.value!),
     };
     yielded += 1;
-    if (limit !== undefined && yielded >= limit) return;
   }
+}
+
+/**
+ * The live puts in `bounds` whose current value holds every pattern, in key
+ * order, each key once, up to `limit`. `rows` is the memtable slice for
+ * `bounds`, newer than every level.
+ *
+ * Each source filters on its own: memtable rows in JS, each level's runs in
+ * wasm per block, so a block with no hit costs no JS per row. The newest
+ * source that matches a key wins the merge. A newer source can still hold
+ * that key with a value that does not match, or a tombstone, so the key is
+ * kept only when no newer source holds it. That check asks only the newer
+ * sources, mostly their Bloom filters, and leaves the page the match came
+ * from untouched, so a scan does not count as reuse in the cache.
+ */
+export async function* scanMatching(
+  rows: readonly MemRow[],
+  levels: readonly RunLevel[],
+  patterns: readonly Uint8Array[],
+  bounds?: ScanBounds,
+  limit?: number,
+): AsyncGenerator<Entry> {
+  const merge = new Merge([
+    filterCursor(arrayCursor(rows), patterns),
+    ...levels.map((level) => level.scanContains(patterns, bounds)),
+  ]);
+  let yielded = 0;
+  for (;;) {
+    if (limit !== undefined && yielded >= limit) return;
+    let w = merge.next();
+    while (w instanceof Miss) {
+      await w.ready;
+      w = merge.next();
+    }
+    if (!w) return;
+    const { entry, source } = w;
+    if (source > 0) {
+      const i = lowerBoundKeys(rows, entry.key);
+      if (i < rows.length && compareBytes(rows[i]!.key, entry.key) === 0) continue;
+      let newer = shadowed(levels, source - 1, entry.key);
+      while (newer instanceof Miss) {
+        await newer.ready;
+        newer = shadowed(levels, source - 1, entry.key);
+      }
+      if (newer) continue;
+    }
+    yield { key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) };
+    yielded += 1;
+  }
+}
+
+/** Whether a level before `level` holds `key`. */
+function shadowed(levels: readonly RunLevel[], level: number, key: Uint8Array): Maybe<boolean> {
+  for (let l = 0; l < level; l++) {
+    const hit = levels[l]!.get(key);
+    if (hit instanceof Miss) return hit;
+    if (hit) return true;
+  }
+  return false;
 }
