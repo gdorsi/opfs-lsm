@@ -1,0 +1,84 @@
+name: nightly
+
+# Long runs that do not fit a pull request: the real-Chrome kill loop, and
+# the seeded suites with random seeds and more runs. Every failure prints
+# its seed and a replay command (docs/verification.md).
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Minutes of the Chrome kill loop
+        default: "30"
+      seed:
+        description: Kill loop seed (empty for a random one)
+        default: ""
+
+jobs:
+  kill-chrome:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+          install-dependencies: true
+      - run: pnpm install --frozen-lockfile
+      - run: >-
+          pnpm --filter @opfs-lsm/kv kill-chrome
+          --minutes "${MINUTES}" --keep-going
+          --artifacts "${RUNNER_TEMP}/kill-chrome"
+          ${SEED:+--seed "$SEED"}
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+          MINUTES: ${{ inputs.minutes || '30' }}
+          SEED: ${{ inputs.seed }}
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kill-chrome-evidence
+          path: ${{ runner.temp }}/kill-chrome
+          if-no-files-found: ignore
+
+  # No KV_MODEL_SEED or KV_FUZZ_SEED: fast-check draws a random seed and
+  # prints it, with the path, on a failure.
+  seed-sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: model
+            files: tests/sim/model.test.ts
+            env: KV_MODEL_RUNS=2000
+          - name: multi-handle
+            files: tests/sim/multi-handle.test.ts
+            env: KV_MODEL_RUNS=2000
+          - name: crash-enum
+            files: tests/sim/crash-enum.test.ts
+            env: KV_CRASH_RUNS=300 KV_CRASH_PAIRS=200 KV_CRASH_REPORT=1
+          - name: fuzz
+            files: fuzz/
+            env: KV_FUZZ_RUNS=50000 KV_FUZZ_REPORT=1
+    name: seed-sweep (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @opfs-lsm/kv build
+      - working-directory: packages/kv
+        run: env ${{ matrix.env }} pnpm exec vitest run ${{ matrix.files }}

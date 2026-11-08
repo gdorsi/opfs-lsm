@@ -40,6 +40,26 @@ jobs:
         env:
           CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
 
+  kill-chrome:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+          install-dependencies: true
+      - run: pnpm install --frozen-lockfile
+      # The probes, then each kill kind once. The nightly workflow runs 30 minutes.
+      - run: pnpm --filter @opfs-lsm/kv kill-chrome --seed 1 --iterations 6
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+
   test:
     runs-on: ubuntu-latest
     steps:
