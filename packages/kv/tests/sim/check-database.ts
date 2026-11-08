@@ -32,6 +32,12 @@ export type DatabaseReport = {
   readonly staleManifests: readonly number[];
   /** Empty manifest files newer than the recorded one: a crash before the writer closed. Ignored. */
   readonly emptyManifests: readonly number[];
+  /**
+   * Chrome's `createWritable` swap files (`<name>.crswap`) in `m/`. A
+   * browser killed mid-write leaves one, and Chrome never removes it. The
+   * engine skips the name, so it is a leak, not a problem.
+   */
+  readonly swapFiles: readonly string[];
   /** Live entries of the runs plus the WAL, newest wins, in key order. */
   readonly state: readonly OracleEntry[];
   /** Every broken rule. Empty for a healthy database. */
@@ -88,7 +94,12 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
   const manifests = new Map<number, GenerationMeta>();
   const staleManifests: number[] = [];
   const emptyManifests: number[] = [];
+  const swapFiles: string[] = [];
   for (const file of await fs.list("m")) {
+    if (file.endsWith(".crswap")) {
+      swapFiles.push(`m/${file}`);
+      continue;
+    }
     const n = Number(file.replace(/\.mft$/, ""));
     if (!/^\d{16}\.mft$/.test(file) || !Number.isSafeInteger(n)) {
       problems.push(`unexpected manifest file m/${file}`);
@@ -161,6 +172,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     orphans,
     staleManifests: staleManifests.sort((a, b) => a - b),
     emptyManifests: emptyManifests.sort((a, b) => a - b),
+    swapFiles: swapFiles.sort(),
     state: live_,
     problems,
   };
