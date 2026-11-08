@@ -5,6 +5,7 @@ import {
   GENERATION_ZERO,
   isIntact,
   manifestNumbers,
+  probeManifest,
   readManifest,
   type GenerationMeta,
 } from "./store/generation.js";
@@ -39,6 +40,12 @@ const RECONCILE_TRIES = 8;
  * 2. Otherwise the recorded manifest, when it is intact. `trust` skips the
  *    check for a generation the caller has loaded or published itself.
  * 3. Otherwise the newest intact manifest, or the empty generation 0.
+ *
+ * Corruption is not a power loss, and recovery never turns it into lost
+ * data. A recorded manifest that is there but does not decode, or one that
+ * does not decode before rule 3 reaches an intact one, throws
+ * `CorruptDatabaseError` and writes nothing, so no WAL record is dropped
+ * and no sweep runs against a stand-in.
  *
  * Writes only for 1 and 3, so a healthy database pays one `meta` read and
  * one listing of `m/`. In a running database neither 1 nor 3 holds: a
@@ -82,12 +89,14 @@ async function choose(
   }
   if (recorded !== undefined) {
     if (trust(recorded)) return undefined;
-    const m = await readManifest(fs, recorded);
-    if (m && (await isIntact(fs, m))) return undefined;
+    const m = await probeManifest(fs, recorded);
+    if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${recorded} does not decode`);
+    if (m !== "missing" && (await isIntact(fs, m))) return undefined;
   }
   for (const n of numbers) {
-    const m = await readManifest(fs, n);
-    if (m && (await isIntact(fs, m))) return m;
+    const m = await probeManifest(fs, n);
+    if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${n} does not decode`);
+    if (m !== "missing" && (await isIntact(fs, m))) return m;
   }
   return GENERATION_ZERO;
 }

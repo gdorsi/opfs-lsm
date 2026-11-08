@@ -42,7 +42,7 @@ export function bytesFile(buf: Uint8Array): RunFile {
  * block i's first key above block i-1's last key, so a key that falls
  * between two blocks costs one block read after the Bloom filter.
  */
-export type RunIndex = {
+type RunIndex = {
   /** `sep(i)` is `sepBytes[sepEnd[i - 1] ?? 0, sepEnd[i])`. */
   readonly sepBytes: Uint8Array;
   readonly sepEnd: Uint32Array;
@@ -54,7 +54,7 @@ export type RunIndex = {
   readonly last: Uint8Array;
 };
 
-export type RunLayout = {
+type RunLayout = {
   readonly bloom: BloomFilter;
   readonly index: RunIndex;
   readonly codec: SstCodec;
@@ -227,7 +227,7 @@ export class SstReader {
  * `TAIL_GUESS`, else a second read for the rest. Skips the CRC, which
  * would cost a pass over the whole file: compaction checks it.
  */
-export async function openMeta(file: RunFile): Promise<Sized<RunLayout>> {
+async function openMeta(file: RunFile): Promise<Sized<RunLayout>> {
   const tail = await file.read(file.size - Math.min(file.size, TAIL_GUESS), Math.min(file.size, TAIL_GUESS));
   const f = readFooter(tail, file.size);
   const need = file.size - f.dataLen;

@@ -153,22 +153,33 @@ export async function manifestNumbers(fs: AsyncFs): Promise<number[]> {
 }
 
 /**
- * Manifest `generation`, or undefined when it is missing, empty (created
- * and never closed) or does not decode.
+ * Manifest `generation`; "missing" when the file is gone or empty (created
+ * and never closed), which a power loss can leave; "corrupt" when it is
+ * there and does not decode, which a power loss cannot (OPFS publishes a
+ * file whole).
  */
+export async function probeManifest(
+  fs: AsyncFs,
+  generation: number,
+): Promise<GenerationMeta | "missing" | "corrupt"> {
+  if (generation === 0) return GENERATION_ZERO;
+  const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
+  if (!buf || buf.byteLength === 0) return "missing";
+  try {
+    return decodeGeneration(buf);
+  } catch (err) {
+    if (err instanceof CorruptDatabaseError) return "corrupt";
+    throw err;
+  }
+}
+
+/** Manifest `generation`, or undefined when it is missing, empty or does not decode. */
 export async function readManifest(
   fs: AsyncFs,
   generation: number,
 ): Promise<GenerationMeta | undefined> {
-  if (generation === 0) return GENERATION_ZERO;
-  const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
-  if (!buf || buf.byteLength === 0) return undefined;
-  try {
-    return decodeGeneration(buf);
-  } catch (err) {
-    if (err instanceof CorruptDatabaseError) return undefined;
-    throw err;
-  }
+  const m = await probeManifest(fs, generation);
+  return typeof m === "string" ? undefined : m;
 }
 
 /** True when every run `meta` lists is on disk and not empty. */
