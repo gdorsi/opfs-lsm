@@ -30,6 +30,8 @@ export type DatabaseReport = {
   readonly orphans: readonly string[];
   /** Manifests older than the recorded one. Reclaim is best-effort, so allowed. */
   readonly staleManifests: readonly number[];
+  /** Empty manifest files newer than the recorded one: a crash before the writer closed. Ignored. */
+  readonly emptyManifests: readonly number[];
   /** Live entries of the runs plus the WAL, newest wins, in key order. */
   readonly state: readonly OracleEntry[];
   /** Every broken rule. Empty for a healthy database. */
@@ -80,6 +82,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
   const recorded = generation ?? 0;
   const manifests = new Map<number, GenerationMeta>();
   const staleManifests: number[] = [];
+  const emptyManifests: number[] = [];
   for (const file of await fs.list("m")) {
     const n = Number(file.replace(/\.mft$/, ""));
     if (!/^\d{16}\.mft$/.test(file) || !Number.isSafeInteger(n)) {
@@ -91,6 +94,12 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
       continue;
     }
     const buf = await fs.read(`m/${file}`, 0, Number.POSITIVE_INFINITY);
+    // A crash between creating a manifest and closing its writer leaves an
+    // empty file (OPFS creates the entry first). The engine skips it.
+    if (buf?.byteLength === 0 && n > recorded) {
+      emptyManifests.push(n);
+      continue;
+    }
     try {
       const decoded = decodeGeneration(buf ?? new Uint8Array(0));
       if (decoded.generation !== n) problems.push(`m/${file} holds generation ${decoded.generation}`);
@@ -138,6 +147,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     runs: runs.map((r) => r.path),
     orphans,
     staleManifests: staleManifests.sort((a, b) => a - b),
+    emptyManifests: emptyManifests.sort((a, b) => a - b),
     state: live_,
     problems,
   };
@@ -280,10 +290,10 @@ function checkOrder(
   });
 }
 
-type WalOp = { key: Uint8Array; value: Uint8Array | undefined };
+export type WalOp = { key: Uint8Array; value: Uint8Array | undefined };
 
 /** design.md, "WAL records": per op, u8 type | u32 keyLen | key | put: u32 valueLen | value. */
-function decodeWalRow(raw: unknown): WalOp[] {
+export function decodeWalRow(raw: unknown): WalOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new Error("not an ArrayBuffer");
   const bytes = new Uint8Array(raw);
   const view = new DataView(raw);
