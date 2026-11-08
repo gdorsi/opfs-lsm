@@ -70,7 +70,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | CompactPreserve | `latestSstEntry`, `foldEntries` (TypeScript path of `mergeSsts`) |
 | PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestAll` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles` (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
 
-**Sync commit:** `4f56f230900213d955efb7ec3552441bb83b1d6c` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
+**Sync commit:** `0e34b2e00478119e96eec08b4ee93434308f8800` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
 ## Intentional product change
 
