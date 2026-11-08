@@ -1,15 +1,21 @@
 {
   "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
   "entry": [
-    "packages/*/bench/**/*.ts",
+    "packages/*/proof/**/*.ts",
     "packages/*/scripts/**/*.ts",
     "packages/*/formal/**/check.ts",
     "packages/*/formal/run-all.ts",
-    "examples/*/bench/**/*.ts",
-    "examples/*/scripts/**/*.ts"
+    "examples/*/scripts/**/*.ts",
+    "bench/cli.ts",
+    "bench/page/main.ts",
+    "bench/workloads/*/*.ts",
+    "bench/contenders/*/*.ts"
   ],
   "ignoreBinaries": [
     "wasm-pack"
+  ],
+  "ignoreDependencies": [
+    "@automerge/automerge-repo-storage-indexeddb"
   ],
   "ignoreExports": [
     {

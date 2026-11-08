@@ -179,7 +179,7 @@ function sourceSync(): string[] {
   need("recover.ts", /Math\.max\(numbers\[0\] \?\? 0, meta\.top, meta\.generation \?\? 0\)/, "new manifests number past every number in use");
   need("recover.ts", /m\.through > meta\.head && \(await isIntact\(fs, m\)\)/, "reconcile adopts an intact manifest past the head first");
   need("host/engine-host.ts", /reconcile\(wal, fs, this\.trust\(dbName\)\)[\s\S]*liveRuns\(fs, generation\)/, "reclaim sweeps against the reconciled generation's runs");
-  need("db.ts", /await reconcile\(wal, fs, TRUST_RECORDED\);[\s\S]*await db\.sync\(\)/, "openDb reconciles before the first sync");
+  need("db.ts", /await reconcile\(wal, tabFs, TRUST_RECORDED\);[\s\S]*await db\.sync\(\)/, "openDb reconciles before the first sync");
   need("db.ts", /if \(missing === undefined\) return;\s*await this\.repair\(\);/, "sync repairs when the recorded generation does not load");
   return out;
 }

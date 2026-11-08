@@ -1,0 +1,30 @@
+{
+  "name": "@opfs-lsm/bench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "node cli.ts run",
+    "smoke": "node cli.ts smoke",
+    "size": "node cli.ts size",
+    "compare": "node cli.ts compare",
+    "report": "node cli.ts report",
+    "check": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@automerge/automerge-repo-storage-indexeddb": "2.6.0-alpha.5",
+    "@automerge/react": "2.6.0-alpha.5",
+    "@opfs-lsm/collections": "workspace:*",
+    "@opfs-lsm/example-automerge": "workspace:*",
+    "@opfs-lsm/example-yjs": "workspace:*",
+    "@opfs-lsm/kv": "workspace:*",
+    "dexie": "^4.0.11",
+    "y-indexeddb": "^9.0.12",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.6",
+    "vite-plugin-wasm": "^3.6.0"
+  }
+}

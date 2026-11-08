@@ -15,6 +15,49 @@ importers:
         specifier: ^1.92.0
         version: 1.92.0
 
+  bench:
+    dependencies:
+      '@automerge/automerge-repo-storage-indexeddb':
+        specifier: 2.6.0-alpha.5
+        version: 2.6.0-alpha.5
+      '@automerge/react':
+        specifier: 2.6.0-alpha.5
+        version: 2.6.0-alpha.5(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@opfs-lsm/collections':
+        specifier: workspace:*
+        version: link:../packages/collections
+      '@opfs-lsm/example-automerge':
+        specifier: workspace:*
+        version: link:../examples/automerge-todo
+      '@opfs-lsm/example-yjs':
+        specifier: workspace:*
+        version: link:../examples/yjs
+      '@opfs-lsm/kv':
+        specifier: workspace:*
+        version: link:../packages/kv
+      dexie:
+        specifier: ^4.0.11
+        version: 4.4.7
+      y-indexeddb:
+        specifier: ^9.0.12
+        version: 9.0.12(yjs@13.6.33)
+      yjs:
+        specifier: ^13.6.33
+        version: 13.6.33
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vite:
+        specifier: ^8.3.6
+        version: 8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15)
+      vite-plugin-wasm:
+        specifier: ^3.6.0
+        version: 3.6.0(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15))
+
   examples/automerge-todo:
     dependencies:
       '@automerge/react':
@@ -152,9 +195,6 @@ importers:
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../../packages/kv
-      y-indexeddb:
-        specifier: ^9.0.12
-        version: 9.0.12(yjs@13.6.33)
       yjs:
         specifier: ^13.6.33
         version: 13.6.33
@@ -184,9 +224,6 @@ importers:
         specifier: workspace:*
         version: link:../kv
     devDependencies:
-      dexie:
-        specifier: ^4.0.11
-        version: 4.4.7
       fake-indexeddb:
         specifier: ^6.0.0
         version: 6.2.7
@@ -202,12 +239,6 @@ importers:
 
   packages/kv:
     devDependencies:
-      dexie:
-        specifier: ^4.0.11
-        version: 4.4.7
-      esbuild:
-        specifier: 0.28.2
-        version: 0.28.2
       fake-indexeddb:
         specifier: ^6.0.0
         version: 6.2.7
