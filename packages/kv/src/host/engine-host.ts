@@ -125,7 +125,7 @@ export class EngineHost {
   async stats(name: string): Promise<HostStats> {
     const dbName = checkDbName(name);
     const fs = await this.fsFor(dbName);
-    const recorded = await this.withWal(dbName, async (wal) => (await wal.recordedGeneration()) ?? 0);
+    const recorded = await this.withWal(dbName, async (wal) => (await wal.meta()).generation ?? 0);
     const latest = await loadGeneration(fs.inner, recorded);
     const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
     for (const run of latest?.runs ?? []) {
