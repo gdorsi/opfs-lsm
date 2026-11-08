@@ -19,4 +19,4 @@ Never use fake-indexeddb on benchmarks plz
 
 ## Static checks
 
-`pnpm static` runs oxlint (`.oxlintrc.json`, correctness rules) and fallow dead-code detection (`.fallowrc.json`). CI runs both in the `static` job. Add a new bench or script entry point to `entry` in `.fallowrc.json` if fallow reports it as unused.
+`pnpm static` runs oxlint (`.oxlintrc.json`, correctness rules) and fallow dead-code detection (`.fallowrc.json`). CI runs both in the `static` job. Add a new script entry point to `entry` in `.fallowrc.json` if fallow reports it as unused. Benchmarks live in `bench/`; see bench/README.md.

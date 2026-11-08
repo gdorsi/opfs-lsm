@@ -29,6 +29,7 @@ import { Memtable, type MemRow } from "./store/memtable.js";
 import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
+import { CountingFs } from "./opfs/counting-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
 import {
@@ -247,9 +248,19 @@ export function prefixBound(prefix: Uint8Array): {
   return end === undefined ? { start } : { start, endExclusive: end };
 }
 
-/** SharedWorker script shipped next to this module in `dist/`. */
-function sharedWorkerUrl(): URL {
-  return new URL("./host/shared-worker.js", import.meta.url);
+/** What `@opfs-lsm/kv/testing` reads from an open Db. */
+export type DbInternals = {
+  readonly name: DbName;
+  readonly wal: IdBWal;
+  readonly fs: CountingFs;
+  readonly ingest: IngestClient;
+};
+
+const internals = new WeakMap<Db, DbInternals>();
+
+/** Undefined for a Db not opened by `openDbWith`. */
+export function dbInternals(db: Db): DbInternals | undefined {
+  return internals.get(db);
 }
 
 export async function openDb(options: OpenOptions): Promise<Db> {
@@ -300,10 +311,14 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     fs = await openBrowserFs(name);
     span(trace, "opfs", performance.now() - opfsAt);
     const workerAt = trace ? performance.now() : 0;
-    const worker = new SharedWorker(sharedWorkerUrl(), {
-      type: "module",
-      name: `opfs-lsm:${name}`,
-    });
+    // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
+    // only emit a worker chunk for this exact shape. Built in a helper, Vite
+    // treated it as a plain asset and inlined the unbundled entry as a
+    // data: URL whose relative imports could not resolve.
+    const worker = new SharedWorker(
+      new URL("./host/shared-worker.js", import.meta.url),
+      { type: "module", name: `opfs-lsm:${name}` },
+    );
     span(trace, "worker-ctor", performance.now() - workerAt);
     ingest = createPortIngestClient(
       worker.port,
@@ -314,6 +329,8 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     if (!fs) fs = defaultMemoryFs(name);
     if (!ingest) ingest = localIngest(name, fs);
   }
+  // Wrapped after the local host got the bare fs, so its IO counts only on the host.
+  const tabFs = new CountingFs(fs);
 
   const idbAt = trace ? performance.now() : 0;
   const wal = await IdBWal.open(name);
@@ -321,7 +338,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const generationAt = trace ? performance.now() : 0;
   // Pair the WAL with a manifest before the first read or write. The
   // recorded manifest's runs are checked by the first sync, which loads them.
-  await reconcile(wal, fs, TRUST_RECORDED);
+  await reconcile(wal, tabFs, TRUST_RECORDED);
   span(trace, "generation", performance.now() - generationAt);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
@@ -331,12 +348,13 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     name,
     writerId,
     wal,
-    fs,
+    tabFs,
     cache,
     ingest,
     ownsIngestClient,
     trace,
   );
+  internals.set(db, { name, wal, fs: tabFs, ingest });
   const syncAt = trace ? performance.now() : 0;
   await db.sync();
   span(trace, "sync", performance.now() - syncAt);

@@ -2,14 +2,15 @@
   "name": "@opfs-lsm/example-yjs",
   "private": true,
   "type": "module",
+  "exports": {
+    "./kv-persistence": "./src/kv-persistence.ts"
+  },
   "scripts": {
     "check": "tsc -p tsconfig.json",
-    "test": "tsx --test src/kv-persistence.test.ts",
-    "bench:load": "pnpm --filter @opfs-lsm/kv build && tsx scripts/bench-load.ts"
+    "test": "tsx --test src/kv-persistence.test.ts"
   },
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*",
-    "y-indexeddb": "^9.0.12",
     "yjs": "^13.6.33"
   },
   "devDependencies": {

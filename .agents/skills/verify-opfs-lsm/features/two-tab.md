@@ -14,7 +14,7 @@ Two-tab visibility lets one tab put and ingest while another tab keeps a pinned 
 ## How to get to it (user POV)
 
 - Run the package two-tab script (headless Chrome opens tab A and tab B on `two-tab.html`).
-- Or open `packages/kv/bench/two-tab.html?auto=1&role=a` and a second page with `role=b` against a built `dist` served over HTTP (the script does this).
+- Or open `packages/kv/proof/two-tab.html?auto=1&role=a` and a second page with `role=b` against a built `dist` served over HTTP (the script does this).
 
 ## Driving it with verify-opfs-lsm
 

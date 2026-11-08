@@ -16,9 +16,9 @@ export type IngestPolicy = {
 /**
  * Every openDb replays the whole uningested WAL on the tab's main thread, at
  * a cost per row. 1 MiB keeps that replay near 40 ms with ~100-byte ops
- * (yjs bench: 4 MiB opened in 71-91 ms, 1 MiB in 39-44 ms, 256 KiB in
- * 25-39 ms). Lower limits mean more ingests and L0 compactions for little
- * more open time saved.
+ * (measured on Yjs docs: 4 MiB opened in 71-91 ms, 1 MiB in 39-44 ms,
+ * 256 KiB in 25-39 ms). Lower limits mean more ingests and L0 compactions
+ * for little more open time saved.
  */
 export const DEFAULT_INGEST_POLICY: IngestPolicy = {
   maxWalBytes: 1024 * 1024,
