@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/engine-core", "crates/engine-wasm"]
+# Needs nightly and libFuzzer: `cargo +nightly fuzz` (docs/verification.md).
+exclude = ["crates/engine-core/fuzz"]
 
 [workspace.package]
 edition = "2021"

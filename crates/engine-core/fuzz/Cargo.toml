@@ -1,0 +1,38 @@
+[package]
+name = "engine-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
+engine-core = { path = ".." }
+
+# Not a member of the root workspace: it needs nightly and libFuzzer.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "decode_sst"
+path = "fuzz_targets/decode_sst.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scan_block_contains"
+path = "fuzz_targets/scan_block_contains.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compact"
+path = "fuzz_targets/compact.rs"
+test = false
+doc = false
+bench = false
