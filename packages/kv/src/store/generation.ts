@@ -244,14 +244,15 @@ export async function reclaimRuns(
 /**
  * The runs of every manifest from `from` on. A tab reads the generation
  * IndexedDB records, which can trail the newest manifest after a crash
- * between publishing one and recording it, so both stay.
+ * between publishing one and recording it, so both stay. A manifest that
+ * fails to read throws: its runs may be live, so nothing may be swept.
  */
 export async function liveRuns(fs: AsyncFs, from: number): Promise<string[]> {
   const out: string[] = [];
   for (const name of await fs.list("m")) {
     const n = Number(name.replace(/\.mft$/, ""));
     if (!Number.isFinite(n) || n < from) continue;
-    const meta = await loadGeneration(fs, n).catch(() => undefined);
+    const meta = await loadGeneration(fs, n);
     for (const run of meta?.runs ?? []) out.push(run.path);
   }
   return out;

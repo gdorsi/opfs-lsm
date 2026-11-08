@@ -68,12 +68,6 @@ const WORKLOAD: Step[] = [
 
 const HANG_MS = 3_000;
 
-/**
- * Manifest reads fail only with `KV_IO_READ_ALL=1`: a failed one during
- * reclaim deletes live runs (the `it.fails` "a failed manifest read …"
- * below), so every later run of the sweep fails on that bug.
- */
-const READ_ALL = process.env.KV_IO_READ_ALL === "1";
 
 function guard<T>(p: Promise<T>, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
@@ -110,7 +104,6 @@ let runs = 0;
 async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, persistent: boolean) {
   const t = new Traced(`io-${++runs}`);
   t.faults.kinds = kinds;
-  if (kinds.has("fs-read") && !READ_ALL) t.faults.spare = (label) => label.startsWith("read m/");
   t.faults.failAt = failAt;
   t.faults.persistent = persistent;
   const events: Event[] = [];
@@ -329,15 +322,16 @@ async function sweep(kinds: ReadonlySet<SiteKind>, persistent: boolean) {
 const ONLY = process.env.KV_IO_SITES;
 
 describe("I/O errors: found by this suite", () => {
-  // Found by the read sweep with KV_IO_READ_ALL=1, one-shot, site 7. After
+  // Found by the read sweep with manifest reads included, one-shot, site 7. After
   // the first flush, the host's first compaction pass sweeps: it keeps the
   // runs of every manifest from the recorded generation on (`liveRuns`), and
-  // removes every other run file. `liveRuns` reads each manifest with
+  // removes every other run file. `liveRuns` read each manifest with
   // `loadGeneration(…).catch(() => undefined)`, so a failed read of manifest
-  // 1 counts as a manifest with no runs, and the sweep deletes l0/1-2.sst,
+  // 1 counted as a manifest with no runs, and the sweep deleted l0/1-2.sst,
   // the only copy of seqs 1..2 (the WAL records are already truncated). The
-  // database no longer opens: GENERATION_GONE.
-  it.fails("a failed manifest read during reclaim never deletes a live run", async () => {
+  // database no longer opened: GENERATION_GONE. `liveRuns` now rethrows,
+  // so the sweep is skipped until the read succeeds.
+  it("a failed manifest read during reclaim never deletes a live run", async () => {
     const t = new Traced(`io-${++runs}`);
     t.faults.spare = (label) => !label.startsWith("read m/");
     t.faults.failAt = 1;
