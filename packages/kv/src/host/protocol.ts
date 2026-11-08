@@ -5,6 +5,44 @@ export function layersChannel(name: string): string {
   return `opfs-lsm-layers/${name}`;
 }
 
+function locks(): LockManager | undefined {
+  return (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks;
+}
+
+function reclaimLock(name: string): string {
+  return `opfs-lsm-reclaim/${name}`;
+}
+
+/**
+ * Run `fn` holding the reclaim lock shared. While any tab holds it, the
+ * host removes no run file and no manifest, so a generation recorded
+ * during `fn` keeps its files until `fn` returns. Waits only for a
+ * reclaim already running. Without Web Locks it runs `fn` unprotected.
+ */
+export function holdingFiles<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  const manager = locks();
+  if (!manager) return fn();
+  // The DOM lib types the callback's promise as the result, unwrapped at runtime.
+  return manager.request(reclaimLock(name), { mode: "shared" }, fn) as unknown as Promise<T>;
+}
+
+/**
+ * Run `fn` holding the reclaim lock exclusively, or skip it and return
+ * false when a tab holds it. Never waits, so no tab can stall the host.
+ */
+export async function unlessHeld(name: string, fn: () => Promise<void>): Promise<boolean> {
+  const manager = locks();
+  if (!manager) {
+    await fn();
+    return true;
+  }
+  return manager.request(reclaimLock(name), { mode: "exclusive", ifAvailable: true }, async (lock) => {
+    if (!lock) return false;
+    await fn();
+    return true;
+  });
+}
+
 export type ClientToHost =
   | {
       readonly type: "ingest";

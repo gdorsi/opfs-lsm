@@ -7,7 +7,6 @@ import {
   loadGeneration,
   publishGeneration,
   publishL0,
-  reclaimManifests,
 } from "../store/generation.js";
 import { foldRecords } from "../store/fold.js";
 
@@ -22,7 +21,8 @@ export type IngestResult = {
  * Fold the shared uningested WAL into one L0, publish generation, and
  * advance ingestedThrough. Compaction runs separately. Folds nothing when every seq
  * through `through` is already ingested, so tabs that ask for the same
- * flush get one L0.
+ * flush get one L0. Removes no file: the host removes old manifests once
+ * no tab is loading a generation (`EngineHost.fold`).
  *
  * Builds on the recorded generation, never on a newer manifest file: one
  * that IndexedDB has not recorded is left by a crash, and its seqs are
@@ -65,6 +65,5 @@ export async function ingestAll(
     ingestedThrough = last;
   }
 
-  await reclaimManifests(fs, (await wal.recordedGeneration()) ?? 0);
   return { generation, ingestedThrough, foldedBytes };
 }

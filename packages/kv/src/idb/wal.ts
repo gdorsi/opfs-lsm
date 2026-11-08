@@ -318,11 +318,6 @@ export class IdBWal {
     return seq;
   }
 
-  /** The recorded generation. Undefined until an ingest records one. */
-  async recordedGeneration(): Promise<number | undefined> {
-    return (await this.meta()).generation;
-  }
-
   async meta(): Promise<WalMeta> {
     const tx = this.db.transaction(META_STORE, "readonly");
     const meta = tx.objectStore(META_STORE);
