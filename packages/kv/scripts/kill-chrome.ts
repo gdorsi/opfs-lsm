@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import ts from "typescript";
-import { allKeys, attempts, mix, prng, type WorkOp } from "../bench/kill-chrome-workload.ts";
+import { allKeys, attempts, mix, prng, type WorkOp } from "../proof/kill-chrome-workload.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -162,7 +162,7 @@ function resolveFile(urlPath: string): { file: string; ts: boolean } | null {
   const clean = path.posix.normalize(decodeURIComponent(urlPath));
   if (clean.includes("..")) return null;
   if (clean.startsWith("/src/")) return { file: path.join(root, "dist", clean.slice(5)), ts: false };
-  if (!/^\/(bench|tests|wasm)\//.test(clean)) return null;
+  if (!/^\/(proof|tests|wasm)\//.test(clean)) return null;
   const file = path.join(root, clean);
   if (fs.existsSync(file) && !file.endsWith(".ts")) return { file, ts: false };
   const tsFile = file.replace(/\.(js|ts)$/, ".ts");
@@ -764,7 +764,7 @@ class Run {
   }
 
   url(): string {
-    return `${this.origin}/bench/kill-chrome.html`;
+    return `${this.origin}/proof/kill-chrome.html`;
   }
 
   async launch(): Promise<Browser> {

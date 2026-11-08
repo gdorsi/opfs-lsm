@@ -87,14 +87,6 @@ cmd_doctor() {
     echo "node_modules: present"
   fi
 
-  # Fixed profile dirs collide if two benches share one checkout.
-  if [[ -d "$ROOT/packages/kv/.bench-chrome-profile" ]]; then
-    echo "warn: packages/kv/.bench-chrome-profile exists (another kv bench may be running)"
-  fi
-  if [[ -d "$ROOT/packages/collections/.bench-chrome-profile" ]]; then
-    echo "warn: packages/collections/.bench-chrome-profile exists (another collections bench may be running)"
-  fi
-
   if (( ok == 0 )); then
     die "doctor failed"
   fi
@@ -146,7 +138,8 @@ run_capture() {
 
 cmd_drive() {
   local feature="${1:-}"
-  [[ -n "$feature" ]] || die "usage: verify-opfs-lsm drive <two-tab|kv-bench|collections-bench|automerge-bench|yjs-bench|two-tab-nobc|two-tab-local>"
+  [[ -n "$feature" ]] || die "usage: verify-opfs-lsm drive <two-tab|two-tab-nobc|two-tab-local|bench <selector…> [flags]|bench-smoke>"
+  shift
   cmd_doctor >/dev/null
 
   case "$feature" in
@@ -159,29 +152,12 @@ cmd_drive() {
     two-tab-local)
       run_capture two-tab-local env TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
       ;;
-    kv-bench)
-      # Fixed profile path: refuse if already present.
-      if [[ -d "$ROOT/packages/kv/.bench-chrome-profile" ]]; then
-        die "refuse: packages/kv/.bench-chrome-profile exists; cleanup or wait"
-      fi
-      run_capture kv-bench env BENCH_N="${BENCH_N:-50}" pnpm bench:browser
+    bench)
+      (( $# > 0 )) || die "usage: verify-opfs-lsm drive bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]"
+      run_capture bench pnpm bench "$@"
       ;;
-    collections-bench)
-      if [[ -d "$ROOT/packages/collections/.bench-chrome-profile" ]]; then
-        die "refuse: packages/collections/.bench-chrome-profile exists; cleanup or wait"
-      fi
-      run_capture collections-bench env BENCH_N="${BENCH_N:-50}" pnpm bench:collections
-      ;;
-    automerge-bench)
-      run_capture automerge-bench env \
-        BENCH_RUNS="${BENCH_RUNS:-1}" BENCH_LOADS="${BENCH_LOADS:-2}" \
-        BENCH_WORKLOADS="${BENCH_WORKLOADS:-trace:100,data/moby-dick.automerge}" \
-        pnpm --filter @opfs-lsm/example-automerge bench:big-doc
-      ;;
-    yjs-bench)
-      run_capture yjs-bench env \
-        DOCS="${DOCS:-100}" RUNS="${RUNS:-1}" \
-        pnpm --filter @opfs-lsm/example-yjs bench:load
+    bench-smoke)
+      run_capture bench-smoke pnpm bench:smoke
       ;;
     *)
       die "unknown feature: $feature"
@@ -190,12 +166,10 @@ cmd_drive() {
 }
 
 cmd_cleanup() {
-  # Only remove verification scratch left by interrupted runs. Never touch artifacts/.
-  rm -rf "$ROOT/packages/kv/.bench-chrome-profile"
-  rm -rf "$ROOT/packages/collections/.bench-chrome-profile"
-  # Harnesses already kill their own Chrome and close ephemeral servers.
+  # Every harness uses a fresh temp Chrome profile, kills its own Chrome, and
+  # closes its server, so there is no scratch to remove. Never touch artifacts/.
   # Do not kill by process name.
-  echo "cleanup: removed fixed bench profiles (if any)"
+  echo "cleanup: nothing to remove (each run uses a temp profile)"
   echo "cleanup: artifacts preserved under $ARTIFACTS"
 }
 
@@ -205,15 +179,17 @@ verify-opfs-lsm — real-Chrome proofs for @opfs-lsm
 
   verify-opfs-lsm doctor
   verify-opfs-lsm launch
-  verify-opfs-lsm drive <two-tab|kv-bench|collections-bench|automerge-bench|yjs-bench|two-tab-nobc|two-tab-local>
+  verify-opfs-lsm drive <two-tab|two-tab-nobc|two-tab-local>
+  verify-opfs-lsm drive bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]
+  verify-opfs-lsm drive bench-smoke
   verify-opfs-lsm cleanup
+
+  bench runs `pnpm bench <args>`; a selector is kv/, table/, automerge/,
+  yjs/ (a family) or kv/fillrandom (one workload). bench-smoke runs
+  `pnpm bench:smoke`.
 
 Env:
   CHROME_PATH            Chrome binary override
-  BENCH_N                ops for benches (default 50 via this helper)
-  BENCH_RUNS / BENCH_LOADS / BENCH_WORKLOADS
-                         automerge-bench size (defaults 1 / 2 / trace:100,data/moby-dick.automerge)
-  DOCS / RUNS            yjs-bench size: load DOCS of DOCS*10 (defaults 100 / 1)
   VERIFY_OPFS_ARTIFACTS  evidence root (default: skill artifacts/)
   VERIFY_OPFS_RUN_ID     fixed run folder name under a feature
 EOF
