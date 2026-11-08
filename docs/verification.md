@@ -25,6 +25,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
 | In-page `EngineHost` | `drive two-tab-local`. |
 | Collections `put`, `get`, or `where` | `drive collections-bench`. See [Failures already on main](#failures-already-on-main). |
+| A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, `lz4.ts`, `sst.rs`), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test` and `cargo test -p engine-core`, then each cargo fuzz and Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
 | Any TypeScript behavior | `pnpm test` |
 | Any TypeScript or JavaScript source, including a removed export | `pnpm static` (oxlint, then `fallow dead-code`) |
 
@@ -134,6 +135,60 @@ The same file holds the churn tests: a tab whose run opens are slow while the ho
 
 `tests/sim/io-error.test.ts` fails fault site N for N = 1, 2, … until a run reaches no site N, with one-shot and persistent faults, over durable sites and read sites. Every call must settle, every resolved call must be right, and after healing the database must reopen with the whole committed log. `KV_IO_SITES=durable|read` runs one sweep, and `KV_IO_REPORT=1` prints its size and error names.
 
+## Fuzz the decoders
+
+Every decoder of on-disk or IndexedDB bytes is fuzzed against the rules of [the corruption research note](research/corruption-hardening-test-suite.md) ("Decisions", techniques 7, 8 and 10):
+
+- Everywhere: corrupt or truncated bytes never hang, crash, panic in wasm, read out of bounds (in TypeScript, a `RangeError` from a `DataView`), allocate from a length field, or loop. An error is the documented one: `CorruptDatabaseError`, or `CommitError("corrupt wal row ...")` for a WAL row.
+- Where a CRC is checked (manifests, and runs in the SharedWorker's compaction decode), changed bytes throw. They never decode, and never become lost data.
+- Where none is (a tab's run reads, LZ4 unpack, block scans, WAL rows and `meta`), a wrong answer is allowed. Tabs keep skipping the SST CRC.
+
+| Layer | Command | Runs in | Covers |
+| --- | --- | --- | --- |
+| Rust properties | `cargo test -p engine-core` | CI (`rust` job) | `decode_sst`, `scan_block_contains`, `merge_sst_bytes` on mutated runs, with an allocation counter (`crates/engine-core/tests/corrupt_inputs.rs`) |
+| cargo fuzz | `crates/engine-core/fuzz/run.sh <target> [seconds]` | by hand | `decode_sst`, `scan_block_contains`, `compact` (libFuzzer, nightly) |
+| TypeScript properties | `pnpm test` (`packages/kv/fuzz/decoders.test.ts`) | CI (`test` job) | `SstReader` (tab reads, wasm and fallback), `decodeSst`, `decodeGeneration` v1 and v2, `decodeOps`, `lz4DecompressJs` |
+| Differential | `pnpm test` (`packages/kv/fuzz/differential.test.ts`) | CI (`test` job) | wasm against the TypeScript fallbacks: whole-run decode, block scan, LZ4 unpack, merge |
+| End to end | `pnpm test` (`packages/kv/tests/sim/corruption.test.ts`) | CI (`test` job) | one corrupt file or IndexedDB row, then open, get, scan, write, flush, compact, reopen |
+| Jazzer.js | `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> [seconds]` | by hand | `sst-read`, `sst-decode`, `manifest`, `wal-row`, `lz4` (the TypeScript decoders; cargo fuzz covers the Rust ones) |
+
+The checks are shared: `packages/kv/fuzz/targets.ts` for the TypeScript properties, the differential test and Jazzer.js, and `crates/engine-core/tests/support/corrupt.rs` for the Rust properties and cargo fuzz. Mutations are bit flips, truncation, extension, length fields inflated or nudged by a few, varints near 2^32, runs of 0x00 or 0xff, and splices of two valid files. Each case may rewrite the CRC (and the SST version and magic) so the decoder reaches the structure behind it.
+
+Longer runs and replays:
+
+```sh
+cd packages/kv
+KV_FUZZ_RUNS=50000 KV_FUZZ_REPORT=1 pnpm exec vitest run fuzz/
+KV_FUZZ_SEED=<seed> KV_FUZZ_PATH=<path> pnpm exec vitest run fuzz/decoders.test.ts
+KV_CORRUPT_REPORT=1 pnpm exec vitest run tests/sim/corruption.test.ts   # prints the table below
+ENGINE_PROP_CASES=100000 cargo test --release -p engine-core --test corrupt_inputs
+```
+
+`pnpm test` runs 1,000 cases per mutation property, 300 per differential property, and a tenth of those for the slower ones. With the end-to-end file they take about 1 s. `KV_FUZZ_RUNS` and `ENGINE_PROP_CASES` scale them. `KV_FUZZ_REPORT=1` prints how often each target ran and each known bug skipped an input.
+
+cargo fuzz needs `rustup toolchain install nightly` and `cargo install cargo-fuzz`. Jazzer.js is a dev dependency of `@opfs-lsm/kv`, with prebuilt binaries for macOS, Linux and Windows. Before a change to a decoder or the on-disk format, run each target for 10 minutes or more. A pass prints `Done N runs` and leaves no `crash-*` file.
+
+Corpora: the seeds are files the engine wrote (a database through ingest and compaction on MemoryFs, plus wasm LZ4 runs). `pnpm --filter @opfs-lsm/kv fuzz:corpus` writes them again after a format change. Only `seed-*` files are tracked. A run adds its new inputs next to them, and git ignores those.
+
+- `packages/kv/fuzz/corpus/<target>/` for Jazzer.js. A finding lands in `packages/kv/fuzz/.build/crash-*`. Replay it with `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> 0 <file>`.
+- `crates/engine-core/fuzz/corpus/<target>/` for cargo fuzz. A finding lands in `crates/engine-core/fuzz/artifacts/<target>/`. Replay it with `cargo +nightly fuzz run <target> <file>`.
+
+Known bugs are reported, not fixed. Each is pinned by a test that states the rule: `it.fails` in `packages/kv/fuzz/known-bugs.test.ts` and `tests/sim/corruption.test.ts`, and `#[ignore]` in `corrupt_inputs.rs` (`cargo test -p engine-core -- --ignored`). The fuzzers skip inputs that reach a known bug, so a long run keeps finding new ones. `KV_FUZZ_KNOWN=1` (TypeScript) and `ENGINE_FUZZ_KNOWN=1` (Rust) feed them too. When a fix lands, its pinned test starts to fail. Drop the `.fails` or `#[ignore]`, and delete the clause that skips it (`KNOWN` and `knownError` in `targets.ts`, `knownWasmBug` in `differential.test.ts`, `known_bug` in `corrupt.rs`).
+
+### What the engine does with a corrupt file today
+
+| File | Checked by | Corrupt bytes today |
+| --- | --- | --- |
+| L0 or L1 run (raw) | Tabs: none. Compaction: CRC. | A tab read fails with `CorruptDatabaseError` when the structure breaks, or answers wrong when only data bytes changed. Compaction refuses the run and stops compacting that level until the run is gone. With wasm it throws the Rust error as a bare string, not `CorruptDatabaseError` (KW2). A flipped bit in the footer's block count makes a tab allocate up to 32 GiB (KT2). A footer bloom hash count near 2^32 makes each get take minutes (KT1). |
+| L2+ run (LZ4) | Tabs: none. Compaction: CRC. | A changed compressed byte fails the read with `CorruptDatabaseError`. A corrupt block size grows the tab's wasm memory by up to 4 GiB, for good (KB1). A filtered scan over a block with a varint near 2^32 panics in wasm (KW1). After about 4,000 panics every wasm call in that context fails (KW3). |
+| Recorded manifest | CRC, everywhere | `openDb` throws `CorruptDatabaseError`. Then the SharedWorker's next flush reconciles, treats the manifest as missing, records generation 0, drops the WAL, and its sweep deletes every run. The database is erased (R2). A manifest written on purpose with a valid CRC and a bad length throws `RangeError` (KT4). |
+| Manifest past the recorded one | CRC, recovery | Ignored. |
+| A run of the recorded generation, missing | | `openDb` records generation 0, drops the WAL, and reads an empty database (R1). |
+| WAL row above `ingestedThrough` | none | A row cut short, a row that is not an `ArrayBuffer`, or a missing row fails `openDb` with `CommitError` (`corrupt wal row`, `wal gap`). A row changed into other valid ops reads as those ops. |
+| WAL `meta` | none | A value that is not a number reads as 0. With `head` 0 a tab misses the WAL tail. With `generation` naming no manifest, recovery records the intact one and loses nothing. |
+
+Bugs reached only by bytes written on purpose, with a valid CRC: KB2 (`decode_sst` reserves the footer's entry count: an abort natively, a panic in wasm) and KT3 (`decodeSst` without wasm throws `RangeError` on a bad index). Over the SharedWorker port, every host error reaches the tab as a plain `Error` (`createPortIngestClient`), so a tab never sees `CorruptDatabaseError` from a host-side failure.
+
 ## Run the static checks
 
 ```sh
@@ -144,15 +199,16 @@ Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
 
 ## What CI runs
 
-[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs five jobs on pull requests and on pushes to `main`:
+[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs six jobs on pull requests and on pushes to `main`:
 
 - `gate`: `pnpm bench:gate` with `BENCH_GATE_BROWSER=smoke`
 - `two-tab`: `pnpm --filter @opfs-lsm/kv two-tab`
 - `test`: `pnpm test`
 - `static`: `pnpm lint` and `pnpm deadcode` (oxlint, then fallow; the same two steps as `pnpm static`)
 - `formal`: `pnpm --filter @opfs-lsm/kv formal:kv`
+- `rust`: `cargo test -p engine-core`, which includes the corrupt-input properties
 
-That workflow leaves out `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collections-bench`, `automerge-bench`, `yjs-bench`, `bench:load`, and `bench:open`. `bench:gate` is the performance smoke. It is separate from `kv-bench`.
+That workflow leaves out cargo fuzz, Jazzer.js, `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collections-bench`, `automerge-bench`, `yjs-bench`, `bench:load`, and `bench:open`. `bench:gate` is the performance smoke. It is separate from `kv-bench`.
 
 ## Failures already on main
 

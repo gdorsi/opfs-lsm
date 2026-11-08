@@ -86,8 +86,11 @@ function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
   return out.buffer;
 }
 
-/** Keys and values are views into the row's buffer, which nothing else holds. */
-function decodeOps(raw: unknown): CheckedOp[] {
+/**
+ * Keys and values are views into the row's buffer, which nothing else holds.
+ * Exported for the decoder fuzz tests (`packages/kv/fuzz/`).
+ */
+export function decodeOps(raw: unknown): CheckedOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new CommitError("corrupt wal row: not bytes");
   const bytes = new Uint8Array(raw);
   const view = new DataView(raw);

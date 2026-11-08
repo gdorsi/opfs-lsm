@@ -5,6 +5,8 @@
     "packages/*/scripts/**/*.ts",
     "packages/*/formal/**/check.ts",
     "packages/*/formal/run-all.ts",
+    "packages/*/fuzz/make-corpus.ts",
+    "packages/*/fuzz/jazzer/*.ts",
     "examples/*/bench/**/*.ts",
     "examples/*/scripts/**/*.ts"
   ],

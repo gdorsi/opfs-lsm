@@ -1,0 +1,6 @@
+target
+artifacts
+coverage
+# A long run grows the corpus; only the committed seeds are tracked.
+corpus/*/*
+!corpus/*/seed-*

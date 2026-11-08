@@ -42,10 +42,13 @@
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
     "formal:view-pin": "tsx formal/view-pin/check.ts",
     "formal:compact-preserve": "tsx formal/compact-preserve/check.ts",
-    "formal:power-loss": "tsx formal/power-loss/check.ts"
+    "formal:power-loss": "tsx formal/power-loss/check.ts",
+    "fuzz:corpus": "tsx fuzz/make-corpus.ts",
+    "fuzz:jazzer": "tsx fuzz/jazzer/run.ts"
   },
   "license": "MIT",
   "devDependencies": {
+    "@jazzer.js/core": "4.0.0",
     "dexie": "^4.0.11",
     "esbuild": "0.28.2",
     "fake-indexeddb": "^6.0.0",
