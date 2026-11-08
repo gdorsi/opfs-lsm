@@ -10,7 +10,6 @@
  * plus whatever earlier runs added, which git ignores) and adds new inputs
  * there. A finding is written to `fuzz/.build/crash-*`; replay it with
  * `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> 0 <file>`.
- * `KV_FUZZ_KNOWN=1` also feeds inputs that reach a reported bug.
  */
 import { build } from "esbuild";
 import { spawnSync } from "node:child_process";

@@ -9,4 +9,4 @@ pub use bloom::{
     bloom_add, bloom_might_contain, bloom_params, create_bloom, BloomFilter,
 };
 pub use compact::merge_sst_bytes;
-pub use sst::{decode_sst, encode_sst, scan_block_contains, Codec, Entry, SstError};
+pub use sst::{decode_sst, encode_sst, lz4_unpack, scan_block_contains, Codec, Entry, SstError};

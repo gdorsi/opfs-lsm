@@ -8,7 +8,6 @@
 # inputs land in fuzz/corpus/<target>/ next to the committed `seed-*` files
 # (git ignores them); a crash lands in fuzz/artifacts/<target>/, and
 # `cargo +nightly fuzz run <target> <file>` replays it.
-# ENGINE_FUZZ_KNOWN=1 also feeds inputs that reach a reported bug.
 set -eu
 target=${1:?target}
 seconds=${2:-600}

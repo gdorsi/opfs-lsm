@@ -119,19 +119,23 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   }
   const dec = new TextDecoder();
   const runs: RunMeta[] = [];
+  // Past the CRC only bytes written on purpose reach here; each read is
+  // still checked, so they throw CorruptDatabaseError, not RangeError.
+  const take = (n: number): number => {
+    if (o + n > crcOff) throw new CorruptDatabaseError("generation truncated");
+    o += n;
+    return o - n;
+  };
   const key = (): Uint8Array => {
-    const len = view.getUint32(o, true);
-    o += 4;
-    const out = buf.slice(o, o + len);
-    o += len;
-    return out;
+    const len = view.getUint32(take(4), true);
+    const at = take(len);
+    return buf.slice(at, at + len);
   };
   for (let i = 0; i < runCount; i++) {
-    const len = view.getUint16(o, true);
-    o += 2;
-    const path = dec.decode(buf.subarray(o, o + len));
-    o += len;
-    if (buf[o++] === 1) {
+    const len = view.getUint16(take(2), true);
+    const at = take(len);
+    const path = dec.decode(buf.subarray(at, at + len));
+    if (buf[take(1)] === 1) {
       const smallest = key();
       runs.push({ path, range: { smallest, largest: key() } });
     } else {

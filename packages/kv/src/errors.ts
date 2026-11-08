@@ -49,3 +49,24 @@ export class StorageUnavailableError extends OpfsLsmError {
     this.name = "StorageUnavailableError";
   }
 }
+
+/**
+ * The error a tab rethrows for a host error that crossed a MessagePort as
+ * a code and a message (structured clone drops the class).
+ */
+export function errorOfCode(code: ErrorCode | undefined, message: string): Error {
+  switch (code) {
+    case "commit":
+      return new CommitError(message);
+    case "closed":
+      return new ClosedError(message);
+    case "corrupt":
+      return new CorruptDatabaseError(message);
+    case "constraint":
+      return new ConstraintError(message);
+    case "unavailable":
+      return new StorageUnavailableError(message);
+    default:
+      return new Error(message);
+  }
+}

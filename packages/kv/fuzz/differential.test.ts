@@ -7,7 +7,7 @@ import { encodeSst as encodeSstWasm, mergeSsts } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { BlockEntries, blockBytes, decodeSst, encodeSst, type SstEntry } from "../src/store/sst.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
-import { bounded, footerOf, framedBlocks, knownError, knownSstBug, lz4SizeUnbounded, repairSst, RuleBroken, tally, type Repair } from "./targets.js";
+import { bounded, framedBlocks, repairSst, RuleBroken, tally, type Repair } from "./targets.js";
 import { loadWasm, type WasmExports } from "./wasm.js";
 
 /**
@@ -17,7 +17,7 @@ import { loadWasm, type WasmExports } from "./wasm.js";
  * thing. On mutated inputs each must obey the rules of `targets.ts`; they
  * may differ in which error they throw, and where no CRC guards the bytes,
  * in their answer. Wasm must never trap: a trap is a Rust panic, and traps
- * use up the instance (KW3 in known-bugs.test.ts).
+ * used up the instance (KW3 in findings.test.ts).
  *
  *   KV_FUZZ_RUNS=5000 KV_FUZZ_REPORT=1 pnpm exec vitest run fuzz/differential.test.ts
  */
@@ -28,7 +28,6 @@ const params: fc.Parameters<unknown> = {
   ...(env.KV_FUZZ_SEED ? { seed: Number(env.KV_FUZZ_SEED), ...(env.KV_FUZZ_PATH ? { path: env.KV_FUZZ_PATH } : {}) } : {}),
 };
 const TIMEOUT = 60_000 + RUNS * 200;
-const includeKnown = env.KV_FUZZ_KNOWN === "1";
 
 let wasm: WasmExports;
 beforeAll(async () => {
@@ -59,74 +58,13 @@ function wasmOutcome<T>(what: string, fn: () => T): Outcome<T> {
   return out;
 }
 
-/** The TypeScript side may fail only with CorruptDatabaseError (or a reported bug). */
+/** The TypeScript side may fail only with CorruptDatabaseError. */
 function tsOutcome<T>(what: string, fn: () => T): Outcome<T> {
   const out = attempt(fn);
-  if (!out.ok && !(out.error instanceof CorruptDatabaseError) && !knownError(out.error)) {
+  if (!out.ok && !(out.error instanceof CorruptDatabaseError)) {
     throw new RuleBroken(`${what} threw ${String(out.error)}`);
   }
   return out;
-}
-
-/**
- * KW1: a varint near 2^32 wraps `o + len` on wasm32 and the slice after it
- * panics. wasm32 keeps only the low 4 bits of the fifth byte, so any fifth
- * byte with low nibble 0xf reads as at least 0xf0000000. Skipped (unless
- * `KV_FUZZ_KNOWN=1`) so the run goes on.
- */
-function hugeVarint(b: Uint8Array): boolean {
-  for (let i = 0; i + 4 < b.byteLength; i++) {
-    const fifth = b[i + 4]!;
-    if (fifth < 0x80 && (fifth & 0x0f) === 0x0f && b[i]! >= 0x80 && b[i + 1]! >= 0x80 && b[i + 2]! >= 0x80 && b[i + 3]! >= 0x80) return true;
-  }
-  return false;
-}
-
-/** The unpacked bytes of a framed block, when they can be had in bounds. */
-function unpacked(framed: Uint8Array, lz4: boolean): Uint8Array | undefined {
-  if (!lz4) return framed;
-  if (framed.byteLength < 4 || lz4SizeUnbounded(framed)) return undefined;
-  try {
-    return lz4DecompressJs(framed.subarray(4), new DataView(framed.buffer, framed.byteOffset).getUint32(0, true));
-  } catch {
-    return undefined;
-  }
-}
-
-/** Inputs that reach a reported wasm bug, told apart before the call. */
-function knownWasmBug(buf: Uint8Array): string | undefined {
-  if (includeKnown) return undefined;
-  const id = knownSstBug(buf);
-  if (id) return id;
-  const f = footerOf(buf);
-  if (f && f.entryCount > buf.byteLength) return "KB2";
-  const lz4 = f?.codec === 1;
-  // Past the CRC, `decode_blocks` and `read_records` wrap the same way as KW1.
-  if (hugeVarint(buf) || framedBlocks(buf).some((b) => hugeVarint(unpacked(b, lz4) ?? new Uint8Array()))) return "KW1";
-  if (f && wrapsOnWasm32(buf)) return "KW1";
-  return undefined;
-}
-
-/** An index entry or footer sum that passes 2^32, which wraps on wasm32. */
-function wrapsOnWasm32(buf: Uint8Array): boolean {
-  const f = footerOf(buf)!;
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const at = buf.byteLength - 44;
-  const field = (i: number) => view.getUint32(at + 4 * i, true);
-  if (field(2) + field(3) >= 2 ** 32 || field(5) + field(6) >= 2 ** 32) return true;
-  let o = f.indexStart;
-  for (let i = 0; i < Math.min(f.blockCount, 4096); i++) {
-    for (let k = 0; k < 2; k++) {
-      if (o + 4 > buf.byteLength) return false;
-      const len = view.getUint32(o, true);
-      if (o + 4 + len >= 2 ** 32) return true;
-      o += 4 + len;
-    }
-    if (o + 8 > buf.byteLength) return false;
-    if (view.getUint32(o, true) + view.getUint32(o + 4, true) >= 2 ** 32) return true;
-    o += 8;
-  }
-  return false;
 }
 
 type Codec = "raw" | "lz4";
@@ -142,10 +80,6 @@ const plain = (es: readonly { kind: string; key: Uint8Array; value?: Uint8Array;
 
 /** Both decoders of a whole run. The wasm one is what the SharedWorker runs. */
 async function decodeBoth(buf: Uint8Array, changed: boolean): Promise<void> {
-  if (knownWasmBug(buf)) {
-    count("skipped (known wasm bug)");
-    return;
-  }
   await bounded("decode_sst (both)", () => {
     const w = wasmOutcome("decode_sst_js", () => wasm.decode_sst_js(buf));
     const t = tsOutcome("decodeSst", () => decodeSst(buf));
@@ -161,14 +95,7 @@ async function decodeBoth(buf: Uint8Array, changed: boolean): Promise<void> {
 }
 
 /** Both block scans of one framed block: `scan_block_contains_js` and the TypeScript cursor a tab falls back to. */
-async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array, mutated: boolean): Promise<"same" | "differ" | "rejected"> {
-  if (mutated && !includeKnown) {
-    if (lz4 && lz4SizeUnbounded(framed)) return "rejected";
-    if (hugeVarint(unpacked(framed, lz4) ?? framed)) {
-      count("skipped (known wasm bug)");
-      return "rejected";
-    }
-  }
+async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array): Promise<"same" | "differ" | "rejected"> {
   return bounded("scan_block_contains (both)", () => {
     const w = wasmOutcome("scan_block_contains_js", () => [...unpackHits(wasm.scan_block_contains_js(framed, lz4, packPatterns([pattern])))]);
     const t = tsOutcome("BlockEntries", () => {
@@ -248,10 +175,10 @@ describe("wasm against the TypeScript fallbacks", () => {
             const block = blocks[pick % blocks.length]!;
             const lz4 = r.codec === "lz4";
             if (!mutate) {
-              expect(await scanBoth(block, lz4, hot, false)).toBe("same");
+              expect(await scanBoth(block, lz4, hot)).toBe("same");
               return;
             }
-            const got = await scanBoth(applyMutations(block, ms, buf), lz4, hot, true);
+            const got = await scanBoth(applyMutations(block, ms, buf), lz4, hot);
             count(`scan of a mutated block: ${got}`);
             if (got === "differ") differ++;
           }),

@@ -1,10 +1,10 @@
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { CommitError, CorruptDatabaseError } from "../../src/errors.js";
 import { EngineHost, MemoryFs, createLocalIngestClient, type Db } from "../../src/index.js";
-import { encodeSst as encodeSstWasm, ensureEngine } from "../../src/store/engine.js";
-import { encodeGeneration, runMeta } from "../../src/store/generation.js";
+import { encodeSst as encodeSstWasm, ensureEngine, mergeSsts } from "../../src/store/engine.js";
+import { decodeGeneration, encodeGeneration, runMeta } from "../../src/store/generation.js";
 import { openHarnessDb } from "../../src/testing.js";
-import { checkDatabase, deleteWal, walMeta, walStore } from "./check-database.js";
+import { checkDatabase, deleteWal, walMeta, walRows, walStore } from "./check-database.js";
 
 /**
  * End-to-end corruption (docs/research/corruption-hardening-test-suite.md,
@@ -131,7 +131,6 @@ const l0 = async (f: Fixture) => (await files(f.fs, "l0")).at(-1)!;
 const l1 = async (f: Fixture) => (await files(f.fs, "l1"))[0]!;
 const l2 = async (f: Fixture) => (await files(f.fs, "l2"))[0]!;
 const recorded = async (f: Fixture) => `m/${String((await walMeta(f.name)).generation).padStart(16, "0")}.mft`;
-const runFiles = async (f: Fixture) => [...(await files(f.fs, "l0")), ...(await files(f.fs, "l1"))];
 
 async function step(r: Report, name: string, fn: () => Promise<Outcome>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -216,18 +215,10 @@ async function run(label: string, make: () => Promise<Fixture>, corrupt: (f: Fix
   return r;
 }
 
-/**
- * KW2 (fuzz/known-bugs.test.ts): with wasm, compaction over a corrupt run
- * fails with the Rust error as a bare string. Reported, not fixed; the KW2
- * test below pins it, and the other tests let it pass.
- */
-const kw2 = (o: Outcome | undefined) =>
-  /^THREW string (CrcMismatch|BadMagic|BadVersion|Truncated|TooShort|BadBlock|BadTag|TrailingGarbage|CountMismatch|BadCodec)/.test(o ?? "");
-
 /** Steps that hung or threw a stray error: every step must fail as documented or answer. */
 function crashes(r: Report): string[] {
   return Object.entries(r)
-    .filter(([s, o]) => o === "HANG" || (o.startsWith("THREW") && !(s === "compact" && kw2(o))))
+    .filter(([, o]) => o === "HANG" || o.startsWith("THREW"))
     .map(([s, o]) => `${s}: ${o}`);
 }
 
@@ -238,8 +229,8 @@ function wrongAnswers(r: Report): string[] {
     .map(([s]) => s);
 }
 
-/** Compaction refused the corrupt run: CorruptDatabaseError, or KW2's string. */
-const refused = (o: Outcome | undefined) => o === "corrupt" || kw2(o);
+/** Compaction refused the corrupt run. */
+const refused = (o: Outcome | undefined) => o === "corrupt";
 
 describe("a healthy database", () => {
   it("passes every step (the harness is right)", async () => {
@@ -294,10 +285,9 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
     expect(wrongAnswers(r)).toEqual([]);
   });
 
-  // KT2 (fuzz/known-bugs.test.ts): one flipped bit in the high byte of the
-  // footer's block count makes a tab allocate 2^24 x 8 bytes before it reads
-  // the index. The read then fails as corrupt, so the outcomes look fine;
-  // the allocation breaks the rule, and the fuzz suite pins it.
+  // KT2 (fuzz/findings.test.ts): one flipped bit in the high byte of the
+  // footer's block count made a tab allocate 2^24 x 8 bytes before it read
+  // the index. `readFooter` now refuses a count the index cannot hold.
   it("L0, the footer's block count high byte flipped", async () => {
     const r = await run("L0 run: block count bit 24 flipped", standard, async (f) => corruptFile(f.fs, await l0(f), flipAt((n) => n - 44 + 7, 0x01)));
     expect(crashes(r)).toEqual([]);
@@ -310,11 +300,9 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
     expect(r.get).toBe("corrupt");
   });
 
-  // KW2: with wasm, compaction's decode throws the Rust error as a bare
+  // KW2: with wasm, compaction's decode threw the Rust error as a bare
   // string ("CrcMismatch") out of `db.ingest()`, not CorruptDatabaseError.
-  // Candidate fix: wrap `decode_sst_js` and `merge_ssts_js` in engine.ts as
-  // the block scanner is wrapped.
-  it.fails("KW2: compaction over a corrupt run fails with CorruptDatabaseError", async () => {
+  it("KW2: compaction over a corrupt run fails with CorruptDatabaseError", async () => {
     const r = await run("L0 run: data byte flipped (KW2)", standard, async (f) => corruptFile(f.fs, await l0(f), flipAt(() => 12)));
     expect(r.compact).toBe("corrupt");
   });
@@ -345,28 +333,16 @@ describe("a corrupt manifest: CRC-checked everywhere", () => {
 });
 
 /**
- * Recovery (`reconcile`, src/recover.ts) treats a recorded manifest that
- * does not decode, or whose runs are not all on disk, as a power loss
- * (design.md, "Recovery", rule 3): it records the newest intact manifest,
- * or generation 0, and drops every WAL record that cannot follow it. The
- * host's sweep then removes every run the new generation does not list.
- *
- * A power loss cannot tear a manifest (OPFS publishes a file whole), and
- * OPFS keeps its writes in order, so a recorded manifest that is on disk
- * but fails its CRC, or lists a run that is gone while no newer intact
- * manifest takes its place, is corruption, not a power loss. R2 throws
- * CorruptDatabaseError and deletes nothing. R1 still becomes silent,
- * permanent loss of the whole database. The
- * research note, technique 10: "A missing or corrupt run throws
- * CorruptDatabaseError. It must never be skipped silently", and "The engine
- * must not 'fix' a gap by deleting data".
- *
- * Candidate fix for R1: for a present,
- * decodable recorded manifest with a missing run, fall back only to a
- * manifest whose `through` reaches `ingestedThrough` (the compaction
- * power-loss row of design.md's table, which loses nothing); else throw.
+ * Recovery (`reconcile`, src/recover.ts) tells a power loss from
+ * corruption (design.md, "Recovery"). A power loss cannot tear a manifest
+ * (OPFS publishes a file whole), and OPFS keeps its writes in order, so a
+ * recorded manifest that is on disk but fails its CRC (R2), or lists a run
+ * that is gone while no intact manifest holds every ingested seq (R1), is
+ * corruption. Recovery then throws CorruptDatabaseError and writes nothing:
+ * no WAL record is dropped, and no sweep deletes a run. Before the fix both
+ * became silent, permanent loss of the whole database.
  */
-describe("recovery never turns corruption into data loss (reported, not fixed)", () => {
+describe("recovery never turns corruption into data loss", () => {
   /** How many keys a reopened database still reads right. */
   async function survivors(f: Fixture): Promise<number> {
     const db = await openHarnessDb({ name: f.name, fs: f.fs, ingest: createLocalIngestClient(new EngineHost(() => f.fs)) });
@@ -376,32 +352,98 @@ describe("recovery never turns corruption into data loss (reported, not fixed)",
     return n;
   }
 
-  // R1: one L0 run of the recorded generation removed. `openDb` records
-  // generation 0, drops the WAL (ingestedThrough moves to head), and reads
-  // an empty database: the intact L1 run and the uningested WAL rows are
-  // lost too, and the next sweep deletes the L1 run.
-  it.fails("R1: a missing run of the recorded generation fails open as corrupt", async () => {
+  /** Every file and its bytes, the WAL rows and `meta`: what a refusal must leave as it was. */
+  async function snapshot(f: Fixture) {
+    const out: Record<string, number[]> = {};
+    for (const dir of ["m", "l0", "l1", "l2"]) {
+      for (const p of await files(f.fs, dir)) out[p] = [...(await f.fs.read(p, 0, Number.POSITIVE_INFINITY))!];
+    }
+    const rows = (await walRows(f.name)).map((r) => [r.seq, [...new Uint8Array(r.raw as ArrayBuffer)]]);
+    return { files: out, rows, meta: await walMeta(f.name) };
+  }
+
+  /** A flush that has a seq to fold, and the compaction after it, on a host that never saw the database. */
+  async function hostFlushAndCompact(f: Fixture): Promise<Outcome> {
+    const { head } = await walMeta(f.name);
+    try {
+      await new EngineHost(() => f.fs).ingest(f.name, head, true);
+      return "ok";
+    } catch (err) {
+      return err instanceof CorruptDatabaseError ? "corrupt" : `THREW ${String(err)}`;
+    }
+  }
+
+  it("R1: a missing run of the recorded generation fails open as corrupt", async () => {
     const r = await run("L0 run: removed", standard, async (f) => f.fs.remove(await l0(f)));
+    expect(crashes(r)).toEqual([]);
     expect(r.open).toBe("corrupt");
   });
 
-  it("R1 today: open records generation 0 and reads an empty database", async () => {
+  it("R1: open, a host flush and a compaction all refuse, and delete nothing", async () => {
     const f = await standard();
     await f.fs.remove(await l0(f));
-    expect(await survivors(f)).toBe(0);
-    expect((await walMeta(f.name)).generation).toBe(0);
+    const before = await snapshot(f);
+    expect(before.rows.length).toBeGreaterThan(0);
+    await expect(openHarnessDb({ name: f.name, fs: f.fs, ingest: createLocalIngestClient(new EngineHost(() => f.fs)) })).rejects.toBeInstanceOf(
+      CorruptDatabaseError,
+    );
+    expect(await snapshot(f)).toEqual(before);
+    expect(await hostFlushAndCompact(f)).toBe("corrupt");
+    expect(await snapshot(f)).toEqual(before);
   });
 
-  // R2: the recorded manifest fails its CRC. `openDb` and the SharedWorker's
-  // next flush both throw CorruptDatabaseError, and nothing is recorded or
-  // swept.
+  it("R1: a manifest that holds every ingested seq stands in, and nothing is lost", async () => {
+    // A compaction's power-loss shape with the old manifest kept: the
+    // recorded manifest lost a run, and a newer manifest with the same
+    // `through` lists one run that merges all of the recorded ones.
+    const f = await standard();
+    const gen = (await walMeta(f.name)).generation!;
+    const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
+    const bodies = await Promise.all(old.runs.map(async (r) => (await f.fs.read(r.path, 0, Number.POSITIVE_INFINITY))!));
+    const merged = (await mergeSsts(bodies, true)).ssts[0]!;
+    const path = `l1/c${gen + 1}.0-${merged.byteLength}.sst`;
+    await put(f.fs, path, merged);
+    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [runMeta(path, merged)] }));
+    await f.fs.remove(await l0(f));
+    expect(await survivors(f)).toBe(f.state.size);
+    expect((await walMeta(f.name)).generation).toBe(gen + 1);
+    expect(await run("L0 run: removed, a merged manifest stands in", async () => f, async () => undefined)).toEqual(HEALTHY);
+  });
+
+  it("R1: a stand-in that misses an ingested seq is not taken", async () => {
+    const f = await standard();
+    const gen = (await walMeta(f.name)).generation!;
+    const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
+    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, through: old.through - 1, runs: [] }));
+    await f.fs.remove(await l0(f));
+    const before = await snapshot(f);
+    expect(await hostFlushAndCompact(f)).toBe("corrupt");
+    expect(await snapshot(f)).toEqual(before);
+  });
+
   it("R2: a manifest that fails its CRC is never replaced, and no run is deleted", async () => {
     const f = await standard();
     await corruptFile(f.fs, await recorded(f), flipAt(() => 50));
-    const before = await runFiles(f);
-    await new EngineHost(() => f.fs).ingest(f.name, Number.POSITIVE_INFINITY, true).catch(() => undefined);
-    expect(await runFiles(f)).toEqual(before);
-    expect((await walMeta(f.name)).generation).not.toBe(0);
+    const before = await snapshot(f);
+    expect(await hostFlushAndCompact(f)).toBe("corrupt");
+    expect(await snapshot(f)).toEqual(before);
+  });
+
+  it("R2: open and a host flush refuse a truncated recorded manifest, and nothing changes", async () => {
+    const f = await standard();
+    await corruptFile(f.fs, await recorded(f), (b) => b.slice(0, 30));
+    const before = await snapshot(f);
+    await expect(survivors(f)).rejects.toBeInstanceOf(CorruptDatabaseError);
+    expect(await hostFlushAndCompact(f)).toBe("corrupt");
+    expect(await snapshot(f)).toEqual(before);
+  });
+
+  it("an empty recorded manifest is a power loss: the newest intact one stands in", async () => {
+    // OPFS can leave a file created and never closed. Not corruption.
+    const f = await standard();
+    await put(f.fs, await recorded(f), new Uint8Array(0));
+    const r = await exercise(f);
+    expect(crashes(r)).toEqual([]);
   });
 });
 

@@ -14,9 +14,6 @@
  *   `CorruptDatabaseError`, never decode.
  * - Where it does not (a tab's `SstReader`, LZ4 unpack, block scans, WAL
  *   rows): any answer is allowed, within the rules above.
- *
- * Inputs that reach a bug already reported are skipped (`knownBug`) unless
- * `KV_FUZZ_KNOWN=1`, so a long run keeps finding new ones.
  */
 import { compareBytes } from "../src/bytes.js";
 import { CommitError, CorruptDatabaseError } from "../src/errors.js";
@@ -42,11 +39,8 @@ const env = (globalThis as { process?: { env?: Record<string, string | undefined
 const TIME_LIMIT_MS = Number(env.KV_FUZZ_TIME_LIMIT_MS ?? 2000);
 /** Bytes one target call may allocate in ArrayBuffers or wasm memory. */
 const ALLOC_LIMIT = 64 << 20;
-const includeKnown = env.KV_FUZZ_KNOWN === "1";
 
 const FOOTER_BYTES = 44;
-/** The encoder always writes 7; see `bloomParams`. */
-const HONEST_HASH_COUNT = 64;
 
 const u32 = (b: Uint8Array, o: number): number | undefined =>
   o >= 0 && o + 4 <= b.byteLength ? new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(o, true) : undefined;
@@ -116,42 +110,9 @@ export function framedBlocks(buf: Uint8Array): Uint8Array[] {
   return out;
 }
 
-/** An LZ4 block unpacks to at most 255 times its size; a bigger claim is corrupt. */
-export const lz4SizeUnbounded = (framed: Uint8Array): boolean => (u32(framed, 0) ?? 0) > 255 * framed.byteLength + 64;
-
-/**
- * Bugs already reported (see the PR that added this file). Each clause
- * names one, so a fix can delete it and let the suite check the input.
- */
-const KNOWN = {
-  /** KB1: an LZ4 block's u32 size is allocated before decoding (wasm and TS). */
-  lz4Size: (framed: Uint8Array) => lz4SizeUnbounded(framed),
-  /** KT1: a footer's bloom hash count is trusted: a get loops that many times. */
-  hashCount: (buf: Uint8Array) => (footerOf(buf)?.hashCount ?? 0) > HONEST_HASH_COUNT,
-  /** KT2: `packIndex` sizes two Uint32Arrays from the footer's block count before checking it. */
-  blockCount: (buf: Uint8Array) => {
-    const f = footerOf(buf);
-    return !!f && f.blockCount * 16 > buf.byteLength;
-  },
-};
-
-/** How often each target ran and each known bug skipped an input, for `KV_FUZZ_REPORT=1`. */
+/** How often each target ran, for `KV_FUZZ_REPORT=1`. */
 export const tally = new Map<string, number>();
 const count = (what: string) => tally.set(what, (tally.get(what) ?? 0) + 1);
-
-/** An SST input a tab or the SharedWorker would read into a reported bug. */
-export function knownSstBug(buf: Uint8Array): string | undefined {
-  if (includeKnown) return undefined;
-  const id = KNOWN.hashCount(buf)
-    ? "KT1"
-    : KNOWN.blockCount(buf)
-      ? "KT2"
-      : footerOf(buf)?.codec === 1 && framedBlocks(buf).some(KNOWN.lz4Size)
-        ? "KB1"
-        : undefined;
-  if (id) count(`skipped (${id})`);
-  return id;
-}
 
 /** Wasm memory in bytes, when a test registers the module's memory. */
 let wasmBytes: () => number = () => 0;
@@ -184,20 +145,10 @@ export async function bounded<T>(what: string, fn: () => Promise<T> | T): Promis
 
 const describe = (err: unknown) => (err instanceof Error ? `${err.name}: ${err.message}` : `a thrown ${typeof err} (${String(err)})`);
 
-/** A reported bug that shows as a wrong error, told apart by where it was thrown. */
-export function knownError(err: unknown): string | undefined {
-  if (includeKnown || !(err instanceof RangeError)) return undefined;
-  // KT3: `readBlockIndex` (decodeSst, sstKeyRange) reads the index with no bounds checks.
-  if (/readBlockIndex/.test(err.stack ?? "")) return "KT3";
-  // KT4: `decodeGeneration` reads run entries past the CRC with no bounds checks.
-  if (/decodeGeneration/.test(err.stack ?? "")) return "KT4";
-  return undefined;
-}
-
 /** `err` must be the documented error, else the rule is broken. */
 function expectCorrupt(what: string, err: unknown): void {
   if (err instanceof RuleBroken) throw err;
-  if (err instanceof CorruptDatabaseError || knownError(err)) return;
+  if (err instanceof CorruptDatabaseError) return;
   throw new RuleBroken(`${what} threw ${describe(err)}, not CorruptDatabaseError`);
 }
 
@@ -251,8 +202,7 @@ export type ReadResult = {
  * checked, so any answer is allowed; each read may throw only
  * `CorruptDatabaseError`, and must end in bounded time and memory.
  */
-export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<ReadResult | undefined> {
-  if (knownSstBug(buf)) return undefined;
+export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<ReadResult> {
   return bounded("a tab read of a run", async () => {
     const reader = new SstReader(bytesFile(buf), new PageCache(), probe.range);
     const max = 255 * buf.byteLength + 16;
@@ -307,7 +257,6 @@ export function expectedRead(entries: readonly SstEntry[], probe: ReadProbe): Re
  * and the CRC was not rewritten to match) it must throw.
  */
 export async function checkDecodeSst(buf: Uint8Array, changed: boolean): Promise<SstEntry[] | undefined> {
-  if (knownSstBug(buf)) return undefined;
   return bounded("decodeSst", () => {
     try {
       const entries = decodeSst(buf);
@@ -386,7 +335,6 @@ export function encodeWalRow(ops: readonly RowOp[]): Uint8Array {
  * return exactly `size` bytes or throw `CorruptDatabaseError`.
  */
 export async function checkLz4(src: Uint8Array, size: number): Promise<Uint8Array | undefined> {
-  if (!includeKnown && size > 255 * src.byteLength + 64) return undefined;
   return bounded("lz4DecompressJs", () => {
     try {
       const out = lz4DecompressJs(src, size);

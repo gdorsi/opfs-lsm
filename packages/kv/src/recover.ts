@@ -39,16 +39,22 @@ const RECONCILE_TRIES = 8;
  *    is handed out again.
  * 2. Otherwise the recorded manifest, when it is intact. `trust` skips the
  *    check for a generation the caller has loaded or published itself.
- * 3. Otherwise the newest intact manifest, or the empty generation 0.
+ * 3. Otherwise, when the recorded manifest is missing (or none is
+ *    recorded), the newest intact manifest, or the empty generation 0.
  *
  * Corruption is not a power loss, and recovery never turns it into lost
- * data. A recorded manifest that is there but does not decode, or one that
- * does not decode before rule 3 reaches an intact one, throws
- * `CorruptDatabaseError` and writes nothing, so no WAL record is dropped
- * and no sweep runs against a stand-in.
+ * data: it throws `CorruptDatabaseError` and writes nothing, so no WAL
+ * record is dropped and no sweep runs against a stand-in.
  *
- * Writes only for 1 and 3, so a healthy database pays one `meta` read and
- * one listing of `m/`. In a running database neither 1 nor 3 holds: a
+ * - The recorded manifest is there but does not decode: throw.
+ * - It decodes but lists a run that is gone: only an intact manifest whose
+ *   `through` reaches `ingestedThrough` may replace it, since it and the
+ *   WAL still hold every seq. Otherwise throw.
+ * - Rule 3 meets a manifest that does not decode before an intact one:
+ *   throw, since it may be the newest state.
+ *
+ * Writes only for 1, 3 and the replacement, so a healthy database pays one
+ * `meta` read and one listing of `m/`. In a running database none holds: a
  * manifest's `through` is at most the head when it is written, `head` never
  * moves down, and reclaim never removes the recorded manifest or its runs.
  */
@@ -91,7 +97,14 @@ async function choose(
     if (trust(recorded)) return undefined;
     const m = await probeManifest(fs, recorded);
     if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${recorded} does not decode`);
-    if (m !== "missing" && (await isIntact(fs, m))) return undefined;
+    if (m !== "missing") {
+      if (await isIntact(fs, m)) return undefined;
+      for (const n of numbers) {
+        const other = await readManifest(fs, n);
+        if (other && other.through >= meta.ingestedThrough && (await isIntact(fs, other))) return other;
+      }
+      throw new CorruptDatabaseError(`manifest ${recorded} lists a run that is gone`);
+    }
   }
   for (const n of numbers) {
     const m = await probeManifest(fs, n);

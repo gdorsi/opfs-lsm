@@ -399,7 +399,7 @@ export function walMeta(name: string): Promise<Meta> {
   });
 }
 
-function walRows(name: string): Promise<{ seq: number; raw: unknown }[]> {
+export function walRows(name: string): Promise<{ seq: number; raw: unknown }[]> {
   return walStore(name, "readonly", async (wal) => {
     const [keys, values] = await Promise.all([result(wal.getAllKeys()), result(wal.getAll())]);
     return keys.map((k, i) => ({ seq: Number(k), raw: values[i] }));

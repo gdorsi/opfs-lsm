@@ -27,11 +27,20 @@ export function lz4Decompress(src: Uint8Array, size: number): Uint8Array {
 }
 
 /**
+ * The largest size `src` can unpack to. LZ4 writes at most 255 bytes per
+ * input byte (each match-length byte adds 255), so a larger claimed size
+ * is corrupt and must not size a buffer. `lz4_unpack` in
+ * `crates/engine-core/src/sst.rs` uses the same bound.
+ */
+const maxUnpacked = (src: Uint8Array) => 255 * src.byteLength + 16;
+
+/**
  * Decode one LZ4 block (the block format, not the frame format) that
  * unpacks to exactly `size` bytes. The wasm encoder writes these with
  * `lz4_flex::block::compress`.
  */
 export function lz4DecompressJs(src: Uint8Array, size: number): Uint8Array {
+  if (size > maxUnpacked(src)) corrupt();
   const out = new Uint8Array(size);
   const n = src.length;
   let s = 0;

@@ -10,6 +10,7 @@ import {
   openHarnessDb,
   __resetMemoryFsForTests
 } from "../src/testing.js";
+import { CorruptDatabaseError, OpfsLsmError } from "../src/errors.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 
 const enc = new TextEncoder();
@@ -30,6 +31,29 @@ afterEach(async () => {
 });
 
 describe("MessagePort ingest host (SharedWorker protocol)", () => {
+  it("a host error crosses the port as the same error class", async () => {
+    const fs = new MemoryFs();
+    const db = await openHarnessDb({ name: "port-db", fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+    await db.put(utf("k"), utf("v"));
+    await db.ingest();
+    await db.close();
+    // The recorded manifest no longer decodes: the host refuses to flush.
+    const [name] = await fs.list("m");
+    const body = (await fs.read(`m/${name}`, 0, Number.POSITIVE_INFINITY))!.slice();
+    body[20]! ^= 1;
+    const w = await fs.create(`m/${name}`);
+    await w.write(body);
+    await w.finish();
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => fs));
+    const client = createPortIngestClient(port2);
+    const err = await client.ingest("port-db", 1).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CorruptDatabaseError);
+    expect((err as OpfsLsmError).code).toBe("corrupt");
+    client.close();
+    port1.close();
+  });
+
   it("ingests via port so a second writer sees SST data", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);

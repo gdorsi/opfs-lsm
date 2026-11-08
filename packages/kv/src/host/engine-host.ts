@@ -1,4 +1,5 @@
 import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
+import { errorOfCode, OpfsLsmError } from "../errors.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile } from "../recover.js";
@@ -458,7 +459,8 @@ export function attachEngineHostPort(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (msg && typeof msg === "object" && "id" in msg) {
-        reply({ type: "err", id: (msg as { id: number }).id, message });
+        const id = (msg as { id: number }).id;
+        reply(err instanceof OpfsLsmError ? { type: "err", id, message, code: err.code } : { type: "err", id, message });
       }
     }
   };
@@ -488,7 +490,7 @@ export function createPortIngestClient(
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
-    if (msg.type === "err") p.reject(new Error(msg.message));
+    if (msg.type === "err") p.reject(errorOfCode(msg.code, msg.message));
     else p.resolve(msg);
   };
   const listener = onMessage as unknown as EventListener;
