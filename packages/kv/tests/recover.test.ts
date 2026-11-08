@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { IdBWal } from "../src/idb/wal.js";
-import { MemoryFs } from "../src/index.js";
+import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import { reconcile } from "../src/recover.js";
 import { publishGeneration, publishRun, type GenerationMeta } from "../src/store/generation.js";
-import { deleteWal } from "./sim/check-database.js";
+import { openHarnessDb } from "../src/testing.js";
+import { checkDatabase, deleteWal } from "./sim/check-database.js";
 
 /**
  * `reconcile` and `IdBWal.adopt` (design.md, "Recovery"): after a power
@@ -211,5 +212,60 @@ describe("reconcile", () => {
     expect(await wal.adopt(stale, 0, 0)).toBe(false);
     expect(await wal.meta()).toEqual({ head: 2, ingestedThrough: 0, generation: undefined, top: 0 });
     wal.close();
+  });
+});
+
+/**
+ * Chrome sometimes deletes every IndexedDB database of an origin after a
+ * browser crash, and leaves OPFS alone (docs/verification.md, "Kill real
+ * Chrome"). To the engine that is an IndexedDB power loss: the open records
+ * the newest manifest and moves `head` past it.
+ */
+describe("a deleted WAL", () => {
+  const text = (b: Uint8Array | undefined) => (b ? new TextDecoder().decode(b) : undefined);
+
+  async function seeded(open: () => ReturnType<typeof openHarnessDb>) {
+    const db = await open();
+    await db.put(enc.encode("a"), enc.encode("1"));
+    await db.ingest();
+    await db.put(enc.encode("b"), enc.encode("2"));
+    return db;
+  }
+
+  it("reopens to the ingested prefix", async () => {
+    name = `recover-${++n}`;
+    const fs = new MemoryFs();
+    const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+    await (await seeded(open)).close();
+    await deleteWal(name);
+    const db = await open();
+    expect(text(await db.get(enc.encode("a")))).toBe("1");
+    expect(await db.get(enc.encode("b"))).toBeUndefined();
+    await db.put(enc.encode("c"), enc.encode("3"));
+    await db.ingest();
+    await db.close();
+    const report = await checkDatabase(fs, name);
+    expect(report.problems).toEqual([]);
+    expect(report.head).toBe(2);
+  });
+
+  it("under an open handle: the handle fails, a new one reads the prefix", async () => {
+    name = `recover-${++n}`;
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(host) });
+    const old = await seeded(open);
+    await deleteWal(name);
+    // The raw IndexedDB error, not an OpfsLsmError.
+    await expect(old.put(enc.encode("x"), enc.encode("9"))).rejects.toMatchObject({ name: "InvalidStateError" });
+    const db = await open();
+    expect(text(await db.get(enc.encode("a")))).toBe("1");
+    await db.put(enc.encode("c"), enc.encode("3"));
+    await db.ingest();
+    await db.close();
+    await old.close().catch(() => undefined);
+    const report = await checkDatabase(fs, name);
+    expect(report.problems).toEqual([]);
+    expect(report.state.map((e) => text(e.key))).toEqual(["a", "c"]);
   });
 });

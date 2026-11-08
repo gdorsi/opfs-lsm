@@ -329,9 +329,9 @@ Chrome DevTools Protocol commands, from
 | Command | Experimental | Description |
 |---|---|---|
 | `Page.crash` | yes | "Crashes renderer on the IO thread, generates minidumps." |
-| `Target.closeTarget` | no | "Closes the target." Works on a SharedWorker target too **(unverified)**. |
+| `Target.closeTarget` | no | "Closes the target." Works on a SharedWorker target too (verified on Chrome 156, see [Phase 5 results](#phase-5-results-2026-11-08)). |
 | `Browser.crash` | yes | "Crashes browser on the main thread." |
-| `Storage.overrideQuotaForOrigin` | yes | Shrinks quota, so OPFS and IndexedDB writes hit `QuotaExceededError`. |
+| `Storage.overrideQuotaForOrigin` | yes | Shrinks quota, so OPFS writes hit `QuotaExceededError`. On Chrome 156 IndexedDB writes ignore it (see [Phase 5 results](#phase-5-results-2026-11-08)). |
 
 Plus `kill -9` of the renderer or browser PID from the harness, which RocksDB's blackbox crash
 test does with its own process ([wiki](https://github.com/facebook/rocksdb/wiki/Stress-test)).
@@ -456,10 +456,67 @@ packages/collections/tests/sim/  same harness with table/index commands + checkC
 | 2 | Multi-handle commands, `fc.scheduler`, history check | cross-tab catch-up, generation install, retry loop, `update` | 1 to 2 days |
 | 3 | `FaultFs`, WAL seam, `crash-enum`, `io-error` | the "Crash behavior" table, reclaim, orphans, error paths | 2 to 4 days |
 | 4 | Fuzz targets (Rust + TS) and corpus | decoders, malformed files, wasm and TS divergence | 1 to 2 days |
-| 5 | Chrome kill loop in nightly CI | platform assumptions, SharedWorker restart, Web Lock release | 2 to 3 days |
+| 5 | Chrome kill loop in nightly CI (done: `scripts/kill-chrome.ts`, `.github/workflows/nightly.yml`) | platform assumptions, SharedWorker restart, Web Lock release | 2 to 3 days |
 | 6 | Env seams + deterministic simulator with buggify; Stryker; differential modes | message loss, multi-host races, untested branches | ongoing |
 
 The effort column is my estimate **(inferred)**.
+
+### Phase 5 results (2026-11-08)
+
+`packages/kv/scripts/kill-chrome.ts` is the loop of technique 6. `docs/verification.md`, "Kill real
+Chrome", says how it works and what a pass means. It ran locally on Chrome 156.0.8078.80 on
+macOS, about 46 minutes and 600 iterations in four runs, with the probes passing in each:
+
+| Run | Kinds | Iterations | Failures |
+| --- | --- | --- | --- |
+| seed 424242, 20 min | all six, 50 each | 300 | 3: one checker false positive (a `.crswap` in `m/`, fixed), two open (below) |
+| seed 31337 | all six | 40, then stopped | 0, then Chrome failed every `indexedDB.open` on that profile |
+| seed 5150, 10 min | kill-browser, browser-crash, page-crash | 154 | 1: the relaunched Chrome died at once (harness, now retried) |
+| seed 8086, 10 min | all six, 23 each | 138 | 0 |
+
+Verified on that Chrome:
+
+- An acked IndexedDB commit survives `Page.crash`, `kill -9` of a renderer or of the browser,
+  and `Browser.crash`, unless Chrome then drops its IndexedDB store (below). Apart from the two
+  open cases below, no iteration lost an ack, and every recovered state was the fold of the log
+  through the recovered head.
+- A tab or browser killed mid-`createWritable` leaves the target file as it was.
+- Web Locks of a crashed tab (reclaim, run and ingest locks) and of a SharedWorker closed by
+  `Target.closeTarget` (ingest and compaction locks) are free at once.
+- `Target.closeTarget` accepts a SharedWorker target id and closes it. No
+  `Target.targetDestroyed` arrives for it; it leaves `Target.getTargets`. A tab that opens the
+  database next gets a new SharedWorker that ingests, as long as DevTools is not attached to
+  the closed one. While a DevTools session was attached, the next tab got no working worker.
+- After `kill -9` of the browser mid-`createWritable`, the swap file stays in OPFS as
+  `<name>.crswap`, listed by `entries()`, across relaunches. Chrome does not clean it up. In a
+  level directory the engine's reclaim removes it as an orphan. In `m/` nothing does: the
+  engine skips the name, and each browser crash during a manifest write leaks one file.
+  `checkDatabase` lists them as `swapFiles`.
+- `Storage.overrideQuotaForOrigin` works only on a page session (the browser session answers
+  "Internal error"), and only for OPFS writes. IndexedDB commits and
+  `navigator.storage.estimate()` ignore it. Under it, ingest fails, and the tab's `ingest()`
+  rejects with a plain `Error` (the `QuotaExceededError` class does not cross the port). The
+  database stays clean, and ingest works again once the quota is restored.
+- After `kill -9` of the browser or `Browser.crash`, Chrome sometimes damages its own
+  IndexedDB store (a LevelDB `CURRENT` naming a missing `MANIFEST`, and a
+  `corruption_info.json`). The next launch fails `indexedDB.open` with `UnknownError`, and
+  Chrome then deletes every IndexedDB database of the origin, or keeps failing every open.
+  OPFS is untouched. 13 of the 149 browser kills of the last two runs, on macOS. The engine
+  treats it as an IndexedDB power loss and recovers the newest intact manifest, so this is a persistence loss
+  (the WAL tail), not corruption.
+
+Open: in the first 20-minute run, two iterations right after such a wipe failed the prefix
+check (seed 424242, iterations 59 and 239). In one, an ingested key was gone; in the other,
+seqs restarted at 1 and the old manifests were gone. That harness then SIGKILLed Chrome's
+helpers, the storage service among them, the moment the browser process exited, even after a
+normal close. Since it waits for them to exit, 292 iterations (149 of them browser kills, with 13
+wipes) found no loss, and a Node test that deletes the WAL between sessions or under an
+open handle recovers a prefix. The cause, Chrome or the engine, is not known.
+
+Still unverified: power loss (fsync of the swap file before the move, the order in which
+IndexedDB and OPFS reach disk), IndexedDB under quota, IndexedDB key generator rollback on a
+commit cut by a kill beyond what `checkDatabase`'s gap check sees, Linux and other browsers.
+The nightly workflow runs the loop on Linux.
 
 Extend `formal:kv` in parallel with its own "Not covered yet" list (crash between
 `publishGeneration` and `advanceIngested`, reclaim against a view pin, BroadcastChannel against
@@ -481,7 +538,7 @@ models prove small domains completely, and the random suites cover large domains
 | Chrome 121 made `relaxed` the default. `complete` fires "after changes make it to the OS buffer", which "is typically flushed every couple seconds". A power failure can lose the change. "strict does not ensure that changes are actually written immediately to disk." | [Chrome blog](https://developer.chrome.com/blog/indexeddb-durability-mode-now-defaults-to-relaxed/) | The engine uses the default, so acked writes can be lost on power loss. This matches `AGENTS.md`. |
 | "Aborting a transaction rolls back any increases to the key generator." | [IndexedDB spec §2.11](https://w3c.github.io/IndexedDB/) | The gapless-seq design depends on this. Test it on Chrome, not only on fake-indexeddb. |
 | No spec text found that orders an IndexedDB commit relative to an OPFS file move. | — | Treat them as independently durable **(inferred)**. |
-| Web Locks: "When an agent terminates, terminate remaining locks and requests with the agent." The spec notes worker termination is "vaguely defined". `steal` leaves the old holder running "without guarantees that it is the sole context". Locks are per storage bucket. | [Web Locks spec](https://w3c.github.io/web-locks/) | Lock release on SharedWorker kill should get its own real-Chrome test. |
+| Web Locks: "When an agent terminates, terminate remaining locks and requests with the agent." The spec notes worker termination is "vaguely defined". `steal` leaves the old holder running "without guarantees that it is the sole context". Locks are per storage bucket. | [Web Locks spec](https://w3c.github.io/web-locks/) | Verified on Chrome 156: released at once after a tab crash and after `Target.closeTarget` on the SharedWorker (`kill-chrome` probes). |
 | SharedWorkers are identified by script URL and name. User agents "may invoke the terminate a worker algorithm when a worker stops being actively needed", which aborts the running script. | [HTML §10](https://html.spec.whatwg.org/multipage/workers.html) | The host can die between any two awaits of an ingest or compaction. The crash enumeration covers this. |
 | SQLite's own OPFS VFSs rely on exclusive sync access handles. A second tab "will hit a locking error". WAL mode needs `locking_mode=exclusive`. The docs make no durability or crash-recovery claim, and say databases can vanish through browser cleanup. | [sqlite.org/wasm persistence](https://sqlite.org/wasm/doc/trunk/persistence.md) | Prior art avoids multi-writer OPFS. This engine routes writes through IndexedDB and one SharedWorker instead. |
 | wa-sqlite marks which VFSs support multiple connections and relaxed durability. Its OPFS multi-connection VFSs use a "retry hack" that can "expose possible race condition failures". | [wa-sqlite examples](https://github.com/rhashimoto/wa-sqlite/tree/master/src/examples) | — |
@@ -520,10 +577,12 @@ None is confirmed. Each is a concrete first test case for phases 3 and 5.
   from `flow/include/flow/Buggify.h`. The Will Wilson talk was not watched.
 - The ALICE per-application vulnerability list (LevelDB, SQLite counts) was not extracted. Only
   the abstract, §1 to §3 and the method were read.
-- Whether Chrome fsyncs an OPFS swap file before the move, how it cleans up `.crswap` files
-  after a browser crash, and how it orders IndexedDB and OPFS writes on disk.
-- Whether `Target.closeTarget` accepts a SharedWorker target id, and the behavior of IndexedDB
-  transactions in flight when the context is destroyed (spec section not located).
+- Whether Chrome fsyncs an OPFS swap file before the move, and how it orders IndexedDB and
+  OPFS writes on disk. (It does not clean up `.crswap` files after a browser crash: see
+  [Phase 5 results](#phase-5-results-2026-11-08).)
+- The spec behavior of IndexedDB transactions in flight when the context is destroyed (section
+  not located). `Target.closeTarget` on a SharedWorker is verified: see
+  [Phase 5 results](#phase-5-results-2026-11-08).
 - `cargo-mutants` and Knossos were not read. Porcupine and Elle details come from their READMEs.
 - Jazzer.js FuzzedDataProvider and bug detectors are documented in its `docs/`, which I did not
   read.
