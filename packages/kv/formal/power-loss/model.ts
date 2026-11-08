@@ -58,6 +58,12 @@ export type Variant = {
   /** Number new manifests past `m/` only, forgetting what recovery saw. */
   readonly reuseNumbers?: boolean;
   /**
+   * The rule before R1 was fixed: a recorded manifest that is there but
+   * lists a run that is gone is treated like a missing one (rule 3), so
+   * recovery records an older manifest or generation 0 and drops the WAL.
+   */
+  readonly lossyRecovery?: boolean;
+  /**
    * A tab holds the reclaim lock through the whole run, so the host's
    * manifest and run removals are all skipped (`unlessHeld`). Not a broken
    * design: the property must hold with and without it.
@@ -66,6 +72,13 @@ export type Variant = {
 };
 
 export class Stuck extends Error {}
+
+/**
+ * Recovery refused: the recorded manifest is there, a run it lists is gone,
+ * and no intact manifest holds every ingested seq. Corruption, never a
+ * power loss; nothing is written.
+ */
+export class Refused extends Error {}
 
 export function emptyIdb(): Idb {
   return { head: 0, ingested: 0, generation: undefined, top: 0, rows: new Map() };
@@ -155,11 +168,17 @@ export class Sys {
         }
       }
     }
-    if (!pick) {
-      if (generation !== undefined && this.intact(this.manifest(generation))) return { gen: generation, top };
-      if (generation !== undefined && this.v.noFallback) throw new Stuck(`manifest ${generation} is gone`);
-      pick = numbers.map((n) => this.manifest(n)).find((m) => this.intact(m)) ?? ZERO;
+    if (!pick && generation !== undefined) {
+      const recorded = this.manifest(generation);
+      if (this.intact(recorded)) return { gen: generation, top };
+      if (recorded && !this.v.lossyRecovery) {
+        // R1: only a manifest that holds every ingested seq may stand in.
+        pick = numbers.map((n) => this.manifest(n)).find((m) => this.intact(m) && m.through >= ingested);
+        if (!pick) throw new Refused(`manifest ${generation} lists a run that is gone`);
+      }
+      if (!pick && this.v.noFallback) throw new Stuck(`manifest ${generation} is gone`);
     }
+    pick ??= numbers.map((n) => this.manifest(n)).find((m) => this.intact(m)) ?? ZERO;
     let floor = pick.through;
     for (const n of numbers) floor = Math.max(floor, this.manifest(n)!.through);
     const nextHead = this.v.noHeadRaise ? head : Math.max(head, pick.through, floor);

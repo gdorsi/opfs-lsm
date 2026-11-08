@@ -20,11 +20,18 @@
  * Broken variants (build on the newest manifest, no head raise, no
  * fallback, no newer-manifest adoption) must each fail, so the model is
  * strong enough to see the bugs the crash suite found.
+ *
+ * CorruptRefuse: after every workload, a run of the recorded manifest is
+ * removed (corruption, which no power loss produces). Unless an intact
+ * manifest holds every ingested seq, open must refuse, and open, sweep,
+ * ingest and compaction must write nothing; with one, the read must still
+ * hold every acked write. The rule from before the fix (`lossyRecovery`) must
+ * fail this check.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cloneIdb, cloneOpfs, emptyIdb, emptyOpfs, replay, Stuck, Sys, type Idb, type Op, type Opfs, type Variant } from "./model.js";
+import { cloneIdb, cloneOpfs, emptyIdb, emptyOpfs, Refused, replay, Stuck, Sys, type Idb, type Op, type Opfs, type Variant } from "./model.js";
 
 const MAX_CMDS = Number(process.env.FORMAL_POWER_CMDS ?? 6);
 /** Power losses in a row: the first, then one during or after each recovery. */
@@ -66,6 +73,17 @@ function read(sys: Sys, what: string): Set<number> {
     return sys.read();
   } catch (err) {
     if (err instanceof Stuck) throw new Violation(`${what}: does not open (${err.message})`);
+    if (err instanceof Refused) throw new Violation(`${what}: refused a state a power loss leaves (${err.message})`);
+    throw err;
+  }
+}
+
+/** A recovery step on a power-loss state: a refusal is a violation. */
+function step(sys: Sys, name: "sweep" | "ingest" | "compact", what: string): void {
+  try {
+    sys[name]();
+  } catch (err) {
+    if (err instanceof Refused) throw new Violation(`${what}: ${name} refused a state a power loss leaves (${err.message})`);
     throw err;
   }
 }
@@ -109,10 +127,10 @@ function recover(st: { idb: Idb; opfs: Opfs }, log: readonly number[], mustHold:
     throw new Violation(`${where}: a process crash lost acked writes: read ${k} of ${mustHold}`);
   }
   const kept = log.slice(0, k);
-  for (const step of ["sweep", "ingest", "compact"] as const) {
-    sys[step]();
+  for (const name of ["sweep", "ingest", "compact"] as const) {
+    step(sys, name, where);
     const sick = sys.problem();
-    if (sick) throw new Violation(`${where}: unhealthy after recovery's ${step}: ${sick}`);
+    if (sick) throw new Violation(`${where}: unhealthy after recovery's ${name}: ${sick}`);
   }
   if (prefixOf(read(sys, `${where}: recovered`), kept, `${where}: recovery changed the read`) !== k) {
     throw new Violation(`${where}: recovery changed the read`);
@@ -159,8 +177,68 @@ function explore(v: Variant, maxCmds: number, depth: number): string | undefined
       checkWorkload(cmds, v, depth);
     } catch (err) {
       if (err instanceof Violation) return err.message;
+      // A refusal anywhere in a power-loss run: recovery called it corruption.
+      if (err instanceof Refused) return `[${cmds.join(" ")}]: refused a state a power loss leaves (${err.message})`;
       throw err;
     }
+  }
+  return undefined;
+}
+
+let refusals = 0;
+let standIns = 0;
+
+/**
+ * CorruptRefuse on one workload: remove each run of the recorded manifest
+ * in turn. Returns a violation, or undefined.
+ */
+function checkCorruptRun(cmds: readonly Cmd[], v: Variant): string | undefined {
+  const live = new Sys(emptyIdb(), emptyOpfs(), v, 1);
+  live.reconcile();
+  for (const c of cmds) run(live, c);
+  const gen = live.idb.generation ?? 0;
+  const runs = gen === 0 ? [] : live.opfs.manifests.get(gen)!.runs;
+  for (const path of runs) {
+    const where = `[${cmds.join(" ")}] then run ${path} of manifest ${gen} removed`;
+    const opfs = cloneOpfs(live.opfs);
+    opfs.runs.delete(path);
+    const { ingested } = live.idb;
+    const standIn = [...opfs.manifests.values()].some((m) => m.through >= ingested && m.runs.every((p) => opfs.runs.has(p)));
+    if (standIn) {
+      const sys = new Sys(cloneIdb(live.idb), opfs, v, 500);
+      let got: Set<number>;
+      try {
+        got = sys.read();
+      } catch (err) {
+        if (err instanceof Refused || err instanceof Stuck) return `${where}: refused, though a manifest holds every ingested seq`;
+        throw err;
+      }
+      if (live.acked.some((id) => !got.has(id))) return `${where}: the stand-in lost acked writes`;
+      standIns++;
+      continue;
+    }
+    for (const name of ["read", "sweep", "ingest", "compact"] as const) {
+      const sys = new Sys(cloneIdb(live.idb), cloneOpfs(opfs), v, 500);
+      let refused = false;
+      try {
+        sys[name]();
+      } catch (err) {
+        if (!(err instanceof Refused)) throw err;
+        refused = true;
+      }
+      if (sys.ops.length > 0) return `${where}: ${name} wrote ${sys.ops.map((o) => o.label).join(", ")}`;
+      // A sweep skipped while a tab holds the reclaim lock writes nothing either.
+      if (!refused && name === "read") return `${where}: open did not refuse`;
+      if (refused) refusals++;
+    }
+  }
+  return undefined;
+}
+
+function exploreCorrupt(v: Variant, maxCmds: number): string | undefined {
+  for (const cmds of workloads(maxCmds)) {
+    const found = checkCorruptRun(cmds, v) ?? checkCorruptRun(cmds, { ...v, held: true });
+    if (found) return found;
   }
   return undefined;
 }
@@ -180,6 +258,7 @@ function sourceSync(): string[] {
   need("idb/wal.ts", /meta\.put\(Math\.max\(knownTop, top, generation\), META_TOP\)/, "adopt keeps the highest manifest number seen");
   need("recover.ts", /Math\.max\(numbers\[0\] \?\? 0, meta\.top, meta\.generation \?\? 0\)/, "new manifests number past every number in use");
   need("recover.ts", /m\.through > meta\.head && \(await isIntact\(fs, m\)\)/, "reconcile adopts an intact manifest past the head first");
+  need("recover.ts", /if \(m === "corrupt"\) throw new CorruptDatabaseError\(`manifest \$\{recorded\} does not decode`\);\s*if \(m !== "missing"\) \{\s*if \(await isIntact\(fs, m\)\) return undefined;[\s\S]*?other\.through >= meta\.ingestedThrough && \(await isIntact\(fs, other\)\)\) return other;\s*\}\s*throw new CorruptDatabaseError/, "a recorded manifest that is there but broken is replaced only by one that holds every ingested seq, else recovery throws");
   need("host/engine-host.ts", /reconcile\(wal, fs, this\.trust\(dbName\)\)[\s\S]*liveRuns\(fs, generation\)/, "reclaim sweeps against the reconciled generation's runs");
   need("db.ts", /await reconcile\(wal, fs, TRUST_RECORDED\);[\s\S]*await db\.sync\(\)/, "openDb reconciles before the first sync");
   need("db.ts", /holdingFiles\(this\.name, async \(\) => \{\s*for \([^)]*\) \{\s*const step = await this\.catchUpOnce\(\);\s*if \(step === "done"\) return;\s*if \(step === "gone"\) gone = await this\.repairGone\(gone\);/, "sync retries under the reclaim lock and repairs when the recorded generation does not load");
@@ -218,6 +297,13 @@ function main(): void {
     console.log(`  broken variant caught: ${name}`);
   }
 
+  const lossy = exploreCorrupt({ lossyRecovery: true }, MAX_CMDS);
+  if (!lossy) {
+    console.error(`\nFAIL model too weak: the broken variant "a missing run of the recorded manifest falls back like a missing manifest" passes`);
+    process.exit(1);
+  }
+  console.log("  broken variant caught: a missing run of the recorded manifest falls back like a missing manifest");
+
   states = 0;
   const started = performance.now();
   const violation = explore({}, MAX_CMDS, 1) ?? explore({ held: true }, MAX_CMDS, 1);
@@ -227,6 +313,14 @@ function main(): void {
     process.exit(1);
   }
   console.log(`\nPASS PowerPrefix — ${states} crash states (${CRASHES} power losses deep) in ${Math.round(performance.now() - started)} ms`);
+
+  const corrupt = exploreCorrupt({}, MAX_CMDS);
+  if (corrupt) {
+    console.error("\nFAIL CorruptRefuse");
+    console.error(corrupt);
+    process.exit(1);
+  }
+  console.log(`PASS CorruptRefuse — ${refusals} refusals that wrote nothing, ${standIns} lossless stand-ins`);
 }
 
 main();
