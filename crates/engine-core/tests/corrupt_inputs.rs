@@ -217,7 +217,7 @@ fn decode_sst_rejects_every_change_the_crc_covers() {
         },
         |case| {
             let (&same, buf) = case.split_first().unwrap();
-            if same == 0 && !corrupt::known_bug(buf, None) {
+            if same == 0 {
                 assert!(decode_sst(buf).is_err(), "a changed run decoded");
             }
         },
@@ -291,18 +291,15 @@ fn the_wrapper_run_decodes_a_block_as_the_engine_writes_it() {
     assert_eq!(decode_sst(&wrapped).unwrap(), decode_sst(&run).unwrap());
 }
 
-// --- Known bugs: inputs the fuzzers found, pinned until a fix lands. Each
-// is ignored so the suite stays green; `cargo test -- --ignored` runs them.
+// --- Regressions: inputs the fuzzers found.
 
-/// KB1: an LZ4 block's u32 uncompressed size sizes a zeroed buffer before
+/// KB1: an LZ4 block's u32 uncompressed size sized a zeroed buffer before
 /// a byte is decoded (`lz4_flex::block::decompress(src, size)` in
 /// `scan_block_contains` and `decode_sst`, and `lz4_decompress_js`). A tab
-/// reads LZ4 blocks with no CRC check, so one corrupt size grows the wasm
+/// reads LZ4 blocks with no CRC check, so one corrupt size grew the wasm
 /// memory by up to 4 GiB, and wasm memory never shrinks.
-/// Candidate fix: reject `size > 255 * src.len() + 16` (LZ4's largest
-/// ratio) with `BadBlock` before decompressing.
+/// `lz4_unpack` refuses a size past LZ4's largest ratio (255 to 1) first.
 #[test]
-#[ignore = "KB1: LZ4 uncompressed size is trusted (reported, not fixed)"]
 fn kb1_an_lz4_block_size_does_not_size_an_allocation() {
     let framed = [0xff, 0xff, 0xff, 0x7f, 0x10, 0x41];
     let (out, largest) = largest_alloc(|| scan_block_contains(&framed, Codec::Lz4, &[]));
@@ -310,15 +307,14 @@ fn kb1_an_lz4_block_size_does_not_size_an_allocation() {
     assert!(largest <= ALLOC_LIMIT, "allocated {largest} bytes for a 6-byte block");
 }
 
-/// KB2: `decode_sst` reserves the footer's `entry_count` entries
-/// (`Vec::with_capacity(entry_count)` in `decode_blocks`) before it reads a
+/// KB2: `decode_sst` reserved the footer's `entry_count` entries
+/// (`Vec::with_capacity(entry_count)` in `decode_blocks`) before it read a
 /// block. Reached only past the CRC, so only by bytes written on purpose:
 /// a CRC-valid run with `entry_count` near `u32::MAX` asks for ~200 GiB
-/// natively (abort) and overflows capacity in wasm (panic).
-/// Candidate fix: cap the reservation, e.g. `entry_count.min(data_len / 10)`
-/// (a record is at least 10 bytes).
+/// natively (abort) and overflowed capacity in wasm (panic).
+/// The reservation is capped at `data_len / 10` (a record is at least 10
+/// bytes).
 #[test]
-#[ignore = "KB2: footer entry count sizes an allocation (reported, not fixed)"]
 fn kb2_the_footer_entry_count_does_not_size_an_allocation() {
     let mut run = corrupt::sample_run(3, 1, Codec::Raw);
     let at = run.len() - FOOTER_BYTES;

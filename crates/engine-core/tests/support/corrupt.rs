@@ -12,9 +12,6 @@
 //! - `scan_block_contains` checks no CRC (tabs call it): a wrong answer is
 //!   allowed, but it must agree with a full decode of the same block when
 //!   both succeed, and every hit must hold every pattern.
-//!
-//! Inputs that hit a known, reported bug are skipped by `known_bug` unless
-//! `ENGINE_FUZZ_KNOWN=1`, so a long run keeps finding new bugs.
 
 #![allow(dead_code)]
 
@@ -94,45 +91,9 @@ pub fn framed_blocks(buf: &[u8]) -> Vec<&[u8]> {
     out
 }
 
-/// Inputs that reach a bug already reported and pinned by an ignored test in
-/// `tests/corrupt_inputs.rs`. Fuzzing skips them so it keeps looking for new ones.
-/// Each clause names its bug.
-pub fn known_bug(buf: &[u8], codec_hint: Option<Codec>) -> bool {
-    if known_bugs_included() {
-        return false;
-    }
-    // KB1: an LZ4 block's u32 uncompressed size is allocated before the
-    // block is decoded (`lz4_flex::block::decompress`), up to 4 GiB.
-    let lz4_size_unbounded = |framed: &[u8]| -> bool {
-        match u32_at(framed, 0) {
-            Some(size) => size as usize > 255 * framed.len() + 64,
-            None => false,
-        }
-    };
-    if let Some(codec) = codec_hint {
-        return codec == Codec::Lz4 && lz4_size_unbounded(buf);
-    }
-    let Some(f) = footer(buf) else { return false };
-    // KB2: `decode_sst` reserves `entry_count` entries from the footer
-    // before reading a block (`Vec::with_capacity(entry_count)`).
-    if f.entry_count as usize > buf.len() {
-        return true;
-    }
-    f.codec == 1 && framed_blocks(buf).into_iter().any(lz4_size_unbounded)
-}
-
-fn known_bugs_included() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ENGINE_FUZZ_KNOWN").is_ok_and(|v| v == "1"))
-}
-
 /// `decode_sst` on arbitrary bytes. When it succeeds, the entries round-trip
 /// through the encoder, and a block scan of every block agrees with them.
 pub fn check_decode(buf: &[u8]) {
-    if known_bug(buf, None) {
-        return;
-    }
     let Ok(entries) = decode_sst(buf) else { return };
     let f = footer(buf).expect("a decoded run has a footer");
     assert_eq!(entries.len(), f.entry_count as usize, "decode returned the footer's entry count");
@@ -177,9 +138,6 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 /// pattern. When the scan succeeds, the same block wrapped in a one-block
 /// run decodes, and its puts filtered by the patterns are the hits.
 pub fn check_scan(framed: &[u8], codec: Codec, patterns: &[&[u8]]) {
-    if known_bug(framed, Some(codec)) {
-        return;
-    }
     let Ok(packed) = scan_block_contains(framed, codec, patterns) else { return };
     let hits = unpack_hits(&packed);
     for (_, value) in &hits {
@@ -236,9 +194,6 @@ pub fn wrap_block(framed: &[u8], codec: Codec, count: u32) -> Vec<u8> {
 /// `BTreeMap` fold of the inputs (newest wins, the last duplicate in a run
 /// wins), cut into runs that each decode.
 pub fn check_merge(inputs: &[Vec<u8>], drop_tombstones: bool, target_bytes: usize, codec: Codec) {
-    if inputs.iter().any(|b| known_bug(b, None)) {
-        return;
-    }
     let result = merge_sst_bytes(inputs, drop_tombstones, target_bytes, codec);
     let decoded: Result<Vec<Vec<Entry>>, _> = inputs.iter().map(|b| decode_sst(b)).collect();
     let Ok(decoded) = decoded else {

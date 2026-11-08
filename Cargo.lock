@@ -27,7 +27,6 @@ version = "0.1.0"
 dependencies = [
  "engine-core",
  "js-sys",
- "lz4_flex",
  "wasm-bindgen",
  "web-sys",
 ]
