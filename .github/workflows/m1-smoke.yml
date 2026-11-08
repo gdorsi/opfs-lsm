@@ -48,6 +48,7 @@ jobs:
 
   kill-chrome:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
