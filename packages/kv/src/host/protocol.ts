@@ -1,3 +1,4 @@
+import type { ErrorCode } from "../errors.js";
 import type { IngestPolicy } from "../ingest-policy.js";
 
 /** The BroadcastChannel where tabs share appends and new generations. */
@@ -71,6 +72,8 @@ export type HostToClient =
       readonly type: "err";
       readonly id: number;
       readonly message: string;
+      /** The `OpfsLsmError` code, so the tab rethrows the same class. */
+      readonly code?: ErrorCode;
     }
   | {
       readonly type: "watch-trace";

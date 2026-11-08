@@ -9,6 +9,13 @@ import { lz4Decompress } from "./lz4.js";
 const SST_MAGIC = 0x4f4c5354;
 const VERSION = 1;
 const FOOTER_BYTES = 44;
+/**
+ * The most Bloom hashes a footer may name. The encoder writes 7; a get
+ * loops once per hash, so a corrupt count must not set its cost.
+ */
+const MAX_BLOOM_HASHES = 32;
+/** The smallest index entry: two u32 key lengths, offset and length. */
+const MIN_INDEX_ENTRY_BYTES = 16;
 
 /**
  * How a run stores its data blocks. An LZ4 block is a u32 uncompressed
@@ -452,6 +459,8 @@ export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
   }
   const codec = CODECS[codecId];
   if (!codec) throw new CorruptDatabaseError(`unsupported sst codec ${codecId}`);
+  if (bloomHashCount > MAX_BLOOM_HASHES) throw new CorruptDatabaseError(`sst bloom hash count ${bloomHashCount}`);
+  if (blockCount * MIN_INDEX_ENTRY_BYTES > indexLen) throw new CorruptDatabaseError("sst block count past the index");
   return { entryCount, blockCount, dataLen: bloomOffset, bloomHashCount, indexStart: indexOffset, indexEnd: footer, codec };
 }
 
@@ -480,19 +489,22 @@ function readBlockIndex(
 ): BlockIndexEntry[] {
   const index: BlockIndexEntry[] = [];
   let o = indexStart;
+  const u32 = () => {
+    if (o + 4 > indexEnd) throw new CorruptDatabaseError("sst index OOB");
+    o += 4;
+    return view.getUint32(o - 4, true);
+  };
+  const key = () => {
+    const len = u32();
+    if (o + len > indexEnd) throw new CorruptDatabaseError("sst index OOB");
+    o += len;
+    return buf.slice(o - len, o);
+  };
   for (let i = 0; i < blockCount; i++) {
-    const firstLen = view.getUint32(o, true);
-    o += 4;
-    const firstKey = buf.slice(o, o + firstLen);
-    o += firstLen;
-    const lastLen = view.getUint32(o, true);
-    o += 4;
-    const lastKey = buf.slice(o, o + lastLen);
-    o += lastLen;
-    const offset = view.getUint32(o, true);
-    o += 4;
-    const length = view.getUint32(o, true);
-    o += 4;
+    const firstKey = key();
+    const lastKey = key();
+    const offset = u32();
+    const length = u32();
     index.push({ firstKey, lastKey, offset, length });
   }
   if (o !== indexEnd) throw new CorruptDatabaseError("sst index trailing");

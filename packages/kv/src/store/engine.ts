@@ -5,7 +5,7 @@
 import type { SstCodec, SstEntry } from "./sst.js";
 import * as sstTs from "./sst.js";
 import { foldEntries } from "./fold.js";
-import { useLz4Decoder } from "./lz4.js";
+import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
 import { CorruptDatabaseError } from "../errors.js";
 
@@ -75,11 +75,18 @@ export async function ensureEngine(): Promise<void> {
       wasm = await loadWasm();
       const mod = wasm;
       if (mod) {
-        useLz4Decoder((src, size) => mod.lz4_decompress_js(src, size));
+        useLz4Decoder((src, size) => {
+          try {
+            return mod.lz4_decompress_js(src, size);
+          } catch (err) {
+            return afterWasmError(err, "sst lz4 block corrupt", () => lz4DecompressJs(src, size));
+          }
+        });
         useBlockScanner((framed, lz4, patterns) => {
           try {
             return mod.scan_block_contains_js(framed, lz4, patterns);
           } catch (err) {
+            if (err instanceof WebAssembly.RuntimeError) dropWasm();
             throw new CorruptDatabaseError(`sst block corrupt: ${String(err)}`);
           }
         });
@@ -87,6 +94,31 @@ export async function ensureEngine(): Promise<void> {
     })();
   }
   await initOnce;
+}
+
+/**
+ * Stop using wasm in this context. A trap (a Rust panic, or an allocation
+ * wasm memory cannot grow to) does not unwind, so the trapped call's frames
+ * stay on the instance's shadow stack: a few thousand traps use it up and
+ * every later call fails. The TypeScript codec takes over instead.
+ */
+function dropWasm(): void {
+  wasm = undefined;
+  useLz4Decoder(undefined);
+  useBlockScanner(undefined);
+}
+
+/**
+ * A wasm call over run bytes failed. A Rust error (a string such as
+ * "CrcMismatch") means the bytes are corrupt. A trap drops wasm and runs
+ * the call again in TypeScript, which gives the honest answer.
+ */
+function afterWasmError<T>(err: unknown, what: string, fallback: () => T): T {
+  if (err instanceof WebAssembly.RuntimeError) {
+    dropWasm();
+    return fallback();
+  }
+  throw new CorruptDatabaseError(`${what}: ${String(err)}`);
 }
 
 export function engineUsingWasm(): boolean {
@@ -105,18 +137,24 @@ export async function encodeSst(
       ? { kind: "put", key: e.key, value: e.value, seq: e.seq ?? 0 }
       : { kind: "del", key: e.key, seq: e.seq ?? 0 },
   );
-  return wasm.encode_sst_js(arr, codec === "lz4");
+  try {
+    return wasm.encode_sst_js(arr, codec === "lz4");
+  } catch (err) {
+    if (!(err instanceof WebAssembly.RuntimeError)) throw err;
+    dropWasm();
+    return sstTs.encodeSst(entries);
+  }
 }
 
 export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
   await ensureEngine();
   if (!wasm) return sstTs.decodeSst(buf);
-  const rows = wasm.decode_sst_js(buf) as {
-    kind: string;
-    key: Uint8Array;
-    value?: Uint8Array;
-    seq: number;
-  }[];
+  let rows: { kind: string; key: Uint8Array; value?: Uint8Array; seq: number }[];
+  try {
+    rows = wasm.decode_sst_js(buf) as typeof rows;
+  } catch (err) {
+    return afterWasmError(err, "sst corrupt", () => sstTs.decodeSst(buf));
+  }
   return rows.map((r) => {
     if (r.kind === "put") {
       return {
@@ -144,8 +182,21 @@ export async function mergeSsts(
 ): Promise<{ readonly ssts: readonly Uint8Array[]; readonly droppedSeq: number }> {
   await ensureEngine();
   if (wasm) {
-    return wasm.merge_ssts_js([...blobsNewestFirst], dropTombstones, targetBytes, codec === "lz4");
+    try {
+      return wasm.merge_ssts_js([...blobsNewestFirst], dropTombstones, targetBytes, codec === "lz4");
+    } catch (err) {
+      return afterWasmError(err, "sst corrupt", () => mergeSstsTs(blobsNewestFirst, dropTombstones, targetBytes));
+    }
   }
+  return mergeSstsTs(blobsNewestFirst, dropTombstones, targetBytes);
+}
+
+/** `mergeSsts` without wasm: every output run is raw. */
+function mergeSstsTs(
+  blobsNewestFirst: readonly Uint8Array[],
+  dropTombstones: boolean,
+  targetBytes: number,
+): { readonly ssts: readonly Uint8Array[]; readonly droppedSeq: number } {
   let entries = foldEntries(blobsNewestFirst.map((b) => sstTs.decodeSst(b)));
   let droppedSeq = 0;
   if (dropTombstones) {

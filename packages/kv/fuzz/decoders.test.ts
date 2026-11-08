@@ -33,7 +33,6 @@ import { loadWasm, withoutWasm } from "./wasm.js";
  *
  *   KV_FUZZ_RUNS=20000 pnpm exec vitest run fuzz/decoders.test.ts
  *   KV_FUZZ_SEED=<seed> KV_FUZZ_PATH=<path> pnpm exec vitest run fuzz/decoders.test.ts
- *   KV_FUZZ_KNOWN=1 ...   also feed inputs that reach a reported bug
  */
 const env = process.env;
 /** Cases per mutation property; the intact-run property, ten times slower per case, runs a tenth. */
