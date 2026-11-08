@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { EngineHost, MemoryFs, createLocalIngestClient, type AsyncFs } from "../../src/index.js";
+import { holdingFiles } from "../../src/host/protocol.js";
 import { openHarnessDb } from "../../src/testing.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { commandsArb, Model, Sut } from "./commands.js";
@@ -298,15 +299,15 @@ describe("risks to target first (research note)", () => {
 
 describe("risks to target first: false corruption", () => {
   // Risk 4. `syncOnce` reads the tail, loads the manifest it names and opens
-  // that generation's runs; when a run is gone it retries, at most 8 times,
-  // then throws CorruptDatabaseError(GENERATION_GONE). The host's reclaim
-  // removes any run no tab holds open, and a tab holds a run only once its
-  // open returns. Here tab B's run opens are slow, and before each one
-  // returns the host flushes four times and compacts, which reclaims the
-  // run B is about to open. Nine rounds of that and B's `sync` reports a
-  // corrupt database although every file of the recorded generation is
-  // there (checked at the end).
-  it.fails("risk 4: a healthy database never reports GENERATION_GONE under compaction churn", async () => {
+  // that generation's runs. The host's reclaim removes any run no tab holds
+  // open, and a tab holds a run only once its open returns. Here tab B's run
+  // opens are slow, and before each one returns the host flushes four times
+  // and compacts. B used to give up after 8 tries with
+  // CorruptDatabaseError(GENERATION_GONE) although every file of the
+  // recorded generation was there. Now a retry holds the reclaim lock
+  // shared, so the host skips reclaim until it returns (design.md, "Loading
+  // a generation under churn").
+  it("risk 4: a healthy database never reports GENERATION_GONE under compaction churn", async () => {
     const enc = new TextEncoder();
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
@@ -364,6 +365,115 @@ describe("risks to target first: false corruption", () => {
       g.BroadcastChannel = channel;
       await a.close();
       await b.close();
+      await deleteWal(name);
+    }
+  });
+});
+
+describe("generation loads under churn", () => {
+  // Before every file call of tab B's sync (each manifest read and run
+  // open), tab A writes and the host flushes and compacts: a new generation
+  // is recorded, and the old one's runs and manifest are reclaimed unless a
+  // lock stops it. Every sync must still succeed and read A's writes.
+  it("sync succeeds when compaction installs and reclaims between every step of its load", async () => {
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const g = globalThis as { BroadcastChannel?: unknown };
+    const channel = g.BroadcastChannel;
+    g.BroadcastChannel = undefined;
+    const name = `churn-every-step-${++runs}`;
+    const ingest = createLocalIngestClient(host);
+    const a = await openHarnessDb({ name, fs, ingest });
+    let n = 0;
+    let churning = false;
+    let churns = 0;
+    const churn = async () => {
+      if (!churning) return;
+      for (let i = 0; i < 4; i++) {
+        await a.put(enc.encode(`k${n % 5}`), enc.encode(`v${n++}`));
+        await host.ingest(name, Number.POSITIVE_INFINITY, true);
+      }
+      churns++;
+    };
+    const churned: AsyncFs = {
+      read: async (path, offset, length) => {
+        await churn();
+        return fs.read(path, offset, length);
+      },
+      open: async (path) => {
+        await churn();
+        return fs.open(path);
+      },
+      list: async (dir) => {
+        await churn();
+        return fs.list(dir);
+      },
+      remove: (path) => fs.remove(path),
+      removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
+      create: (path) => fs.create(path),
+    };
+    const b = await openHarnessDb({ name, fs: churned, ingest });
+    try {
+      for (let round = 0; round < 40; round++) {
+        await a.put(enc.encode("round"), enc.encode(`r${round}`));
+        await host.ingest(name, Number.POSITIVE_INFINITY, true);
+        churning = true;
+        await b.sync();
+        churning = false;
+        expect(dec.decode((await b.get(enc.encode("round")))!)).toBe(`r${round}`);
+      }
+      expect(churns, "the host churned during B's loads").toBeGreaterThan(40);
+      const report = await checkDatabase(fs, name);
+      expect(report.problems).toEqual([]);
+    } finally {
+      churning = false;
+      g.BroadcastChannel = channel;
+      await a.close();
+      await b.close();
+      await deleteWal(name);
+    }
+  });
+
+  // The other direction: a tab that holds the reclaim lock and never lets
+  // go (hung, or killed before the browser frees its locks) stalls no flush
+  // or compaction. Reclaim skips while it is held and catches up after.
+  it("a tab that keeps the reclaim lock stalls no flush or compaction", async () => {
+    const enc = new TextEncoder();
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const name = `held-forever-${++runs}`;
+    const a = await openHarnessDb({ name, fs, ingest: createLocalIngestClient(host) });
+    let n = 0;
+    const flush = async () => {
+      await a.put(enc.encode(`k${n % 3}`), enc.encode(`v${n++}`));
+      await host.ingest(name, Number.POSITIVE_INFINITY, true);
+    };
+    let release!: () => void;
+    let granted = false;
+    try {
+      await flush();
+      const held = holdingFiles(name, () => {
+        granted = true;
+        return new Promise<void>((resolve) => (release = resolve));
+      });
+      await until(() => granted);
+      for (let i = 0; i < 12; i++) await flush();
+      const during = await checkDatabase(fs, name);
+      expect(during.problems).toEqual([]);
+      expect(during.staleManifests.length, "nothing reclaimed while held").toBeGreaterThan(0);
+      expect(during.orphans.length, "nothing reclaimed while held").toBeGreaterThan(0);
+      release();
+      await held;
+      await flush();
+      const after = await checkDatabase(fs, name);
+      expect(after.problems).toEqual([]);
+      expect(after.staleManifests).toEqual([]);
+      expect(after.orphans).toEqual([]);
+    } finally {
+      release?.();
+      await a.close();
       await deleteWal(name);
     }
   });

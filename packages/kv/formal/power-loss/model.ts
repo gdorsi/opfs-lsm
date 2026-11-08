@@ -57,6 +57,12 @@ export type Variant = {
   readonly noNewerAdopt?: boolean;
   /** Number new manifests past `m/` only, forgetting what recovery saw. */
   readonly reuseNumbers?: boolean;
+  /**
+   * A tab holds the reclaim lock through the whole run, so the host's
+   * manifest and run removals are all skipped (`unlessHeld`). Not a broken
+   * design: the property must hold with and without it.
+   */
+  readonly held?: boolean;
 };
 
 export class Stuck extends Error {}
@@ -198,7 +204,8 @@ export class Sys {
     this.write({ store: "opfs", label: `publish m/${gen}`, manifest: { gen, through: last, runs: [path, ...meta.runs] } });
     const before = this.idb.ingested;
     this.write({ store: "idb", label: `advanceIngested ${last} gen ${gen}`, deleteTo: before, ingested: last, generation: Math.max(this.idb.generation ?? 0, gen) });
-    this.reclaimManifests(this.idb.generation ?? 0);
+    // `EngineHost.fold`, after `ingestAll`.
+    if (!this.v.held) this.reclaimManifests(this.idb.generation ?? 0);
   }
 
   /** `mergeNextStep` and `installStep` in src/host/compact.ts: merge every run of the base into one. */
@@ -215,13 +222,17 @@ export class Sys {
     const runs = [...now.runs.filter((p) => !meta.runs.includes(p)), path];
     this.write({ store: "opfs", label: `publish m/${gen}`, manifest: { gen, through: now.through, runs } });
     this.write({ store: "idb", label: `raiseGeneration ${gen}`, generation: Math.max(this.idb.generation ?? 0, gen) });
-    this.reclaimManifests(gen);
     this.sweep();
   }
 
-  /** `EngineHost.reclaim`: remove every run the recorded manifest does not list. */
+  /**
+   * `EngineHost.reclaim`: remove the manifests older than the recorded one
+   * and every run it does not list. Skipped while a tab holds the lock.
+   */
   sweep(): void {
+    if (this.v.held) return;
     const { gen } = this.reconcile();
+    this.reclaimManifests(gen);
     const keep = new Set(this.manifest(gen)?.runs ?? []);
     for (const p of [...this.opfs.runs.keys()].sort()) {
       if (!keep.has(p)) this.write({ store: "opfs", label: `remove ${p}`, rmRun: p });

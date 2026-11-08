@@ -23,7 +23,7 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | `store/merge.ts` `pointGet`, `db.ts` `readKey` / `get` | `formal:wal-over-sst` + ingest |
 | `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
 | `store/merge.ts` `latestSstEntry`, `store/fold.ts` `foldEntries`, `store/engine.ts` `mergeSsts`, `host/compact.ts` | `formal:compact-preserve` |
-| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `EngineHost.reclaim`, manifest numbering, `openDb` / `syncOnce` repair | `formal:power-loss` |
+| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `EngineHost.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair | `formal:power-loss` |
 | Unknown / several areas | **`formal:kv`** (all) |
 
 ## Tool and why
@@ -48,7 +48,7 @@ Exit `0` = all selected checks pass. Failures print a shortest path (or countere
 | WalOverSst | 1 key; all WAL×SST hit kinds (`miss`/`tomb`/two values) on **real** `pointGet` |
 | ViewPin | ≤3 appends; models pin vs live binding; omits SST generation bump mid-view |
 | CompactPreserve | ≤2 runs, keys `{a,b}`, cell ∈ {miss, put1, put2, del}; omits Bloom false negatives, reclaim races |
-| PowerPrefix | Workloads of ≤6 appends/ingests/compactions (`FORMAL_POWER_CMDS`), every (IndexedDB, OPFS) prefix pair, recovery then 4 more commands, and every pair of the next power loss, 2 deep (`FORMAL_POWER_CRASHES`). Writes are abstract ids, so values and folding are not modeled; one tab, one host, compaction merges every run of the base. Must also catch 5 broken variants. |
+| PowerPrefix | Workloads of ≤6 appends/ingests/compactions (`FORMAL_POWER_CMDS`), every (IndexedDB, OPFS) prefix pair, recovery then 4 more commands, and every pair of the next power loss, 2 deep (`FORMAL_POWER_CRASHES`). Writes are abstract ids, so values and folding are not modeled; one tab, one host, compaction merges every run of the base. Every workload runs with reclaim and again with a tab holding the reclaim lock (no removals). Tab-side retry liveness under the lock is not modeled (crash-enum churn tests). Must also catch 5 broken variants. |
 
 A pass is for the model/domain above, not the whole browser stack (SharedWorker ports, IDB quirks, OPFS crashes).
 
@@ -68,9 +68,9 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | WalOverSst | `pointGet` |
 | ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
 | CompactPreserve | `latestSstEntry`, `foldEntries` (TypeScript path of `mergeSsts`) |
-| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestAll` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim`, `openDb` and `syncOnce` repair (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
+| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestAll` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles` (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
 
-**Sync commit:** `4f56f230900213d955efb7ec3552441bb83b1d6c` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
+**Sync commit:** `0e34b2e00478119e96eec08b4ee93434308f8800` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
 ## Intentional product change
 

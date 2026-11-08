@@ -7,6 +7,7 @@ import {
   listRuns,
   liveRuns,
   loadGeneration,
+  reclaimManifests,
   reclaimRuns,
 } from "../store/generation.js";
 import { levelOf } from "../store/levels.js";
@@ -14,6 +15,7 @@ import { installStep, mergeNextStep } from "./compact.js";
 import { ingestAll, type IngestResult } from "./ingest.js";
 import {
   layersChannel,
+  unlessHeld,
   type ClientToHost,
   type HostStats,
   type HostToClient,
@@ -123,7 +125,7 @@ export class EngineHost {
   async stats(name: string): Promise<HostStats> {
     const dbName = checkDbName(name);
     const fs = await this.fsFor(dbName);
-    const recorded = await this.withWal(dbName, async (wal) => (await wal.recordedGeneration()) ?? 0);
+    const recorded = await this.withWal(dbName, async (wal) => (await wal.meta()).generation ?? 0);
     const latest = await loadGeneration(fs.inner, recorded);
     const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
     for (const run of latest?.runs ?? []) {
@@ -160,7 +162,7 @@ export class EngineHost {
     }
     await compaction;
     return {
-      generation: await this.withWal(dbName, async (wal) => (await wal.recordedGeneration()) ?? 0),
+      generation: await this.withWal(dbName, async (wal) => (await wal.meta()).generation ?? 0),
     };
   }
 
@@ -171,7 +173,12 @@ export class EngineHost {
   private async fold(dbName: DbName, through: number): Promise<IngestResult> {
     const fs = await this.fsFor(dbName);
     const result = await this.exclusive(dbName, () =>
-      this.withWal(dbName, (wal) => ingestAll(wal, fs, through, this.trust(dbName))),
+      this.withWal(dbName, async (wal) => {
+        const folded = await ingestAll(wal, fs, through, this.trust(dbName));
+        // Skipped while a tab loads a generation; the next flush or reclaim removes them.
+        await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
+        return folded;
+      }),
     );
     this.trusted.set(dbName, result.generation);
     const counts = this.countsFor(dbName);
@@ -340,7 +347,8 @@ export class EngineHost {
       await this.exclusive(dbName, () =>
         this.withWal(dbName, async (wal) => {
           this.trusted.set(dbName, await installStep(fs, wal, step, this.trust(dbName)));
-          for (const path of step.inputs) this.retired.get(dbName)!.add(path);
+          // No set yet: no reclaim has run, and the first one lists every run.
+          for (const path of step.inputs) this.retired.get(dbName)?.add(path);
           await this.reclaim(dbName, fs, wal);
         }),
       );
@@ -350,19 +358,27 @@ export class EngineHost {
   }
 
   /**
-   * Remove the retired runs no tab holds. The first call for a database
-   * retires every run file outside the live generations, which also
-   * collects what a crash left behind. Needs the ingest and compaction
-   * locks, so no run being written is mistaken for an orphan. Reconciles
-   * first: after a power loss the recorded manifest can be gone, and
-   * sweeping against it would remove the runs recovery needs.
+   * Remove the manifests older than the recorded one and the retired runs
+   * no tab holds. The first call for a database retires every run file
+   * outside the live generations, which also collects what a crash left
+   * behind. Needs the ingest and compaction locks, so no run being written
+   * is mistaken for an orphan. Reconciles first: after a power loss the
+   * recorded manifest can be gone, and sweeping against it would remove
+   * the runs recovery needs.
+   *
+   * Skipped, without waiting, while a tab holds the reclaim lock to load a
+   * generation (`holdingFiles`): the retired runs stay retired and the next
+   * pass tries again (design.md, "Loading a generation under churn").
    */
   private async reclaim(dbName: DbName, fs: AsyncFs, wal: IdBWal): Promise<void> {
-    const { generation } = await reconcile(wal, fs, this.trust(dbName));
-    this.trusted.set(dbName, generation);
-    const retired = this.retired.get(dbName) ?? new Set(await listRuns(fs));
-    const keep = await liveRuns(fs, generation);
-    this.retired.set(dbName, new Set(await reclaimRuns(fs, retired, keep)));
+    await unlessHeld(dbName, async () => {
+      const { generation } = await reconcile(wal, fs, this.trust(dbName));
+      this.trusted.set(dbName, generation);
+      await reclaimManifests(fs, generation);
+      const retired = this.retired.get(dbName) ?? new Set(await listRuns(fs));
+      const keep = await liveRuns(fs, generation);
+      this.retired.set(dbName, new Set(await reclaimRuns(fs, retired, keep)));
+    });
   }
 }
 

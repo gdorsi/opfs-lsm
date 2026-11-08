@@ -22,7 +22,7 @@ import {
   createPortIngestClient,
   type WatchScan,
 } from "./host/engine-host.js";
-import { layersChannel, type IngestClient } from "./host/protocol.js";
+import { holdingFiles, layersChannel, type IngestClient } from "./host/protocol.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type MemRow } from "./store/memtable.js";
@@ -422,6 +422,7 @@ type BusMessage = {
   readonly ops?: readonly CheckedOp[];
 };
 
+/** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
 const TRUST_RECORDED = (): boolean => true;
 const CHECK_RECORDED = (): boolean => false;
@@ -503,13 +504,13 @@ class DbImpl implements Db {
   /**
    * Make `generation` the loaded one, opening its runs when needed.
    * Generations only grow, so one at or below the installed one is stale
-   * and never loaded.
+   * and never loaded. False when its manifest or one of its runs is gone.
    */
-  private async load(generation: number): Promise<void> {
-    if (generation <= this.installed.generation) return;
-    if (this.loaded && this.loaded.generation >= generation) return;
+  private async load(generation: number): Promise<boolean> {
+    if (generation <= this.installed.generation) return true;
+    if (this.loaded && this.loaded.generation >= generation) return true;
     const meta = await loadGeneration(this.fs, generation);
-    if (!meta) return;
+    if (!meta) return false;
     const paths = meta.runs.map((r) => r.path);
     const runs: (Run | undefined)[] = [];
     let next = 0;
@@ -535,7 +536,7 @@ class DbImpl implements Db {
     ) {
       this.dropRuns(held);
       if (failed) throw failed.reason;
-      return;
+      return held.length === paths.length;
     }
     if (this.loaded) this.release(this.loaded);
     this.loaded = {
@@ -545,6 +546,7 @@ class DbImpl implements Db {
       tombstoneSeq: meta.tombstoneSeq,
       refs: 1,
     };
+    return true;
   }
 
   /**
@@ -644,36 +646,70 @@ class DbImpl implements Db {
     return this.syncing;
   }
 
+  /**
+   * Catch up once without the reclaim lock, the usual path. A run or
+   * manifest that went missing mid-load was almost always reclaimed after
+   * a newer generation replaced it, and under churn that can repeat on
+   * every try. So the retries hold the reclaim lock shared: the host
+   * removes no file until they return, and the generation a retry reads
+   * keeps every file (design.md, "Loading a generation under churn").
+   */
   private async syncOnce(): Promise<void> {
-    for (let attempt = 0; attempt < GENERATION_RETRIES; attempt++) {
-      const profile: WalReadProfile | undefined = this.trace
-        ? { ms: 0, rows: 0 }
-        : undefined;
-      const tail = await this.wal.tail(this.mem.appliedThrough, profile);
-      if (profile) {
-        span(this.trace, "wal-read", profile.ms, { rows: profile.rows });
+    if ((await this.catchUpOnce()) === "done") return;
+    await holdingFiles(this.name, async () => {
+      for (let gone = 0; ; ) {
+        const step = await this.catchUpOnce();
+        if (step === "done") return;
+        if (step === "gone") gone = await this.repairGone(gone);
       }
-      if (this.closed) return;
-      const sstAt = this.trace ? performance.now() : 0;
-      if (tail.generation !== this.installed.generation) {
-        await this.load(tail.generation);
-        if (this.closed) return;
-      }
-      if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
-      const memAt = this.trace ? performance.now() : 0;
-      const missing = this.catchUp(tail);
-      if (this.trace) {
-        span(
-          this.trace,
-          "memtable",
-          performance.now() - memAt,
-          profile ? { rows: profile.rows } : undefined,
-        );
-      }
-      if (missing === undefined) return;
-      await this.repair();
+    });
+  }
+
+  /**
+   * Read the tail and catch up to it. "behind" when another load installed
+   * a newer generation meanwhile, "gone" when the tail's generation lacks
+   * a file.
+   */
+  private async catchUpOnce(): Promise<"done" | "behind" | "gone"> {
+    const profile: WalReadProfile | undefined = this.trace
+      ? { ms: 0, rows: 0 }
+      : undefined;
+    const tail = await this.wal.tail(this.mem.appliedThrough, profile);
+    if (profile) {
+      span(this.trace, "wal-read", profile.ms, { rows: profile.rows });
     }
-    throw new CorruptDatabaseError(GENERATION_GONE);
+    if (this.closed) return "done";
+    const sstAt = this.trace ? performance.now() : 0;
+    let whole = true;
+    if (tail.generation !== this.installed.generation) {
+      whole = await this.load(tail.generation);
+      if (this.closed) return "done";
+    }
+    if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
+    const memAt = this.trace ? performance.now() : 0;
+    const missing = this.catchUp(tail);
+    if (this.trace) {
+      span(
+        this.trace,
+        "memtable",
+        performance.now() - memAt,
+        profile ? { rows: profile.rows } : undefined,
+      );
+    }
+    if (missing === undefined) return "done";
+    return whole ? "behind" : "gone";
+  }
+
+  /**
+   * A load under the reclaim lock found a file of the recorded generation
+   * gone. Nothing the host does removes one while the lock is held, so the
+   * files really are gone: repair, and give up after `GENERATION_RETRIES`.
+   * Returns the new count. Call holding the lock.
+   */
+  private async repairGone(gone: number): Promise<number> {
+    if (gone + 1 >= GENERATION_RETRIES) throw new CorruptDatabaseError(GENERATION_GONE);
+    await this.repair();
+    return gone + 1;
   }
 
   /**
@@ -704,24 +740,36 @@ class DbImpl implements Db {
    * so this tab reads its own write as soon as the ack resolves. Awaiting
    * inside the transaction would commit it, so `warm` loads what `plan`
    * reads before each attempt, and a `plan` that still misses appends
-   * nothing and is retried.
+   * nothing and is retried. A tail that names a generation this tab lacks
+   * appends nothing either: the tab loads it, and from then on each try
+   * holds the reclaim lock, as in `syncOnce`.
    */
   private async write<R>(
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
     warm?: () => Promise<unknown>,
   ): Promise<R> {
-    for (let attempt = 0; attempt < GENERATION_RETRIES; ) {
+    let locked = false;
+    let gone = 0;
+    for (;;) {
       await warm?.();
-      let missing: number | undefined;
-      let miss: Miss | undefined;
-      const out = await this.wal.appendAfter(this.mem.appliedThrough, (tail) => {
-        missing = this.catchUp(tail);
-        if (missing !== undefined) return undefined;
-        const planned = plan();
-        if (!(planned instanceof Miss)) return planned;
-        miss = planned;
-        return undefined;
-      });
+      const step = async () => {
+        let missing: number | undefined;
+        let miss: Miss | undefined;
+        const out = await this.wal.appendAfter(this.mem.appliedThrough, (tail) => {
+          missing = this.catchUp(tail);
+          if (missing !== undefined) return undefined;
+          const planned = plan();
+          if (!(planned instanceof Miss)) return planned;
+          miss = planned;
+          return undefined;
+        });
+        if (out || miss) return { out, miss };
+        const whole = missing === undefined || (await this.load(missing));
+        if (whole || !locked) return {};
+        gone = await this.repairGone(gone);
+        return {};
+      };
+      const { out, miss } = locked ? await holdingFiles(this.name, step) : await step();
       if (out) {
         if (out.seq !== undefined) await this.landed(out.seq, out.ops);
         return out.result;
@@ -731,13 +779,8 @@ class DbImpl implements Db {
         await miss.ready.catch(() => undefined);
         continue;
       }
-      attempt++;
-      if (missing !== undefined) {
-        await this.load(missing);
-        if (this.loaded?.generation !== missing) await this.repair();
-      }
+      locked = true;
     }
-    throw new CorruptDatabaseError(GENERATION_GONE);
   }
 
   /**

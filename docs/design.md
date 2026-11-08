@@ -443,11 +443,52 @@ other tabs catch up on `sync`, and the host measures the WAL again on the next o
 A tab installs a generation only when the IndexedDB tail tells it to, during `sync` or an
 append. `catchUp` keeps one rule: the installed generation never holds a seq past
 `appliedThrough`. If the tail names a generation the tab hasn't loaded, the tab loads its
-manifest and runs outside the transaction, then tries again, up to 8 times. A run file can
-disappear between the manifest read and the run read, when a newer compaction reclaims it. A
-retry picks up the newer generation. Before each retry, the tab reconciles (see [Recovery](#recovery)). That
-changes nothing unless IndexedDB still names the generation that did not load, which only
-happens after a power loss.
+manifest and runs outside the transaction, then tries again. A run file or the manifest can
+disappear between the tail read and the run open, when the host reclaims a generation that a
+newer one replaced. The next section says how the retry still makes progress.
+
+## Loading a generation under churn
+
+A tab holds a run only once its open returns, and the host's reclaim removes every run of an
+old generation that no tab holds. So without more, a tab whose opens are slow can lose every
+try: before each open returns, the host records a newer generation and reclaims the one the tab
+is opening. The guarantee is:
+
+**On a healthy database, `sync`, `update` and a blind append that needs a catch-up always
+succeed, however compaction is scheduled. `CorruptDatabaseError` means a file of the recorded
+generation is really gone.**
+
+The tab and the host share a Web Lock, `opfs-lsm-reclaim/<name>`:
+
+- The tab's first try takes no lock, so a sync on a quiet database costs what it did. When that
+  try finds a file missing, every later try holds the lock **shared**, from the tail read to the
+  last run open (`holdingFiles` in `host/protocol.ts`).
+- The host removes files only while it holds the lock **exclusively**, and asks with
+  `ifAvailable`: when a tab holds it, the host skips the removal and does not wait. This covers
+  the run sweep (`EngineHost.reclaim`) and the deletion of old manifests after a flush or a
+  compaction install. Skipped runs stay retired and the next pass tries again; old manifests go
+  with the next flush or reclaim.
+
+Under the lock, the generation the tail names was recorded while no removal could run, so its
+manifest and every run are on disk. Its load succeeds, and the try catches up. A try under the
+lock can still fall behind when another load of the same tab installed a newer generation
+meanwhile; that is not counted, and the next tail names the newer one. A try that finds a file
+missing under the lock counts. The tab reconciles (see [Recovery](#recovery)), which records a
+whole manifest after a power loss, and after 8 such tries it throws
+`CorruptDatabaseError`. A healthy database never reaches that count.
+
+Liveness, tab side: a try under the lock waits only for a removal already running, and a
+removal never waits for anything but its own file calls. Every try under the lock then
+succeeds unless the files are really gone. `update` and appends can still retry when another
+tab writes and the host flushes between the tail read and the append, as any optimistic write
+does, but each retry needs new writes from another tab.
+
+Liveness, host side: the host never waits for the lock, so no tab can stall a flush, a
+compaction or an install, even one that holds the lock forever. Such a tab only delays the
+removal of retired runs and old manifests, which is safe: they are garbage. A tab takes the lock
+only after a try without it failed, almost always because a removal broke it, and lets go once
+it catches up; a skipped removal breaks no try. So removals are skipped only while some tab is
+retrying, and the browser frees a tab's locks when the tab or worker goes away.
 
 After a flush that it started itself or a compaction step, the host posts `{ kind: "ingest" }`
 on the same channel. After `db.ingest()`, the calling tab posts it if the generation moved. Tabs
@@ -511,7 +552,8 @@ Under the exclusive section for the database:
    that IndexedDB has not recorded was left by a crash.
 6. In one IndexedDB transaction, set `ingestedThrough = <last>`, raise `generation` to
    `top + 1`, and delete the records at or below the previous `ingestedThrough`.
-7. Delete the manifests older than the recorded generation.
+7. Delete the manifests older than the recorded generation, unless a tab holds the reclaim
+   lock (see [Loading a generation under churn](#loading-a-generation-under-churn)).
 
 The exclusive section is a promise chain inside the host plus a Web Lock named
 `opfs-lsm-ingest/<name>`. The lock covers the case of two SharedWorkers serving the same
@@ -569,7 +611,9 @@ the plan stays valid. To install, under the exclusive section, the host:
 2. Writes manifest `top + 1`, with the inputs replaced by the outputs, `tombstoneSeq` raised
    to the highest dropped tombstone, and `G`'s `through`.
 3. Raises IndexedDB `generation` to `top + 1`.
-4. Deletes the input runs that the new manifest doesn't list.
+4. Reclaims: deletes the manifests older than `top + 1` and the input runs that the new
+   manifest doesn't list and no tab holds open. While a tab holds the reclaim lock, it deletes
+   nothing and tries again on the next pass.
 
 The merge plans on the recorded generation too, and names its outputs
 `c<top + 1>.<i>`, past every manifest number in use, so an output never overwrites a run that a
@@ -674,9 +718,9 @@ ignored, and the next ingest or compaction numbers past it.
 - `openDb`, before the first sync. It trusts the recorded manifest's runs, because the sync
   opens them anyway. On a healthy database this costs one `meta` read, which replaces the
   `generation` read open already did, and one listing of `m/`.
-- `sync` and appends, when the recorded generation does not load. Usually a newer generation
-  replaced it, and reconcile changes nothing, because IndexedDB no longer names the broken one.
-  After a power loss, reconcile records a manifest that loads.
+- `sync` and appends, when the recorded generation does not load while the tab holds the
+  reclaim lock. Then no reclaim can explain the missing file: after a power loss, reconcile
+  records a manifest that loads.
 - The host, at the start of every ingest, compaction install and sweep, under the ingest lock.
   The host checks a recorded manifest's runs once and then trusts the generations it published
   itself. A sweep keeps only the recorded manifest's runs. A newer manifest is a crash leftover:
@@ -732,6 +776,11 @@ and a second power loss at every pair of the recovery's own writes.
 - A SharedWorker with the same URL and name is shared by every tab of the origin. `openDb` names
   it `opfs-lsm:<name>`, so each database gets its own. If two different URLs serve one database,
   the Web Locks keep them from writing manifests at the same time.
+- Web Locks are shared by the tabs and workers of an origin, and the browser releases a
+  context's locks when it goes away. A tab holds `opfs-lsm-reclaim/<name>` only while it
+  retries a load. The host never waits for it, so the guarantee of
+  [Loading a generation under churn](#loading-a-generation-under-churn) does not depend on the
+  release; only the removal of garbage does. Without Web Locks, a retry is unprotected.
 - BroadcastChannel delivers messages in order from one sender, but may deliver them late. The
   engine tolerates lost or late messages, because the WAL tail is always the source of truth.
 

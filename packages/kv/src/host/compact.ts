@@ -9,7 +9,6 @@ import {
   manifestNumbers,
   publishGeneration,
   publishRun,
-  reclaimManifests,
   runMeta,
   type GenerationMeta,
   type RunMeta,
@@ -72,9 +71,9 @@ export async function mergeNextStep(
 
 /**
  * Swap the step's inputs for its output in the recorded generation and
- * record the result in IDB. The inputs stay on disk: tabs may still read
- * them, so the host retires them (see `EngineHost.reclaim`). Run under the
- * ingest lock.
+ * record the result in IDB. The inputs and the old manifests stay on
+ * disk: tabs may still read them, so the host retires them (see
+ * `EngineHost.reclaim`). Run under the ingest lock.
  */
 export async function installStep(
   fs: AsyncFs,
@@ -98,6 +97,5 @@ export async function installStep(
     through: meta.through,
   });
   await wal.raiseGeneration(generation);
-  await reclaimManifests(fs, generation);
   return generation;
 }

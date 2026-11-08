@@ -64,12 +64,25 @@ export function installSeams(): Restore {
     if (out?.seq !== undefined) world?.history.commit(op, out.ops, out.seq);
     return out;
   } as typeof appendAfter;
+  // Node runs a queued Web Lock callback in the async context of whoever
+  // released the lock, so a commit inside it would be credited to that op.
+  // Browsers have no such context; run the callback in the requester's.
+  const locks = navigator.locks;
+  const request = locks.request;
+  locks.request = function (this: LockManager, name: string, ...rest: unknown[]) {
+    const callback = rest.pop() as LockGrantedCallback<unknown>;
+    const inRequester = AsyncLocalStorage.snapshot();
+    return (request as (...args: unknown[]) => Promise<unknown>).call(this, name, ...rest, (lock: Lock | null) =>
+      inRequester(() => callback(lock)),
+    );
+  } as typeof locks.request;
   const g = globalThis as { BroadcastChannel?: unknown };
   const realChannel = g.BroadcastChannel;
   g.BroadcastChannel = SimChannel;
   return () => {
     proto.append = append;
     proto.appendAfter = appendAfter;
+    locks.request = request;
     g.BroadcastChannel = realChannel;
   };
 }
