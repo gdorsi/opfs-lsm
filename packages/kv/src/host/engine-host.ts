@@ -1,17 +1,20 @@
 import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
+import { CountingFs } from "../opfs/counting-fs.js";
 import {
   listRuns,
   liveRuns,
   loadLatestGeneration,
   reclaimRuns,
 } from "../store/generation.js";
+import { levelOf } from "../store/levels.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestAll, type IngestResult } from "./ingest.js";
 import {
   layersChannel,
   type ClientToHost,
+  type HostStats,
   type HostToClient,
   type IngestClient,
 } from "./protocol.js";
@@ -20,6 +23,13 @@ export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
+
+/** Host counters for one database, besides the fs IO its CountingFs keeps. */
+type HostCounts = {
+  flushes: number;
+  compactionSteps: number;
+  foldedBytes: number;
+};
 
 /**
  * What the host knows about one database's WAL waiting for ingest. Appends
@@ -63,7 +73,8 @@ export type WatchScan = {
  * holds it only to install the merged run.
  */
 export class EngineHost {
-  private readonly fsCache = new Map<string, AsyncFs>();
+  private readonly fsCache = new Map<string, CountingFs>();
+  private readonly counts = new Map<DbName, HostCounts>();
   private readonly chains = new Map<string, Promise<unknown>>();
   private readonly compactions = new Map<string, Promise<void>>();
   private readonly compactAgain = new Set<string>();
@@ -77,13 +88,48 @@ export class EngineHost {
 
   constructor(private readonly fsFactory: FsFactory) {}
 
-  async fsFor(name: DbName): Promise<AsyncFs> {
+  /** Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
+  async fsFor(name: DbName): Promise<CountingFs> {
     let fs = this.fsCache.get(name);
     if (!fs) {
-      fs = await this.fsFactory(name);
+      const inner = await this.fsFactory(name);
+      fs = this.fsCache.get(name) ?? new CountingFs(inner);
       this.fsCache.set(name, fs);
     }
     return fs;
+  }
+
+  private countsFor(dbName: DbName): HostCounts {
+    let counts = this.counts.get(dbName);
+    if (!counts) {
+      counts = { flushes: 0, compactionSteps: 0, foldedBytes: 0 };
+      this.counts.set(dbName, counts);
+    }
+    return counts;
+  }
+
+  /**
+   * What this host counted for `name` since it started. The manifest read
+   * for `generation` and `layout` bypasses the counters.
+   */
+  async stats(name: string): Promise<HostStats> {
+    const dbName = checkDbName(name);
+    const fs = await this.fsFor(dbName);
+    const latest = await loadLatestGeneration(fs.inner);
+    const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
+    for (const run of latest?.runs ?? []) {
+      const level = levelOf(run.path) ?? 0;
+      const entry = byLevel.get(level) ?? { level, runs: 0, bytes: 0 };
+      entry.runs += 1;
+      entry.bytes += fs.sizeOf(run.path) ?? 0;
+      byLevel.set(level, entry);
+    }
+    return structuredClone({
+      fs: fs.counters,
+      ...this.countsFor(dbName),
+      generation: latest?.generation ?? 0,
+      layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
+    });
   }
 
   /**
@@ -113,6 +159,9 @@ export class EngineHost {
     const result = await this.exclusive(dbName, () =>
       this.withWal(dbName, (wal) => ingestAll(wal, fs, through)),
     );
+    const counts = this.countsFor(dbName);
+    counts.foldedBytes += result.foldedBytes;
+    if (result.foldedBytes > 0) counts.flushes += 1;
     const watch = this.watches.get(dbName);
     if (watch) {
       watch.pendingBytes = Math.max(0, watch.pendingBytes - result.foldedBytes);
@@ -276,6 +325,7 @@ export class EngineHost {
           await this.reclaim(dbName, fs, wal);
         }),
       );
+      this.countsFor(dbName).compactionSteps += 1;
       announceGeneration(dbName);
     }
   }
@@ -358,6 +408,9 @@ export function attachEngineHostPort(
         case "unwatch":
           host.unwatch(msg.name);
           return;
+        case "stats":
+          reply({ type: "stats-ok", id: msg.id, stats: await host.stats(msg.name) });
+          return;
         default: {
           const _exhaustive: never = msg;
           void _exhaustive;
@@ -427,6 +480,10 @@ export function createPortIngestClient(
       const msg: ClientToHost = { type: "unwatch", name };
       port.postMessage(msg);
     },
+    async stats(name) {
+      const res = await request({ type: "stats", id: nextId++, name });
+      return (res as Extract<HostToClient, { type: "stats-ok" }>).stats;
+    },
     close() {
       port.removeEventListener("message", listener);
       for (const [, p] of pending) p.reject(new Error("ingest client closed"));
@@ -440,6 +497,7 @@ export function createLocalIngestClient(host: EngineHost): IngestClient {
     ingest: (name, through, settle) => host.ingest(name, through, settle),
     watch: (name, policy) => host.watch(name, policy.maxWalBytes),
     unwatch: (name) => host.unwatch(name),
+    stats: (name) => host.stats(name),
     close: () => undefined,
   };
 }

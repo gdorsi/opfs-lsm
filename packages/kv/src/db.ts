@@ -28,6 +28,7 @@ import { Memtable, type MemRow } from "./store/memtable.js";
 import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
+import { CountingFs } from "./opfs/counting-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
 import {
@@ -247,6 +248,21 @@ export function prefixBound(prefix: Uint8Array): {
   return end === undefined ? { start } : { start, endExclusive: end };
 }
 
+/** What `@opfs-lsm/kv/testing` reads from an open Db. */
+export type DbInternals = {
+  readonly name: DbName;
+  readonly wal: IdBWal;
+  readonly fs: CountingFs;
+  readonly ingest: IngestClient;
+};
+
+const internals = new WeakMap<Db, DbInternals>();
+
+/** Undefined for a Db not opened by `openDbWith`. */
+export function dbInternals(db: Db): DbInternals | undefined {
+  return internals.get(db);
+}
+
 export async function openDb(options: OpenOptions): Promise<Db> {
   return openDbWith(options);
 }
@@ -313,6 +329,8 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     if (!fs) fs = defaultMemoryFs(name);
     if (!ingest) ingest = localIngest(name, fs);
   }
+  // Wrapped after the local host got the bare fs, so its IO counts only on the host.
+  const tabFs = new CountingFs(fs);
 
   const idbAt = trace ? performance.now() : 0;
   const wal = await IdBWal.open(name);
@@ -320,7 +338,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const generationAt = trace ? performance.now() : 0;
   if ((await wal.recordedGeneration()) === undefined) {
     const manifestAt = performance.now();
-    const latest = await loadLatestGeneration(fs);
+    const latest = await loadLatestGeneration(tabFs);
     span(trace, "manifest", performance.now() - manifestAt);
     await wal.raiseGeneration(latest?.generation ?? 0);
   }
@@ -333,12 +351,13 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     name,
     writerId,
     wal,
-    fs,
+    tabFs,
     cache,
     ingest,
     ownsIngestClient,
     trace,
   );
+  internals.set(db, { name, wal, fs: tabFs, ingest });
   const syncAt = trace ? performance.now() : 0;
   await db.sync();
   span(trace, "sync", performance.now() - syncAt);

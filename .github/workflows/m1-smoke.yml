@@ -7,7 +7,7 @@ on:
       - main
 
 jobs:
-  gate:
+  bench:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,10 +16,16 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+          install-dependencies: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm bench:gate
+      - run: pnpm bench:size --check
+      - run: pnpm bench:smoke
         env:
-          BENCH_GATE_BROWSER: smoke
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
 
   two-tab:
     runs-on: ubuntu-latest

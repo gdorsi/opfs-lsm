@@ -321,7 +321,7 @@ async function countProofTabs(debugPort: number): Promise<number> {
   return list.filter(
     (target) =>
       target.type === "page" &&
-      (target.url ?? "").includes("/bench/two-tab.html"),
+      (target.url ?? "").includes("/proof/two-tab.html"),
   ).length;
 }
 
@@ -433,7 +433,7 @@ async function runOnce(options: RunOptions): Promise<number> {
       return;
     }
 
-    const fileUrl = urlPath === "/" ? "/bench/two-tab.html" : urlPath;
+    const fileUrl = urlPath === "/" ? "/proof/two-tab.html" : urlPath;
     const filePath = safeJoin(root, fileUrl);
     if (!filePath) {
       res.writeHead(403);
@@ -473,14 +473,14 @@ async function runOnce(options: RunOptions): Promise<number> {
   if (options.nobc) query.set("nobc", "1");
   if (options.local) query.set("local", "1");
   else query.set("role", "a");
-  const tabA = `http://127.0.0.1:${port}/bench/two-tab.html?${query}`;
+  const tabA = `http://127.0.0.1:${port}/proof/two-tab.html?${query}`;
   const tabBQuery = new URLSearchParams({
     auto: "1",
     name: "two-tab",
     role: "b",
   });
   if (options.nobc) tabBQuery.set("nobc", "1");
-  const tabB = `http://127.0.0.1:${port}/bench/two-tab.html?${tabBQuery}`;
+  const tabB = `http://127.0.0.1:${port}/proof/two-tab.html?${tabBQuery}`;
 
   console.log(`Opening ${tabA}`);
   const started = Date.now();

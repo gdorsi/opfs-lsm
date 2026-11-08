@@ -123,7 +123,7 @@ read throws `wal gap` rather than shift the seqs after it.
 
 `getAllRecords` returns keys and values in one request, but Chrome deserializes each value when
 `.value` is first read. The time it saves comes back in decode, so the engine does not use it.
-On the yjs bench (250k rows) the ranged `getAll` read takes about 360 to 520 ms with object
+On a 250k-row Yjs benchmark (since removed) the ranged `getAll` read takes about 360 to 520 ms with object
 rows. The old `getAllKeys` plus `getAll` pair took about 670 ms, and byte rows cut the open by
 another third. The measurements are in `docs/research/kv-wal-optimization.md`.
 
@@ -211,7 +211,7 @@ the one block prefix, so a reader can compare any record from its offset alone. 
 the table from the record count and the block's length. Offsets are u16 because a block of two
 or more records is at most 4 KiB. A block of one record can be larger, and it has no table.
 The stride of 4 came from a sweep over 1, 4, 8, 16 and 32 with
-`pnpm --filter @opfs-lsm/collections bench:index-runs`. It was the largest stride whose LZ4 gets
+a benchmark script that has since been removed. It was the largest stride whose LZ4 gets
 on UUID ids matched a run that stored every key in full. Stride 8 saves 1.4% of the index bytes and made those gets about
 5% slower.
 
@@ -306,7 +306,7 @@ Reads decode LZ4 blocks in wasm once the module loads. `openDb` starts loading i
 waiting. Before it loads, and wherever wasm doesn't load, a TypeScript decoder in `lz4.ts` does
 the work about 3x slower.
 
-Measured with `pnpm --filter @opfs-lsm/kv bench:range` (todo-shaped layout in memory, Node) against raw L2 runs:
+Measured with a since-removed range benchmark (todo-shaped layout in memory, Node) against raw L2 runs:
 
 | | 100k todos, raw | 100k todos, LZ4 | 1M todos, raw | 1M todos, LZ4 |
 |---|---|---|---|---|
@@ -336,7 +336,7 @@ otherwise. The caller awaits it and reads again. A point get:
    It copies out only the record that matches.
 
 A get used to decode the whole block into objects and then search them. Walking it in place
-cut a get that hits L2 from 7.7 µs to 4.0 µs, measured with `pnpm --filter @opfs-lsm/kv bench:follow` at 100k todos.
+cut a get that hits L2 from 7.7 µs to 4.0 µs, measured at 100k todos with a benchmark script that has since been removed.
 
 Tabs don't check the CRC when they read. That check runs in the SharedWorker, which decodes
 every input run in full before compacting it. Skipping it on the main thread cut tab open time

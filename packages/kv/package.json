@@ -17,26 +17,17 @@
       "import": "./dist/host/shared-worker.js"
     }
   },
-  "files": ["dist", "wasm"],
+  "files": [
+    "dist",
+    "wasm"
+  ],
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/engine-wasm --target web --out-dir ../../packages/kv/wasm --release",
     "build": "sh -c 'test -f wasm/engine_wasm_bg.wasm && test -f wasm/engine_wasm.js || pnpm run build:wasm' && tsc -p tsconfig.json",
     "test": "pnpm run build && vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run",
-    "bench": "tsx scripts/bench-browser.ts",
-    "bench:browser": "tsx scripts/bench-browser.ts",
     "two-tab": "pnpm run build && tsx scripts/two-tab.ts",
-    "bench:latency": "BENCH_PAGE=latency BENCH_N=${BENCH_N:-100000} BENCH_TIMEOUT_MS=900000 tsx scripts/bench-browser.ts",
-    "bench:floors": "BENCH_PAGE=floors BENCH_N=${BENCH_N:-20000} BENCH_TIMEOUT_MS=900000 tsx scripts/bench-browser.ts",
-    "bench:batch": "BENCH_PAGE=batch BENCH_N=${BENCH_N:-130000} BENCH_TIMEOUT_MS=900000 tsx scripts/bench-browser.ts",
-    "bench:wasm": "tsx scripts/bench-wasm.ts",
-    "bench:memtable": "tsx scripts/bench-memtable.ts",
-    "bench:range": "tsx scripts/bench-range.ts",
-    "bench:follow": "tsx scripts/bench-follow.ts",
-    "bench:gate": "tsx scripts/bench-gate.ts",
-    "bench:aged": "tsx scripts/aged.ts",
-    "bench:compaction": "tsx scripts/compaction-cost.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
@@ -45,8 +36,6 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "dexie": "^4.0.11",
-    "esbuild": "0.28.2",
     "fake-indexeddb": "^6.0.0",
     "fast-check": "^4.10.2",
     "tsx": "^4.20.0",

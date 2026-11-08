@@ -1,5 +1,5 @@
 /**
- * Test and bench harness. Apps should import from `@opfs-lsm/collections` only.
+ * Test harness. Apps should import from `@opfs-lsm/collections` only.
  */
 import {
   openHarnessDb,
