@@ -20,11 +20,11 @@ import { CommitError, CorruptDatabaseError } from "../src/errors.js";
 import { decodeOps } from "../src/idb/wal.js";
 import { crc32 } from "../src/store/crc32.js";
 import { Miss, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
-import { decodeGeneration, type GenerationMeta, type KeyRange } from "../src/store/generation.js";
+import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import { decodeSst, type SstEntry } from "../src/store/sst.js";
+import { decodeSst, type KeyRange, type SstEntry } from "../src/store/sst.js";
 
 export class RuleBroken extends Error {
   constructor(message: string) {

@@ -137,18 +137,18 @@ describe("decoder properties (fast-check)", () => {
   );
 
   it(
-    "manifests, version 1 and 2, reject every change under the CRC",
+    "manifests reject every change under the CRC",
     async () => {
       await expect(
         fc.assert(
-          fc.asyncProperty(manifestArb, manifestArb, fc.boolean(), mutationsArb, fc.boolean(), async (m, o, v1, ms, crc) => {
-            const orig = v1 ? encodeManifestV1(m) : encodeGeneration(m);
+          fc.asyncProperty(manifestArb, manifestArb, mutationsArb, fc.boolean(), async (m, o, ms, crc) => {
+            const orig = encodeGeneration(m);
             const other = encodeGeneration(o);
             const buf = applyMutations(orig, ms, other);
             if (crc) fixManifestCrc(buf);
             const same = sameBytes(buf, orig);
             const got = await checkManifest(buf, !crc && !same && !sameBytes(buf, other));
-            if (same) expect(got).toEqual(v1 ? { ...m, through: 0 } : m);
+            if (same) expect(got).toEqual(m);
           }),
           params,
         ),
@@ -202,25 +202,15 @@ const manifestArb: fc.Arbitrary<GenerationMeta> = fc.record({
   runs: fc.array(
     fc.record(
       {
-        path: fc.constantFrom("l0/f1.sst", "l1/c7.0-4096.sst", "l2/c9.3-123456.sst"),
+        path: fc.constantFrom("l0/f1.sst", "l1/c7.0.sst", "l2/c9.3.sst"),
+        bytes: fc.integer({ min: 0, max: 2 ** 32 - 1 }),
         range: fc.record({ smallest: fc.uint8Array({ maxLength: 12 }), largest: fc.uint8Array({ maxLength: 12 }) }),
       },
-      { requiredKeys: ["path"] },
+      { requiredKeys: ["path", "bytes"] },
     ),
     { maxLength: 6 },
   ),
 });
-
-/** A version 1 manifest: no `through`. The engine still reads them (generation.ts). */
-function encodeManifestV1(m: GenerationMeta): Uint8Array {
-  const v2 = encodeGeneration(m);
-  const out = new Uint8Array(v2.byteLength - 8);
-  out.set(v2.subarray(0, 24));
-  out.set(v2.subarray(32), 24);
-  new DataView(out.buffer).setUint32(4, 1, true);
-  fixManifestCrc(out);
-  return out;
-}
 
 const walRowArb: fc.Arbitrary<RowOp[]> = fc.array(
   fc.oneof(

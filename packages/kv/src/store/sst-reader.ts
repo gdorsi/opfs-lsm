@@ -1,6 +1,5 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
-import type { KeyRange } from "./generation.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomMightContain, type BloomFilter } from "./bloom.js";
 import { filterCursor, Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanBounds } from "./cursor.js";
@@ -11,6 +10,7 @@ import {
   findInBlock,
   readFooter,
   type BlockBytes,
+  type KeyRange,
   type SstCodec,
   type SstEntry,
 } from "./sst.js";

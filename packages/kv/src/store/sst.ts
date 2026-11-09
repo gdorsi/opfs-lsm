@@ -56,6 +56,29 @@ export type SstEntry =
     }
   | { readonly kind: "del"; readonly key: Uint8Array; readonly seq?: number };
 
+/** The smallest and largest key of a run. */
+export type KeyRange = {
+  readonly smallest: Uint8Array;
+  readonly largest: Uint8Array;
+};
+
+/**
+ * What an encoder reports when a run ends, and what the manifest records, so
+ * nobody reads a run back for its size or its keys.
+ */
+export type RunEnd = {
+  /** Bytes of the whole run file. */
+  readonly bytes: number;
+  /** Undefined for an empty run, which has no keys. */
+  readonly range?: KeyRange;
+};
+
+/** A run's bytes and its `RunEnd`. */
+export type EncodedRun = {
+  readonly body: Uint8Array;
+  readonly end: RunEnd;
+};
+
 type BlockIndexEntry = {
   firstKey: Uint8Array;
   lastKey: Uint8Array;
@@ -335,10 +358,10 @@ class RecordWalker {
  *     u32 bloomHashCount | u32 indexOffset | u32 indexLen | u32 codec
  *     u32 crc32 of every byte before it | u32 version=1 | u32 magic
  */
-export function encodeSst(
+export function encodeRun(
   entries: readonly SstEntry[],
   blockTarget = SST_BLOCK_TARGET,
-): Uint8Array {
+): EncodedRun {
   if (blockTarget > 0xffff) throw new RangeError("a block's offsets are u16, so its target must fit one");
   const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
   const blocks = splitBlocks(sorted, blockTarget);
@@ -408,7 +431,20 @@ export function encodeSst(
   view.setUint32(o, crc32(out.subarray(0, o)), true);
   view.setUint32(o + 4, VERSION, true);
   view.setUint32(o + 8, SST_MAGIC, true);
-  return out;
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  return {
+    body: out,
+    end: {
+      bytes: out.byteLength,
+      ...(first && last && { range: { smallest: first.key.slice(), largest: last.key.slice() } }),
+    },
+  };
+}
+
+/** `encodeRun`'s bytes. */
+export function encodeSst(entries: readonly SstEntry[], blockTarget = SST_BLOCK_TARGET): Uint8Array {
+  return encodeRun(entries, blockTarget).body;
 }
 
 type BlockLayout = {
@@ -623,11 +659,10 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
 }
 
 /**
- * The smallest and largest key of a whole run file, or undefined for an
- * empty run. The manifest stores it, so a tab routes reads without opening
- * the run.
+ * The smallest and largest key of a whole run file, read from its index, or
+ * undefined for an empty run. Encoders report the same range in `RunEnd`.
  */
-export function sstKeyRange(buf: Uint8Array): { smallest: Uint8Array; largest: Uint8Array } | undefined {
+export function sstKeyRange(buf: Uint8Array): KeyRange | undefined {
   const meta = parseFooter(buf);
   if (meta.entryCount === 0) return undefined;
   const index = readBlockIndex(buf, meta.view, meta.indexStart, meta.indexEnd, meta.blockCount);

@@ -15,7 +15,7 @@
 
 #![allow(dead_code)]
 
-use engine_core::{decode_sst, encode_sst, merge_sst_bytes, scan_block_contains, Codec, Entry};
+use engine_core::{decode_sst, encode_sst, merge_sst_bytes, scan_block_contains, Codec, Entry, SstError};
 use std::collections::BTreeMap;
 
 pub const FOOTER_BYTES: usize = 44;
@@ -192,7 +192,9 @@ pub fn wrap_block(framed: &[u8], codec: Codec, count: u32) -> Vec<u8> {
 /// when any input fails to decode, so a corrupt run is never compacted away.
 /// When every input decodes with sorted keys, the output must equal a
 /// `BTreeMap` fold of the inputs (newest wins, the last duplicate in a run
-/// wins), cut into runs that each decode.
+/// wins), cut into runs that each decode, and each run's `RunEnd` must say
+/// what decoding the run says. An input that decodes but is not sorted is
+/// either refused as out of order or merged into runs that decode.
 pub fn check_merge(inputs: &[Vec<u8>], drop_tombstones: bool, target_bytes: usize, codec: Codec) {
     let result = merge_sst_bytes(inputs, drop_tombstones, target_bytes, codec);
     let decoded: Result<Vec<Vec<Entry>>, _> = inputs.iter().map(|b| decode_sst(b)).collect();
@@ -200,12 +202,25 @@ pub fn check_merge(inputs: &[Vec<u8>], drop_tombstones: bool, target_bytes: usiz
         assert!(result.is_err(), "a merge over an input that does not decode must fail");
         return;
     };
-    let (runs, dropped) = result.expect("a merge over inputs that decode must succeed");
+    let sorted = decoded.iter().all(|run| run.windows(2).all(|w| w[0].key() <= w[1].key()));
+    let (runs, dropped) = match result {
+        Ok(ok) => ok,
+        Err(e) => {
+            assert!(!sorted, "a merge over inputs that decode with sorted keys must succeed: {e:?}");
+            assert_eq!(e, SstError::OutOfOrder, "an unsorted input is refused as out of order");
+            return;
+        }
+    };
     let mut out = Vec::new();
     for run in &runs {
-        out.extend(decode_sst(run).expect("merge output decodes"));
+        let entries = decode_sst(&run.bytes).expect("merge output decodes");
+        assert_eq!(run.end.size, run.bytes.len(), "the reported size is the run's size");
+        assert_eq!(run.end.entries, entries.len(), "the reported entry count is the run's");
+        assert_eq!(run.end.first_key, entries.first().map_or(&[][..], |e| e.key()), "the reported first key");
+        assert_eq!(run.end.last_key, entries.last().map_or(&[][..], |e| e.key()), "the reported last key");
+        out.extend(entries);
     }
-    if !decoded.iter().all(|run| run.windows(2).all(|w| w[0].key() <= w[1].key())) {
+    if !sorted {
         return;
     }
     let mut map: BTreeMap<Vec<u8>, Entry> = BTreeMap::new();

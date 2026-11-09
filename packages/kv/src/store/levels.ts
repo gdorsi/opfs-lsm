@@ -1,12 +1,12 @@
 import { compareBytes } from "../bytes.js";
-import type { KeyRange, RunMeta } from "./generation.js";
-import type { SstCodec } from "./sst.js";
+import type { RunMeta } from "./generation.js";
+import type { KeyRange, SstCodec } from "./sst.js";
 
 /**
  * Leveled layout. A generation lists the L0 runs newest first, then each
  * level's runs in key order. L0 runs may overlap each other. Runs in one
- * level from L1 down never overlap. Each run's level and byte size are in
- * its path and its key range is in the manifest, so planning reads no files.
+ * level from L1 down never overlap. Each run's level is in its path and its
+ * byte size and key range are in the manifest, so planning reads no files.
  */
 const L0_RUNS_TO_COMPACT = 4;
 const LEVEL_RATIO = 10;
@@ -40,13 +40,8 @@ export function levelOf(path: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-function sizeOf(path: string): number {
-  const m = /-(\d+)\.sst$/.exec(path);
-  return m ? Number(m[1]) : 0;
-}
-
-export function levelRunPath(level: number, name: string, bytes: number): string {
-  return `l${level}/${name}-${bytes}.sst`;
+export function levelRunPath(level: number, name: string): string {
+  return `l${level}/${name}.sst`;
 }
 
 /** A missing range is unbounded. */
@@ -70,7 +65,7 @@ function span(runs: readonly RunMeta[]): KeyRange | undefined {
 }
 
 function bytesOf(runs: readonly RunMeta[]): number {
-  return runs.reduce((n, r) => n + sizeOf(r.path), 0);
+  return runs.reduce((n, r) => n + r.bytes, 0);
 }
 
 /** The next compaction step, or undefined when the layout is in shape. */
@@ -112,7 +107,7 @@ export function planCompaction(
   const files = inLevel(best.level);
   const next = inLevel(best.level + 1);
   const cost = (r: RunMeta) =>
-    bytesOf(next.filter((n) => overlaps(n.range, r.range))) / Math.max(1, sizeOf(r.path));
+    bytesOf(next.filter((n) => overlaps(n.range, r.range))) / Math.max(1, r.bytes);
   const pick = files.reduce((a, r) => (cost(r) < cost(a) ? r : a));
   return plan([pick, ...next.filter((n) => overlaps(n.range, pick.range))], best.level + 1);
 }

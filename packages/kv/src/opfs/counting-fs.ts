@@ -12,7 +12,7 @@ export type IoCounters = {
   written: Record<string, IoCount>;
   /** Bytes `read` and open-file reads returned. */
   read: Record<string, IoCount>;
-  /** Files `remove` or `removeUnlessOpen` deleted. Bytes when the size is known, else 0. */
+  /** Files `remove` or `removeUnlessOpen` deleted. Bytes when this fs finished the file, else 0. */
   removed: Record<string, IoCount>;
 };
 
@@ -33,16 +33,10 @@ function add(into: Record<string, IoCount>, path: string, bytes: number): void {
   count.bytes += bytes;
 }
 
-/** Compacted run paths end in `-<bytes>.sst` (see levels.ts `levelRunPath`). */
-function sizeInPath(path: string): number | undefined {
-  const m = /-(\d+)\.sst$/.exec(path);
-  return m ? Number(m[1]) : undefined;
-}
-
 /**
  * Counts every IO call of `inner` by path class. Integer adds per call,
  * never per key. Also remembers the size of each file it finished, so a
- * later remove or layout lookup knows it without a read.
+ * later remove knows it without a read.
  */
 export class CountingFs implements AsyncFs {
   readonly inner: AsyncFs;
@@ -52,11 +46,6 @@ export class CountingFs implements AsyncFs {
   constructor(inner: AsyncFs, counters: IoCounters = emptyIoCounters()) {
     this.inner = inner;
     this.counters = counters;
-  }
-
-  /** Bytes of `path` when this fs finished it or its name carries the size. */
-  sizeOf(path: string): number | undefined {
-    return this.sizes.get(path) ?? sizeInPath(path);
   }
 
   async read(
@@ -89,14 +78,14 @@ export class CountingFs implements AsyncFs {
 
   async remove(path: string): Promise<void> {
     await this.inner.remove(path);
-    add(this.counters.removed, path, this.sizeOf(path) ?? 0);
+    add(this.counters.removed, path, this.sizes.get(path) ?? 0);
     this.sizes.delete(path);
   }
 
   async removeUnlessOpen(path: string): Promise<boolean> {
     const removed = await this.inner.removeUnlessOpen(path);
     if (removed) {
-      add(this.counters.removed, path, this.sizeOf(path) ?? 0);
+      add(this.counters.removed, path, this.sizes.get(path) ?? 0);
       this.sizes.delete(path);
     }
     return removed;

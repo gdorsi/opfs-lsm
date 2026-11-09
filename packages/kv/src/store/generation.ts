@@ -1,26 +1,23 @@
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { crc32 } from "./crc32.js";
-import { encodeSst } from "./engine.js";
-import { sstKeyRange, type SstEntry } from "./sst.js";
+import { encodeRun } from "./engine.js";
+import type { RunEnd, SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-/** Version 2 added `through`. Version 1 manifests read with `through` 0. */
-const GEN_VERSION = 2;
+/** Version 3 records each run's byte size next to its key range. */
+const GEN_VERSION = 3;
 
-export type KeyRange = {
-  readonly smallest: Uint8Array;
-  readonly largest: Uint8Array;
-};
-
-export type RunMeta = {
-  /** Relative to the db root. Names the level and byte size, see levels.ts. */
+/**
+ * A run of the generation: what the encoder reported when it wrote the file
+ * (`RunEnd`), and where the file is.
+ */
+export type RunMeta = RunEnd & {
+  /** Relative to the db root: `l<n>/<name>.sst`. The directory is the level, see levels.ts. */
   readonly path: string;
-  /** Undefined for an empty run, which has no keys. */
-  readonly range?: KeyRange;
 };
 
 export type GenerationMeta = {
@@ -51,7 +48,7 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const paths = meta.runs.map((r) => enc.encode(r.path));
   let size = 4 + 4 + 8 + 8 + 8 + 4;
   meta.runs.forEach((r, i) => {
-    size += 2 + paths[i]!.byteLength + 1;
+    size += 2 + paths[i]!.byteLength + 4 + 1;
     if (r.range) size += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
   });
   size += 4;
@@ -76,6 +73,8 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
     o += 2;
     out.set(p, o);
     o += p.byteLength;
+    view.setUint32(o, r.bytes, true);
+    o += 4;
     out[o++] = r.range ? 1 : 0;
     if (!r.range) return;
     for (const key of [r.range.smallest, r.range.largest]) {
@@ -90,29 +89,21 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
 }
 
 export function decodeGeneration(buf: Uint8Array): GenerationMeta {
-  if (buf.byteLength < 32) {
+  if (buf.byteLength < 40) {
     throw new CorruptDatabaseError("generation too short");
   }
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   if (view.getUint32(0, true) !== GEN_MAGIC) {
     throw new CorruptDatabaseError("bad generation magic");
   }
-  const version = view.getUint32(4, true);
-  if (version !== 1 && version !== GEN_VERSION) {
+  if (view.getUint32(4, true) !== GEN_VERSION) {
     throw new CorruptDatabaseError("bad generation version");
   }
   const generation = Number(view.getBigUint64(8, true));
-  let o = 16;
-  const tombstoneSeq = Number(view.getBigUint64(o, true));
-  o += 8;
-  let through = 0;
-  if (version === GEN_VERSION) {
-    if (buf.byteLength < 40) throw new CorruptDatabaseError("generation too short");
-    through = Number(view.getBigUint64(o, true));
-    o += 8;
-  }
-  const runCount = view.getUint32(o, true);
-  o += 4;
+  const tombstoneSeq = Number(view.getBigUint64(16, true));
+  const through = Number(view.getBigUint64(24, true));
+  const runCount = view.getUint32(32, true);
+  let o = 36;
   const crcOff = buf.byteLength - 4;
   if (crc32(buf.subarray(0, crcOff)) !== view.getUint32(crcOff, true)) {
     throw new CorruptDatabaseError("generation crc mismatch");
@@ -135,11 +126,12 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     const len = view.getUint16(take(2), true);
     const at = take(len);
     const path = dec.decode(buf.subarray(at, at + len));
+    const bytes = view.getUint32(take(4), true);
     if (buf[take(1)] === 1) {
       const smallest = key();
-      runs.push({ path, range: { smallest, largest: key() } });
+      runs.push({ path, bytes, range: { smallest, largest: key() } });
     } else {
-      runs.push({ path });
+      runs.push({ path, bytes });
     }
   }
   if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
@@ -215,12 +207,6 @@ export async function publishGeneration(
   await w.finish();
 }
 
-/** The manifest entry for a run file with these bytes. */
-export function runMeta(path: string, body: Uint8Array): RunMeta {
-  const range = sstKeyRange(body);
-  return range ? { path, range } : { path };
-}
-
 /** Write a non-empty L0 run. */
 export async function publishL0(
   fs: AsyncFs,
@@ -228,11 +214,11 @@ export async function publishL0(
   entries: readonly SstEntry[],
 ): Promise<RunMeta> {
   const path = `${L0_PREFIX}${name}.sst`;
-  const body = await encodeSst(entries);
+  const { body, end } = await encodeRun(entries);
   const w = await fs.create(path);
   await w.write(body);
   await w.finish();
-  return runMeta(path, body);
+  return { path, ...end };
 }
 
 export async function publishRun(

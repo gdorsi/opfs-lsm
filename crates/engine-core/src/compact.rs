@@ -1,7 +1,8 @@
 //! SST merge for compaction (newest-first inputs).
 
-use crate::sst::{decode_sst, encode_sst, entry_size, Codec, Entry, SstError};
+use crate::sst::{decode_sst, entry_size, Codec, EncodedRun, Entry, SstError, SstWriter};
 use alloc::vec::Vec;
+use core::mem;
 
 /// The next entry of input `run`.
 struct Head {
@@ -63,12 +64,16 @@ impl Heads {
 /// `drop_tombstones` is for a merge that includes the oldest run, where no
 /// older value is left for a tombstone to hide. Returns the runs in key
 /// order and the highest seq of a dropped tombstone, 0 when none was dropped.
+/// A key out of order reaches the writer, which refuses a key below the one
+/// before it in its run. A cut starts the writer on a new run, so the runs are
+/// checked against each other at the end. Either way a corrupt input fails with
+/// `SstError::OutOfOrder` and never becomes wrongly ordered or overlapping runs.
 pub fn merge_sst_bytes(
     sst_bytes: &[Vec<u8>],
     drop_tombstones: bool,
     target_bytes: usize,
     codec: Codec,
-) -> Result<(Vec<Vec<u8>>, u64), SstError> {
+) -> Result<(Vec<EncodedRun>, u64), SstError> {
     let mut inputs = sst_bytes
         .iter()
         .map(|bytes| decode_sst(bytes).map(Vec::into_iter))
@@ -82,7 +87,8 @@ pub fn merge_sst_bytes(
 
     let mut dropped = 0u64;
     let mut runs = Vec::new();
-    let mut pending = Vec::new();
+    let mut writer = SstWriter::new(codec);
+    let mut bytes = Vec::new();
     let mut size = 0;
     while let Some(&Head { run, .. }) = heap.top() {
         // Equal keys sit together. The later one in this run wins, as the
@@ -115,15 +121,20 @@ pub fn merge_sst_bytes(
             continue;
         }
         size += entry_size(&entry);
-        pending.push(entry);
+        writer.push((&entry).into(), &mut bytes)?;
         if size >= target_bytes {
-            runs.push(encode_sst(&pending, codec));
-            pending.clear();
+            let end = writer.finish(&mut bytes);
+            runs.push(EncodedRun { bytes: mem::take(&mut bytes), end });
             size = 0;
         }
     }
-    if !pending.is_empty() {
-        runs.push(encode_sst(&pending, codec));
+    if !writer.is_empty() {
+        let end = writer.finish(&mut bytes);
+        runs.push(EncodedRun { bytes, end });
+    }
+    // A merge writes each key once, so every run starts past the end of the one before it.
+    if runs.windows(2).any(|w| w[0].end.last_key >= w[1].end.first_key) {
+        return Err(SstError::OutOfOrder);
     }
     Ok((runs, dropped))
 }
@@ -131,9 +142,23 @@ pub fn merge_sst_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sst::encode_sst;
 
     fn put(k: &[u8], v: &[u8], seq: u64) -> Entry {
         Entry::Put { key: k.to_vec(), value: v.to_vec(), seq }
+    }
+
+    /// The bytes of each run, after checking that what the writer reported at
+    /// the end of the run is what decoding the run gives.
+    fn run_bytes(runs: &[EncodedRun]) -> Vec<&Vec<u8>> {
+        for run in runs {
+            let entries = decode_sst(&run.bytes).unwrap();
+            assert_eq!(run.end.size, run.bytes.len());
+            assert_eq!(run.end.entries, entries.len());
+            assert_eq!(run.end.first_key, entries.first().unwrap().key());
+            assert_eq!(run.end.last_key, entries.last().unwrap().key());
+        }
+        runs.iter().map(|r| &r.bytes).collect()
     }
 
     #[test]
@@ -141,7 +166,7 @@ mod tests {
         let older = encode_sst(&[put(b"k", b"old", 1)], Codec::Raw);
         let newer = encode_sst(&[put(b"k", b"new", 2)], Codec::Raw);
         let (out, dropped) = merge_sst_bytes(&[newer, older], false, usize::MAX, Codec::Raw).unwrap();
-        assert_eq!(decode_sst(&out[0]).unwrap(), vec![put(b"k", b"new", 2)]);
+        assert_eq!(decode_sst(run_bytes(&out)[0]).unwrap(), vec![put(b"k", b"new", 2)]);
         assert_eq!(dropped, 0);
     }
 
@@ -151,11 +176,11 @@ mod tests {
         let newer = encode_sst(&[Entry::Del { key: b"a".to_vec(), seq: 5 }], Codec::Raw);
         let (kept, _) = merge_sst_bytes(&[newer.clone(), older.clone()], false, usize::MAX, Codec::Raw).unwrap();
         assert_eq!(
-            decode_sst(&kept[0]).unwrap(),
+            decode_sst(run_bytes(&kept)[0]).unwrap(),
             vec![Entry::Del { key: b"a".to_vec(), seq: 5 }, put(b"b", b"1", 1)]
         );
         let (out, dropped) = merge_sst_bytes(&[newer, older], true, usize::MAX, Codec::Raw).unwrap();
-        assert_eq!(decode_sst(&out[0]).unwrap(), vec![put(b"b", b"1", 1)]);
+        assert_eq!(decode_sst(run_bytes(&out)[0]).unwrap(), vec![put(b"b", b"1", 1)]);
         assert_eq!(dropped, 5);
     }
 
@@ -166,10 +191,28 @@ mod tests {
             .collect();
         let (out, _) = merge_sst_bytes(&[encode_sst(&entries, Codec::Raw)], false, 1000, Codec::Raw).unwrap();
         assert!(out.len() > 1);
-        let back: Vec<Entry> = out.iter().flat_map(|r| decode_sst(r).unwrap()).collect();
+        let back: Vec<Entry> = run_bytes(&out).into_iter().flat_map(|r| decode_sst(r).unwrap()).collect();
         assert_eq!(back, entries);
         let (none, _) = merge_sst_bytes(&[encode_sst(&[Entry::Del { key: b"a".to_vec(), seq: 1 }], Codec::Raw)], true, 1000, Codec::Raw).unwrap();
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn an_input_out_of_key_order_is_refused() {
+        let ordered = encode_sst(&[put(b"a", b"1", 1), put(b"b", b"2", 2)], Codec::Raw);
+        let mut flipped = ordered.clone();
+        // Swap the two keys in place (same length, so the layout holds), then fix the CRC.
+        let (a, b) = (flipped.iter().position(|&x| x == b'a').unwrap(), flipped.iter().position(|&x| x == b'b').unwrap());
+        flipped.swap(a, b);
+        let crc_at = flipped.len() - 12;
+        let sum = crate::crc32::crc32(&flipped[..crc_at]);
+        flipped[crc_at..crc_at + 4].copy_from_slice(&sum.to_le_bytes());
+        assert_eq!(decode_sst(&flipped).unwrap().iter().map(|e| e.key().to_vec()).collect::<Vec<_>>(), vec![b"b".to_vec(), b"a".to_vec()]);
+        // Cut after every entry, each key opens a run of its own, where the writer has no key before it.
+        assert_eq!(merge_sst_bytes(&[flipped.clone()], false, 1, Codec::Raw).err(), Some(SstError::OutOfOrder));
+        assert_eq!(merge_sst_bytes(&[ordered.clone()], false, 1, Codec::Raw).unwrap().0.len(), 2);
+        assert_eq!(merge_sst_bytes(&[flipped], false, usize::MAX, Codec::Raw).err(), Some(SstError::OutOfOrder));
+        assert!(merge_sst_bytes(&[ordered], false, usize::MAX, Codec::Raw).is_ok());
     }
 
     #[test]
@@ -179,13 +222,13 @@ mod tests {
             .collect();
         let blobs: Vec<Vec<u8>> = runs.iter().map(|r| encode_sst(r, Codec::Raw)).collect();
         let (out, _) = merge_sst_bytes(&blobs, false, 200, Codec::Raw).unwrap();
-        let back: Vec<Entry> = out.iter().flat_map(|r| decode_sst(r).unwrap()).collect();
+        let back: Vec<Entry> = run_bytes(&out).into_iter().flat_map(|r| decode_sst(r).unwrap()).collect();
         let want: Vec<Entry> = (0..30u64).map(|i| put(format!("k{i:02}").as_bytes(), b"0", 10)).collect();
         assert_eq!(back, want);
         let (reversed, _) = merge_sst_bytes(&blobs.iter().rev().cloned().collect::<Vec<_>>(), false, usize::MAX, Codec::Raw).unwrap();
         let newest = |i: u64| [2u64, 1, 0].into_iter().find(|r| i % (r + 1) == 0).unwrap();
         let want: Vec<Entry> = (0..30u64).map(|i| put(format!("k{i:02}").as_bytes(), &[b'0' + newest(i) as u8], 10 - newest(i))).collect();
-        assert_eq!(decode_sst(&reversed[0]).unwrap(), want);
+        assert_eq!(decode_sst(run_bytes(&reversed)[0]).unwrap(), want);
     }
 
     /// The heap replaced a `BTreeMap` that kept the last entry written for a
@@ -207,11 +250,11 @@ mod tests {
             Codec::Raw,
         );
         let (out, dropped) = merge_sst_bytes(&[newest.clone(), older.clone()], false, usize::MAX, Codec::Raw).unwrap();
-        assert_eq!(decode_sst(&out[0]).unwrap(), vec![put(b"a", b"last", 3), put(b"b", b"b", 4)]);
+        assert_eq!(decode_sst(run_bytes(&out)[0]).unwrap(), vec![put(b"a", b"last", 3), put(b"b", b"b", 4)]);
         assert_eq!(dropped, 0);
         let (out, dropped) = merge_sst_bytes(&[newest, older], true, 1, Codec::Raw).unwrap();
         assert_eq!(dropped, 0);
-        let back: Vec<Entry> = out.iter().flat_map(|r| decode_sst(r).unwrap()).collect();
+        let back: Vec<Entry> = run_bytes(&out).into_iter().flat_map(|r| decode_sst(r).unwrap()).collect();
         assert_eq!(back, vec![put(b"a", b"last", 3), put(b"b", b"b", 4)]);
 
         // A later tombstone in the same run is the one that wins. Dropping it
@@ -306,7 +349,8 @@ mod tests {
                 let got = merge_sst_bytes(&blobs, drop_tombstones, target, codec).unwrap();
                 let want = btree_merge(&blobs, drop_tombstones, target, codec);
                 assert_eq!(got.1, want.1, "dropped trial {trial} codec {codec:?}");
-                assert_eq!(got.0, want.0, "bytes trial {trial} codec {codec:?}");
+                let got_bytes: Vec<Vec<u8>> = run_bytes(&got.0).into_iter().cloned().collect();
+                assert_eq!(got_bytes, want.0, "bytes trial {trial} codec {codec:?}");
             }
         }
     }
@@ -318,8 +362,9 @@ mod tests {
             .collect();
         let raw = encode_sst(&entries, Codec::Raw);
         let (packed, _) = merge_sst_bytes(&[raw.clone()], false, usize::MAX, Codec::Lz4).unwrap();
+        let packed: Vec<Vec<u8>> = run_bytes(&packed).into_iter().cloned().collect();
         assert!(packed[0].len() < raw.len() / 2);
         let (back, _) = merge_sst_bytes(&packed, false, usize::MAX, Codec::Raw).unwrap();
-        assert_eq!(back[0], raw);
+        assert_eq!(*run_bytes(&back)[0], raw);
     }
 }

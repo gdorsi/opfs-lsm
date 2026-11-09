@@ -48,12 +48,12 @@ describe("CountingFs", () => {
   it("attributes IO by the first path segment", async () => {
     const fs = new CountingFs(new MemoryFs());
     await write(fs, "l0/a.sst", 10);
-    await write(fs, "l2/run-7.sst", 7);
+    await write(fs, "l2/run.sst", 7);
     await write(fs, "m/0000000000000001.mft", 3);
     await write(fs, "top.bin", 2);
     await write(fs, "lx/x", 1);
 
-    const aborted = await fs.create("l1/gone-5.sst");
+    const aborted = await fs.create("l1/gone.sst");
     await aborted.write(new Uint8Array(5));
     await aborted.abort();
 
@@ -62,7 +62,7 @@ describe("CountingFs", () => {
     await fs.read("l9/missing", 0, 1);
 
     await fs.remove("l0/a.sst");
-    await fs.remove("l3/other-42.sst");
+    await fs.remove("l3/other.sst");
     await fs.remove("m/unknown.mft");
 
     expect(fs.counters.written).toEqual({
@@ -78,8 +78,8 @@ describe("CountingFs", () => {
     expect(fs.counters.removed).toEqual({
       // Size remembered from finish.
       l0: { calls: 1, bytes: 10 },
-      // Size from the run name.
-      l3: { calls: 1, bytes: 42 },
+      // Not finished by this fs, so no size.
+      l3: { calls: 1, bytes: 0 },
       m: { calls: 1, bytes: 0 },
     });
   });

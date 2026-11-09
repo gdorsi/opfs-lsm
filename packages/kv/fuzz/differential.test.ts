@@ -5,7 +5,7 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns, unpackHits } from "../src/store/block-scan.js";
 import { encodeSst as encodeSstWasm, mergeSsts } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
-import { BlockEntries, blockBytes, decodeSst, encodeSst, type SstEntry } from "../src/store/sst.js";
+import { BlockEntries, blockBytes, decodeSst, encodeSst, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
 import { bounded, framedBlocks, repairSst, RuleBroken, tally, type Repair } from "./targets.js";
 import { loadWasm, type FlatEngine } from "./wasm.js";
@@ -227,11 +227,13 @@ describe("wasm against the TypeScript fallbacks", () => {
             const blobs = await Promise.all(runs.map(encodeRun));
             const w = await mergeSsts(blobs, drop, target, "raw");
             const t = await mergeSstsTs(blobs, drop, target);
-            const flat = async (ssts: readonly Uint8Array[]) => plain(ssts.flatMap((s) => decodeSst(s)));
-            expect(await flat(w.ssts)).toEqual(await flat(t.ssts));
+            const flat = async (out: readonly EncodedRun[]) => plain(out.flatMap((r) => decodeSst(r.body)));
+            expect(await flat(w.runs)).toEqual(await flat(t.runs));
             expect(w.droppedSeq).toBe(t.droppedSeq);
             // Raw runs cut blocks and runs in the same places (design.md), so the bytes match too.
-            expect(w.ssts.map((s) => [...s])).toEqual(t.ssts.map((s) => [...s]));
+            expect(w.runs.map((r) => [...r.body])).toEqual(t.runs.map((r) => [...r.body]));
+            // And both report the same size and key range at the end of each run.
+            expect(w.runs.map((r) => r.end)).toEqual(t.runs.map((r) => r.end));
           }),
           { ...params, numRuns: Math.ceil(RUNS / 10) },
         ),

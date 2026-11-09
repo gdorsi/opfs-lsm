@@ -9,7 +9,6 @@ import {
   manifestNumbers,
   publishGeneration,
   publishRun,
-  runMeta,
   type GenerationMeta,
   type RunMeta,
 } from "../store/generation.js";
@@ -53,18 +52,17 @@ export async function mergeNextStep(
     if (!buf) throw new Error(`compaction missing input ${path}`);
     blobs.push(buf);
   }
-  const { ssts, droppedSeq } = await mergeSsts(
+  const { runs, droppedSeq } = await mergeSsts(
     blobs,
     plan.bottom,
     TARGET_RUN_BYTES,
     codecForLevel(plan.outputLevel),
   );
   const outputs: RunMeta[] = [];
-  for (const [i, sst] of ssts.entries()) {
-    const name = `c${top + 1}.${i}`;
-    const path = levelRunPath(plan.outputLevel, name, sst.byteLength);
-    await publishRun(fs, path, sst);
-    outputs.push(runMeta(path, sst));
+  for (const [i, run] of runs.entries()) {
+    const path = levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
+    await publishRun(fs, path, run.body);
+    outputs.push({ path, ...run.end });
   }
   return { inputs: plan.inputs.map((r) => r.path), outputs, droppedSeq };
 }

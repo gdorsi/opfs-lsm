@@ -3,7 +3,7 @@
  * and falls back to the TS SST codec if it is missing (before the wasm is
  * built) or traps.
  */
-import type { SstCodec, SstEntry } from "./sst.js";
+import type { EncodedRun, SstCodec, SstEntry } from "./sst.js";
 import * as sstTs from "./sst.js";
 import { foldEntries } from "./fold.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
@@ -43,6 +43,7 @@ const STATUS_NAMES: Record<number, string> = {
   [-9]: "bad codec",
   [-10]: "bad block",
   [-12]: "patterns truncated",
+  [-14]: "keys out of order",
 };
 
 type Exports = {
@@ -64,7 +65,7 @@ type Exports = {
  * out of wasm memory once, so decoded entries stay valid after later calls.
  */
 export type FlatEngine = {
-  encodeSst(entries: readonly SstEntry[], lz4: boolean): Uint8Array;
+  encodeRun(entries: readonly SstEntry[], lz4: boolean): EncodedRun;
   decodeSst(buf: Uint8Array): SstEntry[];
   lz4Decompress(src: Uint8Array, size: number): Uint8Array;
   scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
@@ -73,7 +74,7 @@ export type FlatEngine = {
     dropTombstones: boolean,
     targetBytes: number,
     lz4: boolean,
-  ): { ssts: Uint8Array[]; droppedSeq: number };
+  ): { runs: EncodedRun[]; droppedSeq: number };
 };
 
 const TAG_PUT = 1;
@@ -102,12 +103,12 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
   }
 
   return {
-    encodeSst(entries, lz4) {
+    encodeRun(entries, lz4) {
       let size = 0;
       for (const e of entries) {
         size += 1 + 8 + 4 + e.key.byteLength + (e.kind === "put" ? 4 + e.value.byteLength : 0);
       }
-      return call(
+      const out = call(
         "encode_sst",
         size,
         (into) => {
@@ -130,6 +131,7 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
         },
         (ptr) => ex.encode_sst(ptr, size, lz4 ? 1 : 0),
       );
+      return readRun(out, new DataView(out.buffer), 0).run;
     },
 
     decodeSst(buf) {
@@ -180,16 +182,40 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
       const view = new DataView(out.buffer);
       const droppedSeq = view.getUint32(0, true) + view.getUint32(4, true) * TWO_32;
       const count = view.getUint32(8, true);
-      const ssts: Uint8Array[] = [];
+      const runs: EncodedRun[] = [];
       let o = 12;
       for (let i = 0; i < count; i++) {
-        const len = view.getUint32(o, true);
-        ssts.push(out.subarray(o + 4, o + 4 + len));
-        o += 4 + len;
+        const { run, next } = readRun(out, view, o);
+        runs.push(run);
+        o = next;
       }
-      return { ssts, droppedSeq };
+      return { runs, droppedSeq };
     },
   };
+}
+
+/**
+ * The run record at `o` (crates/engine-abi.md). The body is a view into
+ * `bytes`. The keys are copies, so the manifest does not keep `bytes` alive.
+ */
+function readRun(bytes: Uint8Array, view: DataView, o: number): { run: EncodedRun; next: number } {
+  const entries = view.getUint32(o, true);
+  const size = view.getUint32(o + 4, true);
+  const firstLen = view.getUint32(o + 8, true);
+  const lastLen = view.getUint32(o + 12, true);
+  const body = bytes.subarray(o + 16, o + 16 + size);
+  const keys = o + 16 + size;
+  const end =
+    entries === 0
+      ? { bytes: size }
+      : {
+          bytes: size,
+          range: {
+            smallest: bytes.slice(keys, keys + firstLen),
+            largest: bytes.slice(keys + firstLen, keys + firstLen + lastLen),
+          },
+        };
+  return { run: { body, end }, next: keys + firstLen + lastLen };
 }
 
 function statusError(op: string, code: number, inputBytes: number, capacity: number): Error {
@@ -334,20 +360,32 @@ export function engineUsingWasm(): boolean {
   return engine !== undefined;
 }
 
-/** Without wasm, every run is written raw: readers take either codec. */
+/**
+ * A run of `entries` with what the encoder reports at its end: the size and
+ * the key range the manifest records. Without wasm, every run is written
+ * raw: readers take either codec.
+ */
+export async function encodeRun(
+  entries: readonly SstEntry[],
+  codec: SstCodec = "raw",
+): Promise<EncodedRun> {
+  await ensureEngine();
+  if (!engine) return sstTs.encodeRun(entries);
+  try {
+    return engine.encodeRun(entries, codec === "lz4");
+  } catch (err) {
+    if (!(err instanceof WebAssembly.RuntimeError)) throw err;
+    dropWasm();
+    return sstTs.encodeRun(entries);
+  }
+}
+
+/** `encodeRun`'s bytes. */
 export async function encodeSst(
   entries: readonly SstEntry[],
   codec: SstCodec = "raw",
 ): Promise<Uint8Array> {
-  await ensureEngine();
-  if (!engine) return sstTs.encodeSst(entries);
-  try {
-    return engine.encodeSst(entries, codec === "lz4");
-  } catch (err) {
-    if (!(err instanceof WebAssembly.RuntimeError)) throw err;
-    dropWasm();
-    return sstTs.encodeSst(entries);
-  }
+  return (await encodeRun(entries, codec)).body;
 }
 
 export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
@@ -371,7 +409,7 @@ export async function mergeSsts(
   dropTombstones: boolean,
   targetBytes = Number.MAX_SAFE_INTEGER,
   codec: SstCodec = "raw",
-): Promise<{ readonly ssts: readonly Uint8Array[]; readonly droppedSeq: number }> {
+): Promise<{ readonly runs: readonly EncodedRun[]; readonly droppedSeq: number }> {
   await ensureEngine();
   if (engine) {
     try {
@@ -388,7 +426,7 @@ function mergeSstsTs(
   blobsNewestFirst: readonly Uint8Array[],
   dropTombstones: boolean,
   targetBytes: number,
-): { readonly ssts: readonly Uint8Array[]; readonly droppedSeq: number } {
+): { readonly runs: readonly EncodedRun[]; readonly droppedSeq: number } {
   let entries = foldEntries(blobsNewestFirst.map((b) => sstTs.decodeSst(b)));
   let droppedSeq = 0;
   if (dropTombstones) {
@@ -397,17 +435,17 @@ function mergeSstsTs(
     }
     entries = entries.filter((e) => e.kind === "put");
   }
-  const ssts: Uint8Array[] = [];
+  const runs: EncodedRun[] = [];
   let start = 0;
   let size = 0;
   for (let i = 0; i < entries.length; i++) {
     size += sstTs.entryRecordSize(entries[i]!);
     if (size >= targetBytes) {
-      ssts.push(sstTs.encodeSst(entries.slice(start, i + 1)));
+      runs.push(sstTs.encodeRun(entries.slice(start, i + 1)));
       start = i + 1;
       size = 0;
     }
   }
-  if (start < entries.length) ssts.push(sstTs.encodeSst(entries.slice(start)));
-  return { ssts, droppedSeq };
+  if (start < entries.length) runs.push(sstTs.encodeRun(entries.slice(start)));
+  return { runs, droppedSeq };
 }

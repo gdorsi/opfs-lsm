@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   EngineCapacityError,
   decodeSst,
+  encodeRun,
   encodeSst,
   engineUsingWasm,
   ensureEngine,
@@ -9,7 +10,9 @@ import {
   mergeSsts,
 } from "../src/store/engine.js";
 import { CorruptDatabaseError } from "../src/errors.js";
+import { crc32 } from "../src/store/crc32.js";
 import { settle } from "../src/store/cursor.js";
+import { encodeRun as encodeRunTs, sstKeyRange, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
@@ -41,10 +44,10 @@ describe("engine WASM", () => {
           value: utf("v"),
         })),
       );
-    const { ssts } = await mergeSsts([await half(0), await half(30_000)], false);
-    expect(ssts).toHaveLength(1);
-    expect(await decodeSst(ssts[0]!)).toHaveLength(60_000);
-    const reader = readerOfBytes(ssts[0]!);
+    const { runs } = await mergeSsts([await half(0), await half(30_000)], false);
+    expect(runs).toHaveLength(1);
+    expect(await decodeSst(runs[0]!.body)).toHaveLength(60_000);
+    const reader = readerOfBytes(runs[0]!.body);
     expect((await settle(() => reader.get(utf("k00059999"))))?.kind).toBe("put");
   });
 
@@ -57,11 +60,87 @@ describe("engine WASM", () => {
         value: new Uint8Array(100),
       })),
     );
-    const { ssts } = await mergeSsts([body], false, 16 * 1024);
-    expect(ssts.length).toBeGreaterThan(5);
-    const keys = (await Promise.all(ssts.map((s) => decodeSst(s)))).flat().map((e) => new TextDecoder().decode(e.key));
+    const { runs } = await mergeSsts([body], false, 16 * 1024);
+    expect(runs.length).toBeGreaterThan(5);
+    const keys = (await Promise.all(runs.map((r) => decodeSst(r.body)))).flat().map((e) => new TextDecoder().decode(e.key));
     expect(keys).toEqual(Array.from({ length: 1000 }, (_, i) => `k${String(i).padStart(4, "0")}`));
-    for (const s of ssts.slice(0, -1)) expect(s.byteLength).toBeLessThan(20 * 1024);
+    for (const r of runs.slice(0, -1)) expect(r.body.byteLength).toBeLessThan(20 * 1024);
+    for (const r of runs) expectReportMatchesFile(r);
+  });
+});
+
+/** What an encoder reports at the end of a run is what the file says. */
+function expectReportMatchesFile(run: EncodedRun): void {
+  expect(run.end.bytes).toBe(run.body.byteLength);
+  expect(run.end.range).toEqual(sstKeyRange(run.body));
+}
+
+describe("the end of a run", () => {
+  const put = (key: string, value = "v", seq = 1): SstEntry => ({ kind: "put", key: utf(key), value: utf(value), seq });
+  const del = (key: string, seq = 1): SstEntry => ({ kind: "del", key: utf(key), seq });
+  const todo = (n: number): SstEntry[] => Array.from({ length: n }, (_, i) => put(`todo/${String(i).padStart(6, "0")}`, `{"title":"buy milk ${i % 7}"}`, i));
+  const shapes: [string, SstEntry[]][] = [
+    ["no entries", []],
+    ["one empty key", [put("")]],
+    ["tombstones only", [del("b", 2), del("a", 1)]],
+    ["unsorted input", [put("m"), put("c"), del("x"), put("a")]],
+    ["equal keys", [put("a", "1", 1), del("a", 2), put("b")]],
+    ["many blocks", todo(2_000)],
+    ["a long shared prefix", Array.from({ length: 300 }, (_, i) => put(`${"p".repeat(200)}${String(i).padStart(4, "0")}`))],
+  ];
+
+  it.each(shapes)("a run of %s reports the size and key range the file holds, from wasm and from TypeScript", async (_name, entries) => {
+    await ensureEngine();
+    expect(engineUsingWasm()).toBe(true);
+    for (const run of [await encodeRun(entries, "raw"), await encodeRun(entries, "lz4"), encodeRunTs(entries)]) {
+      expectReportMatchesFile(run);
+      expect(run.end.range === undefined).toBe(entries.length === 0);
+    }
+  });
+
+  it.each(shapes)("a raw run of %s is the same bytes and the same end from wasm and from TypeScript", async (_name, entries) => {
+    await ensureEngine();
+    const wasm = await encodeRun(entries, "raw");
+    const ts = encodeRunTs(entries);
+    expect(wasm.end).toEqual(ts.end);
+    expect(wasm.body).toEqual(ts.body);
+  });
+
+  it("is keys of their own, not views of the bytes the call returned", async () => {
+    await ensureEngine();
+    const run = await encodeRun([put("alpha"), put("omega")], "raw");
+    const { smallest, largest } = run.end.range!;
+    expect(smallest.buffer).not.toBe(run.body.buffer);
+    expect(largest.buffer).not.toBe(run.body.buffer);
+    expect(new TextDecoder().decode(smallest)).toBe("alpha");
+    expect(new TextDecoder().decode(largest)).toBe("omega");
+  });
+});
+
+describe("a run whose keys are out of order", () => {
+  /** The run `[a, b]` with its two keys swapped in the data block and the CRC fixed, so it decodes as `[b, a]`. */
+  function misordered(): Uint8Array {
+    const sst = encodeRunTs([
+      { kind: "put", key: utf("a"), value: utf("1"), seq: 1 },
+      { kind: "put", key: utf("b"), value: utf("2"), seq: 2 },
+    ]).body.slice();
+    const [a, b] = [sst.indexOf(0x61), sst.indexOf(0x62)];
+    sst[a] = 0x62;
+    sst[b] = 0x61;
+    const crcAt = sst.byteLength - 12;
+    new DataView(sst.buffer).setUint32(crcAt, crc32(sst.subarray(0, crcAt)), true);
+    return sst;
+  }
+
+  it("is refused by the wasm merge, in one output run and when a cut falls between the two keys", async () => {
+    await ensureEngine();
+    expect(engineUsingWasm()).toBe(true);
+    const sst = misordered();
+    expect((await decodeSst(sst)).map((e) => new TextDecoder().decode(e.key))).toEqual(["b", "a"]);
+    await expect(mergeSsts([sst], false)).rejects.toThrow(CorruptDatabaseError);
+    // A target of 1 byte cuts after every entry, so each key opens an output run of its own.
+    await expect(mergeSsts([sst], false, 1)).rejects.toThrow("keys out of order");
+    expect(engineUsingWasm()).toBe(true);
   });
 });
 

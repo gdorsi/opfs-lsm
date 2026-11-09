@@ -179,7 +179,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
 }
 
 const L0_NAME = /^l0\/(\d+)-(\d+)\.sst$/;
-const LEVEL_NAME = /^l(\d+)\/c(\d+)\.(\d+)-(\d+)\.sst$/;
+const LEVEL_NAME = /^l(\d+)\/c(\d+)\.(\d+)\.sst$/;
 
 /** One run: it exists, decodes with a good CRC, is sorted, and matches its name and manifest entry. */
 async function checkRun(
@@ -196,6 +196,7 @@ async function checkRun(
     bad("missing");
     return undefined;
   }
+  if (run.bytes !== buf.byteLength) bad(`manifest says ${run.bytes} bytes, file has ${buf.byteLength}`);
   let entries: SstEntry[];
   let codec: string;
   try {
@@ -246,9 +247,8 @@ async function checkRun(
   } else if (level !== undefined) {
     const m = LEVEL_NAME.exec(path);
     if (!m) {
-      bad("level name is not c<gen>.<i>-<bytes>.sst");
+      bad("level name is not c<gen>.<i>.sst");
     } else {
-      if (Number(m[4]) !== buf.byteLength) bad(`name says ${m[4]} bytes, file has ${buf.byteLength}`);
       if (Number(m[2]) > generation) bad(`written by generation ${m[2]}, after recorded ${generation}`);
     }
     const want = engineUsingWasm() ? codecForLevel(level) : "raw";
