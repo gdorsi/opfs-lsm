@@ -421,9 +421,15 @@ const opArb: fc.Arbitrary<OpSpec> = fc.oneof(
   { weight: 2, arbitrary: fc.record({ type: fc.constant("del" as const), key: keyArb }) },
 );
 
-type RangeSpec = { start?: number; end?: number; limit?: number; contains?: string };
+type RangeSpec = { start?: number; end?: number; limit?: number; contains?: string; reverse?: boolean };
 const rangeArb: fc.Arbitrary<RangeSpec> = fc.record(
-  { start: keyArb, end: keyArb, limit: fc.integer({ min: 0, max: 3 }), contains: fc.constantFrom("a", "v1", ".") },
+  {
+    start: keyArb,
+    end: keyArb,
+    limit: fc.integer({ min: 0, max: 3 }),
+    contains: fc.constantFrom("a", "v1", "."),
+    reverse: fc.boolean(),
+  },
   { requiredKeys: [] },
 );
 
@@ -433,6 +439,7 @@ function rangeOf(spec: RangeSpec): OracleRange {
     ...(spec.end !== undefined ? { endExclusive: KEYS[spec.end]! } : {}),
     ...(spec.limit !== undefined ? { limit: spec.limit } : {}),
     ...(spec.contains !== undefined ? { valueContains: [utf(spec.contains)] } : {}),
+    ...(spec.reverse ? { reverse: true } : {}),
   };
 }
 

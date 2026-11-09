@@ -31,6 +31,17 @@ async function expected(reader: SstReader, patterns: Uint8Array[], bounds?: { st
     .map((e) => dec.decode(e.key));
 }
 
+const allBounds = [
+  undefined,
+  { start: enc.encode("k/00100") },
+  { endExclusive: enc.encode("k/00450") },
+  { start: enc.encode("k/00123"), endExclusive: enc.encode("k/00321") },
+  { start: enc.encode("k/00000"), endExclusive: enc.encode("k/00001") },
+  { start: enc.encode("k/00599") },
+  { endExclusive: enc.encode("k/00000") },
+  { start: enc.encode("k/00300"), endExclusive: enc.encode("k/00300") },
+];
+
 beforeAll(async () => {
   await ensureEngine();
   expect(engineUsingWasm()).toBe(true);
@@ -45,6 +56,30 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
       }
     }
     expect(await keys(reader.scanContains(pats(" w0")))).not.toContain("k/00007z");
+  });
+
+  it("gives the forward hits backward", async () => {
+    const reader = readerOfBytes(await encodeSst(entries, codec));
+    for (const patterns of [pats(" w3"), pats(" w3", " c0"), pats(" nope"), pats(" w")]) {
+      for (const bounds of allBounds) {
+        const forward = await keys(reader.scanContains(patterns, bounds));
+        expect(await keys(reader.scanContains(patterns, bounds, true))).toEqual([...forward].reverse());
+      }
+    }
+  });
+
+  it("gives the forward hits backward without the wasm scanner", async () => {
+    const reader = readerOfBytes(await encodeSst(entries, codec));
+    const prev = useBlockScanner(undefined);
+    try {
+      for (const bounds of allBounds) {
+        const forward = await keys(reader.scanContains(pats(" w3", " c0"), bounds));
+        expect(forward).toEqual(await expected(reader, pats(" w3", " c0"), bounds));
+        expect(await keys(reader.scanContains(pats(" w3", " c0"), bounds, true))).toEqual([...forward].reverse());
+      }
+    } finally {
+      useBlockScanner(prev);
+    }
   });
 
   it("falls back to the cursor when no wasm scanner is installed", async () => {
@@ -82,5 +117,9 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
     expect(await keys(level.scanContains(pats(" w3"), bounds))).toEqual(
       (await expected(lo, pats(" w3"), bounds)).concat(await expected(hi, pats(" w3"), bounds)),
     );
+    for (const b of allBounds) {
+      const forward = await keys(level.scanContains(pats(" w3"), b));
+      expect(await keys(level.scanContains(pats(" w3"), b, true))).toEqual([...forward].reverse());
+    }
   });
 });

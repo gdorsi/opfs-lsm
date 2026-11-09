@@ -299,6 +299,7 @@ function showRange(r: OracleRange): string {
     ...(r.endExclusive ? { end: new TextDecoder().decode(r.endExclusive.subarray(0, 12)) } : {}),
     ...(r.limit !== undefined ? { limit: r.limit } : {}),
     ...(r.valueContains ? { contains: r.valueContains.map((c) => new TextDecoder().decode(c)) } : {}),
+    ...(r.reverse ? { reverse: true } : {}),
   });
 }
 

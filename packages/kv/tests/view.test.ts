@@ -101,6 +101,77 @@ describe("view snapshot", () => {
   });
 });
 
+describe("reverse range", () => {
+  const key = (i: number) => enc.encode(`k${String(i).padStart(5, "0")}`);
+  const keysOf = async (rows: AsyncIterable<{ key: Uint8Array; value: Uint8Array }>) => {
+    const out: string[] = [];
+    for await (const r of rows) out.push(`${dec.decode(r.key)}=${dec.decode(r.value)}`);
+    return out;
+  };
+
+  async function seeded() {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    await db.batch((tx) => {
+      for (let i = 0; i < 3000; i += 2) tx.put(key(i), enc.encode(`sst${i}`));
+    });
+    await db.ingest();
+    await db.batch((tx) => {
+      for (let i = 0; i < 3000; i += 3) tx.put(key(i), enc.encode(`l0-${i}`));
+      for (let i = 2; i < 3000; i += 10) tx.delete(key(i));
+    });
+    await db.ingest();
+    await db.batch((tx) => {
+      for (let i = 0; i < 3000; i += 5) tx.put(key(i), enc.encode(`mem${i}`));
+      for (let i = 1; i < 3000; i += 14) tx.delete(key(i));
+      for (let i = 3; i < 3000; i += 6) tx.delete(key(i));
+    });
+    return db;
+  }
+
+  const bounds = [
+    {},
+    { start: key(100) },
+    { endExclusive: key(2900) },
+    { start: key(500), endExclusive: key(510) },
+    { start: key(1000), endExclusive: key(1000) },
+    { start: key(2990) },
+    { endExclusive: key(2) },
+    { start: key(1), endExclusive: key(2) },
+  ];
+  const limits = [undefined, 0, 1, 5];
+
+  it("yields the forward rows in descending order, and limit takes the last rows", async () => {
+    const db = await seeded();
+    let rows = 0;
+    for (const b of bounds) {
+      const forward = await keysOf(db.range(b));
+      rows += forward.length;
+      for (const limit of limits) {
+        const range = { ...b, reverse: true, ...(limit !== undefined ? { limit } : {}) };
+        const want = [...forward].reverse().slice(0, limit);
+        expect(await keysOf(db.range(range))).toEqual(want);
+        expect(await db.view((snap) => keysOf(snap.range(range)))).toEqual(want);
+      }
+    }
+    expect(rows).toBeGreaterThan(2_000);
+    await db.close();
+  });
+
+  it("reads the snapshot backward, not later writes", async () => {
+    const db = await seeded();
+    const range = { start: key(1000), endExclusive: key(1040) };
+    const forward = await keysOf(db.range(range));
+    const got = await db.view(async (snap) => {
+      await db.batch((tx) => {
+        for (let i = 1000; i < 1040; i++) tx.put(key(i), enc.encode("later"));
+      });
+      return keysOf(snap.range({ ...range, reverse: true }));
+    });
+    expect(got).toEqual([...forward].reverse());
+    await db.close();
+  });
+});
+
 describe("range with valueContains", () => {
   async function seeded() {
     const db = await openHarnessDb({
@@ -142,6 +213,21 @@ describe("range with valueContains", () => {
       "d= red kiwi",
     ]);
     expect(await pairs(db.range({ limit: 2, valueContains: red }))).toEqual(["a= red apple", "d= red kiwi"]);
+    await db.close();
+  });
+
+  it("yields the forward matches in descending order, and limit counts matches", async () => {
+    const db = await seeded();
+    const e = (s: string) => enc.encode(s);
+    for (const b of [{}, { start: e("b"), endExclusive: e("e") }, { start: e("d") }, { endExclusive: e("d") }]) {
+      const forward = await pairs(db.range({ ...b, valueContains: red }));
+      for (const limit of [undefined, 1, 2]) {
+        const range = { ...b, valueContains: red, reverse: true, ...(limit !== undefined ? { limit } : {}) };
+        const want = [...forward].reverse().slice(0, limit);
+        expect(await pairs(db.range(range))).toEqual(want);
+        expect(await db.view((snap) => pairs(snap.range(range)))).toEqual(want);
+      }
+    }
     await db.close();
   });
 

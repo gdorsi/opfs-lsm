@@ -20,6 +20,7 @@ export type OracleRange = {
   readonly endExclusive?: Uint8Array;
   readonly limit?: number;
   readonly valueContains?: readonly Uint8Array[];
+  readonly reverse?: boolean;
 };
 
 /** One key's history: the seq of each op on it, and the value it left (undefined for a delete). */
@@ -90,6 +91,7 @@ export class Oracle {
         (!range.endExclusive || compareBytes(key, range.endExclusive) < 0) &&
         (!range.valueContains || containsAll(value, range.valueContains)),
     );
+    if (range.reverse) out.reverse();
     return range.limit === undefined ? out : out.slice(0, range.limit);
   }
 
@@ -231,5 +233,6 @@ function showRange(r: OracleRange): string {
   if (r.endExclusive) parts.push(`end ${show(r.endExclusive)}`);
   if (r.limit !== undefined) parts.push(`limit ${r.limit}`);
   if (r.valueContains) parts.push(`contains ${r.valueContains.map(show).join("+")}`);
+  if (r.reverse) parts.push("reverse");
   return parts.join(", ");
 }
