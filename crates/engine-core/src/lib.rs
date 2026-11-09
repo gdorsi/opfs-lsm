@@ -6,6 +6,7 @@ extern crate alloc;
 mod bloom;
 mod compact;
 mod crc32;
+mod merge;
 mod sst;
 
 pub use bloom::{
@@ -13,6 +14,7 @@ pub use bloom::{
     key_hash, BloomFilter,
 };
 pub use compact::merge_sst_bytes;
+pub use merge::{decode_block, Demand, MergeConfig, MergeError, MergeSession, Stop};
 pub use sst::{
     decode_sst, encode_run, encode_run_into, encode_sst, lz4_unpack, scan_block_contains, Codec, EncodedRun,
     Entry, EntryRef, OutOfOrder, RunEnd, SstError, SstWriter,

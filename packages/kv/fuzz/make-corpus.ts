@@ -127,6 +127,17 @@ async function main(): Promise<void> {
     pair(lz4Runs[0]!, small[0]!, 2, 0),
     pair(edgeRuns[2]!, edgeRuns[0]!, 3, 1),
   ]);
+  await seeds(join(rustCorpus, "decode_block"), [...rawBlocks.map((b) => cat([0], b)), ...lz4Blocks.map((b) => cat([1], b))]);
+  // Header: flags, target, group (bit i: run i + 1 joins run i's source), window sizes, feed seed.
+  const session = (header: number[], ...runList: Uint8Array[]) =>
+    cat(header, ...runList.flatMap((r) => [[r.byteLength & 0xff, r.byteLength >> 8], r]));
+  await seeds(join(rustCorpus, "merge_session"), [
+    session([0, 0, 0, 0x00, 0], small[1]!, small[0]!),
+    session([1, 4, 0, 0x12, 1], small[1]!, small[0]!),
+    session([2 | 8, 0, 0, 0x34, 2], lz4Runs[0]!, small[0]!),
+    session([1, 1, 0b1, 0x51, 3], encodeSst(todoEntries(30)), encodeSst(todoEntries(30, 30)), edgeRuns[2]!),
+    session([0, 0, 0, 0x60, 4], edgeRuns[0]!, edgeRuns[1]!),
+  ]);
   console.log(
     `seeds: ${runs.length} runs (${lz4Runs.length} LZ4), ${db.manifests.length} manifests, ${db.walRows.length} WAL rows, ${lz4Blocks.length + rawBlocks.length} blocks`,
   );

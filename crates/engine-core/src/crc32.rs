@@ -138,6 +138,37 @@ pub fn crc32(data: &[u8]) -> u32 {
     crc.value()
 }
 
+/// `a * b` modulo the CRC-32 polynomial, in its reflected bit order, where
+/// bit 31 is x^0.
+fn mult_mod_p(a: u32, mut b: u32) -> u32 {
+    let mut p = 0;
+    for i in 0..32 {
+        if a & (1 << (31 - i)) != 0 {
+            p ^= b;
+        }
+        b = if b & 1 != 0 { (b >> 1) ^ 0xedb8_8320 } else { b >> 1 };
+    }
+    p
+}
+
+/// The CRC of `a` followed by `b`, from `crc32(a)`, `crc32(b)` and the length
+/// of `b` (zlib's `crc32_combine`). A run read in pieces checks its stored
+/// CRC with this: the tail's bytes arrive before the data they follow.
+pub fn crc32_combine(crc_a: u32, crc_b: u32, len_b: usize) -> u32 {
+    // x^(8 * len_b) by squaring x^8.
+    let mut shift = 1u32 << 31;
+    let mut square = 1u32 << (31 - 8);
+    let mut n = len_b;
+    while n != 0 {
+        if n & 1 != 0 {
+            shift = mult_mod_p(square, shift);
+        }
+        square = mult_mod_p(square, square);
+        n >>= 1;
+    }
+    mult_mod_p(shift, crc_a) ^ crc_b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +213,18 @@ mod tests {
             crc.update(&data[..cut]);
             crc.update(&data[cut..]);
             assert_eq!(crc.value(), crc32(&data), "cut at {cut}");
+        }
+    }
+
+    #[test]
+    fn combine_gives_the_crc_of_the_whole() {
+        let data: Vec<u8> = (0..70_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 7) as u8).collect();
+        for len in [0usize, 1, 2, 44, 1000, 70_000] {
+            for cut in [0, 1, 7, 8, 64, 255, 256, 4097, len / 2, len.saturating_sub(1), len] {
+                let cut = cut.min(len);
+                let (a, b) = data[..len].split_at(cut);
+                assert_eq!(crc32_combine(crc32(a), crc32(b), b.len()), crc32(&data[..len]), "len {len} cut {cut}");
+            }
         }
     }
 

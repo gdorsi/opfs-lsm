@@ -120,7 +120,7 @@ pub fn merge_sst_bytes(
             dropped = dropped.max(entry.seq());
             continue;
         }
-        size += entry_size(&entry);
+        size += entry_size((&entry).into());
         writer.push((&entry).into(), &mut bytes)?;
         if size >= target_bytes {
             let end = writer.finish(&mut bytes);
@@ -296,7 +296,7 @@ mod tests {
             let mut start = 0;
             let mut size = 0;
             for (i, e) in entries.iter().enumerate() {
-                size += entry_size(e);
+                size += entry_size(e.into());
                 if size >= target_bytes {
                     runs.push(encode_sst(&entries[start..=i], codec));
                     start = i + 1;

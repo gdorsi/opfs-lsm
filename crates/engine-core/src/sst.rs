@@ -16,10 +16,10 @@ mod writer_tests;
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
 const VERSION: u32 = 1;
-const FOOTER_BYTES: usize = 44;
+pub(crate) const FOOTER_BYTES: usize = 44;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
-const BLOCK_TARGET: usize = 4 * 1024;
+pub(crate) const BLOCK_TARGET: usize = 4 * 1024;
 /// A block stores the offset of every `OFFSET_STRIDE`th record after
 /// the first, so a get binary-searches them and walks at most
 /// `OFFSET_STRIDE - 1` records. `packages/kv/src/store/sst.ts` uses the
@@ -164,15 +164,15 @@ pub struct EncodedRun {
 /// Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
 /// records use varints and a shared prefix, so they are never larger.
 /// Compaction cuts runs by this without encoding them.
-pub(crate) fn entry_size(e: &Entry) -> usize {
+pub(crate) fn entry_size(e: EntryRef<'_>) -> usize {
     let mut n = 1 + 8 + 4 + e.key().len();
-    if let Entry::Put { value, .. } = e {
+    if let EntryRef::Put { value, .. } = e {
         n += 4 + value.len();
     }
     n
 }
 
-fn read_u32(buf: &[u8], o: usize) -> u32 {
+pub(crate) fn read_u32(buf: &[u8], o: usize) -> u32 {
     u32::from_le_bytes(buf[o..o + 4].try_into().unwrap())
 }
 
@@ -471,9 +471,15 @@ impl SstWriter {
                 self.block.len()
             }
             Codec::Lz4 => {
+                // Into `framed`, which keeps its capacity: `compress` would
+                // allocate, zero and shrink a new buffer per block.
+                let max = lz4_flex::block::get_maximum_output_size(self.block.len());
                 self.framed.clear();
-                self.framed.extend_from_slice(&(self.block.len() as u32).to_le_bytes());
-                self.framed.extend_from_slice(&lz4_flex::block::compress(&self.block));
+                self.framed.resize(4 + max, 0);
+                self.framed[..4].copy_from_slice(&(self.block.len() as u32).to_le_bytes());
+                let n = lz4_flex::block::compress_into(&self.block, &mut self.framed[4..])
+                    .expect("get_maximum_output_size bounds the output");
+                self.framed.truncate(4 + n);
                 self.sent.emit(out, &self.framed);
                 self.framed.len()
             }
@@ -567,11 +573,16 @@ pub fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
 /// length, as a tombstone whose key is all prefix.
 const MIN_RECORD_BYTES: usize = 10;
 
-/// Unpack one LZ4 block of exactly `size` bytes. LZ4 writes at most 255
-/// bytes per input byte (each match-length byte adds 255), so a larger
-/// `size` is corrupt and is refused before it sizes the output buffer.
+/// LZ4 writes at most 255 bytes per input byte (each match-length byte adds
+/// 255), so a larger `size` is corrupt and is refused before it sizes the
+/// output buffer.
+pub(crate) fn lz4_size_fits(src_len: usize, size: usize) -> bool {
+    size <= src_len.saturating_mul(255).saturating_add(16)
+}
+
+/// Unpack one LZ4 block of exactly `size` bytes.
 pub fn lz4_unpack(src: &[u8], size: usize) -> Result<Vec<u8>, SstError> {
-    if size > src.len().saturating_mul(255).saturating_add(16) {
+    if !lz4_size_fits(src.len(), size) {
         return Err(SstError::BadBlock);
     }
     let out = lz4_flex::block::decompress(src, size).map_err(|_| SstError::BadBlock)?;
@@ -581,72 +592,108 @@ pub fn lz4_unpack(src: &[u8], size: usize) -> Result<Vec<u8>, SstError> {
     Ok(out)
 }
 
-/// `count` records in `buf[o..end]`, each key after `prefix`. Bounds are
-/// checked as `len > end - o` with `o <= end`, never as `o + len > end`,
-/// which wraps for a length near `u32::MAX` on wasm32.
-fn read_records(
-    buf: &[u8],
-    mut o: usize,
+/// A record of a data block, its key split the way the block stores it.
+pub(crate) struct Record<'b> {
+    pub(crate) seq: u64,
+    pub(crate) prefix: &'b [u8],
+    pub(crate) suffix: &'b [u8],
+    /// `None` for a tombstone.
+    pub(crate) value: Option<&'b [u8]>,
+}
+
+impl Record<'_> {
+    pub(crate) fn entry(&self) -> Entry {
+        let mut key = Vec::with_capacity(self.prefix.len() + self.suffix.len());
+        key.extend_from_slice(self.prefix);
+        key.extend_from_slice(self.suffix);
+        match self.value {
+            Some(value) => Entry::Put { key, value: value.to_vec(), seq: self.seq },
+            None => Entry::Del { key, seq: self.seq },
+        }
+    }
+}
+
+/// A cursor over the records of one unpacked data block:
+///   u32 count | varint prefixLen | prefix | records | u16 offsets
+/// It holds positions only, so the block may move between calls; `next` must
+/// be given the bytes `new` read. Lengths are checked as `len > end - o` with
+/// `o <= end`, never as `o + len > end`, which wraps for a length near
+/// `u32::MAX` on wasm32.
+pub(crate) struct BlockWalk {
+    o: usize,
+    /// Where the offset table starts, which the records must end at.
     end: usize,
-    count: usize,
-    prefix: &[u8],
-) -> Result<Vec<Entry>, SstError> {
-    let mut out = Vec::with_capacity(count.min(end.saturating_sub(o) / MIN_RECORD_BYTES));
-    for _ in 0..count {
+    left: usize,
+    prefix_at: usize,
+    prefix_len: usize,
+}
+
+impl BlockWalk {
+    pub(crate) fn new(block: &[u8]) -> Result<BlockWalk, SstError> {
+        if block.len() < 4 {
+            return Err(SstError::Truncated);
+        }
+        let count = read_u32(block, 0) as usize;
+        let end = block.len().checked_sub(offset_table_bytes(count)).ok_or(SstError::Truncated)?;
+        let mut o = 4;
+        let prefix_len = read_varint(block, &mut o, end)?;
+        if prefix_len > end - o {
+            return Err(SstError::Truncated);
+        }
+        Ok(BlockWalk { o: o + prefix_len, end, left: count, prefix_at: o, prefix_len })
+    }
+
+    /// The next record, or `None` after the last, once the records are seen
+    /// to end exactly where the offset table starts.
+    pub(crate) fn next<'b>(&mut self, block: &'b [u8]) -> Result<Option<Record<'b>>, SstError> {
+        let (mut o, end) = (self.o, self.end);
+        if self.left == 0 {
+            return if o == end { Ok(None) } else { Err(SstError::TrailingGarbage) };
+        }
         if o >= end {
             return Err(SstError::Truncated);
         }
-        let tag = buf[o];
+        let tag = block[o];
         o += 1;
         if end - o < 8 {
             return Err(SstError::Truncated);
         }
-        let seq = u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
+        let seq = u64::from_le_bytes(block[o..o + 8].try_into().unwrap());
         o += 8;
-        let key_len = read_varint(buf, &mut o, end)?;
+        let key_len = read_varint(block, &mut o, end)?;
         if key_len > end - o {
             return Err(SstError::Truncated);
         }
-        let mut key = Vec::with_capacity(prefix.len() + key_len);
-        key.extend_from_slice(prefix);
-        key.extend_from_slice(&buf[o..o + key_len]);
+        let suffix = &block[o..o + key_len];
         o += key_len;
-        match tag {
+        let value = match tag {
             TAG_PUT => {
-                let val_len = read_varint(buf, &mut o, end)?;
+                let val_len = read_varint(block, &mut o, end)?;
                 if val_len > end - o {
                     return Err(SstError::Truncated);
                 }
-                let value = buf[o..o + val_len].to_vec();
+                let value = &block[o..o + val_len];
                 o += val_len;
-                out.push(Entry::Put { key, value, seq });
+                Some(value)
             }
-            TAG_DEL => out.push(Entry::Del { key, seq }),
+            TAG_DEL => None,
             other => return Err(SstError::BadTag(other)),
-        }
+        };
+        self.o = o;
+        self.left -= 1;
+        let prefix = &block[self.prefix_at..self.prefix_at + self.prefix_len];
+        Ok(Some(Record { seq, prefix, suffix, value }))
     }
-    if o != end {
-        return Err(SstError::TrailingGarbage);
-    }
-    Ok(out)
 }
 
-/// One unpacked data block: u32 count, varint prefix length, prefix,
-/// records, then the offset table, which a full decode skips.
+/// One unpacked data block, every record of it.
 fn read_block(block: &[u8]) -> Result<Vec<Entry>, SstError> {
-    if block.len() < 4 {
-        return Err(SstError::Truncated);
+    let mut walk = BlockWalk::new(block)?;
+    let mut out = Vec::with_capacity(walk.left.min((walk.end - walk.o) / MIN_RECORD_BYTES));
+    while let Some(record) = walk.next(block)? {
+        out.push(record.entry());
     }
-    let count = read_u32(block, 0) as usize;
-    let mut o = 4;
-    let end = block.len().checked_sub(offset_table_bytes(count)).ok_or(SstError::Truncated)?;
-    let p = read_varint(block, &mut o, end)?;
-    if p > end - o {
-        return Err(SstError::Truncated);
-    }
-    let prefix = &block[o..o + p];
-    o += p;
-    read_records(block, o, end, count, prefix)
+    Ok(out)
 }
 
 /// True when `hay` holds `needle` as a contiguous run of bytes.
@@ -681,102 +728,65 @@ pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]]) -> R
             &unpacked[..]
         }
     };
-    if block.len() < 4 {
-        return Err(SstError::Truncated);
-    }
-    let count = read_u32(block, 0) as usize;
-    let end = block.len().checked_sub(offset_table_bytes(count)).ok_or(SstError::Truncated)?;
-    let mut o = 4;
-    let prefix_len = read_varint(block, &mut o, end)?;
-    if prefix_len > end - o {
-        return Err(SstError::Truncated);
-    }
-    let prefix = &block[o..o + prefix_len];
-    o += prefix_len;
+    let mut walk = BlockWalk::new(block)?;
     let mut out = Vec::new();
-    for _ in 0..count {
-        if o >= end {
-            return Err(SstError::Truncated);
+    while let Some(record) = walk.next(block)? {
+        let Some(value) = record.value else { continue };
+        if patterns.iter().all(|p| contains(value, p)) {
+            out.extend_from_slice(&((record.prefix.len() + record.suffix.len()) as u32).to_le_bytes());
+            out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            out.extend_from_slice(record.prefix);
+            out.extend_from_slice(record.suffix);
+            out.extend_from_slice(value);
         }
-        let tag = block[o];
-        o += 1;
-        if end - o < 8 {
-            return Err(SstError::Truncated);
-        }
-        o += 8;
-        let key_len = read_varint(block, &mut o, end)?;
-        if key_len > end - o {
-            return Err(SstError::Truncated);
-        }
-        let suffix = &block[o..o + key_len];
-        o += key_len;
-        match tag {
-            TAG_PUT => {
-                let val_len = read_varint(block, &mut o, end)?;
-                if val_len > end - o {
-                    return Err(SstError::Truncated);
-                }
-                let value = &block[o..o + val_len];
-                o += val_len;
-                if patterns.iter().all(|p| contains(value, p)) {
-                    out.extend_from_slice(&((prefix.len() + suffix.len()) as u32).to_le_bytes());
-                    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
-                    out.extend_from_slice(prefix);
-                    out.extend_from_slice(suffix);
-                    out.extend_from_slice(value);
-                }
-            }
-            TAG_DEL => {}
-            other => return Err(SstError::BadTag(other)),
-        }
-    }
-    if o != end {
-        return Err(SstError::TrailingGarbage);
     }
     Ok(out)
 }
 
-/// Where the sections of a run are. `crc_off` holds the CRC of every byte
-/// before it.
+/// Where the sections of a run are, as offsets into the run. Data starts at
+/// 0. `crc_off` holds the CRC of every byte before it.
 #[derive(Clone, Copy)]
-struct Layout {
-    entry_count: usize,
-    block_count: usize,
-    data_start: usize,
-    data_len: usize,
-    index_start: usize,
-    index_end: usize,
-    crc_off: usize,
-    codec: Codec,
+pub(crate) struct Layout {
+    pub(crate) entry_count: usize,
+    pub(crate) block_count: usize,
+    pub(crate) data_len: usize,
+    pub(crate) index_start: usize,
+    pub(crate) index_end: usize,
+    pub(crate) crc_off: usize,
+    pub(crate) codec: Codec,
 }
 
-/// Footer is 8 u32 fields, then CRC, version, and magic.
-fn footer_layout(buf: &[u8]) -> Result<Layout, SstError> {
-    if buf.len() < FOOTER_BYTES {
-        return Err(SstError::TooShort);
+/// Check the last `FOOTER_BYTES` of a run of `size` bytes and say where its
+/// sections are. The footer is 8 u32 fields, then CRC, version, and magic.
+pub(crate) fn read_footer(footer: &[u8], size: usize) -> Result<Layout, SstError> {
+    let magic = read_u32(footer, FOOTER_BYTES - 4);
+    if magic != MAGIC {
+        return Err(SstError::BadMagic(magic));
     }
-    let footer = buf.len() - FOOTER_BYTES;
-    let field = |i: usize| read_u32(buf, footer + 4 * i) as usize;
+    let version = read_u32(footer, FOOTER_BYTES - 8);
+    if version != VERSION {
+        return Err(SstError::BadVersion(version));
+    }
+    let at = size - FOOTER_BYTES;
+    let field = |i: usize| read_u32(footer, 4 * i) as usize;
     let (bloom_offset, bloom_len, index_offset, index_len) = (field(2), field(3), field(5), field(6));
-    if bloom_offset.checked_add(bloom_len) != Some(index_offset) || index_offset.checked_add(index_len) != Some(footer) {
+    if bloom_offset.checked_add(bloom_len) != Some(index_offset) || index_offset.checked_add(index_len) != Some(at) {
         return Err(SstError::Truncated);
     }
     Ok(Layout {
         entry_count: field(0),
         block_count: field(1),
-        data_start: 0,
         data_len: bloom_offset,
         index_start: index_offset,
-        index_end: footer,
-        crc_off: footer + 32,
+        index_end: at,
+        crc_off: at + 32,
         codec: Codec::from_u32(field(7) as u32)?,
     })
 }
 
 fn decode_blocks(buf: &[u8], layout: &Layout) -> Result<Vec<Entry>, SstError> {
-    let Layout { entry_count, block_count, data_start, data_len, index_start, index_end, codec, .. } =
-        *layout;
-    // `index_start <= index_end` (footer_layout), and each step keeps
+    let Layout { entry_count, block_count, data_len, index_start, index_end, codec, .. } = *layout;
+    // `index_start <= index_end` (read_footer), and each step keeps
     // `o <= index_end`, so `index_end - o` never wraps.
     let mut o = index_start;
     let skip_key = |o: &mut usize| -> Result<(), SstError> {
@@ -806,7 +816,7 @@ fn decode_blocks(buf: &[u8], layout: &Layout) -> Result<Vec<Entry>, SstError> {
         if offset > data_len || length > data_len - offset {
             return Err(SstError::Truncated);
         }
-        let start = data_start + offset;
+        let start = offset;
         let end = start + length;
         let unpacked;
         let block = match codec {
@@ -834,15 +844,7 @@ pub fn decode_sst(buf: &[u8]) -> Result<Vec<Entry>, SstError> {
     if buf.len() < FOOTER_BYTES {
         return Err(SstError::TooShort);
     }
-    let magic = read_u32(buf, buf.len() - 4);
-    if magic != MAGIC {
-        return Err(SstError::BadMagic(magic));
-    }
-    let version = read_u32(buf, buf.len() - 8);
-    if version != VERSION {
-        return Err(SstError::BadVersion(version));
-    }
-    let layout = footer_layout(buf)?;
+    let layout = read_footer(&buf[buf.len() - FOOTER_BYTES..], buf.len())?;
     if read_u32(buf, layout.crc_off) != crc32(&buf[..layout.crc_off]) {
         return Err(SstError::CrcMismatch);
     }
@@ -897,7 +899,7 @@ mod tests {
         };
         for codec in [Codec::Raw, Codec::Lz4] {
             let sst = encode_sst(&entries, codec);
-            let layout = footer_layout(&sst).unwrap();
+            let layout = read_footer(&sst[sst.len() - FOOTER_BYTES..], sst.len()).unwrap();
             let mut o = layout.index_start;
             let mut got: Vec<Vec<(Vec<u8>, Vec<u8>)>> = vec![vec![]; 4];
             for _ in 0..layout.block_count {
@@ -967,7 +969,7 @@ mod tests {
 
         let many = index_rows(3_000);
         let bytes = encode_sst(&many, Codec::Raw);
-        let raw: usize = many.iter().map(entry_size).sum();
+        let raw: usize = many.iter().map(|e| entry_size(e.into())).sum();
         assert!(bytes.len() * 2 < raw, "{} vs {raw} record bytes", bytes.len());
         assert_eq!(decode_sst(&bytes).unwrap(), many);
     }
@@ -993,12 +995,16 @@ mod tests {
         let count = read_u32(block, 0) as usize;
         assert!(count > OFFSET_STRIDE, "{count} records");
         let table = length - offset_table_bytes(count);
-        let p = block[4] as usize;
-        let records = read_records(block, 5 + p, table, count, &block[5..5 + p]).unwrap();
+        let records = read_block(block).unwrap();
         for j in 1..=(count - 1) / OFFSET_STRIDE {
             let at = read_u16(block, table + 2 * (j - 1)) as usize;
-            let one = read_records(block, at, table, count - j * OFFSET_STRIDE, &block[5..5 + p]).unwrap();
-            assert_eq!(one[0], records[j * OFFSET_STRIDE], "offset {j}");
+            let mut walk = BlockWalk::new(block).unwrap();
+            (walk.o, walk.left) = (at, count - j * OFFSET_STRIDE);
+            let mut rest = Vec::new();
+            while let Some(record) = walk.next(block).unwrap() {
+                rest.push(record.entry());
+            }
+            assert_eq!(rest, records[j * OFFSET_STRIDE..], "offset {j}");
         }
     }
 

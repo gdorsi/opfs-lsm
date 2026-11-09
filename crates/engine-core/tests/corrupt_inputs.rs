@@ -267,6 +267,66 @@ fn compaction_fails_on_a_corrupt_input_and_folds_valid_ones() {
     );
 }
 
+/// A source for a merge session: one run, valid or mutated, or two runs
+/// that split one key-ordered stream, one of them sometimes mutated.
+fn session_source(rng: &mut Rng) -> Vec<Vec<u8>> {
+    if !rng.chance(3) {
+        return vec![if rng.chance(3) { mutated_run(rng) } else { valid_run(rng).0 }];
+    }
+    let codec = if rng.chance(2) { Codec::Lz4 } else { Codec::Raw };
+    let entries = sample_entries([0, 3, 20, 200][rng.below(4)], rng.below(1000) as u64);
+    let cut = rng.below(entries.len() + 1);
+    let mut runs = vec![encode_sst(&entries[..cut], codec), encode_sst(&entries[cut..], codec)];
+    if rng.chance(4) {
+        let i = rng.below(2);
+        mutate(rng, &mut runs[i]);
+        if rng.chance(2) {
+            fix_crc(&mut runs[i]);
+        }
+    }
+    runs
+}
+
+#[test]
+fn a_merge_session_fails_on_a_corrupt_input_and_folds_valid_ones() {
+    for_each_case(
+        6,
+        |rng| {
+            let sources: Vec<Vec<Vec<u8>>> = (0..rng.below(4) + 1).map(|_| session_source(rng)).collect();
+            let flags = rng.below(16) as u8;
+            corrupt::encode_session_case(&sources, flags, rng.below(8) as u8, rng.next() as u8, rng.next() as u8)
+        },
+        |case| {
+            let (sources, config, seed) = corrupt::session_case(case).unwrap();
+            corrupt::check_session(&sources, config, seed);
+        },
+    );
+}
+
+#[test]
+fn the_session_block_decoder_survives_mutated_blocks() {
+    for_each_case(
+        7,
+        |rng| {
+            let (buf, codec) = valid_run(rng);
+            let blocks = corrupt::framed_blocks(&buf);
+            let mut framed = if blocks.is_empty() { vec![] } else { blocks[rng.below(blocks.len())].to_vec() };
+            if !rng.chance(4) {
+                for _ in 0..=rng.below(2) {
+                    mutate(rng, &mut framed);
+                }
+            }
+            let mut out = vec![codec as u8];
+            out.extend_from_slice(&framed);
+            out
+        },
+        |case| {
+            let (codec, framed) = corrupt::block_case(case).unwrap();
+            corrupt::check_block(framed, codec);
+        },
+    );
+}
+
 #[test]
 fn valid_runs_decode_and_scan_to_what_was_written() {
     for_each_case(
