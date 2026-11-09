@@ -53,6 +53,12 @@ describe("planCompaction", () => {
     expect(plan?.outputLevel).toBe(2);
     expect(planCompaction(runs.slice(1), 1000)).toBeUndefined();
   });
+
+  it("compacts the level furthest over its target first", () => {
+    const l1 = [run("l1/a-1500.sst", "a", "b"), run("l1/b-1500.sst", "c", "f")];
+    expect(planCompaction([...l0(4), ...l1], 1000)?.outputLevel).toBe(2);
+    expect(planCompaction([...l0(16), ...l1], 1000)?.outputLevel).toBe(1);
+  });
 });
 
 describe("replaceRuns", () => {
