@@ -84,13 +84,17 @@ The loader maps any negative status to `CorruptDatabaseError`, except
 `-11`, which it reports as a capacity error naming the operation and the
 input size so the host can be configured with a larger `init` capacity.
 
-## Memory discipline
+## Memory
 
-A zero-allocation implementation reserves `capacity` in `init` and serves
-every call from that slab: the input region, an arena reset at the start
-of each operation, and the result inside the arena. Peak need per
-operation is bounded by the inputs: an encode or merge needs roughly the
-sum of input bytes plus the output; a decode needs the SST plus its
-expanded records. The loader's default capacity is set from the measured
-peak of the largest merge the kv host performs at bench size `large`,
-with headroom, and is documented next to the constant.
+The Rust module allocates dynamically. `init` ignores `capacity` and
+returns 0, `input_ptr` grows a reused input buffer, and an operation
+allocates what it needs through the module's allocator. It never returns
+-11; running out of memory inside an operation aborts, which the loader
+sees as a `WebAssembly.RuntimeError` and answers by dropping the module
+and falling back to TypeScript.
+
+The contract carries `capacity` and -11 so that an implementation that
+reserves once in `init` and serves every call from that slab can conform
+without a loader change. Such an implementation must return -11, never
+trap, when an operation exceeds the slab. The loader passes a capacity
+sized for that case; a dynamic implementation ignores it.

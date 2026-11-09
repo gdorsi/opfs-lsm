@@ -15,3 +15,11 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The hot code keeps opt-level 3: at "z" lz4_flex's decoder and the merge run
+# at half speed for 2.6 kB of gzip. The binding crate and std stay at "z".
+[profile.release.package.lz4_flex]
+opt-level = 3
+
+[profile.release.package.engine-core]
+opt-level = 3
