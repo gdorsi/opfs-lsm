@@ -135,9 +135,18 @@ function recordWatchScan(trace: OpenTrace, scan: WatchScan): void {
 }
 
 export type Range = {
+  /** Inclusive. Bounds are in key order whichever way `reverse` points. */
   readonly start?: Uint8Array;
+  /** Exclusive. */
   readonly endExclusive?: Uint8Array;
+  /** At most this many entries, taken in scan order, so the largest keys with `reverse`. */
   readonly limit?: number;
+  /**
+   * Scan from the largest key down. Yields the keys of the forward scan in
+   * descending order. To page backward, pass the last key seen as
+   * `endExclusive`.
+   */
+  readonly reverse?: boolean;
   /**
    * Keep only puts whose current value contains every one of these byte
    * strings. Runs are matched inside the wasm engine one block at a time, so
@@ -176,7 +185,9 @@ export interface Db {
   ): Promise<T>;
   /**
    * Scan `range`, then point-read `follow(entry)` for each entry that returns a
-   * key, in one IndexedDB transaction. Every read sees the same state.
+   * key. The scan and the reads use one pinned memtable and one held
+   * generation, so they see the same state although a page load can make them
+   * wait. Writes that land meanwhile are not seen.
    */
   rangeFollow(
     range: Range,

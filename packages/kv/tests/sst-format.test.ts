@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { encodeSst as encodeWasm, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { decodeSst, encodeSst, sstGet, type SstEntry } from "../src/store/sst.js";
-import { settle, type ScanBounds } from "../src/store/cursor.js";
+import { Miss, settle, type LayerEntry, type ScanBounds } from "../src/store/cursor.js";
 import { compareBytes } from "../src/bytes.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
 import { drain, readerOfBytes } from "./runs.js";
@@ -31,9 +31,24 @@ async function expectReaderAgreesWithDecode(body: Uint8Array): Promise<void> {
     ranges.push({ start: third }, { endExclusive: twoThirds }, { start: third, endExclusive: twoThirds });
     ranges.push({ start: cat(third, Uint8Array.of(0)), endExclusive: cat(twoThirds, Uint8Array.of(0)) });
   }
+  if (all.length > 0) {
+    const first = all[0]!.key;
+    const last = all[all.length - 1]!.key;
+    ranges.push(
+      { start: first },
+      { start: last },
+      { endExclusive: first },
+      { endExclusive: last },
+      { endExclusive: cat(last, Uint8Array.of(0)) },
+      { start: cat(first, Uint8Array.of(0)), endExclusive: last },
+      { start: last, endExclusive: first },
+    );
+  }
+  const shown = (es: LayerEntry[]) => es.map((e) => `${[...e.key]}:${e.kind}:${e.value ? [...e.value] : ""}`);
   for (const bounds of ranges) {
-    const got = (await drain(reader.cursor(bounds))).map((e) => `${[...e.key]}:${e.kind}:${e.value ? [...e.value] : ""}`);
-    expect(got).toEqual(asLayer(bounds));
+    const forward = shown(await drain(reader.cursor(bounds)));
+    expect(forward).toEqual(asLayer(bounds));
+    expect(shown(await drain(reader.cursor(bounds, true)))).toEqual([...forward].reverse());
   }
 }
 
@@ -58,6 +73,58 @@ describe("sst format", () => {
       }
     });
   }
+
+  it("reads blocks of a single record backward", async () => {
+    const entries = indexWorkload(40);
+    const body = encodeSst(entries, 1);
+    expect(new DataView(body.buffer).getUint32(body.byteLength - 40, true)).toBe(entries.length);
+    const sorted = decodeSst(body);
+    const keys = sorted.map((e) => e.key);
+    const reader = readerOfBytes(body);
+    const bounds: ScanBounds[] = [
+      {},
+      { start: keys[5]!, endExclusive: keys[20]! },
+      { start: cat(keys[5]!, Uint8Array.of(0)), endExclusive: cat(keys[20]!, Uint8Array.of(0)) },
+      { start: keys[keys.length - 1]! },
+      { endExclusive: keys[1]! },
+    ];
+    for (const b of bounds) {
+      const forward = (await drain(reader.cursor(b))).map((e) => [...e.key].join());
+      expect(forward.length).toBeGreaterThan(0);
+      expect((await drain(reader.cursor(b, true))).map((e) => [...e.key].join())).toEqual([...forward].reverse());
+    }
+  });
+
+  it("leaves a cursor where it was when a block boundary misses, in both directions", async () => {
+    const body = encodeSst(indexWorkload(300), 256);
+    const sorted = decodeSst(body);
+    const keysOf = (es: LayerEntry[]) => es.map((e) => [...e.key].join());
+    const cut = { start: sorted[sorted.length >> 2]!.key, endExclusive: cat(sorted[(3 * sorted.length) >> 2]!.key, Uint8Array.of(0)) };
+    for (const bounds of [undefined, cut]) {
+      for (const reverse of [false, true]) {
+        const want = keysOf(await drain(readerOfBytes(body).cursor(bounds)));
+        if (reverse) want.reverse();
+        const reader = readerOfBytes(body);
+        const cursor = reader.cursor(bounds, reverse);
+        const got: string[] = [];
+        let misses = 0;
+        for (;;) {
+          const e = cursor.peek();
+          if (e instanceof Miss) {
+            misses++;
+            await e.ready;
+            continue;
+          }
+          if (!e) break;
+          got.push([...e.key].join());
+          cursor.next();
+          reader.close();
+        }
+        expect(got).toEqual(want);
+        expect(misses).toBeGreaterThan(10);
+      }
+    }
+  });
 
   it("stores the multi-index workload in less than half the whole-key record bytes", () => {
     const entries = indexWorkload(2_000).filter((e) => e.key[0] === 0x69);

@@ -194,11 +194,15 @@ export type ReadResult = {
   readonly scan: LayerEntry[] | "error";
   readonly seek: LayerEntry[] | "error";
   readonly contains: LayerEntry[] | "error";
+  readonly reverse: LayerEntry[] | "error";
+  readonly reverseSeek: LayerEntry[] | "error";
+  readonly reverseContains: LayerEntry[] | "error";
 };
 
 /**
  * A tab's read of one run file, as `SstReader` does it: get each probe key,
- * scan it all, scan from the middle key, and a filtered scan. No CRC is
+ * scan it all, scan from the middle key, and a filtered scan, then the three
+ * scans again from the largest key down. No CRC is
  * checked, so any answer is allowed; each read may throw only
  * `CorruptDatabaseError`, and must end in bounded time and memory.
  */
@@ -224,8 +228,17 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
     const contains = await one("SstReader.scanContains", () =>
       drainBounded("SstReader.scanContains", reader.scanContains([probe.pattern]), max),
     );
+    const reverse = await one("SstReader.cursor (reverse)", () =>
+      drainBounded("SstReader.cursor (reverse)", reader.cursor(undefined, true), max),
+    );
+    const reverseSeek = await one("SstReader.cursor (reverse seek)", () =>
+      drainBounded("SstReader.cursor (reverse seek)", reader.cursor(mid ? { endExclusive: mid } : undefined, true), max),
+    );
+    const reverseContains = await one("SstReader.scanContains (reverse)", () =>
+      drainBounded("SstReader.scanContains (reverse)", reader.scanContains([probe.pattern], undefined, true), max),
+    );
     reader.close();
-    return { gets, scan, seek, contains };
+    return { gets, scan, seek, contains, reverse, reverseSeek, reverseContains };
   });
 }
 
@@ -243,11 +256,15 @@ export function expectedRead(entries: readonly SstEntry[], probe: ReadProbe): Re
     }
     return false;
   };
+  const contains = sorted.filter((e) => e.kind === "put" && holds(e.value)).map(layer);
   return {
     gets: probe.keys.map((k) => sorted.find((e) => compareBytes(e.key, k) === 0)),
     scan: sorted.map(layer),
     seek: sorted.filter((e) => !mid || compareBytes(e.key, mid) >= 0).map(layer),
-    contains: sorted.filter((e) => e.kind === "put" && holds(e.value)).map(layer),
+    contains,
+    reverse: sorted.map(layer).reverse(),
+    reverseSeek: sorted.filter((e) => !mid || compareBytes(e.key, mid) < 0).map(layer).reverse(),
+    reverseContains: [...contains].reverse(),
   };
 }
 

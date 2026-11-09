@@ -115,4 +115,31 @@ describe("rangeFollow", () => {
     await writer.close();
     await reader.close();
   });
+
+  it("follows the entries of a reverse range, last first", async () => {
+    const fs = new MemoryFs();
+    const db = await openHarnessDb({ name: NAME, writerId: "w", fs, forceMemory: true, ingestPolicy: quiet });
+    await db.batch((tx) => {
+      for (const i of [1, 2, 3, 4]) {
+        tx.put(utf(`doc/${i}`), utf(`doc ${i}`));
+        tx.put(utf(`idx/${i}`), utf(`doc/${i}`));
+      }
+    });
+    await db.ingest();
+    await db.batch((tx) => {
+      tx.put(utf("doc/5"), utf("doc 5"));
+      tx.put(utf("idx/5"), utf("doc/5"));
+      tx.delete(utf("idx/2"));
+      tx.put(utf("doc/3"), utf("doc 3, newer"));
+    });
+    const shown = (hits: Awaited<ReturnType<typeof db.rangeFollow>>) =>
+      hits.map((h) => `${text(h.entry.key)}>${text(h.value)}`);
+    const forward = shown(await db.rangeFollow(prefixBound(utf("idx/")), (e) => e.value));
+    expect(forward).toHaveLength(4);
+    for (const limit of [undefined, 1, 3]) {
+      const range = { ...prefixBound(utf("idx/")), reverse: true, ...(limit !== undefined ? { limit } : {}) };
+      expect(shown(await db.rangeFollow(range, (e) => e.value))).toEqual([...forward].reverse().slice(0, limit));
+    }
+    await db.close();
+  });
 });

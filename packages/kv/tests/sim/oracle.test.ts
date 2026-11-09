@@ -22,6 +22,21 @@ describe("oracle", () => {
     expect(o.rangeAt({ start: utf("b") }, 1)).toEqual([]);
   });
 
+  it("reads a range backward before it takes the limit", () => {
+    const o = new Oracle();
+    o.append([
+      { type: "put", key: utf("a"), value: utf("1") },
+      { type: "put", key: utf("b"), value: utf("2") },
+      { type: "put", key: utf("c"), value: utf("3") },
+      { type: "put", key: utf("d"), value: utf("4") },
+    ]);
+    const keys = (r: Parameters<Oracle["rangeAt"]>[0]) => o.rangeAt(r).map((e) => new TextDecoder().decode(e.key));
+    expect(keys({ reverse: true })).toEqual(["d", "c", "b", "a"]);
+    expect(keys({ reverse: true, limit: 2 })).toEqual(["d", "c"]);
+    expect(keys({ reverse: true, start: utf("b"), endExclusive: utf("d"), limit: 1 })).toEqual(["c"]);
+    expect(keys({ limit: 2 })).toEqual(["a", "b"]);
+  });
+
   it("keeps the last op when a batch writes a key twice", () => {
     const o = new Oracle();
     o.append([

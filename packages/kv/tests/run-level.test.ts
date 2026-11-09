@@ -39,8 +39,8 @@ function range(from: number, to: number, step: number): number[] {
   return out;
 }
 
-async function scan(cursors: Parameters<typeof mergeCursors>[0], limit?: number): Promise<string[]> {
-  return (await collect(mergeCursors(cursors, limit))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
+async function scan(cursors: Parameters<typeof mergeCursors>[0], limit?: number, reverse?: boolean): Promise<string[]> {
+  return (await collect(mergeCursors(cursors, limit, reverse))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
 }
 
 describe("runLevels", () => {
@@ -56,6 +56,21 @@ describe("runLevels", () => {
         const want = await scan(readers.map((r) => r.cursor(b)), limit);
         const got = await scan(levels.map((l) => l.cursor(b)), limit);
         expect(got).toEqual(want);
+      }
+    }
+  });
+
+  it("scans the forward rows backward, for every bound", async () => {
+    const { paths, readers } = layout();
+    const levels = runLevels(paths, readers);
+    const bounds = [undefined, ...range(-1, 125, 4).flatMap((a) =>
+      range(a, 130, 9).map((b) => ({ start: key(a < 0 ? 0 : a), endExclusive: key(b) })),
+    ), ...range(0, 125, 6).map((a) => ({ start: key(a) })), ...range(0, 125, 6).map((b) => ({ endExclusive: key(b) }))];
+    for (const b of bounds) {
+      const forward = await scan(levels.map((l) => l.cursor(b)));
+      for (const limit of [undefined, 1, 7]) {
+        expect(await scan(levels.map((l) => l.cursor(b, true)), limit, true)).toEqual([...forward].reverse().slice(0, limit));
+        expect(await scan(readers.map((r) => r.cursor(b, true)), limit, true)).toEqual([...forward].reverse().slice(0, limit));
       }
     }
   });

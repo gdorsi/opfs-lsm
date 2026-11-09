@@ -42,11 +42,13 @@ export function scanLayers(
   range: Range | undefined,
 ): AsyncGenerator<Entry> {
   const patterns = range?.valueContains;
+  const reverse = range?.reverse ?? false;
   return patterns && patterns.length > 0
-    ? scanMatching(rows, levels, patterns, bounds, range.limit)
+    ? scanMatching(rows, levels, patterns, bounds, range.limit, reverse)
     : mergeCursors(
-        [arrayCursor(rows), ...levels.map((level) => level.cursor(bounds))],
+        [arrayCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse))],
         range?.limit,
+        reverse,
       );
 }
 
