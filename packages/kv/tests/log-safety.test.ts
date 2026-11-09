@@ -362,6 +362,24 @@ describe("close", () => {
   });
 });
 
+describe("a tab whose logs lost records", () => {
+  it("fails every wait, even one whose target is already stable", async () => {
+    const session = new LogSession({
+      name: uniqueName("corrupt-wait"),
+      tab: TAB,
+      fs: new MemoryFs(),
+      client: workerLikeClient(),
+      onStable: () => undefined,
+      maxWalBytes: 1 << 30,
+    });
+    await session.prepareJoin();
+    await session.finishJoin();
+    session.corrupt(new CorruptDatabaseError("lost"));
+    await expect(session.waitStable(0), "a wait already satisfied still fails").rejects.toThrow("lost");
+    await session.close();
+  });
+});
+
 describe("ingest", () => {
   it("a stable cut is taken while the tab keeps writing", async () => {
     const session = new LogSession({
