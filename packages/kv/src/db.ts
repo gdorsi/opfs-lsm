@@ -574,9 +574,7 @@ class DbImpl implements Db {
       maxWalBytes: this.policy.maxWalBytes,
       onStable: (records) => this.applyStable(records),
       onBehind: (through) => {
-        // A generation newer than any hint reclaimed these records: read the newest manifest.
-        this.wantGeneration = 0;
-        void this.syncGeneration().then(
+        void this.syncNewestOnDisk().then(
           () => {
             if (!this.closed && this.installed.cut < through) {
               this.session.corrupt(
@@ -587,7 +585,7 @@ class DbImpl implements Db {
           () => undefined,
         );
       },
-      onGone: () => this.syncGeneration(),
+      onGone: () => this.syncNewestOnDisk(),
       ...(after ? { after } : {}),
     });
   }
@@ -904,6 +902,15 @@ class DbImpl implements Db {
         this.wantGeneration = 0;
       }
     });
+  }
+
+  /**
+   * A reclaim follows a generation newer than any hint this tab heard, so
+   * after one the newest manifest on disk is read, not the hint.
+   */
+  private syncNewestOnDisk(): Promise<void> {
+    this.wantGeneration = 0;
+    return this.syncGeneration();
   }
 
   /** True once the newest generation is installed, false when one of its files was gone. */
