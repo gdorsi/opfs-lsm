@@ -12,10 +12,13 @@ import { CorruptDatabaseError } from "../errors.js";
 
 /**
  * Bytes handed to the module's `init`. A module that reserves once serves
- * every call from this slab and never grows.
- * TODO: set from the Zig module's `peak_bytes` at bench size `large`, with headroom.
+ * every call from this slab and never grows. Measured with the Zig
+ * module's `peak_bytes` (crates/engine-zig/README.md): an encode peaks at
+ * 2.75x its input bytes and a merge at about 10x its compressed input, so
+ * a 73 MB flush needs 200 MiB and a merge of 40 MiB of LZ4 runs about
+ * 400 MiB. A module that allocates dynamically ignores this.
  */
-const ENGINE_CAPACITY = 256 * 1024 * 1024;
+const ENGINE_CAPACITY = 1024 * 1024 * 1024;
 
 /** The module could not fit an operation in the capacity it was given. */
 export class EngineCapacityError extends Error {
