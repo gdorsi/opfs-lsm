@@ -6,6 +6,7 @@
 
 use crate::bloom::{bloom_add, create_bloom};
 use crate::crc32::crc32;
+use alloc::{vec, vec::Vec};
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
 const VERSION: u32 = 1;
@@ -80,13 +81,13 @@ pub enum SstError {
     BadBlock,
 }
 
-impl std::fmt::Display for SstError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for SstError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{self:?}")
     }
 }
 
-impl std::error::Error for SstError {}
+impl core::error::Error for SstError {}
 
 /// Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
 /// records use varints and a shared prefix, so they are never larger.
@@ -235,6 +236,50 @@ fn write_record(out: &mut Vec<u8>, e: &Entry, prefix_len: usize) {
     }
 }
 
+/// Stable sort by key. Flushes and merges hand over sorted entries, so the
+/// common case is the one pass that checks it. In-crate because core's
+/// driftsort is 5 kB of the module.
+fn sort_by_key(v: &mut [&Entry]) {
+    if v.windows(2).all(|w| w[0].key() <= w[1].key()) {
+        return;
+    }
+    let mut buf = v.to_vec();
+    merge_sort(v, &mut buf);
+}
+
+/// Top-down merge sort of `v`, using `buf` (same length) as scratch.
+fn merge_sort<'a>(v: &mut [&'a Entry], buf: &mut [&'a Entry]) {
+    let n = v.len();
+    if n <= 16 {
+        for i in 1..n {
+            let mut j = i;
+            while j > 0 && v[j - 1].key() > v[j].key() {
+                v.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+        return;
+    }
+    let mid = n / 2;
+    merge_sort(&mut v[..mid], &mut buf[..mid]);
+    merge_sort(&mut v[mid..], &mut buf[mid..]);
+    if v[mid - 1].key() <= v[mid].key() {
+        return;
+    }
+    buf[..n].copy_from_slice(v);
+    let (mut i, mut j) = (0, mid);
+    for slot in v.iter_mut() {
+        // Ties take the left run, which keeps the sort stable.
+        if j == n || (i < mid && buf[i].key() <= buf[j].key()) {
+            *slot = buf[i];
+            i += 1;
+        } else {
+            *slot = buf[j];
+            j += 1;
+        }
+    }
+}
+
 /// Encode SST version 1:
 ///   data blocks | bloom bits | block index | footer (44 bytes)
 /// The footer is u32 entry count, block count, bloom offset, bloom length,
@@ -242,7 +287,7 @@ fn write_record(out: &mut Vec<u8>, e: &Entry, prefix_len: usize) {
 /// every byte before it, u32 version 1 and u32 magic.
 pub fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
-    sorted.sort_by(|a, b| a.key().cmp(b.key()));
+    sort_by_key(&mut sorted);
 
     let blocks = split_blocks(&sorted);
 

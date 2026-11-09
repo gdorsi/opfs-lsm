@@ -1,45 +1,49 @@
 //! CRC-32 (IEEE), matching packages/kv/src/store/crc32.ts
 
-const fn tables() -> [[u32; 256]; 8] {
-    let mut t = [[0u32; 256]; 8];
-    let mut i = 0;
-    while i < 256 {
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+/// The slicing-by-8 tables, filled on first use. Zeroed statics take no
+/// bytes in the module, where a const table would put 8 KiB in .rodata.
+/// Racing fills store the same values, so a second filler is harmless.
+static T: [[AtomicU32; 256]; 8] = [const { [const { AtomicU32::new(0) }; 256] }; 8];
+static READY: AtomicBool = AtomicBool::new(false);
+
+#[cold]
+fn fill() {
+    for (i, slot) in T[0].iter().enumerate() {
         let mut c = i as u32;
-        let mut k = 0;
-        while k < 8 {
+        for _ in 0..8 {
             c = if c & 1 != 0 { 0xedb88320 ^ (c >> 1) } else { c >> 1 };
-            k += 1;
         }
-        t[0][i] = c;
-        i += 1;
+        slot.store(c, Ordering::Relaxed);
     }
-    let mut s = 1;
-    while s < 8 {
-        let mut i = 0;
-        while i < 256 {
-            let prev = t[s - 1][i];
-            t[s][i] = (prev >> 8) ^ t[0][(prev & 0xff) as usize];
-            i += 1;
+    for s in 1..8 {
+        let (done, row) = T.split_at(s);
+        for (i, slot) in row[0].iter().enumerate() {
+            let prev = done[s - 1][i].load(Ordering::Relaxed);
+            slot.store((prev >> 8) ^ t(0, prev & 0xff), Ordering::Relaxed);
         }
-        s += 1;
     }
-    t
+    READY.store(true, Ordering::Release);
 }
 
-static T: [[u32; 256]; 8] = tables();
+#[inline(always)]
+fn t(s: usize, i: u32) -> u32 {
+    T[s][i as usize].load(Ordering::Relaxed)
+}
 
 #[inline(always)]
 fn step8(c: u32, x: &[u8]) -> u32 {
     let lo = u32::from_le_bytes([x[0], x[1], x[2], x[3]]) ^ c;
     let hi = u32::from_le_bytes([x[4], x[5], x[6], x[7]]);
-    T[7][(lo & 0xff) as usize]
-        ^ T[6][((lo >> 8) & 0xff) as usize]
-        ^ T[5][((lo >> 16) & 0xff) as usize]
-        ^ T[4][(lo >> 24) as usize]
-        ^ T[3][(hi & 0xff) as usize]
-        ^ T[2][((hi >> 8) & 0xff) as usize]
-        ^ T[1][((hi >> 16) & 0xff) as usize]
-        ^ T[0][(hi >> 24) as usize]
+    t(7, lo & 0xff)
+        ^ t(6, (lo >> 8) & 0xff)
+        ^ t(5, (lo >> 16) & 0xff)
+        ^ t(4, lo >> 24)
+        ^ t(3, hi & 0xff)
+        ^ t(2, (hi >> 8) & 0xff)
+        ^ t(1, (hi >> 16) & 0xff)
+        ^ t(0, hi >> 24)
 }
 
 /// Running CRC state over `data`, slicing-by-8.
@@ -49,7 +53,7 @@ fn update(mut c: u32, data: &[u8]) -> u32 {
         c = step8(c, ch);
     }
     for &b in chunks.remainder() {
-        c = T[0][((c ^ u32::from(b)) & 0xff) as usize] ^ (c >> 8);
+        c = t(0, (c ^ u32::from(b)) & 0xff) ^ (c >> 8);
     }
     c
 }
@@ -115,6 +119,9 @@ const STREAM_MIN: usize = 1024;
 /// Slicing-by-8 over four quarters of `data` at once. The four lookup chains
 /// don't depend on each other, so the CPU overlaps them.
 pub fn crc32(data: &[u8]) -> u32 {
+    if !READY.load(Ordering::Acquire) {
+        fill();
+    }
     if data.len() < STREAM_MIN {
         return update(0xffff_ffff, data) ^ 0xffff_ffff;
     }
@@ -142,7 +149,7 @@ mod tests {
     fn bytewise(data: &[u8]) -> u32 {
         let mut c = 0xffff_ffffu32;
         for &b in data {
-            c = T[0][((c ^ u32::from(b)) & 0xff) as usize] ^ (c >> 8);
+            c = t(0, (c ^ u32::from(b)) & 0xff) ^ (c >> 8);
         }
         c ^ 0xffff_ffff
     }

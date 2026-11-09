@@ -5,6 +5,11 @@
 // The safety contract of every export is the pointer/length pairing in
 // crates/engine-abi.md, so it is not repeated per function.
 #![allow(clippy::missing_safety_doc)]
+#![cfg_attr(target_family = "wasm", no_std)]
+
+extern crate alloc;
+
+use alloc::vec::Vec;
 
 use core::cell::UnsafeCell;
 use engine_core::{lz4_unpack, merge_sst_bytes, Codec, Entry, SstError};
@@ -254,3 +259,11 @@ pub unsafe extern "C" fn merge_ssts(
 #[cfg(target_family = "wasm")]
 #[global_allocator]
 static ALLOC: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
+
+/// Every panic in the module is a bug or a refused allocation. JS sees a
+/// trap, as it did under std's abort, and the message machinery is not linked.
+#[cfg(target_family = "wasm")]
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    core::arch::wasm32::unreachable()
+}

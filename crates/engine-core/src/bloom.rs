@@ -1,5 +1,7 @@
 //! Bloom filter matching `packages/kv/src/store/bloom.ts`.
 
+use alloc::{vec, vec::Vec};
+
 const FNV_OFFSET: u32 = 2166136261;
 const FNV_PRIME: u32 = 16777619;
 
@@ -30,7 +32,7 @@ pub struct BloomFilter {
 pub fn bloom_params(key_count: usize, bits_per_key: usize) -> (usize, u32) {
     let n = key_count.max(1);
     let bit_count = (n * bits_per_key).max(64);
-    let hash_count = ((bits_per_key as f64) * std::f64::consts::LN_2).round() as u32;
+    let hash_count = ((bits_per_key as f64) * core::f64::consts::LN_2 + 0.5) as u32;
     (bit_count, hash_count.max(1))
 }
 

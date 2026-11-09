@@ -1,5 +1,8 @@
 //! Pure LSM helpers for the async OPFS engine. No I/O, no WASM.
 
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
 mod bloom;
 mod compact;
 mod crc32;
