@@ -612,10 +612,15 @@ export class LogSession {
     );
   }
 
-  /** Make every record written so far durable and broadcast. */
+  /**
+   * Make every record appended so far durable and broadcast. Records
+   * appended after the call are not waited for: a tab that keeps writing
+   * never empties `unsent`.
+   */
   private async flushAll(): Promise<void> {
+    const through = this.nextN;
     await this.lastWrite.catch(() => undefined);
-    while (this.unsent.length > 0) {
+    while (this.unsent.length > 0 && this.unsent[0]!.n <= through) {
       if (this.failed) throw this.failed;
       if (!this.flushing) this.startFlush();
       await this.flushing;
