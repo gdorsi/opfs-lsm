@@ -1,5 +1,5 @@
 import { opsBytes, type CheckedOp } from "../check.js";
-import { ClosedError } from "../errors.js";
+import { ClosedError, CorruptDatabaseError } from "../errors.js";
 import { layersChannel, logChannel } from "../host/protocol.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { Memtable, type MemRows } from "../store/memtable.js";
@@ -269,7 +269,7 @@ export class LogSession {
       case "rec":
         if (msg.tab === this.tab) return;
         this.hlc.observe(msg.stamp);
-        this.took(msg.tab, this.merger.record(msg.tab, { stamp: msg.stamp, tab: msg.tab, n: msg.n, writerId: msg.writerId, ops: msg.ops }));
+        this.took(msg.tab, this.take(msg.tab, { stamp: msg.stamp, tab: msg.tab, n: msg.n, writerId: msg.writerId, ops: msg.ops }));
         return;
       case "promise":
         if (msg.tab === this.tab) return;
@@ -312,6 +312,19 @@ export class LogSession {
     }
   }
 
+  /** Take in a record of another tab; one the merge already passed fails this tab. */
+  private take(tab: TabId, rec: MergedRecord, fromLog = false): Taken {
+    const taken = this.merger.record(tab, rec, fromLog);
+    if (taken === "lost") {
+      this.corrupt(
+        new CorruptDatabaseError(
+          `record ${rec.n} of tab ${tab} at stamp ${rec.stamp} arrived after this tab handed out the records past it`,
+        ),
+      );
+    }
+    return taken;
+  }
+
   private took(tab: TabId, taken: Taken): void {
     if (taken === "gap") void this.read(tab).then(() => this.pump());
     else if (taken === "ok") this.pump();
@@ -343,7 +356,7 @@ export class LogSession {
       }
       for (const r of got.records) {
         this.hlc.observe(r.stamp);
-        this.merger.record(tab, { stamp: r.stamp, tab, n: r.n, writerId: tab, ops: r.ops }, true);
+        this.take(tab, { stamp: r.stamp, tab, n: r.n, writerId: tab, ops: r.ops }, true);
       }
       if (got.pos.n !== undefined) this.merger.readTo(tab, got.pos.n, got.pos.stamp);
       this.pos.set(tab, got.pos);

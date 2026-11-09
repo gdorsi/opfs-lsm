@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { checkBatch } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { KIND_RECORD, encodeFrame, encodeOps, scanFrames, segmentPath } from "../src/log/frame.js";
+import { KIND_RECORD, decodeOps, encodeFrame, encodeOps, scanFrames, segmentPath } from "../src/log/frame.js";
 import type { TabLogClient } from "../src/log/client.js";
+import { Merger, type MergedRecord } from "../src/log/merger.js";
 import { LogSession } from "../src/log/session.js";
 import { TabWriter, type SegmentStore } from "../src/log/tab-writer.js";
 import type { AsyncFs, Db } from "../src/index.js";
@@ -319,5 +320,38 @@ describe("a corrupt frame in a tab's last segment", () => {
     const flipped = bytes.slice();
     flipped[flipped.byteLength - 1]! ^= 1;
     expect(scanFrames(flipped, 0, 0).records.map((r) => r.n), "a bad last frame ends the log").toEqual([1, 2]);
+  });
+});
+
+function rec(tab: string, stamp: number, n: number): MergedRecord {
+  return { stamp, tab, n, writerId: tab, ops: decodeOps(put(`${tab}${stamp}`)) };
+}
+
+describe("merger: a record the merge already passed", () => {
+  it("is lost when its tab was finalized and no generation holds it", () => {
+    const m = new Merger("me");
+    m.record("a", rec("a", 10, 1));
+    m.finalize("a");
+    expect(m.record("a", rec("a", 10, 1)), "a redelivered record is a duplicate").toBe("dup");
+    expect(m.record("a", rec("a", 20, 2)), "a new record of a finalized tab is lost").toBe("lost");
+  });
+
+  it("is lost when it sorts at or below the stable stamp and no generation holds it", () => {
+    const m = new Merger("me");
+    m.setLive(["a", "b"]);
+    m.record("a", rec("a", 10, 1));
+    m.promise("b", 30, 0);
+    m.drain(30);
+    expect(m.stable).toBe(10);
+    expect(m.record("b", rec("b", 5, 1)), "a record below what b promised is lost").toBe("lost");
+  });
+
+  it("is dropped quietly when a generation's cut holds it", () => {
+    const m = new Merger("me");
+    m.setLive(["a"]);
+    m.cut(50);
+    expect(m.record("a", rec("a", 40, 1)), "a record under the cut is in the generation").toBe("ok");
+    m.finalize("a");
+    expect(m.record("a", rec("a", 45, 2)), "a finalized tab's record under the cut is in the generation").toBe("dup");
   });
 });

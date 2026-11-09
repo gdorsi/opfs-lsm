@@ -22,8 +22,13 @@ type TabState = {
   final: boolean;
 };
 
-/** What taking in a record did. "gap": records before it are missing; read the tab's log. */
-export type Taken = "ok" | "dup" | "gap";
+/**
+ * What taking in a record did. "gap": records before it are missing; read
+ * the tab's log. "lost": a new record the merge already passed, which no
+ * generation holds: its tab wrote below its promise or after it was
+ * finalized, and this tab handed out a prefix without it.
+ */
+export type Taken = "ok" | "dup" | "gap" | "lost";
 
 /**
  * One tab's merge of every tab's log. Pure: fed with records and promises
@@ -40,6 +45,8 @@ export type Taken = "ok" | "dup" | "gap";
 export class Merger {
   private readonly tabs = new Map<TabId, TabState>();
   private stableAt: Stamp = 0;
+  /** The highest generation cut taken in: records at or below it are in a generation. */
+  private cutAt: Stamp = 0;
 
   constructor(readonly own: TabId) {}
 
@@ -80,13 +87,14 @@ export class Merger {
    */
   record(tab: TabId, rec: MergedRecord, fromLog = false): Taken {
     const st = this.state(tab);
-    if (st.final) return "dup";
     if (st.n !== undefined && rec.n <= st.n) return "dup";
+    if (st.final) return rec.stamp <= this.cutAt ? "dup" : "lost";
     if (st.n === undefined ? !fromLog && rec.n !== 1 : rec.n !== st.n + 1 && !fromLog) return "gap";
     st.n = rec.n;
     if (rec.stamp > st.promise) st.promise = rec.stamp;
     if (rec.stamp > st.top) st.top = rec.stamp;
     if (rec.stamp > this.stableAt) st.pending.push(rec);
+    else if (rec.stamp > this.cutAt) return "lost";
     return "ok";
   }
 
@@ -152,6 +160,7 @@ export class Merger {
 
   /** A generation holds every record at or below `cut`: drop them, and move the stable stamp to it. */
   cut(cut: Stamp): void {
+    if (cut > this.cutAt) this.cutAt = cut;
     if (cut <= this.stableAt) return;
     this.stableAt = cut;
     for (const st of this.tabs.values()) {
