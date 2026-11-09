@@ -133,7 +133,7 @@ export class EngineHost {
       const level = levelOf(run.path) ?? 0;
       const entry = byLevel.get(level) ?? { level, runs: 0, bytes: 0 };
       entry.runs += 1;
-      entry.bytes += fs.sizeOf(run.path) ?? 0;
+      entry.bytes += run.bytes;
       byLevel.set(level, entry);
     }
     return structuredClone({

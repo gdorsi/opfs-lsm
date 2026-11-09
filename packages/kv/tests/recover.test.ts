@@ -4,6 +4,7 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { IdBWal } from "../src/idb/wal.js";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import { reconcile } from "../src/recover.js";
+import { crc32 } from "../src/store/crc32.js";
 import { publishGeneration, publishRun, type GenerationMeta } from "../src/store/generation.js";
 import { openHarnessDb } from "../src/testing.js";
 import { checkDatabase, deleteWal } from "./sim/check-database.js";
@@ -33,7 +34,7 @@ async function walWith(appends: number): Promise<IdBWal> {
 /** A manifest with one (fake) non-empty run per name. */
 async function manifest(fs: MemoryFs, generation: number, through: number, runs: string[]): Promise<GenerationMeta> {
   for (const path of runs) await publishRun(fs, path, new Uint8Array([1]));
-  const meta = { generation, runs: runs.map((path) => ({ path })), tombstoneSeq: 0, through };
+  const meta = { generation, runs: runs.map((path) => ({ path, bytes: 1 })), tombstoneSeq: 0, through };
   await publishGeneration(fs, meta);
   return meta;
 }
@@ -267,5 +268,34 @@ describe("a deleted WAL", () => {
     const report = await checkDatabase(fs, name);
     expect(report.problems).toEqual([]);
     expect(report.state.map((e) => text(e.key))).toEqual(["a", "c"]);
+  });
+});
+
+/**
+ * Manifest version 3 added each run's byte size, and nothing reads versions 1
+ * or 2. A database from before it fails to open and keeps its files.
+ */
+describe("a database written before manifests held run sizes", () => {
+  it("is refused at open and left as it was", async () => {
+    name = `recover-${++n}`;
+    const fs = new MemoryFs();
+    const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+    const db = await open();
+    await db.put(enc.encode("a"), enc.encode("1"));
+    await db.ingest();
+    await db.close();
+
+    const path = `m/${[...(await fs.list("m"))].sort().at(-1)!}`;
+    const buf = (await fs.read(path, 0, Number.POSITIVE_INFINITY))!;
+    new DataView(buf.buffer).setUint32(4, 2, true);
+    new DataView(buf.buffer).setUint32(buf.byteLength - 4, crc32(buf.subarray(0, buf.byteLength - 4)), true);
+    const w = await fs.create(path);
+    await w.write(buf);
+    await w.finish();
+
+    const files = async () => ({ m: await fs.list("m"), l0: await fs.list("l0") });
+    const before = await files();
+    await expect(open()).rejects.toThrow(CorruptDatabaseError);
+    expect(await files()).toEqual(before);
   });
 });

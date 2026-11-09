@@ -122,7 +122,7 @@ describe("decoder bugs the fuzzers found", () => {
       generation: 1,
       tombstoneSeq: 0,
       through: 0,
-      runs: [{ path: "l1/a.sst", range: { smallest: utf("a"), largest: utf("b") } }],
+      runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") } }],
     });
     // Run count and the first path length, inflated (found by "manifests ... reject every change").
     new DataView(m.buffer).setUint32(34, 0xffffffff, true);

@@ -1,5 +1,6 @@
 import { crc32 } from "../src/store/crc32.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CorruptDatabaseError } from "../src/errors.js";
 import {
   MemoryFs
 } from "../src/index.js";
@@ -11,7 +12,9 @@ import {
   encodeGeneration,
   loadLatestGeneration,
   publishGeneration,
+  publishL0,
 } from "../src/store/generation.js";
+import { encodeRun, sstKeyRange } from "../src/store/sst.js";
 
 const NAME = "generation-coherence";
 const enc = new TextEncoder();
@@ -40,12 +43,13 @@ afterEach(async () => {
 });
 
 describe("manifest", () => {
-  it("round-trips each run's key range", () => {
+  it("round-trips each run's size and key range", () => {
     const meta = {
       generation: 3,
       runs: [
-        { path: "l0/1-2.sst", range: { smallest: utf("a"), largest: utf("m") } },
-        { path: "l1/c2.0-10.sst" },
+        { path: "l0/1-2.sst", bytes: 4_321, range: { smallest: utf("a"), largest: utf("m") } },
+        { path: "l1/c2.0.sst", bytes: 2 ** 32 - 1 },
+        { path: "l2/c9.1.sst", bytes: 0, range: { smallest: new Uint8Array(0), largest: new Uint8Array(0) } },
       ],
       tombstoneSeq: 4,
       through: 9,
@@ -53,40 +57,63 @@ describe("manifest", () => {
     expect(decodeGeneration(encodeGeneration(meta))).toEqual(meta);
   });
 
-  it("reads a version 1 manifest, which has no through, as through 0", () => {
-    const meta = { generation: 2, runs: [{ path: "l0/1-1.sst" }], tombstoneSeq: 1, through: 7 };
-    const v2 = encodeGeneration(meta);
-    // Version 1: the same fields without the u64 through after tombstoneSeq.
-    const v1 = new Uint8Array(v2.byteLength - 8);
-    v1.set(v2.subarray(0, 24));
-    v1.set(v2.subarray(32, v2.byteLength - 4), 24);
-    const view = new DataView(v1.buffer);
-    view.setUint32(4, 1, true);
-    view.setUint32(v1.byteLength - 4, crc32(v1.subarray(0, v1.byteLength - 4)), true);
-    expect(decodeGeneration(v1)).toEqual({ ...meta, through: 0 });
+  it.each([1, 2])("refuses a version %i manifest, which has no run sizes, rather than read it as version 3", (version) => {
+    const meta = { generation: 2, runs: [{ path: "l0/1-1.sst", bytes: 90 }], tombstoneSeq: 1, through: 7 };
+    const buf = encodeGeneration(meta);
+    new DataView(buf.buffer).setUint32(4, version, true);
+    new DataView(buf.buffer).setUint32(buf.byteLength - 4, crc32(buf.subarray(0, buf.byteLength - 4)), true);
+    expect(() => decodeGeneration(buf)).toThrow(CorruptDatabaseError);
+    expect(() => decodeGeneration(buf)).toThrow("bad generation version");
+  });
+});
+
+describe("publishL0", () => {
+  it("returns the size and key range of the file it wrote", async () => {
+    const fs = new MemoryFs();
+    const entries = Array.from({ length: 500 }, (_, i) => ({
+      kind: "put" as const,
+      key: utf(`k${String(i).padStart(4, "0")}`),
+      value: utf(`value ${i}`),
+      seq: i + 1,
+    }));
+    const run = await publishL0(fs, "1-500", entries);
+    const file = (await fs.read(run.path, 0, Number.POSITIVE_INFINITY))!;
+    expect(run.path).toBe("l0/1-500.sst");
+    expect(run.bytes).toBe(file.byteLength);
+    expect(run.range).toEqual(sstKeyRange(file));
+    expect(file).toEqual(encodeRun(entries).body);
+  });
+
+  it("gives an empty run no key range, and its size", async () => {
+    const fs = new MemoryFs();
+    const run = await publishL0(fs, "0-0", []);
+    expect(run.range).toBeUndefined();
+    expect(run.bytes).toBe((await fs.read(run.path, 0, Number.POSITIVE_INFINITY))!.byteLength);
   });
 });
 
 describe("loadLatestGeneration", () => {
+  const a = { path: "l0/a.sst", bytes: 1 };
+
   it("skips an empty newest manifest and returns the older one", async () => {
     const fs = new MemoryFs();
-    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
+    await publishGeneration(fs, { generation: 1, runs: [a], tombstoneSeq: 0, through: 0 });
     const empty = await fs.create(mft(2));
     await empty.finish();
 
     const meta = await loadLatestGeneration(fs);
-    expect(meta).toEqual({ generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
+    expect(meta).toEqual({ generation: 1, runs: [a], tombstoneSeq: 0, through: 0 });
   });
 
   it("skips an undecodable newest manifest and returns the older one", async () => {
     const fs = new MemoryFs();
-    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
+    await publishGeneration(fs, { generation: 1, runs: [a], tombstoneSeq: 0, through: 0 });
     const torn = await fs.create(mft(2));
     await torn.write(new Uint8Array([1, 2, 3, 4]));
     await torn.finish();
 
     const meta = await loadLatestGeneration(fs);
-    expect(meta).toEqual({ generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
+    expect(meta).toEqual({ generation: 1, runs: [a], tombstoneSeq: 0, through: 0 });
   });
 
   it("returns undefined when every manifest is empty", async () => {
@@ -98,10 +125,11 @@ describe("loadLatestGeneration", () => {
 
   it("returns the newest manifest when it is larger than 1 MiB", async () => {
     const fs = new MemoryFs();
-    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/a.sst" }], tombstoneSeq: 0, through: 0 });
+    await publishGeneration(fs, { generation: 1, runs: [a], tombstoneSeq: 0, through: 0 });
     const key = (c: number) => new Uint8Array(8 * 1024).fill(c);
     const runs = Array.from({ length: 100 }, (_, i) => ({
-      path: `l1/r${i}-4194304.sst`,
+      path: `l1/r${i}.sst`,
+      bytes: 4_194_304,
       range: { smallest: key(i * 2), largest: key(i * 2 + 1) },
     }));
     await publishGeneration(fs, { generation: 2, runs, tombstoneSeq: 0, through: 0 });

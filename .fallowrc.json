@@ -23,6 +23,7 @@
     {
       "file": "packages/kv/src/store/engine.ts",
       "exports": [
+        "encodeRun",
         "encodeSst",
         "decodeSst"
       ]

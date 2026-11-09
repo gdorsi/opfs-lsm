@@ -39,7 +39,7 @@ IndexedDB  "opfs-lsm-wal/<name>"
 OPFS  opfs-lsm/<name>/
   ├── m/<generation, 16 digits>.mft    manifests, newest wins
   ├── l0/<firstSeq>-<lastSeq>.sst      flushed runs, may overlap
-  ├── l1/c<gen>.<i>-<bytes>.sst        compacted runs, disjoint within a level
+  ├── l1/c<gen>.<i>.sst                compacted runs, disjoint within a level
   ├── l2/...
   └── ...
 ```
@@ -52,8 +52,9 @@ twice, and a manifest number never names two different manifests.
 Run paths are immutable. A path is written once and never rewritten with different contents.
 This lets every tab cache a parsed run by its path, with no invalidation.
 
-The size in a compacted run's name lets the compaction planner size levels without opening any
-file. L0 names carry the seq range instead.
+The manifest records each run's byte size and key range, so the compaction planner sizes levels
+without opening any file. The level is in the path. L0 names carry the seq range, and a compacted
+run's name carries the generation that wrote it and its position in that step's output.
 
 # Write-ahead log
 
@@ -166,6 +167,11 @@ scanning.
 Runs use SST version 1. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
 TypeScript reader in `packages/kv/src/store/sst.ts` reads it, and there is a byte-compatible
 TypeScript encoder for when wasm doesn't load. That encoder writes only raw blocks.
+
+`SstWriter` takes entries in key order and appends the file to a buffer the caller owns, one
+data block at a time. Its `finish` appends the bloom filter, the index and the footer, and returns
+the run's end: entry count, size, and first and last key. Both encoders report it, and it is what
+the manifest records. Encoding a slice of entries is a loop over the same writer.
 
 The layout follows the LevelDB and RocksDB convention. Data blocks come first, the bloom filter
 and block index follow them, and a fixed-size footer at the end of the file says where each
@@ -362,13 +368,14 @@ one generation:
 
 ```
 u32 magic "OLGN" (0x4f4c474e)
-u32 version = 2
+u32 version = 3
 u64 generation
 u64 tombstoneSeq
-u64 through                  version 2 only
+u64 through
 u32 run count
 per run:
   u16 path length, path (UTF-8, relative to the database root)
+  u32 bytes                  size of the run's file
   u8  has range
   if has range: u32 length, smallest key, u32 length, largest key
 u32 crc32 of every byte before it
@@ -382,9 +389,13 @@ that has no entry at all may have been deleted at any seq up to it.
 
 `through` is the seq the manifest's runs reach: they hold the fold of every seq of the log up to
 it, and no seq past it. An ingest sets it to the last seq it folded, and a compaction keeps its
-base's. Recovery uses it to pair a manifest with the WAL. A version 1 manifest has no `through`
-and reads as `through` 0. Recovery then never prefers it over the WAL, and the first ingest
-writes a version 2 manifest.
+base's. Recovery uses it to pair a manifest with the WAL.
+
+`bytes` is the size the encoder reported when it wrote the run. Planning sums it per level and
+reads no file. Nothing at runtime checks it against the file.
+
+Version 3 added `bytes`. A reader rejects any other version as corrupt, and a database written
+with an earlier version does not open.
 
 The generation the tabs should read is the one recorded in IndexedDB `meta.generation`, not
 the newest file in `m/`. A manifest becomes visible only once IndexedDB records it. New
@@ -618,8 +629,9 @@ flushes keep going while it runs. A flush meanwhile only adds L0 runs in front o
 the plan stays valid. To install, under the exclusive section, the host:
 
 1. Reconciles, and checks that every input is still in the recorded manifest `G`.
-2. Writes manifest `top + 1`, with the inputs replaced by the outputs, `tombstoneSeq` raised
-   to the highest dropped tombstone, and `G`'s `through`.
+2. Writes manifest `top + 1`, with the inputs replaced by the outputs (each with the size and key
+   range its encoder reported), `tombstoneSeq` raised to the highest dropped tombstone, and `G`'s
+   `through`.
 3. Raises IndexedDB `generation` to `top + 1`.
 4. Reclaims: deletes the manifests older than `top + 1` and the input runs that the new
    manifest doesn't list and no tab holds open. While a tab holds the reclaim lock, it deletes

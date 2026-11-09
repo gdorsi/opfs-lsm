@@ -1,8 +1,8 @@
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { CommitError, CorruptDatabaseError } from "../../src/errors.js";
 import { EngineHost, MemoryFs, createLocalIngestClient, type Db } from "../../src/index.js";
-import { encodeSst as encodeSstWasm, ensureEngine, mergeSsts } from "../../src/store/engine.js";
-import { decodeGeneration, encodeGeneration, runMeta } from "../../src/store/generation.js";
+import { encodeRun, ensureEngine, mergeSsts } from "../../src/store/engine.js";
+import { decodeGeneration, encodeGeneration } from "../../src/store/generation.js";
 import { openHarnessDb } from "../../src/testing.js";
 import { checkDatabase, deleteWal, walMeta, walRows, walStore } from "./check-database.js";
 
@@ -99,10 +99,10 @@ async function deep(): Promise<Fixture> {
     state.set(k, v);
     return { kind: "put" as const, key: utf(k), value: utf(v), seq: i + 1 };
   });
-  const body = await encodeSstWasm(entries, "lz4");
-  const path = `l2/c1.0-${body.byteLength}.sst`;
+  const { body, end } = await encodeRun(entries, "lz4");
+  const path = "l2/c1.0.sst";
   await put(fs, path, body);
-  await put(fs, "m/0000000000000001.mft", encodeGeneration({ generation: 1, runs: [runMeta(path, body)], tombstoneSeq: 0, through: 300 }));
+  await put(fs, "m/0000000000000001.mft", encodeGeneration({ generation: 1, runs: [{ path, ...end }], tombstoneSeq: 0, through: 300 }));
   return { name, fs, state };
 }
 
@@ -400,10 +400,10 @@ describe("recovery never turns corruption into data loss", () => {
     const gen = (await walMeta(f.name)).generation!;
     const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
     const bodies = await Promise.all(old.runs.map(async (r) => (await f.fs.read(r.path, 0, Number.POSITIVE_INFINITY))!));
-    const merged = (await mergeSsts(bodies, true)).ssts[0]!;
-    const path = `l1/c${gen + 1}.0-${merged.byteLength}.sst`;
-    await put(f.fs, path, merged);
-    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [runMeta(path, merged)] }));
+    const merged = (await mergeSsts(bodies, true)).runs[0]!;
+    const path = `l1/c${gen + 1}.0.sst`;
+    await put(f.fs, path, merged.body);
+    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [{ path, ...merged.end }] }));
     await f.fs.remove(await l0(f));
     expect(await survivors(f)).toBe(f.state.size);
     expect((await walMeta(f.name)).generation).toBe(gen + 1);

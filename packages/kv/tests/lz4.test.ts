@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { mergeNextStep } from "../src/host/compact.js";
 import { MemoryFs } from "../src/index.js";
-import { decodeSst as decodeWasm, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
-import { publishGeneration, publishRun, runMeta } from "../src/store/generation.js";
+import { decodeSst as decodeWasm, encodeRun, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
+import { publishGeneration, publishRun } from "../src/store/generation.js";
 import { lz4DecompressJs, useLz4Decoder } from "../src/store/lz4.js";
 import { settle } from "../src/store/cursor.js";
 import { decodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
@@ -126,9 +126,10 @@ describe("compaction codec", () => {
 
   async function stepFrom(path: string) {
     const fs = new MemoryFs();
-    const body = await encodeSst(todoRows(0));
+    const { body, end } = await encodeRun(todoRows(0));
     await publishRun(fs, path, body);
-    await publishGeneration(fs, { generation: 1, runs: [runMeta(path, body)], tombstoneSeq: 0, through: 0 });
+    // A size past L1's target makes the run a compaction input without writing 40 MB.
+    await publishGeneration(fs, { generation: 1, runs: [{ path, ...end, bytes: 50_000_000 }], tombstoneSeq: 0, through: 0 });
     const step = await mergeNextStep(fs);
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
@@ -138,7 +139,7 @@ describe("compaction codec", () => {
   const codecOf = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset).getUint32(b.byteLength - 16, true);
 
   it("writes LZ4 runs into L2", async () => {
-    const { out, bytes, raw } = await stepFrom("l1/c1.0-50000000.sst");
+    const { out, bytes, raw } = await stepFrom("l1/c1.0.sst");
     expect(out.startsWith("l2/")).toBe(true);
     expect(codecOf(bytes)).toBe(1);
     expect(bytes.byteLength).toBeLessThan(raw.byteLength / 2);
@@ -149,10 +150,10 @@ describe("compaction codec", () => {
     const fs = new MemoryFs();
     const runs = [];
     for (let i = 0; i < 4; i++) {
-      const body = await encodeSst(todoRows(i * 2_000));
+      const { body, end } = await encodeRun(todoRows(i * 2_000));
       const path = `l0/${i}.sst`;
       await publishRun(fs, path, body);
-      runs.push(runMeta(path, body));
+      runs.push({ path, ...end });
     }
     await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 0 });
     const step = await mergeNextStep(fs);

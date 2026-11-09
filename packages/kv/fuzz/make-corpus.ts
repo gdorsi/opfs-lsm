@@ -18,8 +18,6 @@ import { fileURLToPath } from "node:url";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import { openHarnessDb } from "../src/testing.js";
 import { encodeSst as encodeSstWasm, ensureEngine, engineUsingWasm, mergeSsts } from "../src/store/engine.js";
-import { crc32 } from "../src/store/crc32.js";
-import { encodeGeneration, decodeGeneration } from "../src/store/generation.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
 import { walStore } from "../tests/sim/check-database.js";
 import { framedBlocks } from "./targets.js";
@@ -77,18 +75,6 @@ async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Arr
   return { runs, manifests, walRows };
 }
 
-/** A version 1 manifest (no `through`), which the engine still reads. */
-function manifestV1(v2: Uint8Array): Uint8Array {
-  const meta = decodeGeneration(v2);
-  const body = encodeGeneration(meta);
-  const out = new Uint8Array(body.byteLength - 8);
-  out.set(body.subarray(0, 24));
-  out.set(body.subarray(32), 24);
-  new DataView(out.buffer).setUint32(4, 1, true);
-  new DataView(out.buffer).setUint32(out.byteLength - 4, crc32(out.subarray(0, out.byteLength - 4)), true);
-  return out;
-}
-
 function todoEntries(n: number, from = 0): SstEntry[] {
   return Array.from({ length: n }, (_, i) => ({
     kind: "put" as const,
@@ -106,7 +92,9 @@ async function main(): Promise<void> {
   const lz4Runs = [
     await encodeSstWasm(todoEntries(40), "lz4"),
     // An L2-sized compaction output: several LZ4 blocks.
-    ...(await mergeSsts([await encodeSstWasm(todoEntries(150, 100), "raw"), db.runs[0]!], false, Number.MAX_SAFE_INTEGER, "lz4")).ssts,
+    ...(await mergeSsts([await encodeSstWasm(todoEntries(150, 100), "raw"), db.runs[0]!], false, Number.MAX_SAFE_INTEGER, "lz4")).runs.map(
+      (r) => r.body,
+    ),
   ];
   const edgeRuns = [
     encodeSst([]),
@@ -114,14 +102,13 @@ async function main(): Promise<void> {
     encodeSst([...todoEntries(30), { kind: "del", key: utf("todo/zz"), seq: 99 }], 256),
   ];
   const runs = [...db.runs, ...lz4Runs, ...edgeRuns].filter((r) => r.byteLength < 60_000);
-  const manifests = [...db.manifests, ...db.manifests.slice(0, 1).map(manifestV1)];
   const lz4Blocks = lz4Runs.flatMap((r) => framedBlocks(r)).slice(0, 6);
   const rawBlocks = [...db.runs, ...edgeRuns].flatMap((r) => framedBlocks(r)).slice(0, 6);
 
   // Jazzer.js targets: byte 0 is the flags byte each target documents.
   await seeds(join(tsCorpus, "sst-read"), runs.flatMap((r) => [cat([0], r), cat([4], r)]));
   await seeds(join(tsCorpus, "sst-decode"), runs.map((r) => cat([0], r)));
-  await seeds(join(tsCorpus, "manifest"), manifests.map((m) => cat([0], m)));
+  await seeds(join(tsCorpus, "manifest"), db.manifests.map((m) => cat([0], m)));
   await seeds(join(tsCorpus, "wal-row"), db.walRows.slice(0, 8));
   await seeds(join(tsCorpus, "lz4"), lz4Blocks);
 
@@ -141,7 +128,7 @@ async function main(): Promise<void> {
     pair(edgeRuns[2]!, edgeRuns[0]!, 3, 1),
   ]);
   console.log(
-    `seeds: ${runs.length} runs (${lz4Runs.length} LZ4), ${manifests.length} manifests, ${db.walRows.length} WAL rows, ${lz4Blocks.length + rawBlocks.length} blocks`,
+    `seeds: ${runs.length} runs (${lz4Runs.length} LZ4), ${db.manifests.length} manifests, ${db.walRows.length} WAL rows, ${lz4Blocks.length + rawBlocks.length} blocks`,
   );
 }
 
