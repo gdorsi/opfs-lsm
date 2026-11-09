@@ -1,0 +1,172 @@
+/**
+ * From a document to its kv entries. Writes, deletes and the backfill all
+ * derive entries here, from the stored form only.
+ */
+import { CorruptDatabaseError, type Entry } from "@opfs-lsm/kv";
+import type { BoundCollection, IndexPlan, Path } from "./catalog.js";
+import { DocStoreError } from "./errors.js";
+import { MAX_KEY_BYTES, encodeKey, parseId, textValue, type DocId } from "./keys.js";
+import type { JsonDoc, Scalar } from "./schema.js";
+
+declare const storedBrand: unique symbol;
+
+/**
+ * A document parsed from the JSON text that is, or is about to be, stored.
+ * Entries are derived only from this, never from the caller's object, so
+ * `-0`, NaN, `undefined`, `toJSON` and class instances have already gone
+ * through JSON.
+ */
+export type StoredDoc = JsonDoc & { readonly [storedBrand]: true };
+
+export type EncodedDoc = {
+  readonly id: DocId;
+  /** UTF-8 of `JSON.stringify(doc)`: the row's value. */
+  readonly bytes: Uint8Array;
+  /** `JSON.parse` of that same text. */
+  readonly doc: StoredDoc;
+};
+
+const utf8 = new TextEncoder();
+const fromUtf8 = new TextDecoder();
+
+/** Parsing the text, not the bytes, skips a decode. The two agree because `JSON.stringify` escapes lone surrogates. */
+export function encodeDoc(doc: JsonDoc): EncodedDoc {
+  const text = JSON.stringify(doc) as string | undefined;
+  const parsed: unknown = text === undefined ? undefined : JSON.parse(text);
+  if (text === undefined || !isObject(parsed)) throw new DocStoreError("document", "a document must be a JSON object");
+  return { id: parseId(parsed["id"]), bytes: utf8.encode(text), doc: parsed as StoredDoc };
+}
+
+export function decodeDoc(bytes: Uint8Array): StoredDoc {
+  const parsed: unknown = JSON.parse(fromUtf8.decode(bytes));
+  if (!isObject(parsed)) throw new CorruptDatabaseError("a stored document is not a JSON object");
+  return parsed as StoredDoc;
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isScalar(v: unknown): v is Scalar {
+  return v === null || typeof v === "boolean" || typeof v === "number" || typeof v === "string";
+}
+
+const MAX_ENTRIES_PER_INDEX = 1_000;
+
+/** Why one document cannot be in one index. A missing path is not here: it means "not in this index". */
+export type Unindexable = {
+  readonly path: string;
+  readonly why: "not-scalar" | "text-not-string" | "key-too-long" | "too-many-entries";
+};
+
+const NONE: Entry[] = [];
+
+/**
+ * Every entry of `doc` in every maintained index. On the "next" side, the
+ * document about to be written, a value an index cannot hold throws, so
+ * nothing is stored. On the "stored" side it gives no entries: such a row
+ * predates a still-building index and never had any.
+ */
+export function entriesOf(coll: BoundCollection, id: DocId, doc: StoredDoc, side: "next" | "stored"): Entry[] {
+  const idb = utf8.encode(id);
+  const out: Entry[] = [];
+  for (const plan of coll.maintained) {
+    const entries = indexEntries(plan, idb, doc);
+    if (Array.isArray(entries)) {
+      for (const e of entries) out.push(e);
+    } else if (side === "next") {
+      throw new DocStoreError(
+        "document",
+        `index "${plan.name}" of "${coll.name}" cannot hold the value at "${entries.path}" (${entries.why})`,
+      );
+    }
+  }
+  return out;
+}
+
+/** The entries of `doc` in one index. `id` is the id's UTF-8. */
+export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): Entry[] | Unindexable {
+  const { spec } = plan;
+  const multi = spec.kind === "sorted" && spec.multi;
+  const values: Scalar[] = [];
+  let firsts: readonly Scalar[] | undefined;
+  for (let i = 0; i < spec.on.length; i++) {
+    const path = spec.on[i]!;
+    const v = readPath(doc, path);
+    if (v === undefined) return NONE;
+    if (i === 0 && multi && Array.isArray(v)) {
+      if (!v.every(isScalar)) return { path: path.join("."), why: "not-scalar" };
+      firsts = [...new Set(v)];
+      if (firsts.length > MAX_ENTRIES_PER_INDEX) return { path: path.join("."), why: "too-many-entries" };
+      values.push(null);
+    } else if (isScalar(v)) {
+      values.push(v);
+    } else {
+      return { path: path.join("."), why: "not-scalar" };
+    }
+  }
+
+  let value = id;
+  let tail: Uint8Array | undefined = id;
+  switch (spec.kind) {
+    case "sorted":
+      if (spec.unique) tail = undefined;
+      else value = EMPTY;
+      break;
+    case "text": {
+      const text = readPath(doc, spec.text);
+      if (text === undefined) return NONE;
+      if (typeof text !== "string") return { path: spec.text.join("."), why: "text-not-string" };
+      value = textValue(text);
+      break;
+    }
+  }
+
+  const prefix = plan.target.prefix;
+  const out: Entry[] = [];
+  for (const first of firsts ?? [values[0]!]) {
+    values[0] = first;
+    const key = encodeKey(prefix, values, tail);
+    if (key.length > MAX_KEY_BYTES) return { path: spec.on.map((p) => p.join(".")).join(","), why: "key-too-long" };
+    out.push({ key, value });
+  }
+  return out;
+}
+const EMPTY = new Uint8Array(0);
+
+/** The value at a split dot path, walking own properties of plain objects only. */
+export function readPath(doc: StoredDoc, path: Path): unknown {
+  let v: unknown = doc;
+  for (const segment of path) {
+    if (!isObject(v) || !Object.hasOwn(v, segment)) return undefined;
+    v = v[segment];
+  }
+  return v;
+}
+
+/** Keys of `before` that `after` lacks, and entries of `after` that are new or hold another value. */
+export function diffEntries(
+  before: readonly Entry[],
+  after: readonly Entry[],
+): { readonly remove: Uint8Array[]; readonly write: Entry[] } {
+  const old = new Map<string, Entry>();
+  for (const e of before) old.set(keyString(e.key), e);
+  const write: Entry[] = [];
+  for (const e of after) {
+    const k = keyString(e.key);
+    const was = old.get(k);
+    if (was === undefined || !bytesEqual(was.value, e.value)) write.push(e);
+    old.delete(k);
+  }
+  return { remove: Array.from(old.values(), (e) => e.key), write };
+}
+
+function keyString(key: Uint8Array): string {
+  return String.fromCharCode.apply(null, key as unknown as number[]);
+}
+
+export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
