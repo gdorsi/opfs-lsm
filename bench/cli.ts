@@ -103,6 +103,8 @@ async function run(o: {
     console.log(`${runs.length} runs → ${path.relative(process.cwd(), resultsFile)}`);
     const records = await runPlan(runs, {
       origin: server.origin,
+      useEngine: server.useEngine,
+      engineServed: server.engineServed,
       headless: o.headless,
       resultsFile,
       phaseTimeoutMs: o.timeoutMs,

@@ -28,6 +28,8 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 | `automerge` | the `examples/automerge-todo` kv storage adapter | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | the `examples/yjs` `KvPersistence` | y-indexeddb |
 
+`kv/kv-zig` is kv on the Zig engine module: the runner serves `crates/engine-zig/engine_small.wasm` for every `.wasm` request of that run (`driver/engines.ts`), because the tab and the SharedWorker host each load the engine and only the server sees both.
+
 Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv's WAL commits with IndexedDB's default durability (relaxed in Chrome since version 121), so the IndexedDB baselines use the default too.
 
 ## Workloads

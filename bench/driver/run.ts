@@ -9,9 +9,14 @@ import type { Catalog, PhaseReply, PhaseRequest, PhaseResult, RunRecord } from "
 import { launchChrome } from "./chrome.ts";
 import { hostInfo } from "./host.ts";
 import type { PlannedRun } from "./plan.ts";
+import { ENGINE_WASM } from "./engines.ts";
 
 export type RunOptions = {
   readonly origin: string;
+  /** Serve this engine `.wasm` for the run (see `Server.useEngine`). */
+  readonly useEngine: (file: string | undefined) => void;
+  /** How many engine requests the override has answered. */
+  readonly engineServed: () => number;
   readonly headless: boolean;
   readonly resultsFile: string;
   readonly phaseTimeoutMs: number;
@@ -46,6 +51,8 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
   let meta: Pick<RunRecord, "durability" | "fastPath" | "params"> | undefined;
   let chromeVersion = "unknown";
   let error: string | undefined;
+  const engine = ENGINE_WASM[run.contender];
+  opts.useEngine(engine);
   const chrome = await launchChrome({ headless: opts.headless, onProgress: (line) => opts.log(`    ${line}`) });
   try {
     chromeVersion = chrome.version;
@@ -74,6 +81,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
       phases.push(reply.result);
     }
     await tab.evaluate("__bench.closeStore()", 60_000);
+    if (engine && opts.engineServed() === 0) throw new Error(`${run.contender}: the page never loaded ${engine}`);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   } finally {
