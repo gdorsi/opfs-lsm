@@ -582,11 +582,17 @@ bytes.
 
 ## Planning
 
-`planCompaction` reads only the manifest. It picks the first rule that applies:
-1. When L0 has 4 runs or more, merge every L0 run with the L1 runs whose ranges overlap.
-2. Otherwise, take the first level from L1 down that is over budget. Pick the run whose
-   overlapping bytes in the next level are the smallest fraction of its own size. Merge it with
-   those runs into the next level.
+`planCompaction` reads only the manifest. It scores each level and serves the highest score
+above 1; on a tie the shallower level wins:
+- L0, once it has 4 runs or more, scores its run count over 4. Its step merges every L0 run with
+  the L1 runs whose ranges overlap.
+- L1 and below score their bytes over their budget. The step picks the run whose overlapping
+  bytes in the next level are the smallest fraction of its own size, and merges it with those
+  runs into the next level.
+
+If L0 always went first, steady writes would keep it at 4 runs and L1 would never be pushed
+down: it would grow past its budget and every L0 merge would rewrite all of it. Scoring lets L0
+pass 4 runs for a while, which adds read layers, until its score wins again.
 
 A plan is marked `bottom` when no run below the output level overlaps the inputs. Only then may
 the merge drop tombstones, because no older value is left for them to hide.
