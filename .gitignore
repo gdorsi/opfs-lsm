@@ -12,3 +12,4 @@ packages/kv/.arena-readpath
 .scratch
 examples/todo/dist
 examples/rich-text/dist
+.claude/worktrees
