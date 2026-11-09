@@ -22,8 +22,8 @@
     "wasm"
   ],
   "scripts": {
-    "build:wasm": "wasm-pack build ../../crates/engine-wasm --target web --out-dir ../../packages/kv/wasm --release",
-    "build": "sh -c 'test -f wasm/engine_wasm_bg.wasm && test -f wasm/engine_wasm.js || pnpm run build:wasm' && tsc -p tsconfig.json",
+    "build:wasm": "sh ../../crates/engine-wasm/build.sh",
+    "build": "sh -c 'test -f wasm/engine.wasm || pnpm run build:wasm' && tsc -p tsconfig.json",
     "test": "pnpm run build && vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run",
