@@ -231,12 +231,12 @@ these places. Where they disagree, this section is current.
   kill-loop iterations, keys written and ingested by the check right after
   a `browser-crash` were gone after the next iteration, with the files
   checking clean. Not explained yet (docs/verification.md).
-- **Open: a write blocked by quota.** Chrome can block a
-  `SyncAccessHandle.write()` forever under quota too. The tab can neither
-  ack nor leave, and every other tab's watermark waits on it. A timeout is
-  unsafe for writes (a late landing splits views); the fix is a fence: an
-  empty segment named past the last acked record, created by the page,
-  which readers and ingest treat as the end of the segment before it.
+- **Not a quota hang after all.** The `quota` kill-loop iterations that
+  hung were `ingest()` flushing until nothing was unsent while a tab kept
+  writing; it now flushes only what was appended before it was called.
+  After that fix, 20 of 20 `quota` iterations passed, and every write
+  under quota failed with an error ("No space available", "exceed its
+  storage quota") instead of blocking.
 - **Recovery.** The newest intact manifest wins. An older one stands in only
   while the logs still hold everything above its cut. Open trusts the
   newest manifest and checks runs only on the retries, under the reclaim
