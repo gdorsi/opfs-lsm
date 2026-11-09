@@ -357,6 +357,17 @@ async function restartInPlace(
  * each tab's log segments (size, last stamp), each manifest, and each run with its seq span and
  * the entries of the keys that match `pattern`.
  */
+/** A live segment changes under `getFile()`'s snapshot (NotReadableError): read it again. */
+async function readLive(fs: Awaited<ReturnType<typeof openBrowserFs>>, path: string): Promise<Uint8Array> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return (await fs.read(path, 0, Number.POSITIVE_INFINITY)) ?? new Uint8Array(0);
+    } catch (err) {
+      if ((err as { name?: string }).name !== "NotReadableError" || attempt >= 8) throw err;
+    }
+  }
+}
+
 async function inspect(name: string, pattern: string): Promise<unknown> {
   await ensureEngine();
   const fs = await openBrowserFs(name);
@@ -368,7 +379,7 @@ async function inspect(name: string, pattern: string): Promise<unknown> {
   for (const tab of await listTabs(fs)) {
     const segs: { file: string; bytes: number; lastStamp: number }[] = [];
     for (const file of await listSegments(fs, tab)) {
-      const buf = (await fs.read(`w/${tab}/${file}`, 0, Number.POSITIVE_INFINITY)) ?? new Uint8Array(0);
+      const buf = await readLive(fs, `w/${tab}/${file}`);
       segs.push({ file, bytes: buf.byteLength, lastStamp: await lastStampOf(fs, tab, file) });
     }
     logs[tab] = segs;

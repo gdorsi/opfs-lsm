@@ -760,16 +760,26 @@ class Run {
   }
 
   /** After a kill that left Chrome up: every opfs-lsm lock must come free. */
-  async locksReleased(page: Page): Promise<string[]> {
-    const deadline = Date.now() + 20_000;
-    let held: { name: string; mode: string }[] = [];
-    while (Date.now() < deadline) {
+  /**
+   * The host's ingest and compaction locks are held for as long as a step
+   * takes, and an ingest over thousands of small segments can take tens of
+   * seconds. A lock the dead context held is freed at once, so only one
+   * held for good counts; `slow` gets how long a release took past 20 s.
+   */
+  async locksReleased(page: Page, slow: (ms: number, held: string[]) => void): Promise<string[]> {
+    const started = Date.now();
+    let held: string[] = [];
+    while (Date.now() < started + 120_000) {
       const snap = await page.call<{ held: { name: string; mode: string }[] }>("locks", []);
-      held = snap.held.filter((l) => l.name.startsWith("opfs-lsm"));
-      if (held.length === 0) return [];
+      const now = snap.held.filter((l) => l.name.startsWith("opfs-lsm")).map((l) => `${l.name} (${l.mode})`);
+      if (now.length === 0) {
+        if (Date.now() - started > 20_000) slow(Date.now() - started, held);
+        return [];
+      }
+      held = now;
       await sleep(100);
     }
-    return held.map((l) => `${l.name} (${l.mode})`);
+    return held;
   }
 
   async iteration(plan: Plan, db: Db): Promise<Outcome> {
@@ -900,7 +910,7 @@ class Run {
       if (dead.length > 0) what += ` dead tabs [${dead.join(",")}]`;
       for (const s of stops) if ("err" in s && s.err) fail("a surviving tab did not stop", [`tab ${s.tab}: ${s.err}`]);
       const probe = await this.page();
-      const held = await this.locksReleased(probe);
+      const held = await this.locksReleased(probe, (ms, was) => notes.push(`locks freed ${ms} ms after the kill: ${was.join(", ")}`));
       if (held.length > 0) fail("Web Locks still held after the killed context was gone", held);
       // Before any relaunch: a new tab in the same browser must get a
       // SharedWorker that ingests.
