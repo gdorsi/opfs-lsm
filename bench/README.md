@@ -25,8 +25,8 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 |---|---|---|
 | `kv` | kv (`openDb`, SharedWorker host) | a hand-written IndexedDB key-value store: one object store, one transaction per batch, `getAll` pages for scans |
 | `table` | collections | Dexie |
-| `automerge` | the `examples/automerge-todo` kv storage adapter | automerge-repo's `IndexedDBStorageAdapter` |
-| `yjs` | the `examples/yjs` `KvPersistence` | y-indexeddb |
+| `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
+| `yjs` | `KvPersistence` from `@opfs-lsm/yjs` (`packages/yjs`) | y-indexeddb |
 
 Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv's WAL commits with IndexedDB's default durability (relaxed in Chrome since version 121), so the IndexedDB baselines use the default too.
 

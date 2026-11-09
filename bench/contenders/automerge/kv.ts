@@ -1,4 +1,4 @@
-import { kvStorage } from "@opfs-lsm/example-automerge/storage";
+import { kvStorage } from "@opfs-lsm/automerge";
 import { defineContender } from "../../core/types.ts";
 import { kvCommon, openKv } from "../../page/kv.ts";
 

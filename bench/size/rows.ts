@@ -34,7 +34,7 @@ export const SIZE_ROWS: readonly SizeRow[] = [
   {
     id: "yjs+kv",
     kv: true,
-    source: `export { KvPersistence } from "@opfs-lsm/example-yjs/kv-persistence"; export { openDb } from "@opfs-lsm/kv"; export * as Y from "yjs";`,
+    source: `export { KvPersistence } from "@opfs-lsm/yjs"; export { openDb } from "@opfs-lsm/kv"; export * as Y from "yjs";`,
     note: "yjs + KvPersistence + kv",
   },
   {
@@ -45,7 +45,7 @@ export const SIZE_ROWS: readonly SizeRow[] = [
   {
     id: "automerge-adapter-kv",
     kv: true,
-    source: `export { kvStorage } from "@opfs-lsm/example-automerge/storage"; export { openDb } from "@opfs-lsm/kv";`,
+    source: `export { kvStorage } from "@opfs-lsm/automerge"; export { openDb } from "@opfs-lsm/kv";`,
     note: "automerge-repo storage adapter on kv, includes kv",
   },
   {

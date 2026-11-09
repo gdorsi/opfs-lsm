@@ -11,7 +11,7 @@ import React, { Suspense } from "react"
 import { ErrorBoundary } from "react-error-boundary"
 import ReactDOM from "react-dom/client"
 import { App } from "./App.tsx"
-import { kvStorage } from "./storage.ts"
+import { kvStorage } from "@opfs-lsm/automerge"
 import type { State } from "./types.ts"
 import "./index.css"
 

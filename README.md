@@ -6,6 +6,8 @@ A simple, fast and flexible k/v storage for the browsers.
 
 `@opfs-lsm/collections` builds tables and secondary indexes on the same WAL and OPFS path. Its table API is Dexie-shaped: `put`, `get`, `where`, and `orderBy` over JSON rows.
 
+`@opfs-lsm/yjs` ([packages/yjs](packages/yjs)) is a Yjs provider shaped like y-indexeddb, and `@opfs-lsm/automerge` ([packages/automerge](packages/automerge)) is an automerge-repo storage adapter. Both keep many documents in one kv db.
+
 The storage layout, consistency rules, and ingest path are in [docs/design.md](docs/design.md). How to verify a change is in [docs/verification.md](docs/verification.md).
 
 ## `@opfs-lsm/kv`

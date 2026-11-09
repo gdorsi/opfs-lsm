@@ -1,4 +1,4 @@
-import { KvPersistence } from "@opfs-lsm/example-yjs/kv-persistence";
+import { KvPersistence } from "@opfs-lsm/yjs";
 import { defineContender } from "../../core/types.ts";
 import { kvCommon, openKv } from "../../page/kv.ts";
 

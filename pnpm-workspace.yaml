@@ -4,4 +4,3 @@ packages:
   - "examples/automerge-todo"
   - "examples/todo"
   - "examples/rich-text"
-  - "examples/yjs"
