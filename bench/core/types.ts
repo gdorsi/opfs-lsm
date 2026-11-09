@@ -81,6 +81,8 @@ export type Workload<F extends Family> = {
   /** One line, plain words. Printed above the table. */
   readonly title: string;
   readonly params: (size: SizeName) => Params;
+  /** Run only these contenders (bare names, e.g. "kv"). Default: every contender of the family. */
+  readonly contenders?: readonly string[];
   readonly phases: readonly Phase<F>[];
 };
 
@@ -167,6 +169,27 @@ export type HostInfo = {
   readonly gitSha: string;
 };
 
+/** Peaks of V8's `Runtime.getHeapUsage`, sampled every 100 ms. Missing optional fields: Chrome did not report them. */
+export type HeapPeak = {
+  readonly usedSize: number;
+  readonly totalSize: number;
+  readonly embedderHeapUsedSize?: number;
+  /** ArrayBuffer and wasm memory bytes. Absent when Chrome does not report it. */
+  readonly backingStorageSize?: number;
+  readonly samples: number;
+};
+
+/** Peaks over one Chrome run (all phases). The SharedWorker is the kv host; a tab peak is the largest of any tab. */
+export type MemoryPeaks = {
+  readonly sharedWorker: HeapPeak | null;
+  /** Largest `memory.buffer.byteLength` of a wasm instance in the SharedWorker. Wasm memory never shrinks, so this is its peak. */
+  readonly sharedWorkerWasmBytes: number | null;
+  readonly tab: HeapPeak | null;
+  readonly tabWasmBytes: number | null;
+  /** Peak memory of the single largest renderer process (the SharedWorker's or a tab's): `phys_footprint` on macOS, RSS elsewhere. */
+  readonly largestRendererBytes: number | null;
+};
+
 /** One line of `bench/results/<stamp>.jsonl`. One run = one fresh Chrome profile. */
 export type RunRecord = {
   readonly workload: string;
@@ -178,6 +201,7 @@ export type RunRecord = {
   readonly params: Params;
   readonly host: HostInfo;
   readonly phases: readonly PhaseResult[];
+  readonly memory?: MemoryPeaks;
   /** Set when the run failed (correctness, timeout, crash). Failed runs never feed a median. */
   readonly error?: string;
 };

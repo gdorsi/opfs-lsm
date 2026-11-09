@@ -1,7 +1,7 @@
 /**
  * node bench/cli.ts <verb> [args]
  *
- *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed]
+ *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed] [--max-peak-bytes N]
  *   smoke                   every workload × contender, size tiny, 1 rep, correctness only
  *   size [--check]          bundle-size table; --check fails over a row's budget
  *   compare <a.jsonl> <b.jsonl>
@@ -36,6 +36,7 @@ async function main(): Promise<number> {
       headed: { type: "boolean", default: false },
       check: { type: "boolean", default: false },
       timeout: { type: "string", default: "1800000" },
+      "max-peak-bytes": { type: "string", default: "" },
     },
   });
   switch (verb) {
@@ -52,6 +53,7 @@ async function main(): Promise<number> {
         headless: !values.headed,
         timeoutMs: Number(values.timeout),
         smoke,
+        maxPeakBytes: values["max-peak-bytes"] ? Number(values["max-peak-bytes"]) : undefined,
       });
     }
     case "size": {
@@ -90,6 +92,7 @@ async function run(o: {
   headless: boolean;
   timeoutMs: number;
   smoke: boolean;
+  maxPeakBytes: number | undefined;
 }): Promise<number> {
   await ensureTrace();
   await buildBench({ quiet: true });
@@ -113,6 +116,7 @@ async function run(o: {
     console.log("\n" + text);
     const problems = records.filter((r) => r.error).map((r) => `${r.workload} ${r.contender}: ${r.error}`);
     if (o.smoke) problems.push(...smokeChecks(records));
+    if (o.maxPeakBytes !== undefined) problems.push(...peakChecks(records, o.maxPeakBytes));
     if (problems.length > 0) {
       console.error(`\n${problems.length} problem(s):\n${problems.join("\n")}`);
       return 1;
@@ -132,6 +136,18 @@ function smokeChecks(records: readonly RunRecord[]): string[] {
       const amp = amplification(r, i);
       if (amp && amp.userIn > 0 && !(amp.wal > 0)) problems.push(`${r.workload} ${r.contender} ${p.name}: user bytes but no WAL bytes counted`);
     });
+  }
+  return problems;
+}
+
+/** Opt-in ceiling on the SharedWorker's peak: the sum of three peaks (an upper bound): JS heap in use, ArrayBuffer backing store, wasm memory. Chrome's backing counter does not include wasm memory (bench/probes/memory.ts). */
+function peakChecks(records: readonly RunRecord[], maxBytes: number): string[] {
+  const problems: string[] = [];
+  for (const r of records) {
+    const sw = r.memory?.sharedWorker;
+    if (!sw) continue;
+    const peak = sw.usedSize + (sw.backingStorageSize ?? 0) + (r.memory?.sharedWorkerWasmBytes ?? 0);
+    if (peak > maxBytes) problems.push(`${r.workload} ${r.contender} rep ${r.rep}: SharedWorker peak ${peak} B > --max-peak-bytes ${maxBytes}`);
   }
   return problems;
 }

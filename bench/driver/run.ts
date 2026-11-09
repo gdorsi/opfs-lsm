@@ -5,7 +5,7 @@
  * disk and cores.
  */
 import { appendFileSync } from "node:fs";
-import type { Catalog, PhaseReply, PhaseRequest, PhaseResult, RunRecord } from "../core/types.ts";
+import type { Catalog, MemoryPeaks, PhaseReply, PhaseRequest, PhaseResult, RunRecord } from "../core/types.ts";
 import { launchChrome } from "./chrome.ts";
 import { hostInfo } from "./host.ts";
 import type { PlannedRun } from "./plan.ts";
@@ -45,6 +45,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
   const phases: PhaseResult[] = [];
   let meta: Pick<RunRecord, "durability" | "fastPath" | "params"> | undefined;
   let chromeVersion = "unknown";
+  let memory: MemoryPeaks | undefined;
   let error: string | undefined;
   const chrome = await launchChrome({ headless: opts.headless, onProgress: (line) => opts.log(`    ${line}`) });
   try {
@@ -73,6 +74,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
       meta = { durability: reply.durability, fastPath: reply.fastPath, params: reply.params };
       phases.push(reply.result);
     }
+    memory = await chrome.memory();
     await tab.evaluate("__bench.closeStore()", 60_000);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
@@ -89,6 +91,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
     params: meta?.params ?? { entries: 0, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: 0 },
     host: hostInfo(chromeVersion, opts.headless),
     phases,
+    ...(memory ? { memory } : {}),
     ...(error !== undefined ? { error } : {}),
   };
 }

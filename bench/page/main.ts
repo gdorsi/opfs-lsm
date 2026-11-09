@@ -63,7 +63,10 @@ async function catalog(): Promise<Catalog> {
       family,
       title: w.title,
       phases: w.phases.map((p) => ({ name: p.name, page: p.page })),
-      contenders: contenders.filter((c) => c.family === family).map((c) => c.id).sort(),
+      contenders: contenders
+        .filter((c) => c.family === family && (!w.contenders || w.contenders.some((n) => c.id === `${family}/${n}`)))
+        .map((c) => c.id)
+        .sort(),
     });
   }
   return out;
