@@ -4,6 +4,7 @@ import type { AsyncFs } from "../../src/index.js";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
 import { openHarnessDb } from "../../src/testing.js";
 import { reclaimLogs } from "../../src/host/ingest.js";
+import { holdingFiles, layersChannel } from "../../src/host/protocol.js";
 import { recoverGeneration } from "../../src/recover.js";
 import { reclaimManifests } from "../../src/store/generation.js";
 import { cmd, installSeams, runWorld } from "./multi.js";
@@ -598,4 +599,110 @@ describe("a tab that joins while a liveness query is out", () => {
       ),
     ).resolves.toBeUndefined();
   }, 60_000);
+});
+
+describe("a generation hint older than a reclaim", () => {
+  // Found by multi-handle.test.ts, seed 20593645, path 20, replayPath
+  // "EAKBBCCBDCAABCABAACDAD:VVVF": an open failed with "log records through
+  // stamp S were reclaimed, and no generation holds them". Open set the
+  // wanted generation to the manifest it read first. While that generation
+  // loaded, a compaction committed a newer one and reclaimed segments past
+  // the older one's cut. The log read found them gone and asked for the
+  // newest generation, which took the wanted one at its word and installed
+  // the older generation, whose cut is short of the reclaimed records.
+  // Reduced below with a bus hint as the stale wanted generation.
+  it.fails("installs the generation that holds the reclaimed records", async () => {
+    const g = globalThis as { BroadcastChannel: typeof BroadcastChannel };
+    const Real = g.BroadcastChannel;
+    // R hears only the hint below, and while `deaf` none of W's records or promises.
+    let tagging = false;
+    let deaf = false;
+    class Tap extends Real {
+      private readonly tagged = tagging;
+      private blocks(data: unknown): boolean {
+        const { kind, writerId } = (data ?? {}) as { kind?: string; writerId?: string };
+        if (!this.tagged) return false;
+        if (kind === "ingest") return writerId !== "hint";
+        return deaf && (kind === "rec" || kind === "promise");
+      }
+      override get onmessage() {
+        return super.onmessage;
+      }
+      override set onmessage(fn: ((ev: MessageEvent) => void) | null) {
+        super.onmessage = fn && ((ev: MessageEvent) => (this.blocks(ev.data) ? undefined : fn(ev)));
+      }
+      override addEventListener(type: string, fn: (ev: MessageEvent) => void): void {
+        super.addEventListener(type, (ev) => (this.blocks((ev as MessageEvent).data) ? undefined : fn(ev as MessageEvent)));
+      }
+    }
+    g.BroadcastChannel = Tap as unknown as typeof BroadcastChannel;
+    const fs = new MemoryFs();
+    let parked: (() => void)[] | undefined;
+    const slowFs: AsyncFs = {
+      read: (path, offset, length) => fs.read(path, offset, length),
+      // Opened at once, so reclaim leaves the file, and handed over on release.
+      open: async (path) => {
+        const file = await fs.open(path);
+        if (parked) await new Promise<void>((resolve) => parked!.push(resolve));
+        return file;
+      },
+      list: (dir) => fs.list(dir),
+      remove: (path) => fs.remove(path),
+      removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
+      create: (path) => fs.create(path),
+      segments: () => fs.segments(),
+    };
+    const w = await openHarnessDb({
+      name: NAME,
+      fs,
+      ingest: createLocalIngestClient(new EngineHost(() => fs)),
+      ingestPolicy: { maxWalBytes: 64 },
+    });
+    tagging = true;
+    const r = await openHarnessDb({ name: NAME, fs: slowFs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+    tagging = false;
+    const hint = new Real(layersChannel(NAME));
+    const read = async (k: string) => {
+      const v = await r.get(utf(k));
+      return v && new TextDecoder().decode(v);
+    };
+    try {
+      await w.put(utf("k1"), utf("v1"));
+      await untilAsync(async () => (await read("k1")) === "v1");
+      deaf = true;
+      for (const k of ["k2", "k3", "k4"]) await w.put(utf(k), utf(`v${k[1]}`));
+      await w.ingest();
+      const older = (await recoverGeneration(fs, () => true)).meta;
+      // R learns of that generation and starts loading it; its run opens wait.
+      parked = [];
+      const waiting = parked;
+      hint.postMessage({ kind: "ingest", writerId: "hint", generation: older.generation });
+      await until(() => waiting.length > 0);
+      // As while another tab loads a generation: the older manifest stays.
+      await holdingFiles(NAME, async () => {
+        for (const k of ["k5", "k6", "k7"]) await w.put(utf(k), utf(`v${k[1]}`));
+        await w.ingest();
+      });
+      const [tab] = await fs.list("w");
+      const oldest = (await fs.list(`w/${tab}`)).sort()[0]!;
+      expect(Number(oldest.slice(0, 10)), "reclaim removed W's segments past the older cut").toBeGreaterThan(5);
+      deaf = false;
+      // W's next record reaches R, which finds a gap and reads W's log.
+      const put = w.put(utf("k8"), utf("v8"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      parked = undefined;
+      for (const resume of waiting) resume();
+      await put;
+      await untilAsync(async () => (await read("k8")) === "v8");
+      expect(await read("k2"), "k2 came before k8").toBe("v2");
+      expect(await read("k6")).toBe("v6");
+      await r.put(utf("k9"), utf("v9"));
+      await r.sync();
+    } finally {
+      g.BroadcastChannel = Real;
+      hint.close();
+      await w.close();
+      await r.close();
+    }
+  });
 });
