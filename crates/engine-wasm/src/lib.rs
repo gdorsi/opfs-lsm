@@ -12,26 +12,44 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 
 use core::cell::UnsafeCell;
-use engine_core::{encode_run_into, lz4_unpack, merge_sst_bytes, Codec, EncodedRun, Entry, RunEnd, SstError};
+use engine_core::{
+    encode_run_into, lz4_unpack, merge_sst_bytes, Codec, EncodedRun, Entry, MergeConfig, MergeError, MergeSession,
+    RunEnd, SstError, Stop,
+};
 
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 
 const TRUNCATED: i32 = -5;
 const BAD_TAG: i32 = -6;
+const OUT_OF_MEMORY: i32 = -11;
 const PATTERNS_TRUNCATED: i32 = -12;
+const SESSION_OPEN: i32 = -13;
 const OUT_OF_ORDER: i32 = -14;
+const NO_SESSION: i32 = -15;
+const UNFED: i32 = -16;
+
+const NEED: i32 = 1;
+const WRITE: i32 = 2;
+const RUN_END: i32 = 3;
+const YIELD: i32 = 4;
+const DONE: i32 = 5;
 
 /// Bytes of a run record's fixed head: entries, size, first and last key length.
 const RUN_HEAD: usize = 16;
 
-/// The module is single-threaded, so a static buffer handed out by `&mut` is
-/// never aliased across calls.
-struct Slot(UnsafeCell<Vec<u8>>);
-unsafe impl Sync for Slot {}
+/// The module is single-threaded, so a static handed out by `&mut` is never
+/// aliased across calls.
+struct Static<T>(UnsafeCell<T>);
+unsafe impl<T> Sync for Static<T> {}
 
-static INPUT: Slot = Slot(UnsafeCell::new(Vec::new()));
-static RESULT: Slot = Slot(UnsafeCell::new(Vec::new()));
+static INPUT: Static<Vec<u8>> = Static(UnsafeCell::new(Vec::new()));
+static RESULT: Static<Vec<u8>> = Static(UnsafeCell::new(Vec::new()));
+/// What `result_ptr` and `result_len` report: `RESULT`, or the bytes a
+/// session's `Write` hands out, which are not copied.
+static VIEW: Static<(u32, u32)> = Static(UnsafeCell::new((0, 0)));
+/// The one merge session a module holds.
+static SESSION: Static<Option<MergeSession>> = Static(UnsafeCell::new(None));
 
 fn input() -> &'static mut Vec<u8> {
     unsafe { &mut *INPUT.0.get() }
@@ -39,6 +57,22 @@ fn input() -> &'static mut Vec<u8> {
 
 fn result() -> &'static mut Vec<u8> {
     unsafe { &mut *RESULT.0.get() }
+}
+
+fn session() -> &'static mut Option<MergeSession> {
+    unsafe { &mut *SESSION.0.get() }
+}
+
+fn show(bytes: &[u8]) {
+    unsafe { *VIEW.0.get() = (bytes.as_ptr() as u32, bytes.len() as u32) }
+}
+
+/// Clear `RESULT`, let `fill` write it, and point the view at it.
+fn show_result(fill: impl FnOnce(&mut Vec<u8>)) {
+    let out = result();
+    out.clear();
+    fill(out);
+    show(out);
 }
 
 fn error_code(e: SstError) -> i32 {
@@ -85,7 +119,7 @@ unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
 
 fn finish(r: Result<Vec<u8>, i32>) -> i32 {
     let out = result();
-    match r {
+    let status = match r {
         Ok(v) => {
             *out = v;
             0
@@ -94,6 +128,16 @@ fn finish(r: Result<Vec<u8>, i32>) -> i32 {
             out.clear();
             code
         }
+    };
+    show(out);
+    status
+}
+
+fn merge_error(e: MergeError) -> i32 {
+    match e {
+        MergeError::Corrupt(e) => error_code(e),
+        MergeError::OutOfMemory => OUT_OF_MEMORY,
+        MergeError::Unfed => UNFED,
     }
 }
 
@@ -163,12 +207,12 @@ pub extern "C" fn input_ptr(len: u32) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn result_ptr() -> u32 {
-    result().as_ptr() as u32
+    unsafe { (*VIEW.0.get()).0 }
 }
 
 #[no_mangle]
 pub extern "C" fn result_len() -> u32 {
-    result().len() as u32
+    unsafe { (*VIEW.0.get()).1 }
 }
 
 #[no_mangle]
@@ -190,22 +234,22 @@ pub unsafe extern "C" fn decode_sst(ptr: *const u8, len: usize) -> i32 {
         Ok(e) => e,
         Err(e) => return finish(Err(error_code(e))),
     };
-    let out = result();
-    out.clear();
-    for e in &entries {
-        let (tag, key, value, seq) = match e {
-            Entry::Put { key, value, seq } => (TAG_PUT, key, Some(value), *seq),
-            Entry::Del { key, seq } => (TAG_DEL, key, None, *seq),
-        };
-        out.push(tag);
-        out.extend_from_slice(&seq.to_le_bytes());
-        out.extend_from_slice(&(key.len() as u32).to_le_bytes());
-        out.extend_from_slice(key);
-        if let Some(v) = value {
-            out.extend_from_slice(&(v.len() as u32).to_le_bytes());
-            out.extend_from_slice(v);
+    show_result(|out| {
+        for e in &entries {
+            let (tag, key, value, seq) = match e {
+                Entry::Put { key, value, seq } => (TAG_PUT, key, Some(value), *seq),
+                Entry::Del { key, seq } => (TAG_DEL, key, None, *seq),
+            };
+            out.push(tag);
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            out.extend_from_slice(key);
+            if let Some(v) = value {
+                out.extend_from_slice(&(v.len() as u32).to_le_bytes());
+                out.extend_from_slice(v);
+            }
         }
-    }
+    });
     0
 }
 
@@ -277,6 +321,117 @@ pub unsafe extern "C" fn merge_ssts(
             })
             .map_err(error_code),
     )
+}
+
+/// Open the module's merge session. Input: source list. Fails with -13
+/// while a session is open, -5 for a malformed list, -1 for a run shorter
+/// than a footer, and -11 when its working set cannot be reserved.
+#[no_mangle]
+pub unsafe extern "C" fn merge_open(
+    ptr: *const u8,
+    len: usize,
+    drop_tombstones: i32,
+    target_bytes: f64,
+    lz4: i32,
+    chunk_bytes: u32,
+    tail_bytes: u32,
+    yield_bytes: u32,
+) -> i32 {
+    show(&[]);
+    let slot = session();
+    if slot.is_some() {
+        return SESSION_OPEN;
+    }
+    let mut r = Reader {
+        buf: bytes(ptr, len),
+        o: 0,
+    };
+    let Some(count) = r.u32() else { return TRUNCATED };
+    let mut sources = Vec::new();
+    for _ in 0..count {
+        let Some(runs) = r.u32() else { return TRUNCATED };
+        let mut sizes = Vec::new();
+        for _ in 0..runs {
+            let Some(size) = r.u32() else { return TRUNCATED };
+            sizes.push(size as u32);
+        }
+        sources.push(sizes);
+    }
+    if !r.done() {
+        return TRUNCATED;
+    }
+    let config = MergeConfig {
+        drop_tombstones: drop_tombstones != 0,
+        // `as` saturates, so Number.MAX_SAFE_INTEGER becomes usize::MAX.
+        target_bytes: target_bytes as usize,
+        codec: codec(lz4),
+        chunk_bytes: chunk_bytes as usize,
+        tail_bytes: tail_bytes as usize,
+        yield_bytes: yield_bytes as usize,
+    };
+    match MergeSession::open(config, &sources) {
+        Ok(s) => {
+            *slot = Some(s);
+            0
+        }
+        Err(e) => merge_error(e),
+    }
+}
+
+/// Run the session to its next stop. The result holds the stop's bytes:
+/// demand records for NEED, output bytes for WRITE (in the session's own
+/// buffer), a run head and keys for RUN_END, u64 dropped seq for DONE.
+#[no_mangle]
+pub extern "C" fn merge_pump() -> i32 {
+    show(&[]);
+    let Some(s) = session() else { return NO_SESSION };
+    match s.pump() {
+        Ok(Stop::Need(demands)) => {
+            show_result(|out| {
+                for d in demands {
+                    for v in [d.source, d.run, d.offset, d.len] {
+                        out.extend_from_slice(&v.to_le_bytes());
+                    }
+                }
+            });
+            NEED
+        }
+        Ok(Stop::Write(bytes)) => {
+            show(bytes);
+            WRITE
+        }
+        Ok(Stop::RunEnd(end)) => {
+            show_result(|out| {
+                out.extend_from_slice(&run_head(end));
+                out.extend_from_slice(&end.first_key);
+                out.extend_from_slice(&end.last_key);
+            });
+            RUN_END
+        }
+        Ok(Stop::Yield) => YIELD,
+        Ok(Stop::Done(dropped)) => {
+            show_result(|out| out.extend_from_slice(&dropped.to_le_bytes()));
+            DONE
+        }
+        Err(e) => merge_error(e),
+    }
+}
+
+/// Where the bytes of `source`'s demand go: JS writes exactly `len` bytes
+/// there before the next pump. 0 when `source` has no unfed demand of that
+/// length.
+#[no_mangle]
+pub extern "C" fn merge_feed(source: u32, len: u32) -> u32 {
+    let Some(s) = session() else { return 0 };
+    s.feed(source as usize, len as usize).map_or(0, |b| b.as_mut_ptr() as u32)
+}
+
+/// Drop the session and its buffers. Safe to call with none open.
+#[no_mangle]
+pub extern "C" fn merge_close() -> i32 {
+    show(&[]);
+    *session() = None;
+    0
 }
 
 #[cfg(target_family = "wasm")]

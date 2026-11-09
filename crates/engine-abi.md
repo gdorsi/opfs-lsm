@@ -32,7 +32,8 @@ input_ptr(len: u32) -> u32
 
 result_ptr() -> u32
 result_len() -> u32
-    The bytes produced by the last successful operation.
+    The bytes produced by the last successful operation. After a merge
+    session's WRITE they point into the session's own output buffer.
 
 encode_sst(ptr, len, lz4: i32) -> i32
     Input: entry records (below). Result: one run record (below), the SST
@@ -56,6 +57,55 @@ merge_ssts(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32) -> i32
     blob holds keys out of order.
 ```
 
+### Merge session
+
+A compaction step runs as a session the host pumps, so the module holds a
+window of each input instead of the whole input. A module holds at most
+one session.
+
+```text
+merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32,
+           chunk_bytes, tail_bytes, yield_bytes) -> i32
+    Input: source list (below), newest source first. Reserves the working
+    set: about `chunk_bytes` per source plus the output buffer. Returns 0,
+    -13 while a session is open, -5 for a malformed list, -1 for a run
+    shorter than a footer, or -11 when the working set cannot be reserved.
+
+merge_pump() -> i32
+    Merge until the host has to act, always between two keys. Returns
+      1 NEED     result: demand records. Read each, `merge_feed` it, pump.
+      2 WRITE    result: the next bytes of the open output run, in the
+                 session's buffer. Copy them out before the next call.
+      3 RUN_END  result: run head (below) · first_key · last_key. Every byte
+                 of the run was in a WRITE.
+      4 YIELD    about `yield_bytes` of input were merged; result empty.
+      5 DONE     result: u64 dropped_seq. Every run's CRC matched.
+    or a negative error code. -16 (UNFED) means a demand was not fed yet
+    and leaves the session as it was; any other error is final, every later
+    pump returns it, and no output of the session may be installed.
+
+merge_feed(source, len) -> u32
+    Address where the `len` bytes of `source`'s demand go. JS writes
+    exactly `len` bytes there before the next call. 0 when `source` has no
+    unfed demand of that length.
+
+merge_close() -> i32
+    Drop the session and its buffers. Returns 0, with or without one open.
+```
+
+A session asks for whole blocks only. For each run it first reads the last
+`min(size, tail_bytes)` bytes, which hold the footer and usually the index,
+then the rest of the bloom and index if the tail missed them, then its data
+blocks in order, up to `chunk_bytes` per read. When the tail holds the whole
+run, that one read is all. A NEED lists every source that cannot go on,
+plus a read-ahead for each source holding less than half a chunk.
+
+A source is runs read back to back as one key-ordered stream. Across
+sources the newest wins; within a source the last duplicate of a key wins,
+across block and run boundaries. A source whose keys go back fails with -14.
+Output runs are cut at key boundaries once their entries' sizes reach
+`target_bytes`, as `merge_ssts` cuts them, and written with `lz4`'s codec.
+
 ## Wire formats
 
 All integers little-endian.
@@ -69,6 +119,9 @@ blob list        u32 count · repeated: u32 len · bytes
 run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_len
                  · sst (size bytes) · first_key · last_key
 merge output     u64 dropped_seq · u32 count · repeated: run record
+source list      u32 count · repeated: u32 run_count · run_count × u32 size
+demand record    u32 source · u32 run · u32 offset · u32 len
+run head         u32 entries · u32 size · u32 first_key_len · u32 last_key_len
 ```
 
 A run record carries what the manifest records about a run, so the caller
@@ -83,25 +136,31 @@ when the run is complete.
 ## Error codes
 
 ```text
--1  TOO_SHORT          -5  TRUNCATED           -9  BAD_CODEC
--2  BAD_MAGIC          -6  BAD_TAG            -10  BAD_BLOCK (incl. LZ4)
--3  BAD_VERSION        -7  TRAILING_GARBAGE   -11  OUT_OF_MEMORY
--4  CRC_MISMATCH       -8  COUNT_MISMATCH     -12  PATTERNS_TRUNCATED
--99 other                                     -14  OUT_OF_ORDER
+-1  TOO_SHORT          -5  TRUNCATED           -9  BAD_CODEC          -13  SESSION_OPEN
+-2  BAD_MAGIC          -6  BAD_TAG            -10  BAD_BLOCK (incl. LZ4) -14  OUT_OF_ORDER
+-3  BAD_VERSION        -7  TRAILING_GARBAGE   -11  OUT_OF_MEMORY       -15  NO_SESSION
+-4  CRC_MISMATCH       -8  COUNT_MISMATCH     -12  PATTERNS_TRUNCATED  -16  UNFED
+-99 other
 ```
 
 The loader maps any negative status to `CorruptDatabaseError`, except
 `-11`, which it reports as a capacity error naming the operation and the
-input size so the host can be configured with a larger `init` capacity.
+input size so the host can be configured with a larger `init` capacity,
+and -13, -15 and -16, which are host bugs, not corrupt data.
 
 ## Memory
 
 The Rust module allocates dynamically. `init` ignores `capacity` and
 returns 0, `input_ptr` grows a reused input buffer, and an operation
-allocates what it needs through the module's allocator. It never returns
--11; running out of memory inside an operation aborts, which the loader
-sees as a `WebAssembly.RuntimeError` and answers by dropping the module
-and falling back to TypeScript.
+allocates what it needs through the module's allocator. Outside a merge
+session it never returns -11; running out of memory inside an operation
+aborts, which the loader sees as a `WebAssembly.RuntimeError` and answers
+by dropping the module and falling back to TypeScript. A merge session
+reserves its working set in `merge_open` and grows its own buffers (for a
+block, an index or an entry larger than any before) without aborting, so
+it returns -11 instead. The output writer's per-run state (one bloom hash
+per key and one index row per block of the open run) still grows with
+the run, bounded by `target_bytes`.
 
 The contract carries `capacity` and -11 so that an implementation that
 reserves once in `init` and serves every call from that slab can conform
