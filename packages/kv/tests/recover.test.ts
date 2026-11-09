@@ -92,6 +92,28 @@ describe("recoverGeneration", () => {
     expect(await recoverGeneration(fs, trustNone)).toEqual({ meta: kept, top: 2 });
   });
 
+  it("refuses an empty newest manifest when the logs no longer hold the records above the older cut", async () => {
+    // Manifest 2 committed and reclaim removed the log through stamp 15;
+    // then a power loss emptied manifest 2.
+    const fs = new MemoryFs();
+    await segment(fs, 15, [25]);
+    await manifest(fs, 1, 1, 10, ["l0/1-1.sst"]);
+    await emptyManifest(fs, 2);
+    await expect(recoverGeneration(fs, trustNone)).rejects.toThrow(CorruptDatabaseError);
+  });
+
+  it("falls back from an empty newest manifest to generation 0 only while the logs hold every record", async () => {
+    const whole = new MemoryFs();
+    await segment(whole, 0, [5, 15]);
+    await emptyManifest(whole, 1);
+    expect(await recoverGeneration(whole, trustNone)).toEqual({ meta: GENERATION_ZERO, top: 1 });
+
+    const reclaimed = new MemoryFs();
+    await segment(reclaimed, 5, [15]);
+    await emptyManifest(reclaimed, 1);
+    await expect(recoverGeneration(reclaimed, trustNone)).rejects.toThrow(CorruptDatabaseError);
+  });
+
   it("refuses a newest manifest that does not decode", async () => {
     const fs = new MemoryFs();
     await manifest(fs, 1, 1, 10, ["l0/1-1.sst"]);

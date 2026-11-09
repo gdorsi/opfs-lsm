@@ -31,7 +31,7 @@ export async function ingestThrough(
   asked: Stamp,
   trust: (generation: number) => boolean = () => false,
 ): Promise<IngestResult> {
-  const { meta: base, top } = await recoverGeneration(fs, trust);
+  const { meta: base, top } = await recoverGeneration(fs, trust, { underIngestLock: true });
   const cut = asked === Number.POSITIVE_INFINITY ? await cutNow(fs, name, base.cut) : asked;
   if (cut <= base.cut) return { generation: base.generation, cut: base.cut, foldedBytes: 0 };
   const picked: { stamp: Stamp; tab: string; rec: WalRecord["ops"] }[] = [];

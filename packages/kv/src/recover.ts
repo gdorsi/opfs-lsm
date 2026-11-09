@@ -5,6 +5,7 @@ import type { AsyncFs } from "./opfs/async-fs.js";
 import {
   GENERATION_ZERO,
   isIntact,
+  listRuns,
   manifestNumbers,
   probeManifest,
   type GenerationMeta,
@@ -27,8 +28,8 @@ export type Recovered = {
  * the logs through its `cut`, so the newest intact one wins.
  *
  * A power loss keeps a prefix of each file's writes with no order between
- * files, so the newest manifest may be gone or empty (skipped), or list a
- * run that never reached the disk. Then an older one stands in, but only
+ * files, so the newest manifest may be gone, empty, or list a run that
+ * never reached the disk. Then an older one stands in, but only
  * when the logs still hold every record above its cut: reclaim removes a
  * segment once a manifest covers it. Otherwise records would be missing
  * from the middle of the order, so this throws rather than open a state
@@ -41,28 +42,66 @@ export type Recovered = {
 export async function recoverGeneration(
   fs: AsyncFs,
   trust: (generation: number) => boolean = () => false,
+  opts: { readonly underIngestLock?: boolean } = {},
 ): Promise<Recovered> {
+  for (;;) {
+    const got = await recoverOnce(fs, trust, opts.underIngestLock === true);
+    if (got) return got;
+  }
+}
+
+/** Undefined when the manifests changed under the scan (a reclaim removed them after a newer one): scan again. */
+async function recoverOnce(
+  fs: AsyncFs,
+  trust: (generation: number) => boolean,
+  underIngestLock: boolean,
+): Promise<Recovered | undefined> {
   const numbers = await manifestNumbers(fs);
   const top = numbers[0] ?? 0;
-  let broken: GenerationMeta | undefined;
+  const changed = async () => {
+    const again = await manifestNumbers(fs);
+    return again.length !== numbers.length || again.some((n, i) => n !== numbers[i]);
+  };
+  // The newest manifest skipped: empty, or listing a run that is gone.
+  let skipped: string | undefined;
   for (const n of numbers) {
     const m = await probeManifest(fs, n);
-    if (m === "missing") continue;
     if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${n} does not decode`);
-    if (trust(n) || (await isIntact(fs, m))) {
-      if (broken && !(await logsCover(fs, m.cut))) {
-        throw new CorruptDatabaseError(
-          `manifest ${broken.generation} lists a run that is gone, and the logs no longer hold what it covered`,
-        );
+    if (m !== "missing" && (trust(n) || (await isIntact(fs, m)))) {
+      if (skipped && !(await logsCover(fs, m.cut))) {
+        if (await changed()) return undefined;
+        throw new CorruptDatabaseError(`${skipped}, and the logs no longer hold what it covered`);
       }
       return { meta: m, top };
     }
-    broken ??= m;
+    skipped ??= m === "missing" ? `manifest ${n} is empty` : `manifest ${n} lists a run that is gone`;
   }
-  if (broken && !(await logsCover(fs, 0))) {
-    throw new CorruptDatabaseError(`manifest ${broken.generation} lists a run that is gone`);
+  if (await changed()) return undefined;
+  if (skipped && !(await logsCover(fs, 0))) throw new CorruptDatabaseError(skipped);
+  // No manifest: a new database, or one whose first ingest stopped before
+  // its manifest. Under the ingest lock nothing publishes meanwhile, so
+  // anything else on disk means a manifest was committed and is gone:
+  // building on nothing would drop what it held, and reclaim would remove
+  // every run as an orphan. Without the lock, the host may be publishing
+  // the first manifest while this looks; a tab ignores a generation 0
+  // below the one it holds.
+  if (underIngestLock) {
+    const committed = await committedTrace(fs);
+    if (committed) throw new CorruptDatabaseError(`no manifest, but ${committed}`);
   }
   return { meta: GENERATION_ZERO, top };
+}
+
+/**
+ * What on disk shows a manifest was committed: a log reclaimed past its
+ * start, or a run other than the first ingest's L0 (`l0/1-*`).
+ */
+async function committedTrace(fs: AsyncFs): Promise<string | undefined> {
+  if (!(await logsCover(fs, 0))) return "a log was reclaimed, which only follows a committed manifest";
+  for (const path of await listRuns(fs)) {
+    if (!/^l0\/1-\d+\.sst$/.test(path)) return `run ${path} is on disk`;
+  }
+  return undefined;
 }
 
 /** True when no segment holding a record above `cut` was reclaimed from any tab's log. */

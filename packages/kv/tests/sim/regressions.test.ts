@@ -496,6 +496,57 @@ describe("recovery past a dead tab's reclaimed log", () => {
   });
 });
 
+describe("a manifest directory that went missing", () => {
+  // Found by the Chrome kill loop: after a browser crash, a later iteration
+  // started the database over from generation 0. Its manifests were gone
+  // (an empty \`m/\`), recovery took that for a new database, ingest
+  // numbered every log record from 1, and the host's first reclaim removed
+  // every run as an orphan: everything before was lost, silently. Now
+  // the host, under the ingest lock, refuses when the runs or the logs
+  // show a manifest was committed.
+  it("refuses to start over", async () => {
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const a = await openHarnessDb({ name: NAME, fs, ingest: createLocalIngestClient(host) });
+    for (let i = 0; i < 3; i++) {
+      await a.put(utf(`k${i}`), utf(`v${i}`));
+      await a.ingest();
+    }
+    await a.close();
+    for (const m of await fs.list("m")) await fs.remove(`m/${m}`);
+    const runsBefore = [...(await fs.list("l0")), ...(await fs.list("l1"))].sort();
+    const b = await openHarnessDb({ name: NAME, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+    try {
+      await b.put(utf("k9"), utf("v9"));
+      const ingested = await b.ingest().then(
+        () => "ingested",
+        (err: unknown) => (err as Error).name,
+      );
+      expect(ingested, "the host builds on nothing").toBe("CorruptDatabaseError");
+      const runsAfter = [...(await fs.list("l0")), ...(await fs.list("l1"))].sort();
+      expect(runsAfter, "no run was reclaimed as an orphan").toEqual(expect.arrayContaining(runsBefore));
+    } finally {
+      await b.close();
+    }
+  });
+
+  it("still opens a new database whose first ingest crashed before its manifest", async () => {
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const a = await openHarnessDb({ name: NAME, fs, ingest: createLocalIngestClient(host) });
+    await a.put(utf("k0"), utf("v0"));
+    await a.ingest();
+    await a.close();
+    // The first ingest's run is there, its manifest is not.
+    for (const m of await fs.list("m")) await fs.remove(`m/${m}`);
+    expect((await fs.list("l0")).every((f) => f.startsWith("1-"))).toBe(true);
+    const b = await openHarnessDb({ name: NAME, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+    const v = await b.get(utf("k0"));
+    await b.close();
+    expect(v && new TextDecoder().decode(v)).toBe("v0");
+  });
+});
+
 async function untilAsync(cond: () => Promise<boolean>): Promise<void> {
   for (let i = 0; i < 400; i++) {
     if (await cond()) return;

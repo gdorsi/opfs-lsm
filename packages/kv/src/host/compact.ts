@@ -76,7 +76,7 @@ export async function installStep(
   step: CompactionOutput,
   trust: (generation: number) => boolean = () => false,
 ): Promise<number> {
-  const { meta, top } = await recoverGeneration(fs, trust);
+  const { meta, top } = await recoverGeneration(fs, trust, { underIngestLock: true });
   const live = new Set(meta.runs.map((r) => r.path));
   if (!step.inputs.every((p) => live.has(p))) {
     throw new Error("compaction inputs left the committed generation");

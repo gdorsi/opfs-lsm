@@ -297,7 +297,7 @@ export class EngineHost {
    */
   private async reclaim(dbName: DbName, fs: AsyncFs): Promise<void> {
     await unlessHeld(dbName, async () => {
-      const { meta } = await recoverGeneration(fs, this.trust(dbName));
+      const { meta } = await recoverGeneration(fs, this.trust(dbName), { underIngestLock: true });
       this.trusted.set(dbName, meta.generation);
       await reclaimManifests(fs, meta.generation);
       const retired = this.retired.get(dbName) ?? new Set(await listRuns(fs));
