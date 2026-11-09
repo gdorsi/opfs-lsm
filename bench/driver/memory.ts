@@ -65,15 +65,18 @@ export class PeakTracker {
  * Memory the OS charges to one process: `phys_footprint` on macOS (resident plus
  * compressed pages, what Activity Monitor shows), RSS elsewhere. `ps` RSS alone
  * drops pages macOS compressed, which would read as memory given back.
+ * `peakBytes` is `phys_footprint_peak`, the kernel's own peak since the process
+ * started. It is missing where the OS does not report one.
  */
-async function processMemory(pid: number): Promise<number> {
+async function processMemory(pid: number): Promise<{ bytes: number; peakBytes?: number }> {
   if (process.platform === "darwin") {
     const { stdout } = await run("footprint", ["--noCategories", "-f", "bytes", "-p", String(pid)]);
     const m = /phys_footprint:\s*(\d+)/.exec(stdout);
-    if (m) return Number(m[1]);
+    const peak = /phys_footprint_peak:\s*(\d+)/.exec(stdout);
+    if (m) return { bytes: Number(m[1]), ...(peak && { peakBytes: Number(peak[1]) }) };
   }
   const { stdout } = await run("ps", ["-o", "rss=", "-p", String(pid)]);
-  return (Number(stdout.trim()) || 0) * 1024;
+  return { bytes: (Number(stdout.trim()) || 0) * 1024 };
 }
 
 /**
@@ -92,12 +95,20 @@ async function chromeProcesses(profile: string): Promise<{ pid: number; type: st
   return out;
 }
 
-export type ProcessMemory = { pid: number; type: string; bytes: number };
+export type ProcessMemory = { pid: number; type: string; bytes: number; peakBytes?: number };
 
-/** OS memory of every Chrome process. OS-level, so it keeps sampling while a worker blocks its event loop. */
+/**
+ * OS memory of every Chrome process. OS-level, so it keeps sampling while a
+ * worker blocks its event loop. Not free: reading the renderers every 100 ms
+ * made kv's write phases take 12 to 45% longer, so the sampler asks once a second.
+ */
 export async function chromeMemory(profile: string): Promise<ProcessMemory[]> {
   return Promise.all(
-    (await chromeProcesses(profile)).map(async ({ pid, type }) => ({ pid, type, bytes: await processMemory(pid).catch(() => 0) })),
+    (await chromeProcesses(profile)).map(async ({ pid, type }) => ({
+      pid,
+      type,
+      ...(await processMemory(pid).catch(() => ({ bytes: 0 }))),
+    })),
   );
 }
 

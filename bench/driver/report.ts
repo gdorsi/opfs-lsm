@@ -194,7 +194,7 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
           `| | ${row.contender} | ${mems.length} | ${heap((m) => m.sharedWorker, "usedSize")} | ${heap((m) => m.sharedWorker, "totalSize")} | ${heap((m) => m.sharedWorker, "backingStorageSize")} | ${col((m) => m.sharedWorkerWasmBytes ?? undefined)} | ${heap((m) => m.tab, "usedSize")} | ${heap((m) => m.tab, "totalSize")} | ${heap((m) => m.tab, "backingStorageSize")} | ${col((m) => m.tabWasmBytes ?? undefined)} | ${col((m) => m.largestRendererBytes ?? undefined)} |`,
         );
       }
-      out.push("", "Sampled every 100 ms with `Runtime.getHeapUsage`, so a peak shorter than that can be missed. `n/a`: Chrome did not report the counter. Largest renderer is the biggest single renderer process by `phys_footprint` on macOS (RSS elsewhere).");
+      out.push("", "Sampled every 100 ms with `Runtime.getHeapUsage`, so a peak shorter than that can be missed. `n/a`: Chrome did not report the counter. Largest renderer is the biggest single renderer process, read once a second: `phys_footprint_peak` on macOS, the kernel's own peak; elsewhere the largest RSS seen.");
     }
   }
   if (failed.length > 0) {

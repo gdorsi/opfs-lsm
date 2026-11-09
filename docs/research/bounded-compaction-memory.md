@@ -502,22 +502,30 @@ cannot give the wasm size.
 
 `kv/compaction-memory`, size small: 20 rounds of 100k random puts into a 400k
 key pool (keys 16 B, values 100 B), then settle, then 20k checked reads.
-Median of 5 runs, with the min to max range. All peaks are sampled every
-100 ms. The machine was shared (load 5 to 9 on 18 cores), so read the ranges.
+Median of 5 runs, with the min to max range. The heap and wasm peaks are
+sampled every 100 ms. The largest renderer is the kernel's own peak
+(`phys_footprint_peak`). The machine was shared (load 7 to 14 on 18 cores), so
+read the ranges.
 
 | measure | median (range) |
 |---|---:|
-| SharedWorker JS heap used | 46 MB (44 to 59) |
-| SharedWorker ArrayBuffer backing | 190 MB (186 to 261) |
-| SharedWorker wasm memory | 340 MB (325 to 355) |
-| Tab JS heap used | 79 MB (67 to 89) |
+| SharedWorker JS heap used | 51 MB (44 to 54) |
+| SharedWorker ArrayBuffer backing | 214 MB (180 to 242) |
+| SharedWorker wasm memory | 306 MB (302 to 332) |
+| Tab JS heap used | 70 MB (56 to 75) |
 | Tab wasm memory | 1.2 MB |
-| `rounds` phase wall time | 7.0 s (6.9 to 7.2) |
+| Largest renderer process | 714 MB (705 to 740) |
+| `rounds` phase wall time | 7.8 s (6.8 to 7.8) |
 
-Compaction wrote 651 MB for 232 MB of user bytes, and 43 MB stayed on disk.
-The SharedWorker's wasm memory alone is about twice the 160 MB estimate in the
-problem statement. This PR does not break down why. Later PRs compare against
-these numbers.
+Compaction wrote 565 MB (541 to 689) for 232 MB of user bytes, and 44 MB
+stayed on disk. The SharedWorker's wasm memory alone is about twice the 160 MB
+estimate in the problem statement. This PR does not break down why. Later PRs
+compare against these numbers.
+
+The harness reads the renderer processes once a second. It first read them
+every 100 ms, and that slowed the engine it was measuring: in the same session
+that version took 9.1 s (6.9 to 10.5) for the rounds and saw 335 MB (310 to
+350) of wasm memory.
 
 ## Implementation order
 

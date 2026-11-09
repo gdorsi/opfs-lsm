@@ -186,7 +186,10 @@ export type MemoryPeaks = {
   readonly sharedWorkerWasmBytes: number | null;
   readonly tab: HeapPeak | null;
   readonly tabWasmBytes: number | null;
-  /** Peak memory of the single largest renderer process (the SharedWorker's or a tab's): `phys_footprint` on macOS, RSS elsewhere. */
+  /**
+   * Peak memory of the single largest renderer process (the SharedWorker's or a tab's), read once a second.
+   * On macOS it is `phys_footprint_peak`, the kernel's own peak since the process started. Elsewhere it is the largest RSS seen.
+   */
   readonly largestRendererBytes: number | null;
 };
 

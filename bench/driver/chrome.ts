@@ -20,6 +20,8 @@ import type { MemoryPeaks } from "../core/types.ts";
 import { chromeMemory, combine, PeakTracker, WASM_HOOK, type HeapSample, type ProcessMemory } from "./memory.ts";
 
 const SAMPLE_MS = 100;
+/** How often the OS is asked about the renderers. Rarely, because asking costs them time (see `chromeMemory`). */
+const FOOTPRINT_MS = 1000;
 
 const FLAGS = [
   "--no-first-run",
@@ -160,11 +162,12 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
     };
     const sampleFootprint = async () => {
       const renderers = (await chromeMemory(profile)).filter((p) => p.type === "renderer");
-      footprintPeak = Math.max(footprintPeak ?? 0, ...renderers.map((p) => p.bytes));
+      footprintPeak = Math.max(footprintPeak ?? 0, ...renderers.map((p) => p.peakBytes ?? p.bytes));
     };
+    let footprintAt = 0;
     // One sample in flight per session: a worker busy in a synchronous merge answers late, and queued requests would pile up.
     const busy = new Set<string>();
-    const sampleAll = async () => {
+    const sampleAll = async (last = false) => {
       const jobs: Promise<unknown>[] = [];
       const add = (key: string, job: () => Promise<unknown>) => {
         if (busy.has(key)) return;
@@ -173,7 +176,10 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
       };
       for (const id of workerSessions) add(id, () => sampleHeap(id, sw));
       for (const id of tabSessions) add(id, () => sampleHeap(id, tabs));
-      add("footprint", sampleFootprint);
+      if (last || Date.now() - footprintAt >= FOOTPRINT_MS) {
+        footprintAt = Date.now();
+        add("footprint", sampleFootprint);
+      }
       await Promise.all(jobs);
     };
     const sampler = setInterval(() => void sampleAll(), SAMPLE_MS);
@@ -194,7 +200,7 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
         for (const id of [...workerSessions, ...tabSessions]) await cdp.send("HeapProfiler.collectGarbage", {}, id);
       },
       async memory() {
-        await sampleAll();
+        await sampleAll(true);
         return combine(sw, tabs, footprintPeak);
       },
       async openTab(url) {
