@@ -59,8 +59,8 @@ cmd_doctor() {
     ok=0
   fi
 
-  if [[ ! -f "$ROOT/packages/kv/wasm/engine_wasm_bg.wasm" || ! -f "$ROOT/packages/kv/wasm/engine_wasm.js" ]]; then
-    echo "wasm: MISSING under packages/kv/wasm (need Rust + wasm-pack to rebuild)"
+  if [[ ! -f "$ROOT/packages/kv/wasm/engine.wasm" ]]; then
+    echo "wasm: MISSING under packages/kv/wasm (run pnpm --filter @opfs-lsm/kv build:wasm)"
     ok=0
   else
     echo "wasm: present"

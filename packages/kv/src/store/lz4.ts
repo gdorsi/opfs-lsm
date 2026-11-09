@@ -19,11 +19,7 @@ export function useLz4Decoder(decoder: Decoder | undefined): Decoder | undefined
 /** Unpack one LZ4 block of exactly `size` bytes. */
 export function lz4Decompress(src: Uint8Array, size: number): Uint8Array {
   if (!wasmDecoder) return lz4DecompressJs(src, size);
-  try {
-    return wasmDecoder(src, size);
-  } catch {
-    corrupt();
-  }
+  return wasmDecoder(src, size);
 }
 
 /**

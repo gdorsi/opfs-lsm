@@ -172,7 +172,7 @@ Three rows plus a total, each raw, gzip and brotli:
 
 1. **Main entry, tree-shaken**: size-limit with `@size-limit/esbuild` (or rolldown preset), `import: "{ openDb }"` and one row per realistic import set (`kv`, `collections`). This is the JS cost a user pays on the main thread. Mark the worker and wasm URLs external / ignored here so they are not double-counted.
 2. **SharedWorker script**: bundle `@opfs-lsm/kv/shared-worker` (the existing export) as its own entry with esbuild and measure with `@size-limit/file`. It loads in parallel but it is real download.
-3. **wasm**: `@size-limit/file` on `engine_wasm_bg.wasm`. Brotli is the right default because servers usually serve wasm compressed; also report raw because wasm compile time scales with raw size.
+3. **wasm**: `@size-limit/file` on `engine.wasm`. Brotli is the right default because servers usually serve wasm compressed; also report raw because wasm compile time scales with raw size.
 4. **Total first-load bytes** = 1 + 2 + 3, brotli.
 
 Cross-check once with a webpack 5 or Vite build of `examples/todo` and read the emitted file sizes, to catch anything the hand-split misses. Keep the esbuild metafile as a CI artefact for `--why`.

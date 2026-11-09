@@ -1,0 +1,100 @@
+# Engine WASM ABI
+
+The contract between `packages/kv/src/store/engine.ts` and any engine
+`.wasm`. `crates/engine-wasm` (Rust) implements it. The loader does not
+know which implementation it has, so another language can provide a
+module without touching the loader. A module is conformant when the kv
+unit and fuzz suites pass with it copied to `packages/kv/wasm/engine.wasm`.
+
+## Shape
+
+The module imports nothing and exports `memory` plus the functions below.
+Integers are `u32` unless stated. Every function that does work returns an
+`i32` status: `0` is success, a negative value is an error code from the
+table at the end. On error the result is empty.
+
+JS never allocates or frees. It asks for an input region, writes bytes into
+it, calls one operation, reads the result, and is done. Both regions are
+valid only until the next call into the module.
+
+```text
+init(capacity: u32) -> i32
+    Called once after instantiation. `capacity` is the number of bytes the
+    module may use for all work (inputs, scratch, results). An
+    implementation that allocates dynamically may ignore it and return 0.
+    An implementation that reserves once must reserve here and never grow
+    memory afterwards. Returns -11 (OUT_OF_MEMORY) when it cannot reserve.
+
+input_ptr(len: u32) -> u32
+    Address of an input region of at least `len` bytes. JS writes the
+    packed arguments of the next operation there. Returns 0 when `len`
+    does not fit the capacity. The region may move between calls.
+
+result_ptr() -> u32
+result_len() -> u32
+    The bytes produced by the last successful operation.
+
+encode_sst(ptr, len, lz4: i32) -> i32
+    Input: entry records (below). Result: one SST.
+
+decode_sst(ptr, len) -> i32
+    Input: one SST. Result: entry records in key order. The record stream
+    for a given SST is identical across implementations.
+
+lz4_decompress(ptr, len, size: u32) -> i32
+    Input: one LZ4 block body. Result: exactly `size` bytes, or -10.
+
+scan_block_contains(ptr, len, lz4: i32, pat_ptr, pat_len) -> i32
+    Input: one framed data block as the SST block index frames it (with
+    the u32 size prefix when `lz4`), and a pattern list. Both live in the
+    input region; `pat_ptr` may point anywhere inside it. Result: hit
+    records in key order.
+
+merge_ssts(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32) -> i32
+    Input: blob list. Result: merge output (below).
+```
+
+## Wire formats
+
+All integers little-endian.
+
+```text
+entry record     u8 tag (1 put, 2 del) · u64 seq · u32 key_len · key
+                 · for put only: u32 value_len · value
+pattern list     repeated: u32 len · bytes
+hit record       u32 key_len · u32 value_len · key · value
+blob list        u32 count · repeated: u32 len · bytes
+merge output     u64 dropped_seq · u32 count · repeated: u32 len · sst
+```
+
+`target_bytes` is an `f64` so JS can pass `Number.MAX_SAFE_INTEGER` for
+"one output run"; implementations saturate it to their address size.
+
+## Error codes
+
+```text
+-1  TOO_SHORT          -5  TRUNCATED           -9  BAD_CODEC
+-2  BAD_MAGIC          -6  BAD_TAG            -10  BAD_BLOCK (incl. LZ4)
+-3  BAD_VERSION        -7  TRAILING_GARBAGE   -11  OUT_OF_MEMORY
+-4  CRC_MISMATCH       -8  COUNT_MISMATCH     -12  PATTERNS_TRUNCATED
+-99 other
+```
+
+The loader maps any negative status to `CorruptDatabaseError`, except
+`-11`, which it reports as a capacity error naming the operation and the
+input size so the host can be configured with a larger `init` capacity.
+
+## Memory
+
+The Rust module allocates dynamically. `init` ignores `capacity` and
+returns 0, `input_ptr` grows a reused input buffer, and an operation
+allocates what it needs through the module's allocator. It never returns
+-11; running out of memory inside an operation aborts, which the loader
+sees as a `WebAssembly.RuntimeError` and answers by dropping the module
+and falling back to TypeScript.
+
+The contract carries `capacity` and -11 so that an implementation that
+reserves once in `init` and serves every call from that slab can conform
+without a loader change. Such an implementation must return -11, never
+trap, when an operation exceeds the slab. The loader passes a capacity
+sized for that case; a dynamic implementation ignores it.

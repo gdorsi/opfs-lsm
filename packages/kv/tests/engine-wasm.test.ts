@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  EngineCapacityError,
   decodeSst,
   encodeSst,
   engineUsingWasm,
   ensureEngine,
+  flatEngine,
   mergeSsts,
 } from "../src/store/engine.js";
+import { CorruptDatabaseError } from "../src/errors.js";
 import { settle } from "../src/store/cursor.js";
 import { readerOfBytes } from "./runs.js";
 
@@ -59,5 +62,73 @@ describe("engine WASM", () => {
     const keys = (await Promise.all(ssts.map((s) => decodeSst(s)))).flat().map((e) => new TextDecoder().decode(e.key));
     expect(keys).toEqual(Array.from({ length: 1000 }, (_, i) => `k${String(i).padStart(4, "0")}`));
     for (const s of ssts.slice(0, -1)) expect(s.byteLength).toBeLessThan(20 * 1024);
+  });
+});
+
+describe("engine bridge", () => {
+  it("keeps decoded entries valid after later calls", async () => {
+    await ensureEngine();
+    const first = await decodeSst(
+      await encodeSst([
+        { kind: "put", key: utf("alpha"), value: utf("one"), seq: 7 },
+        { kind: "del", key: utf("beta"), seq: 2 ** 33 + 5 },
+      ]),
+    );
+    const big = await encodeSst(
+      Array.from({ length: 5000 }, (_, i) => ({
+        kind: "put" as const,
+        key: utf(`z${String(i).padStart(6, "0")}`),
+        value: new Uint8Array(200).fill(0xee),
+      })),
+    );
+    await decodeSst(big);
+    const text = (b: Uint8Array) => new TextDecoder().decode(b);
+    expect(text(first[0]!.key)).toBe("alpha");
+    expect(first[0]!.kind === "put" && text(first[0]!.value)).toBe("one");
+    expect(first[0]!.seq).toBe(7);
+    expect(text(first[1]!.key)).toBe("beta");
+    expect(first[1]!.seq).toBe(2 ** 33 + 5);
+  });
+});
+
+describe("engine status codes", () => {
+  /** A module whose every operation returns `code`. */
+  const stub = (code: number): WebAssembly.Instance => {
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const fail = () => code;
+    return {
+      exports: {
+        memory,
+        init: () => 0,
+        input_ptr: () => 8,
+        result_ptr: () => 0,
+        result_len: () => 0,
+        encode_sst: fail,
+        decode_sst: fail,
+        lz4_decompress: fail,
+        scan_block_contains: fail,
+        merge_ssts: fail,
+      },
+    } as unknown as WebAssembly.Instance;
+  };
+
+  it("turns a negative status into CorruptDatabaseError", () => {
+    const engine = flatEngine(stub(-4));
+    expect(() => engine.decodeSst(new Uint8Array(4))).toThrow(CorruptDatabaseError);
+    expect(() => engine.lz4Decompress(new Uint8Array(4), 8)).toThrow(CorruptDatabaseError);
+  });
+
+  it("turns -11 into an error naming the operation, input size and capacity", () => {
+    const engine = flatEngine(stub(-11), 1234);
+    const run = () => engine.decodeSst(new Uint8Array(40));
+    expect(run).toThrow(EngineCapacityError);
+    expect(run).not.toThrow(CorruptDatabaseError);
+    expect(run).toThrow(/decode_sst.*40 bytes.*1234/);
+  });
+
+  it("reports a refused input region as a capacity error", () => {
+    const instance = stub(0);
+    (instance.exports as unknown as { input_ptr: () => number }).input_ptr = () => 0;
+    expect(() => flatEngine(instance, 99).decodeSst(new Uint8Array(40))).toThrow(EngineCapacityError);
   });
 });
