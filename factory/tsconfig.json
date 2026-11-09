@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "erasableSyntaxOnly": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "skipLibCheck": true,
+    "typeRoots": ["../node_modules/.pnpm/@types+node@26.6.6/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": ["./*.ts"]
+}

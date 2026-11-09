@@ -11,7 +11,9 @@
     "bench/cli.ts",
     "bench/page/main.ts",
     "bench/workloads/*/*.ts",
-    "bench/contenders/*/*.ts"
+    "bench/contenders/*/*.ts",
+    "factory/main.ts",
+    "factory/*.test.ts"
   ],
   "ignoreBinaries": [
     "wasm-pack"
