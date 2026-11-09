@@ -1,77 +1,13 @@
-import { readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { performance } from "node:perf_hooks";
+import { MiB, EngineError, loadZig, loadRust, genEntries, flatten, unflatten, framedBlocks, eq } from "./loader.mjs";
 
-const ROOT = new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
-const rustMod = await import(`${ROOT}/packages/kv/wasm/engine_wasm.js`);
-const rustBytes = await readFile(`${ROOT}/packages/kv/wasm/engine_wasm_bg.wasm`);
-await rustMod.default({ module_or_path: rustBytes });
-
-async function loadZig(file) {
-  const bytes = await readFile(new URL(file, import.meta.url));
-  const { instance } = await WebAssembly.instantiate(bytes, {});
-  const ex = instance.exports;
-  const mem = () => new Uint8Array(ex.memory.buffer);
-  const push = (u8) => { const p = ex.alloc(u8.length); mem().set(u8, p); return p; };
-  const take = (code, what) => {
-    if (code !== 0) throw new Error(`${what}: zig error ${code}`);
-    const out = mem().slice(ex.result_ptr(), ex.result_ptr() + ex.result_len());
-    ex.result_free();
-    return out;
-  };
-  return { bytes, ex,
-    encode(flat, lz4) { const p = push(flat); const r = take(ex.encode_sst(p, flat.length, lz4), "encode"); ex.dealloc(p, flat.length); return r; },
-    decode(sst) { const p = push(sst); const r = take(ex.decode_sst(p, sst.length), "decode"); ex.dealloc(p, sst.length); return r; },
-    lz4(src, size) { const p = push(src); const r = take(ex.lz4_decompress(p, src.length, size), "lz4"); ex.dealloc(p, src.length); return r; },
-    scan(framed, lz4, pats) { const p = push(framed), q = push(pats); const r = take(ex.scan_block_contains(p, framed.length, lz4, q, pats.length), "scan"); ex.dealloc(p, framed.length); ex.dealloc(q, pats.length); return r; },
-    merge(blobs, drop, target, lz4) {
-      let n = 4; for (const b of blobs) n += 4 + b.length;
-      const flat = new Uint8Array(n); const dv = new DataView(flat.buffer); dv.setUint32(0, blobs.length, true);
-      let o = 4; for (const b of blobs) { dv.setUint32(o, b.length, true); flat.set(b, o + 4); o += 4 + b.length; }
-      const p = push(flat); const r = take(ex.merge_ssts(p, flat.length, drop, target, lz4), "merge"); ex.dealloc(p, flat.length);
-      const rv = new DataView(r.buffer, r.byteOffset); const dropped = Number(rv.getBigUint64(0, true)); const count = rv.getUint32(8, true);
-      const ssts = []; o = 12; for (let i = 0; i < count; i++) { const len = rv.getUint32(o, true); ssts.push(r.slice(o + 4, o + 4 + len)); o += 4 + len; }
-      return { ssts, droppedSeq: dropped };
-    },
-  };
-}
+const rust = await loadRust();
 const zigSmall = await loadZig("./engine_small.wasm");
 const zigFast = await loadZig("./engine_fast.wasm");
+console.log(`rust side: ${rust.abi} ABI`);
 
-// ---- data ----
 const enc = new TextEncoder();
-function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32); }
-function genEntries(n, seed, delEvery = 10) {
-  const r = rng(seed); const out = [];
-  for (let i = 0; i < n; i++) {
-    const key = enc.encode(`user:${String(Math.floor(r() * n * 3)).padStart(8, "0")}:field${i % 7}`);
-    const seq = i + 1;
-    if (i % delEvery === 5) out.push({ kind: "del", key, seq });
-    else { const v = enc.encode(JSON.stringify({ i, name: "name-" + Math.floor(r() * 1000), tags: ["alpha", "beta", i % 3 ? "gamma" : "delta"], pad: "x".repeat(Math.floor(r() * 60)) })); out.push({ kind: "put", key, value: v, seq }); }
-  }
-  return out;
-}
-function flatten(entries) {
-  let n = 0; for (const e of entries) n += 13 + e.key.length + (e.kind === "put" ? 4 + e.value.length : 0);
-  const out = new Uint8Array(n); const dv = new DataView(out.buffer); let o = 0;
-  for (const e of entries) {
-    out[o] = e.kind === "put" ? 1 : 2; dv.setBigUint64(o + 1, BigInt(e.seq), true); dv.setUint32(o + 9, e.key.length, true); o += 13;
-    out.set(e.key, o); o += e.key.length;
-    if (e.kind === "put") { dv.setUint32(o, e.value.length, true); o += 4; out.set(e.value, o); o += e.value.length; }
-  }
-  return out;
-}
-function unflatten(flat) {
-  const dv = new DataView(flat.buffer, flat.byteOffset); const out = []; let o = 0;
-  while (o < flat.length) {
-    const tag = flat[o]; const seq = Number(dv.getBigUint64(o + 1, true)); const kl = dv.getUint32(o + 9, true); o += 13;
-    const key = flat.slice(o, o + kl); o += kl;
-    if (tag === 1) { const vl = dv.getUint32(o, true); o += 4; out.push({ kind: "put", key, value: flat.slice(o, o + vl), seq }); o += vl; }
-    else out.push({ kind: "del", key, seq });
-  }
-  return out;
-}
-const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 function sameEntries(a, b) {
   if (a.length !== b.length) return `len ${a.length} vs ${b.length}`;
   for (let i = 0; i < a.length; i++) {
@@ -80,8 +16,6 @@ function sameEntries(a, b) {
   }
   return "ok";
 }
-const rustEnc = (entries, lz4) => rustMod.encode_sst_js(entries, lz4);
-const rustDec = (sst) => rustMod.decode_sst_js(sst).map((r) => r.kind === "put" ? { kind: "put", key: new Uint8Array(r.key), value: new Uint8Array(r.value), seq: r.seq } : { kind: "del", key: new Uint8Array(r.key), seq: r.seq });
 
 // ---- parity ----
 const N = 20000;
@@ -89,40 +23,51 @@ const entries = genEntries(N, 7);
 const flat = flatten(entries);
 const results = [];
 const check = (name, ok, detail = "") => { results.push([name, ok ? "PASS" : "FAIL", detail]); };
+const peaks = [];
+const notePeak = (op) => peaks.push([op, zigSmall.peak(), zigFast.peak(), rust.peak()]);
 
-const rRaw = rustEnc(entries, false), zRaw = zigSmall.encode(flat, false);
+const rRaw = rust.encodeEntries(entries, false), zRaw = zigSmall.encode(flat, false);
 check("encode raw: byte-identical to Rust", eq(rRaw, zRaw), `${rRaw.length} B vs ${zRaw.length} B`);
-check("decode raw: Zig decodes Rust output", sameEntries(unflatten(zigSmall.decode(rRaw)), rustDec(rRaw)) === "ok");
+check("decode raw: Zig decodes Rust output", sameEntries(unflatten(zigSmall.decode(rRaw)), rust.decodeEntries(rRaw)) === "ok");
 
-const rLz = rustEnc(entries, true), zLz = zigSmall.encode(flat, true);
-check("encode lz4: Rust decodes Zig output", sameEntries(rustDec(zLz), rustDec(rLz)) === "ok", `rust ${rLz.length} B, zig ${zLz.length} B (${(zLz.length / rLz.length * 100).toFixed(1)}% of rust)`);
-check("decode lz4: Zig decodes Rust output", sameEntries(unflatten(zigSmall.decode(rLz)), rustDec(rLz)) === "ok");
+const rLz = rust.encodeEntries(entries, true), zLz = zigSmall.encode(flat, true);
+check("encode lz4: Rust decodes Zig output", sameEntries(rust.decodeEntries(zLz), rust.decodeEntries(rLz)) === "ok", `rust ${rLz.length} B, zig ${zLz.length} B (${(zLz.length / rLz.length * 100).toFixed(1)}% of rust)`);
+check("decode lz4: Zig decodes Rust output", sameEntries(unflatten(zigSmall.decode(rLz)), rust.decodeEntries(rLz)) === "ok");
 check("encode lz4: ReleaseFast == ReleaseSmall bytes", eq(zigFast.encode(flat, true), zLz));
 
-// one framed block from the raw/lz4 ssts for scan
-function firstBlock(sst) {
-  const dv = new DataView(sst.buffer, sst.byteOffset); const footer = sst.length - 44;
-  const idx = dv.getUint32(footer + 20, true); let o = idx;
-  const fl = dv.getUint32(o, true); o += 4 + fl; const ll = dv.getUint32(o, true); o += 4 + ll;
-  const off = dv.getUint32(o, true), len = dv.getUint32(o + 4, true);
-  return sst.slice(off, off + len);
-}
-function pats(...ps) { let n = 0; for (const p of ps) n += 4 + p.length; const out = new Uint8Array(n); const dv = new DataView(out.buffer); let o = 0; for (const p of ps) { const b = enc.encode(p); dv.setUint32(o, b.length, true); out.set(b, o + 4); o += 4 + b.length; } return out; }
+function pats(...ps) { let n = 0; for (const p of ps) n += 4 + enc.encode(p).length; const out = new Uint8Array(n); const dv = new DataView(out.buffer); let o = 0; for (const p of ps) { const b = enc.encode(p); dv.setUint32(o, b.length, true); out.set(b, o + 4); o += 4 + b.length; } return out; }
+const firstBlock = (sst) => framedBlocks(sst)[0];
 const P = pats("gamma", "name-1");
-check("scan raw block: identical hits", eq(rustMod.scan_block_contains_js(firstBlock(rRaw), false, P), zigSmall.scan(firstBlock(rRaw), false, P)));
-check("scan lz4 block (Rust-compressed): identical hits", eq(rustMod.scan_block_contains_js(firstBlock(rLz), true, P), zigSmall.scan(firstBlock(rLz), true, P)));
-check("scan lz4 block (Zig-compressed) via Rust == via Zig", eq(rustMod.scan_block_contains_js(firstBlock(zLz), true, P), zigSmall.scan(firstBlock(zLz), true, P)));
-{ const b = firstBlock(rLz); const size = new DataView(b.buffer, b.byteOffset).getUint32(0, true); check("lz4_decompress: identical", eq(rustMod.lz4_decompress_js(b.subarray(4), size), zigSmall.lz4(b.subarray(4), size))); }
+check("scan raw block: identical hits", eq(rust.scan(firstBlock(rRaw), false, P), zigSmall.scan(firstBlock(rRaw), false, P)));
+check("scan lz4 block (Rust-compressed): identical hits", eq(rust.scan(firstBlock(rLz), true, P), zigSmall.scan(firstBlock(rLz), true, P)));
+check("scan lz4 block (Zig-compressed) via Rust == via Zig", eq(rust.scan(firstBlock(zLz), true, P), zigSmall.scan(firstBlock(zLz), true, P)));
+{ const b = firstBlock(rLz); const size = new DataView(b.buffer, b.byteOffset).getUint32(0, true); check("lz4_decompress: identical", eq(rust.lz4(b.subarray(4), size), zigSmall.lz4(b.subarray(4), size))); }
 
 // merge: 4 overlapping runs newest-first, with duplicate keys inside a run
-const runsE = [genEntries(5000, 1), genEntries(5000, 2), genEntries(5000, 3), genEntries(5000, 4)];
-const runs = runsE.map((e) => rustEnc(e, false));
+const runs = [1, 2, 3, 4].map((s) => rust.encodeEntries(genEntries(5000, s), false));
 for (const [drop, target] of [[false, Number.MAX_SAFE_INTEGER], [true, Number.MAX_SAFE_INTEGER], [true, 64 * 1024]]) {
-  const r = rustMod.merge_ssts_js(runs, drop, target, false), z = zigSmall.merge(runs, drop, target, false);
+  const r = rust.merge(runs, drop, target, false), z = zigSmall.merge(runs, drop, target, false);
   check(`merge drop=${drop} target=${target === Number.MAX_SAFE_INTEGER ? "inf" : target}: identical ssts + droppedSeq`, r.ssts.length === z.ssts.length && r.ssts.every((s, i) => eq(s, z.ssts[i])) && r.droppedSeq === z.droppedSeq, `${r.ssts.length} runs, droppedSeq ${r.droppedSeq}/${z.droppedSeq}`);
 }
-// corruption: flip a byte
-{ const bad = rRaw.slice(); bad[100] ^= 1; let rErr = "", zErr = ""; try { rustMod.decode_sst_js(bad); } catch (e) { rErr = String(e); } try { zigSmall.decode(bad); } catch (e) { zErr = String(e); } check("corrupt byte: both reject", rErr.includes("Crc") && zErr.includes("-4"), `${rErr} | ${zErr}`); }
+{
+  const bad = rRaw.slice(); bad[100] ^= 1;
+  const err = (fn) => { try { fn(); return null; } catch (e) { return e; } };
+  const rErr = err(() => rust.decode(bad)), zErr = err(() => zigSmall.decode(bad));
+  const isCrc = (e) => e instanceof EngineError && (e.code === -4 || String(e.code).includes("Crc"));
+  check("corrupt byte: both reject with CRC_MISMATCH", isCrc(rErr) && isCrc(zErr), `${rErr?.code} | ${zErr?.code}`);
+}
+
+// capacity: an encode whose work exceeds the arena returns -11, and the module keeps working
+{
+  const bigFlat = flatten(genEntries(50000, 11));
+  const tiny = await loadZig("./engine_small.wasm", { capacity: bigFlat.length + 1 * MiB });
+  const zero = tiny.ex.input_ptr(bigFlat.length + 2 * MiB);
+  let code = 0; try { tiny.encode(bigFlat, true); } catch (e) { code = e.code; }
+  const small = flatten(genEntries(100, 3));
+  let after; try { after = tiny.encode(small, true); } catch (e) { after = e; }
+  const ok = zero === 0 && code === -11 && tiny.ex.result_len() === after.length && eq(after, zigSmall.encode(small, true)) && tiny.memory().growths === 0;
+  check("capacity: oversized encode returns -11, then a small encode matches", ok, `cap ${tiny.ex.memory.buffer.byteLength} B mem, input_ptr(too big)=${zero}, encode 50k -> ${code}, then 100 entries -> ${after.length ?? after} B`);
+}
 
 console.log("\n== parity ==");
 for (const [n, s, d] of results) console.log(`${s}  ${n}${d ? "  (" + d + ")" : ""}`);
@@ -130,21 +75,53 @@ for (const [n, s, d] of results) console.log(`${s}  ${n}${d ? "  (" + d + ")" : 
 // ---- size ----
 console.log("\n== .wasm size (bytes) ==");
 const gz = (b) => gzipSync(b, { level: 9 }).length;
-for (const [name, b] of [["rust (wasm-pack release)", rustBytes], ["zig ReleaseSmall", zigSmall.bytes], ["zig ReleaseFast", zigFast.bytes]]) console.log(`${name.padEnd(26)} raw ${String(b.length).padStart(7)}  gzip ${String(gz(b)).padStart(6)}`);
-console.log(`rust JS glue (engine_wasm.js + _bg.js): ${(await readFile(`${ROOT}/packages/kv/wasm/engine_wasm.js`)).length + (await readFile(`${ROOT}/packages/kv/wasm/engine_wasm_bg.js`)).length} B; zig glue (harness loadZig): ~1.5 kB`);
+for (const [name, b] of [[`rust (${rust.abi})`, rust.bytes], ["zig ReleaseSmall", zigSmall.bytes], ["zig ReleaseFast", zigFast.bytes]]) console.log(`${name.padEnd(26)} raw ${String(b.length).padStart(7)}  gzip ${String(gz(b)).padStart(6)}`);
+console.log(`rust JS glue: ${rust.glueBytes} B; flat-ABI glue (loader.mjs loadFlat): ~2.9 kB unminified, shared by any flat module`);
 
 // ---- timing ----
 function bench(fn, reps = 15) { const t = []; for (let i = 0; i < reps; i++) { const a = performance.now(); fn(); t.push(performance.now() - a); } t.sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; }
 const big = genEntries(50000, 11), bigFlat = flatten(big);
-const bigRaw = rustEnc(big, false), bigLz = rustEnc(big, true);
+const bigRaw = rust.encodeEntries(big, false), bigLz = rust.encodeEntries(big, true);
 console.log(`\n== timing, median of 15, ${big.length} entries (${bigRaw.length} B raw sst) ==`);
-const row = (name, r, zs, zf) => console.log(`${name.padEnd(34)} rust ${r.toFixed(2).padStart(7)} ms   zig-small ${zs.toFixed(2).padStart(7)} ms   zig-fast ${zf.toFixed(2).padStart(7)} ms`);
-row("encode raw (incl. JS marshalling)", bench(() => rustEnc(big, false)), bench(() => zigSmall.encode(flatten(big), false)), bench(() => zigFast.encode(flatten(big), false)));
-row("encode raw (flat pre-marshalled)", NaN, bench(() => zigSmall.encode(bigFlat, false)), bench(() => zigFast.encode(bigFlat, false)));
-row("encode lz4 (incl. JS marshalling)", bench(() => rustEnc(big, true)), bench(() => zigSmall.encode(flatten(big), true)), bench(() => zigFast.encode(flatten(big), true)));
-row("decode raw -> JS entries", bench(() => rustDec(bigRaw)), bench(() => unflatten(zigSmall.decode(bigRaw))), bench(() => unflatten(zigFast.decode(bigRaw))));
-row("decode lz4 -> JS entries", bench(() => rustDec(bigLz)), bench(() => unflatten(zigSmall.decode(bigLz))), bench(() => unflatten(zigFast.decode(bigLz))));
+const row = (name, r, zs, zf) => { console.log(`${name.padEnd(34)} rust ${r.toFixed(2).padStart(7)} ms   zig-small ${zs.toFixed(2).padStart(7)} ms   zig-fast ${zf.toFixed(2).padStart(7)} ms`); notePeak(name); };
+const all = (fn) => [rust, zigSmall, zigFast].map((e) => bench(() => fn(e)));
+const allN = (fn, reps) => [rust, zigSmall, zigFast].map((e) => bench(() => fn(e), reps));
+row("encode raw (incl. JS marshalling)", ...all((e) => e.encodeEntries(big, false)));
+row("encode raw (flat pre-marshalled)", ...all((e) => (e.abi === "wasm-bindgen" ? NaN : e.encode(bigFlat, false))).map((x, i) => (i === 0 && rust.abi === "wasm-bindgen" ? NaN : x)));
+row("encode lz4 (incl. JS marshalling)", ...all((e) => e.encodeEntries(big, true)));
+row("decode raw -> JS entries", ...all((e) => e.decodeEntries(bigRaw)));
+row("decode lz4 -> JS entries", ...all((e) => e.decodeEntries(bigLz)));
 const blk = firstBlock(bigLz);
-row("scan lz4 block x200", bench(() => { for (let i = 0; i < 200; i++) rustMod.scan_block_contains_js(blk, true, P); }), bench(() => { for (let i = 0; i < 200; i++) zigSmall.scan(blk, true, P); }), bench(() => { for (let i = 0; i < 200; i++) zigFast.scan(blk, true, P); }));
-const mruns = [genEntries(20000, 21), genEntries(20000, 22), genEntries(20000, 23), genEntries(20000, 24)].map((e) => rustEnc(e, true));
-row("merge 4x20k lz4 runs, drop tombs", bench(() => rustMod.merge_ssts_js(mruns, true, 256 * 1024, true), 7), bench(() => zigSmall.merge(mruns, true, 256 * 1024, true), 7), bench(() => zigFast.merge(mruns, true, 256 * 1024, true), 7));
+row("scan lz4 block x200", ...all((e) => { for (let i = 0; i < 200; i++) e.scan(blk, true, P); }));
+const mruns = [21, 22, 23, 24].map((s) => rust.encodeEntries(genEntries(20000, s), true));
+row("merge 4x20k lz4 runs, drop tombs", ...allN((e) => e.merge(mruns, true, 256 * 1024, true), 7));
+
+// peak_bytes is a high-water mark since init, so each line is the max over everything run so far
+console.log("\n== peak_bytes (high-water since init, input + arena) ==");
+const mb = (x) => (Number.isNaN(x) ? "n/a" : `${(x / MiB).toFixed(2)} MiB`);
+for (const [op, s, f, r] of peaks) console.log(`after ${op.padEnd(34)} zig-small ${mb(s).padStart(10)}   zig-fast ${mb(f).padStart(10)}   rust ${mb(r)}`);
+{
+  const cases = [
+    ["encode raw 50k", (e) => e.encode(bigFlat, false), bigFlat.length],
+    ["encode lz4 50k", (e) => e.encode(bigFlat, true), bigFlat.length],
+    ["decode raw 50k", (e) => e.decode(bigRaw), bigRaw.length],
+    ["decode lz4 50k", (e) => e.decode(bigLz), bigLz.length],
+    ["scan lz4 block", (e) => e.scan(blk, true, P), blk.length + P.length],
+    ["merge 4x20k lz4 -> 256 KiB runs", (e) => e.merge(mruns, true, 256 * 1024, true), mruns.reduce((n, b) => n + 4 + b.length, 4)],
+    ["merge 4x20k lz4 -> one run", (e) => e.merge(mruns, true, Number.MAX_SAFE_INTEGER, true), mruns.reduce((n, b) => n + 4 + b.length, 4)],
+  ];
+  console.log("\n== peak per operation (fresh instance each) ==");
+  for (const [name, fn, inBytes] of cases) {
+    const e = await loadZig("./engine_small.wasm");
+    const out = fn(e); const outLen = out.length ?? out.ssts.reduce((n, s) => n + s.length, 0);
+    const r = rust.abi === "flat" ? await loadRust() : null; if (r) fn(r);
+    console.log(`${name.padEnd(32)} zig peak ${mb(e.peak()).padStart(10)}   rust peak ${mb(r ? r.peak() : NaN).padStart(10)}   in ${mb(inBytes)}, out ${mb(outLen)}`);
+  }
+}
+
+console.log("\n== memory after init ==");
+for (const e of [zigSmall, zigFast, rust]) {
+  const m = e.memory();
+  if (!m) { console.log(`${e.name.padEnd(18)} n/a (wasm-bindgen)`); continue; }
+  console.log(`${e.name.padEnd(18)} ${m.afterInit} B after init, ${m.now} B now, ${m.calls} calls, ${m.growths} growths ${m.growths === 0 ? "PASS" : e === rust ? "(allowed: dynamic allocator)" : "FAIL"}`);
+}

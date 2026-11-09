@@ -1,7 +1,6 @@
-// Prototype port of engine-core (SST codec, bloom, crc32, merge) and an LZ4 block codec to
-// Zig, exported with a flat-bytes ABI instead of wasm-bindgen. See README.md.
+// Port of engine-core (SST codec, bloom, crc32, merge) and an LZ4 block codec to Zig,
+// exported with the flat ABI in crates/engine-abi.md. See README.md.
 const std = @import("std");
-const A = std.heap.wasm_allocator;
 const Bytes = std.array_list.Managed(u8);
 
 const MAGIC: u32 = 0x4f4c5354;
@@ -34,28 +33,76 @@ fn code(e: anyerror) i32 {
 
 const Entry = struct { key: []const u8, value: []const u8, seq: u64, put: bool };
 
-// ---- result slot -------------------------------------------------------
-var result: []u8 = &[_]u8{};
-var result_view: usize = 0;
-var result_owned: bool = true;
-export fn result_ptr() [*]u8 {
-    return result.ptr;
+// ---- slab ----------------------------------------------------------------
+// `init` grows memory once to hold the slab; nothing grows it afterwards. Each operation
+// reads its input from the front of the slab and bump-allocates everything else, result
+// included, from the bytes after the input. The arena is reset at the start of the next
+// operation, so a result lives until then.
+var slab: []u8 = &[_]u8{};
+var reserved: usize = 0;
+var arena_off: usize = 0;
+var fba = std.heap.FixedBufferAllocator.init(&[_]u8{});
+var peak: usize = 0;
+var result: []const u8 = &[_]u8{};
+
+const FBA = std.heap.FixedBufferAllocator;
+fn notePeak() void {
+    peak = @max(peak, arena_off + fba.end_index);
 }
-export fn result_len() usize {
-    return result_view;
+fn bumpAlloc(ctx: *anyopaque, n: usize, a: std.mem.Alignment, ra: usize) ?[*]u8 {
+    const p = FBA.alloc(ctx, n, a, ra);
+    notePeak();
+    return p;
 }
-export fn result_free() void {
-    if (result_owned and result.len > 0) A.free(result);
+fn bumpResize(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, n: usize, ra: usize) bool {
+    const ok = FBA.resize(ctx, m, a, n, ra);
+    notePeak();
+    return ok;
+}
+fn bumpRemap(ctx: *anyopaque, m: []u8, a: std.mem.Alignment, n: usize, ra: usize) ?[*]u8 {
+    return if (bumpResize(ctx, m, a, n, ra)) m.ptr else null;
+}
+const A: std.mem.Allocator = .{ .ptr = &fba, .vtable = &.{ .alloc = bumpAlloc, .resize = bumpResize, .remap = bumpRemap, .free = FBA.free } };
+
+export fn init(capacity: u32) i32 {
+    if (reserved == 0) {
+        const pages = (@as(u64, capacity) + 0xffff) >> 16;
+        const old = @wasmMemoryGrow(0, @intCast(pages));
+        if (old < 0) return code(error.OutOfMemory);
+        reserved = @intCast(pages << 16);
+        slab = @as([*]u8, @ptrFromInt(@as(usize, @intCast(old)) << 16))[0..capacity];
+    } else if (capacity > reserved) {
+        return code(error.OutOfMemory);
+    } else {
+        slab = slab.ptr[0..capacity];
+    }
+    peak = 0;
     result = &[_]u8{};
-    result_view = 0;
-    result_owned = true;
+    return 0;
 }
-export fn alloc(n: usize) ?[*]u8 {
-    const s = A.alloc(u8, n) catch return null;
-    return s.ptr;
+export fn input_ptr(len: u32) usize {
+    return if (slab.len == 0 or len > slab.len) 0 else @intFromPtr(slab.ptr);
 }
-export fn dealloc(p: [*]u8, n: usize) void {
-    A.free(p[0..n]);
+export fn peak_bytes() u32 {
+    return @intCast(peak);
+}
+export fn result_ptr() usize {
+    return @intFromPtr(result.ptr);
+}
+export fn result_len() u32 {
+    return @intCast(result.len);
+}
+
+// The arena starts past the furthest input byte, so inputs are never overwritten.
+fn begin(input_end: usize) Err!void {
+    result = &[_]u8{};
+    scratch = &[_]u8{};
+    const base = @intFromPtr(slab.ptr);
+    const off = if (input_end > base) std.mem.alignForward(usize, input_end - base, 16) else 0;
+    if (off > slab.len) return error.OutOfMemory;
+    arena_off = off;
+    fba = FBA.init(slab[off..]);
+    notePeak();
 }
 
 // ---- small helpers -------------------------------------------------------
@@ -214,7 +261,7 @@ fn readLenExt(src: []const u8, i: *usize, base: usize) Err!usize {
     }
 }
 
-// One reusable output buffer for all blocks. Grown on demand, never shrunk.
+// One output buffer for all blocks of an operation. Grown on demand, reset by `begin`.
 var scratch: []u8 = &[_]u8{};
 fn scratchFor(size: usize) Err![]u8 {
     if (scratch.len < size + SLACK) {
@@ -558,6 +605,7 @@ fn decodeSst(buf: []const u8, out: *Entries, arena: std.mem.Allocator) !void {
     const crc_off = footer + 32;
     if (rd32(buf, crc_off) != crc32(buf[0..crc_off])) return error.CrcMismatch;
 
+    try out.ensureUnusedCapacity(@min(entry_count, buf.len));
     const before = out.items.len;
     var o = index_off;
     var b: usize = 0;
@@ -650,25 +698,32 @@ fn scanBlockContains(framed: []const u8, lz4: bool, patterns: []const u8) ![]u8 
 }
 
 // ---- merge ---------------------------------------------------------------------
+// Encodes one output run, then slides it down over the encoder's temporaries so the
+// arena keeps only the run. Everything encodeSst allocates lies past `mark`.
+fn encodeRun(entries: []const Entry, lz4: bool) ![]u8 {
+    const mark = fba.end_index;
+    const run = try encodeSst(entries, lz4);
+    const dst = fba.buffer[mark..][0..run.len];
+    std.mem.copyForwards(u8, dst, run);
+    fba.end_index = mark + run.len;
+    return dst;
+}
 fn mergeSsts(blobs: []const []const u8, drop_tombstones: bool, target_bytes: usize, lz4: bool, out: *Bytes) !u64 {
     const n = blobs.len;
     const lists = try A.alloc(Entries, n);
     defer A.free(lists);
     const pos = try A.alloc(usize, n);
     defer A.free(pos);
-    var arena_state = std.heap.ArenaAllocator.init(A);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
     for (blobs, 0..) |b, r| {
         lists[r] = Entries.init(A);
-        try decodeSst(b, &lists[r], arena);
+        try decodeSst(b, &lists[r], A);
         pos[r] = 0;
     }
     var dropped: u64 = 0;
     var pending = Entries.init(A);
     defer pending.deinit();
     var size: usize = 0;
-    var runs = std.array_list.Managed([]u8).init(A);
+    var runs = std.array_list.Managed([]const u8).init(A);
     defer runs.deinit();
     while (true) {
         var best: ?usize = null;
@@ -691,18 +746,20 @@ fn mergeSsts(blobs: []const []const u8, drop_tombstones: bool, target_bytes: usi
         size += entrySize(entry);
         try pending.append(entry);
         if (size >= target_bytes) {
-            try runs.append(try encodeSst(pending.items, lz4));
+            try runs.append(try encodeRun(pending.items, lz4));
             pending.clearRetainingCapacity();
             size = 0;
         }
     }
-    if (pending.items.len > 0) try runs.append(try encodeSst(pending.items, lz4));
+    if (pending.items.len > 0) try runs.append(try encodeRun(pending.items, lz4));
+    var total: usize = 12;
+    for (runs.items) |run| total += 4 + run.len;
+    try out.ensureTotalCapacity(total);
     try put64(out, dropped);
     try put32(out, @intCast(runs.items.len));
     for (runs.items) |run| {
         try put32(out, @intCast(run.len));
         try out.appendSlice(run);
-        A.free(run);
     }
     return dropped;
 }
@@ -744,58 +801,47 @@ fn writeEntries(entries: []const Entry, out: *Bytes) !void {
         }
     }
 }
-fn setResult(r: []u8) void {
-    result_free();
+fn finish(r: []const u8) i32 {
     result = r;
-    result_view = r.len;
-}
-fn setResultBorrowed(r: []u8) void {
-    result_free();
-    result = r;
-    result_view = r.len;
-    result_owned = false;
+    return 0;
 }
 
-export fn encode_sst(p: [*]const u8, n: usize, lz4: bool) i32 {
+export fn encode_sst(p: [*]const u8, n: usize, lz4: i32) i32 {
+    begin(@intFromPtr(p) + n) catch |e| return code(e);
     var entries = Entries.init(A);
-    defer entries.deinit();
     parseEntries(p[0..n], &entries) catch |e| return code(e);
-    const bytes = encodeSst(entries.items, lz4) catch |e| return code(e);
-    setResult(bytes);
-    return 0;
+    return finish(encodeSst(entries.items, lz4 != 0) catch |e| return code(e));
 }
 
 export fn decode_sst(p: [*]const u8, n: usize) i32 {
-    var arena_state = std.heap.ArenaAllocator.init(A);
-    defer arena_state.deinit();
+    begin(@intFromPtr(p) + n) catch |e| return code(e);
     var entries = Entries.init(A);
-    defer entries.deinit();
-    decodeSst(p[0..n], &entries, arena_state.allocator()) catch |e| return code(e);
-    var out = Bytes.init(A);
+    decodeSst(p[0..n], &entries, A) catch |e| return code(e);
+    var total: usize = 0;
+    for (entries.items) |e| total += entrySize(e);
+    var out = Bytes.initCapacity(A, total) catch |e| return code(e);
     writeEntries(entries.items, &out) catch |e| return code(e);
-    setResult(out.toOwnedSlice() catch |e| return code(e));
-    return 0;
+    return finish(out.items);
 }
 
 export fn lz4_decompress(p: [*]const u8, n: usize, size: usize) i32 {
-    const out = lz4Decompress(p[0..n], size) catch |e| return code(e);
-    setResultBorrowed(out);
-    return 0;
+    begin(@intFromPtr(p) + n) catch |e| return code(e);
+    return finish(lz4Decompress(p[0..n], size) catch |e| return code(e));
 }
 
-export fn scan_block_contains(p: [*]const u8, n: usize, lz4: bool, pp: [*]const u8, pn: usize) i32 {
-    const out = scanBlockContains(p[0..n], lz4, pp[0..pn]) catch |e| return code(e);
-    setResult(out);
-    return 0;
+export fn scan_block_contains(p: [*]const u8, n: usize, lz4: i32, pp: [*]const u8, pn: usize) i32 {
+    begin(@max(@intFromPtr(p) + n, @intFromPtr(pp) + pn)) catch |e| return code(e);
+    return finish(scanBlockContains(p[0..n], lz4 != 0, pp[0..pn]) catch |e| return code(e));
 }
 
 // blobs wire: [u32 count] then count x [u32 len][bytes]
-export fn merge_ssts(p: [*]const u8, n: usize, drop_tombstones: bool, target_bytes: f64, lz4: bool) i32 {
+export fn merge_ssts(p: [*]const u8, n: usize, drop_tombstones: i32, target_bytes: f64, lz4: i32) i32 {
+    begin(@intFromPtr(p) + n) catch |e| return code(e);
     const buf = p[0..n];
     if (n < 4) return code(error.Truncated);
     const count: usize = rd32(buf, 0);
+    if (count > (n - 4) / 4) return code(error.Truncated);
     const blobs = A.alloc([]const u8, count) catch |e| return code(e);
-    defer A.free(blobs);
     var o: usize = 4;
     for (0..count) |i| {
         if (o + 4 > n) return code(error.Truncated);
@@ -805,12 +851,8 @@ export fn merge_ssts(p: [*]const u8, n: usize, drop_tombstones: bool, target_byt
         blobs[i] = buf[o .. o + len];
         o += len;
     }
-    const target: usize = if (target_bytes >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) std.math.maxInt(usize) else @intFromFloat(target_bytes);
+    const target: usize = if (!(target_bytes > 0)) 0 else if (target_bytes >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) std.math.maxInt(usize) else @intFromFloat(target_bytes);
     var out = Bytes.init(A);
-    _ = mergeSsts(blobs, drop_tombstones, target, lz4, &out) catch |e| {
-        out.deinit();
-        return code(e);
-    };
-    setResult(out.toOwnedSlice() catch |e| return code(e));
-    return 0;
+    _ = mergeSsts(blobs, drop_tombstones != 0, target, lz4 != 0, &out) catch |e| return code(e);
+    return finish(out.items);
 }
