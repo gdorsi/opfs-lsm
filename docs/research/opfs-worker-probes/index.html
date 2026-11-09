@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>OPFS worker probes</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+  pre { background: #f4f4f4; padding: 1rem; overflow: auto; }
+  li { margin: 0.3rem 0; }
+</style>
+<h1>OPFS worker probes</h1>
+<p>Browser facts a multi-tab OPFS write path relies on. Run each browser from a fresh profile on <code>localhost</code>.</p>
+<ol>
+  <li><button id="all">Run P1–P6</button> <span id="status"></span> (about 20 s; results are posted to the server)</li>
+  <li>
+    <button id="fill">P2b/P3b: fill storage to a quota error</button>
+    cap <input id="cap" type="number" value="2048" size="6" /> MiB. Runs only when free quota is below the cap: use a throwaway profile with a small quota.
+  </li>
+  <li><button id="bfcache">P7: navigate away holding a lock and a handle</button>, then press Back when asked.</li>
+</ol>
+<pre id="out"></pre>
+<script src="page.js"></script>

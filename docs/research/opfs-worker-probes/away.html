@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>OPFS worker probe: away</title>
+<p id="msg">Checking the lock and handle held by the previous page…</p>
+<script>
+  (async () => {
+    const state = JSON.parse(localStorage.getItem("iq-p7") ?? "null");
+    if (!state) return (document.getElementById("msg").textContent = "Start P7 from the probe page.");
+    await new Promise((r) => setTimeout(r, 1000));
+    const snapshot = await navigator.locks.query();
+    const lockHeld = snapshot.held.some((l) => l.name === state.lock);
+    const reopen = await new Promise((resolve) => {
+      const w = new Worker("worker.js");
+      w.onmessage = ({ data }) => data.ev === "done" && resolve(data);
+      w.postMessage({ op: "tryOpen", file: "iq-p7.bin" });
+      setTimeout(() => resolve({ ok: false, error: "timeout" }), 5000);
+    });
+    state.away = { lockHeld, reopen, checkedAt: Date.now() };
+    localStorage.setItem("iq-p7", JSON.stringify(state));
+    document.getElementById("msg").textContent =
+      `Lock held: ${lockHeld}. Handle free: ${reopen.ok}. Now press Back.`;
+  })();
+</script>

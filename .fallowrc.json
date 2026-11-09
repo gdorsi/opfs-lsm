@@ -11,7 +11,9 @@
     "bench/cli.ts",
     "bench/page/main.ts",
     "bench/workloads/*/*.ts",
-    "bench/contenders/*/*.ts"
+    "bench/contenders/*/*.ts",
+    "docs/research/opfs-worker-probes/*.js",
+    "docs/research/opfs-worker-probes/*.mjs"
   ],
   "ignoreBinaries": [
     "wasm-pack"
