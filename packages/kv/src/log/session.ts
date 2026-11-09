@@ -550,6 +550,9 @@ export class LogSession {
     } finally {
       this.unacked.splice(this.unacked.indexOf(stamp), 1);
     }
+    // An earlier record failed while this one was written: this tab left,
+    // and the others read its log only to the record before the failure.
+    if (this.failed) throw this.failed;
     const rec: MergedRecord = { stamp, tab: this.tab, n, writerId, ops };
     this.merger.record(this.tab, rec);
     this.unsent.push(rec);

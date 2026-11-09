@@ -35,6 +35,10 @@ export type OutFrame = {
  * repair: a tab never reopens a log, a new tab starts a new one. A segment
  * is sealed and closed once it reaches `segmentBytes`; the next one starts
  * at the next write.
+ *
+ * After any call throws, every later write and flush throws too: the file
+ * may hold part of a frame the offset does not count, and a record written
+ * after it would follow a gap readers never cross.
  */
 export class TabWriter {
   private file: SegmentFile | undefined;
@@ -42,6 +46,7 @@ export class TabWriter {
   private lastStamp: Stamp = 0;
   private lastN = 0;
   private dirty = false;
+  private failed: unknown;
 
   constructor(
     private readonly store: SegmentStore,
@@ -59,6 +64,16 @@ export class TabWriter {
 
   /** Write `frames` in one write. They are in the file, not yet durable. */
   async write(frames: readonly OutFrame[]): Promise<void> {
+    if (this.failed !== undefined) throw this.failed;
+    try {
+      await this.writeFrames(frames);
+    } catch (err) {
+      this.failed = err;
+      throw err;
+    }
+  }
+
+  private async writeFrames(frames: readonly OutFrame[]): Promise<void> {
     if (frames.length === 0) return;
     if (!this.file) await this.prepare();
     const file = this.file!;
@@ -83,7 +98,13 @@ export class TabWriter {
 
   /** Make everything written so far durable. */
   flush(): void {
-    if (this.dirty && this.file) this.file.flush();
+    if (this.failed !== undefined) throw this.failed;
+    try {
+      if (this.dirty && this.file) this.file.flush();
+    } catch (err) {
+      this.failed = err;
+      throw err;
+    }
     this.dirty = false;
   }
 
