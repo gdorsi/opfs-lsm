@@ -841,6 +841,18 @@ acked write.
   release; only the removal of garbage does. Without Web Locks, a retry is unprotected.
 - BroadcastChannel delivers messages in order from one sender, but may deliver them late. The
   engine tolerates lost or late messages, because the WAL tail is always the source of truth.
+- An OPFS create or remove that Chrome acknowledged survives a browser crash. Chrome 156
+  breaks this: it keeps OPFS names in a LevelDB (`File System/<n>/t/Paths`) whose log a crash
+  can leave ending in a torn record header. The next launch appends after it, and the launch
+  after that drops the rest of that 32 KiB block, forgetting every create and remove written
+  there (directories with their children; the data files stay on disk as orphans). The engine
+  works around it in `src/opfs/root.ts`: before its first OPFS create or remove, each context
+  (page, SharedWorker) creates and removes a directory with a 12,000-character
+  name in the OPFS root, which writes about 36 KiB of throwaway records (0.5 ms) and moves the
+  engine's own records past the poisoned block. The Web Lock `opfs-lsm:pad` is held only while
+  a context pads: a lock held for the page's life keeps it out of the back/forward cache. OPFS
+  writes by other code of the origin before the pad are not
+  covered. See [the bug report draft](research/chrome-opfs-paths-leveldb-torn-tail.md).
 
 # Known limits of this design
 

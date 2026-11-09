@@ -28,6 +28,8 @@
  *   tiny    session B writes one file, then waits 1 s, before the markers
  *   wait    session B waits --wait-ms before the markers
  *   pad     session B creates and removes --pad throwaway files before the markers
+ *   engine  sessions A and B first open a database directory through the engine's
+ *           padded OPFS root (dist/opfs/root.js; build kv first)
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -37,7 +39,7 @@ import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { physicalRecords } from "./leveldb-log.ts";
 
-const MODES = ["none", "reuse", "idle", "tiny", "wait", "pad"] as const;
+const MODES = ["none", "reuse", "idle", "tiny", "wait", "pad", "engine"] as const;
 type Mode = (typeof MODES)[number];
 
 function arg(name: string, fallback: string): string {
@@ -64,9 +66,11 @@ async function writeFile(d, name, bytes) {
   await w.write(bytes);
   await w.close();
 }
+const enginePad = async () => (await import("/kv/opfs/root.js")).openDbDir("repro");
 globalThis.kc = {
   ready: true,
-  async churn(reuse) {
+  async churn(reuse, engine) {
+    if (engine) await enginePad();
     await dir("markers");
     await dir("pad");
     for (let i = 0; i < 2; i++) new Worker("/worker.js", { type: "module" }).postMessage({ id: i, reuse });
@@ -78,6 +82,7 @@ globalThis.kc = {
   },
   async markers(iter, k, opts) {
     const t0 = performance.now();
+    if (opts.engine) await enginePad();
     const m = await dir("markers");
     if (opts.tiny) { await writeFile(m, "tiny-" + iter, new Uint8Array(1)); await new Promise((r) => setTimeout(r, 1000)); }
     if (opts.waitMs) await new Promise((r) => setTimeout(r, opts.waitMs));
@@ -127,8 +132,9 @@ self.onmessage = async ({ data: { id, reuse } }) => {
 
 async function startServer(): Promise<{ server: http.Server; origin: string }> {
   const server = http.createServer((req, res) => {
-    const url = (req.url ?? "/").split("?")[0];
-    const body = url === "/worker.js" ? WORKER : url === "/" ? PAGE : null;
+    const url = (req.url ?? "/").split("?")[0]!;
+    const dist = url.startsWith("/kv/") ? path.join(import.meta.dirname, "..", "dist", url.slice(4)) : "";
+    const body = url === "/worker.js" ? WORKER : url === "/" ? PAGE : dist && fs.existsSync(dist) ? fs.readFileSync(dist, "utf8") : null;
     if (body === null) return void res.writeHead(404).end();
     res.writeHead(200, {
       "content-type": url === "/" ? "text/html" : "text/javascript",
@@ -380,7 +386,7 @@ async function main(): Promise<void> {
 
     let b = await Browser.launch(profile);
     let run = await b.page(origin + "/");
-    void run(`kc.churn(${mode === "reuse"})`, 60_000).catch(() => undefined);
+    void run(`kc.churn(${mode === "reuse"}, ${mode === "engine"})`, 60_000).catch(() => undefined);
     await sleep(500 + Math.floor(Math.random() * 2500));
     const leftA = await b.crash();
     const afterKill = pathsLogs(profile);
@@ -396,7 +402,7 @@ async function main(): Promise<void> {
     b = await Browser.launch(profile);
     run = await b.page(origin + "/");
     const beforeMarkersMs = (await run(
-      `kc.markers(${iter}, ${markers}, ${JSON.stringify({ tiny: mode === "tiny", waitMs: mode === "wait" ? waitMs : 0, pad: mode === "pad" ? pad : 0 })})`,
+      `kc.markers(${iter}, ${markers}, ${JSON.stringify({ tiny: mode === "tiny", waitMs: mode === "wait" ? waitMs : 0, pad: mode === "pad" ? pad : 0, engine: mode === "engine" })})`,
       120_000,
     )) as number;
     const closeB = await b.close();
