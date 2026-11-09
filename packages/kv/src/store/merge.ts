@@ -24,7 +24,6 @@ function heapLess(a: HeapItem, b: HeapItem): boolean {
   return a.source < b.source;
 }
 
-/** Descending keys. The newer source still goes first, because that is age, not key order. */
 function heapGreater(a: HeapItem, b: HeapItem): boolean {
   const c = compareBytes(a.key, b.key);
   if (c !== 0) return c > 0;

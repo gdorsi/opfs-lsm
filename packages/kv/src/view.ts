@@ -34,7 +34,6 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 /**
  * `range` over memtable `rows` already cut to `bounds` and the levels under
  * them: every live put, or with `valueContains` only the matching ones.
- * `rows` stay ascending whichever way `range.reverse` points.
  */
 export function scanLayers(
   rows: readonly MemRow[],

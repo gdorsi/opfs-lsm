@@ -119,7 +119,6 @@ export class SstReader {
     const packed = packPatterns(patterns);
     const outside = reverse ? isAtOrAbove : isBelow;
     return this.blocks(bounds, reverse, (_block, seek, framed, lz4) => {
-      // The wasm engine returns every hit of a block, and only the first block entered has a `seek`.
       const hits = unpackHits(scan(framed, lz4, packed));
       const walk = reverse ? [...hits].reverse().values() : hits;
       return () => {
@@ -343,7 +342,6 @@ function findBlock(index: RunIndex, key: Uint8Array): number {
   return lo - 1;
 }
 
-/** The last block whose separator is < `key`, or -1 when `key` is at or before the first block's. */
 function blockBelow(index: RunIndex, key: Uint8Array): number {
   const b = findBlock(index, key);
   return b >= 0 && compareSepAt(index, b, key) === 0 ? b - 1 : b;

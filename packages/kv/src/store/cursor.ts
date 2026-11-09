@@ -37,7 +37,6 @@ export function lowerBoundKeys(
   return lo;
 }
 
-/** `entries` are ascending and already cut to the scan's bounds. */
 export function entryCursor(entries: readonly LayerEntry[], reverse = false): LayerCursor {
   const step = reverse ? -1 : 1;
   let i = reverse ? entries.length - 1 : 0;

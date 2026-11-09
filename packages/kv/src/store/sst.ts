@@ -694,12 +694,6 @@ export class BlockEntries {
   }
 }
 
-/**
- * The records of one block in descending key order, from the last one below
- * `seek`. Records have no back pointers, so the constructor walks the block
- * forward once and keeps where each one starts. The list grows only as
- * `next` succeeds, so a corrupt record count cannot size it.
- */
 export class ReverseBlockEntries {
   private readonly w: RecordWalker;
   private readonly starts: number[] = [];
