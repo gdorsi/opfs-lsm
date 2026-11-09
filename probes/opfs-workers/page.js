@@ -41,12 +41,6 @@ function spawn() {
   return { w, events, next, run: (op, args) => w.postMessage({ op, ...args }) };
 }
 
-async function size(name) {
-  const root = await rootP;
-  const fh = await root.getFileHandle(name);
-  return (await fh.getFile()).size;
-}
-
 async function remove(name) {
   const root = await rootP;
   await root.removeEntry(name).catch(() => undefined);
