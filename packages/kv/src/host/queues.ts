@@ -45,11 +45,13 @@ export type QueueScan = {
   /** Whole valid records after the cursor, in n order with no gaps. */
   readonly records: readonly { readonly n: RecordN; readonly ops: readonly CheckedOp[]; readonly bytes: number }[];
   /**
-   * How the read ended. "end": no more valid frames. "busy": the active
-   * segment could not be read this round. A hole: record `hole` is
-   * unreadable but something after it is there.
+   * How the read ended. "end": the log's end, as far as it is written.
+   * "partial": short of the end for now (the active segment could not be
+   * read, or the last segment listed is sealed and its successor was not
+   * listed yet). A hole: record `hole` is unreadable but something after it
+   * is there.
    */
-  readonly stop: "end" | "busy" | { readonly hole: RecordN; readonly reason: string };
+  readonly stop: "end" | "partial" | { readonly hole: RecordN; readonly reason: string };
 };
 
 /** Flushed n per live log, from the tabs' `durable` messages. Missing = nothing flushed. */
@@ -129,4 +131,69 @@ export function planIngest(base: QueueBase, scans: readonly QueueScan[], durable
 
   const queues = [...next.values()].filter((c) => c.state !== "open" || c.n > 0).sort(byLogId);
   return { records, through, queues, damagedLive };
+}
+
+/** A log directory on disk: the firstN of each segment file, ascending. */
+export type LogFiles = { readonly log: LogId; readonly segments: readonly RecordN[] };
+
+/**
+ * Generations of lag in reclaim: a segment or log directory goes only once
+ * the newest RECLAIM_LAG + 1 manifests all cover it, so that many newest
+ * manifests can vanish after a crash and the one left still finds its
+ * records on disk. One generation is not enough for two dropped manifests:
+ * a log whose directory reclaim removed leaves `checkCover` nothing to find,
+ * so recovery opens without its records (formal/ingest-plan).
+ */
+export const RECLAIM_LAG = 2;
+
+/**
+ * What reclaim may delete, given every manifest on disk and every log
+ * directory. Keeps the newest `lag + 1` manifests and counts the empty
+ * generation in their place while there are fewer. Removes a finished
+ * segment once all of them cover it, and a dead log's directory once all of
+ * them have it `final`. Never a live log's last segment.
+ */
+export function planReclaim(
+  manifests: readonly { readonly generation: number; readonly queues: readonly QueueCursor[] }[],
+  logs: readonly LogFiles[],
+  dead: ReadonlySet<LogId>,
+  lag = RECLAIM_LAG,
+): { readonly manifests: readonly number[]; readonly segments: readonly { readonly log: LogId; readonly firstN: RecordN }[]; readonly logs: readonly LogId[] } {
+  const newest = [...manifests].sort((a, b) => b.generation - a.generation);
+  const kept = newest.slice(0, lag + 1).map((m) => new Map(m.queues.map((c) => [c.log, c])));
+  const padded = kept.length < lag + 1;
+  const segments: { log: LogId; firstN: RecordN }[] = [];
+  const gone: LogId[] = [];
+  for (const { log, segments: firsts } of logs) {
+    const cursors = kept.map((m) => m.get(log));
+    if (!padded && dead.has(log) && cursors.every((c) => c?.state === "final")) {
+      gone.push(log);
+      continue;
+    }
+    const low = padded ? 0 : Math.min(...cursors.map((c) => c?.n ?? 0));
+    for (let i = 0; i + 1 < firsts.length; i++) {
+      if (firsts[i + 1]! - 1 <= low) segments.push({ log, firstN: firsts[i]! });
+    }
+  }
+  return { manifests: newest.slice(lag + 1).map((m) => m.generation), segments, logs: gone };
+}
+
+/**
+ * Recovery's check that the manifest it picked still finds every record
+ * past its cursors on disk. Undefined when it does; otherwise why open must
+ * refuse. Terminal cursors are never read again, so only open ones count.
+ */
+export function checkCover(queues: readonly QueueCursor[], logs: readonly LogFiles[]): string | undefined {
+  const onDisk = new Map(logs.map((l) => [l.log, l.segments]));
+  for (const c of queues) {
+    if (c.state === "open" && !onDisk.has(c.log)) return `log ${c.log} is gone but its cursor is open at ${c.n}`;
+  }
+  const cursors = new Map(queues.map((c) => [c.log, c]));
+  for (const { log, segments } of logs) {
+    const c = cursors.get(log);
+    if (terminal(c) || segments.length === 0) continue;
+    const n = c?.n ?? 0;
+    if (segments[0]! > n + 1) return `log ${log} starts at ${segments[0]} but its cursor is at ${n}`;
+  }
+  return undefined;
 }

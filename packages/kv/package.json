@@ -35,6 +35,7 @@
     "formal:view-pin": "tsx formal/view-pin/check.ts",
     "formal:compact-preserve": "tsx formal/compact-preserve/check.ts",
     "formal:power-loss": "tsx formal/power-loss/check.ts",
+    "formal:ingest-plan": "tsx formal/ingest-plan/check.ts",
     "fuzz:corpus": "tsx fuzz/make-corpus.ts",
     "fuzz:jazzer": "tsx fuzz/jazzer/run.ts"
   },

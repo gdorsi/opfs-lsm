@@ -15,6 +15,7 @@ const checks = [
   "formal/view-pin/check.ts",
   "formal/compact-preserve/check.ts",
   "formal/power-loss/check.ts",
+  "formal/ingest-plan/check.ts",
 ] as const;
 
 let failed = 0;

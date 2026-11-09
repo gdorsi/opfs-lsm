@@ -109,6 +109,17 @@ describe("planIngest", () => {
     ]);
   });
 
+  it("keeps a dead log open, and its successor waiting, when the read stopped short of its end", () => {
+    const plan = planIngest(
+      EMPTY,
+      [scan(P, [1], { dead: true, stop: "partial" }), scan(S, [1], { dead: true, pred: { log: P, lastN: 2 } })],
+      NO_HINTS,
+      Infinity,
+    );
+    expect(order(plan)).toEqual(["p1@1"]);
+    expect(plan.queues).toEqual([{ log: P, state: "open", n: 1 }]);
+  });
+
   it("never reads a log again once its cursor is terminal", () => {
     const base: QueueBase = { through: 1, queues: [{ log: P, state: "final", n: 1 }] };
     const plan = planIngest(base, [scan(P, [2], { dead: true })], NO_HINTS, Infinity);
