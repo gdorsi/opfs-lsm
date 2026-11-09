@@ -276,6 +276,7 @@ fn scratchFor(size: usize) Err![]u8 {
 // match starts at least 12 bytes before the end, so literals reaching size-12 (or input
 // end-8) must be the final sequence, and no match may end inside the last 5 bytes.
 fn lz4Decompress(src: []const u8, size: usize) Err![]u8 {
+    if (size > src.len *| 255 +| 16) return error.BadBlock;
     const out = try scratchFor(size);
     var i: usize = 0;
     var o: usize = 0;
@@ -308,7 +309,7 @@ fn lz4Decompress(src: []const u8, size: usize) Err![]u8 {
             }
         } else {
             if (lit == 15) lit = try readLenExt(src, &i, 15);
-            if (i + lit > src.len or o + lit > size) return error.BadBlock;
+            if (lit > src.len - i or lit > size - o) return error.BadBlock;
             if (o + lit > last_lit_o or i + lit > last_lit_i) {
                 if (i + lit != src.len or o + lit != size) return error.BadBlock;
                 @memcpy(out[o .. o + lit], src[i .. i + lit]);
@@ -544,7 +545,7 @@ fn readBlockInto(block: []const u8, out: *Entries, arena: std.mem.Allocator) !vo
     var o: usize = 4;
     const end = std.math.sub(usize, block.len, offsetTableBytes(count)) catch return error.Truncated;
     const p = try readVarint(block, &o, end);
-    if (o + p > end) return error.Truncated;
+    if (p > end - o) return error.Truncated;
     const prefix = block[o .. o + p];
     o += p;
     var i: usize = 0;
@@ -552,11 +553,11 @@ fn readBlockInto(block: []const u8, out: *Entries, arena: std.mem.Allocator) !vo
         if (o >= end) return error.Truncated;
         const tag = block[o];
         o += 1;
-        if (o + 8 > end) return error.Truncated;
+        if (8 > end - o) return error.Truncated;
         const seq = rd64(block, o);
         o += 8;
         const klen = try readVarint(block, &o, end);
-        if (o + klen > end) return error.Truncated;
+        if (klen > end - o) return error.Truncated;
         const key = try arena.alloc(u8, p + klen);
         @memcpy(key[0..p], prefix);
         @memcpy(key[p..], block[o .. o + klen]);
@@ -564,7 +565,7 @@ fn readBlockInto(block: []const u8, out: *Entries, arena: std.mem.Allocator) !vo
         switch (tag) {
             TAG_PUT => {
                 const vlen = try readVarint(block, &o, end);
-                if (o + vlen > end) return error.Truncated;
+                if (vlen > end - o) return error.Truncated;
                 const value = try arena.dupe(u8, block[o .. o + vlen]);
                 o += vlen;
                 try out.append(.{ .key = key, .value = value, .seq = seq, .put = true });
@@ -600,7 +601,9 @@ fn decodeSst(buf: []const u8, out: *Entries, arena: std.mem.Allocator) !void {
     const index_off = f.get(buf, footer, 5);
     const index_len = f.get(buf, footer, 6);
     const codec = f.get(buf, footer, 7);
-    if (index_off != bloom_off + bloom_len or index_off + index_len != footer) return error.Truncated;
+    const bloom_end = std.math.add(usize, bloom_off, bloom_len) catch return error.Truncated;
+    const index_end = std.math.add(usize, index_off, index_len) catch return error.Truncated;
+    if (index_off != bloom_end or index_end != footer) return error.Truncated;
     if (codec > 1) return error.BadCodec;
     const lz4 = codec == 1;
     const crc_off = footer + 32;
@@ -611,18 +614,22 @@ fn decodeSst(buf: []const u8, out: *Entries, arena: std.mem.Allocator) !void {
     var o = index_off;
     var b: usize = 0;
     while (b < block_count) : (b += 1) {
-        if (o + 4 > footer) return error.Truncated;
+        if (4 > footer - o) return error.Truncated;
         const fl: usize = rd32(buf, o);
-        o += 4 + fl;
-        if (o + 4 > footer) return error.Truncated;
+        o += 4;
+        if (fl > footer - o) return error.Truncated;
+        o += fl;
+        if (4 > footer - o) return error.Truncated;
         const ll: usize = rd32(buf, o);
-        o += 4 + ll;
-        if (o + 8 > footer) return error.Truncated;
+        o += 4;
+        if (ll > footer - o) return error.Truncated;
+        o += ll;
+        if (8 > footer - o) return error.Truncated;
         const off: usize = rd32(buf, o);
         o += 4;
         const len: usize = rd32(buf, o);
         o += 4;
-        if (off + len > bloom_off) return error.Truncated;
+        if (off > bloom_off or len > bloom_off - off) return error.Truncated;
         const blk = try unpackBlock(buf[off .. off + len], lz4);
         try readBlockInto(blk, out, arena);
     }
@@ -640,10 +647,10 @@ fn scanBlockContains(framed: []const u8, lz4: bool, patterns: []const u8) ![]u8 
     defer pats.deinit();
     var po: usize = 0;
     while (po < patterns.len) {
-        if (po + 4 > patterns.len) return error.PatternsTruncated;
+        if (4 > patterns.len - po) return error.PatternsTruncated;
         const n: usize = rd32(patterns, po);
         po += 4;
-        if (po + n > patterns.len) return error.PatternsTruncated;
+        if (n > patterns.len - po) return error.PatternsTruncated;
         try pats.append(patterns[po .. po + n]);
         po += n;
     }
@@ -653,7 +660,7 @@ fn scanBlockContains(framed: []const u8, lz4: bool, patterns: []const u8) ![]u8 
     const end = std.math.sub(usize, block.len, offsetTableBytes(count)) catch return error.Truncated;
     var o: usize = 4;
     const p = try readVarint(block, &o, end);
-    if (o + p > end) return error.Truncated;
+    if (p > end - o) return error.Truncated;
     const prefix = block[o .. o + p];
     o += p;
     var out = Bytes.init(A);
@@ -663,16 +670,16 @@ fn scanBlockContains(framed: []const u8, lz4: bool, patterns: []const u8) ![]u8 
         if (o >= end) return error.Truncated;
         const tag = block[o];
         o += 1;
-        if (o + 8 > end) return error.Truncated;
+        if (8 > end - o) return error.Truncated;
         o += 8;
         const klen = try readVarint(block, &o, end);
-        if (o + klen > end) return error.Truncated;
+        if (klen > end - o) return error.Truncated;
         const suffix = block[o .. o + klen];
         o += klen;
         switch (tag) {
             TAG_PUT => {
                 const vlen = try readVarint(block, &o, end);
-                if (o + vlen > end) return error.Truncated;
+                if (vlen > end - o) return error.Truncated;
                 const value = block[o .. o + vlen];
                 o += vlen;
                 var all = true;
@@ -770,19 +777,19 @@ fn mergeSsts(blobs: []const []const u8, drop_tombstones: bool, target_bytes: usi
 fn parseEntries(buf: []const u8, out: *Entries) !void {
     var o: usize = 0;
     while (o < buf.len) {
-        if (o + 13 > buf.len) return error.Truncated;
+        if (13 > buf.len - o) return error.Truncated;
         const tag = buf[o];
         const seq = rd64(buf, o + 1);
         const klen: usize = rd32(buf, o + 9);
         o += 13;
-        if (o + klen > buf.len) return error.Truncated;
+        if (klen > buf.len - o) return error.Truncated;
         const key = buf[o .. o + klen];
         o += klen;
         if (tag == TAG_PUT) {
-            if (o + 4 > buf.len) return error.Truncated;
+            if (4 > buf.len - o) return error.Truncated;
             const vlen: usize = rd32(buf, o);
             o += 4;
-            if (o + vlen > buf.len) return error.Truncated;
+            if (vlen > buf.len - o) return error.Truncated;
             try out.append(.{ .key = key, .value = buf[o .. o + vlen], .seq = seq, .put = true });
             o += vlen;
         } else if (tag == TAG_DEL) {
@@ -845,10 +852,10 @@ export fn merge_ssts(p: [*]const u8, n: usize, drop_tombstones: i32, target_byte
     const blobs = A.alloc([]const u8, count) catch |e| return code(e);
     var o: usize = 4;
     for (0..count) |i| {
-        if (o + 4 > n) return code(error.Truncated);
+        if (4 > n - o) return code(error.Truncated);
         const len: usize = rd32(buf, o);
         o += 4;
-        if (o + len > n) return code(error.Truncated);
+        if (len > n - o) return code(error.Truncated);
         blobs[i] = buf[o .. o + len];
         o += len;
     }
