@@ -231,6 +231,25 @@ importers:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@26.6.6)(jiti@1.21.7)(lightningcss@1.33.0)(tsx@4.23.15)(yaml@2.9.1)
 
+  packages/docstore:
+    dependencies:
+      '@opfs-lsm/kv':
+        specifier: workspace:*
+        version: link:../kv
+    devDependencies:
+      fake-indexeddb:
+        specifier: ^6.0.0
+        version: 6.2.7
+      fast-check:
+        specifier: ^4.10.2
+        version: 4.10.2
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.7(@types/node@26.6.6)(jiti@1.21.7)(lightningcss@1.33.0)(tsx@4.23.15)
+
   packages/kv:
     devDependencies:
       '@jazzer.js/core':
