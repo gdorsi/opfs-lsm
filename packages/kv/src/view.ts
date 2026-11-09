@@ -34,6 +34,7 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 /**
  * `range` over memtable `rows` already cut to `bounds` and the levels under
  * them: every live put, or with `valueContains` only the matching ones.
+ * `rows` stay ascending whichever way `range.reverse` points.
  */
 export function scanLayers(
   rows: readonly MemRow[],
@@ -42,11 +43,13 @@ export function scanLayers(
   range: Range | undefined,
 ): AsyncGenerator<Entry> {
   const patterns = range?.valueContains;
+  const reverse = range?.reverse ?? false;
   return patterns && patterns.length > 0
-    ? scanMatching(rows, levels, patterns, bounds, range.limit)
+    ? scanMatching(rows, levels, patterns, bounds, range.limit, reverse)
     : mergeCursors(
-        [arrayCursor(rows), ...levels.map((level) => level.cursor(bounds))],
+        [arrayCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse))],
         range?.limit,
+        reverse,
       );
 }
 

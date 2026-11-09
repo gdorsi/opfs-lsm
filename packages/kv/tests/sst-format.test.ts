@@ -99,9 +99,9 @@ describe("sst format", () => {
     const body = encodeSst(indexWorkload(300), 256);
     const keysOf = (es: LayerEntry[]) => es.map((e) => [...e.key].join());
     for (const reverse of [false, true]) {
-      const reader = readerOfBytes(body);
-      const want = keysOf(await drain(reader.cursor()));
+      const want = keysOf(await drain(readerOfBytes(body).cursor()));
       if (reverse) want.reverse();
+      const reader = readerOfBytes(body);
       const cursor = reader.cursor(undefined, reverse);
       const got: string[] = [];
       let misses = 0;
@@ -110,12 +110,12 @@ describe("sst format", () => {
         if (e instanceof Miss) {
           misses++;
           await e.ready;
-          reader.close();
           continue;
         }
         if (!e) break;
         got.push([...e.key].join());
         cursor.next();
+        reader.close();
       }
       expect(got).toEqual(want);
       expect(misses).toBeGreaterThan(10);

@@ -24,9 +24,18 @@ function heapLess(a: HeapItem, b: HeapItem): boolean {
   return a.source < b.source;
 }
 
-/** Binary min-heap. Order is key, then newer source (smaller index). */
+/** Descending keys. The newer source still goes first, because that is age, not key order. */
+function heapGreater(a: HeapItem, b: HeapItem): boolean {
+  const c = compareBytes(a.key, b.key);
+  if (c !== 0) return c > 0;
+  return a.source < b.source;
+}
+
+/** Binary heap. Order is `less`: key, then newer source (smaller index). */
 class MinHeap {
   private readonly items: HeapItem[] = [];
+
+  constructor(private readonly less: (a: HeapItem, b: HeapItem) => boolean) {}
 
   get length(): number {
     return this.items.length;
@@ -42,7 +51,7 @@ class MinHeap {
     let i = a.length - 1;
     while (i > 0) {
       const p = (i - 1) >> 1;
-      if (!heapLess(a[i]!, a[p]!)) break;
+      if (!this.less(a[i]!, a[p]!)) break;
       const tmp = a[p]!;
       a[p] = a[i]!;
       a[i] = tmp;
@@ -62,8 +71,8 @@ class MinHeap {
       const l = i * 2 + 1;
       const r = l + 1;
       let m = i;
-      if (l < a.length && heapLess(a[l]!, a[m]!)) m = l;
-      if (r < a.length && heapLess(a[r]!, a[m]!)) m = r;
+      if (l < a.length && this.less(a[l]!, a[m]!)) m = l;
+      if (r < a.length && this.less(a[r]!, a[m]!)) m = r;
       if (m === i) break;
       const tmp = a[m]!;
       a[m] = a[i]!;
@@ -135,49 +144,54 @@ export class RunLevel {
     }
   }
 
-  /** The first run whose largest key is at or after `key`. */
-  private seek(key: Uint8Array): number {
+  /** The first run whose key in `keys` (`smallest` or `largest`) is at or after `key`. */
+  private seek(keys: readonly Uint8Array[], key: Uint8Array): number {
     let lo = 0;
     let hi = this.runs.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (compareBytes(this.largest[mid]!, key) < 0) lo = mid + 1;
+      if (compareBytes(keys[mid]!, key) < 0) lo = mid + 1;
       else hi = mid;
     }
     return lo;
   }
 
   get(key: Uint8Array): Maybe<SstEntry | undefined> {
-    const r = this.seek(key);
+    const r = this.seek(this.largest, key);
     if (r >= this.runs.length || compareBytes(this.smallest[r]!, key) > 0) return undefined;
     return this.runs[r]!.get(key);
   }
 
-  cursor(bounds?: ScanBounds): LayerCursor {
-    return this.concat(bounds, (run) => run.cursor(bounds));
+  cursor(bounds?: ScanBounds, reverse = false): LayerCursor {
+    return this.concat(bounds, reverse, (run) => run.cursor(bounds, reverse));
   }
 
-  /** The puts in `bounds` whose value holds every pattern, in key order. */
-  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds): LayerCursor {
-    return this.concat(bounds, (run) => run.scanContains(patterns, bounds));
+  /** The puts in `bounds` whose value holds every pattern, in key order or backward. */
+  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor {
+    return this.concat(bounds, reverse, (run) => run.scanContains(patterns, bounds, reverse));
   }
 
-  /** One cursor per run that `bounds` reaches, opened as the previous one ends. */
-  private concat(bounds: ScanBounds | undefined, cursorOf: (run: SstReader) => LayerCursor): LayerCursor {
-    const { runs, smallest } = this;
+  /**
+   * One cursor per run that `bounds` reaches, opened as the previous one ends.
+   * Backward it starts at the last run below `endExclusive` and steps to the
+   * run before.
+   */
+  private concat(bounds: ScanBounds | undefined, reverse: boolean, cursorOf: (run: SstReader) => LayerCursor): LayerCursor {
+    const { runs, smallest, largest } = this;
+    const start = bounds?.start;
     const end = bounds?.endExclusive;
-    let r = bounds?.start ? this.seek(bounds.start) : 0;
-    const open = () =>
-      r < runs.length && !(end && compareBytes(smallest[r]!, end) >= 0)
-        ? cursorOf(runs[r]!)
-        : undefined;
+    const step = reverse ? -1 : 1;
+    let r = reverse ? (end ? this.seek(smallest, end) : runs.length) - 1 : start ? this.seek(largest, start) : 0;
+    const open = reverse
+      ? () => (r >= 0 && !(start && compareBytes(largest[r]!, start) < 0) ? cursorOf(runs[r]!) : undefined)
+      : () => (r < runs.length && !(end && compareBytes(smallest[r]!, end) >= 0) ? cursorOf(runs[r]!) : undefined);
     let cur = open();
     return {
       peek() {
         while (cur) {
           const e = cur.peek();
           if (e) return e;
-          r += 1;
+          r += step;
           cur = open();
         }
         return undefined;
@@ -212,13 +226,14 @@ export function runLevels(
   return out;
 }
 
-export function arrayCursor(rows: readonly MemRow[]): LayerCursor {
+export function arrayCursor(rows: readonly MemRow[], reverse = false): LayerCursor {
   return entryCursor(
     rows.map((row) =>
       row.kind === "put" && row.value
         ? { key: row.key, kind: "put" as const, value: row.value }
         : { key: row.key, kind: "del" as const },
     ),
+    reverse,
   );
 }
 
@@ -233,10 +248,14 @@ type Winner = { readonly entry: LayerEntry; readonly source: number };
  * merge gathers every source's miss into one parallel round of reads.
  */
 class Merge {
-  private readonly heap = new MinHeap();
+  private readonly heap: MinHeap;
   private pending: number[];
 
-  constructor(private readonly cursors: readonly LayerCursor[]) {
+  constructor(
+    private readonly cursors: readonly LayerCursor[],
+    reverse: boolean,
+  ) {
+    this.heap = new MinHeap(reverse ? heapGreater : heapLess);
     this.pending = cursors.map((_, i) => i);
   }
 
@@ -272,14 +291,16 @@ class Merge {
 }
 
 /**
- * `cursors[0]` is newest. Yields live puts only, up to `limit`.
+ * `cursors[0]` is newest. Yields live puts only, up to `limit`. With `reverse`
+ * every cursor runs backward and so does the merge.
  * Tombstones are not counted and not yielded. Awaits only on a miss.
  */
 export async function* mergeCursors(
   cursors: readonly LayerCursor[],
   limit?: number,
+  reverse = false,
 ): AsyncGenerator<Entry> {
-  const merge = new Merge(cursors);
+  const merge = new Merge(cursors, reverse);
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
@@ -300,8 +321,8 @@ export async function* mergeCursors(
 
 /**
  * The live puts in `bounds` whose current value holds every pattern, in key
- * order, each key once, up to `limit`. `rows` is the memtable slice for
- * `bounds`, newer than every level.
+ * order (descending with `reverse`), each key once, up to `limit`. `rows` is
+ * the memtable slice for `bounds`, ascending and newer than every level.
  *
  * Each source filters on its own: memtable rows in JS, each level's runs in
  * wasm per block, so a block with no hit costs no JS per row. The newest
@@ -317,11 +338,12 @@ export async function* scanMatching(
   patterns: readonly Uint8Array[],
   bounds?: ScanBounds,
   limit?: number,
+  reverse = false,
 ): AsyncGenerator<Entry> {
-  const merge = new Merge([
-    filterCursor(arrayCursor(rows), patterns),
-    ...levels.map((level) => level.scanContains(patterns, bounds)),
-  ]);
+  const merge = new Merge(
+    [filterCursor(arrayCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
+    reverse,
+  );
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;

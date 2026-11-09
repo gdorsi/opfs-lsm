@@ -9,6 +9,7 @@ import {
   blockBytes,
   findInBlock,
   readFooter,
+  ReverseBlockEntries,
   type BlockBytes,
   type KeyRange,
   type SstCodec,
@@ -98,29 +99,32 @@ export class SstReader {
     return findInBlock(blockBytes(page.buf, page.view, 0, { offset: at, length }, meta.codec), key);
   }
 
-  /** Every entry in `bounds`, in key order. */
-  cursor(bounds?: ScanBounds): LayerCursor {
-    return this.blocks(bounds, (block, seek) => {
-      const walk = new BlockEntries(block(), seek);
+  /** Every entry in `bounds`, in key order, or from the largest key down with `reverse`. */
+  cursor(bounds?: ScanBounds, reverse = false): LayerCursor {
+    return this.blocks(bounds, reverse, (block, seek) => {
+      const walk = reverse ? new ReverseBlockEntries(block(), seek) : new BlockEntries(block(), seek);
       return () => walk.next();
     });
   }
 
   /**
-   * The puts in `bounds` whose value holds every pattern, in key order.
+   * The puts in `bounds` whose value holds every pattern, in key order or
+   * with `reverse` from the largest key down.
    * With the wasm engine each block is decoded and matched there and only
    * hits cross back. Without it the cursor does the same work key by key.
    */
-  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds): LayerCursor {
+  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor {
     const scan = blockScanner();
-    if (!scan) return filterCursor(this.cursor(bounds), patterns);
+    if (!scan) return filterCursor(this.cursor(bounds, reverse), patterns);
     const packed = packPatterns(patterns);
-    const start = bounds?.start;
-    return this.blocks(bounds, (_block, _seek, framed, lz4) => {
+    const outside = reverse ? isAtOrAbove : isBelow;
+    return this.blocks(bounds, reverse, (_block, seek, framed, lz4) => {
+      // The wasm engine returns every hit of a block, and only the first block entered has a `seek`.
       const hits = unpackHits(scan(framed, lz4, packed));
+      const walk = reverse ? [...hits].reverse().values() : hits;
       return () => {
-        for (let h = hits.next(); !h.done; h = hits.next()) {
-          if (start && compareBytes(h.value.key, start) < 0) continue;
+        for (let h = walk.next(); !h.done; h = walk.next()) {
+          if (seek && outside(h.value.key, seek)) continue;
           return { key: h.value.key, kind: "put", value: h.value.value };
         }
         return undefined;
@@ -134,14 +138,17 @@ export class SstReader {
   }
 
   /**
-   * A cursor over the blocks that may hold keys in `bounds`. Entering a
-   * block calls `open` with its bytes, as decoded bytes on demand and as
-   * stored, and the returned function yields that block's entries.
+   * A cursor over the blocks that may hold keys in `bounds`, in key order or
+   * from the last block back. Entering a block calls `open` with its bytes,
+   * as decoded bytes on demand and as stored, and the returned function
+   * yields that block's entries. `seek` is where the first block starts:
+   * `start`, or `endExclusive` going back.
    * Scans admit pages to probation. Only entering a block can miss, and a
    * miss leaves the cursor where it was.
    */
   private blocks(
     bounds: ScanBounds | undefined,
+    reverse: boolean,
     open: (
       block: () => BlockBytes,
       seek: Uint8Array | undefined,
@@ -149,9 +156,13 @@ export class SstReader {
       lz4: boolean,
     ) => () => LayerEntry | undefined,
   ): LayerCursor {
+    const start = bounds?.start;
     const end = bounds?.endExclusive;
-    let seek = bounds?.start;
-    let b = -1;
+    const stopAt = reverse ? start : end;
+    const stop = reverse ? isBelow : isAtOrAbove;
+    const step = reverse ? -1 : 1;
+    let seek = reverse ? end : start;
+    let b: number | undefined;
     // The page the cursor is in. Looking it up again per block would count
     // as reuse and promote every page a single scan passes.
     let at: { p: number; page: Page } | undefined;
@@ -162,19 +173,22 @@ export class SstReader {
       for (;;) {
         const e = take?.();
         if (e) {
-          cur = end && compareBytes(e.key, end) >= 0 ? undefined : e;
+          cur = stopAt && stop(e.key, stopAt) ? undefined : e;
           return cur;
         }
         take = undefined;
         const meta = this.meta();
         if (meta instanceof Miss) return meta;
         const { index } = meta;
-        if (b < 0) b = seek ? Math.max(0, findBlock(index, seek)) : 0;
-        const sepFrom = b === 0 ? 0 : index.sepEnd[b - 1]!;
+        const blockCount = index.sepEnd.length;
+        b ??= reverse
+          ? seek ? blockBelow(index, seek) : blockCount - 1
+          : seek ? Math.max(0, findBlock(index, seek)) : 0;
         if (
           meta.entryCount === 0 ||
-          b >= index.sepEnd.length ||
-          (end && compareSep(index.sepBytes, sepFrom, index.sepEnd[b]!, end) >= 0)
+          (reverse
+            ? b < 0 || (start && b + 1 < blockCount && compareSepAt(index, b + 1, start) <= 0)
+            : b >= blockCount || (end && compareSepAt(index, b, end) >= 0))
         ) {
           cur = undefined;
           return cur;
@@ -195,7 +209,7 @@ export class SstReader {
           page.buf.subarray(offset, offset + length),
           meta.codec === "lz4",
         );
-        b += 1;
+        b += step;
         seek = undefined;
       }
     };
@@ -312,6 +326,9 @@ function separatorLength(prevLast: Uint8Array, first: Uint8Array): number {
   return Math.min(i + 1, first.byteLength);
 }
 
+const isBelow = (key: Uint8Array, bound: Uint8Array) => compareBytes(key, bound) < 0;
+const isAtOrAbove = (key: Uint8Array, bound: Uint8Array) => compareBytes(key, bound) >= 0;
+
 /** The last block whose separator is <= `key`, or -1 when `key` sorts before every block. */
 function findBlock(index: RunIndex, key: Uint8Array): number {
   const { sepBytes, sepEnd } = index;
@@ -324,6 +341,16 @@ function findBlock(index: RunIndex, key: Uint8Array): number {
     else hi = mid;
   }
   return lo - 1;
+}
+
+/** The last block whose separator is < `key`, or -1 when `key` is at or before the first block's. */
+function blockBelow(index: RunIndex, key: Uint8Array): number {
+  const b = findBlock(index, key);
+  return b >= 0 && compareSepAt(index, b, key) === 0 ? b - 1 : b;
+}
+
+function compareSepAt(index: RunIndex, block: number, key: Uint8Array): number {
+  return compareSep(index.sepBytes, block === 0 ? 0 : index.sepEnd[block - 1]!, index.sepEnd[block]!, key);
 }
 
 function compareSep(bytes: Uint8Array, from: number, to: number, key: Uint8Array): number {

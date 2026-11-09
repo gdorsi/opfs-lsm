@@ -135,9 +135,17 @@ function recordWatchScan(trace: OpenTrace, scan: WatchScan): void {
 }
 
 export type Range = {
+  /** Inclusive, in key order, whichever way the scan runs. */
   readonly start?: Uint8Array;
+  /** Exclusive, in key order, whichever way the scan runs. */
   readonly endExclusive?: Uint8Array;
+  /** With `reverse`, the last `limit` keys of the range. */
   readonly limit?: number;
+  /**
+   * Yield the keys of the range from the largest down. The same keys as the
+   * forward scan, in the opposite order; `limit` then keeps the largest ones.
+   */
+  readonly reverse?: boolean;
   /**
    * Keep only puts whose current value contains every one of these byte
    * strings. Runs are matched inside the wasm engine one block at a time, so

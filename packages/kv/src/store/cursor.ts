@@ -37,28 +37,21 @@ export function lowerBoundKeys(
   return lo;
 }
 
-export function entryCursor(
-  entries: readonly LayerEntry[],
-  bounds?: ScanBounds,
-): LayerCursor {
-  let i = bounds?.start ? lowerBoundKeys(entries, bounds.start) : 0;
+/** `entries` are ascending and already cut to the scan's bounds. */
+export function entryCursor(entries: readonly LayerEntry[], reverse = false): LayerCursor {
+  const step = reverse ? -1 : 1;
+  let i = reverse ? entries.length - 1 : 0;
   return {
     peek() {
       const e = entries[i];
       if (!e) return undefined;
-      if (
-        bounds?.endExclusive &&
-        compareBytes(e.key, bounds.endExclusive) >= 0
-      ) {
-        return undefined;
-      }
       if (e.kind === "put" && e.value) {
         return { key: e.key, kind: "put", value: e.value };
       }
       return { key: e.key, kind: "del" };
     },
     next() {
-      i += 1;
+      i += step;
     },
   };
 }

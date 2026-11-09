@@ -694,6 +694,39 @@ export class BlockEntries {
   }
 }
 
+/**
+ * The records of one block in descending key order, from the last one below
+ * `seek`. Records have no back pointers, so the constructor walks the block
+ * forward once and keeps where each one starts. The list grows only as
+ * `next` succeeds, so a corrupt record count cannot size it.
+ */
+export class ReverseBlockEntries {
+  private readonly w: RecordWalker;
+  private readonly starts: number[] = [];
+
+  constructor(b: BlockBytes, seek?: Uint8Array) {
+    const w = (this.w = RecordWalker.ofBlock(b));
+    const first = w.o;
+    const below = seek ? w.count - seekInBlock(w, seek) : w.count;
+    w.o = first;
+    for (let i = 0; i < below; i++) {
+      const at = w.o;
+      w.next();
+      this.starts.push(at);
+    }
+  }
+
+  next(): LayerEntry | undefined {
+    const at = this.starts.pop();
+    if (at === undefined) return undefined;
+    const w = this.w;
+    w.o = at;
+    w.next();
+    const key = w.key();
+    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value() } : { key, kind: "del" };
+  }
+}
+
 /** Point lookup in a decoded (sorted) SST. */
 export function sstGet(
   entries: readonly SstEntry[],
