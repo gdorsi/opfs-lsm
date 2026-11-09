@@ -9,6 +9,12 @@ import type { KeyRange, SstCodec } from "./sst.js";
  * byte size and key range are in the manifest, so planning reads no files.
  */
 const L0_RUNS_TO_COMPACT = 4;
+/**
+ * A step holds a window of each source, so its memory grows with the
+ * source count and not with the inputs' size. L0 runs past this many wait
+ * for the next step.
+ */
+const MAX_SOURCES = 16;
 const LEVEL_RATIO = 10;
 /** Ten compaction-sized runs (`TARGET_RUN_BYTES`). */
 const L1_TARGET_BYTES = 40 * 1024 * 1024;
@@ -27,7 +33,13 @@ export function codecForLevel(level: number): SstCodec {
 }
 
 export type CompactionPlan = {
-  /** In manifest order, so newest first. */
+  /**
+   * Newest first. A source is runs a merge reads back to back as one
+   * key-ordered stream: each L0 run alone, and the overlapped runs of the
+   * level below together, since they do not overlap each other.
+   */
+  readonly sources: readonly (readonly RunMeta[])[];
+  /** The runs of `sources`, in manifest order, so newest first. */
   readonly inputs: readonly RunMeta[];
   readonly outputLevel: number;
   /** No run below the output level overlaps the inputs, so tombstones have nothing left to hide. */
@@ -75,14 +87,17 @@ export function planCompaction(
 ): CompactionPlan | undefined {
   const inLevel = (level: number | undefined) =>
     runs.filter((r) => levelOf(r.path) === level);
-  const plan = (inputs: RunMeta[], outputLevel: number): CompactionPlan => {
+  const plan = (sources: RunMeta[][], outputLevel: number): CompactionPlan => {
+    const taken = sources.filter((s) => s.length > 0);
+    const inputs = taken.flat();
     const range = span(inputs);
     const below = runs.filter((r) => {
       const level = levelOf(r.path);
       return (level === undefined || level > outputLevel) && !inputs.includes(r);
     });
     return {
-      inputs: runs.filter((r) => inputs.includes(r)),
+      sources: taken,
+      inputs,
       outputLevel,
       bottom: !below.some((r) => overlaps(r.range, range)),
     };
@@ -100,8 +115,10 @@ export function planCompaction(
   }
 
   if (best.level === 0) {
-    const range = span(l0);
-    return plan([...l0, ...inLevel(1).filter((r) => overlaps(r.range, range))], 1);
+    // The oldest ones, so the L0 runs left behind stay newer than L1.
+    const taken = l0.slice(-(MAX_SOURCES - 1));
+    const range = span(taken);
+    return plan([...taken.map((r) => [r]), inLevel(1).filter((r) => overlaps(r.range, range))], 1);
   }
   if (best.level < 0) return undefined;
   const files = inLevel(best.level);
@@ -109,7 +126,7 @@ export function planCompaction(
   const cost = (r: RunMeta) =>
     bytesOf(next.filter((n) => overlaps(n.range, r.range))) / Math.max(1, r.bytes);
   const pick = files.reduce((a, r) => (cost(r) < cost(a) ? r : a));
-  return plan([pick, ...next.filter((n) => overlaps(n.range, pick.range))], best.level + 1);
+  return plan([[pick], next.filter((n) => overlaps(n.range, pick.range))], best.level + 1);
 }
 
 /**

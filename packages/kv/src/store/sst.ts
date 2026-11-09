@@ -8,7 +8,7 @@ import { lz4Decompress } from "./lz4.js";
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 const SST_MAGIC = 0x4f4c5354;
 const VERSION = 1;
-const FOOTER_BYTES = 44;
+export const SST_FOOTER_BYTES = 44;
 /**
  * The most Bloom hashes a footer may name. The encoder writes 7; a get
  * loops once per hash, so a corrupt count must not set its cost.
@@ -389,7 +389,7 @@ export function encodeRun(
     indexSize += 4 + ix.firstKey.byteLength + 4 + ix.lastKey.byteLength + 8;
   }
 
-  const out = new Uint8Array(dataLen + bloom.bits.byteLength + indexSize + FOOTER_BYTES);
+  const out = new Uint8Array(dataLen + bloom.bits.byteLength + indexSize + SST_FOOTER_BYTES);
   const view = new DataView(out.buffer);
   let o = 0;
   for (const blob of blockBlobs) {
@@ -479,17 +479,17 @@ export type SstFooter = {
  * version. `tail` is the last `tail.byteLength` bytes of a `fileSize`-byte run.
  */
 export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
-  if (tail.byteLength < FOOTER_BYTES || fileSize < tail.byteLength) throw new CorruptDatabaseError("sst too short");
+  if (tail.byteLength < SST_FOOTER_BYTES || fileSize < tail.byteLength) throw new CorruptDatabaseError("sst too short");
   const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
   const magic = view.getUint32(tail.byteLength - 4, true);
   if (magic !== SST_MAGIC) throw new CorruptDatabaseError(`bad sst magic ${magic.toString(16)}`);
   const version = view.getUint32(tail.byteLength - 8, true);
   if (version !== VERSION) throw new CorruptDatabaseError(`unsupported sst version ${version}`);
-  const at = tail.byteLength - FOOTER_BYTES;
+  const at = tail.byteLength - SST_FOOTER_BYTES;
   const field = (i: number) => view.getUint32(at + 4 * i, true);
   const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen, codecId] =
     [0, 1, 2, 3, 4, 5, 6, 7].map(field) as [number, number, number, number, number, number, number, number];
-  const footer = fileSize - FOOTER_BYTES;
+  const footer = fileSize - SST_FOOTER_BYTES;
   if (indexOffset !== bloomOffset + bloomLen || indexOffset + indexLen !== footer) {
     throw new CorruptDatabaseError("sst footer sections OOB");
   }
@@ -545,6 +545,30 @@ function readBlockIndex(
   }
   if (o !== indexEnd) throw new CorruptDatabaseError("sst index trailing");
   return index;
+}
+
+/**
+ * The framed length of each data block, in file order, from `meta`: a run's
+ * bytes from `footer.dataLen` to its end. Encoders write blocks back to back
+ * from offset 0 and a merge reads them that way, so the index must agree.
+ */
+export function blockLengths(meta: Uint8Array, footer: SstFooter): number[] {
+  const view = new DataView(meta.buffer, meta.byteOffset, meta.byteLength);
+  const index = readBlockIndex(meta, view, footer.indexStart - footer.dataLen, footer.indexEnd - footer.dataLen, footer.blockCount);
+  let next = 0;
+  const lengths = index.map(({ offset, length }) => {
+    if (offset !== next || length > footer.dataLen - offset) throw new CorruptDatabaseError("sst blocks do not tile the data");
+    next += length;
+    return length;
+  });
+  if (next !== footer.dataLen) throw new CorruptDatabaseError("sst blocks do not tile the data");
+  return lengths;
+}
+
+/** One data block, framed as the block index frames it, decoded as `decodeSst` decodes it. */
+export function decodeBlock(framed: Uint8Array, codec: SstCodec): SstEntry[] {
+  const view = new DataView(framed.buffer, framed.byteOffset, framed.byteLength);
+  return RecordWalker.ofBlock(blockBytes(framed, view, 0, { offset: 0, length: framed.byteLength }, codec)).entries();
 }
 
 /** One block's unpacked bytes: a u32 record count at `start`, then records up to `end`. */

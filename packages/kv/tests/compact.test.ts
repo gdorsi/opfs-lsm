@@ -61,18 +61,19 @@ describe("L0 compaction", () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     let merging = false;
+    // Compaction is the only host work that opens a run.
     const hostFs: AsyncFs = {
-      read: async (path, offset, length) => {
+      read: (path, offset, length) => fs.read(path, offset, length),
+      list: (dir) => fs.list(dir),
+      remove: (path) => fs.remove(path),
+      open: async (path) => {
         if (path.endsWith(".sst")) {
           merging = true;
           await gate;
         }
-        return fs.read(path, offset, length);
+        return fs.open(path);
       },
-      list: (dir) => fs.list(dir),
-      remove: (path) => fs.remove(path),
-    open: (path) => fs.open(path),
-    removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
+      removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
       create: (path) => fs.create(path),
     };
     const host = new EngineHost(() => hostFs);

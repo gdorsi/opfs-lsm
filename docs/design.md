@@ -595,8 +595,9 @@ bytes.
 
 `planCompaction` reads only the manifest. It scores each level and serves the highest score
 above 1; on a tie the shallower level wins:
-- L0, once it has 4 runs or more, scores its run count over 4. Its step merges every L0 run with
-  the L1 runs whose ranges overlap.
+- L0, once it has 4 runs or more, scores its run count over 4. Its step merges the oldest L0
+  runs, at most 15, with the L1 runs whose ranges overlap them. The newer L0 runs wait for the
+  next step, still newer than all of L1.
 - L1 and below score their bytes over their budget. The step picks the run whose overlapping
   bytes in the next level are the smallest fraction of its own size, and merges it with those
   runs into the next level.
@@ -610,17 +611,50 @@ the merge drop tombstones, because no older value is left for them to hide.
 
 ## Merging
 
-The merge runs in wasm (`crates/engine-core/src/compact.rs`). It decodes every input and checks
-each CRC. It merges the decoded inputs with a min-heap on key and then on run, so the newest run wins
-each key and a later entry for a key in one run wins over an earlier one. It drops tombstones
-if the plan is `bottom`. Then it cuts the output into runs of `TARGET_RUN_BYTES`, 4 MiB of records
-counted as tag, seq, and u32 key and value lengths: the key and value plus 17 bytes. A run closes on the
-first entry that takes it to 4 MiB or more. On-disk records use varints and a shared prefix, so
-a full raw run is under 4 MiB on disk when its blocks share long prefixes, as index keys do. LZ4
-runs are smaller again. The last run of a merge holds whatever is left over.
+A step reads its inputs as sources, newest first. A source is runs read back to back as one
+key-ordered stream: each L0 run is a source of its own, and the next level's overlapped runs,
+which never overlap each other, are one source together. So a step has at most 16 sources.
 
-All the inputs are in memory at once. The fixed run size is what bounds one step to about
-11 runs at a level ratio of 10.
+The merge is a session in wasm (`crates/engine-core/src/merge.rs`, ABI in
+`crates/engine-abi.md`) that the host pumps (`pumpMerge` in `host/compact.ts`). Each pump stops
+between two keys and asks the host for one thing:
+
+| Stop | The host |
+|---|---|
+| NEED | reads the listed byte ranges of the inputs, in parallel, and feeds them in |
+| WRITE | copies the bytes out and writes them to the open output run, `c<top + 1>.<i>` |
+| RUN_END | finishes that file and records its size and key range |
+| YIELD | gives the event loop a turn, after about 1 MiB of input |
+| DONE | installs the outputs: every input was read and every CRC matched |
+
+The session owns every offset and asks for whole blocks only. It reads each run's last 128 KiB
+first, which holds the footer and usually the whole bloom and index, then the rest of them if
+the tail missed it, then the data blocks in order, up to 256 KiB a read. While the host reads for
+one source, every source holding under half a read asks for its next one too. The CRC of a run
+covers its data and then its meta, but the meta comes first: the data's CRC streams in as blocks
+arrive and combines with the meta's, and it is checked before the last block's entries are used.
+
+For a key, the newest source wins and, within a source, the last duplicate wins, across block,
+read and run boundaries: each source holds the entry it would give (`cur`) and the one read after
+it (`look`), and gives `cur` only once `look` has a greater key. It drops the tombstones that win
+if the plan is `bottom`, and keeps the highest seq it dropped. It cuts the output into runs of
+`TARGET_RUN_BYTES`, 4 MiB of records counted as tag, seq, and u32 key and value lengths: the key
+and value plus 17 bytes. A run closes on the first entry that takes it to 4 MiB or more. On-disk
+records use varints and a shared prefix, so a full raw run is under 4 MiB on disk when its blocks
+share long prefixes, as index keys do. LZ4 runs are smaller again. The last run of a merge holds
+whatever is left over.
+
+What a step holds no longer depends on its inputs' size: per source about 256 KiB of blocks
+(512 KiB while reading ahead), one unpacked block and two entries, plus the open output run's
+block, bloom hashes and index rows, and up to 256 KiB of output not yet written. The session
+reserves that at open and returns an error, never a trap, when memory cannot grow. If any input
+is corrupt, or any read or write fails, the host deletes every output the step wrote and installs
+nothing.
+
+Without wasm, or while another step holds the module's one session, the TypeScript session
+(`store/merge-ts.ts`) runs the same protocol. It decodes each read's blocks at once and gathers
+an output run's entries before it encodes them, so it holds about 8 MiB more than the reads, and
+its runs are raw.
 
 ## Installing
 
@@ -670,7 +704,7 @@ From `packages/kv/src/check.ts`:
 | Append, memtable, point get, range merge, SST reader, bloom checks | Each tab's main thread | TypeScript |
 | Unpack an LZ4 block, match a filtered scan inside a block | Each tab's main thread | wasm, with TypeScript fallbacks |
 | Fold WAL into L0, encode SSTs | SharedWorker | TypeScript fold, wasm encode |
-| Compaction merge and split | SharedWorker | wasm |
+| Compaction merge and split | SharedWorker | wasm session, pumped by TypeScript |
 | CRC-32 check on decode | SharedWorker | wasm (slicing-by-8, 4 streams) |
 
 The tab reads with TypeScript so a `get` never posts a message. A get that lands in an LZ4 block

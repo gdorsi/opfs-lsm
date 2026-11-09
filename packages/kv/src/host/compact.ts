@@ -1,14 +1,13 @@
 import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
-import type { AsyncFs } from "../opfs/async-fs.js";
+import type { AsyncFs, FileWriter, OpenFile } from "../opfs/async-fs.js";
 import { reconcile } from "../recover.js";
-import { mergeSsts } from "../store/engine.js";
+import { openMerge, type MergeCore } from "../store/engine.js";
 import {
   loadGeneration,
   loadLatestGeneration,
   manifestNumbers,
   publishGeneration,
-  publishRun,
   type GenerationMeta,
   type RunMeta,
 } from "../store/generation.js";
@@ -18,7 +17,19 @@ import {
   planCompaction,
   replaceRuns,
   TARGET_RUN_BYTES,
+  type CompactionPlan,
 } from "../store/levels.js";
+
+/**
+ * How much of each source a step reads at once. The wasm session holds
+ * about this per source, twice it while reading ahead, whatever the
+ * inputs' size.
+ */
+const CHUNK_BYTES = 256 * 1024;
+/** Usually a run's whole footer, bloom and index, so one read opens it. */
+const TAIL_BYTES = 128 * 1024;
+/** About how much input a step merges between turns of the event loop. */
+const YIELD_BYTES = 1024 * 1024;
 
 /** Merged runs written to OPFS and not yet in any generation. */
 export type CompactionOutput = {
@@ -27,9 +38,11 @@ export type CompactionOutput = {
   readonly droppedSeq: number;
 };
 
+type Merged = Pick<CompactionOutput, "outputs" | "droppedSeq">;
+
 /**
  * Plan one step on `base` (the recorded generation; the newest manifest
- * file when omitted), merge its inputs, and write the output run. Needs no
+ * file when omitted), merge its inputs, and write the output runs. Needs no
  * ingest lock: a flush meanwhile only adds L0 runs in front of the inputs,
  * which stay contiguous and keep their bottom status. Outputs are named
  * past every manifest number in use (`knownTop`, IndexedDB's
@@ -45,26 +58,98 @@ export async function mergeNextStep(
   const top = Math.max(meta.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
   const plan = planCompaction(meta.runs);
   if (!plan) return undefined;
+  const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
+  let merged: Merged;
+  try {
+    merged = await writeStep(fs, plan, name);
+  } catch (err) {
+    if (!(err instanceof WebAssembly.RuntimeError)) throw err;
+    // The trap dropped wasm for this context, so the TypeScript session runs the step.
+    merged = await writeStep(fs, plan, name);
+  }
+  return { inputs: plan.inputs.map((r) => r.path), ...merged };
+}
 
-  const blobs: Uint8Array[] = [];
-  for (const { path } of plan.inputs) {
-    const buf = await fs.read(path, 0, Number.POSITIVE_INFINITY);
-    if (!buf) throw new Error(`compaction missing input ${path}`);
-    blobs.push(buf);
+async function writeStep(fs: AsyncFs, plan: CompactionPlan, name: (i: number) => string): Promise<Merged> {
+  const inputs: OpenFile[][] = [];
+  let merge: MergeCore | undefined;
+  try {
+    for (const source of plan.sources) {
+      const files: OpenFile[] = [];
+      inputs.push(files);
+      for (const { path } of source) {
+        const file = await fs.open(path);
+        if (!file) throw new Error(`compaction missing input ${path}`);
+        files.push(file);
+      }
+    }
+    merge = await openMerge({
+      sources: inputs.map((files) => files.map((f) => f.size)),
+      dropTombstones: plan.bottom,
+      targetBytes: TARGET_RUN_BYTES,
+      codec: codecForLevel(plan.outputLevel),
+      chunkBytes: CHUNK_BYTES,
+      tailBytes: TAIL_BYTES,
+      yieldBytes: YIELD_BYTES,
+    });
+    return await pumpMerge(fs, merge, inputs, name);
+  } finally {
+    merge?.close();
+    for (const file of inputs.flat()) file.close();
   }
-  const { runs, droppedSeq } = await mergeSsts(
-    blobs,
-    plan.bottom,
-    TARGET_RUN_BYTES,
-    codecForLevel(plan.outputLevel),
-  );
+}
+
+/**
+ * Pump `merge` until it is done. Answers each `need` with parallel reads of
+ * `inputs` (by source, then run), streams each output run to `name(i)` as
+ * its bytes come, and gives the event loop a turn at each `yield`. Returns
+ * only after `done`, so only outputs whose inputs all checked out reach a
+ * manifest. On any failure, removes every output it created and throws.
+ */
+export async function pumpMerge(
+  fs: AsyncFs,
+  merge: MergeCore,
+  inputs: readonly (readonly OpenFile[])[],
+  name: (i: number) => string,
+): Promise<Merged> {
   const outputs: RunMeta[] = [];
-  for (const [i, run] of runs.entries()) {
-    const path = levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
-    await publishRun(fs, path, run.body);
-    outputs.push({ path, ...run.end });
+  const created: string[] = [];
+  let open: { readonly path: string; readonly writer: FileWriter } | undefined;
+  try {
+    for (;;) {
+      const stop = merge.pump();
+      switch (stop.kind) {
+        case "need": {
+          const got = await Promise.all(stop.demands.map((d) => inputs[d.source]![d.run]!.read(d.offset, d.length)));
+          stop.demands.forEach((d, i) => merge.feed(d.source, got[i]!));
+          break;
+        }
+        case "write":
+          if (!open) {
+            const path = name(outputs.length);
+            created.push(path);
+            open = { path, writer: await fs.create(path) };
+          }
+          await open.writer.write(stop.bytes);
+          break;
+        case "run-end":
+          if (!open) throw new Error("merge ended an output run it never wrote");
+          await open.writer.finish();
+          outputs.push({ path: open.path, ...stop.end });
+          open = undefined;
+          break;
+        case "yield":
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          break;
+        case "done":
+          return { outputs, droppedSeq: stop.droppedSeq };
+      }
+    }
+  } catch (err) {
+    await open?.writer.abort().catch(() => undefined);
+    for (const path of created) await fs.remove(path).catch(() => undefined);
+    throw err;
   }
-  return { inputs: plan.inputs.map((r) => r.path), outputs, droppedSeq };
 }
 
 /**
