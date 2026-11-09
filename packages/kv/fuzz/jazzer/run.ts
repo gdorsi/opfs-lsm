@@ -43,7 +43,6 @@ await build({
   platform: "node",
   format: "cjs",
   outfile: bundle,
-  external: ["*/wasm/engine_wasm.js"],
   logLevel: "error",
 });
 

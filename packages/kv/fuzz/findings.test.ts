@@ -9,7 +9,7 @@ import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { decodeSst, encodeSst, readFooter } from "../src/store/sst.js";
 import { settle } from "../src/store/cursor.js";
 import { bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
-import { loadWasm, withoutWasm, type WasmExports } from "./wasm.js";
+import { loadWasm, withoutWasm, type FlatEngine } from "./wasm.js";
 
 /**
  * Bugs the decoder fuzzing found, each reduced to one input and kept as a
@@ -19,7 +19,7 @@ import { loadWasm, withoutWasm, type WasmExports } from "./wasm.js";
  */
 
 const utf = (s: string) => new TextEncoder().encode(s);
-let wasm: WasmExports;
+let wasm: FlatEngine;
 
 beforeAll(async () => {
   wasm = await loadWasm();
@@ -138,7 +138,7 @@ describe("decoder bugs the fuzzers found", () => {
   // does. The checks are now `key_len > end - o`, with `o <= end`.
   it("KW1: scan_block_contains does not panic on a varint near 2^32", () => {
     const block = new Uint8Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3]);
-    expect(() => wasm.scan_block_contains_js(block, false, packPatterns([]))).not.toThrow(WebAssembly.RuntimeError);
+    expect(() => wasm.scanBlockContains(block, false, packPatterns([]))).not.toThrow(WebAssembly.RuntimeError);
   });
 
   // KB2 in wasm, past the CRC only: `decode_sst` reserved the footer's
@@ -147,7 +147,7 @@ describe("decoder bugs the fuzzers found", () => {
     const buf = encodeSst(entries);
     footer(buf).setUint32(0, 0xffffffff, true);
     fixSstCrc(buf);
-    expect(() => wasm.decode_sst_js(buf)).not.toThrow(WebAssembly.RuntimeError);
+    expect(() => wasm.decodeSst(buf)).not.toThrow(WebAssembly.RuntimeError);
   });
 
   // KW2, SharedWorker with wasm. `decode_sst_js` and `merge_ssts_js` throw
@@ -179,13 +179,13 @@ describe("wasm traps", () => {
     const block = new Uint8Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3]);
     for (let i = 0; i < 5_000; i++) {
       try {
-        wasm.scan_block_contains_js(block, false, packPatterns([]));
+        wasm.scanBlockContains(block, false, packPatterns([]));
       } catch {
         // KW1 panicked here.
       }
     }
     const run = encodeSst(entries);
-    expect(wasm.decode_sst_js(run)).toHaveLength(entries.length);
+    expect(wasm.decodeSst(run)).toHaveLength(entries.length);
   });
 
   // A trap that is not a panic on input: wasm memory cannot grow to 4 GiB.

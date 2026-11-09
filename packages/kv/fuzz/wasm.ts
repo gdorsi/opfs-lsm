@@ -1,29 +1,25 @@
 /**
- * The wasm engine, loaded the way the engine loads it, with its raw exports
- * for the differential tests and its memory registered with `bounded`.
+ * The wasm engine, instantiated here from the same bytes `engine.ts` loads,
+ * so the differential tests call it directly (its errors are not wrapped
+ * into fallbacks) and its memory is registered with `bounded`.
  */
-import { ensureEngine, engineUsingWasm } from "../src/store/engine.js";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { ensureEngine, engineUsingWasm, flatEngine, type FlatEngine } from "../src/store/engine.js";
 import { useBlockScanner } from "../src/store/block-scan.js";
 import { useLz4Decoder } from "../src/store/lz4.js";
 import { watchWasmMemory } from "./targets.js";
 
-export type WasmExports = {
-  decode_sst_js(buf: Uint8Array): { kind: string; key: Uint8Array; value?: Uint8Array; seq: number }[];
-  encode_sst_js(entries: unknown[], lz4: boolean): Uint8Array;
-  lz4_decompress_js(src: Uint8Array, size: number): Uint8Array;
-  scan_block_contains_js(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
-  merge_ssts_js(blobs: Uint8Array[], drop: boolean, target: number, lz4: boolean): { ssts: Uint8Array[]; droppedSeq: number };
-};
+export type { FlatEngine };
 
-export async function loadWasm(): Promise<WasmExports> {
+export async function loadWasm(): Promise<FlatEngine> {
   await ensureEngine();
   if (!engineUsingWasm()) throw new Error("wasm did not load: run `pnpm --filter @opfs-lsm/kv build:wasm`");
-  const mod = (await import("../wasm/engine_wasm.js")) as unknown as WasmExports & {
-    default: () => Promise<{ memory: WebAssembly.Memory }>;
-  };
-  const { memory } = await mod.default();
+  const bytes = await readFile(fileURLToPath(new URL("../wasm/engine.wasm", import.meta.url)));
+  const { instance } = await WebAssembly.instantiate(bytes, {});
+  const { memory } = instance.exports as { memory: WebAssembly.Memory };
   watchWasmMemory(() => memory.buffer.byteLength);
-  return mod;
+  return flatEngine(instance);
 }
 
 /**
