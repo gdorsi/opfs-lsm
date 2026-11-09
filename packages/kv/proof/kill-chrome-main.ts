@@ -293,6 +293,10 @@ async function writeProbeOpen(file: string, size: number, fill: number): Promise
   for (let at = 0; at < size; at += chunk.byteLength) await w.write(chunk.subarray(0, Math.min(chunk.byteLength, size - at)));
 }
 
+async function removeProbe(file: string): Promise<void> {
+  await (await probeDir()).removeEntry(file);
+}
+
 async function readProbe(file: string): Promise<{ size: number; fills: number[] } | null> {
   try {
     const handle = await (await probeDir()).getFileHandle(file);
@@ -374,7 +378,7 @@ async function inspect(name: string, pattern: string): Promise<unknown> {
     const buf = (await fs.read(`m/${file}`, 0, Number.POSITIVE_INFINITY)) ?? new Uint8Array(0);
     try {
       const g = decodeGeneration(buf);
-      manifests.push({ file, bytes: buf.byteLength, generation: g.generation, through: g.through, tombstoneSeq: g.tombstoneSeq, runs: g.runs.map((r) => r.path) });
+      manifests.push({ file, bytes: buf.byteLength, generation: g.generation, through: g.through, cut: g.cut, tombstoneSeq: g.tombstoneSeq, runs: g.runs.map((r) => r.path) });
     } catch (err) {
       manifests.push({ file, bytes: buf.byteLength, error: errorInfo(err).message });
     }
@@ -399,7 +403,7 @@ async function inspect(name: string, pattern: string): Promise<unknown> {
       runs.push({ path, bytes: buf.byteLength, error: errorInfo(err).message });
     }
   }
-  return { opfsDatabases: dirs.sort(), logs, manifests, runs };
+  return { opfsDatabases: dirs.sort(), top: [...(await fs.list(""))].sort(), logs, manifests, runs };
 }
 
 /** Open a handle and keep it, so this page connects to the SharedWorker. */
@@ -418,6 +422,7 @@ Object.assign(globalThis, {
     lockFree,
     writeProbe,
     writeProbeOpen,
+    removeProbe,
     readProbe,
     opfsTree,
     estimate,

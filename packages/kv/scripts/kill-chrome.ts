@@ -376,13 +376,15 @@ class Browser {
   }
 
   /** Close Chrome the normal way, and kill it when that hangs. */
-  async close(): Promise<void> {
+  async close(): Promise<{ exited: boolean; killed: string[] }> {
+    let exited = !this.alive;
     if (this.alive) {
       this.cdp.fire("Browser.close");
-      await Promise.race([this.exited, sleep(10_000)]);
+      exited = await Promise.race([this.exited.then(() => true), sleep(10_000).then(() => false)]);
     }
-    await this.drain();
+    const killed = await this.drain();
     this.cdp.close();
+    return { exited, killed };
   }
 
   /**
@@ -702,6 +704,8 @@ type Outcome = {
 class Run {
   browser: Browser | undefined;
   readonly log: string[] = [];
+  /** The database's files at the last few points of interest, for a failure's evidence. */
+  readonly snaps: { when: string; files: unknown }[] = [];
   readonly opts: Options;
   readonly origin: string;
   readonly profile: string;
@@ -731,8 +735,27 @@ class Run {
     return Page.open(await this.launch(), this.url(), (l) => this.note(l));
   }
 
+  /** Record the database's files (manifests, runs, logs) as `page` sees them now. */
+  async snap(page: Page, name: string, when: string): Promise<void> {
+    try {
+      const files = await page.call<unknown>("inspect", [name, "^~"], 30_000);
+      this.snaps.push({ when, files });
+    } catch (err) {
+      this.snaps.push({ when, files: `inspect failed: ${(err as Error).message}` });
+    }
+    if (this.snaps.length > 8) this.snaps.shift();
+  }
+
+  /** How each graceful close ended: a forced kill here is a kill no iteration asked for. */
+  readonly closes: { exited: boolean; killed: string[] }[] = [];
+
   async closeBrowser(): Promise<void> {
-    await this.browser?.close();
+    if (this.browser) {
+      const c = await this.browser.close();
+      this.closes.push(c);
+      if (this.closes.length > 4) this.closes.shift();
+      if (!c.exited || c.killed.length > 0) console.log(`     close: browser exited=${c.exited} killed=[${c.killed.join(", ")}]`);
+    }
     this.browser = undefined;
   }
 
@@ -769,6 +792,7 @@ class Run {
 
     const tabs: Page[] = [];
     for (let t = 0; t < plan.tabs; t++) tabs.push(await this.page());
+    await this.snap(tabs[0]!, db.name, `iter ${plan.iteration} after launch, before any tab opens it`);
     await Promise.all(
       tabs.map((p, tab) => p.call("start", [{ name: db.name, seed: this.opts.seed, iteration: plan.iteration, tab, maxWalBytes: plan.maxWalBytes }])),
     );
@@ -812,6 +836,7 @@ class Run {
       for (const e of errors.values()) notes.push(`quota: tab ${e.tab} attempt ${e.n} ${e.typed ? "typed" : "untyped"} ${e.name}: ${e.message.slice(0, 120)}`);
     } else {
       await sleep(plan.killAfterMs);
+      await this.snap(tabs[0]!, db.name, `iter ${plan.iteration} before ${plan.kind}`);
       if (plan.kind === "page-crash") {
         const victim = tabs[plan.pick % tabs.length]!;
         const ok = await victim.crash();
@@ -904,7 +929,9 @@ class Run {
     }
     const probeValue = `probe ${plan.iteration} ${Date.now()}`;
     const keys = [...allKeys(), "~probe", "~in-place"];
+    await this.snap(checker, db.name, `iter ${plan.iteration} after relaunch, before the check`);
     const res = await checker.call<CheckResult>("check", [{ name: db.name, keys, probe: probeValue }], 120_000);
+    await this.snap(checker, db.name, `iter ${plan.iteration} after the check`);
     const tree = await checker.call<string[]>("opfsTree", []);
     // Chrome leaves a writer's swap file behind when the browser dies mid-write.
     const swaps = tree.filter((p) => p.startsWith(`opfs-lsm/${db.name}/`) && p.includes(".crswap"));
@@ -1123,6 +1150,38 @@ async function probes(run: Run): Promise<ProbeResult[]> {
       detail: `target after kill -9 of the browser mid-write: ${JSON.stringify(got)}; kc-probe entries after relaunch: ${tree.filter((p) => p.startsWith("kc-probe/")).join(", ")}; profile files named *crswap* before relaunch: ${onDisk.length}`,
     };
   });
+  // After a browser kill, Chrome was seen to lose the files a later session
+  // created while keeping what it removed: write, kill, then in the next
+  // session create one file and remove another, close, and look again.
+  await attempt("session-after-browser-kill", async () => {
+    let browser = await run.launch();
+    let page = await run.page();
+    await page.call("writeProbe", ["s-before.bin", original, A]);
+    await page.call("writeProbeOpen", ["s-busy.bin", 8 << 20, B], 30_000);
+    process.kill(browser.pid, "SIGKILL");
+    await Promise.race([browser.exited, sleep(10_000)]);
+    await browser.drain();
+    run.browser = undefined;
+    browser = await run.launch();
+    page = await run.page();
+    await page.call("writeProbe", ["s-after.bin", original, B]);
+    await page.call("removeProbe", ["s-before.bin"]);
+    // The engine too: a fresh database written, ingested and checked.
+    const sdb = `kc-session-${run.opts.seed}`;
+    const res = await page.call<CheckResult>("check", [{ name: sdb, keys: [], probe: "session" }], 60_000);
+    const dbIn = await page.call<{ manifests: { file: string }[] }>("inspect", [sdb, "^~"], 30_000);
+    const inSession = await page.call<string[]>("opfsTree", []);
+    await run.closeBrowser();
+    page = await run.page();
+    const dbNext = await page.call<{ manifests: { file: string }[] }>("inspect", [sdb, "^~"], 30_000);
+    const after = await page.call<{ size: number; fills: number[] } | null>("readProbe", ["s-after.bin"]);
+    const before = await page.call<{ size: number; fills: number[] } | null>("readProbe", ["s-before.bin"]);
+    const tree = await page.call<string[]>("opfsTree", []);
+    return {
+      ok: after !== null && before === null && dbNext.manifests.length > 0,
+      detail: `created after the kill: ${after ? "kept" : "LOST"}; removed after the kill: ${before ? "BACK" : "stays removed"}; engine db check ${res.open.ok ? "opened" : "failed"}, manifests in that session [${dbIn.manifests.map((m) => m.file).join(",")}], next launch [${dbNext.manifests.map((m) => m.file).join(",")}]; in that session: ${inSession.filter((p) => p.startsWith("kc-probe/s-")).join(", ")}; next launch: ${tree.filter((p) => p.startsWith("kc-probe/s-")).join(", ")}`,
+    };
+  });
   return out;
 }
 
@@ -1236,7 +1295,7 @@ async function main(): Promise<number> {
           const f = outcome.failure!;
           fs.mkdirSync(opts.artifacts, { recursive: true });
           const file = path.join(opts.artifacts, `seed-${opts.seed}-iter-${i}.json`);
-          fs.writeFileSync(file, JSON.stringify({ seed: opts.seed, plan, db: db.name, failure: f, notes: outcome.notes, log: run.log.slice(-200), chrome: run.browser?.stderrTail() }, null, 2));
+          fs.writeFileSync(file, JSON.stringify({ seed: opts.seed, plan, db: db.name, failure: f, notes: outcome.notes, log: run.log.slice(-200), snaps: run.snaps, closes: run.closes, chrome: run.browser?.stderrTail() }, null, 2));
           console.log(`     seed=${opts.seed} iteration=${i} kind=${plan.kind} kill_at=${plan.killAfterMs}ms tabs=${plan.tabs} maxWalBytes=${plan.maxWalBytes}`);
           console.log(`     reason: ${f.reason}`);
           for (const d of f.detail) console.log(`       ${d}`);
