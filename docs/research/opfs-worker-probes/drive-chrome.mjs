@@ -1,5 +1,5 @@
 // Runs every probe in headless Chrome, P7 included, through the DevTools protocol.
-// Start the server first: node docs/research/opfs-worker-probes/serve.mjs 8788
+// Start the server first: node docs/research/opfs-worker-probes/serve.mjs
 // node docs/research/opfs-worker-probes/drive-chrome.mjs [baseUrl] [chromePath]
 import { spawn } from "node:child_process";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const base = process.argv[2] ?? "http://localhost:8788";
+const base = process.argv[2] ?? "http://localhost:8787";
 const chromePath = process.argv[3] ?? process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const resultsDir = fileURLToPath(new URL("results/", import.meta.url));
 const port = 9333;

@@ -245,8 +245,8 @@ async function bfcacheStart() {
 addEventListener("pageshow", (e) => {
   const state = JSON.parse(localStorage.getItem("iq-p7") ?? "null");
   if (!state?.away) return;
-  state.bfcached = e.persisted;
-  localStorage.setItem("iq-p7", JSON.stringify(state));
+  // Report a run once. Left in place, any later load of this page would post it again as "not bfcached".
+  localStorage.removeItem("iq-p7");
   const p7 = {
     verdict: e.persisted ? "page was bfcached" : "page was not bfcached (reloaded)",
     lockHeldWhileAway: state.away.lockHeld,

@@ -30,7 +30,8 @@ createServer(async (req, res) => {
     const data = await readFile(join(dir, path));
     res.writeHead(200, {
       "content-type": types[extname(path)] ?? "application/octet-stream",
-      "cache-control": "no-store",
+      // Always refetched, but not `no-store`: that alone keeps a page out of Firefox's bfcache, which P7 measures.
+      "cache-control": "no-cache",
     });
     res.end(data);
   } catch {

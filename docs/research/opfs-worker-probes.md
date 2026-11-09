@@ -40,6 +40,9 @@ Probe P7: a page whose worker holds a lock and a handle navigates away. The next
 - **Safari can bfcache a page whose worker holds a lock and a handle, and keeps both held while the page is cached.** Whether it does is decided per navigation: it happened in one of two attempts. A design where other tabs wait on every live tab will stall for as long as Safari keeps such a page.
 - **Chrome put the page in bfcache with its lock still held, then evicted it when another worker opened its file.** It reported `WebLocksContention` as the reason it didn't restore the page. Our reading, inferred from that reason and not probed separately: Chrome evicts a cached page when another context needs what it holds, while a passive `locks.query()` doesn't trigger eviction. So a protocol that only queries locks can still see a cached tab as alive.
 - **Firefox unloads the page, and the lock and handle are released within 1 s.**
+- **Two limits of these runs.** Both are fixed in the probe now, and Safari and Firefox have not been run again.
+  - The probe server sent the page with `Cache-Control: no-store`. Firefox has long kept such pages out of bfcache, so its column doesn't show what the lock and the handle do there. Chrome and Safari cached the page anyway.
+  - The probe page posted a finished P7 run again, as "not bfcached", each time it was loaded afterwards. Safari's 1 of 2 may count one such repeat.
 - **Handling.** On `pagehide` with `persisted: true`, a tab should flush, close its handles and release its locks. On `pageshow` it should start over as a new writer. Nothing in the repo does this yet.
 
 ## SharedWorker reads of a file being written
