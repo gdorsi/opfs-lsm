@@ -97,28 +97,32 @@ describe("sst format", () => {
 
   it("leaves a cursor where it was when a block boundary misses, in both directions", async () => {
     const body = encodeSst(indexWorkload(300), 256);
+    const sorted = decodeSst(body);
     const keysOf = (es: LayerEntry[]) => es.map((e) => [...e.key].join());
-    for (const reverse of [false, true]) {
-      const want = keysOf(await drain(readerOfBytes(body).cursor()));
-      if (reverse) want.reverse();
-      const reader = readerOfBytes(body);
-      const cursor = reader.cursor(undefined, reverse);
-      const got: string[] = [];
-      let misses = 0;
-      for (;;) {
-        const e = cursor.peek();
-        if (e instanceof Miss) {
-          misses++;
-          await e.ready;
-          continue;
+    const cut = { start: sorted[sorted.length >> 2]!.key, endExclusive: cat(sorted[(3 * sorted.length) >> 2]!.key, Uint8Array.of(0)) };
+    for (const bounds of [undefined, cut]) {
+      for (const reverse of [false, true]) {
+        const want = keysOf(await drain(readerOfBytes(body).cursor(bounds)));
+        if (reverse) want.reverse();
+        const reader = readerOfBytes(body);
+        const cursor = reader.cursor(bounds, reverse);
+        const got: string[] = [];
+        let misses = 0;
+        for (;;) {
+          const e = cursor.peek();
+          if (e instanceof Miss) {
+            misses++;
+            await e.ready;
+            continue;
+          }
+          if (!e) break;
+          got.push([...e.key].join());
+          cursor.next();
+          reader.close();
         }
-        if (!e) break;
-        got.push([...e.key].join());
-        cursor.next();
-        reader.close();
+        expect(got).toEqual(want);
+        expect(misses).toBeGreaterThan(10);
       }
-      expect(got).toEqual(want);
-      expect(misses).toBeGreaterThan(10);
     }
   });
 
