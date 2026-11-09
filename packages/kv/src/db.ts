@@ -31,7 +31,8 @@ import {
 import { newTabId, type TabId } from "./log/frame.js";
 import { holdTab } from "./log/liveness.js";
 import type { MergedRecord } from "./log/merger.js";
-import { LogSession } from "./log/session.js";
+import { LeftError, LogSession } from "./log/session.js";
+import { pageLifecycle, type Lifecycle } from "./lifecycle.js";
 import { recoverGeneration } from "./recover.js";
 import { Memtable, layered, type MemRow, type MemRows } from "./store/memtable.js";
 import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
@@ -113,6 +114,8 @@ export type HarnessOpenOptions = OpenOptions & {
    * init can append after the open promise resolves.
    */
   readonly trace?: OpenTrace;
+  /** When the page is suspended and resumed. Default: the page's own events, none without a document. */
+  readonly lifecycle?: Lifecycle;
 };
 
 /** One timed piece of open. `endedAt` is `performance.now()` on this thread. */
@@ -342,33 +345,36 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   // This tab's own log. An fs with in-process segments (MemoryFs) writes
   // it in this thread. OPFS is written only through SyncAccessHandles,
   // which exist only in a dedicated WebWorker; it spawns while open reads
-  // the logs, and the first write waits for it.
-  const tab = newTabId();
-  // The liveness lock comes before the log directory: a tab that finds the
-  // directory and not the lock takes the tab for dead.
-  const held = holdTab(name, tab);
+  // the logs, and the first write waits for it. A Db that rejoins after its
+  // page was suspended starts a new tab, log and worker.
   const segments = fs.segments?.();
-  let client: TabLogClient;
-  try {
-    if (segments) {
-      client = createLocalLogClient(segments, tab, policy.maxWalBytes);
-    } else if (typeof Worker !== "undefined") {
+  const logClient = (tab: TabId, held: Promise<() => void>): TabLogClient => {
+    if (segments) return createLocalLogClient(segments, tab, policy.maxWalBytes);
+    if (typeof Worker !== "undefined") {
       // Inline URL for bundlers, as for the SharedWorker above.
       const logWorker = new Worker(new URL("./log/log-worker.js", import.meta.url), {
         type: "module",
         name: `opfs-lsm-log:${name}`,
       });
-      client = createWorkerLogClient(logWorker, name, tab, policy.maxWalBytes, held);
-    } else if (!useBrowser) {
-      // A Node test over an fs with no in-process segments.
-      client = createLocalLogClient(republishingSegments(fs), tab, policy.maxWalBytes);
-    } else {
-      throw new StorageUnavailableError("no way to write the log: no in-process segments and no Worker");
+      return createWorkerLogClient(logWorker, name, tab, policy.maxWalBytes, held);
     }
-  } catch (err) {
-    void held.then((release) => release(), () => undefined);
-    throw err;
-  }
+    // A Node test over an fs with no in-process segments.
+    if (!useBrowser) return createLocalLogClient(republishingSegments(fs), tab, policy.maxWalBytes);
+    throw new StorageUnavailableError("no way to write the log: no in-process segments and no Worker");
+  };
+  const startTab = (): NewTab => {
+    const tab = newTabId();
+    // The liveness lock comes before the log directory: a tab that finds the
+    // directory and not the lock takes the tab for dead.
+    const held = holdTab(name, tab);
+    try {
+      return { tab, held, client: logClient(tab, held) };
+    } catch (err) {
+      void held.then((release) => release(), () => undefined);
+      throw err;
+    }
+  };
+  const first = startTab();
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
     Math.max(MIN_MEMORY_BUDGET, options.memoryBudget ?? DEFAULT_BUDGET),
@@ -377,9 +383,9 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const db = new DbImpl(
     name,
     writerId,
-    tab,
-    held,
-    client,
+    first,
+    startTab,
+    options.lifecycle ?? pageLifecycle(),
     tabFs,
     cache,
     ingest,
@@ -388,7 +394,15 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     appended,
     trace,
   );
-  internals.set(db, { name, fs: tabFs, ingest, appended, tab });
+  internals.set(db, {
+    name,
+    fs: tabFs,
+    ingest,
+    appended,
+    get tab() {
+      return db.tab;
+    },
+  });
   // Watch first: opening can already ask for an ingest of the logs it finds.
   ingest.watch(name, policy);
   const syncAt = trace ? performance.now() : 0;
@@ -455,6 +469,9 @@ type Layers = {
   refs: number;
 };
 
+/** A tab's identity, liveness lock and log, for a Db to join the tabs as. */
+type NewTab = { readonly tab: TabId; readonly held: Promise<() => void>; readonly client: TabLogClient };
+
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
 
@@ -482,7 +499,18 @@ const GENERATION_GONE =
 class DbImpl implements Db {
   private closed = false;
   private readonly mem = new Memtable();
-  private readonly session: LogSession;
+  private session: LogSession;
+  /** Tabs this Db was before it rejoined: their records are its own writes. */
+  private readonly formerTabs = new Set<TabId>();
+  /**
+   * Set from a suspend until this Db rejoined as a new tab. Work that needs
+   * the session waits for `back`, which rejects if the rejoin failed.
+   */
+  private away: { back: Promise<void>; open: () => void; fail: (err: unknown) => void } | undefined;
+  /** The page is suspended now. */
+  private suspended = false;
+  private rejoining: Promise<void> = Promise.resolve();
+  private stopWatching: (() => void) | undefined;
   private installed: Layers = {
     generation: 0,
     runs: [],
@@ -501,30 +529,49 @@ class DbImpl implements Db {
   private syncing: Promise<void> | undefined;
   private syncAgain = false;
   private readonly changeBus = new ChangeBus();
-  private readonly bus: BroadcastChannel | undefined;
-  private readonly onBusMessage: ((ev: MessageEvent) => void) | undefined;
+  private bus: BroadcastChannel | undefined;
 
   constructor(
     readonly name: DbName,
     readonly writerId: WriterId,
-    tab: TabId,
-    held: Promise<() => void>,
-    client: TabLogClient,
+    first: NewTab,
+    private readonly startTab: () => NewTab,
+    private readonly lifecycle: Lifecycle | undefined,
     private readonly fs: AsyncFs,
     private readonly cache: PageCache,
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
-    policy: IngestPolicy,
+    private readonly policy: IngestPolicy,
     private readonly appended: { records: number; bytes: number },
     private readonly trace?: OpenTrace,
   ) {
-    this.session = new LogSession({
-      name,
+    this.session = this.startSession(first);
+    this.openBus();
+  }
+
+  private openBus(): void {
+    if (typeof BroadcastChannel === "undefined") return;
+    this.bus = new BroadcastChannel(layersChannel(this.name));
+    this.bus.onmessage = (ev: MessageEvent) => this.onMessage(ev.data);
+  }
+
+  private closeBus(): void {
+    this.bus?.close();
+    this.bus = undefined;
+  }
+
+  get tab(): TabId {
+    return this.session.tab;
+  }
+
+  private startSession({ tab, held, client }: NewTab, after?: LogSession): LogSession {
+    return new LogSession({
+      name: this.name,
       tab,
       held,
-      fs,
+      fs: this.fs,
       client,
-      maxWalBytes: policy.maxWalBytes,
+      maxWalBytes: this.policy.maxWalBytes,
       onStable: (records) => this.applyStable(records),
       onBehind: (through) =>
         void this.syncGeneration().then(
@@ -538,11 +585,88 @@ class DbImpl implements Db {
           () => undefined,
         ),
       onGone: () => this.syncGeneration(),
+      ...(after ? { after } : {}),
     });
-    if (typeof BroadcastChannel !== "undefined") {
-      this.bus = new BroadcastChannel(layersChannel(name));
-      this.onBusMessage = (ev: MessageEvent) => this.onMessage(ev.data);
-      this.bus.addEventListener("message", this.onBusMessage);
+  }
+
+  /**
+   * A frozen page answers no other tab, and every tab waits for every live
+   * one. So this tab leaves while the page still runs, as a close does, and
+   * the others read its log to its end.
+   */
+  private suspend(): void {
+    if (this.closed || this.suspended) return;
+    this.suspended = true;
+    if (!this.away) {
+      let open!: () => void;
+      let fail!: (err: unknown) => void;
+      const back = new Promise<void>((res, rej) => {
+        open = res;
+        fail = rej;
+      });
+      back.catch(() => undefined);
+      this.away = { back, open, fail };
+    }
+    // Chrome evicts a page from the back/forward cache when a message reaches it.
+    this.closeBus();
+    void this.session.leave();
+  }
+
+  private resume(): void {
+    if (this.closed || !this.suspended) return;
+    this.suspended = false;
+    this.rejoining = this.rejoining.then(() => this.rejoin());
+  }
+
+  /**
+   * Join again as a new tab: a tab never reopens its log. Every tab reads
+   * the old tab's log to its end, this one too, so its records take their
+   * place in the order like any tab's. The new session starts above what
+   * the old one handed out, and reads the old one's unstable records
+   * through its overlay until they become stable. Generations published
+   * while away went unheard, so the newest is installed first, as on open.
+   */
+  private async rejoin(): Promise<void> {
+    const away = this.away;
+    if (!away || this.suspended || this.closed) return;
+    const old = this.session;
+    await old.leave();
+    if (this.suspended || this.closed) return;
+    try {
+      const next = this.startSession(this.startTab(), old);
+      this.formerTabs.add(old.tab);
+      this.session = next;
+      this.openBus();
+      await this.syncGeneration();
+      await next.prepareJoin();
+      await next.finishJoin();
+      await next.waitStable(next.merger.maxSeen());
+    } catch (err) {
+      // Suspended or closed again: the next resume rejoins, or close fails the waiters.
+      if (err instanceof LeftError || this.closed) return;
+      away.fail(err);
+      return;
+    }
+    if (this.suspended) return;
+    this.away = undefined;
+    away.open();
+  }
+
+  /**
+   * Run `fn` on the session, once this Db is back if the page is suspended.
+   * A session that left throws `LeftError` only before it wrote anything,
+   * so `fn` runs again on the next one.
+   */
+  private async onSession<T>(fn: () => Promise<T>): Promise<T> {
+    for (;;) {
+      // No await when not away: a write started before `close` must reach the log before it.
+      if (this.away) await this.away.back;
+      this.ensureOpen();
+      try {
+        return await fn();
+      } catch (err) {
+        if (!(err instanceof LeftError)) throw err;
+      }
     }
   }
 
@@ -577,6 +701,7 @@ class DbImpl implements Db {
     await this.session.finishJoin();
     await this.session.waitStable(this.session.merger.maxSeen());
     span(this.trace, "log", performance.now() - logAt);
+    this.stopWatching = this.lifecycle?.({ suspend: () => this.suspend(), resume: () => this.resume() });
   }
 
   private onMessage(data: BusMessage | null): void {
@@ -595,7 +720,7 @@ class DbImpl implements Db {
     for (const r of records) {
       const seq = this.mem.appliedThrough + 1;
       this.mem.apply({ seq, ops: r.ops });
-      if (r.tab !== this.session.tab) {
+      if (r.tab !== this.session.tab && !this.formerTabs.has(r.tab)) {
         this.changeBus.emit({ kind: "append", writerId: r.writerId, seq });
       } else if (this.acking.has(r.stamp)) {
         this.acking.set(r.stamp, seq);
@@ -808,7 +933,7 @@ class DbImpl implements Db {
           await this.syncGeneration();
           if (this.closed) return;
           const logAt = this.trace ? performance.now() : 0;
-          await this.session.catchUp();
+          await this.onSession(() => this.session.catchUp());
           span(this.trace, "log", performance.now() - logAt);
         } while (this.syncAgain);
       } finally {
@@ -863,8 +988,16 @@ class DbImpl implements Db {
     this.ensureOpen();
     const ops = collectBatch(build);
     if (ops.length === 0) return;
-    const stamp = this.session.append(ops, this.writerId, (s) => this.acking.set(s, undefined));
-    this.acked(await stamp);
+    const stamp = await this.onSession(async () => {
+      let at: number | undefined;
+      try {
+        return await this.session.append(ops, this.writerId, (s) => this.acking.set((at = s), undefined));
+      } catch (err) {
+        if (at !== undefined) this.acking.delete(at);
+        throw err;
+      }
+    });
+    this.acked(stamp);
     this.count(ops);
   }
 
@@ -880,7 +1013,7 @@ class DbImpl implements Db {
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
-    const held = await this.session.reserve();
+    const held = await this.onSession(() => this.session.reserve());
     const layers = this.installed;
     this.retain(layers);
     try {
@@ -1002,7 +1135,7 @@ class DbImpl implements Db {
   /** Fold everything acked so far, by any tab, into the SSTs, and wait for compaction. */
   async ingest(): Promise<{ generation: number }> {
     this.ensureOpen();
-    const cut = await this.session.stableCut();
+    const cut = await this.onSession(() => this.session.stableCut());
     const before = this.installed.generation;
     const result = await this.ingestClient.ingest(this.name, cut, true);
     if (result.generation !== before) {
@@ -1018,10 +1151,9 @@ class DbImpl implements Db {
     if (this.closed) return;
     this.closed = true;
     this.changeBus.clear();
-    if (this.bus && this.onBusMessage) {
-      this.bus.removeEventListener("message", this.onBusMessage);
-      this.bus.close();
-    }
+    this.stopWatching?.();
+    this.away?.fail(new ClosedError("database is closed"));
+    this.closeBus();
     this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
     await this.session.close();

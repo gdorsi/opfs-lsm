@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>@opfs-lsm/kv back/forward cache proof</title>
+  </head>
+  <body>
+    <p id="status">opening</p>
+    <script type="module">
+      import { openDb } from "/dist/index.js";
+      const enc = new TextEncoder();
+      const dec = new TextDecoder();
+      const db = await openDb({ name: "bfcache" });
+      const shows = [];
+      addEventListener("pageshow", (ev) => shows.push(ev.persisted));
+      window.kv = {
+        put: (k, v) => db.put(enc.encode(k), enc.encode(v)),
+        get: async (k) => {
+          const v = await db.get(enc.encode(k));
+          return v ? dec.decode(v) : null;
+        },
+        sync: () => db.sync(),
+        ingest: () => db.ingest(),
+        shows,
+      };
+      document.getElementById("status").textContent = "ready";
+    </script>
+  </body>
+</html>

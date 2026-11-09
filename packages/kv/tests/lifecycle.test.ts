@@ -160,6 +160,7 @@ describe("a frozen or back/forward-cached tab", () => {
         "the other tab's update",
       );
       await b.put(utf("b2"), utf("2"));
+      await within(b.ingest(), 2_000, "the other tab's ingest");
 
       page.resume();
       await within(a.sync(), 2_000, "the resumed tab's sync");

@@ -28,6 +28,7 @@
     "test:watch": "vitest",
     "test:unit": "vitest run",
     "two-tab": "pnpm run build && node scripts/two-tab.ts",
+    "bfcache": "pnpm run build && node scripts/bfcache.ts",
     "kill-chrome": "pnpm run build && node scripts/kill-chrome.ts",
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",

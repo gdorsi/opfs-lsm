@@ -255,8 +255,20 @@ these places. Where they disagree, this section is current.
 - **Change events.** A tab's own write carries its `seq` only if it was
   already stable at ack time; otherwise the event comes when it becomes
   stable.
-- **Frozen tabs** remain the main risk: a frozen live tab holds every other
-  tab's watermark until its lock is released.
+- **A suspended page leaves, then joins again as a new tab.** A frozen or
+  back/forward-cached tab promises nothing, so it held every other tab's
+  watermark until its lock went. Chrome 133+ Energy Saver skips freezing a
+  tab whose Web Lock others wait on, but the tabs only query the locks, and
+  Safari caches pages that hold Web Locks. Now `freeze` and `pagehide` with
+  `persisted` make the tab leave as on close: it waits for writes in flight
+  and a granted `update`, says `bye` and releases its lock, then flushes and
+  closes its log worker. With nothing in flight the lock goes before the
+  page stops. On `resume` or `pageshow` the `Db` joins again as a new tab
+  with a new log. The new tab starts above what the old one handed out and
+  takes over its overlay. The old log is read like any dead tab's, so its
+  records join the order. Writes made while away wait for the join. Left
+  open: a page frozen with a write in flight holds the others until it
+  resumes, and a `Db` in a worker has no page events.
 
 ## Rejected here
 

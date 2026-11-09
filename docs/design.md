@@ -485,6 +485,24 @@ the error. The other tabs retire it by reading its log to its end. Under an OPFS
 limit. A flush adds no record and the writes queued behind it never run, so nothing lands in the
 log after the others retired it; a write that finished late could.
 
+A tab leaves the same way when its page is frozen or goes into the back/forward cache
+(`freeze`, or `pagehide` with `persisted`). A frozen tab promises nothing, so every other tab's
+watermark would wait for it, and their memory would grow. A browser may also never resume it.
+The `Db` stays open. On `resume` or `pageshow` it joins again as a new tab with a new log,
+because a tab never reopens a log. Leaving and closing work alike. Each first waits for this
+tab's writes in flight and for a granted `update`'s write, so nothing lands in the log after
+the others retired it. Then it says `bye` and releases the lock. Last, it flushes and closes the
+log worker. With nothing in flight, the lock goes while the page still runs. The flush and the
+worker's close may finish only once it resumes, and the others need neither: they read the log's
+written bytes. The new tab starts above what the old one handed out, takes over its overlay,
+and reads the old log like any dead tab's. The old tab's writes take their place in the one
+order, and the new tab reads them as stable records, not as its own. Writes, `update`, `sync`
+and `ingest` issued while the page is away wait until the tab has joined again. Reads go on
+from the memtable and the overlay. The `Db` also closes its `opfs-lsm-layers` channel while
+away, because in Chrome a message that reaches a cached page evicts it. So it installs the
+newest generation before it joins again, as open does. `pnpm --filter @opfs-lsm/kv bfcache`
+checks in Chrome that such a page is restored from the cache while another tab syncs and ingests.
+
 Tabs talk on the BroadcastChannel `opfs-lsm-log/<name>`:
 
 | Message | Meaning |
@@ -493,7 +511,7 @@ Tabs talk on the BroadcastChannel `opfs-lsm-log/<name>`:
 | `advance(s)` | A tab waits for stamp `s`. Each tab answers with a promise up to what it has flushed, and flushes at once when an unflushed record holds the answer back. |
 | `promise(stamp, n)` | The answer to `advance`. |
 | `hello`, `welcome` | A new tab joins (see [Open](#open)). |
-| `bye` | A tab closes. The others read the rest of its log and stop waiting for it. |
+| `bye` | A tab closes or leaves. Once its lock is released, the others read the rest of its log and stop waiting for it. |
 
 A stalled tab asks again every 50 ms, marked `again`. Each tab answers a repeat with its last
 promise even when it promised nothing new, because a lost promise is in no file. On the same
@@ -847,8 +865,9 @@ lost across tabs.
 
 # Known limits of this design
 
-- A frozen live tab holds every other tab's watermark until its lock is released. Its own writes
-  keep working, but other tabs stop seeing new writes, and `update` waits.
+- A tab frozen with a write or a granted `update` in flight releases its lock only once that write
+  lands, at resume. Until then it holds every other tab's watermark. A `Db` opened in a worker
+  has no page events, so it never leaves.
 - Without BroadcastChannel, a second tab waits forever: promises travel only on the channel.
 - Each tab keeps every live run file in memory. Tab memory grows with the size of the database.
 - The leftover run of a merge can be tiny, and the planner rarely picks a tiny run on its own,

@@ -76,6 +76,17 @@ class Overlay {
   }
 }
 
+/**
+ * This tab left because the page was frozen or put in the back/forward
+ * cache. Nothing was written: the Db retries on the tab it rejoins as.
+ */
+export class LeftError extends Error {
+  constructor() {
+    super("this tab left while its page was suspended");
+    this.name = "LeftError";
+  }
+}
+
 export type SessionOptions = {
   readonly name: string;
   readonly tab: TabId;
@@ -100,6 +111,13 @@ export type SessionOptions = {
    * the tab holds the watermark until this resolves.
    */
   readonly onGone?: () => Promise<void>;
+  /**
+   * The session this one takes over from, which left: the same Db rejoining
+   * as a new tab after its page was suspended. What it handed out stays
+   * handed out, and its own unstable records stay readable here until they
+   * become stable, read back from its log like any other tab's.
+   */
+  readonly after?: LogSession;
 };
 
 /** An `update` holding stamp `stamp`: everything below it is stable and nothing above it is. */
@@ -122,7 +140,7 @@ export class LogSession {
   merger: Merger;
   /** Log reads pass over records at or below this, besides the stable ones: the cut open expects. */
   private readFloor: Stamp | Promise<Stamp> = 0;
-  private readonly overlay = new Overlay();
+  private overlay = new Overlay();
   private readonly bus: BroadcastChannel | undefined;
   /** Where ingest requests go to the host; this session never listens on it. */
   private readonly layers: BroadcastChannel | undefined;
@@ -136,6 +154,8 @@ export class LogSession {
    * after that could reach the writer after `close` sealed it.
    */
   private closing: Promise<void> | undefined;
+  /** What a write or wait gets once `close` or `leave` was called. */
+  private stopping: Error | undefined;
   /** No record is handed out before join: their seqs count on from the installed generation. */
   private joined = false;
   private failed: unknown;
@@ -180,6 +200,16 @@ export class LogSession {
       this.bus.onmessage = (ev: MessageEvent<LogMessage | null>) => {
         if (ev.data) this.onMessage(ev.data);
       };
+    }
+    const after = opts.after;
+    if (after) {
+      this.hlc.observe(after.hlc.last);
+      this.merger.cut(after.merger.stable);
+      this.needCut = after.needCut;
+      this.overlay = after.overlay;
+      this.stableRecs = after.stableRecs;
+      this.stableBytes = after.stableBytes;
+      this.askedAt = after.askedAt;
     }
   }
 
@@ -530,7 +560,7 @@ export class LogSession {
   /** Resolve once every record at or below `target` is stable here. */
   waitStable(target: Stamp): Promise<void> {
     if (this.merger.stable >= target) return Promise.resolve();
-    if (this.closed) return Promise.reject(new ClosedError("database is closed"));
+    if (this.stopping) return Promise.reject(this.stopping);
     if (this.failed) return Promise.reject(this.failed);
     return new Promise((resolve, reject) => {
       this.waiters.push({ target, resolve, reject });
@@ -565,9 +595,16 @@ export class LogSession {
     return stamp;
   }
 
-  private async appendAt(stamp: Stamp, ops: readonly CheckedOp[], writerId: string): Promise<void> {
+  private async appendAt(
+    stamp: Stamp,
+    ops: readonly CheckedOp[],
+    writerId: string,
+    reserved = false,
+  ): Promise<void> {
     if (this.failed) throw this.failed;
-    if (this.closing) throw new ClosedError("database is closed");
+    // A granted `update` read the state below its stamp already: shutting
+    // down waits for its write.
+    if (this.stopping && (!reserved || this.closed)) throw this.stopping;
     const n = ++this.nextN;
     this.unacked.push(stamp);
     const written = this.opts.client.append({ stamp, n, body: encodeOps(ops) });
@@ -699,7 +736,7 @@ export class LogSession {
           // appendAt lists the stamp as unacked before this returns to the
           // event loop, so the watermark never passes it in between.
           this.reservation = undefined;
-          await this.appendAt(stamp, ops, writerId);
+          await this.appendAt(stamp, ops, writerId, true);
         },
         done,
       };
@@ -759,24 +796,58 @@ export class LogSession {
   }
 
   close(): Promise<void> {
-    this.closing ??= this.shutDown();
+    this.closing ??= this.shutDown(new ClosedError("database is closed"));
     return this.closing;
   }
 
-  private async shutDown(): Promise<void> {
-    await Promise.race([
-      this.flushAll().catch(() => undefined),
-      new Promise((r) => setTimeout(r, 1000)),
-    ]);
+  /**
+   * Leave as `close` does, for a page that is being frozen or put in the
+   * back/forward cache: a frozen tab promises nothing, so every other tab
+   * would wait for it. With no write or `update` in flight, the lock goes
+   * before this returns, while the page still runs; the flush and the log
+   * worker's close may finish only once it resumes.
+   */
+  leave(): Promise<void> {
+    this.closing ??= this.shutDown(new LeftError());
+    return this.closing;
+  }
+
+  /**
+   * Once the lock goes, the other tabs read this tab's log to its end and
+   * never again, so every write that can still land must have landed:
+   * writes in flight, and the write of an `update` that was granted its
+   * stamp. When they don't finish in time, the log client closes first,
+   * which ends them, and the lock goes after.
+   */
+  private async shutDown(reason: Error): Promise<void> {
+    this.stopping = reason;
+    for (const w of this.waiters) w.reject(reason);
+    this.waiters = [];
+    let landed = true;
+    if (this.unacked.length > 0 || this.updating) {
+      landed = await Promise.race([
+        (async () => {
+          await this.updating;
+          await this.lastWrite.catch(() => undefined);
+          return true;
+        })(),
+        new Promise<boolean>((r) => setTimeout(() => r(false), 1000)),
+      ]);
+    }
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.post({ kind: "bye", tab: this.tab, n: this.sentN });
     this.closed = true;
     this.disarmTimer();
-    for (const w of this.waiters) w.reject(new ClosedError("database is closed"));
-    this.waiters = [];
     this.joining?.done();
     this.bus?.close();
     this.layers?.close();
+    if (landed) {
+      this.releaseTab();
+      await Promise.race([
+        this.flushAll().catch(() => undefined),
+        new Promise((r) => setTimeout(r, 1000)),
+      ]);
+    }
     await this.opts.client.close().catch(() => undefined);
     await this.holding?.catch(() => undefined);
     this.releaseTab();
