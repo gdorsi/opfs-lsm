@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { checkBatch } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { KIND_RECORD, decodeOps, encodeFrame, encodeOps, scanFrames, segmentPath } from "../src/log/frame.js";
-import type { TabLogClient } from "../src/log/client.js";
+import { createLocalLogClient, type TabLogClient } from "../src/log/client.js";
 import { Merger, type MergedRecord } from "../src/log/merger.js";
+import { TAB_START, listSegments, readTab } from "../src/log/reader.js";
 import { LogSession } from "../src/log/session.js";
 import { TabWriter, type SegmentStore } from "../src/log/tab-writer.js";
 import type { AsyncFs, Db } from "../src/index.js";
@@ -253,6 +254,41 @@ describe("the log writer", () => {
     expect(() => writer.flush(), "a later flush throws").toThrow("injected write error");
     const bytes = await fs.read(segmentPath(TAB, { firstN: 1, prevStamp: 0 }), 0, Number.POSITIVE_INFINITY);
     expect(bytes?.byteLength ?? 0, "nothing was written after the failure").toBe(0);
+  });
+});
+
+describe("close", () => {
+  // Where the late append lands against close's awaits depends on their count: try every offset.
+  it.each(Array.from({ length: 17 }, (_, i) => i))("an append %i microtasks into close is refused, or in the log before close returns", async (depth) => {
+    const fs = new MemoryFs();
+    const session = new LogSession({
+      name: uniqueName("close-late-append"),
+      tab: TAB,
+      fs,
+      client: createLocalLogClient(fs.segments(), TAB, 1 << 20),
+      onStable: () => undefined,
+      maxWalBytes: 1 << 30,
+    });
+    await session.prepareJoin();
+    await session.finishJoin();
+    const ops = checkBatch([{ type: "put", key: utf("k"), value: utf("v") }]);
+    const first = session.append(ops, "w");
+    const closing = session.close();
+    const late = outcome(
+      first.then(async () => {
+        for (let i = 0; i < depth; i++) await null;
+        return session.append(ops, "w");
+      }),
+    );
+    await closing;
+    const files = async () =>
+      Promise.all((await listSegments(fs, TAB)).map(async (f) => `${f}:${(await fs.read(`w/${TAB}/${f}`, 0, Number.POSITIVE_INFINITY))?.byteLength}`));
+    const atClose = await files();
+    const got = await late;
+    await sleep(20);
+    expect(await files(), "nothing reaches the log after close returns").toEqual(atClose);
+    const read = await readTab(fs, TAB, TAB_START);
+    expect(read.records.length, "every acked append is in the log").toBe(got === "acked" ? 2 : 1);
   });
 });
 
