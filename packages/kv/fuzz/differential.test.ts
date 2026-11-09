@@ -8,7 +8,7 @@ import { lz4DecompressJs } from "../src/store/lz4.js";
 import { BlockEntries, blockBytes, decodeSst, encodeSst, type SstEntry } from "../src/store/sst.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
 import { bounded, framedBlocks, repairSst, RuleBroken, tally, type Repair } from "./targets.js";
-import { loadWasm, type WasmExports } from "./wasm.js";
+import { loadWasm, type FlatEngine } from "./wasm.js";
 
 /**
  * Differential: the wasm engine against the TypeScript fallbacks
@@ -16,7 +16,7 @@ import { loadWasm, type WasmExports } from "./wasm.js";
  * same valid and mutated inputs. On valid inputs both must return the same
  * thing. On mutated inputs each must obey the rules of `targets.ts`; they
  * may differ in which error they throw, and where no CRC guards the bytes,
- * in their answer. Wasm must never trap: a trap is a Rust panic, and traps
+ * in their answer. Wasm must never trap: a trap is a panic, and traps
  * used up the instance (KW3 in findings.test.ts).
  *
  *   KV_FUZZ_RUNS=5000 KV_FUZZ_REPORT=1 pnpm exec vitest run fuzz/differential.test.ts
@@ -29,7 +29,7 @@ const params: fc.Parameters<unknown> = {
 };
 const TIMEOUT = 60_000 + RUNS * 200;
 
-let wasm: WasmExports;
+let wasm: FlatEngine;
 beforeAll(async () => {
   wasm = await loadWasm();
 });
@@ -49,7 +49,7 @@ function attempt<T>(fn: () => T): Outcome<T> {
   }
 }
 
-/** A wasm call may fail with the Rust error as a string, never trap. */
+/** A wasm call may throw CorruptDatabaseError, never a WebAssembly.RuntimeError. */
 function wasmOutcome<T>(what: string, fn: () => T): Outcome<T> {
   const out = attempt(fn);
   if (!out.ok && out.error instanceof WebAssembly.RuntimeError) {
@@ -81,7 +81,7 @@ const plain = (es: readonly { kind: string; key: Uint8Array; value?: Uint8Array;
 /** Both decoders of a whole run. The wasm one is what the SharedWorker runs. */
 async function decodeBoth(buf: Uint8Array, changed: boolean): Promise<void> {
   await bounded("decode_sst (both)", () => {
-    const w = wasmOutcome("decode_sst_js", () => wasm.decode_sst_js(buf));
+    const w = wasmOutcome("decodeSst", () => wasm.decodeSst(buf));
     const t = tsOutcome("decodeSst", () => decodeSst(buf));
     if (changed && (w.ok || t.ok)) throw new RuleBroken(`${w.ok ? "wasm" : "TypeScript"} decoded a run whose bytes changed under its CRC`);
     if (w.ok && t.ok) {
@@ -94,10 +94,10 @@ async function decodeBoth(buf: Uint8Array, changed: boolean): Promise<void> {
   });
 }
 
-/** Both block scans of one framed block: `scan_block_contains_js` and the TypeScript cursor a tab falls back to. */
+/** Both block scans of one framed block: `scanBlockContains` and the TypeScript cursor a tab falls back to. */
 async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array): Promise<"same" | "differ" | "rejected"> {
   return bounded("scan_block_contains (both)", () => {
-    const w = wasmOutcome("scan_block_contains_js", () => [...unpackHits(wasm.scan_block_contains_js(framed, lz4, packPatterns([pattern])))]);
+    const w = wasmOutcome("scanBlockContains", () => [...unpackHits(wasm.scanBlockContains(framed, lz4, packPatterns([pattern])))]);
     const t = tsOutcome("BlockEntries", () => {
       const b = blockBytes(framed, new DataView(framed.buffer, framed.byteOffset, framed.byteLength), 0, { offset: 0, length: framed.byteLength }, lz4 ? "lz4" : "raw");
       const walk = new BlockEntries(b);
@@ -204,7 +204,7 @@ describe("wasm against the TypeScript fallbacks", () => {
             const size = new DataView(block.buffer, block.byteOffset).getUint32(0, true);
             const src = mutate ? applyMutations(block.subarray(4), ms, block) : block.subarray(4);
             await bounded("lz4 (both)", () => {
-              const w = wasmOutcome("lz4_decompress_js", () => wasm.lz4_decompress_js(src, size));
+              const w = wasmOutcome("lz4Decompress", () => wasm.lz4Decompress(src, size));
               const t = tsOutcome("lz4DecompressJs", () => lz4DecompressJs(src, size));
               if (!mutate) expect(w.ok && t.ok).toBe(true);
               if (w.ok && t.ok) expect(sameBytes(w.value, t.value)).toBe(true);
@@ -243,19 +243,21 @@ describe("wasm against the TypeScript fallbacks", () => {
 
 /**
  * `mergeSsts` as it runs when wasm does not load: a fresh copy of engine.ts
- * whose wasm import fails, so no product seam is needed.
+ * pointed at a module that is not there, so no product seam is needed.
  */
 async function mergeSstsTs(blobs: readonly Uint8Array[], drop: boolean, target: number) {
   fallback ??= (async () => {
     vi.resetModules();
-    vi.doMock("../wasm/engine_wasm.js", () => {
-      throw new Error("wasm disabled for the differential test");
-    });
-    const engine = await import("../src/store/engine.js");
-    await engine.ensureEngine();
-    vi.doUnmock("../wasm/engine_wasm.js");
-    if (engine.engineUsingWasm()) throw new Error("the fallback engine loaded wasm");
-    return engine;
+    const g = globalThis as { __OPFS_LSM_ENGINE_URL?: string };
+    g.__OPFS_LSM_ENGINE_URL = "./no-such-engine.wasm";
+    try {
+      const engine = await import("../src/store/engine.js");
+      await engine.ensureEngine();
+      if (engine.engineUsingWasm()) throw new Error("the fallback engine loaded wasm");
+      return engine;
+    } finally {
+      delete g.__OPFS_LSM_ENGINE_URL;
+    }
   })();
   return (await fallback).mergeSsts(blobs, drop, target, "raw");
 }

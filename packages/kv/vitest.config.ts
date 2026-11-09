@@ -5,11 +5,5 @@ export default defineConfig({
   test: {
     environment: "node",
     setupFiles: ["./tests/setup.ts"],
-    server: {
-      deps: {
-        // Allow vitest to transform the wasm-pack bundler output.
-        inline: [/engine_wasm/],
-      },
-    },
   },
 });

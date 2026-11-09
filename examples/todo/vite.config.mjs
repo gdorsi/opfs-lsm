@@ -24,7 +24,7 @@ export default defineConfig({
         []),
   ],
   // Serve the workspace packages as real files so the runtime `new URL(...,
-  // import.meta.url)` that loads `wasm/engine_wasm_bg.wasm` keeps its true
+  // import.meta.url)` that loads `wasm/engine.wasm` keeps its true
   // location instead of landing on an esbuild prebundle.
   optimizeDeps: { exclude: ["@opfs-lsm/kv", "@opfs-lsm/collections"] },
 });
