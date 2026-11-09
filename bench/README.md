@@ -13,6 +13,8 @@ node bench/cli.ts compare results/a.jsonl results/b.jsonl
 node bench/cli.ts report results/a.jsonl
 ```
 
+Run `pnpm bench:smoke` first whenever the code under test changed. A full `pnpm bench` takes tens of minutes, and a broken path can run it into the 30-minute timeout; the smoke finds that in about a minute. Pass workload selectors as separate words, not one quoted variable: zsh does not split `$SEL`, so `pnpm bench $SEL` with `SEL="kv/ table/"` matches nothing.
+
 Results go to `bench/results/<time>-<host>.jsonl` (one record per run) and a Markdown table next to it. They are not committed: numbers depend on the machine. To compare a change, run the same selection before and after on one machine and use `compare`. It calls a difference only when the min–max ranges of the two runs do not overlap.
 
 Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `google-chrome`.
