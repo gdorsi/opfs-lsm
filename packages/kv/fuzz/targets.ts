@@ -15,7 +15,8 @@
  * - Where it does not (a tab's `SstReader`, LZ4 unpack, block scans): any
  *   answer is allowed, within the rules above.
  * - A tab's log (`scanFrames`): each frame carries a CRC, and a read keeps
- *   only the prefix of frames that hold; past it, anything is allowed.
+ *   only the prefix of frames that hold; past it, anything is allowed, or
+ *   `CorruptDatabaseError` when a whole frame follows the break.
  */
 import { compareBytes } from "../src/bytes.js";
 import { CommitError, CorruptDatabaseError } from "../src/errors.js";
@@ -305,7 +306,8 @@ export function fixFrameCrcs(buf: Uint8Array): void {
  * A read of one log segment (`scanFrames`), from a tab's first record or,
  * with `n` undefined, after reclaimed segments. It may throw only
  * `CommitError("corrupt log ...")`, for a whole frame whose CRC holds and
- * whose body does not decode. What it returns must be a prefix of the
+ * whose body does not decode, and `CorruptDatabaseError`, for a whole frame
+ * past the one the read stopped at. What it returns must be a prefix of the
  * input: its records, encoded again as frames, give back the input's first
  * `validBytes` (up to the SEAL frame when it ends on one), with `n` rising
  * by one and stamps rising.
@@ -317,7 +319,8 @@ export async function checkLogFrames(buf: Uint8Array, n: number | undefined, sta
       scan = scanFrames(buf, n, stamp);
     } catch (err) {
       if (err instanceof CommitError && /^corrupt log/.test(err.message)) return undefined;
-      throw new RuleBroken(`scanFrames threw ${describe(err)}, not CommitError("corrupt log ...")`);
+      if (err instanceof CorruptDatabaseError) return undefined;
+      throw new RuleBroken(`scanFrames threw ${describe(err)}, not CommitError("corrupt log ...") or CorruptDatabaseError`);
     }
     if (scan.validBytes > buf.byteLength) throw new RuleBroken(`scanFrames read ${scan.validBytes} of ${buf.byteLength} bytes`);
     let at = 0;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checkBatch } from "../src/check.js";
-import { encodeOps, segmentPath } from "../src/log/frame.js";
+import { CorruptDatabaseError } from "../src/errors.js";
+import { KIND_RECORD, encodeFrame, encodeOps, scanFrames, segmentPath } from "../src/log/frame.js";
 import type { TabLogClient } from "../src/log/client.js";
 import { LogSession } from "../src/log/session.js";
 import { TabWriter, type SegmentStore } from "../src/log/tab-writer.js";
@@ -279,5 +280,44 @@ describe("ingest", () => {
       await Promise.all(writers);
       await session.close();
     }
+  });
+});
+
+describe("a corrupt frame in a tab's last segment", () => {
+  const frames = [
+    encodeFrame(KIND_RECORD, 10, 1, put("a")),
+    encodeFrame(KIND_RECORD, 20, 2, put("b")),
+    encodeFrame(KIND_RECORD, 30, 3, put("c")),
+  ];
+  const joined = () => new Uint8Array(frames.flatMap((f) => [...f]));
+
+  it("is refused as corruption when valid records follow it", async () => {
+    const bytes = joined();
+    bytes[frames[0]!.byteLength - 1]! ^= 1;
+    expect(() => scanFrames(bytes, 0, 0), "a scan refuses records hidden behind a bad frame").toThrow(
+      CorruptDatabaseError,
+    );
+
+    const fs = new MemoryFs();
+    const file = await fs.segments().create(segmentPath(TAB, { firstN: 1, prevStamp: 0 }));
+    file.write(bytes, 0);
+    file.flush();
+    const opening = openHarnessDb({
+      name: uniqueName("corrupt-mid"),
+      fs,
+      ingest: createLocalIngestClient(new EngineHost(() => fs)),
+    });
+    await expect(opening, "open refuses a log that loses records past a bad frame").rejects.toBeInstanceOf(
+      CorruptDatabaseError,
+    );
+  });
+
+  it("ends the log when nothing valid follows it: a torn tail", () => {
+    const bytes = joined();
+    const torn = bytes.subarray(0, bytes.byteLength - 3);
+    expect(scanFrames(torn, 0, 0).records.map((r) => r.n), "a torn last frame ends the log").toEqual([1, 2]);
+    const flipped = bytes.slice();
+    flipped[flipped.byteLength - 1]! ^= 1;
+    expect(scanFrames(flipped, 0, 0).records.map((r) => r.n), "a bad last frame ends the log").toEqual([1, 2]);
   });
 });

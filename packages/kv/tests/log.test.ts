@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checkBatch } from "../src/check.js";
+import { CorruptDatabaseError } from "../src/errors.js";
 import {
   KIND_RECORD,
   KIND_SEAL,
@@ -46,7 +47,7 @@ describe("log frames", () => {
     expect(scan.validBytes).toBe(bytes.byteLength);
   });
 
-  it("stop at a torn frame, a bad CRC, a gap in n, and a stamp that does not rise", () => {
+  it("stop at a torn frame and a bad last CRC, and refuse a gap in n and a stamp that does not rise", () => {
     const one = encodeFrame(KIND_RECORD, 10, 1, put("a"));
     const two = encodeFrame(KIND_RECORD, 20, 2, put("b"));
     expect(scanFrames(new Uint8Array([...one, ...two.subarray(0, 5)]), 0, 0).records).toHaveLength(1);
@@ -54,14 +55,14 @@ describe("log frames", () => {
     corrupt[corrupt.byteLength - 1]! ^= 1;
     expect(scanFrames(corrupt, 0, 0).records).toHaveLength(1);
     const gap = new Uint8Array([...one, ...encodeFrame(KIND_RECORD, 20, 3, put("c"))]);
-    expect(scanFrames(gap, 0, 0).records).toHaveLength(1);
+    expect(() => scanFrames(gap, 0, 0)).toThrow(CorruptDatabaseError);
     const back = new Uint8Array([...one, ...encodeFrame(KIND_RECORD, 10, 2, put("c"))]);
-    expect(scanFrames(back, 0, 0).records).toHaveLength(1);
+    expect(() => scanFrames(back, 0, 0)).toThrow(CorruptDatabaseError);
   });
 
-  it("accept any first n after reclaimed segments", () => {
+  it("accept any first n after reclaimed segments, and only there", () => {
     const frame = encodeFrame(KIND_RECORD, 50, 7, put("a"));
-    expect(scanFrames(frame, 0, 0).records).toHaveLength(0);
+    expect(() => scanFrames(frame, 0, 0)).toThrow(CorruptDatabaseError);
     expect(scanFrames(frame, undefined, 40).records).toHaveLength(1);
   });
 
@@ -78,10 +79,10 @@ describe("log frames", () => {
     const body = bytes.slice();
     body[30]! ^= 1;
     expect(scanFrames(body, 0, 0, 20).records.map((r) => r.n)).toEqual([3]);
-    expect(scanFrames(body, 0, 0, 0).records).toEqual([]);
+    expect(() => scanFrames(body, 0, 0, 0)).toThrow(CorruptDatabaseError);
     // A skipped record still has to follow the chain.
     const gap = new Uint8Array([...encodeFrame(KIND_RECORD, 10, 1, put("a")), ...encodeFrame(KIND_RECORD, 20, 5, put("b"))]);
-    expect(scanFrames(gap, 0, 0, 20).n).toBe(1);
+    expect(() => scanFrames(gap, 0, 0, 20)).toThrow(CorruptDatabaseError);
   });
 
   it("name segments by first n and the stamp before them, in sort order", () => {

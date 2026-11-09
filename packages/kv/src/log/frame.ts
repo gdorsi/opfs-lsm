@@ -1,5 +1,5 @@
 import type { CheckedOp } from "../check.js";
-import { CommitError } from "../errors.js";
+import { CommitError, CorruptDatabaseError } from "../errors.js";
 import { crc32 } from "../store/crc32.js";
 
 /**
@@ -16,7 +16,9 @@ import { crc32 } from "../store/crc32.js";
  * A frame is part of the log when it is whole, its CRC holds, its `n` is
  * the previous one + 1 and its stamp is above the previous one. Readers
  * stop at the first frame that breaks this, so a torn tail is invisible and
- * every read of a tab's log is a prefix of it.
+ * every read of a tab's log is a prefix of it. A whole frame with a later
+ * `n` past the break is not a torn tail: the bytes before it were damaged,
+ * and the read throws `CorruptDatabaseError` rather than drop it.
  */
 const FRAME_HEAD = 21;
 export const KIND_RECORD = 1;
@@ -99,7 +101,8 @@ export type ScanResult = {
  * segments). Stops at the end, at a frame that breaks the rule, or after a
  * SEAL. Records at or below `skipThrough` are not decoded or returned (a
  * generation already holds them), and only their `n` and stamp are
- * checked. Pure.
+ * checked. Throws `CorruptDatabaseError` when a whole frame with a higher
+ * `n` follows the frame it stopped at. Pure.
  */
 export function scanFrames(
   bytes: Uint8Array,
@@ -140,7 +143,30 @@ export function scanFrames(
     lastStamp = frameStamp;
     at = end;
   }
+  // A whole frame there or after it, the one that broke the chain
+  // included, was written: the log goes on past the break.
+  const later = frameAfter(bytes, at, lastN ?? 0);
+  if (later !== undefined) {
+    throw new CorruptDatabaseError(
+      `log frame at byte ${at} is damaged, and record ${later.n} at byte ${later.at} follows it`,
+    );
+  }
   return { records, validBytes: at, sealed: false, n: lastN ?? 0, stamp: lastStamp };
+}
+
+/** The first whole frame with a valid CRC and an `n` above `afterN`, at byte `from` or after it. */
+function frameAfter(bytes: Uint8Array, from: number, afterN: number): { at: number; n: number } | undefined {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let at = from; at + FRAME_HEAD <= bytes.byteLength; at++) {
+    const kind = view.getUint8(at + 8);
+    if (kind !== KIND_RECORD && kind !== KIND_SEAL) continue;
+    const n = view.getUint32(at + 17, true);
+    if (n <= afterN) continue;
+    const end = at + FRAME_HEAD + view.getUint32(at, true);
+    if (end > bytes.byteLength) continue;
+    if (crc32(bytes.subarray(at + 8, end)) === view.getUint32(at + 4, true)) return { at, n };
+  }
+  return undefined;
 }
 
 const OP_PUT = 0;
