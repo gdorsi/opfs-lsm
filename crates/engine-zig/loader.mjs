@@ -1,4 +1,4 @@
-import { readFile, access } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 
 export const ROOT = new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
 export const MiB = 1024 * 1024;
@@ -64,31 +64,9 @@ export async function loadFlat(bytes, { capacity = 256 * MiB, fixedMemory = fals
 export const loadZig = async (file, opts = {}) =>
   loadFlat(await readFile(new URL(file, import.meta.url)), { fixedMemory: true, name: file, ...opts });
 
-// The Rust build on the flat ABI (packages/kv/wasm/engine.wasm) when present, else the
-// wasm-bindgen build wrapped to the same interface.
 export async function loadRust() {
-  const flatPath = `${ROOT}/packages/kv/wasm/engine.wasm`;
-  if (await access(flatPath).then(() => true, () => false)) {
-    const bytes = await readFile(flatPath);
-    return { ...(await loadFlat(bytes, { name: "rust" })), abi: "flat", glueBytes: 0 };
-  }
-  const mod = await import(`${ROOT}/packages/kv/wasm/engine_wasm.js`);
-  const bytes = await readFile(`${ROOT}/packages/kv/wasm/engine_wasm_bg.wasm`);
-  await mod.default({ module_or_path: bytes });
-  const glueBytes = (await readFile(`${ROOT}/packages/kv/wasm/engine_wasm.js`)).length + (await readFile(`${ROOT}/packages/kv/wasm/engine_wasm_bg.js`)).length;
-  const toEntries = (rows) => rows.map((r) => r.kind === "put" ? { kind: "put", key: new Uint8Array(r.key), value: new Uint8Array(r.value), seq: r.seq } : { kind: "del", key: new Uint8Array(r.key), seq: r.seq });
-  const wrap = (what, fn) => { try { return fn(); } catch (e) { throw new EngineError(`rust ${what}`, String(e)); } };
-  return {
-    bytes, name: "rust", abi: "wasm-bindgen", glueBytes,
-    memory: () => null, peak: () => NaN,
-    encodeEntries: (entries, lz4) => wrap("encode", () => mod.encode_sst_js(entries, lz4)),
-    decodeEntries: (sst) => wrap("decode", () => toEntries(mod.decode_sst_js(sst))),
-    encode(flat, lz4) { return this.encodeEntries(unflatten(flat), lz4); },
-    decode(sst) { return flatten(this.decodeEntries(sst)); },
-    lz4: (src, size) => wrap("lz4", () => mod.lz4_decompress_js(src, size)),
-    scan: (framed, lz4, pats) => wrap("scan", () => mod.scan_block_contains_js(framed, lz4, pats)),
-    merge: (blobs, drop, target, lz4) => wrap("merge", () => mod.merge_ssts_js(blobs, drop, target, lz4)),
-  };
+  const bytes = await readFile(`${ROOT}/packages/kv/wasm/engine.wasm`);
+  return { ...(await loadFlat(bytes, { name: "rust" })), abi: "flat", glueBytes: 0 };
 }
 
 const enc = new TextEncoder();
