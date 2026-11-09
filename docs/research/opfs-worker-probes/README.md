@@ -1,13 +1,13 @@
 # OPFS worker probes
 
-Browser facts about Web Locks, SyncAccessHandles, SharedWorkers and bfcache that a multi-tab OPFS write path relies on. Findings: [`docs/research/opfs-worker-probes.md`](../../docs/research/opfs-worker-probes.md).
+Browser facts about Web Locks, SyncAccessHandles, SharedWorkers and bfcache that a multi-tab OPFS write path relies on. Findings: [`docs/research/opfs-worker-probes.md`](../opfs-worker-probes.md).
 
 ```sh
-node probes/opfs-workers/serve.mjs        # http://localhost:8787/
-node probes/opfs-workers/drive-chrome.mjs http://localhost:8787   # every probe in headless Chrome, P7 included
+node docs/research/opfs-worker-probes/serve.mjs        # http://localhost:8787/
+node docs/research/opfs-worker-probes/drive-chrome.mjs http://localhost:8787   # every probe in headless Chrome, P7 included
 ```
 
-Open `http://localhost:8787/` in each browser (a fresh profile is best) and press **Run P1–P6**. Results show on the page and are saved to `probes/opfs-workers/results/<browser>-<time>.json`. The results committed here are the runs the findings cite. `?auto` runs them on load (used for headless Chrome).
+Open `http://localhost:8787/` in each browser (a fresh profile is best) and press **Run P1–P6**. Results show on the page and are saved to `docs/research/opfs-worker-probes/results/<browser>-<time>.json`. `results/` is gitignored. `?auto` runs them on load (used for headless Chrome).
 
 | Probe | Question | Fails when |
 |---|---|---|

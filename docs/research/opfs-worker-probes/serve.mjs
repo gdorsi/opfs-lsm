@@ -1,5 +1,5 @@
 // Static server for the OPFS worker probe page. Saves each run's results.
-// node probes/opfs-workers/serve.mjs [port]
+// node docs/research/opfs-worker-probes/serve.mjs [port]
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";

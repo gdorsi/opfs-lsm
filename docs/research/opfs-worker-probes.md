@@ -1,10 +1,10 @@
 # OPFS worker probes: locks, handles, SharedWorkers and bfcache
 
 Run 2026-11-09 on an Apple M5 Max (macOS):
-- Chrome 156, headless, through [`drive-chrome.mjs`](../../probes/opfs-workers/drive-chrome.mjs).
+- Chrome 156, headless, through [`drive-chrome.mjs`](opfs-worker-probes/drive-chrome.mjs).
 - Safari 26.6.2 and Firefox 157, opened by hand.
 
-Probe: [`probes/opfs-workers/`](../../probes/opfs-workers/). Raw results: [`probes/opfs-workers/results/`](../../probes/opfs-workers/results/).
+Probe: [`docs/research/opfs-worker-probes/`](opfs-worker-probes/). Raw results are written to its `results/` folder, which is gitignored.
 
 Any write path where several tabs write OPFS files and another context reads, reclaims or takes over those files must answer the same questions. When is a writer really gone? Can a reader see a file while it is being written? Can a cached page keep holding what others wait for? PR #97 (per-tab logs) answers them with a liveness protocol. These probes measure what the browsers actually do.
 
