@@ -79,6 +79,8 @@ class Overlay {
 export type SessionOptions = {
   readonly name: string;
   readonly tab: TabId;
+  /** This tab's liveness lock, requested by the caller; requested here when absent. */
+  readonly held?: Promise<() => void>;
   readonly fs: AsyncFs;
   readonly client: TabLogClient;
   /** Records that became stable, in order. The caller numbers them on from its memtable. */
@@ -191,7 +193,7 @@ export class LogSession {
 
   /** Take this tab's liveness lock. Open calls it first; `prepareJoin` waits for it. */
   hold(): Promise<void> {
-    this.holding ??= holdTab(this.opts.name, this.tab).then((release) => {
+    this.holding ??= (this.opts.held ?? holdTab(this.opts.name, this.tab)).then((release) => {
       this.release = release;
     });
     return this.holding;
@@ -204,18 +206,28 @@ export class LogSession {
    * is awaited only once the log bytes are in. Records stay in the merger until
    * `finishJoin`.
    *
-   * Then the live tabs. The query comes after the reads, so a tab whose log
-   * was read and that is not live died before the query: its log is final,
-   * and is read again from where the first read stopped before it stops
-   * holding the watermark back.
+   * Then the live tabs (`dead`).
    */
   async prepareJoin(floor: Stamp | Promise<Stamp> = 0): Promise<void> {
     this.readFloor = floor;
     await Promise.all([this.hold(), this.readAll()]);
+    const { live, dead } = await this.liveAndDead();
+    this.merger.setLive(live);
+    await Promise.all(dead.map((t) => this.retire(t)));
+  }
+
+  /**
+   * The live tabs, and the known tabs that are dead. Only a tab known
+   * before the query counts as dead when the query misses it: a tab holds
+   * its lock before any other tab can know of it, so it released the lock,
+   * and its log is final. A tab that became known while the query was out
+   * (its hello, a record) may have taken its lock after the snapshot.
+   */
+  private async liveAndDead(): Promise<{ live: Set<TabId>; dead: TabId[] }> {
+    const known = this.merger.known();
     const live = await liveTabs(this.opts.name);
     live.delete(this.tab);
-    this.merger.setLive(live);
-    await Promise.all(this.merger.known().filter((t) => !live.has(t)).map((t) => this.retire(t)));
+    return { live, dead: known.filter((t) => !live.has(t)) };
   }
 
   /**
@@ -445,12 +457,11 @@ export class LogSession {
   /** Stalled: retire tabs that died, wait for tabs that joined, and ask again. */
   private async tick(): Promise<void> {
     if (this.closed) return;
-    const live = await liveTabs(this.opts.name);
-    live.delete(this.tab);
+    const { live, dead } = await this.liveAndDead();
     this.merger.setLive(live);
-    for (const tab of this.merger.known()) if (!live.has(tab)) await this.retire(tab);
+    for (const tab of dead) await this.retire(tab);
     if (this.joining) {
-      for (const tab of [...this.joining.expect]) if (!live.has(tab)) this.joining.expect.delete(tab);
+      for (const tab of dead) this.joining.expect.delete(tab);
       if (this.joining.expect.size === 0) this.joining.done();
       else this.post({ kind: "hello", tab: this.tab });
     }

@@ -29,6 +29,7 @@ import {
   type TabLogClient,
 } from "./log/client.js";
 import { newTabId, type TabId } from "./log/frame.js";
+import { holdTab } from "./log/liveness.js";
 import type { MergedRecord } from "./log/merger.js";
 import { LogSession } from "./log/session.js";
 import { recoverGeneration } from "./recover.js";
@@ -343,22 +344,30 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   // which exist only in a dedicated WebWorker; it spawns while open reads
   // the logs, and the first write waits for it.
   const tab = newTabId();
+  // The liveness lock comes before the log directory: a tab that finds the
+  // directory and not the lock takes the tab for dead.
+  const held = holdTab(name, tab);
   const segments = fs.segments?.();
   let client: TabLogClient;
-  if (segments) {
-    client = createLocalLogClient(segments, tab, policy.maxWalBytes);
-  } else if (typeof Worker !== "undefined") {
-    // Inline URL for bundlers, as for the SharedWorker above.
-    const logWorker = new Worker(new URL("./log/log-worker.js", import.meta.url), {
-      type: "module",
-      name: `opfs-lsm-log:${name}`,
-    });
-    client = createWorkerLogClient(logWorker, name, tab, policy.maxWalBytes);
-  } else if (!useBrowser) {
-    // A Node test over an fs with no in-process segments.
-    client = createLocalLogClient(republishingSegments(fs), tab, policy.maxWalBytes);
-  } else {
-    throw new StorageUnavailableError("no way to write the log: no in-process segments and no Worker");
+  try {
+    if (segments) {
+      client = createLocalLogClient(segments, tab, policy.maxWalBytes);
+    } else if (typeof Worker !== "undefined") {
+      // Inline URL for bundlers, as for the SharedWorker above.
+      const logWorker = new Worker(new URL("./log/log-worker.js", import.meta.url), {
+        type: "module",
+        name: `opfs-lsm-log:${name}`,
+      });
+      client = createWorkerLogClient(logWorker, name, tab, policy.maxWalBytes, held);
+    } else if (!useBrowser) {
+      // A Node test over an fs with no in-process segments.
+      client = createLocalLogClient(republishingSegments(fs), tab, policy.maxWalBytes);
+    } else {
+      throw new StorageUnavailableError("no way to write the log: no in-process segments and no Worker");
+    }
+  } catch (err) {
+    void held.then((release) => release(), () => undefined);
+    throw err;
   }
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
@@ -369,6 +378,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     name,
     writerId,
     tab,
+    held,
     client,
     tabFs,
     cache,
@@ -498,6 +508,7 @@ class DbImpl implements Db {
     readonly name: DbName,
     readonly writerId: WriterId,
     tab: TabId,
+    held: Promise<() => void>,
     client: TabLogClient,
     private readonly fs: AsyncFs,
     private readonly cache: PageCache,
@@ -510,6 +521,7 @@ class DbImpl implements Db {
     this.session = new LogSession({
       name,
       tab,
+      held,
       fs,
       client,
       maxWalBytes: policy.maxWalBytes,

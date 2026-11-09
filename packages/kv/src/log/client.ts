@@ -126,12 +126,17 @@ export function createLocalLogClient(
  */
 const FLUSH_TIMEOUT_MS = 5_000;
 
-/** The browser client: talks to the log worker `worker`, already constructed by the caller. */
+/**
+ * The browser client: talks to the log worker `worker`, already constructed
+ * by the caller. The worker creates the tab's log directory once `held`
+ * resolves: the tab's liveness lock is taken by then.
+ */
 export function createWorkerLogClient(
   worker: Worker,
   name: string,
   tab: TabId,
   segmentBytes: number,
+  held: Promise<unknown>,
 ): TabLogClient {
   let nextId = 1;
   const pending = new Map<number, Deferred>();
@@ -156,7 +161,10 @@ export function createWorkerLogClient(
     return p.promise;
   };
   const open: ToLogWorker = { t: "open", name, tab, segmentBytes };
-  worker.postMessage(open);
+  void held.then(
+    () => worker.postMessage(open),
+    () => undefined,
+  );
   return {
     append: batching((frames) =>
       request({ t: "write", id: nextId++, frames }, frames.map((f) => f.body.buffer as ArrayBuffer)),

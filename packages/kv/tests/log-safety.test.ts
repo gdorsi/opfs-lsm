@@ -4,7 +4,9 @@ import { encodeOps, segmentPath } from "../src/log/frame.js";
 import type { TabLogClient } from "../src/log/client.js";
 import { LogSession } from "../src/log/session.js";
 import { TabWriter, type SegmentStore } from "../src/log/tab-writer.js";
-import { MemoryFs } from "../src/index.js";
+import type { AsyncFs, Db } from "../src/index.js";
+import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
+import { openHarnessDb } from "../src/testing.js";
 import { Traced } from "./sim/crash.js";
 
 /**
@@ -32,6 +34,124 @@ const outcome = (p: Promise<unknown>): Promise<Outcome> =>
     () => "acked",
     () => "rejected",
   );
+
+/** `fs` with its log segment creates parked while `park` is on. */
+function parkableLogs(fs: MemoryFs) {
+  let parked: (() => void)[] | undefined;
+  const wrapped: AsyncFs = {
+    read: (p, o, l) => fs.read(p, o, l),
+    open: (p) => fs.open(p),
+    list: (d) => fs.list(d),
+    remove: (p) => fs.remove(p),
+    removeUnlessOpen: (p) => fs.removeUnlessOpen(p),
+    create: (p) => fs.create(p),
+    segments: () => ({
+      create: async (path) => {
+        if (parked) await new Promise<void>((r) => parked!.push(r));
+        return fs.segments().create(path);
+      },
+    }),
+  };
+  return {
+    fs: wrapped,
+    park: () => (parked = []),
+    async waitParked() {
+      while (!parked || parked.length === 0) await sleep(1);
+    },
+    resume() {
+      const all = parked ?? [];
+      parked = undefined;
+      for (const r of all) r();
+    },
+  };
+}
+
+/**
+ * Make the first `navigator.locks.query()` after this call answer late:
+ * its snapshot is taken at call time, and the answer waits for `release`.
+ */
+function slowFirstLockQuery() {
+  const locks = navigator.locks;
+  const query = locks.query.bind(locks);
+  let release: (() => void) | undefined;
+  let armed = true;
+  locks.query = (async () => {
+    const snap = await query();
+    if (armed) {
+      armed = false;
+      await new Promise<void>((r) => (release = r));
+    }
+    return snap;
+  }) as typeof locks.query;
+  return {
+    async waitAsked() {
+      while (!release) await sleep(1);
+    },
+    answer: () => release!(),
+    restore: () => (locks.query = query as typeof locks.query),
+  };
+}
+
+describe("a tab is retired only once it is dead", () => {
+  it("a tab that joins while another tab's liveness query is in flight has its writes seen by that tab", async () => {
+    const name = uniqueName("retire-join");
+    const fs = new MemoryFs();
+    const ingest = createLocalIngestClient(new EngineHost(() => fs));
+    const dbs: Db[] = [await openHarnessDb({ name, fs, ingest })];
+    const slow = slowFirstLockQuery();
+    try {
+      const bOpen = openHarnessDb({ name, fs, ingest });
+      await slow.waitAsked();
+      const c = await openHarnessDb({ name, fs, ingest });
+      dbs.push(c);
+      slow.answer();
+      const b = await bOpen;
+      dbs.push(b);
+      await c.put(utf("k"), utf("from-c"));
+      await c.sync();
+      await b.sync();
+      expect(str(await b.get(utf("k"))), "a write of a live tab is visible to every tab after sync").toBe("from-c");
+    } finally {
+      slow.restore();
+      await Promise.all(dbs.map((d) => d.close()));
+    }
+  });
+
+  it("an ingest by a tab whose liveness query raced a join keeps the joined tab's acked write", async () => {
+    const name = uniqueName("retire-ingest");
+    const fs = new MemoryFs();
+    const ingest = createLocalIngestClient(new EngineHost(() => fs));
+    const cLogs = parkableLogs(fs);
+    const dbs: Db[] = [await openHarnessDb({ name, fs, ingest })];
+    const slow = slowFirstLockQuery();
+    try {
+      const bOpen = openHarnessDb({ name, fs, ingest });
+      await slow.waitAsked();
+      const c = await openHarnessDb({ name, fs: cLogs.fs, ingest });
+      dbs.push(c);
+      slow.answer();
+      const b = await bOpen;
+      dbs.push(b);
+      cLogs.park();
+      const cPut = outcome(c.put(utf("c"), utf("1")));
+      await cLogs.waitParked();
+      await sleep(2);
+      await b.put(utf("b"), utf("1"));
+      const ingesting = b.ingest();
+      await sleep(30);
+      cLogs.resume();
+      await ingesting;
+      expect(await cPut, "the put of the joined tab is acked").toBe("acked");
+      await c.sync();
+      const fresh = await openHarnessDb({ name, fs, ingest });
+      dbs.push(fresh);
+      expect(str(await fresh.get(utf("c"))), "an acked write survives another tab's ingest and a reopen").toBe("1");
+    } finally {
+      slow.restore();
+      await Promise.all(dbs.map((d) => d.close()));
+    }
+  });
+});
 
 describe("a failed log write", () => {
   it("fails every later write of the tab, so none is acked behind a lost one", async () => {
