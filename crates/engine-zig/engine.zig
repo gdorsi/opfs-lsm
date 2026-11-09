@@ -447,7 +447,9 @@ fn encodeBlock(block: []const Entry, out: *Bytes) !void {
 
 fn encodeSst(entries_in: []const Entry, lz4: bool) ![]u8 {
     var skip: usize = if (entries_in.len > 0) entries_in[0].key.len else 0;
-    for (entries_in[1..]) |e| skip = @min(skip, commonPrefix(entries_in[0].key, e.key));
+    if (entries_in.len > 1) {
+        for (entries_in[1..]) |e| skip = @min(skip, commonPrefix(entries_in[0].key, e.key));
+    }
     const idx = try A.alloc(SortKey, entries_in.len);
     defer A.free(idx);
     for (idx, 0..) |*x, i| x.* = .{ .hi = sortKeyAt(entries_in[i].key, skip), .idx = @intCast(i) };
@@ -519,19 +521,18 @@ fn encodeSst(entries_in: []const Entry, lz4: bool) ![]u8 {
         try put32(&index, @intCast(data.items.len - off));
     }
 
-    var out = try Bytes.initCapacity(A, data.items.len + bloom.bits.len + index.items.len + FOOTER);
-    errdefer out.deinit();
-    try out.appendSlice(data.items);
-    try out.appendSlice(bloom.bits);
-    const index_offset = out.items.len;
-    try out.appendSlice(index.items);
-    const fields = [_]usize{ sorted.len, nblocks, data.items.len, bloom.bits.len, bloom.hash_count, index_offset, index.items.len, if (lz4) 1 else 0 };
-    for (fields) |f| try put32(&out, @intCast(f));
-    const sum = crc32(out.items);
-    try put32(&out, sum);
-    try put32(&out, VERSION);
-    try put32(&out, MAGIC);
-    return out.toOwnedSlice();
+    const data_len = data.items.len;
+    try data.ensureUnusedCapacity(bloom.bits.len + index.items.len + FOOTER);
+    try data.appendSlice(bloom.bits);
+    const index_offset = data.items.len;
+    try data.appendSlice(index.items);
+    const fields = [_]usize{ sorted.len, nblocks, data_len, bloom.bits.len, bloom.hash_count, index_offset, index.items.len, if (lz4) 1 else 0 };
+    for (fields) |f| try put32(&data, @intCast(f));
+    const sum = crc32(data.items);
+    try put32(&data, sum);
+    try put32(&data, VERSION);
+    try put32(&data, MAGIC);
+    return data.toOwnedSlice();
 }
 
 // ---- SST decode ------------------------------------------------------------
