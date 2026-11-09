@@ -64,9 +64,10 @@ impl Heads {
 /// `drop_tombstones` is for a merge that includes the oldest run, where no
 /// older value is left for a tombstone to hide. Returns the runs in key
 /// order and the highest seq of a dropped tombstone, 0 when none was dropped.
-/// A key out of order reaches the writer, which refuses it with
-/// `SstError::OutOfOrder`, so a corrupt input never becomes a wrongly ordered
-/// run.
+/// A key out of order reaches the writer, which refuses a key below the one
+/// before it in its run. A cut starts the writer on a new run, so the runs are
+/// checked against each other at the end. Either way a corrupt input fails with
+/// `SstError::OutOfOrder` and never becomes wrongly ordered or overlapping runs.
 pub fn merge_sst_bytes(
     sst_bytes: &[Vec<u8>],
     drop_tombstones: bool,
@@ -130,6 +131,10 @@ pub fn merge_sst_bytes(
     if !writer.is_empty() {
         let end = writer.finish(&mut bytes);
         runs.push(EncodedRun { bytes, end });
+    }
+    // A merge writes each key once, so every run starts past the end of the one before it.
+    if runs.windows(2).any(|w| w[0].end.last_key >= w[1].end.first_key) {
+        return Err(SstError::OutOfOrder);
     }
     Ok((runs, dropped))
 }
@@ -203,6 +208,9 @@ mod tests {
         let sum = crate::crc32::crc32(&flipped[..crc_at]);
         flipped[crc_at..crc_at + 4].copy_from_slice(&sum.to_le_bytes());
         assert_eq!(decode_sst(&flipped).unwrap().iter().map(|e| e.key().to_vec()).collect::<Vec<_>>(), vec![b"b".to_vec(), b"a".to_vec()]);
+        // Cut after every entry, each key opens a run of its own, where the writer has no key before it.
+        assert_eq!(merge_sst_bytes(&[flipped.clone()], false, 1, Codec::Raw).err(), Some(SstError::OutOfOrder));
+        assert_eq!(merge_sst_bytes(&[ordered.clone()], false, 1, Codec::Raw).unwrap().0.len(), 2);
         assert_eq!(merge_sst_bytes(&[flipped], false, usize::MAX, Codec::Raw).err(), Some(SstError::OutOfOrder));
         assert!(merge_sst_bytes(&[ordered], false, usize::MAX, Codec::Raw).is_ok());
     }

@@ -10,6 +10,7 @@ import {
   mergeSsts,
 } from "../src/store/engine.js";
 import { CorruptDatabaseError } from "../src/errors.js";
+import { crc32 } from "../src/store/crc32.js";
 import { settle } from "../src/store/cursor.js";
 import { encodeRun as encodeRunTs, sstKeyRange, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { readerOfBytes } from "./runs.js";
@@ -113,6 +114,33 @@ describe("the end of a run", () => {
     expect(largest.buffer).not.toBe(run.body.buffer);
     expect(new TextDecoder().decode(smallest)).toBe("alpha");
     expect(new TextDecoder().decode(largest)).toBe("omega");
+  });
+});
+
+describe("a run whose keys are out of order", () => {
+  /** The run `[a, b]` with its two keys swapped in the data block and the CRC fixed, so it decodes as `[b, a]`. */
+  function misordered(): Uint8Array {
+    const sst = encodeRunTs([
+      { kind: "put", key: utf("a"), value: utf("1"), seq: 1 },
+      { kind: "put", key: utf("b"), value: utf("2"), seq: 2 },
+    ]).body.slice();
+    const [a, b] = [sst.indexOf(0x61), sst.indexOf(0x62)];
+    sst[a] = 0x62;
+    sst[b] = 0x61;
+    const crcAt = sst.byteLength - 12;
+    new DataView(sst.buffer).setUint32(crcAt, crc32(sst.subarray(0, crcAt)), true);
+    return sst;
+  }
+
+  it("is refused by the wasm merge, in one output run and when a cut falls between the two keys", async () => {
+    await ensureEngine();
+    expect(engineUsingWasm()).toBe(true);
+    const sst = misordered();
+    expect((await decodeSst(sst)).map((e) => new TextDecoder().decode(e.key))).toEqual(["b", "a"]);
+    await expect(mergeSsts([sst], false)).rejects.toThrow(CorruptDatabaseError);
+    // A target of 1 byte cuts after every entry, so each key opens an output run of its own.
+    await expect(mergeSsts([sst], false, 1)).rejects.toThrow("keys out of order");
+    expect(engineUsingWasm()).toBe(true);
   });
 });
 
