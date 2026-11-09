@@ -21,8 +21,8 @@ The design ranks goals in this order (see `AGENTS.md`):
 1. Read and write latency.
 2. Consistency. Every tab sees the other tabs' writes as one prefix of one order, the same order
    in every tab, with its own writes on top.
-3. Persistence. An acked write survives a crash of the tab, the SharedWorker or the browser. A
-   power loss can lose the writes since a tab's last flush.
+3. Persistence. An acked write survives a crash of the tab or one of its workers. A crash of the
+   whole browser, like a power loss, can lose the writes a tab acked since its last flush.
 
 All multi-byte integers on disk are little-endian.
 
@@ -751,9 +751,14 @@ runs are all on disk, plus every log record above its cut, in (stamp, tab) order
 from its `through` (`recoverGeneration` in `src/recover.ts`). There is no other state to pair
 with it, and nothing to repair.
 
-A **process crash** (a tab, its dedicated WebWorker, the SharedWorker or the browser killed; the
-OS keeps every completed write) loses no acked write: the ack is the write into the log file. A
-frame being written when the tab died is torn, and readers stop at it.
+A **process crash** (a tab, its dedicated WebWorker or the SharedWorker killed, with the browser
+still up) loses no acked write: the ack is the write into the log file. A frame being written
+when the tab died is torn, and readers stop at it.
+
+A **browser crash** (the whole browser killed) counts as a power loss for the logs. The kill loop
+in real Chrome sees it drop the last acked writes of a tab that were not yet flushed ("kept 1499
+of 1501 acked writes"), so the ack is not durable against it. Those writes were never broadcast,
+so the result is the same as below.
 
 A **power loss** keeps each log's writes through its last flush and any prefix of the rest.
 OPFS's `close()` swaps a file into place with no fsync, so a manifest or a run can be gone or
@@ -823,7 +828,8 @@ lost across tabs.
   WebWorker. Each tab's worker holds its own log files for the tab's life; no other context
   writes them. Other contexts read them with `getFile()`.
 - A SyncAccessHandle `flush()` makes its writes durable. Writes not yet flushed may be lost on a
-  power loss, and the frame CRC and `n` chain end the log at the first one lost.
+  power loss or a crash of the whole browser, and the frame CRC and `n` chain end the log at the
+  first one lost.
 - An OPFS `createWritable().close()` publishes the whole file atomically, and never shows a
   partial file to readers. It does not fsync.
 - A SharedWorker with the same URL and name is shared by every tab of the origin. `openDb` names
