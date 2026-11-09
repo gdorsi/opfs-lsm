@@ -9,10 +9,10 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use core::cell::UnsafeCell;
-use engine_core::{lz4_unpack, merge_sst_bytes, Codec, Entry, SstError};
+use engine_core::{encode_run_into, lz4_unpack, merge_sst_bytes, Codec, EncodedRun, Entry, RunEnd, SstError};
 
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
@@ -20,6 +20,10 @@ const TAG_DEL: u8 = 2;
 const TRUNCATED: i32 = -5;
 const BAD_TAG: i32 = -6;
 const PATTERNS_TRUNCATED: i32 = -12;
+const OUT_OF_ORDER: i32 = -14;
+
+/// Bytes of a run record's fixed head: entries, size, first and last key length.
+const RUN_HEAD: usize = 16;
 
 /// The module is single-threaded, so a static buffer handed out by `&mut` is
 /// never aliased across calls.
@@ -49,7 +53,18 @@ fn error_code(e: SstError) -> i32 {
         SstError::CountMismatch => -8,
         SstError::BadCodec(_) => -9,
         SstError::BadBlock => -10,
+        SstError::OutOfOrder => OUT_OF_ORDER,
     }
+}
+
+/// The fixed head of a run record, from what the writer reported.
+fn run_head(end: &RunEnd) -> [u8; RUN_HEAD] {
+    let mut head = [0u8; RUN_HEAD];
+    let fields = [end.entries, end.size, end.first_key.len(), end.last_key.len()];
+    for (slot, n) in head.chunks_exact_mut(4).zip(fields) {
+        slot.copy_from_slice(&(n as u32).to_le_bytes());
+    }
+    head
 }
 
 fn codec(lz4: i32) -> Codec {
@@ -158,9 +173,15 @@ pub extern "C" fn result_len() -> u32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn encode_sst(ptr: *const u8, len: usize, lz4: i32) -> i32 {
-    finish(
-        parse_entries(bytes(ptr, len)).map(|entries| engine_core::encode_sst(&entries, codec(lz4))),
-    )
+    finish(parse_entries(bytes(ptr, len)).map(|entries| {
+        // The run is written after room for its head, so it is never copied.
+        let mut out = vec![0u8; RUN_HEAD];
+        let end = encode_run_into(&entries, codec(lz4), &mut out);
+        out[..RUN_HEAD].copy_from_slice(&run_head(&end));
+        out.extend_from_slice(&end.first_key);
+        out.extend_from_slice(&end.last_key);
+        out
+    }))
 }
 
 #[no_mangle]
@@ -242,13 +263,15 @@ pub unsafe extern "C" fn merge_ssts(
     finish(
         merge_sst_bytes(&blobs, drop_tombstones != 0, target, codec(lz4))
             .map(|(runs, dropped)| {
-                let mut out =
-                    Vec::with_capacity(12 + runs.iter().map(|s| 4 + s.len()).sum::<usize>());
+                let size = |r: &EncodedRun| RUN_HEAD + r.bytes.len() + r.end.first_key.len() + r.end.last_key.len();
+                let mut out = Vec::with_capacity(12 + runs.iter().map(size).sum::<usize>());
                 out.extend_from_slice(&dropped.to_le_bytes());
                 out.extend_from_slice(&(runs.len() as u32).to_le_bytes());
                 for run in &runs {
-                    out.extend_from_slice(&(run.len() as u32).to_le_bytes());
-                    out.extend_from_slice(run);
+                    out.extend_from_slice(&run_head(&run.end));
+                    out.extend_from_slice(&run.bytes);
+                    out.extend_from_slice(&run.end.first_key);
+                    out.extend_from_slice(&run.end.last_key);
                 }
                 out
             })

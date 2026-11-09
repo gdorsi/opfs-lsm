@@ -4,9 +4,15 @@
 //! version sit in the last 8 bytes.
 //! Must stay byte-compatible with `packages/kv/src/store/sst.ts`.
 
-use crate::bloom::{bloom_add, create_bloom};
-use crate::crc32::crc32;
-use alloc::{vec, vec::Vec};
+use crate::bloom::{bloom_from_hashes, key_hash};
+use crate::crc32::{crc32, Crc32};
+use alloc::vec::Vec;
+use core::mem;
+
+#[cfg(test)]
+mod reference;
+#[cfg(test)]
+mod writer_tests;
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
 const VERSION: u32 = 1;
@@ -67,6 +73,32 @@ impl Entry {
     }
 }
 
+/// An entry whose bytes stay with the caller. `SstWriter::push` copies what
+/// it keeps, so a merge can hand over slices of buffers it reuses for the
+/// next entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryRef<'a> {
+    Put { key: &'a [u8], value: &'a [u8], seq: u64 },
+    Del { key: &'a [u8], seq: u64 },
+}
+
+impl<'a> EntryRef<'a> {
+    pub fn key(&self) -> &'a [u8] {
+        match *self {
+            EntryRef::Put { key, .. } | EntryRef::Del { key, .. } => key,
+        }
+    }
+}
+
+impl<'a> From<&'a Entry> for EntryRef<'a> {
+    fn from(e: &'a Entry) -> Self {
+        match e {
+            Entry::Put { key, value, seq } => EntryRef::Put { key, value, seq: *seq },
+            Entry::Del { key, seq } => EntryRef::Del { key, seq: *seq },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SstError {
     TooShort,
@@ -79,6 +111,7 @@ pub enum SstError {
     CountMismatch,
     BadCodec(u32),
     BadBlock,
+    OutOfOrder,
 }
 
 impl core::fmt::Display for SstError {
@@ -89,6 +122,45 @@ impl core::fmt::Display for SstError {
 
 impl core::error::Error for SstError {}
 
+/// `SstWriter::push` got a key below the one before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutOfOrder;
+
+impl core::fmt::Display for OutOfOrder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl core::error::Error for OutOfOrder {}
+
+impl From<OutOfOrder> for SstError {
+    fn from(_: OutOfOrder) -> Self {
+        SstError::OutOfOrder
+    }
+}
+
+/// What a writer reports when a run ends: what the manifest records, so
+/// nobody reads the run back for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunEnd {
+    /// Entries in the run, tombstones included.
+    pub entries: usize,
+    /// Bytes of the whole run, footer included.
+    pub size: usize,
+    /// The smallest and largest key. Both are empty when the run has no
+    /// entries, and also when its only key is empty, so `entries` says which.
+    pub first_key: Vec<u8>,
+    pub last_key: Vec<u8>,
+}
+
+/// A run's bytes and its `RunEnd`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedRun {
+    pub bytes: Vec<u8>,
+    pub end: RunEnd,
+}
+
 /// Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
 /// records use varints and a shared prefix, so they are never larger.
 /// Compaction cuts runs by this without encoding them.
@@ -98,11 +170,6 @@ pub(crate) fn entry_size(e: &Entry) -> usize {
         n += 4 + value.len();
     }
     n
-}
-
-fn write_u32(buf: &mut [u8], o: &mut usize, v: u32) {
-    buf[*o..*o + 4].copy_from_slice(&v.to_le_bytes());
-    *o += 4;
 }
 
 fn read_u32(buf: &[u8], o: usize) -> u32 {
@@ -156,83 +223,273 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
 /// sized from the whole key, an upper bound that stays fixed as the
 /// block prefix shrinks, so a block is sized from running sums.
 /// `packages/kv/src/store/sst.ts` sizes blocks the same way.
-fn record_overhead(e: &Entry) -> usize {
+fn record_overhead(e: EntryRef<'_>) -> usize {
     let n = 1 + 8 + varint_len(e.key().len());
     match e {
-        Entry::Put { value, .. } => n + varint_len(value.len()) + value.len(),
-        Entry::Del { .. } => n,
+        EntryRef::Put { value, .. } => n + varint_len(value.len()) + value.len(),
+        EntryRef::Del { .. } => n,
     }
 }
 
-/// Cut sorted entries into blocks of at most `BLOCK_TARGET` encoded bytes, or one
-/// entry. A block's prefix shrinks as keys join it, so its size is
-/// recomputed from running key and overhead sums at each entry.
-fn split_blocks<'a>(sorted: &'a [&'a Entry]) -> Vec<&'a [&'a Entry]> {
-    let mut blocks = Vec::new();
-    let mut start = 0;
-    let (mut keys, mut overhead) = (0usize, 0usize);
-    for (i, e) in sorted.iter().enumerate() {
-        if i > start {
-            let p = common_prefix(sorted[start].key(), e.key());
-            let n = i + 1 - start;
-            let size = 4 + varint_len(p) + p + overhead + record_overhead(e) + keys + e.key().len() - n * p
+/// A record of the open block. Its key is staged cut after the `shared` bytes
+/// it has in common with the block's first key, because the block's prefix is
+/// only known at its last key and can only shrink. A key cut here is never
+/// longer than the suffix it will be written with, so staged bytes never pass
+/// the block's encoded size however long the keys are.
+struct Staged {
+    seq: u64,
+    shared: usize,
+    rest: usize,
+    /// None for a tombstone.
+    value: Option<usize>,
+}
+
+/// The bytes a run has emitted so far, and their CRC.
+struct Emitted {
+    crc: Crc32,
+    bytes: usize,
+}
+
+impl Emitted {
+    fn emit(&mut self, out: &mut Vec<u8>, bytes: &[u8]) {
+        self.crc.update(bytes);
+        out.extend_from_slice(bytes);
+        self.bytes += bytes.len();
+    }
+}
+
+/// Builds one SST in file order. `push` takes entries in key order and appends
+/// each data block to `out` as soon as it is cut. `finish` appends the bloom
+/// filter, the index and the footer, and reports the run. While a run is open
+/// the writer holds one block, 4 bytes per key for the bloom filter, and the
+/// index, however large the run's data grows.
+///
+/// The writer never reads `out`, so a caller can move the bytes on (to a file,
+/// to a result buffer) and clear it between calls. After `finish` the writer
+/// is empty and ready for the next run, with its allocations kept.
+pub struct SstWriter {
+    codec: Codec,
+    first: Vec<u8>,
+    recs: Vec<Staged>,
+    staged: Vec<u8>,
+    /// Sum of the open block's key lengths and `record_overhead`s, so the cut
+    /// rule is a few additions per entry.
+    keys: usize,
+    overhead: usize,
+    block: Vec<u8>,
+    offsets: Vec<u8>,
+    framed: Vec<u8>,
+    hashes: Vec<u32>,
+    /// Index rows as the file stores them.
+    index: Vec<u8>,
+    sent: Emitted,
+    blocks: usize,
+    entries: usize,
+    first_key: Vec<u8>,
+    last_key: Vec<u8>,
+}
+
+impl SstWriter {
+    pub fn new(codec: Codec) -> Self {
+        SstWriter {
+            codec,
+            first: Vec::new(),
+            recs: Vec::new(),
+            staged: Vec::new(),
+            keys: 0,
+            overhead: 0,
+            block: Vec::new(),
+            offsets: Vec::new(),
+            framed: Vec::new(),
+            hashes: Vec::new(),
+            index: Vec::new(),
+            sent: Emitted { crc: Crc32::new(), bytes: 0 },
+            blocks: 0,
+            entries: 0,
+            first_key: Vec::new(),
+            last_key: Vec::new(),
+        }
+    }
+
+    /// True until the first `push` of a run.
+    pub fn is_empty(&self) -> bool {
+        self.entries == 0
+    }
+
+    /// Add the next entry. Keys must not decrease; an equal key is accepted
+    /// and written after the one before it. A refused entry leaves the writer
+    /// as it was.
+    ///
+    /// A block holds at most `BLOCK_TARGET` encoded bytes, or one entry. Its
+    /// prefix shrinks as keys join it, so its size is recomputed from running
+    /// key and overhead sums at each entry; when the entry would overflow it,
+    /// the block is cut first and appended to `out`.
+    pub fn push(&mut self, e: EntryRef<'_>, out: &mut Vec<u8>) -> Result<(), OutOfOrder> {
+        let key = e.key();
+        if self.entries > 0 && key < self.last_key.as_slice() {
+            return Err(OutOfOrder);
+        }
+        let mut shared = key.len();
+        if !self.recs.is_empty() {
+            shared = common_prefix(&self.first, key);
+            let n = self.recs.len() + 1;
+            let size = 4 + varint_len(shared) + shared + self.overhead + record_overhead(e) + self.keys + key.len()
+                - n * shared
                 + offset_table_bytes(n);
             if size > BLOCK_TARGET {
-                blocks.push(&sorted[start..i]);
-                start = i;
-                keys = 0;
-                overhead = 0;
+                self.cut(out);
+                shared = key.len();
             }
         }
-        keys += e.key().len();
-        overhead += record_overhead(e);
-    }
-    if start < sorted.len() || blocks.is_empty() {
-        blocks.push(&sorted[start..]);
-    }
-    blocks
-}
-
-/// One data block before compression:
-///   u32 count | varint prefixLen | prefix | count records | u16 offsets
-/// The prefix is the longest one shared by every key in the block, which
-/// for sorted keys is the first and last key's. `offsets[j]` is where
-/// record `(j + 1) * OFFSET_STRIDE` starts, from the start of the block.
-fn encode_block(block: &[&Entry]) -> Vec<u8> {
-    let p = match (block.first(), block.last()) {
-        (Some(a), Some(b)) => common_prefix(a.key(), b.key()),
-        _ => 0,
-    };
-    let mut out = Vec::with_capacity(BLOCK_TARGET + 64);
-    out.extend_from_slice(&(block.len() as u32).to_le_bytes());
-    write_varint(&mut out, p);
-    if let Some(first) = block.first() {
-        out.extend_from_slice(&first.key()[..p]);
-    }
-    let mut offsets = Vec::with_capacity(offset_table_bytes(block.len()));
-    for (i, e) in block.iter().enumerate() {
-        if i > 0 && i % OFFSET_STRIDE == 0 {
-            offsets.extend_from_slice(&(out.len() as u16).to_le_bytes());
+        if self.recs.is_empty() {
+            self.first.clear();
+            self.first.extend_from_slice(key);
         }
-        write_record(&mut out, e, p);
+        let (seq, value) = match e {
+            EntryRef::Put { value, seq, .. } => (seq, Some(value)),
+            EntryRef::Del { seq, .. } => (seq, None),
+        };
+        self.recs.push(Staged { seq, shared, rest: key.len() - shared, value: value.map(<[u8]>::len) });
+        self.staged.extend_from_slice(&key[shared..]);
+        if let Some(value) = value {
+            self.staged.extend_from_slice(value);
+        }
+        self.keys += key.len();
+        self.overhead += record_overhead(e);
+        self.hashes.push(key_hash(key));
+        if self.entries == 0 {
+            self.first_key.extend_from_slice(key);
+        }
+        self.last_key.clear();
+        self.last_key.extend_from_slice(key);
+        self.entries += 1;
+        Ok(())
     }
-    out.extend_from_slice(&offsets);
-    out
-}
 
-/// u8 tag | u64 seq | varint suffixLen | suffix | (put) varint valLen | value
-fn write_record(out: &mut Vec<u8>, e: &Entry, prefix_len: usize) {
-    let suffix = &e.key()[prefix_len..];
-    out.push(match e {
-        Entry::Put { .. } => TAG_PUT,
-        Entry::Del { .. } => TAG_DEL,
-    });
-    out.extend_from_slice(&e.seq().to_le_bytes());
-    write_varint(out, suffix.len());
-    out.extend_from_slice(suffix);
-    if let Entry::Put { value, .. } = e {
-        write_varint(out, value.len());
-        out.extend_from_slice(value);
+    /// End the run: close the open block, then append the bloom filter, the
+    /// index and the footer to `out`. Together with what `push` appended,
+    /// `out` holds the run.
+    ///   data blocks | bloom bits | block index | footer (44 bytes)
+    /// The footer is u32 entry count, block count, bloom offset, bloom length,
+    /// bloom hash count, index offset, index length, codec, then a u32 CRC of
+    /// every byte before it, u32 version 1 and u32 magic.
+    pub fn finish(&mut self, out: &mut Vec<u8>) -> RunEnd {
+        if !self.recs.is_empty() || self.blocks == 0 {
+            self.cut(out);
+        }
+        let data_len = self.sent.bytes;
+        let bloom = bloom_from_hashes(&self.hashes, 10);
+        self.sent.emit(out, &bloom.bits);
+        let index_offset = self.sent.bytes;
+        self.sent.emit(out, &self.index);
+
+        let mut footer = [0u8; 32];
+        let fields = [
+            self.entries,
+            self.blocks,
+            data_len,
+            bloom.bits.len(),
+            bloom.hash_count as usize,
+            index_offset,
+            self.index.len(),
+            self.codec as usize,
+        ];
+        for (slot, field) in footer.chunks_exact_mut(4).zip(fields) {
+            slot.copy_from_slice(&(field as u32).to_le_bytes());
+        }
+        self.sent.emit(out, &footer);
+        out.extend_from_slice(&self.sent.crc.value().to_le_bytes());
+        out.extend_from_slice(&VERSION.to_le_bytes());
+        out.extend_from_slice(&MAGIC.to_le_bytes());
+
+        let end = RunEnd {
+            entries: self.entries,
+            size: self.sent.bytes + 12,
+            first_key: mem::take(&mut self.first_key),
+            last_key: mem::take(&mut self.last_key),
+        };
+        self.reset();
+        end
+    }
+
+    fn reset(&mut self) {
+        self.first.clear();
+        self.recs.clear();
+        self.staged.clear();
+        self.keys = 0;
+        self.overhead = 0;
+        self.hashes.clear();
+        self.index.clear();
+        self.sent.crc.reset();
+        self.sent.bytes = 0;
+        self.blocks = 0;
+        self.entries = 0;
+    }
+
+    /// Write the open block, which may be empty only for a run with no
+    /// entries, and append it to `out`.
+    ///   u32 count | varint prefixLen | prefix | count records | u16 offsets
+    /// The prefix is the longest one shared by every key in the block, which
+    /// for sorted keys is the first and last key's. `offsets[j]` is where
+    /// record `(j + 1) * OFFSET_STRIDE` starts, from the start of the block.
+    /// A record is
+    ///   u8 tag | u64 seq | varint suffixLen | suffix | (put) varint valLen | value
+    /// An LZ4 block is then framed with its uncompressed length.
+    fn cut(&mut self, out: &mut Vec<u8>) {
+        let p = self.recs.last().map_or(0, |r| r.shared);
+        let block = &mut self.block;
+        block.clear();
+        self.offsets.clear();
+        block.extend_from_slice(&(self.recs.len() as u32).to_le_bytes());
+        write_varint(block, p);
+        block.extend_from_slice(&self.first[..p]);
+        let mut at = 0;
+        for (i, r) in self.recs.iter().enumerate() {
+            if i > 0 && i % OFFSET_STRIDE == 0 {
+                self.offsets.extend_from_slice(&(block.len() as u16).to_le_bytes());
+            }
+            let head = &self.first[p..r.shared];
+            let rest = &self.staged[at..at + r.rest];
+            at += r.rest;
+            block.push(if r.value.is_some() { TAG_PUT } else { TAG_DEL });
+            block.extend_from_slice(&r.seq.to_le_bytes());
+            write_varint(block, head.len() + rest.len());
+            block.extend_from_slice(head);
+            block.extend_from_slice(rest);
+            if let Some(len) = r.value {
+                write_varint(block, len);
+                block.extend_from_slice(&self.staged[at..at + len]);
+                at += len;
+            }
+        }
+        block.extend_from_slice(&self.offsets);
+
+        let offset = self.sent.bytes;
+        let length = match self.codec {
+            Codec::Raw => {
+                self.sent.emit(out, &self.block);
+                self.block.len()
+            }
+            Codec::Lz4 => {
+                self.framed.clear();
+                self.framed.extend_from_slice(&(self.block.len() as u32).to_le_bytes());
+                self.framed.extend_from_slice(&lz4_flex::block::compress(&self.block));
+                self.sent.emit(out, &self.framed);
+                self.framed.len()
+            }
+        };
+        for key in [&self.first, &self.last_key] {
+            self.index.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            self.index.extend_from_slice(key);
+        }
+        self.index.extend_from_slice(&(offset as u32).to_le_bytes());
+        self.index.extend_from_slice(&(length as u32).to_le_bytes());
+
+        self.recs.clear();
+        self.staged.clear();
+        self.keys = 0;
+        self.overhead = 0;
+        self.blocks += 1;
     }
 }
 
@@ -280,87 +537,30 @@ fn merge_sort<'a>(v: &mut [&'a Entry], buf: &mut [&'a Entry]) {
     }
 }
 
-/// Encode SST version 1:
-///   data blocks | bloom bits | block index | footer (44 bytes)
-/// The footer is u32 entry count, block count, bloom offset, bloom length,
-/// bloom hash count, index offset, index length, codec, then a u32 CRC of
-/// every byte before it, u32 version 1 and u32 magic.
-pub fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
+/// Encode SST version 1 (layout in `SstWriter::finish`) from entries in any
+/// order, appending the run to `out`. Equal keys keep their order in `entries`.
+pub fn encode_run_into(entries: &[Entry], codec: Codec, out: &mut Vec<u8>) -> RunEnd {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
     sort_by_key(&mut sorted);
-
-    let blocks = split_blocks(&sorted);
-
-    let mut bloom = create_bloom(sorted.len().max(1), 10);
-    for e in &sorted {
-        bloom_add(&mut bloom, e.key());
+    let mut writer = SstWriter::new(codec);
+    for e in sorted {
+        if writer.push(e.into(), out).is_err() {
+            unreachable!("sorted entries are in order");
+        }
     }
+    writer.finish(out)
+}
 
-    let mut block_blobs: Vec<Vec<u8>> = Vec::new();
-    let mut index: Vec<(Vec<u8>, Vec<u8>, u32, u32)> = Vec::new();
-    let mut data_len = 0usize;
-    for block in &blocks {
-        let blob = encode_block(block);
-        let blob = match codec {
-            Codec::Raw => blob,
-            Codec::Lz4 => {
-                let mut packed = (blob.len() as u32).to_le_bytes().to_vec();
-                packed.extend(lz4_flex::block::compress(&blob));
-                packed
-            }
-        };
-        let first = block.first().map(|e| e.key().to_vec()).unwrap_or_default();
-        let last = block.last().map(|e| e.key().to_vec()).unwrap_or_default();
-        index.push((first, last, data_len as u32, blob.len() as u32));
-        data_len += blob.len();
-        block_blobs.push(blob);
-    }
+/// `encode_run_into` a new buffer.
+pub fn encode_run(entries: &[Entry], codec: Codec) -> EncodedRun {
+    let mut bytes = Vec::new();
+    let end = encode_run_into(entries, codec, &mut bytes);
+    EncodedRun { bytes, end }
+}
 
-    let mut index_size = 0usize;
-    for (first, last, _, _) in &index {
-        index_size += 4 + first.len() + 4 + last.len() + 8;
-    }
-
-    let total = data_len + bloom.bits.len() + index_size + FOOTER_BYTES;
-    let mut out = vec![0u8; total];
-    let mut o = 0usize;
-    for blob in &block_blobs {
-        out[o..o + blob.len()].copy_from_slice(blob);
-        o += blob.len();
-    }
-    out[o..o + bloom.bits.len()].copy_from_slice(&bloom.bits);
-    o += bloom.bits.len();
-
-    let index_offset = o;
-    for (first, last, offset, length) in &index {
-        write_u32(&mut out, &mut o, first.len() as u32);
-        out[o..o + first.len()].copy_from_slice(first);
-        o += first.len();
-        write_u32(&mut out, &mut o, last.len() as u32);
-        out[o..o + last.len()].copy_from_slice(last);
-        o += last.len();
-        write_u32(&mut out, &mut o, *offset);
-        write_u32(&mut out, &mut o, *length);
-    }
-
-    for field in [
-        sorted.len(),
-        blocks.len(),
-        data_len,
-        bloom.bits.len(),
-        bloom.hash_count as usize,
-        index_offset,
-        index_size,
-        codec as usize,
-    ] {
-        write_u32(&mut out, &mut o, field as u32);
-    }
-    let sum = crc32(&out[..o]);
-    write_u32(&mut out, &mut o, sum);
-    write_u32(&mut out, &mut o, VERSION);
-    write_u32(&mut out, &mut o, MAGIC);
-    debug_assert_eq!(o, out.len());
-    out
+/// `encode_run`'s bytes.
+pub fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
+    encode_run(entries, codec).bytes
 }
 
 /// The smallest record a block can hold: tag, seq, and a one-byte suffix

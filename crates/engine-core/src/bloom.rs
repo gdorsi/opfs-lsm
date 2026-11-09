@@ -5,7 +5,9 @@ use alloc::{vec, vec::Vec};
 const FNV_OFFSET: u32 = 2166136261;
 const FNV_PRIME: u32 = 16777619;
 
-fn fnv1a(data: &[u8]) -> u32 {
+/// The one hash a key contributes to a filter: every probe derives from it,
+/// so a writer can keep 4 bytes per key and build the filter at the end.
+pub fn key_hash(data: &[u8]) -> u32 {
     let mut h = FNV_OFFSET;
     for &b in data {
         h ^= u32::from(b);
@@ -63,17 +65,31 @@ fn bloom_index(h1: u32, h2: u32, i: u32, m: usize) -> usize {
 }
 
 pub fn bloom_add(filter: &mut BloomFilter, key: &[u8]) {
+    bloom_add_hash(filter, key_hash(key));
+}
+
+/// `bloom_add` for a key whose `key_hash` is `h1`.
+pub fn bloom_add_hash(filter: &mut BloomFilter, h1: u32) {
     let m = bit_len(&filter.bits);
-    let h1 = fnv1a(key);
     let h2 = mix(h1) | 1;
     for i in 0..filter.hash_count {
         set_bit(&mut filter.bits, bloom_index(h1, h2, i, m));
     }
 }
 
+/// The filter that `create_bloom(hashes.len(), bits_per_key)` and a
+/// `bloom_add` of each key would build, from the keys' `key_hash`es.
+pub fn bloom_from_hashes(hashes: &[u32], bits_per_key: usize) -> BloomFilter {
+    let mut filter = create_bloom(hashes.len(), bits_per_key);
+    for &h in hashes {
+        bloom_add_hash(&mut filter, h);
+    }
+    filter
+}
+
 pub fn bloom_might_contain(filter: &BloomFilter, key: &[u8]) -> bool {
     let m = bit_len(&filter.bits);
-    let h1 = fnv1a(key);
+    let h1 = key_hash(key);
     let h2 = mix(h1) | 1;
     for i in 0..filter.hash_count {
         if !get_bit(&filter.bits, bloom_index(h1, h2, i, m)) {
@@ -93,5 +109,20 @@ mod tests {
         bloom_add(&mut f, b"hello");
         assert!(bloom_might_contain(&f, b"hello"));
         assert!(!bloom_might_contain(&f, b"nope-key-xyz"));
+    }
+
+    #[test]
+    fn a_filter_built_from_hashes_is_the_filter_built_from_keys() {
+        for n in [0usize, 1, 2, 7, 64, 1000] {
+            let keys: Vec<Vec<u8>> = (0..n).map(|i| format!("key/{i:06}").into_bytes()).collect();
+            let mut by_key = create_bloom(keys.len(), 10);
+            for k in &keys {
+                bloom_add(&mut by_key, k);
+            }
+            let hashes: Vec<u32> = keys.iter().map(|k| key_hash(k)).collect();
+            let by_hash = bloom_from_hashes(&hashes, 10);
+            assert_eq!(by_hash.bits, by_key.bits, "{n} keys");
+            assert_eq!(by_hash.hash_count, by_key.hash_count, "{n} keys");
+        }
     }
 }

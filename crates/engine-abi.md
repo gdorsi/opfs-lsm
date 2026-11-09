@@ -35,7 +35,8 @@ result_len() -> u32
     The bytes produced by the last successful operation.
 
 encode_sst(ptr, len, lz4: i32) -> i32
-    Input: entry records (below). Result: one SST.
+    Input: entry records (below). Result: one run record (below), the SST
+    and what the encoder knows about it.
 
 decode_sst(ptr, len) -> i32
     Input: one SST. Result: entry records in key order. The record stream
@@ -51,7 +52,8 @@ scan_block_contains(ptr, len, lz4: i32, pat_ptr, pat_len) -> i32
     records in key order.
 
 merge_ssts(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32) -> i32
-    Input: blob list. Result: merge output (below).
+    Input: blob list. Result: merge output (below). Returns -14 when a
+    blob holds keys out of order.
 ```
 
 ## Wire formats
@@ -64,8 +66,16 @@ entry record     u8 tag (1 put, 2 del) · u64 seq · u32 key_len · key
 pattern list     repeated: u32 len · bytes
 hit record       u32 key_len · u32 value_len · key · value
 blob list        u32 count · repeated: u32 len · bytes
-merge output     u64 dropped_seq · u32 count · repeated: u32 len · sst
+run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_len
+                 · sst (size bytes) · first_key · last_key
+merge output     u64 dropped_seq · u32 count · repeated: run record
 ```
+
+A run record carries what the manifest records about a run, so the caller
+never reads the SST back for it. `entries` is 0 for an empty run, whose two
+keys are empty; it is what tells an empty run from one whose only key is
+the empty key. The keys follow the SST because the encoder only knows them
+when the run is complete.
 
 `target_bytes` is an `f64` so JS can pass `Number.MAX_SAFE_INTEGER` for
 "one output run"; implementations saturate it to their address size.
@@ -77,7 +87,7 @@ merge output     u64 dropped_seq · u32 count · repeated: u32 len · sst
 -2  BAD_MAGIC          -6  BAD_TAG            -10  BAD_BLOCK (incl. LZ4)
 -3  BAD_VERSION        -7  TRAILING_GARBAGE   -11  OUT_OF_MEMORY
 -4  CRC_MISMATCH       -8  COUNT_MISMATCH     -12  PATTERNS_TRUNCATED
--99 other
+-99 other                                     -14  OUT_OF_ORDER
 ```
 
 The loader maps any negative status to `CorruptDatabaseError`, except
