@@ -7,6 +7,7 @@
  */
 import { checkDbName } from "../check.js";
 import type { FromLogWorker, ToLogWorker } from "./client.js";
+import { openDbDir } from "../opfs/root.js";
 import { LOG_DIR } from "./frame.js";
 import { TabWriter, type SegmentFile, type SegmentStore } from "./tab-writer.js";
 
@@ -48,10 +49,7 @@ scope.onmessage = (ev: MessageEvent<ToLogWorker>) => {
 };
 
 async function openWriter(name: string, tab: string, segmentBytes: number): Promise<TabWriter> {
-  const dbName = checkDbName(name);
-  const root = await navigator.storage.getDirectory();
-  const lsm = await root.getDirectoryHandle("opfs-lsm", { create: true });
-  const db = await lsm.getDirectoryHandle(dbName, { create: true });
+  const db = await openDbDir(checkDbName(name));
   const log = await db.getDirectoryHandle(LOG_DIR, { create: true });
   const dir = await log.getDirectoryHandle(tab, { create: true });
   const w = new TabWriter(opfsSegments(dir), tab, segmentBytes);
