@@ -156,6 +156,76 @@ describe("a tab is retired only once it is dead", () => {
   });
 });
 
+/** Hold the next `navigator.locks.query()` before it takes its snapshot, until `answer`. */
+function lateLockSnapshot() {
+  const locks = navigator.locks;
+  const query = locks.query.bind(locks);
+  let release: (() => void) | undefined;
+  let armed = true;
+  locks.query = (async () => {
+    if (armed) {
+      armed = false;
+      await new Promise<void>((r) => (release = r));
+    }
+    return query();
+  }) as typeof locks.query;
+  return {
+    async waitAsked() {
+      while (!release) await sleep(1);
+    },
+    answer: () => release!(),
+    restore: () => (locks.query = query as typeof locks.query),
+  };
+}
+
+/** Channels made from now on lose every message delivered while `dropping` is on. */
+function lossyChannels() {
+  const Real = globalThis.BroadcastChannel;
+  const state = { dropping: false };
+  class Lossy extends Real {
+    override set onmessage(fn: ((ev: MessageEvent) => void) | null) {
+      super.onmessage = fn && ((ev: MessageEvent) => (state.dropping ? undefined : fn(ev)));
+    }
+    override get onmessage() {
+      return super.onmessage;
+    }
+  }
+  globalThis.BroadcastChannel = Lossy;
+  return { state, restore: () => (globalThis.BroadcastChannel = Real) };
+}
+
+describe("a joining tab", () => {
+  it("sees the acked write of a tab that made its log after the join's listing and closed before its liveness query", async () => {
+    const name = uniqueName("join-unseen");
+    const fs = new MemoryFs();
+    const ingest = createLocalIngestClient(new EngineHost(() => fs));
+    const a = await openHarnessDb({ name, fs, ingest });
+    const c = await openHarnessDb({ name, fs, ingest });
+    const dbs: Db[] = [a];
+    const late = lateLockSnapshot();
+    const lossy = lossyChannels();
+    try {
+      const dOpen = openHarnessDb({ name, fs, ingest });
+      await late.waitAsked();
+      lossy.state.dropping = true;
+      await c.put(utf("k"), utf("from-c"));
+      await a.sync();
+      await c.close();
+      await sleep(20);
+      lossy.state.dropping = false;
+      late.answer();
+      const d = await dOpen;
+      dbs.push(d);
+      await d.sync();
+      expect(str(await d.get(utf("k"))), "an acked write of a closed tab is visible after sync").toBe("from-c");
+    } finally {
+      late.restore();
+      lossy.restore();
+      await Promise.all(dbs.map((db) => db.close()));
+    }
+  });
+});
+
 describe("close", () => {
   it("a put whose log write outlasts close's wait is acked and visible, or rejected", async () => {
     const name = uniqueName("close-inflight");
