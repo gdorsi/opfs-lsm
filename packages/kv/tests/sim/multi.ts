@@ -75,14 +75,54 @@ export function installSeams(): Restore {
       inRequester(() => callback(lock)),
     );
   } as typeof locks.request;
+  // The browser takes the snapshot at the call and answers a task later:
+  // a tab can take its lock, say hello and write between the two.
+  const query = locks.query;
+  locks.query = async function (this: LockManager) {
+    const snapshot = await query.call(this);
+    await worlds.getStore()?.yield("locks query answer");
+    return snapshot;
+  };
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = function (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) {
+    const w = worlds.getStore();
+    if (!closing.getStore() || !w || w.free) return realSetTimeout(fn, ms, ...args);
+    const timer = new SimTimer();
+    void w.yield(`close timeout ${ms} ms`).then(() => {
+      if (!timer.cleared) fn(...args);
+    });
+    return timer;
+  } as typeof setTimeout;
+  globalThis.clearTimeout = function (timer: unknown) {
+    if (timer instanceof SimTimer) timer.cleared = true;
+    else realClearTimeout(timer as Parameters<typeof clearTimeout>[0]);
+  } as typeof clearTimeout;
   const g = globalThis as { BroadcastChannel?: unknown };
   const realChannel = g.BroadcastChannel;
   g.BroadcastChannel = SimChannel;
   return () => {
     proto.appendAt = appendAt;
     locks.request = request;
+    locks.query = query;
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
     g.BroadcastChannel = realChannel;
   };
+}
+
+/**
+ * Inside `close`: its timers fire as scheduler tasks, so the 1 s it waits
+ * for writes in flight can run out before they land, at no cost in real time.
+ */
+const closing = new AsyncLocalStorage<true>();
+
+class SimTimer {
+  cleared = false;
+  ref = () => this;
+  unref = () => this;
+  hasRef = () => false;
+  refresh = () => this;
 }
 
 type Listener = (ev: { data: unknown }) => void;
@@ -343,7 +383,7 @@ class World {
     const s = this.slots[slot]!;
     this.slots[slot] = undefined;
     const op = this.history.invoke({ kind: "close", session: s.id });
-    await this.settle(s.db.close()).then(
+    await this.settle(closing.run(true, () => s.db.close())).then(
       () => this.history.respond(op),
       (err: unknown) => this.history.respond(op, err),
     );
@@ -684,14 +724,16 @@ class OpenCmd implements Cmd {
   toString = () => `${this.slot}: open`;
 }
 
+/** Close, with `write` started first and still in flight. */
 class CloseCmd implements Cmd {
-  constructor(private readonly slot: number) {}
+  constructor(private readonly slot: number, private readonly write?: OpSpec) {}
   check = (m: Readonly<Model>) => m.open[this.slot] === true;
   async run(m: Model, w: World): Promise<void> {
+    if (this.write) await new WriteCmd(this.slot, false, [this.write]).run(m, w);
     m.open[this.slot] = false;
     await w.close(this.slot);
   }
-  toString = () => `${this.slot}: close`;
+  toString = () => `${this.slot}: ${this.write ? `${opName(this.write)} & close` : "close"}`;
 }
 
 /** Host flush, compaction left running in the background. */
@@ -766,6 +808,7 @@ export const multiCommandsArb = (replayPath?: string) => {
       fc.tuple(slot, wait).map(([s, x]) => new IngestCmd(s, x)),
       slot.map((s) => new OpenCmd(s)),
       slot.map((s) => new CloseCmd(s)),
+      fc.tuple(slot, opArb).map(([s, op]) => new CloseCmd(s, op)),
       wait.map((x) => new FlushCmd(x)),
       wait.map((x) => new CompactCmd(x)),
       fc.integer({ min: 1, max: 4 }).map((n) => new DropCmd(n)),
