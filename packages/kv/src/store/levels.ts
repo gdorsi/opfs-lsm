@@ -93,23 +93,28 @@ export function planCompaction(
     };
   };
 
+  // The level furthest over its target goes first. If L0 always won, L1
+  // would grow past its target and every L0 merge would rewrite all of it.
   const l0 = inLevel(0);
-  if (l0.length >= L0_RUNS_TO_COMPACT) {
+  let best = { level: -1, score: 0 };
+  if (l0.length >= L0_RUNS_TO_COMPACT) best = { level: 0, score: l0.length / L0_RUNS_TO_COMPACT };
+  const deepest = Math.max(0, ...runs.map((r) => levelOf(r.path) ?? 0));
+  for (let level = 1; level <= deepest; level++) {
+    const score = bytesOf(inLevel(level)) / (l1Target * LEVEL_RATIO ** (level - 1));
+    if (score > 1 && score > best.score) best = { level, score };
+  }
+
+  if (best.level === 0) {
     const range = span(l0);
     return plan([...l0, ...inLevel(1).filter((r) => overlaps(r.range, range))], 1);
   }
-
-  const deepest = Math.max(0, ...runs.map((r) => levelOf(r.path) ?? 0));
-  for (let level = 1; level <= deepest; level++) {
-    const files = inLevel(level);
-    if (bytesOf(files) <= l1Target * LEVEL_RATIO ** (level - 1)) continue;
-    const next = inLevel(level + 1);
-    const cost = (r: RunMeta) =>
-      bytesOf(next.filter((n) => overlaps(n.range, r.range))) / Math.max(1, sizeOf(r.path));
-    const pick = files.reduce((best, r) => (cost(r) < cost(best) ? r : best));
-    return plan([pick, ...next.filter((n) => overlaps(n.range, pick.range))], level + 1);
-  }
-  return undefined;
+  if (best.level < 0) return undefined;
+  const files = inLevel(best.level);
+  const next = inLevel(best.level + 1);
+  const cost = (r: RunMeta) =>
+    bytesOf(next.filter((n) => overlaps(n.range, r.range))) / Math.max(1, sizeOf(r.path));
+  const pick = files.reduce((a, r) => (cost(r) < cost(a) ? r : a));
+  return plan([pick, ...next.filter((n) => overlaps(n.range, pick.range))], best.level + 1);
 }
 
 /**
