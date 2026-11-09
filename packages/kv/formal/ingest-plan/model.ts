@@ -37,9 +37,15 @@ const FAILING_TAB = 0;
 /** `drops`: the most manifests a crash drops. */
 export type Bounds = { readonly appends: number; readonly commits: number; readonly segCap: number; readonly drops: number };
 
-/** Rules other than the real ones. */
+/** Broken rules, one at a time, to show the model catches each. */
 export type Variant = {
-  /** Reclaim lag in generations. Defaults to RECLAIM_LAG. */
+  /** (a) After a failed write the writer opens segment lastAcked+1 in the same log (the deleted path). */
+  readonly sameLogRecovery?: boolean;
+  /** (b) The planner never sees pred edges. */
+  readonly ignorePred?: boolean;
+  /** (c) A live log's durable hint is whatever the scan found. */
+  readonly ignoreHints?: boolean;
+  /** Reclaim lag in generations; (d) is 0. Defaults to RECLAIM_LAG. */
   readonly lag?: number;
 };
 
@@ -164,10 +170,10 @@ function read(s: State, log: LogId, from: number, listed?: readonly number[]): S
   return out("end");
 }
 
-function toScan(log: LogId, snap: Snap): QueueScan {
+function toScan(log: LogId, snap: Snap, v: Variant): QueueScan {
   const records = snap.records.map(([n, w]) => ({ n, ops: opsOf(w), bytes: 1 }));
   const scan: QueueScan = { log, dead: snap.dead, records, stop: snap.stop };
-  return snap.pred ? { ...scan, pred: snap.pred } : scan;
+  return snap.pred && !v.ignorePred ? { ...scan, pred: snap.pred } : scan;
 }
 
 export class PlanError extends Error {}
@@ -207,10 +213,17 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
     });
     const log = t.log;
     if (t.phase === "failed") {
-      add(`tab ${tab} starts ${TAB_LOGS[tab]![t.next]} with pred ${log}`, (s) => {
+      add(v.sameLogRecovery ? `tab ${tab} reopens ${log} at a new segment` : `tab ${tab} starts ${TAB_LOGS[tab]![t.next]} with pred ${log}`, (s) => {
         const tt = s.tabs[tab]!;
         const w = s.writers[log]!;
         tt.phase = "ok";
+        if (v.sameLogRecovery) {
+          const segs = s.logs[log]!.segments;
+          w.flushed = w.acked;
+          if (segs[segs.length - 1]!.firstN === w.acked + 1) segs[segs.length - 1]!.frames = [];
+          else segs.push({ firstN: w.acked + 1, frames: [], sealed: false });
+          return;
+        }
         const succ = TAB_LOGS[tab]![tt.next++]!;
         spawn(s, tab, succ, { log, lastN: w.acked });
         w.state = "abandoned";
@@ -299,10 +312,10 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
             return [[l, read(s, l, cursorOf(base, l)?.n ?? 0, live ? listed : undefined)] as const];
           }),
         );
-        const scans = [...snaps].map(([l, snap]) => toScan(l, snap));
+        const scans = [...snaps].map(([l, snap]) => toScan(l, snap, v));
         const hints = new Map<LogId, number>();
         for (const sc of scans) {
-          if (!sc.dead) hints.set(sc.log, s.hints[sc.log]!);
+          if (!sc.dead) hints.set(sc.log, v.ignoreHints ? Math.max(0, ...sc.records.map((r) => r.n)) : s.hints[sc.log]!);
         }
         const { plan: p, ids } = plan(base, scans, hints, maxBytes, s);
         s.pass = null;
@@ -472,10 +485,10 @@ export function problem(s: State): string | undefined {
 export const allDead = (s: State): boolean => !s.crash?.refused && LOGS.every((l) => !s.writers[l] || s.writers[l]!.state === "dead");
 
 /** With every writer gone: the host plans from fresh scans of every log until nothing changes. */
-export function drain(s: State): Manifest {
+export function drain(s: State, v: Variant): Manifest {
   let m = newest(s);
   for (let round = 0; round < 10; round++) {
-    const scans = LOGS.flatMap((l) => (s.logs[l] ? [toScan(l, read(s, l, cursorOf(m, l)?.n ?? 0))] : []));
+    const scans = LOGS.flatMap((l) => (s.logs[l] ? [toScan(l, read(s, l, cursorOf(m, l)?.n ?? 0), v)] : []));
     const { plan: p, ids } = plan(m, scans, new Map(), Infinity, s);
     if (ids.length === 0 && sameQueues(p.queues, m.queues)) break;
     m = { gen: m.gen + 1, through: p.through, queues: [...p.queues], stream: [...m.stream, ...ids] };

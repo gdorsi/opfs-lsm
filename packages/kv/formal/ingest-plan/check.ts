@@ -16,7 +16,7 @@
  * is gone (and after every crash), a drain from fresh scans leaves every log
  * final or damaged and every acked, unlost record ingested, so recovery
  * never opens with a silent hole, and keeps every write a tab saw ingested
- * (except design L6).
+ * (except design L6). Broken rules must each fail.
  *
  * The decided one-generation reclaim lag must survive one dropped manifest
  * and is shown to open with a silent hole after two, which is why
@@ -126,7 +126,7 @@ function explore(v: Variant, b: Bounds): Result {
   const check = (s: State, at: () => string[]): string | undefined => {
     const p = problem(s);
     if (p || !allDead(s)) return p;
-    const m = drain(s);
+    const m = drain(s, v);
     if (!reorder) {
       const r = causalReorder(s, m);
       if (r) reorder = { path: at(), message: r };
@@ -203,6 +203,25 @@ function main(): void {
   }
   console.log(`\nPASS ${real.states} states (${real.crashStates} after a crash), ${real.transitions} transitions, depth ${real.depth}, ${real.ms} ms`);
   console.log(`     crash states that opened / refused, by manifests dropped 0/1/2: ${real.opened.join("/")} / ${real.refused.join("/")}`);
+
+  const mutants: [string, Variant][] = [
+    ["(a) a failed write reopens the same log at segment lastAcked+1", { sameLogRecovery: true }],
+    ["(b) the planner ignores pred edges", { ignorePred: true }],
+    ["(c) a live log's durable hint is ignored", { ignoreHints: true }],
+    ["(d) reclaim without lag", { lag: 0 }],
+  ];
+  let weak = false;
+  for (const [name, v] of mutants) {
+    const r = explore(v, BOUNDS);
+    if (!r.violation) {
+      console.error(`\nFAIL model too weak: ${name} passes (${r.states} states)`);
+      weak = true;
+      continue;
+    }
+    console.log(`\ncaught ${name} (${r.states} states, ${r.ms} ms):`);
+    print(r.violation, console.log);
+  }
+  if (weak) process.exit(1);
 
   const oneDrop = explore({ lag: 1 }, { ...BOUNDS, drops: 1 });
   const twoDrops = explore({ lag: 1 }, BOUNDS);
