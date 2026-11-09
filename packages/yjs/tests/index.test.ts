@@ -5,7 +5,7 @@ import { test } from "node:test";
 import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import * as Y from "yjs";
-import { KvPersistence } from "./kv-persistence.ts";
+import { KvPersistence } from "../src/index.ts";
 
 function dbName(): string {
   return `yjs${randomUUID().replaceAll("-", "").slice(0, 20)}`;

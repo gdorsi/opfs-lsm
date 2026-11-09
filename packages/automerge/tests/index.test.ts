@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { ClosedError, ConstraintError } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
-import { decodeKey, encodeKey, kvStorage } from "./storage.ts";
+import { decodeKey, encodeKey, kvStorage } from "../src/index.ts";
 
 const SEED = 0x5eed;
 const ITERATIONS = 5_000;

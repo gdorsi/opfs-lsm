@@ -1,4 +1,4 @@
-import type { Chunk, StorageAdapterInterface, StorageKey } from "@automerge/react";
+import type { Chunk, StorageAdapterInterface, StorageKey } from "@automerge/automerge-repo";
 import { prefixBound, type Db } from "@opfs-lsm/kv";
 
 /**

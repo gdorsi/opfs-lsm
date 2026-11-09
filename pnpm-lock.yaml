@@ -23,18 +23,18 @@ importers:
       '@automerge/react':
         specifier: 2.6.0-alpha.5
         version: 2.6.0-alpha.5(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@opfs-lsm/automerge':
+        specifier: workspace:*
+        version: link:../packages/automerge
       '@opfs-lsm/collections':
         specifier: workspace:*
         version: link:../packages/collections
-      '@opfs-lsm/example-automerge':
-        specifier: workspace:*
-        version: link:../examples/automerge-todo
-      '@opfs-lsm/example-yjs':
-        specifier: workspace:*
-        version: link:../examples/yjs
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../packages/kv
+      '@opfs-lsm/yjs':
+        specifier: workspace:*
+        version: link:../packages/yjs
       dexie:
         specifier: ^4.0.11
         version: 4.4.7
@@ -63,6 +63,9 @@ importers:
       '@automerge/react':
         specifier: 2.6.0-alpha.5
         version: 2.6.0-alpha.5(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@opfs-lsm/automerge':
+        specifier: workspace:*
+        version: link:../../packages/automerge
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../../packages/kv
@@ -91,18 +94,12 @@ importers:
       autoprefixer:
         specifier: ^10
         version: 10.6.2(postcss@8.5.32)
-      fake-indexeddb:
-        specifier: ^6.0.0
-        version: 6.2.7
       postcss:
         specifier: ^8
         version: 8.5.32
       tailwindcss:
         specifier: ^3.4.19
         version: 3.4.19(tsx@4.23.15)
-      tsx:
-        specifier: ^4.20.0
-        version: 4.23.15
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -190,15 +187,15 @@ importers:
         specifier: ^8.3.6
         version: 8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15)
 
-  examples/yjs:
+  packages/automerge:
     dependencies:
       '@opfs-lsm/kv':
         specifier: workspace:*
-        version: link:../../packages/kv
-      yjs:
-        specifier: ^13.6.33
-        version: 13.6.33
+        version: link:../kv
     devDependencies:
+      '@automerge/automerge-repo':
+        specifier: 2.6.0-alpha.5
+        version: 2.6.0-alpha.5
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
@@ -211,12 +208,6 @@ importers:
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
-      vite:
-        specifier: ^8.3.6
-        version: 8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15)
-      vite-plugin-wasm:
-        specifier: ^3.6.0
-        version: 3.6.0(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15))
 
   packages/collections:
     dependencies:
@@ -260,6 +251,28 @@ importers:
       vitest:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@26.6.6)(jiti@1.21.7)(lightningcss@1.33.0)(tsx@4.23.15)
+
+  packages/yjs:
+    dependencies:
+      '@opfs-lsm/kv':
+        specifier: workspace:*
+        version: link:../kv
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      fake-indexeddb:
+        specifier: ^6.0.0
+        version: 6.2.7
+      tsx:
+        specifier: ^4.20.0
+        version: 4.23.15
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      yjs:
+        specifier: ^13.6.33
+        version: 13.6.33
 
 packages:
 

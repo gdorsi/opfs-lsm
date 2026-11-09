@@ -13,10 +13,10 @@
   "dependencies": {
     "@automerge/automerge-repo-storage-indexeddb": "2.6.0-alpha.5",
     "@automerge/react": "2.6.0-alpha.5",
+    "@opfs-lsm/automerge": "workspace:*",
     "@opfs-lsm/collections": "workspace:*",
-    "@opfs-lsm/example-automerge": "workspace:*",
-    "@opfs-lsm/example-yjs": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
+    "@opfs-lsm/yjs": "workspace:*",
     "dexie": "^4.0.11",
     "y-indexeddb": "^9.0.12",
     "yjs": "^13.6.33"

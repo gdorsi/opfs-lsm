@@ -12,6 +12,5 @@
     "verbatimModuleSyntax": true,
     "types": ["vite/client"]
   },
-  "include": ["src"],
-  "exclude": ["src/storage.test.ts"]
+  "include": ["src"]
 }
