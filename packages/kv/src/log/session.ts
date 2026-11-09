@@ -241,12 +241,21 @@ export class LogSession {
    * is awaited only once the log bytes are in. Records stay in the merger until
    * `finishJoin`.
    *
-   * Then the live tabs (`dead`).
+   * Then it learns which tabs are live and retires the dead ones. A tab
+   * can make its log after the listing and let go of its lock before the
+   * liveness query: it is in neither, and a live tab's welcome can still
+   * promise past its records. So the logs are listed again after the
+   * query. A tab that took its lock after this one says hello before it
+   * writes, so no tab with a log can be missed by both a query and a
+   * listing after it; a second query sorts out the tabs the second listing found.
    */
   async prepareJoin(floor: Stamp | Promise<Stamp> = 0): Promise<void> {
     this.readFloor = floor;
     await Promise.all([this.hold(), this.readAll()]);
-    const { live, dead } = await this.liveAndDead();
+    let { live, dead } = await this.liveAndDead();
+    const classified = new Set([...live, ...dead]);
+    await this.readAll();
+    if (this.merger.known().some((t) => !classified.has(t))) ({ live, dead } = await this.liveAndDead());
     this.merger.setLive(live);
     await Promise.all(dead.map((t) => this.retire(t)));
   }
