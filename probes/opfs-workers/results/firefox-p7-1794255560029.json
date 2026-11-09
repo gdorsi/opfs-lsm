@@ -1,0 +1,20 @@
+{
+  "browser": "firefox",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:157.0) Gecko/20100101 Firefox/157.0",
+  "note": "copied from the page by hand",
+  "results": {
+    "P7 bfcache": {
+      "verdict": "page was not bfcached (reloaded)",
+      "lockHeldWhileAway": false,
+      "handleHeldWhileAway": false,
+      "detail": {
+        "lockHeld": false,
+        "reopen": {
+          "ev": "done",
+          "ok": true
+        },
+        "checkedAt": 1794255560029
+      }
+    }
+  }
+}

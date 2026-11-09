@@ -1,0 +1,22 @@
+[
+  {
+    "loaderId": "E4144087FD2B5C8FAB01D36F3E5716F5",
+    "frameId": "8D62D23ABE575A1659771F5A87DA266A",
+    "notRestoredExplanations": [
+      {
+        "type": "PageSupportNeeded",
+        "reason": "WebLocksContention"
+      }
+    ],
+    "notRestoredExplanationsTree": {
+      "url": "http://localhost:8788/",
+      "explanations": [
+        {
+          "type": "PageSupportNeeded",
+          "reason": "WebLocksContention"
+        }
+      ],
+      "children": []
+    }
+  }
+]
