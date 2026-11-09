@@ -54,6 +54,27 @@ harness prints it per operation. Measured on the harness data:
 A merge rewinds the arena after each output run and keeps only the run's
 bytes. Without that, the 256 KiB-run merge peaks at 32.4 MiB.
 
+At scale the ratios settle: an encode peaks at about 2.75x its input bytes
+(a 72.5 MiB input peaks at 199 MiB), and a merge at about 10x its
+compressed input (20.8 MiB of LZ4 runs peak at 199 to 216 MiB), because the
+decoded entries of every input run live in the arena at once. The kv
+loader's default capacity in `packages/kv/src/store/engine.ts` is set from
+these numbers. The encode cost is one copy of the input plus the sorted
+entry table; the merge cost could drop by streaming runs instead of
+decoding them whole, which this prototype does not do.
+
+## Hostile input
+
+Every length read from an SST is checked as `len > end - o` with `o <= end`,
+never as `o + len > end`, because the sum wraps on wasm32 and a wrapped
+check passes. An LZ4 size field above 255 bytes per input byte is reported
+as corruption (-10), not as a capacity miss. The kv differential fuzz suites
+(`packages/kv/fuzz`) run against this module when it is copied to
+`packages/kv/wasm/engine.wasm`; they pass except the test that expects a
+trap on an oversized LZ4 size, which this module rejects with a status
+instead. The build has no runtime bounds checks (`ReleaseSmall`), so a
+missed check is a trap, not an error, and the fuzz suites are the gate.
+
 ## Build and run
 
 Needs Zig 0.16 and a Rust build in `packages/kv/wasm`: `engine.wasm` on the
