@@ -18,8 +18,8 @@
 #![allow(dead_code)]
 
 use engine_core::{
-    decode_block, decode_sst, encode_sst, merge_sst_bytes, scan_block_contains, Codec, EncodedRun, Entry, MergeConfig,
-    MergeError, MergeSession, SstError, Stop,
+    decode_block, decode_sst, encode_sst, scan_block_contains, Codec, EncodedRun, Entry, MergeConfig, MergeError,
+    MergeSession, Stop,
 };
 use std::collections::BTreeMap;
 
@@ -190,95 +190,6 @@ pub fn wrap_block(framed: &[u8], codec: Codec, count: u32) -> Vec<u8> {
     out.extend_from_slice(&sum.to_le_bytes());
     out.extend_from_slice(&1u32.to_le_bytes());
     out.extend_from_slice(&0x4f4c_5354u32.to_le_bytes());
-    out
-}
-
-/// `merge_sst_bytes` on arbitrary inputs, newest first. A merge must fail
-/// when any input fails to decode, so a corrupt run is never compacted away.
-/// When every input decodes with sorted keys, the output must equal a
-/// `BTreeMap` fold of the inputs (newest wins, the last duplicate in a run
-/// wins), cut into runs that each decode, and each run's `RunEnd` must say
-/// what decoding the run says. An input that decodes but is not sorted is
-/// either refused as out of order or merged into runs that decode.
-pub fn check_merge(inputs: &[Vec<u8>], drop_tombstones: bool, target_bytes: usize, codec: Codec) {
-    let result = merge_sst_bytes(inputs, drop_tombstones, target_bytes, codec);
-    let decoded: Result<Vec<Vec<Entry>>, _> = inputs.iter().map(|b| decode_sst(b)).collect();
-    let Ok(decoded) = decoded else {
-        assert!(result.is_err(), "a merge over an input that does not decode must fail");
-        return;
-    };
-    let sorted = decoded.iter().all(|run| run.windows(2).all(|w| w[0].key() <= w[1].key()));
-    let (runs, dropped) = match result {
-        Ok(ok) => ok,
-        Err(e) => {
-            assert!(!sorted, "a merge over inputs that decode with sorted keys must succeed: {e:?}");
-            assert_eq!(e, SstError::OutOfOrder, "an unsorted input is refused as out of order");
-            return;
-        }
-    };
-    let mut out = Vec::new();
-    for run in &runs {
-        let entries = decode_sst(&run.bytes).expect("merge output decodes");
-        assert_eq!(run.end.size, run.bytes.len(), "the reported size is the run's size");
-        assert_eq!(run.end.entries, entries.len(), "the reported entry count is the run's");
-        assert_eq!(run.end.first_key, entries.first().map_or(&[][..], |e| e.key()), "the reported first key");
-        assert_eq!(run.end.last_key, entries.last().map_or(&[][..], |e| e.key()), "the reported last key");
-        out.extend(entries);
-    }
-    if !sorted {
-        return;
-    }
-    let mut map: BTreeMap<Vec<u8>, Entry> = BTreeMap::new();
-    for run in decoded.iter().rev() {
-        for e in run {
-            map.insert(e.key().to_vec(), e.clone());
-        }
-    }
-    let mut want_dropped = 0;
-    let want: Vec<Entry> = map
-        .into_values()
-        .filter(|e| match e {
-            Entry::Del { seq, .. } if drop_tombstones => {
-                want_dropped = want_dropped.max(*seq);
-                false
-            }
-            _ => true,
-        })
-        .collect();
-    assert_eq!(out, want, "merge equals the newest-wins fold");
-    assert_eq!(dropped, want_dropped, "merge reports the highest dropped tombstone");
-}
-
-/// Split fuzz bytes into a merge call: byte 0 holds the flags, then each
-/// input is a u16 length and that many bytes. Bit 0 drops tombstones, bit 1
-/// writes LZ4, bit 2 fixes each input's CRC; byte 1 picks the target size.
-pub fn merge_case(data: &[u8]) -> Option<(Vec<Vec<u8>>, bool, usize, Codec)> {
-    let (&flags, rest) = data.split_first()?;
-    let (&target, mut rest) = rest.split_first()?;
-    let mut inputs = Vec::new();
-    while rest.len() >= 2 && inputs.len() < 6 {
-        let n = u16::from_le_bytes([rest[0], rest[1]]) as usize;
-        rest = &rest[2..];
-        let take = n.min(rest.len());
-        let mut input = rest[..take].to_vec();
-        if flags & 4 != 0 {
-            fix_crc(&mut input);
-        }
-        inputs.push(input);
-        rest = &rest[take..];
-    }
-    let codec = if flags & 2 != 0 { Codec::Lz4 } else { Codec::Raw };
-    let target_bytes = if target == 0 { usize::MAX } else { 64 * target as usize };
-    Some((inputs, flags & 1 != 0, target_bytes, codec))
-}
-
-/// The inverse of `merge_case`, for seeding the corpus.
-pub fn encode_merge_case(inputs: &[Vec<u8>], flags: u8, target: u8) -> Vec<u8> {
-    let mut out = vec![flags, target];
-    for input in inputs {
-        out.extend_from_slice(&(input.len() as u16).to_le_bytes());
-        out.extend_from_slice(input);
-    }
     out
 }
 

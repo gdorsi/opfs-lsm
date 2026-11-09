@@ -163,8 +163,8 @@ fn a_block_may_fill_the_target_exactly() {
 }
 
 /// Every run in the fuzz corpus that decodes, or whose CRC a fuzz target
-/// would fix, and every input of the merge corpus: the entries a decoder
-/// found there encode to the reference bytes.
+/// would fix, and every run of the merge session corpus: the entries a
+/// decoder found there encode to the reference bytes.
 #[test]
 fn the_fuzz_corpus_encodes_to_the_reference_bytes() {
     let dir = |name: &str| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus").join(name);
@@ -185,9 +185,9 @@ fn the_fuzz_corpus_encodes_to_the_reference_bytes() {
         }
         runs.push(buf);
     }
-    for seed in seeds("compact") {
-        // Flags, target, then each input as a u16 length and its bytes.
-        let mut rest = seed.get(2..).unwrap_or_default();
+    for seed in seeds("merge_session") {
+        // A five-byte header, then each run as a u16 length and its bytes.
+        let mut rest = seed.get(5..).unwrap_or_default();
         while rest.len() >= 2 {
             let n = u16::from_le_bytes([rest[0], rest[1]]) as usize;
             rest = &rest[2..];

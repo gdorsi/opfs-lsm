@@ -2,8 +2,9 @@
 //! `cargo test`. Valid runs from the encoder are mutated (bit flips,
 //! truncation, extension, inflated length fields, splices of two runs), with
 //! and without a rewritten CRC, and fed to `decode_sst`,
-//! `scan_block_contains` and `merge_sst_bytes` through the checks in
-//! `support/corrupt.rs`, the same ones the `cargo fuzz` targets run.
+//! `scan_block_contains`, the session's block decoder and a merge session
+//! through the checks in `support/corrupt.rs`, the same ones the `cargo fuzz`
+//! targets run.
 //!
 //! `ENGINE_PROP_CASES` sets the cases per property (default 300).
 //! `ENGINE_PROP_SEED` replays one seed. A failure prints the seed and the
@@ -245,24 +246,6 @@ fn scan_block_contains_survives_mutated_blocks() {
             let (codec, pattern, framed) = corrupt::scan_case(case).unwrap();
             let patterns: Vec<&[u8]> = if pattern.is_empty() { vec![] } else { vec![&pattern] };
             corrupt::check_scan(framed, codec, &patterns);
-        },
-    );
-}
-
-#[test]
-fn compaction_fails_on_a_corrupt_input_and_folds_valid_ones() {
-    for_each_case(
-        4,
-        |rng| {
-            let inputs: Vec<Vec<u8>> = (0..rng.below(4) + 1)
-                .map(|_| if rng.chance(3) { mutated_run(rng) } else { valid_run(rng).0 })
-                .collect();
-            let flags = rng.below(4) as u8;
-            corrupt::encode_merge_case(&inputs, flags, rng.below(8) as u8)
-        },
-        |case| {
-            let (inputs, drop, target, codec) = corrupt::merge_case(case).unwrap();
-            corrupt::check_merge(&inputs, drop, target, codec);
         },
     );
 }

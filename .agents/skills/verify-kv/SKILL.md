@@ -22,13 +22,13 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | `host/ingest.ts`, `idb/wal.ts` (`listUningested`, `advanceIngested`) | full suite (or at least `formal:ingest-visibility`) |
 | `store/merge.ts` `pointGet`, `db.ts` `readKey` / `get` | `formal:wal-over-sst` + ingest |
 | `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
-| `store/merge.ts` `latestSstEntry`, `store/fold.ts` `foldEntries`, `store/engine.ts` `mergeSsts`, `host/compact.ts` | `formal:compact-preserve` |
+| `store/merge.ts` `latestSstEntry`, the merge sessions (`store/merge-ts.ts`, `crates/engine-core/src/merge.rs`), `host/compact.ts` | `formal:compact-preserve` |
 | `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `EngineHost.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair | `formal:power-loss` |
 | Unknown / several areas | **`formal:kv`** (all) |
 
 ## Tool and why
 
-Small exhaustive TypeScript checkers (BFS or full finite domains) plus source-sync guards where the model encodes product await/check order. No JVM — uses repo `tsx`/`pnpm`. Ingest step order is **parsed from** `ingest.ts`. View and compact checks also assert the relevant control flow still exists in source, so a missing `mem.pin()` copy or a reversed `latestSstEntry` / `foldEntries` loop fails the suite.
+Small exhaustive TypeScript checkers (BFS or full finite domains) plus source-sync guards where the model encodes product await/check order. No JVM — uses repo `tsx`/`pnpm`. Ingest step order is **parsed from** `ingest.ts`. View and compact checks also assert the relevant control flow still exists in source, so a missing `mem.pin()` copy, a reversed `latestSstEntry` loop, or a merge session that gives a tie to the older source fails the suite.
 
 ## Command
 
@@ -47,7 +47,7 @@ Exit `0` = all selected checks pass. Failures print a shortest path (or countere
 | NoLostAcks | 1 key, ≤2 appends, one in-flight ingest; omits compact, multi-tab cache, crash |
 | WalOverSst | 1 key; all WAL×SST hit kinds (`miss`/`tomb`/two values) on **real** `pointGet` |
 | ViewPin | ≤3 appends; models pin vs live binding; omits SST generation bump mid-view |
-| CompactPreserve | ≤2 runs, keys `{a,b}`, cell ∈ {miss, put1, put2, del}; omits Bloom false negatives, reclaim races |
+| CompactPreserve | ≤2 sources of one run, keys `{a,b}`, cell ∈ {miss, put1, put2, del}; omits Bloom false negatives, reclaim races |
 | PowerPrefix | Workloads of ≤6 appends/ingests/compactions (`FORMAL_POWER_CMDS`), every (IndexedDB, OPFS) prefix pair, recovery then 4 more commands, and every pair of the next power loss, 2 deep (`FORMAL_POWER_CRASHES`). Writes are abstract ids, so values and folding are not modeled; one tab, one host, compaction merges every run of the base. Every workload runs with reclaim and again with a tab holding the reclaim lock (no removals). Tab-side retry liveness under the lock is not modeled (crash-enum churn tests). Must also catch 6 broken variants. CorruptRefuse removes each run of the recorded manifest after every workload (with and without the lock). |
 
 A pass is for the model/domain above, not the whole browser stack (SharedWorker ports, IDB quirks, OPFS crashes).
@@ -56,7 +56,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 
 - **NoLostAcks:** path with `advanceIngested` before `publishGeneration` and model `resolveGet` undefined.
 - **ViewPin:** `view.get` sees a post-pin append; or `db.ts` no longer passes `this.mem.pin()` into `ViewSnapshotImpl`, or `memtable.ts` drops the copy-on-write pin.
-- **CompactPreserve:** before/after merge disagree; or `merge.ts` / `fold.ts` no longer newest-first get / oldest-first apply.
+- **CompactPreserve:** before/after merge disagree; or `merge.ts` no longer gets newest-first, or `merge-ts.ts` / `merge.rs` no longer keep the newer source on a tie.
 - **PowerPrefix:** the first crash state (what each store kept), then each nested recovery crash, and the read that is not a prefix, the open that fails, or the `checkDatabase`-style problem. `model too weak` means a broken variant passed: the model lost a behavior the product depends on. `source sync` names a product decision the model encodes that the code no longer makes.
 - **Modeling error:** path impossible in TS, or parser/source-sync out of date — fix the formal files, do not weaken the property.
 
@@ -67,7 +67,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | NoLostAcks | `ingestAll` order: `publishL0`, `publishGeneration`, `advanceIngested` |
 | WalOverSst | `pointGet` |
 | ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
-| CompactPreserve | `latestSstEntry`, `foldEntries` (TypeScript path of `mergeSsts`) |
+| CompactPreserve | `latestSstEntry`, the pick of both merge sessions (`Session.run` in `merge-ts.ts`, `before` in `merge.rs`) |
 | PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestAll` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
 
 **Sync commit:** `7f3a256e2d968dd591309d944321d975020b3561` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.

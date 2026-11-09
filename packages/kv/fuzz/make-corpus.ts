@@ -17,8 +17,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import { openHarnessDb } from "../src/testing.js";
-import { encodeSst as encodeSstWasm, ensureEngine, engineUsingWasm, mergeSsts } from "../src/store/engine.js";
+import { encodeSst as encodeSstWasm, ensureEngine, engineUsingWasm } from "../src/store/engine.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
+import { mergeRuns } from "../tests/runs.js";
 import { walStore } from "../tests/sim/check-database.js";
 import { framedBlocks } from "./targets.js";
 
@@ -92,9 +93,7 @@ async function main(): Promise<void> {
   const lz4Runs = [
     await encodeSstWasm(todoEntries(40), "lz4"),
     // An L2-sized compaction output: several LZ4 blocks.
-    ...(await mergeSsts([await encodeSstWasm(todoEntries(150, 100), "raw"), db.runs[0]!], false, Number.MAX_SAFE_INTEGER, "lz4")).runs.map(
-      (r) => r.body,
-    ),
+    ...(await mergeRuns([[await encodeSstWasm(todoEntries(150, 100), "raw")], [db.runs[0]!]], { codec: "lz4" })).runs.map((r) => r.body),
   ];
   const edgeRuns = [
     encodeSst([]),
@@ -118,15 +117,7 @@ async function main(): Promise<void> {
     join(rustCorpus, "scan_block_contains"),
     [...rawBlocks.map((b) => cat([0, 0], b)), ...lz4Blocks.map((b) => cat([1, 4], utf("milk"), b))],
   );
-  const pair = (a: Uint8Array, b: Uint8Array, flags: number, target: number) =>
-    cat([flags, target], [a.byteLength & 0xff, a.byteLength >> 8], a, [b.byteLength & 0xff, b.byteLength >> 8], b);
   const small = runs.filter((r) => r.byteLength < 30_000);
-  await seeds(join(rustCorpus, "compact"), [
-    pair(small[1]!, small[0]!, 0, 0),
-    pair(small[1]!, small[0]!, 1, 4),
-    pair(lz4Runs[0]!, small[0]!, 2, 0),
-    pair(edgeRuns[2]!, edgeRuns[0]!, 3, 1),
-  ]);
   await seeds(join(rustCorpus, "decode_block"), [...rawBlocks.map((b) => cat([0], b)), ...lz4Blocks.map((b) => cat([1], b))]);
   // Header: flags, target, group (bit i: run i + 1 joins run i's source), window sizes, feed seed.
   const session = (header: number[], ...runList: Uint8Array[]) =>

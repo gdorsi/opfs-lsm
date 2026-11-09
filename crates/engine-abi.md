@@ -51,10 +51,6 @@ scan_block_contains(ptr, len, lz4: i32, pat_ptr, pat_len) -> i32
     the u32 size prefix when `lz4`), and a pattern list. Both live in the
     input region; `pat_ptr` may point anywhere inside it. Result: hit
     records in key order.
-
-merge_ssts(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32) -> i32
-    Input: blob list. Result: merge output (below). Returns -14 when a
-    blob holds keys out of order.
 ```
 
 ### Merge session
@@ -103,8 +99,8 @@ plus a read-ahead for each source holding less than half a chunk.
 A source is runs read back to back as one key-ordered stream. Across
 sources the newest wins; within a source the last duplicate of a key wins,
 across block and run boundaries. A source whose keys go back fails with -14.
-Output runs are cut at key boundaries once their entries' sizes reach
-`target_bytes`, as `merge_ssts` cuts them, and written with `lz4`'s codec.
+Output runs are cut at key boundaries once their entries, sized as entry
+records (below), reach `target_bytes`, and written with `lz4`'s codec.
 
 ## Wire formats
 
@@ -115,10 +111,8 @@ entry record     u8 tag (1 put, 2 del) · u64 seq · u32 key_len · key
                  · for put only: u32 value_len · value
 pattern list     repeated: u32 len · bytes
 hit record       u32 key_len · u32 value_len · key · value
-blob list        u32 count · repeated: u32 len · bytes
 run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_len
                  · sst (size bytes) · first_key · last_key
-merge output     u64 dropped_seq · u32 count · repeated: run record
 source list      u32 count · repeated: u32 run_count · run_count × u32 size
 demand record    u32 source · u32 run · u32 offset · u32 len
 run head         u32 entries · u32 size · u32 first_key_len · u32 last_key_len

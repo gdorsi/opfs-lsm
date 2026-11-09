@@ -5,7 +5,6 @@
  */
 import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
 import * as sstTs from "./sst.js";
-import { foldEntries } from "./fold.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
 import { openMergeTs } from "./merge-ts.js";
@@ -14,10 +13,8 @@ import { CorruptDatabaseError } from "../errors.js";
 /**
  * Bytes handed to the module's `init`. A module that reserves once serves
  * every call from this slab and never grows; the Rust module allocates
- * dynamically and ignores it. Sized from a prototype that reserved once:
- * an encode peaked at 2.75x its input and a merge at about 10x its
- * compressed input, so a 73 MB flush needs 200 MiB and a merge of 40 MiB
- * of LZ4 runs about 400 MiB.
+ * dynamically and ignores it. Sized from a prototype that reserved once,
+ * where an encode peaked at 2.75x its input, so a 73 MB flush needs 200 MiB.
  */
 const ENGINE_CAPACITY = 1024 * 1024 * 1024;
 
@@ -72,7 +69,6 @@ type Exports = {
   decode_sst(ptr: number, len: number): number;
   lz4_decompress(ptr: number, len: number, size: number): number;
   scan_block_contains(ptr: number, len: number, lz4: number, patPtr: number, patLen: number): number;
-  merge_ssts(ptr: number, len: number, drop: number, target: number, lz4: number): number;
   merge_open(
     ptr: number,
     len: number,
@@ -150,12 +146,6 @@ export type FlatEngine = {
   decodeSst(buf: Uint8Array): SstEntry[];
   lz4Decompress(src: Uint8Array, size: number): Uint8Array;
   scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
-  mergeSsts(
-    blobs: readonly Uint8Array[],
-    dropTombstones: boolean,
-    targetBytes: number,
-    lz4: boolean,
-  ): { runs: EncodedRun[]; droppedSeq: number };
   /** The module's merge session, or undefined while it holds another. */
   openMerge(spec: MergeSpec): MergeCore | undefined;
 };
@@ -214,7 +204,7 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
         },
         (ptr) => ex.encode_sst(ptr, size, lz4 ? 1 : 0),
       );
-      return readRun(out, new DataView(out.buffer), 0).run;
+      return readRun(out);
     },
 
     decodeSst(buf) {
@@ -242,37 +232,6 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
         (ptr) =>
           ex.scan_block_contains(ptr, framed.byteLength, lz4 ? 1 : 0, ptr + framed.byteLength, patterns.byteLength),
       );
-    },
-
-    mergeSsts(blobs, dropTombstones, targetBytes, lz4) {
-      let size = 4;
-      for (const b of blobs) size += 4 + b.byteLength;
-      const out = call(
-        "merge_ssts",
-        size,
-        (into) => {
-          const view = new DataView(into.buffer, into.byteOffset, into.byteLength);
-          view.setUint32(0, blobs.length, true);
-          let o = 4;
-          for (const b of blobs) {
-            view.setUint32(o, b.byteLength, true);
-            into.set(b, o + 4);
-            o += 4 + b.byteLength;
-          }
-        },
-        (ptr) => ex.merge_ssts(ptr, size, dropTombstones ? 1 : 0, targetBytes, lz4 ? 1 : 0),
-      );
-      const view = new DataView(out.buffer);
-      const droppedSeq = view.getUint32(0, true) + view.getUint32(4, true) * TWO_32;
-      const count = view.getUint32(8, true);
-      const runs: EncodedRun[] = [];
-      let o = 12;
-      for (let i = 0; i < count; i++) {
-        const { run, next } = readRun(out, view, o);
-        runs.push(run);
-        o = next;
-      }
-      return { runs, droppedSeq };
     },
 
     openMerge(spec) {
@@ -331,7 +290,7 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
             case WRITE:
               return { kind: "write", bytes: result.slice() };
             case RUN_END:
-              return { kind: "run-end", end: readEnd(result, view, 0, RUN_HEAD_BYTES).end };
+              return { kind: "run-end", end: readEnd(result, view, RUN_HEAD_BYTES) };
             case YIELD:
               return { kind: "yield" };
             case DONE:
@@ -354,33 +313,26 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
 }
 
 /**
- * The run record at `o` (crates/engine-abi.md). The body is a view into
- * `bytes`. The keys are copies, so the manifest does not keep `bytes` alive.
+ * A run record (crates/engine-abi.md). The body is a view into `bytes`. The
+ * keys are copies, so the manifest does not keep `bytes` alive.
  */
-function readRun(bytes: Uint8Array, view: DataView, o: number): { run: EncodedRun; next: number } {
-  const size = view.getUint32(o + 4, true);
-  const body = bytes.subarray(o + RUN_HEAD_BYTES, o + RUN_HEAD_BYTES + size);
-  const { end, next } = readEnd(bytes, view, o, o + RUN_HEAD_BYTES + size);
-  return { run: { body, end }, next };
+function readRun(bytes: Uint8Array): EncodedRun {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const keys = RUN_HEAD_BYTES + view.getUint32(4, true);
+  return { body: bytes.subarray(RUN_HEAD_BYTES, keys), end: readEnd(bytes, view, keys) };
 }
 
-/** The `RunEnd` of the run head at `head`, whose two keys start at `keys`. Copies the keys. */
-function readEnd(bytes: Uint8Array, view: DataView, head: number, keys: number): { end: RunEnd; next: number } {
-  const entries = view.getUint32(head, true);
-  const size = view.getUint32(head + 4, true);
-  const firstLen = view.getUint32(head + 8, true);
-  const lastLen = view.getUint32(head + 12, true);
-  const end =
-    entries === 0
-      ? { bytes: size }
-      : {
-          bytes: size,
-          range: {
-            smallest: bytes.slice(keys, keys + firstLen),
-            largest: bytes.slice(keys + firstLen, keys + firstLen + lastLen),
-          },
-        };
-  return { end, next: keys + firstLen + lastLen };
+/** The `RunEnd` of the run head that `bytes` starts with, whose two keys start at `keys`. Copies the keys. */
+function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
+  const entries = view.getUint32(0, true);
+  const size = view.getUint32(4, true);
+  const firstLen = view.getUint32(8, true);
+  const lastLen = view.getUint32(12, true);
+  if (entries === 0) return { bytes: size };
+  return {
+    bytes: size,
+    range: { smallest: bytes.slice(keys, keys + firstLen), largest: bytes.slice(keys + firstLen, keys + firstLen + lastLen) },
+  };
 }
 
 function statusError(op: string, code: number, inputBytes: number, capacity: number): Error {
@@ -606,56 +558,4 @@ function dropWasmOnTrap(core: MergeCore): MergeCore {
       }
     },
   };
-}
-
-/**
- * Merge newest-first runs into runs of about `targetBytes`, in key order,
- * written with `codec` (raw without wasm).
- * With `dropTombstones`, also returns the highest seq among the dropped
- * tombstones, 0 when none was dropped.
- */
-export async function mergeSsts(
-  blobsNewestFirst: readonly Uint8Array[],
-  dropTombstones: boolean,
-  targetBytes = Number.MAX_SAFE_INTEGER,
-  codec: SstCodec = "raw",
-): Promise<{ readonly runs: readonly EncodedRun[]; readonly droppedSeq: number }> {
-  await ensureEngine();
-  if (engine) {
-    try {
-      return engine.mergeSsts(blobsNewestFirst, dropTombstones, targetBytes, codec === "lz4");
-    } catch (err) {
-      return afterWasmError(err, "sst corrupt", () => mergeSstsTs(blobsNewestFirst, dropTombstones, targetBytes));
-    }
-  }
-  return mergeSstsTs(blobsNewestFirst, dropTombstones, targetBytes);
-}
-
-/** `mergeSsts` without wasm: every output run is raw. */
-function mergeSstsTs(
-  blobsNewestFirst: readonly Uint8Array[],
-  dropTombstones: boolean,
-  targetBytes: number,
-): { readonly runs: readonly EncodedRun[]; readonly droppedSeq: number } {
-  let entries = foldEntries(blobsNewestFirst.map((b) => sstTs.decodeSst(b)));
-  let droppedSeq = 0;
-  if (dropTombstones) {
-    for (const e of entries) {
-      if (e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
-    }
-    entries = entries.filter((e) => e.kind === "put");
-  }
-  const runs: EncodedRun[] = [];
-  let start = 0;
-  let size = 0;
-  for (let i = 0; i < entries.length; i++) {
-    size += sstTs.entryRecordSize(entries[i]!);
-    if (size >= targetBytes) {
-      runs.push(sstTs.encodeRun(entries.slice(start, i + 1)));
-      start = i + 1;
-      size = 0;
-    }
-  }
-  if (start < entries.length) runs.push(sstTs.encodeRun(entries.slice(start)));
-  return { runs, droppedSeq };
 }

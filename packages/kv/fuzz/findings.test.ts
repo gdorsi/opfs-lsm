@@ -1,13 +1,14 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns } from "../src/store/block-scan.js";
-import { decodeSst as decodeSstEngine, mergeSsts } from "../src/store/engine.js";
+import { decodeSst as decodeSstEngine } from "../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../src/store/generation.js";
 import { lz4Decompress } from "../src/store/lz4.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { decodeSst, encodeSst, readFooter } from "../src/store/sst.js";
 import { settle } from "../src/store/cursor.js";
+import { mergeRuns } from "../tests/runs.js";
 import { bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
 import { loadWasm, withoutWasm, type FlatEngine } from "./wasm.js";
 
@@ -150,15 +151,15 @@ describe("decoder bugs the fuzzers found", () => {
     expect(() => wasm.decodeSst(buf)).not.toThrow(WebAssembly.RuntimeError);
   });
 
-  // KW2, SharedWorker with wasm. `decode_sst_js` and `merge_ssts_js` throw
+  // KW2, SharedWorker with wasm. `decode_sst_js` and `merge_ssts_js` threw
   // the Rust error as a bare string ("CrcMismatch"). `engine.decodeSst` and
-  // `mergeSsts` passed it on, so a compaction over a corrupt run failed with
-  // a string, not CorruptDatabaseError. They now wrap it, and the port
-  // carries the error's code so the tab rethrows the same class.
+  // the compaction merge passed it on, so a compaction over a corrupt run
+  // failed with a string, not CorruptDatabaseError. They now wrap it, and
+  // the port carries the error's code so the tab rethrows the same class.
   it("KW2: a compaction over a run with a bad CRC throws CorruptDatabaseError", async () => {
     const buf = encodeSst(entries);
     buf[5]! ^= 1;
-    await expect(corruptWithinBounds("mergeSsts", () => mergeSsts([buf], false))).resolves.toBeUndefined();
+    await expect(corruptWithinBounds("merge session", () => mergeRuns([[buf]]))).resolves.toBeUndefined();
   });
 
   it("KW2: decodeSst (engine) over a run with a bad CRC throws CorruptDatabaseError", async () => {

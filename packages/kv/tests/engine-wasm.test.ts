@@ -7,13 +7,12 @@ import {
   engineUsingWasm,
   ensureEngine,
   flatEngine,
-  mergeSsts,
 } from "../src/store/engine.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { crc32 } from "../src/store/crc32.js";
 import { settle } from "../src/store/cursor.js";
 import { encodeRun as encodeRunTs, sstKeyRange, type EncodedRun, type SstEntry } from "../src/store/sst.js";
-import { readerOfBytes } from "./runs.js";
+import { mergeRuns, readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
@@ -44,7 +43,7 @@ describe("engine WASM", () => {
           value: utf("v"),
         })),
       );
-    const { runs } = await mergeSsts([await half(0), await half(30_000)], false);
+    const { runs } = await mergeRuns([[await half(0)], [await half(30_000)]]);
     expect(runs).toHaveLength(1);
     expect(await decodeSst(runs[0]!.body)).toHaveLength(60_000);
     const reader = readerOfBytes(runs[0]!.body);
@@ -60,7 +59,7 @@ describe("engine WASM", () => {
         value: new Uint8Array(100),
       })),
     );
-    const { runs } = await mergeSsts([body], false, 16 * 1024);
+    const { runs } = await mergeRuns([[body]], { targetBytes: 16 * 1024 });
     expect(runs.length).toBeGreaterThan(5);
     const keys = (await Promise.all(runs.map((r) => decodeSst(r.body)))).flat().map((e) => new TextDecoder().decode(e.key));
     expect(keys).toEqual(Array.from({ length: 1000 }, (_, i) => `k${String(i).padStart(4, "0")}`));
@@ -137,9 +136,9 @@ describe("a run whose keys are out of order", () => {
     expect(engineUsingWasm()).toBe(true);
     const sst = misordered();
     expect((await decodeSst(sst)).map((e) => new TextDecoder().decode(e.key))).toEqual(["b", "a"]);
-    await expect(mergeSsts([sst], false)).rejects.toThrow(CorruptDatabaseError);
+    await expect(mergeRuns([[sst]])).rejects.toThrow(CorruptDatabaseError);
     // A target of 1 byte cuts after every entry, so each key opens an output run of its own.
-    await expect(mergeSsts([sst], false, 1)).rejects.toThrow("keys out of order");
+    await expect(mergeRuns([[sst]], { targetBytes: 1 })).rejects.toThrow("keys out of order");
     expect(engineUsingWasm()).toBe(true);
   });
 });
@@ -186,7 +185,7 @@ describe("engine status codes", () => {
         decode_sst: fail,
         lz4_decompress: fail,
         scan_block_contains: fail,
-        merge_ssts: fail,
+        merge_open: fail,
       },
     } as unknown as WebAssembly.Instance;
   };

@@ -10,6 +10,7 @@ import { openMergeTs } from "../src/store/merge-ts.js";
 import { decodeSst, encodeRun, entryRecordSize, sstKeyRange, type SstCodec, type SstEntry } from "../src/store/sst.js";
 import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
+import { publish } from "./runs.js";
 
 /**
  * The TypeScript merge session against the wasm one, both pumped by the
@@ -117,12 +118,6 @@ const plain = (entries: readonly SstEntry[]) =>
   entries.map((e) => `${e.kind} ${keyToString(e.key)} ${e.seq} ${e.kind === "put" ? keyToString(e.value) : ""}`);
 
 const same = (a: Uint8Array, b: Uint8Array) => Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(b);
-
-async function publish(fs: AsyncFs, path: string, body: Uint8Array): Promise<void> {
-  const w = await fs.create(path);
-  await w.write(body);
-  await w.finish();
-}
 
 type Merged = { runs: { meta: RunMeta; body: Uint8Array }[]; droppedSeq: number };
 

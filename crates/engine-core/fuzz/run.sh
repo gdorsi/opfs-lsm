@@ -3,8 +3,8 @@
 #
 #   crates/engine-core/fuzz/run.sh <target> [seconds]
 #
-# Targets: decode_sst, scan_block_contains, decode_block, merge_session,
-# compact. Seconds default to 600.
+# Targets: decode_sst, scan_block_contains, decode_block, merge_session.
+# Seconds default to 600.
 # Needs nightly and cargo-fuzz (`cargo install cargo-fuzz`). New corpus
 # inputs land in fuzz/corpus/<target>/ next to the committed `seed-*` files
 # (git ignores them); a crash lands in fuzz/artifacts/<target>/, and

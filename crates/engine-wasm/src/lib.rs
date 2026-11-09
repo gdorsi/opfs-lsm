@@ -13,8 +13,7 @@ use alloc::{vec, vec::Vec};
 
 use core::cell::UnsafeCell;
 use engine_core::{
-    encode_run_into, lz4_unpack, merge_sst_bytes, Codec, EncodedRun, Entry, MergeConfig, MergeError, MergeSession,
-    RunEnd, SstError, Stop,
+    encode_run_into, lz4_unpack, Codec, Entry, MergeConfig, MergeError, MergeSession, RunEnd, SstError, Stop,
 };
 
 const TAG_PUT: u8 = 1;
@@ -278,49 +277,6 @@ pub unsafe extern "C" fn scan_block_contains(
         pats.push(p);
     }
     finish(engine_core::scan_block_contains(bytes(ptr, len), codec(lz4), &pats).map_err(error_code))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn merge_ssts(
-    ptr: *const u8,
-    len: usize,
-    drop_tombstones: i32,
-    target_bytes: f64,
-    lz4: i32,
-) -> i32 {
-    let mut r = Reader {
-        buf: bytes(ptr, len),
-        o: 0,
-    };
-    let Some(count) = r.u32() else {
-        return finish(Err(TRUNCATED));
-    };
-    let mut blobs = Vec::new();
-    for _ in 0..count {
-        match r.u32().and_then(|n| r.take(n)) {
-            Some(b) => blobs.push(b.to_vec()),
-            None => return finish(Err(TRUNCATED)),
-        }
-    }
-    // `as` saturates, so Number.MAX_SAFE_INTEGER becomes usize::MAX.
-    let target = target_bytes as usize;
-    finish(
-        merge_sst_bytes(&blobs, drop_tombstones != 0, target, codec(lz4))
-            .map(|(runs, dropped)| {
-                let size = |r: &EncodedRun| RUN_HEAD + r.bytes.len() + r.end.first_key.len() + r.end.last_key.len();
-                let mut out = Vec::with_capacity(12 + runs.iter().map(size).sum::<usize>());
-                out.extend_from_slice(&dropped.to_le_bytes());
-                out.extend_from_slice(&(runs.len() as u32).to_le_bytes());
-                for run in &runs {
-                    out.extend_from_slice(&run_head(&run.end));
-                    out.extend_from_slice(&run.bytes);
-                    out.extend_from_slice(&run.end.first_key);
-                    out.extend_from_slice(&run.end.last_key);
-                }
-                out
-            })
-            .map_err(error_code),
-    )
 }
 
 /// Open the module's merge session. Input: source list. Fails with -13

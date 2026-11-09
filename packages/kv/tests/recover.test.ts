@@ -5,8 +5,9 @@ import { IdBWal } from "../src/idb/wal.js";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import { reconcile } from "../src/recover.js";
 import { crc32 } from "../src/store/crc32.js";
-import { publishGeneration, publishRun, type GenerationMeta } from "../src/store/generation.js";
+import { publishGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { openHarnessDb } from "../src/testing.js";
+import { publish } from "./runs.js";
 import { checkDatabase, deleteWal } from "./sim/check-database.js";
 
 /**
@@ -33,7 +34,7 @@ async function walWith(appends: number): Promise<IdBWal> {
 
 /** A manifest with one (fake) non-empty run per name. */
 async function manifest(fs: MemoryFs, generation: number, through: number, runs: string[]): Promise<GenerationMeta> {
-  for (const path of runs) await publishRun(fs, path, new Uint8Array([1]));
+  for (const path of runs) await publish(fs, path, new Uint8Array([1]));
   const meta = { generation, runs: runs.map((path) => ({ path, bytes: 1 })), tombstoneSeq: 0, through };
   await publishGeneration(fs, meta);
   return meta;

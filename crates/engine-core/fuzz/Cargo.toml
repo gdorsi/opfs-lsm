@@ -31,13 +31,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "compact"
-path = "fuzz_targets/compact.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "merge_session"
 path = "fuzz_targets/merge_session.rs"
 test = false

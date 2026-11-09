@@ -221,17 +221,6 @@ export async function publishL0(
   return { path, ...end };
 }
 
-export async function publishRun(
-  fs: AsyncFs,
-  path: string,
-  body: Uint8Array,
-): Promise<string> {
-  const w = await fs.create(path);
-  await w.write(body);
-  await w.finish();
-  return path;
-}
-
 /** The manifest of `generation`, or undefined when a newer publish removed it. */
 export async function loadGeneration(
   fs: AsyncFs,
