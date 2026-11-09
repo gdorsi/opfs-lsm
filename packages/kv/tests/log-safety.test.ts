@@ -153,6 +153,34 @@ describe("a tab is retired only once it is dead", () => {
   });
 });
 
+describe("close", () => {
+  it("a put whose log write outlasts close's wait is acked and visible, or rejected", async () => {
+    const name = uniqueName("close-inflight");
+    const fs = new MemoryFs();
+    const ingest = createLocalIngestClient(new EngineHost(() => fs));
+    const cLogs = parkableLogs(fs);
+    const a = await openHarnessDb({ name, fs, ingest });
+    const c = await openHarnessDb({ name, fs: cLogs.fs, ingest });
+    cLogs.park();
+    const cPut = outcome(c.put(utf("c"), utf("1")));
+    await cLogs.waitParked();
+    const closing = c.close();
+    await sleep(1200);
+    await a.put(utf("a"), utf("1"));
+    const ingesting = a.ingest();
+    await sleep(50);
+    cLogs.resume();
+    await ingesting;
+    const got = await cPut;
+    await closing;
+    await a.sync();
+    const fresh = await openHarnessDb({ name, fs, ingest });
+    const seen = str(await fresh.get(utf("c")));
+    await Promise.all([a.close(), fresh.close()]);
+    expect(got !== "acked" || seen === "1", "a put acked across close is in the database").toBe(true);
+  });
+});
+
 describe("a failed log write", () => {
   it("fails every later write of the tab, so none is acked behind a lost one", async () => {
     const t = new Traced(uniqueName("failed-write"));

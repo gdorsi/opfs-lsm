@@ -6,7 +6,7 @@ import { Memtable, type MemRows } from "../store/memtable.js";
 import type { TabLogClient } from "./client.js";
 import { encodeOps, type Stamp, type TabId } from "./frame.js";
 import { Hlc } from "./hlc.js";
-import { holdTab, liveTabs } from "./liveness.js";
+import { holdTab, liveTabs, tabReleased } from "./liveness.js";
 import { Merger, type MergedRecord, type Taken } from "./merger.js";
 import { TAB_START, listTabs, readTab, type TabPos } from "./reader.js";
 
@@ -306,7 +306,8 @@ export class LogSession {
         if (this.joining.expect.size === 0) this.joining.done();
         return;
       case "bye":
-        if (msg.tab !== this.tab) void this.retire(msg.tab);
+        // Writes it had in flight may still land until its lock goes.
+        if (msg.tab !== this.tab) void tabReleased(this.opts.name, msg.tab).then(() => this.retire(msg.tab));
         return;
     }
   }
