@@ -17,7 +17,7 @@
  */
 import type { IoCounters, KvStats } from "@opfs-lsm/kv/testing";
 import { merge, quantile } from "../core/histogram.ts";
-import type { PhaseResult, RunRecord } from "../core/types.ts";
+import type { HeapPeak, PhaseResult, RunRecord } from "../core/types.ts";
 
 type Stat = { median: number; min: number; max: number; n: number };
 
@@ -174,6 +174,27 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
         );
       }
       out.push("", "`~`: from navigator.storage.estimate(), approximate. kv disk bytes are exact OPFS file sizes.");
+    }
+    const memRows = rows.filter((row, i) => i === rows.findIndex((r) => r.contender === row.contender) && row.runs[0]!.memory);
+    if (memRows.length > 0) {
+      out.push(
+        "",
+        "| memory peak (MB) | contender | runs | SharedWorker used | total | backing | wasm | tab used | total | backing | wasm | largest renderer |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+      );
+      for (const row of memRows) {
+        const mems = row.runs.map((r) => r.memory).filter((m) => m !== undefined);
+        const col = (f: (m: NonNullable<(typeof mems)[number]>) => number | undefined) => {
+          const st = stat(mems.map((m) => f(m) ?? NaN));
+          return st.n === 0 ? "n/a" : st.n === 1 ? fmtMB(st.median) : `${fmtMB(st.median)} (${fmtMB(st.min)}–${fmtMB(st.max)})`;
+        };
+        const heap = (pick: (m: NonNullable<(typeof mems)[number]>) => HeapPeak | null, field: keyof HeapPeak) =>
+          col((m) => pick(m)?.[field]);
+        out.push(
+          `| | ${row.contender} | ${mems.length} | ${heap((m) => m.sharedWorker, "usedSize")} | ${heap((m) => m.sharedWorker, "totalSize")} | ${heap((m) => m.sharedWorker, "backingStorageSize")} | ${col((m) => m.sharedWorkerWasmBytes ?? undefined)} | ${heap((m) => m.tab, "usedSize")} | ${heap((m) => m.tab, "totalSize")} | ${heap((m) => m.tab, "backingStorageSize")} | ${col((m) => m.tabWasmBytes ?? undefined)} | ${col((m) => m.largestRendererBytes ?? undefined)} |`,
+        );
+      }
+      out.push("", "Sampled every 100 ms with `Runtime.getHeapUsage`, so a peak shorter than that can be missed. `n/a`: Chrome did not report the counter. Largest renderer is the biggest single renderer process, read once a second: `phys_footprint_peak` on macOS, the kernel's own peak; elsewhere the largest RSS seen.");
     }
   }
   if (failed.length > 0) {

@@ -10,6 +10,7 @@
     "examples/*/scripts/**/*.ts",
     "bench/cli.ts",
     "bench/page/main.ts",
+    "bench/probes/*.ts",
     "bench/workloads/*/*.ts",
     "bench/contenders/*/*.ts",
     "docs/research/opfs-worker-probes/*.js",

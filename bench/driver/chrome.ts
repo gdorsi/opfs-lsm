@@ -16,6 +16,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { MemoryPeaks } from "../core/types.ts";
+import { chromeMemory, combine, PeakTracker, WASM_HOOK, type HeapSample, type ProcessMemory } from "./memory.ts";
+
+const SAMPLE_MS = 100;
+/** How often the OS is asked about the renderers. Rarely, because asking costs them time (see `chromeMemory`). */
+const FOOTPRINT_MS = 1000;
 
 const FLAGS = [
   "--no-first-run",
@@ -36,9 +42,25 @@ export type Tab = {
   close(): Promise<void>;
 };
 
+/** Current values, for probes. */
+export type MemoryNow = {
+  /** OS memory per Chrome process. Spare renderers come and go, so read the large ones, not the sum. */
+  processes: ProcessMemory[];
+  sharedWorker: HeapSample | null;
+  tab: HeapSample | null;
+};
+
 export type Chrome = {
   readonly version: string;
+  /** The fresh user-data dir; OPFS files live under it, so its size shows what reached disk. */
+  readonly profile: string;
+  /** Memory right now, not the peak since launch. */
+  now(): Promise<MemoryNow>;
+  /** `HeapProfiler.collectGarbage` in every SharedWorker and tab. */
+  collectGarbage(): Promise<void>;
   openTab(url: string): Promise<Tab>;
+  /** Peaks since launch: SharedWorker and tab JS heap, wasm memory, largest renderer process. Takes one last sample first. */
+  memory(): Promise<MemoryPeaks>;
   /** Resolves once no shared_worker target is alive. */
   sharedWorkersGone(timeoutMs: number): Promise<void>;
   /** Kill the process group, wait for exit, delete the profile. Idempotent. */
@@ -77,9 +99,11 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
   });
 
   let closed = false;
+  let stopSampler = () => {};
   const close = async () => {
     if (closed) return;
     closed = true;
+    stopSampler();
     await killGroup(child);
     rmSync(profile, { recursive: true, force: true });
   };
@@ -103,14 +127,90 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
     });
     await cdp.send("Target.setDiscoverTargets", { discover: true });
 
+    const sw = new PeakTracker();
+    const tabs = new PeakTracker();
+    const workerSessions = new Set<string>();
+    const tabSessions = new Set<string>();
+    let footprintPeak: number | null = null;
+    // Paused at start, so the hook is in place before kv's module script instantiates wasm.
+    cdp.on("Target.attachedToTarget", (p) => {
+      const a = p as { sessionId: string; targetInfo: { type: string }; waitingForDebugger: boolean };
+      if (a.targetInfo.type !== "shared_worker") return;
+      workerSessions.add(a.sessionId);
+      void (async () => {
+        await cdp.send("Runtime.evaluate", { expression: WASM_HOOK }, a.sessionId);
+        if (a.waitingForDebugger) await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
+      })().catch(() => workerSessions.delete(a.sessionId));
+    });
+    cdp.on("Target.detachedFromTarget", (p) => workerSessions.delete((p as { sessionId: string }).sessionId));
+    await cdp.send("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+      filter: [{ type: "shared_worker" }, { exclude: true }],
+    });
+
+    const sampleHeap = async (sessionId: string, into: PeakTracker) => {
+      const heap = await cdp.send<HeapSample>("Runtime.getHeapUsage", {}, sessionId);
+      into.addHeap(heap);
+      const wasm = await cdp.send<EvalReply>(
+        "Runtime.evaluate",
+        { expression: "globalThis.__benchWasm?.() ?? 0", returnByValue: true },
+        sessionId,
+      );
+      if (typeof wasm.result.value === "number") into.addWasm(wasm.result.value);
+    };
+    const sampleFootprint = async () => {
+      const renderers = (await chromeMemory(profile)).filter((p) => p.type === "renderer");
+      footprintPeak = Math.max(footprintPeak ?? 0, ...renderers.map((p) => p.peakBytes ?? p.bytes));
+    };
+    let footprintAt = 0;
+    // One sample in flight per session: a worker busy in a synchronous merge answers late, and queued requests would pile up.
+    const busy = new Set<string>();
+    const sampleAll = async (last = false) => {
+      const jobs: Promise<unknown>[] = [];
+      const add = (key: string, job: () => Promise<unknown>) => {
+        if (busy.has(key)) return;
+        busy.add(key);
+        jobs.push(job().catch(() => {}).finally(() => busy.delete(key)));
+      };
+      for (const id of workerSessions) add(id, () => sampleHeap(id, sw));
+      for (const id of tabSessions) add(id, () => sampleHeap(id, tabs));
+      if (last || Date.now() - footprintAt >= FOOTPRINT_MS) {
+        footprintAt = Date.now();
+        add("footprint", sampleFootprint);
+      }
+      await Promise.all(jobs);
+    };
+    const sampler = setInterval(() => void sampleAll(), SAMPLE_MS);
+    sampler.unref();
+    stopSampler = () => clearInterval(sampler);
+
     return {
       version: info.Browser,
+      profile,
+      async now() {
+        const heap = (ids: Set<string>) => {
+          const [id] = ids;
+          return id ? cdp.send<HeapSample>("Runtime.getHeapUsage", {}, id) : Promise.resolve(null);
+        };
+        return { processes: await chromeMemory(profile), sharedWorker: await heap(workerSessions), tab: await heap(tabSessions) };
+      },
+      async collectGarbage() {
+        for (const id of [...workerSessions, ...tabSessions]) await cdp.send("HeapProfiler.collectGarbage", {}, id);
+      },
+      async memory() {
+        await sampleAll(true);
+        return combine(sw, tabs, footprintPeak);
+      },
       async openTab(url) {
         const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
         const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true });
         await cdp.send("Runtime.enable", {}, sessionId);
         await cdp.send("Page.enable", {}, sessionId);
         await cdp.send("Runtime.addBinding", { name: "__benchProgress" }, sessionId);
+        await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: WASM_HOOK }, sessionId);
+        tabSessions.add(sessionId);
         const loaded = cdp.once("Page.loadEventFired", sessionId);
         await cdp.send("Page.navigate", { url }, sessionId);
         await withTimeout(loaded, 30_000, "page load");
@@ -128,6 +228,7 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
             return reply.result.value as T;
           },
           async close() {
+            tabSessions.delete(sessionId);
             await cdp.send("Target.closeTarget", { targetId });
           },
         };

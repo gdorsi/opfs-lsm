@@ -40,6 +40,7 @@ The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and value
 - `kv/overwrite`: random fill, then N random overwrites.
 - `kv/deleterandom`: random fill, delete 10%, space before and after compaction.
 - `kv/ycsb-a` … `kv/ycsb-f`: YCSB core workloads A to F, as in YCSB's workload files. Pebble uses the same letters for different mixes.
+- `kv/compaction-memory`: 20 rounds of N random puts into a 4N key pool, settle, then checked reads. Run it for the memory peaks below, not for throughput.
 - `table/todos`: the operations of RxDB's storage comparison on a todo table with two indexes: first insert, bulk and serial inserts, gets by id, index queries, updates, deletes, cold open.
 - `automerge/trace`, `yjs/trace`: the LaTeX editing trace (about 260k keystrokes; 2,000 at `tiny`, 26,000 at `small`) through the persistence layer, then a cold load. The trace downloads once into `bench/.data/`.
 - `automerge/many-docs`, `yjs/many-docs`: many small notes written, then each loaded cold.
@@ -61,6 +62,12 @@ kv counts the bytes it writes in the configuration apps run: the tab and the Sha
 IndexedDB baselines only have `navigator.storage.estimate()`, which is approximate. Those cells are marked `~`. For the CRDT families, user bytes are the bytes the CRDT asked storage to save, and live bytes are the encoded document size.
 
 The definitions and sources are in [docs/research/benchmark-prior-art.md](../docs/research/benchmark-prior-art.md).
+
+## Memory
+
+Every run record carries peaks sampled every 100 ms over CDP: `Runtime.getHeapUsage` of the SharedWorker (found by auto-attach) and of each tab, the largest wasm `memory.buffer.byteLength` in each (a hook installed before kv instantiates wasm), and the largest renderer process. The report prints them per workload. The renderer processes are read once a second, not every 100 ms: at 100 ms the reading itself made kv's write phases take 12 to 45% longer. On macOS the value is `phys_footprint_peak`, the kernel's own peak since the process started, so nothing between two readings is missed. Elsewhere it is the largest RSS seen. Chrome's `backingStorageSize` counts ArrayBuffers but not wasm memory, so the SharedWorker's total is used + backing + wasm. `--max-peak-bytes N` fails a run whose SharedWorker total passes N; it is off by default.
+
+`node bench/probes/memory.ts` answers two Chrome questions behind the compaction-memory design: whether pending `createWritable` data stays in memory, and whether dropping a wasm instance returns its memory. Results are in [docs/research/bounded-compaction-memory.md](../docs/research/bounded-compaction-memory.md).
 
 ## Bundle size
 
