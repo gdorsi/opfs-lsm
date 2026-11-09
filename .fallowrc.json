@@ -13,6 +13,9 @@
     "bench/workloads/*/*.ts",
     "bench/contenders/*/*.ts"
   ],
+  "ignorePatterns": [
+    "architecture/**"
+  ],
   "ignoreBinaries": [
     "wasm-pack"
   ],

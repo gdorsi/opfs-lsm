@@ -16,7 +16,7 @@ async function boot() {
   };
 
   window.addEventListener("beforeunload", () => {
-    // close() aborts the IndexedDB transaction a flush just started.
+    // close() can cut off the log write a flush just started.
     if (!shutdown.flush()) void store.close();
   });
 

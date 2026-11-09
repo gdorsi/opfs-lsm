@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   MemoryFs,
-  prefixBound
+  prefixBound,
+  type Db,
 } from "../src/index.js";
 import {
-  openHarnessDb,
-  __resetMemoryFsForTests
+  openHarnessDb as openDbRaw,
+  __resetMemoryFsForTests,
+  type HarnessOpenOptions,
 } from "../src/testing.js";
-import { checkBatch, checkDbName } from "../src/check.js";
-import { IdBWal } from "../src/idb/wal.js";
 
 const NAME = "update";
 const enc = new TextEncoder();
@@ -17,20 +17,36 @@ const utf = (s: string) => enc.encode(s);
 const text = (b: Uint8Array | undefined) => (b ? dec.decode(b) : undefined);
 const quiet = { maxWalBytes: 1 << 30 };
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
+/** Every Db a test opened, closed after it even when it fails: an open one stays a live tab. */
+const opened: Db[] = [];
+async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
+  const db = await openDbRaw(options);
+  opened.push(db);
+  return db;
 }
 
-beforeEach(async () => {
+/**
+ * Drop `db`'s broadcasts of its records, as if each message were lost: its
+ * writes reach other tabs only through its log file.
+ */
+function muteRecords(db: Db): { dropped: number } {
+  const bus = (db as unknown as { session: { bus: BroadcastChannel } }).session.bus;
+  const post = bus.postMessage.bind(bus);
+  const muted = { dropped: 0 };
+  bus.postMessage = (msg: { kind?: string }) => {
+    if (msg?.kind === "rec") muted.dropped += 1;
+    else post(msg);
+  };
+  return muted;
+}
+
+beforeEach(() => {
   __resetMemoryFsForTests(NAME);
-  await wipe();
 });
-afterEach(() => __resetMemoryFsForTests(NAME));
+afterEach(async () => {
+  await Promise.all(opened.splice(0).map((db) => db.close()));
+  __resetMemoryFsForTests(NAME);
+});
 
 describe("update", () => {
   it("concurrent increments from two tabs lose none", async () => {
@@ -42,6 +58,8 @@ describe("update", () => {
         tx.put(utf("n"), utf(String(Number(text(cur) ?? "0") + 1)));
       });
     await Promise.all(Array.from({ length: 20 }, (_, i) => bump(i % 2 ? a : b)));
+    // The last increment may be b's: a sees it once it catches up.
+    await a.sync();
     expect(text(await a.get(utf("n")))).toBe("20");
     await a.close();
     await b.close();
@@ -64,18 +82,17 @@ describe("update", () => {
   it("sees a write that was never broadcast", async () => {
     const fs = new MemoryFs();
     const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: quiet });
+    const silent = await openHarnessDb({ name: NAME, writerId: "s", fs, forceMemory: true, ingestPolicy: quiet });
     await db.put(utf("n"), utf("1"));
-    const silent = await IdBWal.open(checkDbName(NAME));
-    await silent.appendAfter(0, () => ({
-      ops: checkBatch([{ type: "put", key: utf("n"), value: utf("5") }]),
-      result: undefined,
-    }));
-    silent.close();
+    // The silent tab read "1", so its write sorts after it; only its log file holds it.
+    await silent.sync();
+    const muted = muteRecords(silent);
+    await silent.put(utf("n"), utf("5"));
     await db.update([utf("n")], ([cur], tx) => {
       tx.put(utf("n"), utf(String(Number(text(cur)) + 1)));
     });
     expect(text(await db.get(utf("n")))).toBe("6");
-    await db.close();
+    expect(muted.dropped).toBe(1);
   });
 
   it("writes nothing when the body throws", async () => {

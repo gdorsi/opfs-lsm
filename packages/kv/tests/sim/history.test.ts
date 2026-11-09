@@ -117,7 +117,7 @@ describe("history checker", () => {
     expect(() => checkHistory(h)).toThrow(/update/);
   });
 
-  it("rejects seqs that disagree with real-time write order", () => {
+  it("rejects seqs that disagree with session order", () => {
     const h = new History();
     const a = session(h);
     const b = session(h);
@@ -137,7 +137,56 @@ describe("history checker", () => {
     bad.commit(w2.id, w2.ops);
     bad.commit(w1.id, w1.ops);
     bad.respond(w2);
-    expect(() => checkHistory(bad)).toThrow(/real-time/);
+    expect(() => checkHistory(bad)).toThrow(/session order/);
+  });
+
+  it("allows two sessions' writes out of real-time order, unless the second synced in between", () => {
+    const h = new History();
+    const a = session(h);
+    const b = session(h);
+    const w1 = h.invoke({ kind: "write", session: a, ops: [put("k", "1")] });
+    h.respond(w1);
+    const w2 = h.invoke({ kind: "write", session: b, ops: [put("k", "2")] });
+    h.commit(w2.id, w2.ops);
+    h.commit(w1.id, w1.ops);
+    h.respond(w2);
+    expect(() => checkHistory(h)).not.toThrow();
+    const bad = new History();
+    const c = session(bad);
+    const d = session(bad);
+    const v1 = bad.invoke({ kind: "write", session: c, ops: [put("k", "1")] });
+    bad.respond(v1);
+    bad.respond(bad.invoke({ kind: "sync", session: d }));
+    const v2 = bad.invoke({ kind: "write", session: d, ops: [put("k", "2")] });
+    bad.commit(v2.id, v2.ops);
+    bad.commit(v1.id, v1.ops);
+    bad.respond(v2);
+    expect(() => checkHistory(bad)).toThrow(/session order/);
+  });
+
+  it("accepts a read of the session's own write on top of an older prefix", () => {
+    const h = new History();
+    const a = session(h);
+    const b = session(h);
+    // b's write is ordered first but not stable at a yet; a reads its own on top.
+    const wb = h.invoke({ kind: "write", session: b, ops: [put("x", "b")] });
+    const wa = h.invoke({ kind: "write", session: a, ops: [put("y", "a")] });
+    h.commit(wb.id, wb.ops);
+    h.commit(wa.id, wa.ops);
+    h.respond(wb);
+    h.respond(wa);
+    const r = h.invoke({ kind: "range", session: a, range: {} });
+    r.entries = [{ key: utf("y"), value: utf("a") }];
+    h.respond(r);
+    expect(() => checkHistory(h)).not.toThrow();
+    // Another session sees no such thing: x comes before y in the order.
+    const g = h.invoke({ kind: "range", session: b, range: { start: utf("y") } });
+    g.entries = [{ key: utf("y"), value: utf("a") }];
+    h.respond(g);
+    const bad = h.invoke({ kind: "range", session: session(h), range: {} });
+    bad.entries = [{ key: utf("y"), value: utf("a") }];
+    h.respond(bad);
+    expect(() => checkHistory(h)).toThrow(/not the fold/);
   });
 
   it("tolerates an error from an op whose handle closed under it, but not a corrupt-database error", () => {

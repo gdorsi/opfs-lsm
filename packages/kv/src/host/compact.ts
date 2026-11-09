@@ -1,10 +1,7 @@
-import { CorruptDatabaseError } from "../errors.js";
-import type { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
-import { reconcile } from "../recover.js";
+import { recoverGeneration } from "../recover.js";
 import { mergeSsts } from "../store/engine.js";
 import {
-  loadGeneration,
   loadLatestGeneration,
   manifestNumbers,
   publishGeneration,
@@ -29,12 +26,11 @@ export type CompactionOutput = {
 };
 
 /**
- * Plan one step on `base` (the recorded generation; the newest manifest
+ * Plan one step on `base` (the committed generation; the newest manifest
  * file when omitted), merge its inputs, and write the output run. Needs no
  * ingest lock: a flush meanwhile only adds L0 runs in front of the inputs,
  * which stay contiguous and keep their bottom status. Outputs are named
- * past every manifest number in use (`knownTop`, IndexedDB's
- * `topGeneration`, and `m/`), so they never overwrite a run one may list.
+ * past every manifest number in use (`knownTop` and `m/`), so they never overwrite a run one may list.
  */
 export async function mergeNextStep(
   fs: AsyncFs,
@@ -70,32 +66,29 @@ export async function mergeNextStep(
 }
 
 /**
- * Swap the step's inputs for its output in the recorded generation and
- * record the result in IDB. The inputs and the old manifests stay on
- * disk: tabs may still read them, so the host retires them (see
+ * Swap the step's inputs for its output in the committed generation, and
+ * publish the result, which commits it. The inputs and the old manifests
+ * stay on disk: tabs may still read them, so the host retires them (see
  * `EngineHost.reclaim`). Run under the ingest lock.
  */
 export async function installStep(
   fs: AsyncFs,
-  wal: IdBWal,
   step: CompactionOutput,
   trust: (generation: number) => boolean = () => false,
 ): Promise<number> {
-  const base = await reconcile(wal, fs, trust);
-  const meta = await loadGeneration(fs, base.generation);
-  if (!meta) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
+  const { meta, top } = await recoverGeneration(fs, trust);
   const live = new Set(meta.runs.map((r) => r.path));
   if (!step.inputs.every((p) => live.has(p))) {
-    throw new Error("compaction inputs left the recorded generation");
+    throw new Error("compaction inputs left the committed generation");
   }
   const runs = replaceRuns(meta.runs, step.inputs, step.outputs);
-  const generation = base.top + 1;
+  const generation = top + 1;
   await publishGeneration(fs, {
     generation,
     runs,
     tombstoneSeq: Math.max(meta.tombstoneSeq, step.droppedSeq),
     through: meta.through,
+    cut: meta.cut,
   });
-  await wal.raiseGeneration(generation);
   return generation;
 }

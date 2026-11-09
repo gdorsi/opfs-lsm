@@ -53,15 +53,6 @@ function installCaps(getDirectory: () => Promise<never>): void {
   });
 }
 
-async function deleteIdb(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
 async function roundTrip(): Promise<void> {
   const db = await openDb({ name: NAME });
   await db.put(enc.encode("k"), enc.encode("v"));
@@ -75,7 +66,6 @@ const saved = snap();
 afterEach(async () => {
   restore(saved);
   __resetMemoryFsForTests(NAME);
-  await deleteIdb();
 });
 
 describe("openDb storage policy", () => {

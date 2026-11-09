@@ -55,6 +55,11 @@ export class Oracle {
     return seq;
   }
 
+  /** The ops of the batch at `seq`. */
+  opsAt(seq: number): readonly OracleOp[] {
+    return this.entries[seq - 1]!.ops;
+  }
+
   /** Every key any batch wrote. */
   keys(): Uint8Array[] {
     return [...this.versions.values()].map((v) => v.key);

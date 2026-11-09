@@ -1,19 +1,17 @@
-import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
+import { checkDbName, type DbName } from "../check.js";
 import { errorOfCode, OpfsLsmError } from "../errors.js";
-import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
-import { reconcile } from "../recover.js";
+import { recoverGeneration } from "../recover.js";
 import { CountingFs } from "../opfs/counting-fs.js";
 import {
   listRuns,
   liveRuns,
-  loadGeneration,
   reclaimManifests,
   reclaimRuns,
 } from "../store/generation.js";
 import { levelOf } from "../store/levels.js";
 import { installStep, mergeNextStep } from "./compact.js";
-import { ingestAll, type IngestResult } from "./ingest.js";
+import { ingestThrough, reclaimLogs, type IngestResult } from "./ingest.js";
 import {
   layersChannel,
   unlessHeld,
@@ -36,34 +34,18 @@ type HostCounts = {
 };
 
 /**
- * What the host knows about one database's WAL waiting for ingest. Appends
- * arrive as BroadcastChannel hints, so `pendingBytes` can drift from the
- * WAL. Every ingest reads the WAL itself, and every watch measures it again.
+ * Ingest on the host's own for one database. Tabs count the log bytes
+ * that became stable and ask for an ingest at a cut their watermark passed
+ * (`ingest-request`); every tab sees the same stable order, so several may
+ * ask for the same cut, and the fold of an older cut is a no-op.
  */
 type IngestWatch = {
-  /** The smallest limit any watching tab asked for. */
-  maxWalBytes: number;
-  /** Op bytes heard or measured and not yet folded into a run. */
-  pendingBytes: number;
-  /**
-   * The `pendingBytes` level that starts an ingest. A failure raises it by
-   * `maxWalBytes`, so a retry waits for more writes instead of looping.
-   */
-  triggerAt: number;
+  /** The highest cut asked for. */
+  wanted: number;
   state: "idle" | "ingesting";
   /** Open tabs that asked for this watch. The bus closes at zero. */
   watchers: number;
   bus: BroadcastChannel | undefined;
-};
-
-/** The `append` messages tabs post on `layersChannel` (see `DbImpl.broadcast`). */
-type AppendHint = { readonly kind: string; readonly ops?: readonly CheckedOp[] };
-
-/** Background pending-byte read. `rows` stays 0: the host does not list the WAL. */
-export type WatchScan = {
-  ms: number;
-  rows: number;
-  bytes: number;
 };
 
 /**
@@ -74,7 +56,8 @@ export type WatchScan = {
  * chain in this host plus a Web Lock across hosts. Two SharedWorkers can
  * serve one database, for example two builds whose script URLs differ.
  * A flush holds it for the whole flush. Compaction merges without it and
- * holds it only to install the merged run.
+ * holds it only to install the merged run. Publishing a manifest commits:
+ * the newest intact manifest is the committed generation (`recoverGeneration`).
  */
 export class EngineHost {
   private readonly fsCache = new Map<string, CountingFs>();
@@ -91,8 +74,7 @@ export class EngineHost {
   private readonly retired = new Map<DbName, Set<string>>();
   /**
    * Per database, the generation this host last published or found intact,
-   * so `reconcile` checks a recorded manifest's runs once, not on every
-   * flush. A tab that records another generation makes the host check again.
+   * so recovery checks a manifest's runs once, not on every flush.
    */
   private readonly trusted = new Map<DbName, number>();
 
@@ -120,16 +102,15 @@ export class EngineHost {
 
   /**
    * What this host counted for `name` since it started. `generation` and
-   * `layout` describe the recorded generation; their manifest read bypasses
-   * the counters.
+   * `layout` describe the committed generation; their reads bypass the
+   * counters.
    */
   async stats(name: string): Promise<HostStats> {
     const dbName = checkDbName(name);
     const fs = await this.fsFor(dbName);
-    const recorded = await this.withWal(dbName, async (wal) => (await wal.meta()).generation ?? 0);
-    const latest = await loadGeneration(fs.inner, recorded);
+    const { meta } = await recoverGeneration(fs.inner, this.trust(dbName));
     const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
-    for (const run of latest?.runs ?? []) {
+    for (const run of meta.runs) {
       const level = levelOf(run.path) ?? 0;
       const entry = byLevel.get(level) ?? { level, runs: 0, bytes: 0 };
       entry.runs += 1;
@@ -139,89 +120,59 @@ export class EngineHost {
     return structuredClone({
       fs: fs.counters,
       ...this.countsFor(dbName),
-      generation: latest?.generation ?? 0,
+      generation: meta.generation,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
     });
   }
 
   /**
-   * Flush every WAL record through `through` into an L0 run, then start
+   * Fold every log record at or below `cut` into an L0 run, then start
    * compaction in the background. With `settle`, also wait until the levels
-   * are in shape.
+   * are in shape. The caller's watermark passed `cut`, and every record at
+   * or below it is durable in some tab's log.
    */
   async ingest(
     name: string,
-    through: number,
+    cut: number,
     settle = false,
   ): Promise<{ generation: number }> {
     const dbName = checkDbName(name);
-    const { generation } = await this.fold(dbName, through);
+    const { generation } = await this.fold(dbName, cut);
     const compaction = this.compact(dbName);
     if (!settle) {
       compaction.catch(() => undefined);
       return { generation };
     }
     await compaction;
-    return {
-      generation: await this.withWal(dbName, async (wal) => (await wal.meta()).generation ?? 0),
-    };
+    const fs = await this.fsFor(dbName);
+    return { generation: (await recoverGeneration(fs, this.trust(dbName))).meta.generation };
   }
 
   private trust(dbName: DbName): (generation: number) => boolean {
     return (generation) => this.trusted.get(dbName) === generation;
   }
 
-  private async fold(dbName: DbName, through: number): Promise<IngestResult> {
+  private async fold(dbName: DbName, cut: number): Promise<IngestResult> {
     const fs = await this.fsFor(dbName);
-    const result = await this.exclusive(dbName, () =>
-      this.withWal(dbName, async (wal) => {
-        const folded = await ingestAll(wal, fs, through, this.trust(dbName));
-        // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-        await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
-        return folded;
-      }),
-    );
-    this.trusted.set(dbName, result.generation);
+    const result = await this.exclusive(dbName, async () => {
+      const folded = await ingestThrough(fs, dbName, cut, this.trust(dbName));
+      this.trusted.set(dbName, folded.generation);
+      await reclaimLogs(fs, dbName, folded.cut);
+      // Skipped while a tab loads a generation; the next flush or reclaim removes them.
+      await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
+      return folded;
+    });
     const counts = this.countsFor(dbName);
     counts.foldedBytes += result.foldedBytes;
     if (result.foldedBytes > 0) counts.flushes += 1;
-    const watch = this.watches.get(dbName);
-    if (watch) {
-      watch.pendingBytes = Math.max(0, watch.pendingBytes - result.foldedBytes);
-      watch.triggerAt = watch.maxWalBytes;
-    }
     return result;
   }
 
-  /**
-   * Ingest `name` on the host's own once its WAL passes `maxWalBytes`, with
-   * no tab asking. Reads the byte counter in the background and ingests
-   * when a reopened database is already over the limit.
-   */
-  watch(name: string, maxWalBytes: number, onScan?: (scan: WatchScan) => void): void {
+  /** Ingest `name` on the host's own whenever a tab asks for a cut (`ingest-request`). */
+  watch(name: string, _maxWalBytes?: number): void {
     const dbName = checkDbName(name);
-    const watch = this.watches.get(dbName) ?? this.startWatch(dbName, maxWalBytes);
+    const watch = this.watches.get(dbName) ?? this.startWatch(dbName);
     watch.watchers += 1;
-    watch.maxWalBytes = Math.min(watch.maxWalBytes, maxWalBytes);
-    watch.triggerAt = watch.maxWalBytes;
-    const scanAt = onScan ? performance.now() : 0;
-    void this.withWal(dbName, (wal) => wal.uningestedBytes()).then(
-      (waiting) => {
-        if (onScan) {
-          onScan({
-            ms: performance.now() - scanAt,
-            rows: 0,
-            bytes: waiting,
-          });
-        }
-        watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
-        this.maybeIngest(dbName, watch);
-      },
-      (err: unknown) => {
-        if (isClosedDatabase(err)) return;
-        console.error(`opfs-lsm: reading the WAL of ${dbName} failed`, err);
-      },
-    );
   }
 
   unwatch(name: string): void {
@@ -232,20 +183,13 @@ export class EngineHost {
     this.watches.delete(dbName);
   }
 
-  private startWatch(dbName: DbName, maxWalBytes: number): IngestWatch {
-    const watch: IngestWatch = {
-      maxWalBytes,
-      pendingBytes: 0,
-      triggerAt: maxWalBytes,
-      state: "idle",
-      watchers: 0,
-      bus: undefined,
-    };
+  private startWatch(dbName: DbName): IngestWatch {
+    const watch: IngestWatch = { wanted: 0, state: "idle", watchers: 0, bus: undefined };
     if (typeof BroadcastChannel !== "undefined") {
       watch.bus = new BroadcastChannel(layersChannel(dbName));
-      watch.bus.onmessage = (ev: MessageEvent<AppendHint | null>) => {
-        if (ev.data?.kind !== "append" || !ev.data.ops) return;
-        watch.pendingBytes += opsBytes(ev.data.ops);
+      watch.bus.onmessage = (ev: MessageEvent<{ kind?: string; cut?: number } | null>) => {
+        if (ev.data?.kind !== "ingest-request" || typeof ev.data.cut !== "number") return;
+        if (ev.data.cut > watch.wanted) watch.wanted = ev.data.cut;
         this.maybeIngest(dbName, watch);
       };
     }
@@ -255,29 +199,20 @@ export class EngineHost {
 
   /** One ingest in flight per watch; it checks again when it finishes. */
   private maybeIngest(dbName: DbName, watch: IngestWatch): void {
-    if (
-      watch.state !== "idle" ||
-      watch.pendingBytes < watch.triggerAt ||
-      this.watches.get(dbName) !== watch
-    ) {
-      return;
-    }
+    if (watch.state !== "idle" || this.watches.get(dbName) !== watch) return;
+    const cut = watch.wanted;
     watch.state = "ingesting";
     void (async () => {
       try {
-        const { foldedBytes } = await this.fold(dbName, Number.POSITIVE_INFINITY);
-        if (foldedBytes > 0) announceGeneration(dbName);
-        // Nothing was waiting, so the count was ahead of the WAL. Without
-        // this, it would stay over the trigger and ingest in a loop.
-        else watch.pendingBytes = 0;
+        const { foldedBytes, generation } = await this.fold(dbName, cut);
+        if (foldedBytes > 0) announceGeneration(dbName, generation);
         this.compact(dbName).catch(() => undefined);
       } catch (err) {
         console.error(`opfs-lsm: ingest of ${dbName} failed`, err);
-        watch.triggerAt = watch.pendingBytes + watch.maxWalBytes;
       } finally {
         watch.state = "idle";
       }
-      this.maybeIngest(dbName, watch);
+      if (watch.wanted > cut) this.maybeIngest(dbName, watch);
     })();
   }
 
@@ -294,18 +229,6 @@ export class EngineHost {
       ),
     );
     return next;
-  }
-
-  private async withWal<T>(
-    dbName: DbName,
-    fn: (wal: IdBWal) => Promise<T>,
-  ): Promise<T> {
-    const wal = await IdBWal.open(dbName);
-    try {
-      return await fn(wal);
-    } finally {
-      wal.close();
-    }
   }
 
   /** Run compaction passes until no request arrives during one. */
@@ -334,70 +257,62 @@ export class EngineHost {
   private async compactPass(dbName: DbName): Promise<void> {
     const fs = await this.fsFor(dbName);
     if (this.retired.get(dbName)?.size !== 0) {
-      await this.exclusive(dbName, () =>
-        this.withWal(dbName, (wal) => this.reclaim(dbName, fs, wal)),
-      );
+      await this.exclusive(dbName, () => this.reclaim(dbName, fs));
     }
     for (let i = 0; i < MAX_COMPACTION_STEPS; i++) {
-      const meta = await this.withWal(dbName, (wal) => wal.meta());
-      const base = await loadGeneration(fs, meta.generation ?? 0);
-      // Gone when a flush installed a newer generation since: plan again.
-      if (!base) continue;
-      const step = await mergeNextStep(fs, base, meta.top);
+      const { meta: base, top } = await recoverGeneration(fs, this.trust(dbName));
+      const step = await mergeNextStep(fs, base, top);
       if (!step) return;
-      await this.exclusive(dbName, () =>
-        this.withWal(dbName, async (wal) => {
-          this.trusted.set(dbName, await installStep(fs, wal, step, this.trust(dbName)));
-          // No set yet: no reclaim has run, and the first one lists every run.
-          for (const path of step.inputs) this.retired.get(dbName)?.add(path);
-          await this.reclaim(dbName, fs, wal);
-        }),
-      );
+      const installed = await this.exclusive(dbName, async () => {
+        let generation: number;
+        try {
+          generation = await installStep(fs, step, this.trust(dbName));
+        } catch (err) {
+          // A flush replaced the base meanwhile; its inputs are still there, plan again.
+          if (err instanceof Error && /left the committed generation/.test(err.message)) return undefined;
+          throw err;
+        }
+        this.trusted.set(dbName, generation);
+        // No set yet: no reclaim has run, and the first one lists every run.
+        for (const path of step.inputs) this.retired.get(dbName)?.add(path);
+        await this.reclaim(dbName, fs);
+        return generation;
+      });
+      if (installed === undefined) continue;
       this.countsFor(dbName).compactionSteps += 1;
-      announceGeneration(dbName);
+      announceGeneration(dbName, installed);
     }
   }
 
   /**
-   * Remove the manifests older than the recorded one and the retired runs
+   * Remove the manifests older than the committed one and the retired runs
    * no tab holds. The first call for a database retires every run file
    * outside the live generations, which also collects what a crash left
    * behind. Needs the ingest and compaction locks, so no run being written
-   * is mistaken for an orphan. Reconciles first: after a power loss the
-   * recorded manifest can be gone, and sweeping against it would remove
-   * the runs recovery needs.
+   * is mistaken for an orphan.
    *
    * Skipped, without waiting, while a tab holds the reclaim lock to load a
    * generation (`holdingFiles`): the retired runs stay retired and the next
    * pass tries again (design.md, "Loading a generation under churn").
    */
-  private async reclaim(dbName: DbName, fs: AsyncFs, wal: IdBWal): Promise<void> {
+  private async reclaim(dbName: DbName, fs: AsyncFs): Promise<void> {
     await unlessHeld(dbName, async () => {
-      const { generation } = await reconcile(wal, fs, this.trust(dbName));
-      this.trusted.set(dbName, generation);
-      await reclaimManifests(fs, generation);
+      const { meta } = await recoverGeneration(fs, this.trust(dbName));
+      this.trusted.set(dbName, meta.generation);
+      await reclaimManifests(fs, meta.generation);
       const retired = this.retired.get(dbName) ?? new Set(await listRuns(fs));
-      const keep = await liveRuns(fs, generation);
+      const keep = await liveRuns(fs, meta.generation);
       this.retired.set(dbName, new Set(await reclaimRuns(fs, retired, keep)));
     });
   }
 }
 
 /** Tell the tabs to install the new generation and drop the merged runs. */
-function announceGeneration(dbName: DbName): void {
+function announceGeneration(dbName: DbName, generation: number): void {
   if (typeof BroadcastChannel === "undefined") return;
   const bus = new BroadcastChannel(layersChannel(dbName));
-  bus.postMessage({ kind: "ingest", writerId: "engine-host" });
+  bus.postMessage({ kind: "ingest", writerId: "engine-host", generation });
   bus.close();
-}
-
-function isClosedDatabase(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "name" in err &&
-    (err as { name: string }).name === "InvalidStateError"
-  );
 }
 
 function withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
@@ -422,28 +337,12 @@ export function attachEngineHostPort(
           reply({ type: "pong", id: msg.id });
           return;
         case "ingest": {
-          const { generation } = await host.ingest(
-            msg.name,
-            msg.through,
-            msg.settle,
-          );
+          const { generation } = await host.ingest(msg.name, msg.cut, msg.settle);
           reply({ type: "ingest-ok", id: msg.id, generation });
           return;
         }
         case "watch":
-          host.watch(
-            msg.name,
-            msg.maxWalBytes,
-            msg.trace
-              ? (scan) =>
-                  reply({
-                    type: "watch-trace",
-                    ms: scan.ms,
-                    rows: scan.rows,
-                    bytes: scan.bytes,
-                  })
-              : undefined,
-          );
+          host.watch(msg.name, msg.maxWalBytes);
           return;
         case "unwatch":
           host.unwatch(msg.name);
@@ -471,10 +370,7 @@ export function attachEngineHostPort(
 }
 
 /** Tab-side client over a MessagePort. */
-export function createPortIngestClient(
-  port: MessagePort,
-  onWatchScan?: (scan: WatchScan) => void,
-): IngestClient {
+export function createPortIngestClient(port: MessagePort): IngestClient {
   let nextId = 1;
   const pending = new Map<
     number,
@@ -483,10 +379,6 @@ export function createPortIngestClient(
 
   const onMessage = (ev: MessageEvent<HostToClient>) => {
     const msg = ev.data;
-    if (msg.type === "watch-trace") {
-      onWatchScan?.(msg);
-      return;
-    }
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
@@ -504,17 +396,12 @@ export function createPortIngestClient(
     });
 
   return {
-    async ingest(name: string, through: number, settle = false) {
-      const res = await request({ type: "ingest", id: nextId++, name, through, settle });
+    async ingest(name: string, cut: number, settle = false) {
+      const res = await request({ type: "ingest", id: nextId++, name, cut, settle });
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
     watch(name, policy) {
-      const msg: ClientToHost = {
-        type: "watch",
-        name,
-        maxWalBytes: policy.maxWalBytes,
-        ...(onWatchScan ? { trace: true } : {}),
-      };
+      const msg: ClientToHost = { type: "watch", name, maxWalBytes: policy.maxWalBytes };
       port.postMessage(msg);
     },
     unwatch(name) {
@@ -535,7 +422,7 @@ export function createPortIngestClient(
 
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
-    ingest: (name, through, settle) => host.ingest(name, through, settle),
+    ingest: (name, cut, settle) => host.ingest(name, cut, settle),
     watch: (name, policy) => host.watch(name, policy.maxWalBytes),
     unwatch: (name) => host.unwatch(name),
     stats: (name) => host.stats(name),

@@ -27,8 +27,10 @@ function initial(): State {
 }
 
 /**
- * The pin holds when db.ts hands the view `mem.pin()`, `pin()` marks every
- * chunk shared, and a write copies a shared chunk before it changes it.
+ * The pin holds when db.ts hands the view `pinRows()`, which pins both the
+ * memtable and this tab's unstable writes (`overlay.rows.pin()`), `pin()`
+ * marks every chunk shared, and a write copies a shared chunk before it
+ * changes it.
  */
 function viewPinsInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -36,8 +38,11 @@ function viewPinsInSource(): boolean {
     fs.readFileSync(path.resolve(here, "../../src", file), "utf8");
   const db = read("db.ts");
   const mem = read("store/memtable.ts");
+  const session = read("log/session.ts");
   return (
-    /new ViewSnapshotImpl\([^)]*this\.mem\.pin\(\)/s.test(db) &&
+    /new ViewSnapshotImpl\([^)]*this\.pinRows\(\)/s.test(db) &&
+    /private pinRows\(\)[^{]*\{[^}]*pinOwnRows\(\)[^}]*this\.mem\.pin\(\)/s.test(db) &&
+    /pinOwnRows\(\)[^{]*\{[^}]*this\.overlay\.rows\.pin\(\)/s.test(session) &&
     /pin\(\)[^{]*\{\s*this\.owned\.fill\(false\)/.test(mem) &&
     /if \(!this\.owned\[c\]\) \{\s*this\.chunks\[c\] = this\.chunks\[c\]!\.slice\(\);/.test(mem)
   );

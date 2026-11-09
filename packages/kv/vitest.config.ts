@@ -4,6 +4,5 @@ export default defineConfig({
   assetsInclude: ["**/*.wasm"],
   test: {
     environment: "node",
-    setupFiles: ["./tests/setup.ts"],
   },
 });

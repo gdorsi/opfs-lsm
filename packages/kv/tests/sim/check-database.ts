@@ -1,5 +1,6 @@
 import { compareBytes, keyToString } from "../../src/bytes.js";
 import type { AsyncFs } from "../../src/opfs/async-fs.js";
+import { crc32 } from "../../src/store/crc32.js";
 import { engineUsingWasm } from "../../src/store/engine.js";
 import {
   decodeGeneration,
@@ -13,24 +14,27 @@ import { show, type OracleEntry } from "./oracle.js";
 
 /**
  * The analogue of SQLite's `PRAGMA integrity_check` for one database: walks
- * IndexedDB `meta` and `wal`, the recorded manifest, and every run it lists,
- * and checks the on-disk rules of docs/design.md. It reads through its own
- * decoders where the engine's are private (WAL rows), so a bug in the
- * engine's reader does not hide a bug in its writer.
+ * every tab's log under `w/`, the committed manifest (the newest intact
+ * one), and every run it lists, and checks the on-disk rules of
+ * docs/design.md and architecture/wal-opfs/04-per-tab-logs.md. It reads the
+ * logs through its own decoder, so a bug in the engine's reader does not
+ * hide a bug in its writer.
  *
  * Call it on a quiet database: no ingest or compaction in flight.
  */
 export type DatabaseReport = {
+  /** Every record in the order: the manifest's `through` plus the log records above its cut. */
   readonly head: number;
+  /** The committed manifest's `through`. */
   readonly ingestedThrough: number;
   readonly generation: number | undefined;
-  /** Runs of the recorded manifest, in manifest order. */
+  /** Runs of the committed manifest, in manifest order. */
   readonly runs: readonly string[];
-  /** Run files no manifest at or after the recorded one lists. Allowed (design.md, "Crash behavior"). */
+  /** Run files no manifest at or after the committed one lists. Allowed (design.md, "Crash behavior"). */
   readonly orphans: readonly string[];
-  /** Manifests older than the recorded one. Reclaim is best-effort, so allowed. */
+  /** Manifests older than the committed one. Reclaim is best-effort, so allowed. */
   readonly staleManifests: readonly number[];
-  /** Empty manifest files newer than the recorded one: a crash before the writer closed. Ignored. */
+  /** Empty manifest files newer than the committed one: a crash before the writer closed. Ignored. */
   readonly emptyManifests: readonly number[];
   /**
    * Chrome's `createWritable` swap files (`<name>.crswap`) in `m/`. A
@@ -38,61 +42,23 @@ export type DatabaseReport = {
    * engine skips the name, so it is a leak, not a problem.
    */
   readonly swapFiles: readonly string[];
-  /** Live entries of the runs plus the WAL, newest wins, in key order. */
+  /** Tabs whose log ends in bytes that are not a whole frame: a crash mid-write. Allowed. */
+  readonly tornTails: readonly string[];
+  /** Live entries of the runs plus the logs above the cut, newest wins, in key order. */
   readonly state: readonly OracleEntry[];
   /** Every broken rule. Empty for a healthy database. */
   readonly problems: readonly string[];
 };
 
-/** IndexedDB layout from docs/design.md, "Storage layout" (`src/idb/wal.ts`). */
-const walName = (name: string) => `opfs-lsm-wal/${name}`;
+type WalOp = { key: Uint8Array; value: Uint8Array | undefined };
 
-type Meta = {
-  head: number;
-  ingestedThrough: number;
-  generation: number | undefined;
-  pendingBytes: number | undefined;
-};
+type LogRec = { stamp: number; tab: string; ops: WalOp[] };
 
-export async function checkDatabase(fs: AsyncFs, name: string): Promise<DatabaseReport> {
+export async function checkDatabase(fs: AsyncFs, _name?: string): Promise<DatabaseReport> {
   const problems: string[] = [];
-  const meta = await walMeta(name);
-  const { head, ingestedThrough, generation } = meta;
 
-  // --- WAL: keys are (ingestedThrough, head] with no gap, and may start
-  // lower: the last ingest's records stay until the next one (design.md,
-  // "Truncation"). Every row decodes. Only the rows above ingestedThrough
-  // are uningested.
-  const rows = await walRows(name);
-  if (ingestedThrough > head) problems.push(`ingestedThrough ${ingestedThrough} past head ${head}`);
-  const keys = rows.map((r) => r.seq);
-  const low = Math.min(keys[0] ?? ingestedThrough + 1, ingestedThrough + 1) - 1;
-  const expected = Array.from({ length: Math.max(0, head - low) }, (_, i) => low + 1 + i);
-  if (keys.join(",") !== expected.join(",")) {
-    problems.push(`wal keys [${span(keys)}], expected (${ingestedThrough}, ${head}] and a gapless run below`);
-  }
-  const wal: { seq: number; ops: WalOp[] }[] = [];
-  let walBytes = 0;
-  for (const { seq, raw } of rows) {
-    try {
-      const ops = decodeWalRow(raw);
-      if (ops.length === 0) problems.push(`wal row ${seq} has no ops`);
-      if (seq <= ingestedThrough) continue;
-      for (const op of ops) walBytes += op.key.byteLength + (op.value?.byteLength ?? 0);
-      wal.push({ seq, ops });
-    } catch (err) {
-      problems.push(`wal row ${seq}: ${(err as Error).message}`);
-    }
-  }
-  if (meta.pendingBytes !== undefined && meta.pendingBytes !== walBytes) {
-    problems.push(`pendingBytes ${meta.pendingBytes}, wal holds ${walBytes} op bytes`);
-  }
-
-  // --- Manifests.
-  if (generation === undefined) problems.push("meta.generation is not recorded");
-  const recorded = generation ?? 0;
+  // --- Manifests: the newest one that decodes and whose runs are all there is committed.
   const manifests = new Map<number, GenerationMeta>();
-  const staleManifests: number[] = [];
   const emptyManifests: number[] = [];
   const swapFiles: string[] = [];
   for (const file of await fs.list("m")) {
@@ -105,14 +71,8 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
       problems.push(`unexpected manifest file m/${file}`);
       continue;
     }
-    if (n < recorded) {
-      staleManifests.push(n);
-      continue;
-    }
     const buf = await fs.read(`m/${file}`, 0, Number.POSITIVE_INFINITY);
-    // A crash between creating a manifest and closing its writer leaves an
-    // empty file (OPFS creates the entry first). The engine skips it.
-    if (buf?.byteLength === 0 && n > recorded) {
+    if (buf?.byteLength === 0) {
       emptyManifests.push(n);
       continue;
     }
@@ -124,40 +84,89 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
       problems.push(`m/${file}: ${(err as Error).message}`);
     }
   }
-  const current: GenerationMeta | undefined =
-    recorded === 0 ? { generation: 0, runs: [], tombstoneSeq: 0, through: 0 } : manifests.get(recorded);
-  if (!current) problems.push(`recorded generation ${recorded} has no readable manifest`);
-  if (current && current.tombstoneSeq > current.through) {
+  const numbers = [...manifests.keys()].sort((a, b) => b - a);
+  const committedNumber = numbers[0] ?? 0;
+  const current: GenerationMeta =
+    manifests.get(committedNumber) ?? { generation: 0, runs: [], tombstoneSeq: 0, through: 0, cut: 0 };
+  const staleManifests = numbers.filter((n) => n < committedNumber).sort((a, b) => a - b);
+  const generation = committedNumber;
+  if (current.tombstoneSeq > current.through) {
     problems.push(`tombstoneSeq ${current.tombstoneSeq} past the manifest's through ${current.through}`);
   }
-  if (current && current.through > ingestedThrough) {
-    problems.push(`manifest through ${current.through} past ingestedThrough ${ingestedThrough}`);
-  }
-  // A manifest past the recorded one must not hold seqs past the head: a
-  // reopen would adopt it (design.md, "Recovery").
-  for (const m of manifests.values()) {
-    if (m.generation > recorded && m.through > head) problems.push(`manifest ${m.generation} through ${m.through} past head ${head}`);
-  }
 
-  // --- Runs of the recorded manifest.
-  const runs = current?.runs ?? [];
+  // --- Logs: per tab, segments chain by name, frames are whole and CRC-checked,
+  // n counts up with no gap and stamps rise. A torn tail is allowed only at the
+  // very end of a tab's log.
+  const above: LogRec[] = [];
+  const tornTails: string[] = [];
+  for (const tab of await fs.list("w")) {
+    if (!/^[0-9a-f]{16}$/.test(tab)) {
+      problems.push(`unexpected log entry w/${tab}`);
+      continue;
+    }
+    const files = (await fs.list(`w/${tab}`)).sort();
+    let lastN: number | undefined;
+    let lastStamp = 0;
+    files.forEach((f) => {
+      if (!/^\d{10}\.\d{16}\.wal$/.test(f)) problems.push(`unexpected log file w/${tab}/${f}`);
+    });
+    const segs = files.filter((f) => /^\d{10}\.\d{16}\.wal$/.test(f));
+    if (segs.length > 0) {
+      const firstPrev = Number(segs[0]!.split(".")[1]);
+      if (firstPrev > current.cut) {
+        problems.push(`w/${tab}: records up to ${firstPrev} were reclaimed, past the committed cut ${current.cut}`);
+      }
+    }
+    // A dead tab's reclaim leaves an empty tombstone last, and may be cut
+    // short before it removes the segment before it: that one ends the log
+    // as if it were the last (the tombstone's name must follow on from it).
+    const lastSeg = segs[segs.length - 1];
+    const tombstone =
+      segs.length > 1 && ((await fs.read(`w/${tab}/${lastSeg}`, 0, Number.POSITIVE_INFINITY))?.byteLength ?? 0) === 0;
+    for (const [i, f] of segs.entries()) {
+      const [firstN, prevStamp] = f.split(".").map(Number) as [number, number];
+      if (lastN !== undefined && firstN !== lastN + 1) problems.push(`w/${tab}/${f}: starts at n ${firstN} after ${lastN}`);
+      if (i > 0 && prevStamp !== lastStamp) problems.push(`w/${tab}/${f}: names previous stamp ${prevStamp}, log has ${lastStamp}`);
+      const bytes = (await fs.read(`w/${tab}/${f}`, 0, Number.POSITIVE_INFINITY)) ?? new Uint8Array(0);
+      const frames = scanLog(bytes);
+      const last = i === segs.length - 1 || (tombstone && i === segs.length - 2);
+      if (frames.rest > 0 && !last) problems.push(`w/${tab}/${f}: ${frames.rest} bytes past the last frame in a segment that is not the last`);
+      if (frames.rest > 0) tornTails.push(`w/${tab}/${f}`);
+      if (!frames.sealed && !last) problems.push(`w/${tab}/${f}: not sealed, but a later segment exists`);
+      if (frames.records[0] && frames.records[0].n !== firstN) problems.push(`w/${tab}/${f}: first record n ${frames.records[0].n}, name says ${firstN}`);
+      for (const r of frames.records) {
+        if (lastN !== undefined && r.n !== lastN + 1) problems.push(`w/${tab}/${f}: n ${r.n} after ${lastN}`);
+        if (r.stamp <= lastStamp) problems.push(`w/${tab}/${f}: stamp ${r.stamp} not above ${lastStamp}`);
+        lastN = r.n;
+        lastStamp = r.stamp;
+        if (r.stamp > current.cut) above.push({ stamp: r.stamp, tab, ops: r.ops });
+      }
+      for (const e of frames.errors) problems.push(`w/${tab}/${f}: ${e}`);
+    }
+  }
+  above.sort((a, b) => a.stamp - b.stamp || (a.tab < b.tab ? -1 : a.tab > b.tab ? 1 : 0));
+  const head = current.through + above.length;
+  const ingestedThrough = current.through;
+
+  // --- Runs of the committed manifest.
+  const runs = current.runs;
   const decoded: (SstEntry[] | undefined)[] = [];
-  for (const run of runs) decoded.push(await checkRun(fs, run, recorded, current?.through ?? 0, problems));
+  for (const run of runs) decoded.push(await checkRun(fs, run, generation, current.through, problems));
   checkOrder(runs, decoded, problems);
 
-  // --- Orphans: run files that no manifest from the recorded one on lists.
+  // --- Orphans: run files that no manifest from the committed one on lists.
   const live = new Set<string>();
-  for (const m of manifests.values()) for (const r of m.runs) live.add(r.path);
+  for (const [n, m] of manifests) if (n >= committedNumber) for (const r of m.runs) live.add(r.path);
   const orphans = (await listRuns(fs)).filter((p) => !live.has(p)).sort();
 
-  // --- The state a reader should see: runs oldest first, then the WAL.
+  // --- The state a reader should see: runs oldest first, then the logs above the cut, in order.
   const state = new Map<string, { key: Uint8Array; value: Uint8Array | undefined }>();
   for (let i = decoded.length - 1; i >= 0; i--) {
     for (const e of decoded[i] ?? []) {
       state.set(keyToString(e.key), { key: e.key, value: e.kind === "put" ? e.value : undefined });
     }
   }
-  for (const { ops } of wal) {
+  for (const { ops } of above) {
     for (const op of ops) state.set(keyToString(op.key), { key: op.key, value: op.value });
   }
   const live_: OracleEntry[] = [];
@@ -170,12 +179,54 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     generation,
     runs: runs.map((r) => r.path),
     orphans,
-    staleManifests: staleManifests.sort((a, b) => a - b),
+    staleManifests,
     emptyManifests: emptyManifests.sort((a, b) => a - b),
     swapFiles: swapFiles.sort(),
+    tornTails,
     state: live_,
     problems,
   };
+}
+
+/**
+ * The log frame format of src/log/frame.ts, decoded here on its own:
+ * u32 bodyLen | u32 crc(kind, stamp, n, body) | u8 kind | u64 stamp | u32 n | body.
+ * Kind 1 is a record, 2 a SEAL that ends the segment.
+ */
+function scanLog(bytes: Uint8Array): {
+  records: { stamp: number; n: number; ops: WalOp[] }[];
+  sealed: boolean;
+  rest: number;
+  errors: string[];
+} {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const records: { stamp: number; n: number; ops: WalOp[] }[] = [];
+  const errors: string[] = [];
+  let at = 0;
+  while (at + 21 <= bytes.byteLength) {
+    const len = view.getUint32(at, true);
+    const end = at + 21 + len;
+    if (end > bytes.byteLength) break;
+    if (crc32(bytes.subarray(at + 8, end)) !== view.getUint32(at + 4, true)) break;
+    const kind = bytes[at + 8];
+    const stamp = Number(view.getBigUint64(at + 9, true));
+    const n = view.getUint32(at + 17, true);
+    if (kind === 2) {
+      if (end !== bytes.byteLength) errors.push(`${bytes.byteLength - end} bytes after SEAL`);
+      return { records, sealed: true, rest: 0, errors };
+    }
+    if (kind !== 1) {
+      errors.push(`frame kind ${kind}`);
+      break;
+    }
+    try {
+      records.push({ stamp, n, ops: decodeLogOps(bytes.slice(at + 21, end).buffer) });
+    } catch (err) {
+      errors.push(`record n ${n}: ${(err as Error).message}`);
+    }
+    at = end;
+  }
+  return { records, sealed: false, rest: bytes.byteLength - at, errors };
 }
 
 const L0_NAME = /^l0\/(\d+)-(\d+)\.sst$/;
@@ -313,10 +364,8 @@ function checkOrder(
   });
 }
 
-export type WalOp = { key: Uint8Array; value: Uint8Array | undefined };
-
-/** design.md, "WAL records": per op, u8 type | u32 keyLen | key | put: u32 valueLen | value. */
-export function decodeWalRow(raw: unknown): WalOp[] {
+/** A log record's body (src/log/frame.ts `encodeOps`): per op, u8 type | u32 keyLen | key | put: u32 valueLen | value. */
+function decodeLogOps(raw: unknown): WalOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new Error("not an ArrayBuffer");
   const bytes = new Uint8Array(raw);
   const view = new DataView(raw);
@@ -342,87 +391,4 @@ export function decodeWalRow(raw: unknown): WalOp[] {
     else throw new Error(`op type ${type}`);
   }
   return ops;
-}
-
-function span(keys: readonly number[]): string {
-  if (keys.length <= 6) return keys.join(",");
-  return `${keys.slice(0, 3).join(",")},…,${keys.slice(-3).join(",")} (${keys.length})`;
-}
-
-// --- Raw IndexedDB access for the checker and for tests that damage a WAL.
-
-function openRaw(name: string): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(walName(name));
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function done(tx: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
-}
-
-function result<T>(req: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-/** Run `fn` over the `wal` and `meta` stores in one transaction. */
-export async function walStore<T>(
-  name: string,
-  mode: IDBTransactionMode,
-  fn: (wal: IDBObjectStore, meta: IDBObjectStore) => IDBRequest<T> | Promise<T> | T,
-): Promise<T> {
-  const db = await openRaw(name);
-  try {
-    if (!db.objectStoreNames.contains("wal") || !db.objectStoreNames.contains("meta")) {
-      throw new Error(`${walName(name)} has no wal/meta stores`);
-    }
-    const tx = db.transaction(["wal", "meta"], mode);
-    const finished = done(tx);
-    const out = fn(tx.objectStore("wal"), tx.objectStore("meta"));
-    const value = out instanceof IDBRequest ? await result(out) : await out;
-    await finished;
-    return value;
-  } finally {
-    db.close();
-  }
-}
-
-export function walMeta(name: string): Promise<Meta> {
-  return walStore(name, "readonly", async (_wal, meta) => {
-    const [head, ingested, generation, pending] = await Promise.all(
-      ["head", "ingestedThrough", "generation", "pendingBytes"].map((k) => result(meta.get(k))),
-    );
-    const num = (v: unknown) => (typeof v === "number" ? v : undefined);
-    return {
-      head: num(head) ?? 0,
-      ingestedThrough: num(ingested) ?? 0,
-      generation: num(generation),
-      pendingBytes: num(pending),
-    };
-  });
-}
-
-export function walRows(name: string): Promise<{ seq: number; raw: unknown }[]> {
-  return walStore(name, "readonly", async (wal) => {
-    const [keys, values] = await Promise.all([result(wal.getAllKeys()), result(wal.getAll())]);
-    return keys.map((k, i) => ({ seq: Number(k), raw: values[i] }));
-  });
-}
-
-export function deleteWal(name: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(walName(name));
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
 }

@@ -73,10 +73,10 @@ class Chunks implements MemRows {
 }
 
 /**
- * One tab's in-memory view of the WAL: the records above the installed
- * SST generation's ingestedThrough, up to appliedThrough, folded to one row
- * per key, in key order. Records must be applied in seq order with no gaps,
- * so every read sees the state after one WAL prefix.
+ * One tab's in-memory view of the logs: the stable records above the
+ * installed SST generation's `through`, up to appliedThrough, folded to one
+ * row per key, in key order. Records must be applied in seq order with no
+ * gaps, so every read sees the state after one prefix of the order.
  *
  * A pin shares chunks with the live table. The live table copies a shared
  * chunk before it writes to it, so a pin costs one array of chunk
@@ -160,4 +160,29 @@ export class Memtable extends Chunks {
     this.firsts[0] = new Uint8Array(0);
     this.owned = this.chunks.map(() => true);
   }
+}
+
+/** `top` read over `bottom`: a key in `top` hides the same key in `bottom`. */
+export function layered(top: MemRows, bottom: MemRows): MemRows {
+  return {
+    get: (key) => top.get(key) ?? bottom.get(key),
+    range(bounds) {
+      const a = top.range(bounds);
+      if (a.length === 0) return bottom.range(bounds);
+      const b = bottom.range(bounds);
+      const out: MemRow[] = [];
+      let i = 0;
+      let j = 0;
+      while (i < a.length || j < b.length) {
+        const c = i >= a.length ? 1 : j >= b.length ? -1 : compareBytes(a[i]!.key, b[j]!.key);
+        if (c <= 0) {
+          out.push(a[i++]!);
+          if (c === 0) j++;
+        } else {
+          out.push(b[j++]!);
+        }
+      }
+      return out;
+    },
+  };
 }

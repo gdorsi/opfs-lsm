@@ -5,7 +5,7 @@ description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/collection
 
 # Verify @opfs-lsm (real Chrome)
 
-This skill proves browser behavior the way a integrating developer hits it: headless Chrome, IndexedDB WAL, OPFS SST files, SharedWorker ingest. It does **not** replace the formal suite in `verify-kv` (`pnpm --filter @opfs-lsm/kv formal:kv`). Use both: formal for exhaustive small models, this skill for the real stack.
+This skill proves browser behavior the way a integrating developer hits it: headless Chrome, per-tab OPFS logs written by each tab's dedicated WebWorker, OPFS SST files, SharedWorker ingest. It does **not** replace the formal suite in `verify-kv` (`pnpm --filter @opfs-lsm/kv formal:kv`). Use both: formal for exhaustive small models, this skill for the real stack.
 
 Primary surface: repo-native Chrome harnesses: the two-tab proof in `packages/kv` and the benchmark suite in `bench/`. There is no product UI, CLI, or long-lived server. Secondary surfaces (unit tests with `MemoryFs`, formal checkers) are out of scope here.
 
@@ -98,7 +98,7 @@ Proof standards:
 
 - Exercise the SharedWorker + OPFS path (default harness). `MemoryFs`, `forceMemory`, and vitest alone do not count as browser proof.
 - Capture the action log and the resulting assertions the harness already prints (`two-tab ok`, post-ingest gets), not only exit code.
-- Side effects the harness checks: cross-tab get after put, pinned view across peer ingest, range after ingest, warm and post-ingest point gets. Do not stub IndexedDB/OPFS/SharedWorker.
+- Side effects the harness checks: cross-tab get after put, pinned view across peer ingest, range after ingest, warm and post-ingest point gets. Do not stub OPFS, the log worker or the SharedWorker.
 - Timing rows are evidence of a completed path. A performance claim needs `--reps 5` or more and `node bench/cli.ts compare` (see `features/bench.md`).
 
 ## Cleanup
@@ -124,7 +124,7 @@ Removes nothing on disk: every harness uses a fresh temp profile. Does **not** d
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-Formal properties (NoLostAcks, WalOverSst, ViewPin, CompactPreserve): use `.agents/skills/verify-kv/SKILL.md`, not this skill.
+Formal properties (WalOverSst, ViewPin, CompactPreserve): use `.agents/skills/verify-kv/SKILL.md`, not this skill.
 
 ## Feature map
 

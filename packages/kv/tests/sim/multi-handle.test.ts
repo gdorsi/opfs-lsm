@@ -3,9 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { installSeams, multiCommandsArb, runWorld } from "./multi.js";
 
 /**
- * Random histories over three handles that share one host, one MemoryFs
- * and one fake-indexeddb. Ops of different handles overlap, the scheduler
- * picks the order of bus deliveries and file calls, and the recorded
+ * Random histories over three handles that share one host and one
+ * MemoryFs. Ops of different handles overlap, the scheduler picks the
+ * order of bus deliveries, file calls and log writes, and the recorded
  * history is checked against the log (`history.ts`). Every run ends with
  * `checkDatabase`, the oracle, and a reopen.
  *
@@ -16,6 +16,8 @@ import { installSeams, multiCommandsArb, runWorld } from "./multi.js";
  */
 const env = process.env;
 const RUNS = Number(env.KV_MODEL_RUNS ?? 100);
+/** A history that runs longer than this hangs: fast-check fails it and shrinks it like any other. */
+const RUN_MS = Number(env.KV_MODEL_RUN_MS ?? 20_000);
 const replay = env.KV_MODEL_SEED
   ? { seed: Number(env.KV_MODEL_SEED), ...(env.KV_MODEL_PATH ? { path: env.KV_MODEL_PATH } : {}) }
   : {};
@@ -35,7 +37,7 @@ describe("kv model (several handles)", () => {
         fc.asyncProperty(fc.scheduler(), multiCommandsArb(env.KV_MODEL_REPLAY), (s, cmds) =>
           runWorld(`multi-${++runs}`, s, 1 << 30, cmds),
         ),
-        { numRuns: RUNS, ...replay },
+        { numRuns: RUNS, timeout: RUN_MS, ...replay },
       ),
     ).resolves.toBeUndefined();
   }, 600_000);
@@ -46,7 +48,7 @@ describe("kv model (several handles)", () => {
         fc.asyncProperty(fc.scheduler(), fc.constantFrom(256, 4096), multiCommandsArb(env.KV_MODEL_REPLAY), (s, maxWalBytes, cmds) =>
           runWorld(`multi-${++runs}`, s, maxWalBytes, cmds),
         ),
-        { numRuns: RUNS, ...replay },
+        { numRuns: RUNS, timeout: RUN_MS, ...replay },
       ),
     ).resolves.toBeUndefined();
   }, 600_000);

@@ -1,11 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  EngineHost,
-  MemoryFs,
-  attachEngineHostPort,
-  createPortIngestClient,
-} from "../src/index.js";
-import type { WatchScan } from "../src/host/engine-host.js";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   openHarnessDb,
   __resetMemoryFsForTests,
@@ -17,36 +10,29 @@ const NAME = "open-trace";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
 function phase(trace: OpenTrace, name: string): OpenSpan | undefined {
   return trace.spans.find((span) => span.phase === name);
 }
 
-afterEach(async () => {
-  await wipe();
+afterEach(() => {
   __resetMemoryFsForTests(NAME);
 });
 
 describe("open trace", () => {
-  it("times the WAL replay that open waits for", async () => {
+  it("times the log replay that open waits for", async () => {
     const writer = await openHarnessDb({
       name: NAME,
       forceMemory: true,
       writerId: "w1",
       ingestPolicy: { maxWalBytes: 1 << 30 },
     });
-    await writer.put(enc.encode("a"), enc.encode("1"));
-    await writer.put(enc.encode("b"), enc.encode("2"));
-    await writer.put(enc.encode("c"), enc.encode("3"));
-    await writer.close();
+    try {
+      await writer.put(enc.encode("a"), enc.encode("1"));
+      await writer.put(enc.encode("b"), enc.encode("2"));
+      await writer.put(enc.encode("c"), enc.encode("3"));
+    } finally {
+      await writer.close();
+    }
 
     const trace: OpenTrace = { spans: [] };
     const reader = await openHarnessDb({
@@ -56,17 +42,28 @@ describe("open trace", () => {
       ingestPolicy: { maxWalBytes: 1 << 30 },
       trace,
     });
-    expect(dec.decode(await reader.get(enc.encode("b")))).toBe("2");
-    expect(phase(trace, "wal-read")?.rows).toBe(3);
-    expect(phase(trace, "memtable")?.rows).toBe(3);
-    expect(phase(trace, "sync")?.ms).toBeGreaterThanOrEqual(0);
-    const sync = phase(trace, "sync")?.ms ?? 0;
-    const replay = (phase(trace, "wal-read")?.ms ?? 0) + (phase(trace, "memtable")?.ms ?? 0);
-    expect(replay).toBeLessThanOrEqual(sync + 5);
-    await reader.close();
+    try {
+      // The spans open recorded: a later sync appends more "log" spans.
+      const opened: OpenTrace = { spans: [...trace.spans] };
+      expect(dec.decode(await reader.get(enc.encode("b")))).toBe("2");
+      for (const name of ["generation", "join", "log", "sync", "open"]) {
+        const ms = phase(opened, name)?.ms;
+        if (ms === undefined) throw new Error(`open recorded no ${name} span`);
+        expect(ms).toBeGreaterThanOrEqual(0);
+      }
+      // Joining the tabs and reading the writer's log both happen inside the
+      // sync phase that open waits for, and open covers all of it.
+      const sync = phase(opened, "sync")!;
+      const replay = phase(opened, "join")!.ms + phase(opened, "log")!.ms;
+      expect(replay).toBeLessThanOrEqual(sync.ms + 5);
+      expect(phase(opened, "log")!.endedAt).toBeLessThanOrEqual(sync.endedAt);
+      expect(sync.ms).toBeLessThanOrEqual(phase(opened, "open")!.ms);
+    } finally {
+      await reader.close();
+    }
   });
 
-  it("reopens every acked put from the WAL", async () => {
+  it("reopens every acked put from the log", async () => {
     const writer = await openHarnessDb({
       name: NAME,
       forceMemory: true,
@@ -74,10 +71,13 @@ describe("open trace", () => {
       ingestPolicy: { maxWalBytes: 1 << 30 },
     });
     const n = 200;
-    for (let i = 0; i < n; i++) {
-      await writer.put(enc.encode(`k${i}`), enc.encode(`v${i}`));
+    try {
+      for (let i = 0; i < n; i++) {
+        await writer.put(enc.encode(`k${i}`), enc.encode(`v${i}`));
+      }
+    } finally {
+      await writer.close();
     }
-    await writer.close();
 
     const reader = await openHarnessDb({
       name: NAME,
@@ -85,59 +85,17 @@ describe("open trace", () => {
       writerId: "w2",
       ingestPolicy: { maxWalBytes: 1 << 30 },
     });
-    for (let i = 0; i < n; i++) {
-      expect(dec.decode(await reader.get(enc.encode(`k${i}`)))).toBe(`v${i}`);
+    try {
+      for (let i = 0; i < n; i++) {
+        expect(dec.decode(await reader.get(enc.encode(`k${i}`)))).toBe(`v${i}`);
+      }
+      const seen: string[] = [];
+      for await (const entry of reader.range()) {
+        seen.push(dec.decode(entry.key));
+      }
+      expect(seen).toHaveLength(n);
+    } finally {
+      await reader.close();
     }
-    const seen: string[] = [];
-    for await (const entry of reader.range()) {
-      seen.push(dec.decode(entry.key));
-    }
-    expect(seen).toHaveLength(n);
-    await reader.close();
-  });
-
-  it("delivers the host scan after watch has resolved", async () => {
-    const fs = new MemoryFs();
-    const host = new EngineHost(() => fs);
-    const { port1, port2 } = new MessageChannel();
-    attachEngineHostPort(port1, host);
-    const scans: WatchScan[] = [];
-    const ingest = createPortIngestClient(port2, (scan) => {
-      scans.push(scan);
-    });
-    const writer = await openHarnessDb({
-      name: NAME,
-      writerId: "w1",
-      fs,
-      ingest,
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
-    await writer.put(enc.encode("k"), enc.encode("v"));
-    await writer.close();
-
-    const trace: OpenTrace = { spans: [] };
-    const opened = performance.now();
-    const reader = await openHarnessDb({
-      name: NAME,
-      writerId: "w2",
-      fs,
-      ingest,
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-      trace,
-    });
-    const openMs = performance.now() - opened;
-    expect(dec.decode(await reader.get(enc.encode("k")))).toBe("v");
-    expect(phase(trace, "wal-read")?.rows).toBe(1);
-    await vi.waitFor(() => {
-      expect(scans.some((scan) => scan.bytes > 0)).toBe(true);
-    });
-    const scan = scans.find((item) => item.bytes > 0)!;
-    expect(scan.ms).toBeGreaterThanOrEqual(0);
-    expect(scan.bytes).toBeGreaterThan(0);
-    expect(openMs).toBeGreaterThan(0);
-    await reader.close();
-    ingest.close();
-    port1.close();
-    port2.close();
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EngineHost,
   MemoryFs,
@@ -12,24 +12,20 @@ import {
   openHarnessDb,
   __resetMemoryFsForTests
 } from "../src/testing.js";
-import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
-import { IdBWal } from "../src/idb/wal.js";
+import { opsBytes } from "../src/check.js";
+import { TAB_START, listTabs, readTab } from "../src/log/reader.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 const NAME = "policy";
 const WAIT = { timeout: 2000, interval: 5 };
-/** A failed test leaves tabs open, and their host would ingest the next test's WAL. */
+/** A failed test leaves tabs open, and their host would ingest the next test's log. */
 const opened: Db[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const db of opened.splice(0)) await db.close();
-  await new Promise<void>((resolve) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = req.onerror = req.onblocked = () => resolve();
-  });
   __resetMemoryFsForTests(NAME);
 });
 
@@ -59,6 +55,18 @@ function ingestEvents(db: Db): ChangeEvent[] {
     if (e.kind === "ingest") events.push(e);
   });
   return events;
+}
+
+/** Op bytes in every tab's log above the committed generation's cut: what no run holds yet. */
+async function waitingBytes(fs: AsyncFs): Promise<number> {
+  const cut = (await loadLatestGeneration(fs))?.cut ?? 0;
+  let bytes = 0;
+  for (const tab of await listTabs(fs)) {
+    for (const r of (await readTab(fs, tab, TAB_START)).records) {
+      if (r.stamp > cut) bytes += opsBytes(r.ops);
+    }
+  }
+  return bytes;
 }
 
 async function settle(): Promise<void> {
@@ -103,7 +111,7 @@ function l0Fs() {
 }
 
 describe("ingest policy", () => {
-  it("the host ingests once the waiting WAL passes maxWalBytes, whichever tab wrote", async () => {
+  it("the host ingests once the waiting log passes maxWalBytes, whichever tab wrote", async () => {
     const { fs, a, b } = await twoTabs({ maxWalBytes: 100 });
     const seen = ingestEvents(a);
     await a.put(utf("a"), new Uint8Array(60));
@@ -120,7 +128,7 @@ describe("ingest policy", () => {
     await b.close();
   });
 
-  it("a reopened database uses the stored WAL size", async () => {
+  it("a reopened database counts the log left by earlier tabs", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
     const writer = await open(host, fs, "a", { maxWalBytes: 1 << 30 });
@@ -146,48 +154,15 @@ describe("ingest policy", () => {
     await over.close();
   });
 
-  it("drops only the folded bytes from the WAL counter", async () => {
-    // Its own database: a host from an earlier test may still be ingesting
-    // NAME, and recovery would pair that host's manifests with this WAL.
-    const name = `${NAME}-counter`;
-    onTestFinished(
-      () =>
-        new Promise<void>((resolve) => {
-          const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
-          req.onsuccess = req.onerror = req.onblocked = () => resolve();
-        }),
-    );
-    const wal = await IdBWal.open(checkDbName(name));
-    expect(await wal.uningestedBytes()).toBe(0);
-    const first = {
-      type: "put" as const,
-      key: checkKey(utf("a")),
-      value: checkValue(new Uint8Array(10)),
-    };
-    const second = {
-      type: "put" as const,
-      key: checkKey(utf("b")),
-      value: checkValue(new Uint8Array(4)),
-    };
-    const seq = await wal.append([first]);
-    expect(seq).toBe(1);
-    expect(await wal.uningestedBytes()).toBe(opsBytes([first]));
-    const next = await wal.append([second]);
-    expect(next).toBe(2);
-    await wal.advanceIngested(seq ?? 0, 1, opsBytes([first]));
-    expect(await wal.uningestedBytes()).toBe(opsBytes([second]));
-    expect((await wal.listUningested()).map((record) => record.seq)).toEqual([2]);
-    wal.close();
-  });
-
   it("a second request for the same flush publishes nothing new", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
     const db = await open(host, fs, "a", { maxWalBytes: 1e9 });
     await db.put(utf("a"), utf("1"));
-    expect((await host.ingest(NAME, 1)).generation).toBe(1);
+    expect((await host.ingest(NAME, Number.POSITIVE_INFINITY)).generation).toBe(1);
+    const { cut } = (await loadLatestGeneration(fs))!;
     await db.put(utf("b"), utf("2"));
-    expect((await host.ingest(NAME, 1)).generation).toBe(1);
+    expect((await host.ingest(NAME, cut)).generation).toBe(1);
     expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1);
     await db.close();
   });
@@ -206,12 +181,10 @@ describe("ingest policy", () => {
     await b.close();
   });
 
-  it("keeps the waiting WAL under the limit plus one batch, for overwrites and deletes", async () => {
+  it("keeps the waiting log under the limit plus one batch, for overwrites and deletes", async () => {
     const limit = 4_000;
-    const { a, b } = await twoTabs({ maxWalBytes: limit });
+    const { fs, a, b } = await twoTabs({ maxWalBytes: limit });
     const keys = Array.from({ length: 50 }, (_, i) => utf(`key/${String(i).padStart(4, "0")}`));
-    const wal = await IdBWal.open(checkDbName(NAME));
-    const waiting = async () => (await wal.tail(0)).records.reduce((n, r) => n + opsBytes(r.ops), 0);
     for (let round = 0; round < 40; round++) {
       await a.batch((tx) => {
         for (const k of keys) {
@@ -219,15 +192,15 @@ describe("ingest policy", () => {
           else tx.put(k, new Uint8Array(40));
         }
       });
-      await vi.waitFor(async () => expect(await waiting()).toBeLessThanOrEqual(limit + 50 * 48), WAIT);
+      await vi.waitFor(async () => expect(await waitingBytes(fs)).toBeLessThanOrEqual(limit + 50 * 48), WAIT);
     }
-    wal.close();
+    await b.sync();
     expect(await b.get(keys[0]!)).toBeUndefined();
     await a.close();
     await b.close();
   });
 
-  it("ingests a WAL left over the limit when the database opens again", async () => {
+  it("ingests a log left over the limit when the database opens again", async () => {
     const fs = new MemoryFs();
     const before = await open(new EngineHost(() => fs), fs, "a", { maxWalBytes: 1e9 });
     await before.put(utf("k"), new Uint8Array(150));
@@ -247,7 +220,7 @@ describe("ingest policy", () => {
     const reader = await open(host, fs, "reader", { maxWalBytes: 100 });
     const seen = ingestEvents(reader);
     const writer = await open(host, fs, "writer", { maxWalBytes: 100 });
-    // Let the open's WAL measurement finish, so only the append can trigger.
+    // Let the open's log reads finish, so only the append can trigger.
     await settle();
     await writer.put(utf("k"), new Uint8Array(150));
     await writer.close();
@@ -271,9 +244,7 @@ describe("ingest policy", () => {
 
     state.hold = undefined;
     release();
-    const wal = await IdBWal.open(checkDbName(NAME));
-    await vi.waitFor(async () => expect(await wal.getIngestedThrough()).toBe(5), WAIT);
-    wal.close();
+    await vi.waitFor(async () => expect((await loadLatestGeneration(fs))?.through).toBe(5), WAIT);
     expect(state.started).toBe(2);
     expect(state.maxInFlight).toBe(1);
     await db.close();

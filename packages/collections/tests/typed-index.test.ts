@@ -6,22 +6,12 @@ import { decodeOrderFloat64, encodeOrderFloat64, extractIndexRowId, indexKey, ty
 const NAME = "typed-index-test";
 let open: CollectionDb | undefined;
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
 beforeEach(async () => {
   if (open) {
     await open.close().catch(() => undefined);
     open = undefined;
   }
   __resetMemoryFsForTests(NAME);
-  await wipe();
 });
 
 afterEach(async () => {

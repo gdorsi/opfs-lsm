@@ -1,11 +1,11 @@
+import type { SegmentFile, SegmentStore } from "../../src/log/tab-writer.js";
 import type { AsyncFs, FileWriter } from "../../src/opfs/async-fs.js";
 import { MemoryFs } from "../../src/index.js";
 
 /**
- * Fault injection for the two stores (docs/research/corruption-hardening-test-suite.md,
- * technique 3). `Faults` is shared by a `FaultFs` and the IndexedDB seam in
- * `fault-wal.ts`, so the durable ops of both stores land in one numbered
- * trace, and one fault plan counts the attempts of both.
+ * Fault injection for the database's files (docs/research/corruption-hardening-test-suite.md,
+ * technique 3). `Faults` numbers the durable ops of a `FaultFs` in one
+ * trace, and one fault plan counts its call sites.
  *
  * Durable ops, each atomic (design.md, "Assumptions about the platform"):
  * - OPFS touch: `create` of a path that does not exist makes an empty file
@@ -14,33 +14,31 @@ import { MemoryFs } from "../../src/index.js";
  * - OPFS publish: `create` → `write`… → `finish` (createWritable → close),
  *   recorded at `finish` with the whole file;
  * - OPFS remove: `remove`, or `removeUnlessOpen` that removed;
- * - IndexedDB commit: a readwrite transaction that wrote something,
- *   recorded at its `complete` event with every put, add and delete.
+ * - log create, write and flush: a tab's segment file (a SyncAccessHandle
+ *   in the browser) made, written in place at an offset, and flushed.
  *
- * A crash state is rebuilt from a prefix of the trace (`materializeFs`,
- * `materializeWal`), the way ALICE and RocksDB's FaultInjectionTestFS do it:
- * the engine keeps nothing durable but these ops, so the stores after a
- * crash at op k are the ops before k applied to empty stores.
+ * A crash state is rebuilt from the trace (`materializeFs`), the way ALICE
+ * and RocksDB's FaultInjectionTestFS do it: the engine keeps nothing
+ * durable but these ops, so the files after a crash are a choice of them
+ * applied to an empty directory, in order.
  */
 
-export type IdbMutation =
-  | { readonly kind: "put"; readonly store: string; key: IDBValidKey; readonly value: unknown }
-  | { readonly kind: "delete"; readonly store: string; readonly key: IDBValidKey | IDBKeyRange };
-
-export type DurableOp =
-  | { readonly store: "idb"; readonly i: number; readonly label: string; readonly muts: readonly IdbMutation[] }
-  | { readonly store: "opfs"; readonly i: number; readonly kind: "publish"; readonly path: string; readonly bytes: Uint8Array }
-  | { readonly store: "opfs"; readonly i: number; readonly kind: "touch" | "remove"; readonly path: string };
+export type DurableOp = { readonly i: number; readonly label: string } & (
+  | { readonly store: "opfs"; readonly kind: "publish"; readonly path: string; readonly bytes: Uint8Array }
+  | { readonly store: "opfs"; readonly kind: "touch" | "remove"; readonly path: string }
+  | { readonly store: "log"; readonly kind: "create" | "flush"; readonly path: string }
+  | { readonly store: "log"; readonly kind: "write"; readonly path: string; readonly at: number; readonly bytes: Uint8Array }
+);
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-/** A durable op in a failure message. */
+/** A durable op in a failure message. Tab ids and stamps are aliased, so two runs of one workload describe alike. */
 export function describeOp(op: DurableOp): string {
-  return op.store === "idb" ? `#${op.i} idb ${op.label}` : `#${op.i} opfs ${op.kind} ${op.path}`;
+  return `#${op.i} ${op.label}`;
 }
 
-/** A fault site: one fs call, or one IndexedDB readwrite transaction that writes. */
-export type SiteKind = "fs-read" | "fs-write" | "idb-write";
+/** A fault site: one fs call, or one call on a log segment. */
+export type SiteKind = "fs-read" | "fs-write" | "log-write";
 
 class InjectedIoError extends Error {
   override name = "InjectedIoError";
@@ -52,7 +50,7 @@ export class Faults {
   /** Fault sites reached, in order. Site n is `sites[n - 1]`. */
   readonly sites: string[] = [];
   /** Sites of these kinds count; the others pass untouched. */
-  kinds: ReadonlySet<SiteKind> = new Set<SiteKind>(["fs-read", "fs-write", "idb-write"]);
+  kinds: ReadonlySet<SiteKind> = new Set<SiteKind>(["fs-read", "fs-write", "log-write"]);
   /** Sites this matches are not sites: they never fail and are not counted. */
   spare: ((label: string) => boolean) | undefined;
   /** Fail site `failAt` (1-based), and with `persistent` every later site too. */
@@ -62,8 +60,8 @@ export class Faults {
   injected = 0;
   /**
    * Process crash: once `crashAfter` durable ops completed, every later fs
-   * call never settles and every later IndexedDB write aborts, so nothing
-   * after the crash point becomes durable.
+   * call never settles and every later log write is dropped and never
+   * settles, so nothing after the crash point becomes durable.
    */
   crashAfter: number | undefined;
   /** Resolves when the crash point is reached. */
@@ -94,9 +92,24 @@ export class Faults {
     this.persistent = false;
   }
 
-  record(op: DistributiveOmit<DurableOp, "i">): void {
-    if (this.isCrashed) throw new Error(`harness: a durable op completed after the crash (${describeOp({ ...op, i: 0 } as DurableOp)})`);
-    this.ops.push({ ...op, i: this.ops.length + 1 } as DurableOp);
+  private readonly tabs = new Map<string, string>();
+
+  /** `path` with tab ids as t1, t2… in order of appearance, and segment names without their stamp. */
+  alias(path: string): string {
+    return path
+      .replace(/^(.*\/\d{10})\.\d{16}\.wal$/, "$1.wal")
+      .replace(/^w\/([0-9a-f]{16})/, (_m, tab: string) => {
+        let a = this.tabs.get(tab);
+        if (!a) this.tabs.set(tab, (a = `t${this.tabs.size + 1}`));
+        return `w/${a}`;
+      });
+  }
+
+  record(op: DistributiveOmit<DurableOp, "i" | "label">): void {
+    const extra = op.kind === "write" ? ` @${op.at} +${op.bytes.byteLength}` : "";
+    const label = `${op.store} ${op.kind} ${this.alias(op.path)}${extra}`;
+    if (this.isCrashed) throw new Error(`harness: a durable op completed after the crash (${label})`);
+    this.ops.push({ ...op, label, i: this.ops.length + 1 } as DurableOp);
     if (this.crashAfter !== undefined && this.ops.length >= this.crashAfter) this.crash();
   }
 
@@ -160,6 +173,48 @@ export class FaultFs implements AsyncFs {
     });
   }
 
+  /**
+   * The inner fs's log segments, traced. Segment calls are synchronous, as
+   * on a SyncAccessHandle: a fault throws, and after a crash a write is
+   * dropped and its `settled` never settles.
+   */
+  segments(): SegmentStore {
+    const inner = this.inner.segments?.();
+    if (!inner) throw new Error("harness: FaultFs needs an inner fs with segments");
+    const faults = this.faults;
+    return {
+      create: (path) =>
+        this.site("log-write", `create ${path}`, async () => {
+          const file = await inner.create(path);
+          faults.record({ store: "log", kind: "create", path });
+          let dropped = false;
+          return {
+            write(bytes, at) {
+              const verdict = faults.hit("log-write", `write ${path}`);
+              if (verdict === "fail") throw new InjectedIoError(`injected I/O error at write ${path}`);
+              if (verdict === "crash") {
+                dropped = true;
+                return bytes.byteLength;
+              }
+              const n = file.write(bytes, at);
+              faults.record({ store: "log", kind: "write", path, at, bytes: new Uint8Array(bytes) });
+              return n;
+            },
+            flush() {
+              const verdict = faults.hit("log-write", `flush ${path}`);
+              if (verdict === "fail") throw new InjectedIoError(`injected I/O error at flush ${path}`);
+              if (verdict === "crash") return;
+              file.flush();
+              faults.record({ store: "log", kind: "flush", path });
+            },
+            getSize: () => file.getSize(),
+            close: () => file.close(),
+            settled: () => (dropped ? never<void>() : Promise.resolve()),
+          } satisfies SegmentFile;
+        }),
+    };
+  }
+
   create(path: string): Promise<FileWriter> {
     return this.site("fs-write", `create ${path}`, async () => {
       if ((await this.inner.read(path, 0, 0)) === undefined) {
@@ -205,14 +260,25 @@ function concat(chunks: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
-/** A MemoryFs holding the first `count` OPFS ops of `ops` (IndexedDB ops skipped). */
-export async function materializeFs(ops: readonly DurableOp[], count: number): Promise<MemoryFs> {
-  const fs = new MemoryFs();
-  let kept = 0;
+/** `fs` (a new MemoryFs by default) holding the ops of `ops` that `keep` keeps (all by default), applied in order. */
+export async function materializeFs(
+  ops: readonly DurableOp[],
+  keep: (op: DurableOp) => boolean = () => true,
+  fs = new MemoryFs(),
+): Promise<MemoryFs> {
+  const segs = fs.segments();
+  const files = new Map<string, SegmentFile>();
+  const segment = async (path: string) => {
+    let file = files.get(path);
+    if (!file || (await fs.read(path, 0, 0)) === undefined) files.set(path, (file = await segs.create(path)));
+    return file;
+  };
   for (const op of ops) {
-    if (op.store !== "opfs") continue;
-    if (kept++ >= count) break;
-    if (op.kind === "remove") {
+    if (!keep(op)) continue;
+    if (op.store === "log") {
+      const file = await segment(op.path);
+      if (op.kind === "write") file.write(op.bytes, op.at);
+    } else if (op.kind === "remove") {
       await fs.remove(op.path);
     } else if (op.kind === "publish" || (await fs.read(op.path, 0, 0)) === undefined) {
       const w = await fs.create(op.path);

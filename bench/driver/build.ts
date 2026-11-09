@@ -62,7 +62,7 @@ export async function buildBench(opts: { quiet?: boolean } = {}): Promise<BuildO
       outDir: OUT_DIR,
       emptyOutDir: true,
       target: "es2022",
-      minify: true,
+      minify: !process.env.BENCH_CPU_PROFILE,
       sourcemap: false,
       modulePreload: false,
       reportCompressedSize: false,

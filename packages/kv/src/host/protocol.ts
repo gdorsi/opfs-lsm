@@ -17,9 +17,18 @@ export type HostStats = {
   layout: { level: number; runs: number; bytes: number }[];
 };
 
-/** The BroadcastChannel where tabs share appends and new generations. */
+/** The BroadcastChannel for new generations and ingest requests: tabs and the host. */
 export function layersChannel(name: string): string {
   return `opfs-lsm-layers/${name}`;
+}
+
+/**
+ * The BroadcastChannel where tabs' log sessions share records and promises.
+ * Only sessions listen: a record carries its ops, and every listener pays
+ * to copy them.
+ */
+export function logChannel(name: string): string {
+  return `opfs-lsm-log/${name}`;
 }
 
 function locks(): LockManager | undefined {
@@ -65,15 +74,13 @@ export type ClientToHost =
       readonly type: "ingest";
       readonly id: number;
       readonly name: string;
-      readonly through: number;
+      readonly cut: number;
       readonly settle: boolean;
     }
   | {
       readonly type: "watch";
       readonly name: string;
       readonly maxWalBytes: number;
-      /** Ask the host to report the background WAL scan. Open does not wait for it. */
-      readonly trace?: boolean;
     }
   | { readonly type: "unwatch"; readonly name: string }
   | { readonly type: "stats"; readonly id: number; readonly name: string }
@@ -92,28 +99,24 @@ export type HostToClient =
       /** The `OpfsLsmError` code, so the tab rethrows the same class. */
       readonly code?: ErrorCode;
     }
-  | {
-      readonly type: "watch-trace";
-      readonly ms: number;
-      readonly rows: number;
-      readonly bytes: number;
-    }
   | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats }
   | { readonly type: "pong"; readonly id: number };
 
 export type IngestClient = {
   /**
-   * Flush every WAL record through `through`. A no-op when they are already
-   * in OPFS. With `settle`, resolve once compaction has finished too.
+   * Fold every log record stamped at or below `cut` into the SSTs. The
+   * caller's watermark passed `cut`. A no-op when the committed generation
+   * covers it. With `settle`, resolve once compaction has finished too.
    */
   ingest(
     name: string,
-    through: number,
+    cut: number,
     settle?: boolean,
   ): Promise<{ generation: number }>;
   /**
-   * Have the host ingest `name` on its own once the WAL waiting for ingest
-   * passes `policy.maxWalBytes`, starting with what is already waiting.
+   * Have the host ingest `name` on its own when a tab asks for a cut
+   * (`ingest-request` on `layersChannel`). Tabs ask once
+   * `policy.maxWalBytes` of log became stable since the last cut.
    */
   watch(name: string, policy: IngestPolicy): void;
   /** This tab no longer needs the host to watch `name`. */

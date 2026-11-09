@@ -14,10 +14,6 @@ const dec = new TextDecoder();
 const utf = (s: string) => enc.encode(s);
 
 afterEach(async () => {
-  await new Promise<void>((resolve) => {
-    const req = indexedDB.deleteDatabase("opfs-lsm-wal/lock-db");
-    req.onsuccess = req.onerror = req.onblocked = () => resolve();
-  });
   __resetMemoryFsForTests("lock-db");
 });
 

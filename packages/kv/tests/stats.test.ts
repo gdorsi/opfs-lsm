@@ -6,8 +6,10 @@ import {
   createLocalIngestClient,
   createPortIngestClient,
 } from "../src/index.js";
+import type { Db } from "../src/index.js";
+import type { HarnessOpenOptions } from "../src/testing.js";
 import {
-  openHarnessDb,
+  openHarnessDb as openDb,
   readStats,
   settle,
   __resetMemoryFsForTests,
@@ -20,23 +22,21 @@ const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 const NAME = "stats-db";
 
-async function deleteIdb(name: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
+/** Every Db a test opened, closed after it even when it fails: an open one stays a live tab. */
+const opened: Db[] = [];
+async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
+  const db = await openDb(options);
+  opened.push(db);
+  return db;
 }
 
 afterEach(async () => {
-  await deleteIdb(NAME);
+  await Promise.all(opened.splice(0).map((db) => db.close()));
   __resetMemoryFsForTests(NAME);
 });
 
-/** One put encoded as a WAL record: type byte, u32 key length, key, u32 value length, value. */
-const putRecordBytes = (key: Uint8Array, value: Uint8Array) =>
-  5 + key.byteLength + 4 + value.byteLength;
+/** What one put adds to a tab's log byte count: its key and value bytes. */
+const putBytes = (key: Uint8Array, value: Uint8Array) => key.byteLength + value.byteLength;
 
 async function write(fs: CountingFs, path: string, bytes: number): Promise<void> {
   const w = await fs.create(path);
@@ -86,7 +86,7 @@ describe("CountingFs", () => {
 });
 
 describe("readStats", () => {
-  it("counts WAL, flush, compaction and layout through a local host", async () => {
+  it("counts log appends, flush, compaction and layout through a local host", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
     const db = await openHarnessDb({
@@ -102,7 +102,7 @@ describe("readStats", () => {
     for (let i = 0; i < 4; i++) {
       const key = utf(`key-${i}`);
       const value = utf(`value-${i}`.repeat(i + 1));
-      walBytes += putRecordBytes(key, value);
+      walBytes += putBytes(key, value);
       folded += key.byteLength + value.byteLength;
       await db.put(key, value);
       await db.ingest();
@@ -189,7 +189,7 @@ describe("readStats", () => {
 
     const stats = await readStats(db);
     expect(stats.tab.walAppends).toBe(1);
-    expect(stats.tab.walBytes).toBe(putRecordBytes(key, value));
+    expect(stats.tab.walBytes).toBe(putBytes(key, value));
     expect(stats.host.flushes).toBe(1);
     expect(stats.host.generation).toBe(1);
     expect(stats.host.fs.written.l0!.calls).toBe(1);

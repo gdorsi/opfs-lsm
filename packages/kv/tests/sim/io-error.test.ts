@@ -1,9 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { compareBytes } from "../../src/bytes.js";
 import { EngineHost, type Db } from "../../src/index.js";
 import { checkDatabase } from "./check-database.js";
 import type { SiteKind } from "./fault-fs.js";
-import { installFaultWal } from "./fault-wal.js";
 import { committedLog, Traced } from "./crash.js";
 import { show, type Oracle, type OracleEntry } from "./oracle.js";
 
@@ -13,8 +12,7 @@ import { show, type Oracle, type OracleEntry } from "./oracle.js";
  * workload runs with fault site N failing, for N = 1, 2, … until a run
  * reaches no site N, once with a one-shot fault and once with a persistent
  * one. Sites are every OPFS call (create, write, close, remove, read, open,
- * list) and every IndexedDB readwrite transaction that writes (aborted
- * before it commits).
+ * list) and every call on a tab's log segment (create, write, flush).
  *
  * Every run checks:
  * - no hang: every call settles;
@@ -27,17 +25,11 @@ import { show, type Oracle, type OracleEntry } from "./oracle.js";
  *   nothing committed may be missing), `checkDatabase` passes, and a fresh
  *   host's sweep leaves no orphan.
  *
- * A write that rejects may still have committed (it failed after its
- * commit, while catching up): the log, not the caller, says.
+ * A write that rejects may still have committed (its frame is in the log,
+ * and a later step failed): the log, not the caller, says.
  *
  *   KV_IO_SITES=read pnpm exec vitest run tests/sim/io-error.test.ts   (only read sites)
  */
-
-let restore: () => void;
-beforeAll(() => {
-  restore = installFaultWal();
-});
-afterAll(() => restore());
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -77,7 +69,7 @@ function guard<T>(p: Promise<T>, what: string): Promise<T> {
   return Promise.race([p, hang]).finally(() => clearTimeout(timer));
 }
 
-const durableOnly = new Set<SiteKind>(["fs-write", "idb-write"]);
+const durableOnly = new Set<SiteKind>(["fs-write", "log-write"]);
 const readOnly = new Set<SiteKind>(["fs-read"]);
 
 type Read =
@@ -92,7 +84,7 @@ type Event = {
   readonly reads?: readonly Read[];
   readonly acked: boolean;
   readonly error?: unknown;
-  /** The WAL head of the committed IndexedDB ops at the call and at its return. */
+  /** How many records the logs held at the call and at its return. */
   readonly headBefore: number;
   readonly headAfter: number;
   /** Floor before the call: sync and open are barriers. */
@@ -233,14 +225,9 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
   }
 }
 
-/** The WAL head the committed IndexedDB ops recorded so far. */
+/** How many records the logs hold so far. One tab writes at a time, so they are the first ones of the order. */
 function committedHead(t: Traced): number {
-  let head = 0;
-  for (const op of t.faults.ops) {
-    if (op.store !== "idb") continue;
-    for (const m of op.muts) if (m.store === "meta" && m.kind === "put" && m.key === "head") head = m.value as number;
-  }
-  return head;
+  return committedLog(t.faults.ops).head;
 }
 
 /** Acked writes are committed; resolved reads are log prefixes in their window. */
@@ -353,7 +340,7 @@ describe("I/O errors: found by this suite", () => {
 
 describe("I/O errors at every fault site", () => {
   it("the workload passes with no fault", async () => {
-    const out = await run(new Set<SiteKind>(["fs-read", "fs-write", "idb-write"]), undefined, false);
+    const out = await run(new Set<SiteKind>(["fs-read", "fs-write", "log-write"]), undefined, false);
     expect(out.events.filter((e) => !e.acked).map(fmtEvent)).toEqual([]);
     expect(out.reached).toBeGreaterThan(20);
   });

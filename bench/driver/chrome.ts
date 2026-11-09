@@ -12,7 +12,7 @@
  *   crashed network service cannot drop them
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -111,6 +111,12 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
         await cdp.send("Runtime.enable", {}, sessionId);
         await cdp.send("Page.enable", {}, sessionId);
         await cdp.send("Runtime.addBinding", { name: "__benchProgress" }, sessionId);
+        const profileDir = process.env.BENCH_CPU_PROFILE;
+        if (profileDir) {
+          await cdp.send("Profiler.enable", {}, sessionId);
+          await cdp.send("Profiler.setSamplingInterval", { interval: 100 }, sessionId);
+          await cdp.send("Profiler.start", {}, sessionId);
+        }
         const loaded = cdp.once("Page.loadEventFired", sessionId);
         await cdp.send("Page.navigate", { url }, sessionId);
         await withTimeout(loaded, 30_000, "page load");
@@ -128,6 +134,10 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
             return reply.result.value as T;
           },
           async close() {
+            if (profileDir) {
+              const { profile } = await cdp.send<{ profile: unknown }>("Profiler.stop", {}, sessionId);
+              writeFileSync(path.join(profileDir, `${Date.now()}-${targetId.slice(0, 6)}.cpuprofile`), JSON.stringify(profile));
+            }
             await cdp.send("Target.closeTarget", { targetId });
           },
         };

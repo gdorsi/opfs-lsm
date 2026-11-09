@@ -3,51 +3,49 @@
 --------------------------------------------------------------------------------------------------
 
 `@opfs-lsm/kv` is an embedded key-value store for the browser. Keys and values are byte arrays.
-It is a log-structured merge tree (LSM). Writes go to a write-ahead log in IndexedDB. Sorted,
-immutable SST files in the Origin Private File System (OPFS) hold the data once it has been
-flushed out of the log.
+It is a log-structured merge tree (LSM). All of it lives in the Origin Private File System
+(OPFS). Each tab appends its writes to its own write-ahead log. Sorted, immutable SST files hold
+the data once it has been folded out of the logs.
 
-Every tab of an origin can open the same database. Each tab writes to the shared log, keeps its
-own in-memory table of the writes that are not yet in an SST, and answers reads from memory. One
-SharedWorker turns the log into SST files and compacts them. A SharedWorker is a single script
-that every tab of the origin shares. It isn't a dedicated WebWorker or a ServiceWorker.
+Every tab of an origin can open the same database. Each tab writes to its own log through a
+dedicated WebWorker, reads the other tabs' logs, keeps its own in-memory table of the writes
+that are not yet in an SST, and answers reads from memory. One SharedWorker turns the logs into
+SST files and compacts them. A SharedWorker is a single script that every tab of the origin
+shares. It isn't a dedicated WebWorker or a ServiceWorker.
 
 `@opfs-lsm/collections` builds tables and secondary indexes on top of the kv API. This document
-covers only the kv engine.
+covers only the kv engine. The reasoning behind the per-tab logs, and the designs they replaced,
+are in `architecture/wal-opfs/04-per-tab-logs.md`.
 
 The design ranks goals in this order (see `AGENTS.md`):
 1. Read and write latency.
-2. Consistency. Every read sees the state after one prefix of the log.
-3. Persistence. A write that was acked should survive, but the engine trades this away before
-   the first two.
+2. Consistency. Every tab sees the other tabs' writes as one prefix of one order, the same order
+   in every tab, with its own writes on top.
+3. Persistence. An acked write survives a crash of the tab, the SharedWorker or the browser. A
+   power loss can lose the writes since a tab's last flush.
 
 All multi-byte integers on disk are little-endian.
 
 # Storage layout
 
-A database named `<name>` lives in two places:
+A database named `<name>` lives in one OPFS directory:
 
 ```
-IndexedDB  "opfs-lsm-wal/<name>"
-  ├── wal    seq -> bytes              one record per acked batch
-  └── meta   "head"            -> seq  last committed batch
-             "ingestedThrough" -> seq  every seq <= this is in an SST
-             "pendingBytes"    -> n    op bytes of the records above ingestedThrough
-             "generation"      -> n    the manifest tabs should read
-             "topGeneration"   -> n    highest manifest number recovery has seen
-
 OPFS  opfs-lsm/<name>/
-  ├── m/<generation, 16 digits>.mft    manifests, newest wins
+  ├── w/<tab>/<firstN>.<prevStamp>.wal one tab's log, one segment per file
+  ├── m/<generation, 16 digits>.mft    manifests, the newest intact one wins
   ├── l0/<firstSeq>-<lastSeq>.sst      flushed runs, may overlap
   ├── l1/c<gen>.<i>-<bytes>.sst        compacted runs, disjoint within a level
   ├── l2/...
   └── ...
 ```
 
-A **run** is one SST file. A **generation** is one numbered manifest that lists the live runs. A
-**seq** is the position of a batch in the log. Seqs start at 1 and have no gaps, except where a
-power loss lost them from both stores (see [Recovery](#recovery)). A seq is never handed out
-twice, and a manifest number never names two different manifests.
+A **tab** is one open `Db`, with a random 16-hex-digit id. A **stamp** orders its writes among
+every tab's (see [The order](#the-order)). A **run** is one SST file. A **generation** is one
+numbered manifest that lists the live runs. Its **cut** is the stamp it folded through: the runs
+hold every log record stamped at or below it, from every tab's log. A **seq** is the position of
+a record in the order. Every tab numbers the records above the cut from the generation's
+`through + 1`, so every tab gives each record the same seq.
 
 Run paths are immutable. A path is written once and never rewritten with different contents.
 This lets every tab cache a parsed run by its path, with no invalidation.
@@ -55,91 +53,111 @@ This lets every tab cache a parsed run by its path, with no invalidation.
 The size in a compacted run's name lets the compaction planner size levels without opening any
 file. L0 names carry the seq range instead.
 
-# Write-ahead log
+# Logs
 
-The WAL is the IndexedDB database `opfs-lsm-wal/<name>`, schema version 1
-(`packages/kv/src/idb/wal.ts`).
+Each tab writes its own log under `w/<tab>/` (`packages/kv/src/log/`). Only that tab ever writes
+it, so an append takes no lock and waits for no other tab.
 
-## WAL records
+## Frames
 
-Each acked `put`, `delete`, `batch`, or `update` appends exactly one record to
-the `wal` store. The record's key is its seq. Its value is one `ArrayBuffer` holding the
-batch's ops back to back, little-endian:
+A log is a chain of segment files. A segment is a run of frames:
+
+```
+u32 bodyLen | u32 crc(kind, stamp, n, body) | u8 kind | u64 stamp | u32 n | body
+```
+
+A RECORD frame holds one batch. `n` counts the tab's records from 1 with no gaps. A SEAL frame
+ends a segment. The body is the batch's ops back to back:
 
 ```
 per op:  u8 type (0 put, 1 del) | u32 keyLen | key | put only: u32 valueLen | value
 ```
 
-Reading a WAL row costs per row and per JS object IndexedDB deserializes. One buffer per row is
-the fewest objects a row can be. The decoder hands out keys and values as views into the row's
-buffer. A row holds one batch, so the views keep nothing else alive. Nothing decoded from the
-WAL is sent with `postMessage`, where a view would clone its whole buffer. A row that is not an
-`ArrayBuffer`, or ends inside an op, throws `corrupt wal row`.
+A frame is part of the log when it is whole, its CRC holds, its `n` is the previous one + 1, and
+its stamp is above the previous one. Readers stop at the first frame that breaks this, so a torn
+tail is invisible and every read of a log is a prefix of it. A frame whose stamp is not a safe
+integer ends the prefix too.
+
+A segment's name holds the `n` of its first record and the stamp of the last record before it
+(`<firstN, 10 digits>.<prevStamp, 16 digits>.wal`). So a reader can go on after reclaimed
+segments, and recovery can check that the logs still cover a manifest's cut.
+
+The decoder hands out keys and values as views into the bytes read. A frame whose CRC holds but
+whose body ends inside an op throws `CommitError` (`corrupt log record`).
 
 ## Append
 
-`put`, `delete`, and `batch` append without reading the tail. One `readwrite` transaction over
-`wal` and `meta`:
+`put`, `delete` and `batch` take the next stamp, encode the ops, and send the frame to the tab's
+dedicated WebWorker (`log/log-worker.ts`), named `opfs-lsm-log:<name>`. The worker holds the
+tab's segments as SyncAccessHandles in the default, exclusive mode, which every browser supports.
+The appends of one task go out as one message and one write. The ack is that write: the frame is
+in the file, not yet flushed. The tab reads its own write at once (see
+[Own writes](#own-writes)).
 
-1. Read `head`.
-2. `add` the encoded ops with no key. The store's key generator assigns the seq.
-3. If that key is not past `head`, abort. The caller then appends with `appendAfter`, which
-   writes an explicit key and moves the generator forward.
-4. Otherwise `put` the new `head`, and `put` `pendingBytes` raised by the op bytes of the batch.
+With an fs that keeps segments in process (MemoryFs, in tests), the writer runs in the tab's
+thread instead.
 
-IndexedDB serializes `readwrite` transactions on the same stores, so two tabs cannot take the
-same key. Aborting a transaction reverts the key generator, so an append that aborts does not
-consume a seq. Committed seqs stay gapless.
+## Flush
 
-The record joins this tab's memtable after `complete`, and the ack resolves only after that.
-If the seq is not the next one, another tab appended first: the tab reads the WAL tail, applies
-every record through its own, and then resolves. At the ack, the writer sees its own write and
-every earlier one.
+A SyncAccessHandle flush costs about 0.4 ms in Chrome, ten times a write, and blocks the next
+write. So flushes are lazy. One flush covers every record written before it starts, and it
+runs:
 
-`update` still uses `appendAfter`. That transaction reads the tail, applies it to the memtable,
-runs the synchronous body, and `add`s the batch at `head + 1`. The read and the write stay in
-one transaction.
+- at once, when another tab asks for a stamp that an unflushed record holds back (`advance`, see
+  [The watermark](#the-watermark))
+- 2 ms after a write while other tabs are live
+- 100 ms after a write while the tab is alone
+- before the tab asks for an ingest, and before `close`
 
-The ack is the transaction's `complete` event. The write is durable from that point, at the
-durability IndexedDB gives the transaction. The engine uses the browser's default durability. In
-Chrome, that measured the same as `relaxed`, so a commit survives a tab crash but maybe not a
-power loss.
+A tab broadcasts a record only once it is flushed. So after a power loss, no other tab's state
+and no ingest depends on a record that was lost.
 
-## Truncation
+## Segments
 
-After an ingest, the host sets `ingestedThrough` and `generation`, lowers `pendingBytes` by the
-bytes it folded, and deletes every record at or below the *previous* `ingestedThrough`, all in
-one transaction. So the WAL holds the seqs that are not yet in an SST, plus the seqs the last
-ingest folded. Those stay until the next ingest: under a power loss this commit can survive
-while the new run and manifest do not, and then recovery replays them over the previous
-manifest (see [Recovery](#recovery)). They cost IndexedDB space, about one `maxWalBytes`, and
-nothing else: no read touches a record at or below `ingestedThrough`.
+A segment is sealed once it reaches `maxWalBytes` (`ingest-policy.ts`, 1 MiB by default): the
+writer appends a SEAL frame, flushes, and closes it. The next segment is created at the next
+write. So only a tab's last segment can end in a torn frame. A reader that finds a bad frame in
+a segment with a later one, or a next segment that does not follow on (its `firstN` and
+`prevStamp`), throws `CorruptDatabaseError` rather than drop the records past it.
 
-## Reading the tail
+A tab never reopens a log. A new `Db` starts a new tab id and a new log.
 
-`openDb`, `sync`, a catch-up after an append, and ingest all read the same way: one transaction
-reads `head` and `ingestedThrough` from `meta`, then every record in `(max(since,
-ingestedThrough), head]`. `since` is the caller's `appliedThrough`, 0 on open, so every open
-replays the whole uningested WAL into a new memtable on the tab's main thread. `maxWalBytes`
-bounds that replay (see [When it runs](#when-it-runs)).
+## Reading a log
 
-The read issues one `getAll` per 25,000 seqs, all in flight in the same transaction. Seqs are
-gapless above `ingestedThrough`, so a value's position in its range gives its seq and no
-`getAllKeys` pass is needed. A range that returns fewer values than it spans has a gap, and the
-read throws `wal gap` rather than shift the seqs after it.
+Tabs and the ingest host read logs with plain `AsyncFs` reads (`log/reader.ts`), with no lock and
+no worker, from where the last read stopped. In Chrome a read of a file that its writer changes
+meanwhile can throw `NotReadableError`; the read tries again, up to 8 times. A frame being
+written fails its CRC and ends the read.
 
-Before the first read, `openDb` pairs the WAL with a manifest (see [Recovery](#recovery)).
+Records at or below a floor, the installed generation's cut, are passed over without decoding
+them or checking their CRC: the ingest that folded them checked it.
 
-`getAllRecords` returns keys and values in one request, but Chrome deserializes each value when
-`.value` is first read. The time it saves comes back in decode, so the engine does not use it.
-On a 250k-row Yjs benchmark (since removed) the ranged `getAll` read takes about 360 to 520 ms with object
-rows. The old `getAllKeys` plus `getAll` pair took about 670 ms, and byte rows cut the open by
-another third. The measurements are in `docs/research/kv-wal-optimization.md`.
+## Reclaim
+
+The host removes a segment once a generation covers it: a sealed segment whose records are all
+at or below the cut, and the last segment of a dead tab once its records are too. A live tab's
+open segment is never removed.
+
+A dead tab's last segment gives way to a tombstone: an empty segment named past its last record,
+as the tab's next segment would be. The log then reads as reclaimed through that stamp, the same
+signal as a reclaimed first segment, for recovery (an older manifest stands in only if it covers
+it) and for a tab that missed those records (it waits for a generation that does). Without it,
+the whole log would vanish and both would take the dead tab for one that never wrote. The host
+removes the tombstone and the directory once every manifest on disk covers it. A reclaim cut
+short between creating the tombstone and removing the segment before it leaves both: an unsealed
+segment followed by an empty last one that follows on from it, which readers accept.
+
+A tab that missed records (lost broadcasts, a missed `ingest`) can find their segments
+reclaimed. The next segment's name gives the `n` and stamp before it, so the read goes on. But
+the tab hands out nothing more until it installs a generation whose cut reaches that stamp, or
+it would number what follows too low. It loads the newest. If even that does not reach the
+stamp, the records are gone, and the tab fails every wait and write with `CorruptDatabaseError`.
 
 # Memtable
 
-Each tab holds a memtable (`packages/kv/src/store/memtable.ts`). It holds the WAL records above
-the installed generation's `ingestedThrough`, up to `appliedThrough`, folded to one row per key:
+Each tab holds a memtable (`packages/kv/src/store/memtable.ts`). It holds the stable records
+(see [The watermark](#the-watermark)) above the installed generation's `through`, up to
+`appliedThrough`, folded to one row per key:
 
 ```
 MemRow = { key, seq, kind: "put" | "del", value? }
@@ -148,9 +166,8 @@ MemRow = { key, seq, kind: "put" | "del", value? }
 Rows are kept in key order, in chunks of 512 to 1024 rows. An insert moves at most one chunk. A
 chunk splits in two when it passes 1024 rows.
 
-Records apply in seq order with no gaps. A record that skips a seq is refused, and the tab
-re-reads the WAL tail. This is the invariant every read depends on. The memtable is always one
-exact prefix of the log.
+Records apply in seq order with no gaps. The tab numbers each stable record one past
+`appliedThrough` as it applies it, so the memtable is always one exact prefix of the order.
 
 A `view` pins the memtable without copying it. The pin takes a copy of the array of chunk
 references and marks every chunk as shared. The live table copies a shared chunk before its
@@ -245,7 +262,7 @@ Index offsets and lengths, the bloom offset and the CRC all refer to the stored 
 
 ```
 | u8 tag          1 = put, 2 = delete                                        |
-| u64 seq         the WAL seq that wrote the key                             |
+| u64 seq         the log seq that wrote the key                             |
 | varint suffix length                                                       |
 | suffix          the key after the block's prefix                           |
 | varint value length                                 (puts only)            |
@@ -362,10 +379,11 @@ one generation:
 
 ```
 u32 magic "OLGN" (0x4f4c474e)
-u32 version = 2
+u32 version = 3
 u64 generation
 u64 tombstoneSeq
-u64 through                  version 2 only
+u64 through                  version 2 and later
+u64 cut                      version 3
 u32 run count
 per run:
   u16 path length, path (UTF-8, relative to the database root)
@@ -380,24 +398,22 @@ sorted by smallest key. Reads use that order directly, so the first hit wins.
 `tombstoneSeq` is the highest seq of any delete that a bottom-level compaction dropped. A key
 that has no entry at all may have been deleted at any seq up to it.
 
-`through` is the seq the manifest's runs reach: they hold the fold of every seq of the log up to
-it, and no seq past it. An ingest sets it to the last seq it folded, and a compaction keeps its
-base's. Recovery uses it to pair a manifest with the WAL. A version 1 manifest has no `through`
-and reads as `through` 0. Recovery then never prefers it over the WAL, and the first ingest
-writes a version 2 manifest.
+`cut` is the stamp the manifest's runs reach: they hold every log record stamped at or below it,
+from every tab's log, and none above it. `through` counts those records: the runs hold the fold
+of seqs `1..through`. An ingest sets both. A compaction keeps its base's. Older manifests read
+with the missing fields as 0.
 
-The generation the tabs should read is the one recorded in IndexedDB `meta.generation`, not
-the newest file in `m/`. A manifest becomes visible only once IndexedDB records it. New
-manifests number one past the highest number in use, meaning the newest file in `m/`, the
-recorded generation, and `meta.topGeneration`. Numbers can skip.
+Publishing a manifest commits it. The **committed generation** is the newest manifest whose runs
+are all on disk (see [Recovery](#recovery)). New manifests number one past the highest number in
+`m/`. Numbers can skip.
 
 # Reads
 
-`get` reads the memtable first. On a miss, it asks the installed levels newest first
-(`pointGetSst` in `store/merge.ts`) and stops at the first one that holds the key. Each L0 run
-is a level of its own. A deeper level binary-searches its runs' key ranges and asks only the one
-run whose range holds the key, so a get costs one probe per level, not one per run. It doesn't
-touch IndexedDB, and it doesn't wait on the SharedWorker.
+`get` reads the tab's own unstable writes first, then the memtable. On a miss, it asks the
+installed levels newest first (`pointGetSst` in `store/merge.ts`) and stops at the first one that
+holds the key. Each L0 run is a level of its own. A deeper level binary-searches its runs' key
+ranges and asks only the one run whose range holds the key, so a get costs one probe per level,
+not one per run. It doesn't read a log, and it doesn't wait on the SharedWorker.
 
 `range` merges a cursor over the memtable with one cursor per scan source, using a min-heap
 ordered by key and then by source, newest first. For each key the newest source wins, and
@@ -412,8 +428,8 @@ when it reaches it.
 
 The bloom filters play no part in a scan. They answer whether one exact key is present.
 
-A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the
-levels. Writes that commit during the callback are invisible to it.
+A `view` pins `appliedThrough`, the installed generation, the memtable chunks, the tab's own
+unstable writes and the levels. Writes that land during the callback are invisible to it.
 
 `range({ valueContains })` keeps only live puts whose current value holds every pattern, each
 key once, newest source first. Each source filters on its own: the memtable in JavaScript, each
@@ -423,69 +439,158 @@ place. A newer source that holds the key with a non-matching value or a tombston
 older hit. Without wasm, the run's cursor does the same filter key by key.
 
 `db.rangeFollow(range, follow)` scans a range and point-reads the key that `follow` returns for
-each entry. Every read sees the same state, because the scan and the reads run in one task with no
-await between them.
+each entry. Every read sees the same state: the scan and the reads share one pin of the rows and
+the installed levels.
 
 # Multi-tab coordination
 
-## Seeing other tabs' writes
+Each tab's side of the protocol is a `LogSession` (`packages/kv/src/log/session.ts`). The merge
+of every tab's records is a `Merger` (`log/merger.ts`).
 
-After its own append commits, a tab posts `{ kind: "append", seq, ops }` on the BroadcastChannel
-`opfs-lsm-layers/<name>`. Every other tab applies the record to its memtable when the message
-arrives. If the record doesn't follow that tab's `appliedThrough`, the tab reads the WAL tail
-instead. The ingest host listens on the same channel and counts those op bytes.
+## The order
 
-So a tab sees another tab's write a moment after that write's ack, not at it. `db.sync()` closes
-that gap. It reads the WAL tail in one transaction and applies everything acked before the call.
-A blind append does that catch-up after its own commit, before its ack, when its seq is not the
-next one. `update` catches up inside its transaction, before the body runs. If `close()` runs
-after the commit and before the broadcast, the put still resolves: the channel is already closed,
-other tabs catch up on `sync`, and the host measures the WAL again on the next open.
+Every record has a stamp from its tab's hybrid logical clock (`log/hlc.ts`):
+
+```
+stamp = microseconds since 2025 × 4 + counter          a safe integer until 2096
+stamp = max(wall clock stamp, highest stamp seen + 1)
+```
+
+The order of all records is (stamp, tab). A write made after a tab saw another tab's write sorts
+after it. Writes of tabs that never saw each other sort by wall clock, to `performance.now()`'s
+resolution (5 to 100 µs in browsers), then by tab id. Correctness does not rest on the clocks
+agreeing.
+
+## The watermark
+
+A tab's **promise** is a stamp it will write nothing at or below. The **watermark** is the lowest
+promise among the tabs that may still write: the live tabs, and the dead tabs whose log has not
+been read to the end. A live tab this one has not heard from yet holds it at −∞. Records at or
+below the watermark are **stable**: no tab can write anything that sorts before them. So every
+tab hands out the same prefix in the same order, numbers it the same way, and applies it to its
+memtable.
+
+A tab is **live** while it holds the Web Lock `opfs-lsm-tab/<name>/<tab>`, which it takes at open
+and keeps until close (`log/liveness.ts`). The browser releases the lock when the tab or its
+worker goes away, crash included. A dead tab's log is final: once it is read to the end, the tab
+holds nothing back. If its log is gone, reclaim removed it after a generation took its records,
+which this tab may never have seen: the tab installs the newest generation first.
+
+A tab whose log write or flush fails (out of quota, say) can't go on past the lost record, and
+can't promise past what it wrote either, which would hold every other tab's watermark. It
+leaves as on close: it says `bye`, releases its liveness lock, and every later write fails with
+the error. The other tabs retire it by reading its log to its end. Under an OPFS quota, Chrome's
+`SyncAccessHandle.flush()` can block the log worker for good, so a flush that has not finished in
+5 s counts as a failure too: the tab terminates its log worker and leaves. Only flushes get this
+limit. A flush adds no record and the writes queued behind it never run, so nothing lands in the
+log after the others retired it; a write that finished late could.
+
+Tabs talk on the BroadcastChannel `opfs-lsm-log/<name>`:
+
+| Message | Meaning |
+|---|---|
+| `rec` | One record with its ops, sent once it is flushed. It is also a promise of its stamp. Its `n` lets a receiver that missed one see the gap and read the sender's log instead. |
+| `advance(s)` | A tab waits for stamp `s`. Each tab answers with a promise up to what it has flushed, and flushes at once when an unflushed record holds the answer back. |
+| `promise(stamp, n)` | The answer to `advance`. |
+| `hello`, `welcome` | A new tab joins (see [Open](#open)). |
+| `bye` | A tab closes. The others read the rest of its log and stop waiting for it. |
+
+A stalled tab asks again every 50 ms, marked `again`. Each tab answers a repeat with its last
+promise even when it promised nothing new, because a lost promise is in no file. On the same
+tick the stalled tab lists the live tabs and retires the dead ones. Log reads are the fallback
+for a gap, a join and a dead tab.
+
+So a tab sees another tab's write a moment after that write's ack: after the writer's flush (2 ms
+when other tabs are live) and a message hop. `db.sync()` closes that gap. It reads every log, and
+waits until every record it saw from another tab, and every record this tab wrote, is stable.
+Reads after it are one prefix of the order, with nothing of this tab's on top, so they include
+any write of another tab ordered before this tab's own.
+
+## Own writes
+
+A tab's own write is not stable at its ack: another tab may still write below it. Until it is,
+it sits in the tab's **overlay**, a small table that reads see over the memtable. So the tab
+reads its own writes at once. The overlay drops a record once it is stable or a generation holds
+it.
+
+## Open
+
+`openDb` starts these at once:
+
+- Read the newest manifest, for its cut.
+- Take the liveness lock, and read every other tab's log. The reads wait for the cut only to
+  scan, and pass over the records at or below it.
+- Load and install the generation (see [Installing a generation](#installing-a-generation)).
+
+Then it lists the live tabs. The query comes after the reads, so a tab whose log was read and
+that is not live died before the query: its log is read again from where the first read stopped,
+and then it holds nothing back. If the manifest's runs turn out to be gone and an older
+generation stands in, the logs are read again above its lower cut.
+
+No record is handed out before the generation is installed, because their seqs count on from its
+`through`. Then the tab broadcasts `hello`. Each live tab answers `welcome` with its stable stamp
+and its promise, and holds its watermark below the new tab until the new tab promises. The new
+tab starts its clock above every stamp it saw, promises, and waits until every record it read is
+stable.
+
+## Update
+
+`db.update(keys, body)` holds the next stamp `t`, and waits until every record below `t` is
+stable. While it holds `t`, this tab promises only `t − 1`, so nothing ordered after `t` becomes
+stable. It reads `keys`, runs `body` once, synchronously, and appends the result at `t`. The read
+is exactly the state the write lands on, so there is no conflict and no retry, and it takes no
+lock. Two concurrent updates serialize by stamp. They can't deadlock: a tab waiting to write at
+`t₂` can still promise `t₂ − 1`.
+
+## Changes
+
+`db.changes(listener)` reports every append and every ingest, from this tab and from other tabs
+(`changes.ts`). The tab's own write is reported at its ack, with its seq only if it was already
+stable then. Another tab's write is reported when it becomes stable here, with its seq. An
+ingest is reported when the message below arrives, or when this tab's `db.ingest()` moved the
+generation.
 
 ## Installing a generation
 
-A tab installs a generation only when the IndexedDB tail tells it to, during `sync` or an
-append. `catchUp` keeps one rule: the installed generation never holds a seq past
-`appliedThrough`. If the tail names a generation the tab hasn't loaded, the tab loads its
-manifest and runs outside the transaction, then tries again. A run file or the manifest can
-disappear between the tail read and the run open, when the host reclaims a generation that a
-newer one replaced. The next section says how the retry still makes progress.
+The host and `db.ingest()` post `{ kind: "ingest", generation }` on the BroadcastChannel
+`opfs-lsm-layers/<name>` when a generation moves. A tab installs the newest generation then, at
+open, on `sync`, and when a log read finds segments reclaimed past what it has seen. The newest
+is the one a message named, or else the newest manifest in `m/`.
+
+Installing is synchronous, so reads never see half a switch. The memtable drops the rows at or
+below the generation's `through`, and the session drops the stable records and overlay rows at
+or below its `cut`.
 
 ## Loading a generation under churn
 
 A tab holds a run only once its open returns, and the host's reclaim removes every run of an
 old generation that no tab holds. So without more, a tab whose opens are slow can lose every
-try: before each open returns, the host records a newer generation and reclaims the one the tab
-is opening. The guarantee is:
+try: before each open returns, the host publishes a newer generation and reclaims the one the
+tab is opening. The guarantee is:
 
-**On a healthy database, `sync`, `update` and a blind append that needs a catch-up always
-succeed, however compaction is scheduled. `CorruptDatabaseError` means a file of the recorded
-generation is really gone.**
+**On a healthy database, open and `sync` always install a generation, however compaction is
+scheduled. `CorruptDatabaseError` means a file of the committed generation is really gone.**
 
 The tab and the host share a Web Lock, `opfs-lsm-reclaim/<name>`:
 
-- The tab's first try takes no lock, so a sync on a quiet database costs what it did. When that
-  try finds a file missing, every later try holds the lock **shared**, from the tail read to the
-  last run open (`holdingFiles` in `host/protocol.ts`).
+- The tab's first try takes no lock, so a sync on a quiet database costs nothing more. When that
+  try finds a file missing, every later try holds the lock **shared**, from the manifest read to
+  the last run open (`holdingFiles` in `host/protocol.ts`).
 - The host removes files only while it holds the lock **exclusively**, and asks with
   `ifAvailable`: when a tab holds it, the host skips the removal and does not wait. This covers
   the run sweep (`EngineHost.reclaim`) and the deletion of old manifests after a flush or a
   compaction install. Skipped runs stay retired and the next pass tries again; old manifests go
   with the next flush or reclaim.
 
-Under the lock, the generation the tail names was recorded while no removal could run, so its
-manifest and every run are on disk. Its load succeeds, and the try catches up. A try under the
-lock can still fall behind when another load of the same tab installed a newer generation
-meanwhile; that is not counted, and the next tail names the newer one. A try that finds a file
-missing under the lock counts. The tab reconciles (see [Recovery](#recovery)), which records a
-whole manifest after a power loss, and after 8 such tries it throws
+Under the lock, no removal can run, so the newest manifest and every run it lists stay on disk
+until the try returns. The try under the lock checks that the manifest is intact, and looks past
+one whose runs are gone to the newest intact one (see [Recovery](#recovery)). A try that still
+finds a file missing under the lock counts, and after 8 such tries the tab throws
 `CorruptDatabaseError`. A healthy database never reaches that count.
 
 Liveness, tab side: a try under the lock waits only for a removal already running, and a
-removal never waits for anything but its own file calls. Every try under the lock then
-succeeds unless the files are really gone. `update` and appends can still retry when another
-tab writes and the host flushes between the tail read and the append, as any optimistic write
-does, but each retry needs new writes from another tab.
+removal never waits for anything but its own file calls. Every try under the lock then succeeds
+unless the files are really gone.
 
 Liveness, host side: the host never waits for the lock, so no tab can stall a flush, a
 compaction or an install, even one that holds the lock forever. Such a tab only delays the
@@ -494,77 +599,62 @@ only after a try without it failed, almost always because a removal broke it, an
 it catches up; a skipped removal breaks no try. So removals are skipped only while some tab is
 retrying, and the browser frees a tab's locks when the tab or worker goes away.
 
-After a flush that it started itself or a compaction step, the host posts `{ kind: "ingest" }`
-on the same channel. After `db.ingest()`, the calling tab posts it if the generation moved. Tabs
-respond by calling `sync`.
-
 # Ingest
 
-Ingest moves WAL records into an L0 run. It runs in the SharedWorker's `EngineHost`
+Ingest moves log records into an L0 run. It runs in the SharedWorker's `EngineHost`
 (`packages/kv/src/host/engine-host.ts`, `host/ingest.ts`).
 
 ## When it runs
 
-The ingest host owns the trigger. Per database it keeps an `IngestWatch`:
+The tabs own the trigger. Each tab counts the key and value bytes of the stable records above
+the installed generation's cut. Once they pass its `maxWalBytes`, it flushes its own records and
+posts `{ kind: "ingest-request", cut }` on `opfs-lsm-layers/<name>`. The cut is the stable stamp,
+held below any record of this tab that is not yet flushed. Every tab sees the same stable order,
+so several tabs may ask for the same cut. A tab asks again only once another `maxWalBytes` is
+waiting, which retries a lost request or a failed ingest without hammering the host.
 
-- `maxWalBytes`, the smallest limit any open tab asked for
-- `pendingBytes`, op bytes heard on the broadcast or read from the WAL's `pendingBytes`
-  counter, and not yet folded
-- `triggerAt`, the `pendingBytes` level that starts an ingest
-- `state`, `idle` or `ingesting`
-- `watchers`, how many tabs hold the watch
+The default limit is 1 MiB (`maxWalBytes` in `ingest-policy.ts`). Every open decodes the log
+records above the cut, so the limit is an open-time budget. The count is the bytes of the ops as
+written: overwrites and deletes grow it the same way new keys do.
 
-`openDb` sends `watch` with the tab's `IngestPolicy`. The call resolves once the host is
-listening. The host then reads the WAL's `pendingBytes` counter in the background and
-ingests if it is at the limit, so a database left over the limit by a closed or busy tab
-catches up on open. A database with no counter yet is scanned once and the result stored. `close` sends `unwatch`. At zero watchers the host closes its
-channel and drops the watch. Until then it keeps the smallest limit it has seen.
+`openDb` sends `watch` to the host, and `close` sends `unwatch`. While a database has watchers,
+the host listens on that channel and keeps the highest cut asked for. One ingest runs at a time;
+when it finishes, it starts another if a higher cut arrived meanwhile. A failed ingest is
+logged. At zero watchers the host closes its channel and drops the watch.
 
-Each append broadcast adds the key and value bytes of its ops to `pendingBytes`. When
-`pendingBytes` reaches `triggerAt` and the watch is idle, the host folds every uningested
-record. One ingest runs at a time. When it finishes, the host subtracts the folded bytes and
-checks again. The default limit is 1 MiB (`maxWalBytes` in `ingest-policy.ts`). Every
-open replays the WAL up to the limit, so the limit is an open-time budget.
+`db.ingest()` waits until this tab's records are flushed and every record it has seen is
+stable, asks the host to fold through that cut, and waits for the compaction that starts. A cut
+the committed generation already reaches writes nothing. A host ingest with no cut (tests,
+tools) picks one itself: it reads the logs' last stamps first and lists the live tabs after,
+and takes the lowest last stamp among them. A live tab with no record in what it read holds the
+cut where it is.
 
-The count is the bytes of the ops as written. Overwrites and deletes grow it the same way new
-keys do, so the WAL that every open replays stays near the limit whatever the batch shape.
-IndexedDB stays the source of truth. The count only decides when to ingest, and every ingest
-reads the WAL. A missed broadcast, or an `unwatch` that arrives before a tab's last append,
-delays the fold until the next crossing or the next open, which reads the counter again. A fold that
-finds nothing waiting sets `pendingBytes` back to 0, so a count that ran ahead of the WAL does
-not ingest in a loop.
-
-A failed ingest is logged. `triggerAt` becomes `pendingBytes + maxWalBytes`, so the retry waits
-for another limit of writes. The next `watch` sets `triggerAt` back to the limit and reads
-the counter, so opening the database retries at once.
-
-`db.ingest()` asks the host to fold through the end of the log and waits for the
-compaction that starts. A request for seqs that are already ingested writes nothing.
+Every record at or below a cut is flushed in some log: the asking tab passed its watermark, so
+every other tab promised past it, and tabs promise only what they flushed.
 
 ## Steps
 
 Under the exclusive section for the database:
 
-1. Reconcile (see [Recovery](#recovery)). In a running database this reads `meta` and lists
-   `m/`, and changes nothing. The recorded generation is `G`, and the highest number in use is
-   `top`.
-2. Read every WAL record above `ingestedThrough`.
-3. Fold them to the last op per key, in key order, keeping each op's seq.
-4. Write `l0/<first>-<last>.sst`.
-5. Write manifest `top + 1` with `through = <last>`, listing the new run in front of the runs
-   of manifest `G`. It builds on the recorded generation, never on a newer manifest file: one
-   that IndexedDB has not recorded was left by a crash.
-6. In one IndexedDB transaction, set `ingestedThrough = <last>`, raise `generation` to
-   `top + 1`, and delete the records at or below the previous `ingestedThrough`.
-7. Delete the manifests older than the recorded generation, unless a tab holds the reclaim
-   lock (see [Loading a generation under churn](#loading-a-generation-under-churn)).
+1. Find the committed generation (see [Recovery](#recovery)), its cut, and `top`, the highest
+   manifest number in `m/`.
+2. Read every tab's log, and keep the records above the committed cut and at or below the new
+   one.
+3. Sort them by (stamp, tab), and number them from the committed `through + 1`.
+4. Fold them to the last op per key, in key order, keeping each op's seq, and write
+   `l0/<first>-<last>.sst`.
+5. Write manifest `top + 1` with the new `through` and `cut`, listing the new run in front of
+   the committed runs. This commits the ingest.
+6. Remove the log segments the new cut covers (see [Reclaim](#reclaim)).
+7. Delete the manifests older than the new one, unless a tab holds the reclaim lock (see
+   [Loading a generation under churn](#loading-a-generation-under-churn)).
 
 The exclusive section is a promise chain inside the host plus a Web Lock named
 `opfs-lsm-ingest/<name>`. The lock covers the case of two SharedWorkers serving the same
 database, for example two builds with different script URLs.
 
-OPFS writes go through `createWritable` and `close`. The browser swaps the new file into place
-on `close`, so other readers see a file whole or not at all.
+OPFS run and manifest writes go through `createWritable` and `close`. The browser swaps the new
+file into place on `close`, so other readers see a file whole or not at all.
 
 # Compaction
 
@@ -611,27 +701,19 @@ The merge itself runs without the ingest lock. It holds only `opfs-lsm-compact/<
 flushes keep going while it runs. A flush meanwhile only adds L0 runs in front of the inputs, so
 the plan stays valid. To install, under the exclusive section, the host:
 
-1. Reconciles, and checks that every input is still in the recorded manifest `G`.
+1. Finds the committed generation, and checks that every input is still in it.
 2. Writes manifest `top + 1`, with the inputs replaced by the outputs, `tombstoneSeq` raised
-   to the highest dropped tombstone, and `G`'s `through`.
-3. Raises IndexedDB `generation` to `top + 1`.
-4. Reclaims: deletes the manifests older than `top + 1` and the input runs that the new
+   to the highest dropped tombstone, and the committed `through` and `cut`. This commits the
+   step.
+3. Reclaims: deletes the manifests older than `top + 1` and the input runs that the new
    manifest doesn't list and no tab holds open. While a tab holds the reclaim lock, it deletes
    nothing and tries again on the next pass.
 
-The merge plans on the recorded generation too, and names its outputs
+The merge plans on the committed generation too, and names its outputs
 `c<top + 1>.<i>`, past every manifest number in use, so an output never overwrites a run that a
 manifest on disk lists.
 
 A pass runs up to 8 steps, and a request that arrives during a pass starts another one.
-
-# Updates
-
-`db.update(keys, body)` reads and writes inside one IndexedDB transaction, so it can't conflict.
-`body` must be synchronous.
-
-`db.changes(listener)` reports every append and every ingest, from this tab and from other tabs.
-It is fed by the same BroadcastChannel and by the tab's own commits (`changes.ts`).
 
 # Limits
 
@@ -649,9 +731,10 @@ From `packages/kv/src/check.ts`:
 
 | Work | Thread | Language |
 |---|---|---|
-| Append, memtable, point get, range merge, SST reader, bloom checks | Each tab's main thread | TypeScript |
+| Stamps, encode ops, merge the logs, memtable, point get, range merge, SST reader, bloom checks | Each tab's main thread | TypeScript |
+| Write and flush the tab's log | Each tab's dedicated WebWorker | TypeScript |
 | Unpack an LZ4 block, match a filtered scan inside a block | Each tab's main thread | wasm, with TypeScript fallbacks |
-| Fold WAL into L0, encode SSTs | SharedWorker | TypeScript fold, wasm encode |
+| Fold the logs into L0, encode SSTs | SharedWorker | TypeScript fold, wasm encode |
 | Compaction merge and split | SharedWorker | wasm |
 | CRC-32 check on decode | SharedWorker | wasm (slicing-by-8, 4 streams) |
 
@@ -662,162 +745,107 @@ run instead, except that encode then writes raw blocks only.
 
 # Recovery
 
-Writes go to two stores, and nothing orders one against the other on disk. IndexedDB commits
-with the default (relaxed) durability, so `complete` means the OS has the write, not the disk.
-OPFS's `close()` swaps a file into place with no fsync. After a power loss, each store keeps a
-prefix of its own completed writes, and the two prefixes are independent. Acked writes may be
-lost (see the goals at the top). The database must still open, and read the fold of one prefix
-of the log.
+Publishing a manifest commits an ingest or a compaction step. Every manifest is the fold of the
+logs through its cut. So the database is the **committed generation**, the newest manifest whose
+runs are all on disk, plus every log record above its cut, in (stamp, tab) order, numbered on
+from its `through` (`recoverGeneration` in `src/recover.ts`). There is no other state to pair
+with it, and nothing to repair.
 
-## The invariant
+A **process crash** (a tab, its dedicated WebWorker, the SharedWorker or the browser killed; the
+OS keeps every completed write) loses no acked write: the ack is the write into the log file. A
+frame being written when the tab died is torn, and readers stop at it.
 
-The write order keeps two facts true at every prefix of each store:
+A **power loss** keeps each log's writes through its last flush and any prefix of the rest.
+OPFS's `close()` swaps a file into place with no fsync, so a manifest or a run can be gone or
+empty, with no order against the logs. So:
 
-1. **Every intact manifest is a log prefix.** A manifest is intact when every run it lists is
-   on disk. An intact manifest's runs hold the fold of exactly the seqs `1..through` of the log,
-   leaving out seqs that a power loss lost from both stores. A run is written before any
-   manifest lists it, and run paths are never reused for other writes, so an intact manifest
-   always shows the runs it was written with.
-2. **WAL records are log entries.** `head` never moves down, so a seq is never handed out
-   twice. Recovery moves `head` past every seq that any manifest on disk names, so a manifest
-   that is not intact now cannot become intact later with other writes in its runs. New
-   manifests number past `topGeneration`, so a number IndexedDB still holds after a later power
-   loss never names a different manifest.
+- A tab loses the writes it acked since its last flush. It never broadcast them, so no other
+  tab's state and no ingest's cut depends on them. Each log keeps a prefix of its records, and
+  the database reopens as the merge of those prefixes.
+- The newest manifest may be gone or empty, which counts as missing, or list a run that never
+  reached the disk. Then an older intact manifest stands in, but only while the logs still hold
+  every record above its cut: reclaim removes a segment once a manifest covers it. Recovery
+  checks this from the segment names: each tab's oldest segment must start at or below the cut.
+  Otherwise records would be missing from the middle of the order, and recovery throws
+  `CorruptDatabaseError` rather than open a state that never existed.
 
-So any intact manifest `M`, followed by WAL records `through + 1..head` with no gap, is a log
-prefix: `fold(log[1..head])`. Without those records, `M` alone is `fold(log[1..through])`.
+## Corruption is not a power loss
 
-## The rule
+A power loss cannot tear a manifest, because OPFS publishes a file whole. It cannot break a log
+anywhere but at the end of its last segment, because a segment is sealed and flushed before the
+next one is made. So these are corruption, and the engine throws `CorruptDatabaseError` and
+writes nothing:
 
-`reconcile` (`src/recover.ts`) picks the manifest to record:
+- A manifest that is there and does not decode (bad CRC, magic or length). Only a missing or
+  empty file is skipped.
+- A newest manifest that lists a run that is gone, when the logs no longer hold what an older
+  one would need.
+- A bad frame in a segment with a later one, or a next segment that does not follow on.
+- Records a tab needs that were reclaimed, with no generation that holds them (a deleted first
+  segment, say).
 
-1. **OPFS kept seqs that IndexedDB lost.** The newest intact manifest numbered past the recorded
-   one whose `through` is past `head`. It is a longer prefix than the WAL. Recording it moves
-   `head` to its `through` before any of its seqs can be handed out again.
-2. **Otherwise the recorded manifest**, if it is intact.
-3. **Otherwise IndexedDB recorded a manifest that OPFS lost**, or recorded none: the newest
-   intact manifest, or the empty generation 0. A manifest file that is missing or empty counts
-   as lost: OPFS can leave a file created and never closed.
+The database stays as it is on disk, for an app or a person to recover.
 
-### Corruption is not a power loss
+## Who recovers
 
-A power loss cannot tear a manifest, because OPFS publishes a file whole. OPFS also keeps its
-own writes in order, and the host removes a run only after every older manifest that lists it,
-and never a run of the recorded manifest. So a power loss never leaves the recorded manifest on disk with a run missing, or a manifest that fails to
-decode. Those states are corruption. Recovery refuses them rather than lose data that is still
-on disk: it throws `CorruptDatabaseError` and writes nothing, so no WAL record is dropped and no
-sweep runs against a stand-in.
-
-- **The recorded manifest is there but does not decode** (bad CRC, magic or length): refuse.
-  Only a missing or empty file takes rule 3.
-- **The recorded manifest decodes but lists a run that is gone:** an intact manifest whose
-  `through` is at or past `ingestedThrough` may stand in, because it and the WAL still hold every
-  seq (the old manifest of a compaction, or its new one). Otherwise refuse.
-- **Rule 3 meets a manifest that does not decode before an intact one:** refuse. It may be the
-  newest state.
-
-`openDb`, a tab's repair, and the host's ingest, compaction install and sweep all reconcile
-first, so each of them refuses too, and the database stays as it is on disk for an app or a person
-to recover. A leftover manifest numbered past an intact recorded one is still ignored when it
-does not decode (rule 1 skips it).
-
-Recording a manifest (`IdBWal.adopt`) is one IndexedDB transaction, and it writes only if
-`meta` still reads what reconcile read. The transaction pairs the manifest with the WAL:
-
-- If `through` is at or past `ingestedThrough`, the manifest holds every folded seq.
-  `ingestedThrough` becomes `through`.
-- If `through` is below `ingestedThrough` and the WAL still holds every seq above `through`,
-  those seqs are uningested again. These are the records [Truncation](#truncation) keeps.
-- Otherwise no record can follow the manifest. Every record is dropped, and `ingestedThrough`
-  moves to `head`. The database is the manifest alone, and the seqs between are lost.
-
-In the same transaction, `head` moves past the highest `through` of any manifest on disk, and
-`topGeneration` past every manifest number seen.
-
-In a running database neither rule 1 nor rule 3 applies. A manifest's `through` is at most the
-head when it is written, and `head` never moves down. Reclaim never removes the recorded
-manifest or its runs. A manifest newer than the recorded one exists only between a publish and
-its IndexedDB commit, or after a crash between them. Its seqs are still in the WAL, so it is
-ignored, and the next ingest or compaction numbers past it.
-
-## Who reconciles
-
-- `openDb`, before the first sync. It trusts the recorded manifest's runs, because the sync
-  opens them anyway. On a healthy database this costs one `meta` read, which replaces the
-  `generation` read open already did, and one listing of `m/`.
-- `sync` and appends, when the recorded generation does not load while the tab holds the
-  reclaim lock. Then no reclaim can explain the missing file: after a power loss, reconcile
-  records a manifest that loads.
+- `openDb`. It trusts the newest manifest, because loading the generation opens its runs anyway.
+  Only the retries under the reclaim lock check the runs, where a missing run means it never
+  reached the disk.
 - The host, at the start of every ingest, compaction install and sweep, under the ingest lock.
-  The host checks a recorded manifest's runs once and then trusts the generations it published
-  itself. A sweep keeps only the recorded manifest's runs. A newer manifest is a crash leftover:
-  nothing builds on it, and recovery only records a manifest whose runs are all on disk.
-
-Every tab writes only after its open reconciled, so no new seq can collide with a seq that a
-manifest holds.
+  It checks a manifest's runs once and then trusts the generations it published itself. A sweep
+  keeps only the committed manifest's runs. A newer manifest lists a run that is gone: nothing
+  builds on it.
 
 # Crash behavior
 
 Each step writes new files before it points anything at them, and deletes files only after
-nothing points at them. A **process crash** (a tab or the SharedWorker killed, the OS keeps
-every completed write) stops both stores at one point of the global order:
+nothing points at them. After a process crash:
 
 | Crash after | State on reopen |
 |---|---|
-| Append, before `complete` | The batch isn't in the WAL. The caller never got an ack. |
-| L0 run written, before its manifest | The run is in no manifest and is garbage. The records are still in the WAL. |
-| Manifest written, before the IndexedDB update | `generation` still names the old manifest, so tabs ignore the new one, and the records are still in the WAL. Its `through` is at most `head`, so reconcile leaves it. The next ingest builds on the recorded manifest and numbers past the leftover. It re-folds the same seqs, usually into the same path with the same bytes. The next sweep removes the leftover's other runs, and reclaim removes the manifest once a newer one is recorded. |
-| IndexedDB updated, before reclaim | Old manifests and input runs stay on disk until a later ingest or compaction removes them. |
+| Append, before the frame is in the file | The batch isn't in the log. The caller never got an ack. |
+| Append written, before its flush | The record is in the log, and the reopen reads it. |
+| L0 run written, before its manifest | The run is in no manifest and is garbage. The records are still in the logs. |
+| Manifest written, before the log reclaim | The ingest is committed. The covered segments stay until a later ingest removes them; reads pass over their records. |
 | Compaction outputs written, before install | The outputs are in no manifest. They are garbage. |
+| Manifest written, before the run reclaim | Old manifests and input runs stay on disk until a later ingest or compaction removes them. |
 
-Every acked write survives a process crash. A new host's first sweep removes every run file that
-the recorded manifest doesn't list.
+A new host's first sweep removes every run file that the committed manifest doesn't list.
 
-Under a **power loss**, IndexedDB keeps commits `1..i` and OPFS keeps file operations `1..o`,
-for any `i` and `o`:
-
-| IndexedDB kept | OPFS kept | Reopen |
-|---|---|---|
-| An ingest's commit | Not its run or manifest | The recorded manifest is gone (rule 3). The previous manifest is intact, and the WAL still holds the seqs that ingest folded, so they are uningested again. Nothing is lost. If OPFS lost more than one ingest, the WAL is dropped, and the database is the newest intact manifest. |
-| Not a compaction's `generation` raise | Its new manifest, and the removal of the old one and its inputs | The recorded manifest is gone. OPFS removed it only after publishing the new one, which is intact and has the same `through` (rule 3). Nothing is lost. |
-| Some appends, not the ingest that followed | That ingest's manifest, or later ones | The manifest holds seqs past `head` (rule 1). It is recorded and `head` moves to its `through`. The database is a longer prefix than the WAL held. |
-| Nothing (a new IndexedDB) | Some manifests | Rule 3 records the newest intact one, and `head` moves past its seqs, so new writes never reuse a seq or a run path. |
-| Commits past what OPFS kept, in any mix | Any prefix | One of the rows above. The database opens as an intact manifest plus the WAL records that follow it with no gap. |
-
-`pnpm --filter @opfs-lsm/kv formal:power-loss` checks the rule on a model of both stores. It
-covers every workload of up to six appends, ingests and compactions, every pair of prefixes,
-and a second power loss at every pair of the recovery's own writes. No power-loss state reaches a
-refusal. It also removes each run of the recorded manifest after every workload: open refuses
-and nothing writes, unless a manifest holds every ingested seq, which then stands in with every
-acked write.
-`tests/sim/crash-enum.test.ts` checks every pair on the real code.
+`tests/sim/crash-enum.test.ts` checks both crash models on the real code: every process crash
+point, and up to thousands of power-loss states per workload, including logs that chain, seal
+and are reclaimed by segment. `tests/sim/multi-handle.test.ts` checks that no acked write is
+lost across tabs.
 
 # Assumptions about the platform
 
-- IndexedDB serializes `readwrite` transactions that share a store, across tabs and workers.
-  Seq assignment depends on this. Aborting a transaction reverts the WAL store's key generator,
-  which keeps a blind append gapless when it aborts.
+- A SyncAccessHandle in the default mode is exclusive, and exists only in a dedicated
+  WebWorker. Each tab's worker holds its own log files for the tab's life; no other context
+  writes them. Other contexts read them with `getFile()`.
+- A SyncAccessHandle `flush()` makes its writes durable. Writes not yet flushed may be lost on a
+  power loss, and the frame CRC and `n` chain end the log at the first one lost.
 - An OPFS `createWritable().close()` publishes the whole file atomically, and never shows a
-  partial file to readers.
-- Each store keeps the order of its own completed writes across a power loss, so what survives
-  is a prefix of them. Nothing orders IndexedDB against OPFS (see [Recovery](#recovery)). Both
-  are inferred, not documented (`docs/research/corruption-hardening-test-suite.md`,
-  "Browser durability facts").
+  partial file to readers. It does not fsync.
 - A SharedWorker with the same URL and name is shared by every tab of the origin. `openDb` names
   it `opfs-lsm:<name>`, so each database gets its own. If two different URLs serve one database,
   the Web Locks keep them from writing manifests at the same time.
 - Web Locks are shared by the tabs and workers of an origin, and the browser releases a
-  context's locks when it goes away. A tab holds `opfs-lsm-reclaim/<name>` only while it
+  context's locks when it goes away. Liveness depends on this: a tab that died stops holding the
+  watermark only once its lock is released. A tab holds `opfs-lsm-reclaim/<name>` only while it
   retries a load. The host never waits for it, so the guarantee of
   [Loading a generation under churn](#loading-a-generation-under-churn) does not depend on the
-  release; only the removal of garbage does. Without Web Locks, a retry is unprotected.
-- BroadcastChannel delivers messages in order from one sender, but may deliver them late. The
-  engine tolerates lost or late messages, because the WAL tail is always the source of truth.
+  release; only the removal of garbage does. Without Web Locks, liveness falls back to an
+  in-process registry, and a retry is unprotected.
+- BroadcastChannel delivers messages in order from one sender, but may deliver them late or
+  drop them. A lost `rec` shows up as a gap in `n`, and a lost promise is asked for again.
 
 # Known limits of this design
 
+- A frozen live tab holds every other tab's watermark until its lock is released. Its own writes
+  keep working, but other tabs stop seeing new writes, and `update` waits.
+- Without BroadcastChannel, a second tab waits forever: promises travel only on the channel.
 - Each tab keeps every live run file in memory. Tab memory grows with the size of the database.
 - The leftover run of a merge can be tiny, and the planner rarely picks a tiny run on its own,
   so small runs can stay around.
-- A tab sees another tab's writes over BroadcastChannel, so its reads can lag the ack by a
-  message hop until it calls `sync`.
+- A tab sees another tab's writes only once they are stable, a flush and a message hop after
+  their ack, until it calls `sync`.

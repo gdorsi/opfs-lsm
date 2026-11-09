@@ -4,11 +4,13 @@ import {
   MemoryFs,
   attachEngineHostPort,
   createLocalIngestClient,
-  createPortIngestClient
+  createPortIngestClient,
+  type Db,
 } from "../src/index.js";
 import {
-  openHarnessDb,
-  __resetMemoryFsForTests
+  openHarnessDb as openDbRaw,
+  __resetMemoryFsForTests,
+  type HarnessOpenOptions,
 } from "../src/testing.js";
 import { CorruptDatabaseError, OpfsLsmError } from "../src/errors.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
@@ -16,17 +18,16 @@ import { loadLatestGeneration } from "../src/store/generation.js";
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 
-async function deleteIdb(name: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
+/** Every Db a test opened, closed after it even when it fails: an open one stays a live tab. */
+const opened: Db[] = [];
+async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
+  const db = await openDbRaw(options);
+  opened.push(db);
+  return db;
 }
 
 afterEach(async () => {
-  await deleteIdb("port-db");
+  await Promise.all(opened.splice(0).map((db) => db.close()));
   __resetMemoryFsForTests("port-db");
 });
 
@@ -47,7 +48,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     const { port1, port2 } = new MessageChannel();
     attachEngineHostPort(port1, new EngineHost(() => fs));
     const client = createPortIngestClient(port2);
-    const err = await client.ingest("port-db", 1).catch((e: unknown) => e);
+    const err = await client.ingest("port-db", Number.POSITIVE_INFINITY).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CorruptDatabaseError);
     expect((err as OpfsLsmError).code).toBe("corrupt");
     client.close();
@@ -87,7 +88,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     port2.close();
   });
 
-  it("the host behind the port ingests once the WAL passes maxWalBytes", async () => {
+  it("the host behind the port ingests once the log passes maxWalBytes", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
     const { port1, port2 } = new MessageChannel();

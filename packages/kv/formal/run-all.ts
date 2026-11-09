@@ -10,11 +10,9 @@ import { fileURLToPath } from "node:url";
 const kvRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const checks = [
-  "formal/ingest-visibility/check.ts",
   "formal/wal-over-sst/check.ts",
   "formal/view-pin/check.ts",
   "formal/compact-preserve/check.ts",
-  "formal/power-loss/check.ts",
 ] as const;
 
 let failed = 0;

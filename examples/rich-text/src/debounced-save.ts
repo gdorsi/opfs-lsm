@@ -2,8 +2,8 @@
  * Debounce the latest document, then save it.
  *
  * `flush` starts that save immediately and returns true while a save is still
- * running. Callers use the flag to avoid closing the database: close aborts
- * the IndexedDB transaction the save just opened.
+ * running. Callers use the flag to avoid closing the database: close can cut
+ * off the log write the save just started.
  */
 export type DebouncedSave<T> = {
   push(doc: T): void;
@@ -45,8 +45,8 @@ export function createDebouncedSave<T>(opts: {
       writes += 1;
       let pendingSave: Promise<void>;
       try {
-        // Call save synchronously so a beforeunload flush opens its
-        // IndexedDB transaction before the page freezes.
+        // Call save synchronously so a beforeunload flush starts its
+        // log write before the page freezes.
         pendingSave = opts.save(next.doc);
       } catch (err) {
         writes -= 1;

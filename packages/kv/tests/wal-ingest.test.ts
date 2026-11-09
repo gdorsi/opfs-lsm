@@ -11,24 +11,13 @@ import { MemoryFs } from "../src/opfs/memory-fs.js";
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 
-async function deleteIdb(name: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
 afterEach(async () => {
-  await deleteIdb("notes");
-  await deleteIdb("notes2");
   __resetMemoryFsForTests("notes");
   __resetMemoryFsForTests("notes2");
 });
 
-describe("shared IDB WAL", () => {
-  it("put resolves after IDB commit and get sees the row", async () => {
+describe("per-tab log", () => {
+  it("put resolves once in the log and get sees the row", async () => {
     const db = await openHarnessDb({ name: "notes", writerId: "w1" });
     await db.put(utf("a"), utf("1"));
     const v = await db.get(utf("a"));
@@ -112,7 +101,7 @@ describe("ingest", () => {
 });
 
 describe("batch + prefixBound", () => {
-  it("batch is one IDB append", async () => {
+  it("batch is one log record", async () => {
     const db = await openHarnessDb({ name: "notes2", writerId: "w1" });
     await db.batch((tx) => {
       tx.put(utf("note/1"), utf("x"));

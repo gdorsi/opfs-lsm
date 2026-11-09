@@ -1,12 +1,11 @@
 import fc from "fast-check";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { EngineHost, MemoryFs, createLocalIngestClient, type AsyncFs } from "../../src/index.js";
 import { holdingFiles } from "../../src/host/protocol.js";
 import { openHarnessDb } from "../../src/testing.js";
-import { checkDatabase, deleteWal } from "./check-database.js";
+import { checkDatabase } from "./check-database.js";
 import { commandsArb, Model, Sut } from "./commands.js";
 import { describeOp, FaultFs, Faults, type DurableOp } from "./fault-fs.js";
-import { installFaultWal, traceWal } from "./fault-wal.js";
 import {
   checkCrashState,
   describeCut,
@@ -24,10 +23,11 @@ import { Oracle } from "./oracle.js";
  * technique 3). A workload runs once with every durable op traced; then
  * every crash state is rebuilt from a prefix of the trace, reopened, and
  * checked against the log (`crash.ts`):
- * - process crash: every cut `k` of the global order. The database opens
- *   and holds exactly the committed log, so every acked write survives;
- * - power loss: every pair (IndexedDB prefix, OPFS prefix). The database
- *   opens and holds some log prefix (design.md, "Recovery").
+ * - process crash: every crash point `k`. The database opens and holds
+ *   exactly the committed log, so every acked write survives;
+ * - power loss: at each crash point, logs keep their flushed writes and
+ *   any prefix of the rest, OPFS file ops any prefix of theirs. The
+ *   database opens and holds some log prefix (design.md, "Recovery").
  *
  * Fixed workloads cover ingest, compaction install and reclaim; random
  * histories reuse the single-handle commands of model.test.ts.
@@ -37,17 +37,11 @@ import { Oracle } from "./oracle.js";
  */
 const env = process.env;
 const RUNS = Number(env.KV_CRASH_RUNS ?? 15);
-/** Power-loss pairs drawn per random history. */
+/** Power-loss states drawn per random history. */
 const PAIRS = Number(env.KV_CRASH_PAIRS ?? 40);
 const replay = env.KV_MODEL_SEED
   ? { seed: Number(env.KV_MODEL_SEED), ...(env.KV_MODEL_PATH ? { path: env.KV_MODEL_PATH } : {}) }
   : {};
-
-let restore: () => void;
-beforeAll(() => {
-  restore = installFaultWal();
-});
-afterAll(() => restore());
 
 const put = (key: string, value: string): Step => ({ put: key, value });
 const del = (key: string): Step => ({ del: key });
@@ -89,17 +83,29 @@ const CASCADE: Step[] = [
   put("a", "a3"), ingest,
 ];
 
-const WORKLOADS: [string, Step[]][] = [
-  ["ingest", INGEST],
-  ["compaction", COMPACTION],
-  ["cascade", CASCADE],
+/**
+ * Small segments: a segment seals every write or two, so the logs are
+ * chains of segments, ingests are also asked for by the tab on its own,
+ * and reclaim removes whole segments.
+ */
+const SEGMENTS: Step[] = [
+  put("a", "a1"), put("b", "b1"), put("c", "c1"), ingest,
+  del("a"), put("d", "d1"), reopen, put("e", "e1"),
+  { batch: [{ put: "a", value: "a2" }, { del: "c" }] }, ingest, put("f", "f1"),
+];
+
+const WORKLOADS: [string, Step[], number][] = [
+  ["ingest", INGEST, 1 << 30],
+  ["compaction", COMPACTION, 1 << 30],
+  ["cascade", CASCADE, 1 << 30],
+  ["segments", SEGMENTS, 64],
 ];
 
 let runs = 0;
 
 /** Run `steps` with every durable op traced. */
-async function trace(steps: readonly Step[]): Promise<{ ops: DurableOp[]; log: Oracle }> {
-  const t = new Traced(`trace-${++runs}`);
+async function trace(steps: readonly Step[], maxWalBytes = 1 << 30): Promise<{ ops: DurableOp[]; log: Oracle }> {
+  const t = new Traced(`trace-${++runs}`, maxWalBytes);
   const log = new Oracle();
   try {
     await runSteps(t, steps, log);
@@ -132,8 +138,8 @@ afterAll(() => {
 const allProcessCuts = (ops: readonly DurableOp[]) => Array.from({ length: ops.length + 1 }, (_, k) => processCut(ops, k));
 
 describe("process crash: every crash point", () => {
-  it.each(WORKLOADS)("%s: reopens to the whole committed log", async (_name, steps) => {
-    const { ops, log } = await trace(steps);
+  it.each(WORKLOADS)("%s: reopens to the whole committed log", async (_name, steps, maxWalBytes) => {
+    const { ops, log } = await trace(steps, maxWalBytes);
     await expect(checkAll(ops, log, allProcessCuts(ops), "process")).resolves.toBe(ops.length + 1);
   });
 
@@ -176,7 +182,6 @@ describe("process crash: every crash point", () => {
 async function randomHistory(cmds: Iterable<fc.AsyncCommand<Model, Sut, false>>, seed: number): Promise<void> {
   const faults = new Faults();
   const name = `random-${++runs}`;
-  const unregister = traceWal(name, faults);
   const sut = new Sut(name, 1 << 30, new FaultFs(new MemoryFs(), faults));
   const model = new Model();
   await sut.open();
@@ -186,7 +191,6 @@ async function randomHistory(cmds: Iterable<fc.AsyncCommand<Model, Sut, false>>,
     await sut.settle();
     expect((await checkDatabase(sut.fs, name)).problems).toEqual([]);
   } finally {
-    unregister();
     await sut.dispose();
   }
   const ops = [...faults.ops];
@@ -195,105 +199,97 @@ async function randomHistory(cmds: Iterable<fc.AsyncCommand<Model, Sut, false>>,
   await checkAll(ops, log, powerCuts(ops, PAIRS, mulberry32(seed)), "power");
 }
 
-describe("power loss: every (IndexedDB prefix, OPFS prefix) pair", () => {
-  it.each(WORKLOADS)("%s: reopens to a log prefix", async (_name, steps) => {
-    const { ops, log } = await trace(steps);
+describe("power loss: logs keep what they flushed, OPFS any prefix", () => {
+  it.each(WORKLOADS)("%s: reopens to a log prefix", async (_name, steps, maxWalBytes) => {
+    const { ops, log } = await trace(steps, maxWalBytes);
     const cuts = powerCuts(ops, 5_000, mulberry32(1));
     await expect(checkAll(ops, log, cuts, "power")).resolves.toBe(cuts.length);
   }, 120_000);
 });
 
-/** Cut the trace of `steps` where `pick` says, from the ops' descriptions. */
-async function cutOf(steps: readonly Step[], pick: (idb: string[], opfs: string[]) => Cut) {
+/** Run `steps` traced, and cut the trace where `pick` says. `at(text)` is the first op whose label holds `text`. */
+async function cutOf(steps: readonly Step[], pick: (at: (text: string) => number, ops: readonly DurableOp[]) => Cut) {
   const { ops, log } = await trace(steps);
-  const idb = ops.filter((o) => o.store === "idb").map(describeOp);
-  const opfs = ops.filter((o) => o.store === "opfs").map(describeOp);
-  const cut = pick(idb, opfs);
+  const at = (text: string) => {
+    const op = ops.find((o) => o.label.includes(text));
+    if (!op) throw new Error(`no op ${text} in\n${ops.map(describeOp).join("\n")}`);
+    return op.i;
+  };
+  const cut = pick(at, ops);
   return { ops, log, cut, describe: describeCut(ops, cut) };
 }
 
-const through = (list: string[], text: string) => {
-  const i = list.findIndex((d) => d.includes(text));
-  if (i < 0) throw new Error(`no op ${text} in\n${list.join("\n")}`);
-  return i + 1;
-};
+/** OPFS file ops among the first `k` ops. */
+const opfsBefore = (ops: readonly DurableOp[], k: number) => ops.slice(0, k).filter((o) => o.store === "opfs").length;
+
+const dec = (b: Uint8Array | undefined) => b && new TextDecoder().decode(b);
 
 describe("risks to target first (research note)", () => {
-  // Risk 1. Ingest records generation 1 and ingestedThrough 1 in one
-  // IndexedDB commit. Under power loss that commit can survive while the
-  // L0 run and manifest 1, published before it through OPFS, do not. The
-  // recorded generation has no manifest. It used to fail every open with
-  // GENERATION_GONE, with seq 1 nowhere. Now the open records generation 0
-  // again, and seq 1, which the WAL keeps until the next ingest, survives.
-  it("risk 1: an ingest whose IndexedDB commit outlives its OPFS files leaves a database that opens", async () => {
-    const { ops, log, cut } = await cutOf([put("a", "a1"), ingest], (idb) => ({
-      idb: idb.length, // the first open, append seq 1, advanceIngested through 1 gen 1
-      opfs: 0, // l0/1-1.sst and m/1 lost
-    }));
+  // An ingest publishes l0/1-1.sst and manifest 1 with no fsync; a power
+  // loss can drop both while the log, flushed before the ingest, keeps
+  // the record. The open reads it from the log.
+  it("an ingest whose files are lost leaves its records in the log", async () => {
+    const { ops, log, cut } = await cutOf([put("a", "a1"), ingest], (_at, ops) => ({ k: ops.length, opfs: 0 }));
     await expect(checkCrashState(ops, log, cut, "power")).resolves.toBeUndefined();
     const t = new Traced(`risk1-${++runs}`);
-    try {
-      await t.load(ops, cut);
-      const db = await t.open();
-      expect(new TextDecoder().decode((await db.get(new TextEncoder().encode("a")))!), "seq 1 survives").toBe("a1");
-      await db.close();
-    } finally {
-      await t.dispose();
-    }
+    await t.load(ops, cut);
+    const db = await t.open();
+    expect(dec(await db.get(new TextEncoder().encode("a"))), "the record survives").toBe("a1");
+    await db.close();
   });
 
-  // Risk 2. Compaction install raises `generation` to 5 in IndexedDB, then
-  // removes manifest 4 and the input runs from OPFS. Under power loss the
-  // removals can survive and the raise not: IndexedDB records generation 4,
-  // whose manifest is gone. The open records manifest 5 instead: OPFS
-  // removed manifest 4 after it published 5.
-  it("risk 2: compaction reclaim that outlives its generation raise leaves a database that opens", async () => {
-    const { ops, log, cut } = await cutOf(COMPACTION, (idb, opfs) => ({
-      idb: through(idb, "raiseGeneration 5") - 1,
-      opfs: through(opfs, "remove l0/7-7.sst"),
-    }));
+  // A tab's writes are in its log at once and flushed a little later. A
+  // power loss before the flush drops them, and only them: what the log
+  // flushed before stands.
+  it("a power loss drops only the writes after the last flush", async () => {
+    const { ops, log, cut } = await cutOf([put("a", "a1"), ingest, put("b", "b1"), put("c", "c1")], (at, ops) => {
+      const k = ops.length;
+      const logs: Record<string, number> = {};
+      // Keep the writes the ingest flushed, lose the two after it.
+      const flushed = ops.filter((o) => o.store === "log" && o.kind === "write" && o.i < at("publish m/"));
+      for (const o of flushed) logs[o.path] = (logs[o.path] ?? 0) + 1;
+      return { k, opfs: opfsBefore(ops, k), logs };
+    });
     await expect(checkCrashState(ops, log, cut, "power")).resolves.toBeUndefined();
+    const t = new Traced(`tail-${++runs}`);
+    await t.load(ops, cut);
+    const db = await t.open();
+    const enc = new TextEncoder();
+    expect([dec(await db.get(enc.encode("a"))), dec(await db.get(enc.encode("b"))), dec(await db.get(enc.encode("c")))]).toEqual(["a1", undefined, undefined]);
+    await db.close();
   });
 
-  // Risk 3, process crash between manifest 1 and its IndexedDB update. The
-  // next ingest builds on the recorded generation 0, not on manifest 1, so
-  // it re-folds seqs 1..2 into the same path (same bytes) and lists it once
-  // (design.md, "Crash behavior"). Two more flushes compact, and reclaim
-  // removes the leftovers. Checked as one of the process crash points
-  // above too; spelled out here.
-  it("risk 3: a re-fold after a crash lists its run once, compacts and reclaims cleanly", async () => {
-    const { ops, log, cut } = await cutOf(
-      [put("a", "a1"), put("b", "b1"), ingest],
-      (idb, opfs) => ({ idb: through(idb, "append seq 2"), opfs: through(opfs, "publish m/0000000000000001.mft") }),
+  // A process crash after manifest 1 and before reclaim. The next ingest
+  // builds on manifest 1, two more flushes compact, and reclaim removes the
+  // leftovers. Checked as one of the process crash points above too;
+  // spelled out here.
+  it("a crash between a manifest and its reclaim compacts and reclaims cleanly", async () => {
+    const { ops, log, cut } = await cutOf([put("a", "a1"), put("b", "b1"), ingest], (at, ops) =>
+      processCut(ops, at("publish m/0000000000000001.mft")),
     );
     await checkCrashState(ops, log, cut, "process");
     const t = new Traced(`risk3-${++runs}`);
-    try {
-      await t.load(ops, cut);
-      let db = await t.open();
+    await t.load(ops, cut);
+    let db = await t.open();
+    await db.ingest();
+    expect((await checkDatabase(t.fs, t.name)).runs, "the ingest lists l0/1-2.sst once").toEqual(["l0/1-2.sst"]);
+    // Three more flushes make four L0 runs: compaction.
+    for (const [i, key] of ["c", "d", "e"].entries()) {
+      await db.put(new TextEncoder().encode(key), new TextEncoder().encode(`${key}${i}`));
+      log.append([{ type: "put", key: new TextEncoder().encode(key), value: new TextEncoder().encode(`${key}${i}`) }]);
       await db.ingest();
-      const listed = (await checkDatabase(t.fs, t.name)).runs;
-      expect(listed, "the re-fold lists l0/1-2.sst once").toEqual(["l0/1-2.sst"]);
-      // Three more flushes make four L0 runs: compaction.
-      for (const [i, key] of ["c", "d", "e"].entries()) {
-        await db.put(new TextEncoder().encode(key), new TextEncoder().encode(`${key}${i}`));
-        log.append([{ type: "put", key: new TextEncoder().encode(key), value: new TextEncoder().encode(`${key}${i}`) }]);
-        await db.ingest();
-      }
-      await db.close();
-      await t.host.ingest(t.name, 0, true);
-      const report = await checkDatabase(t.fs, t.name);
-      expect(report.problems).toEqual([]);
-      expect(report.orphans).toEqual([]);
-      expect(report.runs.every((p) => p.startsWith("l1/")), `compacted into L1: ${report.runs.join(", ")}`).toBe(true);
-      const decode = (b: Uint8Array) => new TextDecoder().decode(b);
-      expect(report.state.map((e) => `${decode(e.key)}=${decode(e.value)}`)).toEqual(["a=a1", "b=b1", "c=c0", "d=d1", "e=e2"]);
-      db = await t.open();
-      expect(decode((await db.get(new TextEncoder().encode("b")))!)).toBe("b1");
-      await db.close();
-    } finally {
-      await t.dispose();
     }
+    await db.close();
+    await t.host.ingest(t.name, 0, true);
+    const report = await checkDatabase(t.fs, t.name);
+    expect(report.problems).toEqual([]);
+    expect(report.orphans).toEqual([]);
+    expect(report.runs.every((p) => p.startsWith("l1/")), `compacted into L1: ${report.runs.join(", ")}`).toBe(true);
+    const decode = (b: Uint8Array) => new TextDecoder().decode(b);
+    expect(report.state.map((e) => `${decode(e.key)}=${decode(e.value)}`)).toEqual(["a=a1", "b=b1", "c=c0", "d=d1", "e=e2"]);
+    db = await t.open();
+    expect(decode((await db.get(new TextEncoder().encode("b")))!)).toBe("b1");
+    await db.close();
   });
 });
 
@@ -311,10 +307,6 @@ describe("risks to target first: false corruption", () => {
     const enc = new TextEncoder();
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
-    const g = globalThis as { BroadcastChannel?: unknown };
-    const channel = g.BroadcastChannel;
-    // No broadcasts: only these calls move either handle.
-    g.BroadcastChannel = undefined;
     let parked: (() => void)[] | undefined;
     const slow: AsyncFs = {
       read: (path, offset, length) => fs.read(path, offset, length),
@@ -362,10 +354,8 @@ describe("risks to target first: false corruption", () => {
       expect(outcome).toBe("ok");
     } finally {
       parked = undefined;
-      g.BroadcastChannel = channel;
       await a.close();
       await b.close();
-      await deleteWal(name);
     }
   });
 });
@@ -380,9 +370,6 @@ describe("generation loads under churn", () => {
     const dec = new TextDecoder();
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
-    const g = globalThis as { BroadcastChannel?: unknown };
-    const channel = g.BroadcastChannel;
-    g.BroadcastChannel = undefined;
     const name = `churn-every-step-${++runs}`;
     const ingest = createLocalIngestClient(host);
     const a = await openHarnessDb({ name, fs, ingest });
@@ -429,10 +416,8 @@ describe("generation loads under churn", () => {
       expect(report.problems).toEqual([]);
     } finally {
       churning = false;
-      g.BroadcastChannel = channel;
       await a.close();
       await b.close();
-      await deleteWal(name);
     }
   });
 
@@ -474,7 +459,6 @@ describe("generation loads under churn", () => {
     } finally {
       release?.();
       await a.close();
-      await deleteWal(name);
     }
   });
 });
@@ -484,63 +468,12 @@ async function until(cond: () => boolean): Promise<void> {
   if (!cond()) throw new Error("condition never held");
 }
 
-describe("power loss: OPFS ahead of IndexedDB (found by this suite)", () => {
-  // IndexedDB keeps seq 1 (a=a1) and loses the rest; OPFS keeps manifest 2
-  // with l0/3-4.sst (del a, c=c1) and l0/1-2.sst (a=a1, b=b1). The open
-  // used to read seq 1 over generation 0, and the next ingest built on the
-  // newest manifest file: manifest 3 listed l0/1-1.sst, l0/3-4.sst,
-  // l0/1-2.sst, a=a1, b=b1, c=c1, the fold of no log prefix. Now the open
-  // records manifest 2, which holds seqs past the WAL head, and moves the
-  // head to 4: the database is fold(log[1..4]).
-  it("the next ingest after a power loss builds only on writes the log kept", async () => {
-    const { ops, log, cut } = await cutOf(
-      [put("a", "a1"), put("b", "b1"), ingest, del("a"), put("c", "c1"), ingest],
-      (idb, opfs) => ({ idb: through(idb, "append seq 1"), opfs: through(opfs, "publish m/0000000000000002.mft") }),
-    );
-    await expect(checkCrashState(ops, log, cut, "power")).resolves.toBeUndefined();
-  });
-
-  // IndexedDB loses every commit. The open used to record the newest
-  // manifest with a WAL head of 0, so new writes reused seqs 1 and 2 and
-  // their flush overwrote l0/1-2.sst, losing b=b1. Now recording the
-  // manifest moves the head to 2, its highest seq.
-  it("writes after IndexedDB lost everything never overwrite a run OPFS kept", async () => {
-    const { ops, cut } = await cutOf([put("a", "a1"), put("b", "b1"), ingest], (_idb, opfs) => ({ idb: 0, opfs: opfs.length }));
-    const t = new Traced(`reuse-${++runs}`);
-    const enc = new TextEncoder();
-    const dec = new TextDecoder();
-    try {
-      await t.load(ops, cut);
-      const db = await t.open();
-      expect(dec.decode((await db.get(enc.encode("b")))!)).toBe("b1");
-      await db.put(enc.encode("a"), enc.encode("a9"));
-      await db.put(enc.encode("z"), enc.encode("z1"));
-      await db.ingest();
-      await db.close();
-      const again = await t.open();
-      // Every state since the reopen held b=b1; the new writes did not touch b.
-      expect((await again.get(enc.encode("b"))) && dec.decode((await again.get(enc.encode("b")))!)).toBe("b1");
-      await again.close();
-    } finally {
-      await t.dispose();
-    }
-  });
-});
-
 describe("crash leftovers", () => {
-  // Risk 6 (unbounded orphans). Found by "process crash … compaction":
-  // crash after manifest 5 (compaction output) is published and before
-  // IndexedDB records it. The fresh host's first sweep used to keep the runs
-  // of every manifest from the recorded one on, so manifest 5's output
-  // stayed; the next ingest then removed manifest 5, and nothing retired
-  // its output until another host started. The sweep now keeps only the
-  // recorded manifest's runs: a manifest past it is a crash leftover that
-  // nothing builds on (design.md, "Recovery").
+  // Risk 6 (unbounded orphans): a crash in the middle of a compaction
+  // leaves output runs no manifest lists. A host that swept once after the
+  // crash must still reclaim them.
   it("a host that swept after a crash still reclaims runs the crash left behind", async () => {
-    const { ops, cut } = await cutOf(COMPACTION, (idb, opfs) => ({
-      idb: through(idb, "raiseGeneration 5") - 1,
-      opfs: through(opfs, "publish m/0000000000000005.mft"),
-    }));
+    const { ops, cut } = await cutOf(COMPACTION, (at, ops) => processCut(ops, at("publish l1/")));
     const t = new Traced(`leak-${++runs}`);
     try {
       await t.load(ops, cut);

@@ -122,10 +122,12 @@ describe("decoder bugs the fuzzers found", () => {
       generation: 1,
       tombstoneSeq: 0,
       through: 0,
+      cut: 0,
       runs: [{ path: "l1/a.sst", range: { smallest: utf("a"), largest: utf("b") } }],
     });
-    // Run count and the first path length, inflated (found by "manifests ... reject every change").
-    new DataView(m.buffer).setUint32(34, 0xffffffff, true);
+    // Run count (at 40 since version 3) and the first path length, inflated
+    // (found by "manifests ... reject every change").
+    new DataView(m.buffer).setUint32(42, 0xffffffff, true);
     fixManifestCrc(m);
     await expect(corruptWithinBounds("decodeGeneration", () => decodeGeneration(m))).resolves.toBeUndefined();
   });

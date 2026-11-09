@@ -1,7 +1,7 @@
 {
   "name": "@opfs-lsm/kv",
   "version": "0.1.0",
-  "description": "Browser KV: shared IDB WAL + OPFS LSM (SST ingest)",
+  "description": "Browser KV: per-tab OPFS write-ahead logs + OPFS LSM (SST ingest)",
   "type": "module",
   "exports": {
     ".": {
@@ -27,14 +27,12 @@
     "test": "pnpm run build && vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run",
-    "two-tab": "pnpm run build && tsx scripts/two-tab.ts",
-    "kill-chrome": "pnpm run build && tsx scripts/kill-chrome.ts",
-    "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
+    "two-tab": "pnpm run build && node scripts/two-tab.ts",
+    "kill-chrome": "pnpm run build && node scripts/kill-chrome.ts",
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
     "formal:view-pin": "tsx formal/view-pin/check.ts",
     "formal:compact-preserve": "tsx formal/compact-preserve/check.ts",
-    "formal:power-loss": "tsx formal/power-loss/check.ts",
     "fuzz:corpus": "tsx fuzz/make-corpus.ts",
     "fuzz:jazzer": "tsx fuzz/jazzer/run.ts"
   },
@@ -42,7 +40,6 @@
   "devDependencies": {
     "@jazzer.js/core": "4.0.0",
     "esbuild": "0.28.2",
-    "fake-indexeddb": "^6.0.0",
     "fast-check": "^4.10.2",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",

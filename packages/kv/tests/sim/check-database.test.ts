@@ -1,18 +1,16 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
 import { openHarnessDb } from "../../src/testing.js";
 import {
   loadGeneration,
   publishGeneration,
 } from "../../src/store/generation.js";
-import { checkDatabase, deleteWal, walMeta, walStore } from "./check-database.js";
+import { checkDatabase } from "./check-database.js";
 
 const utf = (s: string) => new TextEncoder().encode(s);
 const NAME = "check-db";
 
-afterEach(() => deleteWal(NAME));
-
-/** Four flushes so one compaction ran, then a tail left in the WAL. */
+/** Four flushes so one compaction ran, then a tail left in the log. */
 async function seeded() {
   const fs = new MemoryFs();
   const host = new EngineHost(() => fs);
@@ -30,11 +28,15 @@ async function seeded() {
   }
   await db.put(utf("tail"), utf("t"));
   await db.close();
+  fsOf = fs;
   return { fs, host };
 }
 
+let fsOf: MemoryFs;
+
+/** The committed generation: the newest manifest. */
 async function recordedGeneration(): Promise<number> {
-  return (await walMeta(NAME)).generation!;
+  return (await checkDatabase(fsOf, NAME)).generation!;
 }
 
 describe("checkDatabase", () => {
@@ -100,20 +102,33 @@ describe("checkDatabase", () => {
     expect((await checkDatabase(fs, NAME)).problems.join("\n")).toMatch(/L1 runs overlap/);
   });
 
-  it("reports a gap in the WAL", async () => {
+  it("reports a gap in a tab's log", async () => {
     const { fs } = await seeded();
     const db = await openHarnessDb({ name: NAME, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
     await db.put(utf("x"), utf("1"));
     await db.put(utf("y"), utf("2"));
     await db.close();
-    await walStore(NAME, "readwrite", (wal) => wal.delete(13));
-    expect((await checkDatabase(fs, NAME)).problems.join("\n")).toMatch(/wal keys/);
+    // Cut the first record (put x) out of the new tab's segment.
+    const putX = [0, 1, 0, 0, 0, 0x78];
+    const holds = (b: Uint8Array) => b.some((_, i) => putX.every((v, j) => b[i + j] === v));
+    let path: string | undefined;
+    for (const tab of await fs.list("w")) {
+      for (const file of await fs.list(`w/${tab}`)) {
+        if (holds((await fs.read(`w/${tab}/${file}`, 0, Infinity))!)) path = `w/${tab}/${file}`;
+      }
+    }
+    const bytes = (await fs.read(path!, 0, Infinity))!;
+    const first = 21 + new DataView(bytes.buffer).getUint32(0, true);
+    await fs.remove(path!);
+    (await fs.segments().create(path!)).write(bytes.slice(first), 0);
+    expect((await checkDatabase(fs, NAME)).problems.join("\n")).toMatch(/first record n 2, name says 1/);
   });
 
-  it("reports a run seq past ingestedThrough", async () => {
+  it("reports a run seq past the manifest's through", async () => {
     const { fs } = await seeded();
-    await walStore(NAME, "readwrite", (_wal, meta) => meta.put(3, "ingestedThrough"));
-    expect((await checkDatabase(fs, NAME)).problems.join("\n")).toMatch(/past ingestedThrough 3/);
+    const meta = (await loadGeneration(fs, await recordedGeneration()))!;
+    await publishGeneration(fs, { ...meta, through: 3 });
+    expect((await checkDatabase(fs, NAME)).problems.join("\n")).toMatch(/past the manifest's through 3/);
   });
 
   it("counts files no manifest lists as orphans, not problems", async () => {

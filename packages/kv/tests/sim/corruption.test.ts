@@ -1,25 +1,26 @@
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { CommitError, CorruptDatabaseError } from "../../src/errors.js";
 import { EngineHost, MemoryFs, createLocalIngestClient, type Db } from "../../src/index.js";
 import { encodeSst as encodeSstWasm, ensureEngine, mergeSsts } from "../../src/store/engine.js";
-import { decodeGeneration, encodeGeneration, runMeta } from "../../src/store/generation.js";
+import { decodeGeneration, encodeGeneration, manifestNumbers, runMeta } from "../../src/store/generation.js";
 import { openHarnessDb } from "../../src/testing.js";
-import { checkDatabase, deleteWal, walMeta, walRows, walStore } from "./check-database.js";
+import { checkDatabase } from "./check-database.js";
 
 /**
  * End-to-end corruption (docs/research/corruption-hardening-test-suite.md,
  * techniques 7 and 10). One database file is corrupted: a run of L0, L1 or
- * L2 (LZ4), the recorded manifest, a leftover manifest, a WAL row, or a WAL
- * `meta` row. Then a fresh tab and host open it and get, scan, write, flush,
+ * L2 (LZ4), the committed manifest, a leftover manifest, or a tab's log
+ * segment. Then a fresh tab and host open it and get, scan, write, flush,
  * compact and reopen. Each step is recorded as one outcome, and the rules
  * are checked:
  *
  * - No step hangs, and none fails with anything but an `OpfsLsmError`.
- * - Where a CRC is checked (manifests everywhere, runs in the SharedWorker's
- *   compaction), the corruption never becomes a wrong answer or lost data:
- *   a step fails with `CorruptDatabaseError`, or answers right.
- * - Where none is (a tab's run reads, WAL rows and `meta`), a wrong answer
- *   is allowed.
+ * - Where a CRC is checked (manifests everywhere, log frames, runs in the
+ *   SharedWorker's compaction), the corruption never becomes a wrong answer
+ *   or lost data: a step fails with `CorruptDatabaseError`, or answers
+ *   right. The exception is the end of a tab's last segment, where a bad
+ *   frame is the shape a crash mid-write leaves: the log ends there.
+ * - Where none is (a tab's run reads), a wrong answer is allowed.
  *
  * `KV_CORRUPT_REPORT=1` prints the table that docs/verification.md quotes.
  */
@@ -42,10 +43,6 @@ afterAll(() => {
   console.log([`| File | Corruption | ${STEPS.join(" | ")} |`, `|---|---|${STEPS.map(() => "---|").join("")}`, ...rows].join("\n"));
 });
 
-afterEach(async () => {
-  for (let i = 1; i <= dbs; i++) await deleteWal(`corrupt-${i}`);
-});
-
 /** The database every case starts from, and what it must read. */
 type Fixture = {
   readonly name: string;
@@ -56,13 +53,19 @@ type Fixture = {
 
 /**
  * Five flushes: four L0 runs compact into one L1 run, then one more L0 run,
- * and two batches left in the WAL. Values are unique per write.
+ * and two batches left in the log. Values are unique per write. Segments
+ * of about 1 KB, so the log is a chain and reclaim removes whole segments.
  */
 async function standard(): Promise<Fixture> {
   const name = `corrupt-${++dbs}`;
   const fs = new MemoryFs();
   const state = new Map<string, string>();
-  const db = await openHarnessDb({ name, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+  const db = await openHarnessDb({
+    name,
+    fs,
+    ingest: createLocalIngestClient(new EngineHost(() => fs)),
+    ingestPolicy: { maxWalBytes: 1024 },
+  });
   for (let round = 0; round < 6; round++) {
     await db.batch((tx) => {
       for (let i = round; i < 40; i += 2) {
@@ -77,16 +80,15 @@ async function standard(): Promise<Fixture> {
     });
     if (round < 5) await db.ingest();
   }
-  await db.put(utf("tail"), utf("in the WAL"));
-  state.set("tail", "in the WAL");
+  await db.put(utf("tail"), utf("in the log"));
+  state.set("tail", "in the log");
   await db.close();
   return { name, fs, state };
 }
 
 /**
- * One LZ4 run in L2, as compaction writes deep runs, recorded by a manifest
- * whose `through` covers its seqs. IndexedDB starts empty, and recovery
- * records the manifest (design.md, "Recovery", rule 3).
+ * One LZ4 run in L2, as compaction writes deep runs, listed by the only
+ * manifest, with no log.
  */
 async function deep(): Promise<Fixture> {
   await ensureEngine();
@@ -102,7 +104,7 @@ async function deep(): Promise<Fixture> {
   const body = await encodeSstWasm(entries, "lz4");
   const path = `l2/c1.0-${body.byteLength}.sst`;
   await put(fs, path, body);
-  await put(fs, "m/0000000000000001.mft", encodeGeneration({ generation: 1, runs: [runMeta(path, body)], tombstoneSeq: 0, through: 300 }));
+  await put(fs, "m/0000000000000001.mft", encodeGeneration({ generation: 1, runs: [runMeta(path, body)], tombstoneSeq: 0, through: 300, cut: 0 }));
   return { name, fs, state };
 }
 
@@ -114,6 +116,58 @@ async function put(fs: MemoryFs, path: string, body: Uint8Array): Promise<void> 
 
 async function files(fs: MemoryFs, dir: string): Promise<string[]> {
   return (await fs.list(dir)).map((n) => `${dir}/${n}`).sort();
+}
+
+/** Every log segment, by tab, oldest first. */
+async function segments(fs: MemoryFs): Promise<string[]> {
+  const out: string[] = [];
+  for (const tab of await files(fs, "w")) out.push(...(await files(fs, tab)));
+  return out;
+}
+
+/** Replace log segment `path` with `change(bytes)`, written in place as a tab writes it. */
+async function corruptSegment(fs: MemoryFs, path: string, change: (b: Uint8Array) => Uint8Array): Promise<void> {
+  const bytes = change((await fs.read(path, 0, Number.POSITIVE_INFINITY))!.slice());
+  await fs.remove(path);
+  (await fs.segments().create(path)).write(bytes, 0);
+}
+
+/**
+ * The standard fixture, then a second tab with 64-byte segments writes
+ * five records: its log is three segments, two of them sealed.
+ */
+async function chained(): Promise<Fixture> {
+  const f = await standard();
+  const db = await openHarnessDb({
+    name: f.name,
+    fs: f.fs,
+    ingest: createLocalIngestClient(new EngineHost(() => f.fs)),
+    ingestPolicy: { maxWalBytes: 64 },
+  });
+  for (let i = 1; i <= 5; i++) {
+    await db.put(utf(`log${i}`), utf(`r${i}`));
+    f.state.set(`log${i}`, `r${i}`);
+  }
+  await db.close();
+  return f;
+}
+
+/** The segments of the chained fixture's second tab: the tab with three. */
+async function chain(f: Fixture): Promise<string[]> {
+  for (const tab of await files(f.fs, "w")) {
+    const segs = await files(f.fs, tab);
+    if (segs.length === 3) return segs;
+  }
+  throw new Error("no tab with three segments");
+}
+
+/** The offset of `text` in `bytes`. */
+function find(bytes: Uint8Array, text: string): number {
+  const want = utf(text);
+  for (let i = 0; i + want.byteLength <= bytes.byteLength; i++) {
+    if (want.every((b, j) => bytes[i + j] === b)) return i;
+  }
+  throw new Error(`no ${text}`);
 }
 
 /** Replace `path` with `change(bytes)`. */
@@ -130,7 +184,9 @@ const flipAt = (at: (len: number) => number, bit = 0x10) => (b: Uint8Array) => {
 const l0 = async (f: Fixture) => (await files(f.fs, "l0")).at(-1)!;
 const l1 = async (f: Fixture) => (await files(f.fs, "l1"))[0]!;
 const l2 = async (f: Fixture) => (await files(f.fs, "l2"))[0]!;
-const recorded = async (f: Fixture) => `m/${String((await walMeta(f.name)).generation).padStart(16, "0")}.mft`;
+/** The newest manifest: the committed one when its runs are all there. */
+const newest = async (f: Fixture) => (await manifestNumbers(f.fs))[0]!;
+const recorded = async (f: Fixture) => `m/${String(await newest(f)).padStart(16, "0")}.mft`;
 
 async function step(r: Report, name: string, fn: () => Promise<Outcome>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -238,13 +294,21 @@ describe("a healthy database", () => {
     expect(await run("none: healthy, one L2 LZ4 run", deep, async () => undefined)).toEqual(HEALTHY);
   });
 
-  it("the standard fixture has L0 and L1 runs, a WAL tail, and checks clean", async () => {
+  it("the standard fixture has L0 and L1 runs, a log tail, and checks clean", async () => {
     const f = await standard();
     expect(await files(f.fs, "l0")).toHaveLength(1);
     expect(await files(f.fs, "l1")).toHaveLength(1);
     const report = await checkDatabase(f.fs, f.name);
     expect(report.problems).toEqual([]);
     expect(report.head - report.ingestedThrough).toBe(2);
+    expect((await segments(f.fs)).length, "reclaim removed whole segments").toBeLessThan(4);
+  });
+
+  it("the chained fixture checks clean and passes every step", async () => {
+    const f = await chained();
+    expect(await chain(f)).toHaveLength(3);
+    expect((await checkDatabase(f.fs, f.name)).problems).toEqual([]);
+    expect(await run("none: healthy, a chain of segments", async () => f, async () => undefined)).toEqual(HEALTHY);
   });
 });
 
@@ -309,14 +373,18 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
 });
 
 describe("a corrupt manifest: CRC-checked everywhere", () => {
-  it("a leftover manifest past the recorded one is ignored", async () => {
-    const r = await run("manifest: leftover past the recorded one, flipped", standard, async (f) => {
-      const gen = (await walMeta(f.name)).generation!;
+  it("a newer manifest that fails its CRC: open fails as corrupt", async () => {
+    // With no record of the committed generation outside OPFS, the newest
+    // manifest file is the committed one: a power loss can leave it empty
+    // or missing, never failing its CRC.
+    const r = await run("manifest: a newer one, flipped", standard, async (f) => {
+      const gen = await newest(f);
       const body = (await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!.slice();
       body[20]! ^= 1;
       await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, body);
     });
-    expect(r).toEqual(HEALTHY);
+    expect(crashes(r)).toEqual([]);
+    expect(r.open).toBe("corrupt");
   });
 
   it("the recorded manifest, a flipped byte: open fails as corrupt", async () => {
@@ -333,14 +401,14 @@ describe("a corrupt manifest: CRC-checked everywhere", () => {
 });
 
 /**
- * Recovery (`reconcile`, src/recover.ts) tells a power loss from
- * corruption (design.md, "Recovery"). A power loss cannot tear a manifest
- * (OPFS publishes a file whole), and OPFS keeps its writes in order, so a
- * recorded manifest that is on disk but fails its CRC (R2), or lists a run
- * that is gone while no intact manifest holds every ingested seq (R1), is
- * corruption. Recovery then throws CorruptDatabaseError and writes nothing:
- * no WAL record is dropped, and no sweep deletes a run. Before the fix both
- * became silent, permanent loss of the whole database.
+ * Recovery (`recoverGeneration`, src/recover.ts) tells a power loss from
+ * corruption. A power loss cannot tear a manifest (OPFS publishes a file
+ * whole), so a manifest on disk that fails its CRC is corruption (R2). One
+ * that lists a run that is gone is a power loss only while an older intact
+ * manifest and the logs above its cut still hold everything (R1); reclaim
+ * removes a segment only once a manifest covers it. Otherwise recovery
+ * throws CorruptDatabaseError and writes nothing: no log segment and no run
+ * is deleted.
  */
 describe("recovery never turns corruption into data loss", () => {
   /** How many keys a reopened database still reads right. */
@@ -352,21 +420,21 @@ describe("recovery never turns corruption into data loss", () => {
     return n;
   }
 
-  /** Every file and its bytes, the WAL rows and `meta`: what a refusal must leave as it was. */
+  /** Every file and its bytes, log segments included: what a refusal must leave as it was. */
   async function snapshot(f: Fixture) {
     const out: Record<string, number[]> = {};
     for (const dir of ["m", "l0", "l1", "l2"]) {
       for (const p of await files(f.fs, dir)) out[p] = [...(await f.fs.read(p, 0, Number.POSITIVE_INFINITY))!];
     }
-    const rows = (await walRows(f.name)).map((r) => [r.seq, [...new Uint8Array(r.raw as ArrayBuffer)]]);
-    return { files: out, rows, meta: await walMeta(f.name) };
+    const logs: Record<string, number[]> = {};
+    for (const p of await segments(f.fs)) logs[p] = [...(await f.fs.read(p, 0, Number.POSITIVE_INFINITY))!];
+    return { files: out, logs };
   }
 
-  /** A flush that has a seq to fold, and the compaction after it, on a host that never saw the database. */
+  /** A flush that has a record to fold, and the compaction after it, on a host that never saw the database. */
   async function hostFlushAndCompact(f: Fixture): Promise<Outcome> {
-    const { head } = await walMeta(f.name);
     try {
-      await new EngineHost(() => f.fs).ingest(f.name, head, true);
+      await new EngineHost(() => f.fs).ingest(f.name, Number.POSITIVE_INFINITY, true);
       return "ok";
     } catch (err) {
       return err instanceof CorruptDatabaseError ? "corrupt" : `THREW ${String(err)}`;
@@ -383,7 +451,7 @@ describe("recovery never turns corruption into data loss", () => {
     const f = await standard();
     await f.fs.remove(await l0(f));
     const before = await snapshot(f);
-    expect(before.rows.length).toBeGreaterThan(0);
+    expect(Object.keys(before.logs).length).toBeGreaterThan(0);
     await expect(openHarnessDb({ name: f.name, fs: f.fs, ingest: createLocalIngestClient(new EngineHost(() => f.fs)) })).rejects.toBeInstanceOf(
       CorruptDatabaseError,
     );
@@ -397,7 +465,7 @@ describe("recovery never turns corruption into data loss", () => {
     // recorded manifest lost a run, and a newer manifest with the same
     // `through` lists one run that merges all of the recorded ones.
     const f = await standard();
-    const gen = (await walMeta(f.name)).generation!;
+    const gen = await newest(f);
     const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
     const bodies = await Promise.all(old.runs.map(async (r) => (await f.fs.read(r.path, 0, Number.POSITIVE_INFINITY))!));
     const merged = (await mergeSsts(bodies, true)).ssts[0]!;
@@ -406,19 +474,7 @@ describe("recovery never turns corruption into data loss", () => {
     await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [runMeta(path, merged)] }));
     await f.fs.remove(await l0(f));
     expect(await survivors(f)).toBe(f.state.size);
-    expect((await walMeta(f.name)).generation).toBe(gen + 1);
     expect(await run("L0 run: removed, a merged manifest stands in", async () => f, async () => undefined)).toEqual(HEALTHY);
-  });
-
-  it("R1: a stand-in that misses an ingested seq is not taken", async () => {
-    const f = await standard();
-    const gen = (await walMeta(f.name)).generation!;
-    const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
-    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, through: old.through - 1, runs: [] }));
-    await f.fs.remove(await l0(f));
-    const before = await snapshot(f);
-    expect(await hostFlushAndCompact(f)).toBe("corrupt");
-    expect(await snapshot(f)).toEqual(before);
   });
 
   it("R2: a manifest that fails its CRC is never replaced, and no run is deleted", async () => {
@@ -447,57 +503,53 @@ describe("recovery never turns corruption into data loss", () => {
   });
 });
 
-describe("a corrupt WAL row: no checksum", () => {
-  const head = async (f: Fixture) => (await walMeta(f.name)).head;
-
-  it("an uningested row cut inside an op: open fails with corrupt wal row", async () => {
-    const r = await run("WAL row: truncated", standard, async (f) => {
-      const seq = await head(f);
-      await walStore(f.name, "readwrite", async (wal) => {
-        const raw = await new Promise<ArrayBuffer>((resolve) => {
-          const req = wal.get(seq);
-          req.onsuccess = () => resolve(req.result as ArrayBuffer);
-        });
-        return wal.put(raw.slice(0, raw.byteLength - 3), seq);
-      });
+describe("a corrupt log: CRC-checked frames, chained segments", () => {
+  // The tail of a tab's last segment is where a crash mid-write tears a
+  // frame: the log ends at the last whole frame, and the records past it
+  // are lost, as after a power loss. Allowed.
+  it("the last record cut short: the log ends before it", async () => {
+    const r = await run("log: last record cut short", chained, async (f) => {
+      const last = (await chain(f)).at(-1)!;
+      await corruptSegment(f.fs, last, (b) => b.slice(0, b.byteLength - 3));
+      f.state.delete("log5");
     });
-    expect(crashes(r)).toEqual([]);
-    expect(r.open).toBe("commit");
+    expect(r).toEqual(HEALTHY);
   });
 
-  it("an uningested row that is not bytes: open fails with corrupt wal row", async () => {
-    const r = await run("WAL row: not an ArrayBuffer", standard, async (f) => {
-      const seq = await head(f);
-      await walStore(f.name, "readwrite", (wal) => wal.put({ ops: "garbage" }, seq));
+  it("a flipped byte in a sealed segment: open fails as corrupt", async () => {
+    const r = await run("log: sealed segment, byte flipped", chained, async (f) => {
+      const first = (await chain(f))[0]!;
+      await corruptSegment(f.fs, first, (b) => flipAt(() => find(b, "r1"))(b));
     });
     expect(crashes(r)).toEqual([]);
-    expect(r.open).toBe("commit");
+    expect(r.open).toBe("corrupt");
   });
 
-  it("an uningested row deleted: open fails on the gap", async () => {
-    const r = await run("WAL row: deleted (a gap)", standard, async (f) => {
-      const seq = await head(f);
-      await walStore(f.name, "readwrite", (wal) => wal.delete(seq - 1));
+  it("a sealed segment cut short: open fails as corrupt", async () => {
+    const r = await run("log: sealed segment cut short", chained, async (f) => {
+      const first = (await chain(f))[0]!;
+      await corruptSegment(f.fs, first, (b) => b.slice(0, b.byteLength - 3));
     });
     expect(crashes(r)).toEqual([]);
-    expect(r.open).toBe("commit");
+    expect(r.open).toBe("corrupt");
   });
 
-  it("meta.generation names a manifest that is not there", async () => {
-    const r = await run("WAL meta: generation past every manifest", standard, async (f) => {
-      await walStore(f.name, "readwrite", (_wal, meta) => meta.put(999, "generation"));
+  it("a middle segment deleted: open fails on the gap", async () => {
+    const r = await run("log: middle segment deleted (a gap)", chained, async (f) => {
+      await f.fs.remove((await chain(f))[1]!);
     });
     expect(crashes(r)).toEqual([]);
+    expect(r.open).toBe("corrupt");
   });
 
-  // `num()` reads a `meta` value that is not a number as 0. With `head` 0
-  // a tab reads no WAL tail and answers without the uningested writes.
-  // `meta` has no checksum, so the rules allow it; the table records it.
-  it("meta.head is not a number: reads miss the WAL tail", async () => {
-    const r = await run("WAL meta: head not a number", standard, async (f) => {
-      await walStore(f.name, "readwrite", (_wal, meta) => meta.put("x", "head"));
+  // A tab's oldest segments are what reclaim removes, once a manifest
+  // covers them. The next segment's name says which records came before
+  // it; when no generation holds them, open fails as corrupt.
+  it("the first segment deleted: open fails as corrupt", async () => {
+    const r = await run("log: first segment deleted", chained, async (f) => {
+      await f.fs.remove((await chain(f))[0]!);
     });
     expect(crashes(r)).toEqual([]);
-    expect(r.get).toBe("wrong");
+    expect(r.open).toBe("corrupt");
   });
 });

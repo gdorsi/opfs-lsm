@@ -9,7 +9,7 @@ export type KvStats = {
   tab: {
     /** WAL records this Db handle appended. */
     walAppends: number;
-    /** Encoded record bytes handed to IndexedDB, excluding meta puts. */
+    /** Key and value bytes of the records this Db appended to its log. */
     walBytes: number;
     /** This tab's OPFS IO (open load, installs). */
     fs: IoCounters;
@@ -24,12 +24,12 @@ function internalsOf(db: Db) {
 }
 
 export async function readStats(db: Db): Promise<KvStats> {
-  const { name, wal, fs, ingest } = internalsOf(db);
+  const { name, appended, fs, ingest } = internalsOf(db);
   const host = await ingest.stats(name);
   return {
     tab: {
-      walAppends: wal.appendedRecords,
-      walBytes: wal.appendedBytes,
+      walAppends: appended.records,
+      walBytes: appended.bytes,
       fs: structuredClone(fs.counters),
     },
     host,

@@ -5,7 +5,7 @@ Two-tab visibility lets one tab put and ingest while another tab keeps a pinned 
 ## Sub-features
 
 - `two-tab-warm` seeds and ingests so SST readers are warm before the peer write.
-- `two-tab-peer-put` puts `k=v` from the peer tab into the shared IndexedDB WAL.
+- `two-tab-peer-put` puts `k=v` from the peer tab into its own OPFS log.
 - `two-tab-pin` holds a view across peer ingest and still reads `k=v`.
 - `two-tab-fresh` reads `k=v` on a fresh get after ingest.
 - `two-tab-range` finds `k` in a range scan after ingest.

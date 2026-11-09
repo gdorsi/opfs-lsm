@@ -4,6 +4,7 @@ import {
   checkDbName,
   checkKey,
   newWriterId,
+  opsBytes,
   type CheckedKey,
   type CheckedOp,
   type DbName,
@@ -11,7 +12,6 @@ import {
 } from "./check.js";
 import {
   ClosedError,
-  CommitError,
   ConstraintError,
   CorruptDatabaseError,
   StorageUnavailableError,
@@ -20,12 +20,19 @@ import {
   EngineHost,
   createLocalIngestClient,
   createPortIngestClient,
-  type WatchScan,
 } from "./host/engine-host.js";
 import { holdingFiles, layersChannel, type IngestClient } from "./host/protocol.js";
-import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
-import { reconcile } from "./recover.js";
-import { Memtable, type MemRow } from "./store/memtable.js";
+import {
+  createLocalLogClient,
+  createWorkerLogClient,
+  republishingSegments,
+  type TabLogClient,
+} from "./log/client.js";
+import { newTabId, type TabId } from "./log/frame.js";
+import type { MergedRecord } from "./log/merger.js";
+import { LogSession } from "./log/session.js";
+import { recoverGeneration } from "./recover.js";
+import { Memtable, layered, type MemRow, type MemRows } from "./store/memtable.js";
 import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
@@ -130,10 +137,6 @@ function span(
   trace.spans.push({ phase, ms, endedAt: performance.now(), ...extra });
 }
 
-function recordWatchScan(trace: OpenTrace, scan: WatchScan): void {
-  span(trace, "host-scan", scan.ms, { rows: scan.rows, bytes: scan.bytes });
-}
-
 export type Range = {
   readonly start?: Uint8Array;
   readonly endExclusive?: Uint8Array;
@@ -159,16 +162,18 @@ export interface Db {
   put(key: Uint8Array, value: Uint8Array): Promise<void>;
   delete(key: Uint8Array): Promise<void>;
   /**
-   * `build` runs synchronously. Promise resolves after the shared IDB WAL
-   * commit. Other tabs see the write when its BroadcastChannel message
-   * arrives, a moment after the ack, or after their next `sync()`. The ingest host
-   * flushes the WAL to OPFS per ingestPolicy.
+   * `build` runs synchronously. Promise resolves once the batch is written
+   * to this tab's log; it is durable at the log's next flush. This tab reads
+   * it at once. Other tabs see it once it is stable, a flush and a
+   * BroadcastChannel message after the ack, or after their next `sync()`.
+   * The ingest host folds the logs into OPFS runs per ingestPolicy.
    */
   batch(build: (tx: BatchTx) => void): Promise<void>;
   /**
-   * Read `keys` and write, in one IndexedDB transaction. `body` runs
-   * synchronously with the current values, in the order of `keys`. No other
-   * write can land between the reads and the commit, so there is no conflict.
+   * Read `keys` and write at one stamp. `body` runs once, synchronously,
+   * with the values of every write ordered before that stamp, in the order
+   * of `keys`. Nothing can be ordered between the reads and the write, so
+   * there is no conflict.
    */
   update<T>(
     keys: readonly Uint8Array[],
@@ -176,7 +181,7 @@ export interface Db {
   ): Promise<T>;
   /**
    * Scan `range`, then point-read `follow(entry)` for each entry that returns a
-   * key, in one IndexedDB transaction. Every read sees the same state.
+   * key, over one pin of the rows and levels. Every read sees the same state.
    */
   rangeFollow(
     range: Range,
@@ -184,13 +189,14 @@ export interface Db {
   ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]>;
   range(range?: Range): AsyncIterable<Entry>;
   /**
-   * Read-only snapshot: pinned WAL head + OPFS generation at open.
-   * Writes that commit during the callback are invisible to `snap`.
+   * Read-only snapshot: the stable rows, this tab's own unstable writes and
+   * the installed generation, pinned when the view opens. Writes that land
+   * during the callback are invisible to `snap`.
    */
   view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T>;
   /**
-   * Subscribe to durable WAL appends and ingest generation bumps.
-   * Fires for this tab's writes and for other tabs (via BroadcastChannel).
+   * Subscribe to log appends and ingest generation bumps. Fires for this
+   * tab's writes at their ack, and for other tabs' writes once stable here.
    * Returns an unsubscribe function.
    */
   changes(listener: ChangeListener): () => void;
@@ -251,9 +257,12 @@ export function prefixBound(prefix: Uint8Array): {
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
 export type DbInternals = {
   readonly name: DbName;
-  readonly wal: IdBWal;
   readonly fs: CountingFs;
   readonly ingest: IngestClient;
+  /** Log records and encoded op bytes this Db appended. */
+  readonly appended: { records: number; bytes: number };
+  /** This Db's log directory under `w/`. */
+  readonly tab: TabId;
 };
 
 const internals = new WeakMap<Db, DbInternals>();
@@ -320,10 +329,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
       { type: "module", name: `opfs-lsm:${name}` },
     );
     span(trace, "worker-ctor", performance.now() - workerAt);
-    ingest = createPortIngestClient(
-      worker.port,
-      trace ? (scan) => recordWatchScan(trace, scan) : undefined,
-    );
+    ingest = createPortIngestClient(worker.port);
     ownsIngestClient = true;
   } else {
     if (!fs) fs = defaultMemoryFs(name);
@@ -332,33 +338,57 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   // Wrapped after the local host got the bare fs, so its IO counts only on the host.
   const tabFs = new CountingFs(fs);
 
-  const idbAt = trace ? performance.now() : 0;
-  const wal = await IdBWal.open(name);
-  span(trace, "idb-open", performance.now() - idbAt);
-  const generationAt = trace ? performance.now() : 0;
-  // Pair the WAL with a manifest before the first read or write. The
-  // recorded manifest's runs are checked by the first sync, which loads them.
-  await reconcile(wal, tabFs, TRUST_RECORDED);
-  span(trace, "generation", performance.now() - generationAt);
+  // This tab's own log. An fs with in-process segments (MemoryFs) writes
+  // it in this thread. OPFS is written only through SyncAccessHandles,
+  // which exist only in a dedicated WebWorker; it spawns while open reads
+  // the logs, and the first write waits for it.
+  const tab = newTabId();
+  const segments = fs.segments?.();
+  let client: TabLogClient;
+  if (segments) {
+    client = createLocalLogClient(segments, tab, policy.maxWalBytes);
+  } else if (typeof Worker !== "undefined") {
+    // Inline URL for bundlers, as for the SharedWorker above.
+    const logWorker = new Worker(new URL("./log/log-worker.js", import.meta.url), {
+      type: "module",
+      name: `opfs-lsm-log:${name}`,
+    });
+    client = createWorkerLogClient(logWorker, name, tab, policy.maxWalBytes);
+  } else if (!useBrowser) {
+    // A Node test over an fs with no in-process segments.
+    client = createLocalLogClient(republishingSegments(fs), tab, policy.maxWalBytes);
+  } else {
+    throw new StorageUnavailableError("no way to write the log: no in-process segments and no Worker");
+  }
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
     Math.max(MIN_MEMORY_BUDGET, options.memoryBudget ?? DEFAULT_BUDGET),
   );
+  const appended = { records: 0, bytes: 0 };
   const db = new DbImpl(
     name,
     writerId,
-    wal,
+    tab,
+    client,
     tabFs,
     cache,
     ingest,
     ownsIngestClient,
+    policy,
+    appended,
     trace,
   );
-  internals.set(db, { name, wal, fs: tabFs, ingest });
-  const syncAt = trace ? performance.now() : 0;
-  await db.sync();
-  span(trace, "sync", performance.now() - syncAt);
+  internals.set(db, { name, fs: tabFs, ingest, appended, tab });
+  // Watch first: opening can already ask for an ingest of the logs it finds.
   ingest.watch(name, policy);
+  const syncAt = trace ? performance.now() : 0;
+  try {
+    await db.open();
+  } catch (err) {
+    await db.close().catch(() => undefined);
+    throw err;
+  }
+  span(trace, "sync", performance.now() - syncAt);
   span(trace, "open", performance.now() - openAt);
   return db;
 }
@@ -409,44 +439,53 @@ type Layers = {
   /** The readers as scan sources, newest first. */
   readonly levels: readonly RunLevel[];
   readonly tombstoneSeq: number;
+  /** The runs hold every seq <= through: every log record stamped <= cut. */
+  readonly through: number;
+  readonly cut: number;
   refs: number;
 };
 
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
 
+/** What DbImpl hears on `layersChannel` itself; the log protocol is the session's. */
 type BusMessage = {
-  readonly kind: "append" | "ingest";
-  readonly writerId: string;
-  readonly seq?: number;
-  readonly ops?: readonly CheckedOp[];
+  readonly kind: string;
+  readonly writerId?: string;
+  /** For `ingest`: the generation published. */
+  readonly generation?: number;
 };
 
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
-const TRUST_RECORDED = (): boolean => true;
-const CHECK_RECORDED = (): boolean => false;
 const GENERATION_GONE =
-  "SST files for the recorded generation stayed missing after retries";
+  "SST files for the committed generation stayed missing after retries";
 
 /**
- * Reads come from this tab's memtable over the installed SST generation and
- * touch no IndexedDB. The memtable is always an exact WAL prefix, and the
- * installed generation never holds seqs past it, so every read sees the
- * state after one WAL prefix. Other tabs' writes arrive over BroadcastChannel.
+ * Reads come from this tab's own unstable writes over its memtable over
+ * the installed SST generation, and never leave the thread. The memtable
+ * is the stable prefix of every tab's log, numbered on from the
+ * generation's `through`; every tab numbers it the same way, so every read
+ * sees the state after one prefix of the one order, plus this tab's own
+ * newer writes (architecture/wal-opfs/04-per-tab-logs.md).
  */
 class DbImpl implements Db {
   private closed = false;
   private readonly mem = new Memtable();
+  private readonly session: LogSession;
   private installed: Layers = {
     generation: 0,
     runs: [],
     levels: [],
     tombstoneSeq: 0,
+    through: 0,
+    cut: 0,
     refs: 1,
   };
   /** The newest generation loaded and not yet installed. */
   private loaded: Layers | undefined;
+  /** The newest generation a hint named. */
+  private wantGeneration = 0;
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
   private syncing: Promise<void> | undefined;
@@ -458,13 +497,36 @@ class DbImpl implements Db {
   constructor(
     readonly name: DbName,
     readonly writerId: WriterId,
-    private readonly wal: IdBWal,
+    tab: TabId,
+    client: TabLogClient,
     private readonly fs: AsyncFs,
     private readonly cache: PageCache,
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
+    policy: IngestPolicy,
+    private readonly appended: { records: number; bytes: number },
     private readonly trace?: OpenTrace,
   ) {
+    this.session = new LogSession({
+      name,
+      tab,
+      fs,
+      client,
+      maxWalBytes: policy.maxWalBytes,
+      onStable: (records) => this.applyStable(records),
+      onBehind: (through) =>
+        void this.syncGeneration().then(
+          () => {
+            if (!this.closed && this.installed.cut < through) {
+              this.session.corrupt(
+                new CorruptDatabaseError(`log records through stamp ${through} were reclaimed, and no generation holds them`),
+              );
+            }
+          },
+          () => undefined,
+        ),
+      onGone: () => this.syncGeneration(),
+    });
     if (typeof BroadcastChannel !== "undefined") {
       this.bus = new BroadcastChannel(layersChannel(name));
       this.onBusMessage = (ev: MessageEvent) => this.onMessage(ev.data);
@@ -472,20 +534,71 @@ class DbImpl implements Db {
     }
   }
 
-  private onMessage(data: BusMessage | null): void {
-    if (this.closed || !data || data.writerId === this.writerId) return;
-    if (data.kind === "append" && data.seq !== undefined && data.ops) {
-      if (!this.mem.apply({ seq: data.seq, ops: data.ops })) {
-        void this.sync().catch(() => undefined);
-      }
-    } else {
-      void this.sync().catch(() => undefined);
+  /**
+   * Join the tabs and catch up. Reading the logs and taking the liveness
+   * lock need no generation, so they run while it loads; records are handed
+   * out only once it is installed, numbered on from its `through`. The bus
+   * is already live, so a generation published meanwhile is announced here
+   * and loaded on top.
+   */
+  async open(): Promise<void> {
+    const at = this.trace ? performance.now() : 0;
+    // The newest manifest, whose cut lets the log reads pass over what it
+    // holds. The reads start at once and wait for the cut only to scan.
+    const recovering = recoverGeneration(this.fs, () => true);
+    const preparing = this.session
+      .prepareJoin(recovering.then((r) => r.meta.cut, () => 0))
+      .then(() => span(this.trace, "join", performance.now() - at));
+    try {
+      const { meta } = await recovering;
+      this.wantGeneration = meta.generation;
+      await this.syncGeneration();
+      span(this.trace, "generation", performance.now() - at);
+      await preparing;
+      // A run of that manifest was gone and an older generation stands in:
+      // read the logs again above its lower cut.
+      if (this.installed.cut < meta.cut) await this.session.rejoin(this.installed.cut);
+    } finally {
+      await preparing.catch(() => undefined);
     }
-    this.changeBus.emit({
-      kind: data.kind,
-      writerId: data.writerId,
-      ...(data.seq !== undefined ? { seq: data.seq } : {}),
-    });
+    const logAt = this.trace ? performance.now() : 0;
+    await this.session.finishJoin();
+    await this.session.waitStable(this.session.merger.maxSeen());
+    span(this.trace, "log", performance.now() - logAt);
+  }
+
+  private onMessage(data: BusMessage | null): void {
+    if (this.closed || !data || data.kind !== "ingest" || data.writerId === this.writerId) return;
+    this.wantGeneration = Math.max(this.wantGeneration, data.generation ?? 0);
+    void this.syncGeneration().catch(() => undefined);
+    this.changeBus.emit({ kind: "ingest", writerId: data.writerId ?? "" });
+  }
+
+  /**
+   * Number stable records on from the memtable and apply them, then tell
+   * listeners. This tab's own records were announced at their ack; the
+   * seq of one that became stable before it is kept for that event.
+   */
+  private applyStable(records: readonly MergedRecord[]): void {
+    for (const r of records) {
+      const seq = this.mem.appliedThrough + 1;
+      this.mem.apply({ seq, ops: r.ops });
+      if (r.tab !== this.session.tab) {
+        this.changeBus.emit({ kind: "append", writerId: r.writerId, seq });
+      } else if (this.acking.has(r.stamp)) {
+        this.acking.set(r.stamp, seq);
+      }
+    }
+  }
+
+  /** This tab's appends between write and ack, by stamp: their seq once stable. */
+  private readonly acking = new Map<number, number | undefined>();
+
+  /** Announce this tab's own write at its ack, with its seq when it is already stable. */
+  private acked(stamp: number): void {
+    const seq = this.acking.get(stamp);
+    this.acking.delete(stamp);
+    this.emitChange({ kind: "append", writerId: this.writerId, ...(seq !== undefined ? { seq } : {}) });
   }
 
   private ensureOpen(): void {
@@ -499,6 +612,17 @@ class DbImpl implements Db {
 
   private emitChange(event: ChangeEvent): void {
     this.changeBus.emit(event);
+  }
+
+  /** This tab's unstable writes over the memtable. */
+  private rows(): MemRows {
+    const own = this.session.ownRows;
+    return own ? layered(own, this.mem) : this.mem;
+  }
+
+  private pinRows(): MemRows {
+    const own = this.session.pinOwnRows();
+    return own ? layered(own, this.mem.pin()) : this.mem.pin();
   }
 
   /**
@@ -544,6 +668,8 @@ class DbImpl implements Db {
       runs: held,
       levels: runLevels(paths, held.map((r) => r.reader)),
       tombstoneSeq: meta.tombstoneSeq,
+      through: meta.through,
+      cut: meta.cut,
       refs: 1,
     };
     return true;
@@ -589,43 +715,73 @@ class DbImpl implements Db {
   }
 
   /**
-   * Apply `tail` to the memtable. Synchronous, so it can run inside an
-   * IndexedDB transaction. Returns the generation to load when the tail
-   * needs one this tab does not have yet.
+   * Make the loaded generation the installed one, if it is newer. The
+   * memtable drops what it covers and jumps to its `through`, and the
+   * session to its cut. Synchronous, so reads never see half a switch.
    */
-  private catchUp(tail: WalTail): number | undefined {
-    const behind = tail.ingestedThrough > this.mem.appliedThrough;
-    // A tail read before a newer generation was installed: its records are
-    // still a WAL prefix, but its generation and ingestedThrough are stale.
-    if (tail.generation > this.installed.generation) {
-      const layers =
-        this.loaded?.generation === tail.generation ? this.loaded : undefined;
-      if (layers) {
-        this.release(this.installed);
-        this.installed = layers;
-        this.loaded = undefined;
-      } else if (behind) {
-        return tail.generation;
-      }
+  private installLoaded(): void {
+    const layers = this.loaded;
+    this.loaded = undefined;
+    if (!layers) return;
+    if (layers.generation <= this.installed.generation) {
+      this.release(layers);
+      return;
     }
-    if (this.loaded && this.loaded.generation <= this.installed.generation) {
-      this.release(this.loaded);
-      this.loaded = undefined;
-    }
-    if (this.installed.generation === tail.generation) {
-      this.mem.advanceTo(tail.ingestedThrough);
-    }
-    for (const record of tail.records) {
-      if (!this.mem.apply(record)) {
-        throw new CommitError(`wal gap before seq ${record.seq}`);
-      }
-    }
-    return undefined;
+    this.release(this.installed);
+    this.installed = layers;
+    this.mem.advanceTo(layers.through);
+    this.session.cut(layers.cut);
   }
 
   /**
-   * Catch up to everything acked before the call, and install the current
-   * generation. Reads after it resolves see other tabs' acked writes.
+   * The newest generation: the one a hint named, or the newest manifest.
+   * `checked` looks past a manifest whose runs are gone to the newest
+   * intact one (`recoverGeneration`); only the retries ask for it, under
+   * the reclaim lock, where a missing run means it never reached the disk.
+   */
+  private async newestGeneration(checked: boolean): Promise<number> {
+    if (checked) {
+      const installed = this.installed.generation;
+      return (await recoverGeneration(this.fs, (g) => g === installed)).meta.generation;
+    }
+    if (this.wantGeneration > this.installed.generation) return this.wantGeneration;
+    return (await recoverGeneration(this.fs, () => true)).meta.generation;
+  }
+
+  /**
+   * Load and install the newest generation. Usually without the reclaim
+   * lock. A run or manifest that went missing mid-load was almost always
+   * reclaimed after a newer generation replaced it, and under churn that
+   * can repeat on every try. So the retries hold the reclaim lock shared:
+   * the host removes no file until they return (design.md, "Loading a
+   * generation under churn").
+   */
+  private async syncGeneration(): Promise<void> {
+    if (await this.loadNewest()) return;
+    await holdingFiles(this.name, async () => {
+      for (let gone = 0; !(await this.loadNewest(true)); gone++) {
+        if (gone + 1 >= GENERATION_RETRIES) throw new CorruptDatabaseError(GENERATION_GONE);
+        this.wantGeneration = 0;
+      }
+    });
+  }
+
+  /** True once the newest generation is installed, false when one of its files was gone. */
+  private async loadNewest(checked = false): Promise<boolean> {
+    const sstAt = this.trace ? performance.now() : 0;
+    const generation = await this.newestGeneration(checked);
+    if (generation <= this.installed.generation) return true;
+    const whole = await this.load(generation);
+    if (this.closed) return true;
+    if (whole) this.installLoaded();
+    if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
+    return whole;
+  }
+
+  /**
+   * Catch up to everything acked before the call, from any tab, and
+   * install the newest generation. Reads after it resolves see other tabs'
+   * acked writes.
    */
   async sync(): Promise<void> {
     this.ensureOpen();
@@ -637,150 +793,17 @@ class DbImpl implements Db {
       try {
         do {
           this.syncAgain = false;
-          await this.syncOnce();
+          await this.syncGeneration();
+          if (this.closed) return;
+          const logAt = this.trace ? performance.now() : 0;
+          await this.session.catchUp();
+          span(this.trace, "log", performance.now() - logAt);
         } while (this.syncAgain);
       } finally {
         this.syncing = undefined;
       }
     })();
     return this.syncing;
-  }
-
-  /**
-   * Catch up once without the reclaim lock, the usual path. A run or
-   * manifest that went missing mid-load was almost always reclaimed after
-   * a newer generation replaced it, and under churn that can repeat on
-   * every try. So the retries hold the reclaim lock shared: the host
-   * removes no file until they return, and the generation a retry reads
-   * keeps every file (design.md, "Loading a generation under churn").
-   */
-  private async syncOnce(): Promise<void> {
-    if ((await this.catchUpOnce()) === "done") return;
-    await holdingFiles(this.name, async () => {
-      for (let gone = 0; ; ) {
-        const step = await this.catchUpOnce();
-        if (step === "done") return;
-        if (step === "gone") gone = await this.repairGone(gone);
-      }
-    });
-  }
-
-  /**
-   * Read the tail and catch up to it. "behind" when another load installed
-   * a newer generation meanwhile, "gone" when the tail's generation lacks
-   * a file.
-   */
-  private async catchUpOnce(): Promise<"done" | "behind" | "gone"> {
-    const profile: WalReadProfile | undefined = this.trace
-      ? { ms: 0, rows: 0 }
-      : undefined;
-    const tail = await this.wal.tail(this.mem.appliedThrough, profile);
-    if (profile) {
-      span(this.trace, "wal-read", profile.ms, { rows: profile.rows });
-    }
-    if (this.closed) return "done";
-    const sstAt = this.trace ? performance.now() : 0;
-    let whole = true;
-    if (tail.generation !== this.installed.generation) {
-      whole = await this.load(tail.generation);
-      if (this.closed) return "done";
-    }
-    if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
-    const memAt = this.trace ? performance.now() : 0;
-    const missing = this.catchUp(tail);
-    if (this.trace) {
-      span(
-        this.trace,
-        "memtable",
-        performance.now() - memAt,
-        profile ? { rows: profile.rows } : undefined,
-      );
-    }
-    if (missing === undefined) return "done";
-    return whole ? "behind" : "gone";
-  }
-
-  /**
-   * A load under the reclaim lock found a file of the recorded generation
-   * gone. Nothing the host does removes one while the lock is held, so the
-   * files really are gone: repair, and give up after `GENERATION_RETRIES`.
-   * Returns the new count. Call holding the lock.
-   */
-  private async repairGone(gone: number): Promise<number> {
-    if (gone + 1 >= GENERATION_RETRIES) throw new CorruptDatabaseError(GENERATION_GONE);
-    await this.repair();
-    return gone + 1;
-  }
-
-  /**
-   * The recorded generation did not load. Usually a newer one replaced it
-   * and the next tail names that one. After a power loss its manifest or
-   * runs can be gone for good: `reconcile` then records one that pairs
-   * with the WAL (design.md, "Recovery"). It changes nothing while
-   * IndexedDB names a generation other than the one found broken.
-   */
-  private async repair(): Promise<void> {
-    await reconcile(this.wal, this.fs, CHECK_RECORDED);
-  }
-
-  /**
-   * Join this tab's committed record to the memtable before the ack
-   * resolves. A gap means another tab appended first: catch up, which
-   * reads the record too.
-   */
-  private async landed(seq: number, ops: readonly CheckedOp[]): Promise<void> {
-    if (!this.mem.apply({ seq, ops }) && !this.closed) await this.sync();
-    this.emitChange({ kind: "append", writerId: this.writerId, seq });
-    this.broadcast({ kind: "append", writerId: this.writerId, seq, ops });
-  }
-
-  /**
-   * In one readwrite transaction, catch the memtable up, let `plan` choose a
-   * batch against it, and append. The batch joins the memtable at its seq,
-   * so this tab reads its own write as soon as the ack resolves. Awaiting
-   * inside the transaction would commit it, so `warm` loads what `plan`
-   * reads before each attempt, and a `plan` that still misses appends
-   * nothing and is retried. A tail that names a generation this tab lacks
-   * appends nothing either: the tab loads it, and from then on each try
-   * holds the reclaim lock, as in `syncOnce`.
-   */
-  private async write<R>(
-    plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
-    warm?: () => Promise<unknown>,
-  ): Promise<R> {
-    let locked = false;
-    let gone = 0;
-    for (;;) {
-      await warm?.();
-      const step = async () => {
-        let missing: number | undefined;
-        let miss: Miss | undefined;
-        const out = await this.wal.appendAfter(this.mem.appliedThrough, (tail) => {
-          missing = this.catchUp(tail);
-          if (missing !== undefined) return undefined;
-          const planned = plan();
-          if (!(planned instanceof Miss)) return planned;
-          miss = planned;
-          return undefined;
-        });
-        if (out || miss) return { out, miss };
-        const whole = missing === undefined || (await this.load(missing));
-        if (whole || !locked) return {};
-        gone = await this.repairGone(gone);
-        return {};
-      };
-      const { out, miss } = locked ? await holdingFiles(this.name, step) : await step();
-      if (out) {
-        if (out.seq !== undefined) await this.landed(out.seq, out.ops);
-        return out.result;
-      }
-      if (miss) {
-        // The next warm reads again and surfaces a real failure.
-        await miss.ready.catch(() => undefined);
-        continue;
-      }
-      locked = true;
-    }
   }
 
   /**
@@ -803,26 +826,10 @@ class DbImpl implements Db {
     }
   }
 
-  /** Every key read, or one Miss for all the bytes they lack. */
-  private readKeys(
-    ks: readonly CheckedKey[],
-    levels: readonly RunLevel[],
-  ): Maybe<(Uint8Array | undefined)[]> {
-    const values: (Uint8Array | undefined)[] = [];
-    let misses: Miss[] | undefined;
-    for (const k of ks) {
-      const row = this.mem.get(k);
-      const v = row ? valueOf(row) : pointGetSst(levels, k);
-      if (v instanceof Miss) (misses ??= []).push(v);
-      else values.push(v);
-    }
-    return misses ? allMissed(misses) : values;
-  }
-
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
     const k = checkKey(key);
-    const row = this.mem.get(k);
+    const row = this.rows().get(k);
     if (row) return valueOf(row);
     return this.settleInstalled((levels) => pointGetSst(levels, k));
   }
@@ -835,31 +842,79 @@ class DbImpl implements Db {
     return this.batch((tx) => tx.delete(key));
   }
 
+  private count(ops: readonly CheckedOp[]): void {
+    this.appended.records += 1;
+    this.appended.bytes += opsBytes(ops);
+  }
+
   async batch(build: (tx: BatchTx) => void): Promise<void> {
     this.ensureOpen();
     const ops = collectBatch(build);
     if (ops.length === 0) return;
-    const seq = await this.wal.append(ops);
-    if (seq === undefined) await this.write(() => ({ ops, result: undefined }));
-    else await this.landed(seq, ops);
+    const stamp = this.session.append(ops, this.writerId, (s) => this.acking.set(s, undefined));
+    this.acked(await stamp);
+    this.count(ops);
   }
 
+  /**
+   * Hold the next stamp, wait until everything ordered before it is
+   * stable here, read, and write at that stamp. Nothing ordered after it
+   * becomes visible meanwhile, so the read is exactly the state the write
+   * lands on: no conflict, no retry, and `body` runs once.
+   */
   async update<T>(
     keys: readonly Uint8Array[],
     body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
-    return this.write(() => {
-      const values = this.readKeys(ks, this.installed.levels);
-      if (values instanceof Miss) return values;
+    const held = await this.session.reserve();
+    const layers = this.installed;
+    this.retain(layers);
+    try {
+      // Usually every key is in memory or a cached block: read now, and pin
+      // the rows only when a read has to wait for the disk.
+      const now = this.readKeys(ks, this.rows(), layers.levels);
+      let values: (Uint8Array | undefined)[];
+      if (now instanceof Miss) {
+        const rows = this.pinRows();
+        values = await settle(() => this.readKeys(ks, rows, layers.levels));
+      } else {
+        values = now;
+      }
       let result!: T;
       const ops = collectBatch((tx) => {
         result = body(values, tx);
         return result;
       });
-      return { ops, result };
-    }, () => this.settleInstalled((levels) => this.readKeys(ks, levels)));
+      if (ops.length > 0) {
+        this.acking.set(held.stamp, undefined);
+        await held.commit(ops, this.writerId);
+        this.acked(held.stamp);
+        this.count(ops);
+      }
+      return result;
+    } finally {
+      held.done();
+      this.release(layers);
+    }
+  }
+
+  /** Every key read, or one Miss for all the bytes they lack. */
+  private readKeys(
+    ks: readonly CheckedKey[],
+    rows: MemRows,
+    levels: readonly RunLevel[],
+  ): Maybe<(Uint8Array | undefined)[]> {
+    const values: (Uint8Array | undefined)[] = [];
+    let misses: Miss[] | undefined;
+    for (const k of ks) {
+      const row = rows.get(k);
+      const v = row ? valueOf(row) : pointGetSst(levels, k);
+      if (v instanceof Miss) (misses ??= []).push(v);
+      else values.push(v);
+    }
+    return misses ? allMissed(misses) : values;
   }
 
   async rangeFollow(
@@ -868,7 +923,7 @@ class DbImpl implements Db {
   ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]> {
     this.ensureOpen();
     const bounds = boundsOf(range);
-    const rows = this.mem.pin();
+    const rows = this.pinRows();
     const layers = this.installed;
     this.retain(layers);
     try {
@@ -896,7 +951,7 @@ class DbImpl implements Db {
     const layers = this.installed;
     this.retain(layers);
     try {
-      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, bounds, range)) {
+      for await (const entry of scanLayers(this.rows().range(bounds), layers.levels, bounds, range)) {
         this.ensureOpen();
         yield entry;
       }
@@ -912,7 +967,7 @@ class DbImpl implements Db {
     const snap = new ViewSnapshotImpl(
       this.mem.appliedThrough,
       layers.generation,
-      this.mem.pin(),
+      this.pinRows(),
       layers.levels,
       () => {
         this.retain(layers);
@@ -932,18 +987,17 @@ class DbImpl implements Db {
     return this.changeBus.subscribe(listener);
   }
 
+  /** Fold everything acked so far, by any tab, into the SSTs, and wait for compaction. */
   async ingest(): Promise<{ generation: number }> {
     this.ensureOpen();
+    const cut = await this.session.stableCut();
     const before = this.installed.generation;
-    const result = await this.ingestClient.ingest(
-      this.name,
-      Number.POSITIVE_INFINITY,
-      true,
-    );
+    const result = await this.ingestClient.ingest(this.name, cut, true);
     if (result.generation !== before) {
       this.emitChange({ kind: "ingest", writerId: this.writerId });
-      this.broadcast({ kind: "ingest", writerId: this.writerId });
+      this.broadcast({ kind: "ingest", writerId: this.writerId, generation: result.generation });
     }
+    this.wantGeneration = Math.max(this.wantGeneration, result.generation);
     await this.sync();
     return result;
   }
@@ -958,7 +1012,7 @@ class DbImpl implements Db {
     }
     this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
-    this.wal.close();
+    await this.session.close();
     this.release(this.installed);
     if (this.loaded) this.release(this.loaded);
     this.loaded = undefined;

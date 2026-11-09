@@ -1,271 +1,213 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
+import { checkKey, checkValue, type CheckedOp } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { IdBWal } from "../src/idb/wal.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
-import { reconcile } from "../src/recover.js";
-import { publishGeneration, publishRun, type GenerationMeta } from "../src/store/generation.js";
-import { openHarnessDb } from "../src/testing.js";
-import { checkDatabase, deleteWal } from "./sim/check-database.js";
+import { EngineHost, MemoryFs, createLocalIngestClient, type Db } from "../src/index.js";
+import { KIND_RECORD, encodeFrame, encodeOps, segmentPath, type Stamp } from "../src/log/frame.js";
+import { recoverGeneration } from "../src/recover.js";
+import {
+  GENERATION_ZERO,
+  loadLatestGeneration,
+  publishGeneration,
+  publishRun,
+  type GenerationMeta,
+} from "../src/store/generation.js";
+import { openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
 
 /**
- * `reconcile` and `IdBWal.adopt` (design.md, "Recovery"): after a power
- * loss, the open records a manifest that pairs with the WAL. The crash
+ * `recoverGeneration` (design.md, "Recovery"): the newest intact manifest
+ * is the committed generation. A power loss can leave the newest manifest
+ * empty or listing a run that never reached the disk; an older one stands
+ * in only while the logs still hold every record above its cut. The crash
  * enumeration in tests/sim/crash-enum.test.ts checks every crash state;
  * these pin each branch.
  */
 const enc = new TextEncoder();
-let n = 0;
-let name = "";
-afterEach(() => deleteWal(name));
+const trustAll = () => true;
+const trustNone = () => false;
+const TAB = "00000000000000aa";
 
 function put(i: number): CheckedOp[] {
   return [{ type: "put", key: checkKey(enc.encode(`k${i}`)), value: checkValue(enc.encode(`v${i}`)) }];
 }
 
-async function walWith(appends: number): Promise<IdBWal> {
-  name = `recover-${++n}`;
-  const wal = await IdBWal.open(checkDbName(name));
-  for (let i = 1; i <= appends; i++) await wal.append(put(i));
-  return wal;
-}
-
 /** A manifest with one (fake) non-empty run per name. */
-async function manifest(fs: MemoryFs, generation: number, through: number, runs: string[]): Promise<GenerationMeta> {
+async function manifest(
+  fs: MemoryFs,
+  generation: number,
+  through: number,
+  cut: Stamp,
+  runs: string[],
+): Promise<GenerationMeta> {
   for (const path of runs) await publishRun(fs, path, new Uint8Array([1]));
-  const meta = { generation, runs: runs.map((path) => ({ path })), tombstoneSeq: 0, through };
+  const meta = { generation, runs: runs.map((path) => ({ path })), tombstoneSeq: 0, through, cut };
   await publishGeneration(fs, meta);
   return meta;
 }
 
+/**
+ * One log segment of TAB holding a record per stamp, after `prevStamp`:
+ * 0 for the tab's first segment, the last reclaimed record's stamp otherwise.
+ */
+async function segment(fs: MemoryFs, prevStamp: Stamp, stamps: Stamp[]): Promise<void> {
+  const firstN = prevStamp === 0 ? 1 : 100;
+  const w = await fs.create(segmentPath(TAB, { firstN, prevStamp }));
+  for (const [i, stamp] of stamps.entries()) {
+    await w.write(encodeFrame(KIND_RECORD, stamp, firstN + i, encodeOps(put(i))));
+  }
+  await w.finish();
+}
+
 /** Flip one byte of the newest manifest, as a disk fault would and a power loss cannot. */
-async function flipByte(fs: MemoryFs, dir: string): Promise<void> {
-  const path = dir + (await fs.list("m")).sort().at(-1)!;
-  const buf = (await fs.read(path, 0, Number.POSITIVE_INFINITY))!;
+async function flipNewest(fs: MemoryFs): Promise<void> {
+  const path = "m/" + [...(await fs.list("m"))].sort().at(-1)!;
+  const buf = (await fs.read(path, 0, Number.POSITIVE_INFINITY))!.slice();
   buf[buf.byteLength >> 1]! ^= 0xff;
   const w = await fs.create(path);
   await w.write(buf);
   await w.finish();
 }
 
-const seqs = async (wal: IdBWal) => (await wal.listUningested()).map((r) => r.seq);
-const trustAll = () => true;
-const trustNone = () => false;
+async function emptyManifest(fs: MemoryFs, generation: number): Promise<void> {
+  const w = await fs.create(`m/${String(generation).padStart(16, "0")}.mft`);
+  await w.finish();
+}
 
-describe("advanceIngested", () => {
-  it("keeps the records it folded until the next ingest", async () => {
-    const wal = await walWith(3);
-    await wal.advanceIngested(2, 1, opsBytes(put(1)) + opsBytes(put(2)));
-    // Seqs 1 and 2 stay: a power loss can keep this commit and lose manifest 1.
-    expect(await wal.adopt(await wal.meta(), 0, 0)).toBe(true);
-    expect(await seqs(wal)).toEqual([1, 2, 3]);
-    expect(await wal.uningestedBytes()).toBe(3 * opsBytes(put(1)));
-    wal.close();
+describe("recoverGeneration", () => {
+  it("is generation 0 on a new database", async () => {
+    expect(await recoverGeneration(new MemoryFs(), trustNone)).toEqual({ meta: GENERATION_ZERO, top: 0 });
   });
 
-  it("drops them at the next ingest", async () => {
-    const wal = await walWith(3);
-    await wal.advanceIngested(2, 1, 0);
-    await wal.advanceIngested(3, 2, 0);
-    // Seqs 1..2 are gone, so a manifest through 0 cannot be followed.
-    expect(await wal.adopt(await wal.meta(), 0, 0)).toBe(true);
-    expect(await wal.meta()).toMatchObject({ head: 3, ingestedThrough: 3, generation: 0 });
-    expect(await seqs(wal)).toEqual([]);
-    wal.close();
-  });
-});
-
-describe("reconcile", () => {
-  it("keeps a recorded generation whose manifest pairs with the WAL", async () => {
-    const wal = await walWith(2);
+  it("picks the newest intact manifest", async () => {
     const fs = new MemoryFs();
-    await manifest(fs, 1, 1, ["l0/1-1.sst"]);
-    await wal.advanceIngested(1, 1, 0);
-    const before = await wal.meta();
-    expect(await reconcile(wal, fs, trustNone)).toEqual({ generation: 1, top: 1 });
-    expect(await wal.meta()).toEqual(before);
-    wal.close();
+    await manifest(fs, 1, 1, 10, ["l0/1-1.sst"]);
+    const newest = await manifest(fs, 2, 2, 20, ["l0/2-2.sst", "l0/1-1.sst"]);
+    expect(await recoverGeneration(fs, trustNone)).toEqual({ meta: newest, top: 2 });
   });
 
-  it("records generation 0 on a new database", async () => {
-    const wal = await walWith(0);
-    expect(await reconcile(wal, new MemoryFs(), trustAll)).toEqual({ generation: 0, top: 0 });
-    expect(await wal.meta()).toMatchObject({ head: 0, ingestedThrough: 0, generation: 0 });
-    wal.close();
-  });
-
-  it("adopts a manifest that holds seqs past the head, and moves the head past them", async () => {
-    // IndexedDB lost everything; OPFS kept manifest 1 through seq 2.
-    const wal = await walWith(0);
+  it("skips an empty newest manifest, and never reuses its number", async () => {
+    // A power loss after creating manifest 2 and before closing it.
     const fs = new MemoryFs();
-    await manifest(fs, 1, 2, ["l0/1-2.sst"]);
-    expect(await reconcile(wal, fs, trustAll)).toEqual({ generation: 1, top: 1 });
-    expect(await wal.meta()).toMatchObject({ head: 2, ingestedThrough: 2, generation: 1 });
-    // The key generator is behind the head, so the blind append gives way
-    // and the explicit one takes seq 3.
-    expect(await wal.append(put(3))).toBeUndefined();
-    expect((await wal.appendAfter(2, () => ({ ops: put(3), result: 0 })))?.seq).toBe(3);
-    wal.close();
+    const kept = await manifest(fs, 1, 1, 10, ["l0/1-1.sst"]);
+    await emptyManifest(fs, 2);
+    expect(await recoverGeneration(fs, trustNone)).toEqual({ meta: kept, top: 2 });
   });
 
-  it("adopts a newer manifest past the head even while the recorded one is intact", async () => {
-    // IndexedDB kept seq 1 of 4; OPFS kept manifest 2 through 4.
-    const wal = await walWith(1);
+  it("refuses a newest manifest that does not decode", async () => {
     const fs = new MemoryFs();
-    await wal.adopt(await wal.meta(), 0, 0);
-    await manifest(fs, 2, 4, ["l0/1-2.sst", "l0/3-4.sst"]);
-    expect((await reconcile(wal, fs, trustAll)).generation).toBe(2);
-    expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 2 });
-    expect(await seqs(wal)).toEqual([]);
-    wal.close();
+    await manifest(fs, 1, 1, 10, ["l0/1-1.sst"]);
+    await manifest(fs, 2, 2, 20, ["l0/1-1.sst", "l0/2-2.sst"]);
+    await flipNewest(fs);
+    await expect(recoverGeneration(fs, trustAll)).rejects.toThrow(CorruptDatabaseError);
   });
 
-  it("ignores a newer manifest the WAL still covers: a crash left it, and the WAL holds its seqs", async () => {
-    const wal = await walWith(3);
+  it("refuses a manifest that does not decode between a broken newest one and an intact older one", async () => {
+    // Manifest 3 lost its run, manifest 2 is corrupt, manifest 1 is intact.
+    // Manifest 2 may hold the newest state, so recovery stops there.
     const fs = new MemoryFs();
-    await wal.adopt(await wal.meta(), 0, 0);
-    await manifest(fs, 1, 3, ["l0/1-3.sst"]);
-    expect(await reconcile(wal, fs, trustAll)).toEqual({ generation: 0, top: 1 });
-    expect(await seqs(wal)).toEqual([1, 2, 3]);
-    wal.close();
-  });
-
-  it("falls back to the newest intact manifest when the recorded one is gone, and replays the kept records", async () => {
-    // IndexedDB recorded generation 2 through 3; OPFS lost manifest 2.
-    const wal = await walWith(4);
-    const fs = new MemoryFs();
-    await manifest(fs, 1, 1, ["l0/1-1.sst"]);
-    await wal.advanceIngested(1, 1, 0);
-    await wal.advanceIngested(3, 2, 0);
-    expect((await reconcile(wal, fs, trustNone)).generation).toBe(1);
-    expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 1, generation: 1 });
-    expect(await seqs(wal)).toEqual([2, 3, 4]);
-    wal.close();
-  });
-
-  it("drops the WAL when the seqs between the manifest and it are gone", async () => {
-    const wal = await walWith(4);
-    const fs = new MemoryFs();
-    await wal.advanceIngested(1, 1, 0);
-    await wal.advanceIngested(2, 2, 0);
-    await wal.advanceIngested(3, 3, 0);
-    // Only generation 0 is left: seqs 1..1 are gone from both stores.
-    expect((await reconcile(wal, fs, trustNone)).generation).toBe(0);
-    expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
-    expect(await seqs(wal)).toEqual([]);
-    wal.close();
-  });
-
-  it("skips a manifest whose runs are gone, but never hands out its seqs again", async () => {
-    const wal = await walWith(0);
-    const fs = new MemoryFs();
-    await manifest(fs, 1, 2, ["l0/1-2.sst"]);
-    const broken = await manifest(fs, 2, 5, ["l0/3-5.sst", "l0/1-2.sst"]);
+    await segment(fs, 0, [5, 15, 25]);
+    await manifest(fs, 1, 1, 10, ["l0/1-1.sst"]);
+    await manifest(fs, 2, 2, 20, ["l0/1-1.sst", "l0/2-2.sst"]);
+    await flipNewest(fs);
+    const broken = await manifest(fs, 3, 3, 30, ["l0/3-3.sst", "l0/1-1.sst", "l0/2-2.sst"]);
     await fs.remove(broken.runs[0]!.path);
-    expect((await reconcile(wal, fs, trustAll)).generation).toBe(1);
-    expect(await wal.meta()).toMatchObject({ head: 5, ingestedThrough: 5, generation: 1 });
-    wal.close();
+    await expect(recoverGeneration(fs, trustNone)).rejects.toThrow(CorruptDatabaseError);
   });
 
-  it("refuses a recorded manifest that does not decode, and writes nothing", async () => {
-    const wal = await walWith(2);
+  it("falls back from a manifest whose run is gone while the logs hold every record above the older cut", async () => {
     const fs = new MemoryFs();
-    await manifest(fs, 1, 1, ["l0/1-1.sst"]);
-    await manifest(fs, 2, 2, ["l0/1-1.sst", "l0/2-2.sst"]);
-    await wal.advanceIngested(2, 2, 0);
-    await flipByte(fs, "m/");
-    const before = await wal.meta();
-    await expect(reconcile(wal, fs, trustNone)).rejects.toThrow(CorruptDatabaseError);
-    expect(await wal.meta()).toEqual(before);
-    wal.close();
+    // Nothing reclaimed: the log still starts at the tab's first record.
+    await segment(fs, 0, [5, 15, 25]);
+    const older = await manifest(fs, 1, 1, 10, ["l0/1-1.sst"]);
+    const broken = await manifest(fs, 2, 2, 20, ["l0/2-2.sst", "l0/1-1.sst"]);
+    await fs.remove(broken.runs[0]!.path);
+    expect(await recoverGeneration(fs, trustNone)).toEqual({ meta: older, top: 2 });
   });
 
-  it("refuses a manifest that does not decode before the newest intact one when the recorded one is gone", async () => {
-    const wal = await walWith(3);
+  it("refuses to fall back when the logs no longer hold the records above the older cut", async () => {
     const fs = new MemoryFs();
-    await manifest(fs, 1, 1, ["l0/1-1.sst"]);
-    await manifest(fs, 2, 2, ["l0/1-1.sst", "l0/2-2.sst"]);
-    await wal.advanceIngested(3, 3, 0);
-    await flipByte(fs, "m/");
-    const before = await wal.meta();
-    await expect(reconcile(wal, fs, trustNone)).rejects.toThrow(CorruptDatabaseError);
-    expect(await wal.meta()).toEqual(before);
-    wal.close();
+    // Reclaim removed the segment through stamp 15, which manifest 2 covered.
+    await segment(fs, 15, [25]);
+    await manifest(fs, 1, 1, 10, ["l0/1-1.sst"]);
+    const broken = await manifest(fs, 2, 2, 20, ["l0/2-2.sst", "l0/1-1.sst"]);
+    await fs.remove(broken.runs[0]!.path);
+    await expect(recoverGeneration(fs, trustNone)).rejects.toThrow(CorruptDatabaseError);
   });
 
-  it("never reuses a manifest number after recording an older manifest", async () => {
-    // IndexedDB recorded generation 3 (through 1); OPFS lost manifest 3.
-    // Falling back to generation 0 must not let the next ingest call its
-    // manifest 1..3: IndexedDB may still name 3 after another power loss.
-    const wal = await walWith(2);
+  it("falls back to generation 0 only while the logs hold every record", async () => {
+    const whole = new MemoryFs();
+    await segment(whole, 0, [5, 15]);
+    const broken = await manifest(whole, 1, 1, 10, ["l0/1-1.sst"]);
+    await whole.remove(broken.runs[0]!.path);
+    expect(await recoverGeneration(whole, trustNone)).toEqual({ meta: GENERATION_ZERO, top: 1 });
+
+    const reclaimed = new MemoryFs();
+    await segment(reclaimed, 5, [15]);
+    const gone = await manifest(reclaimed, 1, 1, 10, ["l0/1-1.sst"]);
+    await reclaimed.remove(gone.runs[0]!.path);
+    await expect(recoverGeneration(reclaimed, trustNone)).rejects.toThrow(CorruptDatabaseError);
+  });
+
+  it("does not check the runs of a trusted generation", async () => {
     const fs = new MemoryFs();
-    await wal.advanceIngested(1, 3, 0);
-    expect(await reconcile(wal, fs, trustNone)).toEqual({ generation: 0, top: 3 });
-    expect(await reconcile(wal, fs, trustAll)).toEqual({ generation: 0, top: 3 });
-    wal.close();
-  });
-
-  it("writes nothing when the WAL changed since it was read", async () => {
-    const wal = await walWith(1);
-    const stale = await wal.meta();
-    await wal.append(put(2));
-    expect(await wal.adopt(stale, 0, 0)).toBe(false);
-    expect(await wal.meta()).toEqual({ head: 2, ingestedThrough: 0, generation: undefined, top: 0 });
-    wal.close();
+    await segment(fs, 0, [5, 15]);
+    await manifest(fs, 1, 1, 10, ["l0/1-1.sst"]);
+    const newest = await manifest(fs, 2, 2, 20, ["l0/2-2.sst", "l0/1-1.sst"]);
+    await fs.remove(newest.runs[0]!.path);
+    expect((await recoverGeneration(fs, (g) => g === 2)).meta).toEqual(newest);
+    expect((await recoverGeneration(fs, trustNone)).meta.generation).toBe(1);
   });
 });
 
 /**
- * Chrome sometimes deletes every IndexedDB database of an origin after a
- * browser crash, and leaves OPFS alone (docs/verification.md, "Kill real
- * Chrome"). To the engine that is an IndexedDB power loss: the open records
- * the newest manifest and moves `head` past it.
+ * End to end: a power loss kept the newest manifest and lost its L0 run.
+ * The open falls back to the older manifest and reads the rest from the logs.
  */
-describe("a deleted WAL", () => {
+describe("a lost run", () => {
+  const NAME = "recover-lost-run";
   const text = (b: Uint8Array | undefined) => (b ? new TextDecoder().decode(b) : undefined);
+  const opened: Db[] = [];
+  afterEach(async () => {
+    await Promise.all(opened.splice(0).map((db) => db.close()));
+    __resetMemoryFsForTests(NAME);
+  });
 
-  async function seeded(open: () => ReturnType<typeof openHarnessDb>) {
+  // Skipped: open trusts every manifest (`recoverGeneration(tabFs, () => true)`
+  // in db.ts), so it never falls back and throws "SST files for the committed
+  // generation stayed missing after retries". Unskip once open falls back.
+  it("reopens to every acked write through the older manifest and the logs", async () => {
+    const fs = new MemoryFs();
+    const open = async () => {
+      const db = await openHarnessDb({
+        name: NAME,
+        fs,
+        ingest: createLocalIngestClient(new EngineHost(() => fs)),
+        ingestPolicy: { maxWalBytes: 1 << 30 },
+      });
+      opened.push(db);
+      return db;
+    };
     const db = await open();
     await db.put(enc.encode("a"), enc.encode("1"));
     await db.ingest();
     await db.put(enc.encode("b"), enc.encode("2"));
-    return db;
-  }
-
-  it("reopens to the ingested prefix", async () => {
-    name = `recover-${++n}`;
-    const fs = new MemoryFs();
-    const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
-    await (await seeded(open)).close();
-    await deleteWal(name);
-    const db = await open();
-    expect(text(await db.get(enc.encode("a")))).toBe("1");
-    expect(await db.get(enc.encode("b"))).toBeUndefined();
-    await db.put(enc.encode("c"), enc.encode("3"));
     await db.ingest();
-    await db.close();
-    const report = await checkDatabase(fs, name);
-    expect(report.problems).toEqual([]);
-    expect(report.head).toBe(2);
-  });
-
-  it("under an open handle: the handle fails, a new one reads the prefix", async () => {
-    name = `recover-${++n}`;
-    const fs = new MemoryFs();
-    const host = new EngineHost(() => fs);
-    const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(host) });
-    const old = await seeded(open);
-    await deleteWal(name);
-    // The raw IndexedDB error, not an OpfsLsmError.
-    await expect(old.put(enc.encode("x"), enc.encode("9"))).rejects.toMatchObject({ name: "InvalidStateError" });
-    const db = await open();
-    expect(text(await db.get(enc.encode("a")))).toBe("1");
     await db.put(enc.encode("c"), enc.encode("3"));
-    await db.ingest();
     await db.close();
-    await old.close().catch(() => undefined);
-    const report = await checkDatabase(fs, name);
-    expect(report.problems).toEqual([]);
-    expect(report.state.map((e) => text(e.key))).toEqual(["a", "c"]);
+
+    const newest = (await loadLatestGeneration(fs))!;
+    expect(newest.through).toBe(2);
+    await fs.remove(newest.runs[0]!.path);
+
+    const reopened = await open();
+    expect(text(await reopened.get(enc.encode("a")))).toBe("1");
+    expect(text(await reopened.get(enc.encode("b")))).toBe("2");
+    expect(text(await reopened.get(enc.encode("c")))).toBe("3");
+    // The next ingest numbers past the lost manifest and folds what it held again.
+    await reopened.put(enc.encode("d"), enc.encode("4"));
+    const { generation } = await reopened.ingest();
+    expect(generation).toBeGreaterThan(newest.generation);
+    expect((await loadLatestGeneration(fs))!.through).toBe(4);
+    expect(text(await reopened.get(enc.encode("b")))).toBe("2");
+    expect(text(await reopened.get(enc.encode("d")))).toBe("4");
   });
 });

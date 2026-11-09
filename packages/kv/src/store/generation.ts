@@ -8,8 +8,11 @@ const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-/** Version 2 added `through`. Version 1 manifests read with `through` 0. */
-const GEN_VERSION = 2;
+/**
+ * Version 2 added `through`, version 3 `cut`. Older manifests read with the
+ * missing fields 0.
+ */
+const GEN_VERSION = 3;
 
 export type KeyRange = {
   readonly smallest: Uint8Array;
@@ -37,10 +40,16 @@ export type GenerationMeta = {
    * manifest is the fold of one log prefix (design.md, "Recovery").
    */
   readonly through: number;
+  /**
+   * The runs hold every log record stamped at or below `cut`, from every
+   * tab's log, and `through` counts them: the stable order numbers the
+   * records above the cut from `through + 1` on.
+   */
+  readonly cut: number;
 };
 
 /** The empty database: no runs, no seqs. */
-export const GENERATION_ZERO: GenerationMeta = { generation: 0, runs: [], tombstoneSeq: 0, through: 0 };
+export const GENERATION_ZERO: GenerationMeta = { generation: 0, runs: [], tombstoneSeq: 0, through: 0, cut: 0 };
 
 function genPath(generation: number): string {
   return `${GEN_PREFIX}${String(generation).padStart(16, "0")}.mft`;
@@ -49,7 +58,7 @@ function genPath(generation: number): string {
 export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const enc = new TextEncoder();
   const paths = meta.runs.map((r) => enc.encode(r.path));
-  let size = 4 + 4 + 8 + 8 + 8 + 4;
+  let size = 4 + 4 + 8 + 8 + 8 + 8 + 4;
   meta.runs.forEach((r, i) => {
     size += 2 + paths[i]!.byteLength + 1;
     if (r.range) size += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
@@ -67,6 +76,8 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   view.setBigUint64(o, BigInt(meta.tombstoneSeq), true);
   o += 8;
   view.setBigUint64(o, BigInt(meta.through), true);
+  o += 8;
+  view.setBigUint64(o, BigInt(meta.cut), true);
   o += 8;
   view.setUint32(o, paths.length, true);
   o += 4;
@@ -98,7 +109,7 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     throw new CorruptDatabaseError("bad generation magic");
   }
   const version = view.getUint32(4, true);
-  if (version !== 1 && version !== GEN_VERSION) {
+  if (version < 1 || version > GEN_VERSION) {
     throw new CorruptDatabaseError("bad generation version");
   }
   const generation = Number(view.getBigUint64(8, true));
@@ -106,9 +117,15 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   const tombstoneSeq = Number(view.getBigUint64(o, true));
   o += 8;
   let through = 0;
-  if (version === GEN_VERSION) {
+  if (version >= 2) {
     if (buf.byteLength < 40) throw new CorruptDatabaseError("generation too short");
     through = Number(view.getBigUint64(o, true));
+    o += 8;
+  }
+  let cut = 0;
+  if (version >= 3) {
+    if (buf.byteLength < 48) throw new CorruptDatabaseError("generation too short");
+    cut = Number(view.getBigUint64(o, true));
     o += 8;
   }
   const runCount = view.getUint32(o, true);
@@ -143,7 +160,7 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     }
   }
   if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
-  return { generation, runs, tombstoneSeq, through };
+  return { generation, runs, tombstoneSeq, through, cut };
 }
 
 /** The numbers of the manifest files in `m/`, newest first. */
@@ -178,7 +195,7 @@ export async function probeManifest(
 }
 
 /** Manifest `generation`, or undefined when it is missing, empty or does not decode. */
-export async function readManifest(
+async function readManifest(
   fs: AsyncFs,
   generation: number,
 ): Promise<GenerationMeta | undefined> {
@@ -257,7 +274,7 @@ export async function loadGeneration(
   return decodeGeneration(buf);
 }
 
-/** Delete manifests older than `keepFrom`. Call after IDB records `keepFrom`. */
+/** Delete manifests older than `keepFrom`. Call once manifest `keepFrom` is published. */
 export async function reclaimManifests(
   fs: AsyncFs,
   keepFrom: number,
@@ -299,12 +316,10 @@ export async function reclaimRuns(
 }
 
 /**
- * The runs of the recorded generation. A manifest past it is left by a
- * crash between publishing it and recording it: the next ingest or
- * compaction builds on the recorded one, and recovery adopts a manifest
- * only when all its runs are on disk, so its runs may go. A read that fails
- * throws, and a manifest that is gone throws too: nothing may be swept
- * against it.
+ * The runs of the committed generation. A manifest past it lists a run
+ * that is gone (a power loss): recovery never picks it and nothing builds
+ * on it, so its runs may go. A read that fails throws, and a manifest that
+ * is gone throws too: nothing may be swept against it.
  */
 export async function liveRuns(fs: AsyncFs, recorded: number): Promise<string[]> {
   const meta = await loadGeneration(fs, recorded);

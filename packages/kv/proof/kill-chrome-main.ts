@@ -2,15 +2,17 @@
  * Page side of the Chrome kill loop (`scripts/kill-chrome.ts`). The harness
  * drives it over CDP: `Runtime.evaluate` calls `kc.*`, and the page reports
  * each acked write through the `kcAck` binding as soon as the ack resolves,
- * so the harness holds every ack it saw before a kill.
+ * so the harness holds every ack it saw before a kill. An ack means the
+ * write is in the tab's log file (not flushed), which a process kill keeps.
  *
  * `/src/*.js` is served from `dist/`, so `checkDatabase` (tests/sim) and
  * the engine share one module graph and one wasm instance.
  */
-import { CommitError, OpfsLsmError, ensureEngine } from "../src/index.js";
+import { OpfsLsmError, ensureEngine } from "../src/index.js";
 import { openBrowserFs, openHarnessDb } from "../src/testing.js";
-import { checkDatabase, walMeta, walRows } from "../tests/sim/check-database.js";
+import { checkDatabase } from "../tests/sim/check-database.js";
 import { decodeGeneration, listRuns } from "../src/store/generation.js";
+import { lastStampOf, listSegments, listTabs } from "../src/log/reader.js";
 import { decodeSst } from "../src/store/sst.js";
 import { attempts, type WorkOp } from "./kill-chrome-workload.js";
 
@@ -103,19 +105,12 @@ async function start(cfg: WorkConfig): Promise<void> {
     writerId,
     ingestPolicy: { maxWalBytes: cfg.maxWalBytes },
   });
-  // This tab's own appends report their seq before the ack resolves
-  // (`landed` in db.ts), and the tab has one write in flight at a time.
-  let ownSeq = 0;
-  db.changes((ev) => {
-    if (ev.kind === "append" && ev.writerId === writerId && ev.seq !== undefined) ownSeq = ev.seq;
-  });
   const state = { stop: false, db, done: Promise.resolve<WorkResult>({ acked: 0, error: null }) };
   state.done = (async (): Promise<WorkResult> => {
     let n = 0;
     for (const ops of attempts(cfg.seed, cfg.iteration, cfg.tab)) {
       if (state.stop) break;
       n += 1;
-      const before = ownSeq;
       try {
         await apply(db, ops);
       } catch (err) {
@@ -123,12 +118,7 @@ async function start(cfg: WorkConfig): Promise<void> {
         bind("kcError")(JSON.stringify({ tab: cfg.tab, n, ...info }));
         return { acked: n - 1, error: { n, ...info } };
       }
-      if (ownSeq === before) {
-        const info = errorInfo(new CommitError(`ack of attempt ${n} reported no seq`));
-        bind("kcError")(JSON.stringify({ tab: cfg.tab, n, ...info }));
-        return { acked: n - 1, error: { n, ...info } };
-      }
-      ack(JSON.stringify({ tab: cfg.tab, n, seq: ownSeq }));
+      ack(JSON.stringify({ tab: cfg.tab, n }));
     }
     return { acked: n, error: null };
   })();
@@ -341,20 +331,18 @@ async function estimate(): Promise<{ usage: number; quota: number }> {
 async function restartInPlace(
   name: string,
   value: string,
-): Promise<{ ok: boolean; ms: number; seq: number | null; error: string | null }> {
+): Promise<{ ok: boolean; ms: number; acked: boolean; error: string | null }> {
   const t0 = performance.now();
   let db: Db | undefined;
-  let seq: number | null = null;
+  let acked = false;
   try {
     db = await withTimeout(openHarnessDb({ name, writerId: "in-place", ingestPolicy: { maxWalBytes: 1 << 30 } }), 15_000, "open");
-    db.changes((ev) => {
-      if (ev.kind === "append" && ev.writerId === "in-place" && ev.seq !== undefined) seq = ev.seq;
-    });
     await db.put(enc.encode("~in-place"), enc.encode(value));
+    acked = true;
     await withTimeout(db.ingest(), 15_000, "ingest");
-    return { ok: true, ms: Math.round(performance.now() - t0), seq, error: null };
+    return { ok: true, ms: Math.round(performance.now() - t0), acked, error: null };
   } catch (err) {
-    return { ok: false, ms: Math.round(performance.now() - t0), seq, error: errorInfo(err).message };
+    return { ok: false, ms: Math.round(performance.now() - t0), acked, error: errorInfo(err).message };
   } finally {
     if (db) await withTimeout(db.close(), 5_000, "close").catch(() => undefined);
   }
@@ -362,21 +350,25 @@ async function restartInPlace(
 
 /**
  * Every file of a database as it lies, without opening it (no recovery):
- * the WAL meta and keys, each manifest, and each run with its seq span and
+ * each tab's log segments (size, last stamp), each manifest, and each run with its seq span and
  * the entries of the keys that match `pattern`.
  */
 async function inspect(name: string, pattern: string): Promise<unknown> {
   await ensureEngine();
   const fs = await openBrowserFs(name);
   const re = new RegExp(pattern);
-  // indexedDB.databases() first: opening a missing WAL would create it.
-  const databases = (await indexedDB.databases()).map((d) => d.name ?? "");
   const lsm = await (await navigator.storage.getDirectory()).getDirectoryHandle("opfs-lsm", { create: true });
   const dirs: string[] = [];
   for await (const [n] of (lsm as FileSystemDirectoryHandle & { entries(): AsyncIterableIterator<[string, FileSystemHandle]> }).entries()) dirs.push(n);
-  const hasWal = databases.includes(`opfs-lsm-wal/${name}`);
-  const meta = hasWal ? await walMeta(name).catch((e: Error) => e.message) : null;
-  const rows = hasWal ? await walRows(name).catch(() => []) : [];
+  const logs: Record<string, { file: string; bytes: number; lastStamp: number }[]> = {};
+  for (const tab of await listTabs(fs)) {
+    const segs: { file: string; bytes: number; lastStamp: number }[] = [];
+    for (const file of await listSegments(fs, tab)) {
+      const buf = (await fs.read(`w/${tab}/${file}`, 0, Number.POSITIVE_INFINITY)) ?? new Uint8Array(0);
+      segs.push({ file, bytes: buf.byteLength, lastStamp: await lastStampOf(fs, tab, file) });
+    }
+    logs[tab] = segs;
+  }
   const manifests: unknown[] = [];
   for (const file of [...(await fs.list("m"))].sort()) {
     const buf = (await fs.read(`m/${file}`, 0, Number.POSITIVE_INFINITY)) ?? new Uint8Array(0);
@@ -407,13 +399,7 @@ async function inspect(name: string, pattern: string): Promise<unknown> {
       runs.push({ path, bytes: buf.byteLength, error: errorInfo(err).message });
     }
   }
-  const keys = rows.map((r) => r.seq);
-  return { databases: databases.sort(), opfsDatabases: dirs.sort(), meta, wal: keys.length ? [keys[0], keys[keys.length - 1], keys.length] : [], manifests, runs };
-}
-
-/** Names of the origin's IndexedDB databases. */
-async function idbNames(): Promise<string[]> {
-  return (await indexedDB.databases()).map((d) => d.name ?? "").sort();
+  return { opfsDatabases: dirs.sort(), logs, manifests, runs };
 }
 
 /** Open a handle and keep it, so this page connects to the SharedWorker. */
@@ -439,7 +425,6 @@ Object.assign(globalThis, {
     restartInPlace,
     ingestNow,
     inspect,
-    idbNames,
     ready: true,
   },
 });

@@ -1,6 +1,6 @@
 # Two-tab without BroadcastChannel
 
-Two-tab without BroadcastChannel runs the same peer put/ingest/get scenario while silencing `BroadcastChannel`, proving visibility still works through the WAL and SharedWorker path when BC posts are dropped.
+Two-tab without BroadcastChannel runs the same peer put/ingest/get scenario while silencing `BroadcastChannel`, proving visibility still works through log reads and the SharedWorker path when BC posts are dropped.
 
 ## Sub-features
 

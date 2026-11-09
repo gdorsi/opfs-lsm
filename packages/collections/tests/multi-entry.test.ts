@@ -7,18 +7,8 @@ import { indexPrefix, MAX_INDEX_KEYS_PER_ROW, type CollectionDb } from "../src/i
 const NAME = "multi-entry-test";
 let open: CollectionDb | undefined;
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
 beforeEach(async () => {
   __resetMemoryFsForTests(NAME);
-  await wipe();
 });
 
 afterEach(async () => {

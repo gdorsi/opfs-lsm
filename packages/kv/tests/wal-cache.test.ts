@@ -3,32 +3,34 @@ import {
   EngineHost,
   MemoryFs,
   attachEngineHostPort,
-  createPortIngestClient
+  createPortIngestClient,
+  type Db,
 } from "../src/index.js";
 import {
-  openHarnessDb,
-  __resetMemoryFsForTests
+  openHarnessDb as openDbRaw,
+  __resetMemoryFsForTests,
+  type HarnessOpenOptions,
 } from "../src/testing.js";
+import { loadLatestGeneration } from "../src/store/generation.js";
 
 const NAME = "wal-cache-test";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
+/** Every Db a test opened, closed after it even when it fails: an open one stays a live tab. */
+const opened: Db[] = [];
+async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
+  const db = await openDbRaw(options);
+  opened.push(db);
+  return db;
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   __resetMemoryFsForTests(NAME);
-  await wipe();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(opened.splice(0).map((db) => db.close()));
   __resetMemoryFsForTests(NAME);
 });
 
@@ -90,11 +92,19 @@ describe("memtable reads", () => {
     expect(dec.decode((await a.get(enc.encode("seed")))!)).toBe("s");
 
     await b.put(enc.encode("k"), enc.encode("v"));
-    const published = await host.ingest(NAME);
+    // The host folds only through the lowest last record of the live tabs:
+    // a writes after reading "k", so the host may fold "k" without asking.
+    await a.sync();
+    await a.put(enc.encode("later"), enc.encode("l"));
+    const published = await host.ingest(NAME, Number.POSITIVE_INFINITY);
     expect(published.generation).toBe(2);
+    expect((await loadLatestGeneration(fs))!.through).toBe(2);
 
+    // a installs the new generation, which covers "k", so the read comes from its run.
+    await a.sync();
     const got = await a.get(enc.encode("k"));
     expect(got && dec.decode(got)).toBe("v");
+    expect(dec.decode((await a.get(enc.encode("later")))!)).toBe("l");
 
     await a.close();
     await b.close();

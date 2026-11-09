@@ -1,3 +1,5 @@
+import type { SegmentStore } from "../log/tab-writer.js";
+
 /** Published file bytes. Stages are not readable until finish. */
 export interface FileWriter {
   write(bytes: Uint8Array): Promise<void>;
@@ -38,4 +40,10 @@ export interface AsyncFs {
   removeUnlessOpen(path: string): Promise<boolean>;
   /** Replace published file only when finish resolves. No append. */
   create(path: string): Promise<FileWriter>;
+  /**
+   * Log segments written in place in this thread, visible to `read` at
+   * once. Only MemoryFs has them: in the browser a tab's log is written by
+   * its dedicated WebWorker through SyncAccessHandles.
+   */
+  segments?(): SegmentStore;
 }

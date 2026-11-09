@@ -1,3 +1,4 @@
+import type { SegmentStore } from "../log/tab-writer.js";
 import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
 
 /** Calls and bytes for one path class. */
@@ -49,8 +50,12 @@ export class CountingFs implements AsyncFs {
   readonly counters: IoCounters;
   private readonly sizes = new Map<string, number>();
 
+  /** The inner fs's in-process log segments, when it has them. */
+  readonly segments?: () => SegmentStore;
+
   constructor(inner: AsyncFs, counters: IoCounters = emptyIoCounters()) {
     this.inner = inner;
+    if (inner.segments) this.segments = () => inner.segments!();
     this.counters = counters;
   }
 

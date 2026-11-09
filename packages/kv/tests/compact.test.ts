@@ -3,11 +3,13 @@ import {
   EngineHost,
   MemoryFs,
   createLocalIngestClient,
-  type ChangeEvent
+  type ChangeEvent,
+  type Db,
 } from "../src/index.js";
 import {
-  openHarnessDb,
-  __resetMemoryFsForTests
+  openHarnessDb as openDbRaw,
+  __resetMemoryFsForTests,
+  type HarnessOpenOptions,
 } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
@@ -15,17 +17,16 @@ import { loadLatestGeneration } from "../src/store/generation.js";
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 
-async function deleteIdb(name: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
+/** Every Db a test opened, closed after it even when it fails: an open one stays a live tab. */
+const opened: Db[] = [];
+async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
+  const db = await openDbRaw(options);
+  opened.push(db);
+  return db;
 }
 
 afterEach(async () => {
-  await deleteIdb("compact");
+  await Promise.all(opened.splice(0).map((db) => db.close()));
   __resetMemoryFsForTests("compact");
 });
 
@@ -71,8 +72,8 @@ describe("L0 compaction", () => {
       },
       list: (dir) => fs.list(dir),
       remove: (path) => fs.remove(path),
-    open: (path) => fs.open(path),
-    removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
+      open: (path) => fs.open(path),
+      removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
       create: (path) => fs.create(path),
     };
     const host = new EngineHost(() => hostFs);
@@ -103,7 +104,10 @@ describe("L0 compaction", () => {
     await db.ingest();
     expect(new TextDecoder().decode(await db.get(utf("k0")))).toBe("newer");
     expect(new TextDecoder().decode(await db.get(utf("k3")))).toBe("v3");
-    expect(events.some((e) => e.kind === "ingest" && e.writerId === "engine-host")).toBe(true);
+    // The host announces each compaction step on BroadcastChannel, which delivers asynchronously.
+    await vi.waitFor(() =>
+      expect(events.some((e) => e.kind === "ingest" && e.writerId === "engine-host")).toBe(true),
+    );
     await db.close();
   });
 });

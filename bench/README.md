@@ -17,6 +17,8 @@ Run `pnpm bench:smoke` first whenever the code under test changed. A full `pnpm 
 
 Results go to `bench/results/<time>-<host>.jsonl` (one record per run) and a Markdown table next to it. They are not committed: numbers depend on the machine. To compare a change, run the same selection before and after on one machine and use `compare`. It calls a difference only when the min–max ranges of the two runs do not overlap.
 
+To see where the time goes, set `BENCH_CPU_PROFILE=<dir>`: the pages are built unminified and each tab's main thread is sampled every 100 µs into `<dir>/<time>-<target>.cpuprofile`, which Chrome DevTools opens. Profiled runs are slower; don't compare their timings with unprofiled ones.
+
 Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `google-chrome`.
 
 ## Families
@@ -28,7 +30,7 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 | `automerge` | the `examples/automerge-todo` kv storage adapter | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | the `examples/yjs` `KvPersistence` | y-indexeddb |
 
-Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv's WAL commits with IndexedDB's default durability (relaxed in Chrome since version 121), so the IndexedDB baselines use the default too.
+Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv acks a write once it is in the tab's OPFS log and flushes the log lazily (`opfs-log-lazy`): a crash loses no acked write, a power loss can lose the last few milliseconds of them. The IndexedDB baselines use IndexedDB's default durability (`idb-default`, relaxed in Chrome since version 121), which makes the same trade.
 
 ## Workloads
 
@@ -53,7 +55,7 @@ Every read is checked against the expected value. One wrong value fails the run,
 kv counts the bytes it writes in the configuration apps run: the tab and the SharedWorker host. The counters come from `readStats` in `@opfs-lsm/kv/testing`. The report derives:
 
 - **W-Amp engine**: (flush + compaction bytes written) / user bytes in. This is the number RocksDB and Pebble report.
-- **W-Amp total**: (WAL + flush + compaction + manifest bytes) / user bytes in. It counts the WAL, as Lim et al. (FAST '16) do. WAL bytes are the records handed to IndexedDB; what IndexedDB itself writes is not visible.
+- **W-Amp total**: (WAL + flush + compaction + manifest bytes) / user bytes in. It counts the WAL, as Lim et al. (FAST '16) do. WAL bytes are the key and value bytes of the records the tabs append to their logs, without the frame headers.
 - **Compaction**: compaction bytes / flush bytes.
 - **Read-Amp**: L0 runs + non-empty deeper levels. After open, kv reads are in memory, so there is no per-read disk count.
 - **Space-Amp**: OPFS bytes / live key and value bytes. It can go below 1 once data reaches L2, which is LZ4-compressed.

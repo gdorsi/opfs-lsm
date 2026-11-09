@@ -128,7 +128,7 @@ describe("compaction codec", () => {
     const fs = new MemoryFs();
     const body = await encodeSst(todoRows(0));
     await publishRun(fs, path, body);
-    await publishGeneration(fs, { generation: 1, runs: [runMeta(path, body)], tombstoneSeq: 0, through: 0 });
+    await publishGeneration(fs, { generation: 1, runs: [runMeta(path, body)], tombstoneSeq: 0, through: 0, cut: 0 });
     const step = await mergeNextStep(fs);
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
@@ -154,7 +154,7 @@ describe("compaction codec", () => {
       await publishRun(fs, path, body);
       runs.push(runMeta(path, body));
     }
-    await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 0 });
+    await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 0, cut: 0 });
     const step = await mergeNextStep(fs);
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;

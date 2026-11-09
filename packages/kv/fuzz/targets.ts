@@ -12,12 +12,14 @@
  * - Where the engine checks a CRC (`decodeSst`, which the SharedWorker runs
  *   before compacting; `decodeGeneration`): changed bytes must throw
  *   `CorruptDatabaseError`, never decode.
- * - Where it does not (a tab's `SstReader`, LZ4 unpack, block scans, WAL
- *   rows): any answer is allowed, within the rules above.
+ * - Where it does not (a tab's `SstReader`, LZ4 unpack, block scans): any
+ *   answer is allowed, within the rules above.
+ * - A tab's log (`scanFrames`): each frame carries a CRC, and a read keeps
+ *   only the prefix of frames that hold; past it, anything is allowed.
  */
 import { compareBytes } from "../src/bytes.js";
 import { CommitError, CorruptDatabaseError } from "../src/errors.js";
-import { decodeOps } from "../src/idb/wal.js";
+import { KIND_RECORD, KIND_SEAL, encodeFrame, encodeOps, scanFrames, type ScanResult } from "../src/log/frame.js";
 import { crc32 } from "../src/store/crc32.js";
 import { Miss, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
 import { decodeGeneration, type GenerationMeta, type KeyRange } from "../src/store/generation.js";
@@ -283,51 +285,70 @@ export async function checkManifest(buf: Uint8Array, changed: boolean): Promise<
   });
 }
 
+const FRAME_HEAD = 21;
+
 /**
- * A WAL row (`decodeOps`). Rows have no checksum: a changed row may decode
- * to other ops. It must throw only `CommitError("corrupt wal ...")`
- * (design.md, "WAL records"), and what it decodes must encode back to the
- * same bytes, so the decoder never invents or drops a byte.
+ * Rewrite the CRC of every whole frame in a log segment, walking it by the
+ * frames' own length fields, so the scan reaches the fields behind the CRC.
  */
-export async function checkWalRow(raw: unknown): Promise<void> {
-  await bounded("decodeOps", () => {
-    let ops: ReturnType<typeof decodeOps>;
+export function fixFrameCrcs(buf: Uint8Array): void {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  for (let at = 0; at + FRAME_HEAD <= buf.byteLength; ) {
+    const end = at + FRAME_HEAD + view.getUint32(at, true);
+    if (end > buf.byteLength) return;
+    view.setUint32(at + 4, crc32(buf.subarray(at + 8, end)), true);
+    at = end;
+  }
+}
+
+/**
+ * A read of one log segment (`scanFrames`), from a tab's first record or,
+ * with `n` undefined, after reclaimed segments. It may throw only
+ * `CommitError("corrupt log ...")`, for a whole frame whose CRC holds and
+ * whose body does not decode. What it returns must be a prefix of the
+ * input: its records, encoded again as frames, give back the input's first
+ * `validBytes` (up to the SEAL frame when it ends on one), with `n` rising
+ * by one and stamps rising.
+ */
+export async function checkLogFrames(buf: Uint8Array, n: number | undefined, stamp: number): Promise<ScanResult | undefined> {
+  return bounded("scanFrames", () => {
+    let scan: ScanResult;
     try {
-      ops = decodeOps(raw);
+      scan = scanFrames(buf, n, stamp);
     } catch (err) {
-      if (err instanceof CommitError && /corrupt wal/.test(err.message)) return;
-      throw new RuleBroken(`decodeOps threw ${describe(err)}, not CommitError("corrupt wal ...")`);
+      if (err instanceof CommitError && /^corrupt log/.test(err.message)) return undefined;
+      throw new RuleBroken(`scanFrames threw ${describe(err)}, not CommitError("corrupt log ...")`);
     }
-    const back = encodeWalRow(ops.map((op) => (op.type === "put" ? { put: op.key, value: op.value } : { del: op.key })));
-    const bytes = new Uint8Array(raw as ArrayBuffer);
-    if (back.byteLength !== bytes.byteLength || back.some((b, i) => b !== bytes[i])) {
-      throw new RuleBroken("decodeOps returned ops that do not encode back to the row");
+    if (scan.validBytes > buf.byteLength) throw new RuleBroken(`scanFrames read ${scan.validBytes} of ${buf.byteLength} bytes`);
+    let at = 0;
+    let lastN = n;
+    let lastStamp = stamp;
+    for (const r of scan.records) {
+      if (lastN !== undefined && r.n !== lastN + 1) throw new RuleBroken(`scanFrames took n ${r.n} after ${lastN}`);
+      if (!Number.isSafeInteger(r.stamp)) throw new RuleBroken(`scanFrames returned stamp ${r.stamp}, past 2^53, which no longer encodes back`);
+      if (r.stamp <= lastStamp) throw new RuleBroken(`scanFrames took stamp ${r.stamp} after ${lastStamp}`);
+      const frame = encodeFrame(KIND_RECORD, r.stamp, r.n, encodeOps(r.ops));
+      if (!sameBytes(frame, buf.subarray(at, at + frame.byteLength))) {
+        throw new RuleBroken(`scanFrames returned record ${r.n}, which does not encode back to its frame`);
+      }
+      at += frame.byteLength;
+      lastN = r.n;
+      lastStamp = r.stamp;
     }
+    if (scan.sealed) {
+      const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      if (at + FRAME_HEAD > buf.byteLength || view.getUint8(at + 8) !== KIND_SEAL) {
+        throw new RuleBroken("scanFrames reported a SEAL that is not the frame after its records");
+      }
+      at += FRAME_HEAD + view.getUint32(at, true);
+    }
+    if (at !== scan.validBytes) throw new RuleBroken(`scanFrames reported ${scan.validBytes} valid bytes, its frames hold ${at}`);
+    return scan;
   });
 }
 
-export type RowOp = { readonly put: Uint8Array; readonly value: Uint8Array } | { readonly del: Uint8Array };
-
-/** A WAL row in the format of design.md, "WAL records", written by the harness. */
-export function encodeWalRow(ops: readonly RowOp[]): Uint8Array {
-  let size = 0;
-  for (const op of ops) size += "put" in op ? 9 + op.put.byteLength + op.value.byteLength : 5 + op.del.byteLength;
-  const out = new Uint8Array(size);
-  const view = new DataView(out.buffer);
-  let o = 0;
-  for (const op of ops) {
-    const key = "put" in op ? op.put : op.del;
-    out[o] = "put" in op ? 0 : 1;
-    view.setUint32(o + 1, key.byteLength, true);
-    out.set(key, o + 5);
-    o += 5 + key.byteLength;
-    if ("put" in op) {
-      view.setUint32(o, op.value.byteLength, true);
-      out.set(op.value, o + 4);
-      o += 4 + op.value.byteLength;
-    }
-  }
-  return out;
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.byteLength === b.byteLength && a.every((x, i) => x === b[i]);
 }
 
 /**

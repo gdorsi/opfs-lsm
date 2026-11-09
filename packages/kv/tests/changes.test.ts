@@ -10,18 +10,8 @@ import {
 const NAME = "changes-test";
 const enc = new TextEncoder();
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
-beforeEach(async () => {
+beforeEach(() => {
   __resetMemoryFsForTests(NAME);
-  await wipe();
 });
 
 afterEach(() => {

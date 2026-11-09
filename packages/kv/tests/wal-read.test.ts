@@ -1,106 +1,63 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
-import { IdBWal } from "../src/idb/wal.js";
+import { describe, expect, it } from "vitest";
+import { checkKey, checkValue, type CheckedOp } from "../src/check.js";
+import { CommitError } from "../src/errors.js";
+import { KIND_RECORD, decodeOps, encodeFrame, encodeOps, segmentPath } from "../src/log/frame.js";
+import { TAB_START, readTab } from "../src/log/reader.js";
+import { MemoryFs } from "../src/opfs/memory-fs.js";
 
-const NAME = "wal-read-test";
-const IDB = `opfs-lsm-wal/${NAME}`;
+/**
+ * Reading a tab's log back. Frame-level rules (torn tail, CRC, gaps in `n`)
+ * are in log.test.ts; these cover the record bodies and resuming a read.
+ */
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(IDB);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
+const TAB = "00000000000000bb";
 
 function put(i: number): CheckedOp[] {
   return [{ type: "put", key: checkKey(enc.encode(`k${i}`)), value: checkValue(enc.encode(`v${i}`)) }];
 }
 
-function rawRow(seq: number, value: unknown): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const open = indexedDB.open(IDB);
-    open.onerror = () => reject(open.error);
-    open.onsuccess = () => {
-      const db = open.result;
-      const tx = db.transaction(["wal", "meta"], "readwrite");
-      tx.objectStore("wal").put(value, seq);
-      tx.objectStore("meta").put(seq, "head");
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => reject(tx.error);
-    };
-  });
+async function appendTo(fs: MemoryFs, frames: Uint8Array[]): Promise<void> {
+  const path = segmentPath(TAB, { firstN: 1, prevStamp: 0 });
+  const old = (await fs.read(path, 0, Number.POSITIVE_INFINITY)) ?? new Uint8Array();
+  const w = await fs.create(path);
+  await w.write(new Uint8Array([...old, ...frames.flatMap((f) => [...f])]));
+  await w.finish();
 }
 
-function deleteSeq(seq: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const open = indexedDB.open(IDB);
-    open.onerror = () => reject(open.error);
-    open.onsuccess = () => {
-      const db = open.result;
-      const tx = db.transaction("wal", "readwrite");
-      tx.objectStore("wal").delete(seq);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => reject(tx.error);
-    };
-  });
-}
+const summary = (records: readonly { n: number; ops: readonly CheckedOp[] }[]) =>
+  records.map((r) => `${r.n}:${r.ops.map((op) => dec.decode(op.key)).join(",")}`);
 
-async function seeded(count: number): Promise<IdBWal> {
-  const wal = await IdBWal.open(checkDbName(NAME));
-  for (let i = 1; i <= count; i++) await wal.append(put(i));
-  return wal;
-}
+describe("log read", () => {
+  it("resumes after the last record it read, and returns only what came after", async () => {
+    const fs = new MemoryFs();
+    await appendTo(fs, Array.from({ length: 4 }, (_, i) => encodeFrame(KIND_RECORD, 10 * (i + 1), i + 1, encodeOps(put(i + 1)))));
+    const first = await readTab(fs, TAB, TAB_START);
+    expect(summary(first.records)).toEqual(["1:k1", "2:k2", "3:k3", "4:k4"]);
+    expect(first.pos).toMatchObject({ n: 4, stamp: 40, sealed: false });
 
-function summary(records: readonly { seq: number; ops: readonly CheckedOp[] }[]): string[] {
-  return records.map((r) => `${r.seq}:${r.ops.map((op) => dec.decode(op.key)).join(",")}`);
-}
-
-beforeEach(wipe);
-
-describe("WAL read", () => {
-  it("returns every record after since and after ingestedThrough", async () => {
-    const wal = await seeded(12);
-    await wal.advanceIngested(4, 1, 0);
-    const tail = await wal.tail(2);
-    expect(tail.head).toBe(12);
-    expect(tail.ingestedThrough).toBe(4);
-    expect(summary(tail.records)).toEqual(
-      Array.from({ length: 8 }, (_, i) => `${i + 5}:k${i + 5}`),
-    );
-    expect(summary(await wal.listUningested())).toEqual(summary(tail.records));
-    expect(summary((await wal.tail(10)).records)).toEqual(["11:k11", "12:k12"]);
-    expect((await wal.tail(12)).records).toEqual([]);
-    wal.close();
+    expect((await readTab(fs, TAB, first.pos)).records).toEqual([]);
+    await appendTo(fs, [5, 6].map((n) => encodeFrame(KIND_RECORD, 10 * n, n, encodeOps(put(n)))));
+    const next = await readTab(fs, TAB, first.pos);
+    expect(summary(next.records)).toEqual(["5:k5", "6:k6"]);
+    expect(next.empty).toBe(false);
   });
 
-  it("throws on a missing seq instead of shifting the ones after it", async () => {
-    const wal = await seeded(5);
-    await deleteSeq(3);
-    await expect(wal.tail(0)).rejects.toThrow("wal gap in seqs 1..5");
-    wal.close();
+  it("reports a tab with no log as empty", async () => {
+    const read = await readTab(new MemoryFs(), TAB, TAB_START);
+    expect(read).toMatchObject({ records: [], empty: true });
   });
 
-  it("round-trips a batch of puts, an empty value and a delete as bytes", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+  it("round-trips a batch of puts, an empty value and a delete as bytes", () => {
     const big = new Uint8Array(70_000).map((_, i) => i & 0xff);
-    await wal.append([
-      { type: "put", key: checkKey(enc.encode("a")), value: checkValue(big) },
-      { type: "put", key: checkKey(enc.encode("empty")), value: checkValue(new Uint8Array()) },
-      { type: "del", key: checkKey(enc.encode("gone")) },
-      { type: "put", key: checkKey(enc.encode("z")), value: checkValue(enc.encode("last")) },
-    ]);
-    const [record] = (await wal.tail(0)).records;
-    const ops = record!.ops;
+    const ops = decodeOps(
+      encodeOps([
+        { type: "put", key: checkKey(enc.encode("a")), value: checkValue(big) },
+        { type: "put", key: checkKey(enc.encode("empty")), value: checkValue(new Uint8Array()) },
+        { type: "del", key: checkKey(enc.encode("gone")) },
+        { type: "put", key: checkKey(enc.encode("z")), value: checkValue(enc.encode("last")) },
+      ]),
+    );
     expect(ops.map((op) => `${op.type}:${dec.decode(op.key)}`)).toEqual([
       "put:a",
       "put:empty",
@@ -111,21 +68,21 @@ describe("WAL read", () => {
     expect(value(0)).toEqual(big);
     expect(value(1).byteLength).toBe(0);
     expect(dec.decode(value(3))).toBe("last");
-    wal.close();
   });
 
-  it("rejects a row that is not bytes", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
-    await rawRow(1, [{ type: "put", key: new ArrayBuffer(1), value: new ArrayBuffer(1) }]);
-    await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: not bytes");
-    wal.close();
+  it("rejects a truncated record body", () => {
+    // A put whose key claims 10 bytes and has 2.
+    const body = new Uint8Array([0, 10, 0, 0, 0, 1, 2]);
+    expect(() => decodeOps(body)).toThrow(CommitError);
+    expect(() => decodeOps(body)).toThrow("corrupt log record: truncated");
+    // A put whose value length is cut off.
+    const cut = encodeOps(put(1)).subarray(0, 8);
+    expect(() => decodeOps(cut)).toThrow("corrupt log record: truncated");
   });
 
-  it("rejects a truncated row", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
-    const row = new Uint8Array([0, 10, 0, 0, 0, 1, 2]);
-    await rawRow(1, row.buffer);
-    await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: truncated");
-    wal.close();
+  it("rejects an unknown op type", () => {
+    const body = encodeOps(put(1)).slice();
+    body[0] = 7;
+    expect(() => decodeOps(body)).toThrow("corrupt log op 7");
   });
 });

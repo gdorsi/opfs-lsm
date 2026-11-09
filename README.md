@@ -2,9 +2,9 @@
 
 A simple, fast and flexible k/v storage for the browsers.
 
-`@opfs-lsm/kv` stores byte keys and values. The promise from `put` or `batch` is the ack. When that promise resolves, the write is one byte row in the shared IndexedDB write-ahead log (WAL). Sorted SST files in the Origin Private File System (OPFS) hold sealed data after ingest. Every tab of an origin can open the same name. Each name has its own SharedWorker, `opfs-lsm:<name>`, which flushes the WAL into SST files once uningested key and value bytes reach 1 MiB.
+`@opfs-lsm/kv` stores byte keys and values in the Origin Private File System (OPFS). Each tab appends its writes to its own write-ahead log (WAL) there, through a dedicated WebWorker. The promise from `put` or `batch` is the ack. When that promise resolves, the write is in the tab's log file, and the tab reads it at once. It is flushed to disk a moment later, so a power loss can lose the last few milliseconds of acked writes; a crash of the tab or the browser loses none. Other tabs see the write a moment after its ack, in one order that every tab agrees on. Sorted SST files hold the data after ingest. Every tab of an origin can open the same name. Each name has its own SharedWorker, `opfs-lsm:<name>`, which folds the logs into SST files once 1 MiB of key and value bytes is waiting.
 
-`@opfs-lsm/collections` builds tables and secondary indexes on the same WAL and OPFS path. Its table API is Dexie-shaped: `put`, `get`, `where`, and `orderBy` over JSON rows.
+`@opfs-lsm/collections` builds tables and secondary indexes on the same kv database. Its table API is Dexie-shaped: `put`, `get`, `where`, and `orderBy` over JSON rows.
 
 The storage layout, consistency rules, and ingest path are in [docs/design.md](docs/design.md). How to verify a change is in [docs/verification.md](docs/verification.md).
 
@@ -29,10 +29,10 @@ In the browser, `openDb` opens OPFS and starts that SharedWorker. In Node it use
 
 | Option | Role |
 | --- | --- |
-| `name` | Database name. Tabs that share this name share one WAL. |
+| `name` | Database name. Tabs that share this name share one database; each writes its own log. |
 | `memoryBudget` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
 
-Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB flush.
+Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB ingest limit.
 
 ### `Db`
 
@@ -40,17 +40,17 @@ Keys and values are `Uint8Array`.
 
 | Method | Role |
 | --- | --- |
-| `get(key)` | Point read from the memtable and SST files. Does not touch IndexedDB. |
-| `put(key, value)` | Append one put. Resolves on WAL ack. |
-| `delete(key)` | Append one delete. Resolves on WAL ack. |
-| `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack. |
-| `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
+| `get(key)` | Point read from this tab's own writes, the memtable and SST files. Does not read a log. |
+| `put(key, value)` | Append one put to this tab's log. Resolves on the ack. |
+| `delete(key)` | Append one delete. Resolves on the ack. |
+| `batch(build)` | Build puts and deletes synchronously. Resolves on one ack. |
+| `update(keys, body)` | Read `keys` and write at one point of the order, with no lock. `body` runs once. No conflict window. |
 | `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `valueContains` keeps live puts whose current value holds every pattern. |
 | `rangeFollow(range, follow)` | Scan a range, then point-read each follow key, on the memtable and SST generation pinned for the call. |
-| `view(body)` | Read-only snapshot pinned to the WAL head and the installed OPFS generation when the view opens. |
-| `changes(listener)` | Subscribe to durable WAL appends and ingest generation bumps. Returns unsubscribe. |
+| `view(body)` | Read-only snapshot pinned to the memtable, this tab's own writes and the installed OPFS generation when the view opens. |
+| `changes(listener)` | Subscribe to appends (this tab's at their ack, other tabs' once visible here) and ingest generation bumps. Returns unsubscribe. |
 | `sync()` | Catch up to every write acked before the call from any tab. |
-| `ingest()` | Flush the memtable now and wait for the compaction it starts. |
+| `ingest()` | Fold every write seen so far into SST files now and wait for the compaction it starts. |
 | `close()` | Close this tab's handle. |
 
 ```ts

@@ -1,3 +1,4 @@
+import { compareBytes, containsAll, keyToString } from "../../src/bytes.js";
 import { Oracle, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 
 /**
@@ -10,25 +11,27 @@ import { Oracle, show, type OracleEntry, type OracleOp, type OracleRange } from 
  * op that wrote it. Values are unique, so a read maps back to a prefix of
  * the log, and the check needs no linearizability search.
  *
- * The promises it checks, all from docs/design.md:
- * - every read is `fold(log[1..p])` for some `p` ("Consistency");
- * - a session's `p` never goes backwards (the memtable is one exact prefix
- *   that only grows, "Memtable");
- * - after a write's ack at seq `s`, the writer's reads use `p >= s` ("At the
- *   ack, the writer sees its own write and every earlier one", "Append");
+ * The log is the one order every tab agrees on: by (stamp, tab). The
+ * promises it checks, from architecture/wal-opfs/04-per-tab-logs.md
+ * ("Guarantees"):
+ * - every read is `fold(log[1..p])` for some `p` (the stable prefix), with
+ *   the session's own records past `p` applied on top: a tab reads its own
+ *   writes at once, before they are stable. Its records acked before the
+ *   read are on top; of those still in flight, some first ones may be;
+ * - a session's `p` never goes backwards (the stable prefix only grows);
  * - after `sync()` or open resolves, `p >=` every seq acked before the call
- *   ("Seeing other tabs' writes"; open runs `sync`);
- * - an `update` reads exactly `fold(log[1..s-1])` when it commits at `s` ("No
- *   other write can land between the reads and the commit"), and when it
- *   writes nothing it still caught up inside its transaction;
- * - all reads in one `view` use one `p` ("pinned WAL head");
- * - a write acked before another is invoked has the smaller seq (the WAL
- *   serializes appends; seqs are the log order).
+ *   (they read every tab's log);
+ * - an `update` reads exactly `fold(log[1..s-1])` when it commits at `s`
+ *   (it reads at its own stamp, once everything below it is stable);
+ * - all reads in one `view` use one `p` and one set of own records;
+ * - session order: a write acked before another write of the same session,
+ *   or of a session that ran `sync()` or open in between, has the smaller
+ *   seq (stamps rise, and above every stamp the tab has seen).
  *
- * Not checked, because the docs do not promise it: that a read on one
- * handle sees another handle's write acked before the read, without a
- * `sync()` in between. "A tab sees another tab's write a moment after that
- * write's ack, not at it."
+ * Not checked, because session puts do not promise it: that writes of two
+ * tabs that did not see each other are in real-time order, or that a read
+ * on one handle sees another handle's write acked before the read without
+ * a `sync()` in between.
  */
 
 export type ViewRead =
@@ -163,15 +166,39 @@ function check(h: History): Oracle {
   /** The newest seq acked anywhere before time `t`. */
   const ackedBefore = (t: number) => Math.max(0, ...acked.filter((w) => w.response! < t).map((w) => seq.get(w.id)!));
 
+  /** A sync or open on `session` that started after `from` and returned before `to`. */
+  const barrier = (session: number, from: number, to: number) =>
+    ops.some(
+      (o) => (o.kind === "sync" || o.kind === "open") && o.session === session && o.error === undefined && o.invoke > from && o.response! < to,
+    );
   for (const a of acked) {
     for (const b of acked) {
-      if (a.response! < b.invoke && seq.get(a.id)! > seq.get(b.id)!) {
+      if (a.response! < b.invoke && seq.get(a.id)! > seq.get(b.id)! && (a.session === b.session || barrier(b.session, a.response!, b.invoke))) {
         throw new Error(
-          `real-time order: #${a.id} acked at seq ${seq.get(a.id)} before #${b.id} was invoked, but #${b.id} got seq ${seq.get(b.id)}`,
+          `session order: #${a.id} acked at seq ${seq.get(a.id)} before #${b.id} was invoked${a.session === b.session ? " on its session" : " and synced"}, but #${b.id} got seq ${seq.get(b.id)}`,
         );
       }
     }
   }
+
+  /** Per session, its records: seq, and the op that wrote them. */
+  const own = new Map<number, { seq: number; op: HistOp }[]>();
+  for (let s = 1; s <= oracle.head; s++) {
+    const w = h.writerOf(s);
+    if (!w) continue;
+    own.set(w.session, [...(own.get(w.session) ?? []), { seq: s, op: w }]);
+  }
+  /**
+   * The own records a read may have on top of its prefix: those acked
+   * before it, and some first ones of those in flight. Each choice is one
+   * list of seqs.
+   */
+  const ownChoices = (r: HistOp): number[][] => {
+    const mine = own.get(r.session) ?? [];
+    const must = mine.filter((m) => m.op.response! < r.invoke).map((m) => m.seq);
+    const maybe = mine.filter((m) => !(m.op.response! < r.invoke) && m.op.invoke < r.response!).map((m) => m.seq);
+    return Array.from({ length: maybe.length + 1 }, (_, k) => [...must, ...maybe.slice(0, k)].sort((x, y) => x - y));
+  };
 
   /** A read cannot see a write that was not invoked when the read returned. */
   const upper = (t: number) => {
@@ -191,13 +218,10 @@ function check(h: History): Oracle {
     for (const o of before) {
       const p = prefix.get(o.id);
       if (p !== undefined) bounds.push({ lo: p, why: `#${o.id} read prefix ${p} (prefix never goes backwards)` });
-      const s = seq.get(o.id);
-      if (s !== undefined) bounds.push({ lo: s, why: `#${o.id} acked at seq ${s} (read-your-writes)` });
       if (o.kind === "sync" || o.kind === "open") {
         bounds.push({ lo: ackedBefore(o.invoke), why: `#${o.id} ${o.kind} barrier` });
       }
     }
-    if (r.kind === "update") bounds.push({ lo: ackedBefore(r.invoke), why: "update catches up inside its transaction" });
     const floor = bounds.reduce((a, b) => (b.lo > a.lo ? b : a));
     const lo = floor.lo;
     const hi = upper(r.response!);
@@ -208,32 +232,30 @@ function check(h: History): Oracle {
           `(floor from ${floor.why}; head ${oracle.head})`,
       );
 
+    const choices = ownChoices(r);
+    /** The prefixes in `[lo, hi]` where every read in `reads` holds, with one choice of own records. */
+    const fits = (reads: readonly ViewRead[]): number[] => {
+      const out: number[] = [];
+      for (let p = lo; p <= hi; p++) {
+        if (choices.some((c) => reads.every((read) => holds(oracle, read, p, c)))) out.push(p);
+      }
+      return out;
+    };
+
     let candidates: number[];
     if (r.kind === "get") {
-      candidates = within(oracle.getCandidates(r.key, r.value, lo));
+      candidates = fits([{ kind: "get", key: r.key, value: r.value }]);
       if (candidates.length === 0) {
         throw fail(`saw ${showValue(r.value)}, value at head is ${showValue(oracle.valueAt(r.key))}`);
       }
     } else if (r.kind === "range") {
-      candidates = within(oracle.rangeCandidates(r.range, r.entries!, lo));
+      candidates = fits([{ kind: "range", range: r.range, entries: r.entries! }]);
       if (candidates.length === 0) {
         throw fail(`saw ${showEntries(r.entries!)}, head has ${showEntries(oracle.rangeAt(r.range))}`);
       }
     } else if (r.kind === "view") {
-      let set: number[] | undefined;
-      for (const read of r.reads) {
-        const next =
-          read.kind === "get"
-            ? oracle.getCandidates(read.key, read.value, lo)
-            : oracle.rangeCandidates(read.range, read.entries, lo);
-        set = within(set ? set.filter((p) => next.includes(p)) : next);
-        if (set.length === 0) {
-          throw fail(
-            `view is not one prefix at read ${read.kind === "get" ? `get ${show(read.key)} = ${showValue(read.value)}` : `range = ${showEntries(read.entries)}`}`,
-          );
-        }
-      }
-      candidates = set ?? [lo];
+      candidates = r.reads.length > 0 ? fits(r.reads) : [lo];
+      if (candidates.length === 0) throw fail(`view is not one prefix: ${r.reads.map(showRead).join("; ")}`);
     } else {
       const s = seq.get(r.id);
       const seen = r.seen ?? [];
@@ -248,6 +270,7 @@ function check(h: History): Oracle {
         if (s - 1 < lo) throw fail(`update committed at seq ${s}, below its floor`);
         candidates = [s - 1];
       } else {
+        // It wrote nothing: it still read one prefix, with nothing of its own on top.
         let set: number[] | undefined;
         r.keys.forEach((k, i) => {
           const next = oracle.getCandidates(k, seen[i], lo);
@@ -260,6 +283,43 @@ function check(h: History): Oracle {
     prefix.set(r.id, candidates[0]!);
   }
   return oracle;
+}
+
+/** Whether `read` returns what `fold(log[1..p])` with the own records `mine` past `p` on top does. */
+function holds(oracle: Oracle, read: ViewRead, p: number, mine: readonly number[]): boolean {
+  const over = mine.filter((s) => s > p);
+  if (read.kind === "get") {
+    let value = oracle.valueAt(read.key, p);
+    for (const s of over) for (const op of oracle.opsAt(s)) if (compareBytes(op.key, read.key) === 0) value = op.type === "put" ? op.value : undefined;
+    return sameValue(value, read.value);
+  }
+  if (over.length === 0) return sameEntries(oracle.rangeAt(read.range, p), read.entries);
+  const state = new Map<string, OracleEntry>();
+  for (const e of oracle.stateAt(p)) state.set(keyToString(e.key), e);
+  for (const s of over) {
+    for (const op of oracle.opsAt(s)) {
+      if (op.type === "put") state.set(keyToString(op.key), { key: op.key, value: op.value });
+      else state.delete(keyToString(op.key));
+    }
+  }
+  const range = read.range;
+  const all = [...state.values()]
+    .sort((a, b) => compareBytes(a.key, b.key))
+    .filter(
+      ({ key, value }) =>
+        (!range.start || compareBytes(key, range.start) >= 0) &&
+        (!range.endExclusive || compareBytes(key, range.endExclusive) < 0) &&
+        (!range.valueContains || containsAll(value, range.valueContains)),
+    );
+  return sameEntries(range.limit === undefined ? all : all.slice(0, range.limit), read.entries);
+}
+
+function sameEntries(a: readonly OracleEntry[], b: readonly OracleEntry[]): boolean {
+  return a.length === b.length && a.every((e, i) => compareBytes(e.key, b[i]!.key) === 0 && sameValue(e.value, b[i]!.value));
+}
+
+function showRead(read: ViewRead): string {
+  return read.kind === "get" ? `get ${show(read.key)} = ${showValue(read.value)}` : `range ${showRange(read.range)} = ${showEntries(read.entries)}`;
 }
 
 function copyOp(op: OracleOp): OracleOp {

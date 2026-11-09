@@ -9,8 +9,9 @@ import {
   checkDecodeSst,
   checkLz4,
   checkManifest,
+  checkLogFrames,
   checkRunRead,
-  checkWalRow,
+  fixFrameCrcs,
   fixManifestCrc,
   footerOf,
   repairSst,
@@ -72,9 +73,15 @@ export async function manifest(data: Uint8Array): Promise<void> {
   await checkManifest(buf, false);
 }
 
-/** `decodeOps` on one WAL row. */
-export async function walRow(data: Uint8Array): Promise<void> {
-  await checkWalRow(data.slice().buffer);
+/**
+ * `scanFrames` on one log segment. Byte 0: bit 0 rewrites each frame's CRC,
+ * bit 1 reads it as after reclaimed segments (any first `n`).
+ */
+export async function logFrames(data: Uint8Array): Promise<void> {
+  if (data.byteLength < 1) return;
+  const buf = data.slice(1);
+  if (data[0]! & 1) fixFrameCrcs(buf);
+  await checkLogFrames(buf, data[0]! & 2 ? undefined : 0, 0);
 }
 
 /** `lz4DecompressJs`: a framed block, u32 size then LZ4 bytes, as the run stores it. */

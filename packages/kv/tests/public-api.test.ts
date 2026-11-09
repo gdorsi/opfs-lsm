@@ -37,15 +37,6 @@ function exportFile(spec: string): string {
   return fileURLToPath(href);
 }
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
 beforeAll(async () => {
   const entry = exportFile("@opfs-lsm/kv");
   expect(entry.endsWith("/dist/index.js")).toBe(true);
@@ -60,7 +51,6 @@ afterEach(async () => {
   await closeDb?.();
   closeDb = undefined;
   testing?.__resetMemoryFsForTests(NAME);
-  await wipe();
 });
 
 describe("public API", () => {

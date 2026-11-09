@@ -3,17 +3,17 @@ import fc from "fast-check";
 import { expect } from "vitest";
 import type { AsyncFs, Db, Entry } from "../../src/index.js";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { IdBWal } from "../../src/idb/wal.js";
+import { LogSession } from "../../src/log/session.js";
+import type { SegmentStore } from "../../src/log/tab-writer.js";
 import { openHarnessDb } from "../../src/testing.js";
-import { checkDatabase, deleteWal } from "./check-database.js";
+import { checkDatabase } from "./check-database.js";
 import { expectEntries } from "./commands.js";
 import { checkHistory, History, type NewOp, type OpOf, type ViewRead } from "./history.js";
 import { show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 
 /**
- * Several `Db` handles (stand-ins for tabs) over one `EngineHost`, one
- * MemoryFs and one fake-indexeddb, driven by `fc.commands` and an
- * `fc.scheduler`. See docs/research/corruption-hardening-test-suite.md,
+ * Several `Db` handles (stand-ins for tabs) over one `EngineHost` and one
+ * MemoryFs, driven by `fc.commands` and an `fc.scheduler`. See docs/research/corruption-hardening-test-suite.md,
  * techniques 1 and 5.
  *
  * Commands start ops and return at once (`&` in a command's name), or wait
@@ -24,46 +24,45 @@ import { show, type OracleEntry, type OracleOp, type OracleRange } from "./oracl
  * - every AsyncFs call of the tabs and of the host except page reads, so a
  *   tab's run open races the host's reclaim and a compaction's merge races
  *   flushes;
+ * - every write to a tab's log, between the bytes landing and the append
+ *   resolving (the round trip to the tab's log worker);
  * - a pause between the reads of a `view` and inside a `range`.
  * Parked tasks run only when a `step` command releases them or a waiting
  * command is stuck on them, one at a time, in the order the scheduler
  * picks, so fast-check shrinks the interleaving with the commands.
- * IndexedDB transactions are not parked: between releases the harness lets
- * fake-indexeddb run, so a parked task stays parked while other handles
- * commit. `fc.scheduledModelRun` is not used: it runs each command as a
+ * `fc.scheduledModelRun` is not used: it runs each command as a
  * scheduler task and releases nothing else until the command ends, which
  * deadlocks a command that waits for its op.
  *
  * `KV_SIM_TRACE=1` prints every parked task and started op.
  *
- * Every op goes into a `History`. Every WAL commit is recorded with its seq
- * and the op that wrote it (a wrapper on `IdBWal`'s two append methods), so
- * the history check is seq-exact.
+ * Every op goes into a `History`. Every record written to a tab's log is
+ * recorded with its stamp, its tab and the op that wrote it (a wrapper on
+ * `LogSession`'s append), and gets its seq from the (stamp, tab) order once
+ * the run is quiet, so the history check is seq-exact.
  */
 
 // --- Harness seams: commit recorder and BroadcastChannel. Installed once per test file.
 
 const currentOp = new AsyncLocalStorage<number>();
-let world: World | undefined;
+/**
+ * The world of the run this code runs for. A history that hangs past its
+ * timeout keeps running while fast-check goes on, so nothing reaches the
+ * world through a global: each run's async work carries its own.
+ */
+const worlds = new AsyncLocalStorage<World>();
 
 type Restore = () => void;
 
 export function installSeams(): Restore {
-  const proto = IdBWal.prototype;
-  const append = proto.append;
-  const appendAfter = proto.appendAfter;
-  proto.append = async function (this: IdBWal, ops) {
+  type AppendAt = (this: LogSession, stamp: number, ops: readonly OracleOp[], writerId: string) => Promise<void>;
+  const proto = LogSession.prototype as unknown as { appendAt: AppendAt };
+  const appendAt = proto.appendAt;
+  proto.appendAt = async function (this: LogSession, stamp, ops, writerId) {
     const op = currentOp.getStore();
-    const seq = await append.call(this, ops);
-    if (seq !== undefined) world?.history.commit(op, ops, seq);
-    return seq;
+    await appendAt.call(this, stamp, ops, writerId);
+    worlds.getStore()?.written(op, ops, stamp, this.tab);
   };
-  proto.appendAfter = async function (this: IdBWal, since: number, decide: Parameters<typeof appendAfter>[1]) {
-    const op = currentOp.getStore();
-    const out = await appendAfter.call(this, since, decide);
-    if (out?.seq !== undefined) world?.history.commit(op, out.ops, out.seq);
-    return out;
-  } as typeof appendAfter;
   // Node runs a queued Web Lock callback in the async context of whoever
   // released the lock, so a commit inside it would be credited to that op.
   // Browsers have no such context; run the callback in the requester's.
@@ -80,8 +79,7 @@ export function installSeams(): Restore {
   const realChannel = g.BroadcastChannel;
   g.BroadcastChannel = SimChannel;
   return () => {
-    proto.append = append;
-    proto.appendAfter = appendAfter;
+    proto.appendAt = appendAt;
     locks.request = request;
     g.BroadcastChannel = realChannel;
   };
@@ -93,6 +91,8 @@ const channels = new Map<string, Set<SimChannel>>();
 /** In-process BroadcastChannel whose deliveries the world schedules. */
 class SimChannel {
   onmessage: Listener | null = null;
+  /** The run that made this channel. */
+  private readonly world = worlds.getStore();
   private readonly listeners = new Set<Listener>();
   private closed = false;
   /** Per receiver, the tail of this sender's deliveries, so each pair stays FIFO. */
@@ -111,10 +111,10 @@ class SimChannel {
       const copy = structuredClone(data);
       const prev = this.queues.get(to) ?? Promise.resolve();
       const next = prev
-        .then(() => world?.yield(`bus ${describeMessage(copy)} -> ${to.owner}`))
+        .then(() => this.world?.yield(`bus ${describeMessage(copy)} -> ${to.owner}`))
         .then(() => {
-          if (world && world.dropNext > 0) {
-            world.dropNext--;
+          if (this.world && this.world.dropNext > 0) {
+            this.world.dropNext--;
             return;
           }
           to.dispatch(copy);
@@ -123,11 +123,11 @@ class SimChannel {
     }
   }
 
-  /** Who listens, for the scheduler report: tabs subscribe while they open. */
-  owner = "host";
+  /** Who listens, for the scheduler report: tabs make their channel while they open. */
+  owner = this.world?.opening ?? "host";
 
   addEventListener(_type: "message", fn: Listener): void {
-    if (world?.opening) this.owner = world.opening;
+    if (this.world?.opening) this.owner = this.world.opening;
     this.listeners.add(fn);
   }
 
@@ -149,8 +149,8 @@ class SimChannel {
 }
 
 function describeMessage(data: unknown): string {
-  const m = data as { kind?: string; seq?: number } | null;
-  return `${m?.kind ?? "?"}${m?.seq !== undefined ? ` seq ${m.seq}` : ""}`;
+  const m = data as { kind?: string; n?: number } | null;
+  return `${m?.kind ?? "?"}${m?.n !== undefined ? ` n ${m.n}` : ""}`;
 }
 
 // --- The system under test.
@@ -173,6 +173,23 @@ class World {
   /** Drop this many upcoming bus deliveries. */
   dropNext = 0;
   private nextValue = 1;
+  /** Records written to the logs, in no order yet. */
+  private readonly records: { op: number | undefined; ops: readonly OracleOp[]; stamp: number; tab: string }[] = [];
+
+  /** A record is in `tab`'s log. */
+  written(op: number | undefined, ops: readonly OracleOp[], stamp: number, tab: string): void {
+    this.records.push({ op, ops, stamp, tab });
+  }
+
+  describeRecords(): string {
+    return this.records.map((r) => `record stamp ${r.stamp} tab ${r.tab} op #${r.op ?? "?"}`).join("\n");
+  }
+
+  /** Once quiet: commit every record to the history at its place in the (stamp, tab) order. */
+  commitRecords(): void {
+    const sorted = [...this.records].sort((a, b) => a.stamp - b.stamp || (a.tab < b.tab ? -1 : a.tab > b.tab ? 1 : 0));
+    sorted.forEach((r, i) => this.history.commit(r.op, r.ops, i + 1));
+  }
 
   constructor(
     readonly name: string,
@@ -198,25 +215,29 @@ class World {
       () => (done = true),
       () => (done = true),
     );
-    // Let IndexedDB run first, so a held task stays held while other
-    // handles' transactions commit. Release one task only when stuck.
-    for (let idle = 0; !done; ) {
+    // Let what is not parked run first. Release one task only when stuck.
+    // The engine's own timers are real (retries, lazy flushes), so stuck
+    // means idle for a while by the clock, not only for many turns: a
+    // loaded machine runs many turns before a 100 ms timer fires.
+    for (let idle = 0, since = Date.now(); !done; ) {
       await pump();
       if (done) break;
       if (this.s.count() > 0) {
         idle = 0;
+        since = Date.now();
         await this.s.waitOne();
       } else if (this.gates.size > 0) {
         idle = 0;
+        since = Date.now();
         this.openGates();
-      } else if (++idle > 1000) {
+      } else if (++idle > 1000 && Date.now() - since > STUCK_MS) {
         throw new Error("harness: an awaited op is stuck with no task to release");
       }
     }
     return p;
   }
 
-  /** Release up to `n` scheduled tasks in the scheduler's order, letting IndexedDB run before each. */
+  /** Release up to `n` scheduled tasks in the scheduler's order, letting the rest run before each. */
   async step(n: number): Promise<void> {
     for (let i = 0; i < n; i++) {
       await pump();
@@ -257,7 +278,15 @@ class World {
 
   private wrapFs(who: string): AsyncFs {
     const fs = this.fs;
+    const segments = (): SegmentStore => ({
+      create: async (path) => {
+        await this.yield(`${who} create ${path}`);
+        const file = await fs.segments().create(path);
+        return { ...file, settled: () => this.yield(`${who} log write ${path}`) };
+      },
+    });
     return {
+      segments,
       read: async (path, offset, length) => {
         await this.yield(`${who} read ${path}`);
         return fs.read(path, offset, length);
@@ -286,7 +315,8 @@ class World {
     };
   }
 
-  async open(slot: number): Promise<void> {
+  /** Open a handle in `slot`. Resolves with the error when the open failed. */
+  async open(slot: number): Promise<unknown> {
     const session = this.history.newSession();
     const op = this.history.invoke({ kind: "open", session });
     this.opening = `s${session}`;
@@ -299,8 +329,10 @@ class World {
       }));
       this.slots[slot] = { id: session, db };
       this.history.respond(op);
+      return undefined;
     } catch (err) {
       this.history.respond(op, err);
+      return err;
     } finally {
       this.opening = undefined;
     }
@@ -371,8 +403,6 @@ class World {
     await this.s.waitAll().catch(() => undefined);
     for (let i = 0; i < this.slots.length; i++) if (this.slots[i]) await this.close(i).catch(() => undefined);
     await this.host.ingest(this.name, 0, true).catch(() => undefined);
-    await deleteWal(this.name);
-    world = undefined;
   }
 }
 
@@ -380,7 +410,10 @@ function trace(line: string): void {
   if (process.env.KV_SIM_TRACE) console.log(line);
 }
 
-/** A few macrotask turns: enough for fake-indexeddb to move every open transaction on. */
+/** How long an awaited op may sit with nothing to release before the harness calls it stuck, in ms. */
+const STUCK_MS = 2_000;
+
+/** A few macrotask turns: enough for timers and unparked work to move on. */
 async function pump(): Promise<void> {
   for (let i = 0; i < 8; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
@@ -643,8 +676,10 @@ class OpenCmd implements Cmd {
   constructor(private readonly slot: number) {}
   check = (m: Readonly<Model>) => m.open[this.slot] === false;
   async run(m: Model, w: World): Promise<void> {
+    // No fault is injected here: a healthy database always opens.
+    const err = await w.open(this.slot);
+    if (err !== undefined) throw new Error(`open of slot ${this.slot} failed`, { cause: err });
     m.open[this.slot] = true;
-    await w.open(this.slot);
   }
   toString = () => `${this.slot}: open`;
 }
@@ -683,7 +718,7 @@ class HoldOpensCmd extends SlotCmd {
   name = () => "hold run opens";
 }
 
-/** Lose the next `n` BroadcastChannel deliveries. The WAL tail is the source of truth. */
+/** Lose the next `n` BroadcastChannel deliveries. The logs are the source of truth. */
 class DropCmd implements Cmd {
   constructor(private readonly n: number) {}
   check = () => true;
@@ -753,7 +788,10 @@ export async function runWorld(
   cmds: Iterable<Cmd>,
 ): Promise<void> {
   const w = new World(name, s, maxWalBytes, SLOTS);
-  world = w;
+  return worlds.run(w, () => runIn(w, name, cmds));
+}
+
+async function runIn(w: World, name: string, cmds: Iterable<Cmd>): Promise<void> {
   try {
     const model: Model = { open: Array.from({ length: SLOTS }, () => true) };
     w.free = true;
@@ -762,6 +800,7 @@ export async function runWorld(
     await fc.asyncModelRun(() => ({ model, real: w }), cmds);
     await w.quiesce();
     expect(w.hostErrors, "host flush and compaction errors").toEqual([]);
+    w.commitRecords();
 
     const oracle = checkHistory(w.history);
     // Concurrent increments: none lost.
@@ -776,7 +815,11 @@ export async function runWorld(
     expect(report.problems, "checkDatabase problems").toEqual([]);
     expect(report.orphans, "orphan runs").toEqual([]);
     expect(report.staleManifests, "stale manifests").toEqual([]);
-    expect(report.head, "WAL head").toBe(oracle.head);
+    if (report.head !== oracle.head) {
+      throw new Error(
+        `the logs hold ${report.head} records, the history credits ${oracle.head} to ops\n${w.describeRecords()}\n--- history ---\n${w.history.format()}`,
+      );
+    }
     expectEntries(report.state, oracle.stateAt(), "on-disk state");
 
     // Reopen and read everything back.
