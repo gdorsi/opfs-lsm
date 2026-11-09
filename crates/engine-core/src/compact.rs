@@ -1,35 +1,62 @@
 //! SST merge for compaction (newest-first inputs).
 
 use crate::sst::{decode_sst, encode_sst, entry_size, Codec, Entry, SstError};
-use std::cmp::Ordering;
-use std::collections::binary_heap::{BinaryHeap, PeekMut};
+use alloc::vec::Vec;
 
-/// The next entry of input `run`. Ordered so the max-heap pops the smallest
-/// key first and, for one key, the newest run first.
+/// The next entry of input `run`.
 struct Head {
     entry: Entry,
     run: usize,
 }
 
-impl Ord for Head {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other.entry.key().cmp(self.entry.key()).then(other.run.cmp(&self.run))
-    }
+/// Pops the smallest key first and, for one key, the newest run first.
+fn before(a: &Head, b: &Head) -> bool {
+    (a.entry.key(), a.run) < (b.entry.key(), b.run)
 }
 
-impl PartialOrd for Head {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+/// A binary min-heap of run heads. In-crate because `BinaryHeap` is about
+/// 2 kB of the module and the merge needs only its top, replace and remove.
+struct Heads(Vec<Head>);
+
+impl Heads {
+    fn top(&self) -> Option<&Head> {
+        self.0.first()
+    }
+
+    fn push(&mut self, h: Head) {
+        let v = &mut self.0;
+        v.push(h);
+        let mut i = v.len() - 1;
+        while i > 0 && before(&v[i], &v[(i - 1) / 2]) {
+            v.swap(i, (i - 1) / 2);
+            i = (i - 1) / 2;
+        }
+    }
+
+    /// Put `next` in place of the top, or drop the top when `next` is `None`,
+    /// and restore the order. Returns the old top.
+    fn replace_top(&mut self, next: Option<Head>) -> Head {
+        let v = &mut self.0;
+        let old = match next {
+            Some(h) => core::mem::replace(&mut v[0], h),
+            None => v.swap_remove(0),
+        };
+        let mut i = 0;
+        loop {
+            let mut m = i;
+            for c in [2 * i + 1, 2 * i + 2] {
+                if c < v.len() && before(&v[c], &v[m]) {
+                    m = c;
+                }
+            }
+            if m == i {
+                return old;
+            }
+            v.swap(i, m);
+            i = m;
+        }
     }
 }
-
-impl PartialEq for Head {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl Eq for Head {}
 
 /// Merge newest-first runs into runs of about `target_bytes` each, split at
 /// key boundaries and written with `codec`. Newer entries win.
@@ -46,7 +73,7 @@ pub fn merge_sst_bytes(
         .iter()
         .map(|bytes| decode_sst(bytes).map(Vec::into_iter))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut heap = BinaryHeap::with_capacity(inputs.len());
+    let mut heap = Heads(Vec::with_capacity(inputs.len()));
     for (run, input) in inputs.iter_mut().enumerate() {
         if let Some(entry) = input.next() {
             heap.push(Head { entry, run });
@@ -57,19 +84,20 @@ pub fn merge_sst_bytes(
     let mut runs = Vec::new();
     let mut pending = Vec::new();
     let mut size = 0;
-    while let Some(Head { mut entry, run }) = heap.pop() {
+    while let Some(&Head { run, .. }) = heap.top() {
         // Equal keys sit together. The later one in this run wins, as the
-        // BTreeMap insert did. Push only the first strictly greater key.
+        // BTreeMap insert did. The run's first strictly greater key replaces it.
+        let mut entry = None;
         let next_after = loop {
             match inputs[run].next() {
-                Some(next) if next.key() == entry.key() => entry = next,
+                Some(next) if next.key() == heap.top().unwrap().entry.key() => entry = Some(next),
                 other => break other,
             }
         };
-        if let Some(next) = next_after {
-            heap.push(Head { entry: next, run });
-        }
-        while let Some(mut shadowed) = heap.peek_mut() {
+        let Head { entry: first, .. } = heap.replace_top(next_after.map(|entry| Head { entry, run }));
+        let entry = entry.unwrap_or(first);
+        // Older runs holding the same key are shadowed: skip past it in each.
+        while let Some(shadowed) = heap.top() {
             if shadowed.entry.key() != entry.key() {
                 break;
             }
@@ -80,12 +108,7 @@ pub fn merge_sst_bytes(
                     other => break other,
                 }
             };
-            match replacement {
-                Some(next) => shadowed.entry = next,
-                None => {
-                    PeekMut::pop(shadowed);
-                }
-            }
+            heap.replace_top(replacement.map(|entry| Head { entry, run: shadowed_run }));
         }
         if drop_tombstones && matches!(entry, Entry::Del { .. }) {
             dropped = dropped.max(entry.seq());
