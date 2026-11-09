@@ -131,6 +131,11 @@ export class LogSession {
   private left = false;
   private holding: Promise<void> | undefined;
   private closed = false;
+  /**
+   * Set when `close()` is called, before it waits: an append it accepted
+   * after that could reach the writer after `close` sealed it.
+   */
+  private closing: Promise<void> | undefined;
   /** No record is handed out before join: their seqs count on from the installed generation. */
   private joined = false;
   private failed: unknown;
@@ -562,7 +567,7 @@ export class LogSession {
 
   private async appendAt(stamp: Stamp, ops: readonly CheckedOp[], writerId: string): Promise<void> {
     if (this.failed) throw this.failed;
-    if (this.closed) throw new ClosedError("database is closed");
+    if (this.closing) throw new ClosedError("database is closed");
     const n = ++this.nextN;
     this.unacked.push(stamp);
     const written = this.opts.client.append({ stamp, n, body: encodeOps(ops) });
@@ -753,8 +758,12 @@ export class LogSession {
     this.pump();
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    this.closing ??= this.shutDown();
+    return this.closing;
+  }
+
+  private async shutDown(): Promise<void> {
     await Promise.race([
       this.flushAll().catch(() => undefined),
       new Promise((r) => setTimeout(r, 1000)),
