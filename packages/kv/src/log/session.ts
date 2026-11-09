@@ -568,9 +568,9 @@ export class LogSession {
 
   /** Resolve once every record at or below `target` is stable here. */
   waitStable(target: Stamp): Promise<void> {
+    if (this.failed) return Promise.reject(this.failed);
     if (this.merger.stable >= target) return Promise.resolve();
     if (this.stopping) return Promise.reject(this.stopping);
-    if (this.failed) return Promise.reject(this.failed);
     return new Promise((resolve, reject) => {
       this.waiters.push({ target, resolve, reject });
       this.pump();
