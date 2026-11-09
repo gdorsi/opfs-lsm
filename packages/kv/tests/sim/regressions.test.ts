@@ -611,7 +611,7 @@ describe("a generation hint older than a reclaim", () => {
   // newest generation, which took the wanted one at its word and installed
   // the older generation, whose cut is short of the reclaimed records.
   // Reduced below with a bus hint as the stale wanted generation.
-  it.fails("installs the generation that holds the reclaimed records", async () => {
+  it("installs the generation that holds the reclaimed records", async () => {
     const g = globalThis as { BroadcastChannel: typeof BroadcastChannel };
     const Real = g.BroadcastChannel;
     // R hears only the hint below, and while `deaf` none of W's records or promises.

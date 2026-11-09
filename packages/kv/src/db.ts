@@ -573,7 +573,9 @@ class DbImpl implements Db {
       client,
       maxWalBytes: this.policy.maxWalBytes,
       onStable: (records) => this.applyStable(records),
-      onBehind: (through) =>
+      onBehind: (through) => {
+        // A generation newer than any hint reclaimed these records: read the newest manifest.
+        this.wantGeneration = 0;
         void this.syncGeneration().then(
           () => {
             if (!this.closed && this.installed.cut < through) {
@@ -583,7 +585,8 @@ class DbImpl implements Db {
             }
           },
           () => undefined,
-        ),
+        );
+      },
       onGone: () => this.syncGeneration(),
       ...(after ? { after } : {}),
     });
