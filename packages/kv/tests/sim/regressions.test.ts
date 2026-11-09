@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import fc from "fast-check";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AsyncFs } from "../../src/index.js";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
 import { openHarnessDb } from "../../src/testing.js";
 import { reclaimLogs } from "../../src/host/ingest.js";
 import { recoverGeneration } from "../../src/recover.js";
 import { reclaimManifests } from "../../src/store/generation.js";
+import { cmd, installSeams, runWorld } from "./multi.js";
 
 /**
  * Bugs the model suite found, reduced to plain tests. A failing one is
@@ -559,3 +561,41 @@ async function until(cond: () => boolean): Promise<void> {
   for (let i = 0; i < 1000 && !cond(); i++) await new Promise((resolve) => setImmediate(resolve));
   if (!cond()) throw new Error("condition never held");
 }
+
+describe("a tab that joins while a liveness query is out", () => {
+  let restore: () => void;
+  beforeAll(() => (restore = installSeams()));
+  afterAll(() => restore());
+  let runs = 0;
+
+  // Found by multi-handle.test.ts, shrunk to
+  //   [2: put "" 0a & close, 0: close, 2: open & (background, slow liveness
+  //   query), 0: open, ...]
+  // s4 took its liveness snapshot, s5 opened and said hello, then s4's
+  // answer came: s5 was known and not in the snapshot, so s4 retired it
+  // and dropped s5's later records as duplicates. The steps let s4 finish
+  // opening before s5 writes; the final sync and read of every handle
+  // shows the write s4 missed.
+  it("keeps the writes of the joined tab visible to the tab that asked", async () => {
+    await expect(
+      fc.assert(
+        fc.asyncProperty(fc.scheduler(), (s) =>
+          runWorld(`sim-regressions-join-${++runs}`, s, 1 << 30, [
+            cmd.close(2, { type: "put", key: 0, value: { size: 1, fill: "a" } }),
+            cmd.close(0),
+            cmd.open(2, "background, slow liveness query"),
+            cmd.open(0),
+            cmd.put(0, 1),
+            cmd.release(),
+            cmd.step(8),
+            cmd.step(8),
+            cmd.step(8),
+            cmd.step(8),
+            cmd.put(0, 2),
+          ]),
+        ),
+        { numRuns: 20 },
+      ),
+    ).resolves.toBeUndefined();
+  }, 60_000);
+});

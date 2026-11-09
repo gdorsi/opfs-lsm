@@ -26,7 +26,9 @@ import { show, type OracleEntry, type OracleOp, type OracleRange } from "./oracl
  *   flushes;
  * - every write to a tab's log, between the bytes landing and the append
  *   resolving (the round trip to the tab's log worker);
- * - a pause between the reads of a `view` and inside a `range`.
+ * - a pause between the reads of a `view` and inside a `range`;
+ * - the answer to a Web Locks query, after its snapshot, as in a browser;
+ * - the timers of a `close`, so its wait for writes in flight can run out.
  * Parked tasks run only when a `step` command releases them or a waiting
  * command is stuck on them, one at a time, in the order the scheduler
  * picks, so fast-check shrinks the interleaving with the commands.
@@ -51,6 +53,8 @@ const currentOp = new AsyncLocalStorage<number>();
  * world through a global: each run's async work carries its own.
  */
 const worlds = new AsyncLocalStorage<World>();
+/** The session whose open this code runs for, so its liveness queries can be held. */
+const sessions = new AsyncLocalStorage<string>();
 
 type Restore = () => void;
 
@@ -80,7 +84,10 @@ export function installSeams(): Restore {
   const query = locks.query;
   locks.query = async function (this: LockManager) {
     const snapshot = await query.call(this);
-    await worlds.getStore()?.yield("locks query answer");
+    const w = worlds.getStore();
+    const who = sessions.getStore() ?? "?";
+    await w?.gate(`${who} query`);
+    await w?.yield(`${who} locks query answer`);
     return snapshot;
   };
   const realSetTimeout = globalThis.setTimeout;
@@ -203,11 +210,14 @@ class World {
   readonly host = new EngineHost(() => this.wrapFs("host"));
   readonly slots: (Session | undefined)[];
   private readonly inflight = new Set<Promise<void>>();
-  /** Host-side failures (flush, compaction) that no op reports. */
+  /** Failures no awaited op reports: host flush and compaction, `open &`. */
   readonly hostErrors: unknown[] = [];
   /** After the commands: stop scheduling and let everything run. */
   free = false;
-  private readonly gates = new Map<string, { readonly opened: Promise<void>; readonly open: () => void }>();
+  private readonly gates = new Map<
+    string,
+    { readonly opened: Promise<void>; readonly open: () => void; readonly reached: Promise<void>; readonly reach: () => void }
+  >();
   /** The session opening now, so its channel can be named. */
   opening: string | undefined;
   /** Drop this many upcoming bus deliveries. */
@@ -287,19 +297,35 @@ class World {
   }
 
   /**
-   * Hold `who`'s run opens until a waiting command gets stuck on them. A
-   * tab that has read a manifest but not opened its runs is the window in
-   * which the host can reclaim them (the generation retry loop in db.ts).
+   * Hold `who` at its gate until a waiting command gets stuck on it. For
+   * `s<n>`, the session's run opens: a tab that has read a manifest but not
+   * opened its runs is the window in which the host can reclaim them (the
+   * generation retry loop in db.ts). For `s<n> query`, its liveness query
+   * answers. Resolves once something waits at the gate.
    */
-  hold(who: string): void {
-    if (this.gates.has(who)) return;
+  hold(who: string): Promise<void> {
+    const held = this.gates.get(who);
+    if (held) return held.reached;
     let open!: () => void;
+    let reach!: () => void;
     const opened = new Promise<void>((resolve) => (open = resolve));
-    this.gates.set(who, { opened, open });
+    const reached = new Promise<void>((resolve) => (reach = resolve));
+    this.gates.set(who, { opened, open, reached, reach });
+    return reached;
   }
 
-  private openGates(): void {
-    for (const gate of this.gates.values()) gate.open();
+  /** Wait at `who`'s gate: resolves once it opens, at once when there is none. */
+  gate(who: string): Promise<void> | undefined {
+    const g = this.gates.get(who);
+    g?.reach();
+    return g?.opened;
+  }
+
+  openGates(): void {
+    for (const gate of this.gates.values()) {
+      gate.reach();
+      gate.open();
+    }
     this.gates.clear();
   }
 
@@ -332,7 +358,7 @@ class World {
         return fs.read(path, offset, length);
       },
       open: async (path) => {
-        await this.gates.get(who)?.opened;
+        await this.gate(who);
         await this.yield(`${who} open ${path}`);
         return fs.open(path);
       },
@@ -355,24 +381,44 @@ class World {
     };
   }
 
-  /** Open a handle in `slot`. Resolves with the error when the open failed. */
-  async open(slot: number): Promise<unknown> {
+  /**
+   * Open a handle in `slot`. Resolves with the error when the open failed.
+   * Without `wait`, resolves at once and calls `opened` once it is open;
+   * with `holdQuery` too, resolves once its liveness query is out, and the
+   * answer comes only once a waiting command is stuck on it, so other tabs
+   * can open in between.
+   */
+  async open(slot: number, wait = true, opened?: () => void, holdQuery = false): Promise<unknown> {
     const session = this.history.newSession();
     const op = this.history.invoke({ kind: "open", session });
-    this.opening = `s${session}`;
-    try {
-      const db = await this.settle(openHarnessDb({
-        name: this.name,
-        fs: this.wrapFs(`s${session}`),
-        ingest: createLocalIngestClient(this.host),
-        ingestPolicy: { maxWalBytes: this.maxWalBytes },
-      }));
-      this.slots[slot] = { id: session, db };
-      this.history.respond(op);
+    const who = `s${session}`;
+    this.opening = who;
+    const queried = holdQuery ? this.hold(`${who} query`) : undefined;
+    const p = sessions.run(who, () => openHarnessDb({
+      name: this.name,
+      fs: this.wrapFs(who),
+      ingest: createLocalIngestClient(this.host),
+      ingestPolicy: { maxWalBytes: this.maxWalBytes },
+    })).then(
+      (db) => {
+        this.slots[slot] = { id: session, db };
+        this.history.respond(op);
+        opened?.();
+        return undefined;
+      },
+      (err: unknown) => {
+        this.history.respond(op, err);
+        return err;
+      },
+    );
+    if (!wait) {
+      this.track(p.then((err) => void (err !== undefined && this.hostErrors.push(err))));
+      if (queried) await this.settle(Promise.race([queried, p]));
+      this.opening = undefined;
       return undefined;
-    } catch (err) {
-      this.history.respond(op, err);
-      return err;
+    }
+    try {
+      return await this.settle(p);
     } finally {
       this.opening = undefined;
     }
@@ -427,12 +473,26 @@ class World {
     void p.finally(() => this.inflight.delete(p));
   }
 
-  /** Stop scheduling, let every op and delivery finish, close every handle. */
+  /**
+   * Stop scheduling, let every op and delivery finish, then have every open
+   * handle sync and read everything: each must see every write acked
+   * anywhere, so a tab that wrongly stopped waiting for another shows. Then
+   * close every handle.
+   */
   async quiesce(): Promise<void> {
     this.free = true;
     this.openGates();
     await this.s.waitAll();
     while (this.inflight.size > 0) await Promise.allSettled([...this.inflight]);
+    for (let i = 0; i < this.slots.length; i++) {
+      if (!this.slots[i]) continue;
+      await this.start(i, "sync", {}, (db) => db.sync(), true);
+      await this.start(i, "range", { range: {} }, async (db, op) => {
+        const entries: OracleEntry[] = [];
+        for await (const e of db.range()) entries.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
+        op.entries = entries;
+      }, true);
+    }
     for (let i = 0; i < this.slots.length; i++) if (this.slots[i]) await this.close(i);
   }
 
@@ -522,7 +582,8 @@ const readName = (r: ReadSpec) => (r.kind === "get" ? `get ${keyName(r.key)}` : 
 
 // --- Commands. The model is which slots hold an open handle.
 
-type Model = { readonly open: boolean[] };
+/** Per slot: open, closed, or `undefined` while an `open &` is out. */
+type Model = { readonly open: (boolean | undefined)[] };
 type Cmd = fc.AsyncCommand<Model, World, false>;
 
 const waitTag = (wait: boolean) => (wait ? "" : " &");
@@ -712,16 +773,23 @@ class IngestCmd extends SlotCmd {
   name = () => "ingest";
 }
 
+type OpenMode = "wait" | "background" | "background, slow liveness query";
+
 class OpenCmd implements Cmd {
-  constructor(private readonly slot: number) {}
+  constructor(private readonly slot: number, private readonly mode: OpenMode = "wait") {}
   check = (m: Readonly<Model>) => m.open[this.slot] === false;
   async run(m: Model, w: World): Promise<void> {
+    if (this.mode !== "wait") {
+      m.open[this.slot] = undefined;
+      await w.open(this.slot, false, () => (m.open[this.slot] = true), this.mode !== "background");
+      return;
+    }
     // No fault is injected here: a healthy database always opens.
     const err = await w.open(this.slot);
     if (err !== undefined) throw new Error(`open of slot ${this.slot} failed`, { cause: err });
     m.open[this.slot] = true;
   }
-  toString = () => `${this.slot}: open`;
+  toString = () => `${this.slot}: open${this.mode === "wait" ? "" : ` & (${this.mode})`}`;
 }
 
 /** Close, with `write` started first and still in flight. */
@@ -758,6 +826,15 @@ class HoldOpensCmd extends SlotCmd {
     w.hold(`s${w.slots[this.slot]!.id}`);
   }
   name = () => "hold run opens";
+}
+
+/** Let every held run open and liveness query answer go. */
+class ReleaseCmd implements Cmd {
+  check = () => true;
+  async run(_m: Model, w: World): Promise<void> {
+    w.openGates();
+  }
+  toString = () => "release held";
 }
 
 /** Lose the next `n` BroadcastChannel deliveries. The logs are the source of truth. */
@@ -806,13 +883,16 @@ export const multiCommandsArb = (replayPath?: string) => {
       fc.tuple(slot, wait, fc.array(readArb, { minLength: 1, maxLength: 3 })).map(([s, x, r]) => new ViewCmd(s, x, r)),
       fc.tuple(slot, wait).map(([s, x]) => new SyncCmd(s, x)),
       fc.tuple(slot, wait).map(([s, x]) => new IngestCmd(s, x)),
-      slot.map((s) => new OpenCmd(s)),
+      fc
+        .tuple(slot, fc.constantFrom<OpenMode>("wait", "background", "background, slow liveness query"))
+        .map(([s, mode]) => new OpenCmd(s, mode)),
       slot.map((s) => new CloseCmd(s)),
       fc.tuple(slot, opArb).map(([s, op]) => new CloseCmd(s, op)),
       wait.map((x) => new FlushCmd(x)),
       wait.map((x) => new CompactCmd(x)),
       fc.integer({ min: 1, max: 4 }).map((n) => new DropCmd(n)),
       slot.map((s) => new HoldOpensCmd(s, false)),
+      fc.constant(new ReleaseCmd()),
       fc.integer({ min: 1, max: 8 }).map((n) => new StepCmd(n)),
       fc.integer({ min: 1, max: 8 }).map((n) => new StepCmd(n)),
     ],
@@ -842,7 +922,7 @@ async function runIn(w: World, name: string, cmds: Iterable<Cmd>): Promise<void>
     w.free = false;
     await fc.asyncModelRun(() => ({ model, real: w }), cmds);
     await w.quiesce();
-    expect(w.hostErrors, "host flush and compaction errors").toEqual([]);
+    expect(w.hostErrors, "host flush and compaction errors, and failed background opens").toEqual([]);
     w.commitRecords();
 
     const oracle = checkHistory(w.history);
@@ -874,3 +954,12 @@ async function runIn(w: World, name: string, cmds: Iterable<Cmd>): Promise<void>
     await w.dispose();
   }
 }
+
+/** Commands by hand, for regressions that replay a shrunk history under a random schedule. */
+export const cmd = {
+  open: (slot: number, mode?: OpenMode): Cmd => new OpenCmd(slot, mode),
+  close: (slot: number, write?: OpSpec): Cmd => new CloseCmd(slot, write),
+  put: (slot: number, key: number): Cmd => new WriteCmd(slot, true, [{ type: "put", key, value: { size: 2, fill: "a" } }]),
+  release: (): Cmd => new ReleaseCmd(),
+  step: (n: number): Cmd => new StepCmd(n),
+};
