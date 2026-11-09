@@ -411,7 +411,7 @@ run whose range holds the key, so a get costs one probe per level, not one per r
 touch IndexedDB, and it doesn't wait on the SharedWorker.
 
 `range` merges a cursor over the memtable with one cursor per scan source, using a min-heap
-ordered by key and then by source, newest first. For each key the newest source wins, and
+ordered by key (descending with `reverse`) and then by source, newest first. For each key the newest source wins, and
 tombstones are dropped. Each L0 run is its own source, because L0 runs overlap. Each deeper
 level is one source (`RunLevel` in `store/merge.ts`): its runs never overlap, so the level
 cursor binary-searches the runs' largest keys for the start key and opens one run at a time,
@@ -420,6 +420,15 @@ ranges in the manifest, so a scan only pays for the runs it reaches. The merge p
 before it awaits, so a cold scan loads all its first pages in one parallel round. It seeks to the
 start key with the block's offset table, then walks records in place and copies out each one
 when it reaches it.
+
+`range({ reverse: true })` returns the same keys in descending order, and `limit` keeps the
+largest. Direction is chosen once, where a cursor or the heap is built. A level opens the last
+run that starts below the end key and steps to the run before. A run starts at the last block
+whose separator is below the end key and stops before a block whose keys all sit below the start
+key, so the first block read is the one that holds the end bound. Records have no back pointers,
+so a block is walked forward once, noting where each record starts, and read from the last. That
+is one header-only pass over a block of about 4 KiB. The file format and the wasm engine don't
+change: `scan_block_contains` returns a block's hits in key order and the reader reverses them.
 
 The bloom filters play no part in a scan. They answer whether one exact key is present.
 
@@ -434,8 +443,9 @@ place. A newer source that holds the key with a non-matching value or a tombston
 older hit. Without wasm, the run's cursor does the same filter key by key.
 
 `db.rangeFollow(range, follow)` scans a range and point-reads the key that `follow` returns for
-each entry. Every read sees the same state, because the scan and the reads run in one task with no
-await between them.
+each entry. Every read sees the same state, because the scan and the reads use one pinned memtable
+and one held generation. A page load can make them wait, and writes that land meanwhile are not
+seen.
 
 # Multi-tab coordination
 

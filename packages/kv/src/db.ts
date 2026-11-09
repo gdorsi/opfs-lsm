@@ -135,15 +135,16 @@ function recordWatchScan(trace: OpenTrace, scan: WatchScan): void {
 }
 
 export type Range = {
-  /** Inclusive, in key order, whichever way the scan runs. */
+  /** Inclusive. Bounds are in key order whichever way `reverse` points. */
   readonly start?: Uint8Array;
-  /** Exclusive, in key order, whichever way the scan runs. */
+  /** Exclusive. */
   readonly endExclusive?: Uint8Array;
-  /** With `reverse`, the last `limit` keys of the range. */
+  /** At most this many entries, taken in scan order, so the largest keys with `reverse`. */
   readonly limit?: number;
   /**
-   * Yield the keys of the range from the largest down. The same keys as the
-   * forward scan, in the opposite order; `limit` then keeps the largest ones.
+   * Scan from the largest key down. Yields the keys of the forward scan in
+   * descending order. To page backward, pass the last key seen as
+   * `endExclusive`.
    */
   readonly reverse?: boolean;
   /**
@@ -184,7 +185,9 @@ export interface Db {
   ): Promise<T>;
   /**
    * Scan `range`, then point-read `follow(entry)` for each entry that returns a
-   * key, in one IndexedDB transaction. Every read sees the same state.
+   * key. The scan and the reads use one pinned memtable and one held
+   * generation, so they see the same state although a page load can make them
+   * wait. Writes that land meanwhile are not seen.
    */
   rangeFollow(
     range: Range,

@@ -47,7 +47,7 @@ Keys and values are `Uint8Array`.
 | `delete(key)` | Append one delete. Resolves on WAL ack. |
 | `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack. |
 | `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
-| `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `valueContains` keeps live puts whose current value holds every pattern. |
+| `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `reverse: true` yields the same keys from the largest down, and `limit` keeps the largest. `valueContains` keeps live puts whose current value holds every pattern. |
 | `rangeFollow(range, follow)` | Scan a range, then point-read each follow key, on the memtable and SST generation pinned for the call. |
 | `view(body)` | Read-only snapshot pinned to the WAL head and the installed OPFS generation when the view opens. |
 | `changes(listener)` | Subscribe to durable WAL appends and ingest generation bumps. Returns unsubscribe. |
