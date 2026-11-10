@@ -190,7 +190,7 @@ function encodeStringPrefix(prefix: Uint8Array, s: string): Uint8Array {
 }
 
 /** Offset just past the value that starts at `at`. */
-export function skipValue(key: Uint8Array, at: number): number {
+function skipValue(key: Uint8Array, at: number): number {
   switch (key[at]) {
     case TAG.null:
     case TAG.false:
@@ -215,7 +215,7 @@ function badQuery(message: string): never {
 }
 
 /** A caller's query value: a scalar, a finite number, `-0` read as `0`. */
-export function checkQueryValue(value: unknown): Scalar {
+function checkQueryValue(value: unknown): Scalar {
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "string" && wellFormed(value)) return value;
   if (typeof value === "number" && Number.isFinite(value)) return value === 0 ? 0 : value;
@@ -228,7 +228,7 @@ export function checkQueryValue(value: unknown): Scalar {
 const NON_WORD = /[^\p{L}\p{N}]+/u;
 
 /** Lowercased runs of letters and digits, in order. */
-export function wordsOf(text: string): string[] {
+function wordsOf(text: string): string[] {
   return text
     .toLowerCase()
     .split(NON_WORD)

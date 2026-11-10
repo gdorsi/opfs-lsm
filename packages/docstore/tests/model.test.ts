@@ -144,10 +144,9 @@ describe("docstore against an in-memory model", () => {
   it(
     "agrees on every read, and leaves exactly the catalog, the rows and their entries in kv",
     async () => {
-      await fc.assert(
-        fc.asyncProperty(fc.array(cmdArb, { maxLength: 40 }), (cmds) => run(cmds)),
-        { numRuns: RUNS, ...replay },
-      );
+      await expect(
+        fc.assert(fc.asyncProperty(fc.array(cmdArb, { maxLength: 40 }), (cmds) => run(cmds)), { numRuns: RUNS, ...replay }),
+      ).resolves.toBeUndefined();
     },
     Math.max(60_000, RUNS * 300),
   );

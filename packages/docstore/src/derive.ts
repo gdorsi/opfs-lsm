@@ -148,7 +148,7 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
 const EMPTY = new Uint8Array(0);
 
 /** The value at a split dot path, walking own properties of plain objects only. */
-export function readPath(doc: StoredDoc, path: Path): unknown {
+function readPath(doc: StoredDoc, path: Path): unknown {
   let v: unknown = doc;
   for (const segment of path) {
     if (!isObject(v) || !Object.hasOwn(v, segment)) return undefined;

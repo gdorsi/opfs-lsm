@@ -34,7 +34,7 @@ export const MODEL: Record<string, ModelIndex> = {
   uniq: { kind: "unique", on: ["u"] },
   search: { kind: "text", on: ["a"], text: "t" },
 };
-export const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1 };
+const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1 };
 
 export type Docs = Collection<Doc, (typeof schema)["collections"]["docs"]>;
 export type DocQuery = Query<Doc, (typeof schema)["collections"]["docs"]>;
@@ -43,10 +43,10 @@ export const asQuery = (q: QueryInput) => q as DocQuery;
 
 const WORDS = ["Buy", "milk", "MILKSHAKE", "buyer", "Bacon", "rép", "Ünï", "x1", "2024", ",", " ", "-"];
 export const textArb = fc.array(fc.constantFrom(...WORDS), { maxLength: 5 }).map((ws) => ws.join(" "));
-export const matchArb = fc
+const matchArb = fc
   .array(fc.constantFrom("bu", "BUY", "mi", "milk", "milks", "ba", "r", "ün", "x", "20", "q"), { minLength: 1, maxLength: 2 })
   .map((ws) => ws.join(" "));
-export const idArb = stringArb.filter((s) => s !== "");
+const idArb = stringArb.filter((s) => s !== "");
 
 export const datasetArb = fc
   .tuple(

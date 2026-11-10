@@ -24,7 +24,7 @@ function at(doc: Doc, path: string): unknown {
   return v;
 }
 
-export function wordsOf(text: string): string[] {
+function wordsOf(text: string): string[] {
   return text
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)

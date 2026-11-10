@@ -42,7 +42,7 @@ export const stringArb: fc.Arbitrary<string> = fc.oneof(
   { weight: 1, arbitrary: fc.string({ unit: "binary", maxLength: 6 }) },
 );
 
-export const numberArb: fc.Arbitrary<number> = fc.oneof(
+const numberArb: fc.Arbitrary<number> = fc.oneof(
   fc.constantFrom(-0, 0, 1, -1, 0.5, -0.5, 2 ** 53, -(2 ** 53), Number.MIN_VALUE, -Number.MIN_VALUE),
   fc.constantFrom(Number.MAX_VALUE, -Number.MAX_VALUE),
   fc.double({ noNaN: true, noDefaultInfinity: true }),

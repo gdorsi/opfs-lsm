@@ -40,26 +40,28 @@ describe("get and getMany", () => {
 
 describe("query matches a brute-force filter and sort", () => {
   it("for every index kind and the rows: the set, its order, reverse, paging, count and queryIds", async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        datasetArb,
-        fc.array(fc.tuple(queryArb, fc.integer({ min: 1, max: 12 })), { minLength: 1, maxLength: 6 }),
-        async (dataset, queries) => {
-          const kv = await openKv(freshName());
-          try {
-            const c = (await openDocStore(kv, schema)).collection("docs");
-            await c.putMany(dataset);
-            const all = dataset.map(stored);
-            for (const [{ index, q }, pageSize] of queries) {
-              await checkQuery(c, all, index, q, pageSize);
+    await expect(
+      fc.assert(
+        fc.asyncProperty(
+          datasetArb,
+          fc.array(fc.tuple(queryArb, fc.integer({ min: 1, max: 12 })), { minLength: 1, maxLength: 6 }),
+          async (dataset, queries) => {
+            const kv = await openKv(freshName());
+            try {
+              const c = (await openDocStore(kv, schema)).collection("docs");
+              await c.putMany(dataset);
+              const all = dataset.map(stored);
+              for (const [{ index, q }, pageSize] of queries) {
+                await checkQuery(c, all, index, q, pageSize);
+              }
+            } finally {
+              await kv.close();
             }
-          } finally {
-            await kv.close();
-          }
-        },
+          },
+        ),
+        { numRuns: 60 },
       ),
-      { numRuns: 60 },
-    );
+    ).resolves.toBeUndefined();
   });
 });
 
