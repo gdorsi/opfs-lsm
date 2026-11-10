@@ -1,0 +1,55 @@
+{
+  "name": "@opfs-lsm/tanstack-db",
+  "version": "0.1.0",
+  "description": "TanStack DB collections persisted in @opfs-lsm/kv and synced between tabs",
+  "keywords": [
+    "tanstack-db",
+    "tanstack",
+    "opfs",
+    "persistence",
+    "browser"
+  ],
+  "homepage": "https://github.com/gdorsi/opfs-lsm#readme",
+  "bugs": {
+    "url": "https://github.com/gdorsi/opfs-lsm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gdorsi/opfs-lsm.git",
+    "directory": "packages/tanstack-db"
+  },
+  "author": "Guido D'Orsi",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@opfs-lsm/kv": "workspace:*",
+    "@standard-schema/spec": "^1.1.0"
+  },
+  "peerDependencies": {
+    "@tanstack/db": "^1.0.0-rc.1.4"
+  },
+  "devDependencies": {
+    "@tanstack/db": "1.0.0-rc.1.4",
+    "@types/node": "^26.6.6",
+    "fake-indexeddb": "^6.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

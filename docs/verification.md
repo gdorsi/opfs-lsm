@@ -183,7 +183,7 @@ The Sync commit in `verify-kv` is the commit where those models were last confir
 pnpm test
 ```
 
-Exit 0. The root script checks that `README.md` still contains its required phrases and builds the four packages. Then it runs the unit suites of `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge` (`test:suites`) while it builds the example apps (`test:examples`). A failure in either fails the command.
+Exit 0. The root script checks that `README.md` still contains its required phrases and builds the five packages. Then it runs the unit suites of `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs`, `@opfs-lsm/automerge` and `@opfs-lsm/tanstack-db` (`test:suites`) while it builds the example apps (`test:examples`). A failure in either fails the command.
 
 The kv suite includes a model-based test (`packages/kv/tests/sim/model.test.ts`): random histories of writes, reads, views, ingests, compactions and reopens on one handle, checked against a log-prefix oracle, with `checkDatabase` (`tests/sim/check-database.ts`) walking the WAL, manifest and runs after every run. It runs 100 + 25 histories by default. For a longer sweep, or to replay a failure from the seed, path and `replayPath` it prints:
 

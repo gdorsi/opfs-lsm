@@ -255,6 +255,31 @@ importers:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@26.6.6)(jiti@1.21.7)(lightningcss@1.33.0)(tsx@4.23.15)(yaml@2.9.1)
 
+  packages/tanstack-db:
+    dependencies:
+      '@opfs-lsm/kv':
+        specifier: workspace:*
+        version: link:../kv
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
+    devDependencies:
+      '@tanstack/db':
+        specifier: 1.0.0-rc.1.4
+        version: 1.0.0-rc.1.4(typescript@5.9.3)
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      fake-indexeddb:
+        specifier: ^6.0.0
+        version: 6.2.7
+      tsx:
+        specifier: ^4.20.0
+        version: 4.23.15
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
   packages/yjs:
     dependencies:
       '@opfs-lsm/kv':
@@ -1142,6 +1167,23 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@standard-schema/spec@1.1.0':
+    resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@tanstack/db-ivm@1.0.0-rc.1.2':
+    resolution: {integrity: sha512-kF5XbkzNmDuJBr+p2//ijZO9CzAGp0fK8gRGRX6gzt9QZM9RNIizAPVLdXM9kcg+VlZC6xB28ZmScsX9j4LMuw==}
+    peerDependencies:
+      typescript: '>=4.7'
+
+  '@tanstack/db@1.0.0-rc.1.4':
+    resolution: {integrity: sha512-UaBXdnoACdauRb0tdav0TqwGE/viWWTHssnPKOC4sd3jiLdS5Jb2KFunW4wflfQpJHxSD+12wAIO7J8uMXQGgA==}
+    peerDependencies:
+      typescript: '>=4.7'
+
+  '@tanstack/pacer-lite@0.2.2':
+    resolution: {integrity: sha512-eQ1MyLKCHyXiH7NbdmB80W77OhiMgGBUb+qDx/8WMGbwg5Lf/NlfD0TfNYAqY77i8V3AxoDoYdICrQE5ADw4Yw==}
+    engines: {node: '>=18'}
+
   '@tanstack/redact@0.3.1':
     resolution: {integrity: sha512-8A4SWi2RluvHj5j3/mifSPkUrhvmBLvvVXzM2DU7eTafvcWRXFLA/8cMe7ivZAbL7W1FMKZjitnIoP0sYIAWJA==}
     peerDependencies:
@@ -1774,6 +1816,10 @@ packages:
 
   fraction.js@5.3.4:
     resolution: {integrity: sha512-1X1NTtiJphryn/uLQz3whtY6jK3fTqoE3ohKs0tT+Ujr1W59oopxmoEh7Lu5p6vBaPbgoM0bzveAW4Qi5RyWDQ==}
+
+  fractional-indexing@3.4.0:
+    resolution: {integrity: sha512-8J3glhz2rrpKG6KmI7wmJo3zH1VjeOpN+vTJSw1fOyO+Viqq3zX6/5NGh6oaZB2qIAYdOYuu5Dz9xp4faOO0Pg==}
+    engines: {node: ^14.13.1 || >=16.0.0}
 
   fs-extra@11.4.1:
     resolution: {integrity: sha512-KYAb4c9BJQI6QqGKthV68OHe0badztdXJWKo0WtBA9IuCFPTKvE5ZdUBglP833aMjhaSPNO4A5j/EkzZtGlKjA==}
@@ -3365,6 +3411,22 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.67.4':
     optional: true
 
+  '@standard-schema/spec@1.1.0': {}
+
+  '@tanstack/db-ivm@1.0.0-rc.1.2(typescript@5.9.3)':
+    dependencies:
+      fractional-indexing: 3.4.0
+      typescript: 5.9.3
+
+  '@tanstack/db@1.0.0-rc.1.4(typescript@5.9.3)':
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      '@tanstack/db-ivm': 1.0.0-rc.1.2(typescript@5.9.3)
+      '@tanstack/pacer-lite': 0.2.2
+      typescript: 5.9.3
+
+  '@tanstack/pacer-lite@0.2.2': {}
+
   '@tanstack/redact@0.3.1(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15)(yaml@2.9.1))':
     dependencies:
       '@jridgewell/remapping': 2.3.5
@@ -3954,6 +4016,8 @@ snapshots:
       to-regex-range: 5.0.1
 
   fraction.js@5.3.4: {}
+
+  fractional-indexing@3.4.0: {}
 
   fs-extra@11.4.1:
     dependencies:
