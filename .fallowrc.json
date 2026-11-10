@@ -34,9 +34,6 @@
     }
   ],
   "usedClassMembers": [
-    "page",
-    "clear",
-    "orderBy",
     "uningestedBytes"
   ]
 }
