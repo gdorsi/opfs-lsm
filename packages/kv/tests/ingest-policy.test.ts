@@ -221,6 +221,8 @@ describe("ingest policy", () => {
       });
       await vi.waitFor(async () => expect(await waiting()).toBeLessThanOrEqual(limit + 50 * 48), WAIT);
     }
+    // The last batch starts an ingest. Let it finish before the next test deletes the database.
+    await settle();
     wal.close();
     expect(await b.get(keys[0]!)).toBeUndefined();
     await a.close();

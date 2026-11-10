@@ -39,10 +39,15 @@ export class Traced {
   readonly faults = new Faults();
   readonly mem = new MemoryFs();
   readonly fs = new FaultFs(this.mem, this.faults);
-  host = new EngineHost(() => this.fs);
+  host: EngineHost;
   private unregister: () => void;
 
-  constructor(readonly name: string) {
+  /** `flushRunBytes` is the host's cap on op bytes per L0 run. */
+  constructor(
+    readonly name: string,
+    flushRunBytes?: number,
+  ) {
+    this.host = new EngineHost(() => this.fs, flushRunBytes === undefined ? {} : { flushRunBytes });
     this.unregister = traceWal(name, this.faults);
   }
 

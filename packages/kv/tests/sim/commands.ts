@@ -27,11 +27,18 @@ export class Model {
   }
 }
 
+/**
+ * Small flush runs, so a flush of a few records, or of one large one, spans
+ * several L0 runs. No L0 stop: a command can hold compaction, and a flush
+ * waiting for it would wait on a command that never comes.
+ */
+export const SIM_HOST_LIMITS = { flushRunBytes: 8 * 1024, l0StopRuns: Number.POSITIVE_INFINITY };
+
 /** The system under test: one handle, its host, and the files they share. */
 export class Sut {
-  /** While set, the host's run reads wait: a compaction stalls before its merge. */
+  /** While set, the host's run opens wait: a compaction stalls before its merge. */
   private gate: { readonly opened: Promise<void>; readonly open: () => void } | undefined;
-  readonly host = new EngineHost(() => this.hostFs());
+  readonly host = new EngineHost(() => this.hostFs(), SIM_HOST_LIMITS);
   db!: Db;
   /** Seqs of this handle's own appends, from `changes`. */
   readonly appended: number[] = [];
@@ -63,18 +70,18 @@ export class Sut {
   }
 
   /**
-   * The host's view of the files. Only compaction reads whole runs through
-   * `read` (tabs `open` them), so the gate stalls a merge and nothing else,
-   * and flushes keep landing L0 runs in front of its inputs.
+   * The host's view of the files. Compaction is the only host work that
+   * opens a run, so the gate stalls a merge and nothing else, and flushes
+   * keep landing L0 runs in front of its inputs.
    */
   private hostFs(): AsyncFs {
     const fs = this.fs;
     return {
-      read: async (path, offset, length) => {
+      read: (path, offset, length) => fs.read(path, offset, length),
+      open: async (path) => {
         if (path.endsWith(".sst")) await this.gate?.opened;
-        return fs.read(path, offset, length);
+        return fs.open(path);
       },
-      open: (path) => fs.open(path),
       list: (dir) => fs.list(dir),
       remove: (path) => fs.remove(path),
       removeUnlessOpen: (path) => fs.removeUnlessOpen(path),

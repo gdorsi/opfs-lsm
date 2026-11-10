@@ -13,7 +13,7 @@ import {
 } from "../store/generation.js";
 import { levelOf } from "../store/levels.js";
 import { installStep, mergeNextStep } from "./compact.js";
-import { ingestAll, type IngestResult } from "./ingest.js";
+import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
   layersChannel,
   unlessHeld,
@@ -28,9 +28,33 @@ export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
 
+/** What the host holds to keep its working set small. */
+export type HostLimits = {
+  /**
+   * Op bytes of WAL records folded into one L0 run. The wasm peak of a flush
+   * grows about tenfold with this figure. A larger backlog becomes several
+   * runs.
+   */
+  readonly flushRunBytes: number;
+  /**
+   * L0 runs at which a flush waits for a compaction step to install before it
+   * publishes another. One less than the sources a merge reads, so one step
+   * can take all of L0. A step takes the L0 runs that exist when it starts,
+   * and a stop at S settles near S/2 runs per step, so a low stop cuts steps
+   * short and each one rewrites all of L1.
+   */
+  readonly l0StopRuns: number;
+};
+
+const DEFAULT_HOST_LIMITS: HostLimits = {
+  flushRunBytes: 1.75 * 1024 * 1024,
+  l0StopRuns: 48,
+};
+
 /** Host counters for one database, besides the fs IO its CountingFs keeps. */
 type HostCounts = {
   flushes: number;
+  l0Stops: number;
   compactionSteps: number;
   foldedBytes: number;
 };
@@ -73,13 +97,19 @@ export type WatchScan = {
  * Every manifest publish runs under one exclusive section per database: a
  * chain in this host plus a Web Lock across hosts. Two SharedWorkers can
  * serve one database, for example two builds whose script URLs differ.
- * A flush holds it for the whole flush. Compaction merges without it and
+ * A flush holds it for one L0 run at a time. Compaction merges without it and
  * holds it only to install the merged run.
  */
 export class EngineHost {
   private readonly fsCache = new Map<string, CountingFs>();
   private readonly counts = new Map<DbName, HostCounts>();
   private readonly chains = new Map<string, Promise<unknown>>();
+  private readonly folds = new Map<string, Promise<unknown>>();
+  /** Per database, settles at the next compaction install, for a flush that waits on a full L0. */
+  private readonly installs = new Map<
+    DbName,
+    { readonly settled: Promise<void>; readonly settle: () => void }
+  >();
   private readonly compactions = new Map<string, Promise<void>>();
   private readonly compactAgain = new Set<string>();
   private readonly watches = new Map<DbName, IngestWatch>();
@@ -95,8 +125,14 @@ export class EngineHost {
    * flush. A tab that records another generation makes the host check again.
    */
   private readonly trusted = new Map<DbName, number>();
+  private readonly limits: HostLimits;
 
-  constructor(private readonly fsFactory: FsFactory) {}
+  constructor(
+    private readonly fsFactory: FsFactory,
+    limits: Partial<HostLimits> = {},
+  ) {
+    this.limits = { ...DEFAULT_HOST_LIMITS, ...limits };
+  }
 
   /** Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
   async fsFor(name: DbName): Promise<CountingFs> {
@@ -112,7 +148,7 @@ export class EngineHost {
   private countsFor(dbName: DbName): HostCounts {
     let counts = this.counts.get(dbName);
     if (!counts) {
-      counts = { flushes: 0, compactionSteps: 0, foldedBytes: 0 };
+      counts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
       this.counts.set(dbName, counts);
     }
     return counts;
@@ -171,26 +207,90 @@ export class EngineHost {
     return (generation) => this.trusted.get(dbName) === generation;
   }
 
-  private async fold(dbName: DbName, through: number): Promise<IngestResult> {
+  /**
+   * Fold the WAL as it stands now into L0 runs of `flushRunBytes`, oldest
+   * first. One fold runs at a time per database, so a flush asked for during
+   * another waits for it and finds its records ingested. Each run is its own
+   * exclusive section, so a compaction install waits for one run, not for the
+   * whole backlog. Records acked after the fold starts are left for the next
+   * flush, so a steady writer cannot keep one fold going. While L0 holds
+   * `l0StopRuns` runs it publishes none, and waits for compaction instead.
+   */
+  private fold(dbName: DbName, through: number): Promise<IngestResult> {
+    return inTurn(this.folds, dbName, () => this.foldRuns(dbName, through));
+  }
+
+  private async foldRuns(dbName: DbName, through: number): Promise<IngestResult> {
     const fs = await this.fsFor(dbName);
-    const result = await this.exclusive(dbName, () =>
-      this.withWal(dbName, async (wal) => {
-        const folded = await ingestAll(wal, fs, through, this.trust(dbName));
-        // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-        await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
-        return folded;
-      }),
-    );
-    this.trusted.set(dbName, result.generation);
+    const head = await this.withWal(dbName, async (wal) => (await wal.meta()).head);
+    const target = Math.min(through, head);
     const counts = this.countsFor(dbName);
-    counts.foldedBytes += result.foldedBytes;
-    if (result.foldedBytes > 0) counts.flushes += 1;
-    const watch = this.watches.get(dbName);
-    if (watch) {
-      watch.pendingBytes = Math.max(0, watch.pendingBytes - result.foldedBytes);
-      watch.triggerAt = watch.maxWalBytes;
+    let foldedBytes = 0;
+    let pastStop = false;
+    for (;;) {
+      // Taken before the attempt, so an install that lands during it is not missed.
+      const installed = this.nextInstall(dbName);
+      const chunk = await this.exclusive(dbName, () =>
+        this.withWal(dbName, async (wal) => {
+          const folded = await ingestChunk(wal, fs, target, this.trust(dbName), {
+            maxBytes: this.limits.flushRunBytes,
+            l0Stop: pastStop ? Number.POSITIVE_INFINITY : this.limits.l0StopRuns,
+          });
+          // Skipped while a tab loads a generation; the next flush or reclaim removes them.
+          await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
+          return folded;
+        }),
+      );
+      pastStop = false;
+      this.trusted.set(dbName, chunk.generation);
+      if (chunk.kind === "stopped") {
+        counts.l0Stops += 1;
+        pastStop = (await this.waitForInstall(dbName, installed)) === "idle";
+        continue;
+      }
+      foldedBytes += chunk.foldedBytes;
+      counts.foldedBytes += chunk.foldedBytes;
+      if (chunk.kind === "folded") counts.flushes += 1;
+      const watch = this.watches.get(dbName);
+      if (watch) {
+        watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
+        watch.triggerAt = watch.maxWalBytes;
+      }
+      if (chunk.kind === "empty" || chunk.ingestedThrough >= target) {
+        return { generation: chunk.generation, ingestedThrough: chunk.ingestedThrough, foldedBytes };
+      }
     }
-    return result;
+  }
+
+  /** A promise for the next compaction install of `dbName`. */
+  private nextInstall(dbName: DbName): Promise<void> {
+    let next = this.installs.get(dbName);
+    if (!next) {
+      let settle!: () => void;
+      next = { settled: new Promise<void>((resolve) => (settle = resolve)), settle };
+      this.installs.set(dbName, next);
+    }
+    return next.settled;
+  }
+
+  private installLanded(dbName: DbName): void {
+    const next = this.installs.get(dbName);
+    this.installs.delete(dbName);
+    next?.settle();
+  }
+
+  /**
+   * Wait for the install a full L0 needs, starting a compaction pass if none
+   * runs. "idle" when compaction ends without one (nothing to merge, or it
+   * failed): the flush then goes on, since waiting longer would wait for
+   * nothing.
+   */
+  private async waitForInstall(dbName: DbName, installed: Promise<void>): Promise<"installed" | "idle"> {
+    const ended = this.compact(dbName).then(
+      () => "idle" as const,
+      () => "idle" as const,
+    );
+    return Promise.race([installed.then(() => "installed" as const), ended]);
   }
 
   /**
@@ -282,18 +382,7 @@ export class EngineHost {
   }
 
   private exclusive<T>(dbName: DbName, fn: () => Promise<T>): Promise<T> {
-    const prev = this.chains.get(dbName) ?? Promise.resolve();
-    const next = prev
-      .catch(() => undefined)
-      .then(() => withLock(`opfs-lsm-ingest/${dbName}`, fn));
-    this.chains.set(
-      dbName,
-      next.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
-    return next;
+    return inTurn(this.chains, dbName, () => withLock(`opfs-lsm-ingest/${dbName}`, fn));
   }
 
   private async withWal<T>(
@@ -354,6 +443,7 @@ export class EngineHost {
         }),
       );
       this.countsFor(dbName).compactionSteps += 1;
+      this.installLanded(dbName);
       announceGeneration(dbName);
     }
   }
@@ -398,6 +488,24 @@ function isClosedDatabase(err: unknown): boolean {
     "name" in err &&
     (err as { name: string }).name === "InvalidStateError"
   );
+}
+
+/** Run `fn` once everything queued before it under `key` has settled. */
+function inTurn<T>(
+  queues: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = queues.get(key) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(fn);
+  queues.set(
+    key,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
 }
 
 function withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {

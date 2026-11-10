@@ -64,12 +64,12 @@ describe("planCompaction", () => {
     expect(paths(plan)).toEqual(plan?.sources.flat().map((r) => r.path));
   });
 
-  it("takes the oldest fifteen L0 runs, so a step reads at most sixteen sources", () => {
-    const runs = [...l0(20), run("l1/a.sst", 100, "a", "z")];
+  it("takes the oldest 48 L0 runs, so a step reads at most 49 sources", () => {
+    const runs = [...l0(53), run("l1/a.sst", 100, "a", "z")];
     const plan = planCompaction(runs)!;
-    expect(plan.sources).toHaveLength(16);
-    expect(plan.sources.slice(0, 15).map((s) => s.map((r) => r.path))).toEqual(l0(20).slice(5).map((r) => [r.path]));
-    expect(plan.sources[15]!.map((r) => r.path)).toEqual(["l1/a.sst"]);
+    expect(plan.sources).toHaveLength(49);
+    expect(plan.sources.slice(0, 48).map((s) => s.map((r) => r.path))).toEqual(l0(53).slice(5).map((r) => [r.path]));
+    expect(plan.sources[48]!.map((r) => r.path)).toEqual(["l1/a.sst"]);
     // The five newest stay in L0, in front of the step's output.
     const after = replaceRuns(runs, paths(plan)!, [run("l1/c9.0.sst", 100, "a", "z")]);
     expect(after.map((r) => r.path)).toEqual([...l0(5).map((r) => r.path), "l1/c9.0.sst"]);

@@ -6,7 +6,7 @@ import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.j
 import { IdBWal } from "../../src/idb/wal.js";
 import { openHarnessDb } from "../../src/testing.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
-import { expectEntries } from "./commands.js";
+import { expectEntries, SIM_HOST_LIMITS } from "./commands.js";
 import { checkHistory, History, type NewOp, type OpOf, type ViewRead } from "./history.js";
 import { show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 
@@ -160,7 +160,7 @@ type Session = { readonly id: number; readonly db: Db };
 class World {
   readonly history = new History();
   readonly fs = new MemoryFs();
-  readonly host = new EngineHost(() => this.wrapFs("host"));
+  readonly host = new EngineHost(() => this.wrapFs("host"), SIM_HOST_LIMITS);
   readonly slots: (Session | undefined)[];
   private readonly inflight = new Set<Promise<void>>();
   /** Host-side failures (flush, compaction) that no op reports. */

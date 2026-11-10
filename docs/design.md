@@ -162,6 +162,35 @@ When the installed generation moves past some seqs (`advanceTo`), the memtable d
 those seqs wrote and rebuilds its chunks. If nothing new was ingested, it returns without
 scanning.
 
+## Size and backpressure
+
+`bytes` is the sum over live rows of the key bytes, the value bytes, and 256 bytes for the row
+itself: the row object and two `Uint8Array` views, and their buffers for a row the tab wrote.
+It moves with each write instead of being counted by a scan. The 256 is an estimate: V8 in Node
+holds 290 to 510 bytes per row, and Chrome compresses pointers.
+
+`openDb({ memtableBytes })` (default 16 MiB, at least 1 MiB) bounds it with two thresholds, the
+split RocksDB's write buffer manager makes between starting a flush and stalling writes. The
+tab keeps them in `Backpressure` (`packages/kv/src/backpressure.ts`), one of three states:
+
+| State | Meaning |
+|---|---|
+| below | Under 7/8 of the limit. Nothing is asked of the host. |
+| requested | Past 7/8. The tab asked the host for one flush (`settle = false`) and does not wait for it. Writes go on. |
+| waiting | At the limit. A write waits, before it appends, for that flush to return, and the tab then loads the generation it published. |
+
+One flush is in flight per tab. A write that has to wait waits on the flush that 7/8 asked for,
+or starts one if the memtable jumped past both thresholds in a single batch. A flush held back by
+the [L0 stop](#steps) just returns later. If a flush fails, or returns without moving the
+generation, the write goes on, and the tab asks again only after the memtable has grown by
+another eighth of the limit. So a host that cannot help neither stops writes for good nor gets a
+request on every one. A host that never answers still holds writers at the limit.
+
+A tab that writes then keeps its memtable near `memtableBytes`. It can pass the limit by the batch
+that crossed it, and by what other tabs append while it waits. The tab checks the thresholds only
+when it writes. A tab that only reads relies on the host's flush limit (see
+[When it runs](#when-it-runs)).
+
 # SST file format
 
 Runs use SST version 1. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
@@ -560,17 +589,30 @@ A failed ingest is logged. `triggerAt` becomes `pendingBytes + maxWalBytes`, so 
 for another limit of writes. The next `watch` sets `triggerAt` back to the limit and reads
 the counter, so opening the database retries at once.
 
+The host's limit is also held to 7/8 of the smallest `memtableBytes` any tab opened with: each
+tab sends `watch` the smaller of its `maxWalBytes` and 7/8 of its `memtableBytes`, and the host
+keeps the smallest it hears.
+
 `db.ingest()` asks the host to fold through the end of the log and waits for the
 compaction that starts. A request for seqs that are already ingested writes nothing.
 
 ## Steps
 
-Under the exclusive section for the database:
+A flush folds the WAL as it stands when it starts, oldest records first, into one L0 run per
+`flushRunBytes` of op bytes (1.75 MiB). A backlog becomes several runs, so a flush holds one run's
+worth in memory, not the backlog. Each run is its own pass through the steps below and holds the
+exclusive section for that pass only, so a compaction install can land between two runs. A host
+runs one flush at a time per database, and a flush asked for meanwhile waits for it. Records acked
+after a flush starts wait for the next one, so a steady writer cannot keep a flush going.
+
+Under the exclusive section for the database, once per run:
 
 1. Reconcile (see [Recovery](#recovery)). In a running database this reads `meta` and lists
    `m/`, and changes nothing. The recorded generation is `G`, and the highest number in use is
    `top`.
-2. Read every WAL record above `ingestedThrough`.
+2. Read the WAL records above `ingestedThrough`, oldest first, until their op bytes reach
+   `flushRunBytes`. A run takes at least one record and never one that would take it past the
+   cap, so a record larger than the cap becomes a run of its own.
 3. Fold them to the last op per key, in key order, keeping each op's seq.
 4. Write `l0/<first>-<last>.sst`.
 5. Write manifest `top + 1` with `through = <last>`, listing the new run in front of the runs
@@ -584,6 +626,18 @@ Under the exclusive section for the database:
 The exclusive section is a promise chain inside the host plus a Web Lock named
 `opfs-lsm-ingest/<name>`. The lock covers the case of two SharedWorkers serving the same
 database, for example two builds with different script URLs.
+
+**L0 stop.** Step 1 also counts the L0 runs of manifest `G`. At 48 runs, with records waiting,
+the flush publishes nothing and releases the section. 48 is one less than the 49 sources of a
+merge, so one compaction step can take all of L0. The stop is high on purpose: a step takes the
+L0 runs that exist when it starts, so a stop at S settles near S/2 runs per step, and every step
+with random keys rewrites all of L1. A stop at 15 made steps of about 6 runs and doubled the
+compaction writes of `kv/compaction-memory`. The flush asks for a compaction pass if none
+runs, then waits for the next step to install, outside the section so the install can take it.
+After the install it tries again. If the pass ends without an install, because nothing was left to
+merge or because it failed, the flush publishes its run anyway and checks again before the next
+one. A compaction that cannot help delays the flush by one pass and never blocks it for good.
+`HostStats.l0Stops` counts the waits.
 
 OPFS writes go through `createWritable` and `close`. The browser swaps the new file into place
 on `close`, so other readers see a file whole or not at all.
@@ -607,7 +661,7 @@ bytes.
 `planCompaction` reads only the manifest. It scores each level and serves the highest score
 above 1; on a tie the shallower level wins:
 - L0, once it has 4 runs or more, scores its run count over 4. Its step merges the oldest L0
-  runs, at most 15, with the L1 runs whose ranges overlap them. The newer L0 runs wait for the
+  runs, at most 48, with the L1 runs whose ranges overlap them. The newer L0 runs wait for the
   next step, still newer than all of L1.
 - L1 and below score their bytes over their budget. The step picks the run whose overlapping
   bytes in the next level are the smallest fraction of its own size, and merges it with those
@@ -624,7 +678,7 @@ the merge drop tombstones, because no older value is left for them to hide.
 
 A step reads its inputs as sources, newest first. A source is runs read back to back as one
 key-ordered stream: each L0 run is a source of its own, and the next level's overlapped runs,
-which never overlap each other, are one source together. So a step has at most 16 sources.
+which never overlap each other, are one source together. So a step has at most 49 sources.
 
 The merge is a session in wasm (`crates/engine-core/src/merge.rs`, ABI in
 `crates/engine-abi.md`) that the host pumps (`pumpMerge` in `host/compact.ts`). Each pump stops

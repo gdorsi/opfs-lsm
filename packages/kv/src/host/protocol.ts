@@ -6,8 +6,10 @@ import type { IoCounters } from "../opfs/counting-fs.js";
 export type HostStats = {
   /** Flush (l0), compaction outputs (lN), manifests (m), compaction input reads. */
   fs: IoCounters;
-  /** Ingests that folded at least one WAL record into an L0 run. */
+  /** L0 runs flushed from the WAL. An ingest of a large backlog publishes several. */
   flushes: number;
+  /** Times a flush found L0 full and waited for compaction before publishing another run. */
+  l0Stops: number;
   /** Compaction steps installed. */
   compactionSteps: number;
   /** Σ IngestResult.foldedBytes. */

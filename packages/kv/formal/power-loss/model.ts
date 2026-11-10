@@ -210,10 +210,11 @@ export class Sys {
     this.acked.push(id);
   }
 
-  /** `ingestAll` in src/host/ingest.ts. */
-  ingest(): void {
+  /** `ingestChunk` in src/host/ingest.ts. A chunk is the oldest records that fit the cap: here all of them, or the oldest one. */
+  ingest(oldestOnly = false): void {
     const { meta, top } = this.base();
-    const rows = [...this.idb.rows].filter(([s]) => s > this.idb.ingested).sort((a, b) => a[0] - b[0]);
+    const waiting = [...this.idb.rows].filter(([s]) => s > this.idb.ingested).sort((a, b) => a[0] - b[0]);
+    const rows = oldestOnly ? waiting.slice(0, 1) : waiting;
     if (rows.length === 0) return;
     const first = rows[0]![0];
     const last = rows[rows.length - 1]![0];
@@ -223,7 +224,7 @@ export class Sys {
     this.write({ store: "opfs", label: `publish m/${gen}`, manifest: { gen, through: last, runs: [path, ...meta.runs] } });
     const before = this.idb.ingested;
     this.write({ store: "idb", label: `advanceIngested ${last} gen ${gen}`, deleteTo: before, ingested: last, generation: Math.max(this.idb.generation ?? 0, gen) });
-    // `EngineHost.fold`, after `ingestAll`.
+    // `EngineHost.fold`, after `ingestChunk`.
     if (!this.v.held) this.reclaimManifests(this.idb.generation ?? 0);
   }
 

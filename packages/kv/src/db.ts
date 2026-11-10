@@ -1,3 +1,4 @@
+import { Backpressure, memtableCaps, type MemtableCaps } from "./backpressure.js";
 import { successor } from "./bytes.js";
 import {
   checkBatch,
@@ -65,6 +66,15 @@ export type OpenOptions = {
    * to the caller. Each `openDb` has its own budget.
    */
   readonly memoryBudget?: number;
+  /**
+   * Bytes this tab's memtable may hold: the rows written and not yet flushed
+   * to OPFS, counted as key bytes, value bytes and an estimate per row.
+   * Default 16 MiB, at least 1 MiB. At 7/8 of it the tab asks the host to
+   * flush and keeps writing. At the limit a write waits for that flush, so
+   * a writing tab's memtable stays near the limit. The host flushes once the
+   * WAL passes 7/8 of the smallest limit any open tab set.
+   */
+  readonly memtableBytes?: number;
 };
 
 /** Below this, one page per merge source may not fit. */
@@ -296,6 +306,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     ...DEFAULT_INGEST_POLICY,
     ...options.ingestPolicy,
   };
+  const caps = memtableCaps(options.memtableBytes);
 
   let fs = options.fs;
   let ingest = options.ingest;
@@ -363,13 +374,15 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     cache,
     ingest,
     ownsIngestClient,
+    caps,
     trace,
   );
   internals.set(db, { name, wal, fs: tabFs, ingest });
   const syncAt = trace ? performance.now() : 0;
   await db.sync();
   span(trace, "sync", performance.now() - syncAt);
-  ingest.watch(name, policy);
+  // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
+  ingest.watch(name, { ...policy, maxWalBytes: Math.min(policy.maxWalBytes, caps.soft) });
   span(trace, "open", performance.now() - openAt);
   return db;
 }
@@ -465,6 +478,7 @@ class DbImpl implements Db {
   private readonly changeBus = new ChangeBus();
   private readonly bus: BroadcastChannel | undefined;
   private readonly onBusMessage: ((ev: MessageEvent) => void) | undefined;
+  private readonly pressure: Backpressure;
 
   constructor(
     readonly name: DbName,
@@ -474,8 +488,14 @@ class DbImpl implements Db {
     private readonly cache: PageCache,
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
+    caps: MemtableCaps,
     private readonly trace?: OpenTrace,
   ) {
+    this.pressure = new Backpressure(
+      caps,
+      () => this.mem.bytes,
+      () => this.relieve(),
+    );
     if (typeof BroadcastChannel !== "undefined") {
       this.bus = new BroadcastChannel(layersChannel(name));
       this.onBusMessage = (ev: MessageEvent) => this.onMessage(ev.data);
@@ -741,8 +761,26 @@ class DbImpl implements Db {
    */
   private async landed(seq: number, ops: readonly CheckedOp[]): Promise<void> {
     if (!this.mem.apply({ seq, ops }) && !this.closed) await this.sync();
+    this.pressure.landed();
     this.emitChange({ kind: "append", writerId: this.writerId, seq });
     this.broadcast({ kind: "append", writerId: this.writerId, seq, ops });
+  }
+
+  /**
+   * Wait out a full memtable before a write (`Backpressure`). Called only
+   * when it is full: a write with room must start its append in the turn it
+   * was called, or a `close` right after a `put` would beat the append.
+   */
+  private async admit(): Promise<void> {
+    await this.pressure.admit();
+    this.ensureOpen();
+  }
+
+  /** One flush for the backpressure gate. True when it moved this tab to a newer generation. */
+  private async relieve(): Promise<boolean> {
+    const before = this.installed.generation;
+    await this.flush(false);
+    return this.installed.generation > before;
   }
 
   /**
@@ -753,12 +791,14 @@ class DbImpl implements Db {
    * reads before each attempt, and a `plan` that still misses appends
    * nothing and is retried. A tail that names a generation this tab lacks
    * appends nothing either: the tab loads it, and from then on each try
-   * holds the reclaim lock, as in `syncOnce`.
+   * holds the reclaim lock, as in `syncOnce`. It first waits out a full
+   * memtable (`admit`).
    */
   private async write<R>(
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
     warm?: () => Promise<unknown>,
   ): Promise<R> {
+    if (this.pressure.full) await this.admit();
     let locked = false;
     let gone = 0;
     for (;;) {
@@ -850,6 +890,7 @@ class DbImpl implements Db {
     this.ensureOpen();
     const ops = collectBatch(build);
     if (ops.length === 0) return;
+    if (this.pressure.full) await this.admit();
     const seq = await this.wal.append(ops);
     if (seq === undefined) await this.write(() => ({ ops, result: undefined }));
     else await this.landed(seq, ops);
@@ -943,13 +984,18 @@ class DbImpl implements Db {
     return this.changeBus.subscribe(listener);
   }
 
-  async ingest(): Promise<{ generation: number }> {
+  ingest(): Promise<{ generation: number }> {
+    return this.flush(true);
+  }
+
+  /** Have the host flush the WAL, tell the other tabs if that moved the generation, and load it. */
+  private async flush(settle: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
     const before = this.installed.generation;
     const result = await this.ingestClient.ingest(
       this.name,
       Number.POSITIVE_INFINITY,
-      true,
+      settle,
     );
     if (result.generation !== before) {
       this.emitChange({ kind: "ingest", writerId: this.writerId });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
 
@@ -126,6 +126,70 @@ describe("WAL read", () => {
     const row = new Uint8Array([0, 10, 0, 0, 0, 1, 2]);
     await rawRow(1, row.buffer);
     await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: truncated");
+    wal.close();
+  });
+});
+
+/** A record whose one put is `bytes` op bytes long. */
+function sized(bytes: number): CheckedOp[] {
+  return [{ type: "put", key: checkKey(enc.encode("k")), value: checkValue(new Uint8Array(bytes - 1)) }];
+}
+
+const seqs = (records: readonly { seq: number }[]) => records.map((r) => r.seq);
+
+describe("WAL read with a byte cap", () => {
+  it("returns the oldest records that fit, up to the cap", async () => {
+    const wal = await IdBWal.open(checkDbName(NAME));
+    for (let i = 0; i < 6; i++) await wal.append(sized(10));
+    expect(seqs(await wal.listUningested({ maxBytes: 35 }))).toEqual([1, 2, 3]);
+    expect(seqs(await wal.listUningested({ maxBytes: 30 }))).toEqual([1, 2, 3]);
+    expect(seqs(await wal.listUningested({ maxBytes: 29 }))).toEqual([1, 2]);
+    await wal.advanceIngested(3, 1, 0);
+    expect(seqs(await wal.listUningested({ maxBytes: 1000 }))).toEqual([4, 5, 6]);
+    expect(summary(await wal.listUningested({ maxBytes: 1000 }))).toEqual(
+      summary(await wal.listUningested()),
+    );
+    wal.close();
+  });
+
+  it("returns a record over the cap alone and never joins it to its neighbors", async () => {
+    const wal = await IdBWal.open(checkDbName(NAME));
+    for (const bytes of [5, 100, 5, 5]) await wal.append(sized(bytes));
+    expect(seqs(await wal.listUningested({ maxBytes: 20 }))).toEqual([1]);
+    await wal.advanceIngested(1, 1, 0);
+    expect(seqs(await wal.listUningested({ maxBytes: 20 }))).toEqual([2]);
+    await wal.advanceIngested(2, 2, 0);
+    expect(seqs(await wal.listUningested({ maxBytes: 20 }))).toEqual([3, 4]);
+    expect(seqs(await wal.listUningested({ maxBytes: 1 }))).toEqual([3]);
+    wal.close();
+  });
+
+  it("returns nothing when everything is ingested", async () => {
+    const wal = await seeded(3);
+    await wal.advanceIngested(3, 1, 0);
+    expect(await wal.listUningested({ maxBytes: 10 })).toEqual([]);
+    wal.close();
+  });
+
+  it("reads about a cap's worth of the log, not all of it", async () => {
+    const wal = await IdBWal.open(checkDbName(NAME));
+    for (let i = 0; i < 300; i++) await wal.append(sized(10));
+    const getAll = vi.spyOn(IDBObjectStore.prototype, "getAll");
+    const records = await wal.listUningested({ maxBytes: 100 });
+    const rowsRead = getAll.mock.results.reduce(
+      (n, r) => n + (r.value as IDBRequest<unknown[]>).result.length,
+      0,
+    );
+    getAll.mockRestore();
+    expect(records).toHaveLength(10);
+    expect(rowsRead).toBeLessThanOrEqual(12);
+    wal.close();
+  });
+
+  it("still reports a gap in the log", async () => {
+    const wal = await seeded(5);
+    await deleteSeq(3);
+    await expect(wal.listUningested({ maxBytes: 1000 })).rejects.toThrow("wal gap in seqs");
     wal.close();
   });
 });

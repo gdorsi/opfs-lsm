@@ -192,6 +192,42 @@ async function readRecords(
   return (await Promise.all(chunks)).flat();
 }
 
+/**
+ * The oldest records with `after < seq <= head` whose op bytes fit in
+ * `maxBytes`, and at least one. It reads one record first, then sizes each
+ * read from the bytes per record so far, so a WAL of large records is never
+ * read far past the cap. A record that would not fit is read and left for the
+ * next call.
+ */
+async function readRecordsUpTo(
+  wal: IDBObjectStore,
+  after: number,
+  head: number,
+  maxBytes: number,
+): Promise<WalRecord[]> {
+  const records: WalRecord[] = [];
+  let bytes = 0;
+  let span = 1;
+  for (let lo = after + 1; lo <= head; ) {
+    const hi = Math.min(head, lo + span - 1);
+    const values = await reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi)));
+    if (values.length !== hi - lo + 1) {
+      throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
+    }
+    for (const [i, value] of values.entries()) {
+      const ops = decodeOps(value);
+      const size = opsBytes(ops);
+      if (records.length > 0 && bytes + size > maxBytes) return records;
+      records.push({ seq: lo + i, ops });
+      bytes += size;
+    }
+    lo = hi + 1;
+    const fits = ((maxBytes - bytes) * records.length) / Math.max(bytes, 1);
+    span = Math.max(1, Math.min(READ_CHUNK, Math.floor(fits)));
+  }
+  return records;
+}
+
 async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
   const meta = tx.objectStore(META_STORE);
   const [head, generation, ingestedThrough] = await Promise.all([
@@ -468,8 +504,12 @@ export class IdBWal {
     return typeof raw === "number" ? raw : undefined;
   }
 
-  /** All records with seq > ingestedThrough, ascending. */
-  async listUningested(): Promise<WalRecord[]> {
+  /**
+   * The records with seq > ingestedThrough, ascending. With `maxBytes`, only
+   * the oldest ones whose op bytes fit in it, and at least one: a record
+   * larger than the cap comes alone.
+   */
+  async listUningested(limit?: { readonly maxBytes: number }): Promise<WalRecord[]> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
@@ -477,7 +517,10 @@ export class IdBWal {
       reqToPromise(meta.get(META_INGESTED)).then(num),
       reqToPromise(meta.get(META_HEAD)).then(num),
     ]);
-    const records = await readRecords(tx.objectStore(WAL_STORE), through, head);
+    const store = tx.objectStore(WAL_STORE);
+    const records = limit
+      ? await readRecordsUpTo(store, through, head, limit.maxBytes)
+      : await readRecords(store, through, head);
     await done;
     return records;
   }
