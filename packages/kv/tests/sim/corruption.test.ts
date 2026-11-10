@@ -501,3 +501,76 @@ describe("a corrupt WAL row: no checksum", () => {
     expect(r.get).toBe("ok");
   });
 });
+
+/**
+ * Files vanish under open handles (an eviction, an external delete), and
+ * the repair records the state of a manifest numbered below the one a
+ * handle has installed. A handle never loads a number at or below its
+ * installed one, so each handle must still reach the repaired state: its
+ * writes land, and it reads what a handle opened after the repair reads.
+ */
+describe("open handles follow a repair to an older manifest", () => {
+  const KEYS = ["a", "b", "c", "d", "e"];
+  const reads = (db: Db) => Promise.all(KEYS.map(async (k) => str(await db.get(utf(k)))));
+
+  /**
+   * `a` has generation 2 installed and `b` generation 3, the recorded one.
+   * `lose` then removes files, each handle writes, and the reads of `a`,
+   * `b` and a fresh handle come back in that order.
+   */
+  async function afterLosing(lose: (fs: MemoryFs, first: Uint8Array) => Promise<void>) {
+    const name = `corrupt-${++dbs}`;
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(host) });
+    // Without BroadcastChannel a handle moves only on its own calls.
+    const g = globalThis as { BroadcastChannel?: unknown };
+    const channel = g.BroadcastChannel;
+    g.BroadcastChannel = undefined;
+    let handles: Db[];
+    try {
+      handles = [await open(), await open()];
+    } finally {
+      g.BroadcastChannel = channel;
+    }
+    const [a, b] = handles as [Db, Db];
+    await a.put(utf("a"), utf("1"));
+    await a.ingest();
+    const first = (await fs.read("m/0000000000000001.mft", 0, Number.POSITIVE_INFINITY))!;
+    await a.put(utf("b"), utf("2"));
+    await a.ingest();
+    await b.put(utf("c"), utf("3"));
+    await b.ingest();
+    expect((await walMeta(name)).generation).toBe(3);
+    await lose(fs, first);
+    await a.put(utf("d"), utf("4"));
+    await b.put(utf("e"), utf("5"));
+    await a.sync();
+    await b.sync();
+    const fresh = await open();
+    const out = [await reads(a), await reads(b), await reads(fresh)];
+    for (const db of [a, b, fresh]) await db.close();
+    return out;
+  }
+
+  const removeManifests = async (fs: MemoryFs) => {
+    for (const path of await files(fs, "m")) await fs.remove(path);
+  };
+
+  it.fails("when no manifest is left, and the empty database stands in", async () => {
+    const [a, b, fresh] = await afterLosing(removeManifests);
+    expect(fresh).toMatchObject({ 0: undefined, 1: undefined, 2: undefined, 4: "5" });
+    expect(a).toEqual(fresh);
+    expect(b).toEqual(fresh);
+  });
+
+  it.fails("when only a manifest below the installed ones is left", async () => {
+    const [a, b, fresh] = await afterLosing(async (fs, first) => {
+      await removeManifests(fs);
+      await put(fs, "m/0000000000000001.mft", first);
+    });
+    expect(fresh).toMatchObject({ 0: "1", 1: undefined, 2: undefined, 4: "5" });
+    expect(a).toEqual(fresh);
+    expect(b).toEqual(fresh);
+  });
+});
