@@ -2,9 +2,10 @@
  * Exhaustive check of the per-tab ingest queues: the real planIngest,
  * planReclaim and checkCover, driven by every interleaving of two tabs
  * writing, rotations in their two steps, one failed write, a tab dying at
- * any step, the SharedWorker's stale scans and listings, and a browser
- * crash (cut tails, a damaged frame or a dropped segment file, the newest
- * one or two manifests dropped), up to the bounds below.
+ * any step, the SharedWorker's ingest round in its steps (locks, listing,
+ * reads with Chrome refusing a live first segment, plan and commit), and a
+ * browser crash (cut tails, a damaged frame or a dropped segment file, the
+ * newest one or two manifests dropped), up to the bounds below.
  *
  * Run: pnpm --filter @opfs-lsm/kv formal:ingest-plan
  *

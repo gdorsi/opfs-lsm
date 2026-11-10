@@ -1,16 +1,16 @@
 /**
  * Model of per-tab logs as ingest queues (design/ingest-queue). Each tab's
- * dedicated WebWorker appends to its own log; the SharedWorker lists the
- * logs and their segment files, and later reads those files, plans with the
- * real `planIngest`, commits a manifest and reclaims with the real
- * `planReclaim`. Between the listing and the plan, writers go on, so the
- * listing can miss a new log or segment. A rotation is two writer steps,
- * creating the successor and sealing the old segment, so a tab can die
- * between them, and so can the browser. A history ends in a browser crash,
- * which kills every writer, may cut each log's unflushed tail, damage a
- * frame or drop a segment file, and drops up to `Bounds.drops` newest
- * manifests; recovery opens with the real `checkCover` and drains with
- * `planIngest`.
+ * dedicated WebWorker appends to its own log. The SharedWorker's ingest
+ * round runs the steps of `scanQueues`: it takes the locks of the logs it
+ * may find dead, lists the logs and their segment files, reads them, then
+ * plans with the real `planIngest` and commits a manifest. It reclaims with
+ * the real `planReclaim`. Writers go on between the steps. A rotation is
+ * two writer steps, creating the successor and sealing the old segment, so
+ * a tab can die between them, and so can the browser. A history ends in a
+ * browser crash, which kills every writer, may cut each log's unflushed
+ * tail, damage a frame or drop a segment file, and drops up to
+ * `Bounds.drops` newest manifests; recovery opens with the real
+ * `checkCover` and drains with `planIngest`.
  *
  * A write is an id. A record's ops carry its id, so a manifest's stream is
  * the write ids it ingested, in seq order. State is plain JSON with every
@@ -70,6 +70,13 @@ type Writer = {
 type Write = { id: number; log: LogId; n: number; acked: boolean; deps: number[]; l6: boolean };
 export type Manifest = { gen: number; through: number; queues: QueueCursor[]; stream: number[] };
 type Snap = { dead: boolean; pred: PredEdge | null; records: [number, number][]; stop: QueueScan["stop"] };
+/**
+ * An ingest round from manifest `base`. Before its read: the logs whose
+ * locks it took (`held`, dead to it) and the segment files it listed, each
+ * null until its step ran. After: what it read, to plan from.
+ */
+type Round = { base: number; held: LogId[] | null; listed: Record<string, number[] | null> | null } | { base: number; scans: [LogId, Snap][] };
+type Listing = Extract<Round, { held: unknown }>;
 
 export type State = {
   logs: Record<string, { segments: Segment[] } | null>;
@@ -77,8 +84,7 @@ export type State = {
   tabs: { log: LogId; next: number; phase: "ok" | "failed" | "dead" }[];
   writes: Write[];
   manifests: Manifest[];
-  /** An ingest in progress: its base and the segment files it listed per log. */
-  pass: { base: number; listed: Record<string, number[] | null> } | null;
+  round: Round | null;
   hints: Record<string, number>;
   /** First record of the log lost to a dropped segment file or a damaged frame. */
   faultLoss: Record<string, number | null>;
@@ -121,7 +127,7 @@ export function initial(): State {
     tabs: [],
     writes: [],
     manifests: [],
-    pass: null,
+    round: null,
     hints: per(0),
     faultLoss: per(null),
     cutLoss: per(null),
@@ -141,6 +147,9 @@ const lossOf = (s: State, log: LogId): number => Math.min(s.faultLoss[log] ?? In
 const lower = (cur: number | null, n: number): number => Math.min(cur ?? Infinity, n);
 const lastFrame = (s: State, log: LogId): number => Math.max(0, ...(s.logs[log]?.segments ?? []).flatMap((g) => g.frames.map((f) => f.n)));
 const seen = (s: State): number[] => [...newest(s).stream].sort((x, y) => x - y);
+const baseOf = (s: State, r: Round): Manifest => s.manifests.find((m) => m.gen === r.base) ?? ZERO;
+const isOpen = (m: Manifest, log: LogId): boolean => (cursorOf(m, log)?.state ?? "open") === "open";
+const subsets = <T>(xs: readonly T[]): T[][] => xs.reduce<T[][]>((acc, x) => [...acc, ...acc.map((a) => [...a, x])], [[]]);
 
 function logFiles(s: State): LogFiles[] {
   return LOGS.flatMap((log) => {
@@ -150,22 +159,31 @@ function logFiles(s: State): LogFiles[] {
 }
 
 /**
- * The SharedWorker's reader on one log from cursor `from`, over the segment
- * files it listed (default: all of them) as they are now: segment by
- * segment, each ending at its successor's firstN - 1 (bytes past that are
- * never read). A bad frame is a hole when a later segment follows it. In
- * the last segment it is the end for now while the log is live, since its
- * writer may still be writing there, and once dead a hole only when a
- * whole frame or a SEAL follows it. A sealed last segment means a successor
- * exists: of a live log, one listed too late; of a dead log, whose listing
- * the host takes while holding its lock, one that is gone.
+ * How the host reads one log: as dead (it holds the log's lock) or live,
+ * over the segment files it listed (default: all of them), and whether
+ * Chrome refuses the first segment because a writer has it open.
  */
-export function read(s: State, log: LogId, from: number, listed?: readonly number[]): Snap {
+export type ReadAs = { readonly dead: boolean; readonly listed?: readonly number[] | undefined; readonly firstUnreadable?: boolean };
+
+/**
+ * The SharedWorker's reader on one log from cursor `from`, over the segment
+ * files it listed as they are now: segment by segment, each ending at its
+ * successor's firstN - 1 (bytes past that are never read). A bad frame is a
+ * hole when a later segment follows it. In the last segment it is the end
+ * for now while the log is live, since its writer may still be writing
+ * there, and once dead a hole only when a whole frame or a SEAL follows it.
+ * A sealed last segment means a successor exists: of a live log, one listed
+ * too late; of a dead log, whose listing the host takes while holding its
+ * lock, one that is gone. An unreadable segment ends the read for now, and
+ * an unreadable first segment hides the header's pred.
+ */
+export function read(s: State, log: LogId, from: number, as: ReadAs): Snap {
+  const { dead, listed, firstUnreadable = false } = as;
   const segs = s.logs[log]!.segments.filter((g) => !listed || listed.includes(g.firstN));
   const w = s.writers[log]!;
-  const pred = segs[0]?.firstN === 1 ? w.pred : null;
+  const pred = segs[0]?.firstN === 1 && !firstUnreadable ? w.pred : null;
   const records: [number, number][] = [];
-  const out = (stop: Snap["stop"]): Snap => ({ dead: w.state === "dead", pred, records, stop });
+  const out = (stop: Snap["stop"]): Snap => ({ dead, pred, records, stop });
   let expect = from + 1;
   let i = -1;
   for (let k = 0; k < segs.length; k++) if (segs[k]!.firstN <= expect) i = k;
@@ -174,18 +192,19 @@ export function read(s: State, log: LogId, from: number, listed?: readonly numbe
     const seg = segs[i]!;
     const next = segs[i + 1];
     if (seg.firstN > expect) return out({ hole: expect, reason: "segment missing" });
+    if (firstUnreadable && seg.firstN === 1) return out("partial");
     const end = next ? next.firstN - 1 : Infinity;
     const frames = seg.frames.filter((f) => f.n >= expect && f.n <= end);
     for (let j = 0; j < frames.length; j++) {
       const f = frames[j]!;
       if (!f.ok) {
         const signedAfter = seg.sealed || frames.slice(j + 1).some((g) => g.ok);
-        return out(next || (w.state === "dead" && signedAfter) ? { hole: expect, reason: "bad frame" } : "end");
+        return out(next || (dead && signedAfter) ? { hole: expect, reason: "bad frame" } : "end");
       }
       records.push([f.n, f.w]);
       expect++;
     }
-    if (!next) return out(!seg.sealed ? "end" : w.state === "dead" ? { hole: expect, reason: "sealed segment has no successor" } : "partial");
+    if (!next) return out(!seg.sealed ? "end" : dead ? { hole: expect, reason: "sealed segment has no successor" } : "partial");
     if (expect <= end) return out({ hole: expect, reason: "segment ends short" });
   }
   return out("end");
@@ -326,46 +345,45 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
     if (s.writers[log]?.state === "abandoned") add(`${log}'s old writer ends (lock released)`, (s) => void (s.writers[log]!.state = "dead"));
   }
 
-  if (s.pass === null) {
-    if (s.used.commits < b.commits) {
-      add("host lists the logs", (s) => {
-        s.pass = { base: newest(s).gen, listed: Object.fromEntries(LOGS.map((l) => [l, s.logs[l]?.segments.map((g) => g.firstN) ?? null])) };
-      });
-    }
-    const r = planReclaim(
+  const lock = (r: Listing): void => {
+    const base = baseOf(s, r);
+    // The real host tries, one at a time, the locks of the logs recovery
+    // listed before. Taking every dead log on disk in one step holds a
+    // superset of what those tries hold, and a dead log read as live gives
+    // no more than its durable hint.
+    const held = LOGS.filter((l) => s.logs[l] && isOpen(base, l) && s.writers[l]!.state === "dead");
+    add(held.length ? `host takes the lock of ${held.join(" and ")}` : "host takes no lock", (s) => void (s.round = { ...r, held }));
+  };
+
+  const r = s.round;
+  if (r === null) {
+    if (s.used.commits < b.commits) lock({ base: newest(s).gen, held: null, listed: null });
+    const rc = planReclaim(
       s.manifests.map((m) => ({ generation: m.gen, queues: m.queues })),
       logFiles(s),
       new Set(LOGS.filter((l) => s.writers[l]?.state === "dead")),
       v.lag ?? RECLAIM_LAG,
     );
-    if (r.manifests.length + r.segments.length + r.logs.length > 0) {
-      const what = [...r.manifests.map((g) => `m/${g}`), ...r.segments.map((g) => `${g.log}/${g.firstN}.seg`), ...r.logs.map((l) => `${l}/`)];
+    if (rc.manifests.length + rc.segments.length + rc.logs.length > 0) {
+      const what = [...rc.manifests.map((g) => `m/${g}`), ...rc.segments.map((g) => `${g.log}/${g.firstN}.seg`), ...rc.logs.map((l) => `${l}/`)];
       add(`host reclaims ${what.join(" ")}`, (s) => {
-        s.manifests = s.manifests.filter((m) => !r.manifests.includes(m.gen));
-        for (const g of r.segments) s.logs[g.log]!.segments = s.logs[g.log]!.segments.filter((x) => x.firstN !== g.firstN);
-        for (const l of r.logs) s.logs[l] = null;
+        s.manifests = s.manifests.filter((m) => !rc.manifests.includes(m.gen));
+        for (const g of rc.segments) s.logs[g.log]!.segments = s.logs[g.log]!.segments.filter((x) => x.firstN !== g.firstN);
+        for (const l of rc.logs) s.logs[l] = null;
       });
     }
-  } else {
-    const pass = s.pass;
-    const base = s.manifests.find((m) => m.gen === pass.base) ?? ZERO;
+  } else if ("scans" in r) {
+    const snaps = new Map(r.scans);
+    const base = baseOf(s, r);
     for (const maxBytes of [Infinity, 1]) {
-      add(`host reads what it listed, plans${maxBytes === 1 ? " one record" : ""} and commits`, (s) => {
-        const snaps = new Map(
-          LOGS.flatMap((l) => {
-            const listed = pass.listed[l];
-            if (!listed) return [];
-            const live = s.writers[l]!.state !== "dead";
-            return [[l, read(s, l, cursorOf(base, l)?.n ?? 0, live ? listed : undefined)] as const];
-          }),
-        );
+      add(`host plans${maxBytes === 1 ? " one record" : ""} and commits`, (s) => {
         const scans = [...snaps].map(([l, snap]) => toScan(l, snap, v));
         const hints = new Map<LogId, number>();
         for (const sc of scans) {
           if (!sc.dead) hints.set(sc.log, v.ignoreHints ? Math.max(0, ...sc.records.map((r) => r.n)) : s.hints[sc.log]!);
         }
         const { plan: p, ids } = plan(base, scans, hints, maxBytes, s);
-        s.pass = null;
+        s.round = null;
         if (ids.length === 0 && sameQueues(p.queues, base.queues)) return;
         for (const id of ids) {
           const w = s.writes[id - 1]!;
@@ -373,6 +391,35 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
         }
         s.manifests.push({ gen: newest(s).gen + 1, through: p.through, queues: [...p.queues], stream: [...base.stream, ...ids] });
         s.used.commits++;
+      });
+    }
+  } else if (r.held === null) lock(r);
+  else if (r.listed === null) {
+    const listed = Object.fromEntries(LOGS.map((l) => [l, s.logs[l]?.segments.map((g) => g.firstN) ?? null]));
+    add("host lists the logs", (s) => void (s.round = { ...r, listed }));
+  } else {
+    const { held, listed } = r;
+    const base = baseOf(s, r);
+    const from = (l: LogId): number => cursorOf(base, l)?.n ?? 0;
+    const logs = LOGS.filter((l) => listed[l] && isOpen(base, l));
+    // Chrome refuses to read a segment its live writer has open, which is
+    // the unsealed one it appends to; a failed write closes it. Only a first
+    // segment with nothing ingested is refused here: elsewhere a refusal
+    // only shortens a live log's read, which its durable hint bounds anyway.
+    const refusable = logs.filter((l) => {
+      const w = s.writers[l]!;
+      const t = s.tabs[w.tab]!;
+      const first = s.logs[l]!.segments[0];
+      return w.state === "live" && !(t.phase === "failed" && t.log === l) && from(l) === 0 && listed[l]![0] === 1 && first?.firstN === 1 && !first.sealed;
+    });
+    for (const unreadable of subsets(refusable)) {
+      const label = `host reads what it listed${unreadable.length ? `, ${unreadable.map((l) => `${l}/1.seg`).join(" and ")} unreadable` : ""}`;
+      add(label, (s) => {
+        const scans = logs.map((l): [LogId, Snap] => [l, read(s, l, from(l), { dead: held.includes(l), listed: listed[l]!, firstUnreadable: unreadable.includes(l) })]);
+        // scanQueues' hold-back: while a live log with nothing ingested has a
+        // first segment it cannot read, whose header may cap a dead log, the
+        // round leaves out every dead log.
+        s.round = { base: r.base, scans: unreadable.length > 0 ? scans.filter(([, snap]) => !snap.dead) : scans };
       });
     }
   }
@@ -394,7 +441,7 @@ export function diskKey(s: State): string {
 }
 
 /**
- * Every browser crash from `s`, a state with no pass open: each log's tail
+ * Every browser crash from `s`, which ends any round: each log's tail
  * cut anywhere between its flushed n and its last frame; at most one fault,
  * a damaged frame with a valid one after it (a hole) or a dropped segment
  * file; and the newest 0 to `b.drops` manifests dropped. Recovery then picks the
@@ -458,7 +505,7 @@ export function crashes(s: State, b: Bounds): Action[] {
             }
             s.tabs = s.tabs.map(() => ({ log: "" as LogId, next: 0, phase: "dead" }));
             s.manifests = s.manifests.slice(0, s.manifests.length - drops);
-            s.pass = null;
+            s.round = null;
             s.hints = per(0);
             s.used = { appends: 0, fails: 0, commits: 0 };
             s.crash = { drops, fault: fault !== null, refused: checkCover(newest(s).queues, logFiles(s)) ?? null };
@@ -535,7 +582,7 @@ export const allDead = (s: State): boolean => !s.crash?.refused && LOGS.every((l
 export function drain(s: State, v: Variant): Manifest {
   let m = newest(s);
   for (let round = 0; round < 10; round++) {
-    const scans = LOGS.flatMap((l) => (s.logs[l] ? [toScan(l, read(s, l, cursorOf(m, l)?.n ?? 0), v)] : []));
+    const scans = LOGS.flatMap((l) => (s.logs[l] ? [toScan(l, read(s, l, cursorOf(m, l)?.n ?? 0, { dead: true }), v)] : []));
     const { plan: p, ids } = plan(m, scans, new Map(), Infinity, s);
     if (ids.length === 0 && sameQueues(p.queues, m.queues)) break;
     m = { gen: m.gen + 1, through: p.through, queues: [...p.queues], stream: [...m.stream, ...ids] };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actions, clone, crashes, diskKey, initial, read, type Bounds, type State } from "../formal/ingest-plan/model.js";
+import { actions, clone, crashes, diskKey, initial, read, type Bounds, type ReadAs, type State } from "../formal/ingest-plan/model.js";
 import type { CheckedKey, CheckedValue } from "../src/check.js";
 import type { LogId, QueueScan } from "../src/host/queues.js";
 import { encodeOps } from "../src/idb/wal.js";
@@ -39,10 +39,11 @@ function encode(s: State, log: LogId): ListedSegment[] {
 }
 
 /** The model's reader and scanLog on the same disk, as comparable values. */
-function bothReads(s: State, log: LogId, from: number, segments: ListedSegment[], listed?: readonly number[]) {
-  const dead = s.writers[log]!.state === "dead";
-  const model = read(s, log, from, listed);
-  const real = scanLog(hex(log), from, dead, listed ? segments.filter((g) => listed.includes(g.firstN)) : segments);
+function bothReads(s: State, log: LogId, from: number, segments: ListedSegment[], as: ReadAs) {
+  const { dead, listed, firstUnreadable } = as;
+  const model = read(s, log, from, as);
+  const shown = segments.map((g): ListedSegment => (firstUnreadable && g.firstN === 1 ? { firstN: 1, bytes: "unreadable" } : g));
+  const real = scanLog(hex(log), from, dead, listed ? shown.filter((g) => listed.includes(g.firstN)) : shown);
   return {
     model: { records: model.records, stop: model.stop, pred: model.pred && { log: hex(model.pred.log), lastN: model.pred.lastN } },
     real: { records: real.records.map((r) => [r.n, r.ops[0]!.key[0]]), stop: real.stop, pred: real.pred ?? null },
@@ -75,7 +76,7 @@ describe("on directly built logs", () => {
     ];
     for (const [name, seg, dead, stop] of cases) {
       const s = disk([seg], dead);
-      const { model, real } = bothReads(s, P, 0, encode(s, P));
+      const { model, real } = bothReads(s, P, 0, encode(s, P), { dead });
       const want = { records: [[1, 1]], stop, pred: null };
       expect([name, "model", model]).toEqual([name, "model", want]);
       expect([name, "scanLog", real]).toEqual([name, "scanLog", want]);
@@ -106,7 +107,7 @@ describe("on directly built logs", () => {
         const encoded = encode(s, P);
         const last = Math.max(0, ...segments.flatMap((g) => g.frames.map((f) => f.n)));
         for (let from = 0; from <= last + 1; from++) {
-          const { model, real } = bothReads(s, P, from, encoded);
+          const { model, real } = bothReads(s, P, from, encoded, { dead });
           if (JSON.stringify(model) !== JSON.stringify(real)) differ.push(`${dead ? "dead" : "live"} from ${from} ${JSON.stringify(segments)}: model ${JSON.stringify(model.stop)}, scanLog ${JSON.stringify(real.stop)}`);
           compared++;
         }
@@ -127,20 +128,24 @@ it("agrees with the ingest-plan model's reader on every log disk the model reach
     for (const log of MODEL_LOGS) {
       const l = s.logs[log];
       if (!l) continue;
-      const w = s.writers[log]!;
-      const dead = w.state === "dead";
-      const listings = [undefined, ...(!dead && s.pass?.listed[log] ? [s.pass.listed[log]] : [])];
-      const key = JSON.stringify([log, l, dead, w.pred, listings]);
+      const pred = s.writers[log]!.pred;
+      const listing = s.round && "listed" in s.round ? s.round.listed?.[log] : undefined;
+      const listings = [undefined, ...(listing ? [listing] : [])];
+      const key = JSON.stringify([log, l, pred, listings]);
       if (seenDisks.has(key)) continue;
       seenDisks.add(key);
       const segments = encode(s, log);
       const last = Math.max(0, ...l.segments.flatMap((g) => g.frames.map((f) => f.n)));
       for (const listed of listings) {
-        for (let from = 0; from <= last + 1; from++) {
-          const { model, real } = bothReads(s, log, from, segments, listed);
-          const at = `${log} from ${from}${listed ? ` listed ${listed}` : ""}: ${JSON.stringify(l)}`;
-          expect([at, real]).toEqual([at, model]);
-          compared++;
+        for (const dead of [false, true]) {
+          for (const firstUnreadable of l.segments[0]?.firstN === 1 ? [false, true] : [false]) {
+            for (let from = 0; from <= last + 1; from++) {
+              const { model, real } = bothReads(s, log, from, segments, { dead, listed, firstUnreadable });
+              const at = `${dead ? "dead" : "live"} ${log} from ${from}${listed ? ` listed ${listed}` : ""}${firstUnreadable ? " first unreadable" : ""}: ${JSON.stringify(l)}`;
+              expect([at, real]).toEqual([at, model]);
+              compared++;
+            }
+          }
         }
       }
     }
