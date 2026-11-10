@@ -10,14 +10,16 @@ export default defineContender({
     const db = await openKv(name);
     return {
       ...kvCommon(db),
-      putMany: (entries) =>
-        db.batch((tx) => {
+      putMany: async (entries) => {
+        await db.batch((tx) => {
           for (const [k, v] of entries) tx.put(k, v);
-        }),
-      deleteMany: (keys) =>
-        db.batch((tx) => {
+        });
+      },
+      deleteMany: async (keys) => {
+        await db.batch((tx) => {
           for (const k of keys) tx.delete(k);
-        }),
+        });
+      },
       get: (key) => db.get(key),
       async range(start, endExclusive, limit) {
         const values: Uint8Array[] = [];

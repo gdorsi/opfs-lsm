@@ -62,6 +62,20 @@ export type TableStore = Common & {
   deleteMany(ids: readonly string[]): Promise<void>;
 };
 
+/** TanStack DB collections: kvCollectionOptions vs indexedDBCollectionOptions. Reads are TanStack's in-memory rows on both sides, so the timed work is persistence and load. */
+export type CollectionStore = Common & {
+  /** One TanStack transaction with every row. Resolves once the store persisted it. */
+  insertMany(rows: readonly Todo[]): Promise<void>;
+  /** One transaction with one row. */
+  insert(row: Todo): Promise<void>;
+  /** One transaction that changes each of `ids` with `f`. */
+  updateMany(ids: readonly string[], f: (row: Todo) => Todo): Promise<void>;
+  deleteMany(ids: readonly string[]): Promise<void>;
+  /** The collection's in-memory row. Used to check results, not timed as a read benchmark. */
+  get(id: string): Todo | undefined;
+  size(): number;
+};
+
 /** Automerge: both contenders are automerge-repo storage adapters; workloads drive a real Repo. */
 export type AutomergeStore = Common & {
   readonly adapter: StorageAdapterInterface;
@@ -83,8 +97,9 @@ export type YjsBinding = {
 export type FamilyStores = {
   kv: KvStore;
   table: TableStore;
+  tanstack: CollectionStore;
   automerge: AutomergeStore;
   yjs: YjsStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "automerge", "yjs"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "automerge", "yjs"];

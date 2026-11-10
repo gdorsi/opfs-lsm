@@ -16,7 +16,9 @@
     "@opfs-lsm/automerge": "workspace:*",
     "@opfs-lsm/docstore": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
+    "@opfs-lsm/tanstack-db": "workspace:*",
     "@opfs-lsm/yjs": "workspace:*",
+    "@tanstack/db": "1.0.0-rc.1.4",
     "dexie": "^4.0.11",
     "y-indexeddb": "^9.0.12",
     "yjs": "^13.6.33"

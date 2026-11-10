@@ -26,6 +26,7 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 |---|---|---|
 | `kv` | kv (`openDb`, SharedWorker host) | a hand-written IndexedDB key-value store: one object store, one transaction per batch, `getAll` pages for scans |
 | `table` | docstore (`packages/docstore`) | Dexie |
+| `tanstack` | `kvCollectionOptions` from `@opfs-lsm/tanstack-db` (`packages/tanstack-db`) | TanStack DB's `indexedDBCollectionOptions` |
 | `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | `KvPersistence` from `@opfs-lsm/yjs` (`packages/yjs`) | y-indexeddb |
 
@@ -43,6 +44,7 @@ The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and value
 - `kv/ycsb-a` … `kv/ycsb-f`: YCSB core workloads A to F, as in YCSB's workload files. Pebble uses the same letters for different mixes.
 - `kv/compaction-memory`: 20 rounds of N random puts into a 4N key pool, settle, then checked reads. Run it for the memory peaks below, not for throughput.
 - `table/todos`: the operations of RxDB's storage comparison on a todo table with two indexes: first insert, bulk and serial inserts, gets by id, index queries, updates, deletes, cold open.
+- `tanstack/todos`: the todo rows of `table/todos` through a TanStack DB collection: first insert, bulk inserts in transactions of 1,000, N/100 serial inserts, N/10 updates and N/10 deletes in transactions of 100, then a cold open that loads every row. Reads are TanStack's in-memory rows on both sides, so the timed work is persistence and load. Untimed `check-*` phases compare the whole collection with the model. Two tabs on one database are not covered: the harness runs one tab at a time.
 - `automerge/trace`, `yjs/trace`: the LaTeX editing trace (about 260k keystrokes; 2,000 at `tiny`, 26,000 at `small`) through the persistence layer, then a cold load. The trace downloads once into `bench/.data/`.
 - `automerge/many-docs`, `yjs/many-docs`: many small notes written, then each loaded cold.
 
