@@ -290,7 +290,7 @@ export async function loadGeneration(
   return decodeGeneration(buf);
 }
 
-/** Delete manifests older than `keepFrom`. Call after IDB records `keepFrom`. */
+/** Delete manifests numbered below `keepFrom`. */
 export async function reclaimManifests(
   fs: AsyncFs,
   keepFrom: number,

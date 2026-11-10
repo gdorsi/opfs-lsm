@@ -29,8 +29,9 @@ export type CompactionOutput = {
  * file when omitted), merge its inputs, and write the output run. Needs no
  * ingest lock: a flush meanwhile only adds L0 runs in front of the inputs,
  * which stay contiguous and keep their bottom status. Outputs are named
- * past every manifest number in use (`knownTop`, IndexedDB's
- * `topGeneration`, and `m/`), so they never overwrite a run one may list.
+ * past every manifest number in use (`knownTop`, the caller's newest
+ * number, torn manifests included, and `m/`), so they never overwrite a run
+ * one may list.
  */
 export async function mergeNextStep(
   fs: AsyncFs,
