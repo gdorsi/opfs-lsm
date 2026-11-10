@@ -3,7 +3,8 @@ export type ErrorCode =
   | "closed"
   | "corrupt"
   | "constraint"
-  | "unavailable";
+  | "unavailable"
+  | "indeterminate";
 
 export class OpfsLsmError extends Error {
   constructor(
@@ -47,6 +48,17 @@ export class StorageUnavailableError extends OpfsLsmError {
   constructor(message: string) {
     super("unavailable", message);
     this.name = "StorageUnavailableError";
+  }
+}
+
+/**
+ * A write whose dedicated WebWorker gave no answer in time. It may still
+ * apply, but never after a later write of the same page.
+ */
+export class IndeterminateWriteError extends OpfsLsmError {
+  constructor(message: string) {
+    super("indeterminate", message);
+    this.name = "IndeterminateWriteError";
   }
 }
 
