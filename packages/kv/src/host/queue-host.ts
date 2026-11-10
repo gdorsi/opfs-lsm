@@ -3,8 +3,25 @@ import { segmentPath } from "../log/segment.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { recoverQueues } from "../recover.js";
 import { foldRecords } from "../store/fold.js";
-import { listLog, publishGeneration, publishL0 } from "../store/generation.js";
-import { planIngest, type DurableHints, type LogFiles, type LogId, type QueueCursor, type QueueScan, type RecordN } from "./queues.js";
+import {
+  listLog,
+  listLogs,
+  manifestNumbers,
+  publishGeneration,
+  publishL0,
+  readManifest,
+  reclaimManifests,
+} from "../store/generation.js";
+import {
+  planIngest,
+  planReclaim,
+  type DurableHints,
+  type LogFiles,
+  type LogId,
+  type QueueCursor,
+  type QueueScan,
+  type RecordN,
+} from "./queues.js";
 
 /**
  * The per-log Web Locks, `opfs-lsm-log/<db>/<log>`. A log's writer, its
@@ -55,6 +72,48 @@ export async function ingestQueues(fs: AsyncFs, locks: LogLocks, durable: Durabl
 
 const sameCursors = (a: readonly QueueCursor[], b: readonly QueueCursor[]): boolean =>
   a.length === b.length && a.every((c, i) => c.log === b[i]!.log && c.state === b[i]!.state && c.n === b[i]!.n);
+
+/**
+ * Deletes what `planReclaim` finds every kept manifest covers: finished
+ * segments, the directory of a dead log they all have final, and the
+ * manifests past the kept ones. A log is dead only when this takes its
+ * lock. A delete that fails is left for the next pass: Chrome and Firefox
+ * refuse to remove a file a writer holds open. Run it under the ingest
+ * lock, and only while no tab loads a generation (`unlessHeld`).
+ *
+ * Every delete is safe on its own, so a pass that dies partway leaves a
+ * state the next pass plans from again.
+ */
+export async function reclaimQueues(fs: AsyncFs, locks: LogLocks): Promise<void> {
+  const manifests: { generation: number; queues: readonly QueueCursor[] }[] = [];
+  for (const generation of await manifestNumbers(fs)) {
+    const meta = await readManifest(fs, generation);
+    if (meta) manifests.push({ generation, queues: meta.queues ?? [] });
+  }
+  const logs = await listLogs(fs);
+  const held = new Map<LogId, () => void>();
+  try {
+    for (const { log } of logs) {
+      const release = await locks.take(log);
+      if (release) held.set(log, release);
+    }
+    const plan = planReclaim(manifests, logs, new Set(held.keys()));
+    for (const { log, firstN } of plan.segments) await removeQuietly(fs, segmentPath(log, firstN));
+    for (const { log, segments } of logs.filter((l) => plan.logs.includes(l.log))) {
+      for (const firstN of segments) await removeQuietly(fs, segmentPath(log, firstN));
+      await removeQuietly(fs, `w/${log}`);
+    }
+    if (plan.manifests.length > 0) await reclaimManifests(fs, Math.max(...plan.manifests) + 1);
+  } finally {
+    for (const release of held.values()) release();
+  }
+}
+
+async function removeQuietly(fs: AsyncFs, path: string): Promise<void> {
+  try {
+    await fs.remove(path);
+  } catch {}
+}
 
 /**
  * Reads every log in `logs` that is not final or damaged in `queues`, from

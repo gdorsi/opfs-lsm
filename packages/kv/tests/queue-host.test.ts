@@ -1,15 +1,23 @@
 import { describe, expect, it } from "vitest";
 import type { CheckedKey, CheckedValue } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { ingestQueues, scanQueues } from "../src/host/queue-host.js";
-import type { LogId, PredEdge, QueueCursor, QueueScan } from "../src/host/queues.js";
+import { ingestQueues, reclaimQueues, scanQueues } from "../src/host/queue-host.js";
+import { checkCover, type LogId, type PredEdge, type QueueCursor, type QueueScan } from "../src/host/queues.js";
 import { encodeOps } from "../src/idb/wal.js";
 import { QueueWriter } from "../src/log/queue-writer.js";
 import { segmentPath } from "../src/log/segment.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { MemoryFs } from "../src/opfs/memory-fs.js";
 import { recoverQueues } from "../src/recover.js";
-import { listLogs, loadLatestGeneration, publishGeneration, publishRun, type GenerationMeta } from "../src/store/generation.js";
+import {
+  listLogs,
+  loadLatestGeneration,
+  manifestNumbers,
+  publishGeneration,
+  publishRun,
+  readManifest,
+  type GenerationMeta,
+} from "../src/store/generation.js";
 import { decodeSst } from "../src/store/sst.js";
 import { BROWSERS, QueueFs, TestLocks, type Browser } from "./sim/queue-fs.js";
 
@@ -349,5 +357,115 @@ describe("ingestQueues", () => {
     ]);
     expect([...seqs.keys()]).toEqual([...keys(P, [1, 2]), ...keys(A, [1, 2]), ...keys(B, [1, 2, 3, 4, 5, 6])]);
     expect((await listLogs(fs)).find((l) => l.log === A)?.segments).toEqual([1, 5]);
+  });
+});
+
+describe("reclaimQueues", () => {
+  const P = "00000000000000a0" as LogId;
+  const S = "00000000000000d4" as LogId;
+  const Z = "00000000000000ff" as LogId;
+
+  const segmentsOf = async (fs: AsyncFs, log: LogId): Promise<number[] | undefined> =>
+    (await listLogs(fs)).find((l) => l.log === log)?.segments;
+
+  /** Every manifest on disk can still find its records: what recovery needs of whichever one a crash leaves newest. */
+  async function expectEveryManifestCovered(fs: AsyncFs): Promise<void> {
+    const logs = await listLogs(fs);
+    for (const g of await manifestNumbers(fs)) expect(checkCover((await readManifest(fs, g))!.queues ?? [], logs), `manifest ${g}`).toBeUndefined();
+  }
+
+  /** A live log whose next record, sealed in its own segment so every browser reads it, makes the next ingest publish a manifest. */
+  async function churn(fs: QueueFs, locks: TestLocks): Promise<() => Promise<void>> {
+    const z = await startLog(fs, locks, Z);
+    return async () => {
+      await append(z, Z, 1);
+      await z.rotate();
+      await ingestQueues(fs, locks.for("host"), new Map([[Z, z.lastAcked]]), Infinity);
+    };
+  }
+
+  it.each(BROWSERS)("%s: removes the segments the newest three manifests cover, never a live log's last one", async (browser) => {
+    const fs = new QueueFs(browser);
+    const locks = new TestLocks();
+    const a = await startLog(fs, locks, A, 2);
+    await append(a, A, 4);
+    await a.rotate();
+    const next = await churn(fs, locks);
+    for (const n of [1, 2, 3, 4]) {
+      await ingestQueues(fs, locks.for("host"), new Map([[A, n]]), Infinity);
+      await reclaimQueues(fs, locks.for("host"));
+      await expectEveryManifestCovered(fs);
+    }
+    expect(await manifestNumbers(fs)).toEqual([4, 3, 2]);
+    expect(await segmentsOf(fs, A)).toEqual([3, 5]);
+
+    await next();
+    await next();
+    await reclaimQueues(fs, locks.for("host"));
+    await expectEveryManifestCovered(fs);
+    expect(await segmentsOf(fs, A)).toEqual([5]);
+    expect(fs.removedOpen).toEqual([]);
+  });
+
+  it("removes a dead log's directory only once the newest three manifests have it final", async () => {
+    const fs = new QueueFs("chrome");
+    const locks = new TestLocks();
+    const a = await startLog(fs, locks, A, 2);
+    await append(a, A, 3);
+    await a.close();
+    locks.release(A);
+    const next = await churn(fs, locks);
+    await ingestQueues(fs, locks.for("host"), new Map(), Infinity);
+
+    for (const round of [1, 2]) {
+      await reclaimQueues(fs, locks.for("host"));
+      expect(await segmentsOf(fs, A), `after ${round} manifest(s)`).toEqual([1, 3]);
+      await next();
+    }
+    await reclaimQueues(fs, locks.for("host"));
+    expect(await segmentsOf(fs, A)).toBeUndefined();
+    expect((await loadLatestGeneration(fs))!.queues).toContainEqual({ log: A, state: "final", n: 3 });
+    expect(locks.heldBy(A)).toBeUndefined();
+  });
+
+  it("keeps the directory of a final log whose writer still holds its lock", async () => {
+    const fs = new QueueFs("safari");
+    const locks = new TestLocks();
+    const p = await startLog(fs, locks, P, 2);
+    await append(p, P, 3);
+    await p.flush();
+    fs.failNextWrite(P, { mode: "short", landed: 3 });
+    await expect(p.append([body(P, 4)])).rejects.toThrow(/short write/);
+    const s = await startLog(fs, locks, S, 2, { log: P, lastN: 3 });
+    await append(s, S, 1);
+    await ingestQueues(fs, locks.for("host"), new Map([[P, 3], [S, await s.flush()]]), Infinity);
+    const next = await churn(fs, locks);
+    await next();
+    await next();
+
+    await reclaimQueues(fs, locks.for("host"));
+    expect((await loadLatestGeneration(fs))!.queues).toContainEqual({ log: P, state: "final", n: 3 });
+    expect(await segmentsOf(fs, P)).toEqual([3]);
+    locks.release(P);
+    await reclaimQueues(fs, locks.for("host"));
+    expect(await segmentsOf(fs, P)).toBeUndefined();
+  });
+
+  it("keeps a damaged log's files from its hole on, and its directory", async () => {
+    const fs = new QueueFs("firefox");
+    const locks = new TestLocks();
+    const a = await startLog(fs, locks, A, 2);
+    await append(a, A, 8);
+    await a.close();
+    locks.release(A);
+    await fs.remove(segmentPath(A, 5));
+    const next = await churn(fs, locks);
+    await ingestQueues(fs, locks.for("host"), new Map(), Infinity);
+    await next();
+    await next();
+    await reclaimQueues(fs, locks.for("host"));
+
+    expect((await loadLatestGeneration(fs))!.queues).toContainEqual({ log: A, state: "damaged", n: 4, reason: "segment ends short" });
+    expect(await segmentsOf(fs, A)).toEqual([3, 7]);
   });
 });

@@ -132,7 +132,10 @@ export class QueueFs implements AsyncFs {
       this.handles.delete(path);
       return;
     }
-    if ((await this.list(path)).length > 0) throw new DOMException(`${path} is not empty`, "InvalidModificationError");
+    const inside = `${path}/`;
+    if ([...this.inner.publishedPaths(), ...this.handles.keys()].some((p) => p.startsWith(inside))) {
+      throw new DOMException(`${path} is not empty`, "InvalidModificationError");
+    }
     await this.inner.remove(path);
   }
 
