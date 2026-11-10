@@ -8,8 +8,6 @@ export type HostStats = {
   fs: IoCounters;
   /** L0 runs flushed from the WAL. An ingest of a large backlog publishes several. */
   flushes: number;
-  /** Times a flush found L0 full and waited for compaction before publishing another run. */
-  l0Stops: number;
   /** Compaction steps installed. */
   compactionSteps: number;
   /** Σ IngestResult.foldedBytes. */
@@ -17,6 +15,22 @@ export type HostStats = {
   generation: number;
   /** From the latest manifest, levels with at least one run. */
   layout: { level: number; runs: number; bytes: number }[];
+  /**
+   * The wasm figures are the SharedWorker's, shared by every database it
+   * serves. None needs DevTools, so any browser reports them.
+   */
+  memory: {
+    /** The wasm instance's memory now. It only grows, until a recycle replaces the instance. */
+    wasmBytes: number;
+    /** The most memory any wasm instance reached. */
+    wasmPeakBytes: number;
+    /** The most a merge session was asked to reserve. */
+    mergeReservedBytes: number;
+    /** Times the host replaced the wasm instance to give its memory back. */
+    recycles: number;
+    /** Times a flush of this database found L0 full and waited for compaction before publishing another run. */
+    l0Stops: number;
+  };
 };
 
 /** What a tab tells the host when it opens a database. The host uses the smallest figure of each. */

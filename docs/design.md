@@ -638,7 +638,7 @@ runs, then waits for the next step to install, outside the section so the instal
 After the install it tries again. If the pass ends without an install, because nothing was left to
 merge or because it failed, the flush publishes its run anyway and checks again before the next
 one. A compaction that cannot help delays the flush by one pass and never blocks it for good.
-`HostStats.l0Stops` counts the waits.
+`HostStats.memory.l0Stops` counts the waits.
 
 OPFS writes go through `createWritable` and `close`. The browser swaps the new file into place
 on `close`, so other readers see a file whole or not at all.
@@ -745,6 +745,18 @@ Merges take turns in a JS context, across its databases. A step waits at the mer
 (`host/merge-slot.ts`) before it opens any input, because the module holds one session and two
 working sets would add up past the budget. A flush does not take the slot. It runs on the engine
 between the merge's pumps.
+
+Wasm memory never shrinks, so the host replaces the instance instead. After each flush chunk
+and each compaction step, if no merge session is open and the instance holds more than the
+recycle threshold, `recycleEngine` (`store/engine.ts`) makes a new one from the module it kept
+and drops the old one, whose memory returns once Chrome collects it. Nothing holds a view of the
+old memory across an await, and the LZ4 decoder and the block scanner read the current instance
+at each call. At 32 MiB the threshold is 16 MiB, so it fires after a flush that overlapped a
+merge and not after a flush alone.
+
+`HostStats.memory` reports `wasmBytes`, `wasmPeakBytes`, `mergeReservedBytes` and `recycles`
+for the SharedWorker, and `l0Stops` for the database. They work in any browser, with no
+DevTools.
 
 ## Installing
 

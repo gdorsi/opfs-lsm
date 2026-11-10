@@ -232,10 +232,12 @@ format does not change. It refuses keys that arrive out of order. The flush
   `merge_open`: a miss returns -11 and never traps. Talc still never shrinks
   memory, so when no session is open and `memory.buffer.byteLength >
   wasmRecycleBytes`, the host **recycles the instance** from the cached
-  `WebAssembly.Module`. For that to work, `useLz4Decoder` and
-  `useBlockScanner` must read the current engine instead of capturing `mod`.
-  No other project was found that recycles instances, and whether it gives
-  memory back is unverified (see the open questions).
+  `WebAssembly.Module` (`recycleEngine` in `store/engine.ts`). It checks after
+  each flush chunk and after each compaction step. `useLz4Decoder` and
+  `useBlockScanner` read the current engine at each call instead of capturing
+  `mod`. No other project was found that recycles instances. In Chrome a
+  dropped instance's memory comes back after a GC (see the probe results), and
+  the page cannot force one.
 - **TS fallback** (`store/merge-ts.ts`). It implements the same
   `MergeCore` pump/feed interface and writes raw output. It buffers up to T
   of entries and then encodes, so it is bounded at about B + 8 MiB. This is
@@ -337,7 +339,12 @@ existing `memoryBudget`.
   SharedWorker and on each tab. It records the peak `usedSize`, plus
   `backingStorageSize` where Chrome reports it.
 - **Every browser.** `HostStats.memory` reports `wasmBytes`,
-  `wasmPeakBytes`, `mergeReservedBytes`, `recycles` and `l0Stops`.
+  `wasmPeakBytes`, `mergeReservedBytes`, `recycles` and `l0Stops`. The first
+  four are the SharedWorker's, shared by every database it serves. Memory only
+  grows within an instance, so `wasmPeakBytes` is the larger of the current
+  size and what each replaced instance reached, with no sampling.
+  `mergeReservedBytes` is the most a session was asked to reserve, a window per
+  source and one for the output run. `l0Stops` is per database.
 - **Workload.** A new `kv/compaction-memory` workload runs the todo example
   for 20 rounds × 100k and asserts peak ≤ 1.25·B.
 - **Throughput.** Compare `kv/fillrandom --size large` and `kv/overwrite`
@@ -471,7 +478,8 @@ Changed after the prior-art review:
   this in step 1.
 - **Instance recycling.** Does dropping a `WebAssembly.Instance` give its
   memory back in Chrome, Safari and Firefox? `memory.discard` is only a
-  Phase 1 proposal. Probe this in step 1.
+  Phase 1 proposal. Chrome does, after a GC (see the probe results). Safari
+  and Firefox are not probed.
 - **Chrome's heap counters.** Does `Runtime.getHeapUsage` report
   `backingStorageSize` in the Chrome the bench uses? Without it, wasm and
   ArrayBuffer bytes come only from the engine's own counters.

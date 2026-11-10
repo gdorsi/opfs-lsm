@@ -11,6 +11,7 @@ import {
   reclaimManifests,
   reclaimRuns,
 } from "../store/generation.js";
+import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
@@ -156,11 +157,13 @@ export class EngineHost {
       entry.bytes += run.bytes;
       byLevel.set(level, entry);
     }
+    const { l0Stops, ...counts } = this.countsFor(dbName);
     return structuredClone({
       fs: fs.counters,
-      ...this.countsFor(dbName),
+      ...counts,
       generation: latest?.generation ?? 0,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
+      memory: { ...engineMemory(), l0Stops },
     });
   }
 
@@ -226,6 +229,7 @@ export class EngineHost {
           return folded;
         }),
       );
+      recycleEngine(budget.wasmRecycleBytes);
       pastStop = false;
       this.trusted.set(dbName, chunk.generation);
       if (chunk.kind === "stopped") {
@@ -420,7 +424,9 @@ export class EngineHost {
       const base = await loadGeneration(fs, meta.generation ?? 0);
       // Gone when a flush installed a newer generation since: plan again.
       if (!base) continue;
-      const step = await mergeNextStep(fs, this.budget(dbName), base, meta.top);
+      const budget = this.budget(dbName);
+      const step = await mergeNextStep(fs, budget, base, meta.top);
+      recycleEngine(budget.wasmRecycleBytes);
       if (!step) return;
       await this.exclusive(dbName, () =>
         this.withWal(dbName, async (wal) => {

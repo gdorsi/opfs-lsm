@@ -148,6 +148,10 @@ export type FlatEngine = {
   scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
   /** The module's merge session. It holds one at a time, so a second open throws: the host takes turns (`inMergeSlot`). */
   openMerge(spec: MergeSpec): MergeCore;
+  /** The module's memory. It only grows. */
+  memoryBytes(): number;
+  /** Whether a merge session is open, from its `openMerge` to its `close`. */
+  sessionOpen(): boolean;
 };
 
 const TAG_PUT = 1;
@@ -158,6 +162,7 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
   const ex = instance.exports as unknown as Exports;
   const status = ex.init(capacity);
   if (status < 0) throw statusError("init", status, 0, capacity);
+  let sessionIsOpen = false;
 
   /** Write `len` bytes through `fill`, run `op`, return a copy of the result. */
   function call(
@@ -267,6 +272,7 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
         spec.yieldBytes,
       );
       if (opened < 0) throw statusError("merge_open", opened, inputBytes, capacity);
+      sessionIsOpen = true;
       // The module holds one session and `merge_close` drops whichever is
       // open, so a closed handle must not reach a session opened after it.
       let closed = false;
@@ -314,10 +320,15 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
         close() {
           if (closed) return;
           closed = true;
+          sessionIsOpen = false;
           ex.merge_close();
         },
       };
     },
+
+    memoryBytes: () => ex.memory.buffer.byteLength,
+
+    sessionOpen: () => sessionIsOpen,
   };
 }
 
@@ -377,6 +388,16 @@ let engine: FlatEngine | undefined;
 /** Kept so a new instance can be made without fetching or compiling again. */
 let wasmModule: WebAssembly.Module | undefined;
 let initOnce: Promise<void> | undefined;
+/** The most memory any instance this context dropped had reached. */
+let droppedPeakBytes = 0;
+let mergeReservedBytes = 0;
+let recycleCount = 0;
+
+/** Every swap goes through here, so the memory a dropped instance reached is not lost. */
+function setEngine(next: FlatEngine | undefined): void {
+  droppedPeakBytes = Math.max(droppedPeakBytes, engine?.memoryBytes() ?? 0);
+  engine = next;
+}
 
 /**
  * Benchmarks swap the engine by setting `globalThis.__OPFS_LSM_ENGINE_URL`
@@ -469,7 +490,7 @@ export async function ensureEngine(): Promise<void> {
  * it up and every later call fails. The TypeScript codec takes over instead.
  */
 function dropWasm(): void {
-  engine = undefined;
+  setEngine(undefined);
   useLz4Decoder(undefined);
   useBlockScanner(undefined);
 }
@@ -492,13 +513,55 @@ export function engineUsingWasm(): boolean {
   return engine !== undefined;
 }
 
+/** What this context's wasm engine holds, for `HostStats.memory`. Zero without wasm. */
+export type EngineMemory = {
+  /** The current instance's memory. Talc never gives memory back, so it only grows until a recycle. */
+  wasmBytes: number;
+  /** The most memory any instance reached. */
+  wasmPeakBytes: number;
+  /** The most a merge session was asked to reserve: a window per source and one for the output run. */
+  mergeReservedBytes: number;
+  /** Instances replaced by `recycleEngine`. */
+  recycles: number;
+};
+
+export function engineMemory(): EngineMemory {
+  const wasmBytes = engine?.memoryBytes() ?? 0;
+  return {
+    wasmBytes,
+    wasmPeakBytes: Math.max(droppedPeakBytes, wasmBytes),
+    mergeReservedBytes,
+    recycles: recycleCount,
+  };
+}
+
+/**
+ * Replace the instance with a fresh one when its memory passed `maxBytes`.
+ * Wasm memory never shrinks, so a new instance is the only way to give it
+ * back, and the dropped one's memory returns once it is collected. Skipped
+ * while a merge session is open, since the session lives in the old
+ * instance. Nothing holds a view of the old memory across an await: results
+ * are copies, and the decoder hooks read `engine` at each call.
+ */
+export function recycleEngine(maxBytes: number): boolean {
+  if (!engine || !wasmModule || engine.sessionOpen() || engine.memoryBytes() <= maxBytes) return false;
+  try {
+    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, {})));
+  } catch {
+    // No memory for a second instance: the old one still works.
+    return false;
+  }
+  recycleCount += 1;
+  return true;
+}
+
 /**
  * A process that dies mid-merge leaves no session behind, since its successor
  * has an engine of its own. A test that freezes a host to stand in for that
  * death restarts the engine for the next host.
  */
 export function __restartEngineForTests(): void {
-  if (engine && wasmModule) engine = flatEngine(new WebAssembly.Instance(wasmModule, {}));
+  if (engine && wasmModule) setEngine(flatEngine(new WebAssembly.Instance(wasmModule, {})));
 }
 
 /**
@@ -547,6 +610,7 @@ export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
  */
 export async function openMerge(spec: MergeSpec): Promise<MergeCore> {
   await ensureEngine();
+  mergeReservedBytes = Math.max(mergeReservedBytes, (spec.sources.length + 1) * spec.chunkBytes);
   if (engine) {
     try {
       return dropWasmOnTrap(engine.openMerge(spec));

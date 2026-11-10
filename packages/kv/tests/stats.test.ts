@@ -12,6 +12,7 @@ import {
   settle,
   __resetMemoryFsForTests,
 } from "../src/testing.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { CountingFs } from "../src/opfs/counting-fs.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 import { levelOf } from "../src/store/levels.js";
@@ -121,6 +122,12 @@ describe("readStats", () => {
     expect(stats.host.fs.read.l0!.calls).toBeGreaterThanOrEqual(4);
     expect(stats.host.fs.removed.l0!.calls).toBe(4);
     expect(stats.host.compactionSteps).toBeGreaterThanOrEqual(1);
+    const { memory } = stats.host;
+    expect(memory.wasmBytes).toBeGreaterThan(0);
+    expect(memory.wasmPeakBytes).toBeGreaterThanOrEqual(memory.wasmBytes);
+    // The step reserved a window per source and one for the output run.
+    expect(memory.mergeReservedBytes).toBeGreaterThanOrEqual(5 * hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES).chunkBytes);
+    expect(memory.l0Stops).toBe(0);
     // The host writes, the tab does not.
     expect(stats.tab.fs.written).toEqual({});
 
@@ -196,6 +203,13 @@ describe("readStats", () => {
     expect(stats.host.layout).toEqual([
       { level: 0, runs: 1, bytes: stats.host.fs.written.l0!.bytes },
     ]);
+    expect(stats.host.memory).toEqual({
+      wasmBytes: expect.any(Number),
+      wasmPeakBytes: expect.any(Number),
+      mergeReservedBytes: expect.any(Number),
+      recycles: expect.any(Number),
+      l0Stops: 0,
+    });
 
     await db.close();
     ingest.close();
