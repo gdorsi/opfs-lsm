@@ -1,4 +1,5 @@
 import { checkDbName, type DbName } from "../check.js";
+import { tryLock } from "../locks.js";
 import type { LogId, PredEdge, RecordN } from "../host/queues.js";
 import { QueueWriter, type SegmentStore } from "./queue-writer.js";
 import { segmentPath } from "./segment.js";
@@ -166,20 +167,6 @@ async function opfsSegments(db: DbName): Promise<SegmentStore> {
   };
 }
 
-function takeLock(name: string): Promise<(() => void) | undefined> {
-  return new Promise((granted, failed) => {
-    navigator.locks
-      .request(name, { mode: "exclusive", ifAvailable: true }, (lock) => {
-        if (!lock) {
-          granted(undefined);
-          return;
-        }
-        return new Promise<void>((release) => granted(release));
-      })
-      .catch(failed);
-  });
-}
-
 /** Dedicated WebWorker boot. Entry: `log-worker.ts`. */
 export function bootLogWorker(): void {
   const scope = globalThis as unknown as {
@@ -188,7 +175,7 @@ export function bootLogWorker(): void {
     close(): void;
   };
   const onMessage = serveLog({
-    lock: takeLock,
+    lock: tryLock,
     segments: opfsSegments,
     post: (msg) => scope.postMessage(msg),
     exit: () => scope.close(),

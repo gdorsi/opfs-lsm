@@ -116,28 +116,23 @@ async function choose(
   return GENERATION_ZERO;
 }
 
-/** What the per-tab ingest queues build on, as recovery found it on disk. */
-export type QueueRecovery = {
+/** The manifest the next one builds on, and the highest number in `m/`. */
+export type Newest = {
   /** The newest manifest that decodes and whose runs are all on disk. */
   readonly base: GenerationMeta;
   /** The highest manifest number in `m/`: the next manifest numbers past it, so no number names two manifests. */
   readonly top: number;
-  readonly logs: readonly LogFiles[];
 };
 
+/** What the per-tab ingest queues build on, as recovery found it on disk. */
+export type QueueRecovery = Newest & { readonly logs: readonly LogFiles[] };
+
 /**
- * The manifest the per-tab ingest queues build on, with no IndexedDB: the
- * newest manifest that decodes and lists no run that is gone. A newer one
- * that is empty, or whose run is gone, is what a power loss leaves of a
+ * The newest manifest that decodes and lists no run that is gone. A newer
+ * one that is empty, or whose run is gone, is what a power loss leaves of a
  * publish, and is skipped. One that does not decode is not, and throws.
- *
- * Refuses with `CorruptDatabaseError` when the logs on disk no longer hold
- * every record past the picked manifest's cursors (`checkCover`), so a
- * database whose newest manifests vanished never opens with a hole. The
- * check runs for a manifest with no cursors too: a log whose first segment
- * is gone was covered by cursors that vanished with their manifests.
  */
-export async function recoverQueues(fs: AsyncFs): Promise<QueueRecovery> {
+export async function newestIntact(fs: AsyncFs): Promise<Newest> {
   const numbers = await manifestNumbers(fs);
   let base = GENERATION_ZERO;
   for (const n of numbers) {
@@ -148,8 +143,20 @@ export async function recoverQueues(fs: AsyncFs): Promise<QueueRecovery> {
       break;
     }
   }
+  return { base, top: Math.max(numbers[0] ?? 0, base.generation) };
+}
+
+/**
+ * `newestIntact`, refused with `CorruptDatabaseError` when the logs on disk
+ * no longer hold every record past its cursors (`checkCover`), so a
+ * database whose newest manifests vanished never opens with a hole. The
+ * check runs for a manifest with no cursors too: a log whose first segment
+ * is gone was covered by cursors that vanished with their manifests.
+ */
+export async function recoverQueues(fs: AsyncFs): Promise<QueueRecovery> {
+  const { base, top } = await newestIntact(fs);
   const logs = await listLogs(fs);
   const gap = checkCover(base.queues ?? [], logs);
   if (gap) throw new CorruptDatabaseError(`manifest ${base.generation} cannot find its records: ${gap}`);
-  return { base, top: Math.max(numbers[0] ?? 0, base.generation), logs };
+  return { base, top, logs };
 }

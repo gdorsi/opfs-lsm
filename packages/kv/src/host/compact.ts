@@ -1,7 +1,7 @@
 import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
-import { reconcile } from "../recover.js";
+import { newestIntact, reconcile } from "../recover.js";
 import { mergeSsts } from "../store/engine.js";
 import {
   loadGeneration,
@@ -97,5 +97,30 @@ export async function installStep(
     ...(meta.queues && { queues: meta.queues }),
   });
   await wal.raiseGeneration(generation);
+  return generation;
+}
+
+/**
+ * Swap the step's inputs for its outputs in the newest intact manifest and
+ * publish the result past every manifest number in use. Run under the
+ * ingest lock. The inputs and the old manifests stay on disk: tabs may
+ * still read them, and recovery may fall back to a kept manifest, so the
+ * host reclaims them later. The queue cursors and `through` carry over:
+ * the runs still hold the same records.
+ */
+export async function installMerged(fs: AsyncFs, step: CompactionOutput): Promise<number> {
+  const { base, top } = await newestIntact(fs);
+  const live = new Set(base.runs.map((r) => r.path));
+  if (!step.inputs.every((p) => live.has(p))) {
+    throw new Error("compaction inputs left the newest manifest");
+  }
+  const generation = top + 1;
+  await publishGeneration(fs, {
+    generation,
+    runs: replaceRuns(base.runs, step.inputs, step.outputs),
+    tombstoneSeq: Math.max(base.tombstoneSeq, step.droppedSeq),
+    through: base.through,
+    ...(base.queues && { queues: base.queues }),
+  });
   return generation;
 }

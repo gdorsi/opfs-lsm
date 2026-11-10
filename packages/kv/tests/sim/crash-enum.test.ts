@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { EngineHost, MemoryFs, createLocalIngestClient, type AsyncFs } from "../../src/index.js";
-import { holdingFiles } from "../../src/host/protocol.js";
+import { holdingFiles } from "../../src/locks.js";
 import { openHarnessDb } from "../../src/testing.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { commandsArb, Model, Sut } from "./commands.js";

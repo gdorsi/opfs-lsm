@@ -1,4 +1,6 @@
 import { CorruptDatabaseError } from "../errors.js";
+import type { SegmentStore } from "../log/queue-writer.js";
+import { segmentPath } from "../log/segment.js";
 import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
 
 /**
@@ -66,6 +68,37 @@ export class MemoryFs implements AsyncFs {
     // Unique first path segment under dir
     return [...new Set(names.filter(Boolean))];
   }
+
+  /**
+   * Segment files written in place, as a dedicated WebWorker's
+   * SyncAccessHandle writes them: every write is readable at once, and a
+   * flush or close changes nothing.
+   */
+  readonly segments: SegmentStore = {
+    create: async (log, firstN) => {
+      const path = segmentPath(log, firstN);
+      let buf = new Uint8Array(256);
+      let size = 0;
+      this.published.set(path, buf.subarray(0, 0));
+      return {
+        write: (bytes, at) => {
+          if (!this.published.has(path)) throw new Error(`write to a removed segment: ${path}`);
+          const end = at + bytes.byteLength;
+          if (end > buf.byteLength) {
+            const grown = new Uint8Array(Math.max(end, buf.byteLength * 2));
+            grown.set(buf.subarray(0, size));
+            buf = grown;
+          }
+          buf.set(bytes, at);
+          size = Math.max(size, end);
+          this.published.set(path, buf.subarray(0, size));
+          return bytes.byteLength;
+        },
+        flush: () => undefined,
+        close: () => undefined,
+      };
+    },
+  };
 
   /** Test helper: full published paths. */
   publishedPaths(): string[] {

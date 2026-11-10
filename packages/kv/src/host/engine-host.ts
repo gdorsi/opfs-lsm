@@ -12,11 +12,11 @@ import {
   reclaimRuns,
 } from "../store/generation.js";
 import { levelOf } from "../store/levels.js";
+import { unlessHeld, withLock } from "../locks.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestAll, type IngestResult } from "./ingest.js";
 import {
   layersChannel,
-  unlessHeld,
   type ClientToHost,
   type HostStats,
   type HostToClient,
@@ -139,6 +139,7 @@ export class EngineHost {
     return structuredClone({
       fs: fs.counters,
       ...this.countsFor(dbName),
+      l0Stops: 0,
       generation: latest?.generation ?? 0,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
     });
@@ -398,14 +399,6 @@ function isClosedDatabase(err: unknown): boolean {
     "name" in err &&
     (err as { name: string }).name === "InvalidStateError"
   );
-}
-
-function withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  const locks = (globalThis as { navigator?: { locks?: LockManager } })
-    .navigator?.locks;
-  if (!locks) return fn();
-  // The DOM lib types the callback's promise as the result, unwrapped at runtime.
-  return locks.request(name, fn) as unknown as Promise<T>;
 }
 
 /** Serve EngineHost over a MessagePort (SharedWorker connection or test channel). */

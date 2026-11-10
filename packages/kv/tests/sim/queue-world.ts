@@ -246,7 +246,8 @@ export class QueueWorld {
 
   async serve(cmd: HostCmd, host = this.hostView()): Promise<void> {
     if (cmd.t === "reclaim") return reclaimQueues(host.fs, host.locks);
-    this.damagedLive.push(...(await ingestQueues(host.fs, host.locks, this.hints, cmd.maxBytes)).damagedLive);
+    const out = await ingestQueues(host.fs, host.locks, this.hints, cmd.maxBytes);
+    if (out.kind === "ingested") this.damagedLive.push(...out.damagedLive);
   }
 
   /**

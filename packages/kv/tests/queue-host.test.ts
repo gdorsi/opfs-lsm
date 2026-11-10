@@ -279,14 +279,14 @@ describe("ingestQueues", () => {
     await b.flush();
     const host = locks.for("host");
 
-    expect(await ingestQueues(fs, host, new Map([[B, 2]]), Infinity)).toEqual({ generation: 1, damagedLive: [] });
+    expect(await ingestQueues(fs, host, new Map([[B, 2]]), Infinity)).toMatchObject({ generation: 1, published: true, records: 5, damagedLive: [] });
     const first = await ingested(fs);
     expect(first.meta).toMatchObject({ through: 5, queues: [{ log: A, state: "final", n: 3 }, { log: B, state: "open", n: 2 }] });
     expect([...first.seqs]).toEqual([...keys(A, [1, 2, 3]), ...keys(B, [1, 2])].map((k, i) => [k, i + 1]));
     expect(locks.heldBy(A)).toBeUndefined();
 
-    expect(await ingestQueues(fs, host, new Map([[B, 2]]), Infinity)).toEqual({ generation: 1, damagedLive: [] });
-    expect(await ingestQueues(fs, host, new Map([[B, 4]]), Infinity)).toEqual({ generation: 2, damagedLive: [] });
+    expect(await ingestQueues(fs, host, new Map([[B, 2]]), Infinity)).toMatchObject({ generation: 1, published: false, records: 0 });
+    expect(await ingestQueues(fs, host, new Map([[B, 4]]), Infinity)).toMatchObject({ generation: 2, published: true, records: 2 });
     const second = await ingested(fs);
     expect(second.meta).toMatchObject({ through: 7, queues: [{ log: A, state: "final", n: 3 }, { log: B, state: "open", n: 4 }] });
     expect([second.seqs.get(`${B}/3`), second.seqs.get(`${B}/4`)]).toEqual([6, 7]);
@@ -362,7 +362,7 @@ describe("ingestQueues", () => {
     await fs.remove(segmentPath(P, 3));
 
     const out = await ingestQueues(fs, locks.for("host"), new Map([[P, 6]]), Infinity);
-    expect(out.damagedLive).toEqual([P]);
+    expect(out.kind === "ingested" && out.damagedLive).toEqual([P]);
     const { meta, seqs } = await ingested(fs);
     expect(meta.queues).toEqual([
       { log: P, state: "damaged", n: 2, reason: "segment ends short" },

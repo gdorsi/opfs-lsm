@@ -65,6 +65,8 @@ export type IngestPlan = {
   readonly queues: readonly QueueCursor[];
   /** Live logs that hit a hole: their tabs re-append what they still hold. */
   readonly damagedLive: readonly LogId[];
+  /** `maxBytes` ended the L0 before a record that could go: another round has more to take. */
+  readonly full: boolean;
 };
 
 const terminal = (c: QueueCursor | undefined): boolean => c !== undefined && c.state !== "open";
@@ -130,7 +132,7 @@ export function planIngest(base: QueueBase, scans: readonly QueueScan[], durable
   for (const s of [...scans].sort(byLogId)) visit(s);
 
   const queues = [...next.values()].filter((c) => c.state !== "open" || c.n > 0).sort(byLogId);
-  return { records, through, queues, damagedLive };
+  return { records, through, queues, damagedLive, full };
 }
 
 /** A log directory on disk: the firstN of each segment file, ascending. */

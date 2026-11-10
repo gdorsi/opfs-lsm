@@ -1,3 +1,4 @@
+import { opsBytes } from "../check.js";
 import { scanLog, type ListedSegment } from "../log/queue-scan.js";
 import { segmentPath } from "../log/segment.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
@@ -11,6 +12,7 @@ import {
   readManifest,
   reclaimManifests,
 } from "../store/generation.js";
+import { levelOf } from "../store/levels.js";
 import {
   planIngest,
   planReclaim,
@@ -35,37 +37,76 @@ export interface LogLocks {
 /** Reads of a segment that Chrome refuses with `NotReadableError` (a writer is appending to it) before it counts as unreadable this round. */
 const READ_TRIES = 8;
 
-/** What an ingest round tells the pages. */
-export type IngestOutcome = {
-  /** The newest manifest: the one this round published, or its base when it had nothing to add. */
-  readonly generation: number;
-  /** Live logs that hit a hole: their tabs start a new log and append again what they still hold. */
-  readonly damagedLive: readonly LogId[];
-};
+/** What an ingest round did. */
+export type IngestOutcome =
+  /** L0 already holds `l0Stop` runs and the plan had records for another: nothing was published. */
+  | { readonly kind: "stalled"; readonly generation: number }
+  | {
+      readonly kind: "ingested";
+      /** The newest manifest: the one this round published, or its base when it had nothing to add. */
+      readonly generation: number;
+      readonly published: boolean;
+      /** The cursors of `generation`. */
+      readonly queues: readonly QueueCursor[];
+      /** Records folded into the L0, and their key and value bytes. */
+      readonly records: number;
+      readonly bytes: number;
+      /** Live logs that hit a hole: their tabs start a new log and append again what they still hold. */
+      readonly damagedLive: readonly LogId[];
+      /** `maxBytes` cut the L0 short of a record that could go: another round has more to take. */
+      readonly more: boolean;
+      /**
+       * Live logs whose read stopped short of their durable hint at a
+       * segment it could not read (Chrome refuses one a write is in flight
+       * on). Rotating seals that segment, so the next round reads it.
+       */
+      readonly stuck: readonly LogId[];
+    };
 
 /**
  * One ingest round: recover the base manifest, scan the logs, plan, then
  * publish one L0 with the plan's records at their seqs and a manifest with
  * the new cursors. Run it under the ingest lock, which every manifest
- * publish and `reclaimQueues` hold too.
+ * publish and `reclaimQueues` hold too. While L0 holds `l0Stop` runs it
+ * publishes no new one, so compaction can catch up.
  *
  * Idempotent: the cursors commit with the runs that hold their records,
  * so a round that dies before its manifest leaves the base as it was, and
  * the next round plans again from it; one that publishes leaves nothing to
  * redo. A round with nothing to add publishes nothing.
  */
-export async function ingestQueues(fs: AsyncFs, locks: LogLocks, durable: DurableHints, maxBytes: number): Promise<IngestOutcome> {
+export async function ingestQueues(
+  fs: AsyncFs,
+  locks: LogLocks,
+  durable: DurableHints,
+  maxBytes: number,
+  l0Stop = Number.POSITIVE_INFINITY,
+): Promise<IngestOutcome> {
   const { base, top, logs } = await recoverQueues(fs);
   const queues = base.queues ?? [];
   return scanQueues(fs, locks, queues, logs.map((l) => l.log), async (scans) => {
     const plan = planIngest({ through: base.through, queues }, scans, durable, maxBytes);
-    if (plan.records.length === 0 && sameCursors(plan.queues, queues)) return { generation: base.generation, damagedLive: plan.damagedLive };
+    const outcome = {
+      kind: "ingested",
+      records: plan.records.length,
+      bytes: plan.records.reduce((sum, r) => sum + opsBytes(r.ops), 0),
+      damagedLive: plan.damagedLive,
+      more: plan.full,
+      stuck: scans.filter((s) => !s.dead && s.stop === "partial" && (durable.get(s.log) ?? 0) > lastRead(s, queues)).map((s) => s.log),
+    } as const;
+    if (plan.records.length === 0 && sameCursors(plan.queues, queues)) return { ...outcome, generation: base.generation, published: false, queues };
+    if (plan.records.length > 0 && base.runs.filter((r) => levelOf(r.path) === 0).length >= l0Stop) return { kind: "stalled", generation: base.generation };
     const runs =
       plan.records.length === 0 ? base.runs : [await publishL0(fs, `${base.through + 1}-${plan.through}`, foldRecords(plan.records)), ...base.runs];
     const generation = top + 1;
     await publishGeneration(fs, { generation, runs, tombstoneSeq: base.tombstoneSeq, through: plan.through, queues: plan.queues });
-    return { generation, damagedLive: plan.damagedLive };
+    return { ...outcome, generation, published: true, queues: plan.queues };
   });
+}
+
+/** The last record `scan` read of its log, or its cursor when it read none. */
+function lastRead(scan: QueueScan, queues: readonly QueueCursor[]): RecordN {
+  return scan.records.at(-1)?.n ?? queues.find((c) => c.log === scan.log)?.n ?? 0;
 }
 
 const sameCursors = (a: readonly QueueCursor[], b: readonly QueueCursor[]): boolean =>
