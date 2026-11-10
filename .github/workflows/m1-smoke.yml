@@ -22,8 +22,8 @@ jobs:
           chrome-version: stable
           install-dependencies: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm bench:size --check
-      - run: pnpm bench:smoke
+      # One build: the bundle-size budgets first, then the smoke.
+      - run: pnpm bench:smoke --check
         env:
           CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
 

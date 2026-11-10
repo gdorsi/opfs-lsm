@@ -30,7 +30,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | Any TypeScript behavior | `pnpm test` |
 | Any TypeScript or JavaScript source, including a removed export | `pnpm static` (oxlint, then `fallow dead-code`) |
 
-`pendingBytes` and the example load/open benches have no check. See [Gaps](#gaps).
+`pendingBytes` has no check. See [Gaps](#gaps).
 
 ## Run the Chrome proofs
 
@@ -273,7 +273,7 @@ Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
 
 [`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs seven jobs on pull requests and on pushes to `main`:
 
-- `bench`: `pnpm bench:size --check`, then `pnpm bench:smoke`
+- `bench`: `pnpm bench:smoke --check`, which applies the bundle-size budgets of `pnpm bench:size --check` and then runs the smoke, from one build
 - `two-tab`: `pnpm --filter @opfs-lsm/kv two-tab`
 - `kill-chrome`: `pnpm --filter @opfs-lsm/kv kill-chrome --seed 1 --iterations 6`, the probes and each kill kind once (about a minute)
 - `test`: `pnpm test`
@@ -286,7 +286,7 @@ Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
 - `kill-chrome`: 30 minutes of the kill loop with `--keep-going` and a random seed. The evidence of a failure is uploaded as `kill-chrome-evidence`.
 - `seed-sweep`: random seeds and more runs for the seeded suites, one job each: `KV_MODEL_RUNS=2000` on `model.test.ts` and on `multi-handle.test.ts`, `KV_CRASH_RUNS=300 KV_CRASH_PAIRS=200` on `crash-enum.test.ts`, and `KV_FUZZ_RUNS=50000` on `fuzz/`. With no `KV_MODEL_SEED` or `KV_FUZZ_SEED`, fast-check draws a seed and prints it, with the path, on a failure. Replay it with the commands in [Run the unit tests](#run-the-unit-tests) and [Fuzz the decoders](#fuzz-the-decoders).
 
-The pull request workflow leaves out cargo fuzz, Jazzer.js, `two-tab-nobc`, `two-tab-local`, the full `pnpm bench` families, `bench:load`, and `bench:open`. `bench:smoke` runs every workload on every contender at size `tiny`, which checks correctness and harness health, not speed.
+The pull request workflow leaves out cargo fuzz, Jazzer.js, `two-tab-nobc`, `two-tab-local`, and the full `pnpm bench` families. `bench:smoke` runs every workload on every contender at size `tiny`, which checks correctness and harness health, not speed.
 
 ## Refresh a skill
 
@@ -303,4 +303,3 @@ While you are changing product code and using verify-kv, follow that skill's "In
 These exist on main and have no feature file and no formal check. Leave them out of the feature map until a maintain pass adds a recipe.
 
 - `pendingBytes`, the ingest trigger in `packages/kv/src/host/engine-host.ts` and the WAL meta key of the same name in `packages/kv/src/idb/wal.ts`.
-- `pnpm --filter @opfs-lsm/example-automerge bench:load` (`examples/automerge-todo/scripts/bench-load.ts`) and `pnpm --filter @opfs-lsm/example-automerge bench:open` (`examples/automerge-todo/scripts/bench-open.ts`). Both are headless Chrome benches. They are outside `verify-opfs-lsm/features/`.

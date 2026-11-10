@@ -2,7 +2,8 @@
  * node bench/cli.ts <verb> [args]
  *
  *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed] [--max-peak-bytes N]
- *   smoke                   every workload × contender, size tiny, 1 rep, correctness only
+ *   smoke [--check]         every workload × contender, size tiny, 1 rep, correctness only;
+ *                           --check first applies the bundle-size budgets to the same build
  *   size [--check]          bundle-size table; --check fails over a row's budget
  *   compare <a.jsonl> <b.jsonl>
  *   report <file.jsonl>
@@ -14,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { SIZES, type RunRecord, type SizeName } from "./core/types.ts";
-import { BENCH_DIR, buildBench } from "./driver/build.ts";
+import { BENCH_DIR, buildBench, type BuildOutput } from "./driver/build.ts";
 import { DATA_DIR, ensureTrace } from "./driver/data.ts";
 import { plan } from "./driver/plan.ts";
 import { amplification, compare, report } from "./driver/report.ts";
@@ -53,19 +54,12 @@ async function main(): Promise<number> {
         headless: !values.headed,
         timeoutMs: Number(values.timeout),
         smoke,
+        checkSizes: smoke && values.check,
         maxPeakBytes: values["max-peak-bytes"] ? Number(values["max-peak-bytes"]) : undefined,
       });
     }
-    case "size": {
-      const rows = measureSizes(await buildBench({ quiet: true }));
-      console.log(formatSizes(rows));
-      const over = rows.filter((r) => r.budget !== undefined && r.afterOpen.brotli > r.budget);
-      if (values.check && over.length > 0) {
-        console.error(`over budget: ${over.map((r) => `${r.id} ${r.afterOpen.brotli} > ${r.budget}`).join(", ")}`);
-        return 1;
-      }
-      return 0;
-    }
+    case "size":
+      return sizes(await buildBench({ quiet: true }), values.check) ? 0 : 1;
     case "compare": {
       const [a, b] = positionals;
       if (!a || !b) throw new Error("compare needs two result files");
@@ -92,10 +86,12 @@ async function run(o: {
   headless: boolean;
   timeoutMs: number;
   smoke: boolean;
+  checkSizes: boolean;
   maxPeakBytes: number | undefined;
 }): Promise<number> {
   await ensureTrace();
-  await buildBench({ quiet: true });
+  const built = await buildBench({ quiet: true });
+  if (o.checkSizes && !sizes(built, true)) return 1;
   const server = await serve({ "/": path.join(BENCH_DIR, ".out"), "/data/": DATA_DIR });
   try {
     const catalog = await readCatalog(server.origin, o.headless);
@@ -125,6 +121,16 @@ async function run(o: {
   } finally {
     await server.close();
   }
+}
+
+/** Print the bundle-size table of a build. With `check`, false when a row is over its budget. */
+function sizes(built: BuildOutput, check: boolean): boolean {
+  const rows = measureSizes(built);
+  console.log(formatSizes(rows));
+  const over = rows.filter((r) => r.budget !== undefined && r.afterOpen.brotli > r.budget);
+  if (!check || over.length === 0) return true;
+  console.error(`over budget: ${over.map((r) => `${r.id} ${r.afterOpen.brotli} > ${r.budget}`).join(", ")}`);
+  return false;
 }
 
 /** Harness health: a kv footprint after writes must show counted WAL bytes. */
