@@ -40,12 +40,16 @@ export type DocId = string & { readonly __brand: "DocId" };
 const utf8 = new TextEncoder();
 const LONE_SURROGATE = /\p{Cs}/u;
 
-/** Lone surrogates are rejected because TextEncoder maps them all to U+FFFD, so two ids would share a key. */
+/** TextEncoder writes every lone surrogate as U+FFFD, so two strings that hold one could share a key. */
+export function wellFormed(s: string): boolean {
+  return !LONE_SURROGATE.test(s);
+}
+
 export function parseId(id: unknown): DocId {
   if (typeof id !== "string" || id === "") {
     throw new DocStoreError("document", "a document id must be a non-empty string");
   }
-  if (LONE_SURROGATE.test(id)) {
+  if (!wellFormed(id)) {
     throw new DocStoreError("document", "a document id must not hold a lone surrogate");
   }
   if (id.length * 3 > MAX_ID_BYTES && utf8.encode(id).length > MAX_ID_BYTES) {
@@ -212,9 +216,10 @@ function badQuery(message: string): never {
 
 /** A caller's query value: a scalar, a finite number, `-0` read as `0`. */
 export function checkQueryValue(value: unknown): Scalar {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string" && wellFormed(value)) return value;
   if (typeof value === "number" && Number.isFinite(value)) return value === 0 ? 0 : value;
-  return badQuery(`${String(value)} is not an index value: use null, a boolean, a finite number or a string`);
+  return badQuery(`${String(value)} is not an index value: use null, a boolean, a finite number or a well-formed string`);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,8 +274,8 @@ export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
   if (gt !== undefined && gte !== undefined) badQuery("gt and gte together");
   if (lt !== undefined && lte !== undefined) badQuery("lt and lte together");
   const bounded = gt !== undefined || gte !== undefined || lt !== undefined || lte !== undefined;
-  if (startsWith !== undefined && (bounded || typeof startsWith !== "string")) {
-    badQuery("startsWith takes a string and no other bound");
+  if (startsWith !== undefined && (bounded || typeof startsWith !== "string" || !wellFormed(startsWith))) {
+    badQuery("startsWith takes a well-formed string and no other bound");
   }
   const eq = q.eq ?? [];
   const arity = target.kind === "rows" ? 1 : target.arity;
@@ -314,7 +319,7 @@ function indexBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]):
 /** The id is raw UTF-8 with no terminator, so the keys equal to `x` end at `x ++ 00`. */
 function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [Uint8Array, Uint8Array] {
   const at = (v: unknown) =>
-    typeof v === "string" ? concat(prefix, utf8.encode(v)) : badQuery("an id bound must be a string");
+    typeof v === "string" && wellFormed(v) ? concat(prefix, utf8.encode(v)) : badQuery("an id bound must be a well-formed string");
   if (eq.length === 1) {
     const k = at(eq[0]);
     return [k, after(k)];

@@ -5,7 +5,7 @@
 import { CorruptDatabaseError, type Entry } from "@opfs-lsm/kv";
 import type { BoundCollection, IndexPlan, Path } from "./catalog.js";
 import { DocStoreError } from "./errors.js";
-import { MAX_KEY_BYTES, bytesEqual, encodeKey, keyString, parseId, textValue, type DocId } from "./keys.js";
+import { MAX_KEY_BYTES, bytesEqual, encodeKey, keyString, parseId, textValue, wellFormed, type DocId } from "./keys.js";
 import type { JsonDoc, Scalar } from "./schema.js";
 
 declare const storedBrand: unique symbol;
@@ -47,8 +47,11 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function isScalar(v: unknown): v is Scalar {
-  return v === null || typeof v === "boolean" || typeof v === "number" || typeof v === "string";
+/** Why `v` cannot be one value of a key, or undefined if it can. Numbers from `JSON.parse` are finite. */
+function unindexable(v: unknown): Unindexable["why"] | undefined {
+  if (v === null || typeof v === "boolean" || typeof v === "number") return undefined;
+  if (typeof v === "string") return wellFormed(v) ? undefined : "lone-surrogate";
+  return "not-scalar";
 }
 
 const MAX_ENTRIES_PER_INDEX = 1_000;
@@ -56,7 +59,7 @@ const MAX_ENTRIES_PER_INDEX = 1_000;
 /** Why one document cannot be in one index. A missing path is not here: it means "not in this index". */
 export type Unindexable = {
   readonly path: string;
-  readonly why: "not-scalar" | "text-not-string" | "key-too-long" | "too-many-entries";
+  readonly why: "not-scalar" | "lone-surrogate" | "text-not-string" | "key-too-long" | "too-many-entries";
 };
 
 const NONE: Entry[] = [];
@@ -102,14 +105,17 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
     const v = readPath(doc, path);
     if (v === undefined) return NONE;
     if (i === 0 && multi && Array.isArray(v)) {
-      if (!v.every(isScalar)) return { path: path.join("."), why: "not-scalar" };
-      firsts = [...new Set(v)];
+      for (const e of v) {
+        const why = unindexable(e);
+        if (why) return { path: path.join("."), why };
+      }
+      firsts = [...new Set(v as Scalar[])];
       if (firsts.length > MAX_ENTRIES_PER_INDEX) return { path: path.join("."), why: "too-many-entries" };
       values.push(null);
-    } else if (isScalar(v)) {
-      values.push(v);
     } else {
-      return { path: path.join("."), why: "not-scalar" };
+      const why = unindexable(v);
+      if (why) return { path: path.join("."), why };
+      values.push(v as Scalar);
     }
   }
 

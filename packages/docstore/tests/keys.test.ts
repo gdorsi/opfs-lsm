@@ -229,6 +229,8 @@ describe("scanPlan", () => {
     ["a NaN bound", { gt: Number.NaN }],
     ["an infinite eq value", { eq: [Number.POSITIVE_INFINITY] }],
     ["an object bound", { lt: {} as unknown as Scalar }],
+    ["a bound with a lone surrogate", { gte: "a\ud800" }],
+    ["startsWith with a lone surrogate", { startsWith: "\udfff" }],
     ["match on a sorted index", { match: "x" }],
   ])("rejects %s with code query", (_, q) => {
     expect(code(() => scanPlan(two, q))).toBe("query");

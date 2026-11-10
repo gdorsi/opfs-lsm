@@ -217,6 +217,7 @@ describe("values an index cannot hold", () => {
     ["an array on a non-multi index", { title: ["a"] as unknown as string }],
     ["a string past kv's key limit", { title: "x".repeat(9_000) }],
     ["a Uint8Array", { title: new Uint8Array(2) as unknown as string }],
+    ["a string with a lone surrogate", { title: "x\ud800" }],
     ["a non-scalar element of a multi index", { tags: ["a", { b: 1 }] as unknown as string[] }],
     ["more than 1,000 distinct elements", { tags: Array.from({ length: 1_001 }, (_, i) => `t${i}`) }],
   ])("throws document for %s, and get returns what was stored before", async (_, change) => {
