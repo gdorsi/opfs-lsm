@@ -52,9 +52,11 @@ export class StorageUnavailableError extends OpfsLsmError {
 }
 
 /**
- * A write that reached its dedicated WebWorker and was not acked: it failed
- * or gave no answer in time. It may still apply, but never after a later
- * write of the same page.
+ * A write that reached its dedicated WebWorker, was not acked, and whose
+ * log nothing could cap: the log's successor did not open, or the log was
+ * ending. It may still apply, but never after a later write of the same
+ * page. A write given up on whose log a successor capped is a
+ * `CommitError` instead: it never applies.
  */
 export class IndeterminateWriteError extends OpfsLsmError {
   constructor(message: string) {

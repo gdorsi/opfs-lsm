@@ -4,7 +4,7 @@ import type { LogId, PredEdge, RecordN } from "../host/queues.js";
 import { encodeOps } from "../idb/wal.js";
 import type { LogCommand, LogToPage, PageToLog } from "./log-worker-boot.js";
 
-/** A request with no answer in this long is given up: its dedicated WebWorker is terminated. */
+/** A request with no answer in this long gives its log up. */
 const WRITE_TIMEOUT_MS = 10_000;
 /** An ack is flushed at most this long after it arrived. */
 const FLUSH_DELAY_MS = 100;
@@ -30,7 +30,7 @@ export type LogClientOptions = {
   readonly clock?: Clock;
   /** Records 1..n of `log` are flushed. The wiring sends it to the host as the log's durable hint. */
   readonly durable?: (log: LogId, n: RecordN) => void;
-  /** `log` opened with `pred` in its first header: after a failed or stuck write, or on resume. */
+  /** `log` opened with `pred` in its first header: after a log was given up, or on resume. */
   readonly respawned?: (log: LogId, pred: PredEdge) => void;
 };
 
@@ -58,25 +58,50 @@ type Log = {
   flushTimer: (() => void) | undefined;
 };
 
+type Ended = { readonly promise: Promise<void>; readonly resolve: () => void };
+
 /**
  * `live`: one log, appends gathered into `queued` and sent one batch at a
- * time. `ending`: its close is sent; what comes after is `next`, and
- * appends wait in `queued` unless that is a close. `suspended`: no log,
- * appends wait for `resume`. `down`: a log failed before it opened; the
- * next append starts one.
+ * time. `handing-over`: `old` failed after it opened and is given up, and
+ * its successor `log`, whose first header caps `old` at its last ack, is
+ * opening. Nothing more is sent to `old`, and its dedicated WebWorker runs
+ * on, holding `old`'s lock, until `log` acks its open. Owed: `old.requests`,
+ * what was sent to `old` and not answered. Queued: `queued`, appends not
+ * sent anywhere yet, which go to `log` once it opened. `ending`: its close
+ * is sent. In both, what comes after is `next`, and appends wait in
+ * `queued` unless that is a close. `suspended`: no log, appends wait for
+ * `resume`. `down`: a log failed before it opened; the next append starts one.
  */
 type State =
   | { readonly kind: "live"; readonly log: Log; readonly queued: Pending[] }
+  | {
+      readonly kind: "handing-over";
+      readonly old: Log;
+      readonly why: string;
+      readonly log: Log;
+      readonly next: "suspend" | "resume" | "close";
+      readonly queued: Pending[];
+      readonly ended: Ended;
+    }
   | {
       readonly kind: "ending";
       readonly log: Log;
       readonly next: "suspend" | "resume" | "close";
       readonly queued: Pending[];
-      readonly ended: { readonly promise: Promise<void>; readonly resolve: () => void };
+      readonly ended: Ended;
     }
   | { readonly kind: "suspended"; readonly pred: PredEdge | undefined; readonly queued: Pending[] }
   | { readonly kind: "down"; readonly pred: PredEdge | undefined }
   | { readonly kind: "closed" };
+
+type Live = Extract<State, { kind: "live" }>;
+type HandingOver = Extract<State, { kind: "handing-over" }>;
+
+function deferred(): Ended {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+}
 
 const realClock: Clock = {
   after(ms, fn) {
@@ -114,16 +139,20 @@ function parseLogToPage(data: unknown): LogToPage | undefined {
 }
 
 const hasAppend = (log: Log): boolean => [...log.requests.values()].some((r) => r.t === "append");
+const opened = (log: Log): boolean => log.handoff?.log === log.id;
 
 /**
  * This page's writer of ingest queues. Each `append` is one record, acked
  * once its write() returned in the dedicated WebWorker that owns the
- * current log. Appends resolve in call order. Any failed write, and any
- * request with no answer in `WRITE_TIMEOUT_MS`, ends the log: its
- * dedicated WebWorker is terminated before a successor is spawned, and the
- * successor's first header names `pred { log, lastN }` with the last ack
- * this page saw, so the host ingests the old log first and nothing of it
- * past that ack after the successor's records.
+ * current log. Appends resolve in call order. A failed write, a request
+ * with no answer in `WRITE_TIMEOUT_MS`, an error event or a message the
+ * dedicated WebWorker should not send gives the log up. Its successor's
+ * first header names `pred { log, lastN }` with the last ack this page
+ * saw, and the old dedicated WebWorker, which holds the old log's lock, is
+ * terminated only once that header is flushed. The host takes a log's lock
+ * before it lists the logs, so it finds the cap whenever it reads the old
+ * log as dead: it ingests the old log through the last ack and nothing of
+ * it past that, all before the successor's records.
  */
 export class LogClient {
   private readonly db: DbName;
@@ -145,7 +174,15 @@ export class LogClient {
     this.start(undefined, []);
   }
 
-  /** Appends `ops` as one record. Rejects with `IndeterminateWriteError` when its write was sent and did not ack, so it may still land, and with `CommitError` when it was never sent. */
+  /**
+   * Appends `ops` as one record. Rejects with `CommitError` when the record
+   * is never ingested: it was never sent, or it was sent to a log that a
+   * successor's header capped below it. Rejects with
+   * `IndeterminateWriteError` when it was sent and nothing could cap its
+   * log: the successor did not open, or the log was ending. It may then
+   * still be ingested, but never after a later append of this client.
+   * Rejects with `ClosedError` once `close` was called.
+   */
   append(ops: readonly CheckedOp[]): Promise<Acked> {
     const body = new Uint8Array(encodeOps(ops));
     return new Promise((resolve, reject) => {
@@ -156,6 +193,7 @@ export class LogClient {
           s.queued.push(p);
           if (s.queued.length === 1 && !hasAppend(s.log)) queueMicrotask(() => this.pump());
           return;
+        case "handing-over":
         case "ending":
           if (s.next === "close") reject(new ClosedError("log client is closing"));
           else s.queued.push(p);
@@ -175,8 +213,9 @@ export class LogClient {
 
   /**
    * Flushes every record acked before the call. Resolves at once when no
-   * log is live: the acked records then sit in logs that are ending, which
-   * the host reads to their end without a durable hint.
+   * log is live: the acked records then sit in logs that are ending or given
+   * up, which the host reads through their last ack without a durable hint
+   * once their dedicated WebWorker is gone.
    */
   flush(): Promise<void> {
     const s = this.state;
@@ -203,6 +242,7 @@ export class LogClient {
     switch (s.kind) {
       case "live":
         return this.end(s, "suspend");
+      case "handing-over":
       case "ending":
         if (s.next === "resume") this.state = { ...s, next: "suspend" };
         return s.ended.promise;
@@ -219,7 +259,7 @@ export class LogClient {
   resume(): void {
     const s = this.state;
     if (s.kind === "suspended") this.start(s.pred, s.queued);
-    else if (s.kind === "ending" && s.next === "suspend") this.state = { ...s, next: "resume" };
+    else if ((s.kind === "ending" || s.kind === "handing-over") && s.next === "suspend") this.state = { ...s, next: "resume" };
   }
 
   /** Sends what was appended before the call, then flushes and closes the log and ends its dedicated WebWorker. */
@@ -228,6 +268,7 @@ export class LogClient {
     switch (s.kind) {
       case "live":
         return this.end(s, "close");
+      case "handing-over":
       case "ending":
         if (s.next !== "close") this.state = { ...s, next: "close" };
         return s.ended.promise;
@@ -244,21 +285,29 @@ export class LogClient {
   }
 
   private start(pred: PredEdge | undefined, queued: Pending[]): void {
+    const log = this.spawnLog(pred);
+    if (log instanceof Error) {
+      for (const p of queued) p.reject(new CommitError(log.message));
+      this.state = { kind: "down", pred };
+      return;
+    }
+    this.state = { kind: "live", log, queued };
+    if (queued.length > 0) queueMicrotask(() => this.pump());
+  }
+
+  /** Spawns a log's dedicated WebWorker and sends its open, or says why it could not. */
+  private spawnLog(pred: PredEdge | undefined): Log | Error {
     const id = newLogId();
     let port: LogWorkerPort;
     try {
       port = this.spawn({ message: (data) => this.onMessage(log, data), error: () => this.lost(log, "its dedicated WebWorker failed") });
     } catch (err) {
-      const cause = err instanceof Error ? err.message : String(err);
-      for (const p of queued) p.reject(new CommitError(`log ${id} did not start: ${cause}`));
-      this.state = { kind: "down", pred };
-      return;
+      return new Error(`log ${id} did not start: ${err instanceof Error ? err.message : String(err)}`);
     }
     const log: Log = { id, pred, port, handoff: pred, durable: 0, requests: new Map(), flushTimer: undefined };
-    this.state = { kind: "live", log, queued };
     const open = { t: "open", db: this.db, log: id, segmentBytes: this.segmentBytes } as const;
     this.send(log, pred ? { ...open, pred } : open, { t: "open" });
-    if (queued.length > 0) queueMicrotask(() => this.pump());
+    return log;
   }
 
   private pump(): void {
@@ -279,21 +328,20 @@ export class LogClient {
     log.port.post(msg, transfer);
   }
 
-  private end(s: Extract<State, { kind: "live" }>, next: "suspend" | "close"): Promise<void> {
+  private end(s: Live, next: "suspend" | "close", ended = deferred()): Promise<void> {
     const { log } = s;
     log.flushTimer?.();
     log.flushTimer = undefined;
     if (next === "close" && s.queued.length > 0) this.sendAppend(log, s.queued.splice(0));
-    let resolve!: () => void;
-    const promise = new Promise<void>((r) => (resolve = r));
-    this.state = { kind: "ending", log, next, queued: s.queued, ended: { promise, resolve } };
+    this.state = { kind: "ending", log, next, queued: s.queued, ended };
     this.send(log, { t: "close" }, { t: "close" });
-    return promise;
+    return ended.promise;
   }
 
+  /** `log` is the one this client listens to: the live or ending log, or the successor a hand-over waits on. */
   private current(log: Log): boolean {
     const s = this.state;
-    return (s.kind === "live" || s.kind === "ending") && s.log === log;
+    return (s.kind === "live" || s.kind === "ending" || s.kind === "handing-over") && s.log === log;
   }
 
   private onMessage(log: Log, data: unknown): void {
@@ -305,11 +353,8 @@ export class LogClient {
       return;
     }
     if (msg.t === "failed") {
-      // A write that threw or came back short can still leave whole frames of its batch on disk, and the host
-      // reads a dead log to its end. A log that never opened holds no record, so nothing sent to it can land.
-      const opened = log.handoff?.log === log.id;
-      const why = `log ${log.id} failed: ${msg.message}`;
-      this.retire(log, opened ? new IndeterminateWriteError(why) : new CommitError(why));
+      // A log that never opened holds no record, so nothing sent to it can land.
+      this.lost(log, `failed: ${msg.message}`, opened(log));
       return;
     }
     log.requests.delete(msg.id);
@@ -318,6 +363,7 @@ export class LogClient {
       case "open":
         log.handoff = { log: log.id, lastN: msg.n };
         if (log.pred) this.onRespawned?.(log.id, log.pred);
+        if (this.state.kind === "handing-over") this.handedOver(this.state);
         return;
       case "append": {
         const first = msg.n - req.batch.length + 1;
@@ -347,33 +393,98 @@ export class LogClient {
     }
   }
 
-  private lost(log: Log, why: string): void {
-    if (this.current(log)) this.retire(log, new IndeterminateWriteError(`log ${log.id}: ${why}`));
+  /**
+   * `log` failed: a failed reply, no answer in time, an error event or a
+   * message it should not send. `landed`: what was sent to it may be on disk.
+   */
+  private lost(log: Log, why: string, landed = true): void {
+    const s = this.state;
+    if (!this.current(log)) return;
+    const what = `log ${log.id}: ${why}`;
+    if (s.kind === "handing-over") this.handOverFailed(s, what);
+    else if (s.kind === "live" && opened(log)) this.handOver(s, what);
+    else this.retire(log, landed ? new IndeterminateWriteError(what) : new CommitError(what));
   }
 
-  /**
-   * Terminates the log's dedicated WebWorker, settles what it still owed
-   * (an append rejects with `cause`, anything else resolves: an ended log
-   * needs no flush or rotation) and moves on.
-   */
-  private retire(log: Log, cause: Error | undefined): void {
-    log.port.terminate();
+  /** Gives `s.log` up, keeping its dedicated WebWorker and lock until a successor that caps it has opened. */
+  private handOver(s: Live, why: string): void {
+    const old = s.log;
+    old.flushTimer?.();
+    old.flushTimer = undefined;
+    const log = this.spawnLog(old.handoff);
+    if (log instanceof Error) {
+      this.abandon(old, `${why}; ${log.message}`, s.queued);
+      this.state = { kind: "down", pred: old.handoff };
+      return;
+    }
+    this.state = { kind: "handing-over", old, why, log, next: "resume", queued: s.queued, ended: deferred() };
+  }
+
+  /** The successor's header is flushed, so nothing sent to `old` past its last ack is ever ingested. */
+  private handedOver(s: HandingOver): void {
+    s.old.port.terminate();
+    this.settle(s.old, new CommitError(`${s.why}; log ${s.log.id} caps it at record ${s.old.handoff?.lastN}`));
+    const live: Live = { kind: "live", log: s.log, queued: s.queued };
+    this.state = live;
+    if (s.next !== "resume") {
+      void this.end(live, s.next, s.ended);
+      return;
+    }
+    s.ended.resolve();
+    this.pump();
+  }
+
+  /** The successor did not open, so nothing caps `old`: once its lock is free the host reads it to its end. */
+  private handOverFailed(s: HandingOver, why: string): void {
+    s.log.port.terminate();
+    this.settle(s.log, new CommitError(why));
+    this.abandon(s.old, `${s.why}; ${why}`, s.queued);
+    const pred = s.old.handoff;
+    switch (s.next) {
+      case "resume":
+        this.state = { kind: "down", pred };
+        break;
+      case "suspend":
+        this.state = { kind: "suspended", pred, queued: [] };
+        break;
+      case "close":
+        this.state = { kind: "closed" };
+        break;
+    }
+    s.ended.resolve();
+  }
+
+  private abandon(old: Log, why: string, queued: readonly Pending[]): void {
+    old.port.terminate();
+    this.settle(old, new IndeterminateWriteError(why));
+    for (const p of queued) p.reject(new CommitError(`not sent: ${why}`));
+  }
+
+  /** Settles what `log` still owed: an append rejects with `failure`, anything else resolves, since an ended log needs no flush or rotation. */
+  private settle(log: Log, failure: Error): void {
     log.flushTimer?.();
     log.flushTimer = undefined;
-    const failure = cause ?? new ClosedError(`log ${log.id} closed`);
     for (const req of log.requests.values()) {
       req.cancel();
       if (req.t === "append") for (const p of req.batch) p.reject(failure);
       else req.done?.();
     }
     log.requests.clear();
+  }
+
+  /**
+   * Terminates the log's dedicated WebWorker, settles what it still owed and
+   * moves on. Reached on a clean close, and on a failure that nothing can
+   * cap: the log never opened, or it is ending and its dedicated WebWorker
+   * frees its lock by itself once it reads the close.
+   */
+  private retire(log: Log, cause: Error | undefined): void {
+    log.port.terminate();
+    const failure = cause ?? new ClosedError(`log ${log.id} closed`);
+    this.settle(log, failure);
 
     const s = this.state;
     if (s.kind === "live") {
-      if (log.handoff?.log === log.id) {
-        this.start(log.handoff, s.queued);
-        return;
-      }
       for (const p of s.queued) p.reject(new CommitError(`log ${log.id} did not open: ${failure.message}`));
       this.state = { kind: "down", pred: log.handoff };
       return;
