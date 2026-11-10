@@ -3,56 +3,56 @@ import {
   MemoryFs,
   prefixBound
 } from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests
-} from "../src/testing.js";
-import { checkBatch, checkDbName } from "../src/check.js";
-import { IdBWal } from "../src/idb/wal.js";
+import { openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
 
 const NAME = "update";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const utf = (s: string) => enc.encode(s);
 const text = (b: Uint8Array | undefined) => (b ? dec.decode(b) : undefined);
-const quiet = { maxWalBytes: 1 << 30 };
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
-beforeEach(async () => {
-  __resetMemoryFsForTests(NAME);
-  await wipe();
-});
+beforeEach(() => __resetMemoryFsForTests(NAME));
 afterEach(() => __resetMemoryFsForTests(NAME));
 
 describe("update", () => {
-  it("concurrent increments from two tabs lose none", async () => {
-    const fs = new MemoryFs();
-    const a = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: quiet });
-    const b = await openHarnessDb({ name: NAME, writerId: "b", fs, forceMemory: true, ingestPolicy: quiet });
-    const bump = (db: typeof a) =>
+  it("updates on one page never lose each other's writes", async () => {
+    const db = await openHarnessDb({ name: NAME, fs: new MemoryFs() });
+    const bump = () =>
       db.update([utf("n")], ([cur], tx) => {
         tx.put(utf("n"), utf(String(Number(text(cur) ?? "0") + 1)));
       });
-    await Promise.all(Array.from({ length: 20 }, (_, i) => bump(i % 2 ? a : b)));
-    expect(text(await a.get(utf("n")))).toBe("20");
+    await Promise.all(Array.from({ length: 20 }, bump));
+    expect(text(await db.get(utf("n")))).toBe("20");
+    await db.close();
+  });
+
+  it("updates from two pages are last-writer-wins: both pages end on one page's last write", async () => {
+    const fs = new MemoryFs();
+    const a = await openHarnessDb({ name: NAME, fs });
+    const b = await openHarnessDb({ name: NAME, fs });
+    const bump = (db: typeof a) =>
+      db.update([utf("n")], ([cur], tx) => {
+        const next = String(Number(text(cur) ?? "0") + 1);
+        tx.put(utf("n"), utf(next));
+        return next;
+      });
+    const wrote = await Promise.all(Array.from({ length: 20 }, (_, i) => bump(i % 2 ? a : b)));
+    const lastOf = (page: number) => wrote.filter((_, i) => i % 2 === page).at(-1);
+    await a.sync();
+    await b.sync();
+    const n = text(await a.get(utf("n")));
+    expect(text(await b.get(utf("n")))).toBe(n);
+    expect([lastOf(0), lastOf(1)]).toContain(n);
     await a.close();
     await b.close();
   });
 
   it("reads an ingested key in a tab that has not loaded the SST yet", async () => {
     const fs = new MemoryFs();
-    const writer = await openHarnessDb({ name: NAME, writerId: "w", fs, forceMemory: true, ingestPolicy: quiet });
+    const writer = await openHarnessDb({ name: NAME, fs });
     await writer.put(utf("k"), utf("1"));
     await writer.ingest();
-    const reader = await openHarnessDb({ name: NAME, writerId: "r", fs, forceMemory: true, ingestPolicy: quiet });
+    const reader = await openHarnessDb({ name: NAME, fs });
     const seen = await reader.update([utf("k"), utf("absent")], (values) =>
       values.map(text),
     );
@@ -61,16 +61,9 @@ describe("update", () => {
     await reader.close();
   });
 
-  it("sees a write that was never broadcast", async () => {
-    const fs = new MemoryFs();
-    const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: quiet });
-    await db.put(utf("n"), utf("1"));
-    const silent = await IdBWal.open(checkDbName(NAME));
-    await silent.appendAfter(0, () => ({
-      ops: checkBatch([{ type: "put", key: utf("n"), value: utf("5") }]),
-      result: undefined,
-    }));
-    silent.close();
+  it("reads this page's writes made before it, even those not acked yet", async () => {
+    const db = await openHarnessDb({ name: NAME, fs: new MemoryFs() });
+    void db.put(utf("n"), utf("5"));
     await db.update([utf("n")], ([cur], tx) => {
       tx.put(utf("n"), utf(String(Number(text(cur)) + 1)));
     });
@@ -79,7 +72,7 @@ describe("update", () => {
   });
 
   it("writes nothing when the body throws", async () => {
-    const db = await openHarnessDb({ name: NAME, writerId: "w", fs: new MemoryFs(), forceMemory: true, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, fs: new MemoryFs() });
     await expect(
       db.update([utf("k")], (_values, tx) => {
         tx.put(utf("k"), utf("x"));
@@ -94,7 +87,7 @@ describe("update", () => {
 describe("rangeFollow", () => {
   it("follows each entry to its target across the log and an SST", async () => {
     const fs = new MemoryFs();
-    const writer = await openHarnessDb({ name: NAME, writerId: "w", fs, forceMemory: true, ingestPolicy: quiet });
+    const writer = await openHarnessDb({ name: NAME, fs });
     await writer.batch((tx) => {
       tx.put(utf("doc/1"), utf("one"));
       tx.put(utf("idx/1"), utf("doc/1"));
@@ -105,7 +98,7 @@ describe("rangeFollow", () => {
       tx.put(utf("idx/2"), utf("doc/2"));
       tx.put(utf("idx/3"), utf("doc/missing"));
     });
-    const reader = await openHarnessDb({ name: NAME, writerId: "r", fs, forceMemory: true, ingestPolicy: quiet });
+    const reader = await openHarnessDb({ name: NAME, fs });
     const hits = await reader.rangeFollow(prefixBound(utf("idx/")), (e) => e.value);
     expect(hits.map((h) => [text(h.entry.key), text(h.value)])).toEqual([
       ["idx/1", "one"],
@@ -118,7 +111,7 @@ describe("rangeFollow", () => {
 
   it("follows the entries of a reverse range, last first", async () => {
     const fs = new MemoryFs();
-    const db = await openHarnessDb({ name: NAME, writerId: "w", fs, forceMemory: true, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, fs });
     await db.batch((tx) => {
       for (const i of [1, 2, 3, 4]) {
         tx.put(utf(`doc/${i}`), utf(`doc ${i}`));

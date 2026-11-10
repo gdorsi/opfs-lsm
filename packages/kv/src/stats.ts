@@ -7,11 +7,11 @@ export type { IoCount, IoCounters } from "./opfs/counting-fs.js";
 /** Counters are monotonic since the tab Db opened / the host started; callers diff snapshots. */
 export type KvStats = {
   tab: {
-    /** WAL records this Db handle appended. */
-    walAppends: number;
-    /** Encoded record bytes handed to IndexedDB, excluding meta puts. */
-    walBytes: number;
-    /** This tab's OPFS IO (open load, installs). */
+    /** Records this Db handle appended to its logs. */
+    appends: number;
+    /** Key and value bytes of those records. */
+    appendBytes: number;
+    /** This tab's OPFS IO (manifest loads, run reads). */
     fs: IoCounters;
   };
   host: HostStats;
@@ -24,14 +24,11 @@ function internalsOf(db: Db) {
 }
 
 export async function readStats(db: Db): Promise<KvStats> {
-  const { name, wal, fs, ingest } = internalsOf(db);
-  const host = await ingest.stats(name);
+  const { fs, hostStats, appended } = internalsOf(db);
+  const host = await hostStats();
+  const { records, bytes } = appended();
   return {
-    tab: {
-      walAppends: wal.appendedRecords,
-      walBytes: wal.appendedBytes,
-      fs: structuredClone(fs.counters),
-    },
+    tab: { appends: records, appendBytes: bytes, fs: structuredClone(fs.counters) },
     host,
   };
 }

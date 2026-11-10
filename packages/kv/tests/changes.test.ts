@@ -1,83 +1,49 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  type ChangeEvent
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests
-} from "../src/testing.js";
+import { type ChangeEvent } from "../src/index.js";
+import { openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
 
 const NAME = "changes-test";
 const enc = new TextEncoder();
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
+beforeEach(() => __resetMemoryFsForTests(NAME));
+afterEach(() => __resetMemoryFsForTests(NAME));
+
+async function until(what: string, ok: () => boolean, ms = 3000): Promise<void> {
+  for (const end = Date.now() + ms; !ok(); ) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
 }
 
-beforeEach(async () => {
-  __resetMemoryFsForTests(NAME);
-  await wipe();
-});
-
-afterEach(() => {
-  __resetMemoryFsForTests(NAME);
-});
-
 describe("changes()", () => {
-  it("notifies local appends and ingest", async () => {
-    const db = await openHarnessDb({
-      name: NAME,
-      forceMemory: true,
-      writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
+  it("notifies this page's acked writes, then the install that holds them", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true });
     const events: ChangeEvent[] = [];
     const stop = db.changes((e) => events.push(e));
 
     await db.put(enc.encode("a"), enc.encode("1"));
-    expect(events).toEqual([
-      { kind: "append", writerId: "w1", seq: 1 },
-    ]);
+    expect(events).toEqual([{ kind: "local" }]);
 
-    await db.ingest();
-    expect(events.at(-1)).toEqual({ kind: "ingest", writerId: "w1" });
+    const { generation } = await db.ingest();
+    expect(events.at(-1)).toEqual({ kind: "ingest", generation });
 
     stop();
     await db.put(enc.encode("b"), enc.encode("2"));
-    expect(events.filter((e) => e.kind === "append")).toHaveLength(1);
+    expect(events.filter((e) => e.kind === "local")).toHaveLength(1);
     await db.close();
   });
 
-  it("receives appends from another writer on the same db name", async () => {
-    if (typeof BroadcastChannel === "undefined") return;
-
-    const a = await openHarnessDb({
-      name: NAME,
-      forceMemory: true,
-      writerId: "wa",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
-    const b = await openHarnessDb({
-      name: NAME,
-      forceMemory: true,
-      writerId: "wb",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
-
+  it("hears another page's writes as an install, once the host ingests them", async () => {
+    const a = await openHarnessDb({ name: NAME, forceMemory: true });
+    const b = await openHarnessDb({ name: NAME, forceMemory: true });
     const events: ChangeEvent[] = [];
     b.changes((e) => events.push(e));
 
     await a.put(enc.encode("k"), enc.encode("v"));
-    await new Promise((r) => setTimeout(r, 20));
-
-    expect(events.some((e) => e.kind === "append" && e.writerId === "wa")).toBe(
-      true,
-    );
+    expect(await b.get(enc.encode("k")), "not ingested yet").toBeUndefined();
+    await until("b's install", () => events.some((e) => e.kind === "ingest"));
+    expect(events.every((e) => e.kind === "ingest"), "a's write is not local to b").toBe(true);
+    expect(new TextDecoder().decode(await b.get(enc.encode("k")))).toBe("v");
     await a.close();
     await b.close();
   });

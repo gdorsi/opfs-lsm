@@ -15,10 +15,8 @@ import {
   publishL0,
 } from "../src/store/generation.js";
 import { encodeRun, sstKeyRange } from "../src/store/sst.js";
-import { checkDbName } from "../src/check.js";
-import { installStep } from "../src/host/compact.js";
+import { installMerged } from "../src/host/compact.js";
 import type { LogId, QueueCursor } from "../src/host/queues.js";
-import { IdBWal } from "../src/idb/wal.js";
 import { loadGeneration, publishRun } from "../src/store/generation.js";
 
 const NAME = "generation-coherence";
@@ -29,23 +27,8 @@ function mft(generation: number): string {
   return `m/${String(generation).padStart(16, "0")}.mft`;
 }
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-beforeEach(async () => {
-  __resetMemoryFsForTests(NAME);
-  await wipe();
-});
-
-afterEach(async () => {
-  __resetMemoryFsForTests(NAME);
-  await wipe();
-});
+beforeEach(() => __resetMemoryFsForTests(NAME));
+afterEach(() => __resetMemoryFsForTests(NAME));
 
 describe("manifest", () => {
   it("round-trips each run's size and key range", () => {
@@ -94,16 +77,12 @@ describe("manifest", () => {
 
   it("keeps the base's cursors through a compaction install", async () => {
     const fs = new MemoryFs();
-    const wal = await IdBWal.open(checkDbName(NAME));
-    try {
-      await publishRun(fs, "l0/1-3.sst", new Uint8Array([1]));
-      await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/1-3.sst", bytes: 1 }], tombstoneSeq: 0, through: 3, queues });
-      const generation = await installStep(fs, wal, { inputs: ["l0/1-3.sst"], outputs: [{ path: "l1/c2.0.sst", bytes: 1 }], droppedSeq: 0 });
-      expect(generation).toBe(2);
-      expect((await loadGeneration(fs, 2))?.queues).toEqual(queues);
-    } finally {
-      wal.close();
-    }
+    await publishRun(fs, "l0/1-3.sst", new Uint8Array([1]));
+    await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/1-3.sst", bytes: 1 }], tombstoneSeq: 0, through: 3, queues });
+    await publishRun(fs, "l1/c2.0.sst", new Uint8Array([1]));
+    const generation = await installMerged(fs, { inputs: ["l0/1-3.sst"], outputs: [{ path: "l1/c2.0.sst", bytes: 1 }], droppedSeq: 0 });
+    expect(generation).toBe(2);
+    expect((await loadGeneration(fs, 2))?.queues).toEqual(queues);
   });
 
   it.each([1, 2])("refuses a version %i manifest, which has no run sizes, rather than read it as version 3", (version) => {

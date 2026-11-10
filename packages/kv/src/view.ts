@@ -12,9 +12,7 @@ import {
 } from "./store/merge.js";
 
 export interface ViewSnapshot {
-  /** WAL head seq pinned when the view opened. */
-  readonly walHead: number;
-  /** OPFS generation pinned when the view opened. */
+  /** The installed manifest the view reads, under this page's writes it does not hold yet. */
   readonly generation: number;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   range(range?: Range): AsyncIterable<Entry>;
@@ -32,7 +30,7 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 }
 
 /**
- * `range` over memtable `rows` already cut to `bounds` and the levels under
+ * `range` over this page's `rows` already cut to `bounds` and the levels under
  * them: every live put, or with `valueContains` only the matching ones.
  */
 export function scanLayers(
@@ -53,7 +51,7 @@ export function scanLayers(
 }
 
 /**
- * Pinned memtable rows plus the SST readers opened for that generation.
+ * This page's pinned rows plus the SST readers opened for that generation.
  * `hold` keeps those readers open and returns its release, so a `range`
  * iterator that outlives the view callback still reads open files.
  */
@@ -61,7 +59,6 @@ export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
 
   constructor(
-    readonly walHead: number,
     readonly generation: number,
     private readonly rows: MemRows,
     private readonly levels: readonly RunLevel[],

@@ -9,23 +9,8 @@ export {
   type OpenSpan,
   type OpenTrace,
 } from "./db.js";
-export {
-  EngineHost,
-  createLocalIngestClient,
-  createPortIngestClient,
-} from "./host/engine-host.js";
-export type { IngestClient } from "./host/protocol.js";
-export {
-  readStats,
-  settle,
-  type IoCount,
-  type IoCounters,
-  type KvStats,
-} from "./stats.js";
+export { Host, type HostLimits } from "./host/host.js";
+export { readStats, settle, type IoCount, type IoCounters, type KvStats } from "./stats.js";
 export type { AsyncFs } from "./opfs/async-fs.js";
 export { MemoryFs } from "./opfs/memory-fs.js";
 export { openBrowserFs } from "./opfs/browser-fs.js";
-export {
-  DEFAULT_INGEST_POLICY,
-  type IngestPolicy,
-} from "./ingest-policy.js";

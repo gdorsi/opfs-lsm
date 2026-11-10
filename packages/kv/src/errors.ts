@@ -81,6 +81,8 @@ export function errorOfCode(code: ErrorCode | undefined, message: string): Error
       return new ConstraintError(message);
     case "unavailable":
       return new StorageUnavailableError(message);
+    case "indeterminate":
+      return new IndeterminateWriteError(message);
     default:
       return new Error(message);
   }

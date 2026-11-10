@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { EngineHost, MemoryFs, createLocalIngestClient, openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
+import { Host, MemoryFs, openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
 import type { OpenFile } from "../src/opfs/async-fs.js";
 import type { PageCache } from "../src/store/page-cache.js";
 import type { Db } from "../src/index.js";
@@ -12,23 +12,8 @@ const MiB = 1024 * 1024;
 const ROWS_PER_RUN = 1500;
 const RUNS = 3;
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
-beforeEach(async () => {
-  __resetMemoryFsForTests(NAME);
-  await wipe();
-});
-
-afterEach(() => {
-  __resetMemoryFsForTests(NAME);
-});
+beforeEach(() => __resetMemoryFsForTests(NAME));
+afterEach(() => __resetMemoryFsForTests(NAME));
 
 /** Run file reads, in the order they start and land. */
 class TracingFs extends MemoryFs {
@@ -67,8 +52,8 @@ function filler(n: number): string {
 
 const valueOf = (i: number, tag: string) => ` ${tag} t${i % 5} ${filler(1000)}`;
 
-/** Three overlapping L0 runs of about 1.5 MB each, then a few memtable writes over them. */
-async function seed3Runs(fs: TracingFs, host: EngineHost, memoryBudget: number) {
+/** Three overlapping L0 runs of about 1.5 MB each, then a few writes of this page over them. */
+async function seed3Runs(fs: TracingFs, host: Host, memoryBudget: number, pageWrites = true) {
   const model = new Map<string, string>();
   const db = await open(fs, host, memoryBudget);
   for (let r = 0; r < RUNS; r++) {
@@ -82,26 +67,19 @@ async function seed3Runs(fs: TracingFs, host: EngineHost, memoryBudget: number) 
     });
     await db.ingest();
   }
-  for (let i = 0; i < 300; i += 7) {
+  for (let i = 0; pageWrites && i < 300; i += 7) {
     await db.put(key(i), enc.encode(" mem t9"));
     model.set(dec.decode(key(i)), " mem t9");
   }
-  for (let i = 3; i < 300; i += 11) {
+  for (let i = 3; pageWrites && i < 300; i += 11) {
     await db.delete(key(i));
     model.delete(dec.decode(key(i)));
   }
   return { db, model };
 }
 
-function open(fs: TracingFs, host: EngineHost, memoryBudget: number): Promise<Db> {
-  return openHarnessDb({
-    name: NAME,
-    writerId: "w1",
-    fs,
-    ingest: createLocalIngestClient(host),
-    ingestPolicy: { maxWalBytes: 1e12 },
-    memoryBudget,
-  });
+function open(fs: TracingFs, host: Host, memoryBudget: number): Promise<Db> {
+  return openHarnessDb({ name: NAME, fs, host, memoryBudget });
 }
 
 const usage = (db: Db) => (db as unknown as { cache: PageCache }).cache.usage();
@@ -117,7 +95,7 @@ const show = (rows: { key: Uint8Array; value: Uint8Array }[]) => rows.map((r) =>
 describe("memoryBudget smaller than one run", () => {
   it("answers get, range, search and update correctly while it evicts", async () => {
     const fs = new TracingFs();
-    const host = new EngineHost(() => fs);
+    const host = new Host(() => fs);
     const { db, model } = await seed3Runs(fs, host, MiB);
     const runs = fs.publishedPaths().filter((p) => p.startsWith("l0/"));
     expect(runs).toHaveLength(RUNS);
@@ -163,7 +141,7 @@ describe("memoryBudget smaller than one run", () => {
 describe("scan resistance", () => {
   it("a full scan larger than the budget does not evict pages that gets reuse", async () => {
     const fs = new TracingFs();
-    const host = new EngineHost(() => fs);
+    const host = new Host(() => fs);
     const { db } = await seed3Runs(fs, host, MiB);
     const hot = [key(1000), key(2001), key(3002)];
     for (let i = 0; i < 2; i++) for (const k of hot) await db.get(k);
@@ -180,8 +158,9 @@ describe("scan resistance", () => {
 describe("cold reads", () => {
   it("opening reads no run bytes, and a cold range with a limit starts every run's first read in one round", async () => {
     const fs = new TracingFs();
-    const host = new EngineHost(() => fs);
-    const { db } = await seed3Runs(fs, host, MiB);
+    const host = new Host(() => fs);
+    // No writes over the runs: the cold open would ingest them as a fourth L0, which starts a compaction.
+    const { db } = await seed3Runs(fs, host, MiB, false);
     await db.close();
 
     fs.events = [];

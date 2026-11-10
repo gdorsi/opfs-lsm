@@ -10,6 +10,7 @@ const dec = new TextDecoder();
 type Api = {
   openDb: typeof import("@opfs-lsm/kv").openDb;
   ClosedError: typeof import("@opfs-lsm/kv").ClosedError;
+  IndeterminateWriteError: typeof import("@opfs-lsm/kv").IndeterminateWriteError;
 };
 
 type TestingApi = {
@@ -37,15 +38,6 @@ function exportFile(spec: string): string {
   return fileURLToPath(href);
 }
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
 beforeAll(async () => {
   const entry = exportFile("@opfs-lsm/kv");
   expect(entry.endsWith("/dist/index.js")).toBe(true);
@@ -60,28 +52,23 @@ afterEach(async () => {
   await closeDb?.();
   closeDb = undefined;
   testing?.__resetMemoryFsForTests(NAME);
-  await wipe();
 });
 
 describe("public API", () => {
-  it("resolves the SharedWorker and testing exports from the package exports map", () => {
+  it("resolves the SharedWorker, the dedicated WebWorker and testing exports from the package exports map", () => {
     const worker = exportFile("@opfs-lsm/kv/shared-worker");
     expect(existsSync(worker)).toBe(true);
     expect(worker.endsWith("/dist/host/shared-worker.js")).toBe(true);
+    const logWorker = exportFile("@opfs-lsm/kv/log-worker");
+    expect(existsSync(logWorker)).toBe(true);
+    expect(logWorker.endsWith("/dist/log/log-worker.js")).toBe(true);
     expect(typeof api.openDb).toBe("function");
+    expect(new api.IndeterminateWriteError("x").code).toBe("indeterminate");
   });
 
   it("runs put, get, batch, update, view, changes, ingest, and close", async () => {
     const fs = new testing.MemoryFs();
-    const db = await testing.openHarnessDb({
-      name: NAME,
-      fs,
-      forceMemory: true,
-      writerId: "w1",
-      ingestPolicy: {
-        maxWalBytes: 1 << 30,
-      },
-    });
+    const db = await testing.openHarnessDb({ name: NAME, fs });
     closeDb = () => db.close();
 
     const kinds: string[] = [];
@@ -109,7 +96,7 @@ describe("public API", () => {
 
     const ingested = await db.ingest();
     expect(ingested.generation).toBeGreaterThan(0);
-    expect(kinds).toContain("append");
+    expect(kinds).toContain("local");
     expect(kinds).toContain("ingest");
     stop();
 

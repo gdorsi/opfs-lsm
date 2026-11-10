@@ -1,56 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  MemoryFs
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests
-} from "../src/testing.js";
+import { MemoryFs } from "../src/index.js";
+import { RECLAIM_LAG } from "../src/host/queues.js";
+import { openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 
-const NAME = "generation-idb";
+const NAME = "installed-manifest";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const utf = (s: string) => enc.encode(s);
 const text = (b: Uint8Array | undefined) => (b ? dec.decode(b) : undefined);
-const quiet = { maxWalBytes: 1 << 30 };
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
-beforeEach(async () => {
-  __resetMemoryFsForTests(NAME);
-  await wipe();
-});
+beforeEach(() => __resetMemoryFsForTests(NAME));
 afterEach(() => __resetMemoryFsForTests(NAME));
 
+/** Counts `list` calls, which a read must not need once its generation is installed. */
 function observedFs(inner: MemoryFs) {
   let lists = 0;
-  let holdNextManifestRead = false;
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let markHeld!: () => void;
-  const isHeld = new Promise<void>((resolve) => {
-    markHeld = resolve;
-  });
   const fs: AsyncFs = {
-    async read(path, offset, length) {
-      const bytes = await inner.read(path, offset, length);
-      if (holdNextManifestRead && path.startsWith("m/")) {
-        holdNextManifestRead = false;
-        markHeld();
-        await held;
-      }
-      return bytes;
-    },
+    read: (path, offset, length) => inner.read(path, offset, length),
     async list(dir) {
       lists += 1;
       return inner.list(dir);
@@ -60,20 +27,12 @@ function observedFs(inner: MemoryFs) {
     removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
     create: (path) => inner.create(path),
   };
-  return {
-    fs,
-    lists: () => lists,
-    holdNextManifestRead: () => {
-      holdNextManifestRead = true;
-    },
-    isHeld,
-    release: () => release(),
-  };
+  return { fs, segments: inner.segments, lists: () => lists };
 }
 
-describe("generation recorded in IndexedDB", () => {
+describe("the installed manifest", () => {
   it("a view pinned before a batch sees none of it after ingest", async () => {
-    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, fs: new MemoryFs() });
     await db.put(utf("z"), utf("0"));
     await db.ingest();
     await db.put(utf("a"), utf("1"));
@@ -92,14 +51,14 @@ describe("generation recorded in IndexedDB", () => {
     await db.close();
   });
 
-  it("keeps only the recorded generation's manifest and every key reads back", async () => {
+  it("the host keeps the newest RECLAIM_LAG + 1 manifests, and every key reads back", async () => {
     const inner = new MemoryFs();
-    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, fs: inner });
     for (let i = 0; i < 6; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
       await db.ingest();
     }
-    expect(await inner.list("m")).toHaveLength(1);
+    expect(await inner.list("m")).toHaveLength(RECLAIM_LAG + 1);
     for (let i = 0; i < 6; i++) {
       expect(text(await db.get(utf(`k${i}`)))).toBe(`v${i}`);
     }
@@ -108,7 +67,7 @@ describe("generation recorded in IndexedDB", () => {
 
   it("a get after ingest does not list OPFS", async () => {
     const o = observedFs(new MemoryFs());
-    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: o.fs, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, fs: o.fs, segments: o.segments });
     for (let i = 0; i < 20; i++) await db.put(utf(`k${i}`), utf(`v${i}`));
     await db.ingest();
     const before = o.lists();

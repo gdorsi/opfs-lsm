@@ -8,7 +8,6 @@ const LIMITS = {
 } as const;
 
 export type DbName = string & { readonly __brand: "DbName" };
-export type WriterId = string & { readonly __brand: "WriterId" };
 export type CheckedKey = Uint8Array & { readonly __brand: "CheckedKey" };
 export type CheckedValue = Uint8Array & { readonly __brand: "CheckedValue" };
 
@@ -83,8 +82,4 @@ export function checkBatch(
     }
   }
   return out;
-}
-
-export function newWriterId(): WriterId {
-  return crypto.randomUUID() as WriterId;
 }

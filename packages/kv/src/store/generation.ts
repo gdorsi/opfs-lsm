@@ -308,8 +308,9 @@ export async function reclaimManifests(
 
 /**
  * Remove each path in `drop` that `keep` does not retain and no tab holds
- * open. Returns the paths still there, for the host to retry. A missing file
- * counts as removed, so a rerun after a crash converges.
+ * open. Returns the paths still there, kept or held, for the host to retry:
+ * a kept manifest that lists a compaction's inputs is reclaimed later. A
+ * missing file counts as removed, so a rerun after a crash converges.
  */
 export async function reclaimRuns(
   fs: AsyncFs,
@@ -319,7 +320,10 @@ export async function reclaimRuns(
   const retained = new Set(keep);
   const held: string[] = [];
   for (const path of new Set(drop)) {
-    if (retained.has(path)) continue;
+    if (retained.has(path)) {
+      held.push(path);
+      continue;
+    }
     let removed = false;
     try {
       removed = await fs.removeUnlessOpen(path);
@@ -329,20 +333,6 @@ export async function reclaimRuns(
     if (!removed) held.push(path);
   }
   return held;
-}
-
-/**
- * The runs of the recorded generation. A manifest past it is left by a
- * crash between publishing it and recording it: the next ingest or
- * compaction builds on the recorded one, and recovery adopts a manifest
- * only when all its runs are on disk, so its runs may go. A read that fails
- * throws, and a manifest that is gone throws too: nothing may be swept
- * against it.
- */
-export async function liveRuns(fs: AsyncFs, recorded: number): Promise<string[]> {
-  const meta = await loadGeneration(fs, recorded);
-  if (!meta) throw new CorruptDatabaseError(`manifest ${recorded} is gone`);
-  return meta.runs.map((run) => run.path);
 }
 
 /** Every run file on disk, from the `l<n>/` directories. */

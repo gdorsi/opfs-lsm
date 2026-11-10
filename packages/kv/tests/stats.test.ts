@@ -1,17 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  EngineHost,
-  MemoryFs,
-  attachEngineHostPort,
-  createLocalIngestClient,
-  createPortIngestClient,
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  readStats,
-  settle,
-  __resetMemoryFsForTests,
-} from "../src/testing.js";
+import { Host, MemoryFs, openHarnessDb, readStats, settle, __resetMemoryFsForTests } from "../src/testing.js";
 import { CountingFs } from "../src/opfs/counting-fs.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 import { levelOf } from "../src/store/levels.js";
@@ -20,23 +8,7 @@ const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 const NAME = "stats-db";
 
-async function deleteIdb(name: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
-afterEach(async () => {
-  await deleteIdb(NAME);
-  __resetMemoryFsForTests(NAME);
-});
-
-/** One put encoded as a WAL record: type byte, u32 key length, key, u32 value length, value. */
-const putRecordBytes = (key: Uint8Array, value: Uint8Array) =>
-  5 + key.byteLength + 4 + value.byteLength;
+afterEach(() => __resetMemoryFsForTests(NAME));
 
 async function write(fs: CountingFs, path: string, bytes: number): Promise<void> {
   const w = await fs.create(path);
@@ -86,23 +58,14 @@ describe("CountingFs", () => {
 });
 
 describe("readStats", () => {
-  it("counts WAL, flush, compaction and layout through a local host", async () => {
+  it("counts appends, flushes, compaction and layout", async () => {
     const fs = new MemoryFs();
-    const host = new EngineHost(() => fs);
-    const db = await openHarnessDb({
-      name: NAME,
-      writerId: "w1",
-      fs,
-      ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
+    const db = await openHarnessDb({ name: NAME, fs, host: new Host(() => fs) });
 
-    let walBytes = 0;
     let folded = 0;
     for (let i = 0; i < 4; i++) {
       const key = utf(`key-${i}`);
       const value = utf(`value-${i}`.repeat(i + 1));
-      walBytes += putRecordBytes(key, value);
       folded += key.byteLength + value.byteLength;
       await db.put(key, value);
       await db.ingest();
@@ -110,8 +73,8 @@ describe("readStats", () => {
     await settle(db);
 
     const stats = await readStats(db);
-    expect(stats.tab.walAppends).toBe(4);
-    expect(stats.tab.walBytes).toBe(walBytes);
+    expect(stats.tab.appends).toBe(4);
+    expect(stats.tab.appendBytes).toBe(folded);
     expect(stats.host.flushes).toBe(4);
     expect(stats.host.foldedBytes).toBeGreaterThanOrEqual(folded);
     expect(stats.host.fs.written.l0!.calls).toBe(4);
@@ -119,9 +82,8 @@ describe("readStats", () => {
     expect(stats.host.fs.written.l1!.bytes).toBeGreaterThan(0);
     expect(stats.host.fs.written.m!.calls).toBeGreaterThanOrEqual(5);
     expect(stats.host.fs.read.l0!.calls).toBeGreaterThanOrEqual(4);
-    expect(stats.host.fs.removed.l0!.calls).toBe(4);
     expect(stats.host.compactionSteps).toBeGreaterThanOrEqual(1);
-    // The host writes, the tab does not.
+    // The host writes runs and manifests, the tab only its log segments, which are no AsyncFs file.
     expect(stats.tab.fs.written).toEqual({});
 
     const latest = (await loadLatestGeneration(fs))!;
@@ -150,17 +112,10 @@ describe("readStats", () => {
 
   it("settle reaches a generation that further ingests leave alone", async () => {
     const fs = new MemoryFs();
-    const host = new EngineHost(() => fs);
-    const db = await openHarnessDb({
-      name: NAME,
-      writerId: "w1",
-      fs,
-      ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
+    const db = await openHarnessDb({ name: NAME, fs, host: new Host(() => fs) });
     for (let i = 0; i < 9; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
-      await host.ingest(NAME, Number.POSITIVE_INFINITY);
+      await db.sync();
     }
     await settle(db);
     const settled = (await readStats(db)).host;
@@ -169,38 +124,22 @@ describe("readStats", () => {
     await db.close();
   });
 
-  it("answers over the SharedWorker port protocol", async () => {
+  it("a first ingest on a new database is one L0 run in generation 1", async () => {
     const fs = new MemoryFs();
-    const host = new EngineHost(() => fs);
-    const { port1, port2 } = new MessageChannel();
-    attachEngineHostPort(port1, host);
-    const ingest = createPortIngestClient(port2);
-    const db = await openHarnessDb({
-      name: NAME,
-      writerId: "w1",
-      fs,
-      ingest,
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
+    const db = await openHarnessDb({ name: NAME, fs, host: new Host(() => fs) });
     const key = utf("k");
     const value = utf("v");
     await db.put(key, value);
     await db.ingest();
 
     const stats = await readStats(db);
-    expect(stats.tab.walAppends).toBe(1);
-    expect(stats.tab.walBytes).toBe(putRecordBytes(key, value));
+    expect(stats.tab.appends).toBe(1);
+    expect(stats.tab.appendBytes).toBe(key.byteLength + value.byteLength);
     expect(stats.host.flushes).toBe(1);
     expect(stats.host.generation).toBe(1);
     expect(stats.host.fs.written.l0!.calls).toBe(1);
-    expect(stats.host.layout).toEqual([
-      { level: 0, runs: 1, bytes: stats.host.fs.written.l0!.bytes },
-    ]);
-
+    expect(stats.host.layout).toEqual([{ level: 0, runs: 1, bytes: stats.host.fs.written.l0!.bytes }]);
     await db.close();
-    ingest.close();
-    port1.close();
-    port2.close();
   });
 
   it("rejects a Db it did not open", async () => {

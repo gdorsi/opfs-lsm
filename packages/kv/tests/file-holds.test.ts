@@ -1,11 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  EngineHost,
-  MemoryFs,
-  createLocalIngestClient,
-  openHarnessDb,
-  __resetMemoryFsForTests,
-} from "../src/testing.js";
+import { Host, MemoryFs, openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
+import type { Db } from "../src/index.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { BrowserFs } from "../src/opfs/browser-fs.js";
 import { checkDbName } from "../src/check.js";
@@ -15,51 +10,36 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const utf = (s: string) => enc.encode(s);
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
+beforeEach(() => __resetMemoryFsForTests(NAME));
+afterEach(() => __resetMemoryFsForTests(NAME));
 
-beforeEach(async () => {
-  __resetMemoryFsForTests(NAME);
-  await wipe();
-});
+/** A page on its own host, as after a SharedWorker restart. */
+const openWithHost = (fs: MemoryFs): Promise<Db> => openHarnessDb({ name: NAME, fs, host: new Host(() => fs) });
 
-afterEach(() => {
-  __resetMemoryFsForTests(NAME);
-});
-
-async function openWithHost(fs: MemoryFs) {
-  const host = new EngineHost(() => fs);
-  const db = await openHarnessDb({
-    name: NAME,
-    writerId: "w1",
-    fs,
-    ingest: createLocalIngestClient(host),
-    ingestPolicy: { maxWalBytes: 1e12 },
-  });
-  return { db, host };
-}
-
-/** Three L0 runs: one more flush starts a compaction into L1. */
-async function threeRuns(db: Awaited<ReturnType<typeof openWithHost>>["db"]) {
+/** Three L0 runs: one more ingest starts a compaction into L1. */
+async function threeRuns(db: Db) {
   for (let i = 0; i < 3; i++) {
     await db.put(utf(`k${i}`), utf(`v${i}`));
     await db.ingest();
   }
 }
 
+/** Three more manifests, so the kept ones (RECLAIM_LAG + 1) no longer list what compaction replaced. */
+async function threeManifests(db: Db) {
+  for (let i = 0; i < 3; i++) {
+    await db.put(utf(`pad${i}`), utf("x"));
+    await db.ingest();
+  }
+}
+
 const l0 = (fs: MemoryFs) => fs.publishedPaths().filter((p) => p.startsWith("l0/"));
 const l1 = (fs: MemoryFs) => fs.publishedPaths().filter((p) => p.startsWith("l1/"));
+const left = (fs: MemoryFs, paths: readonly string[]) => paths.filter((p) => fs.publishedPaths().includes(p));
 
 describe("run files outlive compaction while a tab reads them", () => {
   it("a view opened before a compaction reads every key, and its inputs go after it closes", async () => {
     const fs = new MemoryFs();
-    const { db } = await openWithHost(fs);
+    const db = await openWithHost(fs);
     await threeRuns(db);
     const inputs = l0(fs);
     expect(inputs).toHaveLength(3);
@@ -67,9 +47,9 @@ describe("run files outlive compaction while a tab reads them", () => {
     const seen = await db.view(async (snap) => {
       await db.put(utf("k3"), utf("v3"));
       await db.ingest();
-      await db.ingest();
       expect(l1(fs).length).toBeGreaterThan(0);
-      expect(l0(fs)).toEqual(expect.arrayContaining(inputs));
+      await threeManifests(db);
+      expect(left(fs, inputs), "the view holds them").toEqual(inputs);
       const got: string[] = [];
       for (let i = 0; i < 3; i++) got.push(dec.decode((await snap.get(utf(`k${i}`)))!));
       const keys: string[] = [];
@@ -79,14 +59,14 @@ describe("run files outlive compaction while a tab reads them", () => {
     expect(seen).toEqual({ got: ["v0", "v1", "v2"], keys: ["k0", "k1", "k2"], k3: undefined });
 
     await db.ingest();
-    expect(l0(fs)).toEqual([]);
+    expect(left(fs, inputs)).toEqual([]);
     for (let i = 0; i < 4; i++) expect(dec.decode((await db.get(utf(`k${i}`)))!)).toBe(`v${i}`);
     await db.close();
   });
 
   it("a range iterator holds its generation until return()", async () => {
     const fs = new MemoryFs();
-    const { db } = await openWithHost(fs);
+    const db = await openWithHost(fs);
     await threeRuns(db);
     const inputs = l0(fs);
 
@@ -94,20 +74,20 @@ describe("run files outlive compaction while a tab reads them", () => {
     expect(dec.decode((await it.next()).value!.key)).toBe("k0");
     await db.put(utf("k3"), utf("v3"));
     await db.ingest();
-    await db.ingest();
     expect(l1(fs).length).toBeGreaterThan(0);
-    expect(l0(fs)).toEqual(expect.arrayContaining(inputs));
+    await threeManifests(db);
+    expect(left(fs, inputs)).toEqual(inputs);
     expect(dec.decode((await it.next()).value!.key)).toBe("k1");
 
     await it.return!();
     await db.ingest();
-    expect(l0(fs)).toEqual([]);
+    expect(left(fs, inputs)).toEqual([]);
     await db.close();
   });
 
   it("closing the database releases its runs", async () => {
     const fs = new MemoryFs();
-    const { db } = await openWithHost(fs);
+    const db = await openWithHost(fs);
     await threeRuns(db);
     const inputs = l0(fs);
     expect(await fs.removeUnlessOpen(inputs[0]!)).toBe(false);
@@ -117,11 +97,11 @@ describe("run files outlive compaction while a tab reads them", () => {
 });
 
 describe("host boot sweep", () => {
-  it("removes run files no generation lists and keeps the live ones", async () => {
+  it("removes run files no manifest lists and keeps the live ones", async () => {
     const fs = new MemoryFs();
     const first = await openWithHost(fs);
-    await threeRuns(first.db);
-    await first.db.close();
+    await threeRuns(first);
+    await first.close();
     const live = l0(fs);
     for (const path of ["l0/crashed-flush.sst", "l1/c9.0-100.sst"]) {
       const w = await fs.create(path);
@@ -129,7 +109,7 @@ describe("host boot sweep", () => {
       await w.finish();
     }
 
-    const { db } = await openWithHost(fs);
+    const db = await openWithHost(fs);
     await db.ingest();
     expect(fs.publishedPaths().filter((p) => /^l\d+\//.test(p)).sort()).toEqual([...live].sort());
     for (let i = 0; i < 3; i++) expect(dec.decode((await db.get(utf(`k${i}`)))!)).toBe(`v${i}`);

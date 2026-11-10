@@ -1,69 +1,44 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  EngineHost,
-  MemoryFs,
-  createLocalIngestClient,
-  type ChangeEvent
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests
-} from "../src/testing.js";
+import { MemoryFs, type ChangeEvent } from "../src/index.js";
+import { Host, openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 
-async function deleteIdb(name: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
-afterEach(async () => {
-  await deleteIdb("compact");
+afterEach(() => {
   __resetMemoryFsForTests("compact");
 });
 
 describe("L0 compaction", () => {
   it("merges four L0 runs into L1 and keeps keys readable", async () => {
     const fs = new MemoryFs();
-    const db = await openHarnessDb({
-      name: "compact",
-      writerId: "w1",
-      fs,
-      forceMemory: true,
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
+    const db = await openHarnessDb({ name: "compact", fs });
 
     for (let i = 0; i < 4; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
       await db.ingest();
     }
 
-    expect(fs.publishedPaths().some((p) => p.startsWith("l1/"))).toBe(true);
+    const runs = (await loadLatestGeneration(fs))!.runs;
+    expect(runs.map((r) => r.path.slice(0, 3))).toEqual(["l1/"]);
     for (let i = 0; i < 4; i++) {
       const v = await db.get(utf(`k${i}`));
       expect(v && new TextDecoder().decode(v)).toBe(`v${i}`);
     }
-
-    await db.ingest();
-    expect(fs.publishedPaths().filter((p) => p.startsWith("l0/"))).toEqual([]);
     await db.close();
   });
 
-  it("a flush returns while compaction merges, and a flush mid-merge stays in front", async () => {
+  it("an ingest returns while compaction merges, and an ingest mid-merge stays in front", async () => {
     const fs = new MemoryFs();
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     let merging = false;
     const hostFs: AsyncFs = {
       read: async (path, offset, length) => {
-        if (path.endsWith(".sst")) {
+        // A merge reads whole runs; recovery's intact check reads one byte.
+        if (path.endsWith(".sst") && length > 1) {
           merging = true;
           await gate;
         }
@@ -71,39 +46,32 @@ describe("L0 compaction", () => {
       },
       list: (dir) => fs.list(dir),
       remove: (path) => fs.remove(path),
-    open: (path) => fs.open(path),
-    removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
+      open: (path) => fs.open(path),
+      removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
       create: (path) => fs.create(path),
     };
-    const host = new EngineHost(() => hostFs);
-    const db = await openHarnessDb({
-      name: "compact",
-      writerId: "w1",
-      fs,
-      ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1e12 },
-    });
+    const host = new Host(() => hostFs);
+    const db = await openHarnessDb({ name: "compact", fs, segments: fs.segments, host });
     const events: ChangeEvent[] = [];
     db.changes((e) => events.push(e));
 
     for (let i = 0; i < 4; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
-      await host.ingest("compact", Number.POSITIVE_INFINITY);
+      await db.sync();
     }
     await vi.waitFor(() => expect(merging).toBe(true));
     await db.put(utf("k0"), utf("newer"));
-    await host.ingest("compact", Number.POSITIVE_INFINITY);
+    await db.sync();
     expect((await loadLatestGeneration(fs))!.runs.filter((r) => r.path.startsWith("l0/"))).toHaveLength(5);
 
     release();
-    await host.ingest("compact", Number.POSITIVE_INFINITY, true);
+    await db.ingest();
     const runs = (await loadLatestGeneration(fs))!.runs;
     expect(runs[0]!.path).toMatch(/^l0\//);
     expect(runs.slice(1).every((r) => r.path.startsWith("l1/"))).toBe(true);
-    await db.ingest();
     expect(new TextDecoder().decode(await db.get(utf("k0")))).toBe("newer");
     expect(new TextDecoder().decode(await db.get(utf("k3")))).toBe("v3");
-    expect(events.some((e) => e.kind === "ingest" && e.writerId === "engine-host")).toBe(true);
+    expect(events.filter((e) => e.kind === "ingest").length).toBeGreaterThanOrEqual(6);
     await db.close();
   });
 });

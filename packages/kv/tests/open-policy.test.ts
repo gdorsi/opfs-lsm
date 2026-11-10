@@ -12,6 +12,7 @@ const dec = new TextDecoder();
 type Snap = {
   document: unknown;
   SharedWorker: unknown;
+  Worker: unknown;
   navigator: Navigator;
 };
 
@@ -19,11 +20,12 @@ function snap(): Snap {
   return {
     document: globalThis.document,
     SharedWorker: globalThis.SharedWorker,
+    Worker: (globalThis as { Worker?: unknown }).Worker,
     navigator: globalThis.navigator,
   };
 }
 
-function putGlobal(key: "document" | "SharedWorker" | "navigator", value: unknown): void {
+function putGlobal(key: keyof Snap, value: unknown): void {
   Object.defineProperty(globalThis, key, {
     value,
     configurable: true,
@@ -32,7 +34,7 @@ function putGlobal(key: "document" | "SharedWorker" | "navigator", value: unknow
 }
 
 function restore(prev: Snap): void {
-  for (const key of ["document", "SharedWorker", "navigator"] as const) {
+  for (const key of ["document", "SharedWorker", "Worker", "navigator"] as const) {
     const value = prev[key];
     if (value === undefined) {
       Reflect.deleteProperty(globalThis, key);
@@ -48,17 +50,10 @@ function installDocument(): void {
 
 function installCaps(getDirectory: () => Promise<never>): void {
   putGlobal("SharedWorker", class SharedWorker {});
+  putGlobal("Worker", class Worker {});
   putGlobal("navigator", {
     storage: { getDirectory },
-  });
-}
-
-async function deleteIdb(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
+    locks: saved.navigator.locks,
   });
 }
 
@@ -72,10 +67,9 @@ async function roundTrip(): Promise<void> {
 
 const saved = snap();
 
-afterEach(async () => {
+afterEach(() => {
   restore(saved);
   __resetMemoryFsForTests(NAME);
-  await deleteIdb();
 });
 
 describe("openDb storage policy", () => {

@@ -1,15 +1,15 @@
-export type ChangeKind = "append" | "ingest";
+/**
+ * `local`: a write of this page was acked, and reads here see it.
+ * `ingest`: this page installed a new manifest, and reads see every write
+ * it holds, from any page. Other pages' writes arrive only this way.
+ */
+export type ChangeEvent = { readonly kind: "local" } | { readonly kind: "ingest"; readonly generation: number };
 
-export type ChangeEvent = {
-  readonly kind: ChangeKind;
-  readonly writerId: string;
-  /** WAL seq of the append, when kind === "append". */
-  readonly seq?: number;
-};
+export type ChangeKind = ChangeEvent["kind"];
 
 export type ChangeListener = (event: ChangeEvent) => void;
 
-/** Fan-out for local + cross-tab change notifications. */
+/** Fans one page's change events out to its listeners. */
 export class ChangeBus {
   private readonly listeners = new Set<ChangeListener>();
 

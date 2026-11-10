@@ -1,57 +1,29 @@
 import { successor } from "./bytes.js";
-import {
-  checkBatch,
-  checkDbName,
-  checkKey,
-  newWriterId,
-  type CheckedKey,
-  type CheckedOp,
-  type DbName,
-  type WriterId,
-} from "./check.js";
-import {
-  ClosedError,
-  CommitError,
-  ConstraintError,
-  CorruptDatabaseError,
-  StorageUnavailableError,
-} from "./errors.js";
-import {
-  EngineHost,
-  createLocalIngestClient,
-  createPortIngestClient,
-  type WatchScan,
-} from "./host/engine-host.js";
-import { layersChannel, type IngestClient } from "./host/protocol.js";
+import { checkBatch, checkDbName, checkKey, opsBytes, type CheckedKey, type CheckedOp, type DbName } from "./check.js";
+import { ChangeBus, type ChangeEvent, type ChangeListener } from "./changes.js";
+import { ClosedError, CommitError, ConstraintError, CorruptDatabaseError, StorageUnavailableError } from "./errors.js";
+import { Host } from "./host/host.js";
+import { HostLink, type LinkPort } from "./host/link.js";
+import { layersChannel, parseGenerationNote, type HostStats } from "./host/protocol.js";
+import type { LogId, QueueCursor } from "./host/queues.js";
 import { holdingFiles } from "./locks.js";
-import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
-import { reconcile } from "./recover.js";
-import { Memtable, type MemRow } from "./store/memtable.js";
-import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
-import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
+import { LogClient, type SpawnLogWorker } from "./log/client.js";
+import { localLogWorkers } from "./log/local-log-worker.js";
+import { OwnQueue } from "./log/overlay.js";
+import type { SegmentStore } from "./log/queue-writer.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
-import { CountingFs } from "./opfs/counting-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
+import { CountingFs } from "./opfs/counting-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
-import {
-  loadGeneration,
-  type RunMeta,
-} from "./store/generation.js";
-import { pointGetSst, runLevels, type RunLevel } from "./store/merge.js";
+import { newestIntact } from "./recover.js";
+import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { ensureEngine } from "./store/engine.js";
+import { loadGeneration, type GenerationMeta, type RunMeta } from "./store/generation.js";
+import type { MemRow } from "./store/memtable.js";
+import { pointGetSst, runLevels, type RunLevel } from "./store/merge.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
-import {
-  ViewSnapshotImpl,
-  boundsOf,
-  scanLayers,
-  type ViewSnapshot,
-} from "./view.js";
-import {
-  ChangeBus,
-  type ChangeEvent,
-  type ChangeListener,
-} from "./changes.js";
+import { ViewSnapshotImpl, boundsOf, scanLayers, type ViewSnapshot } from "./view.js";
 
 export type { ViewSnapshot } from "./view.js";
 export type { ChangeEvent, ChangeListener, ChangeKind } from "./changes.js";
@@ -62,14 +34,29 @@ export type OpenOptions = {
   /**
    * Bytes of run files this tab keeps in memory: cached data pages plus
    * each run's Bloom filter and block index. Default 256 MiB, at least
-   * 1 MiB. It does not cover the memtable, the wasm heap, or values handed
-   * to the caller. Each `openDb` has its own budget.
+   * 1 MiB. It does not cover this page's writes the host has not ingested
+   * yet (`pendingBytes`), the wasm heap, or values handed to the caller.
+   * Each `openDb` has its own budget.
    */
   readonly memoryBudget?: number;
+  /**
+   * Key and value bytes of this page's writes that the host has not
+   * ingested yet, at most. They stay in memory so reads see them. Past it
+   * a write waits for an ingest, and rejects with `CommitError` after 30 s.
+   * Default 32 MiB, at least 1 MiB. A write larger than the cap goes once
+   * nothing else is pending.
+   */
+  readonly pendingBytes?: number;
 };
 
 /** Below this, one page per merge source may not fit. */
 const MIN_MEMORY_BUDGET = 1024 * 1024;
+const DEFAULT_PENDING_BYTES = 32 * 1024 * 1024;
+const MIN_PENDING_BYTES = 1024 * 1024;
+/** How long a write waits for room under `pendingBytes`. */
+const ROOM_WAIT_MS = 30_000;
+/** A segment file of a log: about one ingest round's worth of writes, so reclaim frees space often. */
+const DEFAULT_SEGMENT_BYTES = 4 * 1024 * 1024;
 
 /**
  * Harness / test open options (`openHarnessDb` in `@opfs-lsm/kv/testing`).
@@ -77,23 +64,19 @@ const MIN_MEMORY_BUDGET = 1024 * 1024;
  */
 export type HarnessOpenOptions = OpenOptions & {
   /**
-   * SST/generation filesystem used for reads on this tab.
-   * Must match what the ingest host publishes to.
-   * Omit in the browser to use OPFS. Omit in Node to use MemoryFs.
+   * Runs and manifests this page reads: the files its host publishes. Omit
+   * in the browser for OPFS, and in Node for one MemoryFs per name.
    */
   readonly fs?: AsyncFs;
-  /**
-   * Ingest client. Omit in the browser for the package SharedWorker.
-   * Omit in Node/tests for an in-process EngineHost.
-   */
-  readonly ingest?: IngestClient;
-  /** Stable writer id (tests / debugging). Default: random UUID. */
-  readonly writerId?: string;
-  /** When the ingest host flushes the WAL to an OPFS run. */
-  readonly ingestPolicy?: Partial<IngestPolicy>;
-  /**
-   * Force the Node/test path (MemoryFs + local host) even in a browser.
-   */
+  /** Where this page's logs go when their writers run on this thread. Default: `fs.segments`. */
+  readonly segments?: SegmentStore;
+  /** The host this page talks to over a MessageChannel. Default: one per `fs` on this thread. */
+  readonly host?: Host;
+  /** Starts the writer of each log. Default: a dedicated WebWorker in the browser, this thread otherwise. */
+  readonly spawn?: SpawnLogWorker;
+  /** Size of one log segment file. Default 4 MiB. */
+  readonly segmentBytes?: number;
+  /** Force the Node/test path (MemoryFs, a host and log writers on this thread) even in a browser. */
   readonly forceMemory?: boolean;
   /**
    * Use MemoryFs when this page has no SharedWorker or OPFS.
@@ -101,10 +84,7 @@ export type HarnessOpenOptions = OpenOptions & {
    * and ignored in Node, which already defaults to MemoryFs.
    */
   readonly allowEphemeral?: boolean;
-  /**
-   * When set, open records phase durations here. The host scan and wasm
-   * init can append after the open promise resolves.
-   */
+  /** When set, open records phase durations here. Wasm init can append after the open promise resolves. */
   readonly trace?: OpenTrace;
 };
 
@@ -121,18 +101,9 @@ export type OpenTrace = {
   spans: OpenSpan[];
 };
 
-function span(
-  trace: OpenTrace | undefined,
-  phase: string,
-  ms: number,
-  extra?: { rows?: number; bytes?: number },
-): void {
+function span(trace: OpenTrace | undefined, phase: string, ms: number, extra?: { rows?: number; bytes?: number }): void {
   if (!trace) return;
   trace.spans.push({ phase, ms, endedAt: performance.now(), ...extra });
-}
-
-function recordWatchScan(trace: OpenTrace, scan: WatchScan): void {
-  span(trace, "host-scan", scan.ms, { rows: scan.rows, bytes: scan.bytes });
 }
 
 export type Range = {
@@ -163,61 +134,63 @@ export interface BatchTx {
   delete(key: Uint8Array): void;
 }
 
+/**
+ * A database as one page sees it. Reads see the installed manifest, which
+ * holds a prefix of the ingest order, with this page's acked writes it does
+ * not hold yet on top. The installed manifest only moves forward. Other
+ * pages' writes show up when the host ingests them, about a second after
+ * their ack, or after `sync()`.
+ *
+ * Writes reject with `CommitError` when they never apply, and with
+ * `IndeterminateWriteError` when they were sent and may still apply after a
+ * failure, but never after a later write of this page.
+ */
 export interface Db {
-  readonly writerId: WriterId;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   put(key: Uint8Array, value: Uint8Array): Promise<void>;
   delete(key: Uint8Array): Promise<void>;
   /**
-   * `build` runs synchronously. Promise resolves after the shared IDB WAL
-   * commit. Other tabs see the write when its BroadcastChannel message
-   * arrives, a moment after the ack, or after their next `sync()`. The ingest host
-   * flushes the WAL to OPFS per ingestPolicy.
+   * `build` runs synchronously. The batch is one record of this page's log:
+   * it applies whole or not at all. The promise resolves once the record is
+   * written, and reads on this page see it from then on.
    */
   batch(build: (tx: BatchTx) => void): Promise<void>;
   /**
-   * Read `keys` and write, in one IndexedDB transaction. `body` runs
-   * synchronously with the current values, in the order of `keys`. No other
-   * write can land between the reads and the commit, so there is no conflict.
+   * Read `keys`, then write what `body` puts. `body` runs synchronously with
+   * the values this page reads after its earlier writes are acked. The
+   * write is last-writer-wins: another page's write to the same keys that
+   * is ingested after this one replaces it, even if it read older values.
+   * Updates on one page run one after another, so they never lose each
+   * other's writes.
    */
-  update<T>(
-    keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
-  ): Promise<T>;
+  update<T>(keys: readonly Uint8Array[], body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T): Promise<T>;
   /**
    * Scan `range`, then point-read `follow(entry)` for each entry that returns a
-   * key. The scan and the reads use one pinned memtable and one held
-   * generation, so they see the same state although a page load can make them
-   * wait. Writes that land meanwhile are not seen.
+   * key. The scan and the reads see one state, although a page load can make
+   * them wait. Writes that land meanwhile are not seen.
    */
   rangeFollow(
     range: Range,
     follow: (entry: Entry) => Uint8Array | undefined,
   ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]>;
   range(range?: Range): AsyncIterable<Entry>;
-  /**
-   * Read-only snapshot: pinned WAL head + OPFS generation at open.
-   * Writes that commit during the callback are invisible to `snap`.
-   */
+  /** Read-only snapshot: the installed manifest and this page's writes as they were when the view opened. */
   view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T>;
-  /**
-   * Subscribe to durable WAL appends and ingest generation bumps.
-   * Fires for this tab's writes and for other tabs (via BroadcastChannel).
-   * Returns an unsubscribe function.
-   */
+  /** Subscribe to this page's acked writes and to installs of new manifests. Returns an unsubscribe function. */
   changes(listener: ChangeListener): () => void;
   /**
-   * Catch up to every write acked before the call, from any tab. Other tabs'
-   * writes otherwise arrive over BroadcastChannel, a moment after their ack.
+   * Install a manifest that holds this page's writes acked before the call,
+   * and every other page's writes flushed before it. The host asks the other
+   * pages to flush and waits for them at most 500 ms.
    */
   sync(): Promise<void>;
-  /** Flush the memtable now and wait for the compaction it starts. */
+  /** `sync()`, then compaction until a pass installs nothing. */
   ingest(): Promise<{ generation: number }>;
   close(): Promise<void>;
 }
 
 const defaultFsByName = new Map<string, MemoryFs>();
-const defaultHosts = new Map<string, EngineHost>();
+const defaultHosts = new WeakMap<AsyncFs, Host>();
 
 function defaultMemoryFs(name: DbName): MemoryFs {
   let fs = defaultFsByName.get(name);
@@ -228,18 +201,25 @@ function defaultMemoryFs(name: DbName): MemoryFs {
   return fs;
 }
 
-function localIngest(name: DbName, fs: AsyncFs): IngestClient {
-  let host = defaultHosts.get(name);
+function defaultHost(fs: AsyncFs): Host {
+  let host = defaultHosts.get(fs);
   if (!host) {
-    host = new EngineHost(() => fs);
-    defaultHosts.set(name, host);
+    host = new Host(() => fs);
+    defaultHosts.set(fs, host);
   }
-  return createLocalIngestClient(host);
+  return host;
+}
+
+function segmentsOf(fs: AsyncFs): SegmentStore {
+  const segments = (fs as { segments?: SegmentStore }).segments;
+  if (!segments) throw new ConstraintError("fs has no segment store: pass `segments`");
+  return segments;
 }
 
 function canUseBrowserOpfs(): boolean {
   return (
     typeof SharedWorker !== "undefined" &&
+    typeof Worker !== "undefined" &&
     typeof navigator !== "undefined" &&
     !!navigator.storage &&
     typeof navigator.storage.getDirectory === "function"
@@ -248,7 +228,6 @@ function canUseBrowserOpfs(): boolean {
 
 export function __resetMemoryFsForTests(name: string): void {
   defaultFsByName.delete(name);
-  defaultHosts.delete(name);
 }
 
 export function prefixBound(prefix: Uint8Array): {
@@ -263,9 +242,10 @@ export function prefixBound(prefix: Uint8Array): {
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
 export type DbInternals = {
   readonly name: DbName;
-  readonly wal: IdBWal;
   readonly fs: CountingFs;
-  readonly ingest: IngestClient;
+  readonly hostStats: () => Promise<HostStats>;
+  /** Records this page appended, and their key and value bytes. */
+  readonly appended: () => { readonly records: number; readonly bytes: number };
 };
 
 const internals = new WeakMap<Db, DbInternals>();
@@ -293,84 +273,57 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
       () => span(trace, "wasm-error", performance.now() - wasmAt),
     );
   }
-  const policy: IngestPolicy = {
-    ...DEFAULT_INGEST_POLICY,
-    ...options.ingestPolicy,
-  };
 
-  let fs = options.fs;
-  let ingest = options.ingest;
-  let ownsIngestClient = false;
-
-  const callerChoseStorage =
-    options.forceMemory === true || fs !== undefined || ingest !== undefined;
+  const callerChose = options.forceMemory === true || options.fs !== undefined || options.host !== undefined;
   const browserOpfs = canUseBrowserOpfs();
-  const useBrowser = !callerChoseStorage && browserOpfs;
-
-  if (
-    typeof document !== "undefined" &&
-    !callerChoseStorage &&
-    !browserOpfs &&
-    options.allowEphemeral !== true
-  ) {
-    throw new StorageUnavailableError(
-      "browser openDb needs SharedWorker and navigator.storage.getDirectory",
-    );
+  if (typeof document !== "undefined" && !callerChose && !browserOpfs && options.allowEphemeral !== true) {
+    throw new StorageUnavailableError("browser openDb needs SharedWorker, Worker and navigator.storage.getDirectory");
   }
 
-  if (useBrowser) {
+  let fs: AsyncFs;
+  let port: LinkPort;
+  let spawn = options.spawn;
+  let unserve: (() => void) | undefined;
+  if (!callerChose && browserOpfs) {
     const opfsAt = trace ? performance.now() : 0;
     fs = await openBrowserFs(name);
     span(trace, "opfs", performance.now() - opfsAt);
     const workerAt = trace ? performance.now() : 0;
     // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
-    // only emit a worker chunk for this exact shape. Built in a helper, Vite
-    // treated it as a plain asset and inlined the unbundled entry as a
-    // data: URL whose relative imports could not resolve.
-    const worker = new SharedWorker(
-      new URL("./host/shared-worker.js", import.meta.url),
-      { type: "module", name: `opfs-lsm:${name}` },
-    );
+    // only emit a chunk for the SharedWorker for this exact shape. Built in
+    // a helper, Vite treated it as a plain asset and inlined the unbundled
+    // entry as a data: URL whose relative imports could not resolve.
+    const worker = new SharedWorker(new URL("./host/shared-worker.js", import.meta.url), {
+      type: "module",
+      name: `opfs-lsm:${name}`,
+    });
     span(trace, "worker-ctor", performance.now() - workerAt);
-    ingest = createPortIngestClient(
-      worker.port,
-      trace ? (scan) => recordWatchScan(trace, scan) : undefined,
-    );
-    ownsIngestClient = true;
+    port = worker.port;
   } else {
-    if (!fs) fs = defaultMemoryFs(name);
-    if (!ingest) ingest = localIngest(name, fs);
+    fs = options.fs ?? defaultMemoryFs(name);
+    spawn ??= localLogWorkers(options.segments ?? segmentsOf(fs));
+    const channel = new MessageChannel();
+    unserve = (options.host ?? defaultHost(fs)).serve(channel.port2);
+    port = channel.port1;
   }
-  // Wrapped after the local host got the bare fs, so its IO counts only on the host.
-  const tabFs = new CountingFs(fs);
-
-  const idbAt = trace ? performance.now() : 0;
-  const wal = await IdBWal.open(name);
-  span(trace, "idb-open", performance.now() - idbAt);
-  const generationAt = trace ? performance.now() : 0;
-  // Pair the WAL with a manifest before the first read or write. The
-  // recorded manifest's runs are checked by the first sync, which loads them.
-  await reconcile(wal, tabFs, TRUST_RECORDED);
-  span(trace, "generation", performance.now() - generationAt);
-  const writerId = (options.writerId ?? newWriterId()) as WriterId;
-  const cache = new PageCache(
-    Math.max(MIN_MEMORY_BUDGET, options.memoryBudget ?? DEFAULT_BUDGET),
-  );
-  const db = new DbImpl(
+  const cache = new PageCache(Math.max(MIN_MEMORY_BUDGET, options.memoryBudget ?? DEFAULT_BUDGET));
+  const db = new DbImpl({
     name,
-    writerId,
-    wal,
-    tabFs,
+    fs: new CountingFs(fs),
     cache,
-    ingest,
-    ownsIngestClient,
+    port,
+    unserve,
+    spawn,
+    segmentBytes: options.segmentBytes ?? DEFAULT_SEGMENT_BYTES,
+    pendingBytes: Math.max(MIN_PENDING_BYTES, options.pendingBytes ?? DEFAULT_PENDING_BYTES),
     trace,
-  );
-  internals.set(db, { name, wal, fs: tabFs, ingest });
-  const syncAt = trace ? performance.now() : 0;
-  await db.sync();
-  span(trace, "sync", performance.now() - syncAt);
-  ingest.watch(name, policy);
+  });
+  try {
+    await db.open();
+  } catch (err) {
+    await db.close().catch(() => undefined);
+    throw err;
+  }
   span(trace, "open", performance.now() - openAt);
   return db;
 }
@@ -379,11 +332,8 @@ function valueOf(row: MemRow): Uint8Array | undefined {
   return row.kind === "put" ? new Uint8Array(row.value!) : undefined;
 }
 
-function collectBatch(
-  build: (tx: BatchTx) => unknown,
-): readonly CheckedOp[] {
-  const ops: { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[] =
-    [];
+function collectBatch(build: (tx: BatchTx) => unknown): readonly CheckedOp[] {
+  const ops: { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[] = [];
   const ret = build({
     put: (key, value) => {
       ops.push({ type: "put", key, value });
@@ -392,15 +342,13 @@ function collectBatch(
       ops.push({ type: "del", key });
     },
   });
-  if (
-    ret !== undefined &&
-    ret !== null &&
-    typeof (ret as { then?: unknown }).then === "function"
-  ) {
+  if (ret !== undefined && ret !== null && typeof (ret as { then?: unknown }).then === "function") {
     throw new ConstraintError("callback must not return a thenable");
   }
   return checkBatch(ops);
 }
+
+const noop = (): void => undefined;
 
 /** An open run file and the number of `Layers` that list it. */
 type Run = {
@@ -411,8 +359,8 @@ type Run = {
 };
 
 /**
- * One generation's runs. `refs` counts its holders: the `installed` and
- * `loaded` slots, each open view, and each live `range()` iterator. The
+ * One manifest's runs and cursors. `refs` counts its holders: the
+ * `installed` slot, each open view, and each live `range()` iterator. The
  * last release lets go of its runs, so the host may delete their files.
  */
 type Layers = {
@@ -420,109 +368,186 @@ type Layers = {
   readonly runs: readonly Run[];
   /** The readers as scan sources, newest first. */
   readonly levels: readonly RunLevel[];
-  readonly tombstoneSeq: number;
+  readonly queues: readonly QueueCursor[];
   refs: number;
+};
+
+/** A write waiting for room under `pendingBytes`, in call order. */
+type RoomWaiter = {
+  readonly bytes: number;
+  readonly go: () => void;
+  readonly fail: (err: Error) => void;
+  readonly cancel: () => void;
 };
 
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
 
-type BusMessage = {
-  readonly kind: "append" | "ingest";
-  readonly writerId: string;
-  readonly seq?: number;
-  readonly ops?: readonly CheckedOp[];
+type DbParts = {
+  readonly name: DbName;
+  readonly fs: CountingFs;
+  readonly cache: PageCache;
+  readonly port: LinkPort;
+  /** Disconnects a host on this thread from the port. */
+  readonly unserve: (() => void) | undefined;
+  readonly spawn: SpawnLogWorker | undefined;
+  readonly segmentBytes: number;
+  readonly pendingBytes: number;
+  readonly trace: OpenTrace | undefined;
 };
 
-/** Tries under the reclaim lock: each failure means files really are gone. */
-const GENERATION_RETRIES = 8;
-const TRUST_RECORDED = (): boolean => true;
-const CHECK_RECORDED = (): boolean => false;
-const GENERATION_GONE =
-  "SST files for the recorded generation stayed missing after retries";
-
 /**
- * Reads come from this tab's memtable over the installed SST generation and
- * touch no IndexedDB. The memtable is always an exact WAL prefix, and the
- * installed generation never holds seqs past it, so every read sees the
- * state after one WAL prefix. Other tabs' writes arrive over BroadcastChannel.
+ * One page's database. The read state is `installed`, one manifest's runs
+ * and cursors, and `own`, this page's acked records those cursors do not
+ * cover. Both change together in `install`, one synchronous step, so every
+ * read sees the manifest's prefix of the ingest order with this page's
+ * later records on top. A write goes to this page's log through
+ * `LogClient`, and joins `own` in the task its ack arrives in, before its
+ * promise resolves.
  */
 class DbImpl implements Db {
+  readonly name: DbName;
+  private readonly fs: CountingFs;
+  private readonly cache: PageCache;
+  private readonly trace: OpenTrace | undefined;
+  private readonly unserve: (() => void) | undefined;
+  private readonly pendingBytes: number;
   private closed = false;
-  private readonly mem = new Memtable();
-  private installed: Layers = {
-    generation: 0,
-    runs: [],
-    levels: [],
-    tombstoneSeq: 0,
-    refs: 1,
-  };
-  /** The newest generation loaded and not yet installed. */
-  private loaded: Layers | undefined;
+  private readonly own = new OwnQueue();
+  private installed: Layers = { generation: 0, runs: [], levels: [], queues: [], refs: 1 };
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
-  private syncing: Promise<void> | undefined;
-  private syncAgain = false;
   private readonly changeBus = new ChangeBus();
+  private readonly link: HostLink;
+  private readonly client: LogClient;
   private readonly bus: BroadcastChannel | undefined;
-  private readonly onBusMessage: ((ev: MessageEvent) => void) | undefined;
+  /** Generation loads run one at a time, each for the newest generation asked for. */
+  private loading: Promise<void> = Promise.resolve();
+  private wanted = 0;
+  /** Key and value bytes of appends sent and not yet acked or failed. */
+  private sending = 0;
+  /** Settles once every append sent so far was acked or failed. */
+  private landedAll: Promise<void> = Promise.resolve();
+  private readonly roomWaiters: RoomWaiter[] = [];
+  private askingForRoom = false;
+  /** Updates run one after another, each after the earlier one sent its write. */
+  private updates: Promise<unknown> = Promise.resolve();
+  /** Live logs whose records past a damaged cursor are being sent again. */
+  private readonly restarting = new Set<LogId>();
+  private appendedRecords = 0;
+  private appendedBytes = 0;
+  private readonly onPageHide = (): void => {
+    // Every pagehide: for the back/forward cache the log must end, and on unload ending it frees its lock sooner.
+    void this.client.suspend();
+    this.link.detach();
+  };
+  private readonly onPageShow = (ev: Event): void => {
+    if (!(ev as PageTransitionEvent).persisted || this.closed) return;
+    this.client.resume();
+    this.link.attach(this.name).then(
+      (generation) => this.refresh(generation),
+      (err: unknown) => console.error("opfs-lsm: attach after the back/forward cache failed", err),
+    );
+  };
 
-  constructor(
-    readonly name: DbName,
-    readonly writerId: WriterId,
-    private readonly wal: IdBWal,
-    private readonly fs: AsyncFs,
-    private readonly cache: PageCache,
-    private readonly ingestClient: IngestClient,
-    private readonly ownsIngestClient: boolean,
-    private readonly trace?: OpenTrace,
-  ) {
+  constructor(parts: DbParts) {
+    this.name = parts.name;
+    this.fs = parts.fs;
+    this.cache = parts.cache;
+    this.trace = parts.trace;
+    this.unserve = parts.unserve;
+    this.pendingBytes = parts.pendingBytes;
+    this.link = new HostLink(parts.port, (rotate) => this.flushFor(rotate));
+    this.client = new LogClient({
+      db: parts.name,
+      segmentBytes: parts.segmentBytes,
+      ...(parts.spawn ? { spawn: parts.spawn } : {}),
+      durable: (log, n, bytes) => this.link.durable(log, n, bytes),
+    });
     if (typeof BroadcastChannel !== "undefined") {
-      this.bus = new BroadcastChannel(layersChannel(name));
-      this.onBusMessage = (ev: MessageEvent) => this.onMessage(ev.data);
-      this.bus.addEventListener("message", this.onBusMessage);
+      this.bus = new BroadcastChannel(layersChannel(parts.name));
+      this.bus.onmessage = (ev) => {
+        const note = parseGenerationNote(ev.data);
+        if (note && note.generation > this.installed.generation) {
+          // A failure here comes back from the next sync.
+          this.refresh(note.generation).catch(noop);
+        }
+      };
     }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("pagehide", this.onPageHide);
+      window.addEventListener("pageshow", this.onPageShow);
+    }
+    internals.set(this, {
+      name: this.name,
+      fs: this.fs,
+      hostStats: () => this.link.stats(),
+      appended: () => ({ records: this.appendedRecords, bytes: this.appendedBytes }),
+    });
   }
 
-  private onMessage(data: BusMessage | null): void {
-    if (this.closed || !data || data.writerId === this.writerId) return;
-    if (data.kind === "append" && data.seq !== undefined && data.ops) {
-      if (!this.mem.apply({ seq: data.seq, ops: data.ops })) {
-        void this.sync().catch(() => undefined);
-      }
-    } else {
-      void this.sync().catch(() => undefined);
-    }
-    this.changeBus.emit({
-      kind: data.kind,
-      writerId: data.writerId,
-      ...(data.seq !== undefined ? { seq: data.seq } : {}),
-    });
+  /** Joins the host, which ingests what every page flushed, and installs that manifest. */
+  async open(): Promise<void> {
+    const attachAt = this.trace ? performance.now() : 0;
+    const generation = await this.link.attach(this.name);
+    span(this.trace, "attach", performance.now() - attachAt);
+    await this.refresh(generation);
   }
 
   private ensureOpen(): void {
     if (this.closed) throw new ClosedError("database is closed");
   }
 
-  private broadcast(message: BusMessage): void {
-    if (this.closed) return;
-    this.bus?.postMessage(message);
-  }
-
-  private emitChange(event: ChangeEvent): void {
+  private emit(event: ChangeEvent): void {
     this.changeBus.emit(event);
   }
 
+  /** The host asked for a flush, and for a rotation when it could not read the live log. */
+  private async flushFor(rotate: readonly LogId[]): Promise<void> {
+    const live = this.client.live;
+    if (live && rotate.includes(live)) await this.client.rotate();
+    await this.client.flush();
+  }
+
+  /** Install `generation` or a newer one, unless one at least as new is installed. */
+  private refresh(generation: number): Promise<void> {
+    this.wanted = Math.max(this.wanted, generation);
+    const run = (): Promise<void> => this.catchUp();
+    const next = this.loading.then(run, run);
+    this.loading = next.catch(noop);
+    return next;
+  }
+
   /**
-   * Make `generation` the loaded one, opening its runs when needed.
-   * Generations only grow, so one at or below the installed one is stale
-   * and never loaded. False when its manifest or one of its runs is gone.
+   * Load the wanted generation without the reclaim lock, the usual path.
+   * When a manifest or run went missing mid-load, a newer generation almost
+   * always replaced it, and under churn that can repeat on every try. So
+   * the second try holds the reclaim lock shared, which keeps every file,
+   * and loads the newest intact manifest (design.md, "Loading a generation
+   * under churn").
    */
-  private async load(generation: number): Promise<boolean> {
-    if (generation <= this.installed.generation) return true;
-    if (this.loaded && this.loaded.generation >= generation) return true;
-    const meta = await loadGeneration(this.fs, generation);
-    if (!meta) return false;
+  private async catchUp(): Promise<void> {
+    const want = this.wanted;
+    if (this.closed || want <= this.installed.generation) return;
+    const loadAt = this.trace ? performance.now() : 0;
+    const meta = await loadGeneration(this.fs, want);
+    let layers = meta && (await this.load(meta));
+    if (!layers) {
+      layers = await holdingFiles(this.name, async () => {
+        const { base } = await newestIntact(this.fs);
+        if (base.generation <= this.installed.generation) return undefined;
+        const held = await this.load(base);
+        if (!held && !this.closed) throw new CorruptDatabaseError(`a run of generation ${base.generation} went missing under the reclaim lock`);
+        return held;
+      });
+    }
+    if (!layers) return;
+    span(this.trace, "load", performance.now() - loadAt, { rows: layers.runs.length });
+    this.install(layers);
+  }
+
+  /** Open `meta`'s runs. Undefined when one is gone or the page closed. */
+  private async load(meta: GenerationMeta): Promise<Layers | undefined> {
     const paths = meta.runs.map((r) => r.path);
     const runs: (Run | undefined)[] = [];
     let next = 0;
@@ -534,37 +559,76 @@ class DbImpl implements Db {
         if (!runs[i]) gone = true;
       }
     };
-    const settled = await Promise.allSettled(
-      Array.from({ length: Math.min(OPEN_CONCURRENCY, paths.length) }, openNext),
-    );
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(OPEN_CONCURRENCY, paths.length) }, openNext));
     const held = runs.filter((r) => r !== undefined);
     const failed = settled.find((r) => r.status === "rejected");
-    if (
-      failed ||
-      held.length < paths.length ||
-      this.closed ||
-      generation <= this.installed.generation ||
-      (this.loaded && this.loaded.generation >= generation)
-    ) {
+    if (failed || held.length < paths.length || this.closed) {
       this.dropRuns(held);
       if (failed) throw failed.reason;
-      return held.length === paths.length;
+      return undefined;
     }
-    if (this.loaded) this.release(this.loaded);
-    this.loaded = {
-      generation,
+    return {
+      generation: meta.generation,
       runs: held,
-      levels: runLevels(paths, held.map((r) => r.reader)),
-      tombstoneSeq: meta.tombstoneSeq,
+      levels: runLevels(
+        paths,
+        held.map((r) => r.reader),
+      ),
+      queues: meta.queues ?? [],
       refs: 1,
     };
-    return true;
+  }
+
+  /**
+   * Swap in `layers` and take its cursors in one synchronous step. A
+   * generation at or below the installed one is stale and only released.
+   */
+  private install(layers: Layers): void {
+    if (this.closed || layers.generation <= this.installed.generation) {
+      this.release(layers);
+      return;
+    }
+    this.release(this.installed);
+    this.installed = layers;
+    this.own.install(layers.queues);
+    this.resendDamaged(layers.queues);
+    this.admit();
+    this.emit({ kind: "ingest", generation: layers.generation });
+  }
+
+  /**
+   * A damaged cursor means no record of its log past `n` is ever ingested.
+   * The live log's records past it go to a new log ahead of the writes that
+   * wait, and stay readable here until their copies are acked. A log this
+   * page already left has a successor with later writes, so its tail cannot
+   * go after them: it is dropped, and those acked writes are lost.
+   */
+  private resendDamaged(queues: readonly QueueCursor[]): void {
+    for (const c of queues) {
+      if (c.state !== "damaged" || this.restarting.has(c.log)) continue;
+      const tail = this.own.above(c.log, c.n);
+      if (tail.length === 0) continue;
+      const copies = this.client.restart(c.log, tail.map((r) => r.ops));
+      if (!copies) {
+        console.error(`opfs-lsm: ${tail.length} acked writes of log ${c.log} past record ${c.n} are lost: ${c.reason}`);
+        this.own.retire(c.log);
+        continue;
+      }
+      this.restarting.add(c.log);
+      const landed = copies.map((acked, i) => acked.then((at) => this.own.add(at.log, at.n, tail[i]!.ops)));
+      void Promise.allSettled(landed).then((results) => {
+        const lost = results.filter((r) => r.status === "rejected").length;
+        if (lost > 0) console.error(`opfs-lsm: ${lost} acked writes of damaged log ${c.log} did not reach its successor`);
+        this.own.retire(c.log);
+        this.restarting.delete(c.log);
+      });
+    }
   }
 
   /**
    * The open run at `path`, counted for one more `Layers`. Undefined when
-   * the file is gone, which the generation retries handle. Reads no run
-   * bytes: the reader loads its layout and pages on first use.
+   * the file is gone. Reads no run bytes: the reader loads its layout and
+   * pages on first use.
    */
   private async openRun({ path, range }: RunMeta): Promise<Run | undefined> {
     let run = this.runs.get(path);
@@ -600,199 +664,94 @@ class DbImpl implements Db {
     }
   }
 
-  /**
-   * Apply `tail` to the memtable. Synchronous, so it can run inside an
-   * IndexedDB transaction. Returns the generation to load when the tail
-   * needs one this tab does not have yet.
-   */
-  private catchUp(tail: WalTail): number | undefined {
-    const behind = tail.ingestedThrough > this.mem.appliedThrough;
-    // A tail read before a newer generation was installed: its records are
-    // still a WAL prefix, but its generation and ingestedThrough are stale.
-    if (tail.generation > this.installed.generation) {
-      const layers =
-        this.loaded?.generation === tail.generation ? this.loaded : undefined;
-      if (layers) {
-        this.release(this.installed);
-        this.installed = layers;
-        this.loaded = undefined;
-      } else if (behind) {
-        return tail.generation;
-      }
-    }
-    if (this.loaded && this.loaded.generation <= this.installed.generation) {
-      this.release(this.loaded);
-      this.loaded = undefined;
-    }
-    if (this.installed.generation === tail.generation) {
-      this.mem.advanceTo(tail.ingestedThrough);
-    }
-    for (const record of tail.records) {
-      if (!this.mem.apply(record)) {
-        throw new CommitError(`wal gap before seq ${record.seq}`);
-      }
-    }
-    return undefined;
-  }
-
-  /**
-   * Catch up to everything acked before the call, and install the current
-   * generation. Reads after it resolves see other tabs' acked writes.
-   */
   async sync(): Promise<void> {
     this.ensureOpen();
-    if (this.syncing) {
-      this.syncAgain = true;
-      return this.syncing;
-    }
-    this.syncing = (async () => {
-      try {
-        do {
-          this.syncAgain = false;
-          await this.syncOnce();
-        } while (this.syncAgain);
-      } finally {
-        this.syncing = undefined;
-      }
-    })();
-    return this.syncing;
+    await this.client.flush();
+    await this.refresh(await this.link.sync());
   }
 
-  /**
-   * Catch up once without the reclaim lock, the usual path. A run or
-   * manifest that went missing mid-load was almost always reclaimed after
-   * a newer generation replaced it, and under churn that can repeat on
-   * every try. So the retries hold the reclaim lock shared: the host
-   * removes no file until they return, and the generation a retry reads
-   * keeps every file (design.md, "Loading a generation under churn").
-   */
-  private async syncOnce(): Promise<void> {
-    if ((await this.catchUpOnce()) === "done") return;
-    await holdingFiles(this.name, async () => {
-      for (let gone = 0; ; ) {
-        const step = await this.catchUpOnce();
-        if (step === "done") return;
-        if (step === "gone") gone = await this.repairGone(gone);
-      }
+  async ingest(): Promise<{ generation: number }> {
+    this.ensureOpen();
+    await this.client.flush();
+    const generation = await this.link.settle();
+    await this.refresh(generation);
+    return { generation };
+  }
+
+  /** Room for `bytes` more under `pendingBytes`. A write alone goes whatever its size. */
+  private fits(bytes: number): boolean {
+    const held = this.own.bytes + this.sending;
+    return held === 0 || held + bytes <= this.pendingBytes;
+  }
+
+  /** Runs `go` now if nothing waits and `bytes` fit, else once they do, in call order. */
+  private whenRoom<T>(bytes: number, go: () => Promise<T>): Promise<T> {
+    if (this.roomWaiters.length === 0 && this.fits(bytes)) return go();
+    return new Promise<T>((resolve, reject) => {
+      const waiter: RoomWaiter = {
+        bytes,
+        go: () => go().then(resolve, reject),
+        fail: reject,
+        cancel: after(ROOM_WAIT_MS, () => {
+          this.roomWaiters.splice(this.roomWaiters.indexOf(waiter), 1);
+          reject(new CommitError(`${this.own.bytes} bytes of this page's writes were not ingested in ${ROOM_WAIT_MS} ms`));
+          this.admit();
+        }),
+      };
+      this.roomWaiters.push(waiter);
+      this.askForRoom();
     });
   }
 
-  /**
-   * Read the tail and catch up to it. "behind" when another load installed
-   * a newer generation meanwhile, "gone" when the tail's generation lacks
-   * a file.
-   */
-  private async catchUpOnce(): Promise<"done" | "behind" | "gone"> {
-    const profile: WalReadProfile | undefined = this.trace
-      ? { ms: 0, rows: 0 }
-      : undefined;
-    const tail = await this.wal.tail(this.mem.appliedThrough, profile);
-    if (profile) {
-      span(this.trace, "wal-read", profile.ms, { rows: profile.rows });
+  private admit(): void {
+    while (this.roomWaiters.length > 0 && this.fits(this.roomWaiters[0]!.bytes)) {
+      const waiter = this.roomWaiters.shift()!;
+      waiter.cancel();
+      waiter.go();
     }
-    if (this.closed) return "done";
-    const sstAt = this.trace ? performance.now() : 0;
-    let whole = true;
-    if (tail.generation !== this.installed.generation) {
-      whole = await this.load(tail.generation);
-      if (this.closed) return "done";
-    }
-    if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
-    const memAt = this.trace ? performance.now() : 0;
-    const missing = this.catchUp(tail);
-    if (this.trace) {
-      span(
-        this.trace,
-        "memtable",
-        performance.now() - memAt,
-        profile ? { rows: profile.rows } : undefined,
-      );
-    }
-    if (missing === undefined) return "done";
-    return whole ? "behind" : "gone";
+    this.askForRoom();
   }
 
   /**
-   * A load under the reclaim lock found a file of the recorded generation
-   * gone. Nothing the host does removes one while the lock is held, so the
-   * files really are gone: repair, and give up after `GENERATION_RETRIES`.
-   * Returns the new count. Call holding the lock.
+   * What frees room is an ingest of this page's writes, which the host would
+   * otherwise start only past its batch size or after its latency timer.
    */
-  private async repairGone(gone: number): Promise<number> {
-    if (gone + 1 >= GENERATION_RETRIES) throw new CorruptDatabaseError(GENERATION_GONE);
-    await this.repair();
-    return gone + 1;
+  private askForRoom(): void {
+    if (this.askingForRoom || this.roomWaiters.length === 0 || this.closed) return;
+    this.askingForRoom = true;
+    // A failed sync is not retried here: the waiting writes reject after ROOM_WAIT_MS.
+    this.sync().then(
+      () => {
+        this.askingForRoom = false;
+        this.admit();
+      },
+      () => {
+        this.askingForRoom = false;
+      },
+    );
   }
 
-  /**
-   * The recorded generation did not load. Usually a newer one replaced it
-   * and the next tail names that one. After a power loss its manifest or
-   * runs can be gone for good: `reconcile` then records one that pairs
-   * with the WAL (design.md, "Recovery"). It changes nothing while
-   * IndexedDB names a generation other than the one found broken.
-   */
-  private async repair(): Promise<void> {
-    await reconcile(this.wal, this.fs, CHECK_RECORDED);
-  }
-
-  /**
-   * Join this tab's committed record to the memtable before the ack
-   * resolves. A gap means another tab appended first: catch up, which
-   * reads the record too.
-   */
-  private async landed(seq: number, ops: readonly CheckedOp[]): Promise<void> {
-    if (!this.mem.apply({ seq, ops }) && !this.closed) await this.sync();
-    this.emitChange({ kind: "append", writerId: this.writerId, seq });
-    this.broadcast({ kind: "append", writerId: this.writerId, seq, ops });
-  }
-
-  /**
-   * In one readwrite transaction, catch the memtable up, let `plan` choose a
-   * batch against it, and append. The batch joins the memtable at its seq,
-   * so this tab reads its own write as soon as the ack resolves. Awaiting
-   * inside the transaction would commit it, so `warm` loads what `plan`
-   * reads before each attempt, and a `plan` that still misses appends
-   * nothing and is retried. A tail that names a generation this tab lacks
-   * appends nothing either: the tab loads it, and from then on each try
-   * holds the reclaim lock, as in `syncOnce`.
-   */
-  private async write<R>(
-    plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
-    warm?: () => Promise<unknown>,
-  ): Promise<R> {
-    let locked = false;
-    let gone = 0;
-    for (;;) {
-      await warm?.();
-      const step = async () => {
-        let missing: number | undefined;
-        let miss: Miss | undefined;
-        const out = await this.wal.appendAfter(this.mem.appliedThrough, (tail) => {
-          missing = this.catchUp(tail);
-          if (missing !== undefined) return undefined;
-          const planned = plan();
-          if (!(planned instanceof Miss)) return planned;
-          miss = planned;
-          return undefined;
-        });
-        if (out || miss) return { out, miss };
-        const whole = missing === undefined || (await this.load(missing));
-        if (whole || !locked) return {};
-        gone = await this.repairGone(gone);
-        return {};
-      };
-      const { out, miss } = locked ? await holdingFiles(this.name, step) : await step();
-      if (out) {
-        if (out.seq !== undefined) await this.landed(out.seq, out.ops);
-        return out.result;
-      }
-      if (miss) {
-        // The next warm reads again and surfaces a real failure.
-        await miss.ready.catch(() => undefined);
-        continue;
-      }
-      locked = true;
-    }
+  /** Appends `ops` as one record. Resolves once it is acked and in `own`. */
+  private send(ops: readonly CheckedOp[]): Promise<void> {
+    this.ensureOpen();
+    const bytes = opsBytes(ops);
+    this.sending += bytes;
+    this.appendedRecords += 1;
+    this.appendedBytes += bytes;
+    const landed = this.client.append(ops).then(
+      (at) => {
+        this.sending -= bytes;
+        this.own.add(at.log, at.n, ops);
+        this.emit({ kind: "local" });
+      },
+      (err: unknown) => {
+        this.sending -= bytes;
+        this.admit();
+        throw err;
+      },
+    );
+    this.landedAll = landed.catch(noop);
+    return landed;
   }
 
   /**
@@ -800,9 +759,7 @@ class DbImpl implements Db {
    * it waits it holds those levels, so a generation installed meanwhile
    * cannot let the host delete the files it is reading.
    */
-  private async settleInstalled<T>(
-    attempt: (levels: readonly RunLevel[]) => Maybe<T>,
-  ): Promise<T> {
+  private async settleInstalled<T>(attempt: (levels: readonly RunLevel[]) => Maybe<T>): Promise<T> {
     const layers = this.installed;
     const first = attempt(layers.levels);
     if (!(first instanceof Miss)) return first;
@@ -816,14 +773,11 @@ class DbImpl implements Db {
   }
 
   /** Every key read, or one Miss for all the bytes they lack. */
-  private readKeys(
-    ks: readonly CheckedKey[],
-    levels: readonly RunLevel[],
-  ): Maybe<(Uint8Array | undefined)[]> {
+  private readKeys(ks: readonly CheckedKey[], levels: readonly RunLevel[]): Maybe<(Uint8Array | undefined)[]> {
     const values: (Uint8Array | undefined)[] = [];
     let misses: Miss[] | undefined;
     for (const k of ks) {
-      const row = this.mem.get(k);
+      const row = this.own.get(k);
       const v = row ? valueOf(row) : pointGetSst(levels, k);
       if (v instanceof Miss) (misses ??= []).push(v);
       else values.push(v);
@@ -834,7 +788,7 @@ class DbImpl implements Db {
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
     const k = checkKey(key);
-    const row = this.mem.get(k);
+    const row = this.own.get(k);
     if (row) return valueOf(row);
     return this.settleInstalled((levels) => pointGetSst(levels, k));
   }
@@ -851,27 +805,37 @@ class DbImpl implements Db {
     this.ensureOpen();
     const ops = collectBatch(build);
     if (ops.length === 0) return;
-    const seq = await this.wal.append(ops);
-    if (seq === undefined) await this.write(() => ({ ops, result: undefined }));
-    else await this.landed(seq, ops);
+    await this.whenRoom(opsBytes(ops), () => this.send(ops));
   }
 
-  async update<T>(
-    keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
-  ): Promise<T> {
+  update<T>(keys: readonly Uint8Array[], body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
-    return this.write(() => {
-      const values = this.readKeys(ks, this.installed.levels);
-      if (values instanceof Miss) return values;
-      let result!: T;
-      const ops = collectBatch((tx) => {
-        result = body(values, tx);
-        return result;
-      });
-      return { ops, result };
-    }, () => this.settleInstalled((levels) => this.readKeys(ks, levels)));
+    const run = async (): Promise<T> => {
+      for (;;) {
+        await this.landedAll;
+        // The read and the append below run in one task, so nothing of this page lands between them.
+        const step = await this.whenRoom(0, async () => {
+          const values = this.readKeys(ks, this.installed.levels);
+          if (values instanceof Miss) return values;
+          let result!: T;
+          const ops = collectBatch((tx) => {
+            result = body(values, tx);
+            return result;
+          });
+          return { sent: ops.length > 0 ? this.send(ops) : Promise.resolve(), result };
+        });
+        if (step instanceof Miss) {
+          await this.settleInstalled((levels) => this.readKeys(ks, levels));
+          continue;
+        }
+        await step.sent;
+        return step.result;
+      }
+    };
+    const next = this.updates.then(run, run);
+    this.updates = next.catch(noop);
+    return next;
   }
 
   async rangeFollow(
@@ -880,7 +844,7 @@ class DbImpl implements Db {
   ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]> {
     this.ensureOpen();
     const bounds = boundsOf(range);
-    const rows = this.mem.pin();
+    const rows = this.own.pin();
     const layers = this.installed;
     this.retain(layers);
     try {
@@ -908,7 +872,7 @@ class DbImpl implements Db {
     const layers = this.installed;
     this.retain(layers);
     try {
-      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, bounds, range)) {
+      for await (const entry of scanLayers(this.own.range(bounds), layers.levels, bounds, range)) {
         this.ensureOpen();
         yield entry;
       }
@@ -921,16 +885,10 @@ class DbImpl implements Db {
     this.ensureOpen();
     const layers = this.installed;
     this.retain(layers);
-    const snap = new ViewSnapshotImpl(
-      this.mem.appliedThrough,
-      layers.generation,
-      this.mem.pin(),
-      layers.levels,
-      () => {
-        this.retain(layers);
-        return () => this.release(layers);
-      },
-    );
+    const snap = new ViewSnapshotImpl(layers.generation, this.own.pin(), layers.levels, () => {
+      this.retain(layers);
+      return () => this.release(layers);
+    });
     try {
       return await body(snap);
     } finally {
@@ -944,35 +902,34 @@ class DbImpl implements Db {
     return this.changeBus.subscribe(listener);
   }
 
-  async ingest(): Promise<{ generation: number }> {
-    this.ensureOpen();
-    const before = this.installed.generation;
-    const result = await this.ingestClient.ingest(
-      this.name,
-      Number.POSITIVE_INFINITY,
-      true,
-    );
-    if (result.generation !== before) {
-      this.emitChange({ kind: "ingest", writerId: this.writerId });
-      this.broadcast({ kind: "ingest", writerId: this.writerId });
-    }
-    await this.sync();
-    return result;
-  }
-
+  /** Sends what was written before the call, closes the log, and leaves the host. */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     this.changeBus.clear();
-    if (this.bus && this.onBusMessage) {
-      this.bus.removeEventListener("message", this.onBusMessage);
+    if (this.bus) {
+      this.bus.onmessage = null;
       this.bus.close();
     }
-    this.ingestClient.unwatch(this.name);
-    if (this.ownsIngestClient) this.ingestClient.close();
-    this.wal.close();
-    this.release(this.installed);
-    if (this.loaded) this.release(this.loaded);
-    this.loaded = undefined;
+    if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
+      window.removeEventListener("pagehide", this.onPageHide);
+      window.removeEventListener("pageshow", this.onPageShow);
+    }
+    for (const waiter of this.roomWaiters.splice(0)) {
+      waiter.cancel();
+      waiter.fail(new ClosedError("database is closed"));
+    }
+    try {
+      await this.client.close();
+    } finally {
+      this.link.close();
+      this.unserve?.();
+      this.release(this.installed);
+    }
   }
+}
+
+function after(ms: number, fn: () => void): () => void {
+  const timer = setTimeout(fn, ms);
+  return () => clearTimeout(timer);
 }
