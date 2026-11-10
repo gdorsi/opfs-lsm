@@ -2,6 +2,25 @@
   "name": "@opfs-lsm/docstore",
   "version": "0.1.0",
   "description": "A document store with declared indexes on @opfs-lsm/kv",
+  "keywords": [
+    "opfs",
+    "indexeddb",
+    "database",
+    "document-store",
+    "browser",
+    "storage"
+  ],
+  "homepage": "https://github.com/gdorsi/opfs-lsm#readme",
+  "bugs": {
+    "url": "https://github.com/gdorsi/opfs-lsm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gdorsi/opfs-lsm.git",
+    "directory": "packages/docstore"
+  },
+  "author": "Guido D'Orsi",
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": {
@@ -14,9 +33,12 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build",
     "test": "tsc -p tsconfig.test.json && vitest run"
   },
-  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*"
   },
