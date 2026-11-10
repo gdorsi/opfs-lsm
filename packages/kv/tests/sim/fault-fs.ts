@@ -60,6 +60,10 @@ export class Faults {
   persistent = false;
   /** How many sites a fault was injected at. */
   injected = 0;
+  /** The error a failed fs site throws. Default: an `InjectedIoError`. */
+  error: ((label: string) => Error) | undefined;
+  /** Every error thrown at a failed fs site. */
+  readonly thrown = new WeakSet<Error>();
   /**
    * Process crash: once `crashAfter` durable ops completed, every later fs
    * call never settles and every later IndexedDB write aborts, so nothing
@@ -120,7 +124,11 @@ export class FaultFs implements AsyncFs {
   private async site<T>(kind: SiteKind, label: string, fn: () => Promise<T>): Promise<T> {
     const verdict = this.faults.hit(kind, label);
     if (verdict === "crash") return never();
-    if (verdict === "fail") throw new InjectedIoError(`injected I/O error at ${label}`);
+    if (verdict === "fail") {
+      const err = this.faults.error?.(label) ?? new InjectedIoError(`injected I/O error at ${label}`);
+      this.faults.thrown.add(err);
+      throw err;
+    }
     return fn();
   }
 
@@ -173,7 +181,7 @@ export class FaultFs implements AsyncFs {
       // Abort the inner stage, so MemoryFs lets the path be created again,
       // as OPFS does. A failed close leaves the target untouched (fs.spec).
       const aborting = async (err: unknown): Promise<never> => {
-        if (err instanceof InjectedIoError) await w.abort();
+        if (err instanceof Error && this.faults.thrown.has(err)) await w.abort();
         throw err;
       };
       return {
