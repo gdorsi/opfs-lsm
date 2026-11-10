@@ -12,8 +12,8 @@ own in-memory table of the writes that are not yet in an SST, and answers reads 
 SharedWorker turns the log into SST files and compacts them. A SharedWorker is a single script
 that every tab of the origin shares. It isn't a dedicated WebWorker or a ServiceWorker.
 
-`@opfs-lsm/collections` builds tables and secondary indexes on top of the kv API. This document
-covers only the kv engine.
+`@opfs-lsm/docstore` builds JSON collections and declared indexes on top of the kv API. This
+document covers only the kv engine.
 
 The design ranks goals in this order (see `AGENTS.md`):
 1. Read and write latency.
@@ -230,10 +230,11 @@ a benchmark script that has since been removed. It was the largest stride whose 
 on UUID ids matched a run that stored every key in full. Stride 8 saves 1.4% of the index bytes and made those gets about
 5% slower.
 
-The shared prefix is for collections' index keys. Each one starts with `i/`, the table and the
-index name, so neighbours repeat about 20 bytes. One prefix per block keeps nearly all of that
-saving. LevelDB-style restart points every 16 keys saved less on the same data, because the
-part that repeats is the same for the whole block.
+The shared prefix is for the index keys of layers built on kv. The stride and the block layout
+were tuned on the keys of an earlier table layer, which started each index key with `i/`, the
+table and the index name, so neighbours repeated about 20 bytes. One prefix per block keeps
+nearly all of that saving. LevelDB-style restart points every 16 keys saved less on the same
+data, because the part that repeats is the same for the whole block.
 
 Varints are unsigned LEB128 and at most 5 bytes.
 

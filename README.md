@@ -10,7 +10,7 @@ A simple, fast and flexible k/v storage for the browsers.
 
 `@opfs-lsm/kv` stores byte keys and values. The promise from `put` or `batch` is the ack. When that promise resolves, the write is one byte row in the shared IndexedDB write-ahead log (WAL). Sorted SST files in the Origin Private File System (OPFS) hold sealed data after ingest. Every tab of an origin can open the same name. Each name has its own SharedWorker, `opfs-lsm:<name>`, which flushes the WAL into SST files once uningested key and value bytes reach 1 MiB.
 
-`@opfs-lsm/collections` builds tables and secondary indexes on the same WAL and OPFS path. Its table API is Dexie-shaped: `put`, `get`, `where`, and `orderBy` over JSON rows.
+`@opfs-lsm/docstore` ([packages/docstore](packages/docstore)) stores JSON documents in collections on top of kv. A versioned schema declares each collection's indexes, and one `query` method reads through them.
 
 `@opfs-lsm/yjs` ([packages/yjs](packages/yjs)) is a Yjs provider shaped like y-indexeddb, and `@opfs-lsm/automerge` ([packages/automerge](packages/automerge)) is an automerge-repo storage adapter. Both keep many documents in one kv db.
 
@@ -73,69 +73,35 @@ await db.ingest();
 
 Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, and the error classes (`StorageUnavailableError`, `ClosedError`, and others). The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
 
-## `@opfs-lsm/collections`
-
-### Open a collection database
+## `@opfs-lsm/docstore`
 
 ```ts
-import { openCollectionDb } from "@opfs-lsm/collections";
+import { openDb } from "@opfs-lsm/kv";
+import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
 
-const db = await openCollectionDb({
-  name: "app",
-  schema: {
-    tables: [
-      {
-        name: "users",
-        primaryKey: "id",
-        indexes: [
-          { name: "email", path: "email" },
-          { name: "byOrg", path: ["orgId", "createdAt"] },
-        ],
-      },
-    ],
+type User = { id: string; email: string; orgId: string; createdAt: number };
+
+const schema = defineSchema<{ users: User }>()({
+  version: 1,
+  collections: {
+    users: {
+      byEmail: { on: "email", unique: true },
+      byOrg: { on: ["orgId", "createdAt"] },
+    },
   },
 });
 
-const users = db.table<{
-  id: string;
-  email: string;
-  orgId: string;
-  createdAt: number;
-}>("users");
+const kv = await openDb({ name: "app" });
+const users = (await openDocStore(kv, schema)).collection("users");
 
-await users.put({
-  id: "u1",
-  email: "a@example.com",
-  orgId: "acme",
-  createdAt: Date.now(),
-});
+await users.put({ id: "u1", email: "a@example.com", orgId: "acme", createdAt: Date.now() });
 
 const row = await users.get("u1");
-const byEmail = await users.where("email", "a@example.com");
+const byEmail = await users.query({ index: "byEmail", eq: ["a@example.com"] });
+const newest = await users.query({ index: "byOrg", eq: ["acme"], reverse: true, limit: 20 });
 ```
 
-`OpenCollectionOptions` is `OpenOptions` from `@opfs-lsm/kv` plus a required `schema`. `CollectionDb` exposes `table(name)`, `ingest()`, `close()`, and the underlying `kv` handle.
-
-### `Table`
-
-Rows are JSON objects. The primary key field defaults to `"id"` and must be a string.
-
-| Method | Role |
-| --- | --- |
-| `get(id)` | Load one row by primary key. |
-| `put(doc)` | Upsert one row and refresh its index keys. |
-| `putMany(docs)` | Upsert many rows in one read+write transaction. Chunk to about 1,000 rows. |
-| `update(id, mutate)` | Read-modify-write one row. Must keep the primary key. |
-| `delete(id)` | Delete one row and its index keys. |
-| `clear()` | Delete every row and its index entries in chunks. Returns the row count. |
-| `where(index, value)` | Equality or compound-prefix lookup on a declared index. |
-| `orderBy(index, opts?)` | Walk an index in key order. Optional `from`, `toExclusive`, `limit`. |
-| `page(index, opts)` | One cursor page of an index. Pass `next` from the previous call as `after`. |
-| `search(text, opts)` | Word-prefix text search, one cursor page, in `search.sortBy` order. Needs a `search` spec on the table. |
-
-An index `path` is a field name, a dot path, or a compound list such as `["orgId", "createdAt"]`. Set `multiEntry: true` to index each element of an array-valued path.
-
-For text search, give the table `search: { path: "title", sortBy: "newest" }`. A row then gets one extra key holding its lowercased words, so a put costs one key more, not one per word and per prefix as a `multiEntry` term index does. `table.search("mil bre", { limit: 50 })` returns rows with, for every word typed, a word that starts with it (case-insensitive, letters and digits), ordered by `sortBy` ascending. Store a descending number to get newest first, and treat `sortBy` as immutable: changing it moves the row's key. A search reads the search keys until a page fills: a common word returns in microseconds, and a word that matches nothing reads every search key of the table.
+`openDocStore(kv, schema)` uses the `kv` handle you opened. You keep closing it and calling `changes` and `ingest` on it. A collection has `get`, `getMany`, `put`, `putMany`, `modify`, `delete`, `deleteMany`, `clear`, `query`, `queryIds` and `count`. Each write is one kv transaction that also maintains the indexes. The index kinds (sorted, multi, text), schema versions, query rules, key order, errors and limits are in [packages/docstore/README.md](packages/docstore/README.md).
 
 ## Clone and run
 
@@ -151,4 +117,4 @@ pnpm todo:example
 pnpm automerge:example
 ```
 
-`pnpm test` typechecks and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, collections against Dexie, and the Yjs and Automerge adapters against their IndexedDB counterparts. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
+`pnpm test` typechecks and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, docstore against Dexie, and the Yjs and Automerge adapters against their IndexedDB counterparts. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).

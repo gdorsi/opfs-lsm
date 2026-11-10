@@ -14,7 +14,7 @@
     "@automerge/automerge-repo-storage-indexeddb": "2.6.0-alpha.5",
     "@automerge/react": "2.6.0-alpha.5",
     "@opfs-lsm/automerge": "workspace:*",
-    "@opfs-lsm/collections": "workspace:*",
+    "@opfs-lsm/docstore": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
     "@opfs-lsm/yjs": "workspace:*",
     "dexie": "^4.0.11",

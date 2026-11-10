@@ -1,6 +1,6 @@
 # Verify a change
 
-This page is the source of truth for proving a change to `@opfs-lsm/kv` and `@opfs-lsm/collections`. The procedures live in two skills. `.claude/skills/` symlinks the same directories under `.agents/skills/`.
+This page is the source of truth for proving a change to `@opfs-lsm/kv` and `@opfs-lsm/docstore`. The procedures live in two skills. `.claude/skills/` symlinks the same directories under `.agents/skills/`.
 
 - [verify-kv](../.agents/skills/verify-kv/SKILL.md) checks small exhaustive models of WAL visibility, point get, view pins, SST merge, and power-loss recovery.
 - [verify-opfs-lsm](../.agents/skills/verify-opfs-lsm/SKILL.md) drives headless Chrome. The feature recipes are in [features/](../.agents/skills/verify-opfs-lsm/features/README.md).
@@ -16,16 +16,16 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | WAL append or ack, `ingestAll`, `listUningested`, `advanceIngested` | `pnpm --filter @opfs-lsm/kv formal:kv` (or at least `formal:ingest-visibility` and `formal:power-loss`) |
 | The write order of ingest, compaction install or reclaim, `reconcile`, `IdBWal.adopt`, manifest numbering, or the open path | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `kill-chrome --minutes 10` |
 | Generation loading in `db.ts` (`syncOnce`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |
-| Point get versus SST, including tombstones (`pointGet`, `readKey`) | `formal:wal-over-sst`. Add `kv-bench` when the OPFS read after ingest changed. |
+| Point get versus SST, including tombstones (`pointGet`, `readKey`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
 | `view()` or the memtable pin | `formal:view-pin` |
-| SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge sessions in `merge-ts.ts` and `merge.rs`, `host/compact.ts`) | `formal:compact-preserve`, `cargo test -p engine-core`, plus `kv-bench` for a real post-ingest get |
+| SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge sessions in `merge-ts.ts` and `merge.rs`, `host/compact.ts`) | `formal:compact-preserve`, `cargo test -p engine-core`, plus `drive bench kv/` for a real post-ingest get |
 | `openDb`, the SharedWorker, or cross-tab visibility | `drive two-tab` |
 | `BrowserFs` (`createWritable`, removes, file locks), the SharedWorker port, or any Web Lock | `kill-chrome --minutes 10` (see [Kill real Chrome](#kill-real-chrome)) |
-| `packages/automerge/src/index.ts`, or a kv change claimed to speed up Automerge | `drive automerge-bench`. For a performance claim, rerun with `BENCH_RUNS=5` and compare medians and ranges. |
-| `packages/yjs/src/index.ts`, or a kv change claimed to speed up Yjs | `drive yjs-bench`. For a performance claim, rerun with `DOCS=5000 RUNS=5` (a 50k set) and compare medians and ranges. |
+| `packages/automerge/src/index.ts`, or a kv change claimed to speed up Automerge | `drive bench automerge/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
+| `packages/yjs/src/index.ts`, or a kv change claimed to speed up Yjs | `drive bench yjs/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
 | In-page `EngineHost` | `drive two-tab-local`. |
-| Collections `put`, `get`, or `where` | `drive collections-bench`. See [Failures already on main](#failures-already-on-main). |
+| `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench table/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, `lz4.ts`, `sst.rs`, and the merge sessions that read runs, `merge.rs` and `merge-ts.ts`), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test` and `cargo test -p engine-core`, then each cargo fuzz and Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
 | Any TypeScript behavior | `pnpm test` |
 | Any TypeScript or JavaScript source, including a removed export | `pnpm static` (oxlint, then `fallow dead-code`) |
@@ -43,11 +43,11 @@ From the repo root, in this order:
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collections-bench`, `automerge-bench`, `yjs-bench`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
+`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]` and `bench-smoke`. A selector is a family (`kv/`, `table/`, `automerge/`, `yjs/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
 
-`launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv` and `@opfs-lsm/collections`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
+`launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
 
-A healthy doctor prints `doctor: ok` and exits 0. It requires Node `>=22`, pnpm, Chrome (`CHROME_PATH` when set, otherwise `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, otherwise `google-chrome` on `PATH`), `packages/kv/wasm/engine.wasm`, `packages/kv/dist/index.js`, `packages/kv/dist/host/shared-worker.js`, `packages/collections/dist/index.js`, and `node_modules`.
+A healthy doctor prints `doctor: ok` and exits 0. It requires Node `>=22`, pnpm, Chrome (`CHROME_PATH` when set, otherwise `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, otherwise `google-chrome` on `PATH`), `packages/kv/wasm/engine.wasm`, `packages/kv/dist/index.js`, `packages/kv/dist/host/shared-worker.js`, `packages/docstore/dist/index.js`, and `node_modules`.
 
 The helper runs:
 
@@ -56,10 +56,8 @@ The helper runs:
 | `two-tab` | `pnpm --filter @opfs-lsm/kv two-tab` |
 | `two-tab-nobc` | `TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
-| `kv-bench` | `BENCH_N=50 pnpm bench:browser` |
-| `collections-bench` | `BENCH_N=50 pnpm bench:collections` |
-| `automerge-bench` | `BENCH_RUNS=1 BENCH_LOADS=2 BENCH_WORKLOADS=trace:100,data/moby-dick.automerge pnpm --filter @opfs-lsm/example-automerge bench:big-doc` |
-| `yjs-bench` | `DOCS=100 RUNS=1 pnpm --filter @opfs-lsm/example-yjs bench:load` |
+| `bench <selector…>` | `pnpm bench <selector…>`, with the flags after it |
+| `bench-smoke` | `pnpm bench:smoke` |
 
 A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is `0`. Stdout contains the proof strings:
 
@@ -68,10 +66,7 @@ A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is 
 | `two-tab` | `tabs=2`, `mode=SharedWorker`, `two-tab ok` |
 | `two-tab-nobc` | `mode=SharedWorker nobc`, `two-tab ok`, and `bc_posts=` with a positive count |
 | `two-tab-local` | `tabs=1`, `mode=local EngineHost`, `two-tab ok` |
-| `kv-bench` | `mode=SharedWorker + BrowserFs (OPFS)`, `kv solitary put`, `kv one batch`, `kv point get (warm)`, `kv ingest → OPFS`, `kv point get (post-ingest)`. Stdout has no `kv FAILED` line. |
-| `collections-bench` | `mode=SharedWorker + BrowserFs (OPFS)`, `collections solitary put`, `collections get by id`, `collections where email` |
-| `automerge-bench` | An `== <workload>` table per workload with `kv`, `idb` and `mem` columns, each followed by `checks: goodLoads N/N, errors 0` |
-| `yjs-bench` | A `load` table with `kv`, `kv-wal`, `kv-sst` and `idb` rows for `cold` and `warm`, and every `checked` equal to `DOCS` |
+| `bench`, `bench-smoke` | One `## <family>/<workload>: <title>` section per workload, a row per contender, and no `## Failed runs` section. Every read is checked against a model, so exit 0 means every value was right. |
 
 Evidence stays after cleanup:
 
@@ -85,7 +80,7 @@ Evidence stays after cleanup:
 
 `VERIFY_OPFS_ARTIFACTS` overrides the root. `VERIFY_OPFS_RUN_ID` fixes the run folder name.
 
-`cleanup` removes `packages/kv/.bench-chrome-profile` and `packages/collections/.bench-chrome-profile`. It prints `cleanup: removed fixed bench profiles (if any)` and `cleanup: artifacts preserved under ...`, and exits 0. `kv-bench` and `collections-bench` refuse to start while that profile directory exists.
+`cleanup` removes nothing, because every harness uses a fresh temp Chrome profile. It prints `cleanup: nothing to remove (each run uses a temp profile)` and `cleanup: artifacts preserved under ...`, and exits 0.
 
 ## Kill real Chrome
 
@@ -188,7 +183,7 @@ The Sync commit in `verify-kv` is the commit where those models were last confir
 pnpm test
 ```
 
-Exit 0. The root script checks that `README.md` still contains its required phrases, builds the workspace, and runs the `@opfs-lsm/kv` and `@opfs-lsm/collections` unit suites.
+Exit 0. The root script checks that `README.md` still contains its required phrases, builds the workspace, and runs the `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge` unit suites.
 
 The kv suite includes a model-based test (`packages/kv/tests/sim/model.test.ts`): random histories of writes, reads, views, ingests, compactions and reopens on one handle, checked against a log-prefix oracle, with `checkDatabase` (`tests/sim/check-database.ts`) walking the WAL, manifest and runs after every run. It runs 100 + 25 histories by default. For a longer sweep, or to replay a failure from the seed, path and `replayPath` it prints:
 
@@ -291,17 +286,7 @@ Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
 - `kill-chrome`: 30 minutes of the kill loop with `--keep-going` and a random seed. The evidence of a failure is uploaded as `kill-chrome-evidence`.
 - `seed-sweep`: random seeds and more runs for the seeded suites, one job each: `KV_MODEL_RUNS=2000` on `model.test.ts` and on `multi-handle.test.ts`, `KV_CRASH_RUNS=300 KV_CRASH_PAIRS=200` on `crash-enum.test.ts`, and `KV_FUZZ_RUNS=50000` on `fuzz/`. With no `KV_MODEL_SEED` or `KV_FUZZ_SEED`, fast-check draws a seed and prints it, with the path, on a failure. Replay it with the commands in [Run the unit tests](#run-the-unit-tests) and [Fuzz the decoders](#fuzz-the-decoders).
 
-The pull request workflow leaves out cargo fuzz, Jazzer.js, `two-tab-nobc`, `two-tab-local`, `kv-bench`, `collections-bench`, `automerge-bench`, `yjs-bench`, `bench:load`, and `bench:open`. `bench:smoke` is the performance smoke. It is separate from `kv-bench`.
-
-## Failures already on main
-
-The feature files still describe the intended proof (exit 0 and the strings above). On `main` this drive misses that bar. A log that matches the text below is the baseline. Treat it as a new regression only when the error text changes, or when the diff is the path that drive exists to prove.
-
-| Drive | Result on main | CI |
-| --- | --- | --- |
-| `collections-bench` | Exit 1. The page reports `Failed to resolve module specifier '@opfs-lsm/collections/testing'`. `packages/collections/bench/browser.html` has no import-map entry for that specifier. `packages/collections/dist/testing.js` is present after `launch`. | Absent |
-
-`two-tab`, `two-tab-nobc`, `two-tab-local` and `kv-bench` meet the pass bar above. Require them when the matching row in [Pick the check](#pick-the-check) applies.
+The pull request workflow leaves out cargo fuzz, Jazzer.js, `two-tab-nobc`, `two-tab-local`, the full `pnpm bench` families, `bench:load`, and `bench:open`. `bench:smoke` runs every workload on every contender at size `tiny`, which checks correctness and harness health, not speed.
 
 ## Refresh a skill
 

@@ -3,7 +3,7 @@ import type { SstEntry } from "../src/store/sst.js";
 const enc = new TextEncoder();
 export const utf = (s: string) => enc.encode(s);
 
-/** u16le length + UTF-8, as collections encodes key segments. */
+/** u16le length + UTF-8: one key segment. */
 const seg = (s: string) => {
   const body = utf(s);
   return Uint8Array.of(body.byteLength & 0xff, body.byteLength >> 8, ...body);
@@ -11,7 +11,7 @@ const seg = (s: string) => {
 export const cat = (...parts: Uint8Array[]) => Uint8Array.from(parts.flatMap((p) => [...p]));
 
 /**
- * A primary row and one key per index, shaped like collections' keys:
+ * A primary row and one key per index, shaped like a table layer's keys:
  * `i/` + table + index + typed value(s) + id, with an empty value.
  */
 export function indexWorkload(rows: number): SstEntry[] {

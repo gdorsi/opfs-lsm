@@ -1,86 +1,64 @@
 /**
- * Headless todo model: schema, generation, filtering, and cursor paging.
+ * Headless todo model: generation, filtering, and cursor paging.
  *
- * No DOM and no runtime dependency on the packages: the collections types
- * (`CollectionSchema`, `Table`) come in through type-only imports, which
- * erase at build time. The store is whatever matches `TodoStore` — the page
- * passes a real `Table` from `openCollectionDb`, `node:test` passes the
- * in-memory fake in `model.test.ts`.
+ * No DOM and no runtime dependency on the packages: the docstore types
+ * (`Cursor`, `Page`) come in through type-only imports, which erase at build
+ * time. The store is whatever matches `TodoStore` — the page passes a real
+ * `Collection` from `openDocStore`, `node:test` passes the in-memory fake in
+ * `model.test.ts`.
  */
 
-import type { CollectionSchema } from "@opfs-lsm/collections";
-
-/** Latest creation time the 15-digit derived rank supports. */
-const MAX_TIME = 10 ** 15 - 1;
+import type { Cursor, Page } from "@opfs-lsm/docstore";
 
 /** Rows per page in the example UI. */
 export const PAGE_SIZE = 50;
 /** Most rows per `table.putMany` when seeding. */
 const GENERATE_CHUNK = 1000;
 
+/** `titleSort` is derived: indexes read document fields, so a case-insensitive title order needs its own column. */
 export type Todo = {
   id: string;
   title: string;
   done: boolean;
   createdAt: number;
-  newest: number;
   titleSort: string;
 };
 
-/**
- * `newest` and `titleSort` are derived fields: collections indexes read plain
- * document fields, so each sort needs its own comparable column. `search`
- * gives each todo one extra key holding its lowercased title words, scanned
- * newest first by `table.search`, so a put costs one key, not one per word
- * and per prefix.
- */
-export const TODO_SCHEMA: CollectionSchema = {
-  tables: [
-    {
-      name: "todos",
-      primaryKey: "id",
-      indexes: [
-        { name: "byNewest", path: "newest" },
-        { name: "byOldest", path: "createdAt" },
-        { name: "byTitle", path: "titleSort" },
-      ],
-      search: { path: "title", sortBy: "newest" },
-    },
-  ],
-};
-
 const SORTS = {
-  newest: "byNewest",
-  oldest: "byOldest",
-  title: "byTitle",
+  newest: { index: "byCreated", reverse: true },
+  oldest: { index: "byCreated" },
+  title: { index: "byTitle" },
 } as const;
 
 /** The sort orders the UI exposes. */
 export type SortKey = keyof typeof SORTS;
 
+type Paging = { readonly limit: number; readonly after?: Cursor | undefined };
+
 /**
- * A page of index rows plus an opaque cursor. The real collections `Table`
- * fills it with `Uint8Array` index keys; the test fake uses row ids.
+ * The reads the model makes. `search` keeps entries where each word of
+ * `match` starts a title word. `store.ts` declares these indexes.
  */
-export interface TodoStore<Cursor = unknown> {
-  put(doc: Todo): Promise<string>;
+export type TodoQuery =
+  | ({ readonly index: "byCreated"; readonly reverse?: boolean } & Paging)
+  | ({ readonly index: "byTitle" } & Paging)
+  | ({ readonly index: "search"; readonly match: string; readonly reverse: true } & Paging);
+
+/**
+ * The part of a docstore `Collection<Todo>` the model uses. `next` is the
+ * last entry of a page and `after` starts the next page past it.
+ */
+export interface TodoStore {
+  put(doc: Todo): Promise<void>;
   putMany(docs: readonly Todo[]): Promise<void>;
   /** Read-modify-write one row in one transaction. */
-  update(id: string, mutate: (doc: Todo) => Todo): Promise<Todo | undefined>;
+  modify(id: string, fn: (doc: Todo) => Todo): Promise<Todo | undefined>;
   delete(id: string): Promise<boolean>;
-  clear(): Promise<number>;
-  page(
-    indexName: string,
-    opts: { readonly after?: Cursor; readonly limit: number },
-  ): Promise<{ readonly docs: readonly Todo[]; readonly next?: Cursor }>;
-  /** One page of todos where each word of `text` starts a title word, newest first. */
-  search(
-    text: string,
-    opts: { readonly after?: Cursor; readonly limit: number },
-  ): Promise<{ readonly docs: readonly Todo[]; readonly next?: Cursor }>;
+  clear(): Promise<void>;
+  query(q: TodoQuery): Promise<Page<Todo>>;
 }
 
-export type ReadPageOptions<Cursor> = {
+export type ReadPageOptions = {
   after?: Cursor;
   sort?: SortKey | (string & {});
   filter?: string;
@@ -99,7 +77,6 @@ export function createTodo(
     title: trimmed,
     done: false,
     createdAt: now,
-    newest: MAX_TIME - now,
     titleSort: trimmed.toLowerCase(),
   };
 }
@@ -114,16 +91,15 @@ export function normalizeFilter(filter: string): string {
 }
 
 /**
- * One page in `sort` order, starting at `after` (the `next` from the previous
- * page). `next` is the first key the call did not consume, so pages neither
- * skip nor repeat rows.
+ * One page in `sort` order, starting after `after` (the `next` from the
+ * previous page), so pages neither skip nor repeat rows.
  *
- * With a filter, the page is `table.search`: todos where each filter word
+ * With a filter, the page is a `search` query: todos where each filter word
  * starts a title word, newest first, and `sort` doesn't apply.
  */
-export async function readPage<Cursor>(
-  table: TodoStore<Cursor>,
-  options: ReadPageOptions<Cursor> = {},
+export async function readPage(
+  table: TodoStore,
+  options: ReadPageOptions = {},
 ): Promise<{ todos: Todo[]; next?: Cursor }> {
   const {
     after,
@@ -141,18 +117,12 @@ export async function readPage<Cursor>(
   }
 
   const normalized = normalizeFilter(filter);
-  if (wordsOf(normalized).length > 0) {
-    const page = await table.search(normalized, {
-      ...(after !== undefined ? { after } : {}),
-      limit: pageSize,
-    });
-    return { todos: [...page.docs], next: page.next };
-  }
-  const page = await table.page(SORTS[sort as SortKey], {
-    ...(after !== undefined ? { after } : {}),
-    limit: pageSize,
-  });
-  return { todos: [...page.docs], next: page.next };
+  const paging = { limit: pageSize, after };
+  const page =
+    wordsOf(normalized).length > 0
+      ? await table.query({ index: "search", match: normalized, reverse: true, ...paging })
+      : await table.query({ ...SORTS[sort as SortKey], ...paging });
+  return { todos: page.docs, next: page.next };
 }
 
 function mulberry32(seed: number): () => number {
@@ -194,8 +164,8 @@ function titleFromPicker(pick: () => string, rng: () => number): string {
  * Append `count` random todos in batches. `seed` makes the titles repeatable.
  * `onProgress(done, total)` runs after each batch.
  */
-export async function generateTodos<Cursor>(
-  table: TodoStore<Cursor>,
+export async function generateTodos(
+  table: TodoStore,
   count: number,
   options: {
     now?: number;
@@ -235,26 +205,20 @@ export async function generateTodos<Cursor>(
   return total;
 }
 
-/** Delete every todo. Returns the number of rows deleted. */
-export function clearTodos<Cursor>(table: TodoStore<Cursor>): Promise<number> {
+/** Delete every todo. */
+export function clearTodos(table: TodoStore): Promise<void> {
   return table.clear();
 }
 
 /** Flip `done` in one read-modify-write; indexes do not change. */
-export async function toggleTodo<Cursor>(
-  table: TodoStore<Cursor>,
-  todo: Todo,
-): Promise<void> {
-  await table.update(todo.id, (current) => ({
+export async function toggleTodo(table: TodoStore, todo: Todo): Promise<void> {
+  await table.modify(todo.id, (current) => ({
     ...current,
     done: !current.done,
   }));
 }
 
-export function deleteTodo<Cursor>(
-  table: TodoStore<Cursor>,
-  todo: Todo,
-): Promise<boolean> {
+export function deleteTodo(table: TodoStore, todo: Todo): Promise<boolean> {
   return table.delete(todo.id);
 }
 

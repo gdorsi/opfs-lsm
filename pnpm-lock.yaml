@@ -29,9 +29,9 @@ importers:
       '@opfs-lsm/automerge':
         specifier: workspace:*
         version: link:../packages/automerge
-      '@opfs-lsm/collections':
+      '@opfs-lsm/docstore':
         specifier: workspace:*
-        version: link:../packages/collections
+        version: link:../packages/docstore
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../packages/kv
@@ -152,9 +152,9 @@ importers:
 
   examples/todo:
     dependencies:
-      '@opfs-lsm/collections':
+      '@opfs-lsm/docstore':
         specifier: workspace:*
-        version: link:../../packages/collections
+        version: link:../../packages/docstore
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../../packages/kv
@@ -211,25 +211,6 @@ importers:
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
-
-  packages/collections:
-    dependencies:
-      '@opfs-lsm/kv':
-        specifier: workspace:*
-        version: link:../kv
-    devDependencies:
-      fake-indexeddb:
-        specifier: ^6.0.0
-        version: 6.2.7
-      tsx:
-        specifier: ^4.20.0
-        version: 4.23.15
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.7(@types/node@26.6.6)(jiti@1.21.7)(lightningcss@1.33.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/docstore:
     dependencies:

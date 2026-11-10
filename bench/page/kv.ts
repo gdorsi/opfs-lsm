@@ -12,7 +12,7 @@ export async function openKv(name: string): Promise<Db> {
   return db;
 }
 
-export async function assertWasm(): Promise<void> {
+async function assertWasm(): Promise<void> {
   await ensureEngine();
   if (!engineUsingWasm()) throw new Error("kv wasm engine did not load");
 }
