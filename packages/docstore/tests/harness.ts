@@ -5,7 +5,6 @@ import { CATALOG_KEY, ROOT, collectionPrefix, indexPrefix, type CollectionId, ty
 
 let dbs = 0;
 
-/** A database name no other test in this process uses. */
 export function freshName(): string {
   return `docstore-${process.pid}-${++dbs}`;
 }
@@ -15,7 +14,6 @@ export function openKv(name: string): Promise<Db> {
   return openHarnessDb({ name, forceMemory: true, ingestPolicy: { maxWalBytes: 1 << 30 } });
 }
 
-/** Every key this package wrote, in key order. */
 export async function docstoreKeys(kv: Db): Promise<Entry[]> {
   const out: Entry[] = [];
   for await (const e of kv.range({ start: Uint8Array.of(ROOT), endExclusive: Uint8Array.of(ROOT + 1) })) out.push(e);
@@ -28,12 +26,10 @@ export async function keysUnder(kv: Db, prefix: Uint8Array): Promise<number> {
   return n;
 }
 
-/** The catalog as stored, parsed. */
 export async function storedCatalog(kv: Db): Promise<StoredCatalog> {
   return JSON.parse(new TextDecoder().decode(await kv.get(CATALOG_KEY))) as StoredCatalog;
 }
 
-/** `64 CC CC` of a collection, or `64 CC CC II` of one of its indexes, as the stored catalog names them now. */
 export async function storedPrefix(kv: Db, collection: string, index?: string): Promise<Uint8Array> {
   const c = (await storedCatalog(kv)).collections[collection]!;
   const id = c.id as CollectionId;
@@ -78,7 +74,6 @@ export function gate(kv: Db, method: "range" | "batch", free: number) {
 
 export type UpdateRecord = { readonly reads: number; readonly puts: number; readonly deletes: number };
 
-/** `kv` with each `update` call recorded: keys read and ops written. */
 export function recording(kv: Db): { readonly db: Db; readonly updates: UpdateRecord[] } {
   const updates: UpdateRecord[] = [];
   const update: Db["update"] = (keys, body) =>
@@ -101,7 +96,6 @@ export function recording(kv: Db): { readonly db: Db; readonly updates: UpdateRe
   return { db: wrap(kv, { update }), updates };
 }
 
-/** `kv` with some methods replaced. */
 export function wrap(kv: Db, over: Partial<Db>): Db {
   return new Proxy(kv, {
     get(target, prop) {

@@ -108,10 +108,6 @@ export const queryArb: fc.Arbitrary<{ index: string | undefined; q: QueryInput }
     );
   });
 
-/**
- * Check `query`, `queryIds` and `count` for `q` against a brute-force filter
- * and sort of `docs` (stored forms), then page through with `pageSize`.
- */
 export async function checkQuery(
   c: Docs,
   docs: readonly Doc[],

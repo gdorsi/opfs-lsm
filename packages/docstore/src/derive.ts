@@ -1,7 +1,3 @@
-/**
- * From a document to its kv entries. Writes, deletes and the backfill all
- * derive entries here, from the stored form only.
- */
 import { CorruptDatabaseError, type Entry } from "@opfs-lsm/kv";
 import type { BoundCollection, IndexPlan, Path } from "./catalog.js";
 import { DocStoreError } from "./errors.js";
@@ -20,9 +16,7 @@ export type StoredDoc = JsonDoc & { readonly [storedBrand]: true };
 
 export type EncodedDoc = {
   readonly id: DocId;
-  /** UTF-8 of `JSON.stringify(doc)`: the row's value. */
   readonly bytes: Uint8Array;
-  /** `JSON.parse` of that same text. */
   readonly doc: StoredDoc;
 };
 
@@ -94,7 +88,6 @@ export function entriesOf(
   return out;
 }
 
-/** The entries of `doc` in one index. `id` is the id's UTF-8. */
 export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): Entry[] | Unindexable {
   const { spec } = plan;
   const multi = spec.kind === "sorted" && spec.multi;
@@ -147,7 +140,6 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
 }
 const EMPTY = new Uint8Array(0);
 
-/** The value at a split dot path, walking own properties of plain objects only. */
 function readPath(doc: StoredDoc, path: Path): unknown {
   let v: unknown = doc;
   for (const segment of path) {
@@ -157,7 +149,6 @@ function readPath(doc: StoredDoc, path: Path): unknown {
   return v;
 }
 
-/** Keys of `before` that `after` lacks, and entries of `after` that are new or hold another value. */
 export function diffEntries(
   before: readonly Entry[],
   after: readonly Entry[],

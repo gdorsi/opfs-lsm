@@ -102,7 +102,6 @@ export function bytesEqual(a: Uint8Array | undefined, b: Uint8Array | undefined)
   return true;
 }
 
-/** A key as a Map key. */
 export function keyString(key: Uint8Array): string {
   return String.fromCharCode.apply(null, key as unknown as number[]);
 }
@@ -189,7 +188,6 @@ function encodeStringPrefix(prefix: Uint8Array, s: string): Uint8Array {
   return take();
 }
 
-/** Offset just past the value that starts at `at`. */
 function skipValue(key: Uint8Array, at: number): number {
   switch (key[at]) {
     case TAG.null:
@@ -214,7 +212,6 @@ function badQuery(message: string): never {
   throw new DocStoreError("query", message);
 }
 
-/** A caller's query value: a scalar, a finite number, `-0` read as `0`. */
 function checkQueryValue(value: unknown): Scalar {
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "string" && wellFormed(value)) return value;
@@ -222,12 +219,8 @@ function checkQueryValue(value: unknown): Scalar {
   return badQuery(`${String(value)} is not an index value: use null, a boolean, a finite number or a well-formed string`);
 }
 
-// ---------------------------------------------------------------------------
-// Text
-
 const NON_WORD = /[^\p{L}\p{N}]+/u;
 
-/** Lowercased runs of letters and digits, in order. */
 function wordsOf(text: string): string[] {
   return text
     .toLowerCase()
@@ -247,17 +240,11 @@ function matchPatterns(match: string): Uint8Array[] {
   return words.map((w) => utf8.encode(` ${w}`));
 }
 
-// ---------------------------------------------------------------------------
-// Scans
-
-/** What one query walks: the rows, or one index's entries. */
 export type ScanTarget =
   | { readonly kind: "rows"; readonly prefix: Uint8Array }
   | {
       readonly kind: "sorted" | "unique" | "text";
-      /** `64 CC CC II`. */
       readonly prefix: Uint8Array;
-      /** `64 CC CC 00`, to turn an entry's id into a row key. */
       readonly rowPrefix: Uint8Array;
       readonly arity: number;
     };
@@ -266,8 +253,7 @@ export type ScanPlan = { readonly range: Range; readonly target: ScanTarget };
 
 /**
  * The one bound builder. `eq` fixes the first k components and one bound
- * applies to component k + 1. `limit` is the caller's: it asks kv for one
- * more entry to learn whether a next page exists.
+ * applies to component k + 1. `limit` is not set here.
  */
 export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
   const { gt, gte, lt, lte, startsWith } = q;
@@ -333,7 +319,6 @@ function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [
   return [lower, upper];
 }
 
-/** Bytes of the id an entry of `target` points at. */
 export function entryId(target: ScanTarget, key: Uint8Array, value: Uint8Array): Uint8Array {
   switch (target.kind) {
     case "rows":

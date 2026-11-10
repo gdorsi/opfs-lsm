@@ -1,11 +1,3 @@
-/**
- * The schema as the app declares it, and the types derived from it. The
- * declared object is plain data: it is what open normalises and compares
- * with the stored catalog. Only `defineSchema` runs, and it returns its
- * argument.
- */
-
-/** JSON values as `JSON.parse` returns them. */
 export type Json =
   | null
   | boolean
@@ -26,9 +18,6 @@ export type Scalar = null | boolean | number | string;
 export type JsonDoc = { readonly id: string; readonly [key: string]: Json | undefined };
 
 type DocsMap = { readonly [collection: string]: JsonDoc };
-
-// ---------------------------------------------------------------------------
-// Paths
 
 /** Recursion budget: three levels of nesting. */
 type Budget = [never, 0, 1, 2];
@@ -73,13 +62,9 @@ type StringPath<T, D extends number = 3> = [D] extends [never]
             : never;
     }[keyof T & string];
 
-/** The value type at a dot path, minus `undefined`. */
 type At<T, P extends string> = P extends `${infer H}.${infer R}`
   ? At<Defined<T[H & keyof T]>, R>
   : Defined<T[P & keyof T]>;
-
-// ---------------------------------------------------------------------------
-// Index declarations
 
 type Paths<P> = P | readonly [P, ...P[]];
 
@@ -155,9 +140,6 @@ export type IndexesOf<S, C extends string> = S extends { readonly collections: i
     ? Cs[C]
     : never
   : never;
-
-// ---------------------------------------------------------------------------
-// Queries
 
 declare const cursorBrand: unique symbol;
 
@@ -235,7 +217,6 @@ export type Query<T, Ix> =
 export type Page<T> = { readonly docs: T[]; readonly next?: Cursor };
 export type IdPage = { readonly ids: string[]; readonly next?: Cursor };
 
-/** The runtime shape of every query, before the types above narrow it. */
 export type QueryInput = {
   readonly index?: string | undefined;
   readonly eq?: readonly Scalar[] | undefined;

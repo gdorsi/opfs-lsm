@@ -1,9 +1,3 @@
-/**
- * One collection: documents by id, and reads over one index range. Every
- * write is one `store.write` (one kv `update`), every range read one
- * `store.read`. This file owns what a write does to rows and entries;
- * store.ts owns the catalog and the retry rules around them.
- */
 import type { Entry, Range } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { decodeDoc, diffEntries, encodeDoc, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
@@ -71,7 +65,6 @@ export interface Collection<T extends JsonDoc, Ix> {
   count(q: Query<T, Ix>): Promise<number>;
 }
 
-/** A write body or a read that must start over. */
 export const RETRY: unique symbol = Symbol("retry");
 
 const fromUtf8 = new TextDecoder();

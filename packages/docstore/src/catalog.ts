@@ -18,9 +18,6 @@ const MAX_INDEX_ID = 0xff;
 const MAX_PATHS = 8;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-// ---------------------------------------------------------------------------
-// Stored shape: exactly what JSON.stringify writes under 64 00 00.
-
 export type StoredCatalog = {
   readonly format: typeof FORMAT;
   /** The app version that last changed the catalog. Only a higher declared version may change definitions. */
@@ -41,7 +38,6 @@ type StoredCollection = {
 
 type StoredIndex = { readonly id: number; readonly spec: IndexSpec; readonly state: IndexState };
 
-/** The normalised definition. */
 export type IndexSpec =
   | {
       readonly kind: "sorted";
@@ -70,9 +66,6 @@ export type IndexState =
 /** `64 CC CC`, a cleared collection; or `64 CC CC II`, a removed, redefined or failed index. */
 export type DroppedPrefix = { readonly collection: number } | { readonly collection: number; readonly index: number };
 
-// ---------------------------------------------------------------------------
-// Declared shape
-
 export type DeclaredSchema = {
   readonly version: number;
   readonly collections: ReadonlyMap<string, ReadonlyMap<string, IndexSpec>>;
@@ -91,7 +84,6 @@ function checkPath(path: unknown, where: string): string {
   return path;
 }
 
-/** The runtime boundary of the app's declaration. */
 export function normalizeSchema(decl: AnySchema): DeclaredSchema {
   if (!Number.isInteger(decl.version) || decl.version < 1) badSchema("version must be an integer >= 1");
   if (!isRecord(decl.collections)) badSchema("collections must be an object");
@@ -130,9 +122,6 @@ function sameSpec(a: IndexSpec, b: IndexSpec): boolean {
       return b.kind === "text" && a.text === b.text;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Bytes
 
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
@@ -201,13 +190,8 @@ export function encodeCatalog(catalog: StoredCatalog): Uint8Array {
   return utf8.encode(JSON.stringify(catalog));
 }
 
-// ---------------------------------------------------------------------------
-// Open
-
 export type Reconciled =
-  /** Write `catalog`, then work with it. */
   | { readonly kind: "write"; readonly catalog: StoredCatalog }
-  /** The stored catalog stands. */
   | { readonly kind: "keep" }
   | { readonly kind: "error"; readonly error: DocStoreError };
 
@@ -268,10 +252,6 @@ function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog
   return { format: FORMAT, version: declared.version, nextCollectionId, collections, dropped };
 }
 
-// ---------------------------------------------------------------------------
-// Transitions. Each returns undefined when there is nothing to do, so a
-// repeat after a crash or from a second handle writes nothing.
-
 function withIndex(
   c: StoredCatalog,
   collection: string,
@@ -290,14 +270,12 @@ function withIndex(
   };
 }
 
-/** building -> ready. */
 export function markReady(c: StoredCatalog, collection: string, index: IndexId): StoredCatalog | undefined {
   return withIndex(c, collection, index, (was) =>
     was.state.kind === "building" ? { index: { ...was, state: { kind: "ready" } } } : undefined,
   );
 }
 
-/** building -> failed, and its prefix to `dropped`. */
 export function markFailed(
   c: StoredCatalog,
   collection: string,
@@ -341,18 +319,12 @@ export function removeDropped(c: StoredCatalog, prefix: DroppedPrefix): StoredCa
   return dropped.length === c.dropped.length ? undefined : { ...c, dropped };
 }
 
-// ---------------------------------------------------------------------------
-// Bound: the catalog compiled for one handle
-
-/** A dot path, split. */
 export type Path = readonly string[];
 
-/** An index's spec with its paths split once per catalog. */
 export type CompiledSpec =
   | { readonly kind: "sorted"; readonly on: readonly Path[]; readonly unique: boolean; readonly multi: boolean }
   | { readonly kind: "text"; readonly on: readonly Path[]; readonly text: Path };
 
-/** One maintained index, ready to derive entries and to scan. */
 export type IndexPlan = {
   readonly name: string;
   readonly id: IndexId;
@@ -361,7 +333,6 @@ export type IndexPlan = {
   readonly target: Extract<ScanTarget, { readonly rowPrefix: Uint8Array }>;
 };
 
-/** Why this handle may not query an index it declared. */
 export type Unreadable =
   | { readonly kind: "missing" }
   | { readonly kind: "spec-changed" }
@@ -382,7 +353,6 @@ export type Bound = {
   /** A write commits only if the stored catalog bytes still equal these. */
   readonly bytes: Uint8Array;
   readonly catalog: StoredCatalog;
-  /** By declared collection name. Absent: the catalog has no such collection. */
   readonly collections: ReadonlyMap<string, BoundCollection>;
 };
 

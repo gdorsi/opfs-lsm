@@ -10,7 +10,6 @@ export type ModelIndex =
 type Doc = { readonly id: string; readonly [key: string]: unknown };
 type Hit = { readonly id: string; readonly values: readonly Scalar[]; readonly doc: Doc };
 
-/** The stored form: what JSON gives back. */
 export function stored<D>(doc: D): D {
   return JSON.parse(JSON.stringify(doc)) as D;
 }
@@ -45,7 +44,6 @@ function entries(doc: Doc, ix: ModelIndex): Scalar[][] {
   return [values as Scalar[]];
 }
 
-/** Every entry of `ix` over `docs`, in index order: values, then id by code points. */
 function indexOrder(docs: readonly Doc[], ix: ModelIndex): Hit[] {
   const hits = docs.flatMap((doc) => entries(doc, ix).map((values) => ({ id: doc.id, values, doc })));
   return hits.sort((a, b) => compareTuple(a.values, b.values) || compareCodePoints(a.id, b.id));

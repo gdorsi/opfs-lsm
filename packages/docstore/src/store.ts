@@ -1,9 +1,3 @@
-/**
- * The open store: owns this handle's copy of the catalog, the write and read
- * protocols every collection goes through, and the background work the
- * catalog asks for (backfills and sweeps). Only this module reads or writes
- * CATALOG_KEY.
- */
 import { CorruptDatabaseError, prefixBound, type BatchTx, type Db, type Entry } from "@opfs-lsm/kv";
 import {
   bind,
@@ -76,7 +70,6 @@ export async function openDocStore<S extends AnySchema>(kv: Db, schema: S): Prom
   return store;
 }
 
-/** A write planned against one catalog. */
 export type WritePlan<R> = {
   /** Point keys the body reads, after CATALOG_KEY, which the store puts first. */
   readonly keys: readonly Uint8Array[];
@@ -84,7 +77,6 @@ export type WritePlan<R> = {
   readonly apply: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => R | typeof RETRY;
 };
 
-/** What a collection may ask of the store. */
 export interface StoreCore {
   readonly kv: Db;
   /** The collection in a freshly read catalog. */
@@ -135,7 +127,6 @@ function readableId(coll: BoundCollection | undefined, index: string): number | 
 const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
 
 class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
-  /** Jobs running in this handle, by what they work on, so one handle never runs two copies of a job. */
   private readonly jobs = new Map<string, Promise<void>>();
 
   constructor(
@@ -152,7 +143,6 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     while (this.jobs.size > 0) await Promise.all(this.jobs.values());
   }
 
-  /** The backfills of indexes this schema declares and the catalog has building. */
   declaredBuilds(): Promise<unknown> {
     const builds = [...this.bound.collections.values()].flatMap((coll) =>
       coll.maintained.flatMap((plan) => {
@@ -221,14 +211,12 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     this.adopt(bytes);
   }
 
-  /** Recompile only when the stored bytes changed. */
   private adopt(bytes: Uint8Array | undefined): Bound {
     if (!bytes) throw new CorruptDatabaseError("the docstore catalog is gone");
     if (!bytesEqual(bytes, this.bound.bytes)) this.bound = bind(bytes, parseCatalog(bytes), this.declared);
     return this.bound;
   }
 
-  /** One backfill per building index of a declared collection and one sweep per dropped prefix, unless already running here. */
   startJobs(): void {
     for (const coll of this.bound.collections.values()) {
       for (const plan of coll.maintained) {
@@ -331,7 +319,6 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     }
   }
 
-  /** Delete every key under a dropped prefix, then remove it from `dropped`. A second sweeper deletes nothing new. */
   private async sweep(p: DroppedPrefix): Promise<void> {
     const collection = p.collection as CollectionId;
     const prefix = "index" in p ? indexPrefix(collection, p.index as IndexId) : collectionPrefix(collection);

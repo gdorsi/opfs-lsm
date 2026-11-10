@@ -10,7 +10,6 @@ export type DocStoreErrorCode =
   | "unique"
   /** A query on an index whose backfill met data it cannot hold. `ids` names the documents. */
   | "index-failed"
-  /** A malformed query. */
   | "query"
   /** `after` is outside the query's range, or was made before a `clear` or a redefinition. */
   | "cursor"

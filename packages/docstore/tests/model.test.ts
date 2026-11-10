@@ -53,7 +53,6 @@ const cmdArb: fc.Arbitrary<Cmd> = fc.oneof(
   { weight: 1, arbitrary: fc.boolean().map((idle) => ({ kind: "reopen" as const, idle })) },
 );
 
-/** Two documents share a value of the unique index. */
 function sharesUnique(docs: Iterable<Doc>): boolean {
   const seen = new Set<string>();
   for (const d of docs) {
