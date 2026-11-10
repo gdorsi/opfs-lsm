@@ -29,9 +29,9 @@ importers:
       '@opfs-lsm/automerge':
         specifier: workspace:*
         version: link:../packages/automerge
-      '@opfs-lsm/collections':
+      '@opfs-lsm/docstore':
         specifier: workspace:*
-        version: link:../packages/collections
+        version: link:../packages/docstore
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../packages/kv

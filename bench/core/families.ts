@@ -47,7 +47,7 @@ export const OWNER_INDEX = "byOwner";
 export const CREATED_INDEX = "byCreated";
 export const OWNERS = 16;
 
-/** collections vs Dexie. */
+/** docstore vs Dexie. */
 export type TableStore = Common & {
   putMany(rows: readonly Todo[]): Promise<void>;
   put(row: Todo): Promise<void>;
