@@ -13,8 +13,8 @@
 //! a source, the last duplicate wins, across block, read and run boundaries.
 //!
 //! What it holds, whatever the inputs' size: per source about `chunk_bytes` of
-//! framed blocks (more only for a block or run index that is larger), one
-//! unpacked block and two entries; for the output, one open block, a bloom
+//! framed blocks (more only for a block, or a run's bloom and index, that is
+//! larger), one unpacked block and two entries; for the output, one open block, a bloom
 //! hash and an index row per key and block of the open run, and up to
 //! `chunk_bytes` plus one block of bytes not yet written.
 

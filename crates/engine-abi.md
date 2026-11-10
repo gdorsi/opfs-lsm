@@ -150,11 +150,12 @@ allocates what it needs through the module's allocator. Outside a merge
 session it never returns -11; running out of memory inside an operation
 aborts, which the loader sees as a `WebAssembly.RuntimeError` and answers
 by dropping the module and falling back to TypeScript. A merge session
-reserves its working set in `merge_open` and grows its own buffers (for a
-block, an index or an entry larger than any before) without aborting, so
-it returns -11 instead. The output writer's per-run state (one bloom hash
-per key and one index row per block of the open run) still grows with
-the run, bounded by `target_bytes`.
+reserves its working set in `merge_open` and grows its input buffers (for
+a block, a run's bloom and index, or an entry larger than any before)
+without aborting, so it returns -11 instead. The output writer's per-run
+state (one bloom hash per key and one index row per block of the open
+run) still grows with the run, bounded by `target_bytes`, and running
+out of memory there aborts as it does outside a session.
 
 The contract carries `capacity` and -11 so that an implementation that
 reserves once in `init` and serves every call from that slab can conform

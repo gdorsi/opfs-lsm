@@ -268,8 +268,15 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
       );
       if (opened === SESSION_OPEN) return undefined;
       if (opened < 0) throw statusError("merge_open", opened, inputBytes, capacity);
+      // The module holds one session and `merge_close` drops whichever is
+      // open, so a closed handle must not reach a session opened after it.
+      let closed = false;
+      const live = () => {
+        if (closed) throw new Error("merge session closed");
+      };
       return {
         pump() {
+          live();
           const code = ex.merge_pump();
           if (code < 0) throw statusError("merge_pump", code, inputBytes, capacity);
           const result = new Uint8Array(ex.memory.buffer, ex.result_ptr() >>> 0, ex.result_len());
@@ -300,11 +307,14 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
           }
         },
         feed(source, bytes) {
+          live();
           const at = ex.merge_feed(source, bytes.byteLength) >>> 0;
           if (at === 0) throw new Error(`merge_feed: source ${source} has no unfed demand of ${bytes.byteLength} bytes`);
           new Uint8Array(ex.memory.buffer, at, bytes.byteLength).set(bytes);
         },
         close() {
+          if (closed) return;
+          closed = true;
           ex.merge_close();
         },
       };

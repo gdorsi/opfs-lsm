@@ -363,6 +363,35 @@ describe("a session's protocol, in both sessions", () => {
       }
     }
   });
+
+  it("keeps a closed wasm handle away from the session opened after it", () => {
+    const a = encodeRun([{ kind: "put", key: utf("a"), value: utf("1"), seq: 1 }]).body;
+    const spec: MergeSpec = {
+      sources: [[a.byteLength]],
+      dropTombstones: false,
+      targetBytes: Number.MAX_SAFE_INTEGER,
+      codec: "raw",
+      chunkBytes: 1024,
+      tailBytes: 1024,
+      yieldBytes: Number.MAX_SAFE_INTEGER,
+    };
+    const first = openWasm(spec);
+    first.close();
+    const second = openWasm(spec);
+    try {
+      first.close();
+      expect(() => first.pump()).toThrow(/merge session closed/);
+      expect(() => first.feed(0, a)).toThrow(/merge session closed/);
+      // The module's one session is still the second handle's.
+      expect(second.pump().kind).toBe("need");
+      second.feed(0, a);
+      const stops: string[] = [];
+      for (let s = second.pump(); s.kind !== "done"; s = second.pump()) stops.push(s.kind);
+      expect(stops).toEqual(["write", "run-end"]);
+    } finally {
+      second.close();
+    }
+  });
 });
 
 describe("the compaction driver", () => {
