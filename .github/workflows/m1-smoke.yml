@@ -45,6 +45,9 @@ jobs:
       - run: pnpm --filter @opfs-lsm/kv two-tab
         env:
           CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+      - run: pnpm --filter @opfs-lsm/kv log-queue
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
 
   kill-chrome:
     runs-on: ubuntu-latest
