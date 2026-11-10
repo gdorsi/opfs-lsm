@@ -1,6 +1,7 @@
 import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
+import { openDbDir } from "./root.js";
 
 function splitPath(path: string): string[] {
   return path.split("/").filter((p) => p.length > 0 && p !== ".");
@@ -183,8 +184,5 @@ function isNotFound(err: unknown): boolean {
 /** Open (or create) `opfs-lsm/<name>/` under the origin private file system. */
 export async function openBrowserFs(name: string): Promise<BrowserFs> {
   const dbName: DbName = checkDbName(name);
-  const root = await navigator.storage.getDirectory();
-  const lsm = await root.getDirectoryHandle("opfs-lsm", { create: true });
-  const db = await lsm.getDirectoryHandle(dbName, { create: true });
-  return new BrowserFs(db, dbName);
+  return new BrowserFs(await openDbDir(dbName), dbName);
 }
