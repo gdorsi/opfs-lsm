@@ -114,6 +114,17 @@ describe("text search", () => {
     expect(await hits(c, { index: "search", match: "BUY" })).toEqual(["1", "2", "3"]);
   });
 
+  it("keeps combining marks inside a word and matches composed against decomposed text", async () => {
+    const { c } = await docs();
+    await c.putMany([
+      { id: "1", a: 1, t: "हिन्दी" },
+      { id: "2", a: 2, t: "ह न द" },
+      { id: "3", a: 3, t: "cafe\u0301 noir" },
+    ]);
+    expect(await hits(c, { index: "search", match: "हिन्दी" })).toEqual(["1"]);
+    expect(await hits(c, { index: "search", match: "café" })).toEqual(["3"]);
+  });
+
   it("orders and pages matches by the index's on field, forward and reverse", async () => {
     const { c } = await docs();
     await c.putMany(titles);

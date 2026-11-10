@@ -219,10 +219,11 @@ function checkQueryValue(value: unknown): Scalar {
   return badQuery(`${String(value)} is not an index value: use null, a boolean, a finite number or a well-formed string`);
 }
 
-const NON_WORD = /[^\p{L}\p{N}]+/u;
+const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
 
 function wordsOf(text: string): string[] {
   return text
+    .normalize("NFC")
     .toLowerCase()
     .split(NON_WORD)
     .filter((w) => w !== "");

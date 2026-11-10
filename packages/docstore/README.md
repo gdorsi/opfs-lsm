@@ -72,7 +72,7 @@ Each index has a name, unique within its collection, and one of three kinds. `on
 | Higher than stored | Stores this schema. A new or changed index starts building. A removed or changed index's keys are swept. |
 
 - Open resolves once every index the schema declares is ready or failed.
-- A building index is filled from the rows in the background. Any handle with that collection in its schema runs the backfill.
+- A building index is filled from the rows in the background. A handle runs the backfill when it opens or clears the collection, so a backfill cut short by a closed tab resumes on the next open.
 - A collection the new schema leaves out keeps its documents and indexes. A later schema that declares it again sees them.
 - A backfill that finds two documents with one unique value, or a value an index cannot hold, marks the index failed. Queries on a failed index throw `"index-failed"` with the ids. The next version bump rebuilds it.
 - Writes maintain every building or ready index the stored catalog holds, including indexes this handle's schema does not declare.
