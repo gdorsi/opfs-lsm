@@ -94,7 +94,8 @@ export type ClientToHost =
       readonly type: "watch";
       readonly name: string;
       readonly maxWalBytes: number;
-      readonly compactionMemoryBytes: number;
+      /** Absent from a tab of a build before the option existed. The host then assumes the default. */
+      readonly compactionMemoryBytes?: number;
       /** Ask the host to report the background WAL scan. Open does not wait for it. */
       readonly trace?: boolean;
     }

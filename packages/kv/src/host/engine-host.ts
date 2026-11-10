@@ -290,10 +290,13 @@ export class EngineHost {
    */
   watch(name: string, policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
     const dbName = checkDbName(name);
-    const watch = this.watches.get(dbName) ?? this.startWatch(dbName, policy);
+    // A tab of an older build sends no figure, and NaN would win every later `Math.min`.
+    const compactionMemoryBytes =
+      policy.compactionMemoryBytes > 0 ? policy.compactionMemoryBytes : DEFAULT_COMPACTION_MEMORY_BYTES;
+    const watch = this.watches.get(dbName) ?? this.startWatch(dbName, { ...policy, compactionMemoryBytes });
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
-    watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
+    watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
     const scanAt = onScan ? performance.now() : 0;
     void this.withWal(dbName, (wal) => wal.uningestedBytes()).then(
@@ -535,7 +538,10 @@ export function attachEngineHostPort(
         case "watch":
           host.watch(
             msg.name,
-            { maxWalBytes: msg.maxWalBytes, compactionMemoryBytes: msg.compactionMemoryBytes },
+            {
+              maxWalBytes: msg.maxWalBytes,
+              compactionMemoryBytes: msg.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
+            },
             msg.trace
               ? (scan) =>
                   reply({
