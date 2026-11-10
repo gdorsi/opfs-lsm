@@ -1,5 +1,6 @@
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { LogId, QueueCursor } from "../src/host/queues.js";
 import { encodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { encodeSst as encodeSstWasm } from "../src/store/engine.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
@@ -195,22 +196,33 @@ describe("decoder properties (fast-check)", () => {
   );
 });
 
-const manifestArb: fc.Arbitrary<GenerationMeta> = fc.record({
-  generation: fc.integer({ min: 0, max: 2 ** 40 }),
-  tombstoneSeq: fc.integer({ min: 0, max: 2 ** 40 }),
-  through: fc.integer({ min: 0, max: 2 ** 40 }),
-  runs: fc.array(
-    fc.record(
-      {
-        path: fc.constantFrom("l0/f1.sst", "l1/c7.0.sst", "l2/c9.3.sst"),
-        bytes: fc.integer({ min: 0, max: 2 ** 32 - 1 }),
-        range: fc.record({ smallest: fc.uint8Array({ maxLength: 12 }), largest: fc.uint8Array({ maxLength: 12 }) }),
-      },
-      { requiredKeys: ["path", "bytes"] },
+const logArb = fc.stringMatching(/^[0-9a-f]{16}$/) as fc.Arbitrary<LogId>;
+const cursorArb: fc.Arbitrary<QueueCursor> = fc.oneof(
+  fc.record({ log: logArb, state: fc.constantFrom("open" as const, "final" as const), n: fc.nat({ max: 2 ** 32 - 1 }) }),
+  fc.record({ log: logArb, state: fc.constant("damaged" as const), n: fc.nat({ max: 2 ** 32 - 1 }), reason: fc.string({ maxLength: 24 }) }),
+);
+
+/** `queues` is absent or holds cursors: a manifest with none decodes without the field. */
+const manifestArb: fc.Arbitrary<GenerationMeta> = fc.record(
+  {
+    generation: fc.integer({ min: 0, max: 2 ** 40 }),
+    tombstoneSeq: fc.integer({ min: 0, max: 2 ** 40 }),
+    through: fc.integer({ min: 0, max: 2 ** 40 }),
+    runs: fc.array(
+      fc.record(
+        {
+          path: fc.constantFrom("l0/f1.sst", "l1/c7.0.sst", "l2/c9.3.sst"),
+          bytes: fc.integer({ min: 0, max: 2 ** 32 - 1 }),
+          range: fc.record({ smallest: fc.uint8Array({ maxLength: 12 }), largest: fc.uint8Array({ maxLength: 12 }) }),
+        },
+        { requiredKeys: ["path", "bytes"] },
+      ),
+      { maxLength: 6 },
     ),
-    { maxLength: 6 },
-  ),
-});
+    queues: fc.array(cursorArb, { minLength: 1, maxLength: 4 }),
+  },
+  { requiredKeys: ["generation", "tombstoneSeq", "through", "runs"] },
+);
 
 const walRowArb: fc.Arbitrary<RowOp[]> = fc.array(
   fc.oneof(

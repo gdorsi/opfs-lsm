@@ -71,7 +71,8 @@ export async function mergeNextStep(
  * Swap the step's inputs for its output in the recorded generation and
  * record the result in IDB. The inputs and the old manifests stay on
  * disk: tabs may still read them, so the host retires them (see
- * `EngineHost.reclaim`). Run under the ingest lock.
+ * `EngineHost.reclaim`). Run under the ingest lock. The queue cursors
+ * stay as they are: the runs still hold the same records.
  */
 export async function installStep(
   fs: AsyncFs,
@@ -93,6 +94,7 @@ export async function installStep(
     runs,
     tombstoneSeq: Math.max(meta.tombstoneSeq, step.droppedSeq),
     through: meta.through,
+    ...(meta.queues && { queues: meta.queues }),
   });
   await wal.raiseGeneration(generation);
   return generation;

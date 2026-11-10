@@ -1,5 +1,6 @@
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
+import type { LogId, QueueCursor } from "../host/queues.js";
 import { crc32 } from "./crc32.js";
 import { encodeRun } from "./engine.js";
 import type { RunEnd, SstEntry } from "./sst.js";
@@ -8,8 +9,12 @@ const GEN_PREFIX = "m/";
 const L0_PREFIX = "l0/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-/** Version 3 records each run's byte size next to its key range. */
-const GEN_VERSION = 3;
+/** Version 4 adds the ingest queue cursors after the runs. */
+const GEN_VERSION = 4;
+/** Version 3 records each run's byte size next to its key range, and has no cursors. */
+const GEN_VERSION_NO_QUEUES = 3;
+/** A cursor's state byte is its index here. */
+const CURSOR_STATES = ["open", "final", "damaged"] as const;
 
 /**
  * A run of the generation: what the encoder reported when it wrote the file
@@ -34,6 +39,11 @@ export type GenerationMeta = {
    * manifest is the fold of one log prefix (design.md, "Recovery").
    */
   readonly through: number;
+  /**
+   * How far each per-tab log is in the runs, committed in the same file as
+   * the runs that hold those records. Absent: no cursors.
+   */
+  readonly queues?: readonly QueueCursor[];
 };
 
 /** The empty database: no runs, no seqs. */
@@ -46,11 +56,19 @@ function genPath(generation: number): string {
 export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const enc = new TextEncoder();
   const paths = meta.runs.map((r) => enc.encode(r.path));
+  const queues = (meta.queues ?? []).map((c) => ({
+    state: CURSOR_STATES.indexOf(c.state),
+    log: enc.encode(c.log),
+    n: c.n,
+    reason: c.state === "damaged" ? enc.encode(c.reason) : undefined,
+  }));
   let size = 4 + 4 + 8 + 8 + 8 + 4;
   meta.runs.forEach((r, i) => {
     size += 2 + paths[i]!.byteLength + 4 + 1;
     if (r.range) size += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
   });
+  size += 4;
+  for (const q of queues) size += 1 + 2 + q.log.byteLength + 4 + (q.reason ? 2 + q.reason.byteLength : 0);
   size += 4;
   const out = new Uint8Array(size);
   const view = new DataView(out.buffer);
@@ -84,6 +102,20 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
       o += key.byteLength;
     }
   });
+  view.setUint32(o, queues.length, true);
+  o += 4;
+  const text = (bytes: Uint8Array) => {
+    view.setUint16(o, bytes.byteLength, true);
+    out.set(bytes, o + 2);
+    o += 2 + bytes.byteLength;
+  };
+  for (const q of queues) {
+    out[o++] = q.state;
+    text(q.log);
+    view.setUint32(o, q.n, true);
+    o += 4;
+    if (q.reason) text(q.reason);
+  }
   view.setUint32(o, crc32(out.subarray(0, o)), true);
   return out;
 }
@@ -96,7 +128,8 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   if (view.getUint32(0, true) !== GEN_MAGIC) {
     throw new CorruptDatabaseError("bad generation magic");
   }
-  if (view.getUint32(4, true) !== GEN_VERSION) {
+  const version = view.getUint32(4, true);
+  if (version !== GEN_VERSION && version !== GEN_VERSION_NO_QUEUES) {
     throw new CorruptDatabaseError("bad generation version");
   }
   const generation = Number(view.getBigUint64(8, true));
@@ -122,10 +155,13 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     const at = take(len);
     return buf.slice(at, at + len);
   };
-  for (let i = 0; i < runCount; i++) {
+  const text = (): string => {
     const len = view.getUint16(take(2), true);
     const at = take(len);
-    const path = dec.decode(buf.subarray(at, at + len));
+    return dec.decode(buf.subarray(at, at + len));
+  };
+  for (let i = 0; i < runCount; i++) {
+    const path = text();
     const bytes = view.getUint32(take(4), true);
     if (buf[take(1)] === 1) {
       const smallest = key();
@@ -134,8 +170,18 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
       runs.push({ path, bytes });
     }
   }
+  const queues: QueueCursor[] = [];
+  const queueCount = version === GEN_VERSION ? view.getUint32(take(4), true) : 0;
+  for (let i = 0; i < queueCount; i++) {
+    const state = CURSOR_STATES[buf[take(1)]!];
+    const log = text() as LogId;
+    const n = view.getUint32(take(4), true);
+    if (state === "damaged") queues.push({ log, state, n, reason: text() });
+    else if (state) queues.push({ log, state, n });
+    else throw new CorruptDatabaseError("bad queue cursor state");
+  }
   if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
-  return { generation, runs, tombstoneSeq, through };
+  return queues.length > 0 ? { generation, runs, tombstoneSeq, through, queues } : { generation, runs, tombstoneSeq, through };
 }
 
 /** The numbers of the manifest files in `m/`, newest first. */

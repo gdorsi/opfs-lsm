@@ -15,6 +15,11 @@ import {
   publishL0,
 } from "../src/store/generation.js";
 import { encodeRun, sstKeyRange } from "../src/store/sst.js";
+import { checkDbName } from "../src/check.js";
+import { installStep } from "../src/host/compact.js";
+import type { LogId, QueueCursor } from "../src/host/queues.js";
+import { IdBWal } from "../src/idb/wal.js";
+import { loadGeneration, publishRun } from "../src/store/generation.js";
 
 const NAME = "generation-coherence";
 const enc = new TextEncoder();
@@ -55,6 +60,50 @@ describe("manifest", () => {
       through: 9,
     };
     expect(decodeGeneration(encodeGeneration(meta))).toEqual(meta);
+  });
+
+  const queues: QueueCursor[] = [
+    { log: "00000000000000a1" as LogId, state: "open", n: 7 },
+    { log: "00000000000000b2" as LogId, state: "final", n: 0 },
+    { log: "00000000000000c3" as LogId, state: "damaged", n: 2 ** 32 - 1, reason: "bad frame é" },
+  ];
+
+  it("round-trips the queue cursors", () => {
+    const meta = { generation: 5, runs: [{ path: "l0/1-3.sst", bytes: 10 }], tombstoneSeq: 0, through: 3, queues };
+    expect(decodeGeneration(encodeGeneration(meta))).toEqual(meta);
+  });
+
+  it("reads a version 3 manifest, which has no cursors, as a manifest with none", () => {
+    const meta = { generation: 2, runs: [{ path: "l0/1-1.sst", bytes: 90 }], tombstoneSeq: 1, through: 7 };
+    const v4 = encodeGeneration(meta);
+    const v3 = new Uint8Array(v4.byteLength - 4);
+    v3.set(v4.subarray(0, v3.byteLength - 4));
+    new DataView(v3.buffer).setUint32(4, 3, true);
+    new DataView(v3.buffer).setUint32(v3.byteLength - 4, crc32(v3.subarray(0, v3.byteLength - 4)), true);
+    const got = decodeGeneration(v3);
+    expect(got).toEqual(meta);
+    expect(got.queues).toBeUndefined();
+  });
+
+  it("refuses a cursor state it does not know", () => {
+    const buf = encodeGeneration({ generation: 1, runs: [], tombstoneSeq: 0, through: 0, queues: [queues[0]!] });
+    buf[40] = 3;
+    new DataView(buf.buffer).setUint32(buf.byteLength - 4, crc32(buf.subarray(0, buf.byteLength - 4)), true);
+    expect(() => decodeGeneration(buf)).toThrow(CorruptDatabaseError);
+  });
+
+  it("keeps the base's cursors through a compaction install", async () => {
+    const fs = new MemoryFs();
+    const wal = await IdBWal.open(checkDbName(NAME));
+    try {
+      await publishRun(fs, "l0/1-3.sst", new Uint8Array([1]));
+      await publishGeneration(fs, { generation: 1, runs: [{ path: "l0/1-3.sst", bytes: 1 }], tombstoneSeq: 0, through: 3, queues });
+      const generation = await installStep(fs, wal, { inputs: ["l0/1-3.sst"], outputs: [{ path: "l1/c2.0.sst", bytes: 1 }], droppedSeq: 0 });
+      expect(generation).toBe(2);
+      expect((await loadGeneration(fs, 2))?.queues).toEqual(queues);
+    } finally {
+      wal.close();
+    }
   });
 
   it.each([1, 2])("refuses a version %i manifest, which has no run sizes, rather than read it as version 3", (version) => {
