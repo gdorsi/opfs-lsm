@@ -2,6 +2,26 @@
   "name": "@opfs-lsm/kv",
   "version": "0.1.0",
   "description": "Browser KV: shared IDB WAL + OPFS LSM (SST ingest)",
+  "keywords": [
+    "opfs",
+    "indexeddb",
+    "lsm",
+    "key-value",
+    "storage",
+    "browser",
+    "wasm"
+  ],
+  "homepage": "https://github.com/gdorsi/opfs-lsm#readme",
+  "bugs": {
+    "url": "https://github.com/gdorsi/opfs-lsm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gdorsi/opfs-lsm.git",
+    "directory": "packages/kv"
+  },
+  "author": "Guido D'Orsi",
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": {
@@ -24,6 +44,7 @@
   "scripts": {
     "build:wasm": "sh ../../crates/engine-wasm/build.sh",
     "build": "sh -c 'test -f wasm/engine.wasm || pnpm run build:wasm' && tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build",
     "test": "pnpm run build && vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run",
@@ -38,7 +59,9 @@
     "fuzz:corpus": "tsx fuzz/make-corpus.ts",
     "fuzz:jazzer": "tsx fuzz/jazzer/run.ts"
   },
-  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@jazzer.js/core": "4.0.0",
     "esbuild": "0.28.2",

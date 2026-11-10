@@ -1,6 +1,13 @@
 {
   "name": "opfs-async",
   "private": true,
+  "description": "Monorepo for opfs-lsm, a browser key-value store on OPFS and IndexedDB",
+  "license": "MIT",
+  "author": "Guido D'Orsi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gdorsi/opfs-lsm.git"
+  },
   "packageManager": "pnpm@10.33.2",
   "engines": {
     "node": ">=22"
