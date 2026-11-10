@@ -1,11 +1,11 @@
 ---
 name: verify-opfs-lsm
-description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/collections — SharedWorker two-tab visibility and the bench/ suite (kv vs IndexedDB, collections vs Dexie, Automerge and Yjs adapters, every read checked). Use when changing openDb, SharedWorker ingest, WAL/SST visibility across tabs, collections put/get/where, the Automerge or Yjs adapters, or any claim that MemoryFs unit tests alone cannot prove."
+description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/collections: SharedWorker two-tab visibility and the bench/ suite (kv vs IndexedDB, collections vs Dexie, Automerge and Yjs adapters, every read checked). Use when changing openDb, the per-tab logs, SharedWorker ingest, visibility across tabs, collections put/get/where, the Automerge or Yjs adapters, or any claim that MemoryFs unit tests alone cannot prove."
 ---
 
 # Verify @opfs-lsm (real Chrome)
 
-This skill proves browser behavior the way a integrating developer hits it: headless Chrome, IndexedDB WAL, OPFS SST files, SharedWorker ingest. It does **not** replace the formal suite in `verify-kv` (`pnpm --filter @opfs-lsm/kv formal:kv`). Use both: formal for exhaustive small models, this skill for the real stack.
+This skill proves browser behavior the way a integrating developer hits it: headless Chrome, per-tab OPFS logs written by dedicated WebWorkers, OPFS SST files, SharedWorker ingest. It does **not** replace the formal suite in `verify-kv` (`pnpm --filter @opfs-lsm/kv formal:kv`). Use both: formal for exhaustive small models, this skill for the real stack.
 
 Primary surface: repo-native Chrome harnesses: the two-tab proof in `packages/kv` and the benchmark suite in `bench/`. There is no product UI, CLI, or long-lived server. Secondary surfaces (unit tests with `MemoryFs`, formal checkers) are out of scope here.
 
@@ -75,7 +75,7 @@ Harness mapping (repo-native; do not invent a second browser stack):
 Stable proof strings (from harness stdout, not DOM coordinates):
 
 - Two-tab SharedWorker: `tabs=2`, `mode=SharedWorker`, `two-tab ok`, exit `0`.
-- Two-tab local: `tabs=1`, `mode=local EngineHost`, `two-tab ok`, exit `0`.
+- Two-tab local: `tabs=1`, `mode=local Host`, `two-tab ok`, exit `0`.
 - Bench and bench-smoke: one `## <family>/<workload>: <title>` section per workload with a row per contender, no `## Failed runs` section, exit `0`. Every read is checked against a model, so exit `0` means every value was right.
 
 Pages (served only while a drive runs): `#run` / `#out` in `packages/kv/proof/two-tab.html`. Auto mode uses `?auto=1`; agents should not click `Run` unless debugging a hung auto session. The bench pages are built into `bench/.out` and driven by `bench/cli.ts`.
@@ -98,7 +98,7 @@ Proof standards:
 
 - Exercise the SharedWorker + OPFS path (default harness). `MemoryFs`, `forceMemory`, and vitest alone do not count as browser proof.
 - Capture the action log and the resulting assertions the harness already prints (`two-tab ok`, post-ingest gets), not only exit code.
-- Side effects the harness checks: cross-tab get after put, pinned view across peer ingest, range after ingest, warm and post-ingest point gets. Do not stub IndexedDB/OPFS/SharedWorker.
+- Side effects the harness checks: a tab's own write at ack, cross-tab get after `sync()`, pinned view across a peer write and ingest, cross-tab visibility with no `sync()` (`visible_ms=`), range, warm and post-ingest point gets. Do not stub OPFS, the dedicated WebWorkers or the SharedWorker.
 - Timing rows are evidence of a completed path. A performance claim needs `--reps 5` or more and `node bench/cli.ts compare` (see `features/bench.md`).
 
 ## Cleanup
@@ -124,7 +124,7 @@ Removes nothing on disk: every harness uses a fresh temp profile. Does **not** d
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-Formal properties (NoLostAcks, WalOverSst, ViewPin, CompactPreserve): use `.agents/skills/verify-kv/SKILL.md`, not this skill.
+Formal properties (NoLostAcks, OwnOverRuns, ViewPin, CompactPreserve, IngestPlan): use `.agents/skills/verify-kv/SKILL.md`, not this skill. The crash loop (`kill-chrome`) and the log writer proof (`log-queue`) are run directly; see `docs/verification.md`.
 
 ## Feature map
 

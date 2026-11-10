@@ -1,11 +1,11 @@
-# Two-tab local EngineHost
+# Two-tab local Host
 
-Local EngineHost runs the two-handle put/ingest/get scenario inside one page with a shared in-page `EngineHost` and BrowserFs, without a SharedWorker. Use it to prove the local ingest client path, not multi-tab SharedWorker coordination.
+Local Host runs the two-handle scenario inside one page with one `Host` (from `@opfs-lsm/kv/testing`) on the page over BrowserFs, without a SharedWorker. Each handle's log is still written by its own dedicated WebWorker. Use it to prove the in-page host path, not multi-tab SharedWorker coordination.
 
 ## Sub-features
 
-- `local-open` opens two handles on one OPFS BrowserFs and one local ingest client.
-- `local-scenario` runs the same pin / fresh get / range / reverse-get checks as SharedWorker two-tab.
+- `local-open` opens two handles on one OPFS BrowserFs and one `Host` on the page.
+- `local-scenario` runs the same checks as SharedWorker two-tab, `visible_ms=` included.
 
 ## How to get to it (user POV)
 
@@ -20,7 +20,7 @@ Preconditions:
 
 - **Run local two-tab.** Execute `.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-local`. Exit code `0`.
 - **Confirm one page.** Stdout contains `tabs=1`.
-- **Confirm local mode.** Stdout contains `mode=local EngineHost` and `two-tab ok`.
+- **Confirm local mode.** Stdout contains `mode=local Host` and `two-tab ok`.
 - **Proof.** Keep `artifacts/two-tab-local/<run-id>/stdout.txt`. Do not label this run as SharedWorker proof.
 
 ## Gotchas

@@ -2,9 +2,9 @@
 
 A simple, fast and flexible k/v storage for the browsers.
 
-`@opfs-lsm/kv` stores byte keys and values. The promise from `put` or `batch` is the ack. When that promise resolves, the write is one byte row in the shared IndexedDB write-ahead log (WAL). Sorted SST files in the Origin Private File System (OPFS) hold sealed data after ingest. Every tab of an origin can open the same name. Each name has its own SharedWorker, `opfs-lsm:<name>`, which flushes the WAL into SST files once uningested key and value bytes reach 1 MiB.
+`@opfs-lsm/kv` stores byte keys and values. The promise from `put` or `batch` is the ack. When that promise resolves, the write is one record in this tab's own log, a file in the Origin Private File System (OPFS) that a dedicated WebWorker writes through a SyncAccessHandle and flushes within 100 ms. The tab reads its acked writes from then on. Every tab of an origin can open the same name. Each name has its own SharedWorker, `opfs-lsm:<name>`, which ingests every tab's log into sorted SST files about once a second, or at once when 1 MiB of flushed records waits. The order it ingests in is the only order across tabs: other tabs see a write once it is ingested, and when two tabs write one key, the one ingested last wins.
 
-`@opfs-lsm/collections` builds tables and secondary indexes on the same WAL and OPFS path. Its table API is Dexie-shaped: `put`, `get`, `where`, and `orderBy` over JSON rows.
+`@opfs-lsm/collections` builds tables and secondary indexes on the same logs and OPFS path. Its table API is Dexie-shaped: `put`, `get`, `where`, and `orderBy` over JSON rows.
 
 `@opfs-lsm/yjs` ([packages/yjs](packages/yjs)) is a Yjs provider shaped like y-indexeddb, and `@opfs-lsm/automerge` ([packages/automerge](packages/automerge)) is an automerge-repo storage adapter. Both keep many documents in one kv db.
 
@@ -31,10 +31,11 @@ In the browser, `openDb` opens OPFS and starts that SharedWorker. In Node it use
 
 | Option | Role |
 | --- | --- |
-| `name` | Database name. Tabs that share this name share one WAL. |
-| `memoryBudget` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
+| `name` | Database name. Tabs that share this name share one SharedWorker and one set of SST files. |
+| `memoryBudget` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover this tab's writes not yet ingested, the wasm heap, or values returned to the caller. |
+| `pendingBytes` | Key and value bytes of this tab's writes not yet ingested, at most. Default 32 MiB, at least 1 MiB. Past it a write waits for an ingest and rejects with `CommitError` after 30 s. |
 
-Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB flush.
+Harness knobs used by tests (`forceMemory`, `fs`, `segments`, `host`, `spawn`, `segmentBytes`, `allowEphemeral`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`, with `Host` and its `HostLimits` for an ingest host on the page.
 
 ### `Db`
 
@@ -42,17 +43,17 @@ Keys and values are `Uint8Array`.
 
 | Method | Role |
 | --- | --- |
-| `get(key)` | Point read from the memtable and SST files. Does not touch IndexedDB. |
-| `put(key, value)` | Append one put. Resolves on WAL ack. |
-| `delete(key)` | Append one delete. Resolves on WAL ack. |
-| `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack. |
-| `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
+| `get(key)` | Point read from this tab's writes not yet ingested, then the SST files. |
+| `put(key, value)` | Append one put to this tab's log. Resolves on the ack. |
+| `delete(key)` | Append one delete. Resolves on the ack. |
+| `batch(build)` | Build puts and deletes synchronously. One record: it applies whole or not at all. Resolves on one ack. |
+| `update(keys, body)` | Read `keys` after this tab's earlier writes, then write what `body` puts. Updates on one tab never lose each other's writes. Across tabs it is last writer wins: another tab's write to the same keys that is ingested later replaces it. |
 | `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `reverse: true` yields the same keys from the largest down, and `limit` keeps the largest. `valueContains` keeps live puts whose current value holds every pattern. |
-| `rangeFollow(range, follow)` | Scan a range, then point-read each follow key, on the memtable and SST generation pinned for the call. |
-| `view(body)` | Read-only snapshot pinned to the WAL head and the installed OPFS generation when the view opens. |
-| `changes(listener)` | Subscribe to durable WAL appends and ingest generation bumps. Returns unsubscribe. |
-| `sync()` | Catch up to every write acked before the call from any tab. |
-| `ingest()` | Flush the memtable now and wait for the compaction it starts. |
+| `rangeFollow(range, follow)` | Scan a range, then point-read each follow key, on one state pinned for the call. |
+| `view(body)` | Read-only snapshot: the installed SST generation and this tab's writes as they were when the view opened. |
+| `changes(listener)` | Subscribe to this tab's acked writes (`local`) and to installs of newer SST generations (`ingest`). Returns unsubscribe. |
+| `sync()` | Install a generation that holds this tab's writes acked before the call and every other tab's writes flushed before it. The SharedWorker asks the other tabs to flush and waits for them at most 500 ms. |
+| `ingest()` | `sync()`, then compaction until a pass installs nothing. |
 | `close()` | Close this tab's handle. |
 
 ```ts
@@ -65,7 +66,7 @@ await db.sync();
 await db.ingest();
 ```
 
-Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, and the error classes (`StorageUnavailableError`, `ClosedError`, and others). The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
+Advanced exports include `prefixBound`, `BrowserFs`, `MemoryFs`, and the error classes (`StorageUnavailableError`, `ClosedError`, and others). The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
 
 ## `@opfs-lsm/collections`
 

@@ -1,12 +1,12 @@
 # Two-tab without BroadcastChannel
 
-Two-tab without BroadcastChannel runs the same peer put/ingest/get scenario while silencing `BroadcastChannel`, proving visibility still works through the WAL and SharedWorker path when BC posts are dropped.
+Two-tab without BroadcastChannel runs the same scenario while silencing `BroadcastChannel` on the pages, so they never hear the SharedWorker's generation notes. It proves `sync()`, `ingest()` and reads of a tab's own writes do not depend on those notes.
 
 ## Sub-features
 
-- `nobc-silence` replaces `BroadcastChannel` so posts are counted but never delivered.
-- `nobc-scenario` runs the full two-tab scenario under SharedWorker.
-- `nobc-bc-used` asserts the replacement saw at least one `postMessage`.
+- `nobc-silence` replaces `BroadcastChannel` on the pages, so nothing is delivered to them.
+- `nobc-scenario` runs the two-tab scenario under SharedWorker. The no-`sync()` visibility step is skipped (`visible_ms skipped`): without the note a tab learns of new generations only from its own calls.
+- `nobc-bc-used` asserts the page opened at least one channel through the replacement.
 
 ## How to get to it (user POV)
 
@@ -21,11 +21,11 @@ Preconditions:
 
 - **Run nobc two-tab.** Execute `.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-nobc`. Exit code `0`.
 - **Confirm mode.** Stdout contains `mode=SharedWorker nobc` and `two-tab ok`.
-- **Confirm BC stub.** Stdout contains `bc_posts=` with a positive count.
-- **Proof.** Keep `artifacts/two-tab-nobc/<run-id>/stdout.txt` including `two-tab ok` and `bc_posts=`.
+- **Confirm BC stub.** Stdout contains `bc_opened=` with a positive count.
+- **Proof.** Keep `artifacts/two-tab-nobc/<run-id>/stdout.txt` including `two-tab ok` and `bc_opened=`.
 
 ## Gotchas
 
 - CI does not run this drive.
 - Run this together with `two-tab` when BroadcastChannel wiring changed. The default `two-tab` drive is the SharedWorker proof.
-- Local EngineHost + nobc is a different combination; this feature drive uses SharedWorker with `TWO_TAB_NOBC=1` only.
+- Local Host + nobc is a different combination; this feature drive uses SharedWorker with `TWO_TAB_NOBC=1` only.

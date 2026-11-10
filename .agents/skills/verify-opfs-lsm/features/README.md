@@ -14,7 +14,7 @@ Formal model checkers live under `verify-kv` and are not listed here.
 
 ## Driving conventions
 
-- Prefer the SharedWorker path (default). Opt into `two-tab-local` only when proving the in-page `EngineHost` path.
+- Prefer the SharedWorker path (default). Opt into `two-tab-local` only when proving the in-page `Host` path.
 - Treat harness stdout as the user-visible proof log (`#out` content posted to `/two-tab-results`, and the bench report tables).
 - Keep env flags literal: `TWO_TAB_NOBC=1`, `TWO_TAB_LOCAL=1`.
 - Every harness closes its Chrome and uses a fresh temp profile, so there is no profile to clean up.
@@ -35,7 +35,7 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior, 
 
 ## Features
 
-- [Two-tab SharedWorker visibility](./two-tab.md) — peer put/get/ingest across two tabs.
-- [Benchmark suite](./bench.md) — `pnpm bench <family>/` for kv vs IndexedDB, collections vs Dexie, the Automerge adapter, and Yjs `KvPersistence`, with every read checked; `bench-smoke` for all of them at size `tiny`.
-- [Two-tab without BroadcastChannel](./two-tab-nobc.md) — same scenario with BC silenced.
-- [Two-tab local EngineHost](./two-tab-local.md) — one page, two handles, no SharedWorker.
+- [Two-tab SharedWorker visibility](./two-tab.md): peer put/get/ingest across two tabs.
+- [Benchmark suite](./bench.md): `pnpm bench <family>/` for kv vs IndexedDB, collections vs Dexie, the Automerge adapter, and Yjs `KvPersistence`, with every read checked; `bench-smoke` for all of them at size `tiny`.
+- [Two-tab without BroadcastChannel](./two-tab-nobc.md): same scenario with BC silenced.
+- [Two-tab local Host](./two-tab-local.md): one page, two handles, no SharedWorker.

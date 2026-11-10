@@ -1,6 +1,6 @@
 ---
 name: verify-kv
-description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility across ingest, WAL-over-SST reads, view pins, compaction merge, and power-loss recovery. Use when changing ingest, WAL, pointGet, view snapshots, SST merge/compaction, reclaim, recovery (reconcile/adopt), or any bug where get/view can disagree with a successful put."
+description: "Formally check @opfs-lsm/kv core promises: a page reads its acked writes across ingest, its own records over the runs, view pins, compaction merge, and the per-tab ingest queues under crashes. Use when changing the per-tab logs, the SharedWorker's ingest round, planIngest or planReclaim, the page's install, pointGet, view snapshots, SST merge/compaction, reclaim, or any bug where get/view can disagree with a successful put."
 ---
 
 # Verify @opfs-lsm/kv (formal suite)
@@ -9,26 +9,30 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 
 | Id | Property (plain) | Harm if broken |
 |---|---|---|
-| **NoLostAcks** | After WAL `put`/`batch` ack, `get` still sees the value until a later write supersedes it — including across `ingestAll`. | Client saw success; later `get` misses because `advanceIngested` beat `publishGeneration`. |
-| **WalOverSst** | Uningested WAL wins over SST (including tombstones). | Stale SST value or resurrected key after delete. |
-| **ViewPin** | `view()` / `ViewSnapshotImpl` get ignores WAL appends after the pin. | Snapshot is not stable mid-callback. |
+| **NoLostAcks** | After a `put`/`batch` ack, `get` on that page sees the value until a later write supersedes it, in every interleaving of more appends, the SharedWorker's ingest round, and the page's install of the manifest that round published. | The page acked a write, then a `get` missed it while the host ingested it. |
+| **OwnOverRuns** | A page's own records that its installed manifest does not cover win over the runs, tombstones included, in `get`, `range` and `view`. Another page reads the runs alone. | A stale run value, a key back after this page deleted it, or a page reading another page's record before it is ingested. |
+| **ViewPin** | `view()` reads the state it opened on while its page writes, ingests and installs, and while another page writes and ingests. | A snapshot changes mid-callback. |
 | **CompactPreserve** | Newest-first SST merge / compaction keeps the same per-key visible entry as layered get. | Compact drops or resurrects keys. |
-| **PowerPrefix** | After any power loss (IndexedDB and OPFS each keep a prefix of their own writes, unordered), the database opens and reads the writes of one log prefix; a process crash keeps every acked write; recovery leaves a healthy database. No power-loss state is refused as corrupt; a missing run of the recorded manifest is refused with nothing written, unless a manifest holding every ingested seq stands in (CorruptRefuse). | Database will not open, reads a state no prefix of the log produced, or recovery drops data still on disk. |
+| **IngestPlan** | Over the per-tab logs: no write and no (log, n) ingested twice; each log in record order and after its pred; no acked record skipped below a cursor or in a final log (except past the first record a fault or crash took from that log); a healthy database opens; a crash with at most one dropped manifest and no fault recovers; once every writer is gone, a drain ingests every acked record that was not lost. Every plan numbers its seqs on from its base's `through`. | Lost or doubled writes, a log applied out of order, or a database that will not open after a crash. |
 
 ## When to run
 
 | Change touches | Run |
 |---|---|
-| `host/ingest.ts`, `idb/wal.ts` (`listUningested`, `advanceIngested`) | full suite (or at least `formal:ingest-visibility`) |
-| `store/merge.ts` `pointGet`, `db.ts` `readKey` / `get` | `formal:wal-over-sst` + ingest |
-| `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
+| `host/queue-host.ts` `ingestQueues` (the round's write order), `db.ts` `install` | `formal:ingest-visibility` |
+| `log/overlay.ts` `OwnQueue`, `db.ts` reads, `store/merge.ts` `pointGet` | `formal:own-over-runs` |
+| `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, the `OwnQueue` or memtable pin | `formal:view-pin` |
 | `store/merge.ts` `latestSstEntry`, `store/fold.ts` `foldEntries`, `store/engine.ts` `mergeSsts`, `host/compact.ts` | `formal:compact-preserve` |
-| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `EngineHost.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair | `formal:power-loss` |
+| `host/queues.ts` (`planIngest`, `planReclaim`, `checkCover`, `RECLAIM_LAG`), the log segment format or scan (`log/`), hand-over and preds, `host/queue-host.ts` reads and reclaim | `formal:ingest-plan` |
 | Unknown / several areas | **`formal:kv`** (all) |
 
 ## Tool and why
 
-Small exhaustive TypeScript checkers (BFS or full finite domains) plus source-sync guards where the model encodes product await/check order. No JVM — uses repo `tsx`/`pnpm`. Ingest step order is **parsed from** `ingest.ts`. View and compact checks also assert the relevant control flow still exists in source, so a missing `mem.pin()` copy or a reversed `latestSstEntry` / `foldEntries` loop fails the suite.
+Small exhaustive TypeScript checkers, run with `tsx`. No JVM.
+
+- `ingest-visibility` models the round and the install, with the step order **parsed from** `ingestQueues` and `DbImpl.install`, and must fail two broken orders.
+- `own-over-runs` and `view-pin` drive **real** pages over `MemoryFs` and a `Host` on the page, through every case of a small domain.
+- `ingest-plan` is a breadth-first search over a model of tabs, logs and the SharedWorker that calls the **real** `planIngest`, `planReclaim` and `checkCover`, and must fail its broken rules.
 
 ## Command
 
@@ -36,7 +40,7 @@ Small exhaustive TypeScript checkers (BFS or full finite domains) plus source-sy
 pnpm --filter @opfs-lsm/kv formal:kv
 ```
 
-Individual: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:power-loss`.
+Individual: `formal:ingest-visibility`, `formal:own-over-runs`, `formal:view-pin`, `formal:compact-preserve`, `formal:ingest-plan`.
 
 Exit `0` = all selected checks pass. Failures print a shortest path (or counterexample inputs) in product words.
 
@@ -44,33 +48,35 @@ Exit `0` = all selected checks pass. Failures print a shortest path (or countere
 
 | Check | Bound |
 |---|---|
-| NoLostAcks | 1 key, ≤2 appends, one in-flight ingest; omits compact, multi-tab cache, crash |
-| WalOverSst | 1 key; all WAL×SST hit kinds (`miss`/`tomb`/two values) on **real** `pointGet` |
-| ViewPin | ≤3 appends; models pin vs live binding; omits SST generation bump mid-view |
+| NoLostAcks | 1 key, ≤3 appends, one round and one install in flight, one page; omits compaction and other pages |
+| OwnOverRuns | 1 key; runs × own record ∈ {none, tombstone, A, B}², 16 pairs, on real pages |
+| ViewPin | Up to 3 actions from {own put, own delete, ingest, other page's put + ingest + sync} inside a view, after none or one before it: 420 sequences on real pages. The newest-write check after the view runs only when this page alone wrote. |
 | CompactPreserve | ≤2 runs, keys `{a,b}`, cell ∈ {miss, put1, put2, del}; omits Bloom false negatives, reclaim races |
-| PowerPrefix | Workloads of ≤6 appends/ingests/compactions (`FORMAL_POWER_CMDS`), every (IndexedDB, OPFS) prefix pair, recovery then 4 more commands, and every pair of the next power loss, 2 deep (`FORMAL_POWER_CRASHES`). Writes are abstract ids, so values and folding are not modeled; one tab, one host, compaction merges every run of the base. Every workload runs with reclaim and again with a tab holding the reclaim lock (no removals). Tab-side retry liveness under the lock is not modeled (crash-enum churn tests). Must also catch 6 broken variants. CorruptRefuse removes each run of the recorded manifest after every workload (with and without the lock). |
+| IngestPlan | Two tabs, ≤2 appends each (`FORMAL_IQ_APPENDS`), ≤3 commits (`FORMAL_IQ_COMMITS`), one record per segment (`FORMAL_IQ_SEGCAP`), up to two dropped manifests. `FORMAL_IQ_FAILED_OPEN=1` adds a successor that cannot open, at about twice the time. About 50 s at the defaults. |
 
-A pass is for the model/domain above, not the whole browser stack (SharedWorker ports, IDB quirks, OPFS crashes).
+A pass is for the model or domain above, not the whole browser stack (SharedWorker ports, OPFS crashes): see `verify-opfs-lsm` and the kill loop in `docs/verification.md`.
+
+Two results are printed as findings, not gated: reclaim lagging one generation survives one dropped manifest but not two (why `RECLAIM_LAG` is 2), and after a dropped manifest the recovery round can ingest a page's write before a write of another log that the page had seen ingested. `tests/sim/crash-enum.test.ts` accepts the same reorder after lost manifests.
 
 ## Reading failures
 
-- **NoLostAcks:** path with `advanceIngested` before `publishGeneration` and model `resolveGet` undefined.
-- **ViewPin:** `view.get` sees a post-pin append; or `db.ts` no longer passes `this.mem.pin()` into `ViewSnapshotImpl`, or `memtable.ts` drops the copy-on-write pin.
+- **NoLostAcks:** a path where the manifest is published before its run, or the page drops its own records before it swaps in the runs that hold them, with a task between.
+- **OwnOverRuns / ViewPin:** the (runs, own) pair or the action sequence, and the read that differs.
 - **CompactPreserve:** before/after merge disagree; or `merge.ts` / `fold.ts` no longer newest-first get / oldest-first apply.
-- **PowerPrefix:** the first crash state (what each store kept), then each nested recovery crash, and the read that is not a prefix, the open that fails, or the `checkDatabase`-style problem. `model too weak` means a broken variant passed: the model lost a behavior the product depends on. `source sync` names a product decision the model encodes that the code no longer makes.
-- **Modeling error:** path impossible in TS, or parser/source-sync out of date — fix the formal files, do not weaken the property.
+- **IngestPlan:** the shortest path of tab, SharedWorker and crash steps, then the property it breaks. `model too weak` means a broken rule passed.
+- **Modeling error:** path impossible in TS, or parser out of date: fix the formal files, do not weaken the property.
 
 ## Coverage record
 
 | Check | Code |
 |---|---|
-| NoLostAcks | `ingestAll` order: `publishL0`, `publishGeneration`, `advanceIngested` |
-| WalOverSst | `pointGet` |
-| ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
+| NoLostAcks | `ingestQueues` order (`publishL0`, then `publishGeneration` with the cursors), `DbImpl.install` (swap runs and drop covered own records in one task) |
+| OwnOverRuns | `OwnQueue` over the installed runs in `get`, `range` and `view` |
+| ViewPin | `ViewSnapshotImpl`, `Db.view`, the `OwnQueue` pin |
 | CompactPreserve | `latestSstEntry`, `foldEntries` (TypeScript path of `mergeSsts`) |
-| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestAll` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
+| IngestPlan | `planIngest`, `planReclaim`, `checkCover`, `RECLAIM_LAG` (`host/queues.ts`) |
 
-**Sync commit:** `7f3a256e2d968dd591309d944321d975020b3561` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
+**Sync commit:** `2cfa2d5c856af8364d37431af6cf45e6e5361015`, confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
 ## Intentional product change
 
@@ -83,6 +89,6 @@ Drift without recheck → `/maintain-formal-verification-skill`.
 
 ## Not covered yet (next targets)
 
-- Multi-tab BroadcastChannel versus an SST generation bump.
-- Compaction reclaim versus an open view pin (generation lifetime).
-- `pendingBytes` on the WAL and in `EngineHost` (the ingest trigger). The checks do not model it.
+- `update` across pages (last writer wins): only `tests/sim/multi-handle.test.ts` checks it.
+- A corrupt log segment: the SharedWorker drops that log's records past the damage with only a console error (`tests/sim/corruption.test.ts` prints it).
+- `pendingBytes` and the host's round triggers (`batchBytes`, `maxLatencyMs`). The checks do not model them.
