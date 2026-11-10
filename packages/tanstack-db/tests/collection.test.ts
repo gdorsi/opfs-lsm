@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, test } from "node:test";
 import type { ChangeEvent, Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
-import { createCollection, createTransaction } from "@tanstack/db";
+import { collectionOptions, createCollection, createTransaction, DbClient } from "@tanstack/db";
 import { kvCollectionOptions } from "../src/index.ts";
 
 type Todo = { id: string; title: string };
@@ -302,6 +302,32 @@ test("collections with one name on two dbs each persist only their own rows of a
 
   assert.deepEqual(plain(x.toArray), [{ id: "x", title: "in x" }]);
   assert.deepEqual(plain(y.toArray), [{ id: "y", title: "in y" }]);
+});
+
+test("the default id names the db, so one collection name on two dbs gives two ids", async () => {
+  const first = dbName();
+  const x = todos(await open(first));
+  const y = todos(await open(dbName()));
+
+  assert.equal(x.id, `opfs-lsm:${first}:todos`);
+  assert.notEqual(x.id, y.id);
+});
+
+test("one options descriptor serves two DbClients, each with its own collection", async () => {
+  const db = await open(dbName());
+  const options = collectionOptions(kvCollectionOptions({ db, name: "todos", getKey: (t: Todo) => t.id }));
+  const a = new DbClient().collection(options);
+  const b = new DbClient().collection(options);
+  collections.push(a, b);
+  await Promise.all([a.preload(), b.preload()]);
+  assert.notEqual(a, b);
+
+  const tx = createTransaction({ mutationFn: ({ transaction }) => a.utils.acceptMutations(transaction) });
+  tx.mutate(() => a.insert({ id: "1", title: "from a" }));
+  await tx.when("settled");
+  await until(b, () => b.has("1"), "the row in the second client");
+
+  assert.deepEqual(plain(b.toArray), [{ id: "1", title: "from a" }]);
 });
 
 test("closing the db fails the collection, keeps its rows and rejects later writes", async () => {

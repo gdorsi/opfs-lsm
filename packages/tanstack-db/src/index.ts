@@ -1,4 +1,5 @@
 import { ClosedError, prefixBound, type ChangeEvent, type Db, type Entry } from "@opfs-lsm/kv";
+import { withCollectionConfigFactory } from "@tanstack/db";
 import type {
   BaseCollectionConfig,
   ChangeMessageOrDeleteKeyMessage,
@@ -57,12 +58,16 @@ export function kvCollectionOptions<TSchema extends StandardSchemaV1, TKey exten
 export function kvCollectionOptions<T extends object, TKey extends string | number = string | number>(
   config: KvCollectionConfig<T, never, TKey> & { schema?: never },
 ): CollectionConfig<T, TKey, never, KvCollectionUtils> & { id: string; utils: KvCollectionUtils; schema?: never };
-export function kvCollectionOptions(
-  config: KvCollectionConfig<Row, StandardSchemaV1>,
-): CollectionConfig<Row, RowKey, StandardSchemaV1, KvCollectionUtils> & { id: string; utils: KvCollectionUtils } {
+export function kvCollectionOptions(config: KvCollectionConfig<Row, StandardSchemaV1>): KvOptions {
+  return build(config);
+}
+
+type KvOptions = CollectionConfig<Row, RowKey, StandardSchemaV1, KvCollectionUtils> & { id: string; utils: KvCollectionUtils };
+
+function build(config: KvCollectionConfig<Row, StandardSchemaV1>): KvOptions {
   const { db, name, codec = jsonCodec<Row>(), ...base } = config;
   const prefix = collectionPrefix(name);
-  const id = base.id ?? `opfs-lsm:${name}`;
+  const id = base.id ?? `opfs-lsm:${db.name}:${name}`;
   let current: Run | undefined;
   let owner: unknown;
 
@@ -78,7 +83,6 @@ export function kvCollectionOptions(
   };
 
   const persist = async (mutations: ReadonlyArray<PendingMutation<any>>): Promise<void> => {
-    // By instance, not id: the same `name` on two dbs yields the same default id.
     const mine = mutations.filter((m) => m.collection === owner);
     if (mine.length === 0) return;
     await db.batch((tx) => {
@@ -97,7 +101,7 @@ export function kvCollectionOptions(
   const handler = ({ transaction }: { transaction: { mutations: ReadonlyArray<PendingMutation<any>> } }) =>
     persist(transaction.mutations);
 
-  return {
+  const options: KvOptions = {
     ...base,
     id,
     sync: { sync, rowUpdateMode: "full" },
@@ -106,6 +110,8 @@ export function kvCollectionOptions(
     onDelete: handler,
     utils: { acceptMutations: (transaction) => persist(transaction.mutations) },
   };
+  // This object holds one collection's run, so each DbClient gets its own.
+  return withCollectionConfigFactory(options, () => build({ ...config, id }));
 }
 
 type Row = Record<string, unknown>;
