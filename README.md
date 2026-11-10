@@ -73,7 +73,20 @@ await db.sync();
 await db.ingest();
 ```
 
-Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, and the error classes (`StorageUnavailableError`, `ClosedError`, and others). The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
+### Errors
+
+Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A host error keeps its class when it crosses the SharedWorker port.
+
+| Class | `code` | Meaning | What to do |
+| --- | --- | --- | --- |
+| `StorageUnavailableError` | `unavailable` | The page has no SharedWorker or OPFS, or the browser's IndexedDB store failed to open. `cause` holds the browser's error when there is one. | For a failed IndexedDB open, retry `openDb`, or reload the page. Chrome can damage its own IndexedDB store when it crashes, and then deletes it or keeps failing the open. If it deletes it, the writes not yet flushed to OPFS are lost and the flushed data is kept. |
+| `StorageFullError` | `quota` | The browser refused a flush or compaction write because the origin is out of storage quota. | Free space, then call `ingest()` again. The acked writes stay in the WAL. |
+| `CorruptDatabaseError` | `corrupt` | A file of the database does not decode, or a file it needs is gone. | Do not retry. The engine changes nothing. |
+| `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
+| `ConstraintError` | `constraint` | A key, value or batch is not valid or is over a limit. | Fix the call. |
+| `ClosedError` | `closed` | The handle is closed. | Open a new one. |
+
+Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, and the error classes above. The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
 
 ## `@opfs-lsm/docstore`
 

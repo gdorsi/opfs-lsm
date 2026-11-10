@@ -138,7 +138,7 @@ What the loop showed on Chrome 156 on macOS (CI runs it on Linux):
 - An OPFS `createWritable` that a tab or the browser abandons leaves the target file as it was, and recovery opens every state these kills leave.
 - Web Locks of a crashed tab and of a closed SharedWorker are released at once.
 - `Target.closeTarget` closes a SharedWorker. A new tab gets a new one, and it ingests.
-- `Storage.overrideQuotaForOrigin` makes OPFS writes fail. Ingest fails, the database stays clean, and ingest works again once the quota is back.
+- `Storage.overrideQuotaForOrigin` makes OPFS writes fail. Ingest fails with `StorageFullError`, the database stays clean, and ingest works again once the quota is back. Any other error under the quota fails the iteration.
 
 What it does not show:
 
@@ -150,11 +150,11 @@ What it does not show:
 
 Four behaviours it found:
 
-- After `kill -9` of the browser or `Browser.crash`, Chrome sometimes damages its own IndexedDB store for the origin: the LevelDB directory gets a `corruption_info.json` ("Internal error opening backing store for indexedDB.open.") and `CURRENT` names a `MANIFEST` file that is gone. In 13 of 149 browser kills, a later launch failed `indexedDB.open` with that `UnknownError`, and then Chrome deleted every IndexedDB database of the origin. OPFS was untouched. Once, Chrome kept failing every `indexedDB.open` on that profile for the rest of the run instead. To the engine a deleted WAL is an IndexedDB power loss: recovery records the newest intact manifest and moves `head` past it, so the database is a log prefix and only the WAL tail is lost. Every such iteration since the harness drains Chrome's helpers passed. Two iterations from before the drain lost data after such a wipe, and are not explained (research note, "Phase 5 results"). An `openDb` that meets the failed open rejects with the raw `UnknownError`, not an `OpfsLsmError`.
+- After `kill -9` of the browser or `Browser.crash`, Chrome sometimes damages its own IndexedDB store for the origin: the LevelDB directory gets a `corruption_info.json` ("Internal error opening backing store for indexedDB.open.") and `CURRENT` names a `MANIFEST` file that is gone. In 13 of 149 browser kills, a later launch failed `indexedDB.open` with that `UnknownError`, and then Chrome deleted every IndexedDB database of the origin. OPFS was untouched. Once, Chrome kept failing every `indexedDB.open` on that profile for the rest of the run instead. To the engine a deleted WAL is an IndexedDB power loss: recovery records the newest intact manifest and moves `head` past it, so the database is a log prefix and only the WAL tail is lost. Every such iteration since the harness drains Chrome's helpers passed. Two iterations from before the drain lost data after such a wipe, and are not explained (research note, "Phase 5 results"). An `openDb` that meets the failed open rejects with `StorageUnavailableError`, and the `UnknownError` is its `cause`.
 
-- After `kill -9` of the browser mid-`createWritable`, the writer's swap file stays in OPFS as `<name>.crswap`, visible to directory listings. Chrome does not remove it after a relaunch. In a level directory, reclaim takes it for an orphan run and removes it. In `m/` the engine skips the name and nothing removes it, so each browser crash during a manifest write leaks one file. `checkDatabase` lists these as `swapFiles`, not as problems. The loop prints `swap files in the database directory` when it sees one, and the summary prints the most it saw.
+- After `kill -9` of the browser mid-`createWritable`, the writer's swap file stays in OPFS as `<name>.crswap`, visible to directory listings. Chrome does not remove it after a relaunch. In a level directory, reclaim takes it for an orphan run and removes it. In `m/`, manifest reclaim removes it once the recorded generation reaches its number, which is the next flush. A swap file numbered past the recorded generation can belong to a write in progress, so it stays. `checkDatabase` lists these as `swapFiles`, not as problems. The loop prints `swap files in the database directory` when it sees one, and the summary prints the most it saw.
 - While DevTools is attached to the SharedWorker, a tab that opens the database after `Target.closeTarget` gets no working SharedWorker, and its `ingest()` never settles. Detached, a new one starts. The `worker-locks` probe detaches before it closes the worker.
-- Under the OPFS quota, `ingest()` rejects in the tab with a plain `Error` whose message is Chrome's `QuotaExceededError` text. The host's `QuotaExceededError` is not an `OpfsLsmError`, so the port carries no code and the class is lost. It is loud, and nothing is corrupt, but no typed error says the storage is full.
+- Under the OPFS quota, `ingest()` rejects in the tab with `StorageFullError` (code `quota`), whose message is Chrome's `QuotaExceededError` text. The host maps the `QuotaExceededError` name to the code before the reply (`codeOfError`).
 
 ## Run the formal suite
 
@@ -259,7 +259,7 @@ Each bug the fuzzers found is kept as a regression test reduced to one input: `p
 | WAL row above `ingestedThrough` | none | A row cut short, a row that is not an `ArrayBuffer`, or a missing row fails `openDb` with `CommitError` (`corrupt wal row`, `wal gap`). A row changed into other valid ops reads as those ops. |
 | WAL `meta` | none | A value that is not a number reads as 0. With `head` 0 a tab misses the WAL tail. With `generation` naming no manifest, recovery records the intact one and loses nothing. |
 
-Over the SharedWorker port, a host error keeps its class: the port carries the `OpfsLsmError` code, and the tab rethrows `CorruptDatabaseError`, `CommitError` and the others (`errorOfCode`). Any other error arrives as a plain `Error`.
+Over the SharedWorker port, a host error keeps its class: the port carries the `OpfsLsmError` code, and the tab rethrows `CorruptDatabaseError`, `CommitError` and the others (`errorOfCode`). A `QuotaExceededError` from a host write arrives as `StorageFullError`. Any other error arrives as a plain `Error` with the host's message.
 
 ## Run the static checks
 
