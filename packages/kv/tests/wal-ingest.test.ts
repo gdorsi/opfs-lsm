@@ -65,7 +65,7 @@ describe("shared IDB WAL", () => {
     const b = await openHarnessDb({ name: "notes", writerId: "w2", fs });
     const arrived = new Promise<void>((resolve) => {
       a.changes((ev) => {
-        if (ev.writerId === "w2") resolve();
+        if (ev.kind === "append") resolve();
       });
     });
     await b.put(utf("k"), utf("b"));

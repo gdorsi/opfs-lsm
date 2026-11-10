@@ -10,6 +10,7 @@ export {
   type ChangeEvent,
   type ChangeListener,
   type ChangeKind,
+  type ChangeOp,
 } from "./db.js";
 export {
   OpfsLsmError,

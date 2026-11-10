@@ -26,7 +26,7 @@ import {
 import { holdingFiles, layersChannel, type IngestClient } from "./host/protocol.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
-import { Memtable, type MemRow } from "./store/memtable.js";
+import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
@@ -54,7 +54,7 @@ import {
 } from "./changes.js";
 
 export type { ViewSnapshot } from "./view.js";
-export type { ChangeEvent, ChangeListener, ChangeKind } from "./changes.js";
+export type { ChangeEvent, ChangeListener, ChangeKind, ChangeOp } from "./changes.js";
 
 /** Public open options. Apps pass a database name; the library owns the rest. */
 export type OpenOptions = {
@@ -175,15 +175,19 @@ export interface BatchTx {
 export interface Db {
   readonly writerId: WriterId;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
-  put(key: Uint8Array, value: Uint8Array): Promise<void>;
-  delete(key: Uint8Array): Promise<void>;
+  /** Resolves with the WAL seq of the record, as `batch` does. */
+  put(key: Uint8Array, value: Uint8Array): Promise<number>;
+  /** Resolves with the WAL seq of the record, as `batch` does. */
+  delete(key: Uint8Array): Promise<number>;
   /**
    * `build` runs synchronously. Promise resolves after the shared IDB WAL
-   * commit. Other tabs see the write when its BroadcastChannel message
-   * arrives, a moment after the ack, or after their next `sync()`. The ingest host
-   * flushes the WAL to OPFS per ingestPolicy.
+   * commit, with the record's seq. A batch with no ops writes nothing and
+   * resolves with the seq this handle has applied through. Other tabs see
+   * the write when its BroadcastChannel message arrives, a moment after the
+   * ack, or after their next `sync()`. The ingest host flushes the WAL to
+   * OPFS per ingestPolicy.
    */
-  batch(build: (tx: BatchTx) => void): Promise<void>;
+  batch(build: (tx: BatchTx) => void): Promise<number>;
   /**
    * Read `keys` and write, in one IndexedDB transaction. `body` runs
    * synchronously with the current values, in the order of `keys`. No other
@@ -210,9 +214,9 @@ export interface Db {
    */
   view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T>;
   /**
-   * Subscribe to durable WAL appends and ingest generation bumps.
-   * Fires for this tab's writes and for other tabs (via BroadcastChannel).
-   * Returns an unsubscribe function.
+   * Subscribe to every WAL record this handle applies, with its ops, from
+   * this tab and from other tabs, in seq order (`ChangeEvent`). Returns an
+   * unsubscribe function.
    */
   changes(listener: ChangeListener): () => void;
   /**
@@ -476,6 +480,10 @@ class DbImpl implements Db {
   private syncing: Promise<void> | undefined;
   private syncAgain = false;
   private readonly changeBus = new ChangeBus();
+  /** Applied and not yet announced, in seq order. Drained outside IndexedDB callbacks. */
+  private unannounced: ChangeEvent[] = [];
+  /** A repair may have recorded another manifest, so the next install can change what reads return. */
+  private repaired = false;
   private readonly bus: BroadcastChannel | undefined;
   private readonly onBusMessage: ((ev: MessageEvent) => void) | undefined;
   private readonly pressure: Backpressure;
@@ -506,17 +514,14 @@ class DbImpl implements Db {
   private onMessage(data: BusMessage | null): void {
     if (this.closed || !data || data.writerId === this.writerId) return;
     if (data.kind === "append" && data.seq !== undefined && data.ops) {
-      if (!this.mem.apply({ seq: data.seq, ops: data.ops })) {
+      if (this.applyRecord({ seq: data.seq, ops: data.ops }) === "gap") {
         void this.sync().catch(() => undefined);
       }
+      this.announce();
     } else {
       void this.sync().catch(() => undefined);
+      this.emit({ kind: "ingest", writerId: data.writerId });
     }
-    this.changeBus.emit({
-      kind: data.kind,
-      writerId: data.writerId,
-      ...(data.seq !== undefined ? { seq: data.seq } : {}),
-    });
   }
 
   private ensureOpen(): void {
@@ -528,8 +533,32 @@ class DbImpl implements Db {
     this.bus?.postMessage(message);
   }
 
-  private emitChange(event: ChangeEvent): void {
-    this.changeBus.emit(event);
+  /** The one place a record joins the memtable. */
+  private applyRecord(record: WalRecord): "applied" | "already" | "gap" {
+    const applied = this.mem.apply(record);
+    if (applied === "applied") {
+      this.unannounced.push({ kind: "append", seq: record.seq, ops: record.ops });
+    }
+    return applied;
+  }
+
+  /** The one place the memtable drops rows an installed generation covers. */
+  private advance(through: number): void {
+    if (this.mem.advanceTo(through) || this.repaired) {
+      this.repaired = false;
+      this.unannounced.push({ kind: "gap", through: this.mem.appliedThrough });
+    }
+  }
+
+  private announce(): void {
+    const events = this.unannounced;
+    this.unannounced = [];
+    for (const event of events) this.changeBus.emit(event);
+  }
+
+  private emit(event: ChangeEvent): void {
+    this.unannounced.push(event);
+    this.announce();
   }
 
   /**
@@ -644,10 +673,10 @@ class DbImpl implements Db {
       this.loaded = undefined;
     }
     if (this.installed.generation === tail.generation) {
-      this.mem.advanceTo(tail.ingestedThrough);
+      this.advance(tail.ingestedThrough);
     }
     for (const record of tail.records) {
-      if (!this.mem.apply(record)) {
+      if (this.applyRecord(record) === "gap") {
         throw new CommitError(`wal gap before seq ${record.seq}`);
       }
     }
@@ -718,7 +747,12 @@ class DbImpl implements Db {
     }
     if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
     const memAt = this.trace ? performance.now() : 0;
-    const missing = this.catchUp(tail);
+    let missing: number | undefined;
+    try {
+      missing = this.catchUp(tail);
+    } finally {
+      this.announce();
+    }
     if (this.trace) {
       span(
         this.trace,
@@ -752,17 +786,18 @@ class DbImpl implements Db {
    */
   private async repair(): Promise<void> {
     await reconcile(this.wal, this.fs, CHECK_RECORDED);
+    this.repaired = true;
   }
 
   /**
-   * Join this tab's committed record to the memtable before the ack
-   * resolves. A gap means another tab appended first: catch up, which
-   * reads the record too.
+   * Join this tab's committed record to the memtable and announce it before
+   * the ack resolves. A gap means another tab appended first: catch up,
+   * which reads the record too.
    */
   private async landed(seq: number, ops: readonly CheckedOp[]): Promise<void> {
-    if (!this.mem.apply({ seq, ops }) && !this.closed) await this.sync();
+    if (this.applyRecord({ seq, ops }) === "gap" && !this.closed) await this.sync();
     this.pressure.landed();
-    this.emitChange({ kind: "append", writerId: this.writerId, seq });
+    this.announce();
     this.broadcast({ kind: "append", writerId: this.writerId, seq, ops });
   }
 
@@ -792,12 +827,13 @@ class DbImpl implements Db {
    * nothing and is retried. A tail that names a generation this tab lacks
    * appends nothing either: the tab loads it, and from then on each try
    * holds the reclaim lock, as in `syncOnce`. It first waits out a full
-   * memtable (`admit`).
+   * memtable (`admit`). Resolves with the appended seq, undefined when
+   * `plan` chose no ops, and `plan`'s result.
    */
   private async write<R>(
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
     warm?: () => Promise<unknown>,
-  ): Promise<R> {
+  ): Promise<{ readonly seq: number | undefined; readonly result: R }> {
     if (this.pressure.full) await this.admit();
     let locked = false;
     let gone = 0;
@@ -806,14 +842,16 @@ class DbImpl implements Db {
       const step = async () => {
         let missing: number | undefined;
         let miss: Miss | undefined;
-        const out = await this.wal.appendAfter(this.mem.appliedThrough, (tail) => {
-          missing = this.catchUp(tail);
-          if (missing !== undefined) return undefined;
-          const planned = plan();
-          if (!(planned instanceof Miss)) return planned;
-          miss = planned;
-          return undefined;
-        });
+        const out = await this.wal
+          .appendAfter(this.mem.appliedThrough, (tail) => {
+            missing = this.catchUp(tail);
+            if (missing !== undefined) return undefined;
+            const planned = plan();
+            if (!(planned instanceof Miss)) return planned;
+            miss = planned;
+            return undefined;
+          })
+          .finally(() => this.announce());
         if (out || miss) return { out, miss };
         const whole = missing === undefined || (await this.load(missing));
         if (whole || !locked) return {};
@@ -823,7 +861,7 @@ class DbImpl implements Db {
       const { out, miss } = locked ? await holdingFiles(this.name, step) : await step();
       if (out) {
         if (out.seq !== undefined) await this.landed(out.seq, out.ops);
-        return out.result;
+        return out;
       }
       if (miss) {
         // The next warm reads again and surfaces a real failure.
@@ -878,22 +916,23 @@ class DbImpl implements Db {
     return this.settleInstalled((levels) => pointGetSst(levels, k));
   }
 
-  put(key: Uint8Array, value: Uint8Array): Promise<void> {
+  put(key: Uint8Array, value: Uint8Array): Promise<number> {
     return this.batch((tx) => tx.put(key, value));
   }
 
-  delete(key: Uint8Array): Promise<void> {
+  delete(key: Uint8Array): Promise<number> {
     return this.batch((tx) => tx.delete(key));
   }
 
-  async batch(build: (tx: BatchTx) => void): Promise<void> {
+  async batch(build: (tx: BatchTx) => void): Promise<number> {
     this.ensureOpen();
     const ops = collectBatch(build);
-    if (ops.length === 0) return;
+    if (ops.length === 0) return this.mem.appliedThrough;
     if (this.pressure.full) await this.admit();
     const seq = await this.wal.append(ops);
-    if (seq === undefined) await this.write(() => ({ ops, result: undefined }));
-    else await this.landed(seq, ops);
+    if (seq === undefined) return (await this.write(() => ({ ops, result: undefined }))).seq!;
+    await this.landed(seq, ops);
+    return seq;
   }
 
   async update<T>(
@@ -902,7 +941,7 @@ class DbImpl implements Db {
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
-    return this.write(() => {
+    const out = await this.write(() => {
       const values = this.readKeys(ks, this.installed.levels);
       if (values instanceof Miss) return values;
       let result!: T;
@@ -912,6 +951,7 @@ class DbImpl implements Db {
       });
       return { ops, result };
     }, () => this.settleInstalled((levels) => this.readKeys(ks, levels)));
+    return out.result;
   }
 
   async rangeFollow(
@@ -998,7 +1038,7 @@ class DbImpl implements Db {
       settle,
     );
     if (result.generation !== before) {
-      this.emitChange({ kind: "ingest", writerId: this.writerId });
+      this.emit({ kind: "ingest", writerId: this.writerId });
       this.broadcast({ kind: "ingest", writerId: this.writerId });
     }
     await this.sync();
@@ -1008,6 +1048,7 @@ class DbImpl implements Db {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.emit({ kind: "closed" });
     this.changeBus.clear();
     if (this.bus && this.onBusMessage) {
       this.bus.removeEventListener("message", this.onBusMessage);

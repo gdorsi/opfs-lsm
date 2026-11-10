@@ -50,14 +50,14 @@ Keys and values are `Uint8Array`.
 | Method | Role |
 | --- | --- |
 | `get(key)` | Point read from the memtable and SST files. Does not touch IndexedDB. |
-| `put(key, value)` | Append one put. Resolves on WAL ack. |
-| `delete(key)` | Append one delete. Resolves on WAL ack. |
-| `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack. |
+| `put(key, value)` | Append one put. Resolves on WAL ack, with the record's seq. |
+| `delete(key)` | Append one delete. Resolves on WAL ack, with the record's seq. |
+| `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack, with the record's seq. |
 | `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
 | `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `reverse: true` yields the same keys from the largest down, and `limit` keeps the largest. `valueContains` keeps live puts whose current value holds every pattern. |
 | `rangeFollow(range, follow)` | Scan a range, then point-read each follow key, on the memtable and SST generation pinned for the call. |
 | `view(body)` | Read-only snapshot pinned to the WAL head and the installed OPFS generation when the view opens. |
-| `changes(listener)` | Subscribe to durable WAL appends and ingest generation bumps. Returns unsubscribe. |
+| `changes(listener)` | Subscribe to every WAL record this handle applies, from any tab, with its ops, once each and in seq order. A `gap` event means the handle skipped records a flush folded, so read again. Returns unsubscribe. |
 | `sync()` | Catch up to every write acked before the call from any tab. |
 | `ingest()` | Flush the memtable now and wait for the compaction it starts. |
 | `close()` | Close this tab's handle. |

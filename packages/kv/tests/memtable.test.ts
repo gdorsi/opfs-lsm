@@ -47,7 +47,7 @@ describe("Memtable", () => {
           ops.push(del ? { type: "del", key } : { type: "put", key, value: enc.encode(`v${seq}`) as CheckedValue });
           model.set(k, del ? { key, seq, kind: "del" } : { key, seq, kind: "put", value: enc.encode(`v${seq}`) });
         }
-        expect(mem.apply({ seq, ops })).toBe(true);
+        expect(mem.apply({ seq, ops })).toBe("applied");
       } else if (roll < 92) {
         pins.push({ rows: mem.pin(), want: sorted(model) });
       } else if (roll < 95) {

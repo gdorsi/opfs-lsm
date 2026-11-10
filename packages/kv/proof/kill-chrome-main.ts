@@ -7,7 +7,7 @@
  * `/src/*.js` is served from `dist/`, so `checkDatabase` (tests/sim) and
  * the engine share one module graph and one wasm instance.
  */
-import { CommitError, OpfsLsmError, ensureEngine } from "../src/index.js";
+import { OpfsLsmError, ensureEngine } from "../src/index.js";
 import { openBrowserFs, openHarnessDb } from "../src/testing.js";
 import { checkDatabase, walMeta, walRows } from "../tests/sim/check-database.js";
 import { decodeGeneration, listRuns } from "../src/store/generation.js";
@@ -82,7 +82,7 @@ type WorkResult = {
   error: { n: number; name: string; message: string; typed: boolean } | null;
 };
 
-async function apply(db: Db, ops: readonly WorkOp[]): Promise<void> {
+async function apply(db: Db, ops: readonly WorkOp[]): Promise<number> {
   const only = ops.length === 1 ? ops[0]! : undefined;
   if (only?.type === "put") return db.put(enc.encode(only.key), enc.encode(only.value));
   if (only?.type === "del") return db.delete(enc.encode(only.key));
@@ -103,32 +103,21 @@ async function start(cfg: WorkConfig): Promise<void> {
     writerId,
     ingestPolicy: { maxWalBytes: cfg.maxWalBytes },
   });
-  // This tab's own appends report their seq before the ack resolves
-  // (`landed` in db.ts), and the tab has one write in flight at a time.
-  let ownSeq = 0;
-  db.changes((ev) => {
-    if (ev.kind === "append" && ev.writerId === writerId && ev.seq !== undefined) ownSeq = ev.seq;
-  });
   const state = { stop: false, db, done: Promise.resolve<WorkResult>({ acked: 0, error: null }) };
   state.done = (async (): Promise<WorkResult> => {
     let n = 0;
     for (const ops of attempts(cfg.seed, cfg.iteration, cfg.tab)) {
       if (state.stop) break;
       n += 1;
-      const before = ownSeq;
+      let seq: number;
       try {
-        await apply(db, ops);
+        seq = await apply(db, ops);
       } catch (err) {
         const info = errorInfo(err);
         bind("kcError")(JSON.stringify({ tab: cfg.tab, n, ...info }));
         return { acked: n - 1, error: { n, ...info } };
       }
-      if (ownSeq === before) {
-        const info = errorInfo(new CommitError(`ack of attempt ${n} reported no seq`));
-        bind("kcError")(JSON.stringify({ tab: cfg.tab, n, ...info }));
-        return { acked: n - 1, error: { n, ...info } };
-      }
-      ack(JSON.stringify({ tab: cfg.tab, n, seq: ownSeq }));
+      ack(JSON.stringify({ tab: cfg.tab, n, seq }));
     }
     return { acked: n, error: null };
   })();
@@ -347,10 +336,7 @@ async function restartInPlace(
   let seq: number | null = null;
   try {
     db = await withTimeout(openHarnessDb({ name, writerId: "in-place", ingestPolicy: { maxWalBytes: 1 << 30 } }), 15_000, "open");
-    db.changes((ev) => {
-      if (ev.kind === "append" && ev.writerId === "in-place" && ev.seq !== undefined) seq = ev.seq;
-    });
-    await db.put(enc.encode("~in-place"), enc.encode(value));
+    seq = await db.put(enc.encode("~in-place"), enc.encode(value));
     await withTimeout(db.ingest(), 15_000, "ingest");
     return { ok: true, ms: Math.round(performance.now() - t0), seq, error: null };
   } catch (err) {
