@@ -1,6 +1,7 @@
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
-import type { LogId, QueueCursor } from "../host/queues.js";
+import type { LogFiles, LogId, QueueCursor, RecordN } from "../host/queues.js";
+import { parseLogId, parseSegmentName } from "../log/segment.js";
 import { crc32 } from "./crc32.js";
 import { encodeRun } from "./engine.js";
 import type { RunEnd, SstEntry } from "./sst.js";
@@ -352,4 +353,24 @@ export async function listRuns(fs: AsyncFs): Promise<string[]> {
     for (const name of await fs.list(dir)) out.push(`${dir}/${name}`);
   }
   return out;
+}
+
+/** Every per-tab log in `w/`, each with its segments' firstN ascending. */
+export async function listLogs(fs: AsyncFs): Promise<LogFiles[]> {
+  const logs: LogFiles[] = [];
+  for (const name of await fs.list("w")) {
+    const log = parseLogId(name);
+    if (log) logs.push(await listLog(fs, log));
+  }
+  return logs;
+}
+
+/** The segments of `w/<log>/`, firstN ascending. */
+async function listLog(fs: AsyncFs, log: LogId): Promise<LogFiles> {
+  const segments: RecordN[] = [];
+  for (const name of await fs.list(`w/${log}`)) {
+    const firstN = parseSegmentName(name);
+    if (firstN !== undefined) segments.push(firstN);
+  }
+  return { log, segments: segments.sort((a, b) => a - b) };
 }

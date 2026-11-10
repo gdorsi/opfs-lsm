@@ -41,6 +41,11 @@ export function segmentPath(log: LogId, firstN: RecordN): string {
   return `w/${log}/${String(firstN).padStart(10, "0")}.seg`;
 }
 
+/** The log a directory listed in `w/` holds, or undefined for an entry that is not a log. */
+export function parseLogId(name: string): LogId | undefined {
+  return LOG_ID.test(name) ? (name as LogId) : undefined;
+}
+
 /** The firstN of a file listed in `w/<log>/`, or undefined for a file that is not a segment. */
 export function parseSegmentName(name: string): RecordN | undefined {
   const m = SEGMENT_NAME.exec(name);
