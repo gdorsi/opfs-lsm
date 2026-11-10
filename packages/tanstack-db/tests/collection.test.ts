@@ -28,7 +28,6 @@ async function open(name: string): Promise<Db> {
   return db;
 }
 
-/** A handle that gets no BroadcastChannel message, so it learns of other writes only through `sync()`. */
 async function openWithoutBus(name: string): Promise<Db> {
   const g = globalThis as { BroadcastChannel?: unknown };
   const real = g.BroadcastChannel;
@@ -142,7 +141,6 @@ test("an own insert appears once, and its confirmation only clears $hasPendingWr
   assert.equal(c.get("1")?.$hasPendingWrites, false);
 });
 
-/** `db` whose first `view` pins its snapshot, then waits for `open()` before it reads. */
 function gatedView(db: Db) {
   const reached = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();

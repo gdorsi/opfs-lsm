@@ -1,7 +1,5 @@
-/** The bytes in front of every row key of one collection. Only `collectionPrefix` makes one. */
 export type CollectionPrefix = Uint8Array & { readonly __brand: "CollectionPrefix" };
 
-/** A TanStack row key. -0 is stored as 0 and every NaN as one NaN. */
 export type RowKey = string | number;
 
 /** Row to bytes and back. The default, `jsonCodec`, drops what JSON drops: Date, Map, undefined fields. */
@@ -23,7 +21,6 @@ function utf8(text: string, what: string): Uint8Array {
   return encoder.encode(text);
 }
 
-/** `t`, the name's UTF-8 length as a u16, the name. The length keeps "todo" from prefixing "todos". */
 export function collectionPrefix(name: string): CollectionPrefix {
   const bytes = utf8(name, "collection name");
   if (bytes.length > 0xffff) throw new RangeError("collection name is longer than 65535 UTF-8 bytes");
@@ -35,10 +32,6 @@ export function collectionPrefix(name: string): CollectionPrefix {
   return out as CollectionPrefix;
 }
 
-/**
- * The prefix, then 0x01 and a float64 whose big-endian bytes sort as the
- * numbers do, or 0x02 and the string's UTF-8, which sorts by code point.
- */
 export function encodeRowKey(prefix: CollectionPrefix, key: RowKey): Uint8Array {
   if (typeof key === "string") {
     const bytes = utf8(key, "row key");
@@ -61,7 +54,6 @@ export function encodeRowKey(prefix: CollectionPrefix, key: RowKey): Uint8Array 
   return out;
 }
 
-/** The inverse of `encodeRowKey`. Throws on bytes it does not write. */
 export function decodeRowKey(prefix: CollectionPrefix, bytes: Uint8Array): RowKey {
   if (!hasPrefix(prefix, bytes)) throw new TypeError("key is not in this collection");
   const body = bytes.subarray(prefix.length + 1);
@@ -83,7 +75,6 @@ export function decodeRowKey(prefix: CollectionPrefix, bytes: Uint8Array): RowKe
   }
 }
 
-/** Whether `key` is a row key of the collection `prefix` names. */
 export function hasPrefix(prefix: CollectionPrefix, key: Uint8Array): boolean {
   if (key.length <= prefix.length) return false;
   for (let i = 0; i < prefix.length; i++) if (key[i] !== prefix[i]) return false;

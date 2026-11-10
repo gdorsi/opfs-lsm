@@ -118,22 +118,12 @@ type Row = Record<string, unknown>;
 type SyncParams = Parameters<SyncConfig<Row, RowKey>["sync"]>[0];
 type Append = Extract<ChangeEvent, { kind: "append" }>;
 
-/**
- * loading: a snapshot read is in flight, and appends wait in `buffer` until
- * its seq is known. `done` resolves when the load commits or the run stops.
- * live: appends commit as they arrive. stopped: nothing more is written.
- */
 type Phase = Loading | { readonly kind: "live" } | { readonly kind: "stopped" };
 type Loading = { readonly kind: "loading"; readonly buffer: Append[]; readonly done: PromiseWithResolvers<void> };
 
-/**
- * One TanStack sync run. The kv change feed is the only thing that writes
- * synced rows, own writes included. `through` is the highest seq this run has
- * handed to TanStack.
- */
 class Run {
   private phase: Phase = { kind: "stopped" };
-  private through = 0;
+  private syncedThrough = 0;
   private unsubscribe: (() => void) | undefined;
 
   constructor(
@@ -143,7 +133,6 @@ class Run {
     private readonly p: SyncParams,
   ) {}
 
-  /** Subscribe before the read, so no record lands between the snapshot and the feed. */
   start(): void {
     try {
       this.unsubscribe = this.db.changes((event) => this.onChange(event));
@@ -162,7 +151,6 @@ class Run {
     if (was.kind === "loading") was.done.resolve();
   }
 
-  /** Resolves once this run's synced rows include every record announced so far. */
   settled(): Promise<void> {
     return this.phase.kind === "loading" ? this.phase.done.promise : Promise.resolve();
   }
@@ -171,11 +159,10 @@ class Run {
     switch (event.kind) {
       case "append":
         if (this.phase.kind === "loading") this.phase.buffer.push(event);
-        else if (this.phase.kind === "live" && event.seq > this.through) this.commit(undefined, [event]);
+        else if (this.phase.kind === "live" && event.seq > this.syncedThrough) this.commit(undefined, [event]);
         return;
       case "gap":
-        // A load in flight may have pinned its view before the jump, so it restarts.
-        if (this.phase.kind !== "stopped" && event.through > this.through) this.load();
+        if (this.phase.kind !== "stopped" && event.through > this.syncedThrough) this.load();
         return;
       case "ingest":
         return;
@@ -183,6 +170,10 @@ class Run {
         this.stop();
         this.p.fail(new ClosedError("database is closed"));
         return;
+      default: {
+        const unreachable: never = event;
+        return unreachable;
+      }
     }
   }
 
@@ -221,7 +212,7 @@ class Run {
       );
   }
 
-  /** One sync transaction. `rowUpdateMode: "full"` makes an update an upsert, so no write needs to know whether its row exists. */
+  /** TanStack's partial mode merges an update onto the stored row. `full` replaces it. */
   private commit(snapshot: { readonly at: number; readonly rows: readonly Entry[] } | undefined, events: readonly Append[]): void {
     try {
       const writes: ChangeMessageOrDeleteKeyMessage<Row, RowKey>[] = [];
@@ -246,6 +237,6 @@ class Run {
       this.p.fail(err);
       return;
     }
-    this.through = Math.max(this.through, snapshot?.at ?? 0, events.at(-1)?.seq ?? 0);
+    this.syncedThrough = Math.max(this.syncedThrough, snapshot?.at ?? 0, events.at(-1)?.seq ?? 0);
   }
 }
