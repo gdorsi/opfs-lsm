@@ -98,7 +98,7 @@ describe("unique and text entries", () => {
     const c = coll({ search: { on: "at", text: "title" } });
     const [e] = entries(c, { id: "1", at: 3, title: "Buy MILK, then bread!" });
     expect(e!.key).toEqual(entry(c, "search", [3]).key);
-    expect(new TextDecoder().decode(e!.value)).toBe(" buy milk then bread");
+    expect(new TextDecoder().decode(e!.value)).toBe("buy milk then bread");
     expect(entries(c, { id: "1", at: 3 })).toEqual([]);
   });
 });
@@ -145,7 +145,7 @@ describe("diffEntries", () => {
     const c = coll({ search: { on: "at", text: "title" } });
     const { remove, write } = diffEntries(derive(c, { id, at: 1, title: "old" }), derive(c, { id, at: 1, title: "new" }));
     expect(remove).toEqual([]);
-    expect(write.map((e) => new TextDecoder().decode(e.value))).toEqual([" new"]);
+    expect(write.map((e) => new TextDecoder().decode(e.value))).toEqual(["new"]);
   });
 
   it("removes only the entry of a removed tag", () => {

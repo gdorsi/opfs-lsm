@@ -5,7 +5,7 @@
  *     row       64 CC CC 00 <id>              -> document JSON
  *     sorted    64 CC CC II <v1>..<vn> <id>   -> empty
  *     unique    64 CC CC II <v1>..<vn>        -> <id>
- *     text      64 CC CC II <v1>..<vn> <id>   -> " w1 w2 ..." (lowercased words)
+ *     text      64 CC CC II <v1>..<vn> <id>   -> "w1 w2 ..." (lowercased words)
  *
  * CC CC is a collection id (u16be, 1..65535) and II an index id (1..255);
  * index id 00 is the rows. <id> is raw UTF-8. A value <v> is one of
@@ -229,16 +229,16 @@ function wordsOf(text: string): string[] {
     .filter((w) => w !== "");
 }
 
-/** A text entry's value. A space before every word, so `" tok"` occurs iff some word starts with `tok`. */
+/** A text entry's value. Words hold no space, so a typed word occurs in it iff it occurs inside one word. */
 export function textValue(text: string): Uint8Array {
-  return utf8.encode(` ${wordsOf(text).join(" ")}`);
+  return utf8.encode(wordsOf(text).join(" "));
 }
 
-/** kv keeps an entry iff its value contains every pattern: every typed word starts a word of the text. */
+/** kv keeps an entry iff its value contains every pattern: every typed word occurs inside a word of the text. */
 function matchPatterns(match: string): Uint8Array[] {
   const words = wordsOf(match);
   if (words.length === 0) badQuery("match has no words");
-  return words.map((w) => utf8.encode(` ${w}`));
+  return words.map((w) => utf8.encode(w));
 }
 
 export type ScanTarget =
