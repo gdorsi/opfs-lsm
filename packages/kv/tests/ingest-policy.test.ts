@@ -15,6 +15,7 @@ import {
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
+import { checkDatabase, deleteWal, walStore } from "./sim/check-database.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
@@ -146,7 +147,7 @@ describe("ingest policy", () => {
     await over.close();
   });
 
-  it("drops only the folded bytes from the WAL counter", async () => {
+  it("measures the WAL from the records above ingestedThrough", async () => {
     // Its own database: a host from an earlier test may still be ingesting
     // NAME, and recovery would pair that host's manifests with this WAL.
     const name = `${NAME}-counter`;
@@ -174,10 +175,159 @@ describe("ingest policy", () => {
     expect(await wal.uningestedBytes()).toBe(opsBytes([first]));
     const next = await wal.append([second]);
     expect(next).toBe(2);
-    await wal.advanceIngested(seq ?? 0, 1, opsBytes([first]));
+    await wal.advanceIngested(seq ?? 0, 1);
     expect(await wal.uningestedBytes()).toBe(opsBytes([second]));
     expect((await wal.listUningested()).map((record) => record.seq)).toEqual([2]);
+    await wal.append([first]);
+    expect(await wal.uningestedBytes(1 << 20), "under the cap: exact").toBe(opsBytes([second]) + opsBytes([first]));
+    expect(await wal.uningestedBytes(5), "over the cap: the cap").toBe(5);
     wal.close();
+  });
+
+  it("reports the cap once the total passes it, and the exact total at or under it", async () => {
+    const name = `${NAME}-bytes`;
+    onTestFinished(() => deleteWal(name));
+    const wal = await IdBWal.open(checkDbName(name));
+    const op = (n: number) => [
+      {
+        type: "put" as const,
+        key: checkKey(utf("k")),
+        value: checkValue(new Uint8Array(n)),
+      },
+    ];
+    const size = (n: number) => opsBytes(op(n));
+    await wal.append(op(20));
+    await wal.append(op(18));
+    await wal.append(op(10));
+    const full = size(20) + size(18) + size(10);
+    expect(full).toBe(51);
+    expect(await wal.uningestedBytes()).toBe(full);
+    expect(await wal.uningestedBytes(full + 1), "one over the total: exact").toBe(full);
+    expect(await wal.uningestedBytes(full), "exactly the total").toBe(full);
+    expect(await wal.uningestedBytes(full - 1), "one under the total: the cap").toBe(full - 1);
+    expect(await wal.uningestedBytes(size(20)), "cap on a record boundary, with more left").toBe(size(20));
+    const pastFirst = await wal.uningestedBytes(size(20) - 1);
+    expect(pastFirst, "a record larger than the cap still says the WAL is over it").toBeGreaterThanOrEqual(size(20) - 1);
+    expect(pastFirst).toBeLessThan(full);
+    await wal.advanceIngested(1, 1);
+    const rest = size(18) + size(10);
+    expect(await wal.uningestedBytes(), "ingested rows are not counted").toBe(rest);
+    expect(await wal.uningestedBytes(rest)).toBe(rest);
+    expect(await wal.uningestedBytes(rest - 1)).toBe(rest - 1);
+    wal.close();
+  });
+
+  it("ingests on open exactly when the waiting WAL reaches maxWalBytes", async () => {
+    const limit = 40;
+    const key = utf("k");
+    // Key "k" is one byte, so a value of n bytes counts as n + 1.
+    const cases = [
+      { id: "under", values: [30], total: 31, ingests: false },
+      { id: "exact", values: [39], total: 40, ingests: true },
+      { id: "over", values: [40], total: 41, ingests: true },
+      { id: "two-under", values: [20, 17], total: 39, ingests: false },
+      { id: "two-exact", values: [20, 18], total: 40, ingests: true },
+      // The first record is under the limit. The capped read has to notice the second.
+      { id: "two-over", values: [20, 30], total: 52, ingests: true },
+    ];
+    for (const c of cases) onTestFinished(() => deleteWal(`${NAME}-cap-${c.id}`));
+    for (const { id, values, total, ingests } of cases) {
+      const name = `${NAME}-cap-${id}`;
+      let got = 0;
+      for (const n of values) {
+        got += opsBytes([{ type: "put", key: checkKey(key), value: checkValue(new Uint8Array(n)) }]);
+      }
+      expect(got).toBe(total);
+      const fs = new MemoryFs();
+      const host = new EngineHost(() => fs);
+      const writer = await openHarnessDb({
+        name,
+        writerId: "w",
+        fs,
+        ingest: createLocalIngestClient(host),
+        ingestPolicy: { maxWalBytes: 1 << 30 },
+      });
+      opened.push(writer);
+      for (const n of values) await writer.put(key, new Uint8Array(n));
+      await writer.close();
+      const reader = await openHarnessDb({
+        name,
+        writerId: "r",
+        fs,
+        ingest: createLocalIngestClient(host),
+        ingestPolicy: { maxWalBytes: limit },
+      });
+      opened.push(reader);
+      if (ingests) {
+        await vi.waitFor(async () => expect(await loadLatestGeneration(fs)).toBeDefined(), WAIT);
+      } else {
+        for (let i = 0; i < 40; i++) {
+          expect(await loadLatestGeneration(fs)).toBeUndefined();
+          await new Promise((r) => setTimeout(r, 25));
+        }
+      }
+      expect((await reader.get(key))?.byteLength).toBe(values[values.length - 1]);
+      await reader.close();
+    }
+  });
+
+  it("opens a database that still stores meta.pendingBytes", async () => {
+    const name = `${NAME}-legacy`;
+    onTestFinished(() => deleteWal(name));
+    const first = {
+      type: "put" as const,
+      key: checkKey(utf("a")),
+      value: checkValue(utf("1")),
+    };
+    const second = {
+      type: "put" as const,
+      key: checkKey(utf("a")),
+      value: checkValue(utf("2")),
+    };
+    const wal = await IdBWal.open(checkDbName(name));
+    await wal.append([first]);
+    await wal.append([second]);
+    await wal.close();
+    // An older build wrote `meta.head` on each append and kept `pendingBytes`.
+    // The floor is left behind the last key, and the counter is wrong.
+    await walStore(name, "readwrite", (_wal, meta) => {
+      meta.put(1, "head");
+      meta.put(123_456, "pendingBytes");
+    });
+    const again = await IdBWal.open(checkDbName(name));
+    expect((await again.meta()).head).toBe(2);
+    expect((await again.tail(0)).records.map((r) => r.seq)).toEqual([1, 2]);
+    expect(await again.uningestedBytes()).toBe(opsBytes([first]) + opsBytes([second]));
+    again.close();
+
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const db = await openHarnessDb({
+      name,
+      writerId: "a",
+      fs,
+      ingest: createLocalIngestClient(host),
+      ingestPolicy: { maxWalBytes: 1 << 30 },
+    });
+    opened.push(db);
+    const dec = new TextDecoder();
+    expect(dec.decode(await db.get(utf("a")))).toBe("2");
+    await db.put(utf("b"), utf("3"));
+    expect(dec.decode(await db.get(utf("b")))).toBe("3");
+    await db.ingest();
+    await db.close();
+    expect((await checkDatabase(fs, name)).problems).toEqual([]);
+    const reopened = await openHarnessDb({
+      name,
+      writerId: "b",
+      fs,
+      ingest: createLocalIngestClient(host),
+      ingestPolicy: { maxWalBytes: 1 << 30 },
+    });
+    opened.push(reopened);
+    expect(dec.decode(await reopened.get(utf("a")))).toBe("2");
+    expect(dec.decode(await reopened.get(utf("b")))).toBe("3");
+    await reopened.close();
   });
 
   it("a second request for the same flush publishes nothing new", async () => {

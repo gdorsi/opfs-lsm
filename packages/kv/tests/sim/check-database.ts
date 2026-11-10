@@ -52,7 +52,6 @@ type Meta = {
   head: number;
   ingestedThrough: number;
   generation: number | undefined;
-  pendingBytes: number | undefined;
 };
 
 export async function checkDatabase(fs: AsyncFs, name: string): Promise<DatabaseReport> {
@@ -73,20 +72,15 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     problems.push(`wal keys [${span(keys)}], expected (${ingestedThrough}, ${head}] and a gapless run below`);
   }
   const wal: { seq: number; ops: WalOp[] }[] = [];
-  let walBytes = 0;
   for (const { seq, raw } of rows) {
     try {
       const ops = decodeWalRow(raw);
       if (ops.length === 0) problems.push(`wal row ${seq} has no ops`);
       if (seq <= ingestedThrough) continue;
-      for (const op of ops) walBytes += op.key.byteLength + (op.value?.byteLength ?? 0);
       wal.push({ seq, ops });
     } catch (err) {
       problems.push(`wal row ${seq}: ${(err as Error).message}`);
     }
-  }
-  if (meta.pendingBytes !== undefined && meta.pendingBytes !== walBytes) {
-    problems.push(`pendingBytes ${meta.pendingBytes}, wal holds ${walBytes} op bytes`);
   }
 
   // --- Manifests.
@@ -397,17 +391,18 @@ export async function walStore<T>(
   }
 }
 
+/** `head` is the last WAL key, or the floor in `meta` when that is higher (`src/idb/wal.ts`). */
 export function walMeta(name: string): Promise<Meta> {
-  return walStore(name, "readonly", async (_wal, meta) => {
-    const [head, ingested, generation, pending] = await Promise.all(
-      ["head", "ingestedThrough", "generation", "pendingBytes"].map((k) => result(meta.get(k))),
-    );
+  return walStore(name, "readonly", async (wal, meta) => {
+    const [floor, ingested, generation, last] = await Promise.all([
+      ...["head", "ingestedThrough", "generation"].map((k) => result(meta.get(k))),
+      result(wal.openKeyCursor(null, "prev")).then((cursor) => cursor?.key),
+    ]);
     const num = (v: unknown) => (typeof v === "number" ? v : undefined);
     return {
-      head: num(head) ?? 0,
+      head: Math.max(num(floor) ?? 0, num(last) ?? 0),
       ingestedThrough: num(ingested) ?? 0,
       generation: num(generation),
-      pendingBytes: num(pending),
     };
   });
 }

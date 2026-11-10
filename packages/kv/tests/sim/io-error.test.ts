@@ -238,7 +238,11 @@ function committedHead(t: Traced): number {
   let head = 0;
   for (const op of t.faults.ops) {
     if (op.store !== "idb") continue;
-    for (const m of op.muts) if (m.store === "meta" && m.kind === "put" && m.key === "head") head = m.value as number;
+    for (const m of op.muts) {
+      if (m.kind !== "put") continue;
+      if (m.store === "wal") head = Math.max(head, m.key as number);
+      if (m.store === "meta" && m.key === "head") head = Math.max(head, m.value as number);
+    }
   }
   return head;
 }
