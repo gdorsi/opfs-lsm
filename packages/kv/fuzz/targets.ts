@@ -17,7 +17,7 @@
  */
 import { compareBytes } from "../src/bytes.js";
 import { CommitError, CorruptDatabaseError } from "../src/errors.js";
-import { decodeOps } from "../src/idb/wal.js";
+import { decodeOps } from "../src/log/record.js";
 import { crc32 } from "../src/store/crc32.js";
 import { Miss, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
 import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
@@ -301,22 +301,22 @@ export async function checkManifest(buf: Uint8Array, changed: boolean): Promise<
 }
 
 /**
- * A WAL row (`decodeOps`). Rows have no checksum: a changed row may decode
- * to other ops. It must throw only `CommitError("corrupt wal ...")`
- * (design.md, "WAL records"), and what it decodes must encode back to the
- * same bytes, so the decoder never invents or drops a byte.
+ * A record body (`decodeOps`). The body has no checksum of its own (the
+ * segment frame around it has one), so a changed body may decode to other
+ * ops. It must throw only `CommitError("corrupt record ...")`, and what it
+ * decodes must encode back to the same bytes, so the decoder never invents
+ * or drops a byte.
  */
-export async function checkWalRow(raw: unknown): Promise<void> {
+export async function checkRecordBody(bytes: Uint8Array): Promise<void> {
   await bounded("decodeOps", () => {
     let ops: ReturnType<typeof decodeOps>;
     try {
-      ops = decodeOps(raw);
+      ops = decodeOps(bytes);
     } catch (err) {
-      if (err instanceof CommitError && /corrupt wal/.test(err.message)) return;
-      throw new RuleBroken(`decodeOps threw ${describe(err)}, not CommitError("corrupt wal ...")`);
+      if (err instanceof CommitError && /corrupt record/.test(err.message)) return;
+      throw new RuleBroken(`decodeOps threw ${describe(err)}, not CommitError("corrupt record ...")`);
     }
-    const back = encodeWalRow(ops.map((op) => (op.type === "put" ? { put: op.key, value: op.value } : { del: op.key })));
-    const bytes = new Uint8Array(raw as ArrayBuffer);
+    const back = encodeRecordBody(ops.map((op) => (op.type === "put" ? { put: op.key, value: op.value } : { del: op.key })));
     if (back.byteLength !== bytes.byteLength || back.some((b, i) => b !== bytes[i])) {
       throw new RuleBroken("decodeOps returned ops that do not encode back to the row");
     }
@@ -325,8 +325,8 @@ export async function checkWalRow(raw: unknown): Promise<void> {
 
 export type RowOp = { readonly put: Uint8Array; readonly value: Uint8Array } | { readonly del: Uint8Array };
 
-/** A WAL row in the format of design.md, "WAL records", written by the harness. */
-export function encodeWalRow(ops: readonly RowOp[]): Uint8Array {
+/** A record body in the format of `src/log/record.ts`, written by the harness. */
+export function encodeRecordBody(ops: readonly RowOp[]): Uint8Array {
   let size = 0;
   for (const op of ops) size += "put" in op ? 9 + op.put.byteLength + op.value.byteLength : 5 + op.del.byteLength;
   const out = new Uint8Array(size);

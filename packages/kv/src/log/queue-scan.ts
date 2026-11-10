@@ -1,6 +1,6 @@
 import type { CheckedOp } from "../check.js";
 import type { LogId, QueueScan, RecordN } from "../host/queues.js";
-import { decodeOps } from "../idb/wal.js";
+import { decodeOps } from "./record.js";
 import { decodeHeader, frameAt, frameSeed, frameSigned, HEADER_BYTES } from "./segment.js";
 
 /**
@@ -104,7 +104,7 @@ function signedAfter(bytes: Uint8Array, offset: number, seed: number, min: Recor
 
 function decode(body: Uint8Array): CheckedOp[] | undefined {
   try {
-    return decodeOps(body.slice().buffer);
+    return decodeOps(body);
   } catch {
     return undefined;
   }

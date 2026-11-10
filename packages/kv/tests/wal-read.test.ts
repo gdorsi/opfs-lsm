@@ -125,7 +125,7 @@ describe("WAL read", () => {
     const wal = await IdBWal.open(checkDbName(NAME));
     const row = new Uint8Array([0, 10, 0, 0, 0, 1, 2]);
     await rawRow(1, row.buffer);
-    await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: truncated");
+    await expect(wal.tail(0)).rejects.toThrow("corrupt record: truncated");
     wal.close();
   });
 });

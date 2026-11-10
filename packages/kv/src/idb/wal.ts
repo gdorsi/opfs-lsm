@@ -1,5 +1,6 @@
 import { opsBytes, type CheckedOp, type DbName } from "../check.js";
 import { CommitError } from "../errors.js";
+import { decodeOps, encodeOps } from "../log/record.js";
 import type { WalRecord } from "../store/memtable.js";
 
 /**
@@ -55,73 +56,10 @@ function num(raw: unknown): number {
   return typeof raw === "number" ? raw : 0;
 }
 
-const OP_PUT = 0;
-const OP_DEL = 1;
-
-/**
- * A WAL row is one ArrayBuffer: per op, a type byte, a u32 key length, the
- * key, and for a put a u32 value length and the value (little-endian).
- * IndexedDB clones one buffer per row instead of an array of op objects with
- * a buffer per key and value.
- */
-export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
-  let size = 0;
-  for (const op of ops) {
-    size += 5 + op.key.byteLength + (op.type === "put" ? 4 + op.value.byteLength : 0);
-  }
-  const out = new Uint8Array(size);
-  const view = new DataView(out.buffer);
-  let at = 0;
-  for (const op of ops) {
-    view.setUint8(at, op.type === "put" ? OP_PUT : OP_DEL);
-    view.setUint32(at + 1, op.key.byteLength, true);
-    out.set(op.key, at + 5);
-    at += 5 + op.key.byteLength;
-    if (op.type === "put") {
-      view.setUint32(at, op.value.byteLength, true);
-      out.set(op.value, at + 4);
-      at += 4 + op.value.byteLength;
-    }
-  }
-  return out.buffer;
-}
-
-/**
- * Keys and values are views into the row's buffer, which nothing else holds.
- * Exported for the decoder fuzz tests (`packages/kv/fuzz/`).
- */
-export function decodeOps(raw: unknown): CheckedOp[] {
+/** An IndexedDB row is the record body's bytes as one ArrayBuffer, so the clone is one buffer per row. */
+function decodeRow(raw: unknown): CheckedOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new CommitError("corrupt wal row: not bytes");
-  const bytes = new Uint8Array(raw);
-  const view = new DataView(raw);
-  const ops: CheckedOp[] = [];
-  let at = 0;
-  const take = (length: number): Uint8Array => {
-    if (at + length > bytes.byteLength) throw new CommitError("corrupt wal row: truncated");
-    const out = bytes.subarray(at, at + length);
-    at += length;
-    return out;
-  };
-  const u32 = (): number => {
-    if (at + 4 > bytes.byteLength) throw new CommitError("corrupt wal row: truncated");
-    const n = view.getUint32(at, true);
-    at += 4;
-    return n;
-  };
-  while (at < bytes.byteLength) {
-    const type = view.getUint8(at);
-    at += 1;
-    const key = take(u32()) as CheckedOp["key"];
-    if (type === OP_PUT) {
-      const value = take(u32()) as Extract<CheckedOp, { type: "put" }>["value"];
-      ops.push({ type: "put", key, value });
-    } else if (type === OP_DEL) {
-      ops.push({ type: "del", key });
-    } else {
-      throw new CommitError(`corrupt wal op ${type}`);
-    }
-  }
-  return ops;
+  return decodeOps(new Uint8Array(raw));
 }
 
 function openIdb(dbName: DbName): Promise<IDBDatabase> {
@@ -185,7 +123,7 @@ async function readRecords(
         if (values.length !== hi - lo + 1) {
           throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
         }
-        return values.map((value, i) => ({ seq: lo + i, ops: decodeOps(value) }));
+        return values.map((value, i) => ({ seq: lo + i, ops: decodeRow(value) }));
       }),
     );
   }
@@ -282,7 +220,7 @@ export class IdBWal {
       return decision && { seq: undefined, ops: [], result: decision.result };
     }
     const seq = tail.head + 1;
-    const record = encodeOps(decision.ops);
+    const record = encodeOps(decision.ops).buffer;
     tx.objectStore(WAL_STORE).add(record, seq);
     meta.put(seq, META_HEAD);
     meta.put(num(pendingRaw) + opsBytes(decision.ops), META_PENDING);
@@ -306,7 +244,7 @@ export class IdBWal {
     const head = meta.get(META_HEAD);
     const pending = meta.get(META_PENDING);
     const bytes = opsBytes(ops);
-    const record = encodeOps(ops);
+    const record = encodeOps(ops).buffer;
     const add = tx.objectStore(WAL_STORE).add(record);
     let seq: number | undefined;
     let stale = false;
@@ -402,7 +340,7 @@ export class IdBWal {
     let bytes = 0;
     if (nextHead === head && (through >= ingested || above.length === head - through)) {
       wal.delete(IDBKeyRange.upperBound(Math.min(ingested, through)));
-      for (const value of above) bytes += opsBytes(decodeOps(value));
+      for (const value of above) bytes += opsBytes(decodeRow(value));
     } else {
       // No record can follow the manifest: drop them all, and start the
       // WAL past every seq handed out.

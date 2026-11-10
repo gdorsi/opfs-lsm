@@ -10,8 +10,8 @@ import {
   checkLz4,
   checkManifest,
   checkRunRead,
-  checkWalRow,
-  encodeWalRow,
+  checkRecordBody,
+  encodeRecordBody,
   expectedRead,
   fixManifestCrc,
   framedBlocks,
@@ -159,20 +159,17 @@ describe("decoder properties (fast-check)", () => {
   );
 
   it(
-    "WAL rows decode to the ops that encode back to them, or throw corrupt wal row",
+    "record bodies decode to the ops that encode back to them, or throw corrupt record",
     async () => {
       await expect(
         fc.assert(
-          fc.asyncProperty(walRowArb, walRowArb, mutationsArb, fc.boolean(), async (ops, other, ms, mutate) => {
-            const orig = encodeWalRow(ops);
-            const buf = mutate ? applyMutations(orig, ms, encodeWalRow(other)) : orig;
-            await checkWalRow(buf.slice().buffer);
+          fc.asyncProperty(recordBodyArb, recordBodyArb, mutationsArb, fc.boolean(), async (ops, other, ms, mutate) => {
+            const orig = encodeRecordBody(ops);
+            await checkRecordBody(mutate ? applyMutations(orig, ms, encodeRecordBody(other)) : orig);
           }),
           params,
         ),
       ).resolves.toBeUndefined();
-      // A row that is not bytes, as a foreign writer could leave it.
-      for (const raw of [undefined, null, 7, "row", [1, 2], new Uint8Array(4), {}]) await checkWalRow(raw);
     },
     TIMEOUT,
   );
@@ -224,7 +221,7 @@ const manifestArb: fc.Arbitrary<GenerationMeta> = fc.record(
   { requiredKeys: ["generation", "tombstoneSeq", "through", "runs"] },
 );
 
-const walRowArb: fc.Arbitrary<RowOp[]> = fc.array(
+const recordBodyArb: fc.Arbitrary<RowOp[]> = fc.array(
   fc.oneof(
     fc.record({ put: fc.uint8Array({ maxLength: 16 }), value: fc.uint8Array({ maxLength: 32 }) }),
     fc.record({ del: fc.uint8Array({ maxLength: 16 }) }),

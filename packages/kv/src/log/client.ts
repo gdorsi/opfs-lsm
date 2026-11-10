@@ -1,7 +1,7 @@
 import { checkDbName, type CheckedOp, type DbName } from "../check.js";
 import { ClosedError, CommitError, IndeterminateWriteError } from "../errors.js";
 import type { LogId, PredEdge, RecordN } from "../host/queues.js";
-import { encodeOps } from "../idb/wal.js";
+import { encodeOps } from "./record.js";
 import type { LogCommand, LogToPage, PageToLog } from "./log-worker-boot.js";
 
 /** A request with no answer in this long gives its log up. */
@@ -184,7 +184,7 @@ export class LogClient {
    * Rejects with `ClosedError` once `close` was called.
    */
   append(ops: readonly CheckedOp[]): Promise<Acked> {
-    const body = new Uint8Array(encodeOps(ops));
+    const body = encodeOps(ops);
     return new Promise((resolve, reject) => {
       const p: Pending = { body, resolve, reject };
       const s = this.state;

@@ -3,7 +3,7 @@ import type { CheckedKey, CheckedValue } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { ingestQueues, reclaimQueues, scanQueues, type LogLocks } from "../src/host/queue-host.js";
 import { checkCover, type LogFiles, type LogId, type PredEdge, type QueueCursor, type QueueScan } from "../src/host/queues.js";
-import { encodeOps } from "../src/idb/wal.js";
+import { encodeOps } from "../src/log/record.js";
 import { QueueWriter } from "../src/log/queue-writer.js";
 import { segmentPath } from "../src/log/segment.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
@@ -26,7 +26,7 @@ const B = "00000000000000b2" as LogId;
 const enc = new TextEncoder();
 
 const body = (log: LogId, n: number): Uint8Array =>
-  new Uint8Array(encodeOps([{ type: "put", key: enc.encode(`${log}/${n}`) as CheckedKey, value: enc.encode(`value ${n}`) as CheckedValue }]));
+  encodeOps([{ type: "put", key: enc.encode(`${log}/${n}`) as CheckedKey, value: enc.encode(`value ${n}`) as CheckedValue }]);
 const ns = (scan: QueueScan | undefined): number[] => scan?.records.map((r) => r.n) ?? [];
 const range = (lo: number, hi: number): number[] => Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
 const logIds = (logs: readonly LogFiles[]): LogId[] => logs.map((l) => l.log);

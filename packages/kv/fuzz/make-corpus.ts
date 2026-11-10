@@ -44,7 +44,7 @@ const cat = (...parts: (Uint8Array | number[])[]) => {
 };
 
 /** A database through four flushes (one L0 -> L1 compaction) and a reopen, as the engine writes it. */
-async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Array[]; walRows: Uint8Array[] }> {
+async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Array[]; records: Uint8Array[] }> {
   const fs = new MemoryFs();
   const host = new EngineHost(() => fs);
   const open = () => openHarnessDb({ name: "corpus", fs, ingest: createLocalIngestClient(host) });
@@ -71,8 +71,8 @@ async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Arr
   const manifests: Uint8Array[] = [];
   for (const name of await fs.list("m")) manifests.push((await fs.read(`m/${name}`, 0, Infinity))!);
   const raw = await walStore("corpus", "readonly", (wal) => wal.getAll());
-  const walRows = (raw as unknown[]).map((r) => new Uint8Array(r as ArrayBuffer));
-  return { runs, manifests, walRows };
+  const records = (raw as unknown[]).map((r) => new Uint8Array(r as ArrayBuffer));
+  return { runs, manifests, records };
 }
 
 function todoEntries(n: number, from = 0): SstEntry[] {
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
   await seeds(join(tsCorpus, "sst-read"), runs.flatMap((r) => [cat([0], r), cat([4], r)]));
   await seeds(join(tsCorpus, "sst-decode"), runs.map((r) => cat([0], r)));
   await seeds(join(tsCorpus, "manifest"), db.manifests.map((m) => cat([0], m)));
-  await seeds(join(tsCorpus, "wal-row"), db.walRows.slice(0, 8));
+  await seeds(join(tsCorpus, "record"), db.records.slice(0, 8));
   await seeds(join(tsCorpus, "lz4"), lz4Blocks);
 
   // cargo fuzz targets (crates/engine-core/fuzz/fuzz_targets/).
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     pair(edgeRuns[2]!, edgeRuns[0]!, 3, 1),
   ]);
   console.log(
-    `seeds: ${runs.length} runs (${lz4Runs.length} LZ4), ${db.manifests.length} manifests, ${db.walRows.length} WAL rows, ${lz4Blocks.length + rawBlocks.length} blocks`,
+    `seeds: ${runs.length} runs (${lz4Runs.length} LZ4), ${db.manifests.length} manifests, ${db.records.length} record bodies, ${lz4Blocks.length + rawBlocks.length} blocks`,
   );
 }
 

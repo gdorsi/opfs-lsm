@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CheckedKey, CheckedOp, CheckedValue } from "../src/check.js";
 import { ClosedError, CommitError } from "../src/errors.js";
 import { planIngest, type LogId, type QueueScan } from "../src/host/queues.js";
-import { encodeOps } from "../src/idb/wal.js";
+import { encodeOps } from "../src/log/record.js";
 import { scanLog, type ListedSegment } from "../src/log/queue-scan.js";
 import { QueueWriter, type QueueWriterOptions, type SegmentFile, type SegmentStore } from "../src/log/queue-writer.js";
 import { encodeRecords, encodeSeal, FRAME_HEAD_BYTES, frameSeed, HEADER_BYTES } from "../src/log/segment.js";
@@ -14,7 +14,7 @@ const NEXT = "00000000000000c3" as LogId;
 const opsOf = (n: number, value: Uint8Array = Uint8Array.of(n, n)): CheckedOp[] => [
   { type: "put", key: Uint8Array.of(n & 0xff) as CheckedKey, value: value as CheckedValue },
 ];
-const body = (ops: readonly CheckedOp[]): Uint8Array => new Uint8Array(encodeOps(ops));
+const body = (ops: readonly CheckedOp[]): Uint8Array => encodeOps(ops);
 const range = (lo: number, hi: number): number[] => Array.from({ length: Math.max(0, hi - lo + 1) }, (_, i) => lo + i);
 const ns = (scan: QueueScan): number[] => scan.records.map((r) => r.n);
 const counter = (): (() => number) => {

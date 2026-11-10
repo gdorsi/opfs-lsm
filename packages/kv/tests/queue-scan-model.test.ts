@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { actions, clone, crashes, diskKey, initial, read, type Bounds, type ReadAs, type State } from "../formal/ingest-plan/model.js";
 import type { CheckedKey, CheckedValue } from "../src/check.js";
 import type { LogId, QueueScan } from "../src/host/queues.js";
-import { encodeOps } from "../src/idb/wal.js";
+import { encodeOps } from "../src/log/record.js";
 import { scanLog, type ListedSegment } from "../src/log/queue-scan.js";
 import { encodeHeader, encodeRecords, encodeSeal, frameSeed } from "../src/log/segment.js";
 
@@ -30,7 +30,7 @@ function encode(s: State, log: LogId): ListedSegment[] {
     const header = encodeHeader(g.firstN === 1 && pred ? { nonce, firstN: 1, pred: { log: hex(pred.log), lastN: pred.lastN } } : { nonce, firstN: g.firstN });
     const frames = g.frames.map((f) => {
       const ops = [{ type: "put" as const, key: Uint8Array.of(f.w) as CheckedKey, value: Uint8Array.of(f.w) as CheckedValue }];
-      const bytes = encodeRecords([new Uint8Array(encodeOps(ops))], f.n, seed);
+      const bytes = encodeRecords([encodeOps(ops)], f.n, seed);
       if (!f.ok) bytes[bytes.length - 1]! ^= 0xff;
       return bytes;
     });

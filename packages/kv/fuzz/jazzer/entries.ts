@@ -10,7 +10,7 @@ import {
   checkLz4,
   checkManifest,
   checkRunRead,
-  checkWalRow,
+  checkRecordBody,
   fixManifestCrc,
   footerOf,
   repairSst,
@@ -72,9 +72,9 @@ export async function manifest(data: Uint8Array): Promise<void> {
   await checkManifest(buf, false);
 }
 
-/** `decodeOps` on one WAL row. */
-export async function walRow(data: Uint8Array): Promise<void> {
-  await checkWalRow(data.slice().buffer);
+/** `decodeOps` on one record body. */
+export async function recordBody(data: Uint8Array): Promise<void> {
+  await checkRecordBody(data.slice());
 }
 
 /** `lz4DecompressJs`: a framed block, u32 size then LZ4 bytes, as the run stores it. */

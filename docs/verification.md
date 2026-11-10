@@ -227,7 +227,7 @@ Every decoder of on-disk or IndexedDB bytes is fuzzed against the rules of [the 
 | Differential | `pnpm test` (`packages/kv/fuzz/differential.test.ts`) | CI (`test` job) | wasm against the TypeScript fallbacks: whole-run decode, block scan, LZ4 unpack, merge |
 | Writer against its frozen reference | `cargo test -p engine-core` | CI (`rust` job) | `SstWriter` against `crates/engine-core/src/sst/reference.rs`, the encoder it replaced, frozen: the same bytes for random runs in both codecs, tombstones, empty and large values, many blocks, and every run in the fuzz corpus |
 | End to end | `pnpm test` (`packages/kv/tests/sim/corruption.test.ts`) | CI (`test` job) | one corrupt file or IndexedDB row, then open, get, scan, write, flush, compact, reopen |
-| Jazzer.js | `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> [seconds]` | by hand | `sst-read`, `sst-decode`, `manifest`, `wal-row`, `lz4` (the TypeScript decoders; cargo fuzz covers the Rust ones) |
+| Jazzer.js | `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> [seconds]` | by hand | `sst-read`, `sst-decode`, `manifest`, `record`, `lz4` (the TypeScript decoders; cargo fuzz covers the Rust ones) |
 
 The checks are shared: `packages/kv/fuzz/targets.ts` for the TypeScript properties, the differential test and Jazzer.js, and `crates/engine-core/tests/support/corrupt.rs` for the Rust properties and cargo fuzz. Mutations are bit flips, truncation, extension, length fields inflated or nudged by a few, varints near 2^32, runs of 0x00 or 0xff, and splices of two valid files. Each case may rewrite the CRC (and the SST version and magic) so the decoder reaches the structure behind it.
 

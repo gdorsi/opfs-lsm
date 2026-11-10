@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CheckedKey, CheckedOp, CheckedValue } from "../src/check.js";
 import type { LogId, PredEdge, QueueScan } from "../src/host/queues.js";
-import { encodeOps } from "../src/idb/wal.js";
+import { encodeOps } from "../src/log/record.js";
 import { scanLog, type ListedSegment } from "../src/log/queue-scan.js";
 import { encodeHeader, encodeRecords, encodeSeal, frameSeed } from "../src/log/segment.js";
 
@@ -9,7 +9,7 @@ const LOG = "00000000000000b2" as LogId;
 const PRED: PredEdge = { log: "00000000000000a1" as LogId, lastN: 4 };
 
 const opsOf = (n: number): CheckedOp[] => [{ type: "put", key: Uint8Array.of(n) as CheckedKey, value: Uint8Array.of(n, n) as CheckedValue }];
-const bodyOf = (n: number): Uint8Array => new Uint8Array(encodeOps(opsOf(n)));
+const bodyOf = (n: number): Uint8Array => encodeOps(opsOf(n));
 const range = (lo: number, hi: number): number[] => Array.from({ length: Math.max(0, hi - lo + 1) }, (_, i) => lo + i);
 const ns = (scan: QueueScan): number[] => scan.records.map((r) => r.n);
 

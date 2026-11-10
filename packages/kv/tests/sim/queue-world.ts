@@ -3,7 +3,7 @@ import { expect } from "vitest";
 import type { CheckedKey, CheckedValue } from "../../src/check.js";
 import { ingestQueues, reclaimQueues, type LogLocks } from "../../src/host/queue-host.js";
 import { checkCover, RECLAIM_LAG, type LogFiles, type LogId, type PredEdge, type QueueCursor, type RecordN } from "../../src/host/queues.js";
-import { encodeOps } from "../../src/idb/wal.js";
+import { encodeOps } from "../../src/log/record.js";
 import { QueueWriter, type SegmentStore } from "../../src/log/queue-writer.js";
 import { parseLogId, parseSegmentName } from "../../src/log/segment.js";
 import type { AsyncFs } from "../../src/opfs/async-fs.js";
@@ -346,7 +346,7 @@ function logsIn(paths: readonly string[]): LogFiles[] {
 }
 
 function body(log: LogId, n: RecordN, value: string): Uint8Array {
-  return new Uint8Array(encodeOps([{ type: "put", key: enc.encode(`${log}/${n}`) as CheckedKey, value: enc.encode(value) as CheckedValue }]));
+  return encodeOps([{ type: "put", key: enc.encode(`${log}/${n}`) as CheckedKey, value: enc.encode(value) as CheckedValue }]);
 }
 
 function gatedFs(fs: AsyncFs, gate: (label: string) => Promise<void>): AsyncFs {
