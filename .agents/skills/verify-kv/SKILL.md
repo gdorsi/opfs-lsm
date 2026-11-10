@@ -85,4 +85,4 @@ Drift without recheck → `/maintain-formal-verification-skill`.
 
 - Multi-tab BroadcastChannel versus an SST generation bump.
 - Compaction reclaim versus an open view pin (generation lifetime).
-- `pendingBytes` on the WAL and in `EngineHost` (the ingest trigger). The checks do not model it.
+- `pendingBytes` in `EngineHost` (the ingest trigger), and how the head is read from the last WAL key. The checks do not model them.
