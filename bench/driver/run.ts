@@ -15,6 +15,8 @@ export type RunOptions = {
   readonly headless: boolean;
   readonly resultsFile: string;
   readonly phaseTimeoutMs: number;
+  /** Passed to every kv `openDb` as `compactionMemoryBytes`. Unset leaves the default. */
+  readonly compactionMemoryBytes?: number | undefined;
   readonly log: (line: string) => void;
 };
 
@@ -50,7 +52,8 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
   const chrome = await launchChrome({ headless: opts.headless, onProgress: (line) => opts.log(`    ${line}`) });
   try {
     chromeVersion = chrome.version;
-    const url = `${opts.origin}/index.html`;
+    const query = opts.compactionMemoryBytes === undefined ? "" : `?compactionMemoryBytes=${opts.compactionMemoryBytes}`;
+    const url = `${opts.origin}/index.html${query}`;
     let tab = await chrome.openTab(url);
     let carry: string | undefined;
     for (const [phase, page] of run.pages.entries()) {

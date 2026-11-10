@@ -198,12 +198,16 @@ format does not change. It refuses keys that arrive out of order. The flush
 
 ### 5. Host policy (`host/budget.ts`, `host/engine-host.ts`, `host/ingest.ts`)
 
-- **One formula.** `hostBudget(B) → { chunkBytes, maxSources, flushRunBytes,
-  l0StopRuns, yieldBytes, wasmRecycleBytes }`. This is the only place the
-  formula lives, and tests pin its outputs.
+- **One formula.** `hostBudget(B) → { chunkBytes, tailBytes, maxSources,
+  flushRunBytes, l0StopRuns, yieldBytes, wasmRecycleBytes }`. This is the only
+  place the formula lives, and tests pin its outputs (see the arithmetic
+  below).
 - **One merge at a time** per SharedWorker, across all of its databases,
-  through a host-wide `mergeSlot` mutex. LevelDB runs one background
-  compaction, and TigerBeetle's compaction pool has size 1.
+  through a host-wide `mergeSlot` mutex (`inMergeSlot` in
+  `host/merge-slot.ts`). LevelDB runs one background compaction, and
+  TigerBeetle's compaction pool has size 1. A second wasm session is a host
+  bug and throws, so the old fallback to the TypeScript session is gone: the
+  second merge waits instead. A flush does not take the slot.
 - **Bounded flush.**
   - `ingestAll` folds the oldest uningested records, at most `flushRunBytes`
     of op bytes per L0 run and always at least one record.
@@ -228,10 +232,12 @@ format does not change. It refuses keys that arrive out of order. The flush
   `merge_open`: a miss returns -11 and never traps. Talc still never shrinks
   memory, so when no session is open and `memory.buffer.byteLength >
   wasmRecycleBytes`, the host **recycles the instance** from the cached
-  `WebAssembly.Module`. For that to work, `useLz4Decoder` and
-  `useBlockScanner` must read the current engine instead of capturing `mod`.
-  No other project was found that recycles instances, and whether it gives
-  memory back is unverified (see the open questions).
+  `WebAssembly.Module` (`recycleEngine` in `store/engine.ts`). It checks after
+  each flush chunk and after each compaction step. `useLz4Decoder` and
+  `useBlockScanner` read the current engine at each call instead of capturing
+  `mod`. No other project was found that recycles instances. In Chrome a
+  dropped instance's memory comes back after a GC (see the probe results), and
+  the page cannot force one.
 - **TS fallback** (`store/merge-ts.ts`). It implements the same
   `MergeCore` pump/feed interface and writes raw output. It buffers up to T
   of entries and then encodes, so it is bounded at about B + 8 MiB. This is
@@ -254,43 +260,74 @@ thresholds, the same split RocksDB's WriteBufferManager uses between
 
 ### Memory budget arithmetic
 
-Notation:
-
-- B is `compactionMemoryBytes`, T is the output run target (4 MiB), F is the
-  flush run size, C is the read-ahead per source, K is the per-source block
-  and slot memory, and S is the number of sources.
-- H is the writer's hash buffer, `4 B × keys per run`, so `4T / average entry
-  size`. That is 512 KiB for 32-byte entries (R7).
-- τ is one run's index or tail, and W0 is the module's fixed overhead.
-- These come out of `hostBudget(B)`:
-  - `F = clamp(B/16, 1 MiB, T)`
-  - `C = 256 KiB` (64 KiB when B < 32 MiB)
-  - `K ≈ 8 KiB + 2·largest entry`
-  - `S = clamp(⌊(B − W0 − H − 2τ − 2C − 3F)/(2C + K)⌋, 2, 16)`
+A flush and a merge session run on one wasm instance and can overlap, so
+`hostBudget(B)` splits B between the module and both:
 
 ```
-P_host = W0 + S·(C+K) [wasm sources] + S·C [JS reads in flight]
-       + H + τ [streaming writer] + 2C [WRITE chunk, wasm + JS copy]
-       + 3F [one concurrent flush: WAL records + folded entries + encode input]
+B = W0 + 10F + S(2C + K)
 ```
 
-At B = 32 MiB with 32-byte entries (F = 2 MiB, S = 16):
+- B is `compactionMemoryBytes`, T is the output run target (4 MiB), and W0 is
+  the module's memory when idle (1.06 MiB on a fresh instance).
+- F is the flush run size in op bytes. A flush costs about 10F: roughly 7F in
+  wasm and 3F in JS (the WAL records, the folded entries and the copy of the
+  result).
+- S is the number of sources a step reads, C is the window it holds per
+  source, and K is the per-source block buffers and slots. A source holds C
+  in wasm, and up to C more is in flight in JS between a read and
+  `merge_feed`. K is about 16 KiB (12 to 21 KiB measured).
 
-```
-P_host ≈ 1 + 8.2 + 0.5 + 0.15 + 0.5 + 6 ≈ 16.4 MiB
-```
+The measurements below use 16-byte keys and 100-byte values, so an op is 116
+bytes and a packed entry is 133. Each is the wasm memory of a fresh instance,
+module included. `pnpm --filter @opfs-lsm/kv probe:wasm-memory` reproduces
+them.
 
-About 10 MiB of that is wasm memory. A step's input bytes no longer appear.
-Before the size moved into the manifest, the output terms were `3.03·T`, which
-put the figure at about 31 MiB. Today's peak is about 4 × the step's input,
-which is about 160 MB for one L0→L1 step.
+| flush alone, F (MiB) | 0.875 | 1.0 | 1.75 | 2.0 | 3.5 | 4.0 |
+|---|---:|---:|---:|---:|---:|---:|
+| wasm after repeated flushes (MiB) | 6.5 | 10.1 | 11.9 | 19.3 | 22.8 | 36.9 |
+
+Wasm memory grows in steps at power-of-two input sizes, and the packed input
+is 1.15F. An F at 7/8 of a power of two stays just under a step: 1.75 MiB
+costs 11.9 MiB and 2 MiB costs 19.3. That is why `F = 7/8 · min(T, B/16)`.
+
+| merge alone, S = 49 | C = 64 KiB | C = 128 KiB | C = 256 KiB |
+|---|---:|---:|---:|
+| wasm peak (MiB) | 5.3 | 8.2 | 14.5 |
+
+A tail longer than the window makes every source's window grow to it: 64 KiB
+windows with a 128 KiB tail peak at 11.3 MiB, so `tailBytes` never exceeds
+`chunkBytes`.
+
+| flush and merge overlapped | S | C | F | wasm peak (MiB) |
+|---|---:|---:|---:|---:|
+| B = 16 MiB | 44 | 64 KiB | 0.875 MiB | 9.8 |
+| B = 32 MiB | 49 | 128 KiB | 1.75 MiB | 18.8 |
+| B = 64 MiB | 49 | 256 KiB | 3.5 MiB | 36.1 |
+| the 256 KiB window at B = 32 MiB | 49 | 256 KiB | 1.75 MiB | 25.1 |
+
+Add the JS side, `S·C` of reads in flight and about 3F of flush, and the
+overlap totals 15.2, 30.2 and 58.8 MiB at 16, 32 and 64 MiB: 95%, 94% and
+92% of B. The 256 KiB window at 32 MiB would total 42.6 MiB, 1.3 times B.
+The JS terms are estimates, not measurements.
+
+The first draft capped S at 16 and counted a flush as 3F. The flush costs
+more than that, and the cap was too low: the sweep behind the bounded flush
+found that a stop at S settles near S/2 L0 runs per step, and that a
+random-key step rewrites all of L1, so a low stop doubled compaction writes.
+The sweep chose S = 49. Budgeting that many sources at the default needs a
+128 KiB window.
+
+Past 64 MiB nothing grows but the recycle threshold, B/2. At 32 MiB it is 16
+MiB: above the 11.9 MiB a flush needs alone and the 8.2 MiB a merge needs
+alone, below the 18.8 MiB of an overlap. It fires after an overlap and not
+after every flush.
 
 All of this assumes the browser keeps pending `createWritable` writes on disk.
 If it keeps them in memory, add up to T per open output, which is the
 probe in step 1.
 
-The stated slack is +25% for GC lag on read buffers and talc fragmentation,
-plus `(2S+3)·E` for entries larger than 64 KiB.
+An entry larger than 64 KiB adds about twice its size to the window of the
+source that holds it.
 
 On the tab side, `memtable ≤ memtableBytes + one batch`, on top of the
 existing `memoryBudget`.
@@ -302,9 +339,20 @@ existing `memoryBudget`.
   SharedWorker and on each tab. It records the peak `usedSize`, plus
   `backingStorageSize` where Chrome reports it.
 - **Every browser.** `HostStats.memory` reports `wasmBytes`,
-  `wasmPeakBytes`, `mergeReservedBytes`, `recycles` and `l0Stops`.
+  `wasmPeakBytes`, `mergeReservedBytes`, `recycles` and `l0Stops`. The first
+  four are the SharedWorker's, shared by every database it serves. Memory only
+  grows within an instance, so `wasmPeakBytes` is the larger of the current
+  size and what each replaced instance reached, with no sampling.
+  `mergeReservedBytes` is the most a session was asked to reserve, a window per
+  source and one for the output run. `l0Stops` is per database.
 - **Workload.** A new `kv/compaction-memory` workload runs the todo example
-  for 20 rounds × 100k and asserts peak ≤ 1.25·B.
+  for 20 rounds × 100k. `--max-peak-bytes` fails a run whose SharedWorker peak
+  passes the limit. The results below show why 1.25·B is out of reach for that
+  peak.
+- **Live set.** `node bench/probes/live-set.ts` takes heap snapshots of the
+  SharedWorker during a workload. V8 collects before it writes one, so they
+  count only what is alive. The run record's peak also counts garbage V8 has
+  not collected yet.
 - **Throughput.** Compare `kv/fillrandom --size large` and `kv/overwrite`
   against main.
 
@@ -421,22 +469,33 @@ Changed after the prior-art review:
   LevelDB and Pebble, for L1 and deeper (R9).
 - **A `maximum` on `WebAssembly.Memory`**, derived from B. `memory.grow` then
   fails at the budget, so a miss is always a clean -11 (R10).
+- **Fewer short-lived ArrayBuffers in the SharedWorker.**
+  - **Why:** `kv/compaction-memory` allocates about 1.3 GiB of them in 9 s, and
+    V8 frees them on its own schedule. That keeps the unforced SharedWorker
+    peak near 100 MiB at any B, while the live set stays under B (see the
+    results).
+  - **Candidates, not tried:** reuse the read buffers of a compaction step,
+    and stop making a view per key and per value when a flush folds the WAL
+    records.
+  - **Gate:** `--max-peak-bytes` at 1.25·B passing at 32 and 16 MiB.
 
 ## Open questions and risks
 
-- **Defaults.** Is 32 MiB right as the `compactionMemoryBytes` default, and
-  32 MiB as the `memtableBytes` default? With streaming output, the minimum
-  can drop to about 16 MiB.
-- **Throughput margin.** Do we accept 10% or 20%? The estimate is neutral or
-  faster: no per-entry allocation and no whole-buffer copies, against one
-  ranged read per 256 KiB per source.
+- **Defaults.** 32 MiB for `compactionMemoryBytes` holds: the live set peaks at
+  0.81·B and writes keep their speed (see the results). 16 MiB works too, at
+  about twice the `rounds` time, and 8 MiB is the floor. `memtableBytes`
+  defaults to 16 MiB.
+- **Throughput margin.** Writes are level at 32 MiB. The cost is in the final
+  compaction: `settle` takes 0.1 to 0.5 s longer. The window, now half the old
+  fixed size, is the one figure that changed.
 - **Pending `createWritable` data.** Do Chrome, Firefox and Safari keep pending
   writes on disk or in memory? The spec models them as an in-memory buffer. If
   any browser keeps them in memory, add T to `P_host` for that browser. Probe
   this in step 1.
 - **Instance recycling.** Does dropping a `WebAssembly.Instance` give its
   memory back in Chrome, Safari and Firefox? `memory.discard` is only a
-  Phase 1 proposal. Probe this in step 1.
+  Phase 1 proposal. Chrome does, after a GC (see the probe results). Safari
+  and Firefox are not probed.
 - **Chrome's heap counters.** Does `Runtime.getHeapUsage` report
   `backingStorageSize` in the Chrome the bench uses? Without it, wasm and
   ArrayBuffer bytes come only from the engine's own counters.
@@ -526,6 +585,121 @@ The harness reads the renderer processes once a second. It first read them
 every 100 ms, and that slowed the engine it was measuring: in the same session
 that version took 9.1 s (6.9 to 10.5) for the rounds and saw 335 MB (310 to
 350) of wasm memory.
+
+## Results with the budgets in use, Chrome 157.0.8103.39
+
+Step 5 against 7ab05e2, the commit it builds on. 7ab05e2 has the same flush
+run (1.75 MiB), L0 stop (48) and source cap (49) as B = 32 MiB. Its windows are
+a fixed 256 KiB, and it has no merge slot and no recycling. macOS arm64,
+headless, 18 cores shared with other work (load 5 to 18 while these ran).
+Interleaved runs, one of each column per round. Each cell is the median with
+the min to max range in brackets, in MiB unless a unit is given.
+
+### `kv/compaction-memory`, size small
+
+11 runs per column.
+
+| measure | B = 32 MiB | B = 16 MiB | 7ab05e2 |
+|---|---:|---:|---:|
+| SharedWorker wasm memory, peak | 15.2 (14.9 to 16.9) | 8.8 (8.8 to 9.3) | 19.2 (17.4 to 20.9) |
+| SharedWorker wasm memory, at the end | 15.2 (14.7 to 15.7) | 5.3 (2.8 to 7.8) | not counted |
+| recycles | 0 (0 to 1) | 7 (3 to 9) | none |
+| tab JS heap used, peak | 54.6 (45.0 to 78.3) | 55.7 (48.3 to 77.2) | 52.2 (45.5 to 60.0) |
+| `rounds` (s) | 8.70 (7.69 to 15.41) | 17.57 (11.86 to 24.99) | 9.93 (7.02 to 11.78) |
+| `settle` (s) | 1.30 (0.66 to 1.99) | 1.98 (1.21 to 3.43) | 0.84 (0.47 to 2.02) |
+| L0 flushes | 157 (151 to 161) | 296 (294 to 299) | 155 (147 to 161) |
+| compaction steps | 12 (11 to 12) | 18 (18 to 19) | 13 (13 to 13) |
+| compaction written | 325 (285 to 332) | 547 (538 to 582) | 352 (348 to 362) |
+| L0 stops | 4 (3 to 4) | 11 (11 to 12) | 0 |
+
+The wasm memory is what the budget controls, and it is exact: it is not
+garbage-collected, and `HostStats.memory` counts it. It peaks 21% below 7ab05e2
+at 32 MiB and 54% below at 16 MiB. At 32 MiB it stays under the 16 MiB recycle
+threshold in all but one run, so the host recycles almost never. At 16 MiB it
+passes 8 MiB and the host replaces the instance 3 to 9 times a run, which
+leaves 5.3 MiB at the end.
+
+`rounds` at 32 MiB is level with 7ab05e2. The paired runs split 5 to 6 on which
+was faster, and the one slow run (15.41 s) started at load 9.6. The window is
+the one figure of `hostBudget` that differs from 7ab05e2 at this budget, and
+in this one-database run the slot has nothing to queue. It costs the final
+compaction: `settle` is slower in 9 of 11 pairs, and the L0 stop fires 3 to 4
+times where it never did.
+
+### The peak check fails, and it fails on 7ab05e2 too
+
+`--max-peak-bytes` at 1.25·B (40 MiB at 32, 20 MiB at 16) ran on the first five
+runs of each column and exited 1 on all 15. It adds three peaks of the
+SharedWorker, each taken at its own time:
+
+| peak | B = 32 MiB | B = 16 MiB | 7ab05e2 |
+|---|---:|---:|---:|
+| JS heap used | 36.6 (33.4 to 39.0) | 29.3 (28.0 to 32.2) | 36.5 (33.4 to 38.6) |
+| ArrayBuffer backing | 57.0 (43.0 to 64.5) | 60.7 (51.4 to 63.9) | 54.2 (45.8 to 63.5) |
+| wasm memory | 15.2 (14.9 to 16.9) | 8.8 (8.8 to 9.3) | 19.2 (17.4 to 20.9) |
+| sum | 108.9 (97.2 to 116.9) | 98.4 (89.8 to 104.7) | 108.5 (98.4 to 117.8) |
+
+Most of the sum is garbage. `node bench/probes/live-set.ts` attached a second
+DevTools session to the SharedWorker and took a heap snapshot every 0.5 s
+during `rounds`. V8 collects before it writes a snapshot, so each one counts
+only what is alive. The wasm memory is the one ArrayBuffer past 4 MiB, and the
+JS side is every other byte. Two runs per column.
+
+| alive in the SharedWorker | B = 32 MiB | B = 16 MiB | 7ab05e2 |
+|---|---:|---:|---:|
+| snapshots | 36 | 66 | 42 |
+| JS side, median (max) | 5.8 (9.2) | 2.1 (4.9) | 6.2 (9.4) |
+| wasm memory, median (max) | 14.9 (16.9) | 7.8 (8.8) | 17.2 (18.9) |
+| JS side + wasm, largest in one snapshot | 26.0 | 13.6 | 26.8 |
+
+The live set stays under B at both budgets: 0.81·B at 32 MiB and 0.85·B at 16
+MiB, below the arithmetic's 30.2 and 15.2. The 1.25·B limit is not what fails.
+The check also counts about 80 MiB of dead objects and ArrayBuffers that V8 has
+not collected yet, at every B and on 7ab05e2.
+
+That much garbage comes from allocation, not from what the host holds. The
+workload puts 221 MiB of operations. The flushes read them back from the WAL
+and write 222 MiB of L0 runs, and compaction reads 526 MiB and writes 327 (the
+host's IO counters). That is about 1.3 GiB of ArrayBuffers in the 9 s of
+`rounds`. The backing peaks between 43 and 65 MiB in every column, near V8's
+64 MiB external-memory threshold for starting a collection. I did not trace V8
+to confirm that. A smaller B cannot move this part, which is why B = 16 MiB
+shows the same garbage.
+
+Reading `getHeapUsage` right after two forced collections is not a substitute
+for a snapshot. It read two to three times higher than the snapshots at the
+same point of a run, and fell to zero within a second of the worker going idle,
+because the ArrayBuffer sweeper frees backing stores after the collection
+returns.
+
+### `kv/fillrandom` and `kv/overwrite`
+
+`--size large` crashes headless Chrome here before its first phase, for every
+contender, the IndexedDB one included, so these ran at size small, 7 runs per
+column. They flush 8 and 15 runs and compact 1 to 3 times, so they touch the
+new code lightly. `kv/compaction-memory` above is the heavy test.
+
+| phase (s) | B = 32 MiB | B = 16 MiB | 7ab05e2 |
+|---|---:|---:|---:|
+| fillrandom: fill | 0.50 (0.38 to 0.90) | 0.51 (0.42 to 0.66) | 0.54 (0.41 to 0.74) |
+| fillrandom: read after settle | 0.23 (0.18 to 0.38) | 0.30 (0.20 to 0.58) | 0.20 (0.18 to 0.25) |
+| overwrite: fill | 0.41 (0.36 to 0.95) | 0.47 (0.33 to 0.64) | 0.45 (0.34 to 0.55) |
+| overwrite: overwrite | 0.35 (0.29 to 0.53) | 0.41 (0.32 to 0.94) | 0.33 (0.31 to 0.43) |
+| overwrite: settle | 0.30 (0.15 to 0.46) | 0.51 (0.29 to 0.66) | 0.17 (0.12 to 0.33) |
+
+No write phase is measurably slower at 32 MiB. `settle` after the overwrites
+is slower, as in the table above.
+
+### What the budgets cost
+
+- **32 MiB.** The windows halve from 256 to 128 KiB, so the final compaction
+  after the last write takes about 0.1 to 0.5 s longer and the L0 stop fires a
+  few times in a 2M-put run. Writes keep their speed. Keeping 256 KiB windows
+  at 49 sources, with a flush running beside the merge, adds up to 1.3·B.
+- **16 MiB.** The flush run and the windows halve again. The same writes make
+  296 L0 runs instead of 155, compaction writes 547 MiB instead of 352, and
+  `rounds` takes 17.6 s instead of 9.9. That is the price of an 8.8 MiB wasm
+  peak instead of 19.2.
 
 ## Implementation order
 

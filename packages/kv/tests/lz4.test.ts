@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep } from "../src/host/compact.js";
 import { MemoryFs } from "../src/index.js";
 import { decodeSst as decodeWasm, encodeRun, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
@@ -12,6 +13,7 @@ import { drain, publish, readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+const budget = hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES);
 const key = (i: number) => enc.encode(`k/${String(i).padStart(6, "0")}`);
 
 let seed = 1;
@@ -130,7 +132,7 @@ describe("compaction codec", () => {
     await publish(fs, path, body);
     // A size past L1's target makes the run a compaction input without writing 40 MB.
     await publishGeneration(fs, { generation: 1, runs: [{ path, ...end, bytes: 50_000_000 }], tombstoneSeq: 0, through: 0 });
-    const step = await mergeNextStep(fs);
+    const step = await mergeNextStep(fs, budget);
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
     return { out: out.path, bytes, raw: body };
@@ -156,7 +158,7 @@ describe("compaction codec", () => {
       runs.push({ path, ...end });
     }
     await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 0 });
-    const step = await mergeNextStep(fs);
+    const step = await mergeNextStep(fs, budget);
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
     expect(out.path.startsWith("l1/")).toBe(true);

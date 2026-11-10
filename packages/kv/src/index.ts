@@ -19,6 +19,7 @@ export {
   ClosedError,
   CorruptDatabaseError,
   StorageUnavailableError,
+  StorageFullError,
 } from "./errors.js";
 export {
   EngineHost,

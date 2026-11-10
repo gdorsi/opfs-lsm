@@ -232,16 +232,23 @@ export async function loadGeneration(
   return decodeGeneration(buf);
 }
 
-/** Delete manifests older than `keepFrom`. Call after IDB records `keepFrom`. */
+/**
+ * Delete manifests older than `keepFrom`, and swap files (`<n>.mft.crswap`,
+ * left by a write killed mid-flight) numbered up to `keepFrom`. Call after
+ * IDB records `keepFrom`. A write in progress always numbers past the
+ * recorded generation, so its swap file is above `keepFrom` and stays.
+ */
 export async function reclaimManifests(
   fs: AsyncFs,
   keepFrom: number,
 ): Promise<void> {
   for (const name of await fs.list("m")) {
-    const n = Number(name.replace(/\.mft$/, ""));
-    if (!Number.isFinite(n) || n >= keepFrom) continue;
+    const m = /^(\d+)\.mft(\.crswap)?$/.exec(name);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (m[2] ? n > keepFrom : n >= keepFrom) continue;
     try {
-      await fs.remove(genPath(n));
+      await fs.remove(`${GEN_PREFIX}${name}`);
     } catch {
       // best-effort
     }

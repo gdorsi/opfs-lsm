@@ -599,7 +599,7 @@ compaction that starts. A request for seqs that are already ingested writes noth
 ## Steps
 
 A flush folds the WAL as it stands when it starts, oldest records first, into one L0 run per
-`flushRunBytes` of op bytes (1.75 MiB). A backlog becomes several runs, so a flush holds one run's
+`flushRunBytes` of op bytes (1.75 MiB at the default memory budget). A backlog becomes several runs, so a flush holds one run's
 worth in memory, not the backlog. Each run is its own pass through the steps below and holds the
 exclusive section for that pass only, so a compaction install can land between two runs. A host
 runs one flush at a time per database, and a flush asked for meanwhile waits for it. Records acked
@@ -627,9 +627,10 @@ The exclusive section is a promise chain inside the host plus a Web Lock named
 `opfs-lsm-ingest/<name>`. The lock covers the case of two SharedWorkers serving the same
 database, for example two builds with different script URLs.
 
-**L0 stop.** Step 1 also counts the L0 runs of manifest `G`. At 48 runs, with records waiting,
-the flush publishes nothing and releases the section. 48 is one less than the 49 sources of a
-merge, so one compaction step can take all of L0. The stop is high on purpose: a step takes the
+**L0 stop.** Step 1 also counts the L0 runs of manifest `G`. At `l0StopRuns` runs (48 at the
+default memory budget), with records waiting, the flush publishes nothing and releases the
+section. The stop is one less than the 49 sources of a merge, so one compaction step can take
+all of L0. The stop is high on purpose: a step takes the
 L0 runs that exist when it starts, so a stop at S settles near S/2 runs per step, and every step
 with random keys rewrites all of L1. A stop at 15 made steps of about 6 runs and doubled the
 compaction writes of `kv/compaction-memory`. The flush asks for a compaction pass if none
@@ -637,7 +638,7 @@ runs, then waits for the next step to install, outside the section so the instal
 After the install it tries again. If the pass ends without an install, because nothing was left to
 merge or because it failed, the flush publishes its run anyway and checks again before the next
 one. A compaction that cannot help delays the flush by one pass and never blocks it for good.
-`HostStats.l0Stops` counts the waits.
+`HostStats.memory.l0Stops` counts the waits.
 
 OPFS writes go through `createWritable` and `close`. The browser swaps the new file into place
 on `close`, so other readers see a file whole or not at all.
@@ -661,8 +662,8 @@ bytes.
 `planCompaction` reads only the manifest. It scores each level and serves the highest score
 above 1; on a tie the shallower level wins:
 - L0, once it has 4 runs or more, scores its run count over 4. Its step merges the oldest L0
-  runs, at most 48, with the L1 runs whose ranges overlap them. The newer L0 runs wait for the
-  next step, still newer than all of L1.
+  runs, at most `maxSources - 1` (48 at the default memory budget), with the L1 runs whose
+  ranges overlap them. The newer L0 runs wait for the next step, still newer than all of L1.
 - L1 and below score their bytes over their budget. The step picks the run whose overlapping
   bytes in the next level are the smallest fraction of its own size, and merges it with those
   runs into the next level.
@@ -678,7 +679,8 @@ the merge drop tombstones, because no older value is left for them to hide.
 
 A step reads its inputs as sources, newest first. A source is runs read back to back as one
 key-ordered stream: each L0 run is a source of its own, and the next level's overlapped runs,
-which never overlap each other, are one source together. So a step has at most 49 sources.
+which never overlap each other, are one source together. So a step has at most `maxSources`
+sources (49 at the default memory budget).
 
 The merge is a session in wasm (`crates/engine-core/src/merge.rs`, ABI in
 `crates/engine-abi.md`) that the host pumps (`pumpMerge` in `host/compact.ts`). Each pump stops
@@ -692,10 +694,11 @@ between two keys and asks the host for one thing:
 | YIELD | gives the event loop a turn, after about 1 MiB of input |
 | DONE | installs the outputs: every input was read and every CRC matched |
 
-The session owns every offset and asks for whole blocks only. It reads each run's last 128 KiB
-first, which holds the footer and usually the whole bloom and index, then the rest of them if
-the tail missed it, then the data blocks in order, up to 256 KiB a read. While the host reads for
-one source, every source holding under half a read asks for its next one too. The CRC of a run
+The session owns every offset and asks for whole blocks only. It reads each run's last
+`tailBytes` first (128 KiB at the default memory budget), which holds the footer and usually the
+whole bloom and index, then the rest of them if the tail missed it, then the data blocks in
+order, up to `chunkBytes` a read (128 KiB at the default). While the host reads for one source,
+every source holding under half a read asks for its next one too. The CRC of a run
 covers its data and then its meta, but the meta comes first: the data's CRC streams in as blocks
 arrive and combines with the meta's, and it is checked before the last block's entries are used.
 
@@ -709,23 +712,62 @@ records use varints and a shared prefix, so a full raw run is under 4 MiB on dis
 share long prefixes, as index keys do. LZ4 runs are smaller again. The last run of a merge holds
 whatever is left over.
 
-What a step holds no longer depends on its inputs' size: per source about 256 KiB of blocks
-(512 KiB while reading ahead), one unpacked block and two entries, plus the open output run's
-block, bloom hashes and index rows, and up to 256 KiB of output not yet written. The session
+What a step holds no longer depends on its inputs' size: per source about `chunkBytes` of blocks
+(twice that while reading ahead), one unpacked block and two entries, plus the open output run's
+block, bloom hashes and index rows, and up to `chunkBytes` of output not yet written. The session
 reserves that at open and returns an error, never a trap, when memory cannot grow. If any input
 is corrupt, or any read or write fails, the host deletes every output the step wrote and installs
 nothing.
 
-Without wasm, or while another step holds the module's one session, the TypeScript session
+Without wasm, because the module did not load or trapped, the TypeScript session
 (`store/merge-ts.ts`) runs the same protocol. It decodes each read's blocks at once and gathers
 an output run's entries before it encodes them, so it holds about 8 MiB more than the reads, and
 its runs are raw.
 
+## Memory budget
+
+`openDb({ compactionMemoryBytes })` (default 32 MiB, at least 8 MiB) is the memory the
+SharedWorker may spend on flushing and compacting one database: its wasm heap and the run data
+in flight in JS. When tabs pass different values, the host uses the smallest, as it does for
+`maxWalBytes`. `hostBudget` in `host/budget.ts` is the one place the figures follow from it:
+
+| Budget | Flush run | Sources | L0 stop | Read window | Tail read | Recycle at |
+|---|---:|---:|---:|---:|---:|---:|
+| 16 MiB | 0.875 MiB | 44 | 43 | 64 KiB | 64 KiB | 8 MiB |
+| 32 MiB | 1.75 MiB | 49 | 48 | 128 KiB | 128 KiB | 16 MiB |
+| 64 MiB | 3.5 MiB | 49 | 48 | 256 KiB | 128 KiB | 32 MiB |
+
+Past 64 MiB only the recycle threshold grows. A flush and a merge session share one wasm
+instance and can overlap, so the budget covers both and the module. The derivation, and the wasm
+memory measured behind it, are in `docs/research/bounded-compaction-memory.md`.
+
+The budget counts memory that is alive. Dead ArrayBuffers and objects that V8 has not collected
+yet come on top of it and do not shrink with it, so a browser's memory graph can show far more
+than `compactionMemoryBytes`. The research doc has the live set and that garbage, measured.
+
+Merges take turns in a JS context, across its databases. A step waits at the merge slot
+(`host/merge-slot.ts`) before it opens any input, because the module holds one session and two
+working sets would add up past the budget. A flush does not take the slot. It runs on the engine
+between the merge's pumps.
+
+Wasm memory never shrinks, so the host replaces the instance instead. After each flush chunk
+and each compaction step, if no merge session is open and the instance holds more than the
+recycle threshold, `recycleEngine` (`store/engine.ts`) makes a new one from the module it kept
+and drops the old one, whose memory returns once Chrome collects it. Nothing holds a view of the
+old memory across an await, and the LZ4 decoder and the block scanner read the current instance
+at each call. At 32 MiB the threshold is 16 MiB, so it fires after a flush that overlapped a
+merge and not after a flush alone.
+
+`HostStats.memory` reports `wasmBytes`, `wasmPeakBytes`, `mergeReservedBytes` and `recycles`
+for the SharedWorker, and `l0Stops` for the database. They work in any browser, with no
+DevTools.
+
 ## Installing
 
-The merge itself runs without the ingest lock. It holds only `opfs-lsm-compact/<name>`, so
-flushes keep going while it runs. A flush meanwhile only adds L0 runs in front of the inputs, so
-the plan stays valid. To install, under the exclusive section, the host:
+The merge itself runs without the ingest lock. It holds only `opfs-lsm-compact/<name>` and its
+turn at the merge slot, so flushes keep going while it runs. A flush meanwhile only adds L0 runs
+in front of the inputs, so the plan stays valid. To install, under the exclusive section, the
+host:
 
 1. Reconciles, and checks that every input is still in the recorded manifest `G`.
 2. Writes manifest `top + 1`, with the inputs replaced by the outputs (each with the size and key

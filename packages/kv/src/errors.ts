@@ -3,14 +3,16 @@ export type ErrorCode =
   | "closed"
   | "corrupt"
   | "constraint"
-  | "unavailable";
+  | "unavailable"
+  | "quota";
 
 export class OpfsLsmError extends Error {
   constructor(
     readonly code: ErrorCode,
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = "OpfsLsmError";
   }
 }
@@ -44,10 +46,29 @@ export class CorruptDatabaseError extends OpfsLsmError {
 }
 
 export class StorageUnavailableError extends OpfsLsmError {
-  constructor(message: string) {
-    super("unavailable", message);
+  constructor(message: string, options?: ErrorOptions) {
+    super("unavailable", message, options);
     this.name = "StorageUnavailableError";
   }
+}
+
+export class StorageFullError extends OpfsLsmError {
+  constructor(message: string) {
+    super("quota", message);
+    this.name = "StorageFullError";
+  }
+}
+
+/**
+ * The code a host error crosses a MessagePort with. A write the browser
+ * refuses for lack of space is a DOMException, not an OpfsLsmError, so it is
+ * recognised by name.
+ */
+export function codeOfError(err: unknown): ErrorCode | undefined {
+  if (err instanceof OpfsLsmError) return err.code;
+  if (err instanceof Error && err.name === "QuotaExceededError") return "quota";
+  // No code: the tab gets a plain Error with the host's message, on purpose.
+  return undefined;
 }
 
 /**
@@ -66,7 +87,10 @@ export function errorOfCode(code: ErrorCode | undefined, message: string): Error
       return new ConstraintError(message);
     case "unavailable":
       return new StorageUnavailableError(message);
+    case "quota":
+      return new StorageFullError(message);
     default:
+      // No code: a plain Error with the host's message, on purpose.
       return new Error(message);
   }
 }

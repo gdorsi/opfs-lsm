@@ -1,5 +1,5 @@
 import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
-import { errorOfCode, OpfsLsmError } from "../errors.js";
+import { codeOfError, errorOfCode } from "../errors.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile } from "../recover.js";
@@ -11,7 +11,9 @@ import {
   reclaimManifests,
   reclaimRuns,
 } from "../store/generation.js";
+import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
@@ -21,35 +23,13 @@ import {
   type HostStats,
   type HostToClient,
   type IngestClient,
+  type WatchPolicy,
 } from "./protocol.js";
 
 export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
-
-/** What the host holds to keep its working set small. */
-export type HostLimits = {
-  /**
-   * Op bytes of WAL records folded into one L0 run. The wasm peak of a flush
-   * grows about tenfold with this figure. A larger backlog becomes several
-   * runs.
-   */
-  readonly flushRunBytes: number;
-  /**
-   * L0 runs at which a flush waits for a compaction step to install before it
-   * publishes another. One less than the sources a merge reads, so one step
-   * can take all of L0. A step takes the L0 runs that exist when it starts,
-   * and a stop at S settles near S/2 runs per step, so a low stop cuts steps
-   * short and each one rewrites all of L1.
-   */
-  readonly l0StopRuns: number;
-};
-
-const DEFAULT_HOST_LIMITS: HostLimits = {
-  flushRunBytes: 1.75 * 1024 * 1024,
-  l0StopRuns: 48,
-};
 
 /** Host counters for one database, besides the fs IO its CountingFs keeps. */
 type HostCounts = {
@@ -67,6 +47,8 @@ type HostCounts = {
 type IngestWatch = {
   /** The smallest limit any watching tab asked for. */
   maxWalBytes: number;
+  /** The smallest `compactionMemoryBytes` any watching tab asked for. */
+  compactionMemoryBytes: number;
   /** Op bytes heard or measured and not yet folded into a run. */
   pendingBytes: number;
   /**
@@ -125,13 +107,16 @@ export class EngineHost {
    * flush. A tab that records another generation makes the host check again.
    */
   private readonly trusted = new Map<DbName, number>();
-  private readonly limits: HostLimits;
 
+  /** `overrides` replace figures of the budget, for tests that need a small flush run or no L0 stop. */
   constructor(
     private readonly fsFactory: FsFactory,
-    limits: Partial<HostLimits> = {},
-  ) {
-    this.limits = { ...DEFAULT_HOST_LIMITS, ...limits };
+    private readonly overrides: Partial<HostBudget> = {},
+  ) {}
+
+  private budget(dbName: DbName): HostBudget {
+    const asked = this.watches.get(dbName)?.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES;
+    return { ...hostBudget(asked), ...this.overrides };
   }
 
   /** Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
@@ -172,11 +157,13 @@ export class EngineHost {
       entry.bytes += run.bytes;
       byLevel.set(level, entry);
     }
+    const { l0Stops, ...counts } = this.countsFor(dbName);
     return structuredClone({
       fs: fs.counters,
-      ...this.countsFor(dbName),
+      ...counts,
       generation: latest?.generation ?? 0,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
+      memory: { ...engineMemory(), l0Stops },
     });
   }
 
@@ -228,19 +215,21 @@ export class EngineHost {
     let foldedBytes = 0;
     let pastStop = false;
     for (;;) {
+      const budget = this.budget(dbName);
       // Taken before the attempt, so an install that lands during it is not missed.
       const installed = this.nextInstall(dbName);
       const chunk = await this.exclusive(dbName, () =>
         this.withWal(dbName, async (wal) => {
           const folded = await ingestChunk(wal, fs, target, this.trust(dbName), {
-            maxBytes: this.limits.flushRunBytes,
-            l0Stop: pastStop ? Number.POSITIVE_INFINITY : this.limits.l0StopRuns,
+            maxBytes: budget.flushRunBytes,
+            l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
           });
           // Skipped while a tab loads a generation; the next flush or reclaim removes them.
           await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
           return folded;
         }),
       );
+      recycleEngine(budget.wasmRecycleBytes);
       pastStop = false;
       this.trusted.set(dbName, chunk.generation);
       if (chunk.kind === "stopped") {
@@ -294,15 +283,20 @@ export class EngineHost {
   }
 
   /**
-   * Ingest `name` on the host's own once its WAL passes `maxWalBytes`, with
-   * no tab asking. Reads the byte counter in the background and ingests
-   * when a reopened database is already over the limit.
+   * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
+   * with no tab asking. Reads the byte counter in the background and ingests
+   * when a reopened database is already over the limit. The host holds
+   * `name` to the smallest `compactionMemoryBytes` any tab passed.
    */
-  watch(name: string, maxWalBytes: number, onScan?: (scan: WatchScan) => void): void {
+  watch(name: string, policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
     const dbName = checkDbName(name);
-    const watch = this.watches.get(dbName) ?? this.startWatch(dbName, maxWalBytes);
+    // A tab of an older build sends no figure, and NaN would win every later `Math.min`.
+    const compactionMemoryBytes =
+      policy.compactionMemoryBytes > 0 ? policy.compactionMemoryBytes : DEFAULT_COMPACTION_MEMORY_BYTES;
+    const watch = this.watches.get(dbName) ?? this.startWatch(dbName, { ...policy, compactionMemoryBytes });
     watch.watchers += 1;
-    watch.maxWalBytes = Math.min(watch.maxWalBytes, maxWalBytes);
+    watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
+    watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
     const scanAt = onScan ? performance.now() : 0;
     void this.withWal(dbName, (wal) => wal.uningestedBytes()).then(
@@ -332,11 +326,12 @@ export class EngineHost {
     this.watches.delete(dbName);
   }
 
-  private startWatch(dbName: DbName, maxWalBytes: number): IngestWatch {
+  private startWatch(dbName: DbName, policy: WatchPolicy): IngestWatch {
     const watch: IngestWatch = {
-      maxWalBytes,
+      maxWalBytes: policy.maxWalBytes,
+      compactionMemoryBytes: policy.compactionMemoryBytes,
       pendingBytes: 0,
-      triggerAt: maxWalBytes,
+      triggerAt: policy.maxWalBytes,
       state: "idle",
       watchers: 0,
       bus: undefined,
@@ -432,7 +427,9 @@ export class EngineHost {
       const base = await loadGeneration(fs, meta.generation ?? 0);
       // Gone when a flush installed a newer generation since: plan again.
       if (!base) continue;
-      const step = await mergeNextStep(fs, base, meta.top);
+      const budget = this.budget(dbName);
+      const step = await mergeNextStep(fs, budget, base, meta.top);
+      recycleEngine(budget.wasmRecycleBytes);
       if (!step) return;
       await this.exclusive(dbName, () =>
         this.withWal(dbName, async (wal) => {
@@ -541,7 +538,10 @@ export function attachEngineHostPort(
         case "watch":
           host.watch(
             msg.name,
-            msg.maxWalBytes,
+            {
+              maxWalBytes: msg.maxWalBytes,
+              compactionMemoryBytes: msg.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
+            },
             msg.trace
               ? (scan) =>
                   reply({
@@ -568,7 +568,8 @@ export function attachEngineHostPort(
       const message = err instanceof Error ? err.message : String(err);
       if (msg && typeof msg === "object" && "id" in msg) {
         const id = (msg as { id: number }).id;
-        reply(err instanceof OpfsLsmError ? { type: "err", id, message, code: err.code } : { type: "err", id, message });
+        const code = codeOfError(err);
+        reply(code ? { type: "err", id, message, code } : { type: "err", id, message });
       }
     }
   };
@@ -621,6 +622,7 @@ export function createPortIngestClient(
         type: "watch",
         name,
         maxWalBytes: policy.maxWalBytes,
+        compactionMemoryBytes: policy.compactionMemoryBytes,
         ...(onWatchScan ? { trace: true } : {}),
       };
       port.postMessage(msg);
@@ -644,7 +646,7 @@ export function createPortIngestClient(
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
     ingest: (name, through, settle) => host.ingest(name, through, settle),
-    watch: (name, policy) => host.watch(name, policy.maxWalBytes),
+    watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
     stats: (name) => host.stats(name),
     close: () => undefined,

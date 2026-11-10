@@ -489,21 +489,24 @@ Verified on that Chrome:
   the closed one. While a DevTools session was attached, the next tab got no working worker.
 - After `kill -9` of the browser mid-`createWritable`, the swap file stays in OPFS as
   `<name>.crswap`, listed by `entries()`, across relaunches. Chrome does not clean it up. In a
-  level directory the engine's reclaim removes it as an orphan. In `m/` nothing does: the
-  engine skips the name, and each browser crash during a manifest write leaks one file.
-  `checkDatabase` lists them as `swapFiles`.
+  level directory the engine's reclaim removes it as an orphan. In `m/` nothing did: the
+  engine skipped the name, and each browser crash during a manifest write leaked one file.
+  Fixed: manifest reclaim removes a swap file once the recorded generation reaches its
+  number. `checkDatabase` lists them as `swapFiles`.
 - `Storage.overrideQuotaForOrigin` works only on a page session (the browser session answers
   "Internal error"), and only for OPFS writes. IndexedDB commits and
   `navigator.storage.estimate()` ignore it. Under it, ingest fails, and the tab's `ingest()`
-  rejects with a plain `Error` (the `QuotaExceededError` class does not cross the port). The
-  database stays clean, and ingest works again once the quota is restored.
+  rejected with a plain `Error` (the `QuotaExceededError` class does not cross the port).
+  Fixed: it rejects with `StorageFullError`, code `quota`. The database stays clean, and
+  ingest works again once the quota is restored.
 - After `kill -9` of the browser or `Browser.crash`, Chrome sometimes damages its own
   IndexedDB store (a LevelDB `CURRENT` naming a missing `MANIFEST`, and a
   `corruption_info.json`). The next launch fails `indexedDB.open` with `UnknownError`, and
   Chrome then deletes every IndexedDB database of the origin, or keeps failing every open.
   OPFS is untouched. 13 of the 149 browser kills of the last two runs, on macOS. The engine
   treats it as an IndexedDB power loss and recovers the newest intact manifest, so this is a persistence loss
-  (the WAL tail), not corruption.
+  (the WAL tail), not corruption. `openDb` rejected with the raw `UnknownError`. Fixed: it
+  rejects with `StorageUnavailableError`, with the `UnknownError` as `cause`.
 
 Open: in the first 20-minute run, two iterations right after such a wipe failed the prefix
 check (seed 424242, iterations 59 and 239). In one, an ingested key was gone; in the other,

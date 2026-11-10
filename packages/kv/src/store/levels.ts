@@ -9,14 +9,6 @@ import type { KeyRange, SstCodec } from "./sst.js";
  * byte size and key range are in the manifest, so planning reads no files.
  */
 const L0_RUNS_TO_COMPACT = 4;
-/**
- * A step holds a window of each source, so its memory grows with the
- * source count and not with the inputs' size. L0 runs past this many wait
- * for the next step. A step reads all of L1 with random keys, so it should
- * take many L0 runs: the host's L0 stop (`l0StopRuns`) is one less than
- * this, and a step cut short by a lower figure rewrites L1 more often.
- */
-const MAX_SOURCES = 49;
 const LEVEL_RATIO = 10;
 /** Ten compaction-sized runs (`TARGET_RUN_BYTES`). */
 const L1_TARGET_BYTES = 40 * 1024 * 1024;
@@ -82,10 +74,21 @@ function bytesOf(runs: readonly RunMeta[]): number {
   return runs.reduce((n, r) => n + r.bytes, 0);
 }
 
+export type PlanLimits = {
+  /**
+   * The most sources a step reads. A step holds a window of each, so its
+   * memory grows with the source count and not with the inputs' size. L0
+   * runs past `maxSources - 1` wait for the next step.
+   */
+  readonly maxSources: number;
+  /** Bytes of L1 past which it compacts into L2. */
+  readonly l1Target?: number;
+};
+
 /** The next compaction step, or undefined when the layout is in shape. */
 export function planCompaction(
   runs: readonly RunMeta[],
-  l1Target = L1_TARGET_BYTES,
+  { maxSources, l1Target = L1_TARGET_BYTES }: PlanLimits,
 ): CompactionPlan | undefined {
   const inLevel = (level: number | undefined) =>
     runs.filter((r) => levelOf(r.path) === level);
@@ -118,7 +121,7 @@ export function planCompaction(
 
   if (best.level === 0) {
     // The oldest ones, so the L0 runs left behind stay newer than L1.
-    const taken = l0.slice(-(MAX_SOURCES - 1));
+    const taken = l0.slice(-(maxSources - 1));
     const range = span(taken);
     return plan([...taken.map((r) => [r]), inLevel(1).filter((r) => overlaps(r.range, range))], 1);
   }
