@@ -162,7 +162,8 @@ class Run {
         else if (this.phase.kind === "live" && event.seq > this.syncedThrough) this.commit(undefined, [event]);
         return;
       case "gap":
-        if (this.phase.kind !== "stopped" && event.through > this.syncedThrough) this.load();
+        // A repair's gap can name a seq this run synced, and still change what reads return.
+        if (this.phase.kind !== "stopped") this.load();
         return;
       case "ingest":
         return;

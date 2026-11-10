@@ -230,6 +230,59 @@ test("a tab that falls behind a flush reloads and matches the writer", async () 
   assert.deepEqual(plain(reader.toArray), plain(writer.toArray));
 });
 
+/** A db whose change feed the test can thin out and add to. */
+function tappedFeed(db: Db) {
+  const listeners = new Set<(event: ChangeEvent) => void>();
+  let hide = 0;
+  const tapped = new Proxy(db, {
+    get(target, prop) {
+      if (prop === "changes") {
+        return (listener: (event: ChangeEvent) => void) => {
+          listeners.add(listener);
+          const off = target.changes((event) => {
+            if (event.kind === "append" && hide > 0) hide--;
+            else listener(event);
+          });
+          return () => {
+            listeners.delete(listener);
+            off();
+          };
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return {
+    db: tapped,
+    hideNextAppend: () => hide++,
+    emit: (event: ChangeEvent) => {
+      for (const listener of listeners) listener(event);
+    },
+  };
+}
+
+test("a gap at a seq already synced still reloads, as after a repair", async () => {
+  const name = dbName();
+  const w = await open(name);
+  const r = await open(name);
+  const tap = tappedFeed(r);
+  const writer = todos(w);
+  const reader = todos(tap.db);
+  await Promise.all([writer.preload(), reader.preload()]);
+
+  tap.hideNextAppend();
+  await writer.insert({ id: "unannounced", title: "folded by a repair" }).when("settled");
+  await r.sync();
+  await writer.insert({ id: "announced", title: "later" }).when("settled");
+  await until(reader, () => reader.has("announced"), "the announced row");
+  assert.equal(reader.has("unannounced"), false);
+
+  tap.emit({ kind: "gap", through: await r.view((snap) => snap.walHead) });
+  await until(reader, () => reader.has("unannounced"), "the reload after the gap");
+  assert.deepEqual(plain(reader.toArray), plain(writer.toArray));
+});
+
 test("collections named todo and todos stay apart, live and on load", async () => {
   const name = dbName();
   const a = await open(name);
