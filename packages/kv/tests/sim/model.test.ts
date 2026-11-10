@@ -1,5 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import type { HostLimits } from "../../src/testing.js";
 import { commandsArb, expectEntries, expectHealthy, Model, Sut } from "./commands.js";
 
 /**
@@ -20,17 +21,15 @@ const cmdsArb = commandsArb(env.KV_MODEL_REPLAY);
 
 let runs = 0;
 
-async function runHistory(maxWalBytes: number, cmds: Iterable<fc.AsyncCommand<Model, Sut, false>>): Promise<void> {
-  const sut = new Sut(`model-${++runs}`, maxWalBytes);
+async function runHistory(limits: Partial<HostLimits>, cmds: Iterable<fc.AsyncCommand<Model, Sut, false>>): Promise<void> {
+  const sut = new Sut(`model-${++runs}`, limits);
   await sut.open();
   const model = new Model();
   try {
     await fc.asyncModelRun(() => ({ model, real: sut }), cmds);
-    // End of run: quiesce, check the files, then reopen and read everything back.
-    await sut.db.close();
-    await sut.settle();
-    await expectHealthy(model, sut, true);
-    await sut.open();
+    // End of run: quiesce, check the files, then read everything back on the handle `quiet` opened.
+    await sut.quiet();
+    await expectHealthy(model, sut);
     const all: { key: Uint8Array; value: Uint8Array }[] = [];
     for await (const e of sut.db.range()) all.push(e);
     expectEntries(all, model.oracle.stateAt(), "range after reopen");
@@ -42,7 +41,7 @@ async function runHistory(maxWalBytes: number, cmds: Iterable<fc.AsyncCommand<Mo
 describe("kv model (single handle)", () => {
   it("every read is the fold of a log prefix, and the files stay healthy", async () => {
     await expect(
-      fc.assert(fc.asyncProperty(cmdsArb, (cmds) => runHistory(1 << 30, cmds)), { numRuns: RUNS, ...replay }),
+      fc.assert(fc.asyncProperty(cmdsArb, (cmds) => runHistory({ batchBytes: 1 << 30 }, cmds)), { numRuns: RUNS, ...replay }),
     ).resolves.toBeUndefined();
   }, 600_000);
 
@@ -51,8 +50,8 @@ describe("kv model (single handle)", () => {
   it("stays a log prefix with ingest running in the background", async () => {
     await expect(
       fc.assert(
-        fc.asyncProperty(fc.constantFrom(64, 1024, 16 * 1024), cmdsArb, (maxWalBytes, cmds) =>
-          runHistory(maxWalBytes, cmds),
+        fc.asyncProperty(fc.constantFrom(64, 1024, 16 * 1024), cmdsArb, (batchBytes, cmds) =>
+          runHistory({ batchBytes, runBytes: 4096, l0StopRuns: 3 }, cmds),
         ),
         { numRuns: Math.ceil(RUNS / 4), ...replay },
       ),

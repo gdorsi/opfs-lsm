@@ -1,43 +1,34 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { compareBytes } from "../../src/bytes.js";
-import { EngineHost, type Db } from "../../src/index.js";
+import type { Db } from "../../src/index.js";
+import { Host, openHarnessDb } from "../../src/testing.js";
 import { checkDatabase } from "./check-database.js";
 import type { SiteKind } from "./fault-fs.js";
-import { installFaultWal } from "./fault-wal.js";
-import { committedLog, Traced } from "./crash.js";
-import { show, type Oracle, type OracleEntry } from "./oracle.js";
+import { Traced } from "./crash.js";
+import { Oracle, show, type OracleEntry } from "./oracle.js";
 
 /**
  * I/O-error sweep (docs/research/corruption-hardening-test-suite.md,
  * technique 3, "Error injection"; SQLite's I/O-error loop). A fixed
- * workload runs with fault site N failing, for N = 1, 2, … until a run
- * reaches no site N, once with a one-shot fault and once with a persistent
- * one. Sites are every OPFS call (create, write, close, remove, read, open,
- * list) and every IndexedDB readwrite transaction that writes (aborted
- * before it commits).
+ * workload on one tab runs with fault site N failing, for N = 1, 2, …
+ * until a run reaches no site N, once with a one-shot fault and once with a
+ * persistent one. Sites are every OPFS call of the tab and the SharedWorker
+ * (create, write, close, remove, read, open, list). Log segment writes are
+ * not sites here: a failed append and the new log the tab starts after it
+ * are swept in queue-history.test.ts and the log client's tests.
  *
  * Every run checks:
  * - no hang: every call settles;
- * - errors are not answers: a call that resolves is right. An acked write
- *   is in the committed log; a read is the fold of a log prefix no older
- *   than this handle's last ack, barrier or read, and no newer than what
- *   had committed;
- * - after the fault is healed, the same host flushes and compacts, the
- *   database reopens holding the whole committed log (nothing crashed, so
- *   nothing committed may be missing), `checkDatabase` passes, and a fresh
- *   host's sweep leaves no orphan.
- *
- * A write that rejects may still have committed (it failed after its
- * commit, while catching up): the log, not the caller, says.
+ * - errors are not answers: a call that resolves is right. Writes touch
+ *   only the tab's log, so every write acks; with one tab, every read is the
+ *   fold of every write acked before it, since the tab reads its own
+ *   records on top of the runs and an open ingests the closed tab's log;
+ * - after the fault is healed, the same host ingests and compacts, the
+ *   database reopens holding every acked write, `checkDatabase` passes, and
+ *   a later page's compaction pass leaves no orphan.
  *
  *   KV_IO_SITES=read pnpm exec vitest run tests/sim/io-error.test.ts   (only read sites)
  */
-
-let restore: () => void;
-beforeAll(() => {
-  restore = installFaultWal();
-});
-afterAll(() => restore());
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -77,7 +68,7 @@ function guard<T>(p: Promise<T>, what: string): Promise<T> {
   return Promise.race([p, hang]).finally(() => clearTimeout(timer));
 }
 
-const durableOnly = new Set<SiteKind>(["fs-write", "idb-write"]);
+const durableOnly = new Set<SiteKind>(["fs-write"]);
 const readOnly = new Set<SiteKind>(["fs-read"]);
 
 type Read =
@@ -87,16 +78,11 @@ type Read =
 /** What one call did, for the checks after the run. */
 type Event = {
   readonly step: string;
-  /** The value that marks a write, unique, so it maps to its seq. */
-  readonly marker?: string;
   readonly reads?: readonly Read[];
   readonly acked: boolean;
   readonly error?: unknown;
-  /** The WAL head of the committed IndexedDB ops at the call and at its return. */
-  readonly headBefore: number;
-  readonly headAfter: number;
-  /** Floor before the call: sync and open are barriers. */
-  readonly barrier?: boolean;
+  /** The writes acked before the call returned. */
+  readonly head: number;
 };
 
 let runs = 0;
@@ -107,22 +93,22 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
   t.faults.failAt = failAt;
   t.faults.persistent = persistent;
   const events: Event[] = [];
-  const head = () => committedHead(t);
+  const log = new Oracle();
   let db: Db | undefined;
-  const call = async (step: string, body: () => Promise<Omit<Event, "step" | "acked" | "headBefore" | "headAfter">>, marker?: string) => {
-    const headBefore = head();
+  const call = async (step: string, body: () => Promise<Omit<Event, "step" | "acked" | "head">>, ops?: Parameters<Oracle["append"]>[0]) => {
     try {
       const out = await guard(body(), step);
-      events.push({ step, acked: true, ...out, headBefore, headAfter: head(), ...(marker ? { marker } : {}) });
+      if (ops) log.append(ops);
+      events.push({ step, acked: true, ...out, head: log.head });
     } catch (err) {
       if (err instanceof Error && err.message.startsWith("hang:")) throw err;
-      events.push({ step, acked: false, error: err, headBefore, headAfter: head(), ...(marker ? { marker } : {}) });
+      events.push({ step, acked: false, error: err, head: log.head });
     }
   };
   const open = () =>
     call("open", async () => {
       db = await t.open();
-      return { barrier: true };
+      return {};
     });
   const consoleError = console.error;
   console.error = () => undefined; // the host logs failed background work
@@ -136,27 +122,37 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
       const h = db;
       switch (step.kind) {
         case "write": {
-          const marker = step.ops.find((o) => o.value)?.value;
-          await call(`write ${step.ops.map((o) => (o.value ? `${o.key}=${o.value}` : `del ${o.key}`)).join(" ")}`, async () => {
-            await h.batch((tx) => {
-              for (const o of step.ops) {
-                if (o.value) tx.put(utf(o.key), utf(o.value));
-                else tx.delete(utf(o.key));
-              }
-            });
-            return {};
-          }, marker);
+          const ops = step.ops.map((o) =>
+            o.value ? { type: "put" as const, key: utf(o.key), value: utf(o.value) } : { type: "del" as const, key: utf(o.key) },
+          );
+          await call(
+            `write ${step.ops.map((o) => (o.value ? `${o.key}=${o.value}` : `del ${o.key}`)).join(" ")}`,
+            async () => {
+              await h.batch((tx) => {
+                for (const o of ops) {
+                  if (o.type === "put") tx.put(o.key, o.value);
+                  else tx.delete(o.key);
+                }
+              });
+              return {};
+            },
+            ops,
+          );
           break;
         }
         case "update":
-          await call(`update ${step.key}=${step.value}`, async () => {
-            let seen: Uint8Array | undefined;
-            await h.update([utf(step.key)], ([v], tx) => {
-              seen = v && new Uint8Array(v);
-              tx.put(utf(step.key), utf(step.value));
-            });
-            return { reads: [{ kind: "get", key: utf(step.key), value: seen }] };
-          }, step.value);
+          await call(
+            `update ${step.key}=${step.value}`,
+            async () => {
+              let seen: Uint8Array | undefined;
+              await h.update([utf(step.key)], ([v], tx) => {
+                seen = v && new Uint8Array(v);
+                tx.put(utf(step.key), utf(step.value));
+              });
+              return { reads: [{ kind: "get", key: utf(step.key), value: seen }] };
+            },
+            [{ type: "put", key: utf(step.key), value: utf(step.value) }],
+          );
           break;
         case "get":
           await call(`get ${step.key}`, async () => {
@@ -186,7 +182,7 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
         case "sync":
           await call("sync", async () => {
             await h.sync();
-            return { barrier: true };
+            return {};
           });
           break;
         case "ingest":
@@ -211,70 +207,39 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
     // Heal, then the same host recovers, and the database reopens whole.
     t.faults.heal();
     if (db) await guard(db.close(), "close after heal").catch(() => undefined);
-    await guard(t.host.ingest(t.name, Number.POSITIVE_INFINITY, true), "host flush after heal");
-    const log = committedLog(t.faults.ops);
     checkEvents(events, log);
     const again = await guard(t.open(), "open after heal");
+    await guard(again.ingest(), "ingest after heal");
     const all: OracleEntry[] = [];
     for await (const e of again.range()) all.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
     await again.close();
-    expectState(all, log.stateAt(), "range after heal (the whole committed log)");
-    const report = await checkDatabase(t.fs, t.name);
+    expectState(all, log.stateAt(), "range after heal (every acked write)");
+    const report = await checkDatabase(t.fs);
     expect(report.problems, "checkDatabase after heal").toEqual([]);
     expectState(report.state, log.stateAt(), "files after heal");
-    await new EngineHost(() => t.fs).ingest(t.name, 0, true);
-    const swept = await checkDatabase(t.fs, t.name);
-    expect(swept.orphans, "orphans after a fresh host's sweep").toEqual([]);
-    expect(swept.staleManifests, "stale manifests after a fresh host's sweep").toEqual([]);
+    const fresh = await openHarnessDb({ name: t.name, fs: t.fs, segments: t.mem.segments, host: new Host(() => t.fs, { maxLatencyMs: 1e9 }) });
+    await guard(fresh.ingest(), "a fresh host's pass");
+    await fresh.close();
+    const swept = await checkDatabase(t.fs);
+    expect(swept.orphans, "orphans after a fresh host's pass").toEqual([]);
+    expect(swept.staleManifests, "stale manifests after a fresh host's pass").toEqual([]);
     return { reached, injected, events };
   } finally {
     console.error = consoleError;
-    await t.dispose();
   }
 }
 
-/** The WAL head the committed IndexedDB ops recorded so far. */
-function committedHead(t: Traced): number {
-  let head = 0;
-  for (const op of t.faults.ops) {
-    if (op.store !== "idb") continue;
-    for (const m of op.muts) if (m.store === "meta" && m.kind === "put" && m.key === "head") head = m.value as number;
-  }
-  return head;
-}
-
-/** Acked writes are committed; resolved reads are log prefixes in their window. */
+/** Every read that resolved is the fold of every write acked before it: one tab reads its own writes. */
 function checkEvents(events: readonly Event[], log: Oracle): void {
-  const seqOf = (marker: string) => {
-    for (let s = 1; s <= log.head; s++) {
-      const state = log.stateAt(s);
-      const before = log.stateAt(s - 1);
-      if (state.some((e) => dec.decode(e.value) === marker) && !before.some((e) => dec.decode(e.value) === marker)) return s;
-    }
-    return undefined;
-  };
-  let floor = 0;
   for (const e of events) {
-    const where = () => `${e.step}${e.error ? ` (${(e.error as Error).name})` : ""}\n${events.map(fmtEvent).join("\n")}`;
-    if (e.barrier && e.acked) floor = Math.max(floor, e.headBefore);
-    if (e.acked && e.marker !== undefined) {
-      const seq = seqOf(e.marker);
-      if (seq === undefined) throw new Error(`acked write is not in the committed log: ${where()}`);
-      floor = Math.max(floor, seq);
-    }
     if (!e.acked || !e.reads) continue;
-    // An update reads the state before its own seq.
-    const hi = e.marker !== undefined ? Math.max(0, (seqOf(e.marker) ?? 1) - 1) : e.headAfter;
-    const lo = e.marker !== undefined ? hi : floor;
-    let set: number[] | undefined;
+    const where = () => `${e.step}\n${events.map(fmtEvent).join("\n")}`;
+    // An update's read comes before its own write.
+    const at = e.step.startsWith("update") ? e.head - 1 : e.head;
     for (const r of e.reads) {
-      const next = r.kind === "get" ? log.getCandidates(r.key, r.value, lo) : log.rangeCandidates({}, r.entries, lo);
-      set = (set ? set.filter((x) => next.includes(x)) : next).filter((x) => x <= hi);
-      if (set.length === 0) {
-        throw new Error(`read is not a log prefix in [${lo}, ${hi}]: ${fmtRead(r)}: ${where()}`);
-      }
+      const ok = r.kind === "get" ? log.getCandidates(r.key, r.value, at).includes(at) : log.rangeCandidates({}, r.entries, at).includes(at);
+      if (!ok) throw new Error(`read is not the fold of the ${at} writes acked before it: ${fmtRead(r)}: ${where()}`);
     }
-    if (e.marker === undefined) floor = Math.max(floor, set![0]!);
   }
 }
 
@@ -283,7 +248,7 @@ function fmtRead(r: Read): string {
 }
 
 function fmtEvent(e: Event): string {
-  return `  ${e.acked ? "ok " : "ERR"} ${e.step}${e.error ? ` ${(e.error as Error).name}: ${(e.error as Error).message}` : ""} [head ${e.headBefore}->${e.headAfter}]`;
+  return `  ${e.acked ? "ok " : "ERR"} ${e.step}${e.error ? ` ${(e.error as Error).name}: ${(e.error as Error).message}` : ""} [${e.head} acked]`;
 }
 
 function fmt(entries: readonly OracleEntry[]): string {
@@ -322,38 +287,34 @@ async function sweep(kinds: ReadonlySet<SiteKind>, persistent: boolean) {
 const ONLY = process.env.KV_IO_SITES;
 
 describe("I/O errors: found by this suite", () => {
-  // Found by the read sweep with manifest reads included, one-shot, site 7. After
-  // the first flush, the host's first compaction pass sweeps: it keeps the
-  // runs of every manifest from the recorded generation on (`liveRuns`), and
-  // removes every other run file. `liveRuns` read each manifest with
-  // `loadGeneration(…).catch(() => undefined)`, so a failed read of manifest
-  // 1 counted as a manifest with no runs, and the sweep deleted l0/1-2.sst,
-  // the only copy of seqs 1..2 (the WAL records are already truncated). The
-  // database no longer opened: GENERATION_GONE. `liveRuns` now rethrows,
-  // so the sweep is skipped until the read succeeds.
+  // Found by the read sweep with manifest reads included, one-shot, site 7,
+  // on the IndexedDB WAL. After the first flush, the host's first compaction
+  // pass sweeps: it keeps the runs every manifest lists and removes every
+  // other run file. It read each manifest with `.catch(() => undefined)`,
+  // so a failed read of manifest 1 counted as a manifest with no runs, and
+  // the sweep deleted l0/1-2.sst, the only copy of seqs 1..2. The database
+  // no longer opened. The sweep's manifest walk (`manifestRuns` in
+  // host.ts) rethrows a read error, so the sweep is skipped until the read
+  // succeeds. Kept for the per-tab logs, whose reclaim walks the manifests too.
   it("a failed manifest read during reclaim never deletes a live run", async () => {
     const t = new Traced(`io-${++runs}`);
     t.faults.spare = (label) => !label.startsWith("read m/");
     t.faults.failAt = 1;
-    try {
-      const db = await t.open();
-      await db.put(utf("a"), utf("a1"));
-      await db.ingest().catch(() => undefined);
-      await db.close();
-      expect(t.faults.injected, "the fault fired").toBe(1);
-      t.faults.heal();
-      const again = await t.open();
-      expect(dec.decode((await again.get(utf("a")))!)).toBe("a1");
-      await again.close();
-    } finally {
-      await t.dispose();
-    }
+    const db = await t.open();
+    await db.put(utf("a"), utf("a1"));
+    await db.ingest().catch(() => undefined);
+    await db.close();
+    expect(t.faults.injected, "the fault fired").toBe(1);
+    t.faults.heal();
+    const again = await t.open();
+    expect(dec.decode((await again.get(utf("a")))!)).toBe("a1");
+    await again.close();
   });
 });
 
 describe("I/O errors at every fault site", () => {
   it("the workload passes with no fault", async () => {
-    const out = await run(new Set<SiteKind>(["fs-read", "fs-write", "idb-write"]), undefined, false);
+    const out = await run(new Set<SiteKind>(["fs-read", "fs-write"]), undefined, false);
     expect(out.events.filter((e) => !e.acked).map(fmtEvent)).toEqual([]);
     expect(out.reached).toBeGreaterThan(20);
   });

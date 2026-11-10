@@ -1,173 +1,88 @@
 /**
- * View pin: after the view opens, get must ignore later WAL appends.
- * Mirrors ViewSnapshotImpl copying the drained mem rows.
+ * Exhaustive check on real pages: a `view` reads the state it opened on.
+ * Every sequence of up to three actions runs inside an open view: the
+ * page's own put and delete, its ingest (the host ingests, compacts, and
+ * the page installs the manifest), and another page's put and ingest
+ * followed by this page's sync. After each one, the view's `get` and
+ * `range` must read what they read when it opened, and once the view ends
+ * a page that alone wrote must read its newest write.
  *
- * Sync: the constructor must copy `rows` so later appends cannot mutate the pin.
+ * Run: pnpm --filter @opfs-lsm/kv formal:view-pin
  */
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import type { Db } from "../../src/index.js";
+import { MemoryFs } from "../../src/index.js";
+import { Host, openHarnessDb } from "../../src/testing.js";
 
-type State = {
-  /** Live durable value for key k (latest ack). */
-  live: number | undefined;
-  /** Pinned view value; undefined until view opens. */
-  pinned: number | undefined | "closed";
-  nextVal: number;
-};
+type Act = "put" | "del" | "ingest" | "other";
+const ACTS: Act[] = ["put", "del", "ingest", "other"];
+const MAX = 3;
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+const KEY = enc.encode("k");
 
-type Action =
-  | { type: "append" }
-  | { type: "openView" }
-  | { type: "viewGet" }
-  | { type: "closeView" };
-
-function initial(): State {
-  return { live: undefined, pinned: "closed", nextVal: 1 };
-}
-
-/**
- * The pin holds when db.ts hands the view `mem.pin()`, `pin()` marks every
- * chunk shared, and a write copies a shared chunk before it changes it.
- */
-function viewPinsInSource(): boolean {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const read = (file: string) =>
-    fs.readFileSync(path.resolve(here, "../../src", file), "utf8");
-  const db = read("db.ts");
-  const mem = read("store/memtable.ts");
-  return (
-    /new ViewSnapshotImpl\([^)]*this\.mem\.pin\(\)/s.test(db) &&
-    /pin\(\)[^{]*\{\s*this\.owned\.fill\(false\)/.test(mem) &&
-    /if \(!this\.owned\[c\]\) \{\s*this\.chunks\[c\] = this\.chunks\[c\]!\.slice\(\);/.test(mem)
-  );
-}
-
-function enabled(s: State): Action[] {
-  const out: Action[] = [];
-  if (s.nextVal <= 3) out.push({ type: "append" });
-  if (s.pinned === "closed") out.push({ type: "openView" });
-  else {
-    out.push({ type: "viewGet" });
-    out.push({ type: "closeView" });
+function* sequences(n: number): Generator<Act[]> {
+  if (n === 0) {
+    yield [];
+    return;
   }
-  return out;
+  for (const head of sequences(n - 1)) for (const a of ACTS) yield [...head, a];
 }
 
-function step(s: State, a: Action): State {
-  switch (a.type) {
-    case "append":
-      return { ...s, live: s.nextVal, nextVal: s.nextVal + 1 };
-    case "openView":
-      // Correct: pin current live. Broken (no row copy): stay coupled to live.
-      if (!viewPinsInSource()) {
-        return { ...s, pinned: s.live }; // still copies number — need ref model
+async function rangeOf(read: { range(): AsyncIterable<{ key: Uint8Array; value: Uint8Array }> }): Promise<string> {
+  const out: string[] = [];
+  for await (const e of read.range()) out.push(`${dec.decode(e.key)}=${dec.decode(e.value)}`);
+  return out.join();
+}
+
+let runs = 0;
+let reads = 0;
+for (const before of [[], ...ACTS.map((a) => [a])] as Act[][]) {
+  for (let n = 1; n <= MAX; n++) {
+    for (const inside of sequences(n)) {
+      runs++;
+      const fs = new MemoryFs();
+      const host = new Host(() => fs, { maxLatencyMs: 1e9 });
+      const page = await openHarnessDb({ name: "view-pin", fs, host });
+      const other = await openHarnessDb({ name: "view-pin", fs, host });
+      let next = 1;
+      let newest: string | undefined;
+      const act = async (a: Act, db: Db) => {
+        if (a === "put") await page.put(KEY, enc.encode((newest = `v${next++}`)));
+        else if (a === "del") {
+          newest = undefined;
+          await page.delete(KEY);
+        }
+        else if (a === "ingest") await page.ingest();
+        else {
+          await other.put(KEY, enc.encode((newest = `o${next++}`)));
+          await other.ingest();
+          await db.sync();
+        }
+      };
+      for (const a of before) await act(a, page);
+      await page.view(async (snap) => {
+        const atOpen = { get: (await snap.get(KEY)) && dec.decode((await snap.get(KEY))!), range: await rangeOf(snap) };
+        for (const [i, a] of inside.entries()) {
+          await act(a, page);
+          const got = { get: (await snap.get(KEY)) && dec.decode((await snap.get(KEY))!), range: await rangeOf(snap) };
+          reads++;
+          if (got.get !== atOpen.get || got.range !== atOpen.range) {
+            console.error(`FAIL ViewPin: before [${before}] then in the view [${inside.slice(0, i + 1)}]: read ${JSON.stringify(got)}, opened on ${JSON.stringify(atOpen)}`);
+            process.exit(1);
+          }
+        }
+      });
+      // With another page's writes, the ingest order picks the winner: last writer wins.
+      const after = await page.get(KEY);
+      if (!before.includes("other") && !inside.includes("other") && (after && dec.decode(after)) !== newest) {
+        console.error(`FAIL after the view, [${before}] then [${inside}]: page reads ${String(after && dec.decode(after))}, newest write ${String(newest)}`);
+        process.exit(1);
       }
-      return { ...s, pinned: s.live };
-    case "viewGet":
-      return s;
-    case "closeView":
-      return { ...s, pinned: "closed" };
-    default: {
-      const _e: never = a;
-      return _e;
+      await page.close();
+      await other.close();
     }
   }
 }
-
-/**
- * When source does not copy the drained rows, model treats pinned as always
- * equal to live. Numbers are copied on open — to model the bug we re-read
- * live on every viewGet when the pin copy is missing.
- */
-function viewSees(s: State): number | undefined {
-  if (s.pinned === "closed") return undefined;
-  if (!viewPinsInSource()) return s.live;
-  return s.pinned === "closed" ? undefined : s.pinned;
-}
-
-/** After open, viewGet must equal the value at open, not later appends. */
-function pinHolds(s: State, openedAt: number | undefined, a: Action): boolean {
-  if (a.type !== "viewGet") return true;
-  if (s.pinned === "closed") return true;
-  return viewSees(s) === openedAt;
-}
-
-type Node = {
-  state: State;
-  prev: number;
-  action: Action | null;
-  openedAt: number | undefined;
-};
-
-function enc(s: State, openedAt: number | undefined): string {
-  return JSON.stringify({ s, openedAt });
-}
-
-function label(a: Action): string {
-  switch (a.type) {
-    case "append":
-      return "WAL append (after pin possible)";
-    case "openView":
-      return "openViewSnapshot (pin)";
-    case "viewGet":
-      return "view.get";
-    case "closeView":
-      return "view.close";
-    default: {
-      const _e: never = a;
-      return _e;
-    }
-  }
-}
-
-const nodes: Node[] = [
-  { state: initial(), prev: -1, action: null, openedAt: undefined },
-];
-const seen = new Set<string>([enc(initial(), undefined)]);
-
-for (let i = 0; i < nodes.length; i++) {
-  const cur = nodes[i]!;
-  for (const a of enabled(cur.state)) {
-    const next = step(cur.state, a);
-    let openedAt = cur.openedAt;
-    if (a.type === "openView") openedAt = cur.state.live;
-    if (a.type === "closeView") openedAt = undefined;
-
-    if (!pinHolds(next, openedAt, a)) {
-      const path: string[] = [];
-      let j: number | null = i;
-      while (j !== null && j >= 0) {
-        const n = nodes[j]!;
-        if (n.action) path.push(label(n.action));
-        j = n.prev >= 0 ? n.prev : null;
-      }
-      path.reverse();
-      path.push(label(a));
-      console.error("FAIL ViewPin");
-      console.error(
-        `view saw ${String(viewSees(next))} but pin was ${String(openedAt)}`,
-      );
-      console.error("shortest path:");
-      path.forEach((l, idx) => console.error(`  ${idx + 1}. ${l}`));
-      console.error(
-        "\nHarm: view() is not a snapshot — later writes change results mid-callback.",
-      );
-      process.exit(1);
-    }
-
-    const key = enc(next, openedAt);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    nodes.push({ state: next, prev: i, action: a, openedAt });
-  }
-}
-
-if (!viewPinsInSource()) {
-  console.error("FAIL ViewPin — the memtable pin no longer isolates the view from later writes");
-  process.exit(1);
-}
-
-console.log(
-  `PASS ViewPin — ${seen.size} states, copy-on-write memtable pin present`,
-);
+console.log(`PASS ViewPin: ${runs} action sequences, ${reads} view reads after an action, on real pages`);
+// The hosts' latency timers would keep the process alive.
+process.exit(0);

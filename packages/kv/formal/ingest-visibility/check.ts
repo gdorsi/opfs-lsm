@@ -1,90 +1,43 @@
 /**
- * Exhaustive check: ack'd puts stay visible across ingestAll interleavings.
+ * Exhaustive check: a page reads its acked writes across every
+ * interleaving of more appends, the SharedWorker's ingest round and the
+ * page's install of the manifest it publishes, in the step order the
+ * source uses (parsed from `ingestQueues` and `DbImpl.install`).
  *
  * Run: pnpm --filter @opfs-lsm/kv formal:ingest-visibility
+ *
+ * Broken orders must each fail, so the model can see the bug: a manifest
+ * published before its run, and an install that drops the page's own
+ * records before it swaps in the runs that hold them, with a task between.
  */
-import {
-  actionLabel,
-  enabled,
-  encodeState,
-  initialState,
-  noLostAcks,
-  resolveGet,
-  step,
-  type Action,
-  type ModelState,
-} from "./model.js";
-import {
-  loadIngestOrderFromRepo,
-  type IngestStep,
-} from "./parse-ingest-order.js";
+import path from "node:path";
+import { explore, type Order } from "./model.js";
+import { loadOrder } from "./parse.js";
 
-const MAX_APPENDS = 2;
+const MAX_APPENDS = 3;
 
-type Node = {
-  state: ModelState;
-  prev: number;
-  action: Action | null;
-};
+const source = loadOrder();
+console.log(`round order from ${path.relative(process.cwd(), source.files[0]!)}: ${source.round.join(" -> ")}`);
+console.log(`install from ${path.relative(process.cwd(), source.files[1]!)}: ${source.install.join(" + ")}${source.installAtomic ? " in one task" : " with an await between"}`);
+console.log(`bound: ${MAX_APPENDS} appends, one key, one round and one install in flight`);
+console.log("property: NoLostAcks, the page reads its newest acked write");
 
-function explore(order: readonly IngestStep[]): {
-  states: number;
-  violation: null | { path: string[]; state: ModelState };
-} {
-  const start = initialState();
-  const nodes: Node[] = [{ state: start, prev: -1, action: null }];
-  const seen = new Map<string, number>([[encodeState(start), 0]]);
-
-  for (let i = 0; i < nodes.length; i++) {
-    const cur = nodes[i]!;
-    if (!noLostAcks(cur.state)) {
-      const path: string[] = [];
-      let j: number | null = i;
-      while (j !== null && j >= 0) {
-        const n = nodes[j]!;
-        if (n.action) path.push(actionLabel(n.action));
-        j = n.prev >= 0 ? n.prev : null;
-      }
-      path.reverse();
-      return {
-        states: seen.size,
-        violation: { path, state: cur.state },
-      };
-    }
-    for (const a of enabled(cur.state, order, MAX_APPENDS)) {
-      if (a.type === "done") continue;
-      const next = step(cur.state, a, order);
-      const key = encodeState(next);
-      if (seen.has(key)) continue;
-      seen.set(key, nodes.length);
-      nodes.push({ state: next, prev: i, action: a });
-    }
-  }
-  return { states: seen.size, violation: null };
+const { states, violation } = explore(source, MAX_APPENDS);
+if (violation) {
+  console.error(`\nFAIL NoLostAcks after ${states} states; shortest path:`);
+  violation.forEach((l, i) => console.error(`  ${i + 1}. ${l}`));
+  console.error("\nHarm: a page acked a write, then a get on that page missed it while the host ingested it.");
+  process.exit(1);
 }
 
-function main(): void {
-  const { path: sourcePath, order } = loadIngestOrderFromRepo();
-  console.log(`ingest order from ${sourcePath}:`);
-  console.log(`  ${order.join(" → ")}`);
-  console.log(`bound: MaxAppends=${MAX_APPENDS}, one key, one in-flight ingest`);
-  console.log(`property: NoLostAcks — after append, resolveGet sees that value`);
-  console.log(`          until a later append supersedes it`);
-
-  const { states, violation } = explore(order);
-  if (violation) {
-    console.error(`\nFAIL NoLostAcks after ${states} distinct states`);
-    console.error(`resolveGet=${String(resolveGet(violation.state))} ingestedThrough=${violation.state.ingestedThrough} sst=${String(violation.state.sst)} l0Pending=${String(violation.state.l0Pending)}`);
-    console.error("shortest path:");
-    for (const [idx, label] of violation.path.entries()) {
-      console.error(`  ${idx + 1}. ${label}`);
-    }
-    console.error(
-      "\nHarm: a client got an ack from the IDB WAL commit, then a later get missed the key while ingestAll was in flight (or finished in a bad order).",
-    );
+const broken: [string, Order][] = [
+  ["manifest before its run", { ...source, round: ["publishGeneration", "publishL0"] }],
+  ["drop own records, then swap runs, a task apart", { ...source, install: ["dropOwn", "swapRuns"], installAtomic: false }],
+];
+for (const [name, order] of broken) {
+  if (!explore(order, MAX_APPENDS).violation) {
+    console.error(`FAIL the model misses a broken order: ${name}`);
     process.exit(1);
   }
-  console.log(`\nPASS NoLostAcks — ${states} distinct states, no violation`);
 }
-
-main();
+console.log(`\nPASS NoLostAcks: ${states} states, and ${broken.length} broken orders each fail`);

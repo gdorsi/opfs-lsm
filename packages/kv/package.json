@@ -1,7 +1,7 @@
 {
   "name": "@opfs-lsm/kv",
   "version": "0.1.0",
-  "description": "Browser KV: shared IDB WAL + OPFS LSM (SST ingest)",
+  "description": "Browser KV: per-tab OPFS logs ingested by a SharedWorker into an OPFS LSM",
   "type": "module",
   "exports": {
     ".": {
@@ -36,10 +36,9 @@
     "log-queue": "pnpm run build && tsx scripts/log-queue.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",
-    "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
+    "formal:own-over-runs": "tsx formal/own-over-runs/check.ts",
     "formal:view-pin": "tsx formal/view-pin/check.ts",
     "formal:compact-preserve": "tsx formal/compact-preserve/check.ts",
-    "formal:power-loss": "tsx formal/power-loss/check.ts",
     "formal:ingest-plan": "tsx formal/ingest-plan/check.ts",
     "fuzz:corpus": "tsx fuzz/make-corpus.ts",
     "fuzz:jazzer": "tsx fuzz/jazzer/run.ts"
@@ -48,7 +47,6 @@
   "devDependencies": {
     "@jazzer.js/core": "4.0.0",
     "esbuild": "0.28.2",
-    "fake-indexeddb": "^6.0.0",
     "fast-check": "^4.10.2",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",

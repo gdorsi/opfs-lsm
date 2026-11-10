@@ -85,14 +85,12 @@ export class Oracle {
 
   /** What `range` returns at prefix `p`. */
   rangeAt(range: OracleRange, p = this.head): OracleEntry[] {
-    const out = this.stateAt(p).filter(
-      ({ key, value }) =>
-        (!range.start || compareBytes(key, range.start) >= 0) &&
-        (!range.endExclusive || compareBytes(key, range.endExclusive) < 0) &&
-        (!range.valueContains || containsAll(value, range.valueContains)),
-    );
-    if (range.reverse) out.reverse();
-    return range.limit === undefined ? out : out.slice(0, range.limit);
+    return applyRange(this.stateAt(p), range);
+  }
+
+  /** The ops of the batch at `seq`. */
+  opsAt(seq: number): readonly OracleOp[] {
+    return this.entries[seq - 1]?.ops ?? [];
   }
 
   /** Every `p` in `[lo, head]` where `get(key)` returns `observed`. */
@@ -112,6 +110,20 @@ export class Oracle {
     }
     return out;
   }
+}
+
+/** What `range` returns over `entries`, live entries in key order. */
+export function applyRange(entries: readonly OracleEntry[], range: OracleRange): OracleEntry[] {
+  const out = [...entries]
+    .sort((a, b) => compareBytes(a.key, b.key))
+    .filter(
+      ({ key, value }) =>
+        (!range.start || compareBytes(key, range.start) >= 0) &&
+        (!range.endExclusive || compareBytes(key, range.endExclusive) < 0) &&
+        (!range.valueContains || containsAll(value, range.valueContains)),
+    );
+  if (range.reverse) out.reverse();
+  return range.limit === undefined ? out : out.slice(0, range.limit);
 }
 
 /**

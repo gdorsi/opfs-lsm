@@ -1,86 +1,64 @@
-import { compareBytes } from "../../src/bytes.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { openHarnessDb } from "../../src/testing.js";
+import { compareBytes, keyToString } from "../../src/bytes.js";
 import type { Db } from "../../src/index.js";
-import { checkDatabase, decodeWalRow, deleteWal, type DatabaseReport } from "./check-database.js";
-import { describeOp, FaultFs, Faults, fsFiles, materializeFs, type DurableOp } from "./fault-fs.js";
-import { dumpWal, materializeWal, traceWal } from "./fault-wal.js";
-import { Oracle, show, type OracleEntry, type OracleOp } from "./oracle.js";
+import { MemoryFs } from "../../src/index.js";
+import { loadGeneration, manifestNumbers } from "../../src/store/generation.js";
+import { Host, openHarnessDb } from "../../src/testing.js";
+import { checkDatabase, type DatabaseReport } from "./check-database.js";
+import { describeOp, FaultFs, Faults, fsFiles, materializeFs, traceSegments, type DurableOp } from "./fault-fs.js";
+import { Oracle, show, type OracleEntry } from "./oracle.js";
 
 /**
  * Crash states and the recovery check (docs/research/corruption-hardening-test-suite.md,
  * "The contract the tests check", crash strength).
  *
- * A crash state keeps a prefix of each store's durable ops: `idb` commits
- * and `opfs` file ops. Two crash models:
- * - process crash (a tab or the SharedWorker killed; the OS keeps
- *   everything that completed): one cut `k` in the global order, so both
- *   stores keep exactly the ops before `k`. Every committed write must
- *   survive: the state is `fold(log[1..head])`, where `head` is the WAL
- *   head the crash state recorded, which is at least every acked seq.
- * - power loss: IndexedDB commits with relaxed durability, Chromium's OPFS
- *   close path has no fsync, and nothing orders the two stores (the note's
- *   "Browser durability facts"). Each store keeps a prefix of its own ops,
- *   independently. Acked writes may be lost, but the database must open and
- *   its state must be `fold(log[1..p])` for some `p`.
+ * A crash state keeps the first `k` durable ops of a traced run: run files,
+ * manifests, removes, and the log segments' writes. A process crash (a tab
+ * or the SharedWorker killed) keeps every op that completed, so every write
+ * acked before op `k` must survive. `drop` more models a power loss that
+ * also lost the newest manifest publishes: the SharedWorker keeps the log
+ * segments that the newest RECLAIM_LAG + 1 manifests need, so losing up to
+ * RECLAIM_LAG of them must lose no acked write either. It may reorder them:
+ * the recovery round re-ingests each log from the surviving manifest's
+ * cursors, and two logs carry no order between them, so a page's write can
+ * land before a write of a closed page that it had read (formal/ingest-plan
+ * prints this as a finding). After lost manifests the check accepts the
+ * surviving manifest's prefix and then each log's records whole, logs in
+ * any order.
  *
- * After the reopen, recovery runs: a fresh host flushes, compacts and
- * reclaims, and the files must pass `checkDatabase` with no orphans. Then
- * one more write and ingest, which builds on the recorded manifest
- * (design.md, "Recovery"), must read back.
+ * After the reopen, recovery runs: the page ingests and compacts, a second
+ * page's compaction pass reclaims, and the files must pass `checkDatabase`
+ * with no orphans. Then one more write and ingest, which builds on the
+ * newest manifest, must read back.
  */
+
+/** A crash state: the first `k` ops of the trace, then the newest `drop` manifests lost. */
+export type Cut = { readonly k: number; readonly drop: number };
+
+/** An acked write: how many durable ops had completed at its ack, and which page's log took it. */
+export type Ack = { readonly at: number; readonly log: number };
 
 /**
  * One database whose durable ops are traced: a `FaultFs` over MemoryFs for
- * the tab and the host, and the WAL registered with the IndexedDB seam
- * (`installFaultWal` must be installed).
+ * the tab and the host, and the tab's log segments through `traceSegments`.
  */
 export class Traced {
   readonly faults = new Faults();
   readonly mem = new MemoryFs();
   readonly fs = new FaultFs(this.mem, this.faults);
-  host = new EngineHost(() => this.fs);
-  private unregister: () => void;
+  readonly segments = traceSegments(this.mem.segments, this.faults);
+  readonly host = new Host(() => this.fs, { maxLatencyMs: 1e9 });
+  /** Each acked write, in ack order. */
+  readonly acks: Ack[] = [];
 
-  constructor(readonly name: string) {
-    this.unregister = traceWal(name, this.faults);
+  constructor(readonly name: string) {}
+
+  open(): Promise<Db> {
+    return openHarnessDb({ name: this.name, fs: this.fs, segments: this.segments, host: this.host });
   }
 
-  /** Start from crash state `cut` of `ops`, untraced. */
-  async load(ops: readonly DurableOp[], cut: Cut): Promise<void> {
-    this.unregister();
-    await materializeWal(this.name, ops, cut.idb);
-    this.unregister = traceWal(this.name, this.faults);
-    const files = await materializeFs(ops, cut.opfs);
-    for (const path of files.publishedPaths()) {
-      const w = await this.mem.create(path);
-      await w.write((await files.read(path, 0, Number.POSITIVE_INFINITY))!);
-      await w.finish();
-    }
-  }
-
-  open(maxWalBytes = 1 << 30): Promise<Db> {
-    return openHarnessDb({
-      name: this.name,
-      fs: this.fs,
-      ingest: createLocalIngestClient(this.host),
-      ingestPolicy: { maxWalBytes },
-    });
-  }
-
-  /** The trace replayed in full equals both stores, so it missed no write. */
+  /** The trace replayed in full equals the files, so it missed no write. */
   async expectTraceComplete(): Promise<void> {
     const ops = this.faults.ops;
-    const replayed = `${this.name}-replay`;
-    try {
-      await materializeWal(replayed, ops, ops.length);
-      const [want, got] = await Promise.all([dumpWal(this.name), dumpWal(replayed)]);
-      if (JSON.stringify(serialize(want)) !== JSON.stringify(serialize(got))) {
-        throw new Error(`replayed IndexedDB differs:\n${JSON.stringify(serialize(want))}\n${JSON.stringify(serialize(got))}`);
-      }
-    } finally {
-      await deleteWal(replayed);
-    }
     const files = await fsFiles(await materializeFs(ops, ops.length));
     const real = await fsFiles(this.mem);
     const differ = [...new Set([...files.keys(), ...real.keys()])].filter((p) => {
@@ -88,18 +66,8 @@ export class Traced {
       const b = real.get(p);
       return !a || !b || compareBytes(a, b) !== 0;
     });
-    if (differ.length > 0) throw new Error(`replayed OPFS differs at ${differ.join(", ")}`);
+    if (differ.length > 0) throw new Error(`replayed files differ at ${differ.join(", ")}`);
   }
-
-  async dispose(): Promise<void> {
-    this.unregister();
-    await deleteWal(this.name);
-  }
-}
-
-function serialize(dump: { wal: [IDBValidKey, unknown][]; meta: [IDBValidKey, unknown][] }): unknown {
-  const bytes = (v: unknown) => (v instanceof ArrayBuffer ? [...new Uint8Array(v)] : v);
-  return { wal: dump.wal.map(([k, v]) => [k, bytes(v)]), meta: dump.meta.map(([k, v]) => [k, bytes(v)]) };
 }
 
 /** A step of a fixed workload. Values are unique, so reads map back to seqs. */
@@ -112,17 +80,22 @@ export type Step =
 
 const utf = (s: string) => new TextEncoder().encode(s);
 
-/** Run `steps` on one handle of `t`. Returns the log of every acked write. */
+/** Run `steps` on one handle of `t`, appending every acked write to `log`. */
 export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): Promise<void> {
   let db = await t.open();
+  let page = 0;
+  const acked = (ops: Parameters<Oracle["append"]>[0]) => {
+    log.append(ops);
+    t.acks.push({ at: t.faults.ops.length, log: page });
+  };
   try {
     for (const step of steps) {
       if ("put" in step) {
         await db.put(utf(step.put), utf(step.value));
-        log.append([{ type: "put", key: utf(step.put), value: utf(step.value) }]);
+        acked([{ type: "put", key: utf(step.put), value: utf(step.value) }]);
       } else if ("del" in step) {
         await db.delete(utf(step.del));
-        log.append([{ type: "del", key: utf(step.del) }]);
+        acked([{ type: "del", key: utf(step.del) }]);
       } else if ("batch" in step) {
         const ops = step.batch.map((op) =>
           "put" in op ? { type: "put" as const, key: utf(op.put), value: utf(op.value) } : { type: "del" as const, key: utf(op.del) },
@@ -133,12 +106,13 @@ export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): 
             else tx.delete(op.key);
           }
         });
-        log.append(ops);
+        acked(ops);
       } else if ("ingest" in step) {
         await db.ingest();
       } else {
         await db.close();
         db = await t.open();
+        page++;
       }
     }
   } finally {
@@ -146,140 +120,112 @@ export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): 
   }
 }
 
-export type Cut = { readonly idb: number; readonly opfs: number };
-export type CrashModel = "process" | "power";
-
-/** The cut after the first `k` ops in global order. */
-export function processCut(ops: readonly DurableOp[], k: number): Cut {
-  let idb = 0;
-  let opfs = 0;
-  for (const op of ops.slice(0, k)) {
-    if (op.store === "idb") idb++;
-    else opfs++;
-  }
-  return { idb, opfs };
+/** The files crash state `cut` leaves, and the `through` of the newest manifest it kept. */
+async function crashState(ops: readonly DurableOp[], cut: Cut): Promise<{ fs: MemoryFs; through: number }> {
+  const fs = await materializeFs(ops, cut.k);
+  const manifests = (await manifestNumbers(fs)).sort((a, b) => b - a);
+  for (const n of manifests.slice(0, cut.drop)) await fs.remove(`m/${String(n).padStart(16, "0")}.mft`);
+  const kept = manifests[cut.drop];
+  return { fs, through: kept === undefined ? 0 : ((await loadGeneration(fs, kept))?.through ?? 0) };
 }
 
-/** Every `(idb, opfs)` prefix pair, or `max` of them drawn with `random` when there are more. */
-export function powerCuts(ops: readonly DurableOp[], max: number, random: () => number): Cut[] {
-  const nIdb = ops.filter((o) => o.store === "idb").length;
-  const nOpfs = ops.length - nIdb;
-  const all = (nIdb + 1) * (nOpfs + 1);
-  if (all <= max) {
-    const out: Cut[] = [];
-    for (let idb = 0; idb <= nIdb; idb++) for (let opfs = 0; opfs <= nOpfs; opfs++) out.push({ idb, opfs });
-    return out;
-  }
-  const seen = new Set<number>();
-  const out: Cut[] = [];
-  while (out.length < max) {
-    const i = Math.floor(random() * all);
-    if (seen.has(i)) continue;
-    seen.add(i);
-    out.push({ idb: Math.floor(i / (nOpfs + 1)), opfs: i % (nOpfs + 1) });
-  }
-  return out;
-}
-
-/** What each store kept, for a failure message. */
-export function describeCut(ops: readonly DurableOp[], cut: Cut): string {
-  const idb = ops.filter((o) => o.store === "idb");
-  const opfs = ops.filter((o) => o.store === "opfs");
-  const kept = (list: DurableOp[], n: number) =>
-    list.map((o, i) => `${i < n ? "  kept" : "  LOST"} ${describeOp(o)}`).join("\n");
-  return `IndexedDB keeps ${cut.idb}/${idb.length} commits, OPFS keeps ${cut.opfs}/${opfs.length} ops:\n` +
-    `${kept(idb, cut.idb)}\n${kept(opfs, cut.opfs)}`;
-}
-
-/**
- * The log the trace committed: every WAL row an IndexedDB commit added, by
- * seq. Throws unless the seqs are 1..n with no gap.
- */
-export function committedLog(ops: readonly DurableOp[]): Oracle {
-  const rows = new Map<number, OracleOp[]>();
-  for (const op of ops) {
-    if (op.store !== "idb") continue;
-    for (const m of op.muts) {
-      if (m.store !== "wal" || m.kind !== "put") continue;
-      rows.set(m.key as number, decodeWalRow(m.value).map((o) =>
-        o.value === undefined ? { type: "del", key: o.key } : { type: "put", key: o.key, value: o.value },
-      ));
-    }
-  }
-  const log = new Oracle();
-  const seqs = [...rows.keys()].sort((a, b) => a - b);
-  seqs.forEach((seq, i) => {
-    if (seq !== i + 1) throw new Error(`committed seqs are not gapless: ${seqs.join(",")}`);
-    log.append(rows.get(seq)!);
-  });
-  return log;
-}
-
-/** The `meta` rows the first `count` IndexedDB commits left. */
-function metaAt(ops: readonly DurableOp[], count: number): Map<string, number> {
-  const meta = new Map<string, number>();
-  for (const op of ops.filter((o) => o.store === "idb").slice(0, count)) {
-    if (op.store !== "idb") continue;
-    for (const m of op.muts) if (m.store === "meta" && m.kind === "put") meta.set(String(m.key), m.value as number);
-  }
-  return meta;
-}
-
-function headAt(ops: readonly DurableOp[], count: number): number {
-  return metaAt(ops, count).get("head") ?? 0;
+/** What the crash state kept, for a failure message. */
+function describeCut(ops: readonly DurableOp[], cut: Cut): string {
+  const kept = ops.map((o, i) => `${i < cut.k ? "  kept" : "  LOST"} ${describeOp(o)}`).join("\n");
+  return `keeps ${cut.k}/${ops.length} ops, then loses the newest ${cut.drop} manifests:\n${kept}`;
 }
 
 let states = 0;
 
 /**
- * Rebuild the crash state `cut` of `ops`, reopen it, and check it against
- * `oracle` (the log of the run that produced `ops`). Throws, with the cut
- * spelled out, when the database does not open or is not a log prefix.
+ * Rebuild crash state `cut` of `ops`, reopen it, and check it against `log`
+ * (the acked writes of the run that produced `ops`, in the order of
+ * `acks`). Throws, with the cut spelled out, when the database does not
+ * open or does not hold every write acked before the cut, in log order (or
+ * a log order the lost manifests allow).
  */
-export async function checkCrashState(
-  ops: readonly DurableOp[],
-  oracle: Oracle,
-  cut: Cut,
-  model: CrashModel,
-): Promise<void> {
-  const name = `crash-${++states}`;
+export async function checkCrashState(ops: readonly DurableOp[], log: Oracle, acks: readonly Ack[], cut: Cut): Promise<void> {
   try {
-    await recover(name, ops, oracle, cut, model);
+    await recover(`crash-${++states}`, ops, log, acks, cut);
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-    const error = new Error(`${model} crash state is not a log prefix or does not open: ${msg}\n${describeCut(ops, cut)}`);
-    throw error;
-  } finally {
-    await deleteWal(name);
+    throw new Error(`crash state does not hold every acked write in an allowed order, or does not open: ${msg}\n${describeCut(ops, cut)}`);
   }
 }
 
-async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, cut: Cut, model: CrashModel): Promise<void> {
-  await materializeWal(name, ops, cut.idb);
-  const fs = await materializeFs(ops, cut.opfs);
-  const head = headAt(ops, cut.idb);
-  const host = new EngineHost(() => fs);
-  const open = () =>
-    openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), ingestPolicy: { maxWalBytes: 1 << 30 } });
+/** A state recovery may read: `order` names the seqs folded, for a failure message. */
+type Candidate = { readonly order: string; readonly state: OracleEntry[] };
 
-  // 1. It opens, and reads one log prefix: exactly `head` after a process crash.
+/**
+ * Every state the crash state may recover to: each write acked before the
+ * cut is in, and so are any later ones up to the run's head. With no lost
+ * manifest that is a prefix of the log. After lost manifests it is the kept
+ * manifest's prefix `log[1..through]`, then each log's later records whole,
+ * in any order of the logs.
+ */
+function candidates(oracle: Oracle, acks: readonly Ack[], cut: Cut, through: number): Candidate[] {
+  const acked = acks.filter((a) => a.at <= cut.k).length;
+  const out: Candidate[] = [];
+  for (let e = Math.max(acked, through); e <= oracle.head; e++) {
+    out.push({ order: `log[1..${e}]`, state: oracle.stateAt(e) });
+    if (cut.drop === 0) continue;
+    const logs = new Map<number, number[]>();
+    for (let seq = through + 1; seq <= e; seq++) {
+      const log = acks[seq - 1]!.log;
+      logs.set(log, [...(logs.get(log) ?? []), seq]);
+    }
+    for (const chunks of permutations([...logs.values()]).slice(1)) {
+      out.push({
+        order: `log[1..${through}] then ${chunks.map((c) => c.join(",")).join(" then ")}`,
+        state: fold(oracle, oracle.stateAt(through), chunks.flat()),
+      });
+    }
+  }
+  return out;
+}
+
+/** Every order of `items`, the given one first. */
+function permutations<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) return [[...items]];
+  return items.flatMap((item, i) => permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]));
+}
+
+/** `base` with the batches at `seqs` applied in that order. */
+function fold(oracle: Oracle, base: readonly OracleEntry[], seqs: readonly number[]): OracleEntry[] {
+  const state = new Map(base.map((e) => [keyToString(e.key), e]));
+  for (const seq of seqs) {
+    for (const op of oracle.opsAt(seq)) {
+      if (op.type === "put") state.set(keyToString(op.key), { key: op.key, value: op.value });
+      else state.delete(keyToString(op.key));
+    }
+  }
+  return [...state.values()].sort((a, b) => compareBytes(a.key, b.key));
+}
+
+async function recover(name: string, ops: readonly DurableOp[], log: Oracle, acks: readonly Ack[], cut: Cut): Promise<void> {
+  const { fs, through } = await crashState(ops, cut);
+  const host = new Host(() => fs, { maxLatencyMs: 1e9 });
+  const open = () => openHarnessDb({ name, fs, host });
+
+  // 1. It opens, and reads one allowed state that holds every acked write.
   let db: Db;
   try {
     db = await open();
   } catch (err) {
     throw new Error(`does not open: ${(err as Error).name}: ${(err as Error).message}`);
   }
-  let prefixes: number[];
+  let allowed: Candidate[];
   try {
-    prefixes = await readPrefixes(db, oracle, model === "process" ? head : 0, model === "process" ? head : oracle.head);
+    allowed = await readStates(db, log.keys(), candidates(log, acks, cut, through));
+    // 2. Recovery: ingest and compact what the crash left; a second page's pass reclaims.
+    await db.ingest();
   } finally {
     await db.close();
   }
-
-  // 2. Recovery: a fresh host flushes, compacts and reclaims what the crash left.
-  await host.ingest(name, Number.POSITIVE_INFINITY, true);
-  const report = await checkDatabase(fs, name);
-  expectFiles(report, oracle, prefixes, "after recovery");
+  db = await open();
+  await db.ingest();
+  await db.close();
+  expectFiles(await checkDatabase(fs), allowed, "after recovery");
 
   // 3. Keep going: a write and an ingest on top of the recovered files.
   const key = new TextEncoder().encode(`crash/${name}`);
@@ -293,44 +239,40 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   } finally {
     await db.close();
   }
-  // A host that swept before the write keeps runs the write retired until
-  // it restarts (see "crash leftovers" in crash-enum.test.ts), so the last
-  // sweep is a fresh host's.
-  await new EngineHost(() => fs).ingest(name, 0, true);
-  const after = await checkDatabase(fs, name);
-  const withWrite = after.state.filter((e) => compareBytes(e.key, key) !== 0);
-  expectFiles({ ...after, state: withWrite }, oracle, prefixes, "after a write on the recovered database");
+  db = await open();
+  await db.ingest();
+  await db.close();
+  const after = await checkDatabase(fs);
+  const withoutWrite = after.state.filter((e) => compareBytes(e.key, key) !== 0);
+  expectFiles({ ...after, state: withoutWrite }, allowed, "after a write on the recovered database");
 }
 
-/** The prefixes `p` in `[lo, hi]` that every read of the whole key space agrees with. */
-async function readPrefixes(db: Db, oracle: Oracle, lo: number, hi: number): Promise<number[]> {
-  const all: OracleEntry[] = [];
-  for await (const e of db.range()) all.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
-  let set = oracle.rangeCandidates({}, all, lo).filter((p) => p <= hi);
+/** The candidates that `range()` of the whole key space reads, with every `get` agreeing. */
+async function readStates(db: Db, keys: readonly Uint8Array[], all: readonly Candidate[]): Promise<Candidate[]> {
+  const read: OracleEntry[] = [];
+  for await (const e of db.range()) read.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
+  const set = all.filter((c) => sameEntries(c.state, read));
   if (set.length === 0) {
-    throw new Error(
-      `range() = ${fmt(all)} is not fold(log[1..p]) for any p in [${lo}, ${hi}]; fold(log[1..${hi}]) = ${fmt(oracle.stateAt(hi))}`,
-    );
+    throw new Error(`range() = ${fmt(read)} is none of\n${all.map((c) => `  ${c.order} = ${fmt(c.state)}`).join("\n")}`);
   }
-  for (const key of oracle.keys()) {
+  for (const key of keys) {
     const v = await db.get(key);
-    const ok = new Set(oracle.getCandidates(key, v, lo));
-    const next = set.filter((p) => ok.has(p));
-    if (next.length === 0) {
-      throw new Error(`get(${show(key)}) = ${v && show(v)} disagrees with range() at prefixes ${set.join(",")}`);
+    const want = read.find((e) => compareBytes(e.key, key) === 0)?.value;
+    if ((v && show(v)) !== (want && show(want))) {
+      throw new Error(`get(${show(key)}) = ${v && show(v)} disagrees with range() = ${want && show(want)}`);
     }
-    set = next;
   }
   return set;
 }
 
-function expectFiles(report: DatabaseReport, oracle: Oracle, prefixes: readonly number[], when: string): void {
+function expectFiles(report: DatabaseReport, allowed: readonly Candidate[], when: string): void {
   const problems = [...report.problems];
   if (report.orphans.length > 0) problems.push(`orphan runs ${report.orphans.join(", ")}`);
   if (report.staleManifests.length > 0) problems.push(`stale manifests ${report.staleManifests.join(", ")}`);
+  if (report.pending > 0) problems.push(`${report.pending} records not ingested`);
   if (problems.length > 0) throw new Error(`checkDatabase ${when}: ${problems.join("; ")}`);
-  if (!prefixes.some((p) => sameEntries(oracle.stateAt(p), report.state))) {
-    throw new Error(`files ${when} hold ${fmt(report.state)}, not fold(log[1..p]) for p in ${prefixes.join(",")}`);
+  if (!allowed.some((c) => sameEntries(c.state, report.state))) {
+    throw new Error(`files ${when} hold ${fmt(report.state)}, not ${allowed.map((c) => c.order).join(" or ")}`);
   }
 }
 

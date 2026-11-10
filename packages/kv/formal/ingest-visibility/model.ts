@@ -1,227 +1,129 @@
-import type { IngestStep } from "./parse-ingest-order.js";
+/**
+ * One page, one key, the SharedWorker's ingest round and the page's install
+ * of the manifest it publishes, in the step order the source uses
+ * (`parse.ts`). A page reads its own acked records the installed cursor
+ * does not cover, on top of the installed runs.
+ */
 
-export type WalRec = { seq: number; value: number };
+/** The durable steps of an ingest round with records (`ingestQueues`). */
+export type RoundStep = "publishL0" | "publishGeneration";
+/** What the page's `install` does: swap in the manifest's runs, and drop its own records the cursor covers. */
+export type InstallStep = "swapRuns" | "dropOwn";
 
-export type ModelState = {
-  /** Ack'd WAL rows (deleted from visibility once ingestedThrough passes them). */
-  wal: readonly WalRec[];
-  ingestedThrough: number;
-  nextSeq: number;
-  /** Visible SST contents for KEY after publishGeneration. */
-  sst: number | undefined;
-  /** L0 bytes on disk but not yet pointed at by a generation (after publishL0). */
-  l0Pending: number | undefined;
-  /**
-   * In-flight ingest: snapshot of seqs being folded, and index into `order`.
-   * `null` when host is idle.
-   */
-  ingest: null | {
-    first: number;
-    last: number;
-    /** Folded value of KEY in the snapshot (undefined if key absent). */
-    folded: number | undefined;
-    stepIndex: number;
-  };
+export type Order = {
+  readonly round: readonly RoundStep[];
+  readonly install: readonly InstallStep[];
+  /** Both install steps in one task, with no await between: no read sees one without the other. */
+  readonly installAtomic: boolean;
 };
 
-export type Action =
-  | { type: "append"; value: number }
-  | { type: "beginIngest" }
-  | { type: "ingestStep"; step: IngestStep }
-  | { type: "done" };
+/** A run a manifest names that was never written. */
+const MISSING = "missing";
+type Runs = number | undefined | typeof MISSING;
 
-export function initialState(): ModelState {
-  return {
-    wal: [],
-    ingestedThrough: 0,
-    nextSeq: 1,
-    sst: undefined,
-    l0Pending: undefined,
-    ingest: null,
-  };
+type State = {
+  /** Values the page appended, in order: record n holds `log[n - 1]`, acked at once. */
+  readonly log: readonly number[];
+  /** The newest manifest: its cursor over the page's log, and what its runs read for the key. */
+  readonly published: { readonly cursor: number; readonly runs: Runs };
+  /** An ingest round in flight: the records it folds, and what it did so far. */
+  readonly round: null | { readonly upTo: number; readonly l0: boolean; readonly step: number };
+  /** The page's installed runs, and the cursor up to which it dropped its own records. */
+  readonly page: { readonly runs: Runs; readonly dropped: number };
+  /** An install in flight: the manifest it installs, and how many of its steps ran. */
+  readonly install: null | { readonly cursor: number; readonly runs: Runs; readonly step: number };
+};
+
+type Action =
+  | { readonly t: "append" }
+  | { readonly t: "beginRound" }
+  | { readonly t: "roundStep"; readonly step: RoundStep }
+  | { readonly t: "install" }
+  | { readonly t: "installStep"; readonly step: InstallStep };
+
+const initial: State = {
+  log: [],
+  published: { cursor: 0, runs: undefined },
+  round: null,
+  page: { runs: undefined, dropped: 0 },
+  install: null,
+};
+
+/** What `db.get` returns: the newest own record past the dropped cursor, else the installed runs. */
+function read(s: State): number | undefined {
+  if (s.log.length > s.page.dropped) return s.log[s.log.length - 1];
+  return s.page.runs === MISSING ? undefined : s.page.runs;
 }
 
-/** Latest WAL put for KEY with seq > ingestedThrough — the mem cell for that key. */
-function walValue(s: ModelState): number | undefined {
-  let v: number | undefined;
-  for (const r of s.wal) {
-    if (r.seq > s.ingestedThrough) v = r.value;
-  }
-  return v;
+/** NoLostAcks: the page reads its newest acked write. */
+function noLostAcks(s: State): boolean {
+  return s.log.length === 0 || read(s) === s.log[s.log.length - 1];
 }
 
-/**
- * Point read for KEY: the uningested mem cell over SST
- * (`pointGet` on the mem row, else newest SST reader).
- */
-export function resolveGet(s: ModelState): number | undefined {
-  const local = walValue(s);
-  if (local !== undefined) return local;
-  return s.sst;
-}
-
-/**
- * Every ack'd write for KEY must still be readable until a later append
- * supersedes it. Harm if false: client saw commit succeed, later get misses.
- */
-export function noLostAcks(s: ModelState): boolean {
-  const expected = latestAcked(s);
-  if (expected === undefined) return true;
-  return resolveGet(s) === expected;
-}
-
-function latestAcked(s: ModelState): number | undefined {
-  if (s.wal.length === 0) return undefined;
-  // WAL array retains history for bookkeeping; visibility uses ingestedThrough.
-  // Ack'd means append completed — including rows already advanced. Those must
-  // live in SST (or still in the WAL window).
-  let last: number | undefined;
-  for (const r of s.wal) last = r.value;
-  // After advance, rows stay in `wal` array for history but are invisible via
-  // walValue; we need the latest ack across all appends.
-  return last;
-}
-
-function foldSnapshot(
-  wal: readonly WalRec[],
-  first: number,
-  last: number,
-): number | undefined {
-  let v: number | undefined;
-  for (const r of wal) {
-    if (r.seq >= first && r.seq <= last) v = r.value;
-  }
-  return v;
-}
-
-export function enabled(
-  s: ModelState,
-  order: readonly IngestStep[],
-  maxAppends: number,
-): Action[] {
+function enabled(s: State, order: Order, maxAppends: number): Action[] {
   const out: Action[] = [];
-  const appendsDone = s.nextSeq - 1;
-  // Appends may run while ingest awaits (real host); new seqs stay uningested.
-  if (appendsDone < maxAppends) {
-    out.push({ type: "append", value: s.nextSeq });
-  }
-  if (s.ingest === null) {
-    const uningested = s.wal.filter((r) => r.seq > s.ingestedThrough);
-    if (uningested.length > 0) out.push({ type: "beginIngest" });
-  } else if (s.ingest.stepIndex < order.length) {
-    out.push({ type: "ingestStep", step: order[s.ingest.stepIndex]! });
-  }
-  if (
-    s.ingest === null &&
-    appendsDone >= maxAppends &&
-    s.wal.every((r) => r.seq <= s.ingestedThrough)
-  ) {
-    out.push({ type: "done" });
-  }
+  if (s.log.length < maxAppends) out.push({ t: "append" });
+  if (!s.round && s.log.length > s.published.cursor) out.push({ t: "beginRound" });
+  if (s.round) out.push({ t: "roundStep", step: order.round[s.round.step]! });
+  if (!s.install && s.published.cursor > s.page.dropped) out.push({ t: "install" });
+  if (s.install) out.push({ t: "installStep", step: order.install[s.install.step]! });
   return out;
 }
 
-export function step(
-  s: ModelState,
-  a: Action,
-  order: readonly IngestStep[],
-): ModelState {
-  switch (a.type) {
-    case "append": {
-      const rec: WalRec = { seq: s.nextSeq, value: a.value };
-      return {
-        ...s,
-        wal: [...s.wal, rec],
-        nextSeq: s.nextSeq + 1,
-      };
-    }
-    case "beginIngest": {
-      const uningested = s.wal.filter((r) => r.seq > s.ingestedThrough);
-      if (uningested.length === 0) return s;
-      const first = uningested[0]!.seq;
-      const last = uningested[uningested.length - 1]!.seq;
-      return {
-        ...s,
-        ingest: {
-          first,
-          last,
-          folded: foldSnapshot(s.wal, first, last),
-          stepIndex: 0,
-        },
-        l0Pending: undefined,
-      };
-    }
-    case "ingestStep": {
-      if (!s.ingest) return s;
-      const expected = order[s.ingest.stepIndex];
-      if (a.step !== expected) return s;
-      let next: ModelState = { ...s };
-      switch (a.step) {
-        case "publishL0":
-          // publishL0 writes the SST file; not readable until publishGeneration.
-          next = {
-            ...s,
-            l0Pending: s.ingest.folded,
-            ingest: { ...s.ingest, stepIndex: s.ingest.stepIndex + 1 },
-          };
-          break;
-        case "publishGeneration":
-          // loadLatestGeneration now sees the new L0 (or pending fold).
-          next = {
-            ...s,
-            sst:
-              s.l0Pending !== undefined
-                ? s.l0Pending
-                : s.ingest.folded !== undefined
-                  ? s.ingest.folded
-                  : s.sst,
-            l0Pending: undefined,
-            ingest: { ...s.ingest, stepIndex: s.ingest.stepIndex + 1 },
-          };
-          break;
-        case "advanceIngested":
-          next = {
-            ...s,
-            ingestedThrough: s.ingest.last,
-            ingest: { ...s.ingest, stepIndex: s.ingest.stepIndex + 1 },
-          };
-          break;
-        default: {
-          const _exhaustive: never = a.step;
-          return _exhaustive;
-        }
-      }
-      if (next.ingest && next.ingest.stepIndex >= order.length) {
-        next = { ...next, ingest: null };
-      }
-      return next;
-    }
-    case "done":
-      return s;
-    default: {
-      const _exhaustive: never = a;
-      return _exhaustive;
-    }
-  }
+function applyInstall(s: State, step: InstallStep, cursor: number, runs: Runs): State {
+  return step === "swapRuns" ? { ...s, page: { ...s.page, runs } } : { ...s, page: { ...s.page, dropped: Math.max(s.page.dropped, cursor) } };
 }
 
-export function encodeState(s: ModelState): string {
-  return JSON.stringify(s);
-}
-
-export function actionLabel(a: Action): string {
-  switch (a.type) {
+function step(s: State, a: Action, order: Order): State {
+  switch (a.t) {
     case "append":
-      return `append(value=${a.value})`;
-    case "beginIngest":
-      return "beginIngest(listUningested)";
-    case "ingestStep":
-      return a.step;
-    case "done":
-      return "done";
-    default: {
-      const _exhaustive: never = a;
-      return _exhaustive;
+      return { ...s, log: [...s.log, s.log.length + 1] };
+    case "beginRound":
+      return { ...s, round: { upTo: s.log.length, l0: false, step: 0 } };
+    case "roundStep": {
+      const r = s.round!;
+      let next: State = s;
+      if (a.step === "publishL0") next = { ...s, round: { ...r, l0: true } };
+      else next = { ...s, published: { cursor: r.upTo, runs: r.l0 ? s.log[r.upTo - 1] : MISSING } };
+      const n = r.step + 1;
+      return { ...next, round: n >= order.round.length ? null : { ...(next.round ?? r), step: n } };
+    }
+    case "install": {
+      const { cursor, runs } = s.published;
+      if (order.installAtomic) return order.install.reduce((acc, st) => applyInstall(acc, st, cursor, runs), s);
+      return { ...s, install: { cursor, runs, step: 0 } };
+    }
+    case "installStep": {
+      const i = s.install!;
+      const next = applyInstall(s, a.step, i.cursor, i.runs);
+      const n = i.step + 1;
+      return { ...next, install: n >= order.install.length ? null : { ...i, step: n } };
     }
   }
+}
+
+function label(a: Action): string {
+  return a.t === "roundStep" || a.t === "installStep" ? a.step : a.t;
+}
+
+/** Breadth-first over every interleaving; the shortest path to the first state that loses an ack. */
+export function explore(order: Order, maxAppends: number): { states: number; violation: string[] | null } {
+  const nodes: { s: State; prev: number; a: Action | null }[] = [{ s: initial, prev: -1, a: null }];
+  const seen = new Set([JSON.stringify(initial)]);
+  for (let i = 0; i < nodes.length; i++) {
+    const cur = nodes[i]!;
+    if (!noLostAcks(cur.s)) {
+      const path: string[] = [];
+      for (let j = i; j > 0; j = nodes[j]!.prev) path.push(label(nodes[j]!.a!));
+      return { states: seen.size, violation: path.reverse() };
+    }
+    for (const a of enabled(cur.s, order, maxAppends)) {
+      const next = step(cur.s, a, order);
+      const key = JSON.stringify(next);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      nodes.push({ s: next, prev: i, a });
+    }
+  }
+  return { states: seen.size, violation: null };
 }

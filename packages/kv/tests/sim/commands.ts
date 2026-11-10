@@ -1,15 +1,18 @@
 import fc from "fast-check";
 import { expect } from "vitest";
+import { dbInternals } from "../../src/db.js";
 import type { AsyncFs, Db, Entry } from "../../src/index.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { openHarnessDb } from "../../src/testing.js";
-import { checkDatabase, deleteWal } from "./check-database.js";
+import { MemoryFs } from "../../src/index.js";
+import type { SegmentStore } from "../../src/log/queue-writer.js";
+import { Host, openHarnessDb, type HostLimits } from "../../src/testing.js";
+import { checkDatabase } from "./check-database.js";
 import { Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 
 /**
- * fast-check commands for one `Db` handle over MemoryFs and fake-indexeddb,
- * checked against the oracle. See docs/research/corruption-hardening-test-suite.md,
- * technique 1.
+ * fast-check commands for one `Db` handle over MemoryFs and a SharedWorker
+ * `Host`, checked against the oracle. See docs/research/corruption-hardening-test-suite.md,
+ * technique 1. With one page, the ingest order is its ack order, so every
+ * read is `fold(log[1..p])` of the acked log.
  */
 
 export class Model {
@@ -29,49 +32,47 @@ export class Model {
 
 /** The system under test: one handle, its host, and the files they share. */
 export class Sut {
-  /** While set, the host's run reads wait: a compaction stalls before its merge. */
+  /** While set, the host's whole-run reads wait: a compaction stalls before its merge. */
   private gate: { readonly opened: Promise<void>; readonly open: () => void } | undefined;
-  readonly host = new EngineHost(() => this.hostFs());
+  readonly host: Host;
+  readonly segments: SegmentStore;
   db!: Db;
-  /** Seqs of this handle's own appends, from `changes`. */
-  readonly appended: number[] = [];
+  /** Called at each acked write, after the oracle took it. */
+  onAck: (() => void) | undefined;
+  /** How many handles opened so far: each one writes its own log. */
+  opens = 0;
 
   constructor(
     readonly name: string,
-    private readonly maxWalBytes: number,
+    limits: Partial<HostLimits>,
     readonly fs: AsyncFs = new MemoryFs(),
-  ) {}
-
-  /** The host ingests on its own once the WAL passes `maxWalBytes`, racing every command. */
-  get background(): boolean {
-    return this.maxWalBytes < 1 << 20;
+    segments?: SegmentStore,
+  ) {
+    this.host = new Host(() => this.hostFs(), { maxLatencyMs: 1e9, ...limits });
+    this.segments = segments ?? (fs as MemoryFs).segments;
   }
 
   async open(): Promise<void> {
-    const db = await openHarnessDb({
-      name: this.name,
-      fs: this.fs,
-      ingest: createLocalIngestClient(this.host),
-      ingestPolicy: { maxWalBytes: this.maxWalBytes },
-    });
-    db.changes((e) => {
-      if (e.kind === "append" && e.writerId === db.writerId && e.seq !== undefined) {
-        this.appended.push(e.seq);
-      }
-    });
-    this.db = db;
+    this.db = await openHarnessDb({ name: this.name, fs: this.fs, segments: this.segments, host: this.host });
+    this.opens++;
+  }
+
+  /** Records this handle appended. */
+  appended(): number {
+    return dbInternals(this.db)!.appended().records;
   }
 
   /**
    * The host's view of the files. Only compaction reads whole runs through
-   * `read` (tabs `open` them), so the gate stalls a merge and nothing else,
-   * and flushes keep landing L0 runs in front of its inputs.
+   * `read` (tabs `open` them, and recovery reads one byte), so the gate
+   * stalls a merge and nothing else, and ingest keeps landing L0 runs in
+   * front of its inputs.
    */
   private hostFs(): AsyncFs {
     const fs = this.fs;
     return {
       read: async (path, offset, length) => {
-        if (path.endsWith(".sst")) await this.gate?.opened;
+        if (path.endsWith(".sst") && length > 1) await this.gate?.opened;
         return fs.read(path, offset, length);
       },
       open: (path) => fs.open(path),
@@ -94,16 +95,24 @@ export class Sut {
     this.gate = undefined;
   }
 
-  /** Wait for compaction in flight, and run one more pass. Folds no WAL. */
-  settle(): Promise<unknown> {
+  /**
+   * Close the handle, then ingest every log and compact on a new one, twice:
+   * the second handle's compaction pass reclaims the runs the first held.
+   * Leaves the second handle open.
+   */
+  async quiet(): Promise<void> {
     this.release();
-    return this.host.ingest(this.name, 0, true);
+    await this.db.close();
+    await this.open();
+    await this.db.ingest();
+    await this.db.close();
+    await this.open();
+    await this.db.ingest();
   }
 
   async dispose(): Promise<void> {
+    this.release();
     await this.db.close();
-    await this.settle().catch(() => undefined);
-    await deleteWal(this.name);
   }
 }
 
@@ -194,17 +203,18 @@ function opsOf(m: Model, specs: readonly OpSpec[]): OracleOp[] {
   );
 }
 
-/** Run a write and check it appended exactly one record at the next seq, or none for no ops. */
+/** Run a write and check it appended exactly one record, or none for no ops. */
 async function write(m: Model, r: Sut, ops: readonly OracleOp[], run: () => Promise<unknown>): Promise<void> {
-  const before = r.appended.length;
+  const before = r.appended();
   await run();
-  const seqs = r.appended.slice(before);
+  const appended = r.appended() - before;
   if (ops.length === 0) {
-    expect(seqs, "a write with no ops appends nothing").toEqual([]);
+    expect(appended, "a write with no ops appends nothing").toBe(0);
     return;
   }
-  expect(seqs, "one append at the next seq").toEqual([m.oracle.head + 1]);
+  expect(appended, "one record").toBe(1);
   m.reader.acked(m.oracle.append(ops));
+  r.onAck?.();
 }
 
 class BatchCmd implements Cmd {
@@ -228,7 +238,7 @@ class BatchCmd implements Cmd {
   toString = () => (this.ops.length === 1 ? opName(this.ops[0]!) : `batch[${this.ops.map(opName).join("; ")}]`);
 }
 
-/** Many distinct keys in one batch: memtable chunk splits, multi-block runs. */
+/** Many distinct keys in one batch: multi-block runs. */
 class BulkCmd implements Cmd {
   constructor(
     private readonly count: number,
@@ -256,7 +266,7 @@ class BulkCmd implements Cmd {
 
 type UpdateAction = "keep" | "del" | "put";
 
-/** `update` reads `keys` and writes in one transaction, so it reads the prefix just before its own seq. */
+/** With one page, nothing lands between `update`'s read and its append: it reads the log just before its own record. */
 class UpdateCmd implements Cmd {
   constructor(
     private readonly keys: readonly number[],
@@ -363,13 +373,15 @@ class SyncCmd implements Cmd {
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
     const head = m.oracle.head;
+    // A sync's ingest round waits for a compaction pass while L0 is full.
+    r.release();
     await r.db.sync();
     m.reader.synced(head);
   }
   toString = () => "sync";
 }
 
-/** `db.ingest()`: flush the WAL to L0 and wait for the compaction it starts. */
+/** `db.ingest()`: flush, ingest everything flushed, and compact until a pass installs nothing. */
 class IngestCmd implements Cmd {
   check = () => true;
   async run(_m: Model, r: Sut): Promise<void> {
@@ -379,7 +391,7 @@ class IngestCmd implements Cmd {
   toString = () => "ingest";
 }
 
-/** Stall the next compaction before its merge, until a command that waits for compaction. */
+/** Stall the next compaction before its merge, until a command that may wait for one: an open, sync, ingest or check. */
 class HoldCompactionCmd implements Cmd {
   check = () => true;
   async run(_m: Model, r: Sut): Promise<void> {
@@ -388,28 +400,11 @@ class HoldCompactionCmd implements Cmd {
   toString = () => "hold compaction";
 }
 
-/** Flush and return while compaction runs in the background, racing later commands. */
-class FlushCmd implements Cmd {
-  check = () => true;
-  async run(_m: Model, r: Sut): Promise<void> {
-    await r.host.ingest(r.name, Number.POSITIVE_INFINITY, false);
-  }
-  toString = () => "flush (compaction in background)";
-}
-
-/** Run a compaction pass without flushing. */
-class CompactCmd implements Cmd {
-  check = () => true;
-  async run(_m: Model, r: Sut): Promise<void> {
-    await r.settle();
-  }
-  toString = () => "compact";
-}
-
 /** Close the handle and open a new one. No crash: every acked write must be there. */
 class ReopenCmd implements Cmd {
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
+    r.release();
     await r.db.close();
     await r.open();
     m.reader.synced(m.oracle.head);
@@ -417,36 +412,25 @@ class ReopenCmd implements Cmd {
   toString = () => "reopen";
 }
 
-/**
- * Quiesce, then run the integrity check and compare the on-disk state with
- * the oracle. With background ingest on, only closing the handle stops the
- * host from starting another one, so the check closes and reopens.
- */
+/** Quiesce, then run the integrity check and compare the on-disk state with the oracle. */
 class CheckCmd implements Cmd {
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
-    if (r.background) await r.db.close();
-    await r.settle();
-    await expectHealthy(m, r, r.background);
-    if (r.background) {
-      await r.open();
-      m.reader.synced(m.oracle.head);
-    }
+    await r.quiet();
+    await expectHealthy(m, r);
+    m.reader.synced(m.oracle.head);
   }
   toString = () => "check";
 }
 
-/**
- * With `closed`, no handle holds a run open, so after `settle` reclaim has
- * left no orphan. An open handle keeps retired runs until it installs the
- * new generation, which arrives over BroadcastChannel.
- */
-export async function expectHealthy(m: Model, r: Sut, closed: boolean): Promise<void> {
-  const report = await checkDatabase(r.fs, r.name);
+/** After `Sut.quiet`: every acked record is in the runs, and nothing is left over. */
+export async function expectHealthy(m: Model, r: Sut): Promise<void> {
+  const report = await checkDatabase(r.fs);
   expect(report.problems, "checkDatabase problems").toEqual([]);
-  if (closed) expect(report.orphans, "orphan runs").toEqual([]);
+  expect(report.orphans, "orphan runs").toEqual([]);
   expect(report.staleManifests, "stale manifests").toEqual([]);
-  expect(report.head, "WAL head").toBe(m.oracle.head);
+  expect(report.pending, "records not ingested").toBe(0);
+  expect(report.through, "ingested records").toBe(m.oracle.head);
   expectEntries(report.state, m.oracle.stateAt(), "on-disk state");
 }
 
@@ -483,10 +467,8 @@ export const commandsArb = (replayPath?: string, maxCommands = 80) => fc.command
     fc.constant(new SyncCmd()),
     fc.constant(new IngestCmd()),
     fc.constant(new IngestCmd()),
-    fc.constant(new FlushCmd()),
-    fc.constant(new FlushCmd()),
+    fc.constant(new SyncCmd()),
     fc.constant(new HoldCompactionCmd()),
-    fc.constant(new CompactCmd()),
     fc.constant(new ReopenCmd()),
     fc.constant(new CheckCmd()),
   ],
