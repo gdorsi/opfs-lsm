@@ -8,7 +8,7 @@ import { crc32 } from "../src/store/crc32.js";
 import { publishGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { openHarnessDb } from "../src/testing.js";
 import { publish } from "./runs.js";
-import { checkDatabase, deleteWal } from "./sim/check-database.js";
+import { checkDatabase, deleteWal, walRows, walStore } from "./sim/check-database.js";
 
 /**
  * `reconcile` and `IdBWal.adopt` (design.md, "Recovery"): after a power
@@ -54,7 +54,53 @@ const seqs = async (wal: IdBWal) => (await wal.listUningested()).map((r) => r.se
 const trustAll = () => true;
 const trustNone = () => false;
 
+/** A `meta` value, or undefined when the key was never written. */
+function metaRaw(dbName: string, key: string): Promise<unknown> {
+  return walStore(dbName, "readonly", (_wal, meta) => meta.get(key));
+}
+
+/**
+ * The state the "drops the WAL" case leaves: every row deleted, `ingestedThrough`
+ * at the last committed seq, and the head held by the `meta.head` floor.
+ */
+async function droppedWal(): Promise<{ fs: MemoryFs; dbName: string }> {
+  const wal = await walWith(4);
+  const dbName = name;
+  const fs = new MemoryFs();
+  await wal.advanceIngested(1, 1);
+  await wal.advanceIngested(2, 2);
+  await wal.advanceIngested(3, 3);
+  expect((await reconcile(wal, fs, trustNone)).generation).toBe(0);
+  expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
+  expect(await walRows(dbName)).toEqual([]);
+  expect(await metaRaw(dbName, "head")).toBe(4);
+  wal.close();
+  return { fs, dbName };
+}
+
 describe("advanceIngested", () => {
+  it("keeps the head on the last wal key after older rows are deleted", async () => {
+    // Appends write no `meta.head` floor. The head is the last key, including
+    // once ingest has deleted every row of the previous batch.
+    const wal = await walWith(4);
+    expect(await metaRaw(name, "head")).toBeUndefined();
+    expect(await metaRaw(name, "pendingBytes")).toBeUndefined();
+    await wal.advanceIngested(2, 1);
+    await wal.advanceIngested(4, 2);
+    expect(await metaRaw(name, "head")).toBeUndefined();
+    expect((await walRows(name)).map((r) => r.seq)).toEqual([3, 4]);
+    expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4 });
+    expect((await wal.tail(0)).head).toBe(4);
+    const next = await wal.appendAfter(0, () => ({ ops: put(5), result: 0 }));
+    expect(next?.seq).toBe(5);
+    await wal.advanceIngested(5, 3);
+    expect((await walRows(name)).map((r) => r.seq)).toEqual([5]);
+    expect(await wal.meta()).toMatchObject({ head: 5, ingestedThrough: 5 });
+    expect((await wal.tail(0)).head).toBe(5);
+    expect((await wal.appendAfter(0, () => ({ ops: put(6), result: 0 })))?.seq).toBe(6);
+    wal.close();
+  });
+
   it("keeps the records it folded until the next ingest", async () => {
     const wal = await walWith(3);
     await wal.advanceIngested(2, 1);
@@ -207,6 +253,39 @@ describe("reconcile", () => {
     wal.close();
   });
 
+  it("never lowers the head when adopt deletes wal rows", async () => {
+    // Every delete bound adopt uses: a manifest behind the log, one the WAL
+    // still follows, and one past the head (which drops every row).
+    let emptied = 0;
+    for (const through of [0, 1, 2, 3, 4, 8]) {
+      const wal = await walWith(4);
+      const dbName = name;
+      try {
+        await wal.advanceIngested(2, 1);
+        await wal.advanceIngested(4, 2);
+        const before = await wal.meta();
+        expect(before.head).toBe(4);
+        expect(await wal.adopt(before, 0, through)).toBe(true);
+        const after = await wal.meta();
+        expect(after.head).toBeGreaterThanOrEqual(before.head);
+        expect(after.head).toBeGreaterThanOrEqual(after.ingestedThrough);
+        const rows = await walRows(dbName);
+        if (rows.length === 0) {
+          emptied += 1;
+          // The floor, not a leftover key, is what keeps the head from falling.
+          expect(await metaRaw(dbName, "head")).toBe(after.head);
+        }
+        const seq = (await wal.appendAfter(0, () => ({ ops: put(9), result: 0 })))?.seq;
+        expect(seq).toBe(after.head + 1);
+        expect(seq).toBeGreaterThan(after.ingestedThrough);
+      } finally {
+        wal.close();
+        await deleteWal(dbName);
+      }
+    }
+    expect(emptied).toBeGreaterThan(0);
+  });
+
   it("writes nothing when the WAL changed since it was read", async () => {
     const wal = await walWith(1);
     const stale = await wal.meta();
@@ -214,6 +293,52 @@ describe("reconcile", () => {
     expect(await wal.adopt(stale, 0, 0)).toBe(false);
     expect(await wal.meta()).toEqual({ head: 2, ingestedThrough: 0, generation: undefined, top: 0 });
     wal.close();
+  });
+});
+
+describe("the next write after adopt empties the wal", () => {
+  const text = (b: Uint8Array | undefined) => (b ? new TextDecoder().decode(b) : undefined);
+
+  async function openDropped() {
+    const { fs, dbName } = await droppedWal();
+    const db = await openHarnessDb({
+      name: dbName,
+      fs,
+      ingest: createLocalIngestClient(new EngineHost(() => fs)),
+    });
+    return { fs, dbName, db };
+  }
+
+  it("update appends at head + 1", async () => {
+    const { fs, dbName, db } = await openDropped();
+    try {
+      await db.update([], (_values, tx) => {
+        tx.put(enc.encode("n"), enc.encode("x"));
+      });
+      expect(text(await db.get(enc.encode("n")))).toBe("x");
+      const report = await checkDatabase(fs, dbName);
+      expect(report.problems).toEqual([]);
+      expect(report.head).toBe(5);
+      expect(report.ingestedThrough).toBe(4);
+    } finally {
+      await db.close();
+      await deleteWal(dbName);
+    }
+  });
+
+  it("put appends at head + 1", async () => {
+    const { fs, dbName, db } = await openDropped();
+    try {
+      await db.put(enc.encode("n"), enc.encode("x"));
+      expect(text(await db.get(enc.encode("n")))).toBe("x");
+      const report = await checkDatabase(fs, dbName);
+      expect(report.problems).toEqual([]);
+      expect(report.head).toBe(5);
+      expect(report.ingestedThrough).toBe(4);
+    } finally {
+      await db.close();
+      await deleteWal(dbName);
+    }
   });
 });
 
