@@ -239,7 +239,7 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
   }
 
   /** Optimistic: the unique keys to read depend on the new document, which depends on the old row. */
-  modify(id: string, fn: (doc: T) => T): Promise<T | undefined> {
+  async modify(id: string, fn: (doc: T) => T): Promise<T | undefined> {
     const docId = parseId(id);
     const idb = idBytes(docId);
     return this.store.write(this.name, async (coll): Promise<WritePlan<T | undefined>> => {
@@ -283,7 +283,7 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     );
   }
 
-  query(q: Query<T, Ix>): Promise<Page<T>> {
+  async query(q: Query<T, Ix>): Promise<Page<T>> {
     const input = q as QueryInput;
     const limit = limitOf(input.limit);
     return this.store.read(this.name, input.index, async (target) => {
@@ -306,7 +306,7 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     });
   }
 
-  queryIds(q: Query<T, Ix>): Promise<IdPage> {
+  async queryIds(q: Query<T, Ix>): Promise<IdPage> {
     const input = q as QueryInput;
     const limit = limitOf(input.limit);
     return this.store.read(this.name, input.index, async (target) => {
@@ -317,7 +317,7 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     });
   }
 
-  count(q: Query<T, Ix>): Promise<number> {
+  async count(q: Query<T, Ix>): Promise<number> {
     const input = q as QueryInput;
     const limit = limitOf(input.limit);
     return this.store.read(this.name, input.index, async (target) => {
