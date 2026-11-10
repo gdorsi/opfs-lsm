@@ -1,5 +1,5 @@
 import { opsBytes, type CheckedOp, type DbName } from "../check.js";
-import { CommitError } from "../errors.js";
+import { CommitError, StorageUnavailableError } from "../errors.js";
 import type { WalRecord } from "../store/memtable.js";
 
 /**
@@ -141,7 +141,11 @@ function openIdb(dbName: DbName): Promise<IDBDatabase> {
       db.onversionchange = () => db.close();
       resolve(db);
     };
-    req.onerror = () => reject(req.error ?? new CommitError("idb open failed"));
+    req.onerror = () => {
+      const cause = req.error;
+      const detail = cause ? ` (${cause.name}: ${cause.message})` : "";
+      reject(new StorageUnavailableError(`the browser's IndexedDB store failed to open${detail}`, { cause }));
+    };
   });
 }
 

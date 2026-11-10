@@ -850,6 +850,7 @@ class Run {
       if (!under.ok) {
         quotaErrors.push(`${under.error!.typed ? "typed" : "untyped"} ${under.error!.name}: ${under.error!.message.slice(0, 160)}`);
         if (/timed out/.test(under.error!.message)) fail("ingest under quota hung", [under.error!.message]);
+        else if (under.error!.name !== "StorageFullError") fail("ingest under quota did not reject with StorageFullError", [`${under.error!.name}: ${under.error!.message}`]);
       }
       if (!restored.ok) fail("ingest failed after the quota was restored", [`${restored.error!.name}: ${restored.error!.message}`]);
       for (const e of errors.values()) notes.push(`quota: tab ${e.tab} attempt ${e.n} ${e.typed ? "typed" : "untyped"} ${e.name}: ${e.message.slice(0, 120)}`);

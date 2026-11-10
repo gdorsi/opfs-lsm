@@ -35,7 +35,8 @@ export type DatabaseReport = {
   /**
    * Chrome's `createWritable` swap files (`<name>.crswap`) in `m/`. A
    * browser killed mid-write leaves one, and Chrome never removes it. The
-   * engine skips the name, so it is a leak, not a problem.
+   * engine removes it once its generation is recorded, so one found here
+   * is not a problem.
    */
   readonly swapFiles: readonly string[];
   /** Live entries of the runs plus the WAL, newest wins, in key order. */
