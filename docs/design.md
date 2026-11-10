@@ -789,8 +789,17 @@ A pass runs up to 8 steps, and a request that arrives during a pass starts anoth
 `db.update(keys, body)` reads and writes inside one IndexedDB transaction, so it can't conflict.
 `body` must be synchronous.
 
-`db.changes(listener)` reports every append and every ingest, from this tab and from other tabs.
-It is fed by the same BroadcastChannel and by the tab's own commits (`changes.ts`).
+`db.changes(listener)` reports each WAL record a handle applies to its memtable, with the record's
+ops, whichever path brought it: the tab's own commit, another tab's BroadcastChannel message, or a
+catch-up read of the WAL. Every applied seq is announced once, in seq order, after reads can see it,
+and a write's promise resolves after its own record was announced. `put`, `delete` and `batch`
+resolve with the record's seq. A handle that catches up past records a flush folded into a
+generation it had not loaded never reads their ops, so it announces one `gap` up to the seq it
+jumped to, and a listener reads again. After a `repair`, the next catch-up announces a `gap` too,
+since the manifest it recorded can hold another fold than the memtable it replaces. `ingest` says
+a flush moved rows to OPFS without changing what reads return, and `closed` is the last event.
+Events are queued while the memtable changes inside an IndexedDB transaction and fire after it
+(`changes.ts`, `DbImpl.announce`).
 
 # Limits
 

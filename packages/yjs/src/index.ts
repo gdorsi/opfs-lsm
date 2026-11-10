@@ -22,7 +22,7 @@ export class KvPersistence {
   private readonly prefix: Uint8Array;
   private readonly session = (Math.random() * 0x1_0000_0000) >>> 0;
   private seq = 0;
-  private readonly pending = new Set<Promise<void>>();
+  private readonly pending = new Set<Promise<unknown>>();
   private destroyed = false;
 
   constructor(
@@ -87,7 +87,7 @@ export class KvPersistence {
     return this;
   }
 
-  private track(write: Promise<void>): void {
+  private track(write: Promise<unknown>): void {
     const done = write.finally(() => this.pending.delete(done));
     this.pending.add(done);
   }

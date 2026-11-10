@@ -120,10 +120,10 @@ export class Memtable extends Chunks {
     return new Chunks(this.chunks.slice(), this.firsts.slice());
   }
 
-  /** Apply `record` if it is the next seq. Returns false on a gap. */
-  apply(record: WalRecord): boolean {
-    if (record.seq <= this.applied) return true;
-    if (record.seq !== this.applied + 1) return false;
+  /** Apply `record` if it is the next seq. "applied" only when this call moved `appliedThrough`. */
+  apply(record: WalRecord): "applied" | "already" | "gap" {
+    if (record.seq <= this.applied) return "already";
+    if (record.seq !== this.applied + 1) return "gap";
     for (const op of record.ops) {
       this.put(
         op.type === "put"
@@ -132,7 +132,7 @@ export class Memtable extends Chunks {
       );
     }
     this.applied = record.seq;
-    return true;
+    return "applied";
   }
 
   private put(row: MemRow): void {
@@ -161,13 +161,14 @@ export class Memtable extends Chunks {
 
   /**
    * The installed SST generation now holds every seq <= `through`. Drop the
-   * rows it covers, and jump past seqs this table never read.
+   * rows it covers, and jump past seqs this table never read. True when it
+   * jumped.
    */
-  advanceTo(through: number): void {
-    if (through <= this.ingested) return;
+  advanceTo(through: number): boolean {
+    if (through <= this.ingested) return false;
     this.ingested = through;
-    const keep =
-      through > this.applied ? [] : this.range().filter((row) => row.seq > through);
+    const jumped = through > this.applied;
+    const keep = jumped ? [] : this.range().filter((row) => row.seq > through);
     this.applied = Math.max(this.applied, through);
     this.chunks = [];
     this.firsts = [];
@@ -181,5 +182,6 @@ export class Memtable extends Chunks {
     if (this.chunks.length === 0) this.chunks.push([]);
     this.firsts[0] = new Uint8Array(0);
     this.owned = this.chunks.map(() => true);
+    return jumped;
   }
 }

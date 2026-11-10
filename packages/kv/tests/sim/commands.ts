@@ -40,7 +40,7 @@ export class Sut {
   private gate: { readonly opened: Promise<void>; readonly open: () => void } | undefined;
   readonly host = new EngineHost(() => this.hostFs(), SIM_HOST_LIMITS);
   db!: Db;
-  /** Seqs of this handle's own appends, from `changes`. */
+  /** Seqs `changes` announced. The handle is the only writer, so each is one of its own appends. */
   readonly appended: number[] = [];
 
   constructor(
@@ -62,9 +62,7 @@ export class Sut {
       ingestPolicy: { maxWalBytes: this.maxWalBytes },
     });
     db.changes((e) => {
-      if (e.kind === "append" && e.writerId === db.writerId && e.seq !== undefined) {
-        this.appended.push(e.seq);
-      }
+      if (e.kind === "append") this.appended.push(e.seq);
     });
     this.db = db;
   }
