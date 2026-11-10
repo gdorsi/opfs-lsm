@@ -145,7 +145,7 @@ export class LogClient {
     this.start(undefined, []);
   }
 
-  /** Appends `ops` as one record. Rejects with `IndeterminateWriteError` when its write may still land, with `CommitError` when it never will. */
+  /** Appends `ops` as one record. Rejects with `IndeterminateWriteError` when its write was sent and did not ack, so it may still land, and with `CommitError` when it was never sent. */
   append(ops: readonly CheckedOp[]): Promise<Acked> {
     const body = new Uint8Array(encodeOps(ops));
     return new Promise((resolve, reject) => {
@@ -305,7 +305,11 @@ export class LogClient {
       return;
     }
     if (msg.t === "failed") {
-      this.retire(log, new CommitError(`log ${log.id} failed: ${msg.message}`));
+      // A write that threw or came back short can still leave whole frames of its batch on disk, and the host
+      // reads a dead log to its end. A log that never opened holds no record, so nothing sent to it can land.
+      const opened = log.handoff?.log === log.id;
+      const why = `log ${log.id} failed: ${msg.message}`;
+      this.retire(log, opened ? new IndeterminateWriteError(why) : new CommitError(why));
       return;
     }
     log.requests.delete(msg.id);

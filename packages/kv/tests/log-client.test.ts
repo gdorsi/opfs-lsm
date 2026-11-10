@@ -250,8 +250,7 @@ describe("LogClient", () => {
     const failed = outcome(client.append(op("a3")));
     await Promise.resolve();
     const b = await Promise.all([client.append(op("b1")), client.append(op("b2"))]);
-    expect(failed.error).toBeInstanceOf(CommitError);
-    expect(failed.error).not.toBeInstanceOf(IndeterminateWriteError);
+    expect(failed.error).toBeInstanceOf(IndeterminateWriteError);
     expect(b.map((x) => x.n)).toEqual([1, 2]);
     expect(b[0]!.log).not.toBe(a.log);
     expect(respawned).toEqual([[b[0]!.log, { log: a.log, lastN: 2 }]]);
@@ -329,7 +328,7 @@ describe("LogClient", () => {
     const waiting = outcome(client.append(op("a3")));
     await settle();
     await settle();
-    expect(failed.error).toBeInstanceOf(CommitError);
+    expect(failed.error).toBeInstanceOf(IndeterminateWriteError);
     expect(waiting.error).toBeInstanceOf(CommitError);
     opfs.failOpen = false;
     const b = await client.append(op("b1"));
@@ -438,8 +437,8 @@ describe("LogClient", () => {
     await Promise.resolve();
     const queued = outcome(client.append(op("a3")));
     await client.close();
-    expect(inFlight.error).toBeInstanceOf(CommitError);
-    expect(queued.error).toBeInstanceOf(CommitError);
+    expect(inFlight.error).toBeInstanceOf(IndeterminateWriteError);
+    expect(queued.error).toBeInstanceOf(IndeterminateWriteError);
     expect(opfs.read(a.log)).toEqual(["a1"]);
     expect(opfs.lockHeld(a.log)).toBe(false);
     expect(opfs.workers.length).toBe(1);
