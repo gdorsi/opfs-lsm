@@ -1,5 +1,5 @@
 import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
-import { errorOfCode, OpfsLsmError } from "../errors.js";
+import { codeOfError, errorOfCode } from "../errors.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile } from "../recover.js";
@@ -568,7 +568,8 @@ export function attachEngineHostPort(
       const message = err instanceof Error ? err.message : String(err);
       if (msg && typeof msg === "object" && "id" in msg) {
         const id = (msg as { id: number }).id;
-        reply(err instanceof OpfsLsmError ? { type: "err", id, message, code: err.code } : { type: "err", id, message });
+        const code = codeOfError(err);
+        reply(code ? { type: "err", id, message, code } : { type: "err", id, message });
       }
     }
   };
