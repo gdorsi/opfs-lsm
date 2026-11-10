@@ -190,15 +190,37 @@ async function touchStorage(): Promise<void> {
   });
 }
 
-/** Sum of every file size under the OPFS root. Includes orphans on purpose. */
+/**
+ * Sum of every file size under the OPFS root. Includes orphans on purpose.
+ * A store may delete files while this walks (kv's SharedWorker reclaims
+ * after a cold open's ingest round), so a file or directory gone mid-walk
+ * counts as empty.
+ */
 async function walkOpfs(dir?: FileSystemDirectoryHandle): Promise<number> {
   const root = dir ?? (await navigator.storage.getDirectory());
   let total = 0;
-  for await (const handle of (root as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
-    if (handle.kind === "file") total += (await (handle as FileSystemFileHandle).getFile()).size;
-    else total += await walkOpfs(handle as FileSystemDirectoryHandle);
+  try {
+    for await (const handle of (root as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
+      if (handle.kind === "file") total += await fileSize(handle as FileSystemFileHandle);
+      else total += await walkOpfs(handle as FileSystemDirectoryHandle);
+    }
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
   }
   return total;
+}
+
+async function fileSize(handle: FileSystemFileHandle): Promise<number> {
+  try {
+    return (await handle.getFile()).size;
+  } catch (err) {
+    if (isNotFound(err)) return 0;
+    throw err;
+  }
+}
+
+function isNotFound(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "NotFoundError";
 }
 
 function progress(line: string): void {
