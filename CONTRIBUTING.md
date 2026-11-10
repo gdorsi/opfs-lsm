@@ -4,7 +4,7 @@ To set up the repository and run the tests, follow [Clone and run](README.md#clo
 
 ## Add a changeset when you change a published package
 
-The repository publishes four packages to npm: `@opfs-lsm/kv`, `@opfs-lsm/collections`, `@opfs-lsm/yjs`, and `@opfs-lsm/automerge`. [Changesets](https://github.com/changesets/changesets) versions them and writes each package's `CHANGELOG.md`.
+The repository publishes four packages to npm: `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs`, and `@opfs-lsm/automerge`. [Changesets](https://github.com/changesets/changesets) versions them and writes each package's `CHANGELOG.md`.
 
 If your pull request changes what one of these packages does, add a changeset:
 
