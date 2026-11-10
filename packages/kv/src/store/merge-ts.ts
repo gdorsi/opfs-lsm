@@ -17,9 +17,9 @@ import {
 
 /**
  * The merge session in TypeScript (crates/engine-abi.md, "Merge session"),
- * for a context without the wasm one: the module did not load, it trapped,
- * or another step holds its session. It asks for the same reads and merges
- * by the same rules, but holds more. It decodes each read's blocks at once,
+ * for a context without the wasm one: the module did not load, or it
+ * trapped. It asks for the same reads and merges by the same rules, but
+ * holds more. It decodes each read's blocks at once,
  * about `chunkBytes` per source (B in all), and gathers an output run's
  * entries up to `targetBytes` of encoded size before it encodes them, so it
  * holds about B plus twice `targetBytes`: B + 8 MiB for compaction. Nothing

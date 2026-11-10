@@ -1,7 +1,8 @@
 /**
  * node bench/cli.ts <verb> [args]
  *
- *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed] [--max-peak-bytes N]
+ *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed]
+ *       [--max-peak-bytes N] [--compaction-memory-bytes N]
  *   smoke [--check]         every workload × contender, size tiny, 1 rep, correctness only;
  *                           --check first applies the bundle-size budgets to the same build
  *   size [--check]          bundle-size table; --check fails over a row's budget
@@ -38,6 +39,7 @@ async function main(): Promise<number> {
       check: { type: "boolean", default: false },
       timeout: { type: "string", default: "1800000" },
       "max-peak-bytes": { type: "string", default: "" },
+      "compaction-memory-bytes": { type: "string", default: "" },
     },
   });
   switch (verb) {
@@ -55,7 +57,8 @@ async function main(): Promise<number> {
         timeoutMs: Number(values.timeout),
         smoke,
         checkSizes: smoke && values.check,
-        maxPeakBytes: values["max-peak-bytes"] ? Number(values["max-peak-bytes"]) : undefined,
+        maxPeakBytes: bytesFlag("max-peak-bytes", values["max-peak-bytes"]),
+        compactionMemoryBytes: bytesFlag("compaction-memory-bytes", values["compaction-memory-bytes"]),
       });
     }
     case "size":
@@ -88,6 +91,7 @@ async function run(o: {
   smoke: boolean;
   checkSizes: boolean;
   maxPeakBytes: number | undefined;
+  compactionMemoryBytes: number | undefined;
 }): Promise<number> {
   await ensureTrace();
   const built = await buildBench({ quiet: true });
@@ -105,6 +109,7 @@ async function run(o: {
       headless: o.headless,
       resultsFile,
       phaseTimeoutMs: o.timeoutMs,
+      compactionMemoryBytes: o.compactionMemoryBytes,
       log: (line) => console.log(line),
     });
     const text = report(records, new Map(catalog.map((w) => [w.workload, w.title])));
@@ -124,6 +129,13 @@ async function run(o: {
 }
 
 /** Print the bundle-size table of a build. With `check`, false when a row is over its budget. */
+function bytesFlag(name: string, value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const bytes = Number(value);
+  if (!(bytes > 0)) throw new Error(`--${name} must be a positive number of bytes`);
+  return bytes;
+}
+
 function sizes(built: BuildOutput, check: boolean): boolean {
   const rows = measureSizes(built);
   console.log(formatSizes(rows));

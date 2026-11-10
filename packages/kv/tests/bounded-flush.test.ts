@@ -282,7 +282,7 @@ describe("a flush with L0 full", () => {
     let flushed = false;
     const flush = t.host.ingest(NAME, Number.POSITIVE_INFINITY).then(() => (flushed = true));
 
-    await vi.waitFor(async () => expect((await t.host.stats(NAME)).l0Stops).toBe(1));
+    await vi.waitFor(async () => expect((await t.host.stats(NAME)).memory.l0Stops).toBe(1));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(flushed).toBe(false);
     expect(await l0Runs(t.published)).toHaveLength(4);
@@ -295,7 +295,7 @@ describe("a flush with L0 full", () => {
     const install = generations.findIndex((g) => g.runs.some((r) => r.path.startsWith("l1/")));
     // The install took the four runs, and the fifth record became the one run after it.
     expect(generations.slice(install).map(l0Count)).toEqual([0, 1]);
-    expect((await t.host.stats(NAME)).l0Stops).toBe(1);
+    expect((await t.host.stats(NAME)).memory.l0Stops).toBe(1);
     await t.db.ingest();
     for (let i = 0; i < 5; i++) expect(await t.db.get(key(i))).toEqual(value(i, 100));
     await t.db.close();
@@ -309,7 +309,7 @@ describe("a flush with L0 full", () => {
       await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
     }
     expect(await l0Runs(t.published)).toHaveLength(4);
-    expect((await t.host.stats(NAME)).l0Stops).toBe(2);
+    expect((await t.host.stats(NAME)).memory.l0Stops).toBe(2);
     await t.db.close();
   });
 
@@ -325,7 +325,7 @@ describe("a flush with L0 full", () => {
     await t.db.put(key(4), value(4, 100));
     await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
     expect(await l0Runs(t.published)).toHaveLength(5);
-    expect((await t.host.stats(NAME)).l0Stops).toBeGreaterThanOrEqual(1);
+    expect((await t.host.stats(NAME)).memory.l0Stops).toBeGreaterThanOrEqual(1);
     await t.db.close();
   });
 

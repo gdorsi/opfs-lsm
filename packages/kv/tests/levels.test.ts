@@ -20,14 +20,15 @@ const paths = (plan: CompactionPlan | undefined) => plan?.inputs.map((r) => r.pa
 
 describe("planCompaction", () => {
   const l0 = (n: number) => Array.from({ length: n }, (_, i) => run(`l0/${10 - i}.sst`, 100, "c", "f"));
+  const limits = { maxSources: 49 };
 
   it("leaves fewer than four L0 runs alone", () => {
-    expect(planCompaction([...l0(3), run("l1/c1.sst", 100, "a", "z")])).toBeUndefined();
+    expect(planCompaction([...l0(3), run("l1/c1.sst", 100, "a", "z")], limits)).toBeUndefined();
   });
 
   it("merges four L0 runs with only the L1 runs they overlap", () => {
     const l1 = [run("l1/a.sst", 100, "a", "b"), run("l1/b.sst", 100, "d", "e"), run("l1/c.sst", 100, "x", "z")];
-    const plan = planCompaction([...l0(4), ...l1]);
+    const plan = planCompaction([...l0(4), ...l1], limits);
     expect(paths(plan)).toEqual([...l0(4).map((r) => r.path), "l1/b.sst"]);
     expect(plan?.outputLevel).toBe(1);
     expect(plan?.bottom).toBe(true);
@@ -35,9 +36,9 @@ describe("planCompaction", () => {
 
   it("is a bottom merge only when no deeper run overlaps the inputs", () => {
     const l1 = run("l1/a.sst", 100, "c", "d");
-    expect(planCompaction([...l0(4), l1, run("l2/a.sst", 900, "x", "z")])?.bottom).toBe(true);
-    expect(planCompaction([...l0(4), l1, run("l2/a.sst", 900, "e", "g")])?.bottom).toBe(false);
-    expect(planCompaction([...l0(4), l1, run("l2/a.sst", 900)])?.bottom).toBe(false);
+    expect(planCompaction([...l0(4), l1, run("l2/a.sst", 900, "x", "z")], limits)?.bottom).toBe(true);
+    expect(planCompaction([...l0(4), l1, run("l2/a.sst", 900, "e", "g")], limits)?.bottom).toBe(false);
+    expect(planCompaction([...l0(4), l1, run("l2/a.sst", 900)], limits)?.bottom).toBe(false);
   });
 
   it("pushes the oversized level's run with the least overlap below it", () => {
@@ -48,15 +49,15 @@ describe("planCompaction", () => {
       run("l2/b.sst", 100, "h", "i"),
       run("l2/c.sst", 100, "j", "k"),
     ];
-    const plan = planCompaction(runs, 1000);
+    const plan = planCompaction(runs, { ...limits, l1Target: 1000 });
     expect(paths(plan)).toEqual(["l1/b.sst", "l2/b.sst", "l2/c.sst"]);
     expect(plan?.outputLevel).toBe(2);
-    expect(planCompaction(runs.slice(1), 1000)).toBeUndefined();
+    expect(planCompaction(runs.slice(1), { ...limits, l1Target: 1000 })).toBeUndefined();
   });
 
   it("reads each L0 run as a source of its own and the L1 runs it overlaps as one, newest first", () => {
     const l1 = [run("l1/a.sst", 100, "a", "b"), run("l1/b.sst", 100, "c", "d"), run("l1/c.sst", 100, "e", "z")];
-    const plan = planCompaction([...l0(4), ...l1]);
+    const plan = planCompaction([...l0(4), ...l1], limits);
     expect(plan?.sources.map((s) => s.map((r) => r.path))).toEqual([
       ...l0(4).map((r) => [r.path]),
       ["l1/b.sst", "l1/c.sst"],
@@ -64,27 +65,28 @@ describe("planCompaction", () => {
     expect(paths(plan)).toEqual(plan?.sources.flat().map((r) => r.path));
   });
 
-  it("takes the oldest 48 L0 runs, so a step reads at most 49 sources", () => {
+  it.each([49, 17])("takes the oldest L0 runs, so a step reads at most %i sources", (maxSources) => {
     const runs = [...l0(53), run("l1/a.sst", 100, "a", "z")];
-    const plan = planCompaction(runs)!;
-    expect(plan.sources).toHaveLength(49);
-    expect(plan.sources.slice(0, 48).map((s) => s.map((r) => r.path))).toEqual(l0(53).slice(5).map((r) => [r.path]));
-    expect(plan.sources[48]!.map((r) => r.path)).toEqual(["l1/a.sst"]);
-    // The five newest stay in L0, in front of the step's output.
+    const plan = planCompaction(runs, { maxSources })!;
+    const taken = maxSources - 1;
+    expect(plan.sources).toHaveLength(maxSources);
+    expect(plan.sources.slice(0, taken).map((s) => s.map((r) => r.path))).toEqual(l0(53).slice(53 - taken).map((r) => [r.path]));
+    expect(plan.sources[taken]!.map((r) => r.path)).toEqual(["l1/a.sst"]);
+    // The newest stay in L0, in front of the step's output.
     const after = replaceRuns(runs, paths(plan)!, [run("l1/c9.0.sst", 100, "a", "z")]);
-    expect(after.map((r) => r.path)).toEqual([...l0(5).map((r) => r.path), "l1/c9.0.sst"]);
+    expect(after.map((r) => r.path)).toEqual([...l0(53 - taken).map((r) => r.path), "l1/c9.0.sst"]);
   });
 
   it("reads the pushed run as one source and the runs it overlaps below as another", () => {
     const runs = [run("l1/a.sst", 1500, "a", "f"), run("l2/a.sst", 100, "a", "c"), run("l2/b.sst", 100, "d", "e"), run("l2/c.sst", 100, "x", "z")];
-    expect(planCompaction(runs, 1000)?.sources.map((s) => s.map((r) => r.path))).toEqual([["l1/a.sst"], ["l2/a.sst", "l2/b.sst"]]);
-    expect(planCompaction([run("l1/a.sst", 1500, "a", "f")], 1000)?.sources.map((s) => s.map((r) => r.path))).toEqual([["l1/a.sst"]]);
+    expect(planCompaction(runs, { ...limits, l1Target: 1000 })?.sources.map((s) => s.map((r) => r.path))).toEqual([["l1/a.sst"], ["l2/a.sst", "l2/b.sst"]]);
+    expect(planCompaction([run("l1/a.sst", 1500, "a", "f")], { ...limits, l1Target: 1000 })?.sources.map((s) => s.map((r) => r.path))).toEqual([["l1/a.sst"]]);
   });
 
   it("compacts the level furthest over its target first", () => {
     const l1 = [run("l1/a.sst", 1500, "a", "b"), run("l1/b.sst", 1500, "c", "f")];
-    expect(planCompaction([...l0(4), ...l1], 1000)?.outputLevel).toBe(2);
-    expect(planCompaction([...l0(16), ...l1], 1000)?.outputLevel).toBe(1);
+    expect(planCompaction([...l0(4), ...l1], { ...limits, l1Target: 1000 })?.outputLevel).toBe(2);
+    expect(planCompaction([...l0(16), ...l1], { ...limits, l1Target: 1000 })?.outputLevel).toBe(1);
   });
 });
 
