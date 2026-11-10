@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drive real-Chrome proofs for @opfs-lsm/kv and @opfs-lsm/collections.
+# Drive real-Chrome proofs for @opfs-lsm/kv and @opfs-lsm/docstore.
 # Usage: verify-opfs-lsm <doctor|launch|drive|cleanup> [args]
 set -euo pipefail
 
@@ -73,11 +73,11 @@ cmd_doctor() {
     echo "kv dist: present"
   fi
 
-  if [[ ! -f "$ROOT/packages/collections/dist/index.js" ]]; then
-    echo "collections dist: MISSING (run: verify-opfs-lsm launch)"
+  if [[ ! -f "$ROOT/packages/docstore/dist/index.js" ]]; then
+    echo "docstore dist: MISSING (run: verify-opfs-lsm launch)"
     ok=0
   else
-    echo "collections dist: present"
+    echo "docstore dist: present"
   fi
 
   if [[ ! -d "$ROOT/node_modules" ]]; then
@@ -99,7 +99,7 @@ cmd_launch() {
     pnpm install
   fi
   pnpm --filter @opfs-lsm/kv build
-  pnpm --filter @opfs-lsm/collections build
+  pnpm --filter @opfs-lsm/docstore build
   pnpm --filter @opfs-lsm/yjs build
   pnpm --filter @opfs-lsm/automerge build
   cmd_doctor

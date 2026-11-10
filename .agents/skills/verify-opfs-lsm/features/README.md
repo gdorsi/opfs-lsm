@@ -1,12 +1,12 @@
 # @opfs-lsm browser verification map
 
-This directory is the maintained source for verifying real-Chrome behavior of `@opfs-lsm/kv` and `@opfs-lsm/collections`. Read the index before driving, then use the matching feature file as the recipe.
+This directory is the maintained source for verifying real-Chrome behavior of `@opfs-lsm/kv` and `@opfs-lsm/docstore`. Read the index before driving, then use the matching feature file as the recipe.
 
 Formal model checkers live under `verify-kv` and are not listed here.
 
 ## Baseline preconditions
 
-- Repo root is the workspace that contains `packages/kv` and `packages/collections`.
+- Repo root is the workspace that contains `packages/kv` and `packages/docstore`.
 - Run `.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm launch` once so dist + wasm are present.
 - Run `doctor` and require `doctor: ok`.
 - Drive only through `verify-opfs-lsm drive …` so evidence lands under `artifacts/`.
@@ -36,6 +36,6 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior, 
 ## Features
 
 - [Two-tab SharedWorker visibility](./two-tab.md) — peer put/get/ingest across two tabs.
-- [Benchmark suite](./bench.md) — `pnpm bench <family>/` for kv vs IndexedDB, collections vs Dexie, the Automerge adapter, and Yjs `KvPersistence`, with every read checked; `bench-smoke` for all of them at size `tiny`.
+- [Benchmark suite](./bench.md) — `pnpm bench <family>/` for kv vs IndexedDB, docstore vs Dexie, the Automerge adapter, and Yjs `KvPersistence`, with every read checked; `bench-smoke` for all of them at size `tiny`.
 - [Two-tab without BroadcastChannel](./two-tab-nobc.md) — same scenario with BC silenced.
 - [Two-tab local EngineHost](./two-tab-local.md) — one page, two handles, no SharedWorker.

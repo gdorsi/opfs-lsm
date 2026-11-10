@@ -5,7 +5,7 @@ The suite in `bench/` runs each workload in headless Chrome against every conten
 ## Sub-features
 
 - `kv/` compares `kv/kv` (`@opfs-lsm/kv` on SharedWorker + OPFS) with `kv/idb` (raw IndexedDB). Workloads: `fillseq`, `fillrandom`, `fillsync`, `overwrite`, `deleterandom`, `ycsb-a` to `ycsb-f`.
-- `table/` compares `table/collections` with `table/dexie` on one todo table with an owner index and a createdAt index (`table/todos`).
+- `table/` compares `table/docstore` with `table/dexie` on one todo table with an owner index and a createdAt index (`table/todos`).
 - `automerge/` compares the kv storage adapter (`automerge/kv`) with `IndexedDBStorageAdapter` (`automerge/idb`). Workloads: `trace`, `many-docs`.
 - `yjs/` compares `KvPersistence` (`yjs/kv`) with y-indexeddb (`yjs/y-indexeddb`). Workloads: `trace`, `many-docs`.
 - `bench-smoke` runs every workload against every contender at size `tiny`, 1 rep. It checks correctness and harness health, not speed.
@@ -33,7 +33,7 @@ Preconditions:
 ## Gotchas
 
 - Each run uses a fresh temp Chrome profile and its own server, so drives do not collide on disk. Run one at a time anyway, so timings are not shared with another Chrome.
-- `pnpm bench` builds `@opfs-lsm/kv` and `@opfs-lsm/collections` first. A build error fails the drive before Chrome opens.
+- `pnpm bench` builds every package under `packages/` first. A build error fails the drive before Chrome opens.
 - One wrong read fails that run and the whole command exits 1. The other runs still print. Read the `## Failed runs` list for the workload and contender.
 - `--size large` takes much longer. Use it only when the claim is about large data.
 - Timings at size `tiny` or with 1 rep are not evidence of speed.

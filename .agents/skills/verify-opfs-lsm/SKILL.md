@@ -1,6 +1,6 @@
 ---
 name: verify-opfs-lsm
-description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/collections — SharedWorker two-tab visibility and the bench/ suite (kv vs IndexedDB, collections vs Dexie, Automerge and Yjs adapters, every read checked). Use when changing openDb, SharedWorker ingest, WAL/SST visibility across tabs, collections put/get/where, the Automerge or Yjs adapters, or any claim that MemoryFs unit tests alone cannot prove."
+description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/docstore — SharedWorker two-tab visibility and the bench/ suite (kv vs IndexedDB, docstore vs Dexie, Automerge and Yjs adapters, every read checked). Use when changing openDb, SharedWorker ingest, WAL/SST visibility across tabs, docstore put/get/query, the Automerge or Yjs adapters, or any claim that MemoryFs unit tests alone cannot prove."
 ---
 
 # Verify @opfs-lsm (real Chrome)
@@ -23,14 +23,14 @@ Build once per verification session. Harnesses are short-lived: each drive start
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm launch
 ```
 
-Ready when `doctor` prints `doctor: ok` (node ≥22, pnpm, Chrome, wasm present, `packages/kv/dist/index.js`, `packages/kv/dist/host/shared-worker.js`, `packages/collections/dist/index.js`).
+Ready when `doctor` prints `doctor: ok` (node ≥22, pnpm, Chrome, wasm present, `packages/kv/dist/index.js`, `packages/kv/dist/host/shared-worker.js`, `packages/docstore/dist/index.js`).
 
 Equivalent without the helper:
 
 ```sh
 pnpm install
 pnpm --filter @opfs-lsm/kv build
-pnpm --filter @opfs-lsm/collections build
+pnpm --filter @opfs-lsm/docstore build
 ```
 
 Chrome: `CHROME_PATH` when set, else `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, else `google-chrome` on `PATH`.
