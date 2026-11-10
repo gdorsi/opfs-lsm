@@ -19,17 +19,7 @@ import {
   TARGET_RUN_BYTES,
   type CompactionPlan,
 } from "../store/levels.js";
-
-/**
- * How much of each source a step reads at once. The wasm session holds
- * about this per source, twice it while reading ahead, whatever the
- * inputs' size.
- */
-const CHUNK_BYTES = 256 * 1024;
-/** Usually a run's whole footer, bloom and index, so one read opens it. */
-const TAIL_BYTES = 128 * 1024;
-/** About how much input a step merges between turns of the event loop. */
-const YIELD_BYTES = 1024 * 1024;
+import type { HostBudget } from "./budget.js";
 
 /** Merged runs written to OPFS and not yet in any generation. */
 export type CompactionOutput = {
@@ -50,27 +40,33 @@ type Merged = Pick<CompactionOutput, "outputs" | "droppedSeq">;
  */
 export async function mergeNextStep(
   fs: AsyncFs,
+  budget: HostBudget,
   base?: GenerationMeta,
   knownTop = 0,
 ): Promise<CompactionOutput | undefined> {
   const meta = base ?? (await loadLatestGeneration(fs));
   if (!meta) return undefined;
   const top = Math.max(meta.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
-  const plan = planCompaction(meta.runs);
+  const plan = planCompaction(meta.runs, { maxSources: budget.maxSources });
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   let merged: Merged;
   try {
-    merged = await writeStep(fs, plan, name);
+    merged = await writeStep(fs, plan, name, budget);
   } catch (err) {
     if (!(err instanceof WebAssembly.RuntimeError)) throw err;
     // The trap dropped wasm for this context, so the TypeScript session runs the step.
-    merged = await writeStep(fs, plan, name);
+    merged = await writeStep(fs, plan, name, budget);
   }
   return { inputs: plan.inputs.map((r) => r.path), ...merged };
 }
 
-async function writeStep(fs: AsyncFs, plan: CompactionPlan, name: (i: number) => string): Promise<Merged> {
+async function writeStep(
+  fs: AsyncFs,
+  plan: CompactionPlan,
+  name: (i: number) => string,
+  budget: HostBudget,
+): Promise<Merged> {
   const inputs: OpenFile[][] = [];
   let merge: MergeCore | undefined;
   try {
@@ -88,9 +84,9 @@ async function writeStep(fs: AsyncFs, plan: CompactionPlan, name: (i: number) =>
       dropTombstones: plan.bottom,
       targetBytes: TARGET_RUN_BYTES,
       codec: codecForLevel(plan.outputLevel),
-      chunkBytes: CHUNK_BYTES,
-      tailBytes: TAIL_BYTES,
-      yieldBytes: YIELD_BYTES,
+      chunkBytes: budget.chunkBytes,
+      tailBytes: budget.tailBytes,
+      yieldBytes: budget.yieldBytes,
     });
     return await pumpMerge(fs, merge, inputs, name);
   } finally {

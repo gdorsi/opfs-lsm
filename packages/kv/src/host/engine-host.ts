@@ -12,6 +12,7 @@ import {
   reclaimRuns,
 } from "../store/generation.js";
 import { levelOf } from "../store/levels.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
@@ -27,29 +28,6 @@ export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
-
-/** What the host holds to keep its working set small. */
-export type HostLimits = {
-  /**
-   * Op bytes of WAL records folded into one L0 run. The wasm peak of a flush
-   * grows about tenfold with this figure. A larger backlog becomes several
-   * runs.
-   */
-  readonly flushRunBytes: number;
-  /**
-   * L0 runs at which a flush waits for a compaction step to install before it
-   * publishes another. One less than the sources a merge reads, so one step
-   * can take all of L0. A step takes the L0 runs that exist when it starts,
-   * and a stop at S settles near S/2 runs per step, so a low stop cuts steps
-   * short and each one rewrites all of L1.
-   */
-  readonly l0StopRuns: number;
-};
-
-const DEFAULT_HOST_LIMITS: HostLimits = {
-  flushRunBytes: 1.75 * 1024 * 1024,
-  l0StopRuns: 48,
-};
 
 /** Host counters for one database, besides the fs IO its CountingFs keeps. */
 type HostCounts = {
@@ -125,13 +103,15 @@ export class EngineHost {
    * flush. A tab that records another generation makes the host check again.
    */
   private readonly trusted = new Map<DbName, number>();
-  private readonly limits: HostLimits;
 
+  /** `overrides` replace figures of the budget, for tests that need a small flush run or no L0 stop. */
   constructor(
     private readonly fsFactory: FsFactory,
-    limits: Partial<HostLimits> = {},
-  ) {
-    this.limits = { ...DEFAULT_HOST_LIMITS, ...limits };
+    private readonly overrides: Partial<HostBudget> = {},
+  ) {}
+
+  private budget(): HostBudget {
+    return { ...hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES), ...this.overrides };
   }
 
   /** Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
@@ -228,13 +208,14 @@ export class EngineHost {
     let foldedBytes = 0;
     let pastStop = false;
     for (;;) {
+      const budget = this.budget();
       // Taken before the attempt, so an install that lands during it is not missed.
       const installed = this.nextInstall(dbName);
       const chunk = await this.exclusive(dbName, () =>
         this.withWal(dbName, async (wal) => {
           const folded = await ingestChunk(wal, fs, target, this.trust(dbName), {
-            maxBytes: this.limits.flushRunBytes,
-            l0Stop: pastStop ? Number.POSITIVE_INFINITY : this.limits.l0StopRuns,
+            maxBytes: budget.flushRunBytes,
+            l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
           });
           // Skipped while a tab loads a generation; the next flush or reclaim removes them.
           await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
@@ -432,7 +413,7 @@ export class EngineHost {
       const base = await loadGeneration(fs, meta.generation ?? 0);
       // Gone when a flush installed a newer generation since: plan again.
       if (!base) continue;
-      const step = await mergeNextStep(fs, base, meta.top);
+      const step = await mergeNextStep(fs, this.budget(), base, meta.top);
       if (!step) return;
       await this.exclusive(dbName, () =>
         this.withWal(dbName, async (wal) => {

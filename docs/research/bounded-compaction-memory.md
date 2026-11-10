@@ -198,9 +198,10 @@ format does not change. It refuses keys that arrive out of order. The flush
 
 ### 5. Host policy (`host/budget.ts`, `host/engine-host.ts`, `host/ingest.ts`)
 
-- **One formula.** `hostBudget(B) → { chunkBytes, maxSources, flushRunBytes,
-  l0StopRuns, yieldBytes, wasmRecycleBytes }`. This is the only place the
-  formula lives, and tests pin its outputs.
+- **One formula.** `hostBudget(B) → { chunkBytes, tailBytes, maxSources,
+  flushRunBytes, l0StopRuns, yieldBytes, wasmRecycleBytes }`. This is the only
+  place the formula lives, and tests pin its outputs (see the arithmetic
+  below).
 - **One merge at a time** per SharedWorker, across all of its databases,
   through a host-wide `mergeSlot` mutex. LevelDB runs one background
   compaction, and TigerBeetle's compaction pool has size 1.
@@ -254,43 +255,74 @@ thresholds, the same split RocksDB's WriteBufferManager uses between
 
 ### Memory budget arithmetic
 
-Notation:
-
-- B is `compactionMemoryBytes`, T is the output run target (4 MiB), F is the
-  flush run size, C is the read-ahead per source, K is the per-source block
-  and slot memory, and S is the number of sources.
-- H is the writer's hash buffer, `4 B × keys per run`, so `4T / average entry
-  size`. That is 512 KiB for 32-byte entries (R7).
-- τ is one run's index or tail, and W0 is the module's fixed overhead.
-- These come out of `hostBudget(B)`:
-  - `F = clamp(B/16, 1 MiB, T)`
-  - `C = 256 KiB` (64 KiB when B < 32 MiB)
-  - `K ≈ 8 KiB + 2·largest entry`
-  - `S = clamp(⌊(B − W0 − H − 2τ − 2C − 3F)/(2C + K)⌋, 2, 16)`
+A flush and a merge session run on one wasm instance and can overlap, so
+`hostBudget(B)` splits B between the module and both:
 
 ```
-P_host = W0 + S·(C+K) [wasm sources] + S·C [JS reads in flight]
-       + H + τ [streaming writer] + 2C [WRITE chunk, wasm + JS copy]
-       + 3F [one concurrent flush: WAL records + folded entries + encode input]
+B = W0 + 10F + S(2C + K)
 ```
 
-At B = 32 MiB with 32-byte entries (F = 2 MiB, S = 16):
+- B is `compactionMemoryBytes`, T is the output run target (4 MiB), and W0 is
+  the module's memory when idle (1.06 MiB on a fresh instance).
+- F is the flush run size in op bytes. A flush costs about 10F: roughly 7F in
+  wasm and 3F in JS (the WAL records, the folded entries and the copy of the
+  result).
+- S is the number of sources a step reads, C is the window it holds per
+  source, and K is the per-source block buffers and slots. A source holds C
+  in wasm, and up to C more is in flight in JS between a read and
+  `merge_feed`. K is about 16 KiB (12 to 21 KiB measured).
 
-```
-P_host ≈ 1 + 8.2 + 0.5 + 0.15 + 0.5 + 6 ≈ 16.4 MiB
-```
+The measurements below use 16-byte keys and 100-byte values, so an op is 116
+bytes and a packed entry is 133. Each is the wasm memory of a fresh instance,
+module included. `pnpm --filter @opfs-lsm/kv probe:wasm-memory` reproduces
+them.
 
-About 10 MiB of that is wasm memory. A step's input bytes no longer appear.
-Before the size moved into the manifest, the output terms were `3.03·T`, which
-put the figure at about 31 MiB. Today's peak is about 4 × the step's input,
-which is about 160 MB for one L0→L1 step.
+| flush alone, F (MiB) | 0.875 | 1.0 | 1.75 | 2.0 | 3.5 | 4.0 |
+|---|---:|---:|---:|---:|---:|---:|
+| wasm after repeated flushes (MiB) | 6.5 | 10.1 | 11.9 | 19.3 | 22.8 | 36.9 |
+
+Wasm memory grows in steps at power-of-two input sizes, and the packed input
+is 1.15F. An F at 7/8 of a power of two stays just under a step: 1.75 MiB
+costs 11.9 MiB and 2 MiB costs 19.3. That is why `F = 7/8 · min(T, B/16)`.
+
+| merge alone, S = 49 | C = 64 KiB | C = 128 KiB | C = 256 KiB |
+|---|---:|---:|---:|
+| wasm peak (MiB) | 5.3 | 8.2 | 14.5 |
+
+A tail longer than the window makes every source's window grow to it: 64 KiB
+windows with a 128 KiB tail peak at 11.3 MiB, so `tailBytes` never exceeds
+`chunkBytes`.
+
+| flush and merge overlapped | S | C | F | wasm peak (MiB) |
+|---|---:|---:|---:|---:|
+| B = 16 MiB | 44 | 64 KiB | 0.875 MiB | 9.8 |
+| B = 32 MiB | 49 | 128 KiB | 1.75 MiB | 18.8 |
+| B = 64 MiB | 49 | 256 KiB | 3.5 MiB | 36.1 |
+| the 256 KiB window at B = 32 MiB | 49 | 256 KiB | 1.75 MiB | 25.1 |
+
+Add the JS side, `S·C` of reads in flight and about 3F of flush, and the
+overlap totals 15.2, 30.2 and 58.8 MiB at 16, 32 and 64 MiB: 95%, 94% and
+92% of B. The 256 KiB window at 32 MiB would total 42.6 MiB, 1.3 times B.
+The JS terms are estimates, not measurements.
+
+The first draft capped S at 16 and counted a flush as 3F. The flush costs
+more than that, and the cap was too low: the sweep behind the bounded flush
+found that a stop at S settles near S/2 L0 runs per step, and that a
+random-key step rewrites all of L1, so a low stop doubled compaction writes.
+The sweep chose S = 49. Budgeting that many sources at the default needs a
+128 KiB window.
+
+Past 64 MiB nothing grows but the recycle threshold, B/2. At 32 MiB it is 16
+MiB: above the 11.9 MiB a flush needs alone and the 8.2 MiB a merge needs
+alone, below the 18.8 MiB of an overlap. It fires after an overlap and not
+after every flush.
 
 All of this assumes the browser keeps pending `createWritable` writes on disk.
 If it keeps them in memory, add up to T per open output, which is the
 probe in step 1.
 
-The stated slack is +25% for GC lag on read buffers and talc fragmentation,
-plus `(2S+3)·E` for entries larger than 64 KiB.
+An entry larger than 64 KiB adds about twice its size to the window of the
+source that holds it.
 
 On the tab side, `memtable ≤ memtableBytes + one batch`, on top of the
 existing `memoryBudget`.

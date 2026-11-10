@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { compareBytes, keyToString } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep, pumpMerge } from "../src/host/compact.js";
 import { MemoryFs } from "../src/index.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../src/opfs/async-fs.js";
@@ -541,13 +542,14 @@ describe("a compaction step at full size", () => {
         },
       };
       const sources = await database(watched);
-      const step = (await mergeNextStep(watched))!;
+      const budget = hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES);
+      const step = (await mergeNextStep(watched, budget))!;
 
       const sizes = await Promise.all(step.inputs.map(async (p) => (await base.read(p, 0, Infinity))!.byteLength));
       const inputBytes = sizes.reduce((a, b) => a + b, 0);
       expect(step.inputs).toHaveLength(6);
       expect(step.outputs.length).toBeGreaterThanOrEqual(2);
-      expect(Math.max(...reads)).toBeLessThanOrEqual(256 * 1024);
+      expect(Math.max(...reads)).toBeLessThanOrEqual(budget.chunkBytes);
       expect(reads.reduce((a, b) => a + b)).toBeGreaterThanOrEqual(inputBytes);
       expect(writes.get(step.outputs[0]!.path)).toBeGreaterThanOrEqual(8);
 
@@ -558,7 +560,7 @@ describe("a compaction step at full size", () => {
 
       const tsFs = new MemoryFs();
       await database(tsFs);
-      const tsStep = (await (await withoutWasm()).mergeNextStep(tsFs))!;
+      const tsStep = (await (await withoutWasm()).mergeNextStep(tsFs, budget))!;
       expect(tsStep.inputs).toEqual(step.inputs);
       expect(tsStep.outputs).toEqual(step.outputs);
       expect(tsStep.droppedSeq).toBe(step.droppedSeq);
