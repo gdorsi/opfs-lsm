@@ -184,6 +184,8 @@ export interface BatchTx {
 }
 
 export interface Db {
+  /** The name passed to `openDb`. */
+  readonly name: string;
   readonly writerId: WriterId;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   /** Resolves with the WAL seq of the record, as `batch` does. */
