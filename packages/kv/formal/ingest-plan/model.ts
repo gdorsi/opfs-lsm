@@ -5,9 +5,12 @@
  * may find dead, lists the logs and their segment files, reads them, then
  * plans with the real `planIngest` and commits a manifest. It reclaims with
  * the real `planReclaim`. Writers go on between the steps. A rotation is
- * two writer steps, creating the successor and sealing the old segment, so
- * a tab can die between them, and so can the browser. A history ends in a
- * browser crash, which kills every writer, may cut each log's unflushed
+ * two writer steps, creating the successor and sealing the old segment. The
+ * hand-over after a failed write is the failed write (its frame landed or
+ * not), then the successor log with its first header flushed, then the end
+ * of the failed log's dedicated WebWorker, which releases its lock. A tab
+ * can die between any two steps, and so can the browser. A history ends in
+ * a browser crash, which kills every writer, may cut each log's unflushed
  * tail, damage a frame or drop a segment file, and drops up to
  * `Bounds.drops` newest manifests; recovery opens with the real
  * `checkCover` and drains with `planIngest`.
@@ -51,6 +54,12 @@ export type Variant = {
   readonly lag?: number;
   /** (e) Rotation seals the old segment before it creates the successor. */
   readonly sealFirst?: boolean;
+  /** (f) After a failed write the tab ends the old log's dedicated WebWorker before it starts the successor. */
+  readonly releaseFirst?: boolean;
+  /** (g) The host lists the logs before it takes their locks. */
+  readonly listFirst?: boolean;
+  /** (h) The host plans dead logs while a log with nothing ingested has a first segment it cannot read. */
+  readonly noHoldBack?: boolean;
 };
 
 type Frame = { n: number; w: number; ok: boolean };
@@ -65,7 +74,15 @@ type Writer = {
   flushed: number;
   /** While a rotation is half done: the firstN of the segment it rotates off. */
   rotating: number | null;
+  /**
+   * The hand-over successor whose first header, once flushed, caps this log
+   * at its last ack; the tab settles the failed write as never ingested.
+   * Nothing of this log past its last ack may then be ingested.
+   */
+  cappedBy: LogId | null;
 };
+/** ok: writing `log`. failed: a write to `log` failed. */
+type Tab = { log: LogId; next: number; phase: "ok" | "failed" | "dead" };
 /** `l6`: ingested from a dead log past its flushed n (design L6). */
 type Write = { id: number; log: LogId; n: number; acked: boolean; deps: number[]; l6: boolean };
 export type Manifest = { gen: number; through: number; queues: QueueCursor[]; stream: number[] };
@@ -77,11 +94,12 @@ type Snap = { dead: boolean; pred: PredEdge | null; records: [number, number][];
  */
 type Round = { base: number; held: LogId[] | null; listed: Record<string, number[] | null> | null } | { base: number; scans: [LogId, Snap][] };
 type Listing = Extract<Round, { held: unknown }>;
+type Fault = { log: LogId; at: number; dropsFile: boolean };
 
 export type State = {
   logs: Record<string, { segments: Segment[] } | null>;
   writers: Record<string, Writer | null>;
-  tabs: { log: LogId; next: number; phase: "ok" | "failed" | "dead" }[];
+  tabs: Tab[];
   writes: Write[];
   manifests: Manifest[];
   round: Round | null;
@@ -91,7 +109,7 @@ export type State = {
   /** First record of the log lost to the crash cutting its unflushed tail. */
   cutLoss: Record<string, number | null>;
   used: { appends: number; fails: number; commits: number };
-  crash: { drops: number; fault: boolean; refused: string | null } | null;
+  crash: { drops: number; fault: Fault | null; refused: string | null } | null;
 };
 
 export type Action = { readonly label: string; readonly apply: (s: State) => void };
@@ -117,7 +135,19 @@ const idOf = (ops: readonly CheckedOp[]): number => ops[0]!.key[0]!;
 
 function spawn(s: State, tab: number, log: LogId, pred: PredEdge | null): void {
   s.logs[log] = { segments: [{ firstN: 1, frames: [], sealed: false }] };
-  s.writers[log] = { tab, pred, state: "live", acked: 0, flushed: 0, rotating: null };
+  s.writers[log] = { tab, pred, state: "live", acked: 0, flushed: 0, rotating: null, cappedBy: null };
+}
+
+/** The hand-over successor of the tab's failed log, its first header naming that log through its last ack and flushed. */
+function startSuccessor(s: State, tab: number): void {
+  const t = s.tabs[tab]!;
+  const old = s.writers[t.log]!;
+  const succ = TAB_LOGS[tab]![t.next++]!;
+  spawn(s, tab, succ, { log: t.log, lastN: old.acked });
+  old.cappedBy = succ;
+  if (old.state === "live") old.state = "abandoned";
+  t.log = succ;
+  t.phase = "ok";
 }
 
 export function initial(): State {
@@ -149,6 +179,7 @@ const lastFrame = (s: State, log: LogId): number => Math.max(0, ...(s.logs[log]?
 const seen = (s: State): number[] => [...newest(s).stream].sort((x, y) => x - y);
 const baseOf = (s: State, r: Round): Manifest => s.manifests.find((m) => m.gen === r.base) ?? ZERO;
 const isOpen = (m: Manifest, log: LogId): boolean => (cursorOf(m, log)?.state ?? "open") === "open";
+const release = (tab: number, log: LogId): string => `tab ${tab} ends ${log}'s dedicated WebWorker (lock released)`;
 const subsets = <T>(xs: readonly T[]): T[][] => xs.reduce<T[][]>((acc, x) => [...acc, ...acc.map((a) => [...a, x])], [[]]);
 
 function logFiles(s: State): LogFiles[] {
@@ -252,24 +283,25 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
       }
     });
     const log = t.log;
-    if (t.phase === "failed") {
-      add(v.sameLogRecovery ? `tab ${tab} reopens ${log} at a new segment` : `tab ${tab} starts ${TAB_LOGS[tab]![t.next]} with pred ${log}`, (s) => {
-        const tt = s.tabs[tab]!;
+    const succ = TAB_LOGS[tab]![t.next];
+    if (t.phase === "failed" && v.sameLogRecovery) {
+      add(`tab ${tab} reopens ${log} at a new segment`, (s) => {
         const w = s.writers[log]!;
-        tt.phase = "ok";
-        if (v.sameLogRecovery) {
-          const segs = s.logs[log]!.segments;
-          w.flushed = w.acked;
-          w.rotating = null;
-          if (segs[segs.length - 1]!.firstN === w.acked + 1) segs[segs.length - 1]!.frames = [];
-          else segs.push({ firstN: w.acked + 1, frames: [], sealed: false });
-          return;
-        }
-        const succ = TAB_LOGS[tab]![tt.next++]!;
-        spawn(s, tab, succ, { log, lastN: w.acked });
-        w.state = "abandoned";
-        tt.log = succ;
+        const segs = s.logs[log]!.segments;
+        s.tabs[tab]!.phase = "ok";
+        w.flushed = w.acked;
+        w.rotating = null;
+        if (segs[segs.length - 1]!.firstN === w.acked + 1) segs[segs.length - 1]!.frames = [];
+        else segs.push({ firstN: w.acked + 1, frames: [], sealed: false });
       });
+      return;
+    }
+    if (t.phase === "failed") {
+      if (v.releaseFirst && s.writers[log]!.state !== "dead") {
+        add(release(tab, log), (s) => void (s.writers[log]!.state = "dead"));
+        return;
+      }
+      add(`tab ${tab} starts ${succ} with pred ${log} and flushes its header`, (s) => startSuccessor(s, tab));
       return;
     }
     const w = s.writers[log]!;
@@ -342,7 +374,8 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
   });
 
   for (const log of LOGS) {
-    if (s.writers[log]?.state === "abandoned") add(`${log}'s old writer ends (lock released)`, (s) => void (s.writers[log]!.state = "dead"));
+    const w = s.writers[log];
+    if (w?.state === "abandoned") add(release(w.tab, log), (s) => void (s.writers[log]!.state = "dead"));
   }
 
   const lock = (r: Listing): void => {
@@ -351,13 +384,17 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
     // listed before. Taking every dead log on disk in one step holds a
     // superset of what those tries hold, and a dead log read as live gives
     // no more than its durable hint.
-    const held = LOGS.filter((l) => s.logs[l] && isOpen(base, l) && s.writers[l]!.state === "dead");
+    const held = LOGS.filter((l) => (r.listed ? r.listed[l] : s.logs[l]) && isOpen(base, l) && s.writers[l]!.state === "dead");
     add(held.length ? `host takes the lock of ${held.join(" and ")}` : "host takes no lock", (s) => void (s.round = { ...r, held }));
+  };
+  const list = (r: Listing): void => {
+    const listed = Object.fromEntries(LOGS.map((l) => [l, s.logs[l]?.segments.map((g) => g.firstN) ?? null]));
+    add("host lists the logs", (s) => void (s.round = { ...r, listed }));
   };
 
   const r = s.round;
   if (r === null) {
-    if (s.used.commits < b.commits) lock({ base: newest(s).gen, held: null, listed: null });
+    if (s.used.commits < b.commits) (v.listFirst ? list : lock)({ base: newest(s).gen, held: null, listed: null });
     const rc = planReclaim(
       s.manifests.map((m) => ({ generation: m.gen, queues: m.queues })),
       logFiles(s),
@@ -394,10 +431,8 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
       });
     }
   } else if (r.held === null) lock(r);
-  else if (r.listed === null) {
-    const listed = Object.fromEntries(LOGS.map((l) => [l, s.logs[l]?.segments.map((g) => g.firstN) ?? null]));
-    add("host lists the logs", (s) => void (s.round = { ...r, listed }));
-  } else {
+  else if (r.listed === null) list(r);
+  else {
     const { held, listed } = r;
     const base = baseOf(s, r);
     const from = (l: LogId): number => cursorOf(base, l)?.n ?? 0;
@@ -419,7 +454,7 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
         // scanQueues' hold-back: while a live log with nothing ingested has a
         // first segment it cannot read, whose header may cap a dead log, the
         // round leaves out every dead log.
-        s.round = { base: r.base, scans: unreadable.length > 0 ? scans.filter(([, snap]) => !snap.dead) : scans };
+        s.round = { base: r.base, scans: unreadable.length > 0 && !v.noHoldBack ? scans.filter(([, snap]) => !snap.dead) : scans };
       });
     }
   }
@@ -428,14 +463,14 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
 }
 
 /**
- * What a crash or a drain from `s` depends on: the files, the writes, and
- * each writer's pred, flushed n and whether it is gone. States equal on it
- * crash and drain the same way.
+ * What a crash, a drain or the checks from `s` depend on: the files, the
+ * writes, and each writer's pred, flushed n, cap and whether it is gone.
+ * States equal on it crash, drain and check the same way.
  */
 export function diskKey(s: State): string {
   const writers = LOGS.map((l) => {
     const w = s.writers[l];
-    return w && [w.pred, w.flushed, w.state === "dead"];
+    return w && [w.pred, w.flushed, w.cappedBy, w.state === "dead"];
   });
   return JSON.stringify([s.logs, writers, s.manifests, s.writes]);
 }
@@ -460,12 +495,12 @@ export function crashes(s: State, b: Bounds): Action[] {
   for (const cut of cuts) {
     const cutAt = new Map(cut);
     const keeps = (log: LogId, n: number) => n <= (cutAt.get(log) ?? Infinity);
-    const faults: (null | { label: string; log: LogId; at: number; apply: (s: State) => void })[] = [null];
+    const faults: (null | (Fault & { label: string; apply: (s: State) => void }))[] = [null];
     for (const log of LOGS) {
       const l = s.logs[log];
       if (!l) continue;
       for (const g of l.segments) {
-        faults.push({ label: `drops ${log}/${g.firstN}.seg`, log, at: g.firstN, apply: (s) => void (s.logs[log]!.segments = s.logs[log]!.segments.filter((x) => x.firstN !== g.firstN)) });
+        faults.push({ label: `drops ${log}/${g.firstN}.seg`, log, at: g.firstN, dropsFile: true, apply: (s) => void (s.logs[log]!.segments = s.logs[log]!.segments.filter((x) => x.firstN !== g.firstN)) });
       }
       const frames = l.segments.flatMap((g) => g.frames).filter((f) => keeps(log, f.n));
       for (const f of frames) {
@@ -474,6 +509,7 @@ export function crashes(s: State, b: Bounds): Action[] {
           label: `damages frame ${log}${f.n}`,
           log,
           at: f.n,
+          dropsFile: false,
           apply: (s) => {
             for (const g of s.logs[log]!.segments) for (const x of g.frames) if (x.n === f.n && x.w === f.w) x.ok = false;
           },
@@ -508,7 +544,7 @@ export function crashes(s: State, b: Bounds): Action[] {
             s.round = null;
             s.hints = per(0);
             s.used = { appends: 0, fails: 0, commits: 0 };
-            s.crash = { drops, fault: fault !== null, refused: checkCover(newest(s).queues, logFiles(s)) ?? null };
+            s.crash = { drops, fault: fault && { log: fault.log, at: fault.at, dropsFile: fault.dropsFile }, refused: checkCover(newest(s).queues, logFiles(s)) ?? null };
           },
         });
       }
@@ -520,9 +556,13 @@ export function crashes(s: State, b: Bounds): Action[] {
 /**
  * The stream properties of manifest `m`: no write and no (log, n) twice;
  * each log's records in n order; a successor's records after all of its
- * pred's; and no acked record skipped: every acked record at or below an
- * open or damaged cursor, or of a final log, is in the stream unless it is
- * at or past the first record the log lost to a fault or the crash.
+ * pred's; no acked record skipped: every acked record at or below an open
+ * or damaged cursor, or of a final log, is in the stream unless it is at or
+ * past the first record the log lost to a fault or the crash; and no
+ * unacked record of a capped log (`Writer.cappedBy`) unless the crash
+ * dropped the file of the header that caps it. So an unacked record is
+ * ingested only when its tab died or the browser crashed before the
+ * successor's header was flushed.
  */
 function streamProblem(s: State, m: Manifest): string | undefined {
   const pos = new Map<number, number>();
@@ -552,6 +592,14 @@ function streamProblem(s: State, m: Manifest): string | undefined {
     for (const w of s.writes) {
       if (w.log !== c.log || !w.acked || w.n >= lossOf(s, w.log)) continue;
       if ((c.state === "final" || w.n <= c.n) && !pos.has(w.id)) return `acked ${w.log}${w.n} (write ${w.id}) skipped: cursor ${c.log} ${c.state} at ${c.n}`;
+    }
+  }
+  for (const id of m.stream) {
+    const w = s.writes[id - 1]!;
+    const by = w.acked ? null : s.writers[w.log]!.cappedBy;
+    const fault = s.crash?.fault;
+    if (by && !(fault?.dropsFile && fault.log === by && fault.at === 1)) {
+      return `unacked ${w.log}${w.n} (write ${id}) ingested, though ${by}'s header caps ${w.log} at ${s.writers[by]!.pred!.lastN}`;
     }
   }
   return undefined;

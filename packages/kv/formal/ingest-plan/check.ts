@@ -1,19 +1,22 @@
 /**
  * Exhaustive check of the per-tab ingest queues: the real planIngest,
  * planReclaim and checkCover, driven by every interleaving of two tabs
- * writing, rotations in their two steps, one failed write, a tab dying at
- * any step, the SharedWorker's ingest round in its steps (locks, listing,
- * reads with Chrome refusing a live first segment, plan and commit), and a
- * browser crash (cut tails, a damaged frame or a dropped segment file, the
- * newest one or two manifests dropped), up to the bounds below.
+ * writing, rotations in their two steps, one failed write and its
+ * hand-over in steps, a tab dying at any step, the SharedWorker's ingest
+ * round in its steps (locks, listing, reads with Chrome refusing a live
+ * first segment, plan and commit), and a browser crash (cut tails, a
+ * damaged frame or a dropped segment file, the newest one or two manifests
+ * dropped), up to the bounds below.
  *
  * Run: pnpm --filter @opfs-lsm/kv formal:ingest-plan
  *
  * In every state, of the manifest recovery would pick: no write and no
  * (log, n) ingested twice; each log in n order and after its pred; no acked
  * record skipped below a cursor or in a final log, except at or past the
- * first record a fault or the crash took from that log; a healthy database
- * opens; a crash with at most one dropped manifest and no fault recovers.
+ * first record a fault or the crash took from that log; no unacked record
+ * once its tab flushed the header of the successor that caps it, unless
+ * the crash dropped that header's file; a healthy database opens; a crash
+ * with at most one dropped manifest and no fault recovers.
  * Every plan numbers its seqs on from its base's through. Once every writer
  * is gone (and after every crash), a drain from fresh scans leaves every log
  * final or damaged and every acked, unlost record ingested, so recovery
@@ -25,8 +28,8 @@
  * RECLAIM_LAG is 2. A tab's write ingested before a write it had seen
  * ingested, after a dropped manifest, is printed as a finding, not gated.
  *
- * The real rules take about 27 s at the defaults, and the whole check about
- * 55 s. FORMAL_IQ_APPENDS=3 explores about 10.7M states in about 12 minutes.
+ * The real rules take about 25 s at the defaults, and the whole check about
+ * 55 s.
  */
 import { RECLAIM_LAG } from "../../src/host/queues.js";
 import { actions, allDead, causalReorder, clone, crashes, diskKey, drain, drainProblem, initial, PlanError, problem, type Bounds, type State, type Variant } from "./model.js";
@@ -212,6 +215,9 @@ function main(): void {
     ["(c) a live log's durable hint is ignored", { ignoreHints: true }],
     ["(d) reclaim without lag", { lag: 0 }],
     ["(e) seal before the successor exists", { sealFirst: true }],
+    ["(f) release the failed log before its successor's header exists", { releaseFirst: true }],
+    ["(g) list the logs before taking their locks", { listFirst: true }],
+    ["(h) no hold-back while a first segment cannot be read", { noHoldBack: true }],
   ];
   let weak = false;
   for (const [name, v] of mutants) {
