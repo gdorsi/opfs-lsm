@@ -6,7 +6,7 @@ import { planIngest, type LogId, type QueueScan } from "../src/host/queues.js";
 import { encodeOps } from "../src/idb/wal.js";
 import { scanLog, type ListedSegment } from "../src/log/queue-scan.js";
 import { QueueWriter, type QueueWriterOptions, type SegmentFile, type SegmentStore } from "../src/log/queue-writer.js";
-import { encodeRecords, encodeSeal, frameSeed } from "../src/log/segment.js";
+import { encodeRecords, encodeSeal, FRAME_HEAD_BYTES, frameSeed, HEADER_BYTES } from "../src/log/segment.js";
 
 const LOG = "00000000000000b2" as LogId;
 const NEXT = "00000000000000c3" as LogId;
@@ -27,7 +27,7 @@ type Fault = { readonly mode: "throw" | "short"; readonly landed: number };
 
 class MemFile implements SegmentFile {
   bytes = new Uint8Array(0);
-  private closed = false;
+  closed = false;
 
   constructor(
     private readonly store: MemStore,
@@ -64,10 +64,13 @@ class MemStore implements SegmentStore {
   readonly files = new Map<LogId, Map<number, MemFile>>();
   /** Fails the I/O call with this index in `calls`. */
   failAt: { index: number; fault: Fault } | undefined;
+  /** The dedicated WebWorker dies once this many I/O calls are done: no later call happens. */
+  stopAfter = Infinity;
   fired = false;
   private next: { label: string; fault: Fault } | undefined;
 
   io(label: string): Fault | undefined {
+    if (this.calls.length >= this.stopAfter) throw new Error("the dedicated WebWorker is gone");
     this.calls.push(label);
     let fault: Fault | undefined;
     if (this.failAt?.index === this.calls.length - 1) fault = this.failAt.fault;
@@ -113,6 +116,47 @@ async function rejection(p: Promise<unknown>): Promise<unknown> {
   );
 }
 
+/** Opens a log, then runs one rotate() and one size-triggered rotation, up to the first call that rejects. */
+async function rotations(store: MemStore): Promise<{ writer?: QueueWriter; acked: CheckedOp[][]; rejected: boolean }> {
+  const acked: CheckedOp[][] = [];
+  let writer: QueueWriter;
+  try {
+    writer = await openWriter(store, { segmentBytes: HEADER_BYTES + 2 * (FRAME_HEAD_BYTES + body(opsOf(1)).length) });
+  } catch {
+    return { acked, rejected: true };
+  }
+  const steps: (readonly number[] | "rotate" | "flush")[] = [[1, 2], "rotate", [3], [4], [5], "flush"];
+  for (const step of steps) {
+    try {
+      if (step === "rotate") await writer.rotate();
+      else if (step === "flush") await writer.flush();
+      else {
+        const ops = step.map((n) => opsOf(n));
+        await writer.append(ops.map(body));
+        acked.push(...ops);
+      }
+    } catch {
+      return { writer, acked, rejected: true };
+    }
+  }
+  return { writer, acked, rejected: false };
+}
+
+/** The disk reads back exactly the acked records from every cursor and ends there, live or dead, and the dead log plans final. */
+function expectWhole(store: MemStore, acked: readonly CheckedOp[][], at: string): void {
+  const listed = store.listing(LOG);
+  for (const dead of [false, true]) {
+    for (let from = 0; from <= acked.length; from++) {
+      const scan = scanLog(LOG, from, dead, listed);
+      const want = acked.slice(from).map((ops, i) => [from + 1 + i, ops]);
+      const where = `${at}, ${dead ? "dead" : "live"} from ${from}`;
+      expect([where, scan.stop, scan.records.map((r) => [r.n, r.ops])]).toEqual([where, "end", want]);
+    }
+  }
+  const plan = planIngest({ through: 0, queues: [] }, [scanLog(LOG, 0, true, listed)], new Map(), Infinity);
+  expect([at, plan.queues]).toEqual([at, [{ log: LOG, state: "final", n: acked.length }]]);
+}
+
 describe("QueueWriter", () => {
   it("flushes the first header, with its pred, before it resolves open", async () => {
     const store = new MemStore();
@@ -121,7 +165,7 @@ describe("QueueWriter", () => {
     expect(scanLog(NEXT, 0, false, store.listing(NEXT))).toEqual({ log: NEXT, dead: false, pred: { log: LOG, lastN: 3 }, records: [], stop: "end" });
   });
 
-  it("seals, flushes and closes a segment before it creates the successor, whose header is flushed before any frame", async () => {
+  it("flushes a segment and the successor's header before it seals, flushes and closes the old one, and before any frame of the successor", async () => {
     const store = new MemStore();
     const writer = await openWriter(store);
     await writer.append([body(opsOf(1))]);
@@ -130,7 +174,7 @@ describe("QueueWriter", () => {
     expect(store.calls).toEqual([
       "create 1", "write 1", "flush 1",
       "write 1",
-      "write 1", "flush 1", "close 1", "create 2", "write 2", "flush 2",
+      "flush 1", "create 2", "write 2", "flush 2", "write 1", "flush 1", "close 1",
       "write 2",
     ]);
   });
@@ -196,6 +240,60 @@ describe("QueueWriter", () => {
     expect(await rejection(writer.append([body(opsOf(3))]))).toBeInstanceOf(ClosedError);
   });
 
+  describe("across rotations", () => {
+    it("leaves every acked record readable and no hole when the dedicated WebWorker dies after any call", async () => {
+      const clean = new MemStore();
+      await rotations(clean);
+      expect(clean.listing(LOG).map((s) => s.firstN)).toEqual([1, 3, 5]);
+      for (let k = 0; k <= clean.calls.length; k++) {
+        const store = new MemStore();
+        store.stopAfter = k;
+        const { writer, acked } = await rotations(store);
+        expect(writer?.lastAcked ?? 0).toBe(acked.length);
+        expectWhole(store, acked, `dies after ${k} calls, the last ${clean.calls[k - 1] ?? "none"}`);
+      }
+    });
+
+    it("goes terminal with the right lastAcked, closes every file and leaves no hole when any call fails", async () => {
+      const clean = new MemStore();
+      await rotations(clean);
+      for (let k = 0; k < clean.calls.length; k++) {
+        for (const fault of [{ mode: "throw", landed: 0 }, { mode: "short", landed: 5 }] as const) {
+          const at = `${fault.mode} at call ${k}, ${clean.calls[k]}`;
+          const store = new MemStore();
+          store.failAt = { index: k, fault };
+          const { writer, acked, rejected } = await rotations(store);
+          expect([at, rejected]).toEqual([at, true]);
+          if (writer) {
+            expect([at, writer.lastAcked]).toEqual([at, acked.length]);
+            const calls = store.calls.length;
+            for (const later of [writer.append([body(opsOf(9))]), writer.flush(), writer.rotate()]) {
+              expect(await rejection(later)).toBeInstanceOf(CommitError);
+            }
+            expect(store.calls.length).toBe(calls);
+          }
+          const open = [...(store.files.get(LOG)?.entries() ?? [])].filter(([, f]) => !f.closed).map(([n]) => n);
+          expect([at, "segments left open", open]).toEqual([at, "segments left open", []]);
+          expectWhole(store, acked, at);
+        }
+      }
+    });
+
+    it("reads a dead log whose successor file is gone after a finished rotation as a hole", async () => {
+      const store = new MemStore();
+      const writer = await openWriter(store);
+      await writer.append([body(opsOf(1))]);
+      await writer.rotate();
+      const lost = store.listing(LOG).filter((s) => s.firstN !== 2);
+      expect(scanLog(LOG, 0, false, lost).stop).toBe("partial");
+      const dead = scanLog(LOG, 0, true, lost);
+      expect([ns(dead), dead.stop]).toEqual([[1], { hole: 2, reason: "sealed segment has no successor" }]);
+      expect(planIngest({ through: 0, queues: [] }, [dead], new Map(), Infinity).queues).toEqual([
+        { log: LOG, state: "damaged", n: 1, reason: "sealed segment has no successor" },
+      ]);
+    });
+  });
+
   describe("after a failed write", () => {
     async function failing(fault: Fault): Promise<{ store: MemStore; writer: QueueWriter; err: unknown }> {
       const store = new MemStore();
@@ -239,24 +337,20 @@ describe("QueueWriter", () => {
       }
     });
 
-    it("reads a log whose writer stopped between a SEAL and the successor's create as partial while live and a hole once dead", async () => {
+    it("reads a log whose successor's create failed to its end, live or dead, and plans it final", async () => {
       const store = new MemStore();
       const writer = await openWriter(store);
       await writer.append([body(opsOf(1))]);
       store.failNext("create 2");
       await rejection(writer.rotate());
       expect(writer.lastAcked).toBe(1);
-      expect(scanLog(LOG, 0, false, store.listing(LOG)).stop).toBe("partial");
-      const dead = scanLog(LOG, 0, true, store.listing(LOG));
-      expect([ns(dead), dead.stop]).toEqual([[1], { hole: 2, reason: "sealed segment has no successor" }]);
-
-      expect(planIngest({ through: 0, queues: [] }, [dead], new Map(), Infinity).queues).toEqual([
-        { log: LOG, state: "damaged", n: 1, reason: "sealed segment has no successor" },
+      for (const dead of [false, true]) {
+        const scan = scanLog(LOG, 0, dead, store.listing(LOG));
+        expect([ns(scan), scan.stop]).toEqual([[1], "end"]);
+      }
+      expect(planIngest({ through: 0, queues: [] }, [scanLog(LOG, 0, true, store.listing(LOG))], new Map(), Infinity).queues).toEqual([
+        { log: LOG, state: "final", n: 1 },
       ]);
-      const next = await openWriter(store, { pred: { log: LOG, lastN: 1 } }, NEXT);
-      await next.flush();
-      const capped = planIngest({ through: 0, queues: [] }, [dead, scanLog(NEXT, 0, false, store.listing(NEXT))], new Map(), Infinity);
-      expect(capped.queues).toContainEqual({ log: LOG, state: "final", n: 1 });
     });
   });
 
@@ -373,9 +467,7 @@ describe("QueueWriter", () => {
               expect(ns(scan)).toEqual(range(from + 1, from + got.length));
               expect(got.slice(0, n - from)).toEqual(acked.slice(from));
               expect(got.slice(n - from)).toEqual(attempted.slice(0, got.length - (n - from)));
-              if (failedAt === undefined) expect(scan.stop).toBe("end");
-              else if (!dead) expect(["end", "partial"]).toContain(scan.stop);
-              else if (scan.stop !== "end") expect(scan.stop).toEqual({ hole: n + 1, reason: "sealed segment has no successor" });
+              expect(scan.stop).toBe("end");
             }
           }
         }

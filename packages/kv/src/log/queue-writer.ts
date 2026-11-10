@@ -32,11 +32,12 @@ const randomNonce = (): number => crypto.getRandomValues(new Uint32Array(1))[0]!
 
 /**
  * Appends one log. Calls run one at a time in call order. A record is acked
- * when the write() that carried it returned its full length. A segment is
- * sealed, flushed and closed before its successor is created, and the
- * successor's header is flushed before any of its frames. After any call
- * throws or writes short, the writer refuses every call and opens no
- * segment: the caller starts a new log with pred `{ log, lastN: lastAcked }`.
+ * when the write() that carried it returned its full length. A rotation
+ * flushes the open segment, creates its successor and flushes the
+ * successor's header, and only then seals, flushes and closes the old
+ * segment. After any call throws or writes short, the writer refuses every
+ * call and opens no segment: the caller starts a new log with pred
+ * `{ log, lastN: lastAcked }`.
  */
 export class QueueWriter {
   private state: State;
@@ -70,7 +71,7 @@ export class QueueWriter {
     return this.run(async (seg) => {
       let size = 0;
       for (const body of bodies) size += FRAME_HEAD_BYTES + body.byteLength;
-      if (seg.size + size > this.segmentBytes) seg = await this.seal(seg);
+      if (seg.size + size > this.segmentBytes) seg = await this.rotateFrom(seg);
       writeAll(seg.file, encodeRecords(bodies, this.acked + 1, seg.seed), seg.size);
       seg.size += size;
       this.acked += bodies.length;
@@ -86,9 +87,9 @@ export class QueueWriter {
     });
   }
 
-  /** Seals the open segment and opens its successor, so readers see a finished segment. Does nothing to a segment with no record. */
+  /** Opens the open segment's successor, then seals the old one, so readers see a finished segment. Does nothing to a segment with no record. */
   rotate(): Promise<void> {
-    return this.run(async (seg) => void (await this.seal(seg)));
+    return this.run(async (seg) => void (await this.rotateFrom(seg)));
   }
 
   /** Flushes and closes the open segment without sealing it, so the dead log reads to its end. Does nothing after a failure. */
@@ -107,14 +108,26 @@ export class QueueWriter {
     });
   }
 
-  private async seal(seg: Segment): Promise<Segment> {
+  /**
+   * The successor's firstN fences `seg`, so a reader never needs the SEAL
+   * once the successor exists, and a dead log whose last segment is sealed
+   * has lost a file. The flush first keeps a crash from leaving the
+   * successor but not `seg`'s acked tail, which would read as a hole.
+   */
+  private async rotateFrom(seg: Segment): Promise<Segment> {
     const n = this.acked + 1;
     if (n === seg.firstN) return seg;
-    writeAll(seg.file, encodeSeal(n, seg.seed), seg.size);
     seg.file.flush();
-    seg.file.close();
     const next = await startSegment(this.store, this.log, n, this.nonce());
     this.state = { kind: "live", seg: next };
+    try {
+      writeAll(seg.file, encodeSeal(n, seg.seed), seg.size);
+      seg.file.flush();
+    } catch (err) {
+      closeQuietly(seg.file);
+      throw err;
+    }
+    seg.file.close();
     return next;
   }
 

@@ -13,7 +13,7 @@ import { crc32 } from "../store/crc32.js";
  *   u32 bodyLen | u32 crc(nonce, kind, n, body) | u8 kind | u32 n | body
  *
  * Record frames are numbered firstN, firstN + 1, ... A SEAL frame carries
- * the next record's n and ends the segment before its successor exists.
+ * the next record's n and ends the segment once its successor exists.
  * Seeding the CRC with the segment's random nonce means frame-shaped bytes
  * inside a value pass as a frame of this segment only if they copy this
  * segment's own bytes.
