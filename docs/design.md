@@ -162,6 +162,35 @@ When the installed generation moves past some seqs (`advanceTo`), the memtable d
 those seqs wrote and rebuilds its chunks. If nothing new was ingested, it returns without
 scanning.
 
+## Size and backpressure
+
+`bytes` is the sum over live rows of the key bytes, the value bytes, and 256 bytes for the row
+itself: the row object and two `Uint8Array` views, and their buffers for a row the tab wrote.
+It moves with each write instead of being counted by a scan. The 256 is an estimate: V8 in Node
+holds 290 to 510 bytes per row, and Chrome compresses pointers.
+
+`openDb({ memtableBytes })` (default 32 MiB, at least 1 MiB) bounds it with two thresholds, the
+split RocksDB's write buffer manager makes between starting a flush and stalling writes. The
+tab keeps them in `Backpressure` (`packages/kv/src/backpressure.ts`), one of three states:
+
+| State | Meaning |
+|---|---|
+| below | Under 7/8 of the limit. Nothing is asked of the host. |
+| requested | Past 7/8. The tab asked the host for one flush (`settle = false`) and does not wait for it. Writes go on. |
+| waiting | At the limit. A write waits, before it appends, for that flush to return, and the tab then loads the generation it published. |
+
+One flush is in flight per tab. A write that has to wait waits on the flush that 7/8 asked for,
+or starts one if the memtable jumped past both thresholds in a single batch. A flush held back by
+the [L0 stop](#steps) just returns later. If a flush fails, or returns without moving the
+generation, the write goes on, and the tab asks again only after the memtable has grown by
+another eighth of the limit. So a host that cannot help neither stops writes for good nor gets a
+request on every one. A host that never answers still holds writers at the limit.
+
+A tab that writes then keeps its memtable near `memtableBytes`. It can pass the limit by the batch
+that crossed it, and by what other tabs append while it waits. The tab checks the thresholds only
+when it writes. A tab that only reads relies on the host's flush limit (see
+[When it runs](#when-it-runs)).
+
 # SST file format
 
 Runs use SST version 1. The wasm module writes it (`crates/engine-core/src/sst.rs`). The
@@ -558,6 +587,10 @@ not ingest in a loop.
 A failed ingest is logged. `triggerAt` becomes `pendingBytes + maxWalBytes`, so the retry waits
 for another limit of writes. The next `watch` sets `triggerAt` back to the limit and reads
 the counter, so opening the database retries at once.
+
+The host's limit is also held to 7/8 of the smallest `memtableBytes` any tab opened with: each
+tab sends `watch` the smaller of its `maxWalBytes` and 7/8 of its `memtableBytes`, and the host
+keeps the smallest it hears.
 
 `db.ingest()` asks the host to fold through the end of the log and waits for the
 compaction that starts. A request for seqs that are already ingested writes nothing.

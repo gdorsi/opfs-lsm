@@ -26,6 +26,18 @@ export interface MemRows {
 const CHUNK_ROWS = 512;
 
 /**
+ * What a row costs besides its key and value bytes: the row object, two
+ * Uint8Array views, and for a row this tab wrote, their buffers. V8 in Node
+ * holds 290 to 510 bytes. Chrome compresses pointers, so 256 is an estimate
+ * for it.
+ */
+const ROW_OVERHEAD = 256;
+
+function rowBytes(row: MemRow): number {
+  return ROW_OVERHEAD + row.key.byteLength + (row.value?.byteLength ?? 0);
+}
+
+/**
  * The chunk that holds `key` or would. `firsts[i]` is the first key of
  * chunk `i`, and chunk 0 also takes every key before `firsts[1]`.
  */
@@ -87,6 +99,7 @@ export class Memtable extends Chunks {
   private owned: boolean[] = [true];
   private applied = 0;
   private ingested = 0;
+  private live = 0;
 
   constructor() {
     super([[]], [new Uint8Array(0)]);
@@ -94,6 +107,11 @@ export class Memtable extends Chunks {
 
   get appliedThrough(): number {
     return this.applied;
+  }
+
+  /** Key, value and `ROW_OVERHEAD` bytes of every row, moved by each write instead of counted by a scan. */
+  get bytes(): number {
+    return this.live;
   }
 
   /** The rows as they are now. Later writes don't change what it reads. */
@@ -127,8 +145,10 @@ export class Memtable extends Chunks {
     const i = lowerBoundKeys(rows, row.key);
     const at = rows[i];
     if (at && compareBytes(at.key, row.key) === 0) {
+      this.live += rowBytes(row) - rowBytes(at);
       rows[i] = row;
     } else {
+      this.live += rowBytes(row);
       rows.splice(i, 0, row);
     }
     if (rows.length > 2 * CHUNK_ROWS) {
@@ -151,6 +171,8 @@ export class Memtable extends Chunks {
     this.applied = Math.max(this.applied, through);
     this.chunks = [];
     this.firsts = [];
+    this.live = 0;
+    for (const row of keep) this.live += rowBytes(row);
     for (let i = 0; i < keep.length; i += CHUNK_ROWS) {
       const rows = keep.slice(i, i + CHUNK_ROWS);
       this.chunks.push(rows);
