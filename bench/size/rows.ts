@@ -10,7 +10,7 @@ export type SizeRow = {
   readonly note: string;
   /** Includes kv: must reach exactly one SharedWorker chunk and one .wasm. */
   readonly kv?: true;
-  /** Fail `bench:size --check` when brotli-after-open exceeds this many bytes. */
+  /** Fail `bench:size --check` and `bench:smoke --check` when brotli-after-open exceeds this many bytes. */
   readonly budget?: number;
 };
 

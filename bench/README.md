@@ -8,7 +8,8 @@ pnpm bench kv/                               # one family
 pnpm bench kv/fillrandom kv/ycsb-a --size large --reps 7
 pnpm bench yjs/ --contenders kv              # one contender
 pnpm bench:size                              # bundle sizes
-pnpm bench:smoke                             # what CI runs: everything at size tiny, 1 rep
+pnpm bench:smoke                             # everything at size tiny, 1 rep
+pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, then the smoke, from one build
 node bench/cli.ts compare results/a.jsonl results/b.jsonl
 node bench/cli.ts report results/a.jsonl
 ```
