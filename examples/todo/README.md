@@ -1,14 +1,14 @@
 # Todo list example (React on TanStack Redact)
 
-Two browser windows share one todo list. Each window calls `openCollectionDb` on the same database name, with one `todos` table. A SharedWorker ingests the write-ahead log into OPFS. Both windows subscribe to `db.kv.changes`, so a write in one window refreshes the other.
+Two browser windows share one todo list. Each window opens kv with `openDb` on the same database name and `openDocStore` on top of it, with one `todos` collection. A SharedWorker ingests the write-ahead log into OPFS. Both windows subscribe to `kv.changes`, so a write in one window refreshes the other.
 
 The UI is a React app in TypeScript. Vite builds it with the TanStack Redact plugin, which aliases `react` and `react-dom` to Redact's smaller synchronous runtime at build time — the imports in `main.tsx` stay ordinary React. The app is client-only and uses no optional features (no portals, context, Suspense, or hydration), so the plugin runs the `nano` preset.
 
-The page can also seed a large random dataset, filter it, sort it, and page through it. Pages are cursor scans over a collections index, not full loads: secondary indexes cover the sort orders, and each page reaches into the LSM instead of reading every row.
+The page can also seed a large random dataset, filter it, sort it, and page through it. Pages are cursor scans over a docstore index, not full loads: declared indexes cover the sort orders, and each page reaches into the LSM instead of reading every row.
 
 ## Run the example
 
-1. From the repo root, build the kv and collections packages and start the dev server.
+1. From the repo root, build the kv and docstore packages and start the dev server.
 
    ```sh
    pnpm todo:example
@@ -28,7 +28,7 @@ The page can also seed a large random dataset, filter it, sort it, and page thro
 
 4. Seed data, filter, sort, and page.
 
-   Type a count in **Generate random todos** and click **Generate**. Titles are 2 to 5 random words. Generation writes 1,000 rows per batch and reports progress. **Filter todos** narrows the list to todos where each typed word starts a word of the title, ignoring case, so "mil" finds "Buy milk" but "lk" doesn't. It resets to page 1, and search results are newest first. The sort selector switches between **Newest first**, **Oldest first**, and **Title A–Z** when no filter is set. **Prev**/**Next** move through the cursor stack; returning to an earlier page does not rescan from the start of the database. **Clear all** deletes the seeded rows in batches.
+   Type a count in **Generate random todos** and click **Generate**. Titles are 2 to 5 random words. Generation writes 1,000 rows per batch and reports progress. **Filter todos** narrows the list to todos where each typed word occurs inside a word of the title, ignoring case, so "mil" and "lk" both find "Buy milk". It resets to page 1, and search results are newest first. The sort selector switches between **Newest first**, **Oldest first**, and **Title A–Z** when no filter is set. **Prev**/**Next** move through the cursor stack; returning to an earlier page does not rescan from the start of the database. **Clear all** deletes the seeded rows in batches.
 
 5. Click **Ingest** in either window.
 
@@ -40,21 +40,21 @@ Set `TODO_PORT` to change the port. Set `TODO_NO_OPEN=1` to skip opening a brows
 
 ## Modules
 
-`store.ts` is the page store: it opens the database once at module level (top-level await, like the DOM version did), subscribes to `db.kv.changes`, serializes writes through one promise chain, owns the pager cursor stack, and exposes actions. React reads it with `useSyncExternalStore(store.subscribe, store.getSnapshot)` — components hold no effects and no async state. The snapshot shape (`rows`, `hasNext`, `pageIndex`, `filter`, `sort`, `progress`, `error`, `generation`, `bulkBusy`) mirrors what the DOM version wrote straight into elements. `index.html` keeps a static `opening` line inside `#root`, painted while the module opens and loads the first page.
+`store.ts` is the page store: it opens kv and the docstore once at module level (top-level await, like the DOM version did), declares the schema, subscribes to `kv.changes`, serializes writes through one promise chain, owns the pager cursor stack, and exposes actions. React reads it with `useSyncExternalStore(store.subscribe, store.getSnapshot)` — components hold no effects and no async state. The snapshot shape (`rows`, `hasNext`, `pageIndex`, `filter`, `sort`, `progress`, `error`, `generation`, `bulkBusy`) mirrors what the DOM version wrote straight into elements. `index.html` keeps a static `opening` line inside `#root`, painted while the module opens and loads the first page.
 
-`main.tsx` is the React layer: render the snapshot, dispatch actions, and own the two uncontrolled inputs plus the filter-input debounce (a typing concern, not store state). Vite resolves both `@opfs-lsm/kv` and `@opfs-lsm/collections` from the workspace packages, so `index.html` needs no import map. Writes, deletes, and bulk jobs still go through the headless model. `tsconfig.json` typechecks the sources with `strict: true`; rows flow into the store typed as `TodoStore<Uint8Array>` (collections pages carry `Uint8Array` index-key cursors).
+`main.tsx` is the React layer: render the snapshot, dispatch actions, and own the two uncontrolled inputs plus the filter-input debounce (a typing concern, not store state). Vite resolves both `@opfs-lsm/kv` and `@opfs-lsm/docstore` from the workspace packages, so `index.html` needs no import map. Writes, deletes, and bulk jobs still go through the headless model. `tsconfig.json` typechecks the sources with `strict: true`; the collection is assigned to `TodoStore`, so a query the schema does not declare fails to compile.
 
 `vite.config.mjs` mounts `@vitejs/plugin-react` and `redact()` with `preset: "nano"`. `optimizeDeps.exclude` keeps the two workspace packages unlocked so the engine's runtime `new URL(..., import.meta.url)` still points at the committed `wasm/` files in dev. `TODO_REDACT=0` skips the plugin and builds plain React, for a bundle-size comparison. `worker: { format: "es" }` keeps the SharedWorker that `@opfs-lsm/kv` spawns itself a module worker (it uses dynamic `import()` for the wasm glue).
 
-`model.ts` is headless: no DOM access and no runtime package import (the collections types are type-only imports, erased at build time). It owns the table schema, derived sort fields, title generation, filter matching, paging, and bulk operations. Its only contract is `TodoStore<Cursor>` — `put`, `putMany`, `update`, `delete`, `clear`, and `page`, generic over the opaque cursor type so both the real `Table` and the test fake typecheck. The page passes a real table; the tests pass a plain in-memory fake whose cursors are row ids.
+`model.ts` is headless: no DOM access and no runtime package import (the docstore types are type-only imports, erased at build time). It owns the derived `titleSort` field, title generation, filter matching, paging, and bulk operations. Its only contract is `TodoStore`: `put`, `putMany`, `modify`, `delete`, `clear`, and `query`, the slice of a docstore `Collection<Todo>` it uses. The page passes a real collection; the tests pass a plain in-memory fake whose cursors are row ids.
 
-The table is `todos`, primary key `id`. Collections stores a row at `t/` plus table and id, and an index entry at `i/` plus table, index, typed value, and id. Three declared indexes cover the sorts: `byNewest` on `newest` (`10^15 - 1 - createdAt`), `byOldest` on `createdAt`, and `byTitle` on `titleSort` (the lowercased title). Strings in index keys are encoded lexicographically, so `byTitle` is A–Z; the trailing id breaks ties. The table also has a `search` spec on `title`, sorted by `newest`: collections writes one extra key per todo, `s/` plus table, `newest` and id, holding the lowercased title words, in the same batch as the row. A todo therefore costs five keys (row, three indexes, one search key), where a term index cost one key per word and per prefix.
+The collection is `todos`, keyed by `id`. `store.ts` declares three indexes with `defineSchema`: `byCreated` on `createdAt`, `byTitle` on `titleSort` (the lowercased title), and `search`, a text index on `createdAt` that also carries the lowercased words of `title`. docstore stores a row under `0x64`, the collection id, `0x00` and the id, and an index entry under `0x64`, the collection id, the index id, the encoded values and the id. Newest first is `byCreated` read with `reverse: true`, so it needs no derived column. Strings in index keys order by their UTF-8 bytes, so `byTitle` is A–Z because `titleSort` is lowercased; the trailing id breaks ties. A todo costs four keys: the row and one entry in each index.
 
-`Table.put`, `putMany`, `delete`, and `clear` maintain the index entries in the same transaction as the primary row, so a row and its indexes cannot drift. `Table.update` compares index keys and rewrites only the ones that changed, so toggling `done` touches the primary value alone.
+`put`, `putMany`, `delete`, and `clear` keep the index entries in step with the rows, so a row and its indexes cannot drift. `put` and `putMany` do it in one kv transaction. `modify` diffs the index entries of the old and new document and writes only the ones that changed, so toggling `done` rewrites the row alone.
 
-`readPage` calls `table.page(index, { after, limit })` for the requested sort. `limit` is the page size. `next` is the first index key the call did not consume, so pages neither skip nor repeat rows. With a filter, `readPage` calls `table.search(filter, { after, limit })`: one cursor page of todos where each filter word starts a title word, newest first. A common word fills a page in microseconds; a filter that matches nothing reads every search key.
+`readPage` calls `collection.query({ index, reverse, after, limit })` for the requested sort. `limit` is the page size. `next` is the last entry of the page, and the following call passes it as `after`, so pages neither skip nor repeat rows. With a filter, `readPage` queries `search` with `match: filter` and `reverse: true`: one cursor page of todos where each filter word occurs inside a title word, newest first. A common word fills a page after a few entries; a filter that matches nothing reads every search entry.
 
-`generateTodos` chunks `table.putMany` at 1,000 rows. `clearTodos` calls `table.clear`, which removes primary and index rows in batches under the kv limits (10,000 ops and 8 MiB).
+`generateTodos` chunks `collection.putMany` at 1,000 rows. `clearTodos` calls `collection.clear`, which is one catalog write whatever the size; docstore deletes the old keys in the background. `clear` returns no count, so the status line reads `cleared all todos`.
 
 ## Check the model
 
@@ -62,4 +62,4 @@ The table is `todos`, primary key `id`. Collections stores a row at `t/` plus ta
 pnpm --filter @opfs-lsm/example-todo test
 ```
 
-Runs `tsx --test model.test.ts`. The command exits 0. It does not open a browser. It covers the derived sort fields, filter matching, cursor paging, all three sort orders, generation, clear, and toggle. The table is an in-memory fake, so no build is needed. The same model can drive a headless benchmark by passing a real `Table` from `openCollectionDb`.
+Runs `tsx --test model.test.ts`. The command exits 0. It does not open a browser. It covers the derived title sort field, filter matching, cursor paging, all three sort orders, generation, clear, and toggle. The table is an in-memory fake, so no build is needed. The same model can drive a headless benchmark by passing a real `Collection` from `openDocStore`.

@@ -10,7 +10,7 @@ export type SizeRow = {
   readonly note: string;
   /** Includes kv: must reach exactly one SharedWorker chunk and one .wasm. */
   readonly kv?: true;
-  /** Fail `bench:size --check` when brotli-after-open exceeds this many bytes. */
+  /** Fail `bench:size --check` and `bench:smoke --check` when brotli-after-open exceeds this many bytes. */
   readonly budget?: number;
 };
 
@@ -23,11 +23,11 @@ export const SIZE_ROWS: readonly SizeRow[] = [
     budget: 65_000,
   },
   {
-    id: "collections",
+    id: "docstore",
     kv: true,
-    source: `export { openCollectionDb } from "@opfs-lsm/collections";`,
-    note: "openCollectionDb, includes kv",
-    budget: 69_000,
+    source: `export { defineSchema, openDocStore } from "@opfs-lsm/docstore"; export { openDb } from "@opfs-lsm/kv";`,
+    note: "defineSchema, openDocStore and openDb, includes kv",
+    budget: 57_000,
   },
   { id: "dexie", source: `export { default } from "dexie";`, note: "Dexie" },
   { id: "yjs", source: `export * as Y from "yjs";`, note: "yjs alone, to subtract from the two rows below" },

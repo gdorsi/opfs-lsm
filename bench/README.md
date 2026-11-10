@@ -8,7 +8,8 @@ pnpm bench kv/                               # one family
 pnpm bench kv/fillrandom kv/ycsb-a --size large --reps 7
 pnpm bench yjs/ --contenders kv              # one contender
 pnpm bench:size                              # bundle sizes
-pnpm bench:smoke                             # what CI runs: everything at size tiny, 1 rep
+pnpm bench:smoke                             # everything at size tiny, 1 rep
+pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, then the smoke, from one build
 node bench/cli.ts compare results/a.jsonl results/b.jsonl
 node bench/cli.ts report results/a.jsonl
 ```
@@ -24,7 +25,7 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 | family | ours | baseline |
 |---|---|---|
 | `kv` | kv (`openDb`, SharedWorker host) | a hand-written IndexedDB key-value store: one object store, one transaction per batch, `getAll` pages for scans |
-| `table` | collections | Dexie |
+| `table` | docstore (`packages/docstore`) | Dexie |
 | `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | `KvPersistence` from `@opfs-lsm/yjs` (`packages/yjs`) | y-indexeddb |
 

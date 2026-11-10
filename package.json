@@ -1,6 +1,13 @@
 {
   "name": "opfs-async",
   "private": true,
+  "description": "Monorepo for opfs-lsm, a browser key-value store on OPFS and IndexedDB",
+  "license": "MIT",
+  "author": "Guido D'Orsi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gdorsi/opfs-lsm.git"
+  },
   "packageManager": "pnpm@10.33.2",
   "engines": {
     "node": ">=22"
@@ -11,14 +18,16 @@
     "lint": "oxlint",
     "deadcode": "fallow dead-code",
     "static": "pnpm lint && pnpm deadcode",
-    "test": "node scripts/check-readme.mjs && pnpm -r run build && pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/collections test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
+    "test": "node scripts/check-readme.mjs && pnpm --filter './packages/*' run build && pnpm run '/^test:(suites|examples)$/'",
+    "test:suites": "pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
+    "test:examples": "pnpm --filter './examples/*' run build",
     "test:kv": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/kv test:unit",
-    "test:collections": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/collections run build && pnpm --filter @opfs-lsm/collections test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
+    "test:docstore": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/docstore run build && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
     "bench": "pnpm --filter './packages/*' build && node bench/cli.ts run",
     "bench:smoke": "pnpm --filter './packages/*' build && node bench/cli.ts smoke",
     "bench:size": "pnpm --filter './packages/*' build && node bench/cli.ts size",
-    "todo:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && pnpm --filter @opfs-lsm/example-todo dev",
-    "todo:example:build": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/collections build && pnpm --filter @opfs-lsm/example-todo build && pnpm --filter @opfs-lsm/example-todo preview",
+    "todo:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/docstore build && pnpm --filter @opfs-lsm/example-todo dev",
+    "todo:example:build": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/docstore build && pnpm --filter @opfs-lsm/example-todo build && pnpm --filter @opfs-lsm/example-todo preview",
     "automerge:example": "pnpm --filter @opfs-lsm/automerge... build && pnpm --filter @opfs-lsm/example-automerge dev",
     "rich-text:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/example-rich-text dev"
   },
@@ -28,6 +37,7 @@
     ]
   },
   "devDependencies": {
+    "@changesets/cli": "^3.0.3",
     "fallow": "^3.40.0",
     "oxlint": "^1.92.0"
   }

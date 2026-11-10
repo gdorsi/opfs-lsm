@@ -2,6 +2,25 @@
   "name": "@opfs-lsm/yjs",
   "version": "0.1.0",
   "description": "Yjs persistence on @opfs-lsm/kv, shaped like y-indexeddb",
+  "keywords": [
+    "yjs",
+    "yjs-provider",
+    "y-indexeddb",
+    "opfs",
+    "persistence",
+    "browser"
+  ],
+  "homepage": "https://github.com/gdorsi/opfs-lsm#readme",
+  "bugs": {
+    "url": "https://github.com/gdorsi/opfs-lsm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gdorsi/opfs-lsm.git",
+    "directory": "packages/yjs"
+  },
+  "author": "Guido D'Orsi",
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": {
@@ -14,9 +33,12 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build",
     "test": "tsx --test tests/*.test.ts"
   },
-  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*"
   },

@@ -10,7 +10,7 @@
     "test": "tsx --test model.test.ts"
   },
   "dependencies": {
-    "@opfs-lsm/collections": "workspace:*",
+    "@opfs-lsm/docstore": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
     "@tanstack/redact": "^0.3.1",
     "react": "^19.3.1",

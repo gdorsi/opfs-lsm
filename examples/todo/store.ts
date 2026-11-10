@@ -9,10 +9,10 @@
  * page read-only with the reason in the error line.
  */
 
-import { openCollectionDb } from "@opfs-lsm/collections";
+import { defineSchema, openDocStore, type Cursor } from "@opfs-lsm/docstore";
+import { openDb } from "@opfs-lsm/kv";
 import {
   PAGE_SIZE,
-  TODO_SCHEMA,
   clearTodos,
   createTodo,
   deleteTodo,
@@ -26,18 +26,35 @@ import {
 
 const DB_NAME = new URLSearchParams(location.search).get("name") ?? "todos";
 
+/**
+ * `titleSort` is a column of its own because indexes read document fields.
+ * `search` is a sorted index on `createdAt` whose entries also carry the
+ * lowercased title words, so `byCreated` and the search both scan by time.
+ */
+const schema = defineSchema<{ todos: Todo }>()({
+  version: 1,
+  collections: {
+    todos: {
+      byCreated: { on: "createdAt" },
+      byTitle: { on: "titleSort" },
+      search: { on: "createdAt", text: "title" },
+    },
+  },
+});
+
+async function openTodos() {
+  const kv = await openDb({ name: DB_NAME });
+  const todos: TodoStore = (await openDocStore(kv, schema)).collection("todos");
+  return { kv, todos };
+}
+
 let openError: unknown;
-const db = await openCollectionDb({
-  name: DB_NAME,
-  schema: TODO_SCHEMA,
-}).catch((err: unknown) => {
+const db = await openTodos().catch((err: unknown) => {
   openError = err;
   return null;
 });
 // null when the page could not open the database (http origin, OPFS, …).
-const table: TodoStore<Uint8Array> | null = db
-  ? db.table<Todo>("todos")
-  : null;
+const table: TodoStore | null = db?.todos ?? null;
 const open = db !== null;
 
 export type TodoState = {
@@ -45,7 +62,7 @@ export type TodoState = {
   readonly open: boolean;
   readonly rows: readonly Todo[];
   readonly hasNext: boolean;
-  /** Zero-based cursor-stack position; pages[n] is the first key of page n. */
+  /** Zero-based cursor-stack position; pages[n] is the `after` cursor of page n. */
   readonly pageIndex: number;
   readonly filter: string;
   readonly sort: SortKey;
@@ -107,8 +124,8 @@ function showError(err: unknown): void {
   setState({ error: err instanceof Error ? err.message : String(err) });
 }
 
-/** The cursor stack: pages[n] is the first key of page n. */
-const pager = { pages: [undefined] as (Uint8Array | undefined)[], index: 0, next: undefined as Uint8Array | undefined };
+/** The cursor stack: pages[n] is the `after` cursor of page n. */
+const pager = { pages: [undefined] as (Cursor | undefined)[], index: 0, next: undefined as Cursor | undefined };
 let ticket = 0;
 let chain: Promise<void> = Promise.resolve();
 let busy = 0;
@@ -154,7 +171,7 @@ function run(fn: () => unknown): Promise<void> {
   return job;
 }
 
-function requireTable(): TodoStore<Uint8Array> {
+function requireTable(): TodoStore {
   if (!table) throw new Error("database not open");
   return table;
 }
@@ -192,8 +209,8 @@ export function clearAll(): void {
   void run(async () => {
     try {
       setState({ progress: "clearing" });
-      const removed = await clearTodos(target);
-      setState({ progress: `cleared ${removed} todos` });
+      await clearTodos(target);
+      setState({ progress: "cleared all todos" });
     } finally {
       setState({ bulkBusy: false });
     }
@@ -241,7 +258,7 @@ export function ingest(): void {
     return;
   }
   void run(async () => {
-    const result = await db.ingest();
+    const result = await db.kv.ingest();
     setState({ generation: result.generation });
   });
 }

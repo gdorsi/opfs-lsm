@@ -1,6 +1,7 @@
 /// <reference types="node" />
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Cursor } from "@opfs-lsm/docstore";
 import {
   clearTodos,
   createTodo,
@@ -15,58 +16,33 @@ import {
   wordsOf,
 } from "./model.ts";
 
-const MAX_TIME = 10 ** 15 - 1;
-
-const INDEXES = {
-  byNewest: { field: "newest", cmp: (a: Todo, b: Todo) => a.newest - b.newest },
-  byOldest: { field: "createdAt", cmp: (a: Todo, b: Todo) => a.createdAt - b.createdAt },
-  byTitle: {
-    field: "titleSort",
-    cmp: (a: Todo, b: Todo) =>
-      a.titleSort < b.titleSort ? -1 : a.titleSort > b.titleSort ? 1 : 0,
-  },
-};
+const byTime = (a: Todo, b: Todo) => a.createdAt - b.createdAt || a.id.localeCompare(b.id);
+const byTitle = (a: Todo, b: Todo) =>
+  a.titleSort < b.titleSort ? -1 : a.titleSort > b.titleSort ? 1 : a.id.localeCompare(b.id);
 
 /**
- * In-memory stand-in for a collections Table. Cursors are the id of the first
- * unconsumed row, matching the real table's opaque "next" key semantics.
+ * In-memory stand-in for a docstore Collection. A cursor is the id of the
+ * last row of a page and `after` starts past it, as the real `next` and
+ * `after` do.
  */
-function fakeTable(
-  initial: readonly Todo[] = [],
-): TodoStore<string> & { rows: Map<string, Todo>; read: number } {
+function fakeTable(initial: readonly Todo[] = []): TodoStore & { rows: Map<string, Todo>; read: number } {
   const rows = new Map<string, Todo>();
   for (const todo of initial) rows.set(todo.id, { ...todo });
 
-  function ordered(indexName: string): Todo[] {
-    const spec = INDEXES[indexName as keyof typeof INDEXES];
-    if (!spec) throw new Error(`unknown index: ${indexName}`);
-    return [...rows.values()].sort((a, b) => spec.cmp(a, b) || a.id.localeCompare(b.id));
-  }
-
-  /** Cursor page of `sorted`, starting at the row whose id is `after`. */
-  function cursorPage(sorted: Todo[], after: string | undefined, limit: number) {
-    const start = after === undefined ? 0 : sorted.findIndex((todo) => todo.id === after);
-    if (start < 0) throw new Error(`cursor not found: ${String(after)}`);
-    const docs = sorted.slice(start, start + limit).map((todo) => ({ ...todo }));
-    const next = sorted[start + limit];
-    return { docs, next: next?.id };
-  }
-
   return {
     rows,
-    /** Docs returned by `page`, to check a search reads only matches. */
+    /** Docs returned by `query`, to check a search reads only matches. */
     read: 0,
     async put(todo) {
       rows.set(todo.id, { ...todo });
-      return todo.id;
     },
     async putMany(todos) {
       for (const todo of todos) rows.set(todo.id, { ...todo });
     },
-    async update(id, mutate) {
+    async modify(id, fn) {
       const current = rows.get(id);
       if (!current) return undefined;
-      const next = mutate(current);
+      const next = fn(current);
       rows.set(id, { ...next });
       return next;
     },
@@ -74,25 +50,24 @@ function fakeTable(
       return rows.delete(id);
     },
     async clear() {
-      const count = rows.size;
       rows.clear();
-      return count;
     },
-    async page(indexName, { after, limit }: { after?: string; limit: number }) {
-      const { docs, next } = cursorPage(ordered(indexName), after, limit);
+    async query(q) {
+      let sorted = [...rows.values()].sort(q.index === "byTitle" ? byTitle : byTime);
+      if (q.index === "search") {
+        const wanted = wordsOf(q.match);
+        if (wanted.length === 0) throw new RangeError("search text has no words");
+        sorted = sorted.filter((todo) => {
+          const words = wordsOf(todo.title);
+          return wanted.every((w) => words.some((t) => t.includes(w)));
+        });
+      }
+      if ("reverse" in q && q.reverse) sorted.reverse();
+      const start = q.after === undefined ? 0 : sorted.findIndex((todo) => todo.id === q.after) + 1;
+      if (q.after !== undefined && start === 0) throw new Error(`cursor not found: ${q.after}`);
+      const docs = sorted.slice(start, start + q.limit).map((todo) => ({ ...todo }));
       this.read += docs.length;
-      return next === undefined ? { docs } : { docs, next };
-    },
-    async search(text, { after, limit }: { after?: string; limit: number }) {
-      const wanted = wordsOf(text);
-      if (wanted.length === 0) throw new RangeError("search text has no words");
-      const matches = ordered("byNewest").filter((todo) => {
-        const words = wordsOf(todo.title);
-        return wanted.every((w) => words.some((t) => t.startsWith(w)));
-      });
-      const { docs, next } = cursorPage(matches, after, limit);
-      this.read += docs.length;
-      return next === undefined ? { docs } : { docs, next };
+      return start + q.limit < sorted.length ? { docs, next: docs[docs.length - 1]!.id as Cursor } : { docs };
     },
   };
 }
@@ -105,9 +80,9 @@ function makeTodos(count: number, now = 10_000): Todo[] {
   });
 }
 
-async function collectPages<Cursor>(
-  table: TodoStore<Cursor>,
-  options: Omit<ReadPageOptions<Cursor>, "after"> = {},
+async function collectPages(
+  table: TodoStore,
+  options: Omit<ReadPageOptions, "after"> = {},
 ): Promise<Todo[][]> {
   const pages: Todo[][] = [];
   let after: Cursor | undefined;
@@ -120,14 +95,13 @@ async function collectPages<Cursor>(
   throw new Error("paging did not finish");
 }
 
-test("createTodo trims the title, rejects a blank one, and derives sort fields", () => {
+test("createTodo trims the title, rejects a blank one, and derives the title sort field", () => {
   const todo = createTodo("  Buy Milk  ", 10, "a");
   assert.deepEqual(todo, {
     id: "a",
     title: "Buy Milk",
     done: false,
     createdAt: 10,
-    newest: MAX_TIME - 10,
     titleSort: "buy milk",
   });
   assert.equal(createTodo("   ", 10, "a"), null);
@@ -221,14 +195,14 @@ test("readPage with a filter reads newest first whatever the sort", async () => 
   }
 });
 
-test("readPage requires every filter word to start a title word", async () => {
+test("readPage requires every filter word to occur inside a title word", async () => {
   const table = fakeTable([
     createTodo("buy oat milk", 1, "a")!,
     createTodo("buy milk", 2, "b")!,
     createTodo("milkshake", 3, "c")!,
     createTodo("sell milk", 4, "d")!,
   ]);
-  const page = await readPage(table, { filter: "milk bu", pageSize: 10 });
+  const page = await readPage(table, { filter: "ilk uy", pageSize: 10 });
   assert.deepEqual(page.todos.map((t) => t.id), ["b", "a"]);
   assert.equal(table.read, 2);
 });
@@ -298,7 +272,7 @@ test("generateTodos writes in batches of chunkSize rows", async () => {
 
 test("clearTodos deletes every row", async () => {
   const table = fakeTable(makeTodos(30));
-  assert.equal(await clearTodos(table), 30);
+  await clearTodos(table);
   const page = await readPage(table, { pageSize: 10 });
   assert.deepEqual(page.todos, []);
   assert.equal(table.rows.size, 0);
