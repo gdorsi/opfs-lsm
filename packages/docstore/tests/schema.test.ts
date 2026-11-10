@@ -140,6 +140,21 @@ describe("opening a schema", () => {
     expect(await keysUnder(next.kv, oldTitles)).toBe(0);
   });
 
+  it("fails a query whose scan a newer schema's redefinition of its index overtook", async () => {
+    const name = freshName();
+    const old = await at(name, v1);
+    await old.store.collection("todos").putMany(rows(10));
+    const readerKv = await kvOn(name);
+    const held = gate(readerKv, "range", 0);
+    const reader = await openOn(held.db, v1);
+    const query = codeOf(reader.collection("todos").queryIds({ index: "byTitle" }));
+    await held.arrived(1);
+    await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated, byTitle: { on: "slug" } } } }));
+    await readerKv.sync();
+    held.release();
+    expect(await query).toBe("schema");
+  });
+
   it("sweeps every key of a removed index", async () => {
     const name = freshName();
     const old = await at(name, v1);
@@ -215,6 +230,18 @@ describe("indexes the stored data cannot fill", () => {
     expect((await fixed.store.collection("todos").queryIds({ index: "bySlug", eq: ["s"] })).ids).toEqual(["a"]);
   });
 
+  it("sweeps the entries a unique backfill wrote before it met a duplicate", async () => {
+    const name = freshName();
+    const old = await at(name, v1);
+    const docs = rows(600).map((d, i) => ({ ...d, slug: i === 550 ? "r0000" : d.id }));
+    await old.store.collection("todos").putMany(docs);
+    const next = await at(name, unique(2));
+    expect(await codeOf(next.store.collection("todos").query({ index: "bySlug" }))).toBe("index-failed");
+    const failed = await storedPrefix(next.kv, "todos", "bySlug");
+    await next.store.whenIdle();
+    expect(await keysUnder(next.kv, failed)).toBe(0);
+  });
+
   it("fails an index when a row written before it holds a value it cannot index, naming that row", async () => {
     const name = freshName();
     const old = await at(name, v1);
@@ -257,6 +284,33 @@ describe("indexes the stored data cannot fill", () => {
     expect((await todos.queryIds({ index: "bySlug", eq: ["x"] })).ids).toEqual(["r0000"]);
     expect((await todos.queryIds({ index: "bySlug", eq: ["y"] })).ids).toEqual(["r0550"]);
   });
+
+  it("fails a unique index when a write gave a row's value to another row before the backfill reached that row", async () => {
+    const name = freshName();
+    const old = await at(name, v1);
+    await old.store.collection("todos").putMany(rows(600).map((d, i) => (i === 550 ? { ...d, slug: "x" } : d)));
+    const held = gate(await kvOn(name), "range", 1);
+    const opening = openOn(held.db, unique(2));
+    await held.arrived(2);
+    await old.store.collection("todos").put({ id: "a", slug: "x", createdAt: -1 });
+    held.release();
+    const err = await (await opening).collection("todos").query({ index: "bySlug" }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "index-failed" });
+    expect([...(err as { ids: string[] }).ids].sort()).toEqual(["a", "r0550"]);
+  });
+
+  it("accepts an unchanged put of a row whose unique value the building index gave another row", async () => {
+    const name = freshName();
+    const old = await at(name, v1);
+    const docs = rows(600).map((d, i) => (i === 0 || i === 550 ? { ...d, slug: "x" } : d));
+    await old.store.collection("todos").putMany(docs);
+    const held = gate(await kvOn(name), "range", 1);
+    const opening = openOn(held.db, unique(2));
+    await held.arrived(2);
+    expect(await codeOf(old.store.collection("todos").put(docs[550]!))).toBe("no error");
+    held.release();
+    expect(await codeOf((await opening).collection("todos").query({ index: "bySlug" }))).toBe("index-failed");
+  });
 });
 
 describe("clear", () => {
@@ -282,6 +336,21 @@ describe("clear", () => {
     await store.whenIdle();
     expect(await keysUnder(kv, old)).toBe(0);
     expect((await storedCatalog(kv)).dropped).toEqual([]);
+  });
+
+  it("sweeps the entries of index id 255, the last id a collection can give", async () => {
+    const wide = defineSchema<{ todos: Todo }>()({
+      version: 1,
+      collections: { todos: Object.fromEntries(Array.from({ length: 255 }, (_, i) => [`i${i}`, byCreated])) },
+    });
+    const { kv, store } = await at(freshName(), wide);
+    await store.collection("todos").put({ id: "1", createdAt: 1 });
+    expect(Object.values((await storedCatalog(kv)).collections["todos"]!.indexes).map((i) => i.id)).toContain(255);
+    const old = await storedPrefix(kv, "todos");
+    expect(await keysUnder(kv, old)).toBe(256);
+    await store.collection("todos").clear();
+    await store.whenIdle();
+    expect(await keysUnder(kv, old)).toBe(0);
   });
 
   it("keeps a put that resolves after clear resolved, alone", async () => {
