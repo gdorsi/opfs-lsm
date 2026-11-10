@@ -173,7 +173,7 @@ Exit 0. The log ends with `All 5 formal checks passed`. Each check prints a `PAS
 
 The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:power-loss`. `formal:power-loss` runs every workload twice: with reclaim, and with a tab holding the reclaim lock throughout, so the host removes no manifest or run. `FORMAL_POWER_CMDS` (default 6) and `FORMAL_POWER_CRASHES` (default 2) widen the power-loss bound; 7 commands or 3 crashes take about 11 s. Each exits 0 on a pass. A failure prints a shortest path or a counterexample and exits non-zero.
 
-The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `5271bea8faacbec84f5bf95c93baed581ec64f19`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
+The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `0aad344c5784b9302cf83f0fba62d1f35b19e543`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
 
 `pendingBytes` is outside the model. A pass says nothing about the ingest trigger.
 
