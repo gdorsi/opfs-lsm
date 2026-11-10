@@ -144,8 +144,10 @@ function logFiles(s: State): LogFiles[] {
  * The SharedWorker's reader on one log from cursor `from`, over the segment
  * files it listed (default: all of them) as they are now: segment by
  * segment, each ending at its successor's firstN - 1 (bytes past that are
- * never read). A bad frame is a hole when anything valid or a later segment
- * follows it, else a torn tail. A sealed last segment means a successor
+ * never read). A bad frame is a hole when a later segment follows it. In
+ * the last segment it is the end for now while the log is live, since its
+ * writer may still be writing there, and once dead a hole only when a
+ * whole frame or a SEAL follows it. A sealed last segment means a successor
  * exists: of a live log, one listed too late; of a dead log, whose listing
  * the host takes while holding its lock, one that is gone.
  */
@@ -167,7 +169,10 @@ export function read(s: State, log: LogId, from: number, listed?: readonly numbe
     const frames = seg.frames.filter((f) => f.n >= expect && f.n <= end);
     for (let j = 0; j < frames.length; j++) {
       const f = frames[j]!;
-      if (!f.ok) return out(next || frames.slice(j + 1).some((g) => g.ok) ? { hole: expect, reason: "bad frame" } : "end");
+      if (!f.ok) {
+        const signedAfter = seg.sealed || frames.slice(j + 1).some((g) => g.ok);
+        return out(next || (w.state === "dead" && signedAfter) ? { hole: expect, reason: "bad frame" } : "end");
+      }
       records.push([f.n, f.w]);
       expect++;
     }
