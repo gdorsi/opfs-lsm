@@ -4,7 +4,6 @@ import type { AsyncFs } from "../opfs/async-fs.js";
 import { recoverQueues } from "../recover.js";
 import { foldRecords } from "../store/fold.js";
 import {
-  listLog,
   listLogs,
   manifestNumbers,
   publishGeneration,
@@ -16,7 +15,6 @@ import {
   planIngest,
   planReclaim,
   type DurableHints,
-  type LogFiles,
   type LogId,
   type QueueCursor,
   type QueueScan,
@@ -59,7 +57,7 @@ export type IngestOutcome = {
 export async function ingestQueues(fs: AsyncFs, locks: LogLocks, durable: DurableHints, maxBytes: number): Promise<IngestOutcome> {
   const { base, top, logs } = await recoverQueues(fs);
   const queues = base.queues ?? [];
-  return scanQueues(fs, locks, queues, logs, async (scans) => {
+  return scanQueues(fs, locks, queues, logs.map((l) => l.log), async (scans) => {
     const plan = planIngest({ through: base.through, queues }, scans, durable, maxBytes);
     if (plan.records.length === 0 && sameCursors(plan.queues, queues)) return { generation: base.generation, damagedLive: plan.damagedLive };
     const runs =
@@ -116,36 +114,48 @@ async function removeQuietly(fs: AsyncFs, path: string): Promise<void> {
 }
 
 /**
- * Reads every log in `logs` that is not final or damaged in `queues`, from
- * its cursor, and hands the scans to `use`. A log is dead only when this
- * takes its lock; its segments are then listed again under the lock, since
- * `logs` may predate its last segment. The locks stay held until `use`
- * settles, so a log is still dead when the manifest that makes it final
- * is published.
+ * Reads every log not final or damaged in `queues`, from its cursor, and
+ * hands the scans to `use`. A log is dead only when this takes its lock.
+ * It takes the locks of `candidates` first and lists `w/` after, so the
+ * listing holds every segment of a dead log and every successor that caps
+ * one: a tab flushes a successor's header before it ends the failed log's
+ * dedicated WebWorker. A log only the listing has counts as live. The
+ * locks stay held until `use` settles, so a log is still dead when the
+ * manifest that makes it final is published.
+ *
+ * A log with nothing ingested whose first segment Chrome refuses may cap a
+ * dead log in its header, so while one does, the scans leave out every
+ * dead log.
  */
 export async function scanQueues<T>(
   fs: AsyncFs,
   locks: LogLocks,
   queues: readonly QueueCursor[],
-  logs: readonly LogFiles[],
+  candidates: readonly LogId[],
   use: (scans: readonly QueueScan[]) => Promise<T>,
 ): Promise<T> {
   const cursors = new Map(queues.map((c) => [c.log, c]));
-  const held: (() => void)[] = [];
+  const open = (log: LogId): boolean => (cursors.get(log)?.state ?? "open") === "open";
+  const held = new Map<LogId, () => void>();
   try {
-    const scans: QueueScan[] = [];
-    for (const listed of logs) {
-      const cursor = cursors.get(listed.log);
-      if (cursor && cursor.state !== "open") continue;
-      const release = await locks.take(listed.log);
-      if (release) held.push(release);
-      const { segments } = release ? await listLog(fs, listed.log) : listed;
-      const from = cursor?.n ?? 0;
-      scans.push(scanLog(listed.log, from, release !== undefined, await readFrom(fs, listed.log, segments, from)));
+    for (const log of candidates) {
+      if (!open(log)) continue;
+      const release = await locks.take(log);
+      if (release) held.set(log, release);
     }
-    return await use(scans);
+    const scans: QueueScan[] = [];
+    let blind = false;
+    for (const { log, segments } of await listLogs(fs)) {
+      if (!open(log)) continue;
+      const from = cursors.get(log)?.n ?? 0;
+      const listed = await readFrom(fs, log, segments, from);
+      const dead = held.has(log);
+      if (!dead && from === 0 && listed[0]?.firstN === 1 && listed[0].bytes === "unreadable") blind = true;
+      scans.push(scanLog(log, from, dead, listed));
+    }
+    return await use(blind ? scans.filter((s) => !s.dead) : scans);
   } finally {
-    for (const release of held) release();
+    for (const release of held.values()) release();
   }
 }
 

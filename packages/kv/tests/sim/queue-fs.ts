@@ -1,17 +1,18 @@
 import type { LogId, RecordN } from "../../src/host/queues.js";
 import type { LogLocks } from "../../src/host/queue-host.js";
 import type { SegmentFile, SegmentStore } from "../../src/log/queue-writer.js";
-import { segmentPath } from "../../src/log/segment.js";
+import { parseSegmentName, segmentPath } from "../../src/log/segment.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../../src/opfs/async-fs.js";
 import { MemoryFs } from "../../src/opfs/memory-fs.js";
 
 /**
  * How a SharedWorker's `getFile()` read of a file that a dedicated
  * WebWorker holds open behaves (docs/research/opfs-worker-probes.md):
- * - chrome: throws `NotReadableError`; removing the file throws too.
+ * - chrome: throws `NotReadableError` while a write is in flight, and
+ *   otherwise returns every whole write; removing the file throws.
  * - safari: a snapshot, here the bytes as of the last flush; removing the
  *   file succeeds and the writer goes on writing to a file no one can see.
- * - firefox: live bytes, which can stop partway through the newest write;
+ * - firefox: live bytes, which can stop anywhere past the last flush;
  *   removing the file throws.
  * A closed file reads whole in all three.
  */
@@ -19,14 +20,16 @@ export type Browser = "chrome" | "safari" | "firefox";
 
 export const BROWSERS: readonly Browser[] = ["chrome", "safari", "firefox"];
 
-/** For the next write to a log: how many bytes land, and whether the call then throws or returns that short count. */
-export type WriteFault = { readonly mode: "throw" | "short"; readonly landed: number };
+/**
+ * For a log's next segment write: how many bytes land, and whether the
+ * call then throws or returns that short count. Or its next segment
+ * create throws.
+ */
+export type Fault = { readonly at: "write"; readonly mode: "throw" | "short"; readonly landed: number } | { readonly at: "create" };
 
 class HandleFile {
   bytes = new Uint8Array(0);
   flushed = 0;
-  /** Where the newest write began. */
-  lastWrite = 0;
   open = true;
 }
 
@@ -39,20 +42,31 @@ class HandleFile {
 export class QueueFs implements AsyncFs {
   readonly inner = new MemoryFs();
   private readonly handles = new Map<string, HandleFile>();
-  private readonly faults = new Map<LogId, WriteFault>();
-  /** Paths a remove found open in a writer. */
-  readonly removedOpen: string[] = [];
+  private readonly faults = new Map<LogId, Fault>();
+  /** Segments a remove found open in a writer with no later segment in their log: a live log's last segment. */
+  readonly removedLast: string[] = [];
   readonly segments: SegmentStore;
 
   constructor(
     readonly browser: Browser,
+    /** Where a firefox read of an open file stops, and whether chrome refuses one. */
     private readonly random: () => number = Math.random,
+    /** The share of chrome reads of an open file that meet a write in flight. 1: a burst that never lets up. */
+    private readonly chromeRefusal = 1,
   ) {
-    this.segments = { create: async (log, firstN) => this.openSegment(log, firstN) };
+    this.segments = {
+      create: async (log, firstN) => {
+        if (this.faults.get(log)?.at === "create") {
+          this.faults.delete(log);
+          throw new Error(`injected create failure: ${segmentPath(log, firstN)}`);
+        }
+        return this.openSegment(log, firstN);
+      },
+    };
   }
 
-  /** Fail the next write any writer of `log` makes. */
-  failNextWrite(log: LogId, fault: WriteFault): void {
+  /** Make the next write or create of `log`'s writer fail. */
+  fail(log: LogId, fault: Fault): void {
     this.faults.set(log, fault);
   }
 
@@ -69,16 +83,15 @@ export class QueueFs implements AsyncFs {
       write: (data, at) => {
         if (!file.open) throw new Error(`write to a closed handle: ${path}`);
         const fault = this.faults.get(log);
-        this.faults.delete(log);
-        const landed = fault ? Math.min(fault.landed, data.byteLength) : data.byteLength;
+        if (fault?.at === "write") this.faults.delete(log);
+        const landed = fault?.at === "write" ? Math.min(fault.landed, data.byteLength) : data.byteLength;
         if (at + landed > file.bytes.byteLength) {
           const grown = new Uint8Array(at + landed);
           grown.set(file.bytes);
           file.bytes = grown;
         }
         file.bytes.set(data.subarray(0, landed), at);
-        file.lastWrite = at;
-        if (fault?.mode === "throw") throw new Error(`injected write failure: ${path}`);
+        if (fault?.at === "write" && fault.mode === "throw") throw new Error(`injected write failure: ${path}`);
         return landed;
       },
       flush: () => {
@@ -95,13 +108,12 @@ export class QueueFs implements AsyncFs {
     if (!file.open) return file.bytes.slice();
     switch (this.browser) {
       case "chrome":
-        throw new DOMException("the file is being written", "NotReadableError");
+        if (this.random() < this.chromeRefusal) throw new DOMException("the file is being written", "NotReadableError");
+        return file.bytes.slice();
       case "safari":
         return file.bytes.slice(0, file.flushed);
-      case "firefox": {
-        const torn = Math.floor(this.random() * (file.bytes.byteLength - file.lastWrite + 1));
-        return file.bytes.slice(0, file.lastWrite + torn);
-      }
+      case "firefox":
+        return file.bytes.slice(0, file.flushed + Math.floor(this.random() * (file.bytes.byteLength - file.flushed + 1)));
     }
   }
 
@@ -126,7 +138,7 @@ export class QueueFs implements AsyncFs {
     const file = this.handles.get(path);
     if (file) {
       if (file.open) {
-        this.removedOpen.push(path);
+        if (!this.hasLater(path)) this.removedLast.push(path);
         if (this.browser !== "safari") throw new DOMException(`${path} is open`, "NoModificationAllowedError");
       }
       this.handles.delete(path);
@@ -137,6 +149,12 @@ export class QueueFs implements AsyncFs {
       throw new DOMException(`${path} is not empty`, "InvalidModificationError");
     }
     await this.inner.remove(path);
+  }
+
+  private hasLater(path: string): boolean {
+    const dir = path.slice(0, path.lastIndexOf("/") + 1);
+    const firstN = parseSegmentName(path.slice(dir.length))!;
+    return [...this.handles.keys()].some((p) => p.startsWith(dir) && parseSegmentName(p.slice(dir.length))! > firstN);
   }
 
   removeUnlessOpen(path: string): Promise<boolean> {

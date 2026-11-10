@@ -366,7 +366,7 @@ export async function listLogs(fs: AsyncFs): Promise<LogFiles[]> {
 }
 
 /** The segments of `w/<log>/`, firstN ascending. */
-export async function listLog(fs: AsyncFs, log: LogId): Promise<LogFiles> {
+async function listLog(fs: AsyncFs, log: LogId): Promise<LogFiles> {
   const segments: RecordN[] = [];
   for (const name of await fs.list(`w/${log}`)) {
     const firstN = parseSegmentName(name);

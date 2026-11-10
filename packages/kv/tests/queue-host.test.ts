@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { CheckedKey, CheckedValue } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { ingestQueues, reclaimQueues, scanQueues } from "../src/host/queue-host.js";
-import { checkCover, type LogId, type PredEdge, type QueueCursor, type QueueScan } from "../src/host/queues.js";
+import { ingestQueues, reclaimQueues, scanQueues, type LogLocks } from "../src/host/queue-host.js";
+import { checkCover, type LogFiles, type LogId, type PredEdge, type QueueCursor, type QueueScan } from "../src/host/queues.js";
 import { encodeOps } from "../src/idb/wal.js";
 import { QueueWriter } from "../src/log/queue-writer.js";
 import { segmentPath } from "../src/log/segment.js";
@@ -29,6 +29,7 @@ const body = (log: LogId, n: number): Uint8Array =>
   new Uint8Array(encodeOps([{ type: "put", key: enc.encode(`${log}/${n}`) as CheckedKey, value: enc.encode(`value ${n}`) as CheckedValue }]));
 const ns = (scan: QueueScan | undefined): number[] => scan?.records.map((r) => r.n) ?? [];
 const range = (lo: number, hi: number): number[] => Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
+const logIds = (logs: readonly LogFiles[]): LogId[] => logs.map((l) => l.log);
 
 /** A writer of `log` that holds its lock, with room for about `perSegment` records a segment. */
 async function startLog(fs: QueueFs, locks: TestLocks, log: LogId, perSegment = 100, pred?: PredEdge): Promise<QueueWriter> {
@@ -40,8 +41,8 @@ async function append(w: QueueWriter, log: LogId, count: number): Promise<void> 
   for (let i = 0; i < count; i++) await w.append([body(log, w.lastAcked + 1)]);
 }
 
-async function scan(fs: AsyncFs, locks: TestLocks, queues: QueueCursor[] = []): Promise<QueueScan[]> {
-  return scanQueues(fs, locks.for("host"), queues, await listLogs(fs), async (scans) => scans);
+async function scan(fs: AsyncFs, locks: TestLocks, queues: QueueCursor[] = []): Promise<readonly QueueScan[]> {
+  return scanQueues(fs, locks.for("host"), queues, logIds(await listLogs(fs)), async (scans) => scans);
 }
 
 /** The newest manifest, and each record in its runs as `<log>/<n>` with its seq, in seq order. */
@@ -52,7 +53,7 @@ async function ingested(fs: AsyncFs): Promise<{ meta: GenerationMeta; seqs: Map<
     for (const e of decodeSst((await fs.read(run.path, 0, Number.POSITIVE_INFINITY))!)) {
       const key = new TextDecoder().decode(e.key);
       expect(seqs.has(key), `${key} is in two runs`).toBe(false);
-      seqs.set(key, e.seq);
+      seqs.set(key, e.seq!);
     }
   }
   return { meta, seqs: new Map([...seqs].sort((a, b) => a[1] - b[1])) };
@@ -136,7 +137,7 @@ describe("scanQueues", () => {
     await w.close();
     locks.release(A);
 
-    const scans = await scanQueues(fs, locks.for("host"), [], await listLogs(fs), async (scans) => {
+    const scans = await scanQueues(fs, locks.for("host"), [], logIds(await listLogs(fs)), async (scans) => {
       expect(locks.heldBy(A)).toBe("host");
       return scans;
     });
@@ -169,7 +170,7 @@ describe("scanQueues", () => {
     const locks = new TestLocks();
     const w = await startLog(fs, locks, A);
     await append(w, A, 3);
-    fs.failNextWrite(A, { mode: "throw", landed: 9 });
+    fs.fail(A, { at: "write", mode: "throw", landed: 9 });
     await expect(w.append([body(A, 4)])).rejects.toThrow(/injected write failure/);
     fs.closeHandles(A);
     locks.release(A);
@@ -201,26 +202,39 @@ describe("scanQueues", () => {
     expect(refused).toMatchObject({ dead: true, stop: "partial", records: [] });
   });
 
-  it("lists a dead log again under its lock, and a live one only once", async () => {
-    const fs = new QueueFs("safari");
+  it.each(BROWSERS)("%s: takes the locks before it lists, so a successor made after the candidates were listed caps its dead pred", async (browser) => {
+    const fs = new QueueFs(browser);
     const locks = new TestLocks();
-    const a = await startLog(fs, locks, A, 2);
-    const b = await startLog(fs, locks, B, 2);
+    const a = await startLog(fs, locks, A);
     await append(a, A, 2);
-    await append(b, B, 2);
-    const stale = await listLogs(fs);
-    await append(a, A, 2);
-    await append(b, B, 2);
     await a.flush();
-    await b.close();
-    locks.release(B);
+    let b: QueueWriter | undefined;
+    let tab: (() => Promise<void>) | undefined = async () => {
+      fs.fail(A, { at: "write", mode: "throw", landed: 1 << 20 });
+      await expect(a.append([body(A, 3)])).rejects.toThrow(/injected write failure/);
+      b = await startLog(fs, locks, B, 100, { log: A, lastN: 2 });
+      fs.closeHandles(A);
+      locks.release(A);
+    };
+    const host = locks.for("host");
+    const racing: LogLocks = {
+      take: async (log) => {
+        const run = tab;
+        tab = undefined;
+        await run?.();
+        return host.take(log);
+      },
+    };
 
-    const scans = await scanQueues(fs, locks.for("host"), [], stale, async (scans) => scans);
-    const byLog = new Map(scans.map((s) => [s.log, s]));
-    expect(byLog.get(A)).toMatchObject({ dead: false, stop: "partial" });
-    expect(ns(byLog.get(A))).toEqual(range(1, 2));
-    expect(byLog.get(B)).toMatchObject({ dead: true, stop: "end" });
-    expect(ns(byLog.get(B))).toEqual(range(1, 4));
+    const first = await ingestQueues(fs, racing, new Map(), Number.POSITIVE_INFINITY);
+    if (browser === "chrome") expect(first.generation, "A waits while B's header is unreadable").toBe(0);
+    else expect((await ingested(fs)).meta.queues).toContainEqual({ log: A, state: "final", n: 2 });
+    await b!.close();
+    locks.release(B);
+    await ingestQueues(fs, host, new Map(), Number.POSITIVE_INFINITY);
+    const { meta, seqs } = await ingested(fs);
+    expect([...seqs.keys()]).toEqual(keys(A, [1, 2]));
+    expect(meta.queues).toContainEqual({ log: A, state: "final", n: 2 });
   });
 
   it("reads each log from its cursor and skips a final or damaged one", async () => {
@@ -284,7 +298,7 @@ describe("ingestQueues", () => {
     const p = await startLog(fs, locks, P);
     await append(p, P, 3);
     await p.flush();
-    fs.failNextWrite(P, { mode: "throw", landed: Infinity });
+    fs.fail(P, { at: "write", mode: "throw", landed: Infinity });
     await expect(p.append([body(P, 4)])).rejects.toThrow(/injected write failure/);
     const s = await startLog(fs, locks, S, 100, { log: P, lastN: p.lastAcked });
     await append(s, S, 2);
@@ -365,7 +379,7 @@ describe("reclaimQueues", () => {
   const S = "00000000000000d4" as LogId;
   const Z = "00000000000000ff" as LogId;
 
-  const segmentsOf = async (fs: AsyncFs, log: LogId): Promise<number[] | undefined> =>
+  const segmentsOf = async (fs: AsyncFs, log: LogId): Promise<readonly number[] | undefined> =>
     (await listLogs(fs)).find((l) => l.log === log)?.segments;
 
   /** Every manifest on disk can still find its records: what recovery needs of whichever one a crash leaves newest. */
@@ -374,9 +388,15 @@ describe("reclaimQueues", () => {
     for (const g of await manifestNumbers(fs)) expect(checkCover((await readManifest(fs, g))!.queues ?? [], logs), `manifest ${g}`).toBeUndefined();
   }
 
-  /** A live log whose next record, sealed in its own segment so every browser reads it, makes the next ingest publish a manifest. */
+  /**
+   * A live log whose next record, sealed in its own segment so every
+   * browser reads it, makes the next ingest publish a manifest. Its first
+   * segment is sealed at once: an unreadable one would hold back dead logs.
+   */
   async function churn(fs: QueueFs, locks: TestLocks): Promise<() => Promise<void>> {
     const z = await startLog(fs, locks, Z);
+    await append(z, Z, 1);
+    await z.rotate();
     return async () => {
       await append(z, Z, 1);
       await z.rotate();
@@ -404,7 +424,7 @@ describe("reclaimQueues", () => {
     await reclaimQueues(fs, locks.for("host"));
     await expectEveryManifestCovered(fs);
     expect(await segmentsOf(fs, A)).toEqual([5]);
-    expect(fs.removedOpen).toEqual([]);
+    expect(fs.removedLast).toEqual([]);
   });
 
   it("removes a dead log's directory only once the newest three manifests have it final", async () => {
@@ -434,7 +454,7 @@ describe("reclaimQueues", () => {
     const p = await startLog(fs, locks, P, 2);
     await append(p, P, 3);
     await p.flush();
-    fs.failNextWrite(P, { mode: "short", landed: 3 });
+    fs.fail(P, { at: "write", mode: "short", landed: 3 });
     await expect(p.append([body(P, 4)])).rejects.toThrow(/short write/);
     const s = await startLog(fs, locks, S, 2, { log: P, lastN: 3 });
     await append(s, S, 1);
