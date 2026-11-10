@@ -69,7 +69,7 @@ export type OpenOptions = {
   /**
    * Bytes this tab's memtable may hold: the rows written and not yet flushed
    * to OPFS, counted as key bytes, value bytes and an estimate per row.
-   * Default 32 MiB, at least 1 MiB. At 7/8 of it the tab asks the host to
+   * Default 16 MiB, at least 1 MiB. At 7/8 of it the tab asks the host to
    * flush and keeps writing. At the limit a write waits for that flush, so
    * a writing tab's memtable stays near the limit. The host flushes once the
    * WAL passes 7/8 of the smallest limit any open tab set.
