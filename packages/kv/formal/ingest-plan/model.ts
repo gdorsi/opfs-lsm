@@ -142,7 +142,7 @@ function logFiles(s: State): LogFiles[] {
  * exists: of a live log, one listed too late; of a dead log, whose listing
  * the host takes while holding its lock, one that is gone.
  */
-function read(s: State, log: LogId, from: number, listed?: readonly number[]): Snap {
+export function read(s: State, log: LogId, from: number, listed?: readonly number[]): Snap {
   const segs = s.logs[log]!.segments.filter((g) => !listed || listed.includes(g.firstN));
   const w = s.writers[log]!;
   const pred = segs[0]?.firstN === 1 ? w.pred : null;
