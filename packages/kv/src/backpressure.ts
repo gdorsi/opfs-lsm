@@ -1,4 +1,4 @@
-const DEFAULT_MEMTABLE_BYTES = 32 * 1024 * 1024;
+const DEFAULT_MEMTABLE_BYTES = 16 * 1024 * 1024;
 
 /** Below this, one batch may not fit. */
 const MIN_MEMTABLE_BYTES = 1024 * 1024;

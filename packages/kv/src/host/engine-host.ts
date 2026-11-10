@@ -31,21 +31,24 @@ const MAX_COMPACTION_STEPS = 8;
 /** What the host holds to keep its working set small. */
 export type HostLimits = {
   /**
-   * Op bytes of WAL records folded into one L0 run: a sixteenth of a 32 MiB
-   * budget, within 1 to 4 MiB. A larger backlog becomes several runs.
+   * Op bytes of WAL records folded into one L0 run. The wasm peak of a flush
+   * grows about tenfold with this figure. A larger backlog becomes several
+   * runs.
    */
   readonly flushRunBytes: number;
   /**
    * L0 runs at which a flush waits for a compaction step to install before it
    * publishes another. One less than the sources a merge reads, so one step
-   * can take all of L0.
+   * can take all of L0. A step takes the L0 runs that exist when it starts,
+   * and a stop at S settles near S/2 runs per step, so a low stop cuts steps
+   * short and each one rewrites all of L1.
    */
   readonly l0StopRuns: number;
 };
 
 const DEFAULT_HOST_LIMITS: HostLimits = {
-  flushRunBytes: 2 * 1024 * 1024,
-  l0StopRuns: 15,
+  flushRunBytes: 1.75 * 1024 * 1024,
+  l0StopRuns: 48,
 };
 
 /** Host counters for one database, besides the fs IO its CountingFs keeps. */

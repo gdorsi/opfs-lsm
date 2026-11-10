@@ -25,8 +25,8 @@ function settlesWithin(promise: Promise<unknown>, ms = 15): Promise<boolean> {
 }
 
 describe("memtableCaps", () => {
-  it("are 7/8 and 1x of the request, 32 MiB by default, and at least 1 MiB", () => {
-    expect(memtableCaps()).toEqual({ soft: 28 * MiB, hard: 32 * MiB });
+  it("are 7/8 and 1x of the request, 16 MiB by default, and at least 1 MiB", () => {
+    expect(memtableCaps()).toEqual({ soft: 14 * MiB, hard: 16 * MiB });
     expect(memtableCaps(8 * MiB)).toEqual({ soft: 7 * MiB, hard: 8 * MiB });
     expect(memtableCaps(1)).toEqual({ soft: 896 * 1024, hard: MiB });
   });
@@ -310,7 +310,7 @@ describe("the host's flush limit", () => {
   it("is the smaller of maxWalBytes and 7/8 of memtableBytes", async () => {
     const fs = new MemoryFs();
     expect(await limitOf(fs, {})).toBe(MiB);
-    expect(await limitOf(fs, { ingestPolicy: { maxWalBytes: 1e12 } })).toBe(28 * MiB);
+    expect(await limitOf(fs, { ingestPolicy: { maxWalBytes: 1e12 } })).toBe(14 * MiB);
     expect(await limitOf(fs, { ingestPolicy: { maxWalBytes: 1e12 }, memtableBytes: MiB })).toBe(896 * 1024);
   });
 

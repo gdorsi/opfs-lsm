@@ -12,9 +12,11 @@ const L0_RUNS_TO_COMPACT = 4;
 /**
  * A step holds a window of each source, so its memory grows with the
  * source count and not with the inputs' size. L0 runs past this many wait
- * for the next step.
+ * for the next step. A step reads all of L1 with random keys, so it should
+ * take many L0 runs: the host's L0 stop (`l0StopRuns`) is one less than
+ * this, and a step cut short by a lower figure rewrites L1 more often.
  */
-const MAX_SOURCES = 16;
+const MAX_SOURCES = 49;
 const LEVEL_RATIO = 10;
 /** Ten compaction-sized runs (`TARGET_RUN_BYTES`). */
 const L1_TARGET_BYTES = 40 * 1024 * 1024;

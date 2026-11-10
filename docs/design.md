@@ -169,7 +169,7 @@ itself: the row object and two `Uint8Array` views, and their buffers for a row t
 It moves with each write instead of being counted by a scan. The 256 is an estimate: V8 in Node
 holds 290 to 510 bytes per row, and Chrome compresses pointers.
 
-`openDb({ memtableBytes })` (default 32 MiB, at least 1 MiB) bounds it with two thresholds, the
+`openDb({ memtableBytes })` (default 16 MiB, at least 1 MiB) bounds it with two thresholds, the
 split RocksDB's write buffer manager makes between starting a flush and stalling writes. The
 tab keeps them in `Backpressure` (`packages/kv/src/backpressure.ts`), one of three states:
 
@@ -598,7 +598,7 @@ compaction that starts. A request for seqs that are already ingested writes noth
 ## Steps
 
 A flush folds the WAL as it stands when it starts, oldest records first, into one L0 run per
-`flushRunBytes` of op bytes (2 MiB). A backlog becomes several runs, so a flush holds one run's
+`flushRunBytes` of op bytes (1.75 MiB). A backlog becomes several runs, so a flush holds one run's
 worth in memory, not the backlog. Each run is its own pass through the steps below and holds the
 exclusive section for that pass only, so a compaction install can land between two runs. A host
 runs one flush at a time per database, and a flush asked for meanwhile waits for it. Records acked
@@ -626,9 +626,12 @@ The exclusive section is a promise chain inside the host plus a Web Lock named
 `opfs-lsm-ingest/<name>`. The lock covers the case of two SharedWorkers serving the same
 database, for example two builds with different script URLs.
 
-**L0 stop.** Step 1 also counts the L0 runs of manifest `G`. At 15 runs, with records waiting,
-the flush publishes nothing and releases the section. 15 is one less than the 16 sources of a
-merge, so one compaction step can take all of L0. The flush asks for a compaction pass if none
+**L0 stop.** Step 1 also counts the L0 runs of manifest `G`. At 48 runs, with records waiting,
+the flush publishes nothing and releases the section. 48 is one less than the 49 sources of a
+merge, so one compaction step can take all of L0. The stop is high on purpose: a step takes the
+L0 runs that exist when it starts, so a stop at S settles near S/2 runs per step, and every step
+with random keys rewrites all of L1. A stop at 15 made steps of about 6 runs and doubled the
+compaction writes of `kv/compaction-memory`. The flush asks for a compaction pass if none
 runs, then waits for the next step to install, outside the section so the install can take it.
 After the install it tries again. If the pass ends without an install, because nothing was left to
 merge or because it failed, the flush publishes its run anyway and checks again before the next
@@ -657,7 +660,7 @@ bytes.
 `planCompaction` reads only the manifest. It scores each level and serves the highest score
 above 1; on a tie the shallower level wins:
 - L0, once it has 4 runs or more, scores its run count over 4. Its step merges the oldest L0
-  runs, at most 15, with the L1 runs whose ranges overlap them. The newer L0 runs wait for the
+  runs, at most 48, with the L1 runs whose ranges overlap them. The newer L0 runs wait for the
   next step, still newer than all of L1.
 - L1 and below score their bytes over their budget. The step picks the run whose overlapping
   bytes in the next level are the smallest fraction of its own size, and merges it with those
@@ -674,7 +677,7 @@ the merge drop tombstones, because no older value is left for them to hide.
 
 A step reads its inputs as sources, newest first. A source is runs read back to back as one
 key-ordered stream: each L0 run is a source of its own, and the next level's overlapped runs,
-which never overlap each other, are one source together. So a step has at most 16 sources.
+which never overlap each other, are one source together. So a step has at most 49 sources.
 
 The merge is a session in wasm (`crates/engine-core/src/merge.rs`, ABI in
 `crates/engine-abi.md`) that the host pumps (`pumpMerge` in `host/compact.ts`). Each pump stops
