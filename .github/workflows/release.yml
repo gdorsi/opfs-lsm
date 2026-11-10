@@ -4,9 +4,12 @@ name: release
 # pull request from the pending .changeset/*.md files, or, once that pull
 # request is merged, publishes the new versions to npm with provenance.
 # See CONTRIBUTING.md.
+# Disabled until the packages are ready to publish. To turn releases back on,
+# restore the push trigger below and delete the workflow_dispatch line.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+#  push:
+#    branches: [main]
 
 permissions:
   contents: write
