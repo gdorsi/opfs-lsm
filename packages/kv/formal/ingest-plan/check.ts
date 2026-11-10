@@ -1,9 +1,10 @@
 /**
  * Exhaustive check of the per-tab ingest queues: the real planIngest,
  * planReclaim and checkCover, driven by every interleaving of two tabs
- * writing, one failed write, the SharedWorker's stale scans and listings,
- * and a browser crash (cut tails, a damaged frame or a dropped segment file,
- * the newest one or two manifests dropped), up to the bounds below.
+ * writing, rotations in their two steps, one failed write, a tab dying at
+ * any step, the SharedWorker's stale scans and listings, and a browser
+ * crash (cut tails, a damaged frame or a dropped segment file, the newest
+ * one or two manifests dropped), up to the bounds below.
  *
  * Run: pnpm --filter @opfs-lsm/kv formal:ingest-plan
  *
@@ -23,8 +24,8 @@
  * RECLAIM_LAG is 2. A tab's write ingested before a write it had seen
  * ingested, after a dropped manifest, is printed as a finding, not gated.
  *
- * The real rules take about 13 s at the defaults, and the whole check about
- * 30 s. FORMAL_IQ_APPENDS=3 explores about 4.5M states in about 4 minutes.
+ * The real rules take about 27 s at the defaults, and the whole check about
+ * 55 s. FORMAL_IQ_APPENDS=3 explores about 10.7M states in about 12 minutes.
  */
 import { RECLAIM_LAG } from "../../src/host/queues.js";
 import { actions, allDead, causalReorder, crashes, diskKey, drain, drainProblem, initial, PlanError, problem, type Bounds, type State, type Variant } from "./model.js";
@@ -209,6 +210,7 @@ function main(): void {
     ["(b) the planner ignores pred edges", { ignorePred: true }],
     ["(c) a live log's durable hint is ignored", { ignoreHints: true }],
     ["(d) reclaim without lag", { lag: 0 }],
+    ["(e) seal before the successor exists", { sealFirst: true }],
   ];
   let weak = false;
   for (const [name, v] of mutants) {

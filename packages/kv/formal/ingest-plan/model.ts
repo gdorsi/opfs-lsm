@@ -4,7 +4,9 @@
  * logs and their segment files, and later reads those files, plans with the
  * real `planIngest`, commits a manifest and reclaims with the real
  * `planReclaim`. Between the listing and the plan, writers go on, so the
- * listing can miss a new log or segment. A history ends in a browser crash,
+ * listing can miss a new log or segment. A rotation is two writer steps,
+ * creating the successor and sealing the old segment, so a tab can die
+ * between them, and so can the browser. A history ends in a browser crash,
  * which kills every writer, may cut each log's unflushed tail, damage a
  * frame or drop a segment file, and drops up to `Bounds.drops` newest
  * manifests; recovery opens with the real `checkCover` and drains with
@@ -47,10 +49,12 @@ export type Variant = {
   readonly ignoreHints?: boolean;
   /** Reclaim lag in generations; (d) is 0. Defaults to RECLAIM_LAG. */
   readonly lag?: number;
+  /** (e) Rotation seals the old segment before it creates the successor. */
+  readonly sealFirst?: boolean;
 };
 
 type Frame = { n: number; w: number; ok: boolean };
-/** `sealed`: closed by a SEAL frame, written and flushed before its successor is created. */
+/** `sealed`: closed by a SEAL frame, written and flushed once its successor exists. */
 type Segment = { firstN: number; frames: Frame[]; sealed: boolean };
 type Writer = {
   tab: number;
@@ -59,6 +63,8 @@ type Writer = {
   state: "live" | "abandoned" | "dead";
   acked: number;
   flushed: number;
+  /** While a rotation is half done: the firstN of the segment it rotates off. */
+  rotating: number | null;
 };
 /** `l6`: ingested from a dead log past its flushed n (design L6). */
 type Write = { id: number; log: LogId; n: number; acked: boolean; deps: number[]; l6: boolean };
@@ -83,6 +89,7 @@ export type State = {
 };
 
 export type Action = { readonly label: string; readonly apply: (s: State) => void };
+type RotationStep = { readonly verb: "create" | "seal"; readonly file: string; readonly apply: (s: State) => void };
 
 const ZERO: Manifest = { gen: 0, through: 0, queues: [], stream: [] };
 const per = <T>(v: T): Record<string, T> => Object.fromEntries(LOGS.map((l) => [l, v]));
@@ -95,7 +102,7 @@ const idOf = (ops: readonly CheckedOp[]): number => ops[0]!.key[0]!;
 
 function spawn(s: State, tab: number, log: LogId, pred: PredEdge | null): void {
   s.logs[log] = { segments: [{ firstN: 1, frames: [], sealed: false }] };
-  s.writers[log] = { tab, pred, state: "live", acked: 0, flushed: 0 };
+  s.writers[log] = { tab, pred, state: "live", acked: 0, flushed: 0, rotating: null };
 }
 
 export function initial(): State {
@@ -220,6 +227,7 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
         if (v.sameLogRecovery) {
           const segs = s.logs[log]!.segments;
           w.flushed = w.acked;
+          w.rotating = null;
           if (segs[segs.length - 1]!.firstN === w.acked + 1) segs[segs.length - 1]!.frames = [];
           else segs.push({ firstN: w.acked + 1, frames: [], sealed: false });
           return;
@@ -232,22 +240,42 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
       return;
     }
     const w = s.writers[log]!;
-    if (s.used.appends < b.appends) {
-      add(`${log} appends ${log}${w.acked + 1}`, (s) => {
+    const segs = s.logs[log]!.segments;
+    const last = segs[segs.length - 1]!;
+    const next = w.acked + 1;
+    const old = w.rotating ?? last.firstN;
+    const create: RotationStep = { verb: "create", file: `${log}/${next}.seg`, apply: (s) => void s.logs[log]!.segments.push({ firstN: next, frames: [], sealed: false }) };
+    const seal: RotationStep = {
+      verb: "seal",
+      file: `${log}/${old}.seg`,
+      apply: (s) => {
+        // Reclaim may have removed it already: the SEAL then lands in no listed file.
+        const g = s.logs[log]!.segments.find((x) => x.firstN === old);
+        if (g) g.sealed = true;
+      },
+    };
+    const [first, second] = v.sealFirst ? [seal, create] : [create, seal];
+    if (w.rotating !== null) {
+      add(`${log} ${second.verb}s ${second.file}`, (s) => {
+        second.apply(s);
+        s.writers[log]!.rotating = null;
+      });
+    } else if (last.frames.length >= b.segCap && s.used.appends < b.appends) {
+      // Only while an append is left, as a size-triggered rotation: rotating after the last append passes too, at twice the states.
+      add(`${log} ${first.verb}s ${first.file}`, (s) => {
+        const w = s.writers[log]!;
+        w.flushed = w.acked;
+        w.rotating = old;
+        first.apply(s);
+      });
+    } else if (s.used.appends < b.appends) {
+      add(`${log} appends ${log}${next}`, (s) => {
         const w = s.writers[log]!;
         const segs = s.logs[log]!.segments;
-        let seg = segs[segs.length - 1]!;
-        const n = w.acked + 1;
-        if (seg.frames.length >= b.segCap) {
-          w.flushed = w.acked;
-          seg.sealed = true;
-          seg = { firstN: n, frames: [], sealed: false };
-          segs.push(seg);
-        }
         const id = s.writes.length + 1;
-        seg.frames.push({ n, w: id, ok: true });
-        s.writes.push({ id, log, n, acked: true, deps: seen(s), l6: false });
-        w.acked = n;
+        segs[segs.length - 1]!.frames.push({ n: next, w: id, ok: true });
+        s.writes.push({ id, log, n: next, acked: true, deps: seen(s), l6: false });
+        w.acked = next;
         s.used.appends++;
       });
     }
@@ -258,7 +286,12 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
         s.hints[log] = w.acked;
       });
     }
-    if (tab === FAILING_TAB && s.used.fails < 1) {
+    if (tab === FAILING_TAB && s.used.fails < 1 && w.rotating !== null) {
+      add(`${log} fails to ${second.verb} ${second.file}`, (s) => {
+        s.tabs[tab]!.phase = "failed";
+        s.used.fails++;
+      });
+    } else if (tab === FAILING_TAB && s.used.fails < 1) {
       for (const outcome of ["lost", "landed"] as const) {
         add(`${log} fails writing ${log}${w.acked + 1} (frame ${outcome})`, (s) => {
           const w = s.writers[log]!;
@@ -407,7 +440,7 @@ export function crashes(s: State, b: Bounds): Action[] {
             }
             for (const log of LOGS) {
               const w = s.writers[log];
-              if (w) Object.assign(w, { state: "dead", acked: 0, flushed: 0 });
+              if (w) Object.assign(w, { state: "dead", acked: 0, flushed: 0, rotating: null });
             }
             s.tabs = s.tabs.map(() => ({ log: "" as LogId, next: 0, phase: "dead" }));
             s.manifests = s.manifests.slice(0, s.manifests.length - drops);
