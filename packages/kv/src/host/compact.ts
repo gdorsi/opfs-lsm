@@ -20,6 +20,7 @@ import {
   type CompactionPlan,
 } from "../store/levels.js";
 import type { HostBudget } from "./budget.js";
+import { inMergeSlot } from "./merge-slot.js";
 
 /** Merged runs written to OPFS and not yet in any generation. */
 export type CompactionOutput = {
@@ -37,6 +38,8 @@ type Merged = Pick<CompactionOutput, "outputs" | "droppedSeq">;
  * which stay contiguous and keep their bottom status. Outputs are named
  * past every manifest number in use (`knownTop`, IndexedDB's
  * `topGeneration`, and `m/`), so they never overwrite a run one may list.
+ * The merge waits for its turn in the context's one merge slot, so another
+ * database's step already running finishes first.
  */
 export async function mergeNextStep(
   fs: AsyncFs,
@@ -50,13 +53,14 @@ export async function mergeNextStep(
   const plan = planCompaction(meta.runs, { maxSources: budget.maxSources });
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
+  const write = () => inMergeSlot(() => writeStep(fs, plan, name, budget));
   let merged: Merged;
   try {
-    merged = await writeStep(fs, plan, name, budget);
+    merged = await write();
   } catch (err) {
     if (!(err instanceof WebAssembly.RuntimeError)) throw err;
     // The trap dropped wasm for this context, so the TypeScript session runs the step.
-    merged = await writeStep(fs, plan, name, budget);
+    merged = await write();
   }
   return { inputs: plan.inputs.map((r) => r.path), ...merged };
 }

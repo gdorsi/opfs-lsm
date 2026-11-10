@@ -146,8 +146,8 @@ export type FlatEngine = {
   decodeSst(buf: Uint8Array): SstEntry[];
   lz4Decompress(src: Uint8Array, size: number): Uint8Array;
   scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
-  /** The module's merge session, or undefined while it holds another. */
-  openMerge(spec: MergeSpec): MergeCore | undefined;
+  /** The module's merge session. It holds one at a time, so a second open throws: the host takes turns (`inMergeSlot`). */
+  openMerge(spec: MergeSpec): MergeCore;
 };
 
 const TAG_PUT = 1;
@@ -266,7 +266,6 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
         spec.tailBytes,
         spec.yieldBytes,
       );
-      if (opened === SESSION_OPEN) return undefined;
       if (opened < 0) throw statusError("merge_open", opened, inputBytes, capacity);
       // The module holds one session and `merge_close` drops whichever is
       // open, so a closed handle must not reach a session opened after it.
@@ -375,6 +374,8 @@ function unpackEntries(bytes: Uint8Array): SstEntry[] {
 }
 
 let engine: FlatEngine | undefined;
+/** Kept so a new instance can be made without fetching or compiling again. */
+let wasmModule: WebAssembly.Module | undefined;
 let initOnce: Promise<void> | undefined;
 
 /**
@@ -394,7 +395,9 @@ async function loadWasm(): Promise<FlatEngine | undefined> {
     // Node/vitest: file:// fetch is broken, so pass bytes. Browser: stream from the URL.
     const bytes = await readWasmBytes(url);
     const module = await WebAssembly.compile((bytes ?? (await fetchWasm(url))) as BufferSource);
-    return flatEngine(await WebAssembly.instantiate(module, {}));
+    const loaded = flatEngine(await WebAssembly.instantiate(module, {}));
+    wasmModule = module;
+    return loaded;
   } catch (err) {
     const env = (globalThis as { process?: { env?: Record<string, string> } })
       .process?.env;
@@ -436,18 +439,18 @@ export async function ensureEngine(): Promise<void> {
   if (!initOnce) {
     initOnce = (async () => {
       engine = await loadWasm();
-      const mod = engine;
-      if (mod) {
+      if (engine) {
+        // They read `engine` at each call: it is replaced when the instance is.
         useLz4Decoder((src, size) => {
           try {
-            return mod.lz4Decompress(src, size);
+            return engine!.lz4Decompress(src, size);
           } catch (err) {
             return afterWasmError(err, "sst lz4 block corrupt", () => lz4DecompressJs(src, size));
           }
         });
         useBlockScanner((framed, lz4, patterns) => {
           try {
-            return mod.scanBlockContains(framed, lz4, patterns);
+            return engine!.scanBlockContains(framed, lz4, patterns);
           } catch (err) {
             if (err instanceof WebAssembly.RuntimeError) dropWasm();
             if (err instanceof CorruptDatabaseError || err instanceof EngineCapacityError) throw err;
@@ -490,6 +493,15 @@ export function engineUsingWasm(): boolean {
 }
 
 /**
+ * A process that dies mid-merge leaves no session behind, since its successor
+ * has an engine of its own. A test that freezes a host to stand in for that
+ * death restarts the engine for the next host.
+ */
+export function __restartEngineForTests(): void {
+  if (engine && wasmModule) engine = flatEngine(new WebAssembly.Instance(wasmModule, {}));
+}
+
+/**
  * A run of `entries` with what the encoder reports at its end: the size and
  * the key range the manifest records. Without wasm, every run is written
  * raw: readers take either codec.
@@ -528,16 +540,16 @@ export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
 }
 
 /**
- * A merge session over `spec`: wasm's when the module is loaded and holds
- * no other session, the TypeScript one otherwise, whose runs are raw. A
+ * A merge session over `spec`: wasm's when the module is loaded, the
+ * TypeScript one when it did not load or trapped, whose runs are raw. A
  * trap in the wasm session drops wasm for this context, as any trap does.
+ * The caller holds the merge slot, since the module has one session.
  */
 export async function openMerge(spec: MergeSpec): Promise<MergeCore> {
   await ensureEngine();
   if (engine) {
     try {
-      const core = engine.openMerge(spec);
-      if (core) return dropWasmOnTrap(core);
+      return dropWasmOnTrap(engine.openMerge(spec));
     } catch (err) {
       if (!(err instanceof WebAssembly.RuntimeError)) throw err;
       dropWasm();

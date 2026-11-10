@@ -1,5 +1,7 @@
 import { compareBytes } from "../../src/bytes.js";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
+import { __resetMergeSlotForTests } from "../../src/host/merge-slot.js";
+import { __restartEngineForTests } from "../../src/store/engine.js";
 import { openHarnessDb } from "../../src/testing.js";
 import type { Db } from "../../src/index.js";
 import { checkDatabase, decodeWalRow, deleteWal, type DatabaseReport } from "./check-database.js";
@@ -96,9 +98,12 @@ export class Traced {
     if (differ.length > 0) throw new Error(`replayed OPFS differs at ${differ.join(", ")}`);
   }
 
+  /** A host frozen mid-merge leaves a session open and a turn taken in this context, as a dead process would not. */
   async dispose(): Promise<void> {
     this.unregister();
     await deleteWal(this.name);
+    __resetMergeSlotForTests();
+    __restartEngineForTests();
   }
 }
 

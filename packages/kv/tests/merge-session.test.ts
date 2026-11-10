@@ -144,11 +144,7 @@ async function merge(
   }
 }
 
-const openWasm = (spec: MergeSpec): MergeCore => {
-  const core = wasm.openMerge(spec);
-  if (!core) throw new Error("the test engine already holds a session");
-  return core;
-};
+const openWasm = (spec: MergeSpec): MergeCore => wasm.openMerge(spec);
 
 type Case = { fs: MemoryFs; sources: Source[]; paths: string[][]; spec: MergeSpec };
 

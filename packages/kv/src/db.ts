@@ -17,6 +17,7 @@ import {
   CorruptDatabaseError,
   StorageUnavailableError,
 } from "./errors.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES } from "./host/budget.js";
 import {
   EngineHost,
   createLocalIngestClient,
@@ -75,6 +76,15 @@ export type OpenOptions = {
    * WAL passes 7/8 of the smallest limit any open tab set.
    */
   readonly memtableBytes?: number;
+  /**
+   * Bytes the SharedWorker may spend on flushing and compacting this
+   * database: its wasm heap and the run data in flight. Default 32 MiB, at
+   * least 8 MiB. A smaller figure gives smaller flush runs and a smaller read
+   * window, and under about 17.5 MiB fewer runs in one compaction step. The host's
+   * figures stop growing at 64 MiB. When tabs differ, the host uses the
+   * smallest.
+   */
+  readonly compactionMemoryBytes?: number;
 };
 
 /** Below this, one page per merge source may not fit. */
@@ -382,7 +392,11 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   await db.sync();
   span(trace, "sync", performance.now() - syncAt);
   // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
-  ingest.watch(name, { ...policy, maxWalBytes: Math.min(policy.maxWalBytes, caps.soft) });
+  ingest.watch(name, {
+    ...policy,
+    maxWalBytes: Math.min(policy.maxWalBytes, caps.soft),
+    compactionMemoryBytes: options.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
+  });
   span(trace, "open", performance.now() - openAt);
   return db;
 }

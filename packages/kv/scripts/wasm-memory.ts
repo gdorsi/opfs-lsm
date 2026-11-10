@@ -93,7 +93,6 @@ async function merge({ sources, flushMiB, chunk, tail }: Shape, flushEvery?: num
     tailBytes: tail,
     yieldBytes: MiB,
   });
-  if (!core) throw new Error("the instance already holds a session");
   const open = bytes();
   let peak = open;
   const flushEntries = flushEvery ? sortedEntries(flushMiB * MiB, seq) : [];

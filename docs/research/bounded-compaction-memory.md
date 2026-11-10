@@ -203,8 +203,11 @@ format does not change. It refuses keys that arrive out of order. The flush
   place the formula lives, and tests pin its outputs (see the arithmetic
   below).
 - **One merge at a time** per SharedWorker, across all of its databases,
-  through a host-wide `mergeSlot` mutex. LevelDB runs one background
-  compaction, and TigerBeetle's compaction pool has size 1.
+  through a host-wide `mergeSlot` mutex (`inMergeSlot` in
+  `host/merge-slot.ts`). LevelDB runs one background compaction, and
+  TigerBeetle's compaction pool has size 1. A second wasm session is a host
+  bug and throws, so the old fallback to the TypeScript session is gone: the
+  second merge waits instead. A flush does not take the slot.
 - **Bounded flush.**
   - `ingestAll` folds the oldest uningested records, at most `flushRunBytes`
     of op bytes per L0 run and always at least one record.

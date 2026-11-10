@@ -719,16 +719,39 @@ reserves that at open and returns an error, never a trap, when memory cannot gro
 is corrupt, or any read or write fails, the host deletes every output the step wrote and installs
 nothing.
 
-Without wasm, or while another step holds the module's one session, the TypeScript session
+Without wasm, because the module did not load or trapped, the TypeScript session
 (`store/merge-ts.ts`) runs the same protocol. It decodes each read's blocks at once and gathers
 an output run's entries before it encodes them, so it holds about 8 MiB more than the reads, and
 its runs are raw.
 
+## Memory budget
+
+`openDb({ compactionMemoryBytes })` (default 32 MiB, at least 8 MiB) is the memory the
+SharedWorker may spend on flushing and compacting one database: its wasm heap and the run data
+in flight in JS. When tabs pass different values, the host uses the smallest, as it does for
+`maxWalBytes`. `hostBudget` in `host/budget.ts` is the one place the figures follow from it:
+
+| Budget | Flush run | Sources | L0 stop | Read window | Tail read | Recycle at |
+|---|---:|---:|---:|---:|---:|---:|
+| 16 MiB | 0.875 MiB | 44 | 43 | 64 KiB | 64 KiB | 8 MiB |
+| 32 MiB | 1.75 MiB | 49 | 48 | 128 KiB | 128 KiB | 16 MiB |
+| 64 MiB | 3.5 MiB | 49 | 48 | 256 KiB | 128 KiB | 32 MiB |
+
+Past 64 MiB only the recycle threshold grows. A flush and a merge session share one wasm
+instance and can overlap, so the budget covers both and the module. The derivation, and the wasm
+memory measured behind it, are in `docs/research/bounded-compaction-memory.md`.
+
+Merges take turns in a JS context, across its databases. A step waits at the merge slot
+(`host/merge-slot.ts`) before it opens any input, because the module holds one session and two
+working sets would add up past the budget. A flush does not take the slot. It runs on the engine
+between the merge's pumps.
+
 ## Installing
 
-The merge itself runs without the ingest lock. It holds only `opfs-lsm-compact/<name>`, so
-flushes keep going while it runs. A flush meanwhile only adds L0 runs in front of the inputs, so
-the plan stays valid. To install, under the exclusive section, the host:
+The merge itself runs without the ingest lock. It holds only `opfs-lsm-compact/<name>` and its
+turn at the merge slot, so flushes keep going while it runs. A flush meanwhile only adds L0 runs
+in front of the inputs, so the plan stays valid. To install, under the exclusive section, the
+host:
 
 1. Reconciles, and checks that every input is still in the recorded manifest `G`.
 2. Writes manifest `top + 1`, with the inputs replaced by the outputs (each with the size and key

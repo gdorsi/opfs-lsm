@@ -19,6 +19,12 @@ export type HostStats = {
   layout: { level: number; runs: number; bytes: number }[];
 };
 
+/** What a tab tells the host when it opens a database. The host uses the smallest figure of each. */
+export type WatchPolicy = IngestPolicy & {
+  /** The tab's `compactionMemoryBytes`, which sets the host's `hostBudget`. */
+  readonly compactionMemoryBytes: number;
+};
+
 /** The BroadcastChannel where tabs share appends and new generations. */
 export function layersChannel(name: string): string {
   return `opfs-lsm-layers/${name}`;
@@ -74,6 +80,7 @@ export type ClientToHost =
       readonly type: "watch";
       readonly name: string;
       readonly maxWalBytes: number;
+      readonly compactionMemoryBytes: number;
       /** Ask the host to report the background WAL scan. Open does not wait for it. */
       readonly trace?: boolean;
     }
@@ -115,9 +122,10 @@ export type IngestClient = {
   ): Promise<{ generation: number }>;
   /**
    * Have the host ingest `name` on its own once the WAL waiting for ingest
-   * passes `policy.maxWalBytes`, starting with what is already waiting.
+   * passes `policy.maxWalBytes`, starting with what is already waiting, and
+   * hold its flushes and compactions to `policy.compactionMemoryBytes`.
    */
-  watch(name: string, policy: IngestPolicy): void;
+  watch(name: string, policy: WatchPolicy): void;
   /** This tab no longer needs the host to watch `name`. */
   unwatch(name: string): void;
   /** Host counters for `name`. Test and bench only. */

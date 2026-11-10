@@ -22,6 +22,7 @@ import {
   type HostStats,
   type HostToClient,
   type IngestClient,
+  type WatchPolicy,
 } from "./protocol.js";
 
 export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
@@ -45,6 +46,8 @@ type HostCounts = {
 type IngestWatch = {
   /** The smallest limit any watching tab asked for. */
   maxWalBytes: number;
+  /** The smallest `compactionMemoryBytes` any watching tab asked for. */
+  compactionMemoryBytes: number;
   /** Op bytes heard or measured and not yet folded into a run. */
   pendingBytes: number;
   /**
@@ -110,8 +113,9 @@ export class EngineHost {
     private readonly overrides: Partial<HostBudget> = {},
   ) {}
 
-  private budget(): HostBudget {
-    return { ...hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES), ...this.overrides };
+  private budget(dbName: DbName): HostBudget {
+    const asked = this.watches.get(dbName)?.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES;
+    return { ...hostBudget(asked), ...this.overrides };
   }
 
   /** Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
@@ -208,7 +212,7 @@ export class EngineHost {
     let foldedBytes = 0;
     let pastStop = false;
     for (;;) {
-      const budget = this.budget();
+      const budget = this.budget(dbName);
       // Taken before the attempt, so an install that lands during it is not missed.
       const installed = this.nextInstall(dbName);
       const chunk = await this.exclusive(dbName, () =>
@@ -275,15 +279,17 @@ export class EngineHost {
   }
 
   /**
-   * Ingest `name` on the host's own once its WAL passes `maxWalBytes`, with
-   * no tab asking. Reads the byte counter in the background and ingests
-   * when a reopened database is already over the limit.
+   * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
+   * with no tab asking. Reads the byte counter in the background and ingests
+   * when a reopened database is already over the limit. The host holds
+   * `name` to the smallest `compactionMemoryBytes` any tab passed.
    */
-  watch(name: string, maxWalBytes: number, onScan?: (scan: WatchScan) => void): void {
+  watch(name: string, policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
     const dbName = checkDbName(name);
-    const watch = this.watches.get(dbName) ?? this.startWatch(dbName, maxWalBytes);
+    const watch = this.watches.get(dbName) ?? this.startWatch(dbName, policy);
     watch.watchers += 1;
-    watch.maxWalBytes = Math.min(watch.maxWalBytes, maxWalBytes);
+    watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
+    watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
     const scanAt = onScan ? performance.now() : 0;
     void this.withWal(dbName, (wal) => wal.uningestedBytes()).then(
@@ -313,11 +319,12 @@ export class EngineHost {
     this.watches.delete(dbName);
   }
 
-  private startWatch(dbName: DbName, maxWalBytes: number): IngestWatch {
+  private startWatch(dbName: DbName, policy: WatchPolicy): IngestWatch {
     const watch: IngestWatch = {
-      maxWalBytes,
+      maxWalBytes: policy.maxWalBytes,
+      compactionMemoryBytes: policy.compactionMemoryBytes,
       pendingBytes: 0,
-      triggerAt: maxWalBytes,
+      triggerAt: policy.maxWalBytes,
       state: "idle",
       watchers: 0,
       bus: undefined,
@@ -413,7 +420,7 @@ export class EngineHost {
       const base = await loadGeneration(fs, meta.generation ?? 0);
       // Gone when a flush installed a newer generation since: plan again.
       if (!base) continue;
-      const step = await mergeNextStep(fs, this.budget(), base, meta.top);
+      const step = await mergeNextStep(fs, this.budget(dbName), base, meta.top);
       if (!step) return;
       await this.exclusive(dbName, () =>
         this.withWal(dbName, async (wal) => {
@@ -522,7 +529,7 @@ export function attachEngineHostPort(
         case "watch":
           host.watch(
             msg.name,
-            msg.maxWalBytes,
+            { maxWalBytes: msg.maxWalBytes, compactionMemoryBytes: msg.compactionMemoryBytes },
             msg.trace
               ? (scan) =>
                   reply({
@@ -602,6 +609,7 @@ export function createPortIngestClient(
         type: "watch",
         name,
         maxWalBytes: policy.maxWalBytes,
+        compactionMemoryBytes: policy.compactionMemoryBytes,
         ...(onWatchScan ? { trace: true } : {}),
       };
       port.postMessage(msg);
@@ -625,7 +633,7 @@ export function createPortIngestClient(
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
     ingest: (name, through, settle) => host.ingest(name, through, settle),
-    watch: (name, policy) => host.watch(name, policy.maxWalBytes),
+    watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
     stats: (name) => host.stats(name),
     close: () => undefined,
