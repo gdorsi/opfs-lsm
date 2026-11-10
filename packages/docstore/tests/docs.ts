@@ -44,7 +44,7 @@ export const asQuery = (q: QueryInput) => q as DocQuery;
 const WORDS = ["Buy", "milk", "MILKSHAKE", "buyer", "Bacon", "rép", "Ünï", "x1", "2024", ",", " ", "-"];
 export const textArb = fc.array(fc.constantFrom(...WORDS), { maxLength: 5 }).map((ws) => ws.join(" "));
 const matchArb = fc
-  .array(fc.constantFrom("bu", "BUY", "mi", "milk", "milks", "ba", "r", "ün", "x", "20", "q"), { minLength: 1, maxLength: 2 })
+  .array(fc.constantFrom("bu", "BUY", "mi", "milk", "milks", "ba", "r", "ün", "x", "20", "q", "ilk", "uy", "HAKE", "ï", "1", "24"), { minLength: 1, maxLength: 2 })
   .map((ws) => ws.join(" "));
 const idArb = stringArb.filter((s) => s !== "");
 

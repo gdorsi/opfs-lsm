@@ -70,7 +70,7 @@ export function expected(docs: readonly Doc[], ix: ModelIndex | undefined, q: Qu
     if (eq.length < h.values.length && !inBound(h.values[eq.length]!, q)) return false;
     if (ix?.kind !== "text" || words.length === 0) return true;
     const have = wordsOf(at(h.doc, ix.text) as string);
-    return words.every((w) => have.some((word) => word.startsWith(w)));
+    return words.every((w) => have.some((word) => word.includes(w)));
   });
   return q.reverse ? out.reverse() : out;
 }
