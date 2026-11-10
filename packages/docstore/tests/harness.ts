@@ -1,6 +1,7 @@
-import type { BatchTx, Db, Entry } from "@opfs-lsm/kv";
+import { prefixBound, type BatchTx, type Db, type Entry } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
-import { ROOT } from "../src/keys.js";
+import type { StoredCatalog } from "../src/catalog.js";
+import { CATALOG_KEY, ROOT, collectionPrefix, indexPrefix, type CollectionId, type IndexId } from "../src/keys.js";
 
 let dbs = 0;
 
@@ -23,10 +24,56 @@ export async function docstoreKeys(kv: Db): Promise<Entry[]> {
 
 export async function keysUnder(kv: Db, prefix: Uint8Array): Promise<number> {
   let n = 0;
-  const end = Uint8Array.from(prefix);
-  end[end.length - 1]! += 1;
-  for await (const _ of kv.range({ start: prefix, endExclusive: end })) n++;
+  for await (const _ of kv.range(prefixBound(prefix))) n++;
   return n;
+}
+
+/** The catalog as stored, parsed. */
+export async function storedCatalog(kv: Db): Promise<StoredCatalog> {
+  return JSON.parse(new TextDecoder().decode(await kv.get(CATALOG_KEY))) as StoredCatalog;
+}
+
+/** `64 CC CC` of a collection, or `64 CC CC II` of one of its indexes, as the stored catalog names them now. */
+export async function storedPrefix(kv: Db, collection: string, index?: string): Promise<Uint8Array> {
+  const c = (await storedCatalog(kv)).collections[collection]!;
+  const id = c.id as CollectionId;
+  return index === undefined ? collectionPrefix(id) : indexPrefix(id, c.indexes[index]!.id as IndexId);
+}
+
+/**
+ * `kv` whose `method` lets `free` calls through and holds the later ones
+ * until `release`. `arrived(n)` resolves once n calls have been made.
+ */
+export function gate(kv: Db, method: "range" | "batch", free: number) {
+  let allowed = free;
+  let calls = 0;
+  let wake: (() => void)[] = [];
+  const watchers: { n: number; resolve: () => void }[] = [];
+  const pass = async () => {
+    const mine = ++calls;
+    for (const w of watchers.filter((w) => calls >= w.n)) w.resolve();
+    while (mine > allowed) await new Promise<void>((r) => wake.push(r));
+  };
+  const over: Partial<Db> =
+    method === "range"
+      ? {
+          range: async function* (range) {
+            await pass();
+            yield* kv.range(range);
+          },
+        }
+      : { batch: async (build) => (await pass(), kv.batch(build)) };
+  return {
+    db: wrap(kv, over),
+    arrived: (n: number) =>
+      calls >= n ? Promise.resolve() : new Promise<void>((resolve) => watchers.push({ n, resolve })),
+    release(n = Number.POSITIVE_INFINITY) {
+      allowed = n === Number.POSITIVE_INFINITY ? n : allowed + n;
+      const woken = wake;
+      wake = [];
+      for (const w of woken) w();
+    },
+  };
 }
 
 export type UpdateRecord = { readonly reads: number; readonly puts: number; readonly deletes: number };

@@ -52,6 +52,12 @@ export interface Collection<T extends JsonDoc, Ix> {
   delete(id: string): Promise<boolean>;
   /** One transaction. Returns how many of the distinct ids existed. */
   deleteMany(ids: readonly string[]): Promise<number>;
+  /**
+   * Remove every document with one catalog write: the collection gets a new
+   * id, so every reader and writer stops seeing the old keys at once. The old
+   * keys are deleted in the background. The cost does not depend on the size.
+   */
+  clear(): Promise<void>;
 
   /**
    * One page of documents in index order (`reverse`: descending). `next` is
@@ -281,6 +287,10 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
         return priorOf(coll, idb, await this.store.kv.get(concat(coll.rows.prefix, idb)));
       }),
     );
+  }
+
+  clear(): Promise<void> {
+    return this.store.clear(this.name);
   }
 
   async query(q: Query<T, Ix>): Promise<Page<T>> {

@@ -90,7 +90,7 @@ export function upperOf(prefix: Uint8Array): Uint8Array {
 }
 
 /** The smallest key after `key`. */
-function after(key: Uint8Array): Uint8Array {
+export function after(key: Uint8Array): Uint8Array {
   return concat(key, ZERO);
 }
 const ZERO = Uint8Array.of(0);
