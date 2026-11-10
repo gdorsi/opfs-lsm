@@ -18,7 +18,7 @@
     "lint": "oxlint",
     "deadcode": "fallow dead-code",
     "static": "pnpm lint && pnpm deadcode",
-    "test": "node scripts/check-readme.mjs && pnpm -r run build && pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/collections test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
+    "test": "node scripts/check-readme.mjs && pnpm -r run build && pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/collections test && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
     "test:kv": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/kv test:unit",
     "test:collections": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/collections run build && pnpm --filter @opfs-lsm/collections test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
     "bench": "pnpm --filter './packages/*' build && node bench/cli.ts run",

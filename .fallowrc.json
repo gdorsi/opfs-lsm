@@ -7,6 +7,7 @@
     "packages/*/formal/run-all.ts",
     "packages/*/fuzz/make-corpus.ts",
     "packages/*/fuzz/jazzer/*.ts",
+    "packages/docstore/tests/usage.ts",
     "examples/*/scripts/**/*.ts",
     "bench/cli.ts",
     "bench/page/main.ts",
