@@ -817,9 +817,10 @@ class DbImpl implements Db {
     const ks = keys.map(checkKey);
     const run = async (): Promise<T> => {
       for (;;) {
-        await this.landedAll;
-        // The read and the append below run in one task, so nothing of this page lands between them.
+        // Its turn comes after every write called before it was sent, which may have waited for room.
         const step = await this.whenRoom(0, async () => {
+          await this.landedAll;
+          // The read and the append below run in one task, so nothing of this page lands between them.
           const values = this.readKeys(ks, this.installed.levels);
           if (values instanceof Miss) return values;
           let result!: T;

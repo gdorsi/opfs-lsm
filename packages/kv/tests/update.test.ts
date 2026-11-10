@@ -26,6 +26,22 @@ describe("update", () => {
     await db.close();
   });
 
+  it("an update reads this page's earlier write that was still waiting for room", async () => {
+    const db = await openHarnessDb({ name: NAME, fs: new MemoryFs(), pendingBytes: 1 << 20 });
+    const pad = new Uint8Array(600 * 1024);
+    const first = db.put(utf("pad1"), pad);
+    const second = db.batch((tx) => {
+      tx.put(utf("pad2"), pad);
+      tx.put(utf("n"), utf("7"));
+    });
+    const bumped = db.update([utf("n")], ([cur], tx) => {
+      tx.put(utf("n"), utf(String(Number(text(cur) ?? "0") + 1)));
+    });
+    await Promise.all([first, second, bumped]);
+    expect(text(await db.get(utf("n")))).toBe("8");
+    await db.close();
+  });
+
   it("updates from two pages are last-writer-wins: both pages end on one page's last write", async () => {
     const fs = new MemoryFs();
     const a = await openHarnessDb({ name: NAME, fs });
