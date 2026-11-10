@@ -1,11 +1,13 @@
 import fc from "fast-check";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns, unpackHits } from "../src/store/block-scan.js";
-import { encodeSst as encodeSstWasm, mergeSsts } from "../src/store/engine.js";
+import { encodeSst as encodeSstWasm, type MergeSpec } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
+import { openMergeTs } from "../src/store/merge-ts.js";
 import { BlockEntries, blockBytes, decodeSst, encodeSst, type EncodedRun, type SstEntry } from "../src/store/sst.js";
+import { mergeRuns } from "../tests/runs.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
 import { bounded, framedBlocks, repairSst, RuleBroken, tally, type Repair } from "./targets.js";
 import { loadWasm, type FlatEngine } from "./wasm.js";
@@ -221,12 +223,18 @@ describe("wasm against the TypeScript fallbacks", () => {
   it(
     "merge the same runs to the same entries",
     async () => {
+      const openWasm = (spec: MergeSpec) => {
+        const core = wasm.openMerge(spec);
+        if (!core) throw new Error("the test engine already holds a session");
+        return core;
+      };
       await expect(
         fc.assert(
           fc.asyncProperty(fc.array(runArb, { minLength: 1, maxLength: 4 }), fc.boolean(), fc.constantFrom(64, 1024, Number.MAX_SAFE_INTEGER), async (runs, drop, target) => {
-            const blobs = await Promise.all(runs.map(encodeRun));
-            const w = await mergeSsts(blobs, drop, target, "raw");
-            const t = await mergeSstsTs(blobs, drop, target);
+            const sources = (await Promise.all(runs.map(encodeRun))).map((run) => [run]);
+            const options = { dropTombstones: drop, targetBytes: target };
+            const w = await mergeRuns(sources, { ...options, open: openWasm });
+            const t = await mergeRuns(sources, { ...options, open: openMergeTs });
             const flat = async (out: readonly EncodedRun[]) => plain(out.flatMap((r) => decodeSst(r.body)));
             expect(await flat(w.runs)).toEqual(await flat(t.runs));
             expect(w.droppedSeq).toBe(t.droppedSeq);
@@ -242,25 +250,3 @@ describe("wasm against the TypeScript fallbacks", () => {
     TIMEOUT,
   );
 });
-
-/**
- * `mergeSsts` as it runs when wasm does not load: a fresh copy of engine.ts
- * pointed at a module that is not there, so no product seam is needed.
- */
-async function mergeSstsTs(blobs: readonly Uint8Array[], drop: boolean, target: number) {
-  fallback ??= (async () => {
-    vi.resetModules();
-    const g = globalThis as { __OPFS_LSM_ENGINE_URL?: string };
-    g.__OPFS_LSM_ENGINE_URL = "./no-such-engine.wasm";
-    try {
-      const engine = await import("../src/store/engine.js");
-      await engine.ensureEngine();
-      if (engine.engineUsingWasm()) throw new Error("the fallback engine loaded wasm");
-      return engine;
-    } finally {
-      delete g.__OPFS_LSM_ENGINE_URL;
-    }
-  })();
-  return (await fallback).mergeSsts(blobs, drop, target, "raw");
-}
-let fallback: Promise<typeof import("../src/store/engine.js")> | undefined;

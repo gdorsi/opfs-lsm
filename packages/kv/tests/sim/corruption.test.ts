@@ -1,9 +1,10 @@
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { CommitError, CorruptDatabaseError } from "../../src/errors.js";
 import { EngineHost, MemoryFs, createLocalIngestClient, type Db } from "../../src/index.js";
-import { encodeRun, ensureEngine, mergeSsts } from "../../src/store/engine.js";
+import { encodeRun, ensureEngine } from "../../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../../src/store/generation.js";
 import { openHarnessDb } from "../../src/testing.js";
+import { mergeRuns } from "../runs.js";
 import { checkDatabase, deleteWal, walMeta, walRows, walStore } from "./check-database.js";
 
 /**
@@ -400,7 +401,7 @@ describe("recovery never turns corruption into data loss", () => {
     const gen = (await walMeta(f.name)).generation!;
     const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
     const bodies = await Promise.all(old.runs.map(async (r) => (await f.fs.read(r.path, 0, Number.POSITIVE_INFINITY))!));
-    const merged = (await mergeSsts(bodies, true)).runs[0]!;
+    const merged = (await mergeRuns(bodies.map((b) => [b]), { dropTombstones: true })).runs[0]!;
     const path = `l1/c${gen + 1}.0.sst`;
     await put(f.fs, path, merged.body);
     await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [{ path, ...merged.end }] }));

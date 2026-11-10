@@ -54,6 +54,33 @@ describe("planCompaction", () => {
     expect(planCompaction(runs.slice(1), 1000)).toBeUndefined();
   });
 
+  it("reads each L0 run as a source of its own and the L1 runs it overlaps as one, newest first", () => {
+    const l1 = [run("l1/a.sst", 100, "a", "b"), run("l1/b.sst", 100, "c", "d"), run("l1/c.sst", 100, "e", "z")];
+    const plan = planCompaction([...l0(4), ...l1]);
+    expect(plan?.sources.map((s) => s.map((r) => r.path))).toEqual([
+      ...l0(4).map((r) => [r.path]),
+      ["l1/b.sst", "l1/c.sst"],
+    ]);
+    expect(paths(plan)).toEqual(plan?.sources.flat().map((r) => r.path));
+  });
+
+  it("takes the oldest fifteen L0 runs, so a step reads at most sixteen sources", () => {
+    const runs = [...l0(20), run("l1/a.sst", 100, "a", "z")];
+    const plan = planCompaction(runs)!;
+    expect(plan.sources).toHaveLength(16);
+    expect(plan.sources.slice(0, 15).map((s) => s.map((r) => r.path))).toEqual(l0(20).slice(5).map((r) => [r.path]));
+    expect(plan.sources[15]!.map((r) => r.path)).toEqual(["l1/a.sst"]);
+    // The five newest stay in L0, in front of the step's output.
+    const after = replaceRuns(runs, paths(plan)!, [run("l1/c9.0.sst", 100, "a", "z")]);
+    expect(after.map((r) => r.path)).toEqual([...l0(5).map((r) => r.path), "l1/c9.0.sst"]);
+  });
+
+  it("reads the pushed run as one source and the runs it overlaps below as another", () => {
+    const runs = [run("l1/a.sst", 1500, "a", "f"), run("l2/a.sst", 100, "a", "c"), run("l2/b.sst", 100, "d", "e"), run("l2/c.sst", 100, "x", "z")];
+    expect(planCompaction(runs, 1000)?.sources.map((s) => s.map((r) => r.path))).toEqual([["l1/a.sst"], ["l2/a.sst", "l2/b.sst"]]);
+    expect(planCompaction([run("l1/a.sst", 1500, "a", "f")], 1000)?.sources.map((s) => s.map((r) => r.path))).toEqual([["l1/a.sst"]]);
+  });
+
   it("compacts the level furthest over its target first", () => {
     const l1 = [run("l1/a.sst", 1500, "a", "b"), run("l1/b.sst", 1500, "c", "f")];
     expect(planCompaction([...l0(4), ...l1], 1000)?.outputLevel).toBe(2);

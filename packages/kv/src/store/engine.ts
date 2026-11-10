@@ -3,20 +3,18 @@
  * and falls back to the TS SST codec if it is missing (before the wasm is
  * built) or traps.
  */
-import type { EncodedRun, SstCodec, SstEntry } from "./sst.js";
+import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
 import * as sstTs from "./sst.js";
-import { foldEntries } from "./fold.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
+import { openMergeTs } from "./merge-ts.js";
 import { CorruptDatabaseError } from "../errors.js";
 
 /**
  * Bytes handed to the module's `init`. A module that reserves once serves
  * every call from this slab and never grows; the Rust module allocates
- * dynamically and ignores it. Sized from a prototype that reserved once:
- * an encode peaked at 2.75x its input and a merge at about 10x its
- * compressed input, so a 73 MB flush needs 200 MiB and a merge of 40 MiB
- * of LZ4 runs about 400 MiB.
+ * dynamically and ignores it. Sized from a prototype that reserved once,
+ * where an encode peaked at 2.75x its input, so a 73 MB flush needs 200 MiB.
  */
 const ENGINE_CAPACITY = 1024 * 1024 * 1024;
 
@@ -31,6 +29,7 @@ export class EngineCapacityError extends Error {
 }
 
 const OUT_OF_MEMORY = -11;
+const SESSION_OPEN = -13;
 const STATUS_NAMES: Record<number, string> = {
   [-1]: "too short",
   [-2]: "bad magic",
@@ -45,6 +44,20 @@ const STATUS_NAMES: Record<number, string> = {
   [-12]: "patterns truncated",
   [-14]: "keys out of order",
 };
+/** The host broke the session protocol: a bug, not corrupt data. */
+const HOST_BUGS: Record<number, string> = {
+  [SESSION_OPEN]: "a session is open",
+  [-15]: "no session",
+  [-16]: "a demand was not fed",
+};
+
+const NEED = 1;
+const WRITE = 2;
+const RUN_END = 3;
+const YIELD = 4;
+const DONE = 5;
+const DEMAND_BYTES = 16;
+const RUN_HEAD_BYTES = 16;
 
 type Exports = {
   memory: WebAssembly.Memory;
@@ -56,8 +69,72 @@ type Exports = {
   decode_sst(ptr: number, len: number): number;
   lz4_decompress(ptr: number, len: number, size: number): number;
   scan_block_contains(ptr: number, len: number, lz4: number, patPtr: number, patLen: number): number;
-  merge_ssts(ptr: number, len: number, drop: number, target: number, lz4: number): number;
+  merge_open(
+    ptr: number,
+    len: number,
+    drop: number,
+    target: number,
+    lz4: number,
+    chunkBytes: number,
+    tailBytes: number,
+    yieldBytes: number,
+  ): number;
+  merge_pump(): number;
+  merge_feed(source: number, len: number): number;
+  merge_close(): number;
 };
+
+/**
+ * A compaction merge that the host drives a stop at a time
+ * (crates/engine-abi.md, "Merge session"), so it holds a window of each
+ * input instead of the whole input.
+ */
+export type MergeSpec = {
+  /**
+   * Newest first. A source is the byte sizes of runs read back to back as
+   * one key-ordered stream: an L0 run, or the runs a step takes from the
+   * level below it.
+   */
+  readonly sources: readonly (readonly number[])[];
+  /** Drop the tombstones that win: only when the output is the bottom level. */
+  readonly dropTombstones: boolean;
+  /** Close an output run once its entries' `entryRecordSize`s reach this. */
+  readonly targetBytes: number;
+  readonly codec: SstCodec;
+  /** About how much of each source to hold, and the most a `write` carries. */
+  readonly chunkBytes: number;
+  /** How much of a run's end to read first, for its footer and index. */
+  readonly tailBytes: number;
+  /** About how many input bytes to merge before a `yield`. */
+  readonly yieldBytes: number;
+};
+
+/** `length` bytes at `offset` of run `run` of source `source`. */
+export type Demand = { readonly source: number; readonly run: number; readonly offset: number; readonly length: number };
+
+export type MergeStop =
+  /** Read each, `feed` it, then pump. */
+  | { readonly kind: "need"; readonly demands: readonly Demand[] }
+  /** The next bytes of the open output run. Never a view of wasm memory, so they outlive the next call. */
+  | { readonly kind: "write"; readonly bytes: Uint8Array }
+  /** The open output run is complete: every byte of it was in a `write`. */
+  | { readonly kind: "run-end"; readonly end: RunEnd }
+  /** About `yieldBytes` of input were merged since the pump began. */
+  | { readonly kind: "yield" }
+  /** Every input was read and every run's CRC matched: the outputs may be installed. */
+  | { readonly kind: "done"; readonly droppedSeq: number };
+
+export interface MergeCore {
+  /**
+   * Merge until the host has to act. A corrupt input throws
+   * CorruptDatabaseError, and so does every later pump.
+   */
+  pump(): MergeStop;
+  /** Answer `source`'s demand from the last `need`. */
+  feed(source: number, bytes: Uint8Array): void;
+  /** Drop the session and its buffers. Idempotent. */
+  close(): void;
+}
 
 /**
  * One engine module behind typed calls. Everything crosses as flat bytes;
@@ -69,12 +146,8 @@ export type FlatEngine = {
   decodeSst(buf: Uint8Array): SstEntry[];
   lz4Decompress(src: Uint8Array, size: number): Uint8Array;
   scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
-  mergeSsts(
-    blobs: readonly Uint8Array[],
-    dropTombstones: boolean,
-    targetBytes: number,
-    lz4: boolean,
-  ): { runs: EncodedRun[]; droppedSeq: number };
+  /** The module's merge session, or undefined while it holds another. */
+  openMerge(spec: MergeSpec): MergeCore | undefined;
 };
 
 const TAG_PUT = 1;
@@ -131,7 +204,7 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
         },
         (ptr) => ex.encode_sst(ptr, size, lz4 ? 1 : 0),
       );
-      return readRun(out, new DataView(out.buffer), 0).run;
+      return readRun(out);
     },
 
     decodeSst(buf) {
@@ -161,65 +234,121 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
       );
     },
 
-    mergeSsts(blobs, dropTombstones, targetBytes, lz4) {
-      let size = 4;
-      for (const b of blobs) size += 4 + b.byteLength;
-      const out = call(
-        "merge_ssts",
-        size,
-        (into) => {
-          const view = new DataView(into.buffer, into.byteOffset, into.byteLength);
-          view.setUint32(0, blobs.length, true);
-          let o = 4;
-          for (const b of blobs) {
-            view.setUint32(o, b.byteLength, true);
-            into.set(b, o + 4);
-            o += 4 + b.byteLength;
+    openMerge(spec) {
+      let words = 1;
+      let inputBytes = 0;
+      for (const runs of spec.sources) {
+        words += 1 + runs.length;
+        for (const size of runs) inputBytes += size;
+      }
+      const len = 4 * words;
+      // Addresses are u32 and come back as i32: past 2 GiB they read negative.
+      const ptr = ex.input_ptr(len) >>> 0;
+      if (ptr === 0) throw new EngineCapacityError("merge_open", len, capacity);
+      const list = new DataView(ex.memory.buffer, ptr, len);
+      let o = 0;
+      const put = (v: number) => {
+        list.setUint32(o, v, true);
+        o += 4;
+      };
+      put(spec.sources.length);
+      for (const runs of spec.sources) {
+        put(runs.length);
+        for (const size of runs) put(size);
+      }
+      const opened = ex.merge_open(
+        ptr,
+        len,
+        spec.dropTombstones ? 1 : 0,
+        spec.targetBytes,
+        spec.codec === "lz4" ? 1 : 0,
+        spec.chunkBytes,
+        spec.tailBytes,
+        spec.yieldBytes,
+      );
+      if (opened === SESSION_OPEN) return undefined;
+      if (opened < 0) throw statusError("merge_open", opened, inputBytes, capacity);
+      // The module holds one session and `merge_close` drops whichever is
+      // open, so a closed handle must not reach a session opened after it.
+      let closed = false;
+      const live = () => {
+        if (closed) throw new Error("merge session closed");
+      };
+      return {
+        pump() {
+          live();
+          const code = ex.merge_pump();
+          if (code < 0) throw statusError("merge_pump", code, inputBytes, capacity);
+          const result = new Uint8Array(ex.memory.buffer, ex.result_ptr() >>> 0, ex.result_len());
+          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
+          switch (code) {
+            case NEED: {
+              const demands: Demand[] = [];
+              for (let o = 0; o < result.byteLength; o += DEMAND_BYTES) {
+                demands.push({
+                  source: view.getUint32(o, true),
+                  run: view.getUint32(o + 4, true),
+                  offset: view.getUint32(o + 8, true),
+                  length: view.getUint32(o + 12, true),
+                });
+              }
+              return { kind: "need", demands };
+            }
+            case WRITE:
+              return { kind: "write", bytes: result.slice() };
+            case RUN_END:
+              return { kind: "run-end", end: readEnd(result, view, RUN_HEAD_BYTES) };
+            case YIELD:
+              return { kind: "yield" };
+            case DONE:
+              return { kind: "done", droppedSeq: view.getUint32(0, true) + view.getUint32(4, true) * TWO_32 };
+            default:
+              throw new Error(`merge_pump: unknown stop ${code}`);
           }
         },
-        (ptr) => ex.merge_ssts(ptr, size, dropTombstones ? 1 : 0, targetBytes, lz4 ? 1 : 0),
-      );
-      const view = new DataView(out.buffer);
-      const droppedSeq = view.getUint32(0, true) + view.getUint32(4, true) * TWO_32;
-      const count = view.getUint32(8, true);
-      const runs: EncodedRun[] = [];
-      let o = 12;
-      for (let i = 0; i < count; i++) {
-        const { run, next } = readRun(out, view, o);
-        runs.push(run);
-        o = next;
-      }
-      return { runs, droppedSeq };
+        feed(source, bytes) {
+          live();
+          const at = ex.merge_feed(source, bytes.byteLength) >>> 0;
+          if (at === 0) throw new Error(`merge_feed: source ${source} has no unfed demand of ${bytes.byteLength} bytes`);
+          new Uint8Array(ex.memory.buffer, at, bytes.byteLength).set(bytes);
+        },
+        close() {
+          if (closed) return;
+          closed = true;
+          ex.merge_close();
+        },
+      };
     },
   };
 }
 
 /**
- * The run record at `o` (crates/engine-abi.md). The body is a view into
- * `bytes`. The keys are copies, so the manifest does not keep `bytes` alive.
+ * A run record (crates/engine-abi.md). The body is a view into `bytes`. The
+ * keys are copies, so the manifest does not keep `bytes` alive.
  */
-function readRun(bytes: Uint8Array, view: DataView, o: number): { run: EncodedRun; next: number } {
-  const entries = view.getUint32(o, true);
-  const size = view.getUint32(o + 4, true);
-  const firstLen = view.getUint32(o + 8, true);
-  const lastLen = view.getUint32(o + 12, true);
-  const body = bytes.subarray(o + 16, o + 16 + size);
-  const keys = o + 16 + size;
-  const end =
-    entries === 0
-      ? { bytes: size }
-      : {
-          bytes: size,
-          range: {
-            smallest: bytes.slice(keys, keys + firstLen),
-            largest: bytes.slice(keys + firstLen, keys + firstLen + lastLen),
-          },
-        };
-  return { run: { body, end }, next: keys + firstLen + lastLen };
+function readRun(bytes: Uint8Array): EncodedRun {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const keys = RUN_HEAD_BYTES + view.getUint32(4, true);
+  return { body: bytes.subarray(RUN_HEAD_BYTES, keys), end: readEnd(bytes, view, keys) };
+}
+
+/** The `RunEnd` of the run head that `bytes` starts with, whose two keys start at `keys`. Copies the keys. */
+function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
+  const entries = view.getUint32(0, true);
+  const size = view.getUint32(4, true);
+  const firstLen = view.getUint32(8, true);
+  const lastLen = view.getUint32(12, true);
+  if (entries === 0) return { bytes: size };
+  return {
+    bytes: size,
+    range: { smallest: bytes.slice(keys, keys + firstLen), largest: bytes.slice(keys + firstLen, keys + firstLen + lastLen) },
+  };
 }
 
 function statusError(op: string, code: number, inputBytes: number, capacity: number): Error {
   if (code === OUT_OF_MEMORY) return new EngineCapacityError(op, inputBytes, capacity);
+  const bug = HOST_BUGS[code];
+  if (bug) return new Error(`${op}: ${bug} (status ${code})`);
   return new CorruptDatabaseError(`${op}: ${STATUS_NAMES[code] ?? "corrupt"} (status ${code})`);
 }
 
@@ -399,53 +528,44 @@ export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
 }
 
 /**
- * Merge newest-first runs into runs of about `targetBytes`, in key order,
- * written with `codec` (raw without wasm).
- * With `dropTombstones`, also returns the highest seq among the dropped
- * tombstones, 0 when none was dropped.
+ * A merge session over `spec`: wasm's when the module is loaded and holds
+ * no other session, the TypeScript one otherwise, whose runs are raw. A
+ * trap in the wasm session drops wasm for this context, as any trap does.
  */
-export async function mergeSsts(
-  blobsNewestFirst: readonly Uint8Array[],
-  dropTombstones: boolean,
-  targetBytes = Number.MAX_SAFE_INTEGER,
-  codec: SstCodec = "raw",
-): Promise<{ readonly runs: readonly EncodedRun[]; readonly droppedSeq: number }> {
+export async function openMerge(spec: MergeSpec): Promise<MergeCore> {
   await ensureEngine();
   if (engine) {
     try {
-      return engine.mergeSsts(blobsNewestFirst, dropTombstones, targetBytes, codec === "lz4");
+      const core = engine.openMerge(spec);
+      if (core) return dropWasmOnTrap(core);
     } catch (err) {
-      return afterWasmError(err, "sst corrupt", () => mergeSstsTs(blobsNewestFirst, dropTombstones, targetBytes));
+      if (!(err instanceof WebAssembly.RuntimeError)) throw err;
+      dropWasm();
     }
   }
-  return mergeSstsTs(blobsNewestFirst, dropTombstones, targetBytes);
+  return openMergeTs(spec);
 }
 
-/** `mergeSsts` without wasm: every output run is raw. */
-function mergeSstsTs(
-  blobsNewestFirst: readonly Uint8Array[],
-  dropTombstones: boolean,
-  targetBytes: number,
-): { readonly runs: readonly EncodedRun[]; readonly droppedSeq: number } {
-  let entries = foldEntries(blobsNewestFirst.map((b) => sstTs.decodeSst(b)));
-  let droppedSeq = 0;
-  if (dropTombstones) {
-    for (const e of entries) {
-      if (e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
+function dropWasmOnTrap(core: MergeCore): MergeCore {
+  const guard = <T>(call: () => T): T => {
+    try {
+      return call();
+    } catch (err) {
+      if (err instanceof WebAssembly.RuntimeError) dropWasm();
+      throw err;
     }
-    entries = entries.filter((e) => e.kind === "put");
-  }
-  const runs: EncodedRun[] = [];
-  let start = 0;
-  let size = 0;
-  for (let i = 0; i < entries.length; i++) {
-    size += sstTs.entryRecordSize(entries[i]!);
-    if (size >= targetBytes) {
-      runs.push(sstTs.encodeRun(entries.slice(start, i + 1)));
-      start = i + 1;
-      size = 0;
-    }
-  }
-  if (start < entries.length) runs.push(sstTs.encodeRun(entries.slice(start)));
-  return { runs, droppedSeq };
+  };
+  return {
+    pump: () => guard(() => core.pump()),
+    feed: (source, bytes) => guard(() => core.feed(source, bytes)),
+    close: () => {
+      try {
+        core.close();
+      } catch (err) {
+        // The instance trapped and is dropped: nothing is left to close.
+        if (!(err instanceof WebAssembly.RuntimeError)) throw err;
+        dropWasm();
+      }
+    },
+  };
 }

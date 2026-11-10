@@ -3,12 +3,12 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { mergeNextStep } from "../src/host/compact.js";
 import { MemoryFs } from "../src/index.js";
 import { decodeSst as decodeWasm, encodeRun, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
-import { publishGeneration, publishRun } from "../src/store/generation.js";
+import { publishGeneration } from "../src/store/generation.js";
 import { lz4DecompressJs, useLz4Decoder } from "../src/store/lz4.js";
 import { settle } from "../src/store/cursor.js";
 import { decodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
-import { drain, readerOfBytes } from "./runs.js";
+import { drain, publish, readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -127,7 +127,7 @@ describe("compaction codec", () => {
   async function stepFrom(path: string) {
     const fs = new MemoryFs();
     const { body, end } = await encodeRun(todoRows(0));
-    await publishRun(fs, path, body);
+    await publish(fs, path, body);
     // A size past L1's target makes the run a compaction input without writing 40 MB.
     await publishGeneration(fs, { generation: 1, runs: [{ path, ...end, bytes: 50_000_000 }], tombstoneSeq: 0, through: 0 });
     const step = await mergeNextStep(fs);
@@ -152,7 +152,7 @@ describe("compaction codec", () => {
     for (let i = 0; i < 4; i++) {
       const { body, end } = await encodeRun(todoRows(i * 2_000));
       const path = `l0/${i}.sst`;
-      await publishRun(fs, path, body);
+      await publish(fs, path, body);
       runs.push({ path, ...end });
     }
     await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 0 });

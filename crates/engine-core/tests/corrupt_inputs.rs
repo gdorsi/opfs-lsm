@@ -2,8 +2,9 @@
 //! `cargo test`. Valid runs from the encoder are mutated (bit flips,
 //! truncation, extension, inflated length fields, splices of two runs), with
 //! and without a rewritten CRC, and fed to `decode_sst`,
-//! `scan_block_contains` and `merge_sst_bytes` through the checks in
-//! `support/corrupt.rs`, the same ones the `cargo fuzz` targets run.
+//! `scan_block_contains`, the session's block decoder and a merge session
+//! through the checks in `support/corrupt.rs`, the same ones the `cargo fuzz`
+//! targets run.
 //!
 //! `ENGINE_PROP_CASES` sets the cases per property (default 300).
 //! `ENGINE_PROP_SEED` replays one seed. A failure prints the seed and the
@@ -249,20 +250,62 @@ fn scan_block_contains_survives_mutated_blocks() {
     );
 }
 
+/// A source for a merge session: one run, valid or mutated, or two runs
+/// that split one key-ordered stream, one of them sometimes mutated.
+fn session_source(rng: &mut Rng) -> Vec<Vec<u8>> {
+    if !rng.chance(3) {
+        return vec![if rng.chance(3) { mutated_run(rng) } else { valid_run(rng).0 }];
+    }
+    let codec = if rng.chance(2) { Codec::Lz4 } else { Codec::Raw };
+    let entries = sample_entries([0, 3, 20, 200][rng.below(4)], rng.below(1000) as u64);
+    let cut = rng.below(entries.len() + 1);
+    let mut runs = vec![encode_sst(&entries[..cut], codec), encode_sst(&entries[cut..], codec)];
+    if rng.chance(4) {
+        let i = rng.below(2);
+        mutate(rng, &mut runs[i]);
+        if rng.chance(2) {
+            fix_crc(&mut runs[i]);
+        }
+    }
+    runs
+}
+
 #[test]
-fn compaction_fails_on_a_corrupt_input_and_folds_valid_ones() {
+fn a_merge_session_fails_on_a_corrupt_input_and_folds_valid_ones() {
     for_each_case(
-        4,
+        6,
         |rng| {
-            let inputs: Vec<Vec<u8>> = (0..rng.below(4) + 1)
-                .map(|_| if rng.chance(3) { mutated_run(rng) } else { valid_run(rng).0 })
-                .collect();
-            let flags = rng.below(4) as u8;
-            corrupt::encode_merge_case(&inputs, flags, rng.below(8) as u8)
+            let sources: Vec<Vec<Vec<u8>>> = (0..rng.below(4) + 1).map(|_| session_source(rng)).collect();
+            let flags = rng.below(16) as u8;
+            corrupt::encode_session_case(&sources, flags, rng.below(8) as u8, rng.next() as u8, rng.next() as u8)
         },
         |case| {
-            let (inputs, drop, target, codec) = corrupt::merge_case(case).unwrap();
-            corrupt::check_merge(&inputs, drop, target, codec);
+            let (sources, config, seed) = corrupt::session_case(case).unwrap();
+            corrupt::check_session(&sources, config, seed);
+        },
+    );
+}
+
+#[test]
+fn the_session_block_decoder_survives_mutated_blocks() {
+    for_each_case(
+        7,
+        |rng| {
+            let (buf, codec) = valid_run(rng);
+            let blocks = corrupt::framed_blocks(&buf);
+            let mut framed = if blocks.is_empty() { vec![] } else { blocks[rng.below(blocks.len())].to_vec() };
+            if !rng.chance(4) {
+                for _ in 0..=rng.below(2) {
+                    mutate(rng, &mut framed);
+                }
+            }
+            let mut out = vec![codec as u8];
+            out.extend_from_slice(&framed);
+            out
+        },
+        |case| {
+            let (codec, framed) = corrupt::block_case(case).unwrap();
+            corrupt::check_block(framed, codec);
         },
     );
 }
