@@ -425,3 +425,166 @@ describe("a database written before manifests held run sizes", () => {
     expect(await files()).toEqual(before);
   });
 });
+
+/**
+ * An older build reads `meta.head` as the head and never the last WAL key.
+ * Its adopt and `advanceIngested` are the copies those builds still run
+ * (`IdBWal` at the parent of the record-only append). Both delete with
+ * `IDBKeyRange.upperBound` of a seq they read from `meta`, which is at most
+ * the stored floor.
+ */
+function idbDone<T>(req: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+const num = (v: unknown) => (typeof v === "number" ? v : 0);
+
+async function legacyMeta(dbName: string): Promise<{
+  head: number;
+  ingestedThrough: number;
+  generation: number | undefined;
+  top: number;
+}> {
+  return walStore(dbName, "readonly", async (_wal, meta) => {
+    const [head, ingested, generation, top] = await Promise.all(
+      ["head", "ingestedThrough", "generation", "topGeneration"].map((k) => idbDone(meta.get(k))),
+    );
+    return {
+      head: num(head),
+      ingestedThrough: num(ingested),
+      generation: typeof generation === "number" ? generation : undefined,
+      top: num(top),
+    };
+  });
+}
+
+/** Records an older build's `listUningested` would return: `(ingestedThrough, meta.head]`. */
+async function legacyUningested(dbName: string): Promise<number[]> {
+  return walStore(dbName, "readonly", async (wal, meta) => {
+    const [through, head] = await Promise.all([
+      idbDone(meta.get("ingestedThrough")).then(num),
+      idbDone(meta.get("head")).then(num),
+    ]);
+    if (head <= through) return [];
+    const keys = await idbDone(wal.getAllKeys(IDBKeyRange.bound(through + 1, head)));
+    return keys.map(Number);
+  });
+}
+
+/** Older `adopt`: the else branch deletes `upperBound(head)` where `head` is the stored floor. */
+async function legacyAdopt(
+  dbName: string,
+  expect: { head: number; ingestedThrough: number; generation: number | undefined; top: number },
+  generation: number,
+  through: number,
+  floor = through,
+  top = generation,
+): Promise<boolean> {
+  return walStore(dbName, "readwrite", async (wal, meta) => {
+    const [head, ingested, recorded, knownTop] = await Promise.all([
+      idbDone(meta.get("head")).then(num),
+      idbDone(meta.get("ingestedThrough")).then(num),
+      idbDone(meta.get("generation")),
+      idbDone(meta.get("topGeneration")).then(num),
+    ]);
+    if (
+      head !== expect.head ||
+      knownTop !== expect.top ||
+      ingested !== expect.ingestedThrough ||
+      (typeof recorded === "number" ? recorded : undefined) !== expect.generation
+    ) {
+      return false;
+    }
+    const above = head > through ? await idbDone(wal.getAll(IDBKeyRange.bound(through + 1, head))) : [];
+    const nextHead = Math.max(head, through, floor);
+    let nextIngested = through;
+    if (nextHead === head && (through >= ingested || above.length === head - through)) {
+      wal.delete(IDBKeyRange.upperBound(Math.min(ingested, through)));
+    } else {
+      nextIngested = nextHead;
+      wal.delete(IDBKeyRange.upperBound(head));
+    }
+    meta.put(nextHead, "head");
+    meta.put(nextIngested, "ingestedThrough");
+    meta.put(generation, "generation");
+    meta.put(Math.max(knownTop, top, generation), "topGeneration");
+    meta.put(0, "pendingBytes");
+    return true;
+  });
+}
+
+/** Older `advanceIngested`: deletes records at or below the previous `ingestedThrough`. */
+async function legacyAdvance(dbName: string, through: number, generation: number): Promise<void> {
+  await walStore(dbName, "readwrite", async (wal, meta) => {
+    const [existing, prevGen] = await Promise.all([
+      idbDone(meta.get("ingestedThrough")).then(num),
+      idbDone(meta.get("generation")).then(num),
+    ]);
+    if (through > existing) {
+      wal.delete(IDBKeyRange.upperBound(existing));
+      meta.put(through, "ingestedThrough");
+      meta.put(Math.max(prevGen, generation), "generation");
+      meta.put(0, "pendingBytes");
+    }
+  });
+}
+
+describe("an older build sharing the database", () => {
+  it("misses records past the floor, and adopt and truncation do not drop them", async () => {
+    const wal = await walWith(0);
+    const fs = new MemoryFs();
+    // Open records the floor. Appends after that leave it there; an open
+    // that finds records already waiting snaps the floor up to them.
+    expect(await reconcile(wal, fs, trustAll)).toEqual({ generation: 0, top: 0 });
+    for (let i = 1; i <= 4; i++) await wal.append(put(i));
+    await wal.advanceIngested(2, 1);
+    expect((await legacyMeta(name)).head).toBe(0);
+    expect((await wal.meta()).head).toBe(4);
+    // A reload of the older build reads the same floor.
+    expect(await legacyUningested(name)).toEqual([]);
+    expect(await seqs(wal)).toEqual([3, 4]);
+
+    const older = await legacyMeta(name);
+    // Manifest through is past the floor, so the older adopt takes the else branch.
+    expect(await legacyAdopt(name, older, 1, 2, 2, 1)).toBe(true);
+    expect((await walRows(name)).map((r) => r.seq)).toEqual([1, 2, 3, 4]);
+    // The floor is now the manifest through. Records past it are still
+    // invisible, so the older ingest has nothing to advance over.
+    expect(await legacyUningested(name)).toEqual([]);
+    expect(await seqs(wal)).toEqual([3, 4]);
+    wal.close();
+  });
+
+  it("truncates only the prefix at or below the previous ingestedThrough", async () => {
+    const wal = await walWith(4);
+    // The older build committed seqs 1 and 2, then this build appended 3 and 4.
+    await walStore(name, "readwrite", (_wal, meta) => meta.put(2, "head"));
+    expect(await legacyUningested(name)).toEqual([1, 2]);
+    await legacyAdvance(name, 2, 1);
+    expect((await walRows(name)).map((r) => r.seq)).toEqual([1, 2, 3, 4]);
+    expect(await seqs(wal)).toEqual([3, 4]);
+    wal.close();
+  });
+
+  it("drops only up to a stale head when the record count above it does not match", async () => {
+    const wal = await walWith(4);
+    // Floor 2, seq 1 already ingested and removed. The count of records in
+    // (0, 2] is short, and `through` is below `ingestedThrough`, so adopt
+    // takes the else branch. Its delete bound is the floor, not seq 4.
+    await walStore(name, "readwrite", (store, meta) => {
+      store.delete(1);
+      meta.put(2, "head");
+      meta.put(1, "ingestedThrough");
+    });
+    const older = await legacyMeta(name);
+    expect(older.head).toBe(2);
+    expect(await legacyUningested(name)).toEqual([2]);
+    expect(await legacyAdopt(name, older, 0, 0, 0, 0)).toBe(true);
+    expect((await walRows(name)).map((r) => r.seq)).toEqual([3, 4]);
+    expect(await seqs(wal)).toEqual([3, 4]);
+    wal.close();
+  });
+});

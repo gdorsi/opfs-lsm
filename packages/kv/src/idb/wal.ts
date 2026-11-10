@@ -483,9 +483,10 @@ export class IdBWal {
 
   /**
    * Op bytes of the records above ingestedThrough, read from the records.
-   * With `cap`, the read stops once it has seen that many bytes and the
-   * answer is `cap`: enough to say the WAL is over a limit without reading
-   * all of a long one.
+   * With `cap`, the read stops once the next record would pass it. The
+   * answer is then at least `cap`: the bytes already read, when those
+   * already pass `cap`, otherwise `cap`. The ingest watch compares that
+   * with `maxWalBytes`, so a long WAL still trips the limit.
    */
   async uningestedBytes(cap = Number.POSITIVE_INFINITY): Promise<number> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");

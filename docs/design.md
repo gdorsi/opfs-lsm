@@ -78,6 +78,14 @@ The record is the only write. The head, the seq of the last committed batch, is 
 `wal`, or the `head` floor when that is higher. Only recovery writes the floor, so step 3 aborts
 only after a recovery.
 
+A tab still running an older build reads that stored floor as the head. It does not see records
+this build appends, and reloading it does not change that, because the floor stays where
+recovery left it. A later `put`, `delete` or `batch` on the older build stores its new key as
+the floor, and the next read then sees those records. Until then they stay in the WAL. The
+older adopt and truncation delete only up to the floor, and every record appended here is past
+the floor, so the older build cannot drop them. Its `update` rejects while the floor is behind,
+because `appendAfter` would write `floor + 1` onto a key this build already took.
+
 IndexedDB serializes `readwrite` transactions on the same stores, so two tabs cannot take the
 same seq. An aborted transaction reverts the key generator, so committed seqs stay gapless.
 
