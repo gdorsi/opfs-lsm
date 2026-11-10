@@ -105,13 +105,21 @@ describe("text search", () => {
   ];
   const hits = async (c: Docs, q: DocQuery) => (await c.queryIds(q)).ids;
 
-  it("keeps entries where every typed word starts a word of the text, ignoring case", async () => {
+  it("keeps entries where every typed word occurs inside a word of the text, ignoring case", async () => {
     const { c } = await docs();
     await c.putMany(titles);
     expect(await hits(c, { index: "search", match: "bu mi" })).toEqual(["1", "2", "3"]);
     expect(await hits(c, { index: "search", match: "milk" })).toEqual(["1", "2", "3"]);
-    expect(await hits(c, { index: "search", match: "ilk" })).toEqual([]);
+    expect(await hits(c, { index: "search", match: "ilk" })).toEqual(["1", "2", "3"]);
+    expect(await hits(c, { index: "search", match: "HAKE uy" })).toEqual(["2"]);
     expect(await hits(c, { index: "search", match: "BUY" })).toEqual(["1", "2", "3"]);
+  });
+
+  it("does not match typed text that spans two words of the text", async () => {
+    const { c } = await docs();
+    await c.putMany(titles);
+    expect(await hits(c, { index: "search", match: "ymilk" })).toEqual([]);
+    expect(await hits(c, { index: "search", match: "kb" })).toEqual([]);
   });
 
   it("keeps combining marks inside a word and matches composed against decomposed text", async () => {

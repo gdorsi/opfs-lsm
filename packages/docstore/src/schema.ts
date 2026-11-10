@@ -195,7 +195,7 @@ type IndexQuery<I, V extends readonly unknown[], D> = { readonly index: I } & Wh
   PageOptions &
   (D extends { readonly text: string }
     ? {
-        /** Keep entries where every word of `match` starts a word of the text. */
+        /** Keep entries where every word of `match` occurs inside a word of the text. */
         readonly match?: string | undefined;
       }
     : { readonly match?: undefined });

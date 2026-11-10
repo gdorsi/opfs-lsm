@@ -28,7 +28,7 @@ The page can also seed a large random dataset, filter it, sort it, and page thro
 
 4. Seed data, filter, sort, and page.
 
-   Type a count in **Generate random todos** and click **Generate**. Titles are 2 to 5 random words. Generation writes 1,000 rows per batch and reports progress. **Filter todos** narrows the list to todos where each typed word starts a word of the title, ignoring case, so "mil" finds "Buy milk" but "lk" doesn't. It resets to page 1, and search results are newest first. The sort selector switches between **Newest first**, **Oldest first**, and **Title A–Z** when no filter is set. **Prev**/**Next** move through the cursor stack; returning to an earlier page does not rescan from the start of the database. **Clear all** deletes the seeded rows in batches.
+   Type a count in **Generate random todos** and click **Generate**. Titles are 2 to 5 random words. Generation writes 1,000 rows per batch and reports progress. **Filter todos** narrows the list to todos where each typed word occurs inside a word of the title, ignoring case, so "mil" and "lk" both find "Buy milk". It resets to page 1, and search results are newest first. The sort selector switches between **Newest first**, **Oldest first**, and **Title A–Z** when no filter is set. **Prev**/**Next** move through the cursor stack; returning to an earlier page does not rescan from the start of the database. **Clear all** deletes the seeded rows in batches.
 
 5. Click **Ingest** in either window.
 
@@ -52,7 +52,7 @@ The collection is `todos`, keyed by `id`. `store.ts` declares three indexes with
 
 `put`, `putMany`, `delete`, and `clear` keep the index entries in step with the rows, so a row and its indexes cannot drift. `put` and `putMany` do it in one kv transaction. `modify` diffs the index entries of the old and new document and writes only the ones that changed, so toggling `done` rewrites the row alone.
 
-`readPage` calls `collection.query({ index, reverse, after, limit })` for the requested sort. `limit` is the page size. `next` is the last entry of the page, and the following call passes it as `after`, so pages neither skip nor repeat rows. With a filter, `readPage` queries `search` with `match: filter` and `reverse: true`: one cursor page of todos where each filter word starts a title word, newest first. A common word fills a page after a few entries; a filter that matches nothing reads every search entry.
+`readPage` calls `collection.query({ index, reverse, after, limit })` for the requested sort. `limit` is the page size. `next` is the last entry of the page, and the following call passes it as `after`, so pages neither skip nor repeat rows. With a filter, `readPage` queries `search` with `match: filter` and `reverse: true`: one cursor page of todos where each filter word occurs inside a title word, newest first. A common word fills a page after a few entries; a filter that matches nothing reads every search entry.
 
 `generateTodos` chunks `collection.putMany` at 1,000 rows. `clearTodos` calls `collection.clear`, which is one catalog write whatever the size; docstore deletes the old keys in the background. `clear` returns no count, so the status line reads `cleared all todos`.
 

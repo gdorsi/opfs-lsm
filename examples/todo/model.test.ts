@@ -59,7 +59,7 @@ function fakeTable(initial: readonly Todo[] = []): TodoStore & { rows: Map<strin
         if (wanted.length === 0) throw new RangeError("search text has no words");
         sorted = sorted.filter((todo) => {
           const words = wordsOf(todo.title);
-          return wanted.every((w) => words.some((t) => t.startsWith(w)));
+          return wanted.every((w) => words.some((t) => t.includes(w)));
         });
       }
       if ("reverse" in q && q.reverse) sorted.reverse();
@@ -195,14 +195,14 @@ test("readPage with a filter reads newest first whatever the sort", async () => 
   }
 });
 
-test("readPage requires every filter word to start a title word", async () => {
+test("readPage requires every filter word to occur inside a title word", async () => {
   const table = fakeTable([
     createTodo("buy oat milk", 1, "a")!,
     createTodo("buy milk", 2, "b")!,
     createTodo("milkshake", 3, "c")!,
     createTodo("sell milk", 4, "d")!,
   ]);
-  const page = await readPage(table, { filter: "milk bu", pageSize: 10 });
+  const page = await readPage(table, { filter: "ilk uy", pageSize: 10 });
   assert.deepEqual(page.todos.map((t) => t.id), ["b", "a"]);
   assert.equal(table.read, 2);
 });

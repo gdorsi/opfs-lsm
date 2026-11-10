@@ -37,7 +37,7 @@ type Paging = { readonly limit: number; readonly after?: Cursor | undefined };
 
 /**
  * The reads the model makes. `search` keeps entries where each word of
- * `match` starts a title word. `store.ts` declares these indexes.
+ * `match` occurs inside a title word. `store.ts` declares these indexes.
  */
 export type TodoQuery =
   | ({ readonly index: "byCreated"; readonly reverse?: boolean } & Paging)
@@ -95,7 +95,7 @@ export function normalizeFilter(filter: string): string {
  * previous page), so pages neither skip nor repeat rows.
  *
  * With a filter, the page is a `search` query: todos where each filter word
- * starts a title word, newest first, and `sort` doesn't apply.
+ * occurs inside a title word, newest first, and `sort` doesn't apply.
  */
 export async function readPage(
   table: TodoStore,

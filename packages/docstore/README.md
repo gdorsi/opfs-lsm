@@ -106,7 +106,7 @@ A query names an index, or names none and reads the documents in id order.
 | `eq` | Values for the first k components of `on`. |
 | `gt`, `gte`, `lt`, `lte` | Bounds on component k + 1. At most one of `gt` and `gte`, and at most one of `lt` and `lte`. |
 | `startsWith` | A string prefix of component k + 1. No other bound with it. |
-| `match` | Text indexes only. Keeps entries where every word of `match` starts a word of the text. |
+| `match` | Text indexes only. Keeps entries where every word of `match` occurs inside a word of the text. `ow` finds `window`. |
 | `limit` | A positive integer. Absent means every result. |
 | `after` | The `next` of the previous page. |
 | `reverse` | Descending order of the same range. |
