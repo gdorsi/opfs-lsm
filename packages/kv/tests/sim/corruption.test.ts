@@ -505,9 +505,9 @@ describe("a corrupt WAL row: no checksum", () => {
 /**
  * Files vanish under open handles (an eviction, an external delete), and
  * the repair records the state of a manifest numbered below the one a
- * handle has installed. A handle never loads a number at or below its
- * installed one, so each handle must still reach the repaired state: its
- * writes land, and it reads what a handle opened after the repair reads.
+ * handle has installed. A handle skips a stale tail that names a lower
+ * number, and it must not take the repair for one: its writes land, and it
+ * reads what a handle opened after the repair reads.
  */
 describe("open handles follow a repair to an older manifest", () => {
   const KEYS = ["a", "b", "c", "d", "e"];
@@ -557,14 +557,14 @@ describe("open handles follow a repair to an older manifest", () => {
     for (const path of await files(fs, "m")) await fs.remove(path);
   };
 
-  it.fails("when no manifest is left, and the empty database stands in", async () => {
+  it("when no manifest is left, and the empty database stands in", async () => {
     const [a, b, fresh] = await afterLosing(removeManifests);
     expect(fresh).toMatchObject({ 0: undefined, 1: undefined, 2: undefined, 4: "5" });
     expect(a).toEqual(fresh);
     expect(b).toEqual(fresh);
   });
 
-  it.fails("when only a manifest below the installed ones is left", async () => {
+  it("when only a manifest below the installed ones is left", async () => {
     const [a, b, fresh] = await afterLosing(async (fs, first) => {
       await removeManifests(fs);
       await put(fs, "m/0000000000000001.mft", first);

@@ -579,13 +579,25 @@ class DbImpl implements Db {
   }
 
   /**
-   * Make `generation` the loaded one, opening its runs when needed.
-   * Generations only grow, so one at or below the installed one is stale
-   * and never loaded. False when its manifest or one of its runs is gone.
+   * True when `generation` needs no load. Generations grow, so one below
+   * the installed or loaded one is stale, unless the tail that names it is
+   * `ahead` of the memtable (see `catchUp`).
    */
-  private async load(generation: number): Promise<boolean> {
-    if (generation <= this.installed.generation) return true;
-    if (this.loaded && this.loaded.generation >= generation) return true;
+  private has(generation: number, ahead: boolean): boolean {
+    return [this.installed, this.loaded].some(
+      (layers) =>
+        layers !== undefined &&
+        (layers.generation === generation || (layers.generation > generation && !ahead)),
+    );
+  }
+
+  /**
+   * Make `generation` the loaded one, opening its runs when needed. `ahead`
+   * says its tail holds seqs past the memtable. False when its manifest or
+   * one of its runs is gone.
+   */
+  private async load(generation: number, ahead: boolean): Promise<boolean> {
+    if (this.has(generation, ahead)) return true;
     const meta = await loadGeneration(this.fs, generation);
     if (!meta) return false;
     const paths = meta.runs.map((r) => r.path);
@@ -608,8 +620,7 @@ class DbImpl implements Db {
       failed ||
       held.length < paths.length ||
       this.closed ||
-      generation <= this.installed.generation ||
-      (this.loaded && this.loaded.generation >= generation)
+      this.has(generation, ahead)
     ) {
       this.dropRuns(held);
       if (failed) throw failed.reason;
@@ -674,7 +685,14 @@ class DbImpl implements Db {
     const behind = tail.ingestedThrough > this.mem.appliedThrough;
     // A tail read before a newer generation was installed: its records are
     // still a WAL prefix, but its generation and ingestedThrough are stale.
-    if (tail.generation > this.installed.generation) {
+    // Such a tail is never ahead of the memtable, which caught up to the
+    // newer generation. A tail that is ahead and names a lower generation
+    // comes after a repair that recorded an older manifest and emptied the
+    // WAL (design.md, "Recovery"), so this tab follows it.
+    if (
+      tail.generation > this.installed.generation ||
+      (behind && tail.generation < this.installed.generation)
+    ) {
       const layers =
         this.loaded?.generation === tail.generation ? this.loaded : undefined;
       if (layers) {
@@ -759,7 +777,10 @@ class DbImpl implements Db {
     const sstAt = this.trace ? performance.now() : 0;
     let whole = true;
     if (tail.generation !== this.installed.generation) {
-      whole = await this.load(tail.generation);
+      whole = await this.load(
+        tail.generation,
+        tail.ingestedThrough > this.mem.appliedThrough,
+      );
       if (this.closed) return "done";
     }
     if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
@@ -870,7 +891,7 @@ class DbImpl implements Db {
           })
           .finally(() => this.announce());
         if (out || miss) return { out, miss };
-        const whole = missing === undefined || (await this.load(missing));
+        const whole = missing === undefined || (await this.load(missing, true));
         if (whole || !locked) return {};
         gone = await this.repairGone(gone);
         return {};
