@@ -5,7 +5,7 @@
 import { CorruptDatabaseError, type Entry } from "@opfs-lsm/kv";
 import type { BoundCollection, IndexPlan, Path } from "./catalog.js";
 import { DocStoreError } from "./errors.js";
-import { MAX_KEY_BYTES, encodeKey, parseId, textValue, type DocId } from "./keys.js";
+import { MAX_KEY_BYTES, bytesEqual, encodeKey, keyString, parseId, textValue, type DocId } from "./keys.js";
 import type { JsonDoc, Scalar } from "./schema.js";
 
 declare const storedBrand: unique symbol;
@@ -62,18 +62,25 @@ export type Unindexable = {
 const NONE: Entry[] = [];
 
 /**
- * Every entry of `doc` in every maintained index. On the "next" side, the
- * document about to be written, a value an index cannot hold throws, so
- * nothing is stored. On the "stored" side it gives no entries: such a row
- * predates a still-building index and never had any.
+ * Every entry of `doc` in every maintained index; `id` is the id's UTF-8.
+ * On the "next" side, the document about to be written, a value an index
+ * cannot hold throws, so nothing is stored. On the "stored" side it gives no
+ * entries: such a row predates a still-building index and never had any.
+ * The entries of unique indexes are also pushed to `unique`.
  */
-export function entriesOf(coll: BoundCollection, id: DocId, doc: StoredDoc, side: "next" | "stored"): Entry[] {
-  const idb = utf8.encode(id);
+export function entriesOf(
+  coll: BoundCollection,
+  id: Uint8Array,
+  doc: StoredDoc,
+  side: "next" | "stored",
+  unique?: Entry[],
+): Entry[] {
   const out: Entry[] = [];
   for (const plan of coll.maintained) {
-    const entries = indexEntries(plan, idb, doc);
+    const entries = indexEntries(plan, id, doc);
     if (Array.isArray(entries)) {
       for (const e of entries) out.push(e);
+      if (unique && plan.target.kind === "unique") for (const e of entries) unique.push(e);
     } else if (side === "next") {
       throw new DocStoreError(
         "document",
@@ -159,14 +166,4 @@ export function diffEntries(
     old.delete(k);
   }
   return { remove: Array.from(old.values(), (e) => e.key), write };
-}
-
-function keyString(key: Uint8Array): string {
-  return String.fromCharCode.apply(null, key as unknown as number[]);
-}
-
-export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
 }

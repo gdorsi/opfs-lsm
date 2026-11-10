@@ -91,6 +91,18 @@ function after(key: Uint8Array): Uint8Array {
 }
 const ZERO = Uint8Array.of(0);
 
+export function bytesEqual(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** A key as a Map key. */
+export function keyString(key: Uint8Array): string {
+  return String.fromCharCode.apply(null, key as unknown as number[]);
+}
+
 export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) {

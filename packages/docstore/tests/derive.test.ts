@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { bind, encodeCatalog, normalizeSchema, reconcile, type BoundCollection } from "../src/catalog.js";
 import { diffEntries, encodeDoc, entriesOf } from "../src/derive.js";
 import { DocStoreError } from "../src/errors.js";
-import { encodeKey, type DocId } from "../src/keys.js";
+import { encodeKey } from "../src/keys.js";
 import type { JsonDoc, Scalar } from "../src/schema.js";
 
 const utf8 = new TextEncoder();
@@ -24,7 +24,7 @@ const entry = (c: BoundCollection, index: string, values: Scalar[], id = "1") =>
 
 function entries(c: BoundCollection, doc: JsonDoc, side: "next" | "stored" = "next") {
   const { id, doc: stored } = encodeDoc(doc);
-  return entriesOf(c, id, stored, side);
+  return entriesOf(c, utf8.encode(id), stored, side);
 }
 
 function codeOf(f: () => unknown): string {
@@ -123,8 +123,8 @@ describe("values an index cannot hold", () => {
 });
 
 describe("diffEntries", () => {
-  const id = "1" as DocId;
-  const derive = (c: BoundCollection, doc: JsonDoc) => entriesOf(c, id, encodeDoc(doc).doc, "next");
+  const id = "1";
+  const derive = (c: BoundCollection, doc: JsonDoc) => entriesOf(c, utf8.encode(id), encodeDoc(doc).doc, "next");
 
   it("writes nothing for a change no index covers", () => {
     const c = coll({ a: { on: "a" }, b: { on: "b" } });
