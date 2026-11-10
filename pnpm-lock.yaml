@@ -35,9 +35,15 @@ importers:
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../packages/kv
+      '@opfs-lsm/tanstack-db':
+        specifier: workspace:*
+        version: link:../packages/tanstack-db
       '@opfs-lsm/yjs':
         specifier: workspace:*
         version: link:../packages/yjs
+      '@tanstack/db':
+        specifier: 1.0.0-rc.1.4
+        version: 1.0.0-rc.1.4(typescript@5.9.3)
       dexie:
         specifier: ^4.0.11
         version: 4.4.7
