@@ -12,7 +12,7 @@ import { localLogWorkers } from "./log/local-log-worker.js";
 import { OwnQueue } from "./log/overlay.js";
 import type { SegmentStore } from "./log/queue-writer.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
-import { openBrowserFs } from "./opfs/browser-fs.js";
+import { BrowserFs, openBrowserFs } from "./opfs/browser-fs.js";
 import { CountingFs } from "./opfs/counting-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
 import { newestIntact } from "./recover.js";
@@ -246,6 +246,8 @@ export type DbInternals = {
   readonly hostStats: () => Promise<HostStats>;
   /** Records this page appended, and their encoded bytes. */
   readonly appended: () => { readonly records: number; readonly bytes: number };
+  /** The log and record number of this page's newest acked write. */
+  readonly lastAcked: () => { readonly log: LogId; readonly n: number } | undefined;
 };
 
 const internals = new WeakMap<Db, DbInternals>();
@@ -301,7 +303,8 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     port = worker.port;
   } else {
     fs = options.fs ?? defaultMemoryFs(name);
-    spawn ??= localLogWorkers(options.segments ?? segmentsOf(fs));
+    // Over OPFS each log's writer is a dedicated WebWorker, LogClient's default.
+    if (options.segments || !(fs instanceof BrowserFs)) spawn ??= localLogWorkers(options.segments ?? segmentsOf(fs));
     const channel = new MessageChannel();
     unserve = (options.host ?? defaultHost(fs)).serve(channel.port2);
     port = channel.port1;
@@ -435,6 +438,7 @@ class DbImpl implements Db {
   /** Live logs whose records past a damaged cursor are being sent again. */
   private readonly restarting = new Set<LogId>();
   private appendedRecords = 0;
+  private lastAcked: { readonly log: LogId; readonly n: number } | undefined;
   private readonly onPageHide = (): void => {
     // Every pagehide: for the back/forward cache the log must end, and on unload ending it frees its lock sooner.
     void this.client.suspend();
@@ -482,6 +486,7 @@ class DbImpl implements Db {
       fs: this.fs,
       hostStats: () => this.link.stats(),
       appended: () => ({ records: this.appendedRecords, bytes: this.client.appendedBytes }),
+      lastAcked: () => this.lastAcked,
     });
   }
 
@@ -739,6 +744,7 @@ class DbImpl implements Db {
     const landed = this.client.append(ops).then(
       (at) => {
         this.sending -= bytes;
+        this.lastAcked = { log: at.log, n: at.n };
         this.own.add(at.log, at.n, ops);
         this.emit({ kind: "local" });
       },

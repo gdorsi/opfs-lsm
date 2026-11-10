@@ -528,8 +528,8 @@ async function runOnce(options: RunOptions): Promise<number> {
     } else if (!options.local && !parsed.log.includes("mode=SharedWorker")) {
       console.error("missing SharedWorker mode");
       exitCode = 1;
-    } else if (options.local && !parsed.log.includes("mode=local EngineHost")) {
-      console.error("missing local EngineHost mode");
+    } else if (options.local && !parsed.log.includes("mode=local Host")) {
+      console.error("missing local Host mode");
       exitCode = 1;
     }
   } catch (err) {

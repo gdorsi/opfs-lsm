@@ -1,9 +1,13 @@
 /**
- * Tab A puts, warms SST readers, and must still get the key after tab B ingests.
+ * Two tabs on one database through the SharedWorker. Tab A reads its own
+ * write at ack, sees tab B's write after sync(), keeps a view on one state
+ * while B writes and ingests, and measures how long B's write takes to show
+ * up in A with no sync (the SharedWorker's latency ingest and the
+ * BroadcastChannel note).
  *
  *   ?auto=1&role=a     leader tab
  *   ?auto=1&role=b     peer tab
- *   ?local=1           one page, two handles, one EngineHost
+ *   ?local=1           one page, two handles, one Host on the page
  *   ?nobc=1            drop BroadcastChannel messages before openDb
  */
 const params = new URLSearchParams(location.search);
@@ -17,14 +21,16 @@ const statusEl = document.getElementById("status")!;
 const out = document.getElementById("out")!;
 const runBtn = document.getElementById("run") as HTMLButtonElement;
 
-let bcPosts = 0;
+/** Channels the page opened while ?nobc=1 silenced them: the SharedWorker posts, pages listen. */
+let bcOpened = 0;
 
 if (NOBC) {
   class SilentChannel {
-    constructor(_name: string) {}
-    postMessage(_data: unknown): void {
-      bcPosts += 1;
+    onmessage: unknown = null;
+    constructor(_name: string) {
+      bcOpened += 1;
     }
+    postMessage(_data: unknown): void {}
     addEventListener(): void {}
     removeEventListener(): void {}
     close(): void {}
@@ -36,7 +42,6 @@ if (NOBC) {
   });
 }
 
-const quiet = { maxWalBytes: 1 << 30 };
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -104,34 +109,12 @@ async function report(payload: { error?: string; log: string }): Promise<void> {
 }
 
 function modeLabel(): string {
-  const base = LOCAL ? "local EngineHost" : "SharedWorker";
+  const base = LOCAL ? "local Host" : "SharedWorker";
   return NOBC ? `${base} nobc` : base;
 }
 
-async function openHandle(
-  mod: typeof import("../dist/index.js"),
-  testing: typeof import("../dist/testing.js"),
-  writerId: string,
-  shared?: {
-    fs: Awaited<ReturnType<typeof mod.openBrowserFs>>;
-    ingest: ReturnType<typeof mod.createLocalIngestClient>;
-  },
-): Promise<Handle> {
-  if (shared) {
-    return testing.openHarnessDb({
-      name: DB_NAME,
-      writerId,
-      fs: shared.fs,
-      ingest: shared.ingest,
-      ingestPolicy: quiet,
-    });
-  }
-  return testing.openHarnessDb({
-    name: DB_NAME,
-    writerId,
-    ingestPolicy: quiet,
-  });
-}
+/** How long tab A polls for a write of tab B before giving up. */
+const VISIBLE_WITHIN_MS = 10_000;
 
 async function scenario(self: Handle, other: OtherTab): Promise<void> {
   const t0 = performance.now();
@@ -141,18 +124,24 @@ async function scenario(self: Handle, other: OtherTab): Promise<void> {
   );
 
   await self.put(enc.encode("seed"), enc.encode("s"));
+  const own = text(await self.get(enc.encode("seed")));
+  must(own === "s", `own write read back ${own} at ack`);
   const seeded = await self.ingest();
   const seed = text(await self.get(enc.encode("seed")));
   must(seed === "s", `warm get seed was ${seed}`);
   must(seeded.generation >= 1, "seed ingest did not publish a generation");
-  log(`warm seed generation=${seeded.generation}`);
+  log(`own write at ack; warm seed generation=${seeded.generation}`);
 
   await other.put("k", "v");
   await self.sync();
+  const synced = text(await self.get(enc.encode("k")));
+  must(synced === "v", `get after sync was ${synced}`);
+  log("sync k=v");
 
   const pin = await self.view(async (snap) => {
     const before = text(await snap.get(enc.encode("k")));
     const generation = snap.generation;
+    await other.put("k", "v2");
     const ingested = await other.ingest();
     const after = text(await snap.get(enc.encode("k")));
     return { before, after, generation, ingested };
@@ -167,25 +156,43 @@ async function scenario(self: Handle, other: OtherTab): Promise<void> {
     `pinned generation=${pin.generation} ingest generation=${pin.ingested}`,
   );
 
+  await self.sync();
   const fresh = text(await self.get(enc.encode("k")));
-  must(fresh === "v", `fresh get after ingest was ${fresh}`);
-  log("fresh k=v");
+  must(fresh === "v2", `fresh get after the view was ${fresh}`);
+  log("fresh k=v2");
+
+  if (NOBC) {
+    log("visible_ms skipped: no BroadcastChannel");
+  } else {
+    const delays: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const key = enc.encode(`lag/${i}`);
+      await other.put(`lag/${i}`, "x");
+      const acked = performance.now();
+      while (text(await self.get(key)) !== "x") {
+        must(performance.now() - acked < VISIBLE_WITHIN_MS, `lag/${i} not visible after ${VISIBLE_WITHIN_MS} ms`);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      delays.push(Math.round(performance.now() - acked));
+    }
+    log(`visible_ms=${delays.join(",")}`);
+  }
 
   let ranged = false;
   for await (const entry of self.range()) {
-    if (text(entry.key) === "k" && text(entry.value) === "v") ranged = true;
+    if (text(entry.key) === "k" && text(entry.value) === "v2") ranged = true;
   }
-  must(ranged, "range missed k after ingest");
+  must(ranged, "range missed k=v2");
   log("range has k");
 
   await self.put(enc.encode("after"), enc.encode("yes"));
   const seen = await other.get("after");
-  must(seen === "yes", `other tab get after ingest was ${seen}`);
+  must(seen === "yes", `other tab get after sync was ${seen}`);
   log("other tab saw after=yes");
 
   if (NOBC) {
-    must(bcPosts > 0, "BroadcastChannel replacement was not used");
-    log(`bc_posts=${bcPosts}`);
+    must(bcOpened > 0, "BroadcastChannel replacement was not used");
+    log(`bc_opened=${bcOpened}`);
   }
   log(`scenario_ms=${Math.round(performance.now() - t0)}`);
   log("two-tab ok");
@@ -321,11 +328,9 @@ async function run(): Promise<void> {
   const testing = await import("../dist/testing.js");
   if (LOCAL) {
     const fs = await mod.openBrowserFs(DB_NAME);
-    const host = new mod.EngineHost(() => fs);
-    const ingest = mod.createLocalIngestClient(host);
-    const shared = { fs, ingest };
-    const self = await openHandle(mod, testing, "tab-a", shared);
-    const otherDb = await openHandle(mod, testing, "tab-b", shared);
+    const host = new testing.Host(() => fs);
+    const self = await testing.openHarnessDb({ name: DB_NAME, fs, host });
+    const otherDb = await testing.openHarnessDb({ name: DB_NAME, fs, host });
     const other: OtherTab = {
       async put(key, value) {
         await otherDb.put(enc.encode(key), enc.encode(value));
@@ -346,7 +351,7 @@ async function run(): Promise<void> {
   }
 
   if (ROLE === "b") {
-    const db = await openHandle(mod, testing, "tab-b");
+    const db = await mod.openDb({ name: DB_NAME });
     log("mode=" + modeLabel());
     log("tab B ready");
     const ready = await fetch("/peer/ready", { method: "POST" });
@@ -355,7 +360,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  const db = await openHandle(mod, testing, "tab-a");
+  const db = await mod.openDb({ name: DB_NAME });
   await scenario(db, await remoteOther());
   await db.close();
 }
