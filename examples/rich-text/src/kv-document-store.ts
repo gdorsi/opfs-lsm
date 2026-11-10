@@ -4,10 +4,11 @@ import { openDb, type Db } from "@opfs-lsm/kv";
  * A small persistence layer for rich-text documents, built directly on
  * `@opfs-lsm/kv`.
  *
- * - One `openDb` database (OPFS + shared WAL in the browser).
+ * - One `openDb` database (OPFS, with a per-tab log the SharedWorker ingests).
  * - Each document is stored as UTF-8 JSON under `doc:<docId>`.
- * - Writes are durable WAL appends (`db.put`); `db.changes()` notifies this
- *   tab when another tab commits, so editors can reload.
+ * - A save is one `db.put` to this tab's log. `db.changes()` notifies this
+ *   tab of its own saves, and of other tabs' once the SharedWorker ingests
+ *   them, about a second later, so editors can reload.
  */
 export type StoredDocument = unknown;
 
@@ -16,7 +17,7 @@ export type DocumentStore = {
   readonly docId: string;
   load(): Promise<StoredDocument | null>;
   save(doc: StoredDocument): Promise<void>;
-  /** Fires when any writer (this tab or another) changes the database. */
+  /** Fires on this tab's saves, and when another tab's saves are ingested. */
   onChange(listener: () => void): () => void;
   sync(): Promise<void>;
   close(): Promise<void>;

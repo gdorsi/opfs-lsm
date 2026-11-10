@@ -5,7 +5,7 @@ import { assertWasm, kvCommon } from "../../page/kv.ts";
 
 export default defineContender({
   family: "table",
-  durability: "idb-default",
+  durability: "log-write",
   fastPath: "openCollectionDb; putMany (one kv update per batch); where / orderBy on declared indexes; Promise.all for many gets and deletes",
   engine: true,
   async open(name) {

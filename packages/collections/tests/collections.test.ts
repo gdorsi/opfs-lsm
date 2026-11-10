@@ -7,14 +7,6 @@ import { extractIndexRowId, indexKey } from "../src/index.js";
 const NAME = "collections-test";
 let open: CollectionDb | undefined;
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
 
 beforeEach(async () => {
   if (open) {
@@ -22,7 +14,6 @@ beforeEach(async () => {
     open = undefined;
   }
   __resetMemoryFsForTests(NAME);
-  await wipe();
 });
 
 afterEach(async () => {

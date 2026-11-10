@@ -9,8 +9,8 @@ export type KvStats = {
   tab: {
     /** Records this Db handle appended to its logs. */
     appends: number;
-    /** Key and value bytes of those records. */
-    appendBytes: number;
+    /** Encoded bytes of those records, without each frame's head. */
+    logBytes: number;
     /** This tab's OPFS IO (manifest loads, run reads). */
     fs: IoCounters;
   };
@@ -28,7 +28,7 @@ export async function readStats(db: Db): Promise<KvStats> {
   const host = await hostStats();
   const { records, bytes } = appended();
   return {
-    tab: { appends: records, appendBytes: bytes, fs: structuredClone(fs.counters) },
+    tab: { appends: records, logBytes: bytes, fs: structuredClone(fs.counters) },
     host,
   };
 }

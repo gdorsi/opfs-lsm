@@ -1,6 +1,6 @@
 /**
  * How every kv-backed contender opens kv: `openDb`, exactly as apps do
- * (SharedWorker host, default ingest policy), never a harness knob. The wasm
+ * (SharedWorker host, default host limits), never a harness knob. The wasm
  * engine must be live, or L2 runs are not LZ4 and every number is off.
  */
 import { engineUsingWasm, ensureEngine, openDb, type Db } from "@opfs-lsm/kv";

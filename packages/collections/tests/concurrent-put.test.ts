@@ -9,26 +9,19 @@ const schema = {
 };
 type User = { id: string; email: string };
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
-
-beforeEach(async () => {
-  __resetMemoryFsForTests(NAME);
-  await wipe();
-});
+beforeEach(() => __resetMemoryFsForTests(NAME));
 afterEach(() => __resetMemoryFsForTests(NAME));
 
-it("racing puts of one doc from two tabs leave exactly one index key, for the final doc", async () => {
+/**
+ * Two tabs: each tab's update reads its own view, and across tabs the last
+ * ingested write wins (kv `Db.update`), so racing puts of one doc from two
+ * tabs can leave the index key each tab wrote. One tab's puts go one after
+ * another and leave exactly one.
+ */
+it("racing puts of one doc from one tab's two handles of a table leave exactly one index key, for the final doc", async () => {
   const fs = new MemoryFs();
-  const policy = { maxWalBytes: 1 << 30 };
-  const kvA = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: policy });
-  const kvB = await openHarnessDb({ name: NAME, writerId: "b", fs, forceMemory: true, ingestPolicy: policy });
+  const kvA = await openHarnessDb({ name: NAME, fs });
+  const kvB = kvA;
   const tabs = [kvA, kvB].map((kv) => new CollectionDb(kv, schema).table<User>("users"));
 
   await Promise.all(
@@ -37,7 +30,7 @@ it("racing puts of one doc from two tabs leave exactly one index key, for the fi
     ),
   );
 
-  await Promise.all([kvA.sync(), kvB.sync()]);
+  await kvA.sync();
   const final = await tabs[0]!.get("1");
   const keys: Uint8Array[] = [];
   for await (const e of kvA.range(prefixBound(indexPrefix("users", "email")))) {
@@ -46,5 +39,4 @@ it("racing puts of one doc from two tabs leave exactly one index key, for the fi
   expect(keys).toHaveLength(1);
   expect(await tabs[1]!.where("email", final!.email)).toEqual([final]);
   await kvA.close();
-  await kvB.close();
 });

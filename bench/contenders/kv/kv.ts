@@ -3,7 +3,7 @@ import { kvCommon, openKv } from "../../page/kv.ts";
 
 export default defineContender({
   family: "kv",
-  durability: "idb-default",
+  durability: "log-write",
   fastPath: "openDb (SharedWorker host); putMany = one db.batch; range = db.range; update = db.update",
   engine: true,
   async open(name) {

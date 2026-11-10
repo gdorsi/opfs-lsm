@@ -4,7 +4,7 @@ import { kvCommon, openKv } from "../../page/kv.ts";
 
 export default defineContender({
   family: "yjs",
-  durability: "idb-default",
+  durability: "log-write",
   fastPath: "examples/yjs KvPersistence: one put per update, one range scan per load, trim at 500 updates",
   engine: true,
   async open(name) {

@@ -71,19 +71,10 @@ describe("replaceRuns", () => {
 
 const NAME = "levels";
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
 
 describe("bottom compaction", () => {
   beforeEach(async () => {
     __resetMemoryFsForTests(NAME);
-    await wipe();
   });
   afterEach(() => __resetMemoryFsForTests(NAME));
 
@@ -93,7 +84,6 @@ describe("bottom compaction", () => {
       name: NAME,
       fs,
       forceMemory: true,
-      ingestPolicy: { maxWalBytes: 2 ** 40 },
     });
     await db.put(enc.encode("a"), enc.encode("1"));
     await db.put(enc.encode("b"), enc.encode("1"));

@@ -171,6 +171,8 @@ export class LogClient {
   private readonly onRespawned: ((log: LogId, pred: PredEdge) => void) | undefined;
   private state: State = { kind: "closed" };
   private nextId = 1;
+  /** Encoded bytes of every record `append` was given. */
+  appendedBytes = 0;
 
   constructor(options: LogClientOptions) {
     this.db = checkDbName(options.db);
@@ -239,6 +241,7 @@ export class LogClient {
 
   private pending(ops: readonly CheckedOp[]): { promise: Promise<Acked>; pending: Pending } {
     const body = encodeOps(ops);
+    this.appendedBytes += body.byteLength;
     let pending!: Pending;
     const promise = new Promise<Acked>((resolve, reject) => {
       pending = { body, bytes: body.byteLength, resolve, reject };

@@ -17,11 +17,13 @@ export type SizeName = "tiny" | "small" | "large";
 export const SIZES: readonly SizeName[] = ["tiny", "small", "large"];
 
 /**
- * Durability as the contender ships it, printed next to every number. kv's
- * WAL commits IndexedDB transactions with the browser default, which Chrome
- * has made relaxed since version 121.
+ * Durability as the contender ships it, printed next to every number.
+ * `idb-default`: IndexedDB transactions with the browser default, which
+ * Chrome has made relaxed since version 121. `log-write`: kv acks a write
+ * once a SyncAccessHandle write() of its log returned, and flushes within
+ * 100 ms.
  */
-export type Durability = "idb-default" | "idb-strict" | "none";
+export type Durability = "idb-default" | "idb-strict" | "log-write" | "none";
 
 /** Sizing in the LevelDB setup-line vocabulary. */
 export type Params = {

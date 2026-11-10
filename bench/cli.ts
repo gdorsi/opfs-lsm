@@ -127,14 +127,14 @@ async function run(o: {
   }
 }
 
-/** Harness health: a kv footprint after writes must show counted WAL bytes. */
+/** Harness health: a kv footprint after writes must show counted log bytes. */
 function smokeChecks(records: readonly RunRecord[]): string[] {
   const problems: string[] = [];
   for (const r of records) {
     r.phases.forEach((p, i) => {
       if (!p.footprint?.kv) return;
       const amp = amplification(r, i);
-      if (amp && amp.userIn > 0 && !(amp.wal > 0)) problems.push(`${r.workload} ${r.contender} ${p.name}: user bytes but no WAL bytes counted`);
+      if (amp && amp.userIn > 0 && !(amp.log > 0)) problems.push(`${r.workload} ${r.contender} ${p.name}: user bytes but no log bytes counted`);
     });
   }
   return problems;

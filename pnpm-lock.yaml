@@ -199,9 +199,6 @@ importers:
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
-      fake-indexeddb:
-        specifier: ^6.0.0
-        version: 6.2.7
       tsx:
         specifier: ^4.20.0
         version: 4.23.15
@@ -215,9 +212,6 @@ importers:
         specifier: workspace:*
         version: link:../kv
     devDependencies:
-      fake-indexeddb:
-        specifier: ^6.0.0
-        version: 6.2.7
       tsx:
         specifier: ^4.20.0
         version: 4.23.15
@@ -261,9 +255,6 @@ importers:
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
-      fake-indexeddb:
-        specifier: ^6.0.0
-        version: 6.2.7
       tsx:
         specifier: ^4.20.0
         version: 4.23.15

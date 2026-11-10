@@ -16,7 +16,7 @@ async function boot() {
   };
 
   window.addEventListener("beforeunload", () => {
-    // close() aborts the IndexedDB transaction a flush just started.
+    // A running save is left to finish; otherwise close ends this tab's log, so the SharedWorker reads it sooner.
     if (!shutdown.flush()) void store.close();
   });
 

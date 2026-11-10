@@ -244,7 +244,7 @@ export type DbInternals = {
   readonly name: DbName;
   readonly fs: CountingFs;
   readonly hostStats: () => Promise<HostStats>;
-  /** Records this page appended, and their key and value bytes. */
+  /** Records this page appended, and their encoded bytes. */
   readonly appended: () => { readonly records: number; readonly bytes: number };
 };
 
@@ -435,7 +435,6 @@ class DbImpl implements Db {
   /** Live logs whose records past a damaged cursor are being sent again. */
   private readonly restarting = new Set<LogId>();
   private appendedRecords = 0;
-  private appendedBytes = 0;
   private readonly onPageHide = (): void => {
     // Every pagehide: for the back/forward cache the log must end, and on unload ending it frees its lock sooner.
     void this.client.suspend();
@@ -482,7 +481,7 @@ class DbImpl implements Db {
       name: this.name,
       fs: this.fs,
       hostStats: () => this.link.stats(),
-      appended: () => ({ records: this.appendedRecords, bytes: this.appendedBytes }),
+      appended: () => ({ records: this.appendedRecords, bytes: this.client.appendedBytes }),
     });
   }
 
@@ -737,7 +736,6 @@ class DbImpl implements Db {
     const bytes = opsBytes(ops);
     this.sending += bytes;
     this.appendedRecords += 1;
-    this.appendedBytes += bytes;
     const landed = this.client.append(ops).then(
       (at) => {
         this.sending -= bytes;

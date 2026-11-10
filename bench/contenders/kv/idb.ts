@@ -1,7 +1,7 @@
 /**
  * A hand-written IndexedDB key-value store doing the same ops as kv: one
  * object store with binary keys, one readwrite transaction per batch,
- * getAll(range, limit) for scans. Default durability, like kv's WAL.
+ * getAll(range, limit) for scans. Default durability, the IndexedDB baselines' setting.
  */
 import { defineContender } from "../../core/types.ts";
 import { done, openIdb, request } from "../../page/idb.ts";

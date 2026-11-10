@@ -1,7 +1,7 @@
 /**
  * Writes the seed corpora for the decoder fuzzers from files the engine
  * itself produces: a small database run through ingest and two compactions
- * on MemoryFs and fake-indexeddb (L0 and L1 runs, manifests, WAL rows), and
+ * on MemoryFs (L0 and L1 runs, manifests, the bodies of its log records), and
  * LZ4 runs from the wasm encoder and compaction merge, as L2+ runs are
  * written.
  *
@@ -11,15 +11,15 @@
  *   packages/kv/fuzz/corpus/<target>/seed-*          Jazzer.js targets (fuzz/jazzer/)
  *   crates/engine-core/fuzz/corpus/<target>/seed-*   cargo fuzz targets
  */
-import "fake-indexeddb/auto";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
+import { checkBatch } from "../src/check.js";
+import { MemoryFs, type BatchTx } from "../src/index.js";
+import { encodeOps } from "../src/log/record.js";
 import { openHarnessDb } from "../src/testing.js";
 import { encodeSst as encodeSstWasm, ensureEngine, engineUsingWasm, mergeSsts } from "../src/store/engine.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
-import { walStore } from "../tests/sim/check-database.js";
 import { framedBlocks } from "./targets.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -46,19 +46,26 @@ const cat = (...parts: (Uint8Array | number[])[]) => {
 /** A database through four flushes (one L0 -> L1 compaction) and a reopen, as the engine writes it. */
 async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Array[]; records: Uint8Array[] }> {
   const fs = new MemoryFs();
-  const host = new EngineHost(() => fs);
-  const open = () => openHarnessDb({ name: "corpus", fs, ingest: createLocalIngestClient(host) });
+  const open = () => openHarnessDb({ name: "corpus", fs });
   let db = await open();
+  // Each batch's record body, encoded as the page encodes it for its log.
+  const records: Uint8Array[] = [];
+  const batch = async (build: (tx: BatchTx) => void): Promise<void> => {
+    const ops: { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[] = [];
+    build({ put: (key, value) => void ops.push({ type: "put", key, value }), delete: (key) => void ops.push({ type: "del", key }) });
+    records.push(encodeOps(checkBatch(ops)));
+    await db.batch(build);
+  };
   for (let round = 0; round < 5; round++) {
-    await db.batch((tx) => {
+    await batch((tx) => {
       for (let i = 0; i < 60; i++) tx.put(utf(`todo/${String(i * 5 + round).padStart(4, "0")}`), utf(`{"title":"buy milk ${i}","done":${i % 2 === 0}}`));
       tx.delete(utf(`todo/${String(round * 7).padStart(4, "0")}`));
     });
-    await db.put(utf(`i/byDone/${round}`), new Uint8Array(0));
+    await batch((tx) => tx.put(utf(`i/byDone/${round}`), new Uint8Array(0)));
     await db.ingest();
   }
-  await db.put(utf("todo/9999"), utf('{"title":"left in the WAL"}'));
-  await db.delete(utf("todo/0001"));
+  await batch((tx) => tx.put(utf("todo/9999"), utf('{"title":"left in the log"}')));
+  await batch((tx) => tx.delete(utf("todo/0001")));
   await db.close();
   db = await open();
   await db.close();
@@ -70,8 +77,6 @@ async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Arr
   }
   const manifests: Uint8Array[] = [];
   for (const name of await fs.list("m")) manifests.push((await fs.read(`m/${name}`, 0, Infinity))!);
-  const raw = await walStore("corpus", "readonly", (wal) => wal.getAll());
-  const records = (raw as unknown[]).map((r) => new Uint8Array(r as ArrayBuffer));
   return { runs, manifests, records };
 }
 

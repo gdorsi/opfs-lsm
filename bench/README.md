@@ -28,7 +28,7 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 | `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | `KvPersistence` from `@opfs-lsm/yjs` (`packages/yjs`) | y-indexeddb |
 
-Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv's WAL commits with IndexedDB's default durability (relaxed in Chrome since version 121), so the IndexedDB baselines use the default too.
+Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv acks a write once the SyncAccessHandle write() of the tab's log returned and flushes it within 100 ms (`log-write`). The IndexedDB baselines use IndexedDB's default durability (relaxed in Chrome since version 121).
 
 ## Workloads
 
@@ -54,7 +54,7 @@ Every read is checked against the expected value. One wrong value fails the run,
 kv counts the bytes it writes in the configuration apps run: the tab and the SharedWorker host. The counters come from `readStats` in `@opfs-lsm/kv/testing`. The report derives:
 
 - **W-Amp engine**: (flush + compaction bytes written) / user bytes in. This is the number RocksDB and Pebble report.
-- **W-Amp total**: (WAL + flush + compaction + manifest bytes) / user bytes in. It counts the WAL, as Lim et al. (FAST '16) do. WAL bytes are the records handed to IndexedDB; what IndexedDB itself writes is not visible.
+- **W-Amp total**: (log + flush + compaction + manifest bytes) / user bytes in. It counts the log, as Lim et al. (FAST '16) count the WAL. Log bytes are the encoded records the tab handed to its logs, without each 13-byte frame head and the segment headers.
 - **Compaction**: compaction bytes / flush bytes.
 - **Read-Amp**: L0 runs + non-empty deeper levels. After open, kv reads are in memory, so there is no per-read disk count.
 - **Space-Amp**: OPFS bytes / live key and value bytes. It can go below 1 once data reaches L2, which is LZ4-compressed.

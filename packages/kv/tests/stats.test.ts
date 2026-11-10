@@ -10,6 +10,9 @@ const NAME = "stats-db";
 
 afterEach(() => __resetMemoryFsForTests(NAME));
 
+/** One put encoded as a record body: type byte, u32 key length, key, u32 value length, value. */
+const putRecordBytes = (key: Uint8Array, value: Uint8Array) => 5 + key.byteLength + 4 + value.byteLength;
+
 async function write(fs: CountingFs, path: string, bytes: number): Promise<void> {
   const w = await fs.create(path);
   await w.write(new Uint8Array(bytes));
@@ -63,9 +66,11 @@ describe("readStats", () => {
     const db = await openHarnessDb({ name: NAME, fs, host: new Host(() => fs) });
 
     let folded = 0;
+    let logBytes = 0;
     for (let i = 0; i < 4; i++) {
       const key = utf(`key-${i}`);
       const value = utf(`value-${i}`.repeat(i + 1));
+      logBytes += putRecordBytes(key, value);
       folded += key.byteLength + value.byteLength;
       await db.put(key, value);
       await db.ingest();
@@ -74,7 +79,7 @@ describe("readStats", () => {
 
     const stats = await readStats(db);
     expect(stats.tab.appends).toBe(4);
-    expect(stats.tab.appendBytes).toBe(folded);
+    expect(stats.tab.logBytes).toBe(logBytes);
     expect(stats.host.flushes).toBe(4);
     expect(stats.host.foldedBytes).toBeGreaterThanOrEqual(folded);
     expect(stats.host.fs.written.l0!.calls).toBe(4);
@@ -134,7 +139,7 @@ describe("readStats", () => {
 
     const stats = await readStats(db);
     expect(stats.tab.appends).toBe(1);
-    expect(stats.tab.appendBytes).toBe(key.byteLength + value.byteLength);
+    expect(stats.tab.logBytes).toBe(putRecordBytes(key, value));
     expect(stats.host.flushes).toBe(1);
     expect(stats.host.generation).toBe(1);
     expect(stats.host.fs.written.l0!.calls).toBe(1);

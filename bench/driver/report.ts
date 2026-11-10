@@ -7,7 +7,7 @@
  * docs/research/benchmark-prior-art.md section 2.2:
  *
  *   W-Amp engine = (flush + compaction bytes written) / user bytes in
- *   W-Amp total  = (WAL + flush + compaction + manifest bytes) / user bytes in
+ *   W-Amp total  = (log + flush + compaction + manifest bytes) / user bytes in
  *   Compaction   = compaction bytes written / flush bytes written
  *   Read-Amp     = L0 runs + non-empty deeper levels (structural)
  *   Space-Amp    = bytes on disk / live logical bytes
@@ -46,7 +46,8 @@ const isDeeper = (cls: string) => /^l[1-9]\d*$/.test(cls);
 
 export type Amp = {
   userIn: number;
-  wal: number;
+  /** Encoded record bytes the tab handed to its logs. */
+  log: number;
   flush: number;
   compaction: number;
   manifest: number;
@@ -75,7 +76,7 @@ export function amplification(record: RunRecord, phaseIndex: number): Amp | unde
   if (!kv) {
     const disk = fp.idbEstimateBytes + fp.opfsBytes;
     return {
-      userIn, wal: NaN, flush: NaN, compaction: NaN, manifest: NaN, disk, live: fp.liveLogicalBytes,
+      userIn, log: NaN, flush: NaN, compaction: NaN, manifest: NaN, disk, live: fp.liveLogicalBytes,
       wampEngine: NaN, wampTotal: NaN, compactionRatio: NaN, readAmp: NaN,
       spaceAmp: disk / fp.liveLogicalBytes, spaceExact: false,
     };
@@ -84,13 +85,13 @@ export function amplification(record: RunRecord, phaseIndex: number): Amp | unde
   const flush = sumClass(w, isLevel(0));
   const compaction = sumClass(w, isDeeper);
   const manifest = sumClass(w, (c) => c === "m");
-  const wal = kv.tab.walBytes;
+  const log = kv.tab.logBytes;
   const l0 = kv.host.layout.find((l) => l.level === 0)?.runs ?? 0;
   const deeper = kv.host.layout.filter((l) => l.level > 0 && l.runs > 0).length;
   return {
-    userIn, wal, flush, compaction, manifest, disk: fp.opfsBytes, live: fp.liveLogicalBytes,
+    userIn, log, flush, compaction, manifest, disk: fp.opfsBytes, live: fp.liveLogicalBytes,
     wampEngine: (flush + compaction) / userIn,
-    wampTotal: (wal + flush + compaction + manifest) / userIn,
+    wampTotal: (log + flush + compaction + manifest) / userIn,
     compactionRatio: compaction / flush,
     readAmp: l0 + deeper,
     spaceAmp: fp.opfsBytes / fp.liveLogicalBytes,
@@ -162,7 +163,7 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
     if (ampRows.length > 0) {
       out.push(
         "",
-        "| at | contender | W-Amp engine | W-Amp total | compaction | Read-Amp | Space-Amp | user MB | WAL MB | flush MB | compact MB | disk MB | live MB |",
+        "| at | contender | W-Amp engine | W-Amp total | compaction | Read-Amp | Space-Amp | user MB | log MB | flush MB | compact MB | disk MB | live MB |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
       );
       for (const row of ampRows) {
@@ -170,7 +171,7 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
         const med = (f: (a: Amp) => number) => stat(amps.map(f)).median;
         const exact = amps[0]?.spaceExact ?? true;
         out.push(
-          `| ${row.name} | ${row.contender} | ${fmtX(med((a) => a.wampEngine))} | ${fmtX(med((a) => a.wampTotal))} | ${fmtX(med((a) => a.compactionRatio))} | ${fmtN(med((a) => a.readAmp))} | ${exact ? "" : "~"}${fmtX(med((a) => a.spaceAmp))} | ${fmtMB(med((a) => a.userIn))} | ${fmtMB(med((a) => a.wal))} | ${fmtMB(med((a) => a.flush))} | ${fmtMB(med((a) => a.compaction))} | ${exact ? "" : "~"}${fmtMB(med((a) => a.disk))} | ${fmtMB(med((a) => a.live))} |`,
+          `| ${row.name} | ${row.contender} | ${fmtX(med((a) => a.wampEngine))} | ${fmtX(med((a) => a.wampTotal))} | ${fmtX(med((a) => a.compactionRatio))} | ${fmtN(med((a) => a.readAmp))} | ${exact ? "" : "~"}${fmtX(med((a) => a.spaceAmp))} | ${fmtMB(med((a) => a.userIn))} | ${fmtMB(med((a) => a.log))} | ${fmtMB(med((a) => a.flush))} | ${fmtMB(med((a) => a.compaction))} | ${exact ? "" : "~"}${fmtMB(med((a) => a.disk))} | ${fmtMB(med((a) => a.live))} |`,
         );
       }
       out.push("", "`~`: from navigator.storage.estimate(), approximate. kv disk bytes are exact OPFS file sizes.");

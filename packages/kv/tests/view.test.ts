@@ -8,18 +8,9 @@ const NAME = "view-test";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-function wipe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => resolve();
-  });
-}
 
 beforeEach(async () => {
   __resetMemoryFsForTests(NAME);
-  await wipe();
 });
 
 afterEach(() => {
@@ -27,13 +18,8 @@ afterEach(() => {
 });
 
 describe("view snapshot", () => {
-  it("pins WAL head so later puts are invisible", async () => {
-    const db = await openHarnessDb({
-      name: NAME,
-      forceMemory: true,
-      writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
+  it("pins this page's writes and the manifest, so later puts are invisible", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true });
     await db.put(enc.encode("a"), enc.encode("1"));
 
     const seen = await db.view(async (snap) => {
@@ -44,7 +30,7 @@ describe("view snapshot", () => {
       return {
         a: a ? dec.decode(a) : undefined,
         b: b ? dec.decode(b) : undefined,
-        head: snap.walHead,
+        generation: snap.generation,
       };
     });
 
@@ -55,12 +41,7 @@ describe("view snapshot", () => {
   });
 
   it("closes snapshot after callback", async () => {
-    const db = await openHarnessDb({
-      name: NAME,
-      forceMemory: true,
-      writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
+    const db = await openHarnessDb({ name: NAME, forceMemory: true });
     let leaked: { get(key: Uint8Array): Promise<Uint8Array | undefined> } | undefined;
     await db.view(async (snap) => {
       leaked = snap;
@@ -71,12 +52,7 @@ describe("view snapshot", () => {
   });
 
   it("keeps its rows while later writes split the memtable", async () => {
-    const db = await openHarnessDb({
-      name: NAME,
-      forceMemory: true,
-      writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
+    const db = await openHarnessDb({ name: NAME, forceMemory: true });
     const key = (i: number) => enc.encode(`k${String(i).padStart(5, "0")}`);
     await db.batch((tx) => {
       for (let i = 0; i < 3000; i += 2) tx.put(key(i), enc.encode("old"));
@@ -110,7 +86,7 @@ describe("reverse range", () => {
   };
 
   async function seeded() {
-    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    const db = await openHarnessDb({ name: NAME, forceMemory: true });
     await db.batch((tx) => {
       for (let i = 0; i < 3000; i += 2) tx.put(key(i), enc.encode(`sst${i}`));
     });
@@ -174,12 +150,7 @@ describe("reverse range", () => {
 
 describe("range with valueContains", () => {
   async function seeded() {
-    const db = await openHarnessDb({
-      name: NAME,
-      forceMemory: true,
-      writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
-    });
+    const db = await openHarnessDb({ name: NAME, forceMemory: true });
     await db.put(enc.encode("a"), enc.encode(" red apple"));
     await db.put(enc.encode("b"), enc.encode(" red pear"));
     await db.put(enc.encode("c"), enc.encode(" red plum"));
@@ -257,7 +228,7 @@ describe("range with valueContains", () => {
   });
 
   it("hands out bytes that own their buffer", async () => {
-    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    const db = await openHarnessDb({ name: NAME, forceMemory: true });
     await db.put(enc.encode("a"), enc.encode(" red apple"));
     await db.put(enc.encode("b"), enc.encode(" red pear"));
     await db.ingest();

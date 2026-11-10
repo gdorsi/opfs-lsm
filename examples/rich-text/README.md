@@ -6,11 +6,11 @@ Minimal React + [Tiptap](https://tiptap.dev/) example that persists a rich-text 
 
 [`src/kv-document-store.ts`](./src/kv-document-store.ts) is the whole storage layer:
 
-- Opens the shared OPFS/IDB-WAL database with `openDb({ name })`.
+- Opens the database with `openDb({ name })`: OPFS, with a per-tab log the SharedWorker ingests.
 - Stores one document per `docId` as UTF-8 JSON under the key `doc:<docId>`.
 - `load()` → `db.get(key)` → parse JSON.
-- `save(doc)` → UTF-8 bytes of `JSON.stringify(doc)`, then `db.put` (durable WAL append).
-- `onChange()` → `db.changes(...)` so another tab’s commit can trigger `sync()` + reload.
+- `save(doc)` → UTF-8 bytes of `JSON.stringify(doc)`, then `db.put` (one record in this tab's log).
+- `onChange()` → `db.changes(...)` so another tab’s save, once ingested, can trigger `sync()` + reload.
 
 The editor (`App.tsx`) debounces saves, flushes a pending save on unload and unmount, and will not apply a remote reload over an edit that has not been written yet.
 
