@@ -57,8 +57,8 @@ async function main(): Promise<number> {
         timeoutMs: Number(values.timeout),
         smoke,
         checkSizes: smoke && values.check,
-        maxPeakBytes: values["max-peak-bytes"] ? Number(values["max-peak-bytes"]) : undefined,
-        compactionMemoryBytes: values["compaction-memory-bytes"] ? Number(values["compaction-memory-bytes"]) : undefined,
+        maxPeakBytes: bytesFlag("max-peak-bytes", values["max-peak-bytes"]),
+        compactionMemoryBytes: bytesFlag("compaction-memory-bytes", values["compaction-memory-bytes"]),
       });
     }
     case "size":
@@ -129,6 +129,13 @@ async function run(o: {
 }
 
 /** Print the bundle-size table of a build. With `check`, false when a row is over its budget. */
+function bytesFlag(name: string, value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const bytes = Number(value);
+  if (!(bytes > 0)) throw new Error(`--${name} must be a positive number of bytes`);
+  return bytes;
+}
+
 function sizes(built: BuildOutput, check: boolean): boolean {
   const rows = measureSizes(built);
   console.log(formatSizes(rows));
