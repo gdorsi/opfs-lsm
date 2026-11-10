@@ -225,11 +225,15 @@ export function committedLog(ops: readonly DurableOp[]): Oracle {
   return log;
 }
 
+/** The first `count` IndexedDB commits. `count` is a count of those commits, as in `materializeWal`. */
+function idbCommits(ops: readonly DurableOp[], count: number): Extract<DurableOp, { store: "idb" }>[] {
+  return ops.filter((op): op is Extract<DurableOp, { store: "idb" }> => op.store === "idb").slice(0, count);
+}
+
 /** The `meta` rows the first `count` IndexedDB commits left. */
 function metaAt(ops: readonly DurableOp[], count: number): Map<string, number> {
   const meta = new Map<string, number>();
-  for (const op of ops.filter((o) => o.store === "idb").slice(0, count)) {
-    if (op.store !== "idb") continue;
+  for (const op of idbCommits(ops, count)) {
     for (const m of op.muts) if (m.store === "meta" && m.kind === "put") meta.set(String(m.key), m.value as number);
   }
   return meta;
@@ -238,8 +242,7 @@ function metaAt(ops: readonly DurableOp[], count: number): Map<string, number> {
 /** The head after the first `count` IndexedDB commits: the highest seq appended, or the floor in `meta` when that is higher. */
 function headAt(ops: readonly DurableOp[], count: number): number {
   let head = metaAt(ops, count).get("head") ?? 0;
-  for (const op of ops.filter((o) => o.store === "idb").slice(0, count)) {
-    if (op.store !== "idb") continue;
+  for (const op of idbCommits(ops, count)) {
     for (const m of op.muts) if (m.store === "wal" && m.kind === "put") head = Math.max(head, m.key as number);
   }
   return head;

@@ -179,8 +179,15 @@ describe("ingest policy", () => {
     expect(await wal.uningestedBytes()).toBe(opsBytes([second]));
     expect((await wal.listUningested()).map((record) => record.seq)).toEqual([2]);
     await wal.append([first]);
-    expect(await wal.uningestedBytes(1 << 20), "under the cap: exact").toBe(opsBytes([second]) + opsBytes([first]));
-    expect(await wal.uningestedBytes(5), "over the cap: the cap").toBe(5);
+    const secondBytes = opsBytes([second]);
+    const bothBytes = secondBytes + opsBytes([first]);
+    expect(await wal.uningestedBytes(1 << 20), "under the cap: exact").toBe(bothBytes);
+    // Seq 2 is 5 bytes and seq 3 is 11. A cap of 5 stops after seq 2 with
+    // bytes == cap, so it cannot tell a partial sum from the cap itself.
+    expect(secondBytes).toBe(5);
+    expect(await wal.uningestedBytes(8), "early stop, bytes under the cap").toBe(8);
+    expect(await wal.uningestedBytes(4), "early stop, the first record past the cap").toBe(secondBytes);
+    expect(bothBytes).toBeGreaterThan(8);
     wal.close();
   });
 
