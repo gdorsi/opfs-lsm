@@ -593,6 +593,15 @@ The exclusive section is a promise chain inside the host plus a Web Lock named
 `opfs-lsm-ingest/<name>`. The lock covers the case of two SharedWorkers serving the same
 database, for example two builds with different script URLs.
 
+**L0 stop.** Step 1 also counts the L0 runs of manifest `G`. At 15 runs, with records waiting,
+the flush publishes nothing and releases the section. 15 is one less than the 16 sources of a
+merge, so one compaction step can take all of L0. The flush asks for a compaction pass if none
+runs, then waits for the next step to install, outside the section so the install can take it.
+After the install it tries again. If the pass ends without an install, because nothing was left to
+merge or because it failed, the flush publishes its run anyway and checks again before the next
+one. A compaction that cannot help delays the flush by one pass and never blocks it for good.
+`HostStats.l0Stops` counts the waits.
+
 OPFS writes go through `createWritable` and `close`. The browser swaps the new file into place
 on `close`, so other readers see a file whole or not at all.
 

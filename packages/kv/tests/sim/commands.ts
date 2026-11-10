@@ -27,14 +27,18 @@ export class Model {
   }
 }
 
-/** Small, so a flush of a few records, or of one large one, spans several L0 runs. */
-export const FLUSH_RUN_BYTES = 8 * 1024;
+/**
+ * Small flush runs, so a flush of a few records, or of one large one, spans
+ * several L0 runs. No L0 stop: a command can hold compaction, and a flush
+ * waiting for it would wait on a command that never comes.
+ */
+export const SIM_HOST_LIMITS = { flushRunBytes: 8 * 1024, l0StopRuns: Number.POSITIVE_INFINITY };
 
 /** The system under test: one handle, its host, and the files they share. */
 export class Sut {
   /** While set, the host's run opens wait: a compaction stalls before its merge. */
   private gate: { readonly opened: Promise<void>; readonly open: () => void } | undefined;
-  readonly host = new EngineHost(() => this.hostFs(), { flushRunBytes: FLUSH_RUN_BYTES });
+  readonly host = new EngineHost(() => this.hostFs(), SIM_HOST_LIMITS);
   db!: Db;
   /** Seqs of this handle's own appends, from `changes`. */
   readonly appended: number[] = [];

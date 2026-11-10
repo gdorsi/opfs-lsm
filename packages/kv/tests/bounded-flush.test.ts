@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkDbName } from "../src/check.js";
+import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
 import {
   EngineHost,
   MemoryFs,
   createLocalIngestClient,
   decodeSst,
 } from "../src/index.js";
+import { ingestChunk } from "../src/host/ingest.js";
 import { IdBWal } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { decodeGeneration } from "../src/store/generation.js";
@@ -66,10 +67,11 @@ function hostFs(inner: MemoryFs) {
   return { fs, published, hold };
 }
 
-async function setup(flushRunBytes: number) {
+async function setup(flushRunBytes: number, l0StopRuns?: number) {
   const inner = new MemoryFs();
   const { fs, published, hold } = hostFs(inner);
-  const host = new EngineHost(() => fs, { flushRunBytes });
+  const limits = l0StopRuns === undefined ? { flushRunBytes } : { flushRunBytes, l0StopRuns };
+  const host = new EngineHost(() => fs, limits);
   const db = await openHarnessDb({
     name: NAME,
     writerId: "w1",
@@ -246,5 +248,109 @@ describe("a flush of a large backlog", () => {
     await db.ingest();
     for (let i = 0; i < 13; i++) expect(await db.get(key(i))).toEqual(value(i, 100));
     await db.close();
+  });
+});
+
+describe("a flush with L0 full", () => {
+  type Setup = Awaited<ReturnType<typeof setup>>;
+
+  /** Four one-record flushes leave four L0 runs. Their merge stops at its first open until `release`. */
+  async function fullL0(t: Setup) {
+    let merging = false;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    t.hold.open = async (path) => {
+      if (!path.endsWith(".sst")) return;
+      merging = true;
+      await gate;
+    };
+    for (let i = 0; i < 4; i++) {
+      await t.db.put(key(i), value(i, 100));
+      await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
+    }
+    await vi.waitFor(() => expect(merging).toBe(true));
+    return () => release();
+  }
+
+  const l0Count = (g: ReturnType<typeof decodeGeneration>) =>
+    g.runs.filter((r) => r.path.startsWith("l0/")).length;
+
+  it("publishes no more runs until a compaction step installs", async () => {
+    const t = await setup(350, 4);
+    const releaseMerge = await fullL0(t);
+    await t.db.put(key(4), value(4, 100));
+    let flushed = false;
+    const flush = t.host.ingest(NAME, Number.POSITIVE_INFINITY).then(() => (flushed = true));
+
+    await vi.waitFor(async () => expect((await t.host.stats(NAME)).l0Stops).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(flushed).toBe(false);
+    expect(await l0Runs(t.published)).toHaveLength(4);
+
+    releaseMerge();
+    await flush;
+    const generations = t.published
+      .filter((p) => p.path.startsWith("m/"))
+      .map((p) => decodeGeneration(p.bytes));
+    const install = generations.findIndex((g) => g.runs.some((r) => r.path.startsWith("l1/")));
+    // The install took the four runs, and the fifth record became the one run after it.
+    expect(generations.slice(install).map(l0Count)).toEqual([0, 1]);
+    expect((await t.host.stats(NAME)).l0Stops).toBe(1);
+    await t.db.ingest();
+    for (let i = 0; i < 5; i++) expect(await t.db.get(key(i))).toEqual(value(i, 100));
+    await t.db.close();
+  });
+
+  it("goes on when no compaction can run", async () => {
+    // Two runs are below the four that start a merge, so no step will ever install.
+    const t = await setup(350, 2);
+    for (let i = 0; i < 4; i++) {
+      await t.db.put(key(i), value(i, 100));
+      await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
+    }
+    expect(await l0Runs(t.published)).toHaveLength(4);
+    expect((await t.host.stats(NAME)).l0Stops).toBe(2);
+    await t.db.close();
+  });
+
+  it("goes on when the compaction it waits for fails", async () => {
+    const t = await setup(350, 4);
+    t.hold.create = async (path) => {
+      if (path.startsWith("l1/")) throw new Error("disk full");
+    };
+    for (let i = 0; i < 4; i++) {
+      await t.db.put(key(i), value(i, 100));
+      await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
+    }
+    await t.db.put(key(4), value(4, 100));
+    await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
+    expect(await l0Runs(t.published)).toHaveLength(5);
+    expect((await t.host.stats(NAME)).l0Stops).toBeGreaterThanOrEqual(1);
+    await t.db.close();
+  });
+
+  it("ingestChunk stops with records waiting, and is empty with none", async () => {
+    const fs = new MemoryFs();
+    const wal = await IdBWal.open(checkDbName(NAME));
+    try {
+      const put = (i: number): CheckedOp[] => [
+        { type: "put", key: checkKey(key(i)), value: checkValue(value(i, 100)) },
+      ];
+      for (let i = 0; i < 3; i++) await wal.append(put(i));
+      // 100 op bytes a record and a cap of 100: one record a run.
+      const limits = { maxBytes: 100, l0Stop: 2 };
+      const chunk = (through: number) => ingestChunk(wal, fs, through, () => false, limits);
+
+      expect((await chunk(3)).kind).toBe("folded");
+      expect((await chunk(3)).kind).toBe("folded");
+      const stopped = await chunk(3);
+      expect(stopped).toMatchObject({ kind: "stopped", ingestedThrough: 2, foldedBytes: 0 });
+      expect(fs.publishedPaths().filter((p) => p.startsWith("l0/"))).toHaveLength(2);
+      expect(await wal.getIngestedThrough()).toBe(2);
+      // L0 is still full, but nothing through 2 is waiting.
+      expect((await chunk(2)).kind).toBe("empty");
+    } finally {
+      wal.close();
+    }
   });
 });
