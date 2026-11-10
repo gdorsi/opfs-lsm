@@ -28,7 +28,7 @@
  * 55 s. FORMAL_IQ_APPENDS=3 explores about 10.7M states in about 12 minutes.
  */
 import { RECLAIM_LAG } from "../../src/host/queues.js";
-import { actions, allDead, causalReorder, crashes, diskKey, drain, drainProblem, initial, PlanError, problem, type Bounds, type State, type Variant } from "./model.js";
+import { actions, allDead, causalReorder, clone, crashes, diskKey, drain, drainProblem, initial, PlanError, problem, type Bounds, type State, type Variant } from "./model.js";
 
 const BOUNDS: Bounds = {
   appends: Number(process.env.FORMAL_IQ_APPENDS ?? 2),
@@ -150,7 +150,7 @@ function explore(v: Variant, b: Bounds): Result {
           const p = check(s, () => path(i));
           if (p) return done({ path: path(i), message: p });
           for (const a of crashes(s, b)) {
-            const c = JSON.parse(key) as State;
+            const c = clone(s);
             a.apply(c);
             transitions++;
             if (!visited.add(JSON.stringify(c))) continue;
@@ -161,7 +161,7 @@ function explore(v: Variant, b: Bounds): Result {
           }
         }
         for (const a of actions(s, v, b)) {
-          const c = JSON.parse(key) as State;
+          const c = clone(s);
           a.apply(c);
           transitions++;
           const k = JSON.stringify(c);

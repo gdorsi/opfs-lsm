@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actions, crashes, initial, read, type Bounds, type State } from "../formal/ingest-plan/model.js";
+import { actions, clone, crashes, diskKey, initial, read, type Bounds, type State } from "../formal/ingest-plan/model.js";
 import type { CheckedKey, CheckedValue } from "../src/check.js";
 import type { LogId, QueueScan } from "../src/host/queues.js";
 import { encodeOps } from "../src/idb/wal.js";
@@ -120,6 +120,7 @@ describe("on directly built logs", () => {
 
 it("agrees with the ingest-plan model's reader on every log disk the model reaches", () => {
   const seenStates = new Set<string>();
+  const crashed = new Set<string>();
   const seenDisks = new Set<string>();
   let compared = 0;
   const compare = (s: State): void => {
@@ -152,13 +153,15 @@ it("agrees with the ingest-plan model's reader on every log disk the model reach
     for (const key of frontier) {
       const s = JSON.parse(key) as State;
       compare(s);
-      for (const a of crashes(s, BOUNDS)) {
-        const c = JSON.parse(key) as State;
+      const disk = diskKey(s);
+      for (const a of crashed.has(disk) ? [] : crashes(s, BOUNDS)) {
+        const c = clone(s);
         a.apply(c);
         compare(c);
       }
+      crashed.add(disk);
       for (const a of actions(s, {}, BOUNDS)) {
-        const c = JSON.parse(key) as State;
+        const c = clone(s);
         a.apply(c);
         const k = JSON.stringify(c);
         if (seenStates.has(k)) continue;
