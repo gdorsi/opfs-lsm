@@ -29,7 +29,7 @@ export type Frame = {
 };
 
 export const HEADER_BYTES = 32;
-const FRAME_HEAD_BYTES = 13;
+export const FRAME_HEAD_BYTES = 13;
 const MAGIC = [0x4f, 0x4c, 0x51, 0x53];
 const VERSION = 1;
 const RECORD = 1;
