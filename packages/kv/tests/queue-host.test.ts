@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CheckedKey, CheckedValue } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { scanQueues } from "../src/host/queue-host.js";
+import { ingestQueues, scanQueues } from "../src/host/queue-host.js";
 import type { LogId, PredEdge, QueueCursor, QueueScan } from "../src/host/queues.js";
 import { encodeOps } from "../src/idb/wal.js";
 import { QueueWriter } from "../src/log/queue-writer.js";
@@ -9,7 +9,8 @@ import { segmentPath } from "../src/log/segment.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { MemoryFs } from "../src/opfs/memory-fs.js";
 import { recoverQueues } from "../src/recover.js";
-import { listLogs, publishGeneration, publishRun } from "../src/store/generation.js";
+import { listLogs, loadLatestGeneration, publishGeneration, publishRun, type GenerationMeta } from "../src/store/generation.js";
+import { decodeSst } from "../src/store/sst.js";
 import { BROWSERS, QueueFs, TestLocks, type Browser } from "./sim/queue-fs.js";
 
 const A = "00000000000000a1" as LogId;
@@ -34,6 +35,22 @@ async function append(w: QueueWriter, log: LogId, count: number): Promise<void> 
 async function scan(fs: AsyncFs, locks: TestLocks, queues: QueueCursor[] = []): Promise<QueueScan[]> {
   return scanQueues(fs, locks.for("host"), queues, await listLogs(fs), async (scans) => scans);
 }
+
+/** The newest manifest, and each record in its runs as `<log>/<n>` with its seq, in seq order. */
+async function ingested(fs: AsyncFs): Promise<{ meta: GenerationMeta; seqs: Map<string, number> }> {
+  const meta = (await loadLatestGeneration(fs))!;
+  const seqs = new Map<string, number>();
+  for (const run of meta.runs) {
+    for (const e of decodeSst((await fs.read(run.path, 0, Number.POSITIVE_INFINITY))!)) {
+      const key = new TextDecoder().decode(e.key);
+      expect(seqs.has(key), `${key} is in two runs`).toBe(false);
+      seqs.set(key, e.seq);
+    }
+  }
+  return { meta, seqs: new Map([...seqs].sort((a, b) => a[1] - b[1])) };
+}
+
+const keys = (log: LogId, ns: number[]): string[] => ns.map((n) => `${log}/${n}`);
 
 async function file(fs: MemoryFs, path: string, bytes = new Uint8Array([1])): Promise<void> {
   await publishRun(fs, path, bytes);
@@ -221,5 +238,116 @@ describe("scanQueues", () => {
     expect(scans.map((s) => s.log)).toEqual([B]);
     expect(ns(scans[0])).toEqual([4, 5]);
     expect(locks.heldBy(A)).toBeUndefined();
+  });
+});
+
+describe("ingestQueues", () => {
+  const P = "00000000000000a0" as LogId;
+  const S = "00000000000000d4" as LogId;
+
+  it("ingests a dead log to its end and a live one up to its flushed record, and publishes nothing when nothing is new", async () => {
+    const fs = new QueueFs("safari");
+    const locks = new TestLocks();
+    const a = await startLog(fs, locks, A, 2);
+    await append(a, A, 3);
+    await a.close();
+    locks.release(A);
+    const b = await startLog(fs, locks, B, 2);
+    await append(b, B, 4);
+    await b.flush();
+    const host = locks.for("host");
+
+    expect(await ingestQueues(fs, host, new Map([[B, 2]]), Infinity)).toEqual({ generation: 1, damagedLive: [] });
+    const first = await ingested(fs);
+    expect(first.meta).toMatchObject({ through: 5, queues: [{ log: A, state: "final", n: 3 }, { log: B, state: "open", n: 2 }] });
+    expect([...first.seqs]).toEqual([...keys(A, [1, 2, 3]), ...keys(B, [1, 2])].map((k, i) => [k, i + 1]));
+    expect(locks.heldBy(A)).toBeUndefined();
+
+    expect(await ingestQueues(fs, host, new Map([[B, 2]]), Infinity)).toEqual({ generation: 1, damagedLive: [] });
+    expect(await ingestQueues(fs, host, new Map([[B, 4]]), Infinity)).toEqual({ generation: 2, damagedLive: [] });
+    const second = await ingested(fs);
+    expect(second.meta).toMatchObject({ through: 7, queues: [{ log: A, state: "final", n: 3 }, { log: B, state: "open", n: 4 }] });
+    expect([second.seqs.get(`${B}/3`), second.seqs.get(`${B}/4`)]).toEqual([6, 7]);
+  });
+
+  it("ingests a pred log through the last record its writer acked, and its successor after it", async () => {
+    const fs = new QueueFs("safari");
+    const locks = new TestLocks();
+    const p = await startLog(fs, locks, P);
+    await append(p, P, 3);
+    await p.flush();
+    fs.failNextWrite(P, { mode: "throw", landed: Infinity });
+    await expect(p.append([body(P, 4)])).rejects.toThrow(/injected write failure/);
+    const s = await startLog(fs, locks, S, 100, { log: P, lastN: p.lastAcked });
+    await append(s, S, 2);
+    await s.flush();
+
+    await ingestQueues(fs, locks.for("host"), new Map([[P, 3], [S, 2]]), Infinity);
+    const { meta, seqs } = await ingested(fs);
+    expect(meta.queues).toEqual([{ log: P, state: "final", n: 3 }, { log: S, state: "open", n: 2 }]);
+    expect([...seqs]).toEqual([...keys(P, [1, 2, 3]), ...keys(S, [1, 2])].map((k, i) => [k, i + 1]));
+  });
+
+  it("holds a successor until its pred is read through lastN", async () => {
+    const fs = new QueueFs("safari");
+    const locks = new TestLocks();
+    const p = await startLog(fs, locks, P);
+    await append(p, P, 3);
+    await p.flush();
+    const s = await startLog(fs, locks, S, 100, { log: P, lastN: 3 });
+    await append(s, S, 1);
+    await s.flush();
+    const host = locks.for("host");
+
+    await ingestQueues(fs, host, new Map([[P, 2], [S, 1]]), Infinity);
+    expect((await ingested(fs)).meta.queues).toEqual([{ log: P, state: "open", n: 2 }]);
+    await ingestQueues(fs, host, new Map([[P, 3], [S, 1]]), Infinity);
+    const { seqs } = await ingested(fs);
+    expect([seqs.get(`${P}/3`), seqs.get(`${S}/1`)]).toEqual([3, 4]);
+  });
+
+  it("caps a round at maxBytes, and the rounds take each record once", async () => {
+    const fs = new QueueFs("chrome");
+    const locks = new TestLocks();
+    const a = await startLog(fs, locks, A, 2);
+    await append(a, A, 5);
+    await a.close();
+    locks.release(A);
+    const host = locks.for("host");
+
+    for (let round = 1; round <= 5; round++) {
+      expect((await ingestQueues(fs, host, new Map(), 1)).generation).toBe(round);
+      expect((await ingested(fs)).meta.through).toBe(round);
+    }
+    const { meta, seqs } = await ingested(fs);
+    expect(meta.queues).toEqual([{ log: A, state: "final", n: 5 }]);
+    expect([...seqs]).toEqual(keys(A, [1, 2, 3, 4, 5]).map((k, i) => [k, i + 1]));
+  });
+
+  it("damages a log at a hole in a middle segment, keeps its files, and ingests the other logs", async () => {
+    const fs = new QueueFs("firefox");
+    const locks = new TestLocks();
+    for (const log of [A, B]) {
+      const w = await startLog(fs, locks, log, 2);
+      await append(w, log, 6);
+      await w.close();
+      locks.release(log);
+    }
+    await fs.remove(segmentPath(A, 3));
+    const live = await startLog(fs, locks, P, 2);
+    await append(live, P, 6);
+    await live.flush();
+    await fs.remove(segmentPath(P, 3));
+
+    const out = await ingestQueues(fs, locks.for("host"), new Map([[P, 6]]), Infinity);
+    expect(out.damagedLive).toEqual([P]);
+    const { meta, seqs } = await ingested(fs);
+    expect(meta.queues).toEqual([
+      { log: P, state: "damaged", n: 2, reason: "segment ends short" },
+      { log: A, state: "damaged", n: 2, reason: "segment ends short" },
+      { log: B, state: "final", n: 6 },
+    ]);
+    expect([...seqs.keys()]).toEqual([...keys(P, [1, 2]), ...keys(A, [1, 2]), ...keys(B, [1, 2, 3, 4, 5, 6])]);
+    expect((await listLogs(fs)).find((l) => l.log === A)?.segments).toEqual([1, 5]);
   });
 });

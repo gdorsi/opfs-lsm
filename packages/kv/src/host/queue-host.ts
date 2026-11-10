@@ -1,8 +1,10 @@
 import { scanLog, type ListedSegment } from "../log/queue-scan.js";
 import { segmentPath } from "../log/segment.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
-import { listLog } from "../store/generation.js";
-import type { LogFiles, LogId, QueueCursor, QueueScan, RecordN } from "./queues.js";
+import { recoverQueues } from "../recover.js";
+import { foldRecords } from "../store/fold.js";
+import { listLog, publishGeneration, publishL0 } from "../store/generation.js";
+import { planIngest, type DurableHints, type LogFiles, type LogId, type QueueCursor, type QueueScan, type RecordN } from "./queues.js";
 
 /**
  * The per-log Web Locks, `opfs-lsm-log/<db>/<log>`. A log's writer, its
@@ -17,6 +19,42 @@ export interface LogLocks {
 
 /** Reads of a segment that Chrome refuses with `NotReadableError` (a writer is appending to it) before it counts as unreadable this round. */
 const READ_TRIES = 8;
+
+/** What an ingest round tells the pages. */
+export type IngestOutcome = {
+  /** The newest manifest: the one this round published, or its base when it had nothing to add. */
+  readonly generation: number;
+  /** Live logs that hit a hole: their tabs start a new log and append again what they still hold. */
+  readonly damagedLive: readonly LogId[];
+};
+
+/**
+ * One ingest round: recover the base manifest, scan the logs, plan, then
+ * publish one L0 with the plan's records at their seqs and a manifest with
+ * the new cursors. Run it under the ingest lock, which every manifest
+ * publish and `reclaimQueues` hold too.
+ *
+ * Idempotent: the cursors commit with the runs that hold their records,
+ * so a round that dies before its manifest leaves the base as it was, and
+ * the next round plans again from it; one that publishes leaves nothing to
+ * redo. A round with nothing to add publishes nothing.
+ */
+export async function ingestQueues(fs: AsyncFs, locks: LogLocks, durable: DurableHints, maxBytes: number): Promise<IngestOutcome> {
+  const { base, top, logs } = await recoverQueues(fs);
+  const queues = base.queues ?? [];
+  return scanQueues(fs, locks, queues, logs, async (scans) => {
+    const plan = planIngest({ through: base.through, queues }, scans, durable, maxBytes);
+    if (plan.records.length === 0 && sameCursors(plan.queues, queues)) return { generation: base.generation, damagedLive: plan.damagedLive };
+    const runs =
+      plan.records.length === 0 ? base.runs : [await publishL0(fs, `${base.through + 1}-${plan.through}`, foldRecords(plan.records)), ...base.runs];
+    const generation = top + 1;
+    await publishGeneration(fs, { generation, runs, tombstoneSeq: base.tombstoneSeq, through: plan.through, queues: plan.queues });
+    return { generation, damagedLive: plan.damagedLive };
+  });
+}
+
+const sameCursors = (a: readonly QueueCursor[], b: readonly QueueCursor[]): boolean =>
+  a.length === b.length && a.every((c, i) => c.log === b[i]!.log && c.state === b[i]!.state && c.n === b[i]!.n);
 
 /**
  * Reads every log in `logs` that is not final or damaged in `queues`, from
