@@ -98,8 +98,8 @@ const WORKLOADS: [string, Step[]][] = [
 let runs = 0;
 
 /** Run `steps` with every durable op traced. */
-async function trace(steps: readonly Step[]): Promise<{ ops: DurableOp[]; log: Oracle }> {
-  const t = new Traced(`trace-${++runs}`);
+async function trace(steps: readonly Step[], flushRunBytes?: number): Promise<{ ops: DurableOp[]; log: Oracle }> {
+  const t = new Traced(`trace-${++runs}`, flushRunBytes);
   const log = new Oracle();
   try {
     await runSteps(t, steps, log);
@@ -198,6 +198,37 @@ async function randomHistory(cmds: Iterable<fc.AsyncCommand<Model, Sut, false>>,
 describe("power loss: every (IndexedDB prefix, OPFS prefix) pair", () => {
   it.each(WORKLOADS)("%s: reopens to a log prefix", async (_name, steps) => {
     const { ops, log } = await trace(steps);
+    const cuts = powerCuts(ops, 5_000, mulberry32(1));
+    await expect(checkAll(ops, log, cuts, "power")).resolves.toBe(cuts.length);
+  }, 120_000);
+});
+
+/**
+ * With 6 op bytes per L0 run, the first flush of five records is three runs
+ * (1-2, 3-4, 5), each recorded by its own manifest and IndexedDB commit. The
+ * second flush then makes the fourth L0 run, which starts a compaction.
+ */
+const CHUNKED: Step[] = [
+  put("a", "a1"), put("b", "b1"), put("c", "c1"), put("a", "a2"), del("b"), ingest,
+  put("d", "d1"), ingest,
+  reopen, put("e", "e1"), ingest,
+];
+const CHUNK_BYTES = 6;
+
+describe("a flush that spans several L0 runs", () => {
+  it("is cut into the runs the cap says", async () => {
+    const { ops } = await trace(CHUNKED, CHUNK_BYTES);
+    const l0 = ops.map(describeOp).filter((d) => / publish l0\//.test(d)).map((d) => d.replace(/^.* /, ""));
+    expect(l0.slice(0, 3)).toEqual(["l0/1-2.sst", "l0/3-4.sst", "l0/5-5.sst"]);
+  });
+
+  it("process crash: every crash point reopens to the whole committed log", async () => {
+    const { ops, log } = await trace(CHUNKED, CHUNK_BYTES);
+    await expect(checkAll(ops, log, allProcessCuts(ops), "process")).resolves.toBe(ops.length + 1);
+  });
+
+  it("power loss: every (IndexedDB prefix, OPFS prefix) pair reopens to a log prefix", async () => {
+    const { ops, log } = await trace(CHUNKED, CHUNK_BYTES);
     const cuts = powerCuts(ops, 5_000, mulberry32(1));
     await expect(checkAll(ops, log, cuts, "power")).resolves.toBe(cuts.length);
   }, 120_000);

@@ -1,5 +1,5 @@
 /**
- * Exhaustive check: ack'd puts stay visible across ingestAll interleavings.
+ * Exhaustive check: ack'd puts stay visible across ingestChunk interleavings.
  *
  * Run: pnpm --filter @opfs-lsm/kv formal:ingest-visibility
  */
@@ -80,7 +80,7 @@ function main(): void {
       console.error(`  ${idx + 1}. ${label}`);
     }
     console.error(
-      "\nHarm: a client got an ack from the IDB WAL commit, then a later get missed the key while ingestAll was in flight (or finished in a bad order).",
+      "\nHarm: a client got an ack from the IDB WAL commit, then a later get missed the key while ingestChunk was in flight (or finished in a bad order).",
     );
     process.exit(1);
   }

@@ -564,12 +564,21 @@ compaction that starts. A request for seqs that are already ingested writes noth
 
 ## Steps
 
-Under the exclusive section for the database:
+A flush folds the WAL as it stands when it starts, oldest records first, into one L0 run per
+`flushRunBytes` of op bytes (2 MiB). A backlog becomes several runs, so a flush holds one run's
+worth in memory, not the backlog. Each run is its own pass through the steps below and holds the
+exclusive section for that pass only, so a compaction install can land between two runs. A host
+runs one flush at a time per database, and a flush asked for meanwhile waits for it. Records acked
+after a flush starts wait for the next one, so a steady writer cannot keep a flush going.
+
+Under the exclusive section for the database, once per run:
 
 1. Reconcile (see [Recovery](#recovery)). In a running database this reads `meta` and lists
    `m/`, and changes nothing. The recorded generation is `G`, and the highest number in use is
    `top`.
-2. Read every WAL record above `ingestedThrough`.
+2. Read the WAL records above `ingestedThrough`, oldest first, until their op bytes reach
+   `flushRunBytes`. A run takes at least one record and never one that would take it past the
+   cap, so a record larger than the cap becomes a run of its own.
 3. Fold them to the last op per key, in key order, keeping each op's seq.
 4. Write `l0/<first>-<last>.sst`.
 5. Write manifest `top + 1` with `through = <last>`, listing the new run in front of the runs

@@ -13,7 +13,7 @@ import {
 } from "../store/generation.js";
 import { levelOf } from "../store/levels.js";
 import { installStep, mergeNextStep } from "./compact.js";
-import { ingestAll, type IngestResult } from "./ingest.js";
+import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
   layersChannel,
   unlessHeld,
@@ -27,6 +27,19 @@ export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
+
+/** What the host holds to keep its working set small. */
+export type HostLimits = {
+  /**
+   * Op bytes of WAL records folded into one L0 run: a sixteenth of a 32 MiB
+   * budget, within 1 to 4 MiB. A larger backlog becomes several runs.
+   */
+  readonly flushRunBytes: number;
+};
+
+const DEFAULT_HOST_LIMITS: HostLimits = {
+  flushRunBytes: 2 * 1024 * 1024,
+};
 
 /** Host counters for one database, besides the fs IO its CountingFs keeps. */
 type HostCounts = {
@@ -80,6 +93,7 @@ export class EngineHost {
   private readonly fsCache = new Map<string, CountingFs>();
   private readonly counts = new Map<DbName, HostCounts>();
   private readonly chains = new Map<string, Promise<unknown>>();
+  private readonly folds = new Map<string, Promise<unknown>>();
   private readonly compactions = new Map<string, Promise<void>>();
   private readonly compactAgain = new Set<string>();
   private readonly watches = new Map<DbName, IngestWatch>();
@@ -95,8 +109,14 @@ export class EngineHost {
    * flush. A tab that records another generation makes the host check again.
    */
   private readonly trusted = new Map<DbName, number>();
+  private readonly limits: HostLimits;
 
-  constructor(private readonly fsFactory: FsFactory) {}
+  constructor(
+    private readonly fsFactory: FsFactory,
+    limits: Partial<HostLimits> = {},
+  ) {
+    this.limits = { ...DEFAULT_HOST_LIMITS, ...limits };
+  }
 
   /** Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
   async fsFor(name: DbName): Promise<CountingFs> {
@@ -171,26 +191,52 @@ export class EngineHost {
     return (generation) => this.trusted.get(dbName) === generation;
   }
 
-  private async fold(dbName: DbName, through: number): Promise<IngestResult> {
+  /**
+   * Fold the WAL as it stands now into L0 runs of `flushRunBytes`, oldest
+   * first. One fold runs at a time per database, so a flush asked for during
+   * another waits for it and finds its records ingested. Each run is its own
+   * exclusive section, so a compaction install waits for one run, not for the
+   * whole backlog. Records acked after the fold starts are left for the next
+   * flush, so a steady writer cannot keep one fold going.
+   */
+  private fold(dbName: DbName, through: number): Promise<IngestResult> {
+    return inTurn(this.folds, dbName, () => this.foldRuns(dbName, through));
+  }
+
+  private async foldRuns(dbName: DbName, through: number): Promise<IngestResult> {
     const fs = await this.fsFor(dbName);
-    const result = await this.exclusive(dbName, () =>
-      this.withWal(dbName, async (wal) => {
-        const folded = await ingestAll(wal, fs, through, this.trust(dbName));
-        // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-        await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
-        return folded;
-      }),
-    );
-    this.trusted.set(dbName, result.generation);
+    const head = await this.withWal(dbName, async (wal) => (await wal.meta()).head);
+    const target = Math.min(through, head);
     const counts = this.countsFor(dbName);
-    counts.foldedBytes += result.foldedBytes;
-    if (result.foldedBytes > 0) counts.flushes += 1;
-    const watch = this.watches.get(dbName);
-    if (watch) {
-      watch.pendingBytes = Math.max(0, watch.pendingBytes - result.foldedBytes);
-      watch.triggerAt = watch.maxWalBytes;
+    let foldedBytes = 0;
+    for (;;) {
+      const chunk = await this.exclusive(dbName, () =>
+        this.withWal(dbName, async (wal) => {
+          const folded = await ingestChunk(
+            wal,
+            fs,
+            target,
+            this.trust(dbName),
+            this.limits.flushRunBytes,
+          );
+          // Skipped while a tab loads a generation; the next flush or reclaim removes them.
+          await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
+          return folded;
+        }),
+      );
+      this.trusted.set(dbName, chunk.generation);
+      foldedBytes += chunk.foldedBytes;
+      counts.foldedBytes += chunk.foldedBytes;
+      if (chunk.kind === "folded") counts.flushes += 1;
+      const watch = this.watches.get(dbName);
+      if (watch) {
+        watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
+        watch.triggerAt = watch.maxWalBytes;
+      }
+      if (chunk.kind === "empty" || chunk.ingestedThrough >= target) {
+        return { generation: chunk.generation, ingestedThrough: chunk.ingestedThrough, foldedBytes };
+      }
     }
-    return result;
   }
 
   /**
@@ -282,18 +328,7 @@ export class EngineHost {
   }
 
   private exclusive<T>(dbName: DbName, fn: () => Promise<T>): Promise<T> {
-    const prev = this.chains.get(dbName) ?? Promise.resolve();
-    const next = prev
-      .catch(() => undefined)
-      .then(() => withLock(`opfs-lsm-ingest/${dbName}`, fn));
-    this.chains.set(
-      dbName,
-      next.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
-    return next;
+    return inTurn(this.chains, dbName, () => withLock(`opfs-lsm-ingest/${dbName}`, fn));
   }
 
   private async withWal<T>(
@@ -398,6 +433,24 @@ function isClosedDatabase(err: unknown): boolean {
     "name" in err &&
     (err as { name: string }).name === "InvalidStateError"
   );
+}
+
+/** Run `fn` once everything queued before it under `key` has settled. */
+function inTurn<T>(
+  queues: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = queues.get(key) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(fn);
+  queues.set(
+    key,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
 }
 
 function withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {

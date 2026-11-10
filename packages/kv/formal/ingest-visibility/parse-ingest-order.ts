@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Atomic awaits inside the non-empty branch of `ingestAll`. */
+/** Atomic awaits inside the non-empty branch of `ingestChunk`. */
 export type IngestStep =
   | "publishL0"
   | "publishGeneration"
@@ -14,7 +14,7 @@ const STEP_RE =
 const NAME_RE = /(publishL0|publishGeneration|advanceIngested)/;
 
 /**
- * Read the call order of the three durability steps from `ingestAll`.
+ * Read the call order of the three durability steps from `ingestChunk`.
  * Points at `packages/kv/src/host/ingest.ts`.
  */
 function ingestSourcePath(): string {
@@ -41,7 +41,7 @@ function parseIngestOrder(source: string): IngestStep[] {
   for (const r of required) {
     if (!steps.includes(r)) {
       throw new Error(
-        `parseIngestOrder: missing ${r} in ingestAll non-empty branch`,
+        `parseIngestOrder: missing ${r} in ingestChunk non-empty branch`,
       );
     }
   }

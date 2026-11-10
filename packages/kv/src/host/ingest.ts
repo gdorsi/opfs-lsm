@@ -17,35 +17,47 @@ export type IngestResult = {
   readonly foldedBytes: number;
 };
 
+/** What `ingestChunk` did. */
+export type Chunk = IngestResult & {
+  /** "empty" when no record through `through` was waiting, so nothing was published. */
+  readonly kind: "folded" | "empty";
+};
+
 /**
- * Fold the shared uningested WAL into one L0, publish generation, and
- * advance ingestedThrough. Compaction runs separately. Folds nothing when every seq
- * through `through` is already ingested, so tabs that ask for the same
- * flush get one L0. Removes no file: the host removes old manifests once
- * no tab is loading a generation (`EngineHost.fold`).
+ * Fold the oldest uningested WAL records into one L0, publish generation, and
+ * advance ingestedThrough. It takes at most `maxBytes` of op bytes, and at
+ * least one record, so a backlog takes several calls and each run stays
+ * small. Compaction runs separately. Folds nothing when every seq through
+ * `through` is already ingested, so tabs that ask for the same flush get one
+ * L0. Removes no file: the host removes old manifests once no tab is loading
+ * a generation (`EngineHost.fold`).
  *
  * Builds on the recorded generation, never on a newer manifest file: one
  * that IndexedDB has not recorded is left by a crash, and its seqs are
  * either still in the WAL or were adopted by `reconcile`. `trust` names a
  * generation the caller knows is intact (see `reconcile`).
  */
-export async function ingestAll(
+export async function ingestChunk(
   wal: IdBWal,
   fs: AsyncFs,
-  through = Number.POSITIVE_INFINITY,
-  trust: (generation: number) => boolean = () => false,
-): Promise<IngestResult> {
+  through: number,
+  trust: (generation: number) => boolean,
+  maxBytes: number,
+): Promise<Chunk> {
   const base = await reconcile(wal, fs, trust);
   const records =
-    (await wal.getIngestedThrough()) >= through ? [] : await wal.listUningested();
+    (await wal.getIngestedThrough()) >= through ? [] : await wal.listUningested({ maxBytes });
+  let kind: Chunk["kind"];
   let generation: number;
   let ingestedThrough: number;
   let foldedBytes = 0;
 
   if (records.length === 0) {
+    kind = "empty";
     generation = base.generation;
     ingestedThrough = await wal.getIngestedThrough();
   } else {
+    kind = "folded";
     const entries = foldRecords(records);
     const first = records[0]!.seq;
     const last = records[records.length - 1]!.seq;
@@ -65,5 +77,5 @@ export async function ingestAll(
     ingestedThrough = last;
   }
 
-  return { generation, ingestedThrough, foldedBytes };
+  return { kind, generation, ingestedThrough, foldedBytes };
 }

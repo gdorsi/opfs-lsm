@@ -9,7 +9,7 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 
 | Id | Property (plain) | Harm if broken |
 |---|---|---|
-| **NoLostAcks** | After WAL `put`/`batch` ack, `get` still sees the value until a later write supersedes it — including across `ingestAll`. | Client saw success; later `get` misses because `advanceIngested` beat `publishGeneration`. |
+| **NoLostAcks** | After WAL `put`/`batch` ack, `get` still sees the value until a later write supersedes it — including across `ingestChunk`. | Client saw success; later `get` misses because `advanceIngested` beat `publishGeneration`. |
 | **WalOverSst** | Uningested WAL wins over SST (including tombstones). | Stale SST value or resurrected key after delete. |
 | **ViewPin** | `view()` / `ViewSnapshotImpl` get ignores WAL appends after the pin. | Snapshot is not stable mid-callback. |
 | **CompactPreserve** | Newest-first SST merge / compaction keeps the same per-key visible entry as layered get. | Compact drops or resurrects keys. |
@@ -48,7 +48,7 @@ Exit `0` = all selected checks pass. Failures print a shortest path (or countere
 | WalOverSst | 1 key; all WAL×SST hit kinds (`miss`/`tomb`/two values) on **real** `pointGet` |
 | ViewPin | ≤3 appends; models pin vs live binding; omits SST generation bump mid-view |
 | CompactPreserve | ≤2 sources of one run, keys `{a,b}`, cell ∈ {miss, put1, put2, del}; omits Bloom false negatives, reclaim races |
-| PowerPrefix | Workloads of ≤6 appends/ingests/compactions (`FORMAL_POWER_CMDS`), every (IndexedDB, OPFS) prefix pair, recovery then 4 more commands, and every pair of the next power loss, 2 deep (`FORMAL_POWER_CRASHES`). Writes are abstract ids, so values and folding are not modeled; one tab, one host, compaction merges every run of the base. Every workload runs with reclaim and again with a tab holding the reclaim lock (no removals). Tab-side retry liveness under the lock is not modeled (crash-enum churn tests). Must also catch 6 broken variants. CorruptRefuse removes each run of the recorded manifest after every workload (with and without the lock). |
+| PowerPrefix | Workloads of ≤6 appends/ingests/compactions (`FORMAL_POWER_CMDS`; an ingest folds every waiting record or only the oldest, a flush chunk), every (IndexedDB, OPFS) prefix pair, recovery then 4 more commands, and every pair of the next power loss, 2 deep (`FORMAL_POWER_CRASHES`). Writes are abstract ids, so values and folding are not modeled; one tab, one host, compaction merges every run of the base. Every workload runs with reclaim and again with a tab holding the reclaim lock (no removals). Tab-side retry liveness under the lock is not modeled (crash-enum churn tests). Must also catch 6 broken variants. CorruptRefuse removes each run of the recorded manifest after every workload (with and without the lock). |
 
 A pass is for the model/domain above, not the whole browser stack (SharedWorker ports, IDB quirks, OPFS crashes).
 
@@ -64,11 +64,11 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 
 | Check | Code |
 |---|---|
-| NoLostAcks | `ingestAll` order: `publishL0`, `publishGeneration`, `advanceIngested` |
+| NoLostAcks | `ingestChunk` order: `publishL0`, `publishGeneration`, `advanceIngested` |
 | WalOverSst | `pointGet` |
 | ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
 | CompactPreserve | `latestSstEntry`, the pick of both merge sessions (`Session.run` in `merge-ts.ts`, `before` in `merge.rs`) |
-| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestAll` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
+| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
 
 **Sync commit:** `a51aa51fb7b27b3d1c3416656067889500ec9fc2` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 

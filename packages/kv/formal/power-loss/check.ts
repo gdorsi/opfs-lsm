@@ -4,7 +4,8 @@
  *
  * Run: pnpm --filter @opfs-lsm/kv formal:power-loss
  *
- * Every workload of up to MAX_CMDS appends, ingests and compactions runs on
+ * Every workload of up to MAX_CMDS appends, ingests (of every waiting
+ * record, or of the oldest one: a chunk of a flush) and compactions runs on
  * the model in model.ts. For every pair (IndexedDB prefix, OPFS prefix) of
  * its durable ops: open (`reconcile`), read, recover (sweep, ingest,
  * compact), keep writing, and crash again at every pair of the recovery's
@@ -36,8 +37,8 @@ import { cloneIdb, cloneOpfs, emptyIdb, emptyOpfs, Refused, replay, Stuck, Sys, 
 const MAX_CMDS = Number(process.env.FORMAL_POWER_CMDS ?? 6);
 /** Power losses in a row: the first, then one during or after each recovery. */
 const CRASHES = Number(process.env.FORMAL_POWER_CRASHES ?? 2);
-type Cmd = "append" | "ingest" | "compact";
-const CMDS: Cmd[] = ["append", "ingest", "compact"];
+type Cmd = "append" | "ingest" | "ingestOne" | "compact";
+const CMDS: Cmd[] = ["append", "ingest", "ingestOne", "compact"];
 /** Writes after the first recovery, before the second crash. */
 const AFTER: Cmd[] = ["append", "ingest", "append", "compact"];
 
@@ -55,6 +56,7 @@ function* workloads(max: number): Generator<Cmd[]> {
 function run(sys: Sys, cmd: Cmd): void {
   if (cmd === "append") sys.append();
   else if (cmd === "ingest") sys.ingest();
+  else if (cmd === "ingestOne") sys.ingest(true);
   else sys.compact();
 }
 
@@ -263,7 +265,7 @@ function sourceSync(): string[] {
   need("db.ts", /await reconcile\(wal, tabFs, TRUST_RECORDED\);[\s\S]*await db\.sync\(\)/, "openDb reconciles before the first sync");
   need("db.ts", /holdingFiles\(this\.name, async \(\) => \{\s*for \([^)]*\) \{\s*const step = await this\.catchUpOnce\(\);\s*if \(step === "done"\) return;\s*if \(step === "gone"\) gone = await this\.repairGone\(gone\);/, "sync retries under the reclaim lock and repairs when the recorded generation does not load");
   need("db.ts", /private async repairGone[\s\S]*?await this\.repair\(\);/, "a load that finds files gone under the lock repairs");
-  need("host/engine-host.ts", /ingestAll\(wal, fs, through, this\.trust\(dbName\)\);\s*[^\n]*\n\s*await unlessHeld\(dbName, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");
+  need("host/engine-host.ts", /ingestChunk\([^;]*this\.trust\(dbName\)[^;]*;\s*[^\n]*\n\s*await unlessHeld\(dbName, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");
   need("host/engine-host.ts", /await unlessHeld\(dbName, async \(\) => \{\s*const \{ generation \} = await reconcile\(wal, fs, this\.trust\(dbName\)\);[\s\S]*reclaimManifests\(fs, generation\);[\s\S]*liveRuns\(fs, generation\)/, "reclaim removes manifests then runs after reconciling, unless a tab holds the reclaim lock");
   need("host/compact.ts", /await wal\.raiseGeneration\(generation\);\s*return generation;/, "install removes no file");
   return out;
