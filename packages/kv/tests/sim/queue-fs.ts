@@ -21,11 +21,13 @@ export type Browser = "chrome" | "safari" | "firefox";
 export const BROWSERS: readonly Browser[] = ["chrome", "safari", "firefox"];
 
 /**
- * For a log's next segment write: how many bytes land, and whether the
- * call then throws or returns that short count. Or its next segment
- * create throws.
+ * For a log's segment write after `skip` more: how many bytes land, and
+ * whether the call then throws or returns that short count. Or its next
+ * segment create throws.
  */
-export type Fault = { readonly at: "write"; readonly mode: "throw" | "short"; readonly landed: number } | { readonly at: "create" };
+export type Fault =
+  | { readonly at: "write"; readonly mode: "throw" | "short"; readonly landed: number; readonly skip?: number }
+  | { readonly at: "create" };
 
 class HandleFile {
   bytes = new Uint8Array(0);
@@ -43,6 +45,7 @@ export class QueueFs implements AsyncFs {
   readonly inner = new MemoryFs();
   private readonly handles = new Map<string, HandleFile>();
   private readonly faults = new Map<LogId, Fault>();
+  private readonly stages = new Set<FileWriter>();
   /** Segments a remove found open in a writer with no later segment in their log: a live log's last segment. */
   readonly removedLast: string[] = [];
   readonly segments: SegmentStore;
@@ -50,7 +53,7 @@ export class QueueFs implements AsyncFs {
   constructor(
     readonly browser: Browser,
     /** Where a firefox read of an open file stops, and whether chrome refuses one. */
-    private readonly random: () => number = Math.random,
+    public random: () => number = Math.random,
     /** The share of chrome reads of an open file that meet a write in flight. 1: a burst that never lets up. */
     private readonly chromeRefusal = 1,
   ) {
@@ -65,9 +68,13 @@ export class QueueFs implements AsyncFs {
     };
   }
 
-  /** Make the next write or create of `log`'s writer fail. */
+  /** Make the next write or create of `log`'s writer fail, until `disarm`. */
   fail(log: LogId, fault: Fault): void {
     this.faults.set(log, fault);
+  }
+
+  disarm(log: LogId): void {
+    this.faults.delete(log);
   }
 
   /** The writer of `log` died: the browser closes its handles, flushed or not. */
@@ -82,7 +89,11 @@ export class QueueFs implements AsyncFs {
     return {
       write: (data, at) => {
         if (!file.open) throw new Error(`write to a closed handle: ${path}`);
-        const fault = this.faults.get(log);
+        let fault = this.faults.get(log);
+        if (fault?.at === "write" && fault.skip) {
+          this.faults.set(log, { ...fault, skip: fault.skip - 1 });
+          fault = undefined;
+        }
         if (fault?.at === "write") this.faults.delete(log);
         const landed = fault?.at === "write" ? Math.min(fault.landed, data.byteLength) : data.byteLength;
         if (at + landed > file.bytes.byteLength) {
@@ -161,8 +172,26 @@ export class QueueFs implements AsyncFs {
     return this.inner.removeUnlessOpen(path);
   }
 
-  create(path: string): Promise<FileWriter> {
-    return this.inner.create(path);
+  async create(path: string): Promise<FileWriter> {
+    const w = await this.inner.create(path);
+    this.stages.add(w);
+    const done = () => this.stages.delete(w);
+    return {
+      write: (bytes) => w.write(bytes),
+      finish: () => w.finish().finally(done),
+      abort: () => w.abort().finally(done),
+    };
+  }
+
+  /** The SharedWorker died: the browser drops the writables it left unclosed. */
+  async dropStages(): Promise<void> {
+    for (const w of this.stages) await w.abort();
+    this.stages.clear();
+  }
+
+  /** Every file's path, taken in one step. */
+  paths(): string[] {
+    return [...this.inner.publishedPaths(), ...this.handles.keys()];
   }
 }
 
@@ -181,6 +210,10 @@ export class TestLocks {
 
   release(log: LogId): void {
     this.holders.delete(log);
+  }
+
+  releaseAll(holder: string): void {
+    for (const [log, h] of this.holders) if (h === holder) this.holders.delete(log);
   }
 
   heldBy(log: LogId): string | undefined {
