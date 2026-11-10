@@ -20,6 +20,7 @@ const ackBinding = (globalThis as unknown as { lqAck?: Binding }).lqAck;
 let client: LogClient | undefined;
 const durable: [LogId, number][] = [];
 const respawned: [LogId, PredEdge][] = [];
+const predHeld: Promise<boolean>[] = [];
 
 function ops(label: string, size: number): CheckedOp[] {
   const value = new Uint8Array(Math.max(size, label.length));
@@ -87,11 +88,15 @@ const lq = {
   start(db: string, segmentBytes: number): void {
     durable.length = 0;
     respawned.length = 0;
+    predHeld.length = 0;
     client = new LogClient({
       db,
       segmentBytes,
       durable: (log, n) => durable.push([log, n]),
-      respawned: (log, pred) => respawned.push([log, pred]),
+      respawned: (log, pred) => {
+        respawned.push([log, pred]);
+        predHeld.push(lq.lockHeld(db, pred.log));
+      },
     });
   },
 
@@ -138,6 +143,8 @@ const lq = {
   resume: () => live().resume(),
   close: () => live().close(),
   events: () => ({ durable, respawned }),
+  /** Per respawn: did the pred log still hold its lock when its successor had opened? */
+  predHeldAtRespawn: () => Promise.all(predHeld),
 
   async lockHeld(db: string, log: LogId): Promise<boolean> {
     return (await heldLocks()).includes(logLockName(checkDbName(db), log));

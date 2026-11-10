@@ -358,7 +358,7 @@ async function stuck(browser: Browser, origin: string): Promise<boolean> {
   await page.call("flush");
   page.blockLogWorker();
   const late = await page.call<{ ok: boolean; error: string | null; ms: number }>("appendOne", "w-6");
-  c.that(!late.ok && late.error === "IndeterminateWriteError", "a write to the stuck dedicated WebWorker rejects as indeterminate", late);
+  c.that(!late.ok && late.error === "CommitError", "a write to the stuck dedicated WebWorker rejects as a CommitError", late);
   c.that(late.ms >= 10_000 && late.ms < 11_000, "after 10 s", late.ms);
   const freeMs = await page.call<number>("lockFreeAfter", db, old, 10_000);
   c.that(freeMs >= 0, "the stuck log's lock is free after the dedicated WebWorker is terminated", freeMs);
@@ -367,6 +367,8 @@ async function stuck(browser: Browser, origin: string): Promise<boolean> {
   c.that(fresh !== old && after.every((a, i) => a.log === fresh && a.n === i + 1), "later appends land as 1..3 of a new log", after);
   const { respawned } = await page.call<{ respawned: [string, { log: string; lastN: number }][] }>("events");
   c.that(JSON.stringify(respawned) === JSON.stringify([[fresh, { log: old, lastN: 5 }]]), "respawned reports pred { old, 5 }", respawned);
+  const predHeld = await page.call<boolean[]>("predHeldAtRespawn");
+  c.that(JSON.stringify(predHeld) === "[true]", "the stuck log still held its lock when its successor had opened", predHeld);
   const next = await page.call<Read>("read", db, fresh);
   c.that(next.pred?.log === old && next.pred.lastN === 5, "the new log's first header names pred { old, 5 }", next.pred);
   await page.call("close");
@@ -374,13 +376,13 @@ async function stuck(browser: Browser, origin: string): Promise<boolean> {
   const landed = prev.records.slice(5).map((r) => r.label);
   c.that(prev.dead, "the stuck log reads as dead");
   c.that(JSON.stringify(prev.records.slice(0, 5).map((r) => r.label)) === JSON.stringify(before.map((a) => a.label)), "the stuck log holds its 5 acked records first", prev.records);
-  c.that(landed.every((l) => l === "w-6"), "past them, at most the indeterminate write", landed);
+  c.that(landed.every((l) => l === "w-6"), "past them, at most the given-up write", landed);
   const applied = await page.call<{ live: string[]; labels: string[] }>("applied", db);
   const labels = [...before, ...after].map((a) => a.label);
   const at6 = applied.labels.indexOf("w-6");
   c.that(JSON.stringify(applied.labels.filter((l) => l !== "w-6")) === JSON.stringify(labels), "planIngest orders the stuck log's acked records before its successor's", applied.labels);
-  c.that(at6 < 0 || at6 < applied.labels.indexOf("x-1"), "the indeterminate write is never ingested after a later write", applied.labels);
-  return c.report([`old=${old} new=${fresh} indeterminate_after_ms=${late.ms} lock_free_after_ms=${freeMs} late_write_landed=${landed.length > 0} late_write_ingested=${at6 >= 0}`]);
+  c.that(at6 < 0, "the given-up write is never ingested", applied.labels);
+  return c.report([`old=${old} new=${fresh} given_up_after_ms=${late.ms} lock_free_after_ms=${freeMs} late_write_landed=${landed.length > 0} late_write_ingested=${at6 >= 0}`]);
 }
 
 /**
