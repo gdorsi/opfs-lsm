@@ -64,7 +64,7 @@ const OP_DEL = 1;
  * IndexedDB clones one buffer per row instead of an array of op objects with
  * a buffer per key and value.
  */
-function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
+export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
   let size = 0;
   for (const op of ops) {
     size += 5 + op.key.byteLength + (op.type === "put" ? 4 + op.value.byteLength : 0);

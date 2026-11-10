@@ -28,7 +28,7 @@ export type Frame = {
   readonly end: number;
 };
 
-const HEADER_BYTES = 32;
+export const HEADER_BYTES = 32;
 const FRAME_HEAD_BYTES = 13;
 const MAGIC = [0x4f, 0x4c, 0x51, 0x53];
 const VERSION = 1;
