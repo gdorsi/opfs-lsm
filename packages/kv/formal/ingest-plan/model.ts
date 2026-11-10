@@ -8,11 +8,12 @@
  * two writer steps, creating the successor and sealing the old segment. The
  * hand-over after a failed write is the failed write (its frame landed or
  * not), then the successor log with its first header flushed, then the end
- * of the failed log's dedicated WebWorker, which releases its lock. A tab
- * can die between any two steps, and so can the browser. A history ends in
- * a browser crash, which kills every writer, may cut each log's unflushed
- * tail, damage a frame or drop a segment file, and drops up to
- * `Bounds.drops` newest manifests; recovery opens with the real
+ * of the failed log's dedicated WebWorker, which releases its lock; or, when
+ * no successor opens, the end of that dedicated WebWorker and a successor
+ * started later. A tab can die between any two steps, and so can the
+ * browser. A history ends in a browser crash, which kills every writer, may
+ * cut each log's unflushed tail, damage a frame or drop a segment file, and
+ * drops up to `Bounds.drops` newest manifests; recovery opens with the real
  * `checkCover` and drains with `planIngest`.
  *
  * A write is an id. A record's ops carry its id, so a manifest's stream is
@@ -39,8 +40,14 @@ const LOGS = ["a", "p", "q"] as LogId[];
 /** Only tab 0 ever fails a write. */
 const FAILING_TAB = 0;
 
-/** `drops`: the most manifests a crash drops. */
-export type Bounds = { readonly appends: number; readonly commits: number; readonly segCap: number; readonly drops: number };
+/**
+ * `drops`: the most manifests a crash drops. `failedOpen`: a successor may
+ * fail to open, so the tab gives the failed log up and later starts another
+ * that names it, possibly after the host read the given-up log as dead.
+ * Up to that later successor this is the tab dying; with it the check
+ * passes at about twice the states, so the default run leaves it out.
+ */
+export type Bounds = { readonly appends: number; readonly commits: number; readonly segCap: number; readonly drops: number; readonly failedOpen: boolean };
 
 /** Broken rules, one at a time, to show the model catches each. */
 export type Variant = {
@@ -81,8 +88,8 @@ type Writer = {
    */
   cappedBy: LogId | null;
 };
-/** ok: writing `log`. failed: a write to `log` failed. */
-type Tab = { log: LogId; next: number; phase: "ok" | "failed" | "dead" };
+/** ok: writing `log`. failed: a write to `log` failed. down: no successor opened, `log` is given up, and the next one names it. */
+type Tab = { log: LogId; next: number; phase: "ok" | "failed" | "down" | "dead" };
 /** `l6`: ingested from a dead log past its flushed n (design L6). */
 type Write = { id: number; log: LogId; n: number; acked: boolean; deps: number[]; l6: boolean };
 export type Manifest = { gen: number; through: number; queues: QueueCursor[]; stream: number[] };
@@ -138,13 +145,17 @@ function spawn(s: State, tab: number, log: LogId, pred: PredEdge | null): void {
   s.writers[log] = { tab, pred, state: "live", acked: 0, flushed: 0, rotating: null, cappedBy: null };
 }
 
-/** The hand-over successor of the tab's failed log, its first header naming that log through its last ack and flushed. */
-function startSuccessor(s: State, tab: number): void {
+/**
+ * The tab's next log, its first header naming the current one through its
+ * last ack and flushed. `handOver`: the hand-over of a failed log, rather
+ * than a later start after no successor opened.
+ */
+function startSuccessor(s: State, tab: number, handOver: boolean): void {
   const t = s.tabs[tab]!;
   const old = s.writers[t.log]!;
   const succ = TAB_LOGS[tab]![t.next++]!;
   spawn(s, tab, succ, { log: t.log, lastN: old.acked });
-  old.cappedBy = succ;
+  if (handOver) old.cappedBy = succ;
   if (old.state === "live") old.state = "abandoned";
   t.log = succ;
   t.phase = "ok";
@@ -284,6 +295,10 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
     });
     const log = t.log;
     const succ = TAB_LOGS[tab]![t.next];
+    if (t.phase === "down") {
+      add(`tab ${tab} starts ${succ} with pred ${log}, which it gave up`, (s) => startSuccessor(s, tab, false));
+      return;
+    }
     if (t.phase === "failed" && v.sameLogRecovery) {
       add(`tab ${tab} reopens ${log} at a new segment`, (s) => {
         const w = s.writers[log]!;
@@ -301,7 +316,16 @@ export function actions(s: State, v: Variant, b: Bounds): Action[] {
         add(release(tab, log), (s) => void (s.writers[log]!.state = "dead"));
         return;
       }
-      add(`tab ${tab} starts ${succ} with pred ${log} and flushes its header`, (s) => startSuccessor(s, tab));
+      add(`tab ${tab} starts ${succ} with pred ${log} and flushes its header`, (s) => startSuccessor(s, tab, true));
+      if (b.failedOpen) {
+        // A successor that cannot open leaves no file here, and the given-up
+        // log's lock goes at once: a later successor started while that lock
+        // was still held leaves the disk a hand-over leaves.
+        add(`tab ${tab} cannot open ${succ} and ends ${log}'s dedicated WebWorker (lock released)`, (s) => {
+          s.writers[log]!.state = "dead";
+          s.tabs[tab]!.phase = "down";
+        });
+      }
       return;
     }
     const w = s.writers[log]!;
@@ -562,7 +586,8 @@ export function crashes(s: State, b: Bounds): Action[] {
  * unacked record of a capped log (`Writer.cappedBy`) unless the crash
  * dropped the file of the header that caps it. So an unacked record is
  * ingested only when its tab died or the browser crashed before the
- * successor's header was flushed.
+ * successor's header was flushed, or no successor opened before its log's
+ * lock was released.
  */
 function streamProblem(s: State, m: Manifest): string | undefined {
   const pos = new Map<number, number>();

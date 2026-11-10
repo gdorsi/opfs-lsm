@@ -6,7 +6,7 @@ import { encodeOps } from "../src/idb/wal.js";
 import { scanLog, type ListedSegment } from "../src/log/queue-scan.js";
 import { encodeHeader, encodeRecords, encodeSeal, frameSeed } from "../src/log/segment.js";
 
-const BOUNDS: Bounds = { appends: 2, commits: 2, segCap: 1, drops: 0 };
+const BOUNDS: Bounds = { appends: 2, commits: 2, segCap: 1, drops: 0, failedOpen: false };
 type Segment = NonNullable<State["logs"][string]>["segments"][number];
 const MODEL_LOGS = ["a", "p", "q"] as LogId[];
 const hex = (log: LogId): LogId => (MODEL_LOGS.indexOf(log) + 1).toString(16).padStart(16, "0") as LogId;

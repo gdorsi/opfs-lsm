@@ -28,8 +28,9 @@
  * RECLAIM_LAG is 2. A tab's write ingested before a write it had seen
  * ingested, after a dropped manifest, is printed as a finding, not gated.
  *
- * The real rules take about 25 s at the defaults, and the whole check about
- * 55 s.
+ * The real rules take about 24 s at the defaults, and the whole check about
+ * 52 s. FORMAL_IQ_FAILED_OPEN=1 adds a successor that cannot open (see
+ * Bounds) at about twice the states and time.
  */
 import { RECLAIM_LAG } from "../../src/host/queues.js";
 import { actions, allDead, causalReorder, clone, crashes, diskKey, drain, drainProblem, initial, PlanError, problem, type Bounds, type State, type Variant } from "./model.js";
@@ -39,6 +40,7 @@ const BOUNDS: Bounds = {
   commits: Number(process.env.FORMAL_IQ_COMMITS ?? 3),
   segCap: Number(process.env.FORMAL_IQ_SEGCAP ?? 1),
   drops: 2,
+  failedOpen: process.env.FORMAL_IQ_FAILED_OPEN === "1",
 };
 
 /** 64-bit fingerprints of visited states, open addressing; equal fingerprints are taken as equal states. */
@@ -197,7 +199,8 @@ function print(f: Found, to: (s: string) => void): void {
 
 function main(): void {
   console.log(`bound: tab 0 writes log p (then a, after its one failed write), tab 1 writes log q; ${BOUNDS.appends} acked appends,`);
-  console.log(`       ${BOUNDS.commits} commits, ${BOUNDS.segCap} record(s) a segment; one browser crash ends each history, dropping up to ${BOUNDS.drops} manifests`);
+  console.log(`       ${BOUNDS.commits} commits, ${BOUNDS.segCap} record(s) a segment; one browser crash ends each history, dropping up to ${BOUNDS.drops} manifests;`);
+  console.log(`       a successor that cannot open: ${BOUNDS.failedOpen ? "yes" : "no (FORMAL_IQ_FAILED_OPEN=1)"}`);
   console.log(`rules: planIngest, planReclaim (lag ${RECLAIM_LAG}), checkCover from src/host/queues.ts`);
 
   const real = explore({}, BOUNDS);
