@@ -252,8 +252,9 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   /**
    * Fill a building index from the rows, then mark it ready. Any handle may
    * run it, and two at once put the same entries. A row whose bytes changed
-   * since its chunk was scanned is skipped: the write that changed it ran
-   * against a catalog with this index building, so it maintained the index.
+   * since its chunk was scanned makes the chunk rescan: the write that changed
+   * it diffed against the old row, so an entry both versions derive may be in
+   * neither the write nor this index yet.
    * A crash leaves the index building and the next open starts over.
    * Progress is not stored, because storing it in the catalog would make
    * every concurrent writer retry once per chunk.
@@ -295,6 +296,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
             this.adopt(catalog);
             return RETRY;
           }
+          if (rows.some((r, i) => !bytesEqual(values[i], r.value))) return RETRY;
           const puts: Entry[] = [];
           const claimed = new Map<string, Uint8Array>();
           let owners = rows.length;
@@ -302,7 +304,6 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
             const entries = derived[i]!;
             const at = owners;
             if (unique && Array.isArray(entries)) owners += entries.length;
-            if (!bytesEqual(values[i], rows[i]!.value)) continue;
             const id = ids[i]!;
             if (!Array.isArray(entries)) return { reason: "value", ids: [fromUtf8.decode(id)] };
             for (let j = 0; j < entries.length; j++) {
