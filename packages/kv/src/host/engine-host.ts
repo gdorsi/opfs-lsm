@@ -284,9 +284,9 @@ export class EngineHost {
 
   /**
    * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
-   * with no tab asking. Reads the byte counter in the background and ingests
-   * when a reopened database is already over the limit. The host holds
-   * `name` to the smallest `compactionMemoryBytes` any tab passed.
+   * with no tab asking. Reads up to `maxWalBytes` of the waiting records in the
+   * background and ingests when a reopened database is already over the limit.
+   * The host holds `name` to the smallest `compactionMemoryBytes` any tab passed.
    */
   watch(name: string, policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
     const dbName = checkDbName(name);
@@ -299,7 +299,7 @@ export class EngineHost {
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
     const scanAt = onScan ? performance.now() : 0;
-    void this.withWal(dbName, (wal) => wal.uningestedBytes()).then(
+    void this.withWal(dbName, (wal) => wal.uningestedBytes(watch.maxWalBytes)).then(
       (waiting) => {
         if (onScan) {
           onScan({

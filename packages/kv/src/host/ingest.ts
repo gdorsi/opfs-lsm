@@ -89,7 +89,7 @@ export async function ingestChunk(
       through: last,
     });
     for (const r of records) foldedBytes += opsBytes(r.ops);
-    await wal.advanceIngested(last, generation, foldedBytes);
+    await wal.advanceIngested(last, generation);
     ingestedThrough = last;
   }
 

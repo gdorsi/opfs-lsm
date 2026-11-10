@@ -146,7 +146,7 @@ describe("ingest policy", () => {
     await over.close();
   });
 
-  it("drops only the folded bytes from the WAL counter", async () => {
+  it("measures the WAL from the records above ingestedThrough", async () => {
     // Its own database: a host from an earlier test may still be ingesting
     // NAME, and recovery would pair that host's manifests with this WAL.
     const name = `${NAME}-counter`;
@@ -174,9 +174,12 @@ describe("ingest policy", () => {
     expect(await wal.uningestedBytes()).toBe(opsBytes([first]));
     const next = await wal.append([second]);
     expect(next).toBe(2);
-    await wal.advanceIngested(seq ?? 0, 1, opsBytes([first]));
+    await wal.advanceIngested(seq ?? 0, 1);
     expect(await wal.uningestedBytes()).toBe(opsBytes([second]));
     expect((await wal.listUningested()).map((record) => record.seq)).toEqual([2]);
+    await wal.append([first]);
+    expect(await wal.uningestedBytes(1 << 20), "under the cap: exact").toBe(opsBytes([second]) + opsBytes([first]));
+    expect(await wal.uningestedBytes(5), "over the cap: the cap").toBe(5);
     wal.close();
   });
 

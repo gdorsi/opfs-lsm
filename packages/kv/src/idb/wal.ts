@@ -9,12 +9,17 @@ import type { WalRecord } from "../store/memtable.js";
  */
 const WAL_STORE = "wal";
 const META_STORE = "meta";
-/** Seq of the last committed batch. */
+/**
+ * A floor for the head. The head, the seq of the last committed batch, is
+ * the larger of this and the last key in `wal`. An append writes only its
+ * record: a write to `meta` in the same transaction costs about as much
+ * again as the record. Recovery raises the floor when it moves the head
+ * past the records.
+ */
 const META_HEAD = "head";
 const META_INGESTED = "ingestedThrough";
 /** The OPFS generation whose runs hold every seq <= ingestedThrough. */
 const META_GENERATION = "generation";
-const META_PENDING = "pendingBytes";
 /**
  * The highest manifest number recovery has seen. Recovery can record an
  * older manifest than the one IndexedDB named; new manifests number past
@@ -164,6 +169,17 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
+/** The seq of the last committed batch: the last key in `wal`, or the floor in `meta` when that is higher. */
+async function readHead(tx: IDBTransaction): Promise<number> {
+  const [floor, last] = await Promise.all([
+    reqToPromise(tx.objectStore(META_STORE).get(META_HEAD)).then(num),
+    reqToPromise(tx.objectStore(WAL_STORE).openKeyCursor(null, "prev")).then((cursor) =>
+      num(cursor?.key),
+    ),
+  ]);
+  return Math.max(floor, last);
+}
+
 /** Seqs per `getAll`. Every chunk of a read is in flight at once. */
 const READ_CHUNK = 25_000;
 
@@ -235,7 +251,7 @@ async function readRecordsUpTo(
 async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
   const meta = tx.objectStore(META_STORE);
   const [head, generation, ingestedThrough] = await Promise.all([
-    reqToPromise(meta.get(META_HEAD)).then(num),
+    readHead(tx),
     reqToPromise(meta.get(META_GENERATION)).then(num),
     reqToPromise(meta.get(META_INGESTED)).then(num),
   ]);
@@ -255,7 +271,7 @@ async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
 export class IdBWal {
   /** WAL records this handle committed. Test and bench only. */
   appendedRecords = 0;
-  /** Encoded bytes of those records, excluding meta puts. */
+  /** Encoded bytes of those records. */
   appendedBytes = 0;
 
   private constructor(
@@ -306,9 +322,7 @@ export class IdBWal {
   > {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
-    const meta = tx.objectStore(META_STORE);
-    const pendingReq = reqToPromise(meta.get(META_PENDING));
-    const [tail, pendingRaw] = await Promise.all([readTail(tx, since), pendingReq]);
+    const tail = await readTail(tx, since);
     let decision: ReturnType<typeof decide>;
     try {
       decision = decide(tail);
@@ -324,8 +338,6 @@ export class IdBWal {
     const seq = tail.head + 1;
     const record = encodeOps(decision.ops);
     tx.objectStore(WAL_STORE).add(record, seq);
-    meta.put(seq, META_HEAD);
-    meta.put(num(pendingRaw) + opsBytes(decision.ops), META_PENDING);
     await done;
     this.appendedRecords += 1;
     this.appendedBytes += record.byteLength;
@@ -333,33 +345,29 @@ export class IdBWal {
   }
 
   /**
-   * Append `ops` under the key IndexedDB assigns, with no read before the
-   * add. An aborted transaction gives its key back, so committed seqs stay
-   * gapless. Undefined when the assigned key is not past the head. The
-   * caller then appends with `appendAfter`, which writes an explicit key
-   * and moves the generator forward.
+   * Append `ops` under the key IndexedDB assigns. The record is the only
+   * write. The key generator is past every key in `wal`, so the key can
+   * only fail to pass the head when recovery raised the floor: undefined
+   * then, and the caller appends with `appendAfter`, which writes an
+   * explicit key and moves the generator forward. An aborted transaction
+   * gives its key back, so committed seqs stay gapless.
    */
   async append(ops: readonly CheckedOp[]): Promise<number | undefined> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
-    const meta = tx.objectStore(META_STORE);
-    const head = meta.get(META_HEAD);
-    const pending = meta.get(META_PENDING);
-    const bytes = opsBytes(ops);
+    const floor = tx.objectStore(META_STORE).get(META_HEAD);
     const record = encodeOps(ops);
     const add = tx.objectStore(WAL_STORE).add(record);
     let seq: number | undefined;
     let stale = false;
     add.onsuccess = () => {
       const key = add.result as number;
-      if (key <= num(head.result)) {
+      if (key <= num(floor.result)) {
         stale = true;
         tx.abort();
         return;
       }
       seq = key;
-      meta.put(key, META_HEAD);
-      meta.put(num(pending.result) + bytes, META_PENDING);
     };
     try {
       await done;
@@ -373,10 +381,10 @@ export class IdBWal {
   }
 
   async meta(): Promise<WalMeta> {
-    const tx = this.db.transaction(META_STORE, "readonly");
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const meta = tx.objectStore(META_STORE);
     const [head, ingestedThrough, generation, top] = await Promise.all([
-      reqToPromise(meta.get(META_HEAD)).then(num),
+      readHead(tx),
       reqToPromise(meta.get(META_INGESTED)).then(num),
       reqToPromise(meta.get(META_GENERATION)),
       reqToPromise(meta.get(META_TOP)).then(num),
@@ -419,7 +427,7 @@ export class IdBWal {
     const meta = tx.objectStore(META_STORE);
     const wal = tx.objectStore(WAL_STORE);
     const [head, ingested, recorded, knownTop] = await Promise.all([
-      reqToPromise(meta.get(META_HEAD)).then(num),
+      readHead(tx),
       reqToPromise(meta.get(META_INGESTED)).then(num),
       reqToPromise(meta.get(META_GENERATION)),
       reqToPromise(meta.get(META_TOP)).then(num),
@@ -439,10 +447,8 @@ export class IdBWal {
         : [];
     const nextHead = Math.max(head, through, floor);
     let nextIngested = through;
-    let bytes = 0;
     if (nextHead === head && (through >= ingested || above.length === head - through)) {
       wal.delete(IDBKeyRange.upperBound(Math.min(ingested, through)));
-      for (const value of above) bytes += opsBytes(decodeOps(value));
     } else {
       // No record can follow the manifest: drop them all, and start the
       // WAL past every seq handed out.
@@ -453,7 +459,6 @@ export class IdBWal {
     meta.put(nextIngested, META_INGESTED);
     meta.put(generation, META_GENERATION);
     meta.put(Math.max(knownTop, top, generation), META_TOP);
-    meta.put(bytes, META_PENDING);
     await done;
     return true;
   }
@@ -476,36 +481,28 @@ export class IdBWal {
     return num(raw);
   }
 
-  /** Bytes still in the WAL. A database with no counter is scanned once and stored. */
-  async uningestedBytes(): Promise<number> {
-    const known = await this.pendingBytes();
-    if (known !== undefined) return known;
-    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+  /**
+   * Op bytes of the records above ingestedThrough, read from the records.
+   * With `cap`, the read stops once it has seen that many bytes and the
+   * answer is `cap`: enough to say the WAL is over a limit without reading
+   * all of a long one.
+   */
+  async uningestedBytes(cap = Number.POSITIVE_INFINITY): Promise<number> {
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const done = txDone(tx);
-    const meta = tx.objectStore(META_STORE);
-    const [raw, through, head] = await Promise.all([
-      reqToPromise(meta.get(META_PENDING)),
-      reqToPromise(meta.get(META_INGESTED)).then(num),
-      reqToPromise(meta.get(META_HEAD)).then(num),
+    const [through, head] = await Promise.all([
+      reqToPromise(tx.objectStore(META_STORE).get(META_INGESTED)).then(num),
+      readHead(tx),
     ]);
-    if (typeof raw === "number") {
-      await done;
-      return raw;
-    }
-    let bytes = 0;
-    for (const record of await readRecords(tx.objectStore(WAL_STORE), through, head)) {
-      bytes += opsBytes(record.ops);
-    }
-    meta.put(bytes, META_PENDING);
+    const store = tx.objectStore(WAL_STORE);
+    const records = Number.isFinite(cap)
+      ? await readRecordsUpTo(store, through, head, cap)
+      : await readRecords(store, through, head);
     await done;
-    return bytes;
-  }
-
-  private async pendingBytes(): Promise<number | undefined> {
-    const tx = this.db.transaction(META_STORE, "readonly");
-    const raw = await reqToPromise(tx.objectStore(META_STORE).get(META_PENDING));
-    await txDone(tx);
-    return typeof raw === "number" ? raw : undefined;
+    let bytes = 0;
+    for (const record of records) bytes += opsBytes(record.ops);
+    const last = records[records.length - 1]?.seq ?? head;
+    return last < head ? Math.max(bytes, cap) : bytes;
   }
 
   /**
@@ -519,7 +516,7 @@ export class IdBWal {
     const meta = tx.objectStore(META_STORE);
     const [through, head] = await Promise.all([
       reqToPromise(meta.get(META_INGESTED)).then(num),
-      reqToPromise(meta.get(META_HEAD)).then(num),
+      readHead(tx),
     ]);
     const store = tx.objectStore(WAL_STORE);
     const records = limit
@@ -537,24 +534,18 @@ export class IdBWal {
    * commit and loses the new manifest can still recover them (design.md,
    * "Recovery").
    */
-  async advanceIngested(
-    through: number,
-    generation: number,
-    foldedBytes: number,
-  ): Promise<void> {
+  async advanceIngested(through: number, generation: number): Promise<void> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
-    const [existing, prevGen, pending] = await Promise.all([
+    const [existing, prevGen] = await Promise.all([
       reqToPromise(meta.get(META_INGESTED)).then(num),
       reqToPromise(meta.get(META_GENERATION)).then(num),
-      reqToPromise(meta.get(META_PENDING)).then(num),
     ]);
     if (through > existing) {
       tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(existing));
       meta.put(through, META_INGESTED);
       meta.put(Math.max(prevGen, generation), META_GENERATION);
-      meta.put(Math.max(0, pending - foldedBytes), META_PENDING);
     }
     await done;
   }

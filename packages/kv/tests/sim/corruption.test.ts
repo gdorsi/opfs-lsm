@@ -491,14 +491,13 @@ describe("a corrupt WAL row: no checksum", () => {
     expect(crashes(r)).toEqual([]);
   });
 
-  // `num()` reads a `meta` value that is not a number as 0. With `head` 0
-  // a tab reads no WAL tail and answers without the uningested writes.
-  // `meta` has no checksum, so the rules allow it; the table records it.
-  it("meta.head is not a number: reads miss the WAL tail", async () => {
+  // `num()` reads a `meta` value that is not a number as 0. `meta.head` is
+  // only a floor under the last WAL key, so the tail is still read.
+  it("meta.head is not a number: reads still see the WAL tail", async () => {
     const r = await run("WAL meta: head not a number", standard, async (f) => {
       await walStore(f.name, "readwrite", (_wal, meta) => meta.put("x", "head"));
     });
     expect(crashes(r)).toEqual([]);
-    expect(r.get).toBe("wrong");
+    expect(r.get).toBe("ok");
   });
 });

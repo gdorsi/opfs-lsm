@@ -235,8 +235,14 @@ function metaAt(ops: readonly DurableOp[], count: number): Map<string, number> {
   return meta;
 }
 
+/** The head after the first `count` IndexedDB commits: the highest seq appended, or the floor in `meta` when that is higher. */
 function headAt(ops: readonly DurableOp[], count: number): number {
-  return metaAt(ops, count).get("head") ?? 0;
+  let head = metaAt(ops, count).get("head") ?? 0;
+  for (const op of ops.filter((o) => o.store === "idb").slice(0, count)) {
+    if (op.store !== "idb") continue;
+    for (const m of op.muts) if (m.store === "wal" && m.kind === "put") head = Math.max(head, m.key as number);
+  }
+  return head;
 }
 
 let states = 0;
