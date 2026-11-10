@@ -1,4 +1,4 @@
-import { defineSchema, type Query } from "../src/index.js";
+import { defineSchema, type DocStore, type Query } from "../src/index.js";
 
 type Todo = {
   id: string;
@@ -50,6 +50,16 @@ defineSchema<{ todos: Todo }>()({ version: 1, collections: {} });
 type HasDate = { id: string; at: Date };
 // @ts-expect-error a Date does not survive JSON
 defineSchema<{ events: HasDate }>();
+type HasBytes = { id: string; data: Uint8Array };
+// @ts-expect-error a Uint8Array does not survive JSON
+defineSchema<{ blobs: HasBytes }>();
+
+export async function misuse(store: DocStore<typeof todoSchema>): Promise<void> {
+  // @ts-expect-error not a collection of the schema
+  store.collection("nope");
+  // @ts-expect-error a put needs every field the type requires
+  await store.collection("todos").put({ id: "x", title: "t" });
+}
 
 type Note = { id: string; owner: string; slug: string; tags: string[]; updatedAt: number; body: string };
 
