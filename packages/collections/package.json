@@ -2,6 +2,25 @@
   "name": "@opfs-lsm/collections",
   "version": "0.1.0",
   "description": "Dexie-shaped tables/indexes on @opfs-lsm/kv",
+  "keywords": [
+    "opfs",
+    "indexeddb",
+    "dexie",
+    "database",
+    "browser",
+    "storage"
+  ],
+  "homepage": "https://github.com/gdorsi/opfs-lsm#readme",
+  "bugs": {
+    "url": "https://github.com/gdorsi/opfs-lsm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gdorsi/opfs-lsm.git",
+    "directory": "packages/collections"
+  },
+  "author": "Guido D'Orsi",
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": {
@@ -18,9 +37,12 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build",
     "test": "vitest run"
   },
-  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*"
   },
