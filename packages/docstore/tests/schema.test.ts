@@ -13,6 +13,7 @@ import {
   recording,
   storedCatalog,
   storedPrefix,
+  wrap,
 } from "./harness.js";
 
 type Todo = {
@@ -311,26 +312,22 @@ describe("clear", () => {
     }
   });
 
-  it("writes one catalog op whatever the size, and resolves on 100,000 rows about as fast as on 10", async () => {
-    const timed = async (n: number) => {
+  it("writes one catalog op and starts no scan before it resolves, whatever the size", async () => {
+    for (const n of [10, 20_000]) {
       const kv = await kvOn(freshName());
-      const { db, updates } = recording(kv);
+      let scans = 0;
+      const { db, updates } = recording(wrap(kv, { range: (r) => (scans++, kv.range(r)) }));
       const store = await openOn(db, v1);
       const todos = store.collection("todos");
       for (let i = 0; i < n; i += 2_000) await todos.putMany(rows(Math.min(2_000, n - i), i));
-      await todos.put({ id: "warm", createdAt: -1 });
       updates.length = 0;
-      const t0 = performance.now();
+      scans = 0;
       await todos.clear();
-      const ms = performance.now() - t0;
-      expect(updates).toEqual([{ reads: 1, puts: 1, deletes: 0 }]);
+      expect({ updates, scans }).toEqual({ updates: [{ reads: 1, puts: 1, deletes: 0 }], scans: 0 });
       await store.whenIdle();
-      return ms;
-    };
-    const small = await timed(10);
-    const big = await timed(100_000);
-    expect(big).toBeLessThan(3 * small + 2);
-  }, 30_000);
+      expect(scans).toBeGreaterThan(0);
+    }
+  });
 
   it("refuses a cursor made before the clear", async () => {
     const { store } = await at(freshName(), v1);
