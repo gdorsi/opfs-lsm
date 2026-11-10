@@ -741,6 +741,10 @@ Past 64 MiB only the recycle threshold grows. A flush and a merge session share 
 instance and can overlap, so the budget covers both and the module. The derivation, and the wasm
 memory measured behind it, are in `docs/research/bounded-compaction-memory.md`.
 
+The budget counts memory that is alive. Dead ArrayBuffers and objects that V8 has not collected
+yet come on top of it and do not shrink with it, so a browser's memory graph can show far more
+than `compactionMemoryBytes`. The research doc has the live set and that garbage, measured.
+
 Merges take turns in a JS context, across its databases. A step waits at the merge slot
 (`host/merge-slot.ts`) before it opens any input, because the module holds one session and two
 working sets would add up past the budget. A flush does not take the slot. It runs on the engine

@@ -82,7 +82,8 @@ export type OpenOptions = {
    * least 8 MiB. A smaller figure gives smaller flush runs and a smaller read
    * window, and under about 17.5 MiB fewer runs in one compaction step. The host's
    * figures stop growing at 64 MiB. When tabs differ, the host uses the
-   * smallest.
+   * smallest. It counts memory that is alive, not garbage the browser has not
+   * collected yet.
    */
   readonly compactionMemoryBytes?: number;
 };
