@@ -33,6 +33,7 @@
     "test:unit": "vitest run",
     "two-tab": "pnpm run build && tsx scripts/two-tab.ts",
     "kill-chrome": "pnpm run build && tsx scripts/kill-chrome.ts",
+    "log-queue": "pnpm run build && tsx scripts/log-queue.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
