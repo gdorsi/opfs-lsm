@@ -46,6 +46,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import ts from "typescript";
+import { verifyKillState } from "../proof/kill-chrome-verify.ts";
 import { allKeys, attempts, mix, prng, type WorkOp } from "../proof/kill-chrome-workload.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -573,98 +574,6 @@ type CheckResult = {
 
 type Applied = { seq: number; ops: readonly WorkOp[] };
 
-/** key -> value after `log` on top of `base`; a delete leaves no key. */
-function fold(base: ReadonlyMap<string, string>, log: readonly Applied[]): Map<string, string> {
-  const out = new Map(base);
-  for (const { ops } of [...log].sort((a, b) => a.seq - b.seq)) {
-    for (const op of ops) {
-      if (op.type === "put") out.set(op.key, op.value);
-      else out.delete(op.key);
-    }
-  }
-  return out;
-}
-
-const MAX_ASSIGNMENTS = 200_000;
-
-type Verdict = { ok: true; unknown: number; assignments: number } | { ok: false; reason: string; detail: string[] };
-
-/**
- * Find an assignment of the unseen seqs `(baseHead, head]` to in-flight
- * attempts (each tab's next attempts, in order, after its last seen ack)
- * whose fold equals `observed`.
- */
-function verify(
-  base: ReadonlyMap<string, string>,
-  baseHead: number,
-  head: number,
-  known: readonly Applied[],
-  tails: readonly { lastSeq: number; next: readonly (readonly WorkOp[])[] }[],
-  observed: ReadonlyMap<string, string>,
-): Verdict {
-  const seen = new Set<number>();
-  for (const k of known) {
-    if (seen.has(k.seq)) return { ok: false, reason: "two acks with one seq", detail: [`seq ${k.seq}`] };
-    seen.add(k.seq);
-    if (k.seq <= baseHead) return { ok: false, reason: "ack seq at or below the previous head", detail: [`seq ${k.seq}, previous head ${baseHead}`] };
-    if (k.seq > head) return { ok: false, reason: "acked write lost: seq past the recovered head", detail: [`seq ${k.seq}, head ${head}`] };
-  }
-  const unknown: number[] = [];
-  for (let s = baseHead + 1; s <= head; s++) if (!seen.has(s)) unknown.push(s);
-
-  // Keys an in-flight attempt could touch; every other key is fixed by `known`.
-  const touched = new Set<string>();
-  for (const t of tails) for (const ops of t.next.slice(0, unknown.length)) for (const op of ops) touched.add(op.key);
-  const fixed = fold(base, known);
-  const diff: string[] = [];
-  for (const key of new Set([...fixed.keys(), ...observed.keys()])) {
-    if (touched.has(key)) continue;
-    if (fixed.get(key) !== observed.get(key)) diff.push(`${key}: read ${short(observed.get(key))}, log says ${short(fixed.get(key))}`);
-  }
-  if (diff.length > 0) return { ok: false, reason: "state is not the fold of the acked log", detail: diff.slice(0, 12) };
-
-  let tried = 0;
-  const used = tails.map(() => 0);
-  const lastSeq = tails.map((t) => t.lastSeq);
-  const chosen: Applied[] = [];
-  const matches = (): boolean => {
-    const state = fold(base, [...known, ...chosen]);
-    for (const key of touched) if (state.get(key) !== observed.get(key)) return false;
-    return true;
-  };
-  const search = (slot: number): boolean => {
-    if (slot === unknown.length) {
-      tried++;
-      return matches();
-    }
-    if (tried >= MAX_ASSIGNMENTS) return false;
-    const seq = unknown[slot]!;
-    for (let t = 0; t < tails.length; t++) {
-      const ops = tails[t]!.next[used[t]!];
-      if (!ops || seq <= lastSeq[t]!) continue;
-      const prev = lastSeq[t]!;
-      used[t]!++;
-      lastSeq[t] = seq;
-      chosen.push({ seq, ops });
-      if (search(slot + 1)) return true;
-      chosen.pop();
-      lastSeq[t] = prev;
-      used[t]!--;
-    }
-    return false;
-  };
-  if (search(0)) return { ok: true, unknown: unknown.length, assignments: tried };
-  const reason =
-    tried >= MAX_ASSIGNMENTS
-      ? `gave up after ${tried} assignments of ${unknown.length} unseen seqs`
-      : `no assignment of ${unknown.length} unseen seqs to in-flight attempts gives the read state`;
-  const detail: string[] = [`unseen seqs [${unknown.join(",")}]`];
-  for (const key of touched) {
-    if (fixed.get(key) !== observed.get(key)) detail.push(`${key}: read ${short(observed.get(key))}, acked log says ${short(fixed.get(key))}`);
-  }
-  return { ok: false, reason, detail: detail.slice(0, 12) };
-}
-
 function short(v: string | undefined): string {
   if (v === undefined) return "(none)";
   return v.split("|")[0] ?? v;
@@ -1004,7 +913,7 @@ class Run {
         if (inPlaceSeq !== null) known.push({ seq: inPlaceSeq, ops });
         else tails.push({ lastSeq: Math.max(db.head, ...known.map((k) => k.seq)), next: [ops] });
       }
-      const verdict = verify(db.base, db.head, before.head, known, tails, observed);
+      const verdict = verifyKillState(db.base, db.head, before.head, known, tails, observed);
       if (!verdict.ok) fail(verdict.reason, verdict.detail);
       if (after.problems.length > 0) fail("checkDatabase found problems after the restarted SharedWorker ingested", after.problems);
       const expectAfter = new Map(observed);
