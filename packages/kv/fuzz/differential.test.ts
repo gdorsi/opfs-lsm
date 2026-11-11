@@ -5,7 +5,7 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns, unpackHits } from "../src/store/block-scan.js";
 import { encodeSst as encodeSstWasm, type MergeSpec } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
-import { openMergeTs } from "../src/store/merge-ts.js";
+import { openMergeTs } from "../tests/oracle/merge-ts.js";
 import { BlockEntries, blockBytes, decodeSst, encodeSst, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { mergeRuns } from "../tests/runs.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
@@ -13,7 +13,7 @@ import { bounded, framedBlocks, repairSst, RuleBroken, tally, type Repair } from
 import { loadWasm, type FlatEngine } from "./wasm.js";
 
 /**
- * Differential: the wasm engine against the TypeScript fallbacks
+ * Differential: the wasm engine against TypeScript
  * (docs/research/corruption-hardening-test-suite.md, technique 8), on the
  * same valid and mutated inputs. On valid inputs both must return the same
  * thing. On mutated inputs each must obey the rules of `targets.ts`; they
@@ -126,7 +126,7 @@ function contains(hay: Uint8Array, needle: Uint8Array): boolean {
 
 const hot = new TextEncoder().encode(" hot");
 
-describe("wasm against the TypeScript fallbacks", () => {
+describe("wasm against TypeScript", () => {
   it(
     "decode the same runs to the same entries",
     async () => {

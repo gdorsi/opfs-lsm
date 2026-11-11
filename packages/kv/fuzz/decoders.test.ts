@@ -78,7 +78,7 @@ const extraKeys = fc.array(fc.string({ unit: fc.constantFrom(..."ab/0129".split(
 
 describe("decoder properties (fast-check)", () => {
   it(
-    "a tab reads an intact run exactly, with wasm and with the TypeScript fallbacks",
+    "a tab reads an intact run exactly, with the wasm decoders and with the JS ones",
     async () => {
       await expect(
         fc.assert(

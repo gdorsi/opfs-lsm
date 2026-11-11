@@ -149,7 +149,7 @@ returns 0, `input_ptr` grows a reused input buffer, and an operation
 allocates what it needs through the module's allocator. Outside a merge
 session it never returns -11; running out of memory inside an operation
 aborts, which the loader sees as a `WebAssembly.RuntimeError` and answers
-by dropping the module and falling back to TypeScript. A merge session
+by replacing the instance and throwing. A merge session
 reserves its working set in `merge_open` and grows its input buffers (for
 a block, a run's bloom and index, or an entry larger than any before)
 without aborting, so it returns -11 instead. The output writer's per-run

@@ -190,9 +190,8 @@ describe("wasm traps", () => {
   });
 
   // A trap that is not a panic on input: wasm memory cannot grow to 4 GiB.
-  // The engine drops wasm for this context and answers in TypeScript, so
-  // one trap never poisons later calls.
-  it("KW3: after a trap the engine drops wasm and keeps answering", async () => {
+  // The engine replaces the instance, so one trap never poisons later calls.
+  it("KW3: after a trap the engine replaces the instance and keeps answering", async () => {
     vi.resetModules();
     const engine = await import("../src/store/engine.js");
     const lz4 = await import("../src/store/lz4.js");
@@ -201,7 +200,7 @@ describe("wasm traps", () => {
     expect(engine.engineUsingWasm()).toBe(true);
     const src = new Uint8Array(17_000_000);
     expect(() => lz4.lz4Decompress(src, 0xfffffff0)).toThrow(errors.CorruptDatabaseError);
-    expect(engine.engineUsingWasm()).toBe(false);
+    expect(engine.engineUsingWasm()).toBe(true);
     const run = await engine.encodeSst(entries);
     expect(await engine.decodeSst(run)).toHaveLength(entries.length);
     vi.resetModules();
