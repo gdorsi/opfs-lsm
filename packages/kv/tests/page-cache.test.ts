@@ -51,6 +51,16 @@ describe("page cache", () => {
     expect(cache.usage().pinned).toBe(0);
   });
 
+  it("is back within budget once concurrent misses have retried", async () => {
+    const { cache, fetch, loads } = harness(2_000);
+    const keys = Array.from({ length: 50 }, (_, i) => pageKey(0, i));
+    expect(await Promise.all(keys.map((key) => fetch(key, "main", 1_000)))).toEqual(keys);
+    expect(loads()).toBe(50);
+    const usage = cache.usage();
+    expect(usage.pinned).toBe(0);
+    expect(usage.resident).toBeLessThanOrEqual(2_000);
+  });
+
   it("drops a run's entries, and a load that lands after the drop", async () => {
     const { cache, fetch, isResident } = harness(100_000);
     await fetch(pageKey(3, 0), "main", 1_000);
