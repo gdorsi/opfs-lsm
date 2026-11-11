@@ -41,7 +41,7 @@ describe("page cache", () => {
     const { cache, fetch, loads } = harness(1_000);
     await fetch(pageKey(0, 0), "main", 1_500);
     expect(loads()).toBe(1);
-    expect(cache.usage()).toMatchObject({ resident: 1_500, pinned: 0 });
+    expect(cache.usage()).toMatchObject({ resident: 0, pinned: 0 });
 
     const miss = cache.lookup(pageKey(0, 1), "main", async () => ({ value: 1, bytes: 800 }));
     expect(miss).toBeInstanceOf(Miss);

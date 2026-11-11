@@ -91,8 +91,11 @@ export class PageCache {
     const e = this.entries.get(key);
     if (e) {
       // The retry after a fill is the same access as the miss, not a reuse.
-      if (e.pinnedUntil !== 0) e.pinnedUntil = 0;
-      else e.hit = true;
+      if (e.pinnedUntil !== 0) {
+        e.pinnedUntil = 0;
+        // Fills that landed together pinned each other past the budget, and no later fill may come.
+        this.trim();
+      } else e.hit = true;
       return e.value as T;
     }
     let p = this.loading.get(key);
@@ -140,6 +143,10 @@ export class PageCache {
     this.entries.set(key, e);
     this.enqueue(key, e, admit);
     this.resident += s.bytes;
+    this.trim();
+  }
+
+  private trim(): void {
     while (this.resident > this.budget && (this.evictPage() || this.evictFrom("meta"))) {}
   }
 
