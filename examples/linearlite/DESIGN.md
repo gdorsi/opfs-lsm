@@ -61,12 +61,13 @@ export interface SyncState {
 ```
 
 Server (`node:sqlite`, `data/linearlite.db`): tables `issue`, `body`, `comment` with the same fields as above plus
-`version INTEGER NOT NULL` (indexed) and `deleted`; table `meta(k, v)` holds `head` (the global version counter)
-and `epoch` (a random id, so a client notices a reseeded server and starts over). Deletes are tombstones.
+`version INTEGER NOT NULL` (indexed); table `meta(k, v)` holds `head` (the global version counter) and `epoch` (a
+random id, so a client notices a reseeded server and starts over). Issues and comments carry `deleted`, and deletes
+are tombstones. Bodies are 1:1 with issues and are never tombstoned: an issue's tombstone hides its body.
 
 ## One write path
 
-`utils.transact(keys, merge)` (adapter gap 1) runs `merge(currentRows)` inside one kv `db.update`, so nothing can
+`utils.transact(keys, merge)` (see Adapter features) runs `merge(currentRows)` inside one kv `db.update`, so nothing can
 land between the read and the write, in this tab or another. Callers never use `collection.insert/update`.
 
 | write | merge function (pure, `src/domain/merge.ts`) |
@@ -90,6 +91,7 @@ GET  /api/pull?stream=issues&after=V&limit=N  -> { rows, next, head, more, epoch
 POST /api/push { ops: PushOp[] }              -> { results: { stream, id, clocks, row }[], head, epoch }
 GET  /api/events                              -> SSE, `data: {"head":N}` after every commit, ping every 25 s
 GET  /api/detail?id=X                         -> { body, comments }   (a detail view opened before backfill)
+GET  /api/row?stream=S&id=X                   -> { row, epoch }       one row, or null; comments by comment id
 PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?: true }
 ```
 
@@ -106,16 +108,18 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
 - **Conflicts.** Per field, the last push to reach the server wins. A local unsent edit beats any incoming value
   until it is acked.
 - **Server push.** One SQLite transaction per request: bump `head`, apply each op's fields, stamp `version`,
-  insert on `create`. Ops are field assignments, so a retried push is harmless and needs no dedupe table.
+  insert on `create`. Ops are field assignments, so a retried push is harmless and needs no dedupe table. The
+  author of a created row is the `x-linearlite-user` header (absent: `anonymous`); there is no authentication.
 
-## Adapter gaps (`@opfs-lsm/tanstack-db`)
+## Adapter features the app uses (`@opfs-lsm/tanstack-db`)
 
 ```ts
 interface KvCollectionUtils<T, K> {
   /**
    * Read `keys` and write in one kv `db.update`. `merge` gets the stored rows in key order (undefined = absent)
-   * and returns one entry per key: a row to store, `null` to delete, `undefined` to leave as is. Resolves after
-   * this tab's collections on the db have applied the write. Throws if `merge` returns the wrong length or a row
+   * and returns one entry per key: a row to store, `null` to delete, `undefined` to leave as is. Resolves once the
+   * collection shows the write: always when eager, for an on-demand collection only on keys a loaded plan covers
+   * (other writes persist but stay out of memory). Throws if `merge` returns the wrong length or a row
    * whose key differs from its slot.
    */
   transact(keys: readonly K[], merge: (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<T | null | undefined>): Promise<void>;
@@ -130,7 +134,7 @@ interface KvCollectionConfig<T, K> {
 On demand: `loadSubset` runs the plan in one kv `view` (point gets, or one range over the string-key prefix),
 commits those rows, and keeps the plan with a refcount. Change events commit only ops whose key some live plan
 covers. `unloadSubset` releases a plan; rows no other live plan covers leave memory. A `gap` event reloads every
-live plan. A plan that throws rejects the load (an unbounded query on an on-demand collection is a bug).
+live plan. A plan that throws loads nothing, and the live query stays `loading` (an unbounded query on an on-demand collection is a bug).
 
 Known, not fixed here: the adapter's `onUpdate` persists the row as the editing tab last saw it, so a tab with a
 stale copy can erase a newer field another tab wrote. This app never calls `collection.update`.
@@ -140,7 +144,7 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
 - **URL is the only view state.** `?status=1,2&priority=0&q=sync&sort=modified&dir=desc` via `validateSearch`.
   List and board share it. Back and forward restore a view; a link reproduces it.
 - **List.** `@tanstack/react-virtual` over a windowed live query (`orderBy` + `limit`, moved with
-  `utils.setWindow`) and a `count` query with the same `where` for the scroll height. BTree indexes on `status`,
+  `utils.setWindow`, TanStack DB's live-query API, not the adapter's) and a `count` query with the same `where` for the scroll height. BTree indexes on `status`,
   `priority`, `modified`, `created`, `kanbanorder`. Title search is `ilike` in memory.
 - **Board.** Five column queries ordered by `kanbanorder`, windows growing as a column scrolls, counts from one
   `groupBy(status)` query. A drop writes `status` and a fractional key between its neighbours in one `transact`.
