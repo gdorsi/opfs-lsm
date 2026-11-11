@@ -268,7 +268,7 @@ class Leader {
     const res = await request<RowResponse>(this.store.user, `/api/row?stream=${op.stream}&id=${encodeURIComponent(op.id)}`);
     this.checkEpoch(res.epoch);
     const server = res.row as unknown as Omit<Rows[typeof op.stream], "dirty"> | null;
-    await transactOf(this.store, op.stream)([key], ([local]) => [restore<Rows[typeof op.stream]>(local, server)]);
+    await transactOf(this.store, op.stream)([key], ([local]) => [restore<Rows[typeof op.stream]>(local, server, op.clocks)]);
   }
 
   private async save(patch: Partial<SyncState>): Promise<void> {

@@ -42,12 +42,22 @@ export function mergeIncoming<T extends Tombstoned>(
 
 /**
  * Reset a row to the server's state after the server refused an edit of it. Unlike `mergeIncoming` it takes the
- * server's row whatever its version, since the local version may be ahead of what the server holds, and drops
- * every dirty field. No server row, or a tombstone, deletes the local one. A row that is no longer stored stays so.
+ * server's row whatever its version, since the local version may be ahead of what the server holds, and drops the
+ * dirty fields whose clocks are the `refused` ones. A field edited again since the push keeps its value and stays
+ * dirty. No server row, or a tombstone, deletes the local one. A row that is no longer stored stays so.
  */
-export function restore<T extends Tombstoned>(local: T | undefined, server: Omit<T, "dirty"> | null): T | null | undefined {
+export function restore<T extends Tombstoned>(
+  local: T | undefined,
+  server: Omit<T, "dirty"> | null,
+  refused: Clocks,
+): T | null | undefined {
   if (local === undefined) return undefined;
-  return server === null || server.deleted ? null : (server as T);
+  if (server === null || server.deleted) return null;
+  const remaining = unacked(local.dirty, refused);
+  if (remaining === undefined || Object.keys(remaining).length === 0) return server as T;
+  const kept: Record<string, unknown> = {};
+  for (const f in remaining) kept[f] = (local as Record<string, unknown>)[f];
+  return { ...server, ...kept, dirty: remaining } as unknown as T;
 }
 
 function unacked(dirty: Clocks | undefined, acked: Clocks | undefined): Clocks | undefined {

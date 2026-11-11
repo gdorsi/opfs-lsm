@@ -175,23 +175,33 @@ describe("mergeIncoming", () => {
 
 describe("restore", () => {
   const edited = () => applyLocal(issue({ version: 9 }), { title: "Mine", status: 4 }, 20);
+  const SENT = { title: 20, status: 20 };
 
   it("replaces a row whose edit the server refused with the server's row, clean, even when its version is older", () => {
-    const back = restore(edited(), server({ title: "Theirs", version: 5 }));
+    const back = restore(edited(), server({ title: "Theirs", version: 5 }), SENT);
     assert.deepEqual(back, server({ title: "Theirs", version: 5 }));
     assert.equal((back as Issue).dirty, undefined);
   });
 
   it("deletes a row the server has never had, which is what a refused create leaves", () => {
-    assert.equal(restore(edited(), null), null);
+    assert.equal(restore(edited(), null, SENT), null);
   });
 
   it("deletes a row the server holds as a tombstone", () => {
-    assert.equal(restore(edited(), server({ deleted: true, version: 12 })), null);
+    assert.equal(restore(edited(), server({ deleted: true, version: 12 }), SENT), null);
   });
 
   it("leaves a row that is no longer stored alone", () => {
-    assert.equal(restore(undefined, server()), undefined);
+    assert.equal(restore(undefined, server(), SENT), undefined);
+  });
+
+  it("keeps a field edited again after the refused push, dirty, on top of the server's row", () => {
+    const again = applyLocal(edited(), { title: "Again" }, 21);
+    const back = restore(again, server({ title: "Theirs", version: 5 }), SENT) as Issue;
+    assert.equal(back.title, "Again");
+    assert.deepEqual(back.dirty, { title: 21 });
+    assert.equal(back.status, server().status);
+    assert.equal(back.version, 5);
   });
 });
 

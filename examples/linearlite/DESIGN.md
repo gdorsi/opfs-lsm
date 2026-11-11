@@ -110,7 +110,8 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
   mark on a clean row (a crash between the two writes) pushes nothing and is removed.
 - **Refused pushes.** A push the server refuses with a 4xx is retried op by op, so one bad op cannot wedge sync. An
   op still refused is dropped: the leader fetches that row from `/api/row` and replaces the local row with it,
-  clean, or deletes the local row when the server has none (a refused create). It warns in the console.
+  or deletes the local row when the server has none (a refused create). A field edited again while the push was
+  in flight keeps its local value and stays dirty, so the next push sends it. It warns in the console.
 - **First sync.** `issues` first, so list and board fill page by page; then `bodies` and `comments` in the
   background. A detail view opened before its body arrives calls `/api/detail` from its own tab and writes the
   result with the same `mergeIncoming`.
