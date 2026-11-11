@@ -444,6 +444,12 @@ const OPEN_CONCURRENCY = 16;
 
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
+/** Why a catch-up or write attempt must run again: "behind" when another load installed a newer generation, "gone" when a file of the tail's generation is missing. */
+type Retry = "behind" | "gone";
+
+function finished<T>(step: T | Retry): step is T {
+  return step !== "behind" && step !== "gone";
+}
 const GENERATION_GONE =
   "SST files for the recorded generation stayed missing after retries";
 
@@ -700,21 +706,32 @@ class DbImpl implements Db {
     return this.catchUpToWal();
   }
 
+  private async syncOnce(): Promise<void> {
+    await this.retrying(() => this.catchUpOnce());
+  }
+
   /**
-   * Catch up once without the reclaim lock, the usual path. A run or
+   * Run `attempt` once without the reclaim lock, the usual path. A run or
    * manifest that went missing mid-load was almost always reclaimed after
    * a newer generation replaced it, and under churn that can repeat on
    * every try. So the retries hold the reclaim lock shared: the host
    * removes no file until they return, and the generation a retry reads
    * keeps every file (design.md, "Loading a generation under churn").
+   * Nothing the host does removes a file while the lock is held, so a
+   * retry that finds one "gone" repairs, and gives up after
+   * `GENERATION_RETRIES`.
    */
-  private async syncOnce(): Promise<void> {
-    if ((await this.catchUpOnce()) === "done") return;
-    await holdingFiles(this.name, async () => {
+  private async retrying<T>(attempt: () => Promise<T | Retry>): Promise<T> {
+    const first = await attempt();
+    if (finished(first)) return first;
+    return holdingFiles(this.name, async () => {
       for (let gone = 0; ; ) {
-        const step = await this.catchUpOnce();
-        if (step === "done") return;
-        if (step === "gone") gone = await this.repairGone(gone);
+        const step = await attempt();
+        if (finished(step)) return step;
+        if (step === "gone") {
+          if (++gone >= GENERATION_RETRIES) throw new CorruptDatabaseError(GENERATION_GONE);
+          await this.repair();
+        }
       }
     });
   }
@@ -724,7 +741,7 @@ class DbImpl implements Db {
    * a newer generation meanwhile, "gone" when the tail's generation lacks
    * a file.
    */
-  private async catchUpOnce(): Promise<"done" | "behind" | "gone"> {
+  private async catchUpOnce(): Promise<"done" | Retry> {
     const tail = await timed(
       this.trace,
       "wal-read",
@@ -748,18 +765,6 @@ class DbImpl implements Db {
     if (this.trace) span(this.trace, "memtable", performance.now() - memAt, tail.records.length);
     if (missing === undefined) return "done";
     return whole ? "behind" : "gone";
-  }
-
-  /**
-   * A load under the reclaim lock found a file of the recorded generation
-   * gone. Nothing the host does removes one while the lock is held, so the
-   * files really are gone: repair, and give up after `GENERATION_RETRIES`.
-   * Returns the new count. Call holding the lock.
-   */
-  private async repairGone(gone: number): Promise<number> {
-    if (gone + 1 >= GENERATION_RETRIES) throw new CorruptDatabaseError(GENERATION_GONE);
-    await this.repair();
-    return gone + 1;
   }
 
   /**
@@ -810,24 +815,21 @@ class DbImpl implements Db {
    * inside the transaction would commit it, so `warm` loads what `plan`
    * reads before each attempt, and a `plan` that still misses appends
    * nothing and is retried. A tail that names a generation this tab lacks
-   * appends nothing either: the tab loads it, and from then on each try
-   * holds the reclaim lock, as in `syncOnce`. It first waits out a full
-   * memtable (`admit`). Resolves with the appended seq, undefined when
-   * `plan` chose no ops, and `plan`'s result.
+   * appends nothing either: the tab loads it and tries again (`retrying`).
+   * It first waits out a full memtable (`admit`). Resolves with the
+   * appended seq, undefined when `plan` chose no ops, and `plan`'s result.
    */
   private async write<R>(
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
     warm?: () => Promise<unknown>,
   ): Promise<{ readonly seq: number | undefined; readonly result: R }> {
     if (this.pressure.full) await this.admit();
-    let locked = false;
-    let gone = 0;
-    for (;;) {
-      await warm?.();
-      const step = async () => {
+    const out = await this.retrying(async () => {
+      for (;;) {
+        await warm?.();
         let missing: number | undefined;
         let miss: Miss | undefined;
-        const out = await this.wal
+        const appended = await this.wal
           .appendAfter(this.mem.appliedThrough, (tail) => {
             missing = this.catchUp(tail);
             if (missing !== undefined) return undefined;
@@ -837,24 +839,14 @@ class DbImpl implements Db {
             return undefined;
           })
           .finally(() => this.announce());
-        if (out || miss) return { out, miss };
-        const whole = missing === undefined || (await this.load(missing, true));
-        if (whole || !locked) return {};
-        gone = await this.repairGone(gone);
-        return {};
-      };
-      const { out, miss } = locked ? await holdingFiles(this.name, step) : await step();
-      if (out) {
-        if (out.seq !== undefined) await this.landed(out.seq, out.ops);
-        return out;
-      }
-      if (miss) {
+        if (appended) return appended;
+        if (missing !== undefined) return (await this.load(missing, true)) ? "behind" : "gone";
         // The next warm reads again and surfaces a real failure.
-        await miss.ready.catch(() => undefined);
-        continue;
+        await miss?.ready.catch(() => undefined);
       }
-      locked = true;
-    }
+    });
+    if (out.seq !== undefined) await this.landed(out.seq, out.ops);
+    return out;
   }
 
   /**
