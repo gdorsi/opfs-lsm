@@ -532,7 +532,7 @@ state either way. The host:
 1. Takes the compaction lock, then the ingest lock: the order a compaction pass takes them in.
    No flush or merge publishes while it holds them, and a merge already running stops after its
    current step.
-2. Commits the destroy in one IndexedDB transaction (`recordEmpty`). It drops every WAL record
+2. Commits the destroy in one IndexedDB transaction. It drops every WAL record
    and records generation 0, with `head` and `ingestedThrough` one past every seq the WAL or a
    manifest on disk names, and `topGeneration` past every manifest number. Seen from the log,
    destroy is one entry that deletes every key.
