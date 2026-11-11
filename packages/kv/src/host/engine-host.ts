@@ -17,7 +17,6 @@ import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
-  layersChannel,
   unlessHeld,
   type ClientToHost,
   type HostStats,
@@ -25,6 +24,7 @@ import {
   type IngestClient,
   type WatchPolicy,
 } from "./protocol.js";
+import { compactLock, ingestLock, layersChannel, webLocks } from "../locks.js";
 import { coalesced, serial } from "../turns.js";
 
 export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
@@ -165,7 +165,7 @@ class HostedDb {
   private trusted: number | undefined;
   /** Run compaction passes until no request arrives during one. */
   private readonly compact = coalesced(() =>
-    withLock(`opfs-lsm-compact/${this.name}`, () => this.compactPass()),
+    withLock(compactLock(this.name), () => this.compactPass()),
   );
 
   constructor(
@@ -402,7 +402,7 @@ class HostedDb {
   }
 
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    return this.publishTurn(() => withLock(`opfs-lsm-ingest/${this.name}`, fn));
+    return this.publishTurn(() => withLock(ingestLock(this.name), fn));
   }
 
   private async withWal<T>(fn: (wal: IdBWal) => Promise<T>): Promise<T> {
@@ -484,8 +484,7 @@ function isClosedDatabase(err: unknown): boolean {
 }
 
 function withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  const locks = (globalThis as { navigator?: { locks?: LockManager } })
-    .navigator?.locks;
+  const locks = webLocks();
   if (!locks) return fn();
   // The DOM lib types the callback's promise as the result, unwrapped at runtime.
   return locks.request(name, fn) as unknown as Promise<T>;

@@ -24,7 +24,8 @@ import {
   createPortIngestClient,
   type WatchScan,
 } from "./host/engine-host.js";
-import { holdingFiles, layersChannel, type IngestClient } from "./host/protocol.js";
+import { holdingFiles, type IngestClient } from "./host/protocol.js";
+import { layersChannel } from "./locks.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";

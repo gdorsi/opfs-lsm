@@ -1,6 +1,7 @@
 import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
+import { runLock } from "../locks.js";
 import { coalesceReads } from "./coalesce-reads.js";
 
 function splitPath(path: string): string[] {
@@ -44,7 +45,7 @@ export class BrowserFs implements AsyncFs {
   ) {}
 
   private lockName(path: string): string {
-    return `opfs-lsm:${this.dbName}:run:${path}`;
+    return runLock(this.dbName, path);
   }
 
   async open(path: string): Promise<OpenFile | undefined> {

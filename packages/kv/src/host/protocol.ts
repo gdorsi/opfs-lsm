@@ -1,4 +1,5 @@
 import type { ErrorCode } from "../errors.js";
+import { reclaimLock, webLocks } from "../locks.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
 
 /** What the host counted for one database since it started. Test and bench only. */
@@ -40,19 +41,6 @@ export type WatchPolicy = {
   readonly compactionMemoryBytes: number;
 };
 
-/** The BroadcastChannel where tabs share appends and new generations. */
-export function layersChannel(name: string): string {
-  return `opfs-lsm-layers/${name}`;
-}
-
-function locks(): LockManager | undefined {
-  return (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks;
-}
-
-function reclaimLock(name: string): string {
-  return `opfs-lsm-reclaim/${name}`;
-}
-
 /**
  * Run `fn` holding the reclaim lock shared. While any tab holds it, the
  * host removes no run file and no manifest, so a generation recorded
@@ -60,7 +48,7 @@ function reclaimLock(name: string): string {
  * reclaim already running. Without Web Locks it runs `fn` unprotected.
  */
 export function holdingFiles<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  const manager = locks();
+  const manager = webLocks();
   if (!manager) return fn();
   // The DOM lib types the callback's promise as the result, unwrapped at runtime.
   return manager.request(reclaimLock(name), { mode: "shared" }, fn) as unknown as Promise<T>;
@@ -71,7 +59,7 @@ export function holdingFiles<T>(name: string, fn: () => Promise<T>): Promise<T> 
  * false when a tab holds it. Never waits, so no tab can stall the host.
  */
 export async function unlessHeld(name: string, fn: () => Promise<void>): Promise<boolean> {
-  const manager = locks();
+  const manager = webLocks();
   if (!manager) {
     await fn();
     return true;
