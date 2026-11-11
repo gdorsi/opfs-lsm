@@ -77,11 +77,14 @@ function useIssueRead<T>(key: string, read: (issues: IssueDocs) => Promise<T>): 
   return result?.key === key ? result.value : undefined;
 }
 
+/** The fields a count depends on: a sort change keeps the count. */
+const counted = ({ status, priority, q }: IssueFilter) => JSON.stringify([status, priority, q]);
+
 export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly total: number | undefined } {
   const { issues } = openedStore();
   const key = JSON.stringify(filter);
   const view = useWindow(key, () => windowQuery(issues, filter, LIST_WINDOW), LIST_WINDOW);
-  const total = useIssueRead(key, (docs) => countTotal(docs, filter));
+  const total = useIssueRead(counted(filter), (docs) => countTotal(docs, filter));
   return { ...view, total };
 }
 
@@ -92,7 +95,7 @@ export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWi
 
 /** Issues under `filter` per status code; undefined until counted. */
 export function useStatusCounts(filter: IssueFilter): readonly number[] | undefined {
-  return useIssueRead(JSON.stringify(filter), (docs) => countByStatus(docs, filter));
+  return useIssueRead(counted(filter), (docs) => countByStatus(docs, filter));
 }
 
 export function useIssue(id: string): Issue | undefined {
