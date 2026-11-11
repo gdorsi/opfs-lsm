@@ -1,9 +1,11 @@
 import type { Cursor, JsonDoc } from "@opfs-lsm/docstore";
 import type { DocstoreQuery, Order, Plan } from "./plan.js";
 
+type PageQuery = DocstoreQuery & { readonly limit?: number; readonly after?: Cursor };
+
 /** What a read needs of a docstore snapshot. */
 export interface Snapshot {
-  query(q: object): Promise<{ readonly docs: JsonDoc[]; readonly next?: Cursor }>;
+  query(q: PageQuery): Promise<{ readonly docs: JsonDoc[]; readonly next?: Cursor }>;
   getMany(ids: readonly string[]): Promise<(JsonDoc | undefined)[]>;
 }
 

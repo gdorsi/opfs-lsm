@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { IndexInfo } from "@opfs-lsm/docstore";
-import { and, eq, gt, ilike, inArray, IR, isNull, lt, or, type LoadSubsetOptions } from "@tanstack/db";
+import {
+  and,
+  compileSingleRowExpression,
+  eq,
+  gt,
+  ilike,
+  inArray,
+  IR,
+  isNull,
+  lt,
+  or,
+  toBooleanPredicate,
+  type LoadSubsetOptions,
+} from "@tanstack/db";
 import { MAX_RANGES, planLoad } from "../src/plan.ts";
 
 const ref = (path: string) => new IR.PropRef(path.split("."));
@@ -33,6 +46,15 @@ test("a where that pins no index prefix scans", () => {
 test("an in that matches nothing reads nothing", () => {
   assert.deepEqual(plan({ where: and(eq(ref("deleted"), false), inArray(ref("status"), [])) }), [{ kind: "ranges", ranges: [] }]);
   assert.deepEqual(plan({ where: and(eq(ref("deleted"), false), eq(ref("deleted"), true)) }), [{ kind: "ranges", ranges: [] }]);
+});
+
+test("a null in an in list pins nothing, as TanStack's in matches no null row", () => {
+  const match = compileSingleRowExpression(inArray(ref("status"), [1, null]));
+  assert.equal(toBooleanPredicate(match({ status: null })), false);
+  assert.equal(toBooleanPredicate(match({ status: 1 })), true);
+  const pinned = (values: (number | null)[]) => plan({ where: and(eq(ref("deleted"), false), inArray(ref("status"), values)) });
+  assert.deepEqual(pinned([1, null]), pinned([1]));
+  assert.equal(pinned([1])[0]!.kind, "ranges");
 });
 
 test("an ordered limited load reads the index whose prefix is pinned, one range per pinned value, in order", () => {
