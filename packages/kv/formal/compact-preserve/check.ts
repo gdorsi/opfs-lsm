@@ -3,8 +3,9 @@
  * Mirrors pointGetSst (newest level first) and the merge session's pick
  * (the smallest head key; on a tie the earlier, newer source).
  *
- * Sync: latestSstEntry walks levels newest-first; both merge sessions keep
- * the earlier source on a tie (`< 0` in merge-ts.ts, `a < b` in merge.rs).
+ * Sync: latestSstEntry walks levels newest-first; the merge session and its
+ * TypeScript oracle keep the earlier source on a tie (`a < b` in merge.rs,
+ * `< 0` in tests/oracle/merge-ts.ts).
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -56,7 +57,7 @@ function newestFirstInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const read = (rel: string) => fs.readFileSync(path.resolve(here, rel), "utf8");
   const merge = read("../../src/store/merge.ts");
-  const session = read("../../src/store/merge-ts.ts");
+  const session = read("../../tests/oracle/merge-ts.ts");
   const engine = read("../../../../crates/engine-core/src/merge.rs");
   // latestSstEntry: for (const level of levels), levels are newest-first
   // merge-ts.ts: for (const s of this.sources) ... compareBytes(e.key, entry.key) < 0
@@ -123,7 +124,7 @@ for (const runs of allRuns(2)) {
 
 if (!newestFirstInSource()) {
   console.error(
-    "FAIL CompactPreserve — merge.ts / merge-ts.ts / merge.rs no longer newest-first get / newer source wins a tie",
+    "FAIL CompactPreserve — merge.ts / merge.rs / tests/oracle/merge-ts.ts no longer newest-first get / newer source wins a tie",
   );
   process.exit(1);
 }

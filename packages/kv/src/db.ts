@@ -311,15 +311,13 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const trace = options.trace;
   const openAt = trace ? performance.now() : 0;
   const name = checkDbName(options.name);
-  // Reads unpack LZ4 blocks faster once wasm loads. Until then they use the JS decoder.
+  // Started first, so the module loads while the rest of open runs.
   const wasmAt = trace ? performance.now() : 0;
   const engine = ensureEngine();
-  if (trace) {
-    void engine.then(
-      () => span(trace, "wasm", performance.now() - wasmAt),
-      () => span(trace, "wasm-error", performance.now() - wasmAt),
-    );
-  }
+  void engine.then(
+    () => span(trace, "wasm", performance.now() - wasmAt),
+    () => span(trace, "wasm-error", performance.now() - wasmAt),
+  );
   const policy: IngestPolicy = {
     ...DEFAULT_INGEST_POLICY,
     ...options.ingestPolicy,
@@ -405,6 +403,13 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     maxWalBytes: Math.min(policy.maxWalBytes, caps.soft),
     compactionMemoryBytes: options.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
   });
+  // The host cannot flush without the module, so a page that cannot load it does not open.
+  try {
+    await engine;
+  } catch (err) {
+    await db.close();
+    throw err;
+  }
   span(trace, "open", performance.now() - openAt);
   return db;
 }

@@ -58,7 +58,7 @@ export async function sstRead(data: Uint8Array): Promise<void> {
   await checkRunRead(input.buf, { keys: [...keys, ...FIXED_KEYS], range, pattern: PATTERN });
 }
 
-/** The SharedWorker's full decode of a run, TypeScript fallback. */
+/** The SharedWorker's full decode of a run, in TypeScript. */
 export async function sstDecode(data: Uint8Array): Promise<void> {
   const input = sstInput(data);
   if (input) await checkDecodeSst(input.buf, false);
