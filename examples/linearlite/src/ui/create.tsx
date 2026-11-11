@@ -5,7 +5,6 @@ import type { PriorityCode, StatusCode } from "../domain/model.ts";
 import { useAutosize } from "./autosize.ts";
 import { PriorityPicker, StatusPicker } from "./pickers.tsx";
 
-/** The create dialog. The defaults follow the filter so the new issue shows up in the view it was made from. */
 export function CreateModal({ filter, onClose }: { filter: IssueFilter; onClose(): void }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");

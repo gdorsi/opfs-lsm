@@ -3,11 +3,6 @@ import { generate } from "../../scripts/generate.ts";
 import { commentKey, PRIORITIES, STATUSES } from "../domain/model.ts";
 import { CODECS, resetStore, statements, writeHead } from "./db.ts";
 
-/**
- * Replace the store's contents with `generate(count)` in one transaction and start a new epoch. Versions are
- * stamped newest `modified` first, an issue then its body then its comments, so a first sync paints the default
- * view's rows from its first page and a sorted window only ever appends. Every row has a distinct version.
- */
 export function seedDb(db: DatabaseSync, count: number, seed = 1): { rows: number; head: number } {
   const data = generate(count, seed);
   const commentsOf = Map.groupBy(data.comments, (c) => c.issue_id);

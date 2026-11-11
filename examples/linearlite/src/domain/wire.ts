@@ -10,7 +10,6 @@ import {
   type Stream,
 } from "./model.ts";
 
-/** A request the server refuses. `status` is the HTTP status the route answers with. */
 export class WireError extends Error {
   readonly status: number;
   constructor(message: string, status = 400) {
@@ -23,7 +22,6 @@ export class WireError extends Error {
 export type OpFields = {
   issues: IssuePatch;
   bodies: BodyPatch;
-  /** `issue_id` is read only when the comment is created. */
   comments: CommentPatch & { issue_id?: string };
 };
 export type PushOp = { [S in Stream]: { stream: S; id: string; fields: OpFields[S]; clocks: Clocks; create?: true } }[Stream];
@@ -36,7 +34,6 @@ export interface PullRequest {
 }
 export interface PullResponse<S extends Stream = Stream> {
   rows: ServerRow<S>[];
-  /** The cursor to ask with next: the last row's version, or `head` once `more` is false. */
   next: number;
   head: number;
   more: boolean;
@@ -176,7 +173,6 @@ export function parseRowRequest(params: URLSearchParams): { stream: Stream; id: 
   return { stream: parseStream(params.get("stream")), id: id(params.get("id"), "id") };
 }
 
-/** The pushing user's name, from the `x-linearlite-user` header. There is no login; absent means "anonymous". */
 export function parseUsername(header: string | null): string {
   if (header === null) return "anonymous";
   return /^[A-Za-z0-9._-]{1,32}$/.test(header) ? header : fail("x-linearlite-user must be 1-32 characters of [A-Za-z0-9._-]");

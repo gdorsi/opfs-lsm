@@ -1,6 +1,3 @@
-// usage: agent-browser --session S eval "$(cat bench/ui-latency.js)"   (page open on `/`, synced, tab visible)
-// Interaction to painted rows, in the page: each timer starts at the dispatched event and stops after the frame that
-// shows the expected rows (rAF, then a message task, which runs after that frame's paint). Prints p50 and range, ms.
 (async () => {
   const RUNS = 10;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -58,8 +55,6 @@
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   };
-  // Each pair is a text and the same text plus one character. The expected row count comes from the store directly, and
-  // a pair whose two texts match the same rows is skipped, so the timer only stops on the new query's rows.
   const matching = (text) => __linearlite.store.issues.toArray.filter((i) => !i.deleted && i.title.toLowerCase().includes(text)).length;
   const pairs = [["of", "off"], ["ta", "tab"], ["ma", "mag"], ["cu", "cur"], ["ni", "nis"], ["ex", "exc"], ["do", "dol"], ["in", "ind"], ["qu", "que"], ["la", "lab"], ["re", "ren"], ["se", "sed"], ["co", "com"], ["su", "sun"]]
     .filter(([before, term]) => matching(before) !== matching(term))

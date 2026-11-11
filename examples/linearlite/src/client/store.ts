@@ -11,11 +11,6 @@ import {
 } from "@tanstack/db";
 import type { Body, Comment, Issue, SyncState } from "../domain/model.ts";
 
-/**
- * Marks a body or comment with an unsent edit. Those collections load on demand, so the leader cannot scan them for
- * `dirty`; it reads this eager collection instead. A command writes the mark before the row, and every write gets a
- * fresh `nonce`, so the leader removes a mark only if nobody wrote it again while the push was in flight.
- */
 export interface OutboxMark {
   readonly key: string;
   readonly stream: "bodies" | "comments";
@@ -44,7 +39,6 @@ function collections(db: Db) {
 
 export type Store = ReturnType<typeof collections> & {
   readonly db: Db;
-  /** Sent as `x-linearlite-user`. There is no login: `?user=` names the user, for two-user tests. */
   readonly user: string;
 };
 
@@ -66,7 +60,6 @@ function planComments(options: LoadSubsetOptions): { prefix: string } {
 let opening: Promise<Store> | undefined;
 let opened: Store | undefined;
 
-/** The tab's one store. `?db=` names the kv database and `?user=` the user, so tests can run isolated profiles. */
 export function openStore(): Promise<Store> {
   return (opening ??= (async () => {
     const params = new URLSearchParams(location.search);
@@ -78,7 +71,6 @@ export function openStore(): Promise<Store> {
   })());
 }
 
-/** The store once `openStore` has resolved, for code that runs after the route loader awaited it. */
 export function openedStore(): Store {
   if (!opened) throw new Error("openStore() has not resolved yet");
   return opened;

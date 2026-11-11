@@ -88,7 +88,6 @@ function VirtualList({ filterKey: key, rows, offset, total, setRange }: ListProp
   const first = items[0]?.index ?? 0;
   const last = items.at(-1)?.index ?? 0;
 
-  // The scroller is already as tall as `total` here, so a restored offset is reachable.
   useLayoutEffect(() => {
     if (scroller.current) scroller.current.scrollTop = scrolled.get(key) ?? 0;
   }, [key]);

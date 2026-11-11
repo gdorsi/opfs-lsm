@@ -15,7 +15,6 @@ function summarize(labels: readonly string[], picked: readonly number[], none: s
   return picked.length <= 2 ? picked.map((c) => labels[c]).join(", ") : `${picked.length} selected`;
 }
 
-/** Title, live count, filter chips, search and sort. Everything it edits lives in the URL. */
 export function Toolbar({ title, count, filter }: { title: string; count: number; filter: IssueFilter }) {
   const setFilter = useSetFilter();
   const active = filter.status.length > 0 || filter.priority.length > 0 || filter.q !== "";

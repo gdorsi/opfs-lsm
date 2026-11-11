@@ -17,7 +17,6 @@ type IssueWindow = { readonly rows: readonly Issue[]; readonly offset: number; s
 function useWindow(key: string, build: () => ReturnType<typeof windowQuery>, size: number): IssueWindow {
   const query = useMemo(build, [key]);
   const { data } = useLiveQuery(query);
-  // The offset belongs to the query that set it, so a new query reads 0 in its first render instead of one frame late.
   const [placed, setOffset] = useState({ query, offset: 0 });
   const offset = placed.query === query ? placed.offset : 0;
   const setRange = useCallback(
@@ -33,10 +32,6 @@ function useWindow(key: string, build: () => ReturnType<typeof windowQuery>, siz
   return { rows: data, offset, setRange };
 }
 
-/**
- * The list: `rows` are the issues at `[offset, offset + rows.length)` of the filtered, sorted result and `total` is
- * its length. Call `setRange` with the virtualizer's visible range; the window keeps at least 100 rows.
- */
 export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly total: number } {
   const { issues } = openedStore();
   const view = useWindow(JSON.stringify(filter), () => windowQuery(issues, filter, LIST_WINDOW), LIST_WINDOW);
@@ -48,13 +43,11 @@ export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly to
   return { ...view, total: data?.n ?? 0 };
 }
 
-/** One board column in `kanbanorder`, from the top. Grow it with `setRange(0, n)` as the column scrolls. */
 export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWindow {
   const { issues } = openedStore();
   return useWindow(JSON.stringify([status, filter]), () => windowQuery(issues, filter, COLUMN_WINDOW, status), COLUMN_WINDOW);
 }
 
-/** Issues per status under the filter, indexed by status code. */
 export function useStatusCounts(filter: IssueFilter): readonly number[] {
   const { issues } = openedStore();
   const { data } = useLiveQuery((q) =>
@@ -69,7 +62,6 @@ export function useStatusCounts(filter: IssueFilter): readonly number[] {
   }, [data]);
 }
 
-/** The issue summary, from memory. Undefined while the store loads and for an unknown or deleted id. */
 export function useIssue(id: string): Issue | undefined {
   const { issues } = openedStore();
   const { data } = useLiveQuery((q) =>
@@ -83,7 +75,6 @@ export function useIssue(id: string): Issue | undefined {
 
 export type IssueDetail =
   | { readonly kind: "loading" }
-  /** Neither this replica nor the server has a body for the issue. */
   | { readonly kind: "missing"; readonly comments: readonly Comment[] }
   | { readonly kind: "ready"; readonly body: Body; readonly comments: readonly Comment[] };
 
@@ -147,14 +138,11 @@ export function useIssueDetail(id: string): IssueDetail {
 }
 
 export type SyncStatus =
-  /** No leader has written sync state yet: a fresh profile before its first response. */
   | { readonly kind: "starting"; readonly unsynced: number }
   | { readonly kind: "offline"; readonly unsynced: number }
-  /** `cursor` of `head` is how far the stream has pulled, in server versions. */
   | { readonly kind: "syncing"; readonly stream: Stream; readonly cursor: number; readonly head: number; readonly unsynced: number }
   | { readonly kind: "idle"; readonly unsynced: number };
 
-/** For the status bar, in every tab: the leader writes the state to kv, and each tab reads it. */
 export function useSyncStatus(): SyncStatus {
   const { sync, dirtyIssues, outbox } = openedStore();
   const { data: state } = useLiveQuery((q) =>

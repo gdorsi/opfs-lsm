@@ -6,11 +6,6 @@ import { MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type Push
 import { backoffMs, pushOp, rowKey } from "./ops.ts";
 import { openStore, type OutboxMark, type Store } from "./store.ts";
 
-/**
- * Measured at 100k issues (5000 / 2000 / 1000 rows): 5000 catches `issues` up ~1 s sooner but blocks the main
- * thread up to ~400 ms per page late in the sync, 2000 up to ~170 ms. TanStack's ordered window query inserts
- * every row into a sorted array, so a page costs more as the collection grows.
- */
 const PULL_LIMIT = 2000;
 const BACKGROUND = ["bodies", "comments"] as const;
 
@@ -53,7 +48,6 @@ type Transact<T, K extends string = string> = (
   merge: (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<T | null | undefined>,
 ) => Promise<void>;
 
-/** The stream's collections differ only in row type, which TypeScript cannot correlate with `S`. */
 const transactOf = <S extends Stream>(store: Store, stream: S) => store[stream].utils.transact as unknown as Transact<Rows[S]>;
 
 async function read<T, K extends string>(transact: Transact<T, K>, keys: readonly K[]): Promise<ReadonlyArray<T | undefined>> {
@@ -65,7 +59,6 @@ async function read<T, K extends string>(transact: Transact<T, K>, keys: readonl
   return rows;
 }
 
-/** Folds server rows into kv with `mergeIncoming`; with `acked`, each row is the ack of the push that sent those clocks. */
 async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: readonly ServerRow<S>[], acked?: readonly Clocks[]) {
   const incoming = rows as unknown as readonly Omit<Rows[S], "dirty">[];
   await transactOf(store, stream)(
@@ -76,7 +69,6 @@ async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: 
 
 type Loop =
   | { readonly kind: "idle" }
-  /** `wake`: something asked for another round while this one ran. */
   | { readonly kind: "running"; wake: boolean }
   | { readonly kind: "waiting"; readonly timer: ReturnType<typeof setTimeout> };
 
@@ -87,7 +79,6 @@ type Outgoing = { readonly op: PushOp; readonly key: string };
 class Leader {
   private loop: Loop = { kind: "idle" };
   private state: SyncState = EMPTY;
-  /** The newest server head heard of, from a response or a hint. Undefined: not heard yet, so every stream is stale. */
   private head: number | undefined;
   private readonly marked = new Set<Stream>();
   private readonly pullLimit = Number(new URLSearchParams(location.search).get("pull")) || PULL_LIMIT;
@@ -105,10 +96,8 @@ class Leader {
     addEventListener("online", () => this.kick("online"));
     new EventSource("/api/events").onmessage = (e: MessageEvent<string>) => {
       const { head } = JSON.parse(e.data) as { head: number };
-      // A hint can leave every stream current, so no request would mark the server reachable again.
       if (!this.state.online) void this.save({ online: true }).catch(() => undefined);
       this.head = Math.max(this.head ?? 0, head);
-      // Also after a reconnect with nothing new: the server is back, so a waiting loop should retry now.
       this.kick("hint");
     };
     this.kick("start");
@@ -124,8 +113,6 @@ class Leader {
         loop.wake = true;
         return;
       case "waiting":
-        // A local edit cannot reach a server that just failed; a hint or `online` says it may be back, so retry now
-        // and restart the backoff from 1 s.
         if (reason === "dirty") return;
         clearTimeout(loop.timer);
         void this.run(0);
@@ -156,7 +143,6 @@ class Leader {
     }
   }
 
-  /** Push, then catch `issues` up, then backfill bodies and comments, stopping between pages to serve new work. */
   private async cycle(loop: { wake: boolean }): Promise<void> {
     await this.push();
     await this.catchUpIssues(loop);
@@ -277,13 +263,11 @@ class Leader {
     await this.store.sync.utils.transact(["sync"], () => [state]);
   }
 
-  /** A reseeded server shares no versions with this replica: drop every row and cursor and pull from scratch. */
   private async wipe(epoch: string): Promise<void> {
     const { db, issues, outbox } = this.store;
     await issues.preload();
     await clear(issues.utils.transact, [...issues.keys()]);
     await clear(outbox.utils.transact, [...outbox.keys()]);
-    // Bodies and comments load on demand, so a throwaway eager view of each lists their keys.
     for (const name of BACKGROUND) {
       const all = createCollection(
         kvCollectionOptions({ db, name, id: `linearlite-wipe-${name}`, getKey: (r: { key?: string; id: string }) => r.key ?? r.id }),
@@ -298,7 +282,6 @@ class Leader {
   }
 }
 
-/** kv refuses a batch of more than 10,000 writes. */
 const CLEAR_CHUNK = 5000;
 
 async function clear<T, K extends string>(transact: Transact<T, K>, keys: readonly K[]): Promise<void> {
@@ -307,11 +290,6 @@ async function clear<T, K extends string>(transact: Transact<T, K>, keys: readon
 
 const started = new WeakSet<Store>();
 
-/**
- * Every tab asks for the sync lock and holds it for its life. The holder runs the loop; when it closes, the next
- * tab in line takes over from the cursors in kv. Other tabs only write local edits, which reach the leader through
- * kv's change feed.
- */
 export function startSync(store: Store): void {
   if (started.has(store)) return;
   started.add(store);
@@ -322,7 +300,6 @@ export function startSync(store: Store): void {
   });
 }
 
-/** Loads one issue's body and comments from the server, for a detail view opened before backfill reached them. */
 export async function fetchDetail(id: string): Promise<void> {
   const store = await openStore();
   const res = await request<DetailResponse>(store.user, `/api/detail?id=${encodeURIComponent(id)}`);

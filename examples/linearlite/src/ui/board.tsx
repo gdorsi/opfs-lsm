@@ -41,7 +41,6 @@ function Column({ status, count, filter, dragging, setDragging }: ColumnProps) {
   const navigate = useNavigate();
   const { rows, setRange } = useBoardColumn(status, filter);
   const body = useRef<HTMLDivElement>(null);
-  // The drop position as "before the n-th card that is not the dragged one"; null when the drag is elsewhere.
   const [at, setAt] = useState<number | null>(null);
 
   const others = rows.filter((r) => r.id !== dragging);

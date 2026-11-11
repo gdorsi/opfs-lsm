@@ -3,13 +3,9 @@ import type { PriorityCode, StatusCode } from "../domain/model.ts";
 export const SORT_FIELDS = ["modified", "created", "priority", "status", "title"] as const;
 export type SortField = (typeof SORT_FIELDS)[number];
 
-/** The list and board view, as the URL holds it: `?status=1,2&priority=0&q=sync&sort=modified&dir=desc`. */
 export interface IssueFilter {
-  /** Empty: every status. */
   readonly status: readonly StatusCode[];
-  /** Empty: every priority. */
   readonly priority: readonly PriorityCode[];
-  /** Title substring, case-insensitive. Empty: no title filter. */
   readonly q: string;
   readonly sort: SortField;
   readonly dir: "asc" | "desc";
@@ -28,7 +24,6 @@ function codes(raw: unknown): (StatusCode & PriorityCode)[] {
   return [...valid].sort();
 }
 
-/** `validateSearch` for the list and board. Anything unrecognised falls back to the default instead of failing. */
 export function parseIssueFilter(search: Record<string, unknown>): IssueFilter {
   const sort = SORT_FIELDS.find((f) => f === search.sort) ?? "modified";
   const q = typeof search.q === "string" ? search.q.slice(0, MAX_QUERY) : typeof search.q === "number" ? String(search.q) : "";

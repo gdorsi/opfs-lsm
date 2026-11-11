@@ -8,9 +8,7 @@ export type StatusCode = 0 | 1 | 2 | 3 | 4;
 export type PriorityCode = 0 | 1 | 2 | 3 | 4;
 export type Stream = (typeof STREAMS)[number];
 
-/** Field name -> local edit clock of an edit the server has not acknowledged. Absent = clean. */
 export type Clocks = Readonly<Record<string, number>>;
-/** `version` is the server version of the last server state merged in; 0 = never reached the server. */
 export interface Synced {
   readonly version: number;
   readonly dirty?: Clocks;
@@ -32,7 +30,6 @@ export interface Body extends Synced {
   description: string;
 }
 export interface Comment extends Synced {
-  /** `${issue_id}/${id}`: "comments of X" is one kv prefix scan. */
   readonly key: string;
   readonly id: string;
   readonly issue_id: string;
@@ -42,7 +39,6 @@ export interface Comment extends Synced {
   deleted: boolean;
 }
 
-/** One eager row per browser (`id: "sync"`), written by the leader, read by every tab's status bar. */
 export interface SyncState {
   readonly id: "sync";
   epoch: string | null;
@@ -57,12 +53,10 @@ export interface Rows {
   bodies: Body;
   comments: Comment;
 }
-/** A row as the server sends it: the same fields, no local `dirty`. */
 export type ServerRow<S extends Stream = Stream> = S extends Stream ? Omit<Rows[S], "dirty"> : never;
 
 export const commentKey = (issueId: string, id: string) => `${issueId}/${id}`;
 
-/** Fields a client may change, per stream. The server owns the rest (`username`, `created`, `modified`, `version`). */
 export const MUTABLE_FIELDS = {
   issues: ["title", "status", "priority", "kanbanorder", "deleted"],
   bodies: ["description"],
@@ -72,5 +66,4 @@ export const MUTABLE_FIELDS = {
 export type IssuePatch = Partial<Pick<Issue, "title" | "status" | "priority" | "kanbanorder" | "deleted">>;
 export type BodyPatch = Partial<Pick<Body, "description">>;
 export type CommentPatch = Partial<Pick<Comment, "body" | "deleted">>;
-/** The patch type for a row type. */
 export type Patch<T extends Synced> = T extends Issue ? IssuePatch : T extends Body ? BodyPatch : T extends Comment ? CommentPatch : never;

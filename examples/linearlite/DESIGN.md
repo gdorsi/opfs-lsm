@@ -119,6 +119,8 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
   so the first page is the default view's top rows and TanStack's sorted window appends instead of inserting at
   the front: `issues` caught up in 3.8 s instead of 6.9 s at 100k (`bench/first-sync-order.txt`). A real server's
   history arrives in write order, oldest first; it would need a bootstrap endpoint that pages by `modified desc`.
+- **Page size.** 2,000 rows per pull. 5,000 catches up about 1 s sooner at 100k but blocks the main thread up to
+  ~400 ms per page late in the sync; 2,000 keeps each page under ~170 ms (`bench/client-100k.txt`).
 - **Conflicts.** Per field, the last push to reach the server wins. A local unsent edit beats any incoming value
   until it is acked.
 - **Server push.** One SQLite transaction per request: bump `head`, apply each op's fields, stamp `version`,

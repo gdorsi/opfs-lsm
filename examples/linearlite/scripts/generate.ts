@@ -21,7 +21,6 @@ const WORDS =
   );
 const NAMES = ["ada", "grace", "linus", "barbara", "ken", "margaret", "dennis", "radia", "alan", "frances", "edsger", "hedy"];
 
-/** mulberry32: a seeded generator, so the same seed always yields the same dataset. */
 function rng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -33,11 +32,6 @@ function rng(seed: number): () => number {
   };
 }
 
-/**
- * LinearLite's seed shape (examples/linearlite/db/generate_data.js in electric-sql/electric):
- * 3–8 word titles, 2–6 sentence descriptions, 0–1 comment per issue, created in the past year,
- * evenly spaced kanban keys shuffled across issues.
- */
 export function generate(count: number, seed = 1): { issues: SeedIssue[]; comments: SeedComment[] } {
   const r = rng(seed);
   const int = (lo: number, hi: number) => lo + Math.floor(r() * (hi - lo + 1));

@@ -8,7 +8,6 @@ import { Shell } from "../ui/shell.tsx";
 
 const DEFAULTS = { status: [], priority: [], q: "", sort: "modified", dir: "desc" } as const;
 
-/** Every screen: opens the local database, starts sync and carries the filter and the `?new=1` dialog in the URL. */
 export const Route = createFileRoute("/_app")({
   ssr: false,
   validateSearch: (search: Record<string, unknown>) => ({

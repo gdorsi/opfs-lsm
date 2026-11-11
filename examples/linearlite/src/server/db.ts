@@ -25,7 +25,6 @@ CREATE INDEX IF NOT EXISTS comment_issue ON comment (issue_id);
 
 type Dbrow = Record<string, SQLOutputValue>;
 
-/** How one stream's row maps to its table. Column 0 is `id`, the last is `version`. */
 interface Codec<R> {
   readonly table: string;
   readonly columns: readonly string[];
@@ -147,7 +146,6 @@ export function readEpoch(db: DatabaseSync): string {
   return (statements(db).getMeta.get("epoch") as { v: string }).v;
 }
 
-/** Empty every table and start a new epoch, so clients that held the old data notice and start over. Run it inside a transaction. */
 export function resetStore(db: DatabaseSync): string {
   const epoch = randomUUID();
   for (const stream of STREAMS) db.exec(`DELETE FROM ${CODECS[stream].table}`);
@@ -162,7 +160,6 @@ export function defaultDbPath(): string {
 }
 
 const SHARED = Symbol.for("linearlite.serverDb");
-/** The server's one connection. Kept on globalThis so a dev-server module reload does not open a second one. */
 export function serverDb(): DatabaseSync {
   const g = globalThis as { [SHARED]?: DatabaseSync };
   return (g[SHARED] ??= openServerDb(defaultDbPath()));

@@ -7,16 +7,11 @@ type Listener = (head: number) => void;
 const LISTENERS = Symbol.for("linearlite.headListeners");
 const listeners = (): Set<Listener> => ((globalThis as { [LISTENERS]?: Set<Listener> })[LISTENERS] ??= new Set());
 
-/** Called with the new head after every push that changed something. Returns the unsubscribe. */
 export function onHead(listener: Listener): () => void {
   listeners().add(listener);
   return () => void listeners().delete(listener);
 }
 
-/**
- * Rows changed after `after`, oldest version first. A push stamps all its rows with one version, so a page never
- * ends inside a version: the last version's rows are all included, which can make a page longer than `limit`.
- */
 export function pull<S extends Stream>(db: DatabaseSync, stream: S, after: number, limit: number): PullResponse<S> {
   const st = statements(db).streams[stream];
   let raw = st.page.all(after, limit);
@@ -59,13 +54,8 @@ interface Ctx {
   now: number;
 }
 
-/** Issues first, so a body or comment created in the same request finds its issue. */
 const ORDER: Record<Stream, number> = { issues: 0, bodies: 1, comments: 2 };
 
-/**
- * Apply `ops` in one transaction. Ops are field assignments: one that changes nothing writes nothing, so a retried
- * push leaves the version and head alone. Everything that does change is stamped with one new head.
- */
 export function push(db: DatabaseSync, ops: readonly PushOp[], username: string): PushResponse {
   const ordered = [...ops].sort((a, b) => ORDER[a.stream] - ORDER[b.stream]);
   const results: PushResult[] = [];

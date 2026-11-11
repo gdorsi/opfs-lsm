@@ -19,12 +19,10 @@ interface MenuButtonProps {
   readonly className: string;
   readonly title?: string;
   readonly entries: readonly MenuEntry[];
-  /** Stay open after a pick, for multi-select menus. */
   readonly keepOpen?: boolean;
   readonly children: ReactNode;
 }
 
-/** A button that opens a menu in a portal, so no scroller or overflow clips it. */
 export function MenuButton({ className, title, entries, keepOpen, children }: MenuButtonProps) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const close = () => setAnchor(null);

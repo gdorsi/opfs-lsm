@@ -14,7 +14,6 @@ export function DetailScreen({ id }: { id: string }) {
   const issue = useIssue(id);
   const goBack = useGoBack();
   const [gone, setGone] = useState(false);
-  // The in-memory collection answers a lookup by id at once, before the live query has delivered its first result.
   const row = issue ?? openedStore().issues.get(id);
   if (gone) return null;
   if (!row || row.deleted) return <NotFound id={id} onBack={goBack} />;

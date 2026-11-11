@@ -7,7 +7,6 @@ const CODES = [0, 1, 2, 3, 4] as const;
 interface PickerProps<T> {
   readonly value: T;
   onPick(next: T): void;
-  /** `icon` is the bare icon button of a row; `field` adds the label. */
   readonly variant: "icon" | "field" | "pill";
 }
 

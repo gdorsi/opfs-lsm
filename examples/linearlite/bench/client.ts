@@ -1,6 +1,3 @@
-// usage: node bench/client.ts <origin> <scenario...>
-// Drives headless Chrome over CDP with agent-browser against a seeded `vite dev`. Scenarios: page-size, first-sync,
-// visible, warm, tabs, users, offline. Each prints JSON lines; times are ms.
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +9,6 @@ let nextPort = 9400;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** `target` is a session, or `session@tN` to run in that tab of the session. */
 function ab(target: string, ...args: string[]): string {
   const [session, tab] = target.split("@") as [string, string | undefined];
   const run = (a: string[]) => execFileSync("agent-browser", ["--session", session, ...a], { encoding: "utf8", maxBuffer: 1 << 26 }).trim();
@@ -93,7 +89,6 @@ async function firstSync(pull: number, keep = false, user = "ann"): Promise<{ br
   return { browser: b, marks: m, heapMB };
 }
 
-/** Status edits through the real command, timed to the live query's change callback and to the DOM cell. */
 const VISIBLE = `(async () => {
   const { store, commands, createLiveQueryCollection } = globalThis.__linearlite;
   const lq = createLiveQueryCollection((q) => q.from({ i: store.issues }).orderBy(({ i }) => i.modified, "desc").limit(100));
@@ -124,7 +119,6 @@ const VISIBLE = `(async () => {
 
 const now = "performance.timeOrigin + performance.now()";
 
-/** Installs a waiter for `id` reaching `status` in this tab's issues collection; read it back with `seenAt`. */
 const watch = (id: string, status: number) => `(() => {
   const { store } = globalThis.__linearlite;
   globalThis.__seen = new Promise((resolve) => {
@@ -139,7 +133,6 @@ const edit = (id: string, status: number) => `(async () => { const t = ${now}; a
 const pickIssue = (offset: number) =>
   `(() => { const r = globalThis.__linearlite.store.issues.toArray.filter((i) => !i.dirty)[${offset}]; return JSON.stringify({ id: r.id, status: r.status }); })()`;
 
-/** Edit in `from`, time until `to` shows it, `runs` times. */
 function crossEdits(from: string, to: string, runs: number, wait: (to: string) => number): number[] {
   const times: number[] = [];
   for (let i = 0; i < runs; i++) {

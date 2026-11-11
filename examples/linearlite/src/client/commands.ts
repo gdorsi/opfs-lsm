@@ -13,7 +13,6 @@ import {
 import { openStore, outboxKey, type OutboxMark, type Store } from "./store.ts";
 
 let last = 0;
-/** Edit clocks only need to grow within a tab: an ack clears a field only when its clock matches the sent one. */
 function tick(): number {
   last = Math.max(Date.now(), last + 1);
   return last;
@@ -31,7 +30,6 @@ async function editIssue(id: string, patch: IssuePatch): Promise<void> {
   });
 }
 
-/** Written before the row, so a crash between the two leaves a mark on a clean row, which the leader drops. */
 function mark(store: Store, stream: OutboxMark["stream"], rowKey: string): Promise<void> {
   const key = outboxKey(stream, rowKey);
   return store.outbox.utils.transact([key], () => [{ key, stream, rowKey, nonce: crypto.randomUUID() }]);
@@ -42,7 +40,6 @@ export const setPriority = (id: string, priority: PriorityCode) => editIssue(id,
 export const setTitle = (id: string, title: string) => editIssue(id, { title });
 export const deleteIssue = (id: string) => editIssue(id, { deleted: true });
 
-/** Drop onto a board column between two neighbours' `kanbanorder` (null at either end). */
 export const moveIssue = (id: string, status: StatusCode, before: string | null, after: string | null) =>
   editIssue(id, { status, kanbanorder: kanbanBetween(before, after) });
 
@@ -57,7 +54,6 @@ export async function setDescription(id: string, description: string): Promise<v
   });
 }
 
-/** Creates the issue at the top of its board column, and its body. Returns the new id. */
 export async function createIssue(input: { title: string; description: string; status: StatusCode; priority: PriorityCode }): Promise<string> {
   const store = await openStore();
   const id = crypto.randomUUID();

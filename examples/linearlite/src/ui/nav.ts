@@ -2,11 +2,9 @@ import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { IssueFilter } from "../client/filter.ts";
 
-/** The list and board filter, in the URL. Stable between renders while its content is the same. */
 export function useIssueFilter(): IssueFilter {
   const { status, priority, q, sort, dir } = useSearch({ from: "/_app" });
   const key = JSON.stringify([status, priority, q, sort, dir]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => ({ status, priority, q, sort, dir }), [key]);
 }
 
@@ -15,7 +13,6 @@ const patchSearch = (patch: object) => ((prev: object) => ({ ...prev, ...patch }
 
 export const keepSearch = ((prev: object) => prev) as never;
 
-/** Filter changes push a history entry, so Back undoes them; `replace` is for typing. */
 export function useSetFilter() {
   const navigate = useNavigate();
   return useCallback(
@@ -24,7 +21,6 @@ export function useSetFilter() {
   );
 }
 
-/** True once the app has pushed the create modal itself, so closing it can go Back instead of rewriting the URL. */
 let modalPushed = false;
 
 export function useCreateModal() {
@@ -42,7 +38,6 @@ export function useCreateModal() {
   return { open, close };
 }
 
-/** Back to wherever the user came from in this app, else to the list with the current filter. */
 export function useGoBack() {
   const router = useRouter();
   const navigate = useNavigate();
@@ -57,7 +52,6 @@ export function isTyping(target: EventTarget | null): boolean {
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
 }
 
-/** A window key handler that always calls the latest closure. */
 export function useKeys(handler: (e: KeyboardEvent) => void) {
   const latest = useRef(handler);
   latest.current = handler;
