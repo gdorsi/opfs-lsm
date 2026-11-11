@@ -156,7 +156,7 @@ export async function pumpMerge(
  * Swap the step's inputs for its output in the recorded generation and
  * record the result in IDB. The inputs and the old manifests stay on
  * disk: tabs may still read them, so the host retires them (see
- * `EngineHost.reclaim`). Run under the ingest lock.
+ * `HostedDb.reclaim`). Run under the ingest lock.
  */
 export async function installStep(
   fs: AsyncFs,

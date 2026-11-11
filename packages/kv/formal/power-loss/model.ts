@@ -224,7 +224,7 @@ export class Sys {
     this.write({ store: "opfs", label: `publish m/${gen}`, manifest: { gen, through: last, runs: [path, ...meta.runs] } });
     const before = this.idb.ingested;
     this.write({ store: "idb", label: `advanceIngested ${last} gen ${gen}`, deleteTo: before, ingested: last, generation: Math.max(this.idb.generation ?? 0, gen) });
-    // `EngineHost.fold`, after `ingestChunk`.
+    // `HostedDb.fold`, after `ingestChunk`.
     if (!this.v.held) this.reclaimManifests(this.idb.generation ?? 0);
   }
 
@@ -246,7 +246,7 @@ export class Sys {
   }
 
   /**
-   * `EngineHost.reclaim`: remove the manifests older than the recorded one
+   * `HostedDb.reclaim`: remove the manifests older than the recorded one
    * and every run it does not list. Skipped while a tab holds the lock.
    */
   sweep(): void {

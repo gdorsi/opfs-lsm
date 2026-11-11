@@ -43,7 +43,7 @@ export type Chunk = IngestResult & {
  * `through` is already ingested, so tabs that ask for the same flush get one
  * L0, and when L0 is full, so compaction can catch up. Removes no file: the
  * host removes old manifests once no tab is loading a generation
- * (`EngineHost.fold`).
+ * (`HostedDb.fold`).
  *
  * Builds on the recorded generation, never on a newer manifest file: one
  * that IndexedDB has not recorded is left by a crash, and its seqs are

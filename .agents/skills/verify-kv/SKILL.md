@@ -23,7 +23,7 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | `store/merge.ts` `pointGet`, `db.ts` `readKey` / `get` | `formal:wal-over-sst` + ingest |
 | `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
 | `store/merge.ts` `latestSstEntry`, the merge sessions (`store/merge-ts.ts`, `crates/engine-core/src/merge.rs`), `host/compact.ts` | `formal:compact-preserve` |
-| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `EngineHost.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair | `formal:power-loss` |
+| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `HostedDb.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair | `formal:power-loss` |
 | Unknown / several areas | **`formal:kv`** (all) |
 
 ## Tool and why
@@ -68,7 +68,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | WalOverSst | `pointGet` |
 | ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
 | CompactPreserve | `latestSstEntry`, the pick of both merge sessions (`Session.run` in `merge-ts.ts`, `before` in `merge.rs`) |
-| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
+| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `HostedDb.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
 
 **Sync commit:** `0aad344c5784b9302cf83f0fba62d1f35b19e543` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 

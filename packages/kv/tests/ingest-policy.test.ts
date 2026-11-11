@@ -9,6 +9,7 @@ import {
   createLocalIngestClient,
   type AsyncFs,
   type IngestPolicy,
+  readStats,
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
@@ -113,6 +114,15 @@ describe("ingest policy", () => {
     expect((await a.get(utf("c")))?.byteLength).toBe(1);
     await a.close();
     await b.close();
+  });
+
+  it("a tab that asked for no flush loads the generation another tab's flush published", async () => {
+    const { a, b } = await twoTabs({ maxWalBytes: 1e12 });
+    await a.put(utf("k"), utf("v"));
+    const manifestReads = async () => (await readStats(b)).tab.fs.read.m?.calls ?? 0;
+    const before = await manifestReads();
+    await ingest(a);
+    await vi.waitFor(async () => expect(await manifestReads()).toBeGreaterThan(before), WAIT);
   });
 
   it("a reopened database uses the stored WAL size", async () => {
