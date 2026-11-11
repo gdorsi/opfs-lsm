@@ -27,7 +27,7 @@ import {
 import { compactLock, ingestLock, layersChannel, webLocks } from "../locks.js";
 import { coalesced, serial } from "../turns.js";
 
-export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
+type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;

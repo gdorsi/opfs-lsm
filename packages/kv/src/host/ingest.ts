@@ -19,7 +19,7 @@ export type IngestResult = {
 };
 
 /** What bounds one `ingestChunk`. */
-export type ChunkLimits = {
+type ChunkLimits = {
   /** Op bytes of WAL records folded into the run. At least one record is taken. */
   readonly maxBytes: number;
   /** The L0 run count at which no more runs are published. */
@@ -27,7 +27,7 @@ export type ChunkLimits = {
 };
 
 /** What `ingestChunk` did. */
-export type Chunk = IngestResult & {
+type Chunk = IngestResult & {
   /**
    * "empty" when no record through `through` was waiting, and "stopped" when
    * some were but L0 holds `l0Stop` runs. Neither published anything.

@@ -4,7 +4,7 @@ import { Miss } from "./cursor.js";
  * `runId * 2^24 + slot`. A run's pages are slots from 0; its metadata is
  * `META_SLOT`. 2^24 pages of 32 KB cover any u32-addressed run file.
  */
-export type CacheKey = number;
+type CacheKey = number;
 const SLOTS = 0x1000000;
 const META_SLOT = SLOTS - 1;
 
@@ -45,7 +45,7 @@ export const DEFAULT_BUDGET = 256 * 1024 * 1024;
 const PROBATION_SHARE = 0.1;
 const PIN_TTL_FILLS = 1024;
 
-export type CacheUsage = {
+type CacheUsage = {
   readonly budget: number;
   /** Bytes of every resident entry, metadata included. */
   readonly resident: number;

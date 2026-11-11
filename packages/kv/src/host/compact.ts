@@ -23,7 +23,7 @@ import type { HostBudget } from "./budget.js";
 import { inMergeSlot } from "./merge-slot.js";
 
 /** Merged runs written to OPFS and not yet in any generation. */
-export type CompactionOutput = {
+type CompactionOutput = {
   readonly inputs: readonly string[];
   readonly outputs: readonly RunMeta[];
   readonly droppedSeq: number;

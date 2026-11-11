@@ -517,7 +517,7 @@ export function engineUsingWasm(): boolean {
 }
 
 /** What this context's wasm engine holds, for `HostStats.memory`. Zero before it loads. */
-export type EngineMemory = {
+type EngineMemory = {
   /** The current instance's memory. Talc never gives memory back, so it only grows until a recycle. */
   wasmBytes: number;
   /** The most memory any instance reached. */

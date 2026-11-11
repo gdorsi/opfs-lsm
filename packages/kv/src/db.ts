@@ -288,7 +288,7 @@ export function prefixBound(prefix: Uint8Array): {
 }
 
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
-export type DbInternals = {
+type DbInternals = {
   readonly name: DbName;
   readonly wal: IdBWal;
   readonly fs: CountingFs;
