@@ -149,7 +149,7 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   List and board share it. Back and forward restore a view; a link reproduces it.
 - **List.** `@tanstack/react-virtual` over a windowed live query (`orderBy` + `limit`, moved with
   `utils.setWindow`, TanStack DB's live-query API, not the adapter's) and a `count` query with the same `where` for the scroll height. BTree indexes on `status`,
-  `priority`, `modified`, `created`, `kanbanorder`. Title search is `ilike` in memory.
+  `priority`, `modified`, `created`, `kanbanorder`. Title search is `ilike` in memory; a query holding `%` or `_` uses a filter function instead, since `ilike` has no escape.
 - **Board.** Five column queries ordered by `kanbanorder`, windows growing as a column scrolls, counts from one
   `groupBy(status)` query. A drop writes `status` and a fractional key between its neighbours in one `transact`.
 - **Detail.** The summary is in memory, so the title and fields paint with the route. Description and comments

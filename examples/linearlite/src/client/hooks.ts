@@ -1,36 +1,16 @@
-import { and, count, createLiveQueryCollection, eq, ilike, inArray, type Ref } from "@tanstack/db";
+import { and, count, eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Body, Comment, Issue, StatusCode, Stream } from "../domain/model.ts";
 import type { IssueFilter } from "./filter.ts";
-import { openedStore, type Store } from "./store.ts";
+import { filtered, windowQuery } from "./query.ts";
+import { openedStore } from "./store.ts";
 import { fetchDetail } from "./sync.ts";
 
 const LIST_WINDOW = 100;
 const COLUMN_WINDOW = 50;
 
-/** The filter as a `where`. Tombstones are always out. */
-function matches(i: Ref<Issue>, filter: IssueFilter, status?: StatusCode) {
-  const terms = [
-    eq(i.deleted, false),
-    ...(status !== undefined ? [eq(i.status, status)] : filter.status.length > 0 ? [inArray(i.status, [...filter.status])] : []),
-    ...(filter.priority.length > 0 ? [inArray(i.priority, [...filter.priority])] : []),
-    ...(filter.q !== "" ? [ilike(i.title, `%${filter.q}%`)] : []),
-  ];
-  const [first, second, ...rest] = terms;
-  return second === undefined ? first! : and(first!, second, ...rest);
-}
-
 type IssueWindow = { readonly rows: readonly Issue[]; readonly offset: number; setRange(start: number, end: number): void };
-
-const windowQuery = (issues: Store["issues"], filter: IssueFilter, size: number, status?: StatusCode) =>
-  createLiveQueryCollection((q) =>
-    q
-      .from({ i: issues })
-      .where(({ i }) => matches(i, filter, status))
-      .orderBy(({ i }) => (status === undefined ? i[filter.sort] : i.kanbanorder), status === undefined ? filter.dir : "asc")
-      .limit(size),
-  );
 
 /** An ordered live query that holds only `[offset, offset + limit)` and moves with `setWindow`. `key` names the query. */
 function useWindow(key: string, build: () => ReturnType<typeof windowQuery>, size: number): IssueWindow {
@@ -59,9 +39,7 @@ export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly to
   const { issues } = openedStore();
   const view = useWindow(JSON.stringify(filter), () => windowQuery(issues, filter, LIST_WINDOW), LIST_WINDOW);
   const { data } = useLiveQuery((q) =>
-    q
-      .from({ i: issues })
-      .where(({ i }) => matches(i, filter))
+    filtered(q, issues, filter)
       .select(({ i }) => ({ n: count(i.id) }))
       .findOne(),
   );
@@ -78,9 +56,7 @@ export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWi
 export function useStatusCounts(filter: IssueFilter): readonly number[] {
   const { issues } = openedStore();
   const { data } = useLiveQuery((q) =>
-    q
-      .from({ i: issues })
-      .where(({ i }) => matches(i, filter))
+    filtered(q, issues, filter)
       .groupBy(({ i }) => i.status)
       .select(({ i }) => ({ status: i.status, n: count(i.id) })),
   );
