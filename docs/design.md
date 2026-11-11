@@ -665,8 +665,9 @@ of OPFS, independently.
 | Fold the WAL into L0, encode SSTs | SharedWorker | TypeScript fold, wasm encode |
 | Compaction merge, CRC check | SharedWorker | wasm session, pumped by TypeScript |
 
-A tab reads in TypeScript so that a `get` never posts a message. The wasm module is required:
-`openDb` rejects with `StorageUnavailableError` when it does not load.
+A tab reads in TypeScript so that a `get` never posts a message. Every wasm path has a
+TypeScript fallback for when the module does not load. The fallback encoder writes raw blocks
+only.
 
 # Assumptions about the platform
 
