@@ -1,6 +1,6 @@
 # opfs-lsm
 
-A simple, fast and flexible k/v storage for the browsers.
+A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 7× faster than IndexedDB, reads up to 30× faster, and every tab of an origin shares one database with a live change feed.
 
 > [!WARNING]
 > opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next. Two things are missing before a stable release:
@@ -8,130 +8,98 @@ A simple, fast and flexible k/v storage for the browsers.
 > - Tests on mobile browsers.
 > - Final storage formats. The WAL and SST layouts still change while we tune performance.
 
-`@opfs-lsm/kv` stores byte keys and values. The promise from `put` or `batch` is the ack. When that promise resolves, the write is one byte row in the shared IndexedDB write-ahead log (WAL). Sorted SST files in the Origin Private File System (OPFS) hold sealed data after ingest. Every tab of an origin can open the same name. Each name has its own SharedWorker, `opfs-lsm:<name>`, which flushes the WAL into SST files once uningested key and value bytes reach 1 MiB.
+## Why kv instead of IndexedDB
 
-`@opfs-lsm/docstore` ([packages/docstore](packages/docstore)) stores JSON documents in collections on top of kv. A versioned schema declares each collection's indexes, and one `query` method reads through them.
+A sync engine needs three things from browser storage: fast writes, fast reads, and one consistent view across tabs. IndexedDB gives the third only with glue code, and is slow at the first two. `@opfs-lsm/kv` gives all three.
 
-`@opfs-lsm/yjs` ([packages/yjs](packages/yjs)) is a Yjs provider shaped like y-indexeddb, and `@opfs-lsm/automerge` ([packages/automerge](packages/automerge)) is an automerge-repo storage adapter. Both keep many documents in one kv db.
+- **Every tab shares one database.** Each tab opens the same name. `changes` delivers every write from every tab to every open handle, once each and in order. A handle that falls behind gets a `gap` event and reads again. Your engine needs no `BroadcastChannel` code and no leader election.
+- **Every write has a sequence number.** `put`, `delete` and `batch` resolve with the seq of their record, and `changes` and `view` report the same numbers. Use them as a cursor for an outbox or a sync checkpoint.
+- **Reads are consistent.** `view` reads a snapshot that later writes do not change. `update` reads keys and writes in one transaction, with no window for another tab to write in between.
+- **Point reads never touch IndexedDB.** They come from memory and from sorted files in the Origin Private File System (OPFS), with Bloom filters that answer a missing key without a disk read.
 
-`@opfs-lsm/tanstack-db` ([packages/tanstack-db](packages/tanstack-db)) keeps TanStack DB collections in kv, with other tabs' writes arriving live. Many collections share one kv db.
+### Benchmarks
 
-The storage layout, consistency rules, and ingest path are in [docs/design.md](docs/design.md). How to verify a change is in [docs/verification.md](docs/verification.md).
+Medians of 5 runs in headless Chrome 157 on an Apple M5 Max, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000. Numbers depend on the machine. To run them yourself, see [bench/README.md](bench/README.md).
 
-## `@opfs-lsm/kv`
+| Workload | IndexedDB | kv | |
+| --- | ---: | ---: | ---: |
+| Random writes, batches of 1,000 | 43.4k ops/s | 302k ops/s | 7.0× |
+| Random point reads | 14.5k ops/s | 429k ops/s | 30× |
+| Reads of missing keys | 13.8k ops/s | 1.75M ops/s | 127× |
+| YCSB B: 95% read, 5% update | 14.5k ops/s | 102k ops/s | 7.0× |
+| YCSB E: short range scans | 6.6k ops/s | 18.3k ops/s | 2.8× |
+| Full ordered scan | 585k ops/s | 604k ops/s | 1.0× |
+| Single put, awaited one at a time | 6.6k ops/s | 5.5k ops/s | 0.8× |
+| Cold open | 1.0 ms | 8.5 ms | 0.1× |
 
-### Open a database
+The framework adapters show the same shape. TanStack DB bulk inserts run at 136k rows/s against 21k on its IndexedDB adapter. Loading 500 Yjs notes cold runs at 11.2k notes/s against 3.6k on y-indexeddb.
 
-```ts
-import { openDb } from "@opfs-lsm/kv";
+### When IndexedDB is still the better fit
 
-const db = await openDb({ name: "notes" });
+- Your app opens a database and closes it after a handful of reads. Opening kv starts a SharedWorker and loads a wasm engine, which costs about 8 ms.
+- Your app writes one key at a time and awaits each write. Each kv write is also one IndexedDB transaction, so kv cannot beat IndexedDB there.
+- Your app must run where SharedWorker, OPFS or WebAssembly is missing. See [Browser support](#browser-support).
 
-const key = new TextEncoder().encode("hello");
-const value = new TextEncoder().encode("world");
-await db.put(key, value);
-const found = await db.get(key);
-```
+## Packages
 
-`openDb` opens OPFS and starts that SharedWorker. Where SharedWorker or OPFS is missing, as in Node or a dedicated WebWorker, it rejects with `StorageUnavailableError`. It never keeps the data in memory instead. Tests get an in-memory database from `openHarnessDb({ forceMemory: true })` in `@opfs-lsm/kv/testing`.
+| Package | What it is | Status |
+| --- | --- | --- |
+| [`@opfs-lsm/kv`](packages/kv) | The key-value store. Start here. | Beta |
+| [`@opfs-lsm/tanstack-db`](packages/tanstack-db) | Persistence for TanStack DB collections, with other tabs' writes arriving live. | Beta |
+| [`@opfs-lsm/yjs`](packages/yjs) | A Yjs provider shaped like y-indexeddb. | Beta |
+| [`@opfs-lsm/automerge`](packages/automerge) | A storage adapter for automerge-repo. | Beta |
+| [`@opfs-lsm/docstore`](packages/docstore) | A document store with declared indexes. | Experiment, not published |
 
-### `OpenOptions`
+Each adapter keeps many documents or collections in one kv database. `@opfs-lsm/docstore` exists to test the kv API from the point of view of a query layer. It can change heavily or go away.
 
-| Option | Role |
-| --- | --- |
-| `name` | Database name. Tabs that share this name share one WAL. |
-| `cacheBytes` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
-| `memtableBytes` | Bytes of rows this tab holds that are not yet flushed to OPFS, counted as key bytes, value bytes, and an estimate per row. Default 16 MiB. A smaller request is raised to 1 MiB. At 7/8 of it the tab asks the host to flush and keeps writing. At the limit a write waits until the host returns that flush, so a writing tab's memtable stays near the limit. A host that cannot flush does not hold writes for good. When tabs differ, the host flushes once the WAL passes the smallest ask: 1 MiB, or 7/8 of `memtableBytes` when that is lower. |
-| `compactionMemoryBytes` | Bytes the SharedWorker may spend on flushing and compacting this database: its wasm heap and the run data in flight. Default 32 MiB. A smaller request is raised to 8 MiB. A smaller figure gives smaller flush runs and a smaller read window, and under about 17.5 MiB fewer runs in one compaction step. The host's figures stop growing at 64 MiB. When tabs differ, the host uses the smallest, until the last tab closes the database. It counts memory that is alive, not garbage the browser has not collected yet. |
+The packages are not on npm yet. Until the first release, build them from source as [CONTRIBUTING.md](CONTRIBUTING.md) describes.
 
-Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB flush. `ingest(db)` from the same entry flushes the memtable now and waits for the compaction it starts.
-
-### `Db`
-
-Keys and values are `Uint8Array`.
-
-| Member | Role |
-| --- | --- |
-| `name` | The name passed to `openDb`. |
-| `get(key)` | Point read from the memtable and SST files. Does not touch IndexedDB. |
-| `put(key, value)` | Append one put. Resolves on WAL ack, with the record's seq. |
-| `delete(key)` | Append one delete. Resolves on WAL ack, with the record's seq. |
-| `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack, with the record's seq. |
-| `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
-| `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `reverse: true` yields the same keys from the largest down, and `limit` keeps the largest. `valueContains` keeps live puts whose current value holds every pattern. |
-| `rangeJoin(range, keyOf)` | Scan a range and join each entry to the value at `keyOf(entry)`, as an index entry joins its row. The scan and the reads see one state. |
-| `view(body)` | Read-only snapshot of the state when the view opens. `snap.seq` is the seq of the last record it includes, counted as write acks and `changes` count it. |
-| `changes(listener)` | Subscribe to every WAL record this handle applies, from any tab, with its ops, once each and in seq order. A `gap` event means the handle skipped records a flush folded, so read again. Returns unsubscribe. |
-| `sync()` | Catch up to every write acked before the call from any tab. |
-| `close()` | Close this tab's handle. |
+## Quickstart
 
 ```ts
+import { openDb, prefixBound } from "@opfs-lsm/kv";
+
+const db = await openDb({ name: "app" });
+const text = new TextEncoder();
+const read = new TextDecoder();
+
+await db.put(text.encode("todo:1"), text.encode("Buy milk"));
+
 await db.batch((tx) => {
-  tx.put(key, value);
-  tx.delete(oldKey);
+  tx.put(text.encode("todo:2"), text.encode("Walk the dog"));
+  tx.delete(text.encode("todo:1"));
 });
 
-await db.sync();
-```
+const value = await db.get(text.encode("todo:2"));
 
-### Errors
+for await (const { key, value } of db.range({ ...prefixBound(text.encode("todo:")), limit: 50 })) {
+  console.log(read.decode(key), read.decode(value));
+}
 
-Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A host error keeps its class when it crosses the SharedWorker port.
-
-| Class | `code` | Meaning | What to do |
-| --- | --- | --- | --- |
-| `StorageUnavailableError` | `unavailable` | The context has no SharedWorker or OPFS, the wasm engine did not load, or the browser's IndexedDB store failed to open. `cause` holds the browser's error when there is one. | For a failed IndexedDB open, retry `openDb`, or reload the page. Chrome can damage its own IndexedDB store when it crashes, and then deletes it or keeps failing the open. If it deletes it, the writes not yet flushed to OPFS are lost and the flushed data is kept. |
-| `StorageFullError` | `quota` | The browser refused a flush or compaction write because the origin is out of storage quota. | The host rejects the flush, and no `Db` method surfaces that. The acked writes stay in the WAL, and the host flushes again after another 1 MiB of writes or the next `openDb`. `ingest(db)` from `@opfs-lsm/kv/testing` flushes now and rejects with this error. |
-| `CorruptDatabaseError` | `corrupt` | A file of the database does not decode, or a file it needs is gone. | Do not retry. The engine changes nothing. |
-| `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
-| `ConstraintError` | `constraint` | A key, value or batch is not valid or is over a limit. | Fix the call. |
-| `ClosedError` | `closed` | The handle is closed. | Open a new one. |
-
-`@opfs-lsm/kv` also exports `prefixBound` and the error classes above. The harness that tests use (`EngineHost`, `MemoryFs`, `openHarnessDb`) is in `@opfs-lsm/kv/testing`. The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
-
-## `@opfs-lsm/docstore`
-
-```ts
-import { openDb } from "@opfs-lsm/kv";
-import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
-
-type User = { id: string; email: string; orgId: string; createdAt: number };
-
-const schema = defineSchema<{ users: User }>()({
-  version: 1,
-  collections: {
-    users: {
-      byEmail: { on: "email", unique: true },
-      byOrg: { on: ["orgId", "createdAt"] },
-    },
-  },
+const unsubscribe = db.changes((event) => {
+  if (event.kind === "append") console.log("a tab wrote record", event.seq, event.ops);
+  if (event.kind === "gap") console.log("records were folded, read again");
 });
-
-const kv = await openDb({ name: "app" });
-const users = (await openDocStore(kv, schema)).collection("users");
-
-await users.put({ id: "u1", email: "a@example.com", orgId: "acme", createdAt: Date.now() });
-
-const row = await users.get("u1");
-const byEmail = await users.query({ index: "byEmail", eq: ["a@example.com"] });
-const newest = await users.query({ index: "byOrg", eq: ["acme"], reverse: true, limit: 20 });
 ```
 
-`openDocStore(kv, schema)` uses the `kv` handle you opened. You keep closing it and calling `changes` on it. A collection has `get`, `getMany`, `put`, `putMany`, `modify`, `delete`, `deleteMany`, `clear`, `query`, `queryIds` and `count`. Each write is one kv transaction that also maintains the indexes. The index kinds (sorted, multi, text), schema versions, query rules, key order, errors and limits are in [packages/docstore/README.md](packages/docstore/README.md).
+The promise from `put`, `delete` or `batch` is the ack. When it resolves, the write is committed to the WAL in IndexedDB, and this tab reads it. Other tabs see it when their handle applies the record, and `sync()` waits for that. The full API, the options and the errors are in [packages/kv/README.md](packages/kv/README.md).
 
-## Clone and run
+## Browser support
 
-`engines.node` in `package.json` is `>=22`. `.nvmrc` pins 24. `packageManager` is `pnpm@10.33.2`.
+`@opfs-lsm/kv` needs SharedWorker, OPFS, IndexedDB and WebAssembly in the page. Where one is missing, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
 
-```
-git clone https://github.com/gdorsi/opfs-lsm.git
-cd opfs-lsm
-pnpm install
-pnpm test
-pnpm bench kv/
-pnpm todo:example
-pnpm automerge:example
-pnpm rich-text:example
-```
+The engine is tested in desktop Chrome. Firefox, Safari and mobile browsers are not tested yet.
 
-`pnpm test` typechecks and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, docstore against Dexie, the TanStack DB adapter against TanStack DB's IndexedDB adapter, and the Yjs and Automerge adapters against their IndexedDB counterparts. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
+## How it works
+
+kv is a log-structured merge tree (LSM). An ack means the write is one row in a write-ahead log (WAL) in IndexedDB, which all tabs share. Each database has one SharedWorker that moves the WAL into sorted, immutable SST files in OPFS and merges those files in the background. Each tab keeps the writes not yet in an SST file in memory, so reads do not go back to the WAL.
+
+The storage layout, the consistency rules and the recovery after a crash are in [docs/design.md](docs/design.md). How each promise is checked, with formal models and kill tests in real Chrome, is in [docs/verification.md](docs/verification.md).
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers setup, `pnpm test`, `pnpm bench`, and how releases work.
+
+## License
+
+MIT

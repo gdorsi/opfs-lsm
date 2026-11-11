@@ -1,5 +1,8 @@
 # @opfs-lsm/docstore
 
+> [!WARNING]
+> docstore is an experiment, and it is not published to npm. It exists to test `@opfs-lsm/kv` from the point of view of a query layer: each gap it finds becomes a kv change. Its API, schema format and key layout can change heavily or go away without notice. Do not build on it.
+
 A document store on `@opfs-lsm/kv`. Collections hold JSON documents with a string `id`. You declare each collection's indexes in a versioned schema, and queries read through those indexes.
 
 ```ts
