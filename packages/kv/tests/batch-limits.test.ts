@@ -26,9 +26,9 @@ afterEach(() => {
 const key = (i: number) => enc.encode(`k${String(i).padStart(6, "0")}`);
 
 describe("batch limits", () => {
-  it("commits a batch of 50,000 ops and reads every key before and after a flush", async () => {
+  it("commits a batch of 20,000 ops and reads every key before and after a flush", async () => {
     const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1" });
-    const count = 50_000;
+    const count = 20_000;
     await db.batch((tx) => {
       for (let i = 0; i < count; i++) tx.put(key(i), enc.encode(String(i)));
     });
@@ -41,6 +41,20 @@ describe("batch limits", () => {
     await ingest(db);
     expect(await scan()).toBe(count);
     expect(await db.get(key(count - 1))).toEqual(enc.encode(String(count - 1)));
+    await db.close();
+  });
+
+  it("counts 256 bytes per op: 40,000 one-byte deletes are over the limit, 30,000 are not", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1" });
+    const deletes = (count: number) =>
+      db.batch((tx) => {
+        for (let i = 0; i < count; i++) tx.delete(new Uint8Array([i & 255]));
+      });
+    await db.put(new Uint8Array([7]), enc.encode("kept"));
+    await expect(deletes(40_000)).rejects.toBeInstanceOf(ConstraintError);
+    expect(await db.get(new Uint8Array([7]))).toEqual(enc.encode("kept"));
+    await deletes(30_000);
+    expect(await db.get(new Uint8Array([7]))).toBeUndefined();
     await db.close();
   });
 
