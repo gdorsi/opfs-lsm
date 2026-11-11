@@ -55,6 +55,11 @@ export interface DetailResponse {
   comments: ServerRow<"comments">[];
 }
 
+export interface RowResponse<S extends Stream = Stream> {
+  row: ServerRow<S> | null;
+  epoch: string;
+}
+
 export const MAX_OPS = 1000;
 const MAX_PULL_LIMIT = 10_000;
 const DEFAULT_PULL_LIMIT = 1000;
@@ -164,6 +169,11 @@ export function parsePushRequest(json: unknown): PushRequest {
 
 export function parseDetailRequest(params: URLSearchParams): { id: string } {
   return { id: id(params.get("id"), "id") };
+}
+
+/** `id` is the comment's own id for the comments stream, not its `key`. */
+export function parseRowRequest(params: URLSearchParams): { stream: Stream; id: string } {
+  return { stream: parseStream(params.get("stream")), id: id(params.get("id"), "id") };
 }
 
 /** The pushing user's name, from the `x-linearlite-user` header. There is no login; absent means "anonymous". */

@@ -8,7 +8,7 @@ import type { ServerRow, Stream } from "../domain/model.ts";
 import { type PushOp, WireError } from "../domain/wire.ts";
 import { openServerDb, readEpoch, readHead } from "./db.ts";
 import { seedDb } from "./seed.ts";
-import { detail, onHead, pull, push } from "./sync.ts";
+import { detail, onHead, pull, push, row } from "./sync.ts";
 
 let dir: string;
 let db: DatabaseSync;
@@ -139,6 +139,21 @@ describe("push", () => {
     assert.notEqual(pull(db, "issues", 0, 1).rows[0]?.title, "Never");
     assert.throws(() => push(db, [{ stream: "issues", id: "half", create: true, fields: { title: "x" }, clocks: {} }], "ada"), WireError);
     assert.throws(() => push(db, [{ stream: "comments", id: "c9", create: true, fields: { issue_id: "nope", body: "x" }, clocks: {} }], "ada"), WireError);
+  });
+});
+
+describe("row", () => {
+  it("returns one row of any stream by its id, a tombstone as stored, and null for a missing id", () => {
+    const issue = pull(db, "issues", 0, 1).rows[0]!;
+    assert.deepEqual(row(db, "issues", issue.id), { row: issue, epoch: readEpoch(db) });
+    assert.deepEqual(row(db, "bodies", issue.id).row, pull(db, "bodies", 0, 1000).rows.find((b) => b.id === issue.id));
+    const comment = pull(db, "comments", 0, 1).rows[0]!;
+    assert.deepEqual(row(db, "comments", comment.id).row, comment);
+
+    push(db, [edit(issue.id, { deleted: true })], "ada");
+    assert.equal(row(db, "issues", issue.id).row?.deleted, true);
+    assert.equal(row(db, "issues", "missing").row, null);
+    assert.equal(row(db, "comments", "missing").row, null);
   });
 });
 

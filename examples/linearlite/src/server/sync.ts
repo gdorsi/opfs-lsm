@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { commentKey, MUTABLE_FIELDS, type ServerRow, type Stream } from "../domain/model.ts";
-import { type DetailResponse, type PullResponse, type PushOp, type PushResponse, type PushResult, WireError } from "../domain/wire.ts";
+import { type DetailResponse, type PullResponse, type PushOp, type PushResponse, type PushResult, type RowResponse, WireError } from "../domain/wire.ts";
 import { CODECS, readEpoch, readHead, statements, writeHead } from "./db.ts";
 
 type Listener = (head: number) => void;
@@ -44,6 +44,12 @@ export function detail(db: DatabaseSync, id: string): DetailResponse {
     body: body ? CODECS.bodies.fromDb(body) : null,
     comments: s.commentsOf.all(id).map((r) => CODECS.comments.fromDb(r)),
   };
+}
+
+/** One row by id, tombstones included; `null` when the server has none. */
+export function row<S extends Stream>(db: DatabaseSync, stream: S, id: string): RowResponse<S> {
+  const found = statements(db).streams[stream].get.get(id);
+  return { row: found ? CODECS[stream].fromDb(found) : null, epoch: readEpoch(db) };
 }
 
 interface Ctx {

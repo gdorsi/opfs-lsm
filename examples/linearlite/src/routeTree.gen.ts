@@ -15,6 +15,7 @@ import { Route as ApiDetailRouteImport } from './routes/api/detail'
 import { Route as ApiEventsRouteImport } from './routes/api/events'
 import { Route as ApiPullRouteImport } from './routes/api/pull'
 import { Route as ApiPushRouteImport } from './routes/api/push'
+import { Route as ApiRowRouteImport } from './routes/api/row'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -46,6 +47,11 @@ const ApiPushRoute = ApiPushRouteImport.update({
   path: '/api/push',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiRowRoute = ApiRowRouteImport.update({
+  id: '/api/row',
+  path: '/api/row',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -54,6 +60,7 @@ export interface FileRoutesByFullPath {
   '/api/events': typeof ApiEventsRoute
   '/api/pull': typeof ApiPullRoute
   '/api/push': typeof ApiPushRoute
+  '/api/row': typeof ApiRowRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -62,6 +69,7 @@ export interface FileRoutesByTo {
   '/api/events': typeof ApiEventsRoute
   '/api/pull': typeof ApiPullRoute
   '/api/push': typeof ApiPushRoute
+  '/api/row': typeof ApiRowRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -71,13 +79,27 @@ export interface FileRoutesById {
   '/api/events': typeof ApiEventsRoute
   '/api/pull': typeof ApiPullRoute
   '/api/push': typeof ApiPushRoute
+  '/api/row': typeof ApiRowRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/spike' | '/api/detail' | '/api/events' | '/api/pull' | '/api/push'
+    | '/'
+    | '/spike'
+    | '/api/detail'
+    | '/api/events'
+    | '/api/pull'
+    | '/api/push'
+    | '/api/row'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/spike' | '/api/detail' | '/api/events' | '/api/pull' | '/api/push'
+  to:
+    | '/'
+    | '/spike'
+    | '/api/detail'
+    | '/api/events'
+    | '/api/pull'
+    | '/api/push'
+    | '/api/row'
   id:
     | '__root__'
     | '/'
@@ -86,6 +108,7 @@ export interface FileRouteTypes {
     | '/api/events'
     | '/api/pull'
     | '/api/push'
+    | '/api/row'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -95,6 +118,7 @@ export interface RootRouteChildren {
   ApiEventsRoute: typeof ApiEventsRoute
   ApiPullRoute: typeof ApiPullRoute
   ApiPushRoute: typeof ApiPushRoute
+  ApiRowRoute: typeof ApiRowRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -141,6 +165,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPushRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/row': {
+      id: '/api/row'
+      path: '/api/row'
+      fullPath: '/api/row'
+      preLoaderRoute: typeof ApiRowRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -151,6 +182,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiEventsRoute: ApiEventsRoute,
   ApiPullRoute: ApiPullRoute,
   ApiPushRoute: ApiPushRoute,
+  ApiRowRoute: ApiRowRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
