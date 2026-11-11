@@ -64,6 +64,8 @@ export function followCollection<T extends JsonDoc>(
   let prefix: Uint8Array | undefined;
   /** Events at or below this seq are reflected in what the feed already knows. */
   let through = 0;
+  /** The last catalog read failed, so events may have been missed. */
+  let stale = false;
 
   const emit = (change: CollectionChange<T>) => {
     if (!live) return;
@@ -113,20 +115,32 @@ export function followCollection<T extends JsonDoc>(
     }
   };
 
-  /** Hold events, learn the id and seq from one snapshot, then replay what the snapshot does not reflect. */
-  const resync = () => {
-    held = [];
+  /**
+   * Hold events, learn the id and seq from one snapshot, then replay what the
+   * snapshot does not reflect. A read that fails leaves the feed stale: the
+   * events it held are lost, so the next event reads again, and the listener
+   * gets a gap once a read succeeds.
+   */
+  const resync = (first: ChangeEvent[] = []) => {
+    held = first;
     kv.view(async (snap) => ({ seq: snap.seq, id: collectionIdIn(await snap.get(CATALOG_KEY), name) }))
-      .then((base) => {
-        through = base.seq;
-        follow(base.id);
-      })
-      .catch((err: unknown) => {
-        if (!(err instanceof ClosedError)) console.error("docstore changes() could not read the catalog", err);
-        follow(undefined);
-      })
-      .then(() => {
-        const replay = held!;
+      .then(
+        (base) => {
+          through = base.seq;
+          follow(base.id);
+          if (stale) emit({ kind: "gap" });
+          stale = false;
+          return held!;
+        },
+        (err: unknown) => {
+          follow(undefined);
+          if (err instanceof ClosedError) return held!;
+          console.error("docstore changes() could not read the catalog", err);
+          stale = true;
+          return held!.filter((event) => event.kind === "closed");
+        },
+      )
+      .then((replay) => {
         held = undefined;
         for (const event of replay) deliver(event);
       });
@@ -134,8 +148,10 @@ export function followCollection<T extends JsonDoc>(
 
   /** A replayed gap starts another resync, and the events after it wait for that one. */
   const deliver = (event: ChangeEvent) => {
+    if (!live) return;
     if (held) held.push(event);
-    else if (live) apply(event);
+    else if (stale && event.kind !== "closed") resync([event]);
+    else apply(event);
   };
 
   const off = kv.changes(deliver);

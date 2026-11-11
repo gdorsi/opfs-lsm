@@ -219,7 +219,7 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
   ) {}
 
   /** Point reads need no snapshot: a read that straddles a `clear` or a schema change is a read before it. */
-  private async live(): Promise<CollectionReader<T, Ix>> {
+  private async live(): Promise<Pick<CollectionReader<T, Ix>, "get" | "getMany">> {
     const { kv } = this.store;
     return new CollectionReader(kv, this.store.collectionIn(await kv.get(CATALOG_KEY), this.name));
   }

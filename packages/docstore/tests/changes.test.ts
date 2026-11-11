@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defineSchema, openDocStore, type CollectionChange } from "../src/index.js";
 import { concat } from "../src/keys.js";
 import { schema, type Doc, type Docs } from "./docs.js";
-import { freshName, openKv, openKvWithoutBus, storedPrefix } from "./harness.js";
+import { freshName, openKv, openKvWithoutBus, storedPrefix, wrap } from "./harness.js";
 
 const open: Db[] = [];
 afterEach(async () => {
@@ -246,6 +246,27 @@ describe("changes", () => {
     expect(events.flatMap((e) => (e.kind === "append" ? e.changes.map((ch) => ch.id) : [])).sort()).toEqual(
       ["w1", "w2", "w3", "w4", "w5"],
     );
+  });
+
+  it("sends a gap and goes on reporting once it can read the catalog again, after a read that failed", async () => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    let failing = false;
+    const flaky = wrap(kv, {
+      view: (body) => (failing ? Promise.reject(new Error("read failed")) : kv.view(body)),
+    } as Partial<Db>);
+    const c = (await openDocStore(flaky, schema)).collection("docs");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    failing = true;
+    const { events } = listen(c);
+    await c.put({ id: "1", a: 1 });
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalled());
+    failing = false;
+    await c.put({ id: "2", a: 2 });
+    await settled(() => expect(summary(events)).toEqual(["gap"]));
+    await c.put({ id: "3", a: 3 });
+    await settled(() => expect(summary(events)).toEqual(["gap", "+3"]));
   });
 
   it("stops reporting after the unsubscribe function is called, and ends with closed when kv closes", async () => {
