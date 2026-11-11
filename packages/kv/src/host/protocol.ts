@@ -76,8 +76,6 @@ export type ClientToHost =
       readonly type: "ingest";
       readonly id: number;
       readonly name: string;
-      /** Always the whole WAL. A SharedWorker of an older build reads it as the seq to flush through. */
-      readonly through: number;
       readonly waitForCompaction: boolean;
     }
   | {

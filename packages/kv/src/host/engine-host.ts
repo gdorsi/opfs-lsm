@@ -225,9 +225,22 @@ class HostedDb {
     };
   }
 
+  /**
+   * Wait for a fold in flight, reconcile and remove old manifests as a fold
+   * that found nothing to fold does, then compact. Removes no run file here:
+   * that needs the compaction lock, and `compactPass` does it under it.
+   */
   async compactNow(): Promise<void> {
     const fs = await this.fs();
-    await this.foldTurn(() => this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal))));
+    await this.foldTurn(() =>
+      this.exclusive(() =>
+        this.withWal(async (wal) => {
+          const { generation } = await reconcile(wal, fs, this.trusted);
+          this.trusted = generation;
+          await unlessHeld(this.name, () => reclaimManifests(fs, generation));
+        }),
+      ),
+    );
     await this.compact();
   }
 
@@ -588,7 +601,7 @@ export function createPortIngestClient(
 
   return {
     async ingest(name: string, waitForCompaction = false) {
-      const res = await request({ type: "ingest", id: nextId++, name, through: Number.POSITIVE_INFINITY, waitForCompaction });
+      const res = await request({ type: "ingest", id: nextId++, name, waitForCompaction });
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
     watch(name, policy) {
