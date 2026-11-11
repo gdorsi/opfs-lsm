@@ -1,6 +1,7 @@
 import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
+import { coalesceReads } from "./coalesce-reads.js";
 
 function splitPath(path: string): string[] {
   return path.split("/").filter((p) => p.length > 0 && p !== ".");
@@ -65,15 +66,14 @@ export class BrowserFs implements AsyncFs {
       if (isNotFound(err)) return undefined;
       throw err;
     }
+    const read = coalesceReads((offset, length) => file.slice(offset, offset + length).arrayBuffer());
     return {
       size: file.size,
       read: async (offset, length) => {
         if (offset + length > file.size) {
           throw new CorruptDatabaseError(`short read: ${path}`);
         }
-        return new Uint8Array(
-          await file.slice(offset, offset + length).arrayBuffer(),
-        );
+        return read(offset, length);
       },
       close: release,
     };
