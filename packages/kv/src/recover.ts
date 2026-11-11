@@ -25,6 +25,9 @@ export type Reconciled = {
 /** Attempts when another tab or host changes `meta` under a reconcile. */
 const RECONCILE_TRIES = 8;
 
+/** A generation whose manifest `reconcile` need not check, "recorded" for whichever is recorded, or undefined to check. */
+export type Trusted = number | "recorded" | undefined;
+
 /**
  * Make IndexedDB record a manifest that pairs with its WAL (design.md,
  * "Recovery"). After a power loss, IndexedDB and OPFS each keep a prefix of
@@ -37,8 +40,9 @@ const RECONCILE_TRIES = 8;
  *    past the WAL head: OPFS kept writes IndexedDB lost. It is a longer
  *    prefix, and recording it moves `head` past its seqs before any of them
  *    is handed out again.
- * 2. Otherwise the recorded manifest, when it is intact. `trust` skips the
- *    check for a generation the caller has loaded or published itself.
+ * 2. Otherwise the recorded manifest, when it is intact. `trusted` skips
+ *    the check for a generation the caller has loaded or published itself,
+ *    or for whatever is recorded when it is "recorded".
  * 3. Otherwise, when the recorded manifest is missing (or none is
  *    recorded), the newest intact manifest, or the empty generation 0.
  *
@@ -61,13 +65,13 @@ const RECONCILE_TRIES = 8;
 export async function reconcile(
   wal: IdBWal,
   fs: AsyncFs,
-  trust: (generation: number) => boolean,
+  trusted: Trusted,
 ): Promise<Reconciled> {
   for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
     const meta = await wal.meta();
     const numbers = await manifestNumbers(fs);
     const top = Math.max(numbers[0] ?? 0, meta.top, meta.generation ?? 0);
-    const pick = await choose(fs, meta, numbers, trust);
+    const pick = await choose(fs, meta, numbers, trusted);
     if (!pick) return { generation: meta.generation!, top };
     // No seq any manifest on disk names is handed out again, so a manifest
     // that is not intact now never becomes intact with other writes.
@@ -85,7 +89,7 @@ async function choose(
   fs: AsyncFs,
   meta: WalMeta,
   numbers: readonly number[],
-  trust: (generation: number) => boolean,
+  trusted: Trusted,
 ): Promise<GenerationMeta | undefined> {
   const recorded = meta.generation;
   for (const n of numbers) {
@@ -94,7 +98,7 @@ async function choose(
     if (m && m.through > meta.head && (await isIntact(fs, m))) return m;
   }
   if (recorded !== undefined) {
-    if (trust(recorded)) return undefined;
+    if (trusted === "recorded" || trusted === recorded) return undefined;
     const m = await probeManifest(fs, recorded);
     if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${recorded} does not decode`);
     if (m !== "missing") {

@@ -365,7 +365,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const generationAt = trace ? performance.now() : 0;
   // Pair the WAL with a manifest before the first read or write. The
   // recorded manifest's runs are checked by the first sync, which loads them.
-  await reconcile(wal, tabFs, TRUST_RECORDED);
+  await reconcile(wal, tabFs, "recorded");
   span(trace, "generation", performance.now() - generationAt);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
@@ -462,8 +462,6 @@ type BusMessage =
 
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
-const TRUST_RECORDED = (): boolean => true;
-const CHECK_RECORDED = (): boolean => false;
 const GENERATION_GONE =
   "SST files for the recorded generation stayed missing after retries";
 
@@ -800,7 +798,7 @@ class DbImpl implements Db {
    * IndexedDB names a generation other than the one found broken.
    */
   private async repair(): Promise<void> {
-    await reconcile(this.wal, this.fs, CHECK_RECORDED);
+    await reconcile(this.wal, this.fs, undefined);
     this.repaired = true;
   }
 

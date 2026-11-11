@@ -2,7 +2,7 @@ import { opsBytes } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
-import { reconcile } from "../recover.js";
+import { reconcile, type Trusted } from "../recover.js";
 import {
   loadGeneration,
   publishGeneration,
@@ -47,17 +47,17 @@ export type Chunk = IngestResult & {
  *
  * Builds on the recorded generation, never on a newer manifest file: one
  * that IndexedDB has not recorded is left by a crash, and its seqs are
- * either still in the WAL or were adopted by `reconcile`. `trust` names a
+ * either still in the WAL or were adopted by `reconcile`. `trusted` names a
  * generation the caller knows is intact (see `reconcile`).
  */
 export async function ingestChunk(
   wal: IdBWal,
   fs: AsyncFs,
   through: number,
-  trust: (generation: number) => boolean,
+  trusted: Trusted,
   limits: ChunkLimits,
 ): Promise<Chunk> {
-  const base = await reconcile(wal, fs, trust);
+  const base = await reconcile(wal, fs, trusted);
   const ingested = await wal.getIngestedThrough();
   const records = ingested >= through ? [] : await wal.listUningested({ maxBytes: limits.maxBytes });
   let kind: Chunk["kind"];

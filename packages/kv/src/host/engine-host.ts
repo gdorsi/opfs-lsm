@@ -163,7 +163,6 @@ class HostedDb {
    * records another generation makes the host check again.
    */
   private trusted: number | undefined;
-  private readonly trust = (generation: number): boolean => this.trusted === generation;
   /** Run compaction passes until no request arrives during one. */
   private readonly compact = coalesced(() =>
     withLock(`opfs-lsm-compact/${this.name}`, () => this.compactPass()),
@@ -254,7 +253,7 @@ class HostedDb {
         const installed = this.installSignal();
         const chunk = await this.exclusive(() =>
           this.withWal(async (wal) => {
-            const folded = await ingestChunk(wal, fs, target, this.trust, {
+            const folded = await ingestChunk(wal, fs, target, this.trusted, {
               maxBytes: budget.flushRunBytes,
               l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
             });
@@ -431,7 +430,7 @@ class HostedDb {
       if (!step) return;
       await this.exclusive(() =>
         this.withWal(async (wal) => {
-          this.trusted = await installStep(fs, wal, step, this.trust);
+          this.trusted = await installStep(fs, wal, step, this.trusted);
           // No set yet: no reclaim has run, and the first one lists every run.
           for (const path of step.inputs) this.retired?.add(path);
           await this.reclaim(fs, wal);
@@ -457,7 +456,7 @@ class HostedDb {
    */
   private async reclaim(fs: AsyncFs, wal: IdBWal): Promise<void> {
     await unlessHeld(this.name, async () => {
-      const { generation } = await reconcile(wal, fs, this.trust);
+      const { generation } = await reconcile(wal, fs, this.trusted);
       this.trusted = generation;
       await reclaimManifests(fs, generation);
       const retired = this.retired ?? new Set(await listRuns(fs));

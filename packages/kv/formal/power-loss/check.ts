@@ -253,20 +253,20 @@ function sourceSync(): string[] {
   const need = (file: string, re: RegExp, what: string) => {
     if (!re.test(read(file))) out.push(`${file}: ${what}`);
   };
-  need("host/ingest.ts", /reconcile\(wal, fs, trust\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*publishL0[\s\S]*publishGeneration[\s\S]*through: last[\s\S]*advanceIngested/, "ingest builds on the recorded generation and numbers past the top manifest");
-  need("host/compact.ts", /reconcile\(wal, fs, trust\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*through: meta\.through[\s\S]*raiseGeneration/, "install builds on the recorded generation");
+  need("host/ingest.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*publishL0[\s\S]*publishGeneration[\s\S]*through: last[\s\S]*advanceIngested/, "ingest builds on the recorded generation and numbers past the top manifest");
+  need("host/compact.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*through: meta\.through[\s\S]*raiseGeneration/, "install builds on the recorded generation");
   need("idb/wal.ts", /async advanceIngested[\s\S]*delete\(IDBKeyRange\.upperBound\(existing\)\)/, "advanceIngested keeps the records it folds until the next ingest");
   need("idb/wal.ts", /Math\.max\(head, through, floor\)/, "adopt raises head past every seq a manifest names");
   need("idb/wal.ts", /meta\.put\(Math\.max\(knownTop, top, generation\), META_TOP\)/, "adopt keeps the highest manifest number seen");
   need("recover.ts", /Math\.max\(numbers\[0\] \?\? 0, meta\.top, meta\.generation \?\? 0\)/, "new manifests number past every number in use");
   need("recover.ts", /m\.through > meta\.head && \(await isIntact\(fs, m\)\)/, "reconcile adopts an intact manifest past the head first");
   need("recover.ts", /if \(m === "corrupt"\) throw new CorruptDatabaseError\(`manifest \$\{recorded\} does not decode`\);\s*if \(m !== "missing"\) \{\s*if \(await isIntact\(fs, m\)\) return undefined;[\s\S]*?other\.through >= meta\.ingestedThrough && \(await isIntact\(fs, other\)\)\) return other;\s*\}\s*throw new CorruptDatabaseError/, "a recorded manifest that is there but broken is replaced only by one that holds every ingested seq, else recovery throws");
-  need("host/engine-host.ts", /reconcile\(wal, fs, this\.trust\)[\s\S]*liveRuns\(fs, generation\)/, "reclaim sweeps against the reconciled generation's runs");
-  need("db.ts", /await reconcile\(wal, tabFs, TRUST_RECORDED\);[\s\S]*await db\.sync\(\)/, "openDb reconciles before the first sync");
+  need("host/engine-host.ts", /reconcile\(wal, fs, this\.trusted\)[\s\S]*liveRuns\(fs, generation\)/, "reclaim sweeps against the reconciled generation's runs");
+  need("db.ts", /await reconcile\(wal, tabFs, "recorded"\);[\s\S]*await db\.sync\(\)/, "openDb reconciles before the first sync");
   need("db.ts", /holdingFiles\(this\.name, async \(\) => \{\s*for \([^)]*\) \{\s*const step = await this\.catchUpOnce\(\);\s*if \(step === "done"\) return;\s*if \(step === "gone"\) gone = await this\.repairGone\(gone\);/, "sync retries under the reclaim lock and repairs when the recorded generation does not load");
   need("db.ts", /private async repairGone[\s\S]*?await this\.repair\(\);/, "a load that finds files gone under the lock repairs");
-  need("host/engine-host.ts", /ingestChunk\([^;]*this\.trust[^;]*;\s*[^\n]*\n\s*await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");
-  need("host/engine-host.ts", /await unlessHeld\(this\.name, async \(\) => \{\s*const \{ generation \} = await reconcile\(wal, fs, this\.trust\);[\s\S]*reclaimManifests\(fs, generation\);[\s\S]*liveRuns\(fs, generation\)/, "reclaim removes manifests then runs after reconciling, unless a tab holds the reclaim lock");
+  need("host/engine-host.ts", /ingestChunk\([^;]*this\.trusted[^;]*;\s*[^\n]*\n\s*await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");
+  need("host/engine-host.ts", /await unlessHeld\(this\.name, async \(\) => \{\s*const \{ generation \} = await reconcile\(wal, fs, this\.trusted\);[\s\S]*reclaimManifests\(fs, generation\);[\s\S]*liveRuns\(fs, generation\)/, "reclaim removes manifests then runs after reconciling, unless a tab holds the reclaim lock");
   need("host/compact.ts", /await wal\.raiseGeneration\(generation\);\s*return generation;/, "install removes no file");
   return out;
 }

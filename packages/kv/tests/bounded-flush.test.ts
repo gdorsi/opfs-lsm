@@ -341,7 +341,7 @@ describe("a flush with L0 full", () => {
       for (let i = 0; i < 3; i++) await wal.append(put(i));
       // 100 op bytes a record and a cap of 100: one record a run.
       const limits = { maxBytes: 100, l0Stop: 2 };
-      const chunk = (through: number) => ingestChunk(wal, fs, through, () => false, limits);
+      const chunk = (through: number) => ingestChunk(wal, fs, through, undefined, limits);
 
       expect((await chunk(3)).kind).toBe("folded");
       expect((await chunk(3)).kind).toBe("folded");
