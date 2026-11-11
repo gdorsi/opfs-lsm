@@ -55,7 +55,7 @@ async function flipByte(fs: MemoryFs, dir: string): Promise<void> {
   await w.finish();
 }
 
-const seqs = async (wal: IdBWal) => (await wal.listUningested()).map((r) => r.seq);
+const seqs = async (wal: IdBWal) => (await wal.listUningested({ maxBytes: 1 << 30 })).map((r) => r.seq);
 
 /** A `meta` value, or undefined when the key was never written. */
 function metaRaw(dbName: string, key: string): Promise<unknown> {
@@ -110,7 +110,7 @@ describe("advanceIngested", () => {
     // Seqs 1 and 2 stay: a power loss can keep this commit and lose manifest 1.
     expect(await wal.adopt(await wal.meta(), 0, 0)).toBe(true);
     expect(await seqs(wal)).toEqual([1, 2, 3]);
-    expect(await wal.uningestedBytes()).toBe(3 * opsBytes(put(1)));
+    expect(await wal.uningestedBytes(1 << 30)).toBe(3 * opsBytes(put(1)));
     wal.close();
   });
 

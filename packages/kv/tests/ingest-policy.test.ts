@@ -162,7 +162,7 @@ describe("ingest policy", () => {
         }),
     );
     const wal = await IdBWal.open(checkDbName(name));
-    expect(await wal.uningestedBytes()).toBe(0);
+    expect(await wal.uningestedBytes(1 << 30)).toBe(0);
     const first = {
       type: "put" as const,
       key: checkKey(utf("a")),
@@ -175,12 +175,12 @@ describe("ingest policy", () => {
     };
     const seq = await wal.append([first]);
     expect(seq).toBe(1);
-    expect(await wal.uningestedBytes()).toBe(opsBytes([first]));
+    expect(await wal.uningestedBytes(1 << 30)).toBe(opsBytes([first]));
     const next = await wal.append([second]);
     expect(next).toBe(2);
     await wal.advanceIngested(seq ?? 0, 1);
-    expect(await wal.uningestedBytes()).toBe(opsBytes([second]));
-    expect((await wal.listUningested()).map((record) => record.seq)).toEqual([2]);
+    expect(await wal.uningestedBytes(1 << 30)).toBe(opsBytes([second]));
+    expect((await wal.listUningested({ maxBytes: 1 << 30 })).map((record) => record.seq)).toEqual([2]);
     await wal.append([first]);
     const secondBytes = opsBytes([second]);
     const bothBytes = secondBytes + opsBytes([first]);
@@ -211,7 +211,7 @@ describe("ingest policy", () => {
     await wal.append(op(10));
     const full = size(20) + size(18) + size(10);
     expect(full).toBe(51);
-    expect(await wal.uningestedBytes()).toBe(full);
+    expect(await wal.uningestedBytes(1 << 30)).toBe(full);
     expect(await wal.uningestedBytes(full + 1), "one over the total: exact").toBe(full);
     expect(await wal.uningestedBytes(full), "exactly the total").toBe(full);
     expect(await wal.uningestedBytes(full - 1), "one under the total: the cap").toBe(full - 1);
@@ -221,7 +221,7 @@ describe("ingest policy", () => {
     expect(pastFirst).toBeLessThan(full);
     await wal.advanceIngested(1, 1);
     const rest = size(18) + size(10);
-    expect(await wal.uningestedBytes(), "ingested rows are not counted").toBe(rest);
+    expect(await wal.uningestedBytes(1 << 30), "ingested rows are not counted").toBe(rest);
     expect(await wal.uningestedBytes(rest)).toBe(rest);
     expect(await wal.uningestedBytes(rest - 1)).toBe(rest - 1);
     wal.close();
@@ -307,7 +307,7 @@ describe("ingest policy", () => {
     const again = await IdBWal.open(checkDbName(name));
     expect((await again.meta()).head).toBe(2);
     expect((await again.tail(0)).records.map((r) => r.seq)).toEqual([1, 2]);
-    expect(await again.uningestedBytes()).toBe(opsBytes([first]) + opsBytes([second]));
+    expect(await again.uningestedBytes(1 << 30)).toBe(opsBytes([first]) + opsBytes([second]));
     again.close();
 
     const fs = new MemoryFs();
