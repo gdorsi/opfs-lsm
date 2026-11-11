@@ -17,15 +17,16 @@ type IssueWindow = { readonly rows: readonly Issue[]; readonly offset: number; s
 function useWindow(key: string, build: () => ReturnType<typeof windowQuery>, size: number): IssueWindow {
   const query = useMemo(build, [key]);
   const { data } = useLiveQuery(query);
-  const [offset, setOffset] = useState(0);
-  useEffect(() => setOffset(0), [query]);
+  // The offset belongs to the query that set it, so a new query reads 0 in its first render instead of one frame late.
+  const [placed, setOffset] = useState({ query, offset: 0 });
+  const offset = placed.query === query ? placed.offset : 0;
   const setRange = useCallback(
     (start: number, end: number) => {
       const next = { offset: Math.max(0, start), limit: Math.max(size, end - start) };
       const current = query.utils.getWindow();
       if (current?.offset === next.offset && current.limit === next.limit) return;
       void query.utils.setWindow(next);
-      setOffset(next.offset);
+      setOffset({ query, offset: next.offset });
     },
     [query, size],
   );

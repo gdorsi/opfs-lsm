@@ -169,6 +169,8 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
 
 ## Measuring
 
+`bench/spike.sh` ran against a `/spike` route that has since been removed (last at commit f2a16a8); check that commit out to rerun it.
+
 `bench/` drives Chrome as `bench/spike.sh` does, against a seeded server, at 10k and 100k issues, 5 alternating
 runs, with the limiter named per number: first sync to first rows and to `issues` caught up, warm start to first
 rows (offline), filter and sort change to rows, title search keystroke to rows, detail open, edit to visible in a

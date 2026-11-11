@@ -10,6 +10,7 @@
     "packages/docstore/tests/usage.ts",
     "examples/*/scripts/**/*.ts",
     "examples/*/bench/*.ts",
+    "examples/*/bench/*.js",
     "bench/cli.ts",
     "bench/page/main.ts",
     "bench/probes/*.ts",
@@ -23,32 +24,13 @@
     "agent-browser"
   ],
   "ignoreDependencies": [
-    "@automerge/automerge-repo-storage-indexeddb",
-    "@tanstack/react-virtual"
+    "@automerge/automerge-repo-storage-indexeddb"
   ],
   "ignoreExports": [
     {
       "file": "examples/linearlite/src/domain/model.ts",
       "exports": [
-        "STATUS_LABELS",
-        "PRIORITY_LABELS",
         "SyncState"
-      ]
-    },
-    {
-      "file": "examples/linearlite/src/client/hooks.ts",
-      "exports": [
-        "useBoardColumn",
-        "useStatusCounts",
-        "useIssue",
-        "useIssueDetail",
-        "IssueDetail"
-      ]
-    },
-    {
-      "file": "examples/linearlite/src/client/filter.ts",
-      "exports": [
-        "SORT_FIELDS"
       ]
     },
     {
