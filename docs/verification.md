@@ -18,7 +18,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | Generation loading in `db.ts` (`syncOnce`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |
 | Point get versus SST, including tombstones (`pointGet`, `readKey`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
 | `view()` or the memtable pin | `formal:view-pin` |
-| SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge sessions in `merge-ts.ts` and `merge.rs`, `host/compact.ts`) | `formal:compact-preserve`, `cargo test -p engine-core`, plus `drive bench kv/` for a real post-ingest get |
+| SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge session in `merge.rs` and its oracle `tests/oracle/merge-ts.ts`, `host/compact.ts`) | `formal:compact-preserve`, `cargo test -p engine-core`, plus `drive bench kv/` for a real post-ingest get |
 | `openDb`, the SharedWorker, or cross-tab visibility | `drive two-tab` |
 | `BrowserFs` (`createWritable`, removes, file locks), the SharedWorker port, or any Web Lock | `kill-chrome --minutes 10` (see [Kill real Chrome](#kill-real-chrome)) |
 | `packages/automerge/src/index.ts`, or a kv change claimed to speed up Automerge | `drive bench automerge/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
@@ -26,7 +26,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
 | In-page `EngineHost` | `drive two-tab-local`. |
 | `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench table/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
-| A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, `lz4.ts`, `sst.rs`, and the merge sessions that read runs, `merge.rs` and `merge-ts.ts`), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test` and `cargo test -p engine-core`, then each cargo fuzz and Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
+| A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, `lz4.ts`, `sst.rs`, and the merge session that reads runs, `merge.rs`), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test` and `cargo test -p engine-core`, then each cargo fuzz and Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
 | Any TypeScript behavior | `pnpm test` |
 | Any TypeScript or JavaScript source, including a removed export | `pnpm static` (oxlint, then `fallow dead-code`) |
 
@@ -218,8 +218,8 @@ Every decoder of on-disk or IndexedDB bytes is fuzzed against the rules of [the 
 | --- | --- | --- | --- |
 | Rust properties | `cargo test -p engine-core` | CI (`rust` job) | `decode_sst`, `scan_block_contains`, the session's block decoder and a merge session on mutated runs, with an allocation counter (`crates/engine-core/tests/corrupt_inputs.rs`); the merge session against the merge it replaced, frozen (`crates/engine-core/src/merge/oracle.rs`) |
 | cargo fuzz | `crates/engine-core/fuzz/run.sh <target> [seconds]` | by hand | `decode_sst`, `scan_block_contains`, `decode_block`, `merge_session` (libFuzzer, nightly) |
-| TypeScript properties | `pnpm test` (`packages/kv/fuzz/decoders.test.ts`) | CI (`test` job) | `SstReader` (tab reads, wasm and fallback), `decodeSst`, `decodeGeneration` (version 3), `decodeOps`, `lz4DecompressJs` |
-| Differential | `pnpm test` (`packages/kv/fuzz/differential.test.ts`, `packages/kv/tests/merge-session.test.ts`) | CI (`test` job) | wasm against the TypeScript fallbacks: whole-run decode, block scan, LZ4 unpack, and both merge sessions through the compaction driver |
+| TypeScript properties | `pnpm test` (`packages/kv/fuzz/decoders.test.ts`) | CI (`test` job) | `SstReader` (tab reads, with the wasm decoders and with the JS ones), `decodeSst`, `decodeGeneration` (version 3), `decodeOps`, `lz4DecompressJs` |
+| Differential | `pnpm test` (`packages/kv/fuzz/differential.test.ts`, `packages/kv/tests/merge-session.test.ts`) | CI (`test` job) | wasm against TypeScript: whole-run decode, block scan, LZ4 unpack, and the merge session against its oracle (`tests/oracle/merge-ts.ts`) |
 | Writer against its frozen reference | `cargo test -p engine-core` | CI (`rust` job) | `SstWriter` against `crates/engine-core/src/sst/reference.rs`, the encoder it replaced, frozen: the same bytes for random runs in both codecs, tombstones, empty and large values, many blocks, and every run in the fuzz corpus |
 | End to end | `pnpm test` (`packages/kv/tests/sim/corruption.test.ts`) | CI (`test` job) | one corrupt file or IndexedDB row, then open, get, scan, write, flush, compact, reopen |
 | Jazzer.js | `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> [seconds]` | by hand | `sst-read`, `sst-decode`, `manifest`, `wal-row`, `lz4` (the TypeScript decoders; cargo fuzz covers the Rust ones) |

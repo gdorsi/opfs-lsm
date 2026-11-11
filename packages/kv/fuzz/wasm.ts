@@ -23,7 +23,7 @@ export async function loadWasm(): Promise<FlatEngine> {
 }
 
 /**
- * Run `fn` with the TypeScript fallbacks a tab uses before wasm loads: the
+ * Run `fn` with the JS decoders in place of the wasm ones: the
  * LZ4 decoder and the block scanner.
  */
 export async function withoutWasm<T>(fn: () => Promise<T>): Promise<T> {

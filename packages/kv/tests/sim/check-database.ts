@@ -1,6 +1,5 @@
 import { compareBytes, keyToString } from "../../src/bytes.js";
 import type { AsyncFs } from "../../src/opfs/async-fs.js";
-import { engineUsingWasm } from "../../src/store/engine.js";
 import {
   decodeGeneration,
   listRuns,
@@ -246,7 +245,7 @@ async function checkRun(
     } else {
       if (Number(m[2]) > generation) bad(`written by generation ${m[2]}, after recorded ${generation}`);
     }
-    const want = engineUsingWasm() ? codecForLevel(level) : "raw";
+    const want = codecForLevel(level);
     if (codec !== want) bad(`codec ${codec}, level ${level} uses ${want}`);
   } else {
     bad("path names no level");

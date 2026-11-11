@@ -22,8 +22,8 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | `host/ingest.ts`, `idb/wal.ts` (`listUningested`, `advanceIngested`) | full suite (or at least `formal:ingest-visibility`) |
 | `store/merge.ts` `pointGet`, `db.ts` `readKey` / `get` | `formal:wal-over-sst` + ingest |
 | `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
-| `store/merge.ts` `latestSstEntry`, the merge sessions (`store/merge-ts.ts`, `crates/engine-core/src/merge.rs`), `host/compact.ts` | `formal:compact-preserve` |
-| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `EngineHost.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair | `formal:power-loss` |
+| `store/merge.ts` `latestSstEntry`, the merge session (`crates/engine-core/src/merge.rs`) and its oracle (`tests/oracle/merge-ts.ts`), `host/compact.ts` | `formal:compact-preserve` |
+| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `HostedDb.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair | `formal:power-loss` |
 | Unknown / several areas | **`formal:kv`** (all) |
 
 ## Tool and why
@@ -56,7 +56,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 
 - **NoLostAcks:** path with `advanceIngested` before `publishGeneration` and model `resolveGet` undefined.
 - **ViewPin:** `view.get` sees a post-pin append; or `db.ts` no longer passes `this.mem.pin()` into `ViewSnapshotImpl`, or `memtable.ts` drops the copy-on-write pin.
-- **CompactPreserve:** before/after merge disagree; or `merge.ts` no longer gets newest-first, or `merge-ts.ts` / `merge.rs` no longer keep the newer source on a tie.
+- **CompactPreserve:** before/after merge disagree; or `merge.ts` no longer gets newest-first, or `merge.rs` / `tests/oracle/merge-ts.ts` no longer keep the newer source on a tie.
 - **PowerPrefix:** the first crash state (what each store kept), then each nested recovery crash, and the read that is not a prefix, the open that fails, or the `checkDatabase`-style problem. `model too weak` means a broken variant passed: the model lost a behavior the product depends on. `source sync` names a product decision the model encodes that the code no longer makes.
 - **Modeling error:** path impossible in TS, or parser/source-sync out of date — fix the formal files, do not weaken the property.
 
@@ -67,8 +67,8 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | NoLostAcks | `ingestChunk` order: `publishL0`, `publishGeneration`, `advanceIngested` |
 | WalOverSst | `pointGet` |
 | ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
-| CompactPreserve | `latestSstEntry`, the pick of both merge sessions (`Session.run` in `merge-ts.ts`, `before` in `merge.rs`) |
-| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `EngineHost.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
+| CompactPreserve | `latestSstEntry`, the pick of the merge session and its oracle (`before` in `merge.rs`, `Session.run` in `tests/oracle/merge-ts.ts`) |
+| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `HostedDb.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
 
 **Sync commit:** `0aad344c5784b9302cf83f0fba62d1f35b19e543` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 

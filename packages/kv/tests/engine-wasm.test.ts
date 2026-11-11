@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   EngineCapacityError,
   decodeSst,
@@ -208,5 +208,29 @@ describe("engine status codes", () => {
     const instance = stub(0);
     (instance.exports as unknown as { input_ptr: () => number }).input_ptr = () => 0;
     expect(() => flatEngine(instance, 99).decodeSst(new Uint8Array(40))).toThrow(EngineCapacityError);
+  });
+});
+
+describe("a context where the wasm module does not load", () => {
+  it("rejects ensureEngine and openDb with StorageUnavailableError, and loads on a later try", async () => {
+    vi.resetModules();
+    const g = globalThis as { __OPFS_LSM_ENGINE_URL?: string };
+    g.__OPFS_LSM_ENGINE_URL = "./no-such-engine.wasm";
+    const engine = await import("../src/store/engine.js");
+    const { StorageUnavailableError } = await import("../src/errors.js");
+    const { openHarnessDb } = await import("../src/testing.js");
+    try {
+      await expect(engine.ensureEngine()).rejects.toBeInstanceOf(StorageUnavailableError);
+      await expect(openHarnessDb({ name: "no-wasm", forceMemory: true })).rejects.toBeInstanceOf(
+        StorageUnavailableError,
+      );
+    } finally {
+      delete g.__OPFS_LSM_ENGINE_URL;
+    }
+    await engine.ensureEngine();
+    expect(engine.engineUsingWasm()).toBe(true);
+    const db = await openHarnessDb({ name: "no-wasm", forceMemory: true });
+    await db.close();
+    vi.resetModules();
   });
 });
