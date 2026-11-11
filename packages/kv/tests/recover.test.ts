@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { IdBWal } from "../src/idb/wal.js";
-import { reconcile } from "../src/recover.js";
+import { reconcile, recordEmpty } from "../src/recover.js";
 import { crc32 } from "../src/store/crc32.js";
 import { publishGeneration, type GenerationMeta } from "../src/store/generation.js";
 import {
@@ -289,12 +289,28 @@ describe("reconcile", () => {
     expect(emptied).toBeGreaterThan(0);
   });
 
+  it("never falls back to a manifest from before a destroy", async () => {
+    // A power loss after a destroy and a flush can keep the flush's commit,
+    // lose its manifest, and lose the destroy's removal of manifest 1.
+    const wal = await walWith(2);
+    const fs = new MemoryFs();
+    await manifest(fs, 1, 2, ["l0/old.sst"]);
+    await wal.advanceIngested(2, 1);
+    await recordEmpty(wal, fs);
+    const after = await wal.appendAfter(0, () => ({ ops: put(9), result: undefined }));
+    await wal.advanceIngested(after!.seq!, 2);
+
+    expect((await reconcile(wal, fs, undefined)).generation).toBe(0);
+    expect(await seqs(wal)).toEqual([]);
+    wal.close();
+  });
+
   it("writes nothing when the WAL changed since it was read", async () => {
     const wal = await walWith(1);
     const stale = await wal.meta();
     await wal.append(put(2));
     expect(await wal.adopt(stale, 0, 0, 0, 0)).toBe(false);
-    expect(await wal.meta()).toEqual({ head: 2, ingestedThrough: 0, generation: undefined, top: 0 });
+    expect(await wal.meta()).toEqual({ head: 2, ingestedThrough: 0, generation: undefined, top: 0, destroyedTop: 0 });
     wal.close();
   });
 });

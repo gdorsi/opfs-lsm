@@ -97,6 +97,7 @@ export type ClientToHost =
       readonly compactionMemoryBytes?: number;
     }
   | { readonly type: "unwatch"; readonly name: string }
+  | { readonly type: "destroy"; readonly id: number; readonly name: string }
   | { readonly type: "stats"; readonly id: number; readonly name: string };
 
 export type HostToClient =
@@ -112,7 +113,8 @@ export type HostToClient =
       /** The `OpfsLsmError` code, so the tab rethrows the same class. */
       readonly code?: ErrorCode;
     }
-  | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats };
+  | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats }
+  | { readonly type: "destroy-ok"; readonly id: number };
 
 export type IngestClient = {
   /**
@@ -128,6 +130,8 @@ export type IngestClient = {
   watch(name: string, policy: WatchPolicy): void;
   /** This tab no longer needs the host to watch `name`. */
   unwatch(name: string): void;
+  /** Delete every file and WAL record of `name`. See `Db.dangerousDestroy`. */
+  destroy(name: string): Promise<void>;
   /** Host counters for `name`. Test and bench only. */
   stats(name: string): Promise<HostStats>;
   close(): void;

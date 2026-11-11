@@ -237,6 +237,18 @@ export interface Db {
    */
   sync(): Promise<void>;
   close(): Promise<void>;
+  /**
+   * Delete every record of this database, in every tab. Seen from the log,
+   * it is one write that deletes every key: writes acked before it are
+   * gone, and writes after it land in the empty database. Every handle
+   * stays open; this one reads empty once it resolves, other tabs at their
+   * next `sync`, and each reports a `gap` change event. One IndexedDB
+   * transaction, on disk before the removes start, empties the database.
+   * Then the host removes every run file no tab still reads, and the rest
+   * once their tabs move on. Waits for a flush or compaction step already
+   * running. `destroyDb` does the same without opening the database.
+   */
+  dangerousDestroy(): Promise<void>;
 }
 
 const defaultFsByName = new Map<string, MemoryFs>();
@@ -304,20 +316,21 @@ export async function openDb(options: OpenOptions): Promise<Db> {
   return openDbWith(options);
 }
 
-/** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
-export function openDbWith(options: HarnessOpenOptions): Promise<Db> {
-  return timed(options.trace, "open", () => openTraced(options));
-}
-
-async function openTraced(options: HarnessOpenOptions): Promise<Db> {
-  const trace = options.trace;
-  const name = checkDbName(options.name);
-  // Started first, so the module loads while the rest of open runs.
-  const engine = timed(trace, "wasm", ensureEngine);
-  // Awaited last: a throw before that must not leave its rejection unhandled.
-  engine.catch(() => undefined);
-  const caps = memtableCaps(options.memtableBytes);
-
+/**
+ * The fs and ingest client for `name`: the ones `options` gives, else OPFS
+ * and the package SharedWorker, else an in-process host on `options.fs` or a
+ * memory fs. `walOpen` is set when IndexedDB opened alongside OPFS.
+ */
+async function connect(
+  name: DbName,
+  options: HarnessOpenOptions,
+  trace: OpenTrace | undefined,
+): Promise<{
+  readonly fs: AsyncFs;
+  readonly ingest: IngestClient;
+  readonly ownsIngestClient: boolean;
+  readonly walOpen: Promise<IdBWal> | undefined;
+}> {
   let walOpen: Promise<IdBWal> | undefined;
   let fs = options.fs;
   let ingest = options.ingest;
@@ -355,6 +368,45 @@ async function openTraced(options: HarnessOpenOptions): Promise<Db> {
     }
   }
   ingest ??= localIngest(name, fs);
+  return { fs, ingest, ownsIngestClient, walOpen };
+}
+
+/**
+ * Delete every record of database `name` without opening it, so it works
+ * when `openDb` throws `CorruptDatabaseError`. Open handles on it stay
+ * open, as after `dangerousDestroy`.
+ */
+export async function destroyDb(name: string): Promise<void> {
+  return destroyDbWith({ name });
+}
+
+/** `destroyDb` with the harness options of `openDbWith`. */
+export async function destroyDbWith(options: HarnessOpenOptions): Promise<void> {
+  const name = checkDbName(options.name);
+  const { ingest, ownsIngestClient, walOpen } = await connect(name, options, undefined);
+  void walOpen?.then((w) => w.close(), () => undefined);
+  try {
+    await ingest.destroy(name);
+  } finally {
+    if (ownsIngestClient) ingest.close();
+  }
+}
+
+/** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
+export function openDbWith(options: HarnessOpenOptions): Promise<Db> {
+  return timed(options.trace, "open", () => openTraced(options));
+}
+
+async function openTraced(options: HarnessOpenOptions): Promise<Db> {
+  const trace = options.trace;
+  const name = checkDbName(options.name);
+  // Started first, so the module loads while the rest of open runs.
+  const engine = timed(trace, "wasm", ensureEngine);
+  // Awaited last: a throw before that must not leave its rejection unhandled.
+  engine.catch(() => undefined);
+  const caps = memtableCaps(options.memtableBytes);
+
+  const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, trace);
   // Wrapped after the local host got the bare fs, so its IO counts only on the host.
   const tabFs = new CountingFs(fs);
 
@@ -1004,6 +1056,15 @@ class DbImpl implements Db {
     const result = await this.ingestClient.ingest(this.name, waitForCompaction);
     await this.sync();
     return result;
+  }
+
+  async dangerousDestroy(): Promise<void> {
+    this.ensureOpen();
+    await this.ingestClient.destroy(this.name);
+    // Moving to the empty generation lets go of this tab's runs, and the
+    // compaction pass the ingest starts reclaims them.
+    await this.sync();
+    await this.ingestClient.ingest(this.name, true);
   }
 
   async close(): Promise<void> {

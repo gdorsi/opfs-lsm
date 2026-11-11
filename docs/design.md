@@ -32,6 +32,7 @@ IndexedDB  "opfs-lsm-wal/<name>"
              "ingestedThrough" -> seq  every seq <= this is in an SST
              "generation"      -> n    the manifest tabs read
              "topGeneration"   -> n    highest manifest number recovery has seen
+             "destroyedTop"    -> n    manifests numbered up to this predate a destroy
 
 OPFS  opfs-lsm/<name>/
   ├── m/<generation, 16 digits>.mft    manifests
@@ -300,37 +301,11 @@ Tabs do not check the CRC. The host checks it when it reads a run as a compactio
 
 # Manifest format
 
-```
-| u32 magic       "OLGN" (0x4f4c474e)                                        |
-| u32 version     3                                                          |
-| u64 generation                                                             |
-| u64 tombstoneSeq                                                           |
-| u64 through                                                                |
-| u32 run count                                                              |
-| run 0                                                                      |
-| ...                                                                        |
-| u32 crc32       of every byte before it                                    |
-
-per run:
-| u16 path length                                                            |
-| path            UTF-8, relative to the database root                       |
-| u32 bytes       size of the run file                                       |
-| u8 has range                                                               |
-| u32 length, smallest key, u32 length, largest key   (if has range)         |
-```
-
-`tombstoneSeq` is the highest seq of any delete that a bottom-level compaction dropped.
+A manifest, `m/<generation>.mft`, lists the runs of one generation. Its byte layout is in
+[manifest-format.md](manifest-format.md).
 
 `through` is the seq the runs reach. The runs hold the fold of every seq up to it and no seq
 past it. An ingest sets it to the last seq it folded. A compaction keeps the value of its base.
-
-`bytes` and the key range let the compaction planner size and route levels without opening a
-file. The level of a run is in its path.
-
-Runs are listed L0 first, newest first. Each deeper level follows, with its runs sorted by
-smallest key. Reads use that order directly.
-
-A reader rejects any other version as corrupt.
 
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
@@ -546,6 +521,37 @@ under the exclusive section, the host:
 
 A pass runs up to 8 steps. A request that arrives during a pass starts another pass.
 
+# Destroy
+
+`db.dangerousDestroy()` and `destroyDb(name)` empty the database. Seen from the log, a destroy
+is one entry that deletes every key: the writes acked before it are gone, and the writes after
+it land in the empty database. `destroyDb` does not open the database, so it also empties one
+that `openDb` refuses as corrupt. The host:
+
+1. Takes the compaction lock, then the ingest lock: the order a compaction pass takes them in.
+   No flush or merge publishes while it holds them, and a merge already running stops after its
+   current step.
+2. Commits in one IndexedDB transaction at durability `"strict"`, which completes only once it
+   is on disk. It drops every WAL record and records generation 0, with `head` and
+   `ingestedThrough` one past every seq the WAL or a manifest on disk names, and
+   `topGeneration` and `destroyedTop` at the highest manifest number in use.
+3. Posts `{ kind: "ingest" }`. Each tab installs generation 0 at its next `sync` or append, as
+   it would any generation, and its memtable drops every row. Handles stay open, and each
+   reports a `gap` change event.
+4. Removes every manifest, then sweeps: against generation 0, every run is retired. Both skip
+   while a tab holds the reclaim lock, and the sweep skips each run a tab still holds open, as
+   any sweep does. A tab holds its runs until it installs generation 0, or until a `view` that
+   started before the destroy ends, and that view reads the old data meanwhile.
+
+`dangerousDestroy` then syncs its own tab, which lets go of its runs, and asks the host for a
+flush, whose compaction pass sweeps them. The runs other tabs held go at a later pass.
+
+The transaction is the commit point. After it, recovery adopts no manifest on disk, now or
+after later flushes: rule 1 needs a `through` past `head`, rule 2 keeps the recorded generation,
+and rule 3 skips every manifest numbered up to `destroyedTop`. So the files are garbage whether
+or not step 4 finishes. Since the commit is on disk before step 4 starts, no power loss keeps a
+remove and loses the commit.
+
 # Change events
 
 `db.changes(listener)` reports each WAL record that a handle applies to its memtable, with its
@@ -560,9 +566,9 @@ ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
 
 # Recovery
 
-Writes go to two stores, and nothing orders one against the other on disk. Neither an IndexedDB
-commit nor an OPFS `close` is an fsync. After a power loss, each store keeps a prefix of its own
-completed writes, and the two prefixes are independent. Acked writes may be lost. The database
+Writes go to two stores, and nothing orders one against the other on disk. No OPFS `close` and no
+IndexedDB commit is an fsync, except the commit of a destroy. After a power loss, each store keeps
+a prefix of its own completed writes, and the two prefixes are independent. Acked writes may be lost. The database
 must still open, and read the fold of one prefix of the log.
 
 ## The invariant
@@ -585,8 +591,9 @@ prefix. Without those records, the manifest alone is one.
 1. **OPFS kept seqs that IndexedDB lost.** The newest intact manifest that is numbered past the
    recorded one and whose `through` is past `head`. It is a longer prefix than the WAL.
 2. **Otherwise the recorded manifest**, if it is intact.
-3. **Otherwise IndexedDB recorded a manifest that OPFS lost.** The newest intact manifest, or
-   the empty generation 0. A manifest file that is missing or empty counts as lost.
+3. **Otherwise IndexedDB recorded a manifest that OPFS lost.** The newest intact manifest
+   numbered past `destroyedTop`, or the empty generation 0. A manifest file that is missing or
+   empty counts as lost.
 
 In a running database only rule 2 applies. A manifest newer than the recorded one is a leftover
 of a crash between a publish and its IndexedDB commit. Its seqs are still in the WAL, so it is
@@ -639,6 +646,7 @@ A **process crash** keeps every completed write of both stores. Every acked writ
 | Manifest written, before the IndexedDB commit | The manifest is ignored. The records are in the WAL, and the next flush folds them again. |
 | IndexedDB commit, before reclaim | Old manifests and runs stay until a later pass removes them. |
 | Compaction outputs written, before install | The outputs are garbage. |
+| Destroy's transaction, before its removes finish | The database is empty. The files left are garbage. |
 
 The first sweep of a new host removes every run that the recorded manifest does not list.
 
@@ -651,6 +659,8 @@ of OPFS, independently.
 | Not the commit of a compaction | Its manifest and its removals | Rule 3. The new manifest is intact and has the same `through`. Nothing is lost. |
 | Some appends, not the flush after them | The manifest of that flush | Rule 1. `head` moves to its `through`. |
 | Nothing | Some manifests | Rule 3 records the newest intact one, and `head` moves past its seqs. |
+| A destroy's transaction | Any prefix of its removes and of later ops | No manifest from before the destroy is adopted. The database holds a prefix of the writes after it, or none. |
+| Not a destroy's transaction | None of its removes | The commit was not on disk, so no remove had started. As if the destroy had not run. |
 
 # Limits
 
@@ -680,7 +690,8 @@ A tab reads in TypeScript so that a `get` never posts a message. The wasm module
    An aborted transaction reverts the key generator of the store.
 2. An OPFS `createWritable().close()` publishes the whole file atomically.
 3. Each store keeps the order of its own completed writes across a power loss, so a prefix of
-   them survives. Nothing orders IndexedDB against OPFS.
+   them survives. Nothing orders IndexedDB against OPFS, except that an IndexedDB transaction
+   at durability `"strict"` completes only once it is on disk.
 4. A SharedWorker with the same URL and name is shared by every tab of the origin.
 5. Web Locks are shared by the tabs and workers of an origin, and the browser releases the
    locks of a context when it goes away.

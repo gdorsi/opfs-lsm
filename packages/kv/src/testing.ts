@@ -4,6 +4,7 @@
  */
 export {
   openDbWith as openHarnessDb,
+  destroyDbWith as destroyHarnessDb,
   __resetMemoryFsForTests,
   type HarnessOpenOptions,
   type OpenSpan,

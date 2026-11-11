@@ -1,5 +1,6 @@
 export {
   openDb,
+  destroyDb,
   prefixBound,
   type OpenOptions,
   type Db,

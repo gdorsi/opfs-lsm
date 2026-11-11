@@ -44,7 +44,8 @@ export type Trusted = number | "recorded" | undefined;
  *    the check for a generation the caller has loaded or published itself,
  *    or for whatever is recorded when it is "recorded".
  * 3. Otherwise, when the recorded manifest is missing (or none is
- *    recorded), the newest intact manifest, or the empty generation 0.
+ *    recorded), the newest intact manifest numbered past `destroyedTop`, or
+ *    the empty generation 0. The ones at or below it predate a destroy.
  *
  * Corruption is not a power loss, and recovery never turns it into lost
  * data: it throws `CorruptDatabaseError` and writes nothing, so no WAL
@@ -67,20 +68,63 @@ export async function reconcile(
   fs: AsyncFs,
   trusted: Trusted,
 ): Promise<Reconciled> {
-  for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
-    const [meta, numbers] = await Promise.all([wal.meta(), manifestNumbers(fs)]);
-    const top = Math.max(numbers[0] ?? 0, meta.top, meta.generation ?? 0);
+  return untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
     const pick = await choose(fs, meta, numbers, trusted);
     if (!pick) return { generation: meta.generation!, top };
     // No seq any manifest on disk names is handed out again, so a manifest
     // that is not intact now never becomes intact with other writes.
-    let floor = pick.through;
-    for (const n of numbers) floor = Math.max(floor, (await readManifest(fs, n))?.through ?? 0);
-    if (await wal.adopt(meta, pick.generation, pick.through, floor, top)) {
-      return { generation: pick.generation, top };
-    }
+    const floor = await highestThrough(fs, numbers, pick.through);
+    const adopted = await wal.adopt(meta, pick.generation, pick.through, floor, top);
+    return adopted ? { generation: pick.generation, top } : undefined;
+  });
+}
+
+/**
+ * Empty the database in one IndexedDB transaction, the commit point of
+ * `dangerousDestroy` (design.md, "Destroy"): drop every WAL record and
+ * record generation 0 with `head` and `ingestedThrough` one past every seq
+ * the WAL or a manifest on disk names, and `destroyedTop` at the highest
+ * manifest number in use. Recovery then adopts no manifest on disk, now or
+ * after later flushes: rule 1 needs a `through` past the head, rule 2 keeps
+ * the recorded generation, and rule 3 skips every number up to
+ * `destroyedTop`. So the files are garbage whether or not they are removed
+ * after. The commit is on disk before it resolves, so no power loss keeps
+ * a remove that follows and loses it.
+ */
+export async function recordEmpty(wal: IdBWal, fs: AsyncFs): Promise<void> {
+  await untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
+    const floor = await highestThrough(fs, numbers, meta.head);
+    return (await wal.empty(meta, floor + 1, top)) || undefined;
+  });
+}
+
+/** What `meta` and `m/` held when a writer read them, and the number new manifests go past. */
+type Seen = { readonly meta: WalMeta; readonly numbers: readonly number[]; readonly top: number };
+
+/**
+ * Read `meta` and `m/`, then run `record`, which adopts against them.
+ * Undefined from `record` means another tab or host changed `meta` first,
+ * so read and run it again.
+ */
+async function untilAdopted<T>(
+  wal: IdBWal,
+  fs: AsyncFs,
+  record: (seen: Seen) => Promise<T | undefined>,
+): Promise<T> {
+  for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
+    const [meta, numbers] = await Promise.all([wal.meta(), manifestNumbers(fs)]);
+    const top = Math.max(numbers[0] ?? 0, meta.top, meta.generation ?? 0);
+    const out = await record({ meta, numbers, top });
+    if (out !== undefined) return out;
   }
-  throw new CorruptDatabaseError("the WAL kept changing while recovery read it");
+  throw new CorruptDatabaseError("the WAL kept changing while it was read");
+}
+
+/** The highest `through` of the manifests `numbers`, and at least `from`. */
+async function highestThrough(fs: AsyncFs, numbers: readonly number[], from: number): Promise<number> {
+  let floor = from;
+  for (const n of numbers) floor = Math.max(floor, (await readManifest(fs, n))?.through ?? 0);
+  return floor;
 }
 
 /** The manifest to record instead of the recorded one, or undefined to keep it. */
@@ -110,6 +154,7 @@ async function choose(
     }
   }
   for (const n of numbers) {
+    if (n <= meta.destroyedTop) break;
     const m = await probeManifest(fs, n);
     if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${n} does not decode`);
     if (m !== "missing" && (await isIntact(fs, m))) return m;

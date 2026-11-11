@@ -28,7 +28,14 @@ export type IdbMutation =
   | { readonly kind: "delete"; readonly store: string; readonly key: IDBValidKey | IDBKeyRange };
 
 export type DurableOp =
-  | { readonly store: "idb"; readonly i: number; readonly label: string; readonly muts: readonly IdbMutation[] }
+  | {
+      readonly store: "idb";
+      readonly i: number;
+      readonly label: string;
+      readonly muts: readonly IdbMutation[];
+      /** Committed with durability "strict": on disk before any later op starts. */
+      readonly strict?: true;
+    }
   | { readonly store: "opfs"; readonly i: number; readonly kind: "publish"; readonly path: string; readonly bytes: Uint8Array }
   | { readonly store: "opfs"; readonly i: number; readonly kind: "touch" | "remove"; readonly path: string };
 

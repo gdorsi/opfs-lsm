@@ -26,6 +26,11 @@ const META_GENERATION = "generation";
  * this, so a number is never reused for other runs.
  */
 const META_TOP = "topGeneration";
+/**
+ * The `topGeneration` the last destroy recorded. Manifests numbered at or
+ * below it hold writes from before that destroy, so recovery adopts none.
+ */
+const META_DESTROYED_TOP = "destroyedTop";
 const IDB_VERSION = 1;
 
 /** The `meta` keys that say which log prefix the WAL and the manifest hold. */
@@ -36,6 +41,8 @@ export type WalMeta = {
   readonly generation: number | undefined;
   /** The highest manifest number recovery has seen, 0 for none. */
   readonly top: number;
+  /** The `topGeneration` the last destroy recorded, 0 for none. */
+  readonly destroyedTop: number;
 };
 
 /** What a tab needs to bring its memtable up to the WAL head. */
@@ -183,6 +190,28 @@ async function readHead(tx: IDBTransaction): Promise<number> {
     ),
   ]);
   return Math.max(floor, last);
+}
+
+async function readMeta(tx: IDBTransaction): Promise<WalMeta> {
+  const meta = tx.objectStore(META_STORE);
+  const [head, ingestedThrough, generation, top, destroyedTop] = await Promise.all([
+    readHead(tx),
+    metaNum(meta, META_INGESTED),
+    metaOpt(meta, META_GENERATION),
+    metaNum(meta, META_TOP),
+    metaNum(meta, META_DESTROYED_TOP),
+  ]);
+  return { head, ingestedThrough, generation, top, destroyedTop };
+}
+
+function sameMeta(a: WalMeta, b: WalMeta): boolean {
+  return (
+    a.head === b.head &&
+    a.ingestedThrough === b.ingestedThrough &&
+    a.generation === b.generation &&
+    a.top === b.top &&
+    a.destroyedTop === b.destroyedTop
+  );
 }
 
 /** Seqs per `getAll`. Every chunk of a read is in flight at once. */
@@ -481,20 +510,33 @@ export class IdBWal {
   }
 
   async meta(): Promise<WalMeta> {
-    const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
+    return readMeta(this.db.transaction([WAL_STORE, META_STORE], "readonly"));
+  }
+
+  /**
+   * Empty the database: drop every record, and record generation 0 with
+   * `head` and `ingestedThrough` at `head`, and `topGeneration` and
+   * `destroyedTop` at `top`. Writes nothing and returns false unless `meta`
+   * still reads `expect`. Resolves once the commit is on disk (durability
+   * "strict"), so no power loss keeps a file removed after it and loses it.
+   */
+  async empty(expect: WalMeta, head: number, top: number): Promise<boolean> {
+    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite", { durability: "strict" });
+    const done = txDone(tx);
+    const now = await readMeta(tx);
+    if (!sameMeta(now, expect)) {
+      await done;
+      return false;
+    }
     const meta = tx.objectStore(META_STORE);
-    const [head, ingestedThrough, generation, top] = await Promise.all([
-      readHead(tx),
-      metaNum(meta, META_INGESTED),
-      metaOpt(meta, META_GENERATION),
-      metaNum(meta, META_TOP),
-    ]);
-    return {
-      head,
-      ingestedThrough,
-      generation,
-      top,
-    };
+    tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(now.head));
+    meta.put(head, META_HEAD);
+    meta.put(head, META_INGESTED);
+    meta.put(0, META_GENERATION);
+    meta.put(top, META_TOP);
+    meta.put(top, META_DESTROYED_TOP);
+    await done;
+    return true;
   }
 
   /**
@@ -525,21 +567,12 @@ export class IdBWal {
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
     const wal = tx.objectStore(WAL_STORE);
-    const [head, ingested, recorded, knownTop] = await Promise.all([
-      readHead(tx),
-      metaNum(meta, META_INGESTED),
-      metaOpt(meta, META_GENERATION),
-      metaNum(meta, META_TOP),
-    ]);
-    if (
-      head !== expect.head ||
-      knownTop !== expect.top ||
-      ingested !== expect.ingestedThrough ||
-      recorded !== expect.generation
-    ) {
+    const now = await readMeta(tx);
+    if (!sameMeta(now, expect)) {
       await done;
       return false;
     }
+    const { head, ingestedThrough: ingested, top: knownTop } = now;
     const above =
       head > through
         ? await reqToPromise(wal.getAll(IDBKeyRange.bound(through + 1, head)))

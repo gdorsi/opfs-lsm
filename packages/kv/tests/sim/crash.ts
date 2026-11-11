@@ -123,6 +123,7 @@ export type Step =
   | { readonly del: string }
   | { readonly batch: readonly ({ readonly put: string; readonly value: string } | { readonly del: string })[] }
   | { readonly ingest: true }
+  | { readonly destroy: true }
   | { readonly reopen: true };
 
 const utf = (s: string) => new TextEncoder().encode(s);
@@ -151,6 +152,10 @@ export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): 
         log.append(ops);
       } else if ("ingest" in step) {
         await ingest(db);
+      } else if ("destroy" in step) {
+        // Destroy takes one seq: a delete of every key written before it.
+        await db.dangerousDestroy();
+        log.append(log.keys().map((key) => ({ type: "del" as const, key })));
       } else {
         await db.close();
         db = await t.open();
@@ -175,23 +180,36 @@ export function processCut(ops: readonly DurableOp[], k: number): Cut {
   return { idb, opfs };
 }
 
-/** Every `(idb, opfs)` prefix pair, or `max` of them drawn with `random` when there are more. */
+/**
+ * Every `(idb, opfs)` prefix pair a power loss can leave, or `max` of them
+ * drawn with `random` when there are more. A strict IndexedDB commit is on
+ * disk before the next op starts, so a pair that keeps an OPFS op after it
+ * keeps it too.
+ */
 export function powerCuts(ops: readonly DurableOp[], max: number, random: () => number): Cut[] {
-  const nIdb = ops.filter((o) => o.store === "idb").length;
-  const nOpfs = ops.length - nIdb;
-  const all = (nIdb + 1) * (nOpfs + 1);
-  if (all <= max) {
-    const out: Cut[] = [];
-    for (let idb = 0; idb <= nIdb; idb++) for (let opfs = 0; opfs <= nOpfs; opfs++) out.push({ idb, opfs });
-    return out;
+  const idbOps = ops.filter((o) => o.store === "idb");
+  const opfsOps = ops.filter((o) => o.store === "opfs");
+  const nIdb = idbOps.length;
+  const nOpfs = opfsOps.length;
+  /** The fewest IndexedDB commits a pair keeping `opfs` OPFS ops keeps. */
+  const minIdb = (opfs: number): number => {
+    const last = opfs === 0 ? -1 : opfsOps[opfs - 1]!.i;
+    let need = 0;
+    for (const [k, op] of idbOps.entries()) if (op.strict && op.i < last) need = k + 1;
+    return need;
+  };
+  const possible: Cut[] = [];
+  for (let opfs = 0; opfs <= nOpfs; opfs++) {
+    for (let idb = minIdb(opfs); idb <= nIdb; idb++) possible.push({ idb, opfs });
   }
+  if (possible.length <= max) return possible;
   const seen = new Set<number>();
   const out: Cut[] = [];
   while (out.length < max) {
-    const i = Math.floor(random() * all);
+    const i = Math.floor(random() * possible.length);
     if (seen.has(i)) continue;
     seen.add(i);
-    out.push({ idb: Math.floor(i / (nOpfs + 1)), opfs: i % (nOpfs + 1) });
+    out.push(possible[i]!);
   }
   return out;
 }

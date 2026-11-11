@@ -13,7 +13,7 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | **WalOverSst** | Uningested WAL wins over SST (including tombstones). | Stale SST value or resurrected key after delete. |
 | **ViewPin** | `view()` / `ViewSnapshotImpl` get ignores WAL appends after the pin. | Snapshot is not stable mid-callback. |
 | **CompactPreserve** | Newest-first SST merge / compaction keeps the same per-key visible entry as layered get. | Compact drops or resurrects keys. |
-| **PowerPrefix** | After any power loss (IndexedDB and OPFS each keep a prefix of their own writes, unordered), the database opens and reads the writes of one log prefix; a process crash keeps every acked write; recovery leaves a healthy database. No power-loss state is refused as corrupt; a missing run of the recorded manifest is refused with nothing written, unless a manifest holding every ingested seq stands in (CorruptRefuse). | Database will not open, reads a state no prefix of the log produced, or recovery drops data still on disk. |
+| **PowerPrefix** | After any power loss (IndexedDB and OPFS each keep a prefix of their own writes, unordered), the database opens and reads the state after one log prefix (a destroy is an entry that deletes every write before it, and once a file op after its strict commit survives, the read is from after it: DestroyHolds); a process crash keeps every acked write; recovery leaves a healthy database. No power-loss state is refused as corrupt; a missing run of the recorded manifest is refused with nothing written, unless a manifest holding every ingested seq stands in (CorruptRefuse). | Database will not open, reads a state no prefix of the log produced, or recovery drops data still on disk. |
 
 ## When to run
 
@@ -23,7 +23,7 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | `store/read.ts` `pointGet`, `db.ts` `readKey` / `get` | `formal:wal-over-sst` + ingest |
 | `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
 | `store/read.ts` `latestSstEntry`, the merge session (`crates/engine-core/src/merge.rs`) and its oracle (`tests/oracle/merge-ts.ts`), `host/compact.ts` | `formal:compact-preserve` |
-| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `HostedDb.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair | `formal:power-loss` |
+| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `HostedDb.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair, destroy (`recordEmpty`, `IdBWal.empty`, `HostedDb.destroy`, `destroyedTop` in rule 3) | `formal:power-loss` |
 | Unknown / several areas | **`formal:kv`** (all) |
 
 ## Tool and why
@@ -68,9 +68,9 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | WalOverSst | `pointGet` |
 | ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
 | CompactPreserve | `latestSstEntry`, the pick of the merge session and its oracle (`before` in `merge.rs`, `Session.run` in `tests/oracle/merge-ts.ts`) |
-| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `HostedDb.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
+| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `HostedDb.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, destroy committing generation 0 past every seq at strict durability before it removes a file, recovery skipping manifests up to `destroyedTop`, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
 
-**Sync commit:** `0aad344c5784b9302cf83f0fba62d1f35b19e543` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
+**Sync commit:** `8138007237b19dd658127df296f9e65294e3a309` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
 ## Intentional product change
 
