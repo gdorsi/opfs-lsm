@@ -123,6 +123,7 @@ export type Step =
   | { readonly del: string }
   | { readonly batch: readonly ({ readonly put: string; readonly value: string } | { readonly del: string })[] }
   | { readonly ingest: true }
+  | { readonly destroy: true }
   | { readonly reopen: true };
 
 const utf = (s: string) => new TextEncoder().encode(s);
@@ -151,6 +152,11 @@ export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): 
         log.append(ops);
       } else if ("ingest" in step) {
         await ingest(db);
+      } else if ("destroy" in step) {
+        // Destroy takes one seq: a delete of every key written before it.
+        await db.dangerousDestroy();
+        log.append(log.keys().map((key) => ({ type: "del" as const, key })));
+        db = await t.open();
       } else {
         await db.close();
         db = await t.open();

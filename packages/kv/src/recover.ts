@@ -83,6 +83,27 @@ export async function reconcile(
   throw new CorruptDatabaseError("the WAL kept changing while recovery read it");
 }
 
+/**
+ * Empty the database in one IndexedDB transaction, the commit point of
+ * `dangerousDestroy` (design.md, "Destroy"): drop every WAL record and
+ * record generation 0 with `head` and `ingestedThrough` one past every seq
+ * the WAL or a manifest on disk names. Recovery then adopts no manifest
+ * on disk: rule 1 needs a `through` past the head, and rule 2 keeps the
+ * recorded generation 0. So the files are garbage whether or not they are
+ * removed after, and new manifests number past every one of them.
+ */
+export async function recordEmpty(wal: IdBWal, fs: AsyncFs): Promise<void> {
+  for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
+    const meta = await wal.meta();
+    const numbers = await manifestNumbers(fs);
+    const top = Math.max(numbers[0] ?? 0, meta.top, meta.generation ?? 0);
+    let floor = meta.head;
+    for (const n of numbers) floor = Math.max(floor, (await readManifest(fs, n))?.through ?? 0);
+    if (await wal.adopt(meta, 0, 0, floor + 1, top)) return;
+  }
+  throw new CorruptDatabaseError("the WAL kept changing while destroy read it");
+}
+
 /** The manifest to record instead of the recorded one, or undefined to keep it. */
 async function choose(
   fs: AsyncFs,

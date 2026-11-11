@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClosedError, type Db } from "../src/index.js";
 import {
   EngineHost,
   MemoryFs,
+  type AsyncFs,
   createLocalIngestClient,
   ingest,
   openHarnessDb,
@@ -17,9 +18,9 @@ afterEach(async () => {
   await Promise.all(opened.splice(0).map((db) => db.close()));
 });
 
-function storage() {
+function storage(hostFs?: (fs: MemoryFs) => AsyncFs) {
   const fs = new MemoryFs();
-  const client = createLocalIngestClient(new EngineHost(() => fs));
+  const client = createLocalIngestClient(new EngineHost(() => hostFs?.(fs) ?? fs));
   const open = async () => {
     const db = await openHarnessDb({ name: NAME, fs, ingest: client, maxWalBytes: 1 << 30 });
     opened.push(db);
@@ -80,5 +81,37 @@ describe("dangerousDestroy", () => {
     await after.close();
 
     expect(await keys(await open())).toEqual(["new"]);
+  });
+
+  it("empties the database when removing its files fails, and closes every handle", async () => {
+    let failing = true;
+    const { open } = storage((fs) => ({
+      read: (path, offset, length) => fs.read(path, offset, length),
+      open: (path) => fs.open(path),
+      list: (dir) => fs.list(dir),
+      remove: (path) => fs.remove(path),
+      removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
+      create: (path) => fs.create(path),
+      removeTree: async (path) => {
+        if (failing && path !== "m") throw new Error("disk gone");
+        await fs.removeTree(path);
+      },
+    }));
+    const a = await open();
+    const b = await open();
+    for (let i = 0; i < 20; i++) await a.put(enc.encode(`k-${i}`), enc.encode("x"));
+    await ingest(a);
+    await a.put(enc.encode("wal-only"), enc.encode("y"));
+
+    await expect(a.dangerousDestroy()).rejects.toThrow("disk gone");
+
+    await expect(a.get(enc.encode("wal-only"))).rejects.toBeInstanceOf(ClosedError);
+    await vi.waitFor(() => expect(b.get(enc.encode("wal-only"))).rejects.toBeInstanceOf(ClosedError));
+    failing = false;
+    const reopened = await open();
+    expect(await keys(reopened)).toEqual([]);
+    await reopened.put(enc.encode("new"), enc.encode("1"));
+    await ingest(reopened);
+    expect(await keys(reopened)).toEqual(["new"]);
   });
 });

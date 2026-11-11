@@ -77,7 +77,7 @@ function l0Fs() {
     remove: (path) => inner.remove(path),
     open: (path) => inner.open(path),
     removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
-    removeAll: () => inner.removeAll(),
+    removeTree: (p) => inner.removeTree(p),
     create: async (path) => {
       if (!path.startsWith("l0/")) return inner.create(path);
       if (state.fail) throw new Error("disk full");

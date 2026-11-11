@@ -378,6 +378,9 @@ reads the tail again.
 After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and
 tabs call `sync`.
 
+After `dangerousDestroy`, the tab that called it posts `{ kind: "destroyed" }`, and every other
+tab closes its handle on the database (see [Destroy](#destroy)).
+
 ## Loading a generation under churn
 
 The host removes the runs of a replaced generation once no tab holds them open, and a tab holds
@@ -546,6 +549,33 @@ under the exclusive section, the host:
 
 A pass runs up to 8 steps. A request that arrives during a pass starts another pass.
 
+# Destroy
+
+`db.dangerousDestroy()` asks the host to destroy the database, then posts `destroyed` and
+closes the handle. It posts and closes when the host fails too, so every tab ends in the same
+state either way. The host:
+
+1. Takes the compaction lock, then the ingest lock: the order a compaction pass takes them in.
+   No flush or merge publishes while it holds them, and a merge already running stops after its
+   current step.
+2. Commits the destroy in one IndexedDB transaction (`recordEmpty`). It drops every WAL record
+   and records generation 0, with `head` and `ingestedThrough` one past every seq the WAL or a
+   manifest on disk names, and `topGeneration` past every manifest number. Seen from the log,
+   destroy is one entry that deletes every key.
+3. Removes every file: one recursive remove of `m/`, then one per other top-level directory.
+   The cost does not grow with the data.
+
+The transaction is the commit point. After it, recovery adopts no manifest on disk: rule 1 needs
+a `through` past `head`, and rule 2 keeps the recorded generation 0, which is always intact. So
+the files are garbage whether or not step 3 finishes. If it fails or is cut short, the next
+sweep removes the runs it left, and the next flush records a manifest numbered past the
+manifests it left, which reclaim then removes. Manifests go first so that a power loss that
+keeps a prefix of the removes never leaves a manifest whose runs are gone.
+
+A tab that opens during a destroy reads `meta` before or after the transaction. Before it, the
+tab holds the old database until `destroyed` closes it, or until its next `sync` follows the
+tail to generation 0. After it, the tab opens an empty database.
+
 # Change events
 
 `db.changes(listener)` reports each WAL record that a handle applies to its memtable, with its
@@ -639,6 +669,7 @@ A **process crash** keeps every completed write of both stores. Every acked writ
 | Manifest written, before the IndexedDB commit | The manifest is ignored. The records are in the WAL, and the next flush folds them again. |
 | IndexedDB commit, before reclaim | Old manifests and runs stay until a later pass removes them. |
 | Compaction outputs written, before install | The outputs are garbage. |
+| Destroy's transaction, before its removes finish | The database is empty. The files left are garbage. |
 
 The first sweep of a new host removes every run that the recorded manifest does not list.
 
@@ -651,6 +682,8 @@ of OPFS, independently.
 | Not the commit of a compaction | Its manifest and its removals | Rule 3. The new manifest is intact and has the same `through`. Nothing is lost. |
 | Some appends, not the flush after them | The manifest of that flush | Rule 1. `head` moves to its `through`. |
 | Nothing | Some manifests | Rule 3 records the newest intact one, and `head` moves past its seqs. |
+| A destroy's transaction | Any prefix of its removes | Rule 2 keeps generation 0. The database is empty. |
+| Not a destroy's transaction | Some of its removes | Rule 1, 2 or 3 as if the destroy had not run. A manifest left has all its runs, since `m/` goes first. |
 
 # Limits
 

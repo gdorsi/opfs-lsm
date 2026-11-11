@@ -168,8 +168,13 @@ export class FaultFs implements AsyncFs {
     });
   }
 
-  removeAll() {
-    return this.site("fs-write", "remove all", () => this.inner.removeAll());
+  /** One traced remove per file, so a crash can land between any two. */
+  async removeTree(path: string): Promise<void> {
+    if ((await this.inner.read(path, 0, 0)) !== undefined) {
+      await this.remove(path);
+      return;
+    }
+    for (const name of await this.inner.list(path)) await this.removeTree(`${path}/${name}`);
   }
 
   create(path: string): Promise<FileWriter> {

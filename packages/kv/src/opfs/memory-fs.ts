@@ -76,8 +76,10 @@ export class MemoryFs implements AsyncFs {
     this.published.delete(path);
   }
 
-  async removeAll(): Promise<void> {
-    this.published.clear();
+  async removeTree(path: string): Promise<void> {
+    for (const file of this.published.keys()) {
+      if (file === path || file.startsWith(`${path}/`)) this.published.delete(file);
+    }
   }
 
   async create(path: string): Promise<FileWriter> {

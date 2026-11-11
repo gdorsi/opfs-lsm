@@ -69,7 +69,7 @@ describe("model suite regressions", () => {
       list: (dir) => fs.list(dir),
       remove: (path) => fs.remove(path),
       removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
-      removeAll: () => fs.removeAll(),
+      removeTree: (p) => fs.removeTree(p),
       create: (path) => fs.create(path),
     };
     const ingest = createLocalIngestClient(host);

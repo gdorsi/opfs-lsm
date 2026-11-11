@@ -95,10 +95,22 @@ const CASCADE: Step[] = [
   put("a", "a3"), ingest,
 ];
 
+/** A destroy over runs at two levels and a WAL tail, then writes and flushes on the emptied database, and a second destroy. */
+const DESTROY: Step[] = [
+  ...COMPACTION,
+  put("f", "f1"),
+  { destroy: true },
+  put("a", "a9"), ingest,
+  put("g", "g1"),
+  { destroy: true },
+  put("h", "h1"), ingest,
+];
+
 const WORKLOADS: [string, Step[]][] = [
   ["ingest", INGEST],
   ["compaction", COMPACTION],
   ["cascade", CASCADE],
+  ["destroy", DESTROY],
 ];
 
 let runs = 0;
@@ -363,7 +375,7 @@ describe("risks to target first: false corruption", () => {
       list: (dir) => fs.list(dir),
       remove: (path) => fs.remove(path),
       removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
-      removeAll: () => fs.removeAll(),
+      removeTree: (p) => fs.removeTree(p),
       create: (path) => fs.create(path),
     };
     const name = `churn-${++runs}`;
@@ -450,7 +462,7 @@ describe("generation loads under churn", () => {
       },
       remove: (path) => fs.remove(path),
       removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
-      removeAll: () => fs.removeAll(),
+      removeTree: (p) => fs.removeTree(p),
       create: (path) => fs.create(path),
     };
     const b = await openHarnessDb({ name, fs: churned, ingest });

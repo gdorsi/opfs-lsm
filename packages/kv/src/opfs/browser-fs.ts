@@ -158,13 +158,14 @@ export class BrowserFs implements AsyncFs {
     await dir.removeEntry(fileName);
   }
 
-  async removeAll(): Promise<void> {
-    for (const name of await this.list("")) {
-      try {
-        await this.root.removeEntry(name, { recursive: true });
-      } catch (err) {
-        if (!isNotFound(err)) throw err;
-      }
+  async removeTree(path: string): Promise<void> {
+    const parts = splitPath(path);
+    if (parts.length === 0) throw new Error("cannot remove root");
+    try {
+      const dir = await getDir(this.root, parts.slice(0, -1), false);
+      await dir.removeEntry(parts[parts.length - 1]!, { recursive: true });
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
     }
   }
 

@@ -2,7 +2,7 @@ import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js"
 import { codeOfError, errorOfCode } from "../errors.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
-import { reconcile } from "../recover.js";
+import { reconcile, recordEmpty } from "../recover.js";
 import { CountingFs } from "../opfs/counting-fs.js";
 import {
   listRuns,
@@ -10,6 +10,7 @@ import {
   loadGeneration,
   reclaimManifests,
   reclaimRuns,
+  removeAllFiles,
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
@@ -408,22 +409,23 @@ class HostedDb {
   }
 
   /**
-   * Delete the WAL and every run and manifest. Holds the compaction and
-   * ingest locks, so no flush or merge writes meanwhile, and a merge
-   * running when it is called stops after its current step. Deletes the
-   * WAL first: once it is gone no tab can commit, and a retry after a
-   * failed file removal finds a database to open.
+   * Empty the database, then remove its files (design.md, "Destroy"). Holds
+   * the compaction and ingest locks, so no flush or merge publishes
+   * meanwhile, and a merge running when it is called stops after its
+   * current step. `recordEmpty` is the commit point. The files left by a
+   * removal that fails or is cut short are orphans the next reclaim sweeps.
    */
   async destroy(): Promise<void> {
     this.destroying = true;
     try {
       await withLock(compactLock(this.name), () =>
         this.exclusive(async () => {
-          await IdBWal.destroy(this.name);
-          await (await this.fs()).removeAll();
-          this.trusted = undefined;
+          const fs = await this.fs();
+          await this.withWal((wal) => recordEmpty(wal, fs));
+          this.trusted = 0;
           this.retired = undefined;
           if (this.watching) this.watching.pendingBytes = 0;
+          await removeAllFiles(fs);
         }),
       );
     } finally {

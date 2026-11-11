@@ -37,11 +37,11 @@ export interface AsyncFs {
   /** Remove `path` unless some tab holds it open. True when it is gone. */
   removeUnlessOpen(path: string): Promise<boolean>;
   /**
-   * Remove every file of this database, open or not. Readers holding a file
-   * fail on their next read. Costs one call per top-level directory, not one
-   * per file.
+   * Remove `path` and, when it is a directory, everything under it, open or
+   * not. Readers holding a removed file fail on their next read. One call,
+   * not one per file. A missing `path` is not an error.
    */
-  removeAll(): Promise<void>;
+  removeTree(path: string): Promise<void>;
   /** Replace published file only when finish resolves. No append. */
   create(path: string): Promise<FileWriter>;
 }

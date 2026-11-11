@@ -243,11 +243,12 @@ export interface Db {
   close(): Promise<void>;
   /**
    * Delete every record of this database, in every tab, and close this
-   * handle. Other tabs' handles on it close too, with a `closed` change
-   * event. Cost does not grow with the data: it deletes the IndexedDB WAL
-   * and one OPFS directory per level, not the files one by one. Waits for
-   * a flush or compaction step already running. `openDb` with the same name
-   * afterwards opens an empty database.
+   * handle, whether or not it succeeds. Other tabs' handles on it close
+   * too, with a `closed` change event. One IndexedDB transaction empties
+   * the database, then one recursive remove per OPFS directory frees the
+   * files, so the cost does not grow with the data. Waits for a flush or
+   * compaction step already running. `openDb` with the same name afterwards
+   * opens an empty database.
    */
   dangerousDestroy(): Promise<void>;
 }
@@ -480,7 +481,8 @@ type BusMessage =
       readonly seq: number;
       readonly ops: readonly CheckedOp[];
     }
-  | { readonly kind: "ingest" | "destroyed"; readonly writerId: string };
+  | { readonly kind: "ingest"; readonly writerId: string }
+  | { readonly kind: "destroyed"; readonly writerId: string };
 
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
@@ -1072,9 +1074,12 @@ class DbImpl implements Db {
 
   async dangerousDestroy(): Promise<void> {
     this.ensureOpen();
-    await this.ingestClient.destroy(this.name);
-    this.broadcast({ kind: "destroyed", writerId: this.writerId });
-    await this.close();
+    try {
+      await this.ingestClient.destroy(this.name);
+    } finally {
+      this.broadcast({ kind: "destroyed", writerId: this.writerId });
+      await this.close();
+    }
   }
 
   async close(): Promise<void> {

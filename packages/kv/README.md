@@ -50,7 +50,7 @@ Keys and values are `Uint8Array`.
 | `changes(listener)` | Subscribe to every WAL record this handle applies, from any tab, with its ops, once each and in seq order. A `gap` event means the handle skipped records a flush folded, so read again. Returns unsubscribe. |
 | `sync()` | Catch up to every write acked before the call from any tab. |
 | `close()` | Close this tab's handle. |
-| `dangerousDestroy()` | Delete the whole database, in every tab, and close every handle on it. Takes about the same time at any size: 2.5 GiB went in about 0.1 s in Chrome. Waits for a flush or compaction step already running. |
+| `dangerousDestroy()` | Delete the whole database, in every tab, and close every handle on it. Takes about the same time at any size: 2.5 GiB went in 0.1 to 0.4 s in Chrome. Waits for a flush or compaction step already running. A crash at any point leaves either the old database or an empty one. |
 
 ```ts
 await db.batch((tx) => {
