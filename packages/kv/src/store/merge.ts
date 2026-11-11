@@ -113,7 +113,7 @@ export function latestSstEntry(
 }
 
 /** Newest run wins. A tombstone hides older puts. */
-export function pointGetSst(
+function pointGetSst(
   levels: readonly RunLevel[],
   key: Uint8Array,
 ): Maybe<Uint8Array | undefined> {

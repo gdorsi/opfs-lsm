@@ -27,7 +27,7 @@ import {
 import { holdingFiles, layersChannel, type IngestClient } from "./host/protocol.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
-import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
+import { Memtable, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import { coalesced } from "./turns.js";
@@ -39,7 +39,7 @@ import {
   loadGeneration,
   type RunMeta,
 } from "./store/generation.js";
-import { pointGetSst, runLevels, type RunLevel } from "./store/merge.js";
+import { pointGet, runLevels, type RunLevel } from "./store/merge.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
@@ -399,10 +399,6 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   }
   span(trace, "open", performance.now() - openAt);
   return db;
-}
-
-function valueOf(row: MemRow): Uint8Array | undefined {
-  return row.kind === "put" ? new Uint8Array(row.value!) : undefined;
 }
 
 function collectBatch(
@@ -918,8 +914,7 @@ class DbImpl implements Db {
     const values: (Uint8Array | undefined)[] = [];
     let misses: Miss[] | undefined;
     for (const k of ks) {
-      const row = this.mem.get(k);
-      const v = row ? valueOf(row) : pointGetSst(levels, k);
+      const v = pointGet(this.mem.get(k), levels, k);
       if (v instanceof Miss) (misses ??= []).push(v);
       else values.push(v);
     }
@@ -930,8 +925,7 @@ class DbImpl implements Db {
     this.ensureOpen();
     const k = checkKey(key);
     const row = this.mem.get(k);
-    if (row) return valueOf(row);
-    return this.settleInstalled((levels) => pointGetSst(levels, k));
+    return this.settleInstalled((levels) => pointGet(row, levels, k));
   }
 
   put(key: Uint8Array, value: Uint8Array): Promise<number> {
@@ -989,8 +983,8 @@ class DbImpl implements Db {
         if (key !== undefined) {
           const k = checkKey(key);
           const row = rows.get(k);
-          const got = row ? valueOf(row) : pointGetSst(layers.levels, k);
-          joined = got instanceof Miss ? await settle(() => pointGetSst(layers.levels, k)) : got;
+          const got = pointGet(row, layers.levels, k);
+          joined = got instanceof Miss ? await settle(() => pointGet(row, layers.levels, k)) : got;
         }
         out.push({ entry, joined });
       }
