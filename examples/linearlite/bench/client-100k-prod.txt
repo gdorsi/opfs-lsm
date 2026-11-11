@@ -1,0 +1,9 @@
+production build (vite build + vite preview), 100k issues seeded newest-first, headless Chrome, 3 runs each
+node bench/client.ts http://127.0.0.1:4182 first-sync      then, in a separate process, warm
+{"scenario":"first-sync","metric":"first-rows","n":3,"p50":153,"min":151,"max":175}
+{"scenario":"first-sync","metric":"caught-up:issues","n":3,"p50":3373,"min":2977,"max":3423}
+{"scenario":"first-sync","metric":"caught-up:bodies","n":3,"p50":6589,"min":5835,"max":6741}
+{"scenario":"first-sync","metric":"caught-up:comments","n":3,"p50":8586,"min":7868,"max":8647}
+{"scenario":"warm","metric":"first-rows","n":3,"p50":1130,"min":1113,"max":1253}
+visible, tabs, users and offline drive commands through a dev-only global, so they run under vite dev only.
+warm timed out once when run after first-sync in the same process; alone it passes. Harness issue, not the app.
