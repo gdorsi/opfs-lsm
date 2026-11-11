@@ -3,7 +3,6 @@ import { ConstraintError } from "./errors.js";
 const LIMITS = {
   keyBytes: 8 * 1024,
   valueBytes: 16 * 1024 * 1024,
-  batchOps: 10_000,
   batchBytes: 8 * 1024 * 1024,
 } as const;
 
@@ -60,9 +59,6 @@ export function opsBytes(ops: readonly CheckedOp[]): number {
 export function checkBatch(
   ops: readonly { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[],
 ): readonly CheckedOp[] {
-  if (ops.length > LIMITS.batchOps) {
-    throw new ConstraintError(`batch longer than ${LIMITS.batchOps} ops`);
-  }
   let bytes = 0;
   const out: CheckedOp[] = [];
   for (const op of ops) {

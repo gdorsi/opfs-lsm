@@ -668,7 +668,6 @@ of OPFS, independently.
 |---|---|
 | Key | 8 KiB |
 | Value | 16 MiB |
-| Ops per batch | 10,000 |
 | Bytes per batch | 8 MiB |
 | Database name | `[A-Za-z0-9_-]{1,64}` |
 

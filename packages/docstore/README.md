@@ -221,4 +221,4 @@ Every error this package throws on purpose is a `DocStoreError` with a `code`. k
 - A document id is at most 1,024 UTF-8 bytes.
 - An index key is at most 8 KiB. A write whose key would be longer throws `"document"`.
 - A multi index takes at most 1,000 distinct elements per document.
-- A write call is one kv batch, so kv's limits apply to it. kv allows 10,000 operations and 8 MiB per batch, and 16 MiB per value. Over a limit, kv throws `ConstraintError`.
+- A write call is one kv batch, so kv's limits apply to it. kv allows 8 MiB of keys and values per batch. It does not limit the number of operations. Over a limit, kv throws `ConstraintError`.
