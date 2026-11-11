@@ -152,7 +152,8 @@ function readPath(doc: StoredDoc, path: Path): unknown {
 export function diffEntries(
   before: readonly Entry[],
   after: readonly Entry[],
-): { readonly remove: Uint8Array[]; readonly write: Entry[] } {
+): { readonly remove: Uint8Array[]; readonly write: readonly Entry[] } {
+  if (before.length === 0) return { remove: [], write: after };
   const old = new Map<string, Entry>();
   for (const e of before) old.set(keyString(e.key), e);
   const write: Entry[] = [];
