@@ -28,7 +28,14 @@ export type IdbMutation =
   | { readonly kind: "delete"; readonly store: string; readonly key: IDBValidKey | IDBKeyRange };
 
 export type DurableOp =
-  | { readonly store: "idb"; readonly i: number; readonly label: string; readonly muts: readonly IdbMutation[] }
+  | {
+      readonly store: "idb";
+      readonly i: number;
+      readonly label: string;
+      readonly muts: readonly IdbMutation[];
+      /** Committed with durability "strict": on disk before any later op starts. */
+      readonly strict?: true;
+    }
   | { readonly store: "opfs"; readonly i: number; readonly kind: "publish"; readonly path: string; readonly bytes: Uint8Array }
   | { readonly store: "opfs"; readonly i: number; readonly kind: "touch" | "remove"; readonly path: string };
 
@@ -166,15 +173,6 @@ export class FaultFs implements AsyncFs {
       if (removed) this.faults.record({ store: "opfs", kind: "remove", path });
       return removed;
     });
-  }
-
-  /** One traced remove per file, so a crash can land between any two. */
-  async removeTree(path: string): Promise<void> {
-    if ((await this.inner.read(path, 0, 0)) !== undefined) {
-      await this.remove(path);
-      return;
-    }
-    for (const name of await this.inner.list(path)) await this.removeTree(`${path}/${name}`);
   }
 
   create(path: string): Promise<FileWriter> {

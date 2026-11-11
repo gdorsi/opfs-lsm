@@ -44,7 +44,8 @@ export type Trusted = number | "recorded" | undefined;
  *    the check for a generation the caller has loaded or published itself,
  *    or for whatever is recorded when it is "recorded".
  * 3. Otherwise, when the recorded manifest is missing (or none is
- *    recorded), the newest intact manifest, or the empty generation 0.
+ *    recorded), the newest intact manifest numbered past `destroyedTop`, or
+ *    the empty generation 0. The ones at or below it predate a destroy.
  *
  * Corruption is not a power loss, and recovery never turns it into lost
  * data: it throws `CorruptDatabaseError` and writes nothing, so no WAL
@@ -82,15 +83,18 @@ export async function reconcile(
  * Empty the database in one IndexedDB transaction, the commit point of
  * `dangerousDestroy` (design.md, "Destroy"): drop every WAL record and
  * record generation 0 with `head` and `ingestedThrough` one past every seq
- * the WAL or a manifest on disk names. Recovery then adopts no manifest
- * on disk: rule 1 needs a `through` past the head, and rule 2 keeps the
- * recorded generation 0. So the files are garbage whether or not they are
- * removed after, and new manifests number past every one of them.
+ * the WAL or a manifest on disk names, and `destroyedTop` at the highest
+ * manifest number in use. Recovery then adopts no manifest on disk, now or
+ * after later flushes: rule 1 needs a `through` past the head, rule 2 keeps
+ * the recorded generation, and rule 3 skips every number up to
+ * `destroyedTop`. So the files are garbage whether or not they are removed
+ * after. The commit is on disk before it resolves, so no power loss keeps
+ * a remove that follows and loses it.
  */
 export async function recordEmpty(wal: IdBWal, fs: AsyncFs): Promise<void> {
   await untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
     const floor = await highestThrough(fs, numbers, meta.head);
-    return (await wal.adopt(meta, 0, 0, floor + 1, top)) || undefined;
+    return (await wal.empty(meta, floor + 1, top)) || undefined;
   });
 }
 
@@ -150,6 +154,7 @@ async function choose(
     }
   }
   for (const n of numbers) {
+    if (n <= meta.destroyedTop) break;
     const m = await probeManifest(fs, n);
     if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${n} does not decode`);
     if (m !== "missing" && (await isIntact(fs, m))) return m;

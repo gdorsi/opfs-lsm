@@ -92,13 +92,6 @@ export class CountingFs implements AsyncFs {
     return removed;
   }
 
-  async removeTree(path: string): Promise<void> {
-    await this.inner.removeTree(path);
-    for (const file of this.sizes.keys()) {
-      if (file === path || file.startsWith(`${path}/`)) this.sizes.delete(file);
-    }
-  }
-
   async create(path: string): Promise<FileWriter> {
     const writer = await this.inner.create(path);
     let bytes = 0;

@@ -52,7 +52,6 @@ function observedFs(inner: MemoryFs) {
     remove: (path) => inner.remove(path),
     open: (path) => inner.open(path),
     removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
-    removeTree: (p) => inner.removeTree(p),
     create: (path) => inner.create(path),
   };
   return {

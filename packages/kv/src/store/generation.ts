@@ -138,15 +138,6 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   return { generation, runs, tombstoneSeq, through };
 }
 
-/**
- * Remove every file, the manifests first. A power loss keeps a prefix of
- * these removes, so a manifest it leaves still has all its runs.
- */
-export async function removeAllFiles(fs: AsyncFs): Promise<void> {
-  await fs.removeTree("m");
-  for (const name of await fs.list("")) await fs.removeTree(name);
-}
-
 /** The numbers of the manifest files in `m/`, newest first. */
 export async function manifestNumbers(fs: AsyncFs): Promise<number[]> {
   const gens: number[] = [];

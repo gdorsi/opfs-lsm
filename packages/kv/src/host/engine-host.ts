@@ -10,7 +10,6 @@ import {
   loadGeneration,
   reclaimManifests,
   reclaimRuns,
-  removeAllFiles,
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
@@ -409,27 +408,32 @@ class HostedDb {
   }
 
   /**
-   * Empty the database, then remove its files (design.md, "Destroy"). Holds
-   * the compaction and ingest locks, so no flush or merge publishes
-   * meanwhile, and a merge running when it is called stops after its
-   * current step. `recordEmpty` is the commit point. The files left by a
-   * removal that fails or is cut short are orphans the next reclaim sweeps.
+   * Empty the database, then remove the files no tab holds (design.md,
+   * "Destroy"). Holds the compaction and ingest locks, so no flush or merge
+   * publishes meanwhile, and a merge running when it is called stops after
+   * its current step. `recordEmpty` is the commit point. Tabs follow it like
+   * any new generation, and the runs a tab still holds go once it lets go,
+   * at a later reclaim.
    */
   async destroy(): Promise<void> {
     this.destroying = true;
     try {
       await withLock(compactLock(this.name), () =>
-        this.exclusive(async () => {
-          const fs = await this.fs();
-          await this.withWal((wal) => recordEmpty(wal, fs));
-          this.trusted = 0;
-          this.retired = undefined;
-          if (this.watching) this.watching.pendingBytes = 0;
-          await removeAllFiles(fs);
-        }),
+        this.exclusive(() =>
+          this.withWal(async (wal) => {
+            const fs = await this.fs();
+            await recordEmpty(wal, fs);
+            this.trusted = 0;
+            this.retired = undefined;
+            if (this.watching) this.watching.pendingBytes = 0;
+            await unlessHeld(this.name, () => reclaimManifests(fs, Number.POSITIVE_INFINITY));
+            await this.reclaim(fs, wal);
+          }),
+        ),
       );
     } finally {
       this.destroying = false;
+      announceGeneration(this.name);
     }
   }
 

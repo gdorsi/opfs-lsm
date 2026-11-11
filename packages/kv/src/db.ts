@@ -242,13 +242,15 @@ export interface Db {
   sync(): Promise<void>;
   close(): Promise<void>;
   /**
-   * Delete every record of this database, in every tab, and close this
-   * handle, whether or not it succeeds. Other tabs' handles on it close
-   * too, with a `closed` change event. One IndexedDB transaction empties
-   * the database, then one recursive remove per OPFS directory frees the
-   * files, so the cost does not grow with the data. Waits for a flush or
-   * compaction step already running. `openDb` with the same name afterwards
-   * opens an empty database.
+   * Delete every record of this database, in every tab. Seen from the log,
+   * it is one write that deletes every key: writes acked before it are
+   * gone, and writes after it land in the empty database. Every handle
+   * stays open; this one reads empty once it resolves, other tabs at their
+   * next `sync`, and each reports a `gap` change event. One IndexedDB
+   * transaction, on disk before the removes start, empties the database.
+   * Then the host removes every run file no tab still reads, and the rest
+   * once their tabs move on. Waits for a flush or compaction step already
+   * running. `destroyDb` does the same without opening the database.
    */
   dangerousDestroy(): Promise<void>;
 }
@@ -318,20 +320,21 @@ export async function openDb(options: OpenOptions): Promise<Db> {
   return openDbWith(options);
 }
 
-/** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
-export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
-  const trace = options.trace;
-  const openAt = trace ? performance.now() : 0;
-  const name = checkDbName(options.name);
-  // Started first, so the module loads while the rest of open runs.
-  const wasmAt = trace ? performance.now() : 0;
-  const engine = ensureEngine();
-  void engine.then(
-    () => span(trace, "wasm", performance.now() - wasmAt),
-    () => span(trace, "wasm-error", performance.now() - wasmAt),
-  );
-  const caps = memtableCaps(options.memtableBytes);
-
+/**
+ * The fs and ingest client for `name`: the ones `options` gives, else OPFS
+ * and the package SharedWorker, else an in-process host on `options.fs` or a
+ * memory fs. `walOpen` is set when IndexedDB opened alongside OPFS.
+ */
+async function connect(
+  name: DbName,
+  options: HarnessOpenOptions,
+  trace: OpenTrace | undefined,
+): Promise<{
+  readonly fs: AsyncFs;
+  readonly ingest: IngestClient;
+  readonly ownsIngestClient: boolean;
+  readonly walOpen: Promise<IdBWal> | undefined;
+}> {
   let walOpen: Promise<IdBWal> | undefined;
   let fs = options.fs;
   let ingest = options.ingest;
@@ -376,6 +379,44 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     }
   }
   ingest ??= localIngest(name, fs);
+  return { fs, ingest, ownsIngestClient, walOpen };
+}
+
+/**
+ * Delete every record of database `name` without opening it, so it works
+ * when `openDb` throws `CorruptDatabaseError`. Open handles on it stay
+ * open, as after `dangerousDestroy`.
+ */
+export async function destroyDb(name: string): Promise<void> {
+  return destroyDbWith({ name });
+}
+
+/** `destroyDb` with the harness options of `openDbWith`. */
+export async function destroyDbWith(options: HarnessOpenOptions): Promise<void> {
+  const { ingest, ownsIngestClient, walOpen } = await connect(checkDbName(options.name), options, undefined);
+  void walOpen?.then((w) => w.close(), () => undefined);
+  try {
+    await ingest.destroy(options.name);
+  } finally {
+    if (ownsIngestClient) ingest.close();
+  }
+}
+
+/** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
+export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
+  const trace = options.trace;
+  const openAt = trace ? performance.now() : 0;
+  const name = checkDbName(options.name);
+  // Started first, so the module loads while the rest of open runs.
+  const wasmAt = trace ? performance.now() : 0;
+  const engine = ensureEngine();
+  void engine.then(
+    () => span(trace, "wasm", performance.now() - wasmAt),
+    () => span(trace, "wasm-error", performance.now() - wasmAt),
+  );
+  const caps = memtableCaps(options.memtableBytes);
+
+  const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, trace);
   // Wrapped after the local host got the bare fs, so its IO counts only on the host.
   const tabFs = new CountingFs(fs);
 
@@ -470,10 +511,7 @@ type Layers = {
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
 
-/**
- * A tab posts each record it appends, and `destroyed` after `dangerousDestroy`.
- * The host posts `ingest` for a new generation.
- */
+/** A tab posts each record it appends. The host posts `ingest` for a new generation. */
 type BusMessage =
   | {
       readonly kind: "append";
@@ -481,8 +519,7 @@ type BusMessage =
       readonly seq: number;
       readonly ops: readonly CheckedOp[];
     }
-  | { readonly kind: "ingest"; readonly writerId: string }
-  | { readonly kind: "destroyed"; readonly writerId: string };
+  | { readonly kind: "ingest"; readonly writerId: string };
 
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
@@ -544,9 +581,7 @@ class DbImpl implements Db {
 
   private onMessage(data: BusMessage | null): void {
     if (this.closed || !data || data.writerId === this.writerId) return;
-    if (data.kind === "destroyed") {
-      void this.close();
-    } else if (data.kind === "append") {
+    if (data.kind === "append") {
       if (this.applyRecord({ seq: data.seq, ops: data.ops }) === "gap") {
         void this.sync().catch(() => undefined);
       }
@@ -560,7 +595,7 @@ class DbImpl implements Db {
     if (this.closed) throw new ClosedError("database is closed");
   }
 
-  private broadcast(message: Exclude<BusMessage, { kind: "ingest" }>): void {
+  private broadcast(message: Extract<BusMessage, { kind: "append" }>): void {
     if (this.closed) return;
     this.bus?.postMessage(message);
   }
@@ -1074,12 +1109,11 @@ class DbImpl implements Db {
 
   async dangerousDestroy(): Promise<void> {
     this.ensureOpen();
-    try {
-      await this.ingestClient.destroy(this.name);
-    } finally {
-      this.broadcast({ kind: "destroyed", writerId: this.writerId });
-      await this.close();
-    }
+    await this.ingestClient.destroy(this.name);
+    // Moving to the empty generation lets go of this tab's runs, and the
+    // compaction pass the ingest starts reclaims them.
+    await this.sync();
+    await this.ingestClient.ingest(this.name, Number.POSITIVE_INFINITY, true);
   }
 
   async close(): Promise<void> {

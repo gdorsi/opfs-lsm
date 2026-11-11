@@ -17,6 +17,8 @@ import { walStore } from "./check-database.js";
  *   throws once a commit has started;
  * - every committed one is one durable op, recorded at `complete` with its
  *   writes, so a crash state can replay a prefix of them (`materializeWal`).
+ *   A "strict" one is marked, since no power loss drops it once a later op
+ *   ran (`powerCuts`).
  */
 
 const registered = new Map<string, Faults>();
@@ -57,7 +59,9 @@ export function installFaultWal(): () => void {
       });
     } else {
       tx.addEventListener("complete", () => {
-        if (s.muts.length > 0) s.faults.record({ store: "idb", label: labelOf(s.muts), muts: s.muts });
+        if (s.muts.length === 0) return;
+        const label = labelOf(s.muts);
+        s.faults.record(tx.durability === "strict" ? { store: "idb", label, muts: s.muts, strict: true } : { store: "idb", label, muts: s.muts });
       });
     }
     return state;

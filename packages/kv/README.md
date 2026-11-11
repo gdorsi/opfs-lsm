@@ -19,6 +19,8 @@ await db.put(key, value);
 const found = await db.get(key);
 ```
 
+`destroyDb(name)` deletes every record of a database without opening it, so it also works on one that `openDb` refuses with `CorruptDatabaseError`. Open handles behave as after `dangerousDestroy()`.
+
 `openDb` opens OPFS and starts the database's SharedWorker, or joins it when another tab started it. Where SharedWorker or OPFS is missing, as in Node or a dedicated WebWorker, it rejects with `StorageUnavailableError`. It never keeps the data in memory instead. Tests get an in-memory database from `openHarnessDb({ forceMemory: true })` in `@opfs-lsm/kv/testing`.
 
 ## `OpenOptions`
@@ -50,7 +52,7 @@ Keys and values are `Uint8Array`.
 | `changes(listener)` | Subscribe to every WAL record this handle applies, from any tab, with its ops, once each and in seq order. A `gap` event means the handle skipped records a flush folded, so read again. Returns unsubscribe. |
 | `sync()` | Catch up to every write acked before the call from any tab. |
 | `close()` | Close this tab's handle. |
-| `dangerousDestroy()` | Delete the whole database, in every tab, and close every handle on it. Takes about the same time at any size: 2.5 GiB went in 0.1 to 0.4 s in Chrome. Waits for a flush or compaction step already running. After a process crash the database is either the old one or empty. A power loss can also leave an older state of it. |
+| `dangerousDestroy()` | Delete every record, in every tab. Writes acked before it are gone, and writes after it land in the empty database. Every handle stays open: this one reads empty when it resolves, other tabs at their next `sync` or write, each with a `gap` event. The host removes the files no tab is reading, and the rest once their tabs move on. Waits for a flush or compaction step already running. Once it resolves, the deleted records never come back, even after a power loss. A crash before that leaves the database as if it had not run. |
 
 ```ts
 await db.batch((tx) => {
@@ -69,7 +71,7 @@ Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A h
 | --- | --- | --- | --- |
 | `StorageUnavailableError` | `unavailable` | The context has no SharedWorker or OPFS, the wasm engine did not load, or the browser's IndexedDB store failed to open. `cause` holds the browser's error when there is one. | For a failed IndexedDB open, retry `openDb`, or reload the page. Chrome can damage its own IndexedDB store when it crashes, and then deletes it or keeps failing the open. If it deletes it, the writes not yet flushed to OPFS are lost and the flushed data is kept. |
 | `StorageFullError` | `quota` | The browser refused a flush or compaction write because the origin is out of storage quota. | The host rejects the flush, and no `Db` method surfaces that. The acked writes stay in the WAL, and the host flushes again after another 1 MiB of writes or the next `openDb`. `ingest(db)` from `@opfs-lsm/kv/testing` flushes now and rejects with this error. |
-| `CorruptDatabaseError` | `corrupt` | A file of the database does not decode, or a file it needs is gone. | Do not retry. The engine changes nothing. |
+| `CorruptDatabaseError` | `corrupt` | A file of the database does not decode, or a file it needs is gone. | Do not retry. The engine changes nothing. `destroyDb(name)` empties the database. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
 | `ConstraintError` | `constraint` | A key, value or batch is not valid or is over a limit. | Fix the call. |
 | `ClosedError` | `closed` | The handle is closed. | Open a new one. |

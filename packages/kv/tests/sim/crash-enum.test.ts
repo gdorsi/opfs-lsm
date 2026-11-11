@@ -375,7 +375,6 @@ describe("risks to target first: false corruption", () => {
       list: (dir) => fs.list(dir),
       remove: (path) => fs.remove(path),
       removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
-      removeTree: (p) => fs.removeTree(p),
       create: (path) => fs.create(path),
     };
     const name = `churn-${++runs}`;
@@ -462,7 +461,6 @@ describe("generation loads under churn", () => {
       },
       remove: (path) => fs.remove(path),
       removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
-      removeTree: (p) => fs.removeTree(p),
       create: (path) => fs.create(path),
     };
     const b = await openHarnessDb({ name, fs: churned, ingest });

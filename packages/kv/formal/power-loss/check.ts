@@ -18,9 +18,12 @@
  *   a healthy database (`checkDatabase`), and later writes read back.
  * Every workload runs twice: once with reclaim, and once with a tab holding
  * the reclaim lock throughout, so the host removes no manifest or run.
+ * - DestroyHolds: a crash that keeps an OPFS op after a destroy's commit
+ *   reads the state after that destroy or later. The commit is strict, so
+ *   no power loss keeps such an op without it (`possibleCut`).
  * Broken variants (build on the newest manifest, no head raise, no
- * fallback, no newer-manifest adoption, destroy files before its commit or
- * runs before manifests) must each fail, so the model is
+ * fallback, no newer-manifest adoption, destroy files before its commit, or
+ * a destroy commit at the default durability) must each fail, so the model is
  * strong enough to see the bugs the crash suite found.
  *
  * CorruptRefuse: after every workload, a run of the recorded manifest is
@@ -33,7 +36,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cloneIdb, cloneOpfs, DESTROYED, emptyIdb, emptyOpfs, Refused, replay, Stuck, Sys, type Idb, type Op, type Opfs, type Variant } from "./model.js";
+import { cloneIdb, cloneOpfs, DESTROYED, emptyIdb, emptyOpfs, possibleCut, Refused, replay, Stuck, Sys, type Idb, type Op, type Opfs, type Variant } from "./model.js";
 
 const MAX_CMDS = Number(process.env.FORMAL_POWER_CMDS ?? 6);
 /** Power losses in a row: the first, then one during or after each recovery. */
@@ -123,17 +126,42 @@ function committed(ops: readonly Op[], idb: number): number[] {
   return out;
 }
 
+/**
+ * DestroyHolds: the log entries a crash that keeps the first `opfs` OPFS
+ * ops must read past. A destroy whose commit came before a kept OPFS op
+ * stays done, so the read is the state after it or later.
+ */
+function destroyedBefore(ops: readonly Op[], opfs: number): number {
+  let o = 0;
+  let entries = 0;
+  let destroyed = 0;
+  let through = 0;
+  for (const op of ops) {
+    if (op.store === "opfs") {
+      if (o++ >= opfs) break;
+      through = destroyed;
+      continue;
+    }
+    if (op.label.startsWith("append")) entries += op.put?.length ?? 0;
+    if (op.label === "destroy") destroyed = ++entries;
+  }
+  return through;
+}
+
 let states = 0;
 
 /**
  * Recover the crash state `st` of a run whose log was `log`, check it, and
  * when `depth` allows, crash again at every pair of the recovery's ops.
  */
-function recover(st: { idb: Idb; opfs: Opfs }, log: readonly number[], mustHold: number | undefined, depth: number, v: Variant, where: string): void {
+function recover(st: { idb: Idb; opfs: Opfs }, log: readonly number[], mustHold: number | undefined, depth: number, v: Variant, where: string, destroyedThrough = 0): void {
   states++;
   const sys = new Sys(cloneIdb(st.idb), cloneOpfs(st.opfs), v, 1000 * depth + 1);
   const opened = read(sys, `${where}: open`);
   const k = prefixOf(opened, log, `${where}: open`);
+  if (k < destroyedThrough) {
+    throw new Violation(`${where}: a destroy undone after its removes began: read the state after ${k} of ${destroyedThrough} log entries`);
+  }
   if (mustHold !== undefined && !same(opened, stateAt(log, mustHold))) {
     throw new Violation(`${where}: a process crash lost acked writes: read the state after ${k} of ${mustHold}`);
   }
@@ -157,9 +185,10 @@ function recover(st: { idb: Idb; opfs: Opfs }, log: readonly number[], mustHold:
   const nO = sys.ops.length - nI;
   for (let i = 0; i <= nI; i++) {
     for (let o = 0; o <= nO; o++) {
+      if (!possibleCut(sys.ops, i, o)) continue;
       const cut = replay(base, sys.ops, i, o);
       const proc = isProcessCut(sys.ops, i, o) ? kept.length + committed(sys.ops, i).length : undefined;
-      recover(cut, full, proc, depth + 1, v, `${where} → recovery crash (idb ${i}/${nI}, opfs ${o}/${nO})`);
+      recover(cut, full, proc, depth + 1, v, `${where} → recovery crash (idb ${i}/${nI}, opfs ${o}/${nO})`, destroyedThrough);
     }
   }
 }
@@ -173,11 +202,12 @@ function checkWorkload(cmds: readonly Cmd[], v: Variant, depth: number): void {
   const empty = { idb: emptyIdb(), opfs: emptyOpfs() };
   for (let i = 0; i <= nI; i++) {
     for (let o = 0; o <= nO; o++) {
+      if (!possibleCut(sys.ops, i, o)) continue;
       const cut = replay(empty, sys.ops, i, o);
       const proc = isProcessCut(sys.ops, i, o) ? committed(sys.ops, i).length : undefined;
       const kept = (list: Op[], n: number) => list.slice(0, n).map((x) => x.label).join(", ");
       const where = `[${cmds.join(" ")}] crash: IndexedDB keeps [${kept(sys.ops.filter((x) => x.store === "idb"), i)}], OPFS keeps [${kept(sys.ops.filter((x) => x.store === "opfs"), o)}]`;
-      recover(cut, sys.acked, proc, depth, v, where);
+      recover(cut, sys.acked, proc, depth, v, where, destroyedBefore(sys.ops, o));
     }
   }
 }
@@ -277,16 +307,17 @@ function sourceSync(): string[] {
   need("host/engine-host.ts", /ingestChunk\([^;]*this\.trusted[^;]*;\s*[^\n]*\n\s*await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");
   need("host/engine-host.ts", /await unlessHeld\(this\.name, async \(\) => \{\s*const \{ generation \} = await reconcile\(wal, fs, this\.trusted\);[\s\S]*reclaimManifests\(fs, generation\);[\s\S]*liveRuns\(fs, generation\)/, "reclaim removes manifests then runs after reconciling, unless a tab holds the reclaim lock");
   need("host/compact.ts", /await wal\.raiseGeneration\(generation\);\s*return generation;/, "install removes no file");
-  need("recover.ts", /export async function recordEmpty[\s\S]*?highestThrough\(fs, numbers, meta\.head\)[\s\S]*?wal\.adopt\(meta, 0, 0, floor \+ 1, top\)/, "destroy records generation 0 past every seq the WAL or a manifest names");
-  need("host/engine-host.ts", /recordEmpty\(wal, fs\)\);[\s\S]*?await removeAllFiles\(fs\);/, "destroy commits before it removes a file");
-  need("store/generation.ts", /export async function removeAllFiles[\s\S]*?await fs\.removeTree\("m"\);\s*for \(const name of await fs\.list\(""\)\) await fs\.removeTree\(name\);/, "destroy removes the manifests before the runs");
+  need("recover.ts", /export async function recordEmpty[\s\S]*?highestThrough\(fs, numbers, meta\.head\)[\s\S]*?wal\.empty\(meta, floor \+ 1, top\)/, "destroy records generation 0 past every seq the WAL or a manifest names");
+  need("idb/wal.ts", /async empty\([\s\S]*?durability: "strict"[\s\S]*?meta\.put\(top, META_DESTROYED_TOP\)/, "the destroy commit is strict and records destroyedTop");
+  need("recover.ts", /for \(const n of numbers\) \{\s*if \(n <= meta\.destroyedTop\) break;/, "rule 3 adopts no manifest from before a destroy");
+  need("host/engine-host.ts", /await recordEmpty\(wal, fs\);[\s\S]*?await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, Number\.POSITIVE_INFINITY\)\);\s*await this\.reclaim\(fs, wal\);/, "destroy commits, then removes the manifests and sweeps, each unless a tab holds the reclaim lock");
   return out;
 }
 
 function main(): void {
   console.log(`bound: workloads of up to ${MAX_CMDS} appends/ingests/compactions/destroys, every (IndexedDB, OPFS) prefix pair,`);
   console.log(`       then recovery + [${AFTER.join(", ")}] and every pair of the next crash, ${CRASHES} crashes deep`);
-  console.log("property: PowerPrefix, ProcessAll, RecoveryStable");
+  console.log("property: PowerPrefix, ProcessAll, RecoveryStable, DestroyHolds");
 
   const drift = sourceSync();
   if (drift.length > 0) {
@@ -302,10 +333,11 @@ function main(): void {
     ["a newer manifest past the head is never adopted", { noNewerAdopt: true }],
     ["a manifest number is reused after recovery records an older one", { reuseNumbers: true }],
     ["destroy removes the files before its commit", { destroyFilesFirst: true }],
-    ["destroy removes the runs before the manifests", { destroyRunsFirst: true }],
+    ["destroy commits at the default durability", { destroyRelaxed: true }],
+    ["recovery falls back to a manifest from before a destroy", { fallBehindDestroy: true }],
   ];
   for (const [name, v] of broken) {
-    const found = explore(v, MAX_CMDS, 1);
+    const found = explore(v, MAX_CMDS, 1) ?? explore({ ...v, held: true }, MAX_CMDS, 1);
     if (!found) {
       console.error(`\nFAIL model too weak: the broken variant "${name}" passes`);
       process.exit(1);

@@ -93,7 +93,6 @@ async function database(name: string) {
     list: (dir) => inner.list(dir),
     remove: (path) => inner.remove(path),
     removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
-    removeTree: (p) => inner.removeTree(p),
     create: async (path) => {
       await hold.create?.(path);
       return inner.create(path);

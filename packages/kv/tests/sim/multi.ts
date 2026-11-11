@@ -285,10 +285,6 @@ class World {
         await this.yield(`${who} remove ${path}`);
         return fs.removeUnlessOpen(path);
       },
-      removeTree: async (path) => {
-        await this.yield(`${who} remove tree ${path}`);
-        return fs.removeTree(path);
-      },
       create: async (path) => {
         await this.yield(`${who} create ${path}`);
         return fs.create(path);

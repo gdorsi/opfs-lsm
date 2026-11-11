@@ -8,7 +8,8 @@
  * writes folded into it, and a merge is their union. Each engine action
  * runs against live stores and records its durable ops in order, one
  * IndexedDB commit or one OPFS file op each. A crash state replays a prefix
- * of each store's ops (`replay`).
+ * of each store's ops (`replay`), and keeps every strict commit that came
+ * before an op it keeps (`possibleCut`).
  */
 
 export type Write = { readonly seq: number; readonly id: number };
@@ -27,6 +28,8 @@ export type Idb = {
   generation: number | undefined;
   /** `topGeneration`: the highest manifest number recovery has seen. */
   top: number;
+  /** `destroyedTop`: manifests numbered at or below it predate a destroy. */
+  destroyedTop: number;
   rows: Map<number, number>;
 };
 export type Opfs = {
@@ -45,6 +48,9 @@ export type Op =
       readonly ingested?: number;
       readonly generation?: number;
       readonly top?: number;
+      readonly destroyedTop?: number;
+      /** Durability "strict": on disk before the next op of either store starts. */
+      readonly strict?: boolean;
     }
   | { readonly store: "opfs"; readonly label: string; readonly run?: [string, readonly Write[]]; readonly manifest?: Manifest; readonly rmRun?: string; readonly rmManifest?: number };
 
@@ -68,8 +74,10 @@ export type Variant = {
   readonly lossyRecovery?: boolean;
   /** Destroy removes the files before its IndexedDB commit. */
   readonly destroyFilesFirst?: boolean;
-  /** Destroy removes the runs before the manifests. */
-  readonly destroyRunsFirst?: boolean;
+  /** Rule 3 may fall back to a manifest numbered at or below `destroyedTop`. */
+  readonly fallBehindDestroy?: boolean;
+  /** Destroy commits at the default durability, so its removes can reach the disk first. */
+  readonly destroyRelaxed?: boolean;
   /**
    * A tab holds the reclaim lock through the whole run, so the host's
    * manifest and run removals are all skipped (`unlessHeld`). Not a broken
@@ -88,7 +96,7 @@ export class Stuck extends Error {}
 export class Refused extends Error {}
 
 export function emptyIdb(): Idb {
-  return { head: 0, ingested: 0, generation: undefined, top: 0, rows: new Map() };
+  return { head: 0, ingested: 0, generation: undefined, top: 0, destroyedTop: 0, rows: new Map() };
 }
 export function emptyOpfs(): Opfs {
   return { runs: new Map(), manifests: new Map() };
@@ -108,6 +116,7 @@ function applyOp(idb: Idb, opfs: Opfs, op: Op): void {
     if (op.ingested !== undefined) idb.ingested = op.ingested;
     if (op.generation !== undefined) idb.generation = op.generation;
     if (op.top !== undefined) idb.top = op.top;
+    if (op.destroyedTop !== undefined) idb.destroyedTop = op.destroyedTop;
   } else {
     if (op.run) opfs.runs.set(op.run[0], op.run[1]);
     if (op.manifest) opfs.manifests.set(op.manifest.gen, op.manifest);
@@ -125,6 +134,26 @@ export function replay(base: { idb: Idb; opfs: Opfs }, ops: readonly Op[], idb: 
     if (op.store === "idb" ? i++ < idb : o++ < opfs) applyOp(out.idb, out.opfs, op);
   }
   return out;
+}
+
+/**
+ * True when a power loss can keep the first `idb` IndexedDB ops and the
+ * first `opfs` OPFS ops: every strict commit before a kept op is kept.
+ */
+export function possibleCut(ops: readonly Op[], idb: number, opfs: number): boolean {
+  let i = 0;
+  let o = 0;
+  /** IndexedDB ops through the last strict commit so far. */
+  let need = 0;
+  for (const op of ops) {
+    if (op.store === "idb") {
+      i++;
+      if (op.strict) need = i;
+    } else if (o++ < opfs && idb < need) {
+      return false;
+    }
+  }
+  return true;
 }
 
 const ZERO: Manifest = { gen: 0, through: 0, runs: [] };
@@ -185,7 +214,8 @@ export class Sys {
       }
       if (!pick && this.v.noFallback) throw new Stuck(`manifest ${generation} is gone`);
     }
-    pick ??= numbers.map((n) => this.manifest(n)).find((m) => this.intact(m)) ?? ZERO;
+    const fallback = this.v.fallBehindDestroy ? numbers : numbers.filter((n) => n > this.idb.destroyedTop);
+    pick ??= fallback.map((n) => this.manifest(n)).find((m) => this.intact(m)) ?? ZERO;
     let floor = pick.through;
     for (const n of numbers) floor = Math.max(floor, this.manifest(n)!.through);
     const nextHead = this.v.noHeadRaise ? head : Math.max(head, pick.through, floor);
@@ -254,9 +284,9 @@ export class Sys {
 
   /**
    * `HostedDb.destroy`: `recordEmpty` (generation 0, head past every seq the
-   * WAL or a manifest names), then `removeAllFiles`. The order inside `m/` is
-   * unspecified, so manifests go newest first, the recorded one before the
-   * older ones a held reclaim lock kept. Removes regardless of that lock.
+   * WAL or a manifest names, on disk before it returns), then, unless a tab
+   * holds the reclaim lock, every manifest in an unspecified order (newest
+   * first here), then a sweep, which against generation 0 removes every run.
    */
   destroy(): void {
     const numbers = this.numbers();
@@ -264,22 +294,12 @@ export class Sys {
     let floor = this.idb.head;
     for (const n of numbers) floor = Math.max(floor, this.manifest(n)!.through);
     const removeAll = () => {
-      const manifests = () => {
-        for (const n of numbers) this.write({ store: "opfs", label: `remove m/${n}`, rmManifest: n });
-      };
-      const runs = () => {
-        for (const p of [...this.opfs.runs.keys()].sort()) this.write({ store: "opfs", label: `remove ${p}`, rmRun: p });
-      };
-      if (this.v.destroyRunsFirst) {
-        runs();
-        manifests();
-      } else {
-        manifests();
-        runs();
-      }
+      if (this.v.held) return;
+      for (const n of this.numbers()) this.write({ store: "opfs", label: `remove m/${n}`, rmManifest: n });
+      this.sweep();
     };
     if (this.v.destroyFilesFirst) removeAll();
-    this.write({ store: "idb", label: "destroy", deleteTo: this.idb.head, head: floor + 1, ingested: floor + 1, generation: 0, top });
+    this.write({ store: "idb", label: "destroy", deleteTo: this.idb.head, head: floor + 1, ingested: floor + 1, generation: 0, top, destroyedTop: top, strict: !this.v.destroyRelaxed });
     this.acked.push(DESTROYED);
     if (!this.v.destroyFilesFirst) removeAll();
   }
