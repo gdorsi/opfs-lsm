@@ -159,15 +159,25 @@ class Leader {
   /** Push, then catch `issues` up, then backfill bodies and comments, stopping between pages to serve new work. */
   private async cycle(loop: { wake: boolean }): Promise<void> {
     await this.push();
-    while (this.stale("issues")) await this.page("issues");
+    await this.catchUpIssues(loop);
     for (const stream of BACKGROUND) {
       while (this.stale(stream)) {
         await this.page(stream);
         if (loop.wake) {
           loop.wake = false;
           await this.push();
-          while (this.stale("issues")) await this.page("issues");
+          await this.catchUpIssues(loop);
         }
+      }
+    }
+  }
+
+  private async catchUpIssues(loop: { wake: boolean }): Promise<void> {
+    while (this.stale("issues")) {
+      await this.page("issues");
+      if (loop.wake) {
+        loop.wake = false;
+        await this.push();
       }
     }
   }
