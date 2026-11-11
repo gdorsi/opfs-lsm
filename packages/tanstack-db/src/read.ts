@@ -60,6 +60,14 @@ async function firstMatches(snap: Snapshot, q: DocstoreQuery, match: (doc: JsonD
   }
 }
 
+/** The boundary a limited read would set if `docs` were every row that passes its `where`. */
+export function boundaryOf(docs: readonly JsonDoc[], { order, limit }: { readonly order: Order; readonly limit: number }): Boundary | undefined {
+  if (docs.length < limit) return undefined;
+  if (!order.lexical && docs.some((d) => typeof valueAt(d, order.path) === "string")) return undefined;
+  const sorted = docs.toSorted((a, b) => compareRows(a, b, order));
+  return { order, value: valueAt(sorted[limit - 1]!, order.path) };
+}
+
 export function atOrBefore(doc: JsonDoc, boundary: Boundary): boolean {
   return compareOrder(valueAt(doc, boundary.order.path), boundary.value, boundary.order) <= 0;
 }
