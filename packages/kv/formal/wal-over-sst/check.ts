@@ -3,7 +3,7 @@
  * Runs against the real pointGet over a one-run level.
  */
 import { encodeSst, sstKeyRange } from "../../src/store/sst.js";
-import { pointGet, runLevels, type RunLevel } from "../../src/store/merge.js";
+import { pointGet, runLevels, type RunLevel } from "../../src/store/read.js";
 import { untilHit } from "../../src/store/cursor.js";
 import { PageCache } from "../../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../../src/store/sst-reader.js";

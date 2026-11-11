@@ -56,7 +56,7 @@ const mergeBroken = (runs: readonly Run[]) => sessionMerge(runs, (cmp) => cmp <=
 function newestFirstInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const read = (rel: string) => fs.readFileSync(path.resolve(here, rel), "utf8");
-  const merge = read("../../src/store/merge.ts");
+  const merge = read("../../src/store/read.ts");
   const session = read("../../tests/oracle/merge-ts.ts");
   const engine = read("../../../../crates/engine-core/src/merge.rs");
   // latestSstEntry: for (const level of levels), levels are newest-first
@@ -124,7 +124,7 @@ for (const runs of allRuns(2)) {
 
 if (!newestFirstInSource()) {
   console.error(
-    "FAIL CompactPreserve — merge.ts / merge.rs / tests/oracle/merge-ts.ts no longer newest-first get / newer source wins a tie",
+    "FAIL CompactPreserve — read.ts / merge.rs / tests/oracle/merge-ts.ts no longer newest-first get / newer source wins a tie",
   );
   process.exit(1);
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { untilHit } from "../src/store/cursor.js";
-import { latestSstEntry, mergeCursors, runLevels } from "../src/store/merge.js";
+import { latestSstEntry, mergeCursors, runLevels } from "../src/store/read.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
 import { collect, readerOfBytes } from "./runs.js";

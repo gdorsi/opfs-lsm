@@ -3,7 +3,7 @@ import { containsAll } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { useBlockScanner } from "../src/store/block-scan.js";
-import { RunLevel } from "../src/store/merge.js";
+import { RunLevel } from "../src/store/read.js";
 import type { SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
 import type { LayerCursor } from "../src/store/cursor.js";

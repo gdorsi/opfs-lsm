@@ -35,7 +35,7 @@ What I did not verify is listed in section 8. Short version: no Chrome, no OPFS,
 
 ### 1.2 Facts that shape the plan
 
-- [R] Runs are grouped into scan sources: each L0 run alone, one `RunLevel` per deeper level (`store/merge.ts:119-199`). My 1M-row layout has 100 runs and 5 sources (run).
+- [R] Runs are grouped into scan sources: each L0 run alone, one `RunLevel` per deeper level (`store/read.ts:119-199`). My 1M-row layout has 100 runs and 5 sources (run).
 - [R] Each `SstReader` has a whole-key Bloom filter and `get` checks it first (`store/sst.ts:606-612,641-655`). A point get for a key that is absent costs about 0.7 us over the 5 sources (run, section 5).
 - [R] `SstReader.cursor(bounds)` reads one run alone (`store/sst.ts:657-700`), so a per-run scan needs no new reader code, only an API that exposes it.
 - [R] `ViewSnapshot` exposes `walHead`, `generation`, `get`, `range` and nothing else (`view.ts:13-20`). Collections cannot see the memtable tail or individual runs today.
@@ -84,7 +84,7 @@ Each PR lists the checks from `docs/verification.md:14-26` that its diff trigger
 
 **PR1. kv: `ViewSnapshot.scanRuns(range)`** [I design].
 Yields, per source (memtable pin first, then each L0 run, then each level), an async iterator of `{key, value | undefined(tombstone), seq?}` for the range, **unmerged**, newest source first, with a stable run identity so collections can cache a decoded string per run path. No format change, no write path change.
-- Files: `view.ts`, `db.ts` (`view()` passes the same `rows` and `levels`), `store/merge.ts` (expose per-`SstReader` cursors; `RunLevel.cursor` merges a level's runs sequentially, which is fine since runs in a level do not overlap).
+- Files: `view.ts`, `db.ts` (`view()` passes the same `rows` and `levels`), `store/read.ts` (expose per-`SstReader` cursors; `RunLevel.cursor` merges a level's runs sequentially, which is fine since runs in a level do not overlap).
 - Checks: `view()`/memtable pin row, so `formal:view-pin`; `pnpm test`. No ingest or merge files touched, so no `formal:ingest-visibility` or `compact-preserve`. Add a unit test: scanning every source and merging by newest equals `view.range`.
 - Formal property to add (small): **ScanRunsSuperset**, for every key whose current value (via `get`) matches a predicate, the unmerged scan yields at least one record of that key whose newest-source copy is the current value. This is what makes "dedupe then re-match" exact. A model next to `view-pin`, same exhaustive style, over 2 runs, one memtable, cell values {miss, put1, put2, del}.
 - Riskiest assumption proved here: the API shape is enough, and `RunLevel` pinned by a view survives a compaction mid-scan (`view.ts:34-47`).
@@ -161,7 +161,7 @@ Keys `w/<table>/<word>` with empty value, ordinary records; word set per layer a
 | present rare word, `t`, `the` | 6.8, 6.7, 6.7 us |
 | exact-word point get, absent / present (per-run Bloom path) | 0.72 / 0.63 us |
 
-A miss is one range seek, **about 7 us, independent of rows** (checked at 20k and 1M, 5.7-7.3 us). Prefixes need no stored keys: sorted order makes "any word starts with `mli`" one seek. [R] That relies on the merge seeking per source by key (`RunLevel.cursor`, `store/merge.ts:152-175`). Not included: the memtable tail (E4: 0.1-2.5 ms) and tokenising the query.
+A miss is one range seek, **about 7 us, independent of rows** (checked at 20k and 1M, 5.7-7.3 us). Prefixes need no stored keys: sorted order makes "any word starts with `mli`" one seek. [R] That relies on the merge seeking per source by key (`RunLevel.cursor`, `store/read.ts:152-175`). Not included: the memtable tail (E4: 0.1-2.5 ms) and tokenising the query.
 
 ### 5.4 In-memory vocabulary derived from the per-run strings (run)
 

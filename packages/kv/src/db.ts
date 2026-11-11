@@ -38,7 +38,7 @@ import {
   loadGeneration,
   type RunMeta,
 } from "./store/generation.js";
-import { pointGet, runLevels, type RunLevel } from "./store/merge.js";
+import { pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { untilHit } from "../src/store/cursor.js";
 import { decodeSst, encodeSst, SST_BLOCK_TARGET } from "../src/store/sst.js";
-import { pointGet, runLevels } from "../src/store/merge.js";
+import { pointGet, runLevels } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { SstReader } from "../src/store/sst-reader.js";
 import { bytesFile, drain, readerOfBytes } from "./runs.js";

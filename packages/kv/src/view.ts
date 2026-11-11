@@ -8,7 +8,7 @@ import {
   pointGet,
   scanMatching,
   type RunLevel,
-} from "./store/merge.js";
+} from "./store/read.js";
 
 export interface ViewSnapshot {
   /** The seq of the last record the snapshot includes, as write acks and `changes` count it. */
