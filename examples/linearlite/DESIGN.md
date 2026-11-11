@@ -7,15 +7,17 @@ of 100,000 issues with 0–1 comment each.
 
 ## The shape in one paragraph
 
-kv on OPFS holds the whole replica in every browser. TanStack DB collections are the read model: issue summaries
-are in memory in full, descriptions and comments only while a screen shows them. Every write, a local edit or a
-row from the server, is one kv read-modify-write (`utils.transact`), so there is one write path and one merge
-rule. Each row carries its own unsent edits (`dirty`), which is the "not synced" mark and the conflict guard. The
-outbox is those rows, found by a live query over `dirty` issues and, because bodies and comments load on demand and
-cannot be scanned, by small eager `outbox` marks naming the ones with unsent edits. One tab per browser, elected with Web Locks, talks to the server. The server is SQLite where every
-row carries the global version that last changed it, so "what changed since V" is an index scan, not a log.
+kv on OPFS holds the whole replica in every browser, as `@opfs-lsm/docstore` collections with declared indexes.
+TanStack DB collections are the read model, and every one that holds rows of a stream loads on demand: a screen's
+live queries read the rows they show through those indexes, and nothing else is in memory. Counts are not
+queries over memory either: the list total and the board's column counts count index entries in docstore. Every
+write, a local edit or a row from the server, is one read-modify-write (`utils.transact`), so there is one write
+path and one merge rule. Each row carries its own unsent edits (`dirty`), which is the "not synced" mark and the
+conflict guard, and a `pending: true` that a sparse index lists, so the outbox is a range read. One tab per
+browser, elected with Web Locks, talks to the server. The server is SQLite where every row carries the global
+version that last changed it, so "what changed since V" is an index scan, not a log.
 
-## Why the data is split (measured)
+## Why nothing is eager (measured)
 
 `bench/spike-100k.txt`: five alternating cold opens per side, 100k issues, fresh Chrome process each time.
 
@@ -24,10 +26,11 @@ row carries the global version that last changed it, so "what changed since V" i
 | issue summaries only | 947 ms (776–1052) | 238 MB |
 | summaries + descriptions + 49,734 comments | 1456 ms (1351–5623) | 437 MB |
 
-Bodies and comments are 59 of the 81 MB of JSON, and nobody filters or sorts by them. They stay in kv and load by
-key when a screen opens them. A profile of the summaries-only open shows no single limiter: TanStack ingest and
-BTree index builds (~150 ms), kv's SST merge scan (~85 ms), JSON decode (~74 ms), GC (~50 ms), and ~210 ms waiting
-on OPFS reads.
+An eager collection reads, decodes and indexes every row before the list can paint, and holds them all. A
+profile of the summaries-only open shows no single limiter: TanStack ingest and BTree index builds (~150 ms), kv's
+SST merge scan (~85 ms), JSON decode (~74 ms), GC (~50 ms), and ~210 ms waiting on OPFS reads. Every term grows
+with the replica. On demand, a warm start reads one index page of the list's 100 rows and counts 100,000 index
+entries; see [Measured](#measured).
 
 ## Data
 
@@ -40,10 +43,13 @@ export type PriorityCode = 0 | 1 | 2 | 3 | 4;
 
 /** Field name -> local edit clock of an edit the server has not acknowledged. Absent = clean. */
 export type Clocks = Readonly<Record<string, number>>;
-/** `version` is the server version of the last server state merged in; 0 = never reached the server. */
-export type Synced = { readonly version: number; readonly dirty?: Clocks };
+/**
+ * `version` is the server version of the last server state merged in; 0 = never reached the server.
+ * `pending` is `true` exactly when `dirty` is present: no index can hold an object, a sparse one can hold `true`.
+ */
+export type Synced = { readonly version: number; readonly dirty?: Clocks; readonly pending?: true };
 
-export type Issue = Synced & {               // eager, ~220 B
+export type Issue = Synced & {               // on demand, ~220 B
   readonly id: string; title: string; status: StatusCode; priority: PriorityCode; kanbanorder: string;
   readonly username: string; readonly created: number; modified: number; deleted: boolean;
 };
@@ -54,8 +60,6 @@ export type Comment = Synced & {                                            // o
   readonly created: number; deleted: boolean;
 };
 export type Stream = "issues" | "bodies" | "comments";
-/** Eager, one per body or comment with unsent edits; the row itself still holds `dirty`. */
-export type OutboxMark = { readonly id: string; readonly stream: "bodies" | "comments"; readonly rowKey: string; readonly nonce: string };
 /** One eager row per browser (`id: "sync"`), written by the leader, read by every tab's status bar. */
 export type SyncState = {
   readonly id: "sync"; epoch: string | null; cursors: Record<Stream, number>; head: number;
@@ -75,17 +79,23 @@ land between the read and the write, in this tab or another. Callers never use `
 
 | write | merge function (pure, `src/domain/merge.ts`) |
 |---|---|
-| local edit (`setStatus`, `move`, `rename`, …) | `applyLocal(row, patch, clock)`: patch the fields, stamp `dirty[f] = clock` |
+| local edit (`setStatus`, `move`, `rename`, …) | `applyLocal(row, patch, clock)`: patch the fields, stamp `dirty[f] = clock` and `pending` |
 | server row from a pull | `mergeIncoming(local, incoming)`: drop if `incoming.version <= local.version`; else take incoming, but keep every `dirty` field's local value |
-| push acknowledgment | `mergeIncoming(local, row, ackedClocks)`: a dirty field whose clock equals the acked one is confirmed and cleared; a field edited again in flight stays dirty |
+| push acknowledgment | `mergeIncoming(local, row, ackedClocks)`: a dirty field whose clock equals the acked one is confirmed and cleared; a field edited again in flight stays dirty; `pending` goes with the last dirty field |
 
 Each is idempotent: replaying a page or an ack converges to the same row. So a crash between writing a page and
 advancing its cursor costs one re-pull, and no cross-collection transaction is needed. Deletes are
 `deleted = true` plus `dirty`; the acked tombstone becomes a kv delete.
 
-Hypothesis to check before the UI relies on it: a `transact` from a click shows in the same tab's live query
-within one frame (the adapter applies kv's change event before the promise resolves). If it does not, the
-commands wrap `transact` in a TanStack `createTransaction` for an optimistic overlay.
+A `transact` from a click shows in the same tab's list with no optimistic overlay: edit to live query 3.1 ms
+p50, to DOM 3.5 ms (`visible`, production build, 60 edits).
+
+**Write chunking.** kv caps one write batch at 10,000 ops. A docstore write of a row is one op for the row plus,
+per index, at most a delete of its old entry and a put of its new one, so a row costs at most `1 + 2 × indexes`
+ops. A pulled page of 2,000 rows is merged in slices of `floor(10000 / (1 + 2 × indexes))` rows, each its own
+`transact`: 666 issues (seven indexes), 3,333 bodies (one), 2,000 comments (two). The slice size is read from the
+collection's `indexes`, so adding an index cannot push a page over the cap. Slicing loses nothing a crash could
+not already lose: a merge is idempotent and the cursor advances only after the whole page.
 
 ## Sync
 
@@ -101,24 +111,27 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
 - **Leader.** Every tab calls `navigator.locks.request("linearlite:sync", …)` and holds it for its life. The holder
   runs the loop; the next tab takes over from the cursors in kv when it closes. Other tabs only write local edits.
   kv's change feed is the bus between tabs; there is no tab-to-tab messaging.
-- **Loop.** On start, on every SSE hint, on a local edit (a live query over `dirty` rows) and on `online`:
+- **Loop.** On start, on every SSE hint, on a local edit (a live query over `pending` rows) and on `online`:
   push every dirty row (fields = current values of dirty fields; a row with `version 0` pushes all fields with
   `create`), then pull each stream until `more` is false. Push before pull, so acked fields merge before the pull
   brings the same rows. Failure: back off 1 s → 30 s, mark `online: false`.
-- **Outbox marks.** A command writes the mark, then the row. The leader reads the marked rows, pushes them, and
-  removes a mark only if its `nonce` is unchanged, so an edit made while the push was in flight keeps its mark. A
-  mark on a clean row (a crash between the two writes) pushes nothing and is removed.
+- **Outbox.** Issues, bodies and comments each have a sparse `pending` index, and the leader pushes the rows
+  three live queries over `eq(pending, true)` read from it, a range of the unsent rows only. An ack clears just
+  the fields whose clocks it confirms, so an edit made while the push was in flight stays pending. There is no
+  separate outbox collection to keep in step with the rows.
 - **Refused pushes.** A push the server refuses with a 4xx is retried op by op, so one bad op cannot wedge sync. An
   op still refused is dropped: the leader fetches that row from `/api/row` and replaces the local row with it,
   or deletes the local row when the server has none (a refused create). A field edited again while the push was
   in flight keeps its local value and stays dirty, so the next push sends it. It warns in the console.
 - **First sync.** `issues` first, so list and board fill page by page; then `bodies` and `comments` in the
-  background. A detail view opened before its body arrives calls `/api/detail` from its own tab and writes the
-  result with the same `mergeIncoming`.
+  background. An epoch change clears each collection with docstore's `clear`, one catalog write. A detail view
+  opened before its body arrives calls `/api/detail` from its own tab and writes the result with the same
+  `mergeIncoming`.
 - **Pull order on a first sync.** Pages come in version order. The seed stamps versions newest `modified` first,
-  so the first page is the default view's top rows and TanStack's sorted window appends instead of inserting at
-  the front: `issues` caught up in 3.8 s instead of 6.9 s at 100k (`bench/first-sync-order.txt`). A real server's
-  history arrives in write order, oldest first; it would need a bootstrap endpoint that pages by `modified desc`.
+  so the first page is the default view's top rows: the list's window fills from the first slice and then holds
+  its 100 rows, and every later row sorts past it and stays out of memory. A real server's history arrives in
+  write order, oldest first; the window would then take a newer row on most slices, which costs a TanStack
+  update each, not memory.
 - **Page size.** 2,000 rows per pull. 5,000 catches up about 1 s sooner at 100k but blocks the main thread up to
   ~400 ms per page late in the sync; 2,000 keeps each page under ~170 ms (`bench/client-100k.txt`).
 - **Conflicts.** Per field, the last push to reach the server wins. A local unsent edit beats any incoming value
@@ -130,8 +143,9 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
 ## Adapter features the app uses (`@opfs-lsm/tanstack-db`)
 
 Every collection is `docstoreCollectionOptions({ collection, syncMode })` over an `@opfs-lsm/docstore` collection,
-keyed by `id`. `issues`, `sync` and `outbox` are eager; `bodies` and `comments` are on demand, and `comments` has a
-docstore index on `issue_id`.
+keyed by `id`. `issues`, `bodies` and `comments` are on demand; `sync` is eager, one row. `issues` sets
+`defaultStringCollation: { stringSort: "lexical" }`, so the title sort reads its index in pages: the index orders
+strings by code point, which agrees with TanStack's lexical compare for the seed's titles.
 
 ```ts
 interface DocstoreCollectionUtils<T> {
@@ -147,9 +161,48 @@ interface DocstoreCollectionUtils<T> {
 ```
 
 On demand: `loadSubset` reads the query's rows through the collection's indexes in one docstore `view`: `eq(id)`
-reads that body, `eq(issue_id, X)` reads the `issue_id` index. A change event commits a document while some loaded
-query matches it. `unloadSubset` drops the rows no other loaded query matches. A `gap` event reloads every loaded
-query.
+reads that document, `eq` and `inArray` on an index's leading fields read one range per value, and an ordered,
+limited query reads the first rows of each range, in pages. A change event commits a document while some loaded
+query keeps it; an ordered window keeps the rows at or before its last row, so the rows a first sync writes past
+the list's window never reach memory. `unloadSubset` drops the rows no other loaded query keeps. A `gap` event
+reloads every loaded query.
+
+### Indexes
+
+```ts
+// src/client/store.ts
+issues: {
+  byModified: { on: ["deleted", "modified"] },
+  byCreated:  { on: ["deleted", "created"] },
+  byTitle:    { on: ["deleted", "title"] },
+  byPriority: { on: ["deleted", "priority", "status"] },
+  byStatus:   { on: ["deleted", "status", "kanbanorder"] },
+  search:     { on: ["deleted", "modified"], text: "title" },
+  pending:    { on: "pending" },
+},
+bodies:   { pending: { on: "pending" } },
+comments: { byIssue: { on: "issue_id" }, pending: { on: "pending" } },
+```
+
+Every list read pins `deleted = false`, so every ordered index leads with `deleted`: the adapter reads an ordered
+window from an index whose leading fields the `where` pins and whose next field is the sort.
+
+| read | index |
+|---|---|
+| list sorted by modified, created or title, either direction, and its tie load (`eq(field, boundary)`) | `byModified`, `byCreated`, `byTitle`; a status or priority filter reads the same pages and filters them |
+| list sorted by priority; a priority filter under that sort (one range per priority) | `byPriority` |
+| list sorted by status; a status filter under that sort; a board column (`status = s`, by `kanbanorder`) | `byStatus` |
+| title search under the default sort | `search`: the entries holding every word of the query, newest first, then `ilike` in memory |
+| title search under another sort | that sort's index, pages filtered by `ilike` |
+| `useIssue(id)`, a detail fetch | the documents by id, no index |
+| unsynced rows | `pending`, sparse: only rows with `pending: true` have an entry |
+| list total, board column counts | `byStatus` per status, `byPriority` per priority and status, `search` for a query |
+
+Each index costs first-sync time and storage. At 100k issues, seven indexes catch `issues` up in 4.2 s and three
+(`byModified`, `byStatus`, `pending`) in 3.3 s, about 240 ms per index (`bench/first-sync-100k.txt`). A missing
+sort index costs more: that sort reads and holds all 100,000 issues, as an eager collection does. So every sort
+keeps its index. Two are candidates to merge: `search` holds an entry per row ordered as `byModified` is, and could
+serve the plain list too if the adapter read a text index without a `match`.
 
 Known, not fixed here: the adapter's `onUpdate` persists the row as the editing tab last saw it, so a tab with a
 stale copy can erase a newer field another tab wrote. This app never calls `collection.update`.
@@ -159,22 +212,87 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
 - **The URL holds the view.** `?status=1,2&priority=0&q=sync&sort=modified&dir=desc` via `validateSearch`.
   List and board share it. Back and forward restore a view; a link reproduces it.
 - **List.** `@tanstack/react-virtual` over a windowed live query (`orderBy` + `limit`, moved with
-  `utils.setWindow`, TanStack DB's live-query API, not the adapter's) and a `count` query with the same `where` for the scroll height. BTree indexes on `status`,
-  `priority`, `modified`, `created`, `kanbanorder`. Title search is `ilike` in memory; a query holding `%` or `_` uses a filter function instead, since `ilike` has no escape.
+  `utils.setWindow`, TanStack DB's live-query API, not the adapter's). No TanStack index: the collection holds a
+  few hundred rows. Title search is `ilike`; a query holding `%` or `_` uses a filter function instead, since
+  `ilike` has no escape.
+- **Counts.** The scroll height and the toolbar total come from `countTotal` and the board's column counts from
+  `countByStatus` (`src/client/counts.ts`), which count docstore index entries and read no document. A search
+  counts the documents the `search` index matches whose title contains the query, so the total agrees with the
+  list's `ilike`; a query of one plain word is counted from the index entries alone, which is exact for titles
+  stored in NFC, as typed text is (the index normalizes, `ilike` does not). `useIssueRead` reads again after
+  every change to issues, one read at a time, and waits four times the last read's duration, at least 250 ms,
+  before the next. A first sync changes issues every few milliseconds, and counting 100,000 entries then takes
+  up to a fifth of the main thread instead of half. The counts depend on the filter and the query, not the
+  sort, so a sort change keeps them.
+- **Deep scroll.** TanStack loads an ordered window without an index on its field as a prefix: a jump to row
+  50,000 asks for the first 50,100 rows, and the adapter reads and parses them: 846 ms the first time, one frame
+  after that, since the rows stay in memory, also once the list scrolls back to the top. The list does not work
+  around it; see [Measured](#measured).
 - **Scroll.** The list keeps its scroll position per filter for the session, in memory, not in the URL, so Back
   from an issue lands where the user left.
-- **Board.** Five column queries ordered by `kanbanorder`, windows growing as a column scrolls, counts from one
-  `groupBy(status)` query. A drop writes `status` and a fractional key between its neighbours in one `transact`.
-- **Detail.** The summary is in memory, so the title and fields paint with the route. Description and comments
-  load from kv on demand (a few ms) and, before backfill, from `/api/detail`.
+- **Board.** Five column queries ordered by `kanbanorder`, windows growing as a column scrolls, counts from
+  `countByStatus`. A drop writes `status` and a fractional key between its neighbours in one `transact`.
+- **Detail.** The summary is a live query by id: from the list's rows when they hold it, else one document
+  read. Description and comments load from kv on demand (a few ms) and, before backfill, from `/api/detail`.
 - **Feedback.** A dot on rows with `dirty`; a status bar with `Syncing 42,000 / 100,000`, `Offline · 12 unsynced`
   or nothing when idle. Shortcuts: `c` new issue, `/` search, `j`/`k` move in the list, `Enter` opens, `Esc` back.
 
-## Measuring
+## Measured
 
-`bench/spike.sh` ran against a `/spike` route that has since been removed (last at commit f2a16a8); check that commit out to rerun it.
+`node bench/client.ts <origin> <scenario>` drives headless Chrome against a production build (`vite build`,
+`vite preview`) and a server seeded with `pnpm seed 100000`; `bench/ui-latency.js` times the list from the DOM alone
+and counts a step only once the rows and the toolbar total are right, so one script times every build. Five runs per
+build, one per build per round under a machine-wide lock; p50 (min–max) in ms. A is this app before issues moved to
+docstore indexes (a631954, eager issues through the kv adapter), B this design, C the same app on TanStack DB's
+SQLite persisted collection (`spike/linearlite-sqlite`), eager and on demand. The interaction rows for A and B are
+round 2 of `bench/ui-latency-100k.txt`, C's are round 1. Raw lines, commands and machine load are in
+`bench/client-100k-prod.txt` and `bench/ui-latency-100k.txt`; what each read costs inside B is at the end of the
+latter. Interaction times end at the next painted frame, so they move in ~16.7 ms steps.
 
-`bench/` drives Chrome as `bench/spike.sh` does, against a seeded server, at 10k and 100k issues, 5 alternating
-runs, with the limiter named per number: first sync to first rows and to `issues` caught up, warm start to first
-rows (offline), filter and sort change to rows, title search keystroke to rows, detail open, edit to visible in a
-second tab, edit to acked, and tab heap.
+| | A | B | C eager | C on demand | what limits B |
+|---|---|---|---|---|---|
+| warm start, first rows | 886 (876–898) | 106 (105–107) | 1,091 | 2,056 | main thread busy 89 of 116 ms in one trace (`bench/trace-warm.ts`, unminified build): opening kv and docstore and reading the first page 38, script 28, React 11 |
+| warm start, rows and total | 888 (878–899) | 150 (150–152) | 1,093 | 2,056 | the total counts 100,000 `byStatus` entries, 32 ms |
+| heap after warm start, MB | 139 | 25 | 119 | 134 | |
+| storage, MB | 233 | 156 | 183 | 208 | |
+| first sync, first rows | 139 (133–151) | 134 (124–141) | 212 | 212 | the first pull page |
+| first sync, issues caught up | 2,417 (2,389–2,497) | 3,935 (3,846–4,249) | 9,940 | 11,121 | the index entries: kv's write path and docstore's index planning (`bench/first-sync-100k.txt`) |
+| first sync, comments caught up | 5,713 (5,685–5,841) | 7,814 (7,750–8,190) | 13,345 | 14,474 | the same, for three streams |
+| heap after first sync, MB | 322 (157–326) | 22 (12–38) | 181 | 190 | |
+| status chip on | 28.3 (27.7–29.3) | 29.3 (19.9–30.3) | 42.6 | 1,088 | reads take ~8 ms of it: 431 documents to fill the window, 20k entries counted |
+| status chip off | 96.1 (95.4–99) | 48.8 (47.2–59.5) | 190 | 146 | counting 100,000 entries, 32 ms |
+| priority filter on | 27.1 (27–28.1) | 33 (29.5–45.5) | 39.9 | 1,109 | 585 documents read to fill the window (3 ms), 20k entries counted (7 ms) |
+| sort modified ↔ created | 14.5 (13.5–15) | 14 (13.8–14.3) | 13.7 | 14 | one frame |
+| sort modified → priority | 706 (700–709) | 760 (755–777) | 73.4 | 73.5 | TanStack loads the ~19,700 issues tied with the window's last row (89 ms to read) and takes them in |
+| search keystroke (80 ms debounce) | 144 (142–145) | 123 (117–138) | 197 | 1,610 | the debounce, then the `search` entries for the word |
+| list → detail, title painted | 14.5 (13.9–15.7) | 16.6 (16–17.9) | 59.6 | 127 | not the read: the live query by id finds the list's row at once (under 1 ms) |
+| jump to row 5,000, first | 37.5 (37.1–58.7) | 158 (152–169) | 42.3 | 994 | TanStack asks for the first 5,100 rows; reading them takes 26 ms |
+| jump to row 50,000, first | 343 (318–346) | 846 (817–894) | 198 | 1,188 | TanStack asks for the first 50,100 rows; reading them takes 266 ms, TanStack takes in the rest |
+| jump to row 50,000, later | 63.3 (60–87.1) | 15.3 (14.4–17.7) | 41.7 | 45.4 | one frame: the rows stayed in memory |
+| heap after the interactions, MB | 161 | 79 | 141 | 153 | the 50,058 rows the deep jump loaded |
+
+Edits on B (`tabs`, `users`, `offline`, `visible`) all pass: an edit in one tab reaches the other tab's list in
+2.2 and 1.8 ms p50 (each direction, n=10); another user's edit in 7 ms through the server; five edits made offline
+are acked 330 ms after reconnecting; a tab's own edit reaches its DOM in 3.5 ms.
+
+Where B is slower than A, and whose cost it is:
+
+- **First sync**, 1.5 s later for issues and 2.1 s for comments. Each issue writes seven keys instead of one (the
+  document and an entry in six indexes; `pending` has none for a synced row), and each key is appended to kv's
+  WAL, applied to its memtable and posted to other tabs, and the next merge reads the stored row back to plan the
+  index changes. kv's broadcast posts every op even with no other tab open; that is
+  kv's to change. Fewer indexes buy back ~240 ms each at the price of a sort that holds every issue.
+- **Sort by priority or status**, 760 ms against 706 (and C's 73, which holds all 100,000 rows under a TanStack
+  BTree index). Every issue in the window shares the priority of its last row, and TanStack then loads every row
+  with that value, with no limit: 19,700 issues. TanStack owns the load; LinearLite could avoid it by sorting on a
+  key that is unique per issue (priority, then modified, in one field) at the cost of one more index per sort.
+- **First jump deep into the list**, 158 ms to row 5,000 and 846 ms to row 50,000, against 38 and 343. TanStack
+  loads a window without a TanStack index on the sort field as a prefix (offset + limit rows), and the adapter
+  reads and parses all of them, then TanStack keeps them after the list scrolls back. A read that skips index
+  entries without reading their documents (docstore) and a load that asks only for the window (TanStack) would
+  make the first jump cost what a later one does.
+- **Priority filter**, 33 ms against 27: B reads and counts what A already holds (above).
+- **List → detail** is a wash: 16.6 against 14.5 ms here, 14.6 against 23.1 ms in round 1.
+
+`bench/spike.sh` ran against a `/spike` route that has since been removed (last at commit f2a16a8); check that
+commit out to rerun it.

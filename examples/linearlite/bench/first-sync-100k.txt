@@ -1,0 +1,43 @@
+First sync of 100k issues on docstore indexes: what each index and each fix costs.
+Production builds (vite build, vite preview), one server database, headless Chrome, fresh profile per run, pull
+page 2,000, interleaved one run per build per round under the machine lock. node bench/client.ts <origin> first-sync
+with RUNS=1 per invocation. ms from navigation; heap after a forced GC, MB.
+
+1. Index count. Same code, three builds: main (A, no docstore index), seven issue indexes, three (byModified,
+   byStatus, pending). 3 rounds, 1-min load 4.4-7.1 (other work on the machine).
+
+                         caught-up:issues        caught-up:comments     storage MB
+   A (main)              2,691 (2,647-3,254)     5,997 (5,896-6,814)    189-237
+   7 indexes             4,203 (4,167-4,252)     8,319 (7,989-8,500)    131-184
+   3 indexes             3,258 (2,860-3,480)     7,580 (7,326-7,721)     99-162
+
+   Four indexes cost 945 ms of caught-up:issues, about 240 ms each per 100k rows. Storage moves with how much of the
+   WAL is ingested when the run stops, so it does not separate the builds.
+
+2. Two fixes, measured before and after. 3 rounds, 1-min load 2.8-6.3.
+
+                                          caught-up:issues        TanStack issues after   heap MB
+   before                                 6,727 (6,664-8,122)     100,000                 83-185
+   + adapter keeps a short window bounded 6,025 (5,944-6,471)     100                     16-27
+   + counts at most a fifth of the thread 4,503 (4,045-4,755)     100                     24-41
+
+   The list's window loads on an empty replica and found no rows, so it had no last row to keep rows at or before,
+   and kept every issue the sync wrote (packages/tanstack-db, "let a short window's rows go once writes fill it").
+   The count hook reran after each slice, waiting as long as the last count took, so counting 100,000 entries took
+   up to half the main thread; it now waits four times as long, at least 250 ms.
+
+3. Where B's first sync goes after both fixes. One trace of an unminified production build, navigation to
+   caught-up:issues (5.3 s under tracing), main thread, inclusive ms (pr3 trace tools: trace-first, incl.py):
+
+   kv write path (append to IndexedDB, memtable apply, broadcast to other tabs)   ~1,400
+     appendAfter 569, applyRecord 366, broadcast 328, checkBatch 155
+   docstore transact (read the stored rows, plan index changes, encode)           ~  800
+     pointGet 320, planChanges 311 (indexEntries 252, diffEntries 149), encodeDoc 128
+   garbage collection                                                              481
+   counts (useIssueRead)                                                           383
+   adapter change feed into TanStack (onChange 137, decide 132)                    254
+
+   The cost over A is the index entries: each issue writes 7 keys instead of 1 (the document and an entry in six
+   indexes; `pending` has none for a synced row), read back on the next merge, broadcast to other tabs and
+   appended to the WAL. broadcast posts every op of a record on a BroadcastChannel even
+   when no other tab listens; that is kv's.
