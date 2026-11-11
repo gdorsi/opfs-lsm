@@ -15,7 +15,7 @@ function summarize(labels: readonly string[], picked: readonly number[], none: s
   return picked.length <= 2 ? picked.map((c) => labels[c]).join(", ") : `${picked.length} selected`;
 }
 
-export function Toolbar({ title, count, filter }: { title: string; count: number; filter: IssueFilter }) {
+export function Toolbar({ title, count, filter }: { title: string; count: number | undefined; filter: IssueFilter }) {
   const setFilter = useSetFilter();
   const active = filter.status.length > 0 || filter.priority.length > 0 || filter.q !== "";
 
@@ -37,7 +37,7 @@ export function Toolbar({ title, count, filter }: { title: string; count: number
     <div className="topbar">
       <span className="title">{title}</span>
       <span className="count mono" id="count" aria-live="polite">
-        {count.toLocaleString()}
+        {count?.toLocaleString()}
       </span>
       <div className="chips">
         <MenuButton className={`chip${filter.status.length ? " on" : ""}`} entries={statusEntries} keepOpen title="Filter by status">

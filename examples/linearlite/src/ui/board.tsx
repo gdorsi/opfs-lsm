@@ -19,10 +19,10 @@ export function BoardScreen() {
   const [dragging, setDragging] = useState<string | null>(null);
   return (
     <>
-      <Toolbar title="Board" count={counts.reduce((a, b) => a + b, 0)} filter={filter} />
+      <Toolbar title="Board" count={counts?.reduce((a, b) => a + b, 0)} filter={filter} />
       <div className="board">
         {COLUMNS.map((status) => (
-          <Column key={status} status={status} count={counts[status] ?? 0} filter={filter} dragging={dragging} setDragging={setDragging} />
+          <Column key={status} status={status} count={counts?.[status]} filter={filter} dragging={dragging} setDragging={setDragging} />
         ))}
       </div>
     </>
@@ -31,7 +31,7 @@ export function BoardScreen() {
 
 interface ColumnProps {
   readonly status: StatusCode;
-  readonly count: number;
+  readonly count: number | undefined;
   readonly filter: IssueFilter;
   readonly dragging: string | null;
   setDragging(id: string | null): void;
@@ -83,7 +83,7 @@ function Column({ status, count, filter, dragging, setDragging }: ColumnProps) {
         <StatusIcon status={status} />
         {STATUS_LABELS[status]}
         <span className="count mono" data-count>
-          {count.toLocaleString()}
+          {count?.toLocaleString()}
         </span>
       </header>
       <div
@@ -91,7 +91,7 @@ function Column({ status, count, filter, dragging, setDragging }: ColumnProps) {
         className="cards"
         onScroll={(e) => {
           const el = e.currentTarget;
-          if (rows.length < count && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM) setRange(0, rows.length + GROW);
+          if (rows.length < (count ?? Infinity) && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM) setRange(0, rows.length + GROW);
         }}
       >
         {count === 0 && <div className="col-empty">No issues</div>}

@@ -57,12 +57,26 @@ async function read<T, K extends string>(transact: Transact<T, K>, keys: readonl
   return rows;
 }
 
+/** kv's cap on the operations of one write batch (docstore README, "Limits"). */
+const KV_BATCH_OPS = 10_000;
+
+/**
+ * The most rows of `stream` one `transact` can write within kv's batch cap. A row write is the row plus, per index,
+ * at most a delete of its old entry and a put of its new one; every index here holds at most one entry per row.
+ */
+const rowsPerBatch = (store: Store, stream: Stream) => Math.floor(KV_BATCH_OPS / (1 + 2 * store.docs.collection(stream).indexes.size));
+
+/** Each slice is its own transaction; a crash between two costs a re-pull, since merging a row again changes nothing. */
 async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: readonly ServerRow<S>[], acked?: readonly Clocks[]) {
   const incoming = rows as unknown as readonly Omit<Rows[S], "dirty" | "pending">[];
-  await transactOf(store, stream)(
-    incoming.map((row) => row.id),
-    (locals) => incoming.map((row, i) => mergeIncoming<Rows[S]>(locals[i], row, acked?.[i])),
-  );
+  const step = rowsPerBatch(store, stream);
+  for (let at = 0; at < incoming.length; at += step) {
+    const slice = incoming.slice(at, at + step);
+    await transactOf(store, stream)(
+      slice.map((row) => row.id),
+      (locals) => slice.map((row, i) => mergeIncoming<Rows[S]>(locals[i], row, acked?.[at + i])),
+    );
+  }
 }
 
 type Loop =
@@ -262,21 +276,12 @@ class Leader {
   }
 
   private async wipe(epoch: string): Promise<void> {
-    const { docs, issues, outbox } = this.store;
-    await issues.preload();
-    await clear(issues.utils.transact, [...issues.keys()]);
-    await clear(outbox.utils.transact, [...outbox.keys()]);
-    for (const name of BACKGROUND) await docs.collection(name).clear();
+    const { docs } = this.store;
+    for (const name of ["issues", ...BACKGROUND, "outbox"] as const) await docs.collection(name).clear();
     this.head = undefined;
     this.marked.clear();
     await this.save({ ...EMPTY, epoch });
   }
-}
-
-const CLEAR_CHUNK = 5000;
-
-async function clear<T, K extends string>(transact: Transact<T, K>, keys: readonly K[]): Promise<void> {
-  for (let i = 0; i < keys.length; i += CLEAR_CHUNK) await transact(keys.slice(i, i + CLEAR_CHUNK), (rows) => rows.map(() => null));
 }
 
 const started = new WeakSet<Store>();

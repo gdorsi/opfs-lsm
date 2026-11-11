@@ -1,11 +1,12 @@
-import { and, count, eq } from "@tanstack/db";
+import { and, eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Body, Comment, Issue, StatusCode, Stream } from "../domain/model.ts";
+import { countByStatus, countTotal } from "./counts.ts";
 import type { IssueFilter } from "./filter.ts";
 import { backoffMs } from "./ops.ts";
-import { filtered, windowQuery } from "./query.ts";
-import { openedStore } from "./store.ts";
+import { windowQuery } from "./query.ts";
+import { openedStore, type IssueDocs } from "./store.ts";
 import { fetchDetail } from "./sync.ts";
 
 export const LIST_WINDOW = 100;
@@ -32,15 +33,56 @@ function useWindow(key: string, build: () => ReturnType<typeof windowQuery>, siz
   return { rows: data, offset, setRange };
 }
 
-export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly total: number } {
+/**
+ * `read` of the stored issues, run again after every change to them. One read runs at a time. Changes during a read
+ * start one more, four times that read's duration after it and at least 250 ms, so a first sync, which changes the
+ * issues every few milliseconds, spends at most a fifth of the main thread counting them. Undefined until the first
+ * read for `key` resolves.
+ */
+function useIssueRead<T>(key: string, read: (issues: IssueDocs) => Promise<T>): T | undefined {
+  const { docs } = openedStore();
+  const [result, setResult] = useState<{ readonly key: string; readonly value: T }>();
+  useEffect(() => {
+    const issues = docs.collection("issues");
+    let live = true;
+    let running = false;
+    let again = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const run = async () => {
+      timer = undefined;
+      running = true;
+      again = false;
+      const t0 = performance.now();
+      try {
+        const value = await read(issues);
+        if (live) setResult({ key, value });
+      } catch (err) {
+        console.warn("linearlite could not count issues", err);
+      }
+      running = false;
+      if (live && again) timer = setTimeout(() => void run(), Math.max(250, 4 * (performance.now() - t0)));
+    };
+    const off = issues.changes((event) => {
+      if (event.kind === "closed") return;
+      if (running || timer !== undefined) again = true;
+      else void run();
+    });
+    void run();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      off();
+    };
+  }, [docs, key]); // `key` names `read`
+  return result?.key === key ? result.value : undefined;
+}
+
+export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly total: number | undefined } {
   const { issues } = openedStore();
-  const view = useWindow(JSON.stringify(filter), () => windowQuery(issues, filter, LIST_WINDOW), LIST_WINDOW);
-  const { data } = useLiveQuery((q) =>
-    filtered(q, issues, filter)
-      .select(({ i }) => ({ n: count(i.id) }))
-      .findOne(),
-  );
-  return { ...view, total: data?.n ?? 0 };
+  const key = JSON.stringify(filter);
+  const view = useWindow(key, () => windowQuery(issues, filter, LIST_WINDOW), LIST_WINDOW);
+  const total = useIssueRead(key, (docs) => countTotal(docs, filter));
+  return { ...view, total };
 }
 
 export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWindow {
@@ -48,18 +90,9 @@ export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWi
   return useWindow(JSON.stringify([status, filter]), () => windowQuery(issues, filter, COLUMN_WINDOW, status), COLUMN_WINDOW);
 }
 
-export function useStatusCounts(filter: IssueFilter): readonly number[] {
-  const { issues } = openedStore();
-  const { data } = useLiveQuery((q) =>
-    filtered(q, issues, filter)
-      .groupBy(({ i }) => i.status)
-      .select(({ i }) => ({ status: i.status, n: count(i.id) })),
-  );
-  return useMemo(() => {
-    const counts = [0, 0, 0, 0, 0];
-    for (const { status, n } of data) counts[status] = n;
-    return counts;
-  }, [data]);
+/** Issues under `filter` per status code; undefined until counted. */
+export function useStatusCounts(filter: IssueFilter): readonly number[] | undefined {
+  return useIssueRead(JSON.stringify(filter), (docs) => countByStatus(docs, filter));
 }
 
 export function useIssue(id: string): Issue | undefined {

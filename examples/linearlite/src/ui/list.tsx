@@ -27,10 +27,11 @@ export function ListScreen() {
   useEffect(() => {
     if (view.rows.length > 0 && performance.getEntriesByName("linearlite:first-rows").length === 0) performance.mark("linearlite:first-rows");
   }, [view.rows.length]);
+  const total = view.total ?? (view.rows.length > 0 ? view.offset + view.rows.length : undefined);
   return (
     <>
       <Toolbar title="All issues" count={view.total} filter={filter} />
-      {view.total === 0 ? <ListEmpty filter={filter} /> : <VirtualList key={filterKey} filterKey={filterKey} {...view} />}
+      {total === 0 ? <ListEmpty filter={filter} /> : total !== undefined && <VirtualList key={filterKey} filterKey={filterKey} {...view} total={total} />}
     </>
   );
 }
