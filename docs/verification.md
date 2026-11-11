@@ -26,6 +26,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
 | In-page `EngineHost` | `drive two-tab-local`. |
 | `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench table/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
+| `packages/tanstack-db/src` | `pnpm --filter @opfs-lsm/tanstack-db test`, with `TSDB_DIFF_RUNS=2000` after a change to the planner or the on-demand run. For a performance claim, `drive bench tanstack/` with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, `lz4.ts`, `sst.rs`, and the merge session that reads runs, `merge.rs`), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test` and `cargo test -p engine-core`, then each cargo fuzz and Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
 | Any TypeScript behavior | `pnpm test` |
 | Any TypeScript or JavaScript source, including a removed export | `pnpm static` (oxlint, then `fallow dead-code`) |
@@ -205,6 +206,8 @@ It covers four fixed workloads (ingest, compaction with reclaim, a two-step casc
 The same file holds the churn tests: a tab whose run opens are slow while the host flushes and compacts before each one returns, a tab whose every file call is preceded by four flushes and a compaction, for 40 syncs, and a tab that keeps the reclaim lock while the host flushes and compacts. A healthy database must never report `CorruptDatabaseError`, and the host must never wait for the tab (design.md, "Loading a generation under churn").
 
 `tests/sim/io-error.test.ts` fails fault site N for N = 1, 2, … until a run reaches no site N, with one-shot and persistent faults, over durable sites and read sites. Every call must settle, every resolved call must be right, and after healing the database must reopen with the whole committed log. `KV_IO_SITES=durable|read` runs one sweep, and `KV_IO_REPORT=1` prints its size and error names.
+
+The tanstack-db suite includes a differential test (`packages/tanstack-db/tests/differential.test.ts`). It generates documents, live queries (a `where`, an order, a window and its moves) and writes through `transact`, TanStack mutations and a second docstore handle. Each query runs over an on-demand collection and over an in-memory collection that holds every document, and both must show the same rows in the same order. It runs 40 cases by default (under 1 s). `TSDB_DIFF_RUNS` widens it, `TSDB_DIFF_SEED` replays a failure, and `TSDB_DIFF_REPORT=1` prints how many loads of each shape TanStack sent. `tests/reads.test.ts` counts the documents each load reads.
 
 ## Fuzz the decoders
 
