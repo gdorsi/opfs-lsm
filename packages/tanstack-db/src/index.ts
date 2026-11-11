@@ -486,3 +486,5 @@ class DemandRun {
     return this.p.commit();
   }
 }
+
+export { docstoreCollectionOptions, type DocstoreCollectionConfig, type DocstoreCollectionUtils } from "./docstore.js";
