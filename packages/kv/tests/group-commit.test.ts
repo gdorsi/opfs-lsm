@@ -9,7 +9,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const utf = (s: string) => enc.encode(s);
 const text = (b: Uint8Array | undefined) => (b ? dec.decode(b) : undefined);
-const quiet = { maxWalBytes: 1 << 30 };
+const maxWalBytes = 1 << 30;
 
 function put(i: number): CheckedOp[] {
   return [{ type: "put", key: checkKey(utf(`k${i}`)), value: checkValue(utf(`v${i}`)) }];
@@ -103,7 +103,7 @@ describe("WAL group commit", () => {
 
   it("a stale group falls back to appendAfter: every write lands past the floor, in call order", async () => {
     const fs = new MemoryFs();
-    const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, maxWalBytes });
     await db.put(utf("k0"), utf("v0"));
     await ingest(db);
     const floor = await raiseFloor(10);
@@ -115,7 +115,7 @@ describe("WAL group commit", () => {
 
   it("joins a group's records to the memtable and the change feed in seq order", async () => {
     const fs = new MemoryFs();
-    const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, maxWalBytes });
     const seen: number[] = [];
     db.changes((event) => {
       if (event.kind === "append") seen.push(event.seq);
@@ -129,14 +129,14 @@ describe("WAL group commit", () => {
 
   it("a put issued before close still commits", async () => {
     const fs = new MemoryFs();
-    let db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: quiet });
+    let db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, maxWalBytes });
     const first = db.put(utf("a"), utf("1"));
     await new Promise((r) => setTimeout(r, 0));
     const second = db.put(utf("b"), utf("2"));
     const closed = db.close();
     expect(await Promise.all([first, second])).toEqual([1, 2]);
     await closed;
-    db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: quiet });
+    db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, maxWalBytes });
     expect(text(await db.get(utf("b")))).toBe("2");
     await db.close();
   });

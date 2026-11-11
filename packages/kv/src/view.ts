@@ -2,14 +2,13 @@ import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { settle, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, untilHit, type ScanBounds } from "./store/cursor.js";
 import {
-  arrayCursor,
   mergeCursors,
   pointGet,
   scanMatching,
   type RunLevel,
-} from "./store/merge.js";
+} from "./store/read.js";
 
 export interface ViewSnapshot {
   /** The seq of the last record the snapshot includes, as write acks and `changes` count it. */
@@ -44,7 +43,7 @@ export function scanLayers(
   return patterns && patterns.length > 0
     ? scanMatching(rows, levels, patterns, bounds, range.limit, reverse)
     : mergeCursors(
-        [arrayCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse))],
+        [entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse))],
         range?.limit,
         reverse,
       );
@@ -78,7 +77,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     this.ensureOpen();
     const k = checkKey(key);
     const row = this.rows.get(k);
-    return settle(() => pointGet(row, this.levels, k));
+    return untilHit(() => pointGet(row, this.levels, k));
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {

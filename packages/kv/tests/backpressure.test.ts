@@ -178,7 +178,7 @@ afterEach(async () => {
   __resetMemoryFsForTests(NAME);
 });
 
-type Call = { readonly through: number; readonly settle: boolean };
+type Call = { readonly through: number; readonly waitForCompaction: boolean };
 
 /**
  * A tab's link to a host. It records the ingest requests, answers them with
@@ -193,8 +193,8 @@ function tabLink(
   const client: IngestClient = {
     ...host,
     watch: () => undefined,
-    ingest: (_name, through, settle) => {
-      const call = { through, settle: settle ?? false };
+    ingest: (_name, through, waitForCompaction) => {
+      const call = { through, waitForCompaction: waitForCompaction ?? false };
       calls.push(call);
       return ingest(call, host);
     },
@@ -211,7 +211,7 @@ async function open(
     name: NAME,
     fs,
     ingest,
-    ingestPolicy: { maxWalBytes: 1e12 },
+    maxWalBytes: 1e12,
     ...options,
   });
   opened.push(db);
@@ -244,13 +244,13 @@ describe("a writer against memtableBytes", () => {
     const held = new Promise<void>((resolve) => (release = resolve));
     const { client, calls } = tabLink(fs, async (call, host) => {
       await held;
-      return host.ingest(NAME, call.through, call.settle);
+      return host.ingest(NAME, call.through, call.waitForCompaction);
     });
     const db = await open(fs, client, { memtableBytes: MiB });
 
     const { held: put, rows, rowsWhenAsked } = await putUntilHeld(db, calls);
 
-    expect(calls).toEqual([{ through: Number.POSITIVE_INFINITY, settle: false }]);
+    expect(calls).toEqual([{ through: Number.POSITIVE_INFINITY, waitForCompaction: false }]);
     // Writes past the request went on while it was out.
     expect(rows).toBeGreaterThan(rowsWhenAsked + 1);
     const update = db.update([key(0)], (_values, tx) => tx.put(key(0), value(1)));
@@ -310,8 +310,8 @@ describe("the host's flush limit", () => {
   it("is the smaller of maxWalBytes and 7/8 of memtableBytes", async () => {
     const fs = new MemoryFs();
     expect(await limitOf(fs, {})).toBe(MiB);
-    expect(await limitOf(fs, { ingestPolicy: { maxWalBytes: 1e12 } })).toBe(14 * MiB);
-    expect(await limitOf(fs, { ingestPolicy: { maxWalBytes: 1e12 }, memtableBytes: MiB })).toBe(896 * 1024);
+    expect(await limitOf(fs, { maxWalBytes: 1e12 })).toBe(14 * MiB);
+    expect(await limitOf(fs, { maxWalBytes: 1e12, memtableBytes: MiB })).toBe(896 * 1024);
   });
 
   it("flushes the WAL at 7/8 of the smallest memtableBytes any tab opened with", async () => {

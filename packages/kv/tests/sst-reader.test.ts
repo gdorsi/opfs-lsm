@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
-import { settle } from "../src/store/cursor.js";
+import { untilHit } from "../src/store/cursor.js";
 import { encodeSst as encodeWasm, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { decodeSst, encodeSst, sstGet, sstKeyRange, type SstEntry } from "../src/store/sst.js";
@@ -62,7 +62,7 @@ describe("lazy sst reader", () => {
         const reader = openRun(body, new PageCache());
         const probes = probesOf(all);
         const got: string[] = [];
-        for (const k of probes) got.push(show(await settle(() => reader.get(k))));
+        for (const k of probes) got.push(show(await untilHit(() => reader.get(k))));
         expect(got).toEqual(probes.map((k) => show(sstGet(all, k))));
       }
     });
@@ -77,9 +77,9 @@ describe("lazy sst reader", () => {
       seq: i + 1,
     }));
     const reader = openRun(encodeSst(entries), new PageCache());
-    expect((await settle(() => reader.get(utf("k00149999"))))?.seq).toBe(n);
-    expect((await settle(() => reader.get(utf("k00000000"))))?.seq).toBe(1);
-    expect(await settle(() => reader.get(utf("k00150000")))).toBeUndefined();
+    expect((await untilHit(() => reader.get(utf("k00149999"))))?.seq).toBe(n);
+    expect((await untilHit(() => reader.get(utf("k00000000"))))?.seq).toBe(1);
+    expect(await untilHit(() => reader.get(utf("k00150000")))).toBeUndefined();
   });
 
   it("with a budget larger than the database, a second pass of gets reads nothing", async () => {
@@ -89,11 +89,11 @@ describe("lazy sst reader", () => {
     for (const [, body] of await encodings(indexWorkload(2_000))) {
       runs.push({ reader: openRun(body, cache, reads), all: decodeSst(body) });
     }
-    for (const { reader, all } of runs) for (const e of all) await settle(() => reader.get(e.key));
+    for (const { reader, all } of runs) for (const e of all) await untilHit(() => reader.get(e.key));
     expect(reads.count).toBeGreaterThan(0);
     reads.count = 0;
     for (const { reader, all } of runs) {
-      for (const e of all) expect(show(await settle(() => reader.get(e.key)))).toBe(show(e));
+      for (const e of all) expect(show(await untilHit(() => reader.get(e.key)))).toBe(show(e));
     }
     expect(reads.count).toBe(0);
   });
@@ -107,7 +107,7 @@ describe("lazy sst reader", () => {
     for (const body of bodies) {
       const cache = new PageCache();
       const reader = openRun(body, cache);
-      await settle(() => reader.get(utf("probe")));
+      await untilHit(() => reader.get(utf("probe")));
       metaBytes.push(cache.usage().metadata);
     }
     const budget = Math.max(...metaBytes) + 2 * PAGE_TARGET;
@@ -127,9 +127,9 @@ describe("lazy sst reader", () => {
       for (let i = 0; i < longest; i += 7) {
         for (const { reader, all } of runs) {
           const e = all[(i * 7919) % all.length]!;
-          expect(show(await settle(() => reader.get(e.key)))).toBe(show(e));
+          expect(show(await untilHit(() => reader.get(e.key)))).toBe(show(e));
           const missKey = cat(e.key, Uint8Array.of(0));
-          expect(show(await settle(() => reader.get(missKey)))).toBe(show(sstGet(all, missKey)));
+          expect(show(await untilHit(() => reader.get(missKey)))).toBe(show(sstGet(all, missKey)));
           const u = cache.usage();
           expect(u.resident).toBeLessThanOrEqual(Math.max(u.budget, u.pinned));
           minMeta = Math.min(minMeta, u.metadata);
@@ -147,11 +147,11 @@ describe("lazy sst reader", () => {
 
     const alone = new Reads();
     const one = openRun(body, new PageCache(), alone);
-    await settle(() => one.get(sameBlock[0]!));
+    await untilHit(() => one.get(sameBlock[0]!));
 
     const together = new Reads();
     const many = openRun(body, new PageCache(), together);
-    const got = await Promise.all(sameBlock.map((k) => settle(() => many.get(k))));
+    const got = await Promise.all(sameBlock.map((k) => untilHit(() => many.get(k))));
 
     expect(got.map(show)).toEqual(all.slice(100, 104).map(show));
     expect(together.count).toBe(alone.count);

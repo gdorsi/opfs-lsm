@@ -149,7 +149,7 @@ each handle's `p`. Commands:
 | Command | Catches bugs in |
 |---|---|
 | `put`, `del`, `batch`, `update(keys, body)` on handle *i* | WAL append, `appendAfter` catch-up, memtable apply, gapless seq (`idb/wal.ts`, `db.ts write/landed`) |
-| `get`, `range(lo, hi)`, `view(fn)` with several reads | `pointGet` order, merge heap, `RunLevel`, tombstones, pin copy-on-write (`store/merge.ts`, `memtable.ts`, `view.ts`) |
+| `get`, `range(lo, hi)`, `view(fn)` with several reads | `pointGet` order, merge heap, `RunLevel`, tombstones, pin copy-on-write (`store/read.ts`, `memtable.ts`, `view.ts`) |
 | `sync`, deliver or drop a broadcast | `catchUp`, generation install, the 8-retry loop (`db.ts`) |
 | `ingest`, `compact` (forced), small `maxWalBytes` | `ingestAll` step order, `advanceTo`, `planCompaction`, the `bottom` tombstone drop, install checks (`host/ingest.ts`, `host/compact.ts`, `store/levels.ts`) |
 | `close`, `reopen` handle *i* | WAL replay, `recordedGeneration`, manifest load |
@@ -388,7 +388,7 @@ would cost a CRC per block read instead of per file open **(inferred)**.
 - **Mutation testing.** SQLite turns branches into jumps or no-ops and requires the suite to
   notice ([§7.6](https://sqlite.org/testing.html)). StrykerJS does this for TypeScript and has
   a Vitest runner ([intro](https://stryker-mutator.io/docs/stryker-js/introduction/)). Point it at
-  `store/merge.ts`, `store/fold.ts`, `store/memtable.ts`, `store/levels.ts`, `host/ingest.ts`,
+  `store/read.ts`, `store/fold.ts`, `store/memtable.ts`, `store/levels.ts`, `host/ingest.ts`,
   `host/compact.ts` and `idb/wal.ts`, with the model-based suite as the test command. A
   surviving mutant in a merge or ingest path marks a property the suite does not check.
   `cargo-mutants` would do the same for `engine-core` **(unverified: not read for this note)**.

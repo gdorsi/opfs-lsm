@@ -10,7 +10,7 @@ import {
 } from "../src/store/engine.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { crc32 } from "../src/store/crc32.js";
-import { settle } from "../src/store/cursor.js";
+import { untilHit } from "../src/store/cursor.js";
 import { encodeRun as encodeRunTs, sstKeyRange, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { mergeRuns, readerOfBytes } from "./runs.js";
 
@@ -47,7 +47,7 @@ describe("engine WASM", () => {
     expect(runs).toHaveLength(1);
     expect(await decodeSst(runs[0]!.body)).toHaveLength(60_000);
     const reader = readerOfBytes(runs[0]!.body);
-    expect((await settle(() => reader.get(utf("k00059999"))))?.kind).toBe("put");
+    expect((await untilHit(() => reader.get(utf("k00059999"))))?.kind).toBe("put");
   });
 
   it("cuts merge output into runs of about the target size, in key order", async () => {

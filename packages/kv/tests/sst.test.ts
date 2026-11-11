@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { settle } from "../src/store/cursor.js";
+import { untilHit } from "../src/store/cursor.js";
 import { decodeSst, encodeSst, SST_BLOCK_TARGET } from "../src/store/sst.js";
-import { pointGet, runLevels } from "../src/store/merge.js";
+import { pointGet, runLevels } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { SstReader } from "../src/store/sst-reader.js";
 import { bytesFile, drain, readerOfBytes } from "./runs.js";
@@ -22,8 +22,8 @@ describe("sst", () => {
     const body = encodeSst(entries);
     expect(decodeSst(body)).toHaveLength(n);
     const reader = readerOfBytes(body);
-    expect((await settle(() => reader.get(utf("k00059999"))))?.seq).toBe(n);
-    expect(await settle(() => reader.get(utf("k00060000")))).toBeUndefined();
+    expect((await untilHit(() => reader.get(utf("k00059999"))))?.seq).toBe(n);
+    expect(await untilHit(() => reader.get(utf("k00060000")))).toBeUndefined();
   });
 
   it("writes the data first and the footer last", () => {
@@ -41,7 +41,7 @@ describe("sst", () => {
     ]);
     expect(decodeSst(body).map((e) => e.seq)).toEqual([7, 2 ** 40]);
     const reader = readerOfBytes(body);
-    expect(await settle(() => reader.get(utf("b")))).toEqual({ kind: "del", key: utf("b"), seq: 2 ** 40 });
+    expect(await untilHit(() => reader.get(utf("b")))).toEqual({ kind: "del", key: utf("b"), seq: 2 ** 40 });
   });
 
   it("rejects a footer whose version is not 1", async () => {
@@ -50,7 +50,7 @@ describe("sst", () => {
     view.setUint32(body.byteLength - 8, 7, true);
     expect(() => decodeSst(body)).toThrow(/unsupported sst version 7/);
     const reader = new SstReader(bytesFile(body), new PageCache(), undefined);
-    await expect(settle(() => reader.get(utf("a")))).rejects.toThrow(/unsupported sst version 7/);
+    await expect(untilHit(() => reader.get(utf("a")))).rejects.toThrow(/unsupported sst version 7/);
   });
 
   it("round-trips puts and deletes", () => {
@@ -93,13 +93,13 @@ describe("sst", () => {
     }));
     const body = encodeSst(entries, 200);
     const reader = readerOfBytes(body);
-    expect(await settle(() => reader.get(utf("k040")))).toEqual({
+    expect(await untilHit(() => reader.get(utf("k040")))).toEqual({
       kind: "put",
       key: utf("k040"),
       value: utf("v40"),
       seq: 0,
     });
-    expect(await settle(() => reader.get(utf("missing")))).toBeUndefined();
+    expect(await untilHit(() => reader.get(utf("missing")))).toBeUndefined();
   });
 
   it("get finds what a full decode holds, for every key and gap", async () => {
@@ -118,7 +118,7 @@ describe("sst", () => {
     for (const body of runs) {
       const all = decodeSst(body);
       const reader = readerOfBytes(body);
-      for (const k of probes) expect(show(await settle(() => reader.get(k)))).toBe(show(sstGet(all, k)));
+      for (const k of probes) expect(show(await untilHit(() => reader.get(k)))).toBe(show(sstGet(all, k)));
     }
   });
 
@@ -132,9 +132,9 @@ describe("sst", () => {
       { kind: "del", key: utf("b") },
     ]);
     const levels = runLevels(["l0/2-2.sst", "l0/1-1.sst"], [readerOfBytes(newer), readerOfBytes(older)]);
-    expect(await settle(() => pointGet(undefined, levels, utf("a")))).toEqual(utf("new"));
-    expect(await settle(() => pointGet(undefined, levels, utf("b")))).toBeUndefined();
-    expect(await settle(() => pointGet(undefined, levels, utf("c")))).toBeUndefined();
+    expect(await untilHit(() => pointGet(undefined, levels, utf("a")))).toEqual(utf("new"));
+    expect(await untilHit(() => pointGet(undefined, levels, utf("b")))).toBeUndefined();
+    expect(await untilHit(() => pointGet(undefined, levels, utf("c")))).toBeUndefined();
   });
 
   it("cursor seeks one block and stops before endExclusive", async () => {

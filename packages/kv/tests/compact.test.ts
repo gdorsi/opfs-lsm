@@ -35,7 +35,7 @@ describe("L0 compaction", () => {
       writerId: "w1",
       fs,
       forceMemory: true,
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
 
     for (let i = 0; i < 4; i++) {
@@ -80,7 +80,7 @@ describe("L0 compaction", () => {
       writerId: "w1",
       fs,
       ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1e12 },
+      maxWalBytes: 1e12,
     });
     for (let i = 0; i < 4; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));

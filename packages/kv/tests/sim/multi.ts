@@ -301,7 +301,7 @@ class World {
         name: this.name,
         fs: this.wrapFs(`s${session}`),
         ingest: createLocalIngestClient(this.host),
-        ingestPolicy: { maxWalBytes: this.maxWalBytes },
+        maxWalBytes: this.maxWalBytes,
       }));
       this.slots[slot] = { id: session, db };
       this.history.respond(op);

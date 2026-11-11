@@ -77,7 +77,7 @@ describe("WAL read", () => {
     expect(summary(tail.records)).toEqual(
       Array.from({ length: 8 }, (_, i) => `${i + 5}:k${i + 5}`),
     );
-    expect(summary(await wal.listUningested())).toEqual(summary(tail.records));
+    expect(summary(await wal.listUningested({ maxBytes: 1 << 30 }))).toEqual(summary(tail.records));
     expect(summary((await wal.tail(10)).records)).toEqual(["11:k11", "12:k12"]);
     expect((await wal.tail(12)).records).toEqual([]);
     wal.close();
@@ -147,7 +147,7 @@ describe("WAL read with a byte cap", () => {
     await wal.advanceIngested(3, 1);
     expect(seqs(await wal.listUningested({ maxBytes: 1000 }))).toEqual([4, 5, 6]);
     expect(summary(await wal.listUningested({ maxBytes: 1000 }))).toEqual(
-      summary(await wal.listUningested()),
+      summary(await wal.listUningested({ maxBytes: 1 << 30 })),
     );
     wal.close();
   });

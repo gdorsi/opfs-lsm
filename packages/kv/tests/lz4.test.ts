@@ -5,7 +5,7 @@ import { mergeNextStep } from "../src/host/compact.js";
 import { decodeSst as decodeWasm, encodeRun, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { publishGeneration } from "../src/store/generation.js";
 import { lz4DecompressJs, useLz4Decoder } from "../src/store/lz4.js";
-import { settle } from "../src/store/cursor.js";
+import { untilHit } from "../src/store/cursor.js";
 import { decodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
 import { drain, publish, readerOfBytes } from "./runs.js";
@@ -70,7 +70,7 @@ describe("LZ4 runs", () => {
     const b = readerOfBytes(packed);
     expect(sstKeyRange(packed)).toEqual(sstKeyRange(raw));
     const keys = Array.from({ length: 703 }, (_, i) => key(i - 1));
-    const gets = (r: SstReader) => Promise.all(keys.map((k) => settle(() => r.get(k))));
+    const gets = (r: SstReader) => Promise.all(keys.map((k) => untilHit(() => r.get(k))));
     expect(show(await gets(b))).toEqual(show(await gets(a)));
     const scan = async (r: SstReader, start?: Uint8Array) => show(await drain(r.cursor(start ? { start } : undefined)));
     expect(await scan(b)).toEqual(await scan(a));
@@ -87,7 +87,7 @@ describe("LZ4 runs", () => {
     try {
       expect(show(decodeSst(packed))).toEqual(want);
       const reader = readerOfBytes(packed);
-      expect(show([await settle(() => reader.get(key(5)))])).toEqual(show([decodeSst(packed)[5]]));
+      expect(show([await untilHit(() => reader.get(key(5)))])).toEqual(show([decodeSst(packed)[5]]));
     } finally {
       useLz4Decoder(wasmDecoder);
     }
@@ -105,7 +105,7 @@ describe("LZ4 runs", () => {
     packed.fill(0xff, 4, 64);
     const get = () => {
       const reader = readerOfBytes(packed);
-      return settle(() => reader.get(key(1)));
+      return untilHit(() => reader.get(key(1)));
     };
     await expect(get()).rejects.toThrow(CorruptDatabaseError);
     const wasmDecoder = useLz4Decoder(lz4DecompressJs);

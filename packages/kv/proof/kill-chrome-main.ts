@@ -101,7 +101,7 @@ async function start(cfg: WorkConfig): Promise<void> {
   const db = await openHarnessDb({
     name: cfg.name,
     writerId,
-    ingestPolicy: { maxWalBytes: cfg.maxWalBytes },
+    maxWalBytes: cfg.maxWalBytes,
   });
   const state = { stop: false, db, done: Promise.resolve<WorkResult>({ acked: 0, error: null }) };
   state.done = (async (): Promise<WorkResult> => {
@@ -200,7 +200,7 @@ async function check(cfg: CheckConfig): Promise<CheckResult> {
   await ensureEngine();
   let db: Db;
   try {
-    db = await withTimeout(openHarnessDb({ name: cfg.name, writerId: "check", ingestPolicy: { maxWalBytes: 1 << 30 } }), 20_000, "open");
+    db = await withTimeout(openHarnessDb({ name: cfg.name, writerId: "check", maxWalBytes: 1 << 30 }), 20_000, "open");
   } catch (err) {
     return { open: { ok: false, error: errorInfo(err) } };
   }
@@ -335,7 +335,7 @@ async function restartInPlace(
   let db: Db | undefined;
   let seq: number | null = null;
   try {
-    db = await withTimeout(openHarnessDb({ name, writerId: "in-place", ingestPolicy: { maxWalBytes: 1 << 30 } }), 15_000, "open");
+    db = await withTimeout(openHarnessDb({ name, writerId: "in-place", maxWalBytes: 1 << 30 }), 15_000, "open");
     seq = await db.put(enc.encode("~in-place"), enc.encode(value));
     await withTimeout(ingest(db), 15_000, "ingest");
     return { ok: true, ms: Math.round(performance.now() - t0), seq, error: null };
@@ -405,7 +405,7 @@ async function idbNames(): Promise<string[]> {
 /** Open a handle and keep it, so this page connects to the SharedWorker. */
 let kept: Db | undefined;
 async function connect(name: string): Promise<void> {
-  kept ??= await openHarnessDb({ name, writerId: `probe-${crypto.randomUUID()}`, ingestPolicy: { maxWalBytes: 1 << 30 } });
+  kept ??= await openHarnessDb({ name, writerId: `probe-${crypto.randomUUID()}`, maxWalBytes: 1 << 30 });
 }
 
 Object.assign(globalThis, {

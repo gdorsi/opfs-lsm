@@ -1,5 +1,5 @@
 import type { ErrorCode } from "../errors.js";
-import type { IngestPolicy } from "../ingest-policy.js";
+import { reclaimLock, webLocks } from "../locks.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
 
 /** What the host counted for one database since it started. Test and bench only. */
@@ -8,6 +8,8 @@ export type HostStats = {
   fs: IoCounters;
   /** L0 runs flushed from the WAL. An ingest of a large backlog publishes several. */
   flushes: number;
+  /** Times a flush of this database found L0 full and waited for compaction before publishing another run. */
+  l0Stops: number;
   /** Compaction steps installed. */
   compactionSteps: number;
   /** Σ IngestResult.foldedBytes. */
@@ -28,29 +30,16 @@ export type HostStats = {
     mergeReservedBytes: number;
     /** Times the host replaced the wasm instance to give its memory back. */
     recycles: number;
-    /** Times a flush of this database found L0 full and waited for compaction before publishing another run. */
-    l0Stops: number;
   };
 };
 
 /** What a tab tells the host when it opens a database. The host uses the smallest figure of each. */
-export type WatchPolicy = IngestPolicy & {
+export type WatchPolicy = {
+  /** The tab's `maxWalBytes`. */
+  readonly maxWalBytes: number;
   /** The tab's `compactionMemoryBytes`, which sets the host's `hostBudget`. */
   readonly compactionMemoryBytes: number;
 };
-
-/** The BroadcastChannel where tabs share appends and new generations. */
-export function layersChannel(name: string): string {
-  return `opfs-lsm-layers/${name}`;
-}
-
-function locks(): LockManager | undefined {
-  return (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks;
-}
-
-function reclaimLock(name: string): string {
-  return `opfs-lsm-reclaim/${name}`;
-}
 
 /**
  * Run `fn` holding the reclaim lock shared. While any tab holds it, the
@@ -59,7 +48,7 @@ function reclaimLock(name: string): string {
  * reclaim already running. Without Web Locks it runs `fn` unprotected.
  */
 export function holdingFiles<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  const manager = locks();
+  const manager = webLocks();
   if (!manager) return fn();
   // The DOM lib types the callback's promise as the result, unwrapped at runtime.
   return manager.request(reclaimLock(name), { mode: "shared" }, fn) as unknown as Promise<T>;
@@ -70,7 +59,7 @@ export function holdingFiles<T>(name: string, fn: () => Promise<T>): Promise<T> 
  * false when a tab holds it. Never waits, so no tab can stall the host.
  */
 export async function unlessHeld(name: string, fn: () => Promise<void>): Promise<boolean> {
-  const manager = locks();
+  const manager = webLocks();
   if (!manager) {
     await fn();
     return true;
@@ -88,7 +77,7 @@ export type ClientToHost =
       readonly id: number;
       readonly name: string;
       readonly through: number;
-      readonly settle: boolean;
+      readonly waitForCompaction: boolean;
     }
   | {
       readonly type: "watch";
@@ -128,12 +117,12 @@ export type HostToClient =
 export type IngestClient = {
   /**
    * Flush every WAL record through `through`. A no-op when they are already
-   * in OPFS. With `settle`, resolve once compaction has finished too.
+   * in OPFS. With `waitForCompaction`, resolve once compaction has finished too.
    */
   ingest(
     name: string,
     through: number,
-    settle?: boolean,
+    waitForCompaction?: boolean,
   ): Promise<{ generation: number }>;
   /**
    * Have the host ingest `name` on its own once the WAL waiting for ingest

@@ -65,7 +65,7 @@ export class Sut {
       name: this.name,
       fs: this.fs,
       ingest: createLocalIngestClient(this.host),
-      ingestPolicy: { maxWalBytes: this.maxWalBytes },
+      maxWalBytes: this.maxWalBytes,
     });
     db.changes((e) => {
       if (e.kind === "append") this.appended.push(e.seq);

@@ -37,7 +37,7 @@ describe("memtable reads", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     await db.put(enc.encode("a"), enc.encode("1"));
     expect(dec.decode(await db.get(enc.encode("a")))).toBe("1");
@@ -52,7 +52,7 @@ describe("memtable reads", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     await db.put(enc.encode("k"), enc.encode("v"));
     await ingestDb(db);
@@ -66,22 +66,20 @@ describe("memtable reads", () => {
     const { port1, port2 } = new MessageChannel();
     attachEngineHostPort(port1, host);
     const ingest = createPortIngestClient(port2);
-    const policy = {
-      maxWalBytes: 1 << 30,
-    };
+    const maxWalBytes = 1 << 30;
     const a = await openHarnessDb({
       name: NAME,
       writerId: "w1",
       fs,
       ingest,
-      ingestPolicy: policy,
+      maxWalBytes,
     });
     const b = await openHarnessDb({
       name: NAME,
       writerId: "w2",
       fs,
       ingest,
-      ingestPolicy: policy,
+      maxWalBytes,
     });
 
     await a.put(enc.encode("seed"), enc.encode("s"));

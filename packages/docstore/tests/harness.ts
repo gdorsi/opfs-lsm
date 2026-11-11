@@ -11,7 +11,7 @@ export function freshName(): string {
 
 /** One handle on `name`. Handles on one name share the WAL and the run files, like tabs of one origin. */
 export function openKv(name: string): Promise<Db> {
-  return openHarnessDb({ name, forceMemory: true, ingestPolicy: { maxWalBytes: 1 << 30 } });
+  return openHarnessDb({ name, forceMemory: true, maxWalBytes: 1 << 30 });
 }
 
 export async function docstoreKeys(kv: Db): Promise<Entry[]> {

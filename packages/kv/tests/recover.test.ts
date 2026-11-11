@@ -55,9 +55,7 @@ async function flipByte(fs: MemoryFs, dir: string): Promise<void> {
   await w.finish();
 }
 
-const seqs = async (wal: IdBWal) => (await wal.listUningested()).map((r) => r.seq);
-const trustAll = () => true;
-const trustNone = () => false;
+const seqs = async (wal: IdBWal) => (await wal.listUningested({ maxBytes: 1 << 30 })).map((r) => r.seq);
 
 /** A `meta` value, or undefined when the key was never written. */
 function metaRaw(dbName: string, key: string): Promise<unknown> {
@@ -75,7 +73,7 @@ async function droppedWal(): Promise<{ fs: MemoryFs; dbName: string }> {
   await wal.advanceIngested(1, 1);
   await wal.advanceIngested(2, 2);
   await wal.advanceIngested(3, 3);
-  expect((await reconcile(wal, fs, trustNone)).generation).toBe(0);
+  expect((await reconcile(wal, fs, undefined)).generation).toBe(0);
   expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
   expect(await walRows(dbName)).toEqual([]);
   expect(await metaRaw(dbName, "head")).toBe(4);
@@ -112,7 +110,7 @@ describe("advanceIngested", () => {
     // Seqs 1 and 2 stay: a power loss can keep this commit and lose manifest 1.
     expect(await wal.adopt(await wal.meta(), 0, 0)).toBe(true);
     expect(await seqs(wal)).toEqual([1, 2, 3]);
-    expect(await wal.uningestedBytes()).toBe(3 * opsBytes(put(1)));
+    expect(await wal.uningestedBytes(1 << 30)).toBe(3 * opsBytes(put(1)));
     wal.close();
   });
 
@@ -135,14 +133,14 @@ describe("reconcile", () => {
     await manifest(fs, 1, 1, ["l0/1-1.sst"]);
     await wal.advanceIngested(1, 1);
     const before = await wal.meta();
-    expect(await reconcile(wal, fs, trustNone)).toEqual({ generation: 1, top: 1 });
+    expect(await reconcile(wal, fs, undefined)).toEqual({ generation: 1, top: 1 });
     expect(await wal.meta()).toEqual(before);
     wal.close();
   });
 
   it("records generation 0 on a new database", async () => {
     const wal = await walWith(0);
-    expect(await reconcile(wal, new MemoryFs(), trustAll)).toEqual({ generation: 0, top: 0 });
+    expect(await reconcile(wal, new MemoryFs(), "recorded")).toEqual({ generation: 0, top: 0 });
     expect(await wal.meta()).toMatchObject({ head: 0, ingestedThrough: 0, generation: 0 });
     wal.close();
   });
@@ -152,7 +150,7 @@ describe("reconcile", () => {
     const wal = await walWith(0);
     const fs = new MemoryFs();
     await manifest(fs, 1, 2, ["l0/1-2.sst"]);
-    expect(await reconcile(wal, fs, trustAll)).toEqual({ generation: 1, top: 1 });
+    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 1, top: 1 });
     expect(await wal.meta()).toMatchObject({ head: 2, ingestedThrough: 2, generation: 1 });
     // The key generator is behind the head, so the blind append gives way
     // and the explicit one takes seq 3.
@@ -167,7 +165,7 @@ describe("reconcile", () => {
     const fs = new MemoryFs();
     await wal.adopt(await wal.meta(), 0, 0);
     await manifest(fs, 2, 4, ["l0/1-2.sst", "l0/3-4.sst"]);
-    expect((await reconcile(wal, fs, trustAll)).generation).toBe(2);
+    expect((await reconcile(wal, fs, "recorded")).generation).toBe(2);
     expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 2 });
     expect(await seqs(wal)).toEqual([]);
     wal.close();
@@ -178,7 +176,7 @@ describe("reconcile", () => {
     const fs = new MemoryFs();
     await wal.adopt(await wal.meta(), 0, 0);
     await manifest(fs, 1, 3, ["l0/1-3.sst"]);
-    expect(await reconcile(wal, fs, trustAll)).toEqual({ generation: 0, top: 1 });
+    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 1 });
     expect(await seqs(wal)).toEqual([1, 2, 3]);
     wal.close();
   });
@@ -190,7 +188,7 @@ describe("reconcile", () => {
     await manifest(fs, 1, 1, ["l0/1-1.sst"]);
     await wal.advanceIngested(1, 1);
     await wal.advanceIngested(3, 2);
-    expect((await reconcile(wal, fs, trustNone)).generation).toBe(1);
+    expect((await reconcile(wal, fs, undefined)).generation).toBe(1);
     expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 1, generation: 1 });
     expect(await seqs(wal)).toEqual([2, 3, 4]);
     wal.close();
@@ -203,7 +201,7 @@ describe("reconcile", () => {
     await wal.advanceIngested(2, 2);
     await wal.advanceIngested(3, 3);
     // Only generation 0 is left: seqs 1..1 are gone from both stores.
-    expect((await reconcile(wal, fs, trustNone)).generation).toBe(0);
+    expect((await reconcile(wal, fs, undefined)).generation).toBe(0);
     expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
     expect(await seqs(wal)).toEqual([]);
     wal.close();
@@ -215,7 +213,7 @@ describe("reconcile", () => {
     await manifest(fs, 1, 2, ["l0/1-2.sst"]);
     const broken = await manifest(fs, 2, 5, ["l0/3-5.sst", "l0/1-2.sst"]);
     await fs.remove(broken.runs[0]!.path);
-    expect((await reconcile(wal, fs, trustAll)).generation).toBe(1);
+    expect((await reconcile(wal, fs, "recorded")).generation).toBe(1);
     expect(await wal.meta()).toMatchObject({ head: 5, ingestedThrough: 5, generation: 1 });
     wal.close();
   });
@@ -228,7 +226,7 @@ describe("reconcile", () => {
     await wal.advanceIngested(2, 2);
     await flipByte(fs, "m/");
     const before = await wal.meta();
-    await expect(reconcile(wal, fs, trustNone)).rejects.toThrow(CorruptDatabaseError);
+    await expect(reconcile(wal, fs, undefined)).rejects.toThrow(CorruptDatabaseError);
     expect(await wal.meta()).toEqual(before);
     wal.close();
   });
@@ -241,7 +239,7 @@ describe("reconcile", () => {
     await wal.advanceIngested(3, 3);
     await flipByte(fs, "m/");
     const before = await wal.meta();
-    await expect(reconcile(wal, fs, trustNone)).rejects.toThrow(CorruptDatabaseError);
+    await expect(reconcile(wal, fs, undefined)).rejects.toThrow(CorruptDatabaseError);
     expect(await wal.meta()).toEqual(before);
     wal.close();
   });
@@ -253,8 +251,8 @@ describe("reconcile", () => {
     const wal = await walWith(2);
     const fs = new MemoryFs();
     await wal.advanceIngested(1, 3);
-    expect(await reconcile(wal, fs, trustNone)).toEqual({ generation: 0, top: 3 });
-    expect(await reconcile(wal, fs, trustAll)).toEqual({ generation: 0, top: 3 });
+    expect(await reconcile(wal, fs, undefined)).toEqual({ generation: 0, top: 3 });
+    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 3 });
     wal.close();
   });
 
@@ -543,7 +541,7 @@ describe("an older build sharing the database", () => {
     const fs = new MemoryFs();
     // Open records the floor. Appends after that leave it there; an open
     // that finds records already waiting snaps the floor up to them.
-    expect(await reconcile(wal, fs, trustAll)).toEqual({ generation: 0, top: 0 });
+    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 0 });
     for (let i = 1; i <= 4; i++) await wal.append(put(i));
     await wal.advanceIngested(2, 1);
     expect((await legacyMeta(name)).head).toBe(0);

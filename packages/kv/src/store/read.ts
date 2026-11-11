@@ -113,7 +113,7 @@ export function latestSstEntry(
 }
 
 /** Newest run wins. A tombstone hides older puts. */
-export function pointGetSst(
+function pointGetSst(
   levels: readonly RunLevel[],
   key: Uint8Array,
 ): Maybe<Uint8Array | undefined> {
@@ -122,6 +122,8 @@ export function pointGetSst(
   return hit?.kind === "put" ? new Uint8Array(hit.value) : undefined;
 }
 
+type Ranged = SstReader & { readonly range: NonNullable<SstReader["range"]> };
+
 /**
  * Runs whose key ranges never overlap, in key order: one level from L1
  * down, or a single L0 run. Routes by the key range each run's manifest
@@ -129,35 +131,29 @@ export function pointGetSst(
  * it reaches, and a get asks only the run whose range holds the key.
  */
 export class RunLevel {
-  private readonly runs: SstReader[] = [];
-  private readonly smallest: Uint8Array[] = [];
-  private readonly largest: Uint8Array[] = [];
+  /** Runs with no keys have no range to route by, so they are dropped. */
+  private readonly runs: Ranged[];
 
   constructor(readers: readonly SstReader[]) {
-    for (const reader of readers) {
-      const range = reader.range;
-      if (!range) continue;
-      this.runs.push(reader);
-      this.smallest.push(range.smallest);
-      this.largest.push(range.largest);
-    }
+    this.runs = readers.filter((reader): reader is Ranged => reader.range !== undefined);
   }
 
-  /** The first run whose key in `keys` (`smallest` or `largest`) is at or after `key`. */
-  private seek(keys: readonly Uint8Array[], key: Uint8Array): number {
+  /** The first run whose `side` key is at or after `key`. */
+  private seek(side: "smallest" | "largest", key: Uint8Array): number {
+    const { runs } = this;
     let lo = 0;
-    let hi = this.runs.length;
+    let hi = runs.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (compareBytes(keys[mid]!, key) < 0) lo = mid + 1;
+      if (compareBytes(runs[mid]!.range[side], key) < 0) lo = mid + 1;
       else hi = mid;
     }
     return lo;
   }
 
   get(key: Uint8Array): Maybe<SstEntry | undefined> {
-    const r = this.seek(this.largest, key);
-    if (r >= this.runs.length || compareBytes(this.smallest[r]!, key) > 0) return undefined;
+    const r = this.seek("largest", key);
+    if (r >= this.runs.length || compareBytes(this.runs[r]!.range.smallest, key) > 0) return undefined;
     return this.runs[r]!.get(key);
   }
 
@@ -176,14 +172,14 @@ export class RunLevel {
    * run before.
    */
   private concat(bounds: ScanBounds | undefined, reverse: boolean, cursorOf: (run: SstReader) => LayerCursor): LayerCursor {
-    const { runs, smallest, largest } = this;
+    const { runs } = this;
     const start = bounds?.start;
     const end = bounds?.endExclusive;
     const step = reverse ? -1 : 1;
-    let r = reverse ? (end ? this.seek(smallest, end) : runs.length) - 1 : start ? this.seek(largest, start) : 0;
+    let r = reverse ? (end ? this.seek("smallest", end) : runs.length) - 1 : start ? this.seek("largest", start) : 0;
     const open = reverse
-      ? () => (r >= 0 && !(start && compareBytes(largest[r]!, start) < 0) ? cursorOf(runs[r]!) : undefined)
-      : () => (r < runs.length && !(end && compareBytes(smallest[r]!, end) >= 0) ? cursorOf(runs[r]!) : undefined);
+      ? () => (r >= 0 && !(start && compareBytes(runs[r]!.range.largest, start) < 0) ? cursorOf(runs[r]!) : undefined)
+      : () => (r < runs.length && !(end && compareBytes(runs[r]!.range.smallest, end) >= 0) ? cursorOf(runs[r]!) : undefined);
     let cur = open();
     return {
       peek() {
@@ -223,17 +219,6 @@ export function runLevels(
     i = j;
   }
   return out;
-}
-
-export function arrayCursor(rows: readonly MemRow[], reverse = false): LayerCursor {
-  return entryCursor(
-    rows.map((row) =>
-      row.kind === "put" && row.value
-        ? { key: row.key, kind: "put" as const, value: row.value }
-        : { key: row.key, kind: "del" as const },
-    ),
-    reverse,
-  );
 }
 
 /** The newest entry for one key and the source it came from. */
@@ -340,7 +325,7 @@ export async function* scanMatching(
   reverse = false,
 ): AsyncGenerator<Entry> {
   const merge = new Merge(
-    [filterCursor(arrayCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
+    [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
     reverse,
   );
   let yielded = 0;

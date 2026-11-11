@@ -17,19 +17,19 @@ import {
   CorruptDatabaseError,
   StorageUnavailableError,
 } from "./errors.js";
-import { DEFAULT_COMPACTION_MEMORY_BYTES } from "./host/budget.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import {
   EngineHost,
   createLocalIngestClient,
   createPortIngestClient,
   type WatchScan,
 } from "./host/engine-host.js";
-import { holdingFiles, layersChannel, type IngestClient } from "./host/protocol.js";
+import { holdingFiles, type IngestClient } from "./host/protocol.js";
+import { layersChannel } from "./locks.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
-import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
-import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
-import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
+import { Memtable, type WalRecord } from "./store/memtable.js";
+import { allMissed, Miss, untilHit, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { CountingFs } from "./opfs/counting-fs.js";
@@ -39,7 +39,7 @@ import {
   loadGeneration,
   type RunMeta,
 } from "./store/generation.js";
-import { pointGetSst, runLevels, type RunLevel } from "./store/merge.js";
+import { pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
@@ -109,8 +109,15 @@ export type HarnessOpenOptions = OpenOptions & {
   readonly ingest?: IngestClient;
   /** Stable writer id (tests / debugging). Default: random UUID. */
   readonly writerId?: string;
-  /** When the ingest host flushes the WAL to an OPFS run. */
-  readonly ingestPolicy?: Partial<IngestPolicy>;
+  /**
+   * Flush the WAL into an L0 run once the records waiting for ingest hold this
+   * many key and value bytes. It counts every op as written, so overwrites and
+   * deletes bound the WAL as much as new keys do, whatever the batch sizes.
+   * The host counts the appends tabs announce, and measures the WAL whenever a
+   * tab opens the database, so ingest does not depend on any tab staying open
+   * or responsive. When tabs pass different limits, the host uses the smallest.
+   */
+  readonly maxWalBytes?: number;
   /**
    * Keep the run files in a MemoryFs shared by every open of this name in
    * the process, with an in-process EngineHost. The only way to get memory
@@ -313,10 +320,6 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     () => span(trace, "wasm", performance.now() - wasmAt),
     () => span(trace, "wasm-error", performance.now() - wasmAt),
   );
-  const policy: IngestPolicy = {
-    ...DEFAULT_INGEST_POLICY,
-    ...options.ingestPolicy,
-  };
   const caps = memtableCaps(options.memtableBytes);
 
   let fs = options.fs;
@@ -363,7 +366,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const generationAt = trace ? performance.now() : 0;
   // Pair the WAL with a manifest before the first read or write. The
   // recorded manifest's runs are checked by the first sync, which loads them.
-  await reconcile(wal, tabFs, TRUST_RECORDED);
+  await reconcile(wal, tabFs, "recorded");
   span(trace, "generation", performance.now() - generationAt);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
@@ -386,8 +389,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   span(trace, "sync", performance.now() - syncAt);
   // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
   ingest.watch(name, {
-    ...policy,
-    maxWalBytes: Math.min(policy.maxWalBytes, caps.soft),
+    maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
     compactionMemoryBytes: options.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
   });
   // The host cannot flush without the module, so a page that cannot load it does not open.
@@ -399,10 +401,6 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   }
   span(trace, "open", performance.now() - openAt);
   return db;
-}
-
-function valueOf(row: MemRow): Uint8Array | undefined {
-  return row.kind === "put" ? new Uint8Array(row.value!) : undefined;
 }
 
 function collectBatch(
@@ -465,8 +463,6 @@ type BusMessage =
 
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
-const TRUST_RECORDED = (): boolean => true;
-const CHECK_RECORDED = (): boolean => false;
 const GENERATION_GONE =
   "SST files for the recorded generation stayed missing after retries";
 
@@ -803,7 +799,7 @@ class DbImpl implements Db {
    * IndexedDB names a generation other than the one found broken.
    */
   private async repair(): Promise<void> {
-    await reconcile(this.wal, this.fs, CHECK_RECORDED);
+    await reconcile(this.wal, this.fs, undefined);
     this.repaired = true;
   }
 
@@ -904,7 +900,7 @@ class DbImpl implements Db {
     this.retain(layers);
     try {
       await first.ready;
-      return await settle(() => attempt(layers.levels));
+      return await untilHit(() => attempt(layers.levels));
     } finally {
       this.release(layers);
     }
@@ -918,8 +914,7 @@ class DbImpl implements Db {
     const values: (Uint8Array | undefined)[] = [];
     let misses: Miss[] | undefined;
     for (const k of ks) {
-      const row = this.mem.get(k);
-      const v = row ? valueOf(row) : pointGetSst(levels, k);
+      const v = pointGet(this.mem.get(k), levels, k);
       if (v instanceof Miss) (misses ??= []).push(v);
       else values.push(v);
     }
@@ -930,8 +925,7 @@ class DbImpl implements Db {
     this.ensureOpen();
     const k = checkKey(key);
     const row = this.mem.get(k);
-    if (row) return valueOf(row);
-    return this.settleInstalled((levels) => pointGetSst(levels, k));
+    return this.settleInstalled((levels) => pointGet(row, levels, k));
   }
 
   put(key: Uint8Array, value: Uint8Array): Promise<number> {
@@ -989,8 +983,8 @@ class DbImpl implements Db {
         if (key !== undefined) {
           const k = checkKey(key);
           const row = rows.get(k);
-          const got = row ? valueOf(row) : pointGetSst(layers.levels, k);
-          joined = got instanceof Miss ? await settle(() => pointGetSst(layers.levels, k)) : got;
+          const got = pointGet(row, layers.levels, k);
+          joined = got instanceof Miss ? await untilHit(() => pointGet(row, layers.levels, k)) : got;
         }
         out.push({ entry, joined });
       }
@@ -1042,12 +1036,12 @@ class DbImpl implements Db {
   }
 
   /** Have the host flush the WAL, and load what it published. */
-  async flush(settle: boolean): Promise<{ generation: number }> {
+  async flush(waitForCompaction: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
     const result = await this.ingestClient.ingest(
       this.name,
       Number.POSITIVE_INFINITY,
-      settle,
+      waitForCompaction,
     );
     await this.sync();
     return result;

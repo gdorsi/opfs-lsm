@@ -42,12 +42,7 @@ export function entryCursor(entries: readonly LayerEntry[], reverse = false): La
   let i = reverse ? entries.length - 1 : 0;
   return {
     peek() {
-      const e = entries[i];
-      if (!e) return undefined;
-      if (e.kind === "put" && e.value) {
-        return { key: e.key, kind: "put", value: e.value };
-      }
-      return { key: e.key, kind: "del" };
+      return entries[i];
     },
     next() {
       i += step;
@@ -91,7 +86,7 @@ export function filterCursor(cursor: LayerCursor, patterns: readonly Uint8Array[
  * Re-runs a sync read until it stops missing. Terminates because the
  * bytes a Miss fills stay pinned until the retry touches them.
  */
-export async function settle<T>(attempt: () => Maybe<T>): Promise<T> {
+export async function untilHit<T>(attempt: () => Maybe<T>): Promise<T> {
   for (;;) {
     const r = attempt();
     if (!(r instanceof Miss)) return r;

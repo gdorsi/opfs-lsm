@@ -60,6 +60,16 @@ function num(raw: unknown): number {
   return typeof raw === "number" ? raw : 0;
 }
 
+/** A `meta` number, 0 when unset. */
+function metaNum(meta: IDBObjectStore, key: string): Promise<number> {
+  return reqToPromise(meta.get(key)).then(num);
+}
+
+/** A `meta` number, undefined when unset. */
+function metaOpt(meta: IDBObjectStore, key: string): Promise<number | undefined> {
+  return reqToPromise(meta.get(key)).then((raw) => (typeof raw === "number" ? raw : undefined));
+}
+
 const OP_PUT = 0;
 const OP_DEL = 1;
 
@@ -172,7 +182,7 @@ function txDone(tx: IDBTransaction): Promise<void> {
 /** The seq of the last committed batch: the last key in `wal`, or the floor in `meta` when that is higher. */
 async function readHead(tx: IDBTransaction): Promise<number> {
   const [floor, last] = await Promise.all([
-    reqToPromise(tx.objectStore(META_STORE).get(META_HEAD)).then(num),
+    metaNum(tx.objectStore(META_STORE), META_HEAD),
     reqToPromise(tx.objectStore(WAL_STORE).openKeyCursor(null, "prev")).then((cursor) =>
       num(cursor?.key),
     ),
@@ -252,8 +262,8 @@ async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
   const meta = tx.objectStore(META_STORE);
   const [head, generation, ingestedThrough] = await Promise.all([
     readHead(tx),
-    reqToPromise(meta.get(META_GENERATION)).then(num),
-    reqToPromise(meta.get(META_INGESTED)).then(num),
+    metaNum(meta, META_GENERATION),
+    metaNum(meta, META_INGESTED),
   ]);
   const records = await readRecords(
     tx.objectStore(WAL_STORE),
@@ -486,15 +496,15 @@ export class IdBWal {
     const meta = tx.objectStore(META_STORE);
     const [head, ingestedThrough, generation, top] = await Promise.all([
       readHead(tx),
-      reqToPromise(meta.get(META_INGESTED)).then(num),
-      reqToPromise(meta.get(META_GENERATION)),
-      reqToPromise(meta.get(META_TOP)).then(num),
+      metaNum(meta, META_INGESTED),
+      metaOpt(meta, META_GENERATION),
+      metaNum(meta, META_TOP),
     ]);
     await txDone(tx);
     return {
       head,
       ingestedThrough,
-      generation: typeof generation === "number" ? generation : undefined,
+      generation,
       top,
     };
   }
@@ -529,15 +539,15 @@ export class IdBWal {
     const wal = tx.objectStore(WAL_STORE);
     const [head, ingested, recorded, knownTop] = await Promise.all([
       readHead(tx),
-      reqToPromise(meta.get(META_INGESTED)).then(num),
-      reqToPromise(meta.get(META_GENERATION)),
-      reqToPromise(meta.get(META_TOP)).then(num),
+      metaNum(meta, META_INGESTED),
+      metaOpt(meta, META_GENERATION),
+      metaNum(meta, META_TOP),
     ]);
     if (
       head !== expect.head ||
       knownTop !== expect.top ||
       ingested !== expect.ingestedThrough ||
-      (typeof recorded === "number" ? recorded : undefined) !== expect.generation
+      recorded !== expect.generation
     ) {
       await done;
       return false;
@@ -568,38 +578,36 @@ export class IdBWal {
   async raiseGeneration(generation: number): Promise<void> {
     const tx = this.db.transaction(META_STORE, "readwrite");
     const meta = tx.objectStore(META_STORE);
-    const raw = await reqToPromise(meta.get(META_GENERATION));
-    if (typeof raw !== "number" || generation > raw) {
-      meta.put(Math.max(num(raw), generation), META_GENERATION);
+    const recorded = await metaOpt(meta, META_GENERATION);
+    if (recorded === undefined || generation > recorded) {
+      meta.put(generation, META_GENERATION);
     }
     await txDone(tx);
   }
 
   async getIngestedThrough(): Promise<number> {
     const tx = this.db.transaction(META_STORE, "readonly");
-    const raw = await reqToPromise(tx.objectStore(META_STORE).get(META_INGESTED));
+    const through = await metaNum(tx.objectStore(META_STORE), META_INGESTED);
     await txDone(tx);
-    return num(raw);
+    return through;
   }
 
   /**
    * Op bytes of the records above ingestedThrough, read from the records.
-   * With `cap`, the read stops once the next record would pass it. The
+   * The read stops once the next record would pass `cap`. The
    * answer is then at least `cap`: the bytes already read, when those
    * already pass `cap`, otherwise `cap`. The ingest watch compares that
    * with `maxWalBytes`, so a long WAL still trips the limit.
    */
-  async uningestedBytes(cap = Number.POSITIVE_INFINITY): Promise<number> {
+  async uningestedBytes(cap: number): Promise<number> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const done = txDone(tx);
     const [through, head] = await Promise.all([
-      reqToPromise(tx.objectStore(META_STORE).get(META_INGESTED)).then(num),
+      metaNum(tx.objectStore(META_STORE), META_INGESTED),
       readHead(tx),
     ]);
     const store = tx.objectStore(WAL_STORE);
-    const records = Number.isFinite(cap)
-      ? await readRecordsUpTo(store, through, head, cap)
-      : await readRecords(store, through, head);
+    const records = await readRecordsUpTo(store, through, head, cap);
     await done;
     let bytes = 0;
     for (const record of records) bytes += opsBytes(record.ops);
@@ -608,22 +616,20 @@ export class IdBWal {
   }
 
   /**
-   * The records with seq > ingestedThrough, ascending. With `maxBytes`, only
-   * the oldest ones whose op bytes fit in it, and at least one: a record
-   * larger than the cap comes alone.
+   * The records with seq > ingestedThrough, ascending: only the oldest ones
+   * whose op bytes fit in `maxBytes`, and at least one: a record larger than
+   * the cap comes alone.
    */
-  async listUningested(limit?: { readonly maxBytes: number }): Promise<WalRecord[]> {
+  async listUningested(limit: { readonly maxBytes: number }): Promise<WalRecord[]> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
     const [through, head] = await Promise.all([
-      reqToPromise(meta.get(META_INGESTED)).then(num),
+      metaNum(meta, META_INGESTED),
       readHead(tx),
     ]);
     const store = tx.objectStore(WAL_STORE);
-    const records = limit
-      ? await readRecordsUpTo(store, through, head, limit.maxBytes)
-      : await readRecords(store, through, head);
+    const records = await readRecordsUpTo(store, through, head, limit.maxBytes);
     await done;
     return records;
   }
@@ -641,8 +647,8 @@ export class IdBWal {
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
     const [existing, prevGen] = await Promise.all([
-      reqToPromise(meta.get(META_INGESTED)).then(num),
-      reqToPromise(meta.get(META_GENERATION)).then(num),
+      metaNum(meta, META_INGESTED),
+      metaNum(meta, META_GENERATION),
     ]);
     if (through > existing) {
       tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(existing));

@@ -76,7 +76,7 @@ export class Traced {
       name: this.name,
       fs: this.fs,
       ingest: createLocalIngestClient(this.host),
-      ingestPolicy: { maxWalBytes },
+      maxWalBytes,
     });
   }
 
@@ -284,7 +284,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   const head = headAt(ops, cut.idb);
   const host = new EngineHost(() => fs);
   const open = () =>
-    openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), ingestPolicy: { maxWalBytes: 1 << 30 } });
+    openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1 << 30 });
 
   // 1. It opens, and reads one log prefix: exactly `head` after a process crash.
   let db: Db;

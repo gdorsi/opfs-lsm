@@ -25,7 +25,7 @@ async function seeded() {
     name: NAME,
     fs,
     ingest: createLocalIngestClient(host),
-    ingestPolicy: { maxWalBytes: 1 << 30 },
+    maxWalBytes: 1 << 30,
   });
   for (let i = 0; i < 5; i++) {
     await db.put(utf(`k${i}`), utf(`v${i}`));

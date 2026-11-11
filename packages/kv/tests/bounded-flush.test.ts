@@ -79,7 +79,7 @@ async function setup(flushRunBytes: number, l0StopRuns?: number) {
     writerId: "w1",
     fs: inner,
     ingest: createLocalIngestClient(host),
-    ingestPolicy: { maxWalBytes: 1e12 },
+    maxWalBytes: 1e12,
   });
   return { inner, host, db, published, hold };
 }
@@ -142,7 +142,7 @@ describe("a flush of a large backlog", () => {
       writerId: "w2",
       fs: inner,
       ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1e12 },
+      maxWalBytes: 1e12,
     });
     expect(await fresh.get(key(0))).toEqual(value(50, 100));
     expect(await fresh.get(key(1))).toBeUndefined();
@@ -284,7 +284,7 @@ describe("a flush with L0 full", () => {
     let flushed = false;
     const flush = t.host.ingest(NAME, Number.POSITIVE_INFINITY).then(() => (flushed = true));
 
-    await vi.waitFor(async () => expect((await t.host.stats(NAME)).memory.l0Stops).toBe(1));
+    await vi.waitFor(async () => expect((await t.host.stats(NAME)).l0Stops).toBe(1));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(flushed).toBe(false);
     expect(await l0Runs(t.published)).toHaveLength(4);
@@ -297,7 +297,7 @@ describe("a flush with L0 full", () => {
     const install = generations.findIndex((g) => g.runs.some((r) => r.path.startsWith("l1/")));
     // The install took the four runs, and the fifth record became the one run after it.
     expect(generations.slice(install).map(l0Count)).toEqual([0, 1]);
-    expect((await t.host.stats(NAME)).memory.l0Stops).toBe(1);
+    expect((await t.host.stats(NAME)).l0Stops).toBe(1);
     await ingest(t.db);
     for (let i = 0; i < 5; i++) expect(await t.db.get(key(i))).toEqual(value(i, 100));
     await t.db.close();
@@ -311,7 +311,7 @@ describe("a flush with L0 full", () => {
       await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
     }
     expect(await l0Runs(t.published)).toHaveLength(4);
-    expect((await t.host.stats(NAME)).memory.l0Stops).toBe(2);
+    expect((await t.host.stats(NAME)).l0Stops).toBe(2);
     await t.db.close();
   });
 
@@ -327,7 +327,7 @@ describe("a flush with L0 full", () => {
     await t.db.put(key(4), value(4, 100));
     await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
     expect(await l0Runs(t.published)).toHaveLength(5);
-    expect((await t.host.stats(NAME)).memory.l0Stops).toBeGreaterThanOrEqual(1);
+    expect((await t.host.stats(NAME)).l0Stops).toBeGreaterThanOrEqual(1);
     await t.db.close();
   });
 
@@ -341,7 +341,7 @@ describe("a flush with L0 full", () => {
       for (let i = 0; i < 3; i++) await wal.append(put(i));
       // 100 op bytes a record and a cap of 100: one record a run.
       const limits = { maxBytes: 100, l0Stop: 2 };
-      const chunk = (through: number) => ingestChunk(wal, fs, through, () => false, limits);
+      const chunk = (through: number) => ingestChunk(wal, fs, through, undefined, limits);
 
       expect((await chunk(3)).kind).toBe("folded");
       expect((await chunk(3)).kind).toBe("folded");

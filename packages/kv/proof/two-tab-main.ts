@@ -36,7 +36,7 @@ if (NOBC) {
   });
 }
 
-const quiet = { maxWalBytes: 1 << 30 };
+const maxWalBytes = 1 << 30;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -119,7 +119,7 @@ async function openHandle(
   const db = await testing.openHarnessDb({
     name: DB_NAME,
     writerId,
-    ingestPolicy: quiet,
+    maxWalBytes,
     ...(shared ? { fs: shared.fs, ingest: shared.ingest } : {}),
   });
   return Object.assign(db, { ingest: () => testing.ingest(db) });

@@ -17,7 +17,6 @@ import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
-  layersChannel,
   unlessHeld,
   type ClientToHost,
   type HostStats,
@@ -25,6 +24,7 @@ import {
   type IngestClient,
   type WatchPolicy,
 } from "./protocol.js";
+import { compactLock, ingestLock, layersChannel, webLocks } from "../locks.js";
 import { coalesced, serial } from "../turns.js";
 
 export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
@@ -108,15 +108,15 @@ export class EngineHost {
 
   /**
    * Flush every WAL record through `through` into an L0 run, then start
-   * compaction in the background. With `settle`, also wait until the levels
+   * compaction in the background. With `waitForCompaction`, also wait until the levels
    * are in shape.
    */
   async ingest(
     name: string,
     through: number,
-    settle = false,
+    waitForCompaction = false,
   ): Promise<{ generation: number }> {
-    return this.db(name).ingest(through, settle);
+    return this.db(name).ingest(through, waitForCompaction);
   }
 
   /**
@@ -149,7 +149,7 @@ class HostedDb {
   private readonly publishTurn = serial();
   private readonly foldTurn = serial();
   /** Settles at the next compaction install, for a flush that waits on a full L0. */
-  private nextInstall: { readonly settled: Promise<void>; readonly settle: () => void } | undefined;
+  private nextInstall: { readonly settled: Promise<void>; readonly resolve: () => void } | undefined;
   private watching: IngestWatch | undefined;
   /**
    * Run files out of every live generation that a tab still held at the
@@ -163,10 +163,9 @@ class HostedDb {
    * records another generation makes the host check again.
    */
   private trusted: number | undefined;
-  private readonly trust = (generation: number): boolean => this.trusted === generation;
   /** Run compaction passes until no request arrives during one. */
   private readonly compact = coalesced(() =>
-    withLock(`opfs-lsm-compact/${this.name}`, () => this.compactPass()),
+    withLock(compactLock(this.name), () => this.compactPass()),
   );
 
   constructor(
@@ -204,20 +203,19 @@ class HostedDb {
       entry.bytes += run.bytes;
       byLevel.set(level, entry);
     }
-    const { l0Stops, ...counts } = this.counts;
     return structuredClone({
       fs: fs.counters,
-      ...counts,
+      ...this.counts,
       generation: latest?.generation ?? 0,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
-      memory: { ...engineMemory(), l0Stops },
+      memory: engineMemory(),
     });
   }
 
-  async ingest(through: number, settle: boolean): Promise<{ generation: number }> {
+  async ingest(through: number, waitForCompaction: boolean): Promise<{ generation: number }> {
     const { generation } = await this.fold(through);
     const compaction = this.compact();
-    if (!settle) {
+    if (!waitForCompaction) {
       compaction.catch(() => undefined);
       return { generation };
     }
@@ -254,7 +252,7 @@ class HostedDb {
         const installed = this.installSignal();
         const chunk = await this.exclusive(() =>
           this.withWal(async (wal) => {
-            const folded = await ingestChunk(wal, fs, target, this.trust, {
+            const folded = await ingestChunk(wal, fs, target, this.trusted, {
               maxBytes: budget.flushRunBytes,
               l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
             });
@@ -291,8 +289,8 @@ class HostedDb {
   /** A promise for the next compaction install. */
   private installSignal(): Promise<void> {
     if (!this.nextInstall) {
-      let settle!: () => void;
-      this.nextInstall = { settled: new Promise<void>((resolve) => (settle = resolve)), settle };
+      let resolve!: () => void;
+      this.nextInstall = { settled: new Promise<void>((r) => (resolve = r)), resolve };
     }
     return this.nextInstall.settled;
   }
@@ -300,7 +298,7 @@ class HostedDb {
   private installLanded(): void {
     const next = this.nextInstall;
     this.nextInstall = undefined;
-    next?.settle();
+    next?.resolve();
   }
 
   /**
@@ -403,7 +401,7 @@ class HostedDb {
   }
 
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    return this.publishTurn(() => withLock(`opfs-lsm-ingest/${this.name}`, fn));
+    return this.publishTurn(() => withLock(ingestLock(this.name), fn));
   }
 
   private async withWal<T>(fn: (wal: IdBWal) => Promise<T>): Promise<T> {
@@ -431,7 +429,7 @@ class HostedDb {
       if (!step) return;
       await this.exclusive(() =>
         this.withWal(async (wal) => {
-          this.trusted = await installStep(fs, wal, step, this.trust);
+          this.trusted = await installStep(fs, wal, step, this.trusted);
           // No set yet: no reclaim has run, and the first one lists every run.
           for (const path of step.inputs) this.retired?.add(path);
           await this.reclaim(fs, wal);
@@ -457,7 +455,7 @@ class HostedDb {
    */
   private async reclaim(fs: AsyncFs, wal: IdBWal): Promise<void> {
     await unlessHeld(this.name, async () => {
-      const { generation } = await reconcile(wal, fs, this.trust);
+      const { generation } = await reconcile(wal, fs, this.trusted);
       this.trusted = generation;
       await reclaimManifests(fs, generation);
       const retired = this.retired ?? new Set(await listRuns(fs));
@@ -485,8 +483,7 @@ function isClosedDatabase(err: unknown): boolean {
 }
 
 function withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  const locks = (globalThis as { navigator?: { locks?: LockManager } })
-    .navigator?.locks;
+  const locks = webLocks();
   if (!locks) return fn();
   // The DOM lib types the callback's promise as the result, unwrapped at runtime.
   return locks.request(name, fn) as unknown as Promise<T>;
@@ -509,7 +506,7 @@ export function attachEngineHostPort(
           const { generation } = await host.ingest(
             msg.name,
             msg.through,
-            msg.settle,
+            msg.waitForCompaction,
           );
           reply({ type: "ingest-ok", id: msg.id, generation });
           return;
@@ -592,8 +589,8 @@ export function createPortIngestClient(
     });
 
   return {
-    async ingest(name: string, through: number, settle = false) {
-      const res = await request({ type: "ingest", id: nextId++, name, through, settle });
+    async ingest(name: string, through: number, waitForCompaction = false) {
+      const res = await request({ type: "ingest", id: nextId++, name, through, waitForCompaction });
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
     watch(name, policy) {
@@ -624,7 +621,7 @@ export function createPortIngestClient(
 
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
-    ingest: (name, through, settle) => host.ingest(name, through, settle),
+    ingest: (name, through, waitForCompaction) => host.ingest(name, through, waitForCompaction),
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
     stats: (name) => host.stats(name),

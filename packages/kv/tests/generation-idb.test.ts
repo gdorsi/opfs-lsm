@@ -7,7 +7,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const utf = (s: string) => enc.encode(s);
 const text = (b: Uint8Array | undefined) => (b ? dec.decode(b) : undefined);
-const quiet = { maxWalBytes: 1 << 30 };
+const maxWalBytes = 1 << 30;
 
 function wipe(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -67,7 +67,7 @@ function observedFs(inner: MemoryFs) {
 
 describe("generation recorded in IndexedDB", () => {
   it("a view pinned before a batch sees none of it after ingest", async () => {
-    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), maxWalBytes });
     await db.put(utf("z"), utf("0"));
     await ingest(db);
     await db.put(utf("a"), utf("1"));
@@ -88,7 +88,7 @@ describe("generation recorded in IndexedDB", () => {
 
   it("keeps only the recorded generation's manifest and every key reads back", async () => {
     const inner = new MemoryFs();
-    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, maxWalBytes });
     for (let i = 0; i < 6; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
       await ingest(db);
@@ -102,7 +102,7 @@ describe("generation recorded in IndexedDB", () => {
 
   it("a get after ingest does not list OPFS", async () => {
     const o = observedFs(new MemoryFs());
-    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: o.fs, ingestPolicy: quiet });
+    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: o.fs, maxWalBytes });
     for (let i = 0; i < 20; i++) await db.put(utf(`k${i}`), utf(`v${i}`));
     await ingest(db);
     const before = o.lists();

@@ -39,7 +39,7 @@ describe("open trace", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     await writer.put(enc.encode("a"), enc.encode("1"));
     await writer.put(enc.encode("b"), enc.encode("2"));
@@ -51,7 +51,7 @@ describe("open trace", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w2",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
       trace,
     });
     expect(dec.decode(await reader.get(enc.encode("b")))).toBe("2");
@@ -69,7 +69,7 @@ describe("open trace", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     const n = 200;
     for (let i = 0; i < n; i++) {
@@ -81,7 +81,7 @@ describe("open trace", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w2",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     for (let i = 0; i < n; i++) {
       expect(dec.decode(await reader.get(enc.encode(`k${i}`)))).toBe(`v${i}`);
@@ -108,7 +108,7 @@ describe("open trace", () => {
       writerId: "w1",
       fs,
       ingest,
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     await writer.put(enc.encode("k"), enc.encode("v"));
     await writer.close();
@@ -120,7 +120,7 @@ describe("open trace", () => {
       writerId: "w2",
       fs,
       ingest,
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
       trace,
     });
     const openMs = performance.now() - opened;

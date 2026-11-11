@@ -9,7 +9,7 @@ import {
   recycleEngine,
   type MergeSpec,
 } from "../src/store/engine.js";
-import { settle as settleRead } from "../src/store/cursor.js";
+import { untilHit } from "../src/store/cursor.js";
 import {
   __resetMemoryFsForTests,
   openHarnessDb,
@@ -98,7 +98,7 @@ describe("recycleEngine", () => {
     recycleEngine(0);
     const freshForGet = engineMemory().wasmBytes;
     const reader = readerOfBytes(run);
-    const hit = await settleRead(() => reader.get(utf("big")));
+    const hit = await untilHit(() => reader.get(utf("big")));
     expect(hit?.kind === "put" && hit.value.byteLength).toBe(3 * MiB);
     // The 3 MiB it unpacked went into the new instance. A hook that kept the old one would leave this at its fresh size.
     expect(engineMemory().wasmBytes).toBeGreaterThan(freshForGet + 2 * MiB);
@@ -138,7 +138,7 @@ describe("the host's recycle points", () => {
       writerId: "w1",
       fs,
       ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     for (let round = 0; round < rounds; round++) {
       for (let i = 0; i < perFlush; i++) await db.put(utf(`k${round}-${i}`), new Uint8Array(40_000));

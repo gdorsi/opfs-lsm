@@ -35,7 +35,7 @@ function setMeta(values: Record<string, number>): Promise<void> {
 }
 
 const open = (writerId: string) =>
-  openHarnessDb({ name: NAME, forceMemory: true, writerId, ingestPolicy: { maxWalBytes: 1 << 30 } });
+  openHarnessDb({ name: NAME, forceMemory: true, writerId, maxWalBytes: 1 << 30 });
 
 beforeEach(async () => {
   __resetMemoryFsForTests(NAME);

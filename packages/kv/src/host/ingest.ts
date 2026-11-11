@@ -2,7 +2,7 @@ import { opsBytes } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
-import { reconcile } from "../recover.js";
+import { reconcile, type Trusted } from "../recover.js";
 import {
   loadGeneration,
   publishGeneration,
@@ -47,51 +47,41 @@ export type Chunk = IngestResult & {
  *
  * Builds on the recorded generation, never on a newer manifest file: one
  * that IndexedDB has not recorded is left by a crash, and its seqs are
- * either still in the WAL or were adopted by `reconcile`. `trust` names a
+ * either still in the WAL or were adopted by `reconcile`. `trusted` names a
  * generation the caller knows is intact (see `reconcile`).
  */
 export async function ingestChunk(
   wal: IdBWal,
   fs: AsyncFs,
   through: number,
-  trust: (generation: number) => boolean,
+  trusted: Trusted,
   limits: ChunkLimits,
 ): Promise<Chunk> {
-  const base = await reconcile(wal, fs, trust);
+  const base = await reconcile(wal, fs, trusted);
   const ingested = await wal.getIngestedThrough();
   const records = ingested >= through ? [] : await wal.listUningested({ maxBytes: limits.maxBytes });
-  let kind: Chunk["kind"];
-  let generation: number;
-  let ingestedThrough: number;
-  let foldedBytes = 0;
-
   if (records.length === 0) {
-    kind = "empty";
-    generation = base.generation;
-    ingestedThrough = ingested;
-  } else {
-    const prev = await loadGeneration(fs, base.generation);
-    if (!prev) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
-    if (prev.runs.filter((r) => levelOf(r.path) === 0).length >= limits.l0Stop) {
-      return { kind: "stopped", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
-    }
-    kind = "folded";
-    const entries = foldRecords(records);
-    const first = records[0]!.seq;
-    const last = records[records.length - 1]!.seq;
-
-    generation = base.top + 1;
-    const l0 = await publishL0(fs, `${first}-${last}`, entries);
-    await publishGeneration(fs, {
-      generation,
-      runs: [l0, ...prev.runs],
-      tombstoneSeq: prev.tombstoneSeq,
-      through: last,
-    });
-    for (const r of records) foldedBytes += opsBytes(r.ops);
-    await wal.advanceIngested(last, generation);
-    ingestedThrough = last;
+    return { kind: "empty", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
+  const prev = await loadGeneration(fs, base.generation);
+  if (!prev) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
+  if (prev.runs.filter((r) => levelOf(r.path) === 0).length >= limits.l0Stop) {
+    return { kind: "stopped", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
+  }
+  const entries = foldRecords(records);
+  const first = records[0]!.seq;
+  const last = records[records.length - 1]!.seq;
 
-  return { kind, generation, ingestedThrough, foldedBytes };
+  const generation = base.top + 1;
+  const l0 = await publishL0(fs, `${first}-${last}`, entries);
+  await publishGeneration(fs, {
+    generation,
+    runs: [l0, ...prev.runs],
+    tombstoneSeq: prev.tombstoneSeq,
+    through: last,
+  });
+  let foldedBytes = 0;
+  for (const r of records) foldedBytes += opsBytes(r.ops);
+  await wal.advanceIngested(last, generation);
+  return { kind: "folded", generation, ingestedThrough: last, foldedBytes };
 }

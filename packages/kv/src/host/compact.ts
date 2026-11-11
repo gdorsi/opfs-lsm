@@ -1,7 +1,7 @@
 import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../opfs/async-fs.js";
-import { reconcile } from "../recover.js";
+import { reconcile, type Trusted } from "../recover.js";
 import { openMerge, type MergeCore } from "../store/engine.js";
 import {
   loadGeneration,
@@ -154,9 +154,9 @@ export async function installStep(
   fs: AsyncFs,
   wal: IdBWal,
   step: CompactionOutput,
-  trust: (generation: number) => boolean = () => false,
+  trusted: Trusted,
 ): Promise<number> {
-  const base = await reconcile(wal, fs, trust);
+  const base = await reconcile(wal, fs, trusted);
   const meta = await loadGeneration(fs, base.generation);
   if (!meta) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
   const live = new Set(meta.runs.map((r) => r.path));

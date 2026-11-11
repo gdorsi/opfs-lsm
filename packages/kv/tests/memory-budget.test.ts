@@ -99,7 +99,7 @@ function open(fs: TracingFs, host: EngineHost, cacheBytes: number): Promise<Db> 
     writerId: "w1",
     fs,
     ingest: createLocalIngestClient(host),
-    ingestPolicy: { maxWalBytes: 1e12 },
+    maxWalBytes: 1e12,
     cacheBytes,
   });
 }

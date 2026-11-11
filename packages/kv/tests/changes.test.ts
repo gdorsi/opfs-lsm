@@ -16,7 +16,7 @@ function wipe(): Promise<void> {
 }
 
 const open = (writerId: string): Promise<Db> =>
-  openHarnessDb({ name: NAME, forceMemory: true, writerId, ingestPolicy: { maxWalBytes: 1 << 30 } });
+  openHarnessDb({ name: NAME, forceMemory: true, writerId, maxWalBytes: 1 << 30 });
 
 /** A handle that gets no BroadcastChannel message, so it learns of other writes only through `sync()`. */
 async function openWithoutBus(writerId: string): Promise<Db> {

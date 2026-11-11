@@ -27,5 +27,4 @@ export {
 export type { AsyncFs } from "./opfs/async-fs.js";
 export { MemoryFs } from "./opfs/memory-fs.js";
 export { openBrowserFs } from "./opfs/browser-fs.js";
-export type { IngestPolicy } from "./ingest-policy.js";
 export { engineUsingWasm, ensureEngine } from "./store/engine.js";
