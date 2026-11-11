@@ -17,7 +17,7 @@ import {
   CorruptDatabaseError,
   StorageUnavailableError,
 } from "./errors.js";
-import { DEFAULT_COMPACTION_MEMORY_BYTES } from "./host/budget.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import {
   EngineHost,
   createLocalIngestClient,
@@ -29,7 +29,6 @@ import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, untilHit, type Maybe } from "./store/cursor.js";
-import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { CountingFs } from "./opfs/counting-fs.js";
@@ -109,8 +108,15 @@ export type HarnessOpenOptions = OpenOptions & {
   readonly ingest?: IngestClient;
   /** Stable writer id (tests / debugging). Default: random UUID. */
   readonly writerId?: string;
-  /** When the ingest host flushes the WAL to an OPFS run. */
-  readonly ingestPolicy?: Partial<IngestPolicy>;
+  /**
+   * Flush the WAL into an L0 run once the records waiting for ingest hold this
+   * many key and value bytes. It counts every op as written, so overwrites and
+   * deletes bound the WAL as much as new keys do, whatever the batch sizes.
+   * The host counts the appends tabs announce, and measures the WAL whenever a
+   * tab opens the database, so ingest does not depend on any tab staying open
+   * or responsive. When tabs pass different limits, the host uses the smallest.
+   */
+  readonly maxWalBytes?: number;
   /**
    * Keep the run files in a MemoryFs shared by every open of this name in
    * the process, with an in-process EngineHost. The only way to get memory
@@ -313,10 +319,6 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     () => span(trace, "wasm", performance.now() - wasmAt),
     () => span(trace, "wasm-error", performance.now() - wasmAt),
   );
-  const policy: IngestPolicy = {
-    ...DEFAULT_INGEST_POLICY,
-    ...options.ingestPolicy,
-  };
   const caps = memtableCaps(options.memtableBytes);
 
   let fs = options.fs;
@@ -386,8 +388,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   span(trace, "sync", performance.now() - syncAt);
   // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
   ingest.watch(name, {
-    ...policy,
-    maxWalBytes: Math.min(policy.maxWalBytes, caps.soft),
+    maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
     compactionMemoryBytes: options.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
   });
   // The host cannot flush without the module, so a page that cannot load it does not open.

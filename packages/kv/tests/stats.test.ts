@@ -94,7 +94,7 @@ describe("readStats", () => {
       writerId: "w1",
       fs,
       ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
 
     let walBytes = 0;
@@ -163,7 +163,7 @@ describe("readStats", () => {
       writerId: "w1",
       fs,
       ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     for (let i = 0; i < 9; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
@@ -187,7 +187,7 @@ describe("readStats", () => {
       writerId: "w1",
       fs,
       ingest,
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     const key = utf("k");
     const value = utf("v");

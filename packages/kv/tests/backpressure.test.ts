@@ -211,7 +211,7 @@ async function open(
     name: NAME,
     fs,
     ingest,
-    ingestPolicy: { maxWalBytes: 1e12 },
+    maxWalBytes: 1e12,
     ...options,
   });
   opened.push(db);
@@ -310,8 +310,8 @@ describe("the host's flush limit", () => {
   it("is the smaller of maxWalBytes and 7/8 of memtableBytes", async () => {
     const fs = new MemoryFs();
     expect(await limitOf(fs, {})).toBe(MiB);
-    expect(await limitOf(fs, { ingestPolicy: { maxWalBytes: 1e12 } })).toBe(14 * MiB);
-    expect(await limitOf(fs, { ingestPolicy: { maxWalBytes: 1e12 }, memtableBytes: MiB })).toBe(896 * 1024);
+    expect(await limitOf(fs, { maxWalBytes: 1e12 })).toBe(14 * MiB);
+    expect(await limitOf(fs, { maxWalBytes: 1e12, memtableBytes: MiB })).toBe(896 * 1024);
   });
 
   it("flushes the WAL at 7/8 of the smallest memtableBytes any tab opened with", async () => {

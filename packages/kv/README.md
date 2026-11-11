@@ -30,7 +30,7 @@ const found = await db.get(key);
 | `memtableBytes` | Bytes of rows this tab holds that are not yet flushed to OPFS, counted as key bytes, value bytes, and an estimate per row. Default 16 MiB. A smaller request is raised to 1 MiB. At 7/8 of it the tab asks the host to flush and keeps writing. At the limit a write waits until the host returns that flush, so a writing tab's memtable stays near the limit. A host that cannot flush does not hold writes for good. When tabs differ, the host flushes once the WAL passes the smallest ask: 1 MiB, or 7/8 of `memtableBytes` when that is lower. |
 | `compactionMemoryBytes` | Bytes the SharedWorker may spend on flushing and compacting this database: its wasm heap and the run data in flight. Default 32 MiB. A smaller request is raised to 8 MiB. A smaller figure gives smaller flush runs and a smaller read window, and under about 17.5 MiB fewer runs in one compaction step. The host's figures stop growing at 64 MiB. When tabs differ, the host uses the smallest, until the last tab closes the database. It counts memory that is alive, not garbage the browser has not collected yet. |
 
-Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB flush. `ingest(db)` from the same entry flushes the memtable now and waits for the compaction it starts.
+Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `maxWalBytes`, `writerId`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `maxWalBytes` overrides the 1 MiB flush. `ingest(db)` from the same entry flushes the memtable now and waits for the compaction it starts.
 
 ## `Db`
 

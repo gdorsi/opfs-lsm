@@ -41,7 +41,7 @@ async function openWithHost(fs: MemoryFs) {
     writerId: "w1",
     fs,
     ingest: createLocalIngestClient(host),
-    ingestPolicy: { maxWalBytes: 1e12 },
+    maxWalBytes: 1e12,
   });
   return { db, host };
 }

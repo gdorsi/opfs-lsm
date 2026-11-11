@@ -152,12 +152,12 @@ describe("batch + prefixBound", () => {
 describe("ingest", () => {
   it("a flush larger than one run stays readable from another tab", async () => {
     const fs = new MemoryFs();
-    const policy = { maxWalBytes: 2 ** 40 };
-    const a = await openHarnessDb({ name: "notes", writerId: "w1", fs, ingestPolicy: policy });
+    const maxWalBytes = 2 ** 40;
+    const a = await openHarnessDb({ name: "notes", writerId: "w1", fs, maxWalBytes });
     const value = (i: number) => new Uint8Array(1 << 20).fill(i);
     for (let i = 0; i < 70; i++) await a.put(utf(`k${String(i).padStart(2, "0")}`), value(i));
     await ingest(a);
-    const b = await openHarnessDb({ name: "notes", writerId: "w2", fs, ingestPolicy: policy });
+    const b = await openHarnessDb({ name: "notes", writerId: "w2", fs, maxWalBytes });
     for (let i = 0; i < 70; i++) {
       expect((await b.get(utf(`k${String(i).padStart(2, "0")}`)))?.[0]).toBe(i);
     }

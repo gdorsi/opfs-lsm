@@ -104,7 +104,7 @@ async function database(name: string) {
     writerId: `${name}-w`,
     fs: inner,
     ingest: createLocalIngestClient(host),
-    ingestPolicy: { maxWalBytes: 1e12 },
+    maxWalBytes: 1e12,
   });
   let next = 0;
   /** One flush run: a put and an ingest that does not wait for compaction. The fourth one starts a compaction. */

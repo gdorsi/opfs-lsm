@@ -138,7 +138,7 @@ describe("the host's recycle points", () => {
       writerId: "w1",
       fs,
       ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     for (let round = 0; round < rounds; round++) {
       for (let i = 0; i < perFlush; i++) await db.put(utf(`k${round}-${i}`), new Uint8Array(40_000));

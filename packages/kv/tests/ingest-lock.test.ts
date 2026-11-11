@@ -33,20 +33,20 @@ describe("ingest across two hosts", () => {
       );
     }
     const fs = new MemoryFs();
-    const policy = { maxWalBytes: 1e12 };
+    const maxWalBytes = 1e12;
     const a = await openHarnessDb({
       name: "lock-db",
       writerId: "a",
       fs,
       ingest: createLocalIngestClient(new EngineHost(() => fs)),
-      ingestPolicy: policy,
+      maxWalBytes,
     });
     const b = await openHarnessDb({
       name: "lock-db",
       writerId: "b",
       fs,
       ingest: createLocalIngestClient(new EngineHost(() => fs)),
-      ingestPolicy: policy,
+      maxWalBytes,
     });
     for (let round = 0; round < 6; round++) {
       await a.put(utf(`a${round}`), utf(`${round}`));
@@ -58,7 +58,7 @@ describe("ingest across two hosts", () => {
       writerId: "c",
       fs,
       ingest: createLocalIngestClient(new EngineHost(() => fs)),
-      ingestPolicy: policy,
+      maxWalBytes,
     });
     for (let round = 0; round < 6; round++) {
       for (const who of ["a", "b"]) {

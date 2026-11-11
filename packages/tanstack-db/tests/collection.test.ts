@@ -23,7 +23,7 @@ function dbName(): string {
 }
 
 async function open(name: string): Promise<Db> {
-  const db = await openHarnessDb({ name, forceMemory: true, ingestPolicy: { maxWalBytes: 1 << 30 } });
+  const db = await openHarnessDb({ name, forceMemory: true, maxWalBytes: 1 << 30 });
   opened.push(db);
   return db;
 }

@@ -46,7 +46,7 @@ async function runsFlushed(
       writerId: `w${i}`,
       fs,
       ingest: client,
-      ingestPolicy: { maxWalBytes: 1e12 },
+      maxWalBytes: 1e12,
       ...(compactionMemoryBytes === undefined ? {} : { compactionMemoryBytes }),
     };
     tabs.push(await openHarnessDb(options));

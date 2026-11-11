@@ -79,7 +79,7 @@ async function setup(flushRunBytes: number, l0StopRuns?: number) {
     writerId: "w1",
     fs: inner,
     ingest: createLocalIngestClient(host),
-    ingestPolicy: { maxWalBytes: 1e12 },
+    maxWalBytes: 1e12,
   });
   return { inner, host, db, published, hold };
 }
@@ -142,7 +142,7 @@ describe("a flush of a large backlog", () => {
       writerId: "w2",
       fs: inner,
       ingest: createLocalIngestClient(host),
-      ingestPolicy: { maxWalBytes: 1e12 },
+      maxWalBytes: 1e12,
     });
     expect(await fresh.get(key(0))).toEqual(value(50, 100));
     expect(await fresh.get(key(1))).toBeUndefined();

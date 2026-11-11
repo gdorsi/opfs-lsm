@@ -1,5 +1,4 @@
 import type { ErrorCode } from "../errors.js";
-import type { IngestPolicy } from "../ingest-policy.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
 
 /** What the host counted for one database since it started. Test and bench only. */
@@ -34,7 +33,9 @@ export type HostStats = {
 };
 
 /** What a tab tells the host when it opens a database. The host uses the smallest figure of each. */
-export type WatchPolicy = IngestPolicy & {
+export type WatchPolicy = {
+  /** The tab's `maxWalBytes`. */
+  readonly maxWalBytes: number;
   /** The tab's `compactionMemoryBytes`, which sets the host's `hostBudget`. */
   readonly compactionMemoryBytes: number;
 };

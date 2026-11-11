@@ -97,7 +97,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
       writerId: "w1",
       fs,
       ingest,
-      ingestPolicy: { maxWalBytes: 100 },
+      maxWalBytes: 100,
     });
     await new Promise((r) => setTimeout(r, 100));
     await db.put(utf("k"), new Uint8Array(150));

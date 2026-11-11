@@ -33,7 +33,7 @@ describe("view snapshot", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     await db.put(enc.encode("a"), enc.encode("1"));
 
@@ -60,7 +60,7 @@ describe("view snapshot", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     let leaked: { get(key: Uint8Array): Promise<Uint8Array | undefined> } | undefined;
     await db.view(async (snap) => {
@@ -76,7 +76,7 @@ describe("view snapshot", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     const key = (i: number) => enc.encode(`k${String(i).padStart(5, "0")}`);
     await db.batch((tx) => {
@@ -111,7 +111,7 @@ describe("reverse range", () => {
   };
 
   async function seeded() {
-    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", maxWalBytes: 1 << 30 });
     await db.batch((tx) => {
       for (let i = 0; i < 3000; i += 2) tx.put(key(i), enc.encode(`sst${i}`));
     });
@@ -179,7 +179,7 @@ describe("range with valueContains", () => {
       name: NAME,
       forceMemory: true,
       writerId: "w1",
-      ingestPolicy: { maxWalBytes: 1 << 30 },
+      maxWalBytes: 1 << 30,
     });
     await db.put(enc.encode("a"), enc.encode(" red apple"));
     await db.put(enc.encode("b"), enc.encode(" red pear"));
@@ -258,7 +258,7 @@ describe("range with valueContains", () => {
   });
 
   it("hands out bytes that own their buffer", async () => {
-    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", maxWalBytes: 1 << 30 });
     await db.put(enc.encode("a"), enc.encode(" red apple"));
     await db.put(enc.encode("b"), enc.encode(" red pear"));
     await ingest(db);
