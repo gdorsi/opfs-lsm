@@ -254,7 +254,7 @@ async function checkRun(
 }
 
 /**
- * Manifest order (design.md, "Manifest format"): L0 newest first, then each
+ * Manifest order (docs/manifest-format.md): L0 newest first, then each
  * level by smallest key with no overlap. Reads take the first hit, so every
  * key's seqs must fall along that order.
  */

@@ -21,8 +21,11 @@ export class BrowserFs implements AsyncFs {
   ) {}
 
   /**
-   * Directory handles by path. Nothing removes a directory, so a handle
-   * stays good, and a lookup costs a trip to the browser process.
+   * Directory handles by path, since a lookup costs a trip to the browser
+   * process. A handle names a path, so it still reads after a `removeTree`.
+   * A create through a handle of a removed directory throws NotFoundError
+   * instead of making it again, so `removeTree` drops its own handles, and
+   * a create that meets another instance's removal drops and retries.
    */
   private readonly dirs = new Map<string, Promise<FileSystemDirectoryHandle>>();
 
@@ -51,8 +54,23 @@ export class BrowserFs implements AsyncFs {
   private async fileHandle(path: string, create: boolean): Promise<FileSystemFileHandle> {
     const parts = splitPath(path);
     if (parts.length === 0) throw new Error("empty path");
-    const dir = await this.dir(parts.slice(0, -1), create);
-    return dir.getFileHandle(parts[parts.length - 1]!, { create });
+    const lookup = async () =>
+      (await this.dir(parts.slice(0, -1), create)).getFileHandle(parts[parts.length - 1]!, { create });
+    try {
+      return await lookup();
+    } catch (err) {
+      if (!create || !isNotFound(err)) throw err;
+      // Another instance's `removeTree` removed a directory this cache holds.
+      this.forget(parts.slice(0, -1).join("/"));
+      return lookup();
+    }
+  }
+
+  /** Drop the cached handles of `key` and every directory under it. */
+  private forget(key: string): void {
+    for (const known of this.dirs.keys()) {
+      if (known === key || known.startsWith(`${key}/`)) this.dirs.delete(known);
+    }
   }
 
   private lockName(path: string): string {
@@ -161,8 +179,9 @@ export class BrowserFs implements AsyncFs {
   async removeTree(path: string): Promise<void> {
     const parts = splitPath(path);
     if (parts.length === 0) throw new Error("cannot remove root");
+    this.forget(parts.join("/"));
     try {
-      const dir = await getDir(this.root, parts.slice(0, -1), false);
+      const dir = await this.dir(parts.slice(0, -1), false);
       await dir.removeEntry(parts[parts.length - 1]!, { recursive: true });
     } catch (err) {
       if (!isNotFound(err)) throw err;
