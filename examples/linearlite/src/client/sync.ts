@@ -1,7 +1,7 @@
 import { mergeIncoming, restore } from "../domain/merge.ts";
 import type { Clocks, Rows, ServerRow, Stream, SyncState } from "../domain/model.ts";
 import { MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse, type RowResponse } from "../domain/wire.ts";
-import { backoffMs, pushOp } from "./ops.ts";
+import { backoffMs, Pager, pushOp } from "./ops.ts";
 import { openStore, type Store } from "./store.ts";
 
 const PULL_LIMIT = 2000;
@@ -94,6 +94,9 @@ class Leader {
   private head: number | undefined;
   private readonly marked = new Set<Stream>();
   private readonly pullLimit = Number(new URLSearchParams(location.search).get("pull")) || PULL_LIMIT;
+  private readonly pager = new Pager((stream, after) =>
+    request<PullResponse>(this.store.user, `/api/pull?stream=${stream}&after=${after}&limit=${this.pullLimit}`),
+  );
 
   constructor(private readonly store: Store) {}
 
@@ -187,8 +190,7 @@ class Leader {
   }
 
   private async page(stream: Stream): Promise<void> {
-    const after = this.state.cursors[stream];
-    const res = await request<PullResponse>(this.store.user, `/api/pull?stream=${stream}&after=${after}&limit=${this.pullLimit}`);
+    const res = await this.pager.page(stream, this.state.cursors[stream]);
     this.checkEpoch(res.epoch);
     if (res.rows.length > 0) await mergeServerRows(this.store, stream, res.rows);
     this.head = Math.max(this.head ?? 0, res.head);
@@ -228,6 +230,7 @@ class Leader {
         if (op) outgoing.push({ op, key: row.id });
       }
     }
+    if (outgoing.length > 0) this.pager.forget();
     for (let i = 0; i < outgoing.length; i += MAX_OPS) await this.send(outgoing.slice(i, i + MAX_OPS));
   }
 
@@ -275,6 +278,7 @@ class Leader {
   private async wipe(epoch: string): Promise<void> {
     const { docs } = this.store;
     for (const name of ["issues", ...BACKGROUND] as const) await docs.collection(name).clear();
+    this.pager.forget();
     this.head = undefined;
     this.marked.clear();
     await this.save({ ...EMPTY, epoch });
