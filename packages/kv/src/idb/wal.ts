@@ -528,8 +528,8 @@ export class IdBWal {
     expect: WalMeta,
     generation: number,
     through: number,
-    floor = through,
-    top = generation,
+    floor: number,
+    top: number,
   ): Promise<boolean> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);

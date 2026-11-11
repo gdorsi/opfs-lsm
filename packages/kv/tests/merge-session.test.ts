@@ -5,7 +5,7 @@ import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.
 import { mergeNextStep, pumpMerge } from "../src/host/compact.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../src/opfs/async-fs.js";
 import type { MergeCore, MergeSpec } from "../src/store/engine.js";
-import { publishGeneration, type RunMeta } from "../src/store/generation.js";
+import { loadLatestGeneration, publishGeneration, type RunMeta } from "../src/store/generation.js";
 import { openMergeTs } from "./oracle/merge-ts.js";
 import { decodeSst, encodeRun, entryRecordSize, sstKeyRange, type SstCodec, type SstEntry } from "../src/store/sst.js";
 import { fixSstCrc } from "../fuzz/targets.js";
@@ -524,7 +524,7 @@ describe("a compaction step at full size", () => {
       };
       const sources = await database(watched);
       const budget = hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES);
-      const step = (await mergeNextStep(watched, budget))!;
+      const step = (await mergeNextStep(watched, budget, (await loadLatestGeneration(watched))!, 0))!;
 
       const sizes = await Promise.all(step.inputs.map(async (p) => (await base.read(p, 0, Infinity))!.byteLength));
       const inputBytes = sizes.reduce((a, b) => a + b, 0);

@@ -5,7 +5,6 @@ import { reconcile, type Trusted } from "../recover.js";
 import { openMerge, type MergeCore } from "../store/engine.js";
 import {
   loadGeneration,
-  loadLatestGeneration,
   manifestNumbers,
   publishGeneration,
   type GenerationMeta,
@@ -32,10 +31,10 @@ type CompactionOutput = {
 type Merged = Pick<CompactionOutput, "outputs" | "droppedSeq">;
 
 /**
- * Plan one step on `base` (the recorded generation; the newest manifest
- * file when omitted), merge its inputs, and write the output runs. Needs no
- * ingest lock: a flush meanwhile only adds L0 runs in front of the inputs,
- * which stay contiguous and keep their bottom status. Outputs are named
+ * Plan one step on `base`, the recorded generation, merge its inputs, and
+ * write the output runs. Needs no ingest lock: a flush meanwhile only adds
+ * L0 runs in front of the inputs, which stay contiguous and keep their
+ * bottom status. Outputs are named
  * past every manifest number in use (`knownTop`, IndexedDB's
  * `topGeneration`, and `m/`), so they never overwrite a run one may list.
  * The merge waits for its turn in the context's one merge slot, so another
@@ -44,13 +43,11 @@ type Merged = Pick<CompactionOutput, "outputs" | "droppedSeq">;
 export async function mergeNextStep(
   fs: AsyncFs,
   budget: HostBudget,
-  base?: GenerationMeta,
-  knownTop = 0,
+  base: GenerationMeta,
+  knownTop: number,
 ): Promise<CompactionOutput | undefined> {
-  const meta = base ?? (await loadLatestGeneration(fs));
-  if (!meta) return undefined;
-  const top = Math.max(meta.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
-  const plan = planCompaction(meta.runs, { maxSources: budget.maxSources });
+  const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
+  const plan = planCompaction(base.runs, { maxSources: budget.maxSources });
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget));
