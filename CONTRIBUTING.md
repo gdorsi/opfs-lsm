@@ -1,10 +1,27 @@
 # Contributing
 
-To set up the repository and run the tests, follow [Clone and run](README.md#clone-and-run) in the README. Before you open a pull request, run `pnpm test` and `pnpm static`.
+Before you open a pull request, run `pnpm test` and `pnpm static`.
+
+## Clone and run
+
+`engines.node` in `package.json` is `>=22`. `.nvmrc` pins 24. `packageManager` is `pnpm@10.33.2`.
+
+```sh
+git clone https://github.com/gdorsi/opfs-lsm.git
+cd opfs-lsm
+pnpm install
+pnpm test
+pnpm bench kv/
+pnpm todo:example
+pnpm automerge:example
+pnpm rich-text:example
+```
+
+`pnpm test` typechecks and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, docstore against Dexie, the TanStack DB adapter against TanStack DB's IndexedDB adapter, and the Yjs and Automerge adapters against their IndexedDB counterparts. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
 
 ## Add a changeset when you change a published package
 
-The repository publishes five packages to npm: `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/tanstack-db`, `@opfs-lsm/yjs`, and `@opfs-lsm/automerge`. [Changesets](https://github.com/changesets/changesets) versions them and writes each package's `CHANGELOG.md`.
+The repository publishes four packages to npm: `@opfs-lsm/kv`, `@opfs-lsm/tanstack-db`, `@opfs-lsm/yjs`, and `@opfs-lsm/automerge`. `@opfs-lsm/docstore` is a private experiment and never publishes. [Changesets](https://github.com/changesets/changesets) versions them and writes each package's `CHANGELOG.md`.
 
 If your pull request changes what one of these packages does, add a changeset:
 
