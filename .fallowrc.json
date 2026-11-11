@@ -28,12 +28,6 @@
   ],
   "ignoreExports": [
     {
-      "file": "examples/linearlite/src/domain/model.ts",
-      "exports": [
-        "SyncState"
-      ]
-    },
-    {
       "file": "packages/kv/src/store/engine.ts",
       "exports": [
         "encodeRun",
