@@ -147,7 +147,6 @@ function build(config: KvCollectionConfig<Row, StandardSchemaV1>): KvOptions {
         else if (row !== undefined) tx.put(encoded[i]!, codec.encode(row));
       });
     });
-    // kv announced the record before update resolved; see persist.
     await current?.settled();
   };
 
@@ -294,7 +293,6 @@ class Run {
   }
 }
 
-/** What one loaded subset reads and keeps in memory. */
 type Plan = { readonly keys: ReadonlySet<RowKey> } | { readonly prefix: string };
 type Demand = { readonly options: LoadSubsetOptions; readonly plan: Plan; phase: Loading | Loaded };
 type Loaded = { readonly kind: "loaded" } | { readonly kind: "released" };
@@ -307,12 +305,6 @@ function covers(plan: Plan, key: RowKey): boolean {
   return "prefix" in plan ? typeof key === "string" && key.startsWith(plan.prefix) : plan.keys.has(key);
 }
 
-/**
- * An on-demand sync run. Each loaded subset (a `Demand`) reads its plan in
- * one view, and the change feed applies only ops some demand covers. A
- * loading demand buffers every append, as `Run` does, and replays the ones
- * past its snapshot, so a write that lands during the read is not lost.
- */
 class DemandRun {
   private phase: DemandPhase = { kind: "stopped" };
   private unsubscribe: (() => void) | undefined;
@@ -402,7 +394,6 @@ class DemandRun {
     }
   }
 
-  /** Reads the demand's rows. A fetch during a fetch restarts it and keeps its buffer and its waiters. */
   private fetch(demand: Demand): Loading {
     const prev = demand.phase.kind === "loading" ? demand.phase : undefined;
     const mine: Loading = {
@@ -463,7 +454,6 @@ class DemandRun {
     return writes;
   }
 
-  /** Commits writes from the change feed, where a bad row stops the run as it does in `Run`. */
   private apply(writes: readonly Write[]): void {
     try {
       this.commit(writes);

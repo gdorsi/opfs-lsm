@@ -239,7 +239,6 @@ test("a tab that falls behind a flush reloads and matches the writer", async () 
   assert.deepEqual(plain(reader.toArray), plain(writer.toArray));
 });
 
-/** A db whose change feed the test can thin out and add to. */
 function tappedFeed(db: Db) {
   const listeners = new Set<(event: ChangeEvent) => void>();
   let hide = 0;
@@ -502,14 +501,12 @@ test("a transact during the first load resolves once the collection shows the wr
 type Comment = { key: string; issue_id: string; body: string };
 type Body = { id: string; description: string };
 
-/** The value a live query's `where` compares `field` to with `eq`. */
 function eqValue(options: LoadSubsetOptions, field: string): unknown {
   const filter = parseLoadSubsetOptions(options).filters.find((f) => f.operator === "eq" && f.field.join(".") === field);
   if (!filter) throw new Error(`load ${field} with eq`);
   return filter.value;
 }
 
-/** Comments keyed `${issue_id}/${n}`, loaded by issue as one prefix. */
 function comments(db: Db) {
   const c = createCollection(
     kvCollectionOptions({
@@ -523,7 +520,6 @@ function comments(db: Db) {
   return c;
 }
 
-/** Descriptions loaded by id as point gets. */
 function bodies(db: Db) {
   const c = createCollection(
     kvCollectionOptions({
@@ -537,7 +533,6 @@ function bodies(db: Db) {
   return c;
 }
 
-/** An eager collection on the same rows, as another tab's writer. */
 function eagerComments(db: Db) {
   const c = createCollection(kvCollectionOptions({ db, name: "comments", getKey: (r: Comment) => r.key }));
   collections.push(c);
