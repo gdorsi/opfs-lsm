@@ -54,11 +54,17 @@ async function launch(name: string, profile = mkdtempSync(join(tmpdir(), "linear
   while (await listening(port)) port = nextPort++;
   const flags = ["--headless=new", "--disable-gpu", "--enable-precise-memory-info", "--js-flags=--expose-gc"];
   const proc = spawn(CHROME, [...flags, `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, "about:blank"], { stdio: "ignore" });
-  await sleep(1500);
-  ab(session, ...(initScript ? ["--init-script", initScript] : []), "connect", String(port));
-  const url = ab(session, "get", "cdp-url");
-  if (!url.includes(`:${port}/`)) throw new Error(`${session} connected to ${url}, not port ${port}`);
-  return { session, profile, proc };
+  const browser = { session, profile, proc };
+  try {
+    await waitFor(`Chrome on port ${port}`, async () => ((await listening(port)) ? true : undefined), 30_000);
+    ab(session, ...(initScript ? ["--init-script", initScript] : []), "connect", String(port));
+    const url = ab(session, "get", "cdp-url");
+    if (!url.includes(`:${port}/`)) throw new Error(`${session} connected to ${url}, not port ${port}`);
+    return browser;
+  } catch (err) {
+    await quit(browser, true);
+    throw err;
+  }
 }
 
 async function quit(b: Browser, keepProfile = false): Promise<void> {
@@ -78,10 +84,10 @@ const marks = `JSON.stringify(Object.fromEntries(performance.getEntriesByType("m
 /** Heap after a full GC and the origin's storage use, in MB. */
 const footprint = `(async () => { globalThis.gc?.(); await new Promise((r) => setTimeout(r, 100)); return JSON.stringify({ heapMB: Math.round(performance.memory.usedJSHeapSize / 1e6), storageMB: Math.round((await navigator.storage.estimate()).usage / 1e6) }); })()`;
 
-async function waitFor<T>(what: string, poll: () => T | undefined, timeoutMs = 180_000): Promise<T> {
+async function waitFor<T>(what: string, poll: () => T | undefined | Promise<T | undefined>, timeoutMs = 180_000): Promise<T> {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
-    const v = poll();
+    const v = await poll();
     if (v !== undefined) return v;
     await sleep(250);
   }

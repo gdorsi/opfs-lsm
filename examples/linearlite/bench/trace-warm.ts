@@ -39,8 +39,12 @@ class Cdp {
 
 async function launch(profile: string, port: number) {
   const proc = spawn(CHROME, ["--headless=new", "--disable-gpu", `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, "about:blank"], { stdio: "ignore" });
-  await sleep(1500);
-  const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  let version: any;
+  for (let tries = 0; !version; tries++) {
+    version = await fetch(`http://127.0.0.1:${port}/json/version`).then((r) => r.json(), () => undefined);
+    if (!version && tries > 100) throw new Error(`Chrome did not open port ${port}`);
+    if (!version) await sleep(200);
+  }
   const pages = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as any[];
   const browser = await Cdp.open(version.webSocketDebuggerUrl);
   const page = await Cdp.open(pages.find((p) => p.type === "page").webSocketDebuggerUrl);
