@@ -315,6 +315,9 @@ importers:
 
   packages/tanstack-db:
     dependencies:
+      '@opfs-lsm/docstore':
+        specifier: workspace:*
+        version: link:../docstore
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../kv
