@@ -9,7 +9,7 @@
 import { CorruptDatabaseError } from "@opfs-lsm/kv";
 import { DocStoreError } from "./errors.js";
 import { indexPrefix, rowPrefix, type CollectionId, type IndexId, type ScanTarget } from "./keys.js";
-import type { AnySchema } from "./schema.js";
+import type { AnySchema, IndexInfo } from "./schema.js";
 
 /** Bumped when stored bytes change meaning. */
 const FORMAT = 1;
@@ -120,6 +120,19 @@ export function normalizeSchema(decl: AnySchema): DeclaredSchema {
     drop.add(name);
   }
   return { version: decl.version, collections, drop };
+}
+
+export function describeIndexes(specs: ReadonlyMap<string, IndexSpec> | undefined): ReadonlyMap<string, IndexInfo> {
+  const out = new Map<string, IndexInfo>();
+  for (const [name, s] of specs ?? []) {
+    out.set(
+      name,
+      s.kind === "text"
+        ? { kind: "text", on: s.on, unique: false, text: s.text }
+        : { kind: s.multi ? "multi" : "sorted", on: s.on, unique: s.unique },
+    );
+  }
+  return out;
 }
 
 function sameSpec(a: IndexSpec, b: IndexSpec): boolean {
@@ -374,6 +387,23 @@ export type Bound = {
   readonly catalog: StoredCatalog;
   readonly collections: ReadonlyMap<string, BoundCollection>;
 };
+
+export function readableTarget(coll: BoundCollection, index: string): ScanTarget {
+  const r = coll.readable.get(index);
+  if (r === undefined) throw new DocStoreError("schema", `"${coll.name}" has no index "${index}" in this schema`);
+  if (!("kind" in r)) return r.target;
+  const where = `index "${index}" of "${coll.name}"`;
+  switch (r.kind) {
+    case "missing":
+      throw new DocStoreError("schema", `the stored catalog has no ${where}`);
+    case "spec-changed":
+      throw new DocStoreError("schema", `a newer schema redefined ${where}`);
+    case "building":
+      throw new DocStoreError("schema", `a newer schema is building ${where}`);
+    case "failed":
+      throw new DocStoreError("index-failed", `${where} cannot hold the stored data (${r.reason})`, r.ids);
+  }
+}
 
 /** Compile `catalog` for a handle that declared `declared`. An index is readable iff its stored spec equals the declared one and it is ready. */
 export function bind(bytes: Uint8Array, catalog: StoredCatalog, declared: DeclaredSchema): Bound {

@@ -2,6 +2,7 @@ import { CorruptDatabaseError, prefixBound, type BatchTx, type Db, type Entry } 
 import {
   bind,
   clearCollection,
+  describeIndexes,
   encodeCatalog,
   markFailed,
   markReady,
@@ -29,7 +30,6 @@ import {
   upperOf,
   type CollectionId,
   type IndexId,
-  type ScanTarget,
 } from "./keys.js";
 import type { AnySchema, CollectionName, DocOf, IndexesOf } from "./schema.js";
 
@@ -79,12 +79,10 @@ export type WritePlan<R> = {
 
 export interface StoreCore {
   readonly kv: Db;
-  /** The collection in a freshly read catalog. */
-  current(name: string): Promise<BoundCollection>;
+  /** The collection in the catalog `bytes`, which a kv snapshot read. */
+  collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection;
   /** One kv `update`, planned against this handle's catalog and planned again whenever the stored catalog differs. */
   write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R>;
-  /** One read between two catalog reads, repeated until the collection id and index id did not change in between. */
-  read<R>(name: string, index: string | undefined, read: (target: ScanTarget) => Promise<R | typeof RETRY>): Promise<R>;
   clear(name: string): Promise<void>;
 }
 
@@ -102,28 +100,6 @@ function collectionOf(bound: Bound, name: string): BoundCollection {
   return coll;
 }
 
-function readableTarget(coll: BoundCollection, index: string): ScanTarget {
-  const r = coll.readable.get(index);
-  if (r === undefined) throw new DocStoreError("schema", `"${coll.name}" has no index "${index}" in this schema`);
-  if (!("kind" in r)) return r.target;
-  const where = `index "${index}" of "${coll.name}"`;
-  switch (r.kind) {
-    case "missing":
-      throw new DocStoreError("schema", `the stored catalog has no ${where}`);
-    case "spec-changed":
-      throw new DocStoreError("schema", `a newer schema redefined ${where}`);
-    case "building":
-      throw new DocStoreError("schema", `a newer schema is building ${where}`);
-    case "failed":
-      throw new DocStoreError("index-failed", `${where} cannot hold the stored data (${r.reason})`, r.ids);
-  }
-}
-
-function readableId(coll: BoundCollection | undefined, index: string): number | undefined {
-  const r = coll?.readable.get(index);
-  return r && !("kind" in r) ? r.id : undefined;
-}
-
 const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
 
 class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
@@ -136,7 +112,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   ) {}
 
   collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>> {
-    return new CollectionImpl(this, name);
+    return new CollectionImpl(this, name, describeIndexes(this.declared.collections.get(name)));
   }
 
   async whenIdle(): Promise<void> {
@@ -153,8 +129,8 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     return Promise.all(builds);
   }
 
-  async current(name: string): Promise<BoundCollection> {
-    return collectionOf(this.adopt(await this.kv.get(CATALOG_KEY)), name);
+  collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection {
+    return collectionOf(this.adopt(bytes), name);
   }
 
   async write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R> {
@@ -169,28 +145,6 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
         return plan.apply(values, tx);
       });
       if (out !== RETRY) return out;
-    }
-  }
-
-  /**
-   * Ids are never reused and a ready index never goes back to building, so
-   * an unchanged collection id and index id before and after mean no `clear`,
-   * drop or redefinition touched the scanned prefix while the read ran.
-   */
-  async read<R>(
-    name: string,
-    index: string | undefined,
-    read: (target: ScanTarget) => Promise<R | typeof RETRY>,
-  ): Promise<R> {
-    for (;;) {
-      const before = await this.current(name);
-      const out = await read(index === undefined ? before.rows : readableTarget(before, index));
-      const after = this.adopt(await this.kv.get(CATALOG_KEY)).collections.get(name);
-      if (after?.id !== before.id || (index !== undefined && readableId(after, index) !== readableId(before, index))) {
-        continue;
-      }
-      if (out === RETRY) throw new CorruptDatabaseError(`an index entry of "${name}" points at a missing document`);
-      return out;
     }
   }
 

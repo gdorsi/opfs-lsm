@@ -147,6 +147,16 @@ export type IndexesOf<S, C extends string> = S extends { readonly collections: i
     : never
   : never;
 
+/** What a declared index is, for layers that plan queries. */
+export type IndexInfo = {
+  readonly kind: "sorted" | "multi" | "text";
+  /** The dot paths the index orders by. */
+  readonly on: readonly string[];
+  readonly unique: boolean;
+  /** The dot path of a text index's words. */
+  readonly text?: string;
+};
+
 declare const cursorBrand: unique symbol;
 
 /**

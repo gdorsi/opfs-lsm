@@ -109,7 +109,7 @@ export const queryArb: fc.Arbitrary<{ index: string | undefined; q: QueryInput }
   });
 
 export async function checkQuery(
-  c: Docs,
+  c: Pick<Docs, "query" | "queryIds" | "count">,
   docs: readonly Doc[],
   index: string | undefined,
   q: QueryInput,

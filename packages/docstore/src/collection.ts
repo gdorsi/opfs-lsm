@@ -1,23 +1,17 @@
-import type { Entry, Range } from "@opfs-lsm/kv";
+import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
+import { followCollection, type CollectionChange } from "./changes.js";
 import { decodeDoc, diffEntries, encodeDoc, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import {
-  bytesEqual,
-  concat,
-  encodeCursor,
-  entryId,
-  idBytes,
-  keyString,
-  parseId,
-  scanPlan,
-  type DocId,
-} from "./keys.js";
-import type { Cursor, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
+import { CATALOG_KEY, bytesEqual, concat, idBytes, keyString, parseId, type DocId } from "./keys.js";
+import type { IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
+import { CollectionReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
 
 export interface Collection<T extends JsonDoc, Ix> {
   readonly name: string;
+  /** The indexes this handle's schema declares for the collection, by name. */
+  readonly indexes: ReadonlyMap<string, IndexInfo>;
 
   /** The stored document, or undefined. */
   get(id: string): Promise<T | undefined>;
@@ -41,6 +35,22 @@ export interface Collection<T extends JsonDoc, Ix> {
    * there was no document (then `fn` does not run).
    */
   modify(id: string, fn: (doc: T) => T): Promise<T | undefined>;
+  /**
+   * Read-modify-write several documents in one kv transaction, so no write
+   * from this handle, another handle or another tab lands between the read
+   * and the write. `fn` gets the stored forms in the order of `ids`
+   * (undefined: no document) and returns one entry per id: a document to
+   * store, whose id must be that slot's id, `null` to delete, or `undefined`
+   * to leave as is. A slot left as is still counts as read: if its document
+   * changed meanwhile, `fn` runs again. `fn` may run more than once, so it
+   * must be pure. Throws DocStoreError "document" for a repeated id, a result
+   * of the wrong length, or a document under another id, and writes nothing.
+   * Other errors are those of `putMany`.
+   */
+  modifyMany(
+    ids: readonly string[],
+    fn: (docs: readonly (T | undefined)[]) => readonly (T | null | undefined)[],
+  ): Promise<void>;
 
   /** True if there was a document. */
   delete(id: string): Promise<boolean>;
@@ -63,6 +73,21 @@ export interface Collection<T extends JsonDoc, Ix> {
   queryIds(q: Query<T, Ix>): Promise<IdPage>;
   /** How many entries `query` would walk, stopping at `limit` if given. */
   count(q: Query<T, Ix>): Promise<number>;
+
+  /**
+   * Reads from one kv snapshot: every read in `body` sees the same state,
+   * whatever is written meanwhile. `body` runs once. A write made inside
+   * `body` is not visible to its snapshot.
+   */
+  view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R>;
+  /**
+   * Every change to this collection's documents, from this handle, other
+   * handles and other tabs, in kv seq order. Index entries are not reported.
+   * Returns the unsubscribe function. To read the collection and then follow
+   * it without a hole, subscribe first, then `view`, and ignore events with a
+   * seq at or below `snap.seq`.
+   */
+  changes(listener: (change: CollectionChange<T>) => void): () => void;
 }
 
 export const RETRY: unique symbol = Symbol("retry");
@@ -184,44 +209,27 @@ function uniqueError(incoming: string, owner: string): DocStoreError {
   return new DocStoreError("unique", `"${incoming}" and "${owner}" would share a unique value`, [incoming, owner]);
 }
 
-function limitOf(limit: unknown): number | undefined {
-  if (limit === undefined) return undefined;
-  if (typeof limit === "number" && Number.isInteger(limit) && limit >= 1) return limit;
-  throw new DocStoreError("query", "limit must be a positive integer");
-}
-
-function withLimit(range: Range, limit: number | undefined): Range {
-  return limit === undefined ? range : { ...range, limit };
-}
-
-function nextOf(keys: readonly Uint8Array[], limit: number | undefined): { next?: Cursor } {
-  return limit !== undefined && keys.length > limit ? { next: encodeCursor(keys[limit - 1]!) } : {};
-}
-
-async function collect(entries: AsyncIterable<Entry>): Promise<Entry[]> {
-  const out: Entry[] = [];
-  for await (const e of entries) out.push(e);
-  return out;
-}
+type Slot = EncodedDoc | null | undefined;
 
 export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> {
   constructor(
     private readonly store: StoreCore,
     readonly name: string,
+    readonly indexes: ReadonlyMap<string, IndexInfo>,
   ) {}
 
+  /** Point reads need no snapshot: a read that straddles a `clear` or a schema change is a read before it. */
+  private async live(): Promise<Pick<CollectionReader<T, Ix>, "get" | "getMany">> {
+    const { kv } = this.store;
+    return new CollectionReader(kv, this.store.collectionIn(await kv.get(CATALOG_KEY), this.name));
+  }
+
   async get(id: string): Promise<T | undefined> {
-    const idb = idBytes(parseId(id));
-    const coll = await this.store.current(this.name);
-    const bytes = await this.store.kv.get(concat(coll.rows.prefix, idb));
-    return bytes && (decodeDoc(bytes) as unknown as T);
+    return (await this.live()).get(id);
   }
 
   async getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
-    const idbs = ids.map((id) => idBytes(parseId(id)));
-    const coll = await this.store.current(this.name);
-    const rows = await Promise.all(idbs.map((b) => this.store.kv.get(concat(coll.rows.prefix, b))));
-    return rows.map((bytes) => bytes && (decodeDoc(bytes) as unknown as T));
+    return (await this.live()).getMany(ids);
   }
 
   put(doc: T): Promise<void> {
@@ -237,22 +245,65 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     );
   }
 
-  /** Optimistic: the unique keys to read depend on the new document, which depends on the old row. */
   async modify(id: string, fn: (doc: T) => T): Promise<T | undefined> {
-    const docId = parseId(id);
-    const idb = idBytes(docId);
-    return this.store.write(this.name, async (coll): Promise<WritePlan<T | undefined>> => {
-      const rowKey = concat(coll.rows.prefix, idb);
-      const bytes = await this.store.kv.get(rowKey);
-      if (!bytes) return { keys: [rowKey], apply: ([row]) => (row === undefined ? undefined : RETRY) };
-      const doc = decodeDoc(bytes);
-      const prior = priorOf(coll, idb, bytes, doc);
-      const next = encodeDoc(fn(doc as unknown as T));
-      if (next.id !== docId) throw new DocStoreError("document", `modify changed the id of "${docId}"`);
-      const plan = planChanges(coll, [docId], [next], [prior]);
+    const [slot] = await this.transact([id], ([doc]) => [doc === undefined ? undefined : fn(doc)]);
+    return slot ? (slot.doc as unknown as T) : undefined;
+  }
+
+  async modifyMany(
+    ids: readonly string[],
+    fn: (docs: readonly (T | undefined)[]) => readonly (T | null | undefined)[],
+  ): Promise<void> {
+    await this.transact(ids, fn);
+  }
+
+  /**
+   * Optimistic: the rows are read before the transaction, the unique keys to
+   * read depend on the new documents, which depend on the old rows. The
+   * transaction commits only if every row, the ones `fn` left included, still
+   * holds the bytes `fn` saw. Returns what each slot became.
+   */
+  private async transact(
+    ids: readonly string[],
+    fn: (docs: readonly (T | undefined)[]) => readonly (T | null | undefined)[],
+  ): Promise<readonly Slot[]> {
+    const docIds = ids.map(parseId);
+    if (new Set(docIds).size !== docIds.length) throw new DocStoreError("document", "modifyMany got one id twice");
+    const idbs = docIds.map(idBytes);
+    return this.store.write(this.name, async (coll): Promise<WritePlan<readonly Slot[]>> => {
+      const rowKeys = idbs.map((b) => concat(coll.rows.prefix, b));
+      const olds = await Promise.all(rowKeys.map((k) => this.store.kv.get(k)));
+      const docs = olds.map((bytes) => bytes && decodeDoc(bytes));
+      // Before `fn`, which may change the objects it is given.
+      const priors = olds.map((bytes, i) => priorOf(coll, idbs[i]!, bytes, docs[i]));
+
+      const out = fn(docs as unknown as (T | undefined)[]);
+      if (!Array.isArray(out) || out.length !== docIds.length) {
+        throw new DocStoreError("document", `fn must return one entry for each of the ${docIds.length} ids`);
+      }
+      const next = out.map((d, i): Slot => {
+        if (d === undefined || d === null) return d;
+        const encoded = encodeDoc(d);
+        if (encoded.id !== docIds[i]) {
+          throw new DocStoreError("document", `fn returned a document with id "${encoded.id}" for "${docIds[i]}"`);
+        }
+        return encoded;
+      });
+
+      const changed = next.flatMap((d, i) => (d === undefined ? [] : [i]));
+      const left = next.flatMap((d, i) => (d === undefined ? [i] : []));
+      const plan = planChanges(
+        coll,
+        changed.map((i) => docIds[i]!),
+        changed.map((i) => next[i] ?? undefined),
+        changed.map((i) => priors[i]!),
+      );
       return {
-        keys: plan.keys,
-        apply: (values, tx) => (plan.apply(values, tx) === RETRY ? RETRY : (next.doc as unknown as T)),
+        keys: [...plan.keys, ...left.map((i) => rowKeys[i]!)],
+        apply: (values, tx) => {
+          if (left.some((i, k) => !bytesEqual(olds[i], values[plan.keys.length + k]))) return RETRY;
+          return plan.apply(values, tx) === RETRY ? RETRY : next;
+        },
       };
     });
   }
@@ -286,47 +337,25 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     return this.store.clear(this.name);
   }
 
-  async query(q: Query<T, Ix>): Promise<Page<T>> {
-    const input = q as QueryInput;
-    const limit = limitOf(input.limit);
-    return this.store.read(this.name, input.index, async (target) => {
-      const range = withLimit(scanPlan(target, input).range, limit === undefined ? undefined : limit + 1);
-      if (target.kind === "rows") {
-        const hits = await collect(this.store.kv.range(range));
-        const docs = hits.slice(0, limit).map((h) => decodeDoc(h.value) as unknown as T);
-        return { docs, ...nextOf(hits.map((h) => h.key), limit) };
-      }
-      let joins = 0;
-      const hits = await this.store.kv.rangeJoin(range, (e) =>
-        limit === undefined || joins++ < limit ? concat(target.rowPrefix, entryId(target, e.key, e.value)) : undefined,
-      );
-      const docs: T[] = [];
-      for (const { joined } of hits.slice(0, limit)) {
-        if (joined === undefined) return RETRY;
-        docs.push(decodeDoc(joined) as unknown as T);
-      }
-      return { docs, ...nextOf(hits.map((h) => h.entry.key), limit) };
-    });
+  query(q: Query<T, Ix>): Promise<Page<T>> {
+    return this.view((snap) => snap.query(q));
   }
 
-  async queryIds(q: Query<T, Ix>): Promise<IdPage> {
-    const input = q as QueryInput;
-    const limit = limitOf(input.limit);
-    return this.store.read(this.name, input.index, async (target) => {
-      const range = withLimit(scanPlan(target, input).range, limit === undefined ? undefined : limit + 1);
-      const hits = await collect(this.store.kv.range(range));
-      const ids = hits.slice(0, limit).map((h) => fromUtf8.decode(entryId(target, h.key, h.value)));
-      return { ids, ...nextOf(hits.map((h) => h.key), limit) };
-    });
+  queryIds(q: Query<T, Ix>): Promise<IdPage> {
+    return this.view((snap) => snap.queryIds(q));
   }
 
-  async count(q: Query<T, Ix>): Promise<number> {
-    const input = q as QueryInput;
-    const limit = limitOf(input.limit);
-    return this.store.read(this.name, input.index, async (target) => {
-      let n = 0;
-      for await (const _ of this.store.kv.range(withLimit(scanPlan(target, input).range, limit))) n++;
-      return n;
-    });
+  count(q: Query<T, Ix>): Promise<number> {
+    return this.view((snap) => snap.count(q));
+  }
+
+  view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R> {
+    return this.store.kv.view(async (snap) =>
+      body(new SnapshotReader<T, Ix>(snap, this.store.collectionIn(await snap.get(CATALOG_KEY), this.name))),
+    );
+  }
+
+  changes(listener: (change: CollectionChange<T>) => void): () => void {
+    return followCollection(this.store.kv, this.name, listener);
   }
 }

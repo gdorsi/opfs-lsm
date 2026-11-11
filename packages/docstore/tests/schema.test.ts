@@ -14,6 +14,7 @@ import {
   storedCatalog,
   storedPrefix,
   wrap,
+  wrapViews,
 } from "./harness.js";
 
 type Todo = {
@@ -140,19 +141,34 @@ describe("opening a schema", () => {
     expect(await keysUnder(next.kv, oldTitles)).toBe(0);
   });
 
-  it("fails a query whose scan a newer schema's redefinition of its index overtook", async () => {
+  it("finishes a query in the state it started in when a newer schema redefines its index meanwhile", async () => {
     const name = freshName();
     const old = await at(name, v1);
-    await old.store.collection("todos").putMany(rows(10));
+    const docs = rows(10);
+    await old.store.collection("todos").putMany(docs);
     const readerKv = await kvOn(name);
-    const held = gate(readerKv, "range", 0);
-    const reader = await openOn(held.db, v1);
-    const query = codeOf(reader.collection("todos").queryIds({ index: "byTitle" }));
-    await held.arrived(1);
+    let scanning!: () => void;
+    const scanStarted = new Promise<void>((r) => (scanning = r));
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    const reader = await openOn(
+      wrapViews(readerKv, (snap) => ({
+        async *range(r) {
+          scanning();
+          await released;
+          yield* snap.range(r);
+        },
+      })),
+      v1,
+    );
+    const query = reader.collection("todos").queryIds({ index: "byTitle" });
+    await scanStarted;
     await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated, byTitle: { on: "slug" } } } }));
     await readerKv.sync();
-    held.release();
-    expect(await query).toBe("schema");
+    release();
+    const byTitle = [...docs].sort((a, b) => a.title!.localeCompare(b.title!) || a.id.localeCompare(b.id));
+    expect((await query).ids).toEqual(byTitle.map((d) => d.id));
+    expect(await codeOf(reader.collection("todos").queryIds({ index: "byTitle" }))).toBe("schema");
   });
 
   it("sweeps every key of a removed index", async () => {
@@ -310,6 +326,22 @@ describe("indexes the stored data cannot fill", () => {
     expect((await todos.queryIds({ index: "bySlug", eq: ["y"] })).ids).toEqual(["r0550"]);
   });
 
+  it("keeps a unique entry the backfill gave one row when modifyMany changes the other row that shared its value and deletes a third", async () => {
+    const name = freshName();
+    const old = await at(name, v1);
+    const docs = rows(600).map((d, i) => (i === 0 || i === 550 ? { ...d, slug: "x" } : d));
+    await old.store.collection("todos").putMany(docs);
+    const held = gate(await kvOn(name), "range", 1);
+    const opening = openOn(held.db, unique(2));
+    await held.arrived(2);
+    await old.store.collection("todos").modifyMany(["r0550", "r0001"], ([shared]) => [{ ...shared!, slug: "y" }, null]);
+    held.release();
+    const todos = (await opening).collection("todos");
+    expect((await todos.queryIds({ index: "bySlug", eq: ["x"] })).ids).toEqual(["r0000"]);
+    expect((await todos.queryIds({ index: "bySlug", eq: ["y"] })).ids).toEqual(["r0550"]);
+    expect(await todos.count({ index: "byCreated" })).toBe(599);
+  });
+
   it("fails a unique index when a write gave a row's value to another row before the backfill reached that row", async () => {
     const name = freshName();
     const old = await at(name, v1);
@@ -451,24 +483,18 @@ describe("clear", () => {
         const clearing = await openOn(sweeper.db, v1);
         const readerKv = await kvOn(name);
         let armed = false;
-        const readerDb = new Proxy(readerKv, {
-          get(target, prop) {
-            if (prop === "get") {
-              return async (key: Uint8Array) => {
-                const value = await target.get(key);
-                if (armed) {
-                  armed = false;
-                  await clearing.collection("todos").clear();
-                  await Promise.race([sweeper.arrived(chunks + 1), clearing.whenIdle()]);
-                  await target.sync();
-                }
-                return value;
-              };
+        const readerDb = wrapViews(readerKv, (snap) => ({
+          async get(key) {
+            const value = await snap.get(key);
+            if (armed) {
+              armed = false;
+              await clearing.collection("todos").clear();
+              await Promise.race([sweeper.arrived(chunks + 1), clearing.whenIdle()]);
+              await readerKv.sync();
             }
-            const v = Reflect.get(target, prop, target) as unknown;
-            return typeof v === "function" ? v.bind(target) : v;
+            return value;
           },
-        });
+        }));
         const reader = (await openOn(readerDb, v1)).collection("todos");
         armed = true;
         const got = await read(reader);

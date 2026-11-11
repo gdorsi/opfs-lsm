@@ -1,6 +1,7 @@
 /**
  * Random histories of writes, clears, reads, ingests and reopens on one
- * database, checked against an in-memory map of the documents.
+ * database, checked against an in-memory map of the documents. A reader that
+ * follows the change feed from a snapshot must end up with the same map.
  *
  * Replay a failure: DOCSTORE_MODEL_SEED=<seed> DOCSTORE_MODEL_PATH=<path> pnpm exec vitest run tests/model.test.ts
  * Sweep longer:     DOCSTORE_MODEL_RUNS=2000 pnpm exec vitest run tests/model.test.ts
@@ -11,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { openDocStore, type DocStore } from "../src/index.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
 import { MODEL, checkQuery, queryArb, schema, textArb, type Doc } from "./docs.js";
+import { mirror } from "./mirror.js";
 import { codeOf, docstoreKeys, freshName, openKv, storedCatalog } from "./harness.js";
 import { expected, stored } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
@@ -25,12 +27,16 @@ const replay = env["DOCSTORE_MODEL_SEED"]
 type Cmd =
   | { readonly kind: "putMany"; readonly docs: readonly Doc[] }
   | { readonly kind: "modify"; readonly id: string; readonly patch: Partial<Doc> }
+  | { readonly kind: "modifyMany"; readonly slots: readonly Slot[] }
   | { readonly kind: "deleteMany"; readonly ids: readonly string[] }
   | { readonly kind: "clear" }
   | { readonly kind: "query"; readonly index: string | undefined; readonly q: QueryInput; readonly page: number }
   | { readonly kind: "getMany"; readonly ids: readonly string[] }
   | { readonly kind: "ingest" }
   | { readonly kind: "reopen"; readonly idle: boolean };
+
+/** What one slot of a `modifyMany` call does to its document. */
+type Slot = { readonly id: string; readonly act: "set" | "delete" | "leave"; readonly patch: Partial<Doc> };
 
 const ids = fc.constantFrom("a", "aa", "ab", "b", "\u0000", "a\u0000", "😀", "z");
 const uArb = fc.option(fc.constantFrom<Scalar>(null, true, 1, -0, "x", "y"), { nil: undefined });
@@ -46,6 +52,15 @@ const docArb: fc.Arbitrary<Doc> = fc.record({ id: ids, ...fields }, { requiredKe
 const cmdArb: fc.Arbitrary<Cmd> = fc.oneof(
   { weight: 6, arbitrary: fc.uniqueArray(docArb, { selector: (d) => d.id, minLength: 1, maxLength: 4 }).map((docs) => ({ kind: "putMany" as const, docs })) },
   { weight: 3, arbitrary: fc.record({ id: ids, patch: fc.record(fields, { requiredKeys: [] }) }).map((m) => ({ kind: "modify" as const, ...m })) },
+  {
+    weight: 3,
+    arbitrary: fc
+      .uniqueArray(
+        fc.record({ id: ids, act: fc.constantFrom("set", "set", "delete", "leave"), patch: fc.record(fields, { requiredKeys: [] }) }),
+        { selector: (s) => s.id, minLength: 1, maxLength: 4 },
+      )
+      .map((slots) => ({ kind: "modifyMany" as const, slots })),
+  },
   { weight: 2, arbitrary: fc.array(ids, { minLength: 1, maxLength: 3 }).map((ids) => ({ kind: "deleteMany" as const, ids })) },
   { weight: 1, arbitrary: fc.constant({ kind: "clear" as const }) },
   { weight: 5, arbitrary: fc.tuple(queryArb, fc.integer({ min: 1, max: 5 })).map(([{ index, q }, page]) => ({ kind: "query" as const, index, q, page })) },
@@ -71,6 +86,7 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
   let store: DocStore<typeof schema> = await openDocStore(kv, schema);
   let model = new Map<string, Doc>();
   const c = () => store.collection("docs");
+  let reader = mirror(c());
   try {
     for (const cmd of cmds) {
       switch (cmd.kind) {
@@ -102,6 +118,32 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
           }
           break;
         }
+        case "modifyMany": {
+          const ids = cmd.slots.map((s) => s.id);
+          const next = new Map(model);
+          const results = cmd.slots.map((s) => {
+            if (s.act === "leave") return undefined;
+            if (s.act === "delete") return null;
+            return { ...next.get(s.id), ...s.patch, id: s.id } as Doc;
+          });
+          results.forEach((r, i) => {
+            if (r === null) next.delete(ids[i]!);
+            else if (r) next.set(ids[i]!, stored(r));
+          });
+          let given: readonly (Doc | undefined)[] = [];
+          const fn = (docs: readonly (Doc | undefined)[]) => {
+            given = structuredClone(docs);
+            return results;
+          };
+          if (sharesUnique(next.values())) {
+            expect(await codeOf(c().modifyMany(ids, fn))).toBe("unique");
+          } else {
+            await c().modifyMany(ids, fn);
+            expect(given).toEqual(ids.map((id) => model.get(id)));
+            model = next;
+          }
+          break;
+        }
         case "deleteMany": {
           const distinct = new Set(cmd.ids);
           expect(await c().deleteMany(cmd.ids)).toBe([...distinct].filter((id) => model.has(id)).length);
@@ -114,6 +156,7 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
           break;
         case "query":
           await checkQuery(c(), [...model.values()], cmd.index, cmd.q, cmd.page);
+          await c().view((snap) => checkQuery(snap, [...model.values()], cmd.index, cmd.q, cmd.page));
           break;
         case "getMany":
           expect(await c().getMany(cmd.ids)).toEqual(cmd.ids.map((id) => model.get(id)));
@@ -123,12 +166,15 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
           break;
         case "reopen":
           if (cmd.idle) await store.whenIdle();
+          reader.stop();
           await kv.close();
           kv = await openKv(name);
           store = await openDocStore(kv, schema);
+          reader = mirror(c());
           break;
       }
     }
+    await reader.reaches(model);
     await store.whenIdle();
     const docs = [...model.values()];
     const entries = Object.values(MODEL).reduce((n, ix) => n + expected(docs, ix, {}).length, 0);
