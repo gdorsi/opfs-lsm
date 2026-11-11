@@ -41,26 +41,26 @@ export type PriorityCode = 0 | 1 | 2 | 3 | 4;
 /** Field name -> local edit clock of an edit the server has not acknowledged. Absent = clean. */
 export type Clocks = Readonly<Record<string, number>>;
 /** `version` is the server version of the last server state merged in; 0 = never reached the server. */
-export interface Synced { readonly version: number; readonly dirty?: Clocks }
+export type Synced = { readonly version: number; readonly dirty?: Clocks };
 
-export interface Issue extends Synced {      // eager, ~220 B
+export type Issue = Synced & {               // eager, ~220 B
   readonly id: string; title: string; status: StatusCode; priority: PriorityCode; kanbanorder: string;
   readonly username: string; readonly created: number; modified: number; deleted: boolean;
-}
-export interface Body extends Synced { readonly id: string; description: string }   // on demand, by id
-export interface Comment extends Synced {                                            // on demand, by issue
-  readonly key: string;  // `${issue_id}/${id}`: "comments of X" is one kv prefix scan
+};
+export type Body = Synced & { readonly id: string; description: string };   // on demand, by id
+export type Comment = Synced & {                                            // on demand, by issue
+  readonly key: string;  // `${issue_id}/${id}`, from the server; the collection keys comments by `id`
   readonly id: string; readonly issue_id: string; body: string; readonly username: string;
   readonly created: number; deleted: boolean;
-}
+};
 export type Stream = "issues" | "bodies" | "comments";
 /** Eager, one per body or comment with unsent edits; the row itself still holds `dirty`. */
-export interface OutboxMark { readonly key: string; readonly stream: "bodies" | "comments"; readonly rowKey: string; readonly nonce: string }
+export type OutboxMark = { readonly id: string; readonly stream: "bodies" | "comments"; readonly rowKey: string; readonly nonce: string };
 /** One eager row per browser (`id: "sync"`), written by the leader, read by every tab's status bar. */
-export interface SyncState {
+export type SyncState = {
   readonly id: "sync"; epoch: string | null; cursors: Record<Stream, number>; head: number;
   online: boolean; caughtUp: Record<Stream, boolean>;
-}
+};
 ```
 
 Server (`node:sqlite`, `data/linearlite.db`): tables `issue`, `body`, `comment` with the same fields as above plus
@@ -70,7 +70,7 @@ are tombstones. Bodies are 1:1 with issues and are never tombstoned: an issue's 
 
 ## One write path
 
-`utils.transact(keys, merge)` (see Adapter features) runs `merge(currentRows)` inside one kv `db.update`, so nothing can
+`utils.transact(ids, merge)` (see Adapter features) writes `merge(currentRows)` in one kv transaction, so nothing can
 land between the read and the write, in this tab or another. Callers never use `collection.insert/update`.
 
 | write | merge function (pure, `src/domain/merge.ts`) |
@@ -129,28 +129,27 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
 
 ## Adapter features the app uses (`@opfs-lsm/tanstack-db`)
 
-```ts
-interface KvCollectionUtils<T, K> {
-  /**
-   * Read `keys` and write in one kv `db.update`. `merge` gets the stored rows in key order (undefined = absent)
-   * and returns one entry per key: a row to store, `null` to delete, `undefined` to leave as is. Resolves once the
-   * collection shows the write: always when eager, for an on-demand collection only on keys a loaded plan covers
-   * (other writes persist but stay out of memory). Throws if `merge` returns the wrong length or a row
-   * whose key differs from its slot.
-   */
-  transact(keys: readonly K[], merge: (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<T | null | undefined>): Promise<void>;
-}
+Every collection is `docstoreCollectionOptions({ collection, syncMode })` over an `@opfs-lsm/docstore` collection,
+keyed by `id`. `issues`, `sync` and `outbox` are eager; `bodies` and `comments` are on demand, and `comments` has a
+docstore index on `issue_id`.
 
-interface KvCollectionConfig<T, K> {
-  /** Absent: eager, as today. Present: `syncMode: "on-demand"`; each loadSubset becomes kv reads per `plan`. */
-  onDemand?: { plan(options: LoadSubsetOptions): { keys: readonly K[] } | { prefix: string } };
+```ts
+interface DocstoreCollectionUtils<T> {
+  /**
+   * Read `ids` and write them in one kv transaction (docstore's `modifyMany`). `merge` gets the stored documents in
+   * id order (undefined = absent) and returns one entry per id: a document to store, `null` to delete, `undefined`
+   * to leave as is. It may run more than once, first on what this tab last saw. Resolves once the collection shows
+   * the write: always when eager, for an on-demand collection only for documents a loaded query matches. Throws
+   * DocStoreError "document" if `merge` returns the wrong length or a document under another id.
+   */
+  transact(ids: readonly string[], merge: (docs: ReadonlyArray<T | undefined>) => ReadonlyArray<T | null | undefined>): Promise<void>;
 }
 ```
 
-On demand: `loadSubset` runs the plan in one kv `view` (point gets, or one range over the string-key prefix),
-commits those rows, and keeps the plan with a refcount. Change events commit only ops whose key some live plan
-covers. `unloadSubset` releases a plan; rows no other live plan covers leave memory. A `gap` event reloads every
-live plan. A plan that throws loads nothing, and the live query stays `loading` (an unbounded query on an on-demand collection is a bug).
+On demand: `loadSubset` reads the query's rows through the collection's indexes in one docstore `view`: `eq(id)`
+reads that body, `eq(issue_id, X)` reads the `issue_id` index. A change event commits a document while some loaded
+query matches it. `unloadSubset` drops the rows no other loaded query matches. A `gap` event reloads every loaded
+query.
 
 Known, not fixed here: the adapter's `onUpdate` persists the row as the editing tab last saw it, so a tab with a
 stale copy can erase a newer field another tab wrote. This app never calls `collection.update`.

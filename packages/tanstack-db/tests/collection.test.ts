@@ -2,8 +2,17 @@ import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterEach, test } from "node:test";
+import {
+  defineSchema,
+  DocStoreError,
+  openDocStore,
+  type Collection,
+  type CollectionChange,
+  type CollectionSnapshot,
+  type JsonDoc,
+} from "@opfs-lsm/docstore";
 import type { ChangeEvent, Db } from "@opfs-lsm/kv";
-import { openHarnessDb, ingest } from "@opfs-lsm/kv/testing";
+import { ingest, openHarnessDb } from "@opfs-lsm/kv/testing";
 import {
   collectionOptions,
   createCollection,
@@ -11,13 +20,28 @@ import {
   createTransaction,
   DbClient,
   eq,
-  parseLoadSubsetOptions,
+  IR,
   type LoadSubsetOptions,
 } from "@tanstack/db";
-import { kvCollectionOptions } from "../src/index.ts";
+import { docstoreCollectionOptions } from "../src/index.ts";
 
 type Todo = { id: string; title: string };
-type Item = { id: number; title: string };
+type Body = { id: string; description: string };
+type Comment = { id: string; issue_id: string; body: string };
+type Issue = { id: string; modified: number };
+
+const schema = defineSchema<{ todo: Todo; todos: Todo; bodies: Body; comments: Comment; issues: Issue }>()({
+  version: 1,
+  collections: {
+    todo: {},
+    todos: {},
+    bodies: {},
+    comments: { byIssue: { on: "issue_id" } },
+    issues: { byModified: { on: "modified" } },
+  },
+});
+
+type Store = Awaited<ReturnType<typeof openDocStore<typeof schema>>>;
 
 const opened: Db[] = [];
 const collections: { cleanup(): Promise<void> }[] = [];
@@ -31,13 +55,13 @@ function dbName(): string {
   return `tsdb${randomUUID().replaceAll("-", "").slice(0, 20)}`;
 }
 
-async function open(name: string): Promise<Db> {
-  const db = await openHarnessDb({ name, forceMemory: true, maxWalBytes: 1 << 30 });
-  opened.push(db);
-  return db;
+async function open(name: string): Promise<{ kv: Db; store: Store }> {
+  const kv = await openHarnessDb({ name, forceMemory: true, maxWalBytes: 1 << 30 });
+  opened.push(kv);
+  return { kv, store: await openDocStore(kv, schema) };
 }
 
-async function openWithoutBus(name: string): Promise<Db> {
+async function openWithoutBus(name: string) {
   const g = globalThis as { BroadcastChannel?: unknown };
   const real = g.BroadcastChannel;
   g.BroadcastChannel = undefined;
@@ -48,17 +72,15 @@ async function openWithoutBus(name: string): Promise<Db> {
   }
 }
 
-function todos(db: Db, name = "todos") {
-  const c = createCollection(kvCollectionOptions({ db, name, getKey: (t: Todo) => t.id }));
+function tracked<C extends { cleanup(): Promise<void> }>(c: C): C {
   collections.push(c);
   return c;
 }
 
-function items(db: Db) {
-  const c = createCollection(kvCollectionOptions({ db, name: "items", getKey: (t: Item) => t.id }));
-  collections.push(c);
-  return c;
-}
+const eager = <T extends JsonDoc>(docs: Collection<T, any>) => tracked(createCollection(docstoreCollectionOptions({ collection: docs })));
+const todos = (docs: Collection<Todo, any>) => eager(docs);
+const onDemand = <T extends JsonDoc>(docs: Collection<T, any>) =>
+  tracked(createCollection(docstoreCollectionOptions({ collection: docs, syncMode: "on-demand" })));
 
 type Watchable = {
   subscribeChanges(callback: () => void, options: { includeInitialState: true }): { unsubscribe(): void };
@@ -84,56 +106,109 @@ function until(collection: Watchable, done: () => boolean, what: string): Promis
 }
 
 const plain = <T extends object>(rows: readonly T[]) =>
-  rows.map((row) => Object.fromEntries(Object.entries(row).filter(([k]) => !k.startsWith("$")))).sort((a, b) =>
-    String(a.id).localeCompare(String(b.id)),
-  );
+  rows
+    .map((row) => Object.fromEntries(Object.entries(row).filter(([k]) => !k.startsWith("$"))))
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+
+/** `docs` whose next views each wait, after taking their snapshot, until `open()`. */
+function gatedView<T extends JsonDoc>(docs: Collection<T, any>) {
+  const reached = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  const gated = new Proxy(docs, {
+    get(target, prop) {
+      if (prop === "view") {
+        return <R>(body: (snap: CollectionSnapshot<T, any>) => Promise<R>) =>
+          target.view(async (snap) => {
+            reached.resolve();
+            await gate.promise;
+            return body(snap);
+          });
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { docs: gated, reached: reached.promise, open: () => gate.resolve() };
+}
+
+/** `docs` whose change feed can drop appends and be sent events. */
+function tappedFeed<T extends JsonDoc>(docs: Collection<T, any>) {
+  const listeners = new Set<(event: CollectionChange<T>) => void>();
+  let hide = 0;
+  const tapped = new Proxy(docs, {
+    get(target, prop) {
+      if (prop === "changes") {
+        return (listener: (event: CollectionChange<T>) => void) => {
+          listeners.add(listener);
+          const off = target.changes((event) => {
+            if (event.kind === "append" && hide > 0) hide--;
+            else listener(event);
+          });
+          return () => {
+            listeners.delete(listener);
+            off();
+          };
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return {
+    docs: tapped,
+    hideNextAppend: () => hide++,
+    emit: (event: CollectionChange<T>) => {
+      for (const listener of listeners) listener(event);
+    },
+  };
+}
 
 test("rows persist across a reopen", async () => {
   const name = dbName();
   const first = await open(name);
-  const c = items(first);
+  const c = todos(first.store.collection("todos"));
   await c.preload();
   await c.insert([
-    { id: 1, title: "one" },
-    { id: 2, title: "two" },
-    { id: 3, title: "three" },
+    { id: "1", title: "one" },
+    { id: "2", title: "two" },
+    { id: "3", title: "three" },
   ]).when("settled");
-  await c.update(2, (d) => {
+  await c.update("2", (d) => {
     d.title = "TWO";
   }).when("settled");
-  await c.delete(3).when("settled");
+  await c.delete("3").when("settled");
   await c.cleanup();
-  await first.close();
+  await first.kv.close();
 
-  const again = items(await open(name));
+  const again = todos((await open(name)).store.collection("todos"));
   await again.preload();
   assert.deepEqual(plain(again.toArray), [
-    { id: 1, title: "one" },
-    { id: 2, title: "TWO" },
+    { id: "1", title: "one" },
+    { id: "2", title: "TWO" },
   ]);
 });
 
 test("an insert, update and delete in one tab reach the other", async () => {
   const name = dbName();
-  const [a, b] = [items(await open(name)), items(await open(name))];
+  const [a, b] = [todos((await open(name)).store.collection("todos")), todos((await open(name)).store.collection("todos"))];
   await Promise.all([a.preload(), b.preload()]);
 
-  await a.insert({ id: 7, title: "x" }).when("settled");
-  await until(b, () => b.get(7)?.title === "x", "the insert in b");
-  await a.update(7, (d) => {
+  await a.insert({ id: "7", title: "x" }).when("settled");
+  await until(b, () => b.get("7")?.title === "x", "the insert in b");
+  await a.update("7", (d) => {
     d.title = "y";
   }).when("settled");
-  await until(b, () => b.get(7)?.title === "y", "the update in b");
-  await b.delete(7).when("settled");
-  await until(a, () => !a.has(7), "the delete in a");
+  await until(b, () => b.get("7")?.title === "y", "the update in b");
+  await b.delete("7").when("settled");
+  await until(a, () => !a.has("7"), "the delete in a");
 
   assert.equal(a.size, 0);
   assert.equal(b.size, 0);
 });
 
 test("an own insert appears once, and its confirmation only clears $hasPendingWrites", async () => {
-  const db = await open(dbName());
-  const c = todos(db);
+  const { kv, store } = await open(dbName());
+  const c = todos(store.collection("todos"));
   await c.preload();
   const seen: { type: string; key: unknown; title: unknown; pending: unknown }[] = [];
   c.subscribeChanges((changes) => {
@@ -141,7 +216,7 @@ test("an own insert appears once, and its confirmation only clears $hasPendingWr
   });
 
   await c.insert({ id: "1", title: "milk" }).when("settled");
-  await db.sync();
+  await kv.sync();
 
   assert.deepEqual(seen, [
     { type: "insert", key: "1", title: "milk", pending: true },
@@ -150,40 +225,20 @@ test("an own insert appears once, and its confirmation only clears $hasPendingWr
   assert.equal(c.get("1")?.$hasPendingWrites, false);
 });
 
-function gatedView(db: Db) {
-  const reached = Promise.withResolvers<void>();
-  const gate = Promise.withResolvers<void>();
-  const gated = new Proxy(db, {
-    get(target, prop) {
-      if (prop === "view") {
-        return <T>(body: Parameters<Db["view"]>[0]) =>
-          target.view(async (snap) => {
-            reached.resolve();
-            await gate.promise;
-            return body(snap) as T;
-          });
-      }
-      const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return { db: gated, reached: reached.promise, open: () => gate.resolve() };
-}
-
 test("a write that lands while the first load reads is not lost", async () => {
   const name = dbName();
-  const writer = todos(await open(name));
+  const writer = todos((await open(name)).store.collection("todos"));
   await writer.preload();
   await writer.insert({ id: "before", title: "before" }).when("settled");
 
   const b = await open(name);
-  const gate = gatedView(b);
-  const reader = todos(gate.db);
+  const gate = gatedView(b.store.collection("todos"));
+  const reader = todos(gate.docs);
   const loaded = reader.preload();
   await gate.reached;
 
   await writer.insert({ id: "during", title: "during" }).when("settled");
-  await b.sync();
+  await b.kv.sync();
   gate.open();
   await loaded;
 
@@ -194,13 +249,13 @@ test("a write that lands while the first load reads is not lost", async () => {
 });
 
 test("an own insert during the first load stays visible until the load confirms it", async () => {
-  const db = await open(dbName());
-  const gate = gatedView(db);
-  const c = todos(gate.db);
+  const { kv, store } = await open(dbName());
+  const gate = gatedView(store.collection("todos"));
+  const c = todos(gate.docs);
   const loaded = c.preload();
   await gate.reached;
   const written = Promise.withResolvers<void>();
-  db.changes((e) => {
+  kv.changes((e) => {
     if (e.kind === "append") written.resolve();
   });
 
@@ -218,90 +273,59 @@ test("a tab that falls behind a flush reloads and matches the writer", async () 
   const name = dbName();
   const w = await open(name);
   const behind = await openWithoutBus(name);
-  const writer = todos(w);
-  const reader = todos(behind);
+  const writer = todos(w.store.collection("todos"));
+  const reader = todos(behind.store.collection("todos"));
   await writer.preload();
   await writer.insert({ id: "gone", title: "old" }).when("settled");
-  await behind.sync();
+  await behind.kv.sync();
   await reader.preload();
   assert.equal(reader.size, 1);
 
   const kinds: ChangeEvent["kind"][] = [];
-  behind.changes((e) => kinds.push(e.kind));
+  behind.kv.changes((e) => kinds.push(e.kind));
   await writer.delete("gone").when("settled");
   await writer.insert({ id: "kept", title: "folded" }).when("settled");
-  await ingest(w);
+  await ingest(w.kv);
   await writer.insert({ id: "late", title: "after" }).when("settled");
-  await behind.sync();
+  await behind.kv.sync();
 
   await until(reader, () => reader.has("late") && !reader.has("gone"), "the reload after the gap");
   assert.deepEqual(kinds, ["gap", "append"]);
   assert.deepEqual(plain(reader.toArray), plain(writer.toArray));
 });
 
-function tappedFeed(db: Db) {
-  const listeners = new Set<(event: ChangeEvent) => void>();
-  let hide = 0;
-  const tapped = new Proxy(db, {
-    get(target, prop) {
-      if (prop === "changes") {
-        return (listener: (event: ChangeEvent) => void) => {
-          listeners.add(listener);
-          const off = target.changes((event) => {
-            if (event.kind === "append" && hide > 0) hide--;
-            else listener(event);
-          });
-          return () => {
-            listeners.delete(listener);
-            off();
-          };
-        };
-      }
-      const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return {
-    db: tapped,
-    hideNextAppend: () => hide++,
-    emit: (event: ChangeEvent) => {
-      for (const listener of listeners) listener(event);
-    },
-  };
-}
-
-test("a gap at a seq already synced still reloads, as after a repair", async () => {
+test("a gap after an append the feed never delivered still reloads, as after a repair", async () => {
   const name = dbName();
   const w = await open(name);
   const r = await open(name);
-  const tap = tappedFeed(r);
-  const writer = todos(w);
-  const reader = todos(tap.db);
+  const tap = tappedFeed(r.store.collection("todos"));
+  const writer = todos(w.store.collection("todos"));
+  const reader = todos(tap.docs);
   await Promise.all([writer.preload(), reader.preload()]);
 
   tap.hideNextAppend();
   await writer.insert({ id: "unannounced", title: "folded by a repair" }).when("settled");
-  await r.sync();
+  await r.kv.sync();
   await writer.insert({ id: "announced", title: "later" }).when("settled");
   await until(reader, () => reader.has("announced"), "the announced row");
   assert.equal(reader.has("unannounced"), false);
 
-  tap.emit({ kind: "gap", through: await r.view((snap) => snap.seq) });
+  tap.emit({ kind: "gap" });
   await until(reader, () => reader.has("unannounced"), "the reload after the gap");
   assert.deepEqual(plain(reader.toArray), plain(writer.toArray));
 });
 
 test("collections named todo and todos stay apart, live and on load", async () => {
   const name = dbName();
-  const a = await open(name);
-  const b = await open(name);
-  const [aTodo, aTodos, bTodo, bTodos] = [todos(a, "todo"), todos(a, "todos"), todos(b, "todo"), todos(b, "todos")];
-  await Promise.all([aTodo, aTodos, bTodo, bTodos].map((c) => c.preload()));
+  const a = (await open(name)).store;
+  const b = (await open(name)).store;
+  const [aTodo, aTodos, bTodo, bTodos] = [a.collection("todo"), a.collection("todos"), b.collection("todo"), b.collection("todos")].map(todos);
+  await Promise.all([aTodo, aTodos, bTodo, bTodos].map((c) => c!.preload()));
 
-  await aTodo.insert({ id: "1", title: "from todo" }).when("settled");
-  await aTodos.insert({ id: "1", title: "from todos" }).when("settled");
-  await until(bTodos, () => bTodos.has("1"), "the todos row in b");
-  await until(bTodo, () => bTodo.has("1"), "the todo row in b");
+  await aTodo!.insert({ id: "1", title: "from todo" }).when("settled");
+  await aTodos!.insert({ id: "1", title: "from todos" }).when("settled");
+  await until(bTodos!, () => bTodos!.has("1"), "the todos row in b");
+  await until(bTodo!, () => bTodo!.has("1"), "the todo row in b");
 
   for (const [c, title] of [
     [aTodo, "from todo"],
@@ -309,42 +333,45 @@ test("collections named todo and todos stay apart, live and on load", async () =
     [bTodo, "from todo"],
     [bTodos, "from todos"],
   ] as const) {
-    assert.deepEqual(plain(c.toArray), [{ id: "1", title }]);
+    assert.deepEqual(plain(c!.toArray), [{ id: "1", title }]);
   }
-  const reloaded = todos(a, "todo");
+  const reloaded = todos(a.collection("todo"));
   await reloaded.preload();
   assert.deepEqual(plain(reloaded.toArray), [{ id: "1", title: "from todo" }]);
 });
 
-test("acceptMutations writes a manual transaction as one kv record that arrives as one change batch", async () => {
+test("acceptMutations writes a manual transaction, puts and deletes, as one kv record that arrives as one change batch", async () => {
   const name = dbName();
   const a = await open(name);
   const b = await open(name);
-  const writer = todos(a);
-  const reader = todos(b);
+  const writer = todos(a.store.collection("todos"));
+  const reader = todos(b.store.collection("todos"));
   await Promise.all([writer.preload(), reader.preload()]);
-  const appends: number[] = [];
-  a.changes((e) => {
-    if (e.kind === "append") appends.push(e.ops.length);
+  await writer.insert({ id: "old", title: "old" }).when("settled");
+  await until(reader, () => reader.has("old"), "the first row in b");
+  let appends = 0;
+  a.kv.changes((e) => {
+    if (e.kind === "append") appends++;
   });
   const batches: string[][] = [];
-  reader.subscribeChanges((changes) => batches.push(changes.map((ch) => `${ch.type} ${ch.key}`)));
+  reader.subscribeChanges((changes) => batches.push(changes.map((ch) => `${ch.type} ${ch.key}`)), { includeInitialState: true });
 
   const tx = createTransaction({ mutationFn: ({ transaction }) => writer.utils.acceptMutations(transaction) });
   tx.mutate(() => {
     writer.insert({ id: "a", title: "A" });
     writer.insert({ id: "b", title: "B" });
+    writer.delete("old");
   });
   await tx.when("settled");
-  await until(reader, () => reader.size === 2, "both rows in b");
+  await until(reader, () => reader.size === 2 && !reader.has("old"), "the transaction in b");
 
-  assert.deepEqual(appends, [2]);
-  assert.deepEqual(batches, [["insert a", "insert b"]]);
+  assert.equal(appends, 1);
+  assert.deepEqual(batches, [["insert old"], ["insert a", "insert b", "delete old"]]);
 });
 
 test("collections with one name on two dbs each persist only their own rows of a shared transaction", async () => {
-  const x = todos(await open(dbName()));
-  const y = todos(await open(dbName()));
+  const x = todos((await open(dbName())).store.collection("todos"));
+  const y = todos((await open(dbName())).store.collection("todos"));
   await Promise.all([x.preload(), y.preload()]);
 
   const tx = createTransaction({
@@ -363,21 +390,16 @@ test("collections with one name on two dbs each persist only their own rows of a
   assert.deepEqual(plain(y.toArray), [{ id: "y", title: "in y" }]);
 });
 
-test("the default id names the db, so one collection name on two dbs gives two ids", async () => {
-  const first = dbName();
-  const x = todos(await open(first));
-  const y = todos(await open(dbName()));
-
-  assert.equal(x.id, `opfs-lsm:${first}:todos`);
-  assert.notEqual(x.id, y.id);
+test("the default id names the collection", async () => {
+  const { store } = await open(dbName());
+  assert.equal(todos(store.collection("todos")).id, "opfs-lsm:todos");
 });
 
 test("one options descriptor serves two DbClients, each with its own collection", async () => {
-  const db = await open(dbName());
-  const options = collectionOptions(kvCollectionOptions({ db, name: "todos", getKey: (t: Todo) => t.id }));
-  const a = new DbClient().collection(options);
-  const b = new DbClient().collection(options);
-  collections.push(a, b);
+  const { store } = await open(dbName());
+  const options = collectionOptions(docstoreCollectionOptions({ collection: store.collection("todos") }));
+  const a = tracked(new DbClient().collection(options));
+  const b = tracked(new DbClient().collection(options));
   await Promise.all([a.preload(), b.preload()]);
   assert.notEqual(a, b);
 
@@ -390,12 +412,12 @@ test("one options descriptor serves two DbClients, each with its own collection"
 });
 
 test("closing the db fails the collection, keeps its rows and rejects later writes", async () => {
-  const db = await open(dbName());
-  const c = todos(db);
+  const { kv, store } = await open(dbName());
+  const c = todos(store.collection("todos"));
   await c.preload();
   await c.insert({ id: "1", title: "kept" }).when("settled");
 
-  await db.close();
+  await kv.close();
 
   assert.ok(c.health.error, "the collection reports the closed db");
   assert.equal(c.status, "ready");
@@ -407,8 +429,8 @@ test("closing the db fails the collection, keeps its rows and rejects later writ
 });
 
 test("transact puts, deletes and leaves rows by what merge returns, and the collection shows it on resolve", async () => {
-  const db = await open(dbName());
-  const c = todos(db);
+  const { store } = await open(dbName());
+  const c = todos(store.collection("todos"));
   await c.preload();
   await c.insert([
     { id: "a", title: "A" },
@@ -430,36 +452,37 @@ test("transact puts, deletes and leaves rows by what merge returns, and the coll
   ]);
 });
 
-test("transact merges against a row another handle wrote after this collection loaded", async () => {
+test("transact merges against a row another handle wrote after this collection loaded, after a first run on what this tab saw", async () => {
   const name = dbName();
-  const writer = todos(await open(name));
-  const reader = todos(await openWithoutBus(name));
+  const writer = todos((await open(name)).store.collection("todos"));
+  const reader = todos((await openWithoutBus(name)).store.collection("todos"));
   await Promise.all([writer.preload(), reader.preload()]);
   await writer.insert({ id: "1", title: "from the writer" }).when("settled");
   assert.equal(reader.has("1"), false);
 
-  let seen: Todo | undefined;
+  const seen: (Todo | undefined)[] = [];
   await reader.utils.transact(["1"], ([row]) => {
-    seen = row;
-    return [{ id: "1", title: `${row!.title}, merged` }];
+    seen.push(row);
+    return [row && { id: "1", title: `${row.title}, merged` }];
   });
 
-  assert.deepEqual(seen, { id: "1", title: "from the writer" });
+  assert.deepEqual(seen.at(-1), { id: "1", title: "from the writer" });
   assert.deepEqual(plain(reader.toArray), [{ id: "1", title: "from the writer, merged" }]);
 });
 
-test("transact writes nothing when merge returns the wrong length, a mismatched key or throws", async () => {
-  const db = await open(dbName());
-  const c = todos(db);
+test("transact writes nothing when merge returns the wrong length, another id or throws", async () => {
+  const { kv, store } = await open(dbName());
+  const c = todos(store.collection("todos"));
   await c.preload();
   await c.insert({ id: "a", title: "A" }).when("settled");
   const appends: number[] = [];
-  db.changes((e) => {
+  kv.changes((e) => {
     if (e.kind === "append") appends.push(e.seq);
   });
+  const document = (err: unknown) => err instanceof DocStoreError && err.code === "document";
 
-  await assert.rejects(c.utils.transact(["a", "b"], () => [null]), RangeError);
-  await assert.rejects(c.utils.transact(["a", "b"], () => [null, { id: "c", title: "C" }]), TypeError);
+  await assert.rejects(c.utils.transact(["a", "b"], () => [null]), document);
+  await assert.rejects(c.utils.transact(["a", "b"], () => [null, { id: "c", title: "C" }]), document);
   await assert.rejects(
     c.utils.transact(["a"], () => {
       throw new Error("no");
@@ -468,20 +491,20 @@ test("transact writes nothing when merge returns the wrong length, a mismatched 
   );
 
   assert.deepEqual(appends, []);
-  const reloaded = todos(db);
+  const reloaded = todos(store.collection("todos"));
   await reloaded.preload();
   assert.deepEqual(plain(reloaded.toArray), [{ id: "a", title: "A" }]);
 });
 
 test("a transact during the first load resolves once the collection shows the write", async () => {
-  const db = await open(dbName());
-  const gate = gatedView(db);
-  const c = todos(gate.db);
+  const { kv, store } = await open(dbName());
+  const gate = gatedView(store.collection("todos"));
+  const c = todos(gate.docs);
   const loaded = c.preload();
   await gate.reached;
 
   const appended = Promise.withResolvers<void>();
-  db.changes((e) => {
+  kv.changes((e) => {
     if (e.kind === "append") appended.resolve();
   });
 
@@ -498,62 +521,17 @@ test("a transact during the first load resolves once the collection shows the wr
   await loaded;
 });
 
-type Comment = { key: string; issue_id: string; body: string };
-type Body = { id: string; description: string };
+const comment = (issue: string, n: number, body = `${issue}${n}`): Comment => ({ id: `${issue}-${n}`, issue_id: issue, body });
 
-function eqValue(options: LoadSubsetOptions, field: string): unknown {
-  const filter = parseLoadSubsetOptions(options).filters.find((f) => f.operator === "eq" && f.field.join(".") === field);
-  if (!filter) throw new Error(`load ${field} with eq`);
-  return filter.value;
+function commentsOf(c: ReturnType<typeof onDemand<Comment>>, issue: string) {
+  return tracked(createLiveQueryCollection((q) => q.from({ c }).where(({ c }) => eq(c.issue_id, issue))));
 }
 
-function comments(db: Db) {
-  const c = createCollection(
-    kvCollectionOptions({
-      db,
-      name: "comments",
-      getKey: (r: Comment) => r.key,
-      onDemand: { plan: (options) => ({ prefix: `${String(eqValue(options, "issue_id"))}/` }) },
-    }),
-  );
-  collections.push(c);
-  return c;
-}
-
-function bodies(db: Db) {
-  const c = createCollection(
-    kvCollectionOptions({
-      db,
-      name: "bodies",
-      getKey: (r: Body) => r.id,
-      onDemand: { plan: (options) => ({ keys: [String(eqValue(options, "id"))] }) },
-    }),
-  );
-  collections.push(c);
-  return c;
-}
-
-function eagerComments(db: Db) {
-  const c = createCollection(kvCollectionOptions({ db, name: "comments", getKey: (r: Comment) => r.key }));
-  collections.push(c);
-  return c;
-}
-
-function commentsOf(c: ReturnType<typeof comments>, issue: string) {
-  const q = createLiveQueryCollection((q) => q.from({ c }).where(({ c }) => eq(c.issue_id, issue)));
-  collections.push(q);
-  return q;
-}
-
-const comment = (issue: string, n: number, body = `${issue}${n}`): Comment => ({ key: `${issue}/${n}`, issue_id: issue, body });
-
-test("an on-demand collection is ready at once and holds only what a live query loads by prefix", async () => {
+test("an on-demand collection is ready at once and holds only what a live query loads", async () => {
   const name = dbName();
-  const writer = eagerComments(await open(name));
-  await writer.preload();
-  await writer.insert([comment("X", 1), comment("X", 2), comment("Y", 1), comment("XY", 1)]).when("settled");
+  await (await open(name)).store.collection("comments").putMany([comment("X", 1), comment("X", 2), comment("Y", 1), comment("XY", 1)]);
 
-  const c = comments(await open(name));
+  const c = onDemand((await open(name)).store.collection("comments"));
   c.startSyncImmediate();
   assert.equal(c.isReady(), true);
   assert.equal(c.size, 0);
@@ -561,34 +539,32 @@ test("an on-demand collection is ready at once and holds only what a live query 
   const ofX = commentsOf(c, "X");
   await ofX.preload();
 
-  assert.deepEqual(plain(ofX.toArray).map((r) => r.key), ["X/1", "X/2"]);
-  assert.deepEqual([...c.keys()].sort(), ["X/1", "X/2"]);
+  assert.deepEqual(plain(ofX.toArray).map((r) => r.id), ["X-1", "X-2"]);
+  assert.deepEqual([...c.keys()].sort(), ["X-1", "X-2"]);
 });
 
-test("an on-demand collection loads by keys", async () => {
-  const name = dbName();
-  const db = await open(name);
-  const c = bodies(db);
+test("an on-demand collection loads by id", async () => {
+  const { store } = await open(dbName());
+  const c = onDemand(store.collection("bodies"));
   await c.utils.transact(["A", "B"], () => [
     { id: "A", description: "a" },
     { id: "B", description: "b" },
   ]);
-  assert.equal(c.size, 0, "a write no plan covers stays out of memory");
+  assert.equal(c.size, 0, "a write no live query asked for stays out of memory");
 
-  const q = createLiveQueryCollection((q) => q.from({ b: c }).where(({ b }) => eq(b.id, "B")));
-  collections.push(q);
+  const q = tracked(createLiveQueryCollection((q) => q.from({ b: c }).where(({ b }) => eq(b.id, "B"))));
   await q.preload();
 
   assert.deepEqual(plain(q.toArray), [{ id: "B", description: "b" }]);
   assert.deepEqual([...c.keys()], ["B"]);
   await c.utils.transact(["B"], ([row]) => [{ ...row!, description: "b2" }]);
-  assert.equal(c.get("B")?.description, "b2", "a transact on a covered key shows on resolve");
+  assert.equal(c.get("B")?.description, "b2", "a transact on a loaded row shows on resolve");
 });
 
 test("another handle's writes reach a loaded subset, and writes outside it stay out of memory", async () => {
   const name = dbName();
-  const writer = eagerComments(await open(name));
-  const c = comments(await open(name));
+  const writer = eager((await open(name)).store.collection("comments"));
+  const c = onDemand((await open(name)).store.collection("comments"));
   await writer.preload();
   const ofX = commentsOf(c, "X");
   await ofX.preload();
@@ -596,30 +572,25 @@ test("another handle's writes reach a loaded subset, and writes outside it stay 
   await writer.insert(comment("Y", 1)).when("settled");
   await writer.insert(comment("X", 1)).when("settled");
   await until(ofX, () => ofX.size === 1, "the X comment");
-  await writer.update("X/1", (d) => {
+  await writer.update("X-1", (d) => {
     d.body = "edited";
   }).when("settled");
-  await until(ofX, () => ofX.get("X/1")?.body === "edited", "the edit");
-  await writer.delete("X/1").when("settled");
-  await until(c, () => !c.has("X/1"), "the delete");
+  await until(ofX, () => ofX.get("X-1")?.body === "edited", "the edit");
+  await writer.delete("X-1").when("settled");
+  await until(c, () => !c.has("X-1"), "the delete");
 
-  assert.equal(c.has("Y/1"), false);
+  assert.equal(c.has("Y-1"), false);
   assert.equal(c.size, 0);
 });
 
 test("cleaning up a live query unloads its rows, and a row two queries share stays until both go", async () => {
-  const name = dbName();
-  const db = await open(name);
-  const c = bodies(db);
+  const { store } = await open(dbName());
+  const c = onDemand(store.collection("bodies"));
   await c.utils.transact(["A", "B"], () => [
     { id: "A", description: "a" },
     { id: "B", description: "b" },
   ]);
-  const byId = (id: string) => {
-    const q = createLiveQueryCollection((q) => q.from({ b: c }).where(({ b }) => eq(b.id, id)));
-    collections.push(q);
-    return q;
-  };
+  const byId = (id: string) => tracked(createLiveQueryCollection((q) => q.from({ b: c }).where(({ b }) => eq(b.id, id))));
   const [first, second, other] = [byId("A"), byId("A"), byId("B")];
   await Promise.all([first.preload(), second.preload(), other.preload()]);
   assert.deepEqual([...c.keys()].sort(), ["A", "B"]);
@@ -632,92 +603,152 @@ test("cleaning up a live query unloads its rows, and a row two queries share sta
   await until(c, () => c.size === 0, "A to unload");
 
   await c.utils.transact(["A"], () => [{ id: "A", description: "later" }]);
-  assert.equal(c.size, 0, "an unloaded key no longer follows writes");
+  assert.equal(c.size, 0, "an unloaded row no longer follows writes");
 });
 
 test("a write that lands while a subset loads is not lost", async () => {
   const name = dbName();
-  const writer = eagerComments(await open(name));
-  await writer.preload();
-  await writer.insert(comment("X", 1, "old")).when("settled");
+  const writer = (await open(name)).store.collection("comments");
+  await writer.put(comment("X", 1, "old"));
 
   const r = await open(name);
-  const gate = gatedView(r);
-  const c = comments(gate.db);
+  const gate = gatedView(r.store.collection("comments"));
+  const c = onDemand(gate.docs);
   const ofX = commentsOf(c, "X");
   const loaded = ofX.preload();
   await gate.reached;
 
-  await writer.update("X/1", (d) => {
-    d.body = "new";
-  }).when("settled");
-  await writer.insert(comment("X", 2)).when("settled");
-  await r.sync();
+  await writer.put(comment("X", 1, "new"));
+  await writer.put(comment("X", 2));
+  await r.kv.sync();
   gate.open();
   await loaded;
 
   assert.deepEqual(
-    ofX.toArray.map((r) => [r.key, r.body]).sort(),
+    ofX.toArray.map((r) => [r.id, r.body]).sort(),
     [
-      ["X/1", "new"],
-      ["X/2", "X2"],
+      ["X-1", "new"],
+      ["X-2", "X2"],
     ],
   );
 });
 
 test("a gap reloads every loaded subset, its puts and its deletes", async () => {
   const name = dbName();
-  const w = await open(name);
+  const writer = (await open(name)).store.collection("comments");
   const r = await open(name);
-  const tap = tappedFeed(r);
-  const writer = eagerComments(w);
-  const c = comments(tap.db);
-  await writer.preload();
-  await writer.insert(comment("X", 1)).when("settled");
-  await r.sync();
+  const tap = tappedFeed(r.store.collection("comments"));
+  const c = onDemand(tap.docs);
+  await writer.put(comment("X", 1));
+  await r.kv.sync();
   const ofX = commentsOf(c, "X");
   await ofX.preload();
   assert.equal(ofX.size, 1);
 
   tap.hideNextAppend();
-  await writer.delete("X/1").when("settled");
+  await writer.delete("X-1");
   tap.hideNextAppend();
-  await writer.insert(comment("X", 2)).when("settled");
-  await r.sync();
-  assert.deepEqual([...c.keys()], ["X/1"]);
+  await writer.put(comment("X", 2));
+  await r.kv.sync();
+  assert.deepEqual([...c.keys()], ["X-1"]);
 
-  tap.emit({ kind: "gap", through: await r.view((snap) => snap.seq) });
-  await until(c, () => c.has("X/2") && !c.has("X/1"), "the reload after the gap");
+  tap.emit({ kind: "gap" });
+  await until(c, () => c.has("X-2") && !c.has("X-1"), "the reload after the gap");
 });
 
-test("a plan that throws fails that query's load", async () => {
-  const c = comments(await open(dbName()));
-  const q = createLiveQueryCollection((q) => q.from({ c }));
-  collections.push(q);
+test("an ordered window holds its page, takes a write that sorts into it and leaves out one that sorts past it", async () => {
+  const name = dbName();
+  const other = (await open(name)).store.collection("issues");
+  await other.putMany(Array.from({ length: 50 }, (_, i) => ({ id: `i${i}`, modified: i })));
+  const r = await open(name);
+  const c = onDemand(r.store.collection("issues"));
+  const top = tracked(
+    createLiveQueryCollection((q) =>
+      q
+        .from({ i: c })
+        .orderBy(({ i }) => i.modified, "desc")
+        .limit(5),
+    ),
+  );
+  await top.preload();
+  assert.deepEqual(top.toArray.map((i) => i.id), ["i49", "i48", "i47", "i46", "i45"]);
+  assert.equal(c.size, 5);
 
-  await assert.rejects(q.preload(), /load issue_id with eq/);
+  await other.put({ id: "past", modified: 10 });
+  await other.put({ id: "into", modified: 100 });
+  await until(top, () => top.toArray[0]?.id === "into", "the row that sorts first");
+  assert.equal(c.has("past"), false);
+
+  await other.delete("into");
+  await other.delete("i49");
+  await until(top, () => top.toArray[0]?.id === "i48" && top.size === 5, "the window to refill");
+  assert.deepEqual(top.toArray.map((i) => i.id), ["i48", "i47", "i46", "i45", "i44"]);
+});
+
+const newest = (c: ReturnType<typeof onDemand<Issue>>, limit: number) =>
+  tracked(
+    createLiveQueryCollection((q) =>
+      q
+        .from({ i: c })
+        .orderBy(({ i }) => i.modified, "desc")
+        .limit(limit),
+    ),
+  );
+
+test("a row that moves past an ordered window's last row leaves memory, and the window refills", async () => {
+  const name = dbName();
+  const other = (await open(name)).store.collection("issues");
+  await other.putMany(Array.from({ length: 50 }, (_, i) => ({ id: `i${i}`, modified: i })));
+  const c = onDemand((await open(name)).store.collection("issues"));
+  const top = newest(c, 5);
+  await top.preload();
+
+  await other.put({ id: "i49", modified: 0 });
+  await until(top, () => top.toArray.at(-1)?.id === "i44", "the window to refill");
+
+  assert.deepEqual(top.toArray.map((i) => i.id), ["i48", "i47", "i46", "i45", "i44"]);
+  assert.equal(c.has("i49"), false);
+});
+
+test("a window shortened by writes that land while its load is in flight refills once the load settles", async () => {
+  const name = dbName();
+  const other = (await open(name)).store.collection("issues");
+  await other.putMany(Array.from({ length: 5 }, (_, i) => ({ id: `i${i + 1}`, modified: i + 1 })));
+  const r = await open(name);
+  const gate = gatedView(r.store.collection("issues"));
+  const top = newest(onDemand(gate.docs), 3);
+  const loaded = top.preload();
+  await gate.reached;
+
+  await other.deleteMany(["i5", "i4"]);
+  await r.kv.sync();
+  gate.open();
+  await loaded;
+
+  await until(top, () => top.size === 3, "the window to refill");
+  assert.deepEqual(top.toArray.map((i) => i.id), ["i3", "i2", "i1"]);
 });
 
 test("loading the same options twice supersedes the first fetch, which then never commits", async () => {
   const name = dbName();
-  const writer = bodies(await open(name));
-  await writer.utils.transact(["A"], () => [{ id: "A", description: "old" }]);
+  const writer = (await open(name)).store.collection("bodies");
+  await writer.put({ id: "A", description: "old" });
 
   const r = await open(name);
   const slow = Promise.withResolvers<void>();
   const firstReached = Promise.withResolvers<void>();
   let views = 0;
-  const db = new Proxy(r, {
+  const docs = new Proxy(r.store.collection("bodies"), {
     get(target, prop) {
       if (prop === "view") {
-        return <T>(body: Parameters<Db["view"]>[0]) => {
+        return <R>(body: (snap: CollectionSnapshot<Body, any>) => Promise<R>) => {
           const mine = ++views;
           return target.view(async (snap) => {
             if (mine === 1) {
               firstReached.resolve();
               await slow.promise;
             }
-            return body(snap) as T;
+            return body(snap);
           });
         };
       }
@@ -725,29 +756,26 @@ test("loading the same options twice supersedes the first fetch, which then neve
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const config = kvCollectionOptions({
-    db,
-    name: "bodies",
-    getKey: (r: Body) => r.id,
-    onDemand: { plan: () => ({ keys: ["A"] }) },
-  });
+  const config = docstoreCollectionOptions({ collection: docs, syncMode: "on-demand" });
   const commits: Body[][] = [];
   let batch: Body[] = [];
   const handle = config.sync.sync({
     collection: undefined as never,
     begin: () => (batch = []),
-    write: (m) => batch.push((m as { value: Body }).value),
+    write: (m: unknown) => batch.push((m as { value: Body }).value),
     commit: () => void commits.push(batch),
     markReady: () => {},
     truncate: () => {},
+    fail: () => {},
+    invalidateLoadedSubsets: () => {},
     metadata: undefined as never,
   } as never) as { cleanup(): void; loadSubset(o: LoadSubsetOptions): Promise<void> };
 
-  const options: LoadSubsetOptions = {};
+  const options: LoadSubsetOptions = { where: eq(new IR.PropRef(["id"]), "A") };
   const first = handle.loadSubset(options);
   await firstReached.promise;
-  await writer.utils.transact(["A"], () => [{ id: "A", description: "new" }]);
-  await r.sync();
+  await writer.put({ id: "A", description: "new" });
+  await r.kv.sync();
   const second = handle.loadSubset(options);
   await second;
   slow.resolve();

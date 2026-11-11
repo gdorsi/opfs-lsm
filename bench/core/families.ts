@@ -62,7 +62,7 @@ export type TableStore = Common & {
   deleteMany(ids: readonly string[]): Promise<void>;
 };
 
-/** TanStack DB collections: kvCollectionOptions vs indexedDBCollectionOptions. Reads are TanStack's in-memory rows on both sides, so the timed work is persistence and load. */
+/** TanStack DB collections: docstoreCollectionOptions vs indexedDBCollectionOptions. Reads are TanStack's in-memory rows on both sides, so the timed work is persistence and load. */
 export type CollectionStore = Common & {
   /** One TanStack transaction with every row. Resolves once the store persisted it. */
   insertMany(rows: readonly Todo[]): Promise<void>;

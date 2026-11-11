@@ -9,12 +9,12 @@ export type PriorityCode = 0 | 1 | 2 | 3 | 4;
 export type Stream = (typeof STREAMS)[number];
 
 export type Clocks = Readonly<Record<string, number>>;
-export interface Synced {
+export type Synced = {
   readonly version: number;
   readonly dirty?: Clocks;
-}
+};
 
-export interface Issue extends Synced {
+export type Issue = Synced & {
   readonly id: string;
   title: string;
   status: StatusCode;
@@ -24,12 +24,12 @@ export interface Issue extends Synced {
   readonly created: number;
   modified: number;
   deleted: boolean;
-}
-export interface Body extends Synced {
+};
+export type Body = Synced & {
   readonly id: string;
   description: string;
-}
-export interface Comment extends Synced {
+};
+export type Comment = Synced & {
   readonly key: string;
   readonly id: string;
   readonly issue_id: string;
@@ -37,16 +37,16 @@ export interface Comment extends Synced {
   readonly username: string;
   readonly created: number;
   deleted: boolean;
-}
+};
 
-export interface SyncState {
+export type SyncState = {
   readonly id: "sync";
   epoch: string | null;
   cursors: Record<Stream, number>;
   head: number;
   online: boolean;
   caughtUp: Record<Stream, boolean>;
-}
+};
 
 export interface Rows {
   issues: Issue;

@@ -1,7 +1,7 @@
 {
   "name": "@opfs-lsm/tanstack-db",
   "version": "0.1.0",
-  "description": "TanStack DB collections persisted in @opfs-lsm/kv and synced between tabs",
+  "description": "TanStack DB collections persisted in @opfs-lsm/docstore, synced between tabs and loaded on demand through its indexes",
   "keywords": [
     "tanstack-db",
     "tanstack",
@@ -40,8 +40,7 @@
   },
   "dependencies": {
     "@opfs-lsm/docstore": "workspace:*",
-    "@opfs-lsm/kv": "workspace:*",
-    "@standard-schema/spec": "^1.1.0"
+    "@opfs-lsm/kv": "workspace:*"
   },
   "peerDependencies": {
     "@tanstack/db": "^1.0.0-rc.1.4"
