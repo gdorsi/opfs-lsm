@@ -397,3 +397,95 @@ test("closing the db fails the collection, keeps its rows and rejects later writ
   assert.equal(c.has("2"), false);
   assert.equal(c.size, 1);
 });
+
+test("transact puts, deletes and leaves rows by what merge returns, and the collection shows it on resolve", async () => {
+  const db = await open(dbName());
+  const c = todos(db);
+  await c.preload();
+  await c.insert([
+    { id: "a", title: "A" },
+    { id: "b", title: "B" },
+    { id: "c", title: "C" },
+  ]).when("settled");
+
+  let seen: ReadonlyArray<Todo | undefined> = [];
+  await c.utils.transact(["a", "b", "c", "d"], (rows) => {
+    seen = rows;
+    return [{ id: "a", title: `${rows[0]!.title}!` }, null, undefined, { id: "d", title: "D" }];
+  });
+
+  assert.deepEqual(seen, [{ id: "a", title: "A" }, { id: "b", title: "B" }, { id: "c", title: "C" }, undefined]);
+  assert.deepEqual(plain(c.toArray), [
+    { id: "a", title: "A!" },
+    { id: "c", title: "C" },
+    { id: "d", title: "D" },
+  ]);
+});
+
+test("transact merges against a row another handle wrote after this collection loaded", async () => {
+  const name = dbName();
+  const writer = todos(await open(name));
+  const reader = todos(await openWithoutBus(name));
+  await Promise.all([writer.preload(), reader.preload()]);
+  await writer.insert({ id: "1", title: "from the writer" }).when("settled");
+  assert.equal(reader.has("1"), false);
+
+  let seen: Todo | undefined;
+  await reader.utils.transact(["1"], ([row]) => {
+    seen = row;
+    return [{ id: "1", title: `${row!.title}, merged` }];
+  });
+
+  assert.deepEqual(seen, { id: "1", title: "from the writer" });
+  assert.deepEqual(plain(reader.toArray), [{ id: "1", title: "from the writer, merged" }]);
+});
+
+test("transact writes nothing when merge returns the wrong length, a mismatched key or throws", async () => {
+  const db = await open(dbName());
+  const c = todos(db);
+  await c.preload();
+  await c.insert({ id: "a", title: "A" }).when("settled");
+  const appends: number[] = [];
+  db.changes((e) => {
+    if (e.kind === "append") appends.push(e.seq);
+  });
+
+  await assert.rejects(c.utils.transact(["a", "b"], () => [null]), RangeError);
+  await assert.rejects(c.utils.transact(["a", "b"], () => [null, { id: "c", title: "C" }]), TypeError);
+  await assert.rejects(
+    c.utils.transact(["a"], () => {
+      throw new Error("no");
+    }),
+    /no/,
+  );
+
+  assert.deepEqual(appends, []);
+  const reloaded = todos(db);
+  await reloaded.preload();
+  assert.deepEqual(plain(reloaded.toArray), [{ id: "a", title: "A" }]);
+});
+
+test("a transact during the first load resolves once the collection shows the write", async () => {
+  const db = await open(dbName());
+  const gate = gatedView(db);
+  const c = todos(gate.db);
+  const loaded = c.preload();
+  await gate.reached;
+
+  const appended = Promise.withResolvers<void>();
+  db.changes((e) => {
+    if (e.kind === "append") appended.resolve();
+  });
+
+  const written = c.utils.transact(["x"], () => [{ id: "x", title: "X" }]);
+  let resolved = false;
+  void written.then(() => (resolved = true));
+  await appended.promise;
+  await new Promise((r) => setImmediate(r));
+  assert.equal(resolved, false, "transact waits for the load that will show its write");
+  gate.open();
+  await written;
+
+  assert.deepEqual(plain(c.toArray), [{ id: "x", title: "X" }]);
+  await loaded;
+});

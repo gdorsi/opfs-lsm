@@ -40,29 +40,50 @@ export interface KvCollectionConfig<
   codec?: RowCodec<T>;
 }
 
-export interface KvCollectionUtils extends UtilsRecord {
+export interface KvCollectionUtils<T extends object = Row, TKey extends string | number = string | number>
+  extends UtilsRecord {
   /**
    * Persist a manual transaction's mutations of this collection as one kv
    * batch. Call it from `createTransaction({ mutationFn })`.
    */
   acceptMutations(transaction: { mutations: ReadonlyArray<PendingMutation<any>> }): Promise<void>;
+  /**
+   * Read `keys` and write them in one kv `update`, so no other write lands
+   * between the read and the write, from this tab or another. `merge` gets the
+   * stored rows in the order of `keys` (undefined = absent) and returns one
+   * entry per key: a row to store, `null` to delete, `undefined` to leave as
+   * is. Resolves once this collection shows the write. Rejects, writing
+   * nothing, when `merge` throws, returns the wrong number of entries, or
+   * returns a row whose key is not its slot's.
+   */
+  transact(
+    keys: readonly TKey[],
+    merge: (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<T | null | undefined>,
+  ): Promise<void>;
 }
 
 export function kvCollectionOptions<TSchema extends StandardSchemaV1, TKey extends string | number = string | number>(
   config: KvCollectionConfig<InferSchemaOutput<TSchema>, TSchema, TKey> & { schema: TSchema },
-): CollectionConfig<InferSchemaOutput<TSchema>, TKey, TSchema, KvCollectionUtils> & {
+): CollectionConfig<InferSchemaOutput<TSchema>, TKey, TSchema, KvCollectionUtils<InferSchemaOutput<TSchema>, TKey>> & {
   id: string;
-  utils: KvCollectionUtils;
+  utils: KvCollectionUtils<InferSchemaOutput<TSchema>, TKey>;
   schema: TSchema;
 };
 export function kvCollectionOptions<T extends object, TKey extends string | number = string | number>(
   config: KvCollectionConfig<T, never, TKey> & { schema?: never },
-): CollectionConfig<T, TKey, never, KvCollectionUtils> & { id: string; utils: KvCollectionUtils; schema?: never };
+): CollectionConfig<T, TKey, never, KvCollectionUtils<T, TKey>> & {
+  id: string;
+  utils: KvCollectionUtils<T, TKey>;
+  schema?: never;
+};
 export function kvCollectionOptions(config: KvCollectionConfig<Row, StandardSchemaV1>): KvOptions {
   return build(config);
 }
 
-type KvOptions = CollectionConfig<Row, RowKey, StandardSchemaV1, KvCollectionUtils> & { id: string; utils: KvCollectionUtils };
+type KvOptions = CollectionConfig<Row, RowKey, StandardSchemaV1, KvCollectionUtils<Row, RowKey>> & {
+  id: string;
+  utils: KvCollectionUtils<Row, RowKey>;
+};
 
 function build(config: KvCollectionConfig<Row, StandardSchemaV1>): KvOptions {
   const { db, name, codec = jsonCodec<Row>(), ...base } = config;
@@ -98,6 +119,27 @@ function build(config: KvCollectionConfig<Row, StandardSchemaV1>): KvOptions {
     await current?.settled();
   };
 
+  const transact: KvCollectionUtils<Row, RowKey>["transact"] = async (keys, merge) => {
+    const encoded = keys.map((key) => encodeRowKey(prefix, key));
+    await db.update(encoded, (values, tx) => {
+      const rows = merge(values.map((value) => (value === undefined ? undefined : codec.decode(value))));
+      if (rows.length !== keys.length) {
+        throw new RangeError(`merge returned ${rows.length} entries for ${keys.length} keys`);
+      }
+      rows.forEach((row, i) => {
+        if (row && base.getKey(row) !== keys[i]) {
+          throw new TypeError(`merge returned a row with key ${String(base.getKey(row))} for key ${String(keys[i])}`);
+        }
+      });
+      rows.forEach((row, i) => {
+        if (row === null) tx.delete(encoded[i]!);
+        else if (row !== undefined) tx.put(encoded[i]!, codec.encode(row));
+      });
+    });
+    // kv announced the record before update resolved; see persist.
+    await current?.settled();
+  };
+
   const handler = ({ transaction }: { transaction: { mutations: ReadonlyArray<PendingMutation<any>> } }) =>
     persist(transaction.mutations);
 
@@ -108,7 +150,7 @@ function build(config: KvCollectionConfig<Row, StandardSchemaV1>): KvOptions {
     onInsert: handler,
     onUpdate: handler,
     onDelete: handler,
-    utils: { acceptMutations: (transaction) => persist(transaction.mutations) },
+    utils: { acceptMutations: (transaction) => persist(transaction.mutations), transact },
   };
   // This object holds one collection's run, so each DbClient gets its own.
   return withCollectionConfigFactory(options, () => build({ ...config, id }));
