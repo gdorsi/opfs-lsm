@@ -14,17 +14,27 @@ if (lines.length > maxLines) {
 }
 
 lines.forEach((line, i) => {
-  const path = line.match(/[\w./-]+\.(?:ts|tsx|js|mjs|rs)\b/);
+  const path = line.match(/[\w./-]+\.(?:ts|tsx|js|mjs|rs)(?!\w|\.\w)/);
   if (path) errors.push(`docs/design.md:${i + 1}: names the source file "${path[0]}". Name only what a user or the disk sees.`);
 });
 
 const headings = new Set(
   lines.filter((line) => line.startsWith("#")).map((line) => line.replace(/^#+\s*/, "").trim()),
 );
-const citations = execFileSync("git", ["grep", "-nE", 'design\\.md, "[^"]+"', "--", ":!scripts/check-docs.mjs"], { cwd: root, encoding: "utf8" });
-for (const hit of citations.trim().split("\n")) {
-  for (const [, heading] of hit.matchAll(/design\.md, "([^"]+)"/g)) {
-    if (!headings.has(heading)) errors.push(`${hit.split(":").slice(0, 2).join(":")}: cites design.md, "${heading}", which is not a heading.`);
+const citation = 'design\\.md, "([^"]+)"';
+let citations = "";
+try {
+  citations = execFileSync("git", ["grep", "-nE", citation, "--", ":!scripts/check-docs.mjs"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+} catch (error) {
+  if (error.status !== 1) throw error;
+}
+for (const hit of citations.trim().split("\n").filter(Boolean)) {
+  for (const [, heading] of hit.matchAll(new RegExp(citation, "g"))) {
+    if (!headings.has(heading)) errors.push(`${hit.split(":").slice(0, 2).join(":")}: cites missing heading "${heading}".`);
   }
 }
 
