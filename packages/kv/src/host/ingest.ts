@@ -60,38 +60,28 @@ export async function ingestChunk(
   const base = await reconcile(wal, fs, trusted);
   const ingested = await wal.getIngestedThrough();
   const records = ingested >= through ? [] : await wal.listUningested({ maxBytes: limits.maxBytes });
-  let kind: Chunk["kind"];
-  let generation: number;
-  let ingestedThrough: number;
-  let foldedBytes = 0;
-
   if (records.length === 0) {
-    kind = "empty";
-    generation = base.generation;
-    ingestedThrough = ingested;
-  } else {
-    const prev = await loadGeneration(fs, base.generation);
-    if (!prev) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
-    if (prev.runs.filter((r) => levelOf(r.path) === 0).length >= limits.l0Stop) {
-      return { kind: "stopped", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
-    }
-    kind = "folded";
-    const entries = foldRecords(records);
-    const first = records[0]!.seq;
-    const last = records[records.length - 1]!.seq;
-
-    generation = base.top + 1;
-    const l0 = await publishL0(fs, `${first}-${last}`, entries);
-    await publishGeneration(fs, {
-      generation,
-      runs: [l0, ...prev.runs],
-      tombstoneSeq: prev.tombstoneSeq,
-      through: last,
-    });
-    for (const r of records) foldedBytes += opsBytes(r.ops);
-    await wal.advanceIngested(last, generation);
-    ingestedThrough = last;
+    return { kind: "empty", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
+  const prev = await loadGeneration(fs, base.generation);
+  if (!prev) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
+  if (prev.runs.filter((r) => levelOf(r.path) === 0).length >= limits.l0Stop) {
+    return { kind: "stopped", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
+  }
+  const entries = foldRecords(records);
+  const first = records[0]!.seq;
+  const last = records[records.length - 1]!.seq;
 
-  return { kind, generation, ingestedThrough, foldedBytes };
+  const generation = base.top + 1;
+  const l0 = await publishL0(fs, `${first}-${last}`, entries);
+  await publishGeneration(fs, {
+    generation,
+    runs: [l0, ...prev.runs],
+    tombstoneSeq: prev.tombstoneSeq,
+    through: last,
+  });
+  let foldedBytes = 0;
+  for (const r of records) foldedBytes += opsBytes(r.ops);
+  await wal.advanceIngested(last, generation);
+  return { kind: "folded", generation, ingestedThrough: last, foldedBytes };
 }
