@@ -546,7 +546,7 @@ A pass runs up to 8 steps. A request that arrives during a pass starts another p
 ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
 
 * Every applied seq is announced once, in seq order, after reads can see it.
-* The promise of a write resolves with its seq, after its record was announced.
+* The promise of `put`, `delete` or `batch` resolves with its seq, after its record was announced.
 * `gap` replaces the records that a handle skipped because a flush folded them before it read
   them. A listener reads again.
 * `ingest` says that a flush moved rows to OPFS without changing what reads return.
@@ -594,8 +594,8 @@ read. It pairs the manifest with the WAL:
 * If `through` is at or past `ingestedThrough`, `ingestedThrough` becomes `through`.
 * If `through` is below `ingestedThrough` and the WAL holds every seq above `through`, those
   seqs are uningested again.
-* Otherwise every record is dropped and `ingestedThrough` moves to `head`. The database is the
-  manifest alone.
+* Otherwise every record is dropped and `ingestedThrough` moves to the new `head`. The database
+  is the manifest alone.
 
 The same transaction moves `head` past the highest `through` of any manifest on disk, and
 `topGeneration` past every manifest number seen.
