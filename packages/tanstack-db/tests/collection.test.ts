@@ -697,3 +697,66 @@ test("a plan that throws fails that query's load", async () => {
 
   await assert.rejects(q.preload(), /load issue_id with eq/);
 });
+
+test("loading the same options twice supersedes the first fetch, which then never commits", async () => {
+  const name = dbName();
+  const writer = bodies(await open(name));
+  await writer.utils.transact(["A"], () => [{ id: "A", description: "old" }]);
+
+  const r = await open(name);
+  const slow = Promise.withResolvers<void>();
+  const firstReached = Promise.withResolvers<void>();
+  let views = 0;
+  const db = new Proxy(r, {
+    get(target, prop) {
+      if (prop === "view") {
+        return <T>(body: Parameters<Db["view"]>[0]) => {
+          const mine = ++views;
+          return target.view(async (snap) => {
+            if (mine === 1) {
+              firstReached.resolve();
+              await slow.promise;
+            }
+            return body(snap) as T;
+          });
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const config = kvCollectionOptions({
+    db,
+    name: "bodies",
+    getKey: (r: Body) => r.id,
+    onDemand: { plan: () => ({ keys: ["A"] }) },
+  });
+  const commits: Body[][] = [];
+  let batch: Body[] = [];
+  const handle = config.sync.sync({
+    collection: undefined as never,
+    begin: () => (batch = []),
+    write: (m) => batch.push((m as { value: Body }).value),
+    commit: () => void commits.push(batch),
+    markReady: () => {},
+    truncate: () => {},
+    metadata: undefined as never,
+  } as never) as { cleanup(): void; loadSubset(o: LoadSubsetOptions): Promise<void> };
+
+  const options: LoadSubsetOptions = {};
+  const first = handle.loadSubset(options);
+  await firstReached.promise;
+  await writer.utils.transact(["A"], () => [{ id: "A", description: "new" }]);
+  await r.sync();
+  const second = handle.loadSubset(options);
+  await second;
+  slow.resolve();
+  await first;
+
+  assert.deepEqual(
+    commits.flat().map((r) => r.description),
+    commits.flat().map(() => "new"),
+    "the superseded fetch never commits its older snapshot",
+  );
+  handle.cleanup();
+});

@@ -352,6 +352,8 @@ class DemandRun {
     const planned = this.planner.plan(options);
     const plan: Plan = "prefix" in planned ? { prefix: planned.prefix } : { keys: new Set(planned.keys) };
     const demand: Demand = { options, plan, phase: { kind: "loaded" } };
+    const replaced = this.phase.demands.get(options);
+    if (replaced) this.release(replaced);
     this.phase.demands.set(options, demand);
     return this.fetch(demand).done.promise;
   }
