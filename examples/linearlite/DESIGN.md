@@ -105,6 +105,10 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
 - **First sync.** `issues` first, so list and board fill page by page; then `bodies` and `comments` in the
   background. A detail view opened before its body arrives calls `/api/detail` from its own tab and writes the
   result with the same `mergeIncoming`.
+- **Pull order on a first sync.** Pages come in version order. The seed stamps versions newest `modified` first,
+  so the first page is the default view's top rows and TanStack's sorted window appends instead of inserting at
+  the front: `issues` caught up in 3.8 s instead of 6.9 s at 100k (`bench/first-sync-order.txt`). A real server's
+  history arrives in write order, oldest first; it would need a bootstrap endpoint that pages by `modified desc`.
 - **Conflicts.** Per field, the last push to reach the server wins. A local unsent edit beats any incoming value
   until it is acked.
 - **Server push.** One SQLite transaction per request: bump `head`, apply each op's fields, stamp `version`,

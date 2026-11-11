@@ -5,8 +5,8 @@ import { CODECS, resetStore, statements, writeHead } from "./db.ts";
 
 /**
  * Replace the store's contents with `generate(count)` in one transaction and start a new epoch. Versions are
- * stamped in `modified` order, an issue then its body then its comments, so the first sync fills the
- * most recently touched issues last and every row has a distinct version.
+ * stamped newest `modified` first, an issue then its body then its comments, so a first sync paints the default
+ * view's rows from its first page and a sorted window only ever appends. Every row has a distinct version.
  */
 export function seedDb(db: DatabaseSync, count: number, seed = 1): { rows: number; head: number } {
   const data = generate(count, seed);
@@ -20,7 +20,7 @@ export function seedDb(db: DatabaseSync, count: number, seed = 1): { rows: numbe
   db.exec("BEGIN IMMEDIATE");
   try {
     resetStore(db);
-    for (const s of data.issues.toSorted((a, b) => a.modified - b.modified)) {
+    for (const s of data.issues.toSorted((a, b) => b.modified - a.modified)) {
       issues.insert.run(
         ...issueParams({
           id: s.id,

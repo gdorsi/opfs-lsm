@@ -1,0 +1,6 @@
+first sync at 100k, 3 runs per side, sequential (not alternated), vite dev, headless Chrome; node bench/client.ts first-sync
+seed versions oldest-modified first: first page modified [1762147122363, ...] (oldest)
+  first-rows p50 298 (286-690)  caught-up:issues p50 6866 (6786-8185)  bodies 9351 (9073-10523)  comments 11068 (10336-11769)
+seed versions newest-modified first: first page modified [1793491168373, ...] (newest)
+  first-rows p50 459 (346-531)  caught-up:issues p50 3777 (3698-3823)  bodies 6381 (5766-6405)  comments 7804 (7751-8122)
+limiter (client delegate's profile, oldest-first): TanStack TopKArray.insert splices at the front of the sorted window per row
