@@ -177,16 +177,17 @@ export type SyncStatus =
   | { readonly kind: "idle"; readonly unsynced: number };
 
 export function useSyncStatus(): SyncStatus {
-  const { sync, dirtyIssues, outbox } = openedStore();
+  const { sync, dirtyIssues, dirtyBodies, dirtyComments } = openedStore();
   const { data: state } = useLiveQuery((q) =>
     q
       .from({ s: sync })
       .where(({ s }) => eq(s.id, "sync"))
       .findOne(),
   );
-  const { data: dirty } = useLiveQuery(dirtyIssues);
-  const { data: marks } = useLiveQuery(outbox);
-  const unsynced = dirty.length + marks.length;
+  const { data: issues } = useLiveQuery(dirtyIssues);
+  const { data: bodies } = useLiveQuery(dirtyBodies);
+  const { data: comments } = useLiveQuery(dirtyComments);
+  const unsynced = issues.length + bodies.length + comments.length;
   if (!state) return { kind: "starting", unsynced };
   if (!state.online) return { kind: "offline", unsynced };
   const behind = (["issues", "bodies", "comments"] as const).find((s) => !state.caughtUp[s]);

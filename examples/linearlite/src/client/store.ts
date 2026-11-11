@@ -4,17 +4,8 @@ import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, createLiveQueryCollection, eq } from "@tanstack/db";
 import type { Body, Comment, Issue, SyncState } from "../domain/model.ts";
 
-export type OutboxMark = {
-  readonly id: string;
-  readonly stream: "bodies" | "comments";
-  readonly rowKey: string;
-  readonly nonce: string;
-};
-
-export const outboxKey = (stream: OutboxMark["stream"], rowKey: string) => `${stream}:${rowKey}`;
-
 /** The reads each issue index serves are in DESIGN.md, "Indexes". */
-const schema = defineSchema<{ issues: Issue; bodies: Body; comments: Comment; sync: SyncState; outbox: OutboxMark }>()({
+const schema = defineSchema<{ issues: Issue; bodies: Body; comments: Comment; sync: SyncState }>()({
   version: 2,
   collections: {
     issues: {
@@ -26,11 +17,11 @@ const schema = defineSchema<{ issues: Issue; bodies: Body; comments: Comment; sy
       search: { on: ["deleted", "modified"], text: "title" },
       pending: { on: "pending" },
     },
-    bodies: {},
-    comments: { byIssue: { on: "issue_id" } },
+    bodies: { pending: { on: "pending" } },
+    comments: { byIssue: { on: "issue_id" }, pending: { on: "pending" } },
     sync: {},
-    outbox: {},
   },
+  drop: ["outbox"],
 });
 
 export type Docs = DocStore<typeof schema>;
@@ -48,9 +39,10 @@ function collections(docs: Docs) {
   const bodies = createCollection(docstoreCollectionOptions({ collection: docs.collection("bodies"), syncMode: "on-demand" }));
   const comments = createCollection(docstoreCollectionOptions({ collection: docs.collection("comments"), syncMode: "on-demand" }));
   const sync = createCollection(docstoreCollectionOptions({ collection: docs.collection("sync") }));
-  const outbox = createCollection(docstoreCollectionOptions({ collection: docs.collection("outbox") }));
   const dirtyIssues = createLiveQueryCollection((q) => q.from({ i: issues }).where(({ i }) => eq(i.pending, true)));
-  return { issues, bodies, comments, sync, outbox, dirtyIssues };
+  const dirtyBodies = createLiveQueryCollection((q) => q.from({ b: bodies }).where(({ b }) => eq(b.pending, true)));
+  const dirtyComments = createLiveQueryCollection((q) => q.from({ c: comments }).where(({ c }) => eq(c.pending, true)));
+  return { issues, bodies, comments, sync, dirtyIssues, dirtyBodies, dirtyComments };
 }
 
 export type Store = ReturnType<typeof collections> & {
@@ -68,7 +60,7 @@ export function openStore(): Promise<Store> {
     const db = await openDb({ name: params.get("db") ?? "linearlite" });
     const docs = await openDocStore(db, schema);
     const store: Store = { db, docs, user: params.get("user") ?? "anonymous", ...collections(docs) };
-    await Promise.all([store.sync.preload(), store.outbox.preload()]);
+    await store.sync.preload();
     opened = store;
     return store;
   })());

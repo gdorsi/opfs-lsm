@@ -2,7 +2,7 @@ import { mergeIncoming, restore } from "../domain/merge.ts";
 import type { Clocks, Rows, ServerRow, Stream, SyncState } from "../domain/model.ts";
 import { MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse, type RowResponse } from "../domain/wire.ts";
 import { backoffMs, pushOp } from "./ops.ts";
-import { openStore, type OutboxMark, type Store } from "./store.ts";
+import { openStore, type Store } from "./store.ts";
 
 const PULL_LIMIT = 2000;
 const BACKGROUND = ["bodies", "comments"] as const;
@@ -103,8 +103,10 @@ class Leader {
     const onWrite = (changes: ReadonlyArray<{ type: string }>) => {
       if (changes.some((c) => c.type !== "delete")) this.kick("dirty");
     };
-    this.store.dirtyIssues.subscribeChanges(onWrite);
-    this.store.outbox.subscribeChanges(onWrite);
+    const { dirtyIssues, dirtyBodies, dirtyComments } = this.store;
+    dirtyIssues.subscribeChanges(onWrite);
+    dirtyBodies.subscribeChanges(onWrite);
+    dirtyComments.subscribeChanges(onWrite);
     addEventListener("online", () => this.kick("online"));
     new EventSource("/api/events").onmessage = (e: MessageEvent<string>) => {
       const { head } = JSON.parse(e.data) as { head: number };
@@ -207,31 +209,26 @@ class Leader {
     if (this.state.epoch !== null && this.state.epoch !== epoch) throw new EpochChanged(epoch);
   }
 
+  private dirty() {
+    const { dirtyIssues, dirtyBodies, dirtyComments } = this.store;
+    return [
+      { stream: "issues", rows: dirtyIssues },
+      { stream: "bodies", rows: dirtyBodies },
+      { stream: "comments", rows: dirtyComments },
+    ] as const;
+  }
+
+  /** Sends every row with unsent edits. An ack clears only the fields it confirms, so an edit made meanwhile stays to send. */
   private async push(): Promise<void> {
-    const { dirtyIssues, outbox } = this.store;
-    await dirtyIssues.preload();
     const outgoing: Outgoing[] = [];
-    for (const row of dirtyIssues.toArray) {
-      const op = pushOp("issues", row);
-      if (op) outgoing.push({ op, key: row.id });
-    }
-    const marks: OutboxMark[] = [...outbox.values()].map(({ id, stream, rowKey, nonce }) => ({ id, stream, rowKey, nonce }));
-    for (const stream of BACKGROUND) {
-      const keys = marks.filter((m) => m.stream === stream).map((m) => m.rowKey);
-      if (keys.length === 0) continue;
-      const rows = await read(transactOf(this.store, stream), keys);
-      rows.forEach((row, i) => {
-        const op = row && pushOp(stream, row);
-        if (op) outgoing.push({ op, key: keys[i]! });
-      });
+    for (const { stream, rows } of this.dirty()) {
+      await rows.preload();
+      for (const row of rows.toArray) {
+        const op = pushOp(stream, row);
+        if (op) outgoing.push({ op, key: row.id });
+      }
     }
     for (let i = 0; i < outgoing.length; i += MAX_OPS) await this.send(outgoing.slice(i, i + MAX_OPS));
-    if (marks.length > 0) {
-      await outbox.utils.transact(
-        marks.map((m) => m.id),
-        (stored) => stored.map((m, i) => (m?.nonce === marks[i]!.nonce ? null : undefined)),
-      );
-    }
   }
 
   /**
@@ -277,7 +274,7 @@ class Leader {
 
   private async wipe(epoch: string): Promise<void> {
     const { docs } = this.store;
-    for (const name of ["issues", ...BACKGROUND, "outbox"] as const) await docs.collection(name).clear();
+    for (const name of ["issues", ...BACKGROUND] as const) await docs.collection(name).clear();
     this.head = undefined;
     this.marked.clear();
     await this.save({ ...EMPTY, epoch });
