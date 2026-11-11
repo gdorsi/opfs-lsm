@@ -295,10 +295,15 @@ export function conjuncts(where: BasicExpression<boolean> | undefined): BasicExp
  */
 function pathOf(expression: BasicExpression): string | undefined {
   if (expression.type !== "ref") return undefined;
-  const { path, sourceAlias } = expression;
-  const own = sourceAlias !== undefined && path[0] === sourceAlias ? path.slice(1) : path;
+  const own = ownPath(expression);
   if (own.length === 0 || own.some((s) => s.includes(".")) || own[0]!.startsWith("$")) return undefined;
   return own.join(".");
+}
+
+/** A ref's path inside its row, without the alias of the source it reads. */
+export function ownPath(ref: IR.PropRef): readonly string[] {
+  const { path, sourceAlias } = ref;
+  return sourceAlias !== undefined && path[0] === sourceAlias ? path.slice(1) : path;
 }
 
 /** A value docstore can put in an index key, and that a TanStack comparison does not treat as unknown. */

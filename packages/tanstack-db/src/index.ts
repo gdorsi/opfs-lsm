@@ -11,7 +11,7 @@ import type {
   SyncConfig,
   UtilsRecord,
 } from "@tanstack/db";
-import { conjuncts, planLoad, type Plan } from "./plan.js";
+import { conjuncts, ownPath, planLoad, type Plan } from "./plan.js";
 import { atOrBefore, read, type Boundary, type Snapshot } from "./read.js";
 
 /**
@@ -507,6 +507,5 @@ function compile(where: IR.BasicExpression<boolean> | undefined): Match {
 function readsVirtual(e: IR.BasicExpression): boolean {
   if (e.type === "func") return e.args.some(readsVirtual);
   if (e.type !== "ref") return false;
-  const own = e.sourceAlias !== undefined && e.path[0] === e.sourceAlias ? e.path.slice(1) : e.path;
-  return own[0]?.startsWith("$") ?? false;
+  return ownPath(e)[0]?.startsWith("$") ?? false;
 }

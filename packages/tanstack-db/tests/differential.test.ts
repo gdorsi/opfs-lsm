@@ -89,6 +89,8 @@ type Spec = {
     readonly dir: "asc" | "desc";
     readonly nulls: "first" | "last";
     readonly stringSort: "lexical" | "locale";
+    /** A second order key, before the id tiebreak. */
+    readonly then?: { readonly field: "g" | "n" | "s"; readonly dir: "asc" | "desc" };
   };
   readonly window?: { readonly offset: number; readonly limit: number };
   readonly moves: readonly { readonly offset: number; readonly limit: number }[];
@@ -105,6 +107,9 @@ const specArb: fc.Arbitrary<Spec> = fc
         dir: fc.constantFrom("asc", "desc"),
         nulls: fc.constantFrom("first", "last"),
         stringSort: fc.constantFrom("lexical", "locale"),
+        then: fc.option(fc.record({ field: fc.constantFrom("g", "n", "s"), dir: fc.constantFrom("asc", "desc") }), {
+          nil: undefined,
+        }),
       }),
       { nil: undefined, freq: 4 },
     ),
@@ -147,10 +152,10 @@ function liveQuery(source: Collection<Doc, string, any>, spec: Spec) {
       b = b.where(({ d }) => rest.reduce((all, c) => and(all, condition(c, d)), condition(first, d)));
     }
     if (!spec.order) return b;
-    const { field, dir, nulls, stringSort } = spec.order;
-    let o = b
-      .orderBy(({ d }) => d[field], { direction: dir, nulls, stringSort })
-      .orderBy(({ d }) => d.id, { direction: "asc", stringSort: "lexical" });
+    const { field, dir, nulls, stringSort, then } = spec.order;
+    let o = b.orderBy(({ d }) => d[field], { direction: dir, nulls, stringSort });
+    if (then) o = o.orderBy(({ d }) => d[then.field], { direction: then.dir, nulls, stringSort });
+    o = o.orderBy(({ d }) => d.id, { direction: "asc", stringSort: "lexical" });
     if (spec.window) o = o.limit(spec.window.limit).offset(spec.window.offset);
     return o;
   });
