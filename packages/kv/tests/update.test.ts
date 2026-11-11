@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MemoryFs, prefixBound } from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests,
-  ingest,
-} from "../src/testing.js";
+import { prefixBound } from "../src/index.js";
+import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { checkBatch, checkDbName } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
 

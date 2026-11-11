@@ -1,16 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
-import {
-  EngineHost,
-  MemoryFs,
-  createLocalIngestClient,
-  decodeSst,
-} from "../src/index.js";
 import { ingestChunk } from "../src/host/ingest.js";
 import { IdBWal } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { decodeGeneration } from "../src/store/generation.js";
-import { __resetMemoryFsForTests, openHarnessDb, ingest } from "../src/testing.js";
+import {
+  __resetMemoryFsForTests,
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../src/testing.js";
+import { decodeSst } from "../src/store/engine.js";
 
 const NAME = "bounded-flush";
 const enc = new TextEncoder();

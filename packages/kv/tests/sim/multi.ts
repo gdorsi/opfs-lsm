@@ -1,10 +1,16 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import fc from "fast-check";
 import { expect } from "vitest";
-import type { AsyncFs, Db, Entry } from "../../src/index.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
+import type { Db, Entry } from "../../src/index.js";
 import { IdBWal } from "../../src/idb/wal.js";
-import { openHarnessDb, ingest } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  type AsyncFs,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { expectEntries, SIM_HOST_LIMITS } from "./commands.js";
 import { checkHistory, History, type NewOp, type OpOf, type ViewRead } from "./history.js";

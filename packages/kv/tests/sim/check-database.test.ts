@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { openHarnessDb, ingest } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import {
   loadGeneration,
   publishGeneration,

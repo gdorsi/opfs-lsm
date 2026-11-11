@@ -1,17 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  EngineHost,
-  MemoryFs,
-  attachEngineHostPort,
-  createLocalIngestClient,
-  createPortIngestClient,
-} from "../src/index.js";
-import {
   openHarnessDb,
   readStats,
   settle,
   __resetMemoryFsForTests,
   ingest as ingestDb,
+  EngineHost,
+  MemoryFs,
+  attachEngineHostPort,
+  createLocalIngestClient,
+  createPortIngestClient,
 } from "../src/testing.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { CountingFs } from "../src/opfs/counting-fs.js";

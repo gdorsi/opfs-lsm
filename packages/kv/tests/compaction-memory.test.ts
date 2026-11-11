@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  __resetMemoryFsForTests,
+  openHarnessDb,
+  type HarnessOpenOptions,
+  ingest,
   EngineHost,
   MemoryFs,
   attachEngineHostPort,
   createLocalIngestClient,
   createPortIngestClient,
   type IngestClient,
-} from "../src/index.js";
-import { __resetMemoryFsForTests, openHarnessDb, type HarnessOpenOptions, ingest } from "../src/testing.js";
+} from "../src/testing.js";
 
 const NAME = "compaction-memory";
 const MiB = 1024 * 1024;

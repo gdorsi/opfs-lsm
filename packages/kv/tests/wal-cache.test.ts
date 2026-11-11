@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  EngineHost,
-  MemoryFs,
-  attachEngineHostPort,
-  createPortIngestClient
-} from "../src/index.js";
-import {
   openHarnessDb,
   __resetMemoryFsForTests,
   ingest as ingestDb,
+  EngineHost,
+  MemoryFs,
+  attachEngineHostPort,
+  createPortIngestClient,
 } from "../src/testing.js";
 
 const NAME = "wal-cache-test";

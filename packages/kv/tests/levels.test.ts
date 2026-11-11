@@ -1,15 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  MemoryFs,
-  decodeSst
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests,
-  ingest,
-} from "../src/testing.js";
+import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { loadLatestGeneration, type RunMeta } from "../src/store/generation.js";
 import { planCompaction, replaceRuns, type CompactionPlan } from "../src/store/levels.js";
+import { decodeSst } from "../src/store/engine.js";
 
 const enc = new TextEncoder();
 

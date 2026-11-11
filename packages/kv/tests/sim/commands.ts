@@ -1,8 +1,14 @@
 import fc from "fast-check";
 import { expect } from "vitest";
-import type { AsyncFs, Db, Entry } from "../../src/index.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { openHarnessDb, ingest } from "../../src/testing.js";
+import type { Db, Entry } from "../../src/index.js";
+import {
+  openHarnessDb,
+  ingest,
+  type AsyncFs,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 

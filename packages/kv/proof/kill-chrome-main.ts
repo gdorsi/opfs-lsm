@@ -7,8 +7,8 @@
  * `/src/*.js` is served from `dist/`, so `checkDatabase` (tests/sim) and
  * the engine share one module graph and one wasm instance.
  */
-import { OpfsLsmError, ensureEngine } from "../src/index.js";
-import { openBrowserFs, openHarnessDb, ingest } from "../src/testing.js";
+import { OpfsLsmError } from "../src/index.js";
+import { openBrowserFs, openHarnessDb, ingest, ensureEngine } from "../src/testing.js";
 import { checkDatabase, walMeta, walRows } from "../tests/sim/check-database.js";
 import { decodeGeneration, listRuns } from "../src/store/generation.js";
 import { decodeSst } from "../src/store/sst.js";

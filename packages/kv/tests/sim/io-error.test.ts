@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../../src/bytes.js";
-import { EngineHost, type Db } from "../../src/index.js";
+import { type Db } from "../../src/index.js";
 import { checkDatabase } from "./check-database.js";
 import type { SiteKind } from "./fault-fs.js";
 import { installFaultWal } from "./fault-wal.js";
 import { committedLog, Traced } from "./crash.js";
 import { show, type Oracle, type OracleEntry } from "./oracle.js";
-import { ingest as ingestDb } from "../../src/testing.js";
+import { ingest as ingestDb, EngineHost } from "../../src/testing.js";
 
 /**
  * I/O-error sweep (docs/research/corruption-hardening-test-suite.md,

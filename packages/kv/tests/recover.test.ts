@@ -2,11 +2,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { IdBWal } from "../src/idb/wal.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import { reconcile } from "../src/recover.js";
 import { crc32 } from "../src/store/crc32.js";
 import { publishGeneration, type GenerationMeta } from "../src/store/generation.js";
-import { openHarnessDb, ingest } from "../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../src/testing.js";
 import { publish } from "./runs.js";
 import { checkDatabase, deleteWal, walRows, walStore } from "./sim/check-database.js";
 

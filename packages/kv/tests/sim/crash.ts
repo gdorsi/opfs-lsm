@@ -1,8 +1,13 @@
 import { compareBytes } from "../../src/bytes.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
 import { __resetMergeSlotForTests } from "../../src/host/merge-slot.js";
 import { __restartEngineForTests } from "../../src/store/engine.js";
-import { openHarnessDb, ingest } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import type { Db } from "../../src/index.js";
 import { checkDatabase, decodeWalRow, deleteWal, type DatabaseReport } from "./check-database.js";
 import { describeOp, FaultFs, Faults, fsFiles, materializeFs, type DurableOp } from "./fault-fs.js";

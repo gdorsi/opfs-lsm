@@ -1,9 +1,15 @@
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { CommitError, CorruptDatabaseError } from "../../src/errors.js";
-import { EngineHost, MemoryFs, createLocalIngestClient, type Db } from "../../src/index.js";
+import { type Db } from "../../src/index.js";
 import { encodeRun, ensureEngine } from "../../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../../src/store/generation.js";
-import { openHarnessDb, ingest } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import { mergeRuns } from "../runs.js";
 import { checkDatabase, deleteWal, walMeta, walRows, walStore } from "./check-database.js";
 

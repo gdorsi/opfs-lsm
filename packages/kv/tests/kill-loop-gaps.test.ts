@@ -1,16 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { StorageFullError, StorageUnavailableError, type OpfsLsmError } from "../src/index.js";
+import { reclaimManifests } from "../src/store/generation.js";
 import {
+  openHarnessDb,
+  ingest,
   EngineHost,
   MemoryFs,
-  StorageFullError,
-  StorageUnavailableError,
   attachEngineHostPort,
   createLocalIngestClient,
   createPortIngestClient,
-  type OpfsLsmError,
-} from "../src/index.js";
-import { reclaimManifests } from "../src/store/generation.js";
-import { openHarnessDb, ingest } from "../src/testing.js";
+} from "../src/testing.js";
 import { checkDatabase, deleteWal } from "./sim/check-database.js";
 import { FaultFs, Faults } from "./sim/fault-fs.js";
 
