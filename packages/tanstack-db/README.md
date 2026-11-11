@@ -96,6 +96,18 @@ const countOpen = () => collection.count({ index: "byStatus", eq: [false, 1] });
 const stop = collection.changes(() => void countOpen().then(show));
 ```
 
+TanStack loads a window at offset N of an ordered query as its first N rows plus the window, and keeps them when the window moves back. To show a window deep in a long order, start a query at that row's order value instead. Find the value from the index without reading documents, and count the rows before it:
+
+```ts
+const at = async (n: number) => {
+	const { next } = await collection.queryIds({ index: "byStatus", eq: [false, 1], reverse: true, limit: n });
+	const [row] = (await collection.query({ index: "byStatus", eq: [false, 1], reverse: true, limit: 1, after: next })).docs;
+	return { value: row.modified, before: await collection.count({ index: "byStatus", eq: [false, 1], gt: row.modified }) };
+};
+```
+
+A live query with the same `where` plus `lte(i.modified, value)` reads one range of the index, and its first row is row `before` of the order. Rows tied with `value` come first, so the window at row `n` is at offset `n - before` inside it. Count `before` again when the collection changes.
+
 After an optimistic `update` or `delete` moves a row out of an ordered window, TanStack refills the window from the rows it holds, without asking the adapter. Those can include rows another live query loaded further down the order, so the window can skip a row no query loaded. `utils.transact` writes through the change feed, and TanStack then asks for the rows it needs.
 
 What the index order assumes:
