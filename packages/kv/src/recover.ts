@@ -68,8 +68,7 @@ export async function reconcile(
   trusted: Trusted,
 ): Promise<Reconciled> {
   for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
-    const meta = await wal.meta();
-    const numbers = await manifestNumbers(fs);
+    const [meta, numbers] = await Promise.all([wal.meta(), manifestNumbers(fs)]);
     const top = Math.max(numbers[0] ?? 0, meta.top, meta.generation ?? 0);
     const pick = await choose(fs, meta, numbers, trusted);
     if (!pick) return { generation: meta.generation!, top };

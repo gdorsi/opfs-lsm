@@ -327,10 +327,9 @@ export class IdBWal {
   /** The tail after `since`, from one readonly transaction. */
   async tail(since: number, profile?: WalReadProfile): Promise<WalTail> {
     const started = profile ? performance.now() : 0;
+    // The reads are the result. Waiting for `complete` as well is one more trip.
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
-    const done = txDone(tx);
     const tail = await readTail(tx, since);
-    await done;
     if (profile) {
       profile.ms = performance.now() - started;
       profile.rows = tail.records.length;
@@ -500,7 +499,6 @@ export class IdBWal {
       metaOpt(meta, META_GENERATION),
       metaNum(meta, META_TOP),
     ]);
-    await txDone(tx);
     return {
       head,
       ingestedThrough,
