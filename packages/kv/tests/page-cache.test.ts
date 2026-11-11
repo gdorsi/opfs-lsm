@@ -41,7 +41,7 @@ describe("page cache", () => {
     const { cache, fetch, loads } = harness(1_000);
     await fetch(pageKey(0, 0), "main", 1_500);
     expect(loads()).toBe(1);
-    expect(cache.usage()).toMatchObject({ resident: 1_500, pinned: 0 });
+    expect(cache.usage()).toMatchObject({ resident: 0, pinned: 0 });
 
     const miss = cache.lookup(pageKey(0, 1), "main", async () => ({ value: 1, bytes: 800 }));
     expect(miss).toBeInstanceOf(Miss);
@@ -49,6 +49,16 @@ describe("page cache", () => {
     expect(cache.usage()).toMatchObject({ resident: 800, pinned: 800 });
     expect(cache.lookup(pageKey(0, 1), "main", () => Promise.reject(new Error("reloaded")))).toBe(1);
     expect(cache.usage().pinned).toBe(0);
+  });
+
+  it("is back within budget once concurrent misses have retried", async () => {
+    const { cache, fetch, loads } = harness(2_000);
+    const keys = Array.from({ length: 50 }, (_, i) => pageKey(0, i));
+    expect(await Promise.all(keys.map((key) => fetch(key, "main", 1_000)))).toEqual(keys);
+    expect(loads()).toBe(50);
+    const usage = cache.usage();
+    expect(usage.pinned).toBe(0);
+    expect(usage.resident).toBeLessThanOrEqual(2_000);
   });
 
   it("drops a run's entries, and a load that lands after the drop", async () => {
