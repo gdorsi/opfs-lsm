@@ -112,8 +112,8 @@ async function openHandle(
   testing: typeof import("../dist/testing.js"),
   writerId: string,
   shared?: {
-    fs: Awaited<ReturnType<typeof mod.openBrowserFs>>;
-    ingest: ReturnType<typeof mod.createLocalIngestClient>;
+    fs: Awaited<ReturnType<typeof testing.openBrowserFs>>;
+    ingest: ReturnType<typeof testing.createLocalIngestClient>;
   },
 ): Promise<Handle> {
   const db = await testing.openHarnessDb({
@@ -311,9 +311,9 @@ async function run(): Promise<void> {
   const mod = await import("../dist/index.js");
   const testing = await import("../dist/testing.js");
   if (LOCAL) {
-    const fs = await mod.openBrowserFs(DB_NAME);
-    const host = new mod.EngineHost(() => fs);
-    const ingest = mod.createLocalIngestClient(host);
+    const fs = await testing.openBrowserFs(DB_NAME);
+    const host = new testing.EngineHost(() => fs);
+    const ingest = testing.createLocalIngestClient(host);
     const shared = { fs, ingest };
     const self = await openHandle(mod, testing, "tab-a", shared);
     const otherDb = await openHandle(mod, testing, "tab-b", shared);
