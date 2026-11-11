@@ -25,6 +25,7 @@ import {
   type IngestClient,
   type WatchPolicy,
 } from "./protocol.js";
+import { coalesced, serial } from "../turns.js";
 
 export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 
@@ -74,39 +75,11 @@ export type WatchScan = {
 
 /**
  * OPFS publisher + ingest owner. Runs in the SharedWorker in production;
- * tests use the same class in-process or behind a MessagePort.
- *
- * Every manifest publish runs under one exclusive section per database: a
- * chain in this host plus a Web Lock across hosts. Two SharedWorkers can
- * serve one database, for example two builds whose script URLs differ.
- * A flush holds it for one L0 run at a time. Compaction merges without it and
- * holds it only to install the merged run.
+ * tests use the same class in-process or behind a MessagePort. It keeps one
+ * `HostedDb` per database name, for as long as the host lives.
  */
 export class EngineHost {
-  private readonly fsCache = new Map<string, CountingFs>();
-  private readonly counts = new Map<DbName, HostCounts>();
-  private readonly chains = new Map<string, Promise<unknown>>();
-  private readonly folds = new Map<string, Promise<unknown>>();
-  /** Per database, settles at the next compaction install, for a flush that waits on a full L0. */
-  private readonly installs = new Map<
-    DbName,
-    { readonly settled: Promise<void>; readonly settle: () => void }
-  >();
-  private readonly compactions = new Map<string, Promise<void>>();
-  private readonly compactAgain = new Set<string>();
-  private readonly watches = new Map<DbName, IngestWatch>();
-  /**
-   * Run files out of every live generation that a tab still held at the
-   * last try. A cache of what the manifests and directories say: a missing
-   * entry means this host has not swept that database yet.
-   */
-  private readonly retired = new Map<DbName, Set<string>>();
-  /**
-   * Per database, the generation this host last published or found intact,
-   * so `reconcile` checks a recorded manifest's runs once, not on every
-   * flush. A tab that records another generation makes the host check again.
-   */
-  private readonly trusted = new Map<DbName, number>();
+  private readonly dbs = new Map<DbName, HostedDb>();
 
   /** `overrides` replace figures of the budget, for tests that need a small flush run or no L0 stop. */
   constructor(
@@ -114,29 +87,14 @@ export class EngineHost {
     private readonly overrides: Partial<HostBudget> = {},
   ) {}
 
-  private budget(dbName: DbName): HostBudget {
-    const asked = this.watches.get(dbName)?.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES;
-    return { ...hostBudget(asked), ...this.overrides };
-  }
-
-  /** Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
-  async fsFor(name: DbName): Promise<CountingFs> {
-    let fs = this.fsCache.get(name);
-    if (!fs) {
-      const inner = await this.fsFactory(name);
-      fs = this.fsCache.get(name) ?? new CountingFs(inner);
-      this.fsCache.set(name, fs);
+  private db(name: string): HostedDb {
+    const dbName = checkDbName(name);
+    let db = this.dbs.get(dbName);
+    if (!db) {
+      db = new HostedDb(dbName, this.fsFactory, this.overrides);
+      this.dbs.set(dbName, db);
     }
-    return fs;
-  }
-
-  private countsFor(dbName: DbName): HostCounts {
-    let counts = this.counts.get(dbName);
-    if (!counts) {
-      counts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
-      this.counts.set(dbName, counts);
-    }
-    return counts;
+    return db;
   }
 
   /**
@@ -145,26 +103,7 @@ export class EngineHost {
    * the counters.
    */
   async stats(name: string): Promise<HostStats> {
-    const dbName = checkDbName(name);
-    const fs = await this.fsFor(dbName);
-    const recorded = await this.withWal(dbName, async (wal) => (await wal.meta()).generation ?? 0);
-    const latest = await loadGeneration(fs.inner, recorded);
-    const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
-    for (const run of latest?.runs ?? []) {
-      const level = levelOf(run.path) ?? 0;
-      const entry = byLevel.get(level) ?? { level, runs: 0, bytes: 0 };
-      entry.runs += 1;
-      entry.bytes += run.bytes;
-      byLevel.set(level, entry);
-    }
-    const { l0Stops, ...counts } = this.countsFor(dbName);
-    return structuredClone({
-      fs: fs.counters,
-      ...counts,
-      generation: latest?.generation ?? 0,
-      layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
-      memory: { ...engineMemory(), l0Stops },
-    });
+    return this.db(name).stats();
   }
 
   /**
@@ -177,70 +116,163 @@ export class EngineHost {
     through: number,
     settle = false,
   ): Promise<{ generation: number }> {
-    const dbName = checkDbName(name);
-    const { generation } = await this.fold(dbName, through);
-    const compaction = this.compact(dbName);
+    return this.db(name).ingest(through, settle);
+  }
+
+  /**
+   * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
+   * with no tab asking. Reads up to `maxWalBytes` of the waiting records in the
+   * background and ingests when a reopened database is already over the limit.
+   * The host holds `name` to the smallest `compactionMemoryBytes` any tab passed.
+   */
+  watch(name: string, policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
+    this.db(name).watch(policy, onScan);
+  }
+
+  unwatch(name: string): void {
+    this.db(name).unwatch();
+  }
+}
+
+/**
+ * What the host holds for one database.
+ *
+ * Every manifest publish runs under one exclusive section: a queue in this
+ * host plus a Web Lock across hosts. Two SharedWorkers can serve one
+ * database, for example two builds whose script URLs differ. A flush holds
+ * it for one L0 run at a time. Compaction merges without it and holds it
+ * only to install the merged run.
+ */
+class HostedDb {
+  private fsReady: Promise<CountingFs> | undefined;
+  private readonly counts: HostCounts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
+  private readonly publishTurn = serial();
+  private readonly foldTurn = serial();
+  /** Settles at the next compaction install, for a flush that waits on a full L0. */
+  private nextInstall: { readonly settled: Promise<void>; readonly settle: () => void } | undefined;
+  private watching: IngestWatch | undefined;
+  /**
+   * Run files out of every live generation that a tab still held at the
+   * last try. A cache of what the manifests and directories say: undefined
+   * means this host has not swept the database yet.
+   */
+  private retired: Set<string> | undefined;
+  /**
+   * The generation this host last published or found intact, so `reconcile`
+   * checks a recorded manifest's runs once, not on every flush. A tab that
+   * records another generation makes the host check again.
+   */
+  private trusted: number | undefined;
+  private readonly trust = (generation: number): boolean => this.trusted === generation;
+  /** Run compaction passes until no request arrives during one. */
+  private readonly compact = coalesced(() =>
+    withLock(`opfs-lsm-compact/${this.name}`, () => this.compactPass()),
+  );
+
+  constructor(
+    private readonly name: DbName,
+    private readonly fsFactory: FsFactory,
+    private readonly overrides: Partial<HostBudget>,
+  ) {}
+
+  private budget(): HostBudget {
+    const asked = this.watching?.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES;
+    return { ...hostBudget(asked), ...this.overrides };
+  }
+
+  /** Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
+  private fs(): Promise<CountingFs> {
+    this.fsReady ??= Promise.resolve(this.fsFactory(this.name)).then(
+      (inner) => new CountingFs(inner),
+      (err: unknown) => {
+        this.fsReady = undefined;
+        throw err;
+      },
+    );
+    return this.fsReady;
+  }
+
+  async stats(): Promise<HostStats> {
+    const fs = await this.fs();
+    const recorded = await this.withWal(async (wal) => (await wal.meta()).generation ?? 0);
+    const latest = await loadGeneration(fs.inner, recorded);
+    const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
+    for (const run of latest?.runs ?? []) {
+      const level = levelOf(run.path) ?? 0;
+      const entry = byLevel.get(level) ?? { level, runs: 0, bytes: 0 };
+      entry.runs += 1;
+      entry.bytes += run.bytes;
+      byLevel.set(level, entry);
+    }
+    const { l0Stops, ...counts } = this.counts;
+    return structuredClone({
+      fs: fs.counters,
+      ...counts,
+      generation: latest?.generation ?? 0,
+      layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
+      memory: { ...engineMemory(), l0Stops },
+    });
+  }
+
+  async ingest(through: number, settle: boolean): Promise<{ generation: number }> {
+    const { generation } = await this.fold(through);
+    const compaction = this.compact();
     if (!settle) {
       compaction.catch(() => undefined);
       return { generation };
     }
     await compaction;
     return {
-      generation: await this.withWal(dbName, async (wal) => (await wal.meta()).generation ?? 0),
+      generation: await this.withWal(async (wal) => (await wal.meta()).generation ?? 0),
     };
-  }
-
-  private trust(dbName: DbName): (generation: number) => boolean {
-    return (generation) => this.trusted.get(dbName) === generation;
   }
 
   /**
    * Fold the WAL as it stands now into L0 runs of `flushRunBytes`, oldest
-   * first. One fold runs at a time per database, so a flush asked for during
-   * another waits for it and finds its records ingested. Each run is its own
+   * first. One fold runs at a time, so a flush asked for during another
+   * waits for it and finds its records ingested. Each run is its own
    * exclusive section, so a compaction install waits for one run, not for the
    * whole backlog. Records acked after the fold starts are left for the next
    * flush, so a steady writer cannot keep one fold going. While L0 holds
    * `l0StopRuns` runs it publishes none, and waits for compaction instead.
    */
-  private fold(dbName: DbName, through: number): Promise<IngestResult> {
-    return inTurn(this.folds, dbName, () => this.foldRuns(dbName, through));
+  private fold(through: number): Promise<IngestResult> {
+    return this.foldTurn(() => this.foldRuns(through));
   }
 
-  private async foldRuns(dbName: DbName, through: number): Promise<IngestResult> {
-    const fs = await this.fsFor(dbName);
-    const head = await this.withWal(dbName, async (wal) => (await wal.meta()).head);
+  private async foldRuns(through: number): Promise<IngestResult> {
+    const fs = await this.fs();
+    const head = await this.withWal(async (wal) => (await wal.meta()).head);
     const target = Math.min(through, head);
-    const counts = this.countsFor(dbName);
     let foldedBytes = 0;
     let pastStop = false;
     for (;;) {
-      const budget = this.budget(dbName);
+      const budget = this.budget();
       // Taken before the attempt, so an install that lands during it is not missed.
-      const installed = this.nextInstall(dbName);
-      const chunk = await this.exclusive(dbName, () =>
-        this.withWal(dbName, async (wal) => {
-          const folded = await ingestChunk(wal, fs, target, this.trust(dbName), {
+      const installed = this.installSignal();
+      const chunk = await this.exclusive(() =>
+        this.withWal(async (wal) => {
+          const folded = await ingestChunk(wal, fs, target, this.trust, {
             maxBytes: budget.flushRunBytes,
             l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
           });
           // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-          await unlessHeld(dbName, () => reclaimManifests(fs, folded.generation));
+          await unlessHeld(this.name, () => reclaimManifests(fs, folded.generation));
           return folded;
         }),
       );
       recycleEngine(budget.wasmRecycleBytes);
       pastStop = false;
-      this.trusted.set(dbName, chunk.generation);
+      this.trusted = chunk.generation;
       if (chunk.kind === "stopped") {
-        counts.l0Stops += 1;
-        pastStop = (await this.waitForInstall(dbName, installed)) === "idle";
+        this.counts.l0Stops += 1;
+        pastStop = (await this.waitForInstall(installed)) === "idle";
         continue;
       }
       foldedBytes += chunk.foldedBytes;
-      counts.foldedBytes += chunk.foldedBytes;
-      if (chunk.kind === "folded") counts.flushes += 1;
-      const watch = this.watches.get(dbName);
+      this.counts.foldedBytes += chunk.foldedBytes;
+      if (chunk.kind === "folded") this.counts.flushes += 1;
+      const watch = this.watching;
       if (watch) {
         watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
         watch.triggerAt = watch.maxWalBytes;
@@ -251,20 +283,18 @@ export class EngineHost {
     }
   }
 
-  /** A promise for the next compaction install of `dbName`. */
-  private nextInstall(dbName: DbName): Promise<void> {
-    let next = this.installs.get(dbName);
-    if (!next) {
+  /** A promise for the next compaction install. */
+  private installSignal(): Promise<void> {
+    if (!this.nextInstall) {
       let settle!: () => void;
-      next = { settled: new Promise<void>((resolve) => (settle = resolve)), settle };
-      this.installs.set(dbName, next);
+      this.nextInstall = { settled: new Promise<void>((resolve) => (settle = resolve)), settle };
     }
-    return next.settled;
+    return this.nextInstall.settled;
   }
 
-  private installLanded(dbName: DbName): void {
-    const next = this.installs.get(dbName);
-    this.installs.delete(dbName);
+  private installLanded(): void {
+    const next = this.nextInstall;
+    this.nextInstall = undefined;
     next?.settle();
   }
 
@@ -274,32 +304,25 @@ export class EngineHost {
    * failed): the flush then goes on, since waiting longer would wait for
    * nothing.
    */
-  private async waitForInstall(dbName: DbName, installed: Promise<void>): Promise<"installed" | "idle"> {
-    const ended = this.compact(dbName).then(
+  private async waitForInstall(installed: Promise<void>): Promise<"installed" | "idle"> {
+    const ended = this.compact().then(
       () => "idle" as const,
       () => "idle" as const,
     );
     return Promise.race([installed.then(() => "installed" as const), ended]);
   }
 
-  /**
-   * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
-   * with no tab asking. Reads up to `maxWalBytes` of the waiting records in the
-   * background and ingests when a reopened database is already over the limit.
-   * The host holds `name` to the smallest `compactionMemoryBytes` any tab passed.
-   */
-  watch(name: string, policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
-    const dbName = checkDbName(name);
+  watch(policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
     // A tab of an older build sends no figure, and NaN would win every later `Math.min`.
     const compactionMemoryBytes =
       policy.compactionMemoryBytes > 0 ? policy.compactionMemoryBytes : DEFAULT_COMPACTION_MEMORY_BYTES;
-    const watch = this.watches.get(dbName) ?? this.startWatch(dbName, { ...policy, compactionMemoryBytes });
+    const watch = this.watching ?? this.startWatch({ ...policy, compactionMemoryBytes });
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
     const scanAt = onScan ? performance.now() : 0;
-    void this.withWal(dbName, (wal) => wal.uningestedBytes(watch.maxWalBytes)).then(
+    void this.withWal((wal) => wal.uningestedBytes(watch.maxWalBytes)).then(
       (waiting) => {
         if (onScan) {
           onScan({
@@ -309,24 +332,23 @@ export class EngineHost {
           });
         }
         watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
-        this.maybeIngest(dbName, watch);
+        this.maybeIngest(watch);
       },
       (err: unknown) => {
         if (isClosedDatabase(err)) return;
-        console.error(`opfs-lsm: reading the WAL of ${dbName} failed`, err);
+        console.error(`opfs-lsm: reading the WAL of ${this.name} failed`, err);
       },
     );
   }
 
-  unwatch(name: string): void {
-    const dbName = checkDbName(name);
-    const watch = this.watches.get(dbName);
+  unwatch(): void {
+    const watch = this.watching;
     if (!watch || --watch.watchers > 0) return;
     watch.bus?.close();
-    this.watches.delete(dbName);
+    this.watching = undefined;
   }
 
-  private startWatch(dbName: DbName, policy: WatchPolicy): IngestWatch {
+  private startWatch(policy: WatchPolicy): IngestWatch {
     const watch: IngestWatch = {
       maxWalBytes: policy.maxWalBytes,
       compactionMemoryBytes: policy.compactionMemoryBytes,
@@ -337,54 +359,51 @@ export class EngineHost {
       bus: undefined,
     };
     if (typeof BroadcastChannel !== "undefined") {
-      watch.bus = new BroadcastChannel(layersChannel(dbName));
+      watch.bus = new BroadcastChannel(layersChannel(this.name));
       watch.bus.onmessage = (ev: MessageEvent<AppendHint | null>) => {
         if (ev.data?.kind !== "append" || !ev.data.ops) return;
         watch.pendingBytes += opsBytes(ev.data.ops);
-        this.maybeIngest(dbName, watch);
+        this.maybeIngest(watch);
       };
     }
-    this.watches.set(dbName, watch);
+    this.watching = watch;
     return watch;
   }
 
   /** One ingest in flight per watch; it checks again when it finishes. */
-  private maybeIngest(dbName: DbName, watch: IngestWatch): void {
+  private maybeIngest(watch: IngestWatch): void {
     if (
       watch.state !== "idle" ||
       watch.pendingBytes < watch.triggerAt ||
-      this.watches.get(dbName) !== watch
+      this.watching !== watch
     ) {
       return;
     }
     watch.state = "ingesting";
     void (async () => {
       try {
-        const { foldedBytes } = await this.fold(dbName, Number.POSITIVE_INFINITY);
-        if (foldedBytes > 0) announceGeneration(dbName);
+        const { foldedBytes } = await this.fold(Number.POSITIVE_INFINITY);
+        if (foldedBytes > 0) announceGeneration(this.name);
         // Nothing was waiting, so the count was ahead of the WAL. Without
         // this, it would stay over the trigger and ingest in a loop.
         else watch.pendingBytes = 0;
-        this.compact(dbName).catch(() => undefined);
+        this.compact().catch(() => undefined);
       } catch (err) {
-        console.error(`opfs-lsm: ingest of ${dbName} failed`, err);
+        console.error(`opfs-lsm: ingest of ${this.name} failed`, err);
         watch.triggerAt = watch.pendingBytes + watch.maxWalBytes;
       } finally {
         watch.state = "idle";
       }
-      this.maybeIngest(dbName, watch);
+      this.maybeIngest(watch);
     })();
   }
 
-  private exclusive<T>(dbName: DbName, fn: () => Promise<T>): Promise<T> {
-    return inTurn(this.chains, dbName, () => withLock(`opfs-lsm-ingest/${dbName}`, fn));
+  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    return this.publishTurn(() => withLock(`opfs-lsm-ingest/${this.name}`, fn));
   }
 
-  private async withWal<T>(
-    dbName: DbName,
-    fn: (wal: IdBWal) => Promise<T>,
-  ): Promise<T> {
-    const wal = await IdBWal.open(dbName);
+  private async withWal<T>(fn: (wal: IdBWal) => Promise<T>): Promise<T> {
+    const wal = await IdBWal.open(this.name);
     try {
       return await fn(wal);
     } finally {
@@ -392,80 +411,54 @@ export class EngineHost {
     }
   }
 
-  /** Run compaction passes until no request arrives during one. */
-  private compact(dbName: DbName): Promise<void> {
-    const running = this.compactions.get(dbName);
-    if (running) {
-      this.compactAgain.add(dbName);
-      return running;
-    }
-    const run = (async () => {
-      try {
-        do {
-          this.compactAgain.delete(dbName);
-          await withLock(`opfs-lsm-compact/${dbName}`, () =>
-            this.compactPass(dbName),
-          );
-        } while (this.compactAgain.has(dbName));
-      } finally {
-        this.compactions.delete(dbName);
-      }
-    })();
-    this.compactions.set(dbName, run);
-    return run;
-  }
-
-  private async compactPass(dbName: DbName): Promise<void> {
-    const fs = await this.fsFor(dbName);
-    if (this.retired.get(dbName)?.size !== 0) {
-      await this.exclusive(dbName, () =>
-        this.withWal(dbName, (wal) => this.reclaim(dbName, fs, wal)),
-      );
+  private async compactPass(): Promise<void> {
+    const fs = await this.fs();
+    if (this.retired?.size !== 0) {
+      await this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal)));
     }
     for (let i = 0; i < MAX_COMPACTION_STEPS; i++) {
-      const meta = await this.withWal(dbName, (wal) => wal.meta());
+      const meta = await this.withWal((wal) => wal.meta());
       const base = await loadGeneration(fs, meta.generation ?? 0);
       // Gone when a flush installed a newer generation since: plan again.
       if (!base) continue;
-      const budget = this.budget(dbName);
+      const budget = this.budget();
       const step = await mergeNextStep(fs, budget, base, meta.top);
       recycleEngine(budget.wasmRecycleBytes);
       if (!step) return;
-      await this.exclusive(dbName, () =>
-        this.withWal(dbName, async (wal) => {
-          this.trusted.set(dbName, await installStep(fs, wal, step, this.trust(dbName)));
+      await this.exclusive(() =>
+        this.withWal(async (wal) => {
+          this.trusted = await installStep(fs, wal, step, this.trust);
           // No set yet: no reclaim has run, and the first one lists every run.
-          for (const path of step.inputs) this.retired.get(dbName)?.add(path);
-          await this.reclaim(dbName, fs, wal);
+          for (const path of step.inputs) this.retired?.add(path);
+          await this.reclaim(fs, wal);
         }),
       );
-      this.countsFor(dbName).compactionSteps += 1;
-      this.installLanded(dbName);
-      announceGeneration(dbName);
+      this.counts.compactionSteps += 1;
+      this.installLanded();
+      announceGeneration(this.name);
     }
   }
 
   /**
    * Remove the manifests older than the recorded one and the retired runs
-   * no tab holds. The first call for a database retires every run file
-   * outside the live generations, which also collects what a crash left
-   * behind. Needs the ingest and compaction locks, so no run being written
-   * is mistaken for an orphan. Reconciles first: after a power loss the
-   * recorded manifest can be gone, and sweeping against it would remove
-   * the runs recovery needs.
+   * no tab holds. The first call retires every run file outside the live
+   * generations, which also collects what a crash left behind. Needs the
+   * ingest and compaction locks, so no run being written is mistaken for an
+   * orphan. Reconciles first: after a power loss the recorded manifest can
+   * be gone, and sweeping against it would remove the runs recovery needs.
    *
    * Skipped, without waiting, while a tab holds the reclaim lock to load a
    * generation (`holdingFiles`): the retired runs stay retired and the next
    * pass tries again (design.md, "Loading a generation under churn").
    */
-  private async reclaim(dbName: DbName, fs: AsyncFs, wal: IdBWal): Promise<void> {
-    await unlessHeld(dbName, async () => {
-      const { generation } = await reconcile(wal, fs, this.trust(dbName));
-      this.trusted.set(dbName, generation);
+  private async reclaim(fs: AsyncFs, wal: IdBWal): Promise<void> {
+    await unlessHeld(this.name, async () => {
+      const { generation } = await reconcile(wal, fs, this.trust);
+      this.trusted = generation;
       await reclaimManifests(fs, generation);
-      const retired = this.retired.get(dbName) ?? new Set(await listRuns(fs));
+      const retired = this.retired ?? new Set(await listRuns(fs));
       const keep = await liveRuns(fs, generation);
-      this.retired.set(dbName, new Set(await reclaimRuns(fs, retired, keep)));
+      this.retired = new Set(await reclaimRuns(fs, retired, keep));
     });
   }
 }
@@ -485,24 +478,6 @@ function isClosedDatabase(err: unknown): boolean {
     "name" in err &&
     (err as { name: string }).name === "InvalidStateError"
   );
-}
-
-/** Run `fn` once everything queued before it under `key` has settled. */
-function inTurn<T>(
-  queues: Map<string, Promise<unknown>>,
-  key: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const prev = queues.get(key) ?? Promise.resolve();
-  const next = prev.catch(() => undefined).then(fn);
-  queues.set(
-    key,
-    next.then(
-      () => undefined,
-      () => undefined,
-    ),
-  );
-  return next;
 }
 
 function withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
