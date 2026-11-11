@@ -1,14 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { WatchScan } from "../src/host/engine-host.js";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   openHarnessDb,
   __resetMemoryFsForTests,
   type OpenSpan,
   type OpenTrace,
-  EngineHost,
-  MemoryFs,
-  attachEngineHostPort,
-  createPortIngestClient,
 } from "../src/testing.js";
 
 const NAME = "open-trace";
@@ -92,50 +87,5 @@ describe("open trace", () => {
     }
     expect(seen).toHaveLength(n);
     await reader.close();
-  });
-
-  it("delivers the host scan after watch has resolved", async () => {
-    const fs = new MemoryFs();
-    const host = new EngineHost(() => fs);
-    const { port1, port2 } = new MessageChannel();
-    attachEngineHostPort(port1, host);
-    const scans: WatchScan[] = [];
-    const ingest = createPortIngestClient(port2, (scan) => {
-      scans.push(scan);
-    });
-    const writer = await openHarnessDb({
-      name: NAME,
-      writerId: "w1",
-      fs,
-      ingest,
-      maxWalBytes: 1 << 30,
-    });
-    await writer.put(enc.encode("k"), enc.encode("v"));
-    await writer.close();
-
-    const trace: OpenTrace = { spans: [] };
-    const opened = performance.now();
-    const reader = await openHarnessDb({
-      name: NAME,
-      writerId: "w2",
-      fs,
-      ingest,
-      maxWalBytes: 1 << 30,
-      trace,
-    });
-    const openMs = performance.now() - opened;
-    expect(dec.decode(await reader.get(enc.encode("k")))).toBe("v");
-    expect(phase(trace, "wal-read")?.rows).toBe(1);
-    await vi.waitFor(() => {
-      expect(scans.some((scan) => scan.bytes > 0)).toBe(true);
-    });
-    const scan = scans.find((item) => item.bytes > 0)!;
-    expect(scan.ms).toBeGreaterThanOrEqual(0);
-    expect(scan.bytes).toBeGreaterThan(0);
-    expect(openMs).toBeGreaterThan(0);
-    await reader.close();
-    ingest.close();
-    port1.close();
-    port2.close();
   });
 });

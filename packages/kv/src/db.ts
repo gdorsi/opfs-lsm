@@ -18,15 +18,10 @@ import {
   StorageUnavailableError,
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
-import {
-  EngineHost,
-  createLocalIngestClient,
-  createPortIngestClient,
-  type WatchScan,
-} from "./host/engine-host.js";
+import { EngineHost, createLocalIngestClient, createPortIngestClient } from "./host/engine-host.js";
 import { holdingFiles, type BusMessage, type IngestClient } from "./host/protocol.js";
 import { layersChannel } from "./locks.js";
-import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
+import { IdBWal, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, untilHit, type Maybe } from "./store/cursor.js";
@@ -124,10 +119,7 @@ export type HarnessOpenOptions = OpenOptions & {
    * storage without passing `fs`: an open that cannot reach OPFS rejects.
    */
   readonly forceMemory?: boolean;
-  /**
-   * When set, open records phase durations here. The host scan and wasm
-   * init can append after the open promise resolves.
-   */
+  /** When set, open records phase durations here. Wasm init can append after the open promise resolves. */
   readonly trace?: OpenTrace;
 };
 
@@ -136,7 +128,6 @@ export type OpenSpan = {
   phase: string;
   ms: number;
   rows?: number;
-  bytes?: number;
   endedAt: number;
 };
 
@@ -144,18 +135,23 @@ export type OpenTrace = {
   spans: OpenSpan[];
 };
 
-function span(
-  trace: OpenTrace | undefined,
-  phase: string,
-  ms: number,
-  extra?: { rows?: number; bytes?: number },
-): void {
-  if (!trace) return;
-  trace.spans.push({ phase, ms, endedAt: performance.now(), ...extra });
+function span(trace: OpenTrace, phase: string, ms: number, rows?: number): void {
+  trace.spans.push({ phase, ms, endedAt: performance.now(), ...(rows === undefined ? {} : { rows }) });
 }
 
-function recordWatchScan(trace: OpenTrace, scan: WatchScan): void {
-  span(trace, "host-scan", scan.ms, { rows: scan.rows, bytes: scan.bytes });
+/** `run()`, recorded as `phase` when tracing. `rowsOf` counts the rows of its result. */
+function timed<T>(
+  trace: OpenTrace | undefined,
+  phase: string,
+  run: () => Promise<T>,
+  rowsOf?: (out: T) => number,
+): Promise<T> {
+  if (!trace) return run();
+  const at = performance.now();
+  return run().then((out) => {
+    span(trace, phase, performance.now() - at, rowsOf?.(out));
+    return out;
+  });
 }
 
 export type Range = {
@@ -309,17 +305,17 @@ export async function openDb(options: OpenOptions): Promise<Db> {
 }
 
 /** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
-export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
+export function openDbWith(options: HarnessOpenOptions): Promise<Db> {
+  return timed(options.trace, "open", () => openTraced(options));
+}
+
+async function openTraced(options: HarnessOpenOptions): Promise<Db> {
   const trace = options.trace;
-  const openAt = trace ? performance.now() : 0;
   const name = checkDbName(options.name);
   // Started first, so the module loads while the rest of open runs.
-  const wasmAt = trace ? performance.now() : 0;
-  const engine = ensureEngine();
-  void engine.then(
-    () => span(trace, "wasm", performance.now() - wasmAt),
-    () => span(trace, "wasm-error", performance.now() - wasmAt),
-  );
+  const engine = timed(trace, "wasm", ensureEngine);
+  // Awaited last: a throw before that must not leave its rejection unhandled.
+  engine.catch(() => undefined);
   const caps = memtableCaps(options.memtableBytes);
 
   let walOpen: Promise<IdBWal> | undefined;
@@ -336,19 +332,16 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   }
 
   if (!fs) {
-    const opfsAt = trace ? performance.now() : 0;
     // IndexedDB opens while OPFS does.
     walOpen = IdBWal.open(name);
     walOpen.catch(() => undefined);
     try {
-      fs = await openBrowserFs(name);
+      fs = await timed(trace, "opfs", () => openBrowserFs(name));
     } catch (err) {
       void walOpen.then((w) => w.close(), () => undefined);
       throw err;
     }
-    span(trace, "opfs", performance.now() - opfsAt);
     if (!ingest) {
-      const workerAt = trace ? performance.now() : 0;
       // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
       // only emit a worker chunk for this exact shape. Built in a helper, Vite
       // treated it as a plain asset and inlined the unbundled entry as a
@@ -357,11 +350,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
         new URL("./host/shared-worker.js", import.meta.url),
         { type: "module", name: `opfs-lsm:${name}` },
       );
-      span(trace, "worker-ctor", performance.now() - workerAt);
-      ingest = createPortIngestClient(
-        worker.port,
-        trace ? (scan) => recordWatchScan(trace, scan) : undefined,
-      );
+      ingest = createPortIngestClient(worker.port);
       ownsIngestClient = true;
     }
   }
@@ -369,14 +358,10 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   // Wrapped after the local host got the bare fs, so its IO counts only on the host.
   const tabFs = new CountingFs(fs);
 
-  const idbAt = trace ? performance.now() : 0;
-  const wal = await (walOpen ?? IdBWal.open(name));
-  span(trace, "idb-open", performance.now() - idbAt);
-  const generationAt = trace ? performance.now() : 0;
+  const wal = await timed(trace, "idb-open", () => walOpen ?? IdBWal.open(name));
   // Pair the WAL with a manifest before the first read or write. The
   // recorded manifest's runs are checked by the first sync, which loads them.
-  await reconcile(wal, tabFs, "recorded");
-  span(trace, "generation", performance.now() - generationAt);
+  await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
     Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
@@ -393,9 +378,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     trace,
   );
   internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
-  const syncAt = trace ? performance.now() : 0;
-  await db.sync();
-  span(trace, "sync", performance.now() - syncAt);
+  await timed(trace, "sync", () => db.sync());
   // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
   ingest.watch(name, {
     maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
@@ -408,7 +391,6 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     await db.close();
     throw err;
   }
-  span(trace, "open", performance.now() - openAt);
   return db;
 }
 
@@ -743,24 +725,19 @@ class DbImpl implements Db {
    * a file.
    */
   private async catchUpOnce(): Promise<"done" | "behind" | "gone"> {
-    const profile: WalReadProfile | undefined = this.trace
-      ? { ms: 0, rows: 0 }
-      : undefined;
-    const tail = await this.wal.tail(this.mem.appliedThrough, profile);
-    if (profile) {
-      span(this.trace, "wal-read", profile.ms, { rows: profile.rows });
-    }
+    const tail = await timed(
+      this.trace,
+      "wal-read",
+      () => this.wal.tail(this.mem.appliedThrough),
+      (t) => t.records.length,
+    );
     if (this.closed) return "done";
-    const sstAt = this.trace ? performance.now() : 0;
     let whole = true;
     if (tail.generation !== this.installed.generation) {
-      whole = await this.load(
-        tail.generation,
-        tail.ingestedThrough > this.mem.appliedThrough,
-      );
+      const ahead = tail.ingestedThrough > this.mem.appliedThrough;
+      whole = await timed(this.trace, "sst", () => this.load(tail.generation, ahead));
       if (this.closed) return "done";
     }
-    if (this.trace) span(this.trace, "sst", performance.now() - sstAt);
     const memAt = this.trace ? performance.now() : 0;
     let missing: number | undefined;
     try {
@@ -768,14 +745,7 @@ class DbImpl implements Db {
     } finally {
       this.announce();
     }
-    if (this.trace) {
-      span(
-        this.trace,
-        "memtable",
-        performance.now() - memAt,
-        profile ? { rows: profile.rows } : undefined,
-      );
-    }
+    if (this.trace) span(this.trace, "memtable", performance.now() - memAt, tail.records.length);
     if (missing === undefined) return "done";
     return whole ? "behind" : "gone";
   }

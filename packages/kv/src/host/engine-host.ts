@@ -64,13 +64,6 @@ type IngestWatch = {
   bus: BroadcastChannel | undefined;
 };
 
-/** Background pending-byte read. `rows` stays 0: the host does not list the WAL. */
-export type WatchScan = {
-  ms: number;
-  rows: number;
-  bytes: number;
-};
-
 /**
  * OPFS publisher + ingest owner. Runs in the SharedWorker in production;
  * tests use the same class in-process or behind a MessagePort. It keeps one
@@ -123,8 +116,8 @@ export class EngineHost {
    * background and ingests when a reopened database is already over the limit.
    * The host holds `name` to the smallest `compactionMemoryBytes` any tab passed.
    */
-  watch(name: string, policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
-    this.db(name).watch(policy, onScan);
+  watch(name: string, policy: WatchPolicy): void {
+    this.db(name).watch(policy);
   }
 
   unwatch(name: string): void {
@@ -331,22 +324,14 @@ class HostedDb {
     return Promise.race([installed.then(() => "installed" as const), ended]);
   }
 
-  watch(policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
+  watch(policy: WatchPolicy): void {
     const watch = this.watching ?? this.startWatch(policy);
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
-    const scanAt = onScan ? performance.now() : 0;
     void this.withWal((wal) => wal.uningestedBytes(watch.maxWalBytes)).then(
       (waiting) => {
-        if (onScan) {
-          onScan({
-            ms: performance.now() - scanAt,
-            rows: 0,
-            bytes: waiting,
-          });
-        }
         watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
         this.maybeIngest(watch);
       },
@@ -519,22 +504,10 @@ export function attachEngineHostPort(
           return;
         }
         case "watch":
-          host.watch(
-            msg.name,
-            {
-              maxWalBytes: msg.maxWalBytes,
-              compactionMemoryBytes: compactionMemoryOf(msg.compactionMemoryBytes),
-            },
-            msg.trace
-              ? (scan) =>
-                  reply({
-                    type: "watch-trace",
-                    ms: scan.ms,
-                    rows: scan.rows,
-                    bytes: scan.bytes,
-                  })
-              : undefined,
-          );
+          host.watch(msg.name, {
+            maxWalBytes: msg.maxWalBytes,
+            compactionMemoryBytes: compactionMemoryOf(msg.compactionMemoryBytes),
+          });
           return;
         case "unwatch":
           host.unwatch(msg.name);
@@ -563,10 +536,7 @@ export function attachEngineHostPort(
 }
 
 /** Tab-side client over a MessagePort. */
-export function createPortIngestClient(
-  port: MessagePort,
-  onWatchScan?: (scan: WatchScan) => void,
-): IngestClient {
+export function createPortIngestClient(port: MessagePort): IngestClient {
   let nextId = 1;
   const pending = new Map<
     number,
@@ -575,10 +545,6 @@ export function createPortIngestClient(
 
   const onMessage = (ev: MessageEvent<HostToClient>) => {
     const msg = ev.data;
-    if (msg.type === "watch-trace") {
-      onWatchScan?.(msg);
-      return;
-    }
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
@@ -606,7 +572,6 @@ export function createPortIngestClient(
         name,
         maxWalBytes: policy.maxWalBytes,
         compactionMemoryBytes: policy.compactionMemoryBytes,
-        ...(onWatchScan ? { trace: true } : {}),
       };
       port.postMessage(msg);
     },

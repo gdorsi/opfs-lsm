@@ -95,8 +95,6 @@ export type ClientToHost =
       readonly maxWalBytes: number;
       /** Absent from a tab of a build before the option existed. */
       readonly compactionMemoryBytes?: number;
-      /** Ask the host to report the background WAL scan. Open does not wait for it. */
-      readonly trace?: boolean;
     }
   | { readonly type: "unwatch"; readonly name: string }
   | { readonly type: "stats"; readonly id: number; readonly name: string };
@@ -113,12 +111,6 @@ export type HostToClient =
       readonly message: string;
       /** The `OpfsLsmError` code, so the tab rethrows the same class. */
       readonly code?: ErrorCode;
-    }
-  | {
-      readonly type: "watch-trace";
-      readonly ms: number;
-      readonly rows: number;
-      readonly bytes: number;
     }
   | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats };
 
