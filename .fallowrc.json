@@ -9,6 +9,7 @@
     "packages/*/fuzz/jazzer/*.ts",
     "packages/docstore/tests/usage.ts",
     "examples/*/scripts/**/*.ts",
+    "examples/*/bench/*.ts",
     "bench/cli.ts",
     "bench/page/main.ts",
     "bench/probes/*.ts",
@@ -18,7 +19,8 @@
     "docs/research/opfs-worker-probes/*.mjs"
   ],
   "ignoreBinaries": [
-    "wasm-pack"
+    "wasm-pack",
+    "agent-browser"
   ],
   "ignoreDependencies": [
     "@automerge/automerge-repo-storage-indexeddb",

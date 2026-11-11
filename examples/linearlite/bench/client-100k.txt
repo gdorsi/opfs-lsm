@@ -1,0 +1,35 @@
+# node bench/client.ts <origin> <scenario...>: 100k issues (pnpm seed 100000), vite dev, headless Chrome 157.0.8103.39, Apple M5 Max, macOS 26.6.2.
+# Times in ms; marks are ms from navigation start. p50/min/max over n runs.
+# page-size: one fresh profile per run, alternating 5000/2000/1000 rows per pull
+{"scenario":"page-size","pull":5000,"leader":236,"first-rows":369,"caught-up:issues":5524,"caught-up:bodies":7375,"caught-up:comments":8408,"heapMB":634}
+{"scenario":"page-size","pull":2000,"leader":190,"first-rows":270,"caught-up:issues":6510,"caught-up:bodies":8923,"caught-up:comments":10269,"heapMB":294}
+{"scenario":"page-size","pull":1000,"leader":200,"first-rows":257,"caught-up:issues":8105,"caught-up:bodies":10750,"caught-up:comments":12494,"heapMB":372}
+{"scenario":"page-size","pull":5000,"leader":214,"first-rows":354,"caught-up:issues":5942,"caught-up:bodies":7794,"caught-up:comments":8852,"heapMB":611}
+{"scenario":"page-size","pull":2000,"leader":197,"first-rows":271,"caught-up:issues":6963,"caught-up:bodies":9842,"caught-up:comments":11289,"heapMB":309}
+{"scenario":"page-size","pull":1000,"leader":181,"first-rows":236,"caught-up:issues":8207,"caught-up:bodies":11220,"caught-up:comments":13134,"heapMB":327}
+{"scenario":"page-size","pull":5000,"leader":352,"first-rows":528,"caught-up:issues":6574,"caught-up:bodies":8695,"caught-up:comments":9684,"heapMB":632}
+{"scenario":"page-size","pull":2000,"leader":220,"first-rows":292,"caught-up:issues":9197,"caught-up:bodies":12239,"caught-up:comments":14685,"heapMB":333}
+{"scenario":"page-size","pull":1000,"leader":213,"first-rows":272,"caught-up:issues":8863,"caught-up:bodies":12443,"caught-up:comments":14437,"heapMB":363}
+# visible, tabs
+{"scenario":"visible","round":0,"query":{"n":20,"p50":3.6,"min":1.8,"max":18.4},"dom":{"n":20,"p50":6.7,"min":4.5,"max":27.2}}
+{"scenario":"visible","round":1,"query":{"n":20,"p50":2.8,"min":1.6,"max":15.7},"dom":{"n":20,"p50":6.4,"min":4.4,"max":18.7}}
+{"scenario":"visible","round":2,"query":{"n":20,"p50":1.9,"min":1.5,"max":3.8},"dom":{"n":20,"p50":4.7,"min":4.3,"max":15.8}}
+{"scenario":"visible","all":true,"query":{"n":60,"p50":2.7,"min":1.5,"max":18.4},"dom":{"n":60,"p50":5.6,"min":4.3,"max":27.2}}
+{"scenario":"tabs","leaderA":true,"leaderB":false}
+{"scenario":"tabs","metric":"A->B","n":10,"p50":2.3,"min":1.9,"max":5.6}
+{"scenario":"tabs","metric":"B->A","n":10,"p50":1.9,"min":1.6,"max":2.6}
+{"scenario":"tabs","handover":{"pendingWhileLeaderOffline":true,"serverBefore":1,"serverAfter":2,"expected":2,"closeToAckedMs":108}}
+# first-sync, warm, users, offline
+{"scenario":"first-sync","run":0,"leader":245,"first-rows":322,"caught-up:issues":6136,"caught-up:bodies":7947,"caught-up:comments":9333,"heapMB":234}
+{"scenario":"first-sync","run":1,"leader":190,"first-rows":256,"caught-up:issues":6062,"caught-up:bodies":8250,"caught-up:comments":9740,"heapMB":239}
+{"scenario":"first-sync","run":2,"leader":216,"first-rows":284,"caught-up:issues":6040,"caught-up:bodies":8059,"caught-up:comments":9784,"heapMB":243}
+{"scenario":"first-sync","metric":"first-rows","n":3,"p50":284,"min":256,"max":322}
+{"scenario":"first-sync","metric":"caught-up:issues","n":3,"p50":6062,"min":6040,"max":6136}
+{"scenario":"first-sync","metric":"caught-up:bodies","n":3,"p50":8059,"min":7947,"max":8250}
+{"scenario":"first-sync","metric":"caught-up:comments","n":3,"p50":9740,"min":9333,"max":9784}
+{"scenario":"warm","run":0,"first-rows":1465,"rows":100,"sync":"Offline"}
+{"scenario":"warm","run":1,"first-rows":1640,"rows":100,"sync":"Offline"}
+{"scenario":"warm","run":2,"first-rows":1890,"rows":100,"sync":"Offline"}
+{"scenario":"warm","metric":"first-rows","n":3,"p50":1640,"min":1465,"max":1890}
+{"scenario":"users","metric":"bob->ann","n":10,"p50":10.2,"min":8.7,"max":66.7}
+{"scenario":"offline","expected":[4,0,0],"dirtyOffline":[true,true,true],"statusOffline":"Offline · 3 unsynced","serverOffline":[3,4,4],"reconnectToAckedMs":270,"serverOnline":[4,0,0],"statusOnline":"Synced"}
