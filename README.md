@@ -34,6 +34,19 @@ Medians of 5 runs in headless Chrome 157 on an Apple M5 Max, 100,000 entries wit
 
 The framework adapters show the same shape. TanStack DB bulk inserts run at 136k rows/s against 21k on its IndexedDB adapter. Loading 500 Yjs notes cold runs at 11.2k notes/s against 3.6k on y-indexeddb.
 
+### Bundle size
+
+Importing `@opfs-lsm/kv` adds **22.7 kB** of JavaScript to your main bundle (gzip, 68.0 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
+
+| | gzip | raw | loaded |
+| --- | ---: | ---: | --- |
+| Main-thread JS | 22.7 kB | 68.0 kB | at import |
+| SharedWorker chunk | 12.2 kB | 35.7 kB | on the first `openDb` |
+| wasm engine | 17.5 kB | 38.2 kB | on the first `openDb`, one file for the tab and the SharedWorker |
+| **Total after open** | **52.4 kB** | **142.0 kB** | |
+
+For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 29.7 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](bench/README.md#bundle-size).
+
 ### When IndexedDB is still the better fit
 
 - Your app opens a database and closes it after a handful of reads. Opening kv starts a SharedWorker and loads a wasm engine, which costs about 8 ms.
