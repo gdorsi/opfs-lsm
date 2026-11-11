@@ -108,7 +108,7 @@ describe("advanceIngested", () => {
     const wal = await walWith(3);
     await wal.advanceIngested(2, 1);
     // Seqs 1 and 2 stay: a power loss can keep this commit and lose manifest 1.
-    expect(await wal.adopt(await wal.meta(), 0, 0)).toBe(true);
+    expect(await wal.adopt(await wal.meta(), 0, 0, 0, 0)).toBe(true);
     expect(await seqs(wal)).toEqual([1, 2, 3]);
     expect(await wal.uningestedBytes(1 << 30)).toBe(3 * opsBytes(put(1)));
     wal.close();
@@ -119,7 +119,7 @@ describe("advanceIngested", () => {
     await wal.advanceIngested(2, 1);
     await wal.advanceIngested(3, 2);
     // Seqs 1..2 are gone, so a manifest through 0 cannot be followed.
-    expect(await wal.adopt(await wal.meta(), 0, 0)).toBe(true);
+    expect(await wal.adopt(await wal.meta(), 0, 0, 0, 0)).toBe(true);
     expect(await wal.meta()).toMatchObject({ head: 3, ingestedThrough: 3, generation: 0 });
     expect(await seqs(wal)).toEqual([]);
     wal.close();
@@ -163,7 +163,7 @@ describe("reconcile", () => {
     // IndexedDB kept seq 1 of 4; OPFS kept manifest 2 through 4.
     const wal = await walWith(1);
     const fs = new MemoryFs();
-    await wal.adopt(await wal.meta(), 0, 0);
+    await wal.adopt(await wal.meta(), 0, 0, 0, 0);
     await manifest(fs, 2, 4, ["l0/1-2.sst", "l0/3-4.sst"]);
     expect((await reconcile(wal, fs, "recorded")).generation).toBe(2);
     expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 2 });
@@ -174,7 +174,7 @@ describe("reconcile", () => {
   it("ignores a newer manifest the WAL still covers: a crash left it, and the WAL holds its seqs", async () => {
     const wal = await walWith(3);
     const fs = new MemoryFs();
-    await wal.adopt(await wal.meta(), 0, 0);
+    await wal.adopt(await wal.meta(), 0, 0, 0, 0);
     await manifest(fs, 1, 3, ["l0/1-3.sst"]);
     expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 1 });
     expect(await seqs(wal)).toEqual([1, 2, 3]);
@@ -268,7 +268,7 @@ describe("reconcile", () => {
         await wal.advanceIngested(4, 2);
         const before = await wal.meta();
         expect(before.head).toBe(4);
-        expect(await wal.adopt(before, 0, through)).toBe(true);
+        expect(await wal.adopt(before, 0, through, through, 0)).toBe(true);
         const after = await wal.meta();
         expect(after.head).toBeGreaterThanOrEqual(before.head);
         expect(after.head).toBeGreaterThanOrEqual(after.ingestedThrough);
@@ -293,7 +293,7 @@ describe("reconcile", () => {
     const wal = await walWith(1);
     const stale = await wal.meta();
     await wal.append(put(2));
-    expect(await wal.adopt(stale, 0, 0)).toBe(false);
+    expect(await wal.adopt(stale, 0, 0, 0, 0)).toBe(false);
     expect(await wal.meta()).toEqual({ head: 2, ingestedThrough: 0, generation: undefined, top: 0 });
     wal.close();
   });

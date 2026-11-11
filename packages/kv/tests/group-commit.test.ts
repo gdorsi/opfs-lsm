@@ -28,7 +28,7 @@ function wipe(): Promise<void> {
 async function raiseFloor(by: number): Promise<number> {
   const wal = await IdBWal.open(checkDbName(NAME));
   const meta = await wal.meta();
-  expect(await wal.adopt(meta, meta.generation ?? 0, meta.ingestedThrough, meta.head + by)).toBe(true);
+  expect(await wal.adopt(meta, meta.generation ?? 0, meta.ingestedThrough, meta.head + by, meta.generation ?? 0)).toBe(true);
   wal.close();
   return meta.head + by;
 }

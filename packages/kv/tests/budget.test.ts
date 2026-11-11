@@ -73,11 +73,10 @@ describe("hostBudget", () => {
     expect(hostBudget(Number.POSITIVE_INFINITY)).toMatchObject({ ...at64, wasmRecycleBytes: Number.POSITIVE_INFINITY });
   });
 
-  it("reads a budget below the minimum as the minimum and NaN as the default", () => {
+  it("reads a budget below the minimum as the minimum", () => {
     expect(MIN_COMPACTION_MEMORY_BYTES).toBe(8 * MiB);
     expect(hostBudget(1)).toEqual(hostBudget(MIN_COMPACTION_MEMORY_BYTES));
     expect(hostBudget(-5 * MiB)).toEqual(hostBudget(MIN_COMPACTION_MEMORY_BYTES));
-    expect(hostBudget(Number.NaN)).toEqual(hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES));
   });
 
   it("stops L0 one run short of the sources a step reads, at every budget", () => {

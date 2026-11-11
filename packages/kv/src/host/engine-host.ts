@@ -1,4 +1,4 @@
-import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
+import { checkDbName, opsBytes, type DbName } from "../check.js";
 import { codeOfError, errorOfCode } from "../errors.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
@@ -13,11 +13,12 @@ import {
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
-import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
+import { compactionMemoryOf, DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
   unlessHeld,
+  type BusMessage,
   type ClientToHost,
   type HostStats,
   type HostToClient,
@@ -27,7 +28,7 @@ import {
 import { compactLock, ingestLock, layersChannel, webLocks } from "../locks.js";
 import { coalesced, serial } from "../turns.js";
 
-export type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
+type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
@@ -61,16 +62,6 @@ type IngestWatch = {
   /** Open tabs that asked for this watch. The bus closes at zero. */
   watchers: number;
   bus: BroadcastChannel | undefined;
-};
-
-/** The `append` messages tabs post on `layersChannel` (see `DbImpl.broadcast`). */
-type AppendHint = { readonly kind: string; readonly ops?: readonly CheckedOp[] };
-
-/** Background pending-byte read. `rows` stays 0: the host does not list the WAL. */
-export type WatchScan = {
-  ms: number;
-  rows: number;
-  bytes: number;
 };
 
 /**
@@ -107,16 +98,16 @@ export class EngineHost {
   }
 
   /**
-   * Flush every WAL record through `through` into an L0 run, then start
-   * compaction in the background. With `waitForCompaction`, also wait until the levels
-   * are in shape.
+   * Flush the WAL into L0 runs, then start compaction in the background.
+   * With `waitForCompaction`, also wait until the levels are in shape.
    */
-  async ingest(
-    name: string,
-    through: number,
-    waitForCompaction = false,
-  ): Promise<{ generation: number }> {
-    return this.db(name).ingest(through, waitForCompaction);
+  async ingest(name: string, waitForCompaction = false): Promise<{ generation: number }> {
+    return this.db(name).ingest(waitForCompaction);
+  }
+
+  /** Wait for a flush in flight, then compact until the levels are in shape. Folds no WAL. */
+  async compact(name: string): Promise<void> {
+    return this.db(name).compactNow();
   }
 
   /**
@@ -125,8 +116,8 @@ export class EngineHost {
    * background and ingests when a reopened database is already over the limit.
    * The host holds `name` to the smallest `compactionMemoryBytes` any tab passed.
    */
-  watch(name: string, policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
-    this.db(name).watch(policy, onScan);
+  watch(name: string, policy: WatchPolicy): void {
+    this.db(name).watch(policy);
   }
 
   unwatch(name: string): void {
@@ -212,8 +203,8 @@ class HostedDb {
     });
   }
 
-  async ingest(through: number, waitForCompaction: boolean): Promise<{ generation: number }> {
-    const { generation } = await this.fold(through);
+  async ingest(waitForCompaction: boolean): Promise<{ generation: number }> {
+    const { generation } = await this.fold();
     const compaction = this.compact();
     if (!waitForCompaction) {
       compaction.catch(() => undefined);
@@ -226,6 +217,25 @@ class HostedDb {
   }
 
   /**
+   * Wait for a fold in flight, reconcile and remove old manifests as a fold
+   * that found nothing to fold does, then compact. Removes no run file here:
+   * that needs the compaction lock, and `compactPass` does it under it.
+   */
+  async compactNow(): Promise<void> {
+    const fs = await this.fs();
+    await this.foldTurn(() =>
+      this.exclusive(() =>
+        this.withWal(async (wal) => {
+          const { generation } = await reconcile(wal, fs, this.trusted);
+          this.trusted = generation;
+          await unlessHeld(this.name, () => reclaimManifests(fs, generation));
+        }),
+      ),
+    );
+    await this.compact();
+  }
+
+  /**
    * Fold the WAL as it stands now into L0 runs of `flushRunBytes`, oldest
    * first. One fold runs at a time, so a flush asked for during another
    * waits for it and finds its records ingested. Each run is its own
@@ -235,14 +245,13 @@ class HostedDb {
    * `l0StopRuns` runs it publishes none, and waits for compaction instead.
    * A fold that published a run tells the tabs, whoever asked for it.
    */
-  private fold(through: number): Promise<IngestResult> {
-    return this.foldTurn(() => this.foldRuns(through));
+  private fold(): Promise<IngestResult> {
+    return this.foldTurn(() => this.foldRuns());
   }
 
-  private async foldRuns(through: number): Promise<IngestResult> {
+  private async foldRuns(): Promise<IngestResult> {
     const fs = await this.fs();
-    const head = await this.withWal(async (wal) => (await wal.meta()).head);
-    const target = Math.min(through, head);
+    const target = await this.withWal(async (wal) => (await wal.meta()).head);
     let foldedBytes = 0;
     let pastStop = false;
     try {
@@ -315,25 +324,14 @@ class HostedDb {
     return Promise.race([installed.then(() => "installed" as const), ended]);
   }
 
-  watch(policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
-    // A tab of an older build sends no figure, and NaN would win every later `Math.min`.
-    const compactionMemoryBytes =
-      policy.compactionMemoryBytes > 0 ? policy.compactionMemoryBytes : DEFAULT_COMPACTION_MEMORY_BYTES;
-    const watch = this.watching ?? this.startWatch({ ...policy, compactionMemoryBytes });
+  watch(policy: WatchPolicy): void {
+    const watch = this.watching ?? this.startWatch(policy);
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
-    watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, compactionMemoryBytes);
+    watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
-    const scanAt = onScan ? performance.now() : 0;
     void this.withWal((wal) => wal.uningestedBytes(watch.maxWalBytes)).then(
       (waiting) => {
-        if (onScan) {
-          onScan({
-            ms: performance.now() - scanAt,
-            rows: 0,
-            bytes: waiting,
-          });
-        }
         watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
         this.maybeIngest(watch);
       },
@@ -363,8 +361,8 @@ class HostedDb {
     };
     if (typeof BroadcastChannel !== "undefined") {
       watch.bus = new BroadcastChannel(layersChannel(this.name));
-      watch.bus.onmessage = (ev: MessageEvent<AppendHint | null>) => {
-        if (ev.data?.kind !== "append" || !ev.data.ops) return;
+      watch.bus.onmessage = (ev: MessageEvent<BusMessage>) => {
+        if (ev.data.kind !== "append") return;
         watch.pendingBytes += opsBytes(ev.data.ops);
         this.maybeIngest(watch);
       };
@@ -385,7 +383,7 @@ class HostedDb {
     watch.state = "ingesting";
     void (async () => {
       try {
-        const { foldedBytes } = await this.fold(Number.POSITIVE_INFINITY);
+        const { foldedBytes } = await this.fold();
         // Nothing was waiting, so the count was ahead of the WAL. Without
         // this, it would stay over the trigger and ingest in a loop.
         if (foldedBytes === 0) watch.pendingBytes = 0;
@@ -469,7 +467,8 @@ class HostedDb {
 function announceGeneration(dbName: DbName): void {
   if (typeof BroadcastChannel === "undefined") return;
   const bus = new BroadcastChannel(layersChannel(dbName));
-  bus.postMessage({ kind: "ingest", writerId: "engine-host" });
+  const message: BusMessage = { kind: "ingest" };
+  bus.postMessage(message);
   bus.close();
 }
 
@@ -499,35 +498,16 @@ export function attachEngineHostPort(
     const reply = (m: HostToClient) => port.postMessage(m);
     try {
       switch (msg.type) {
-        case "ping":
-          reply({ type: "pong", id: msg.id });
-          return;
         case "ingest": {
-          const { generation } = await host.ingest(
-            msg.name,
-            msg.through,
-            msg.waitForCompaction,
-          );
+          const { generation } = await host.ingest(msg.name, msg.waitForCompaction);
           reply({ type: "ingest-ok", id: msg.id, generation });
           return;
         }
         case "watch":
-          host.watch(
-            msg.name,
-            {
-              maxWalBytes: msg.maxWalBytes,
-              compactionMemoryBytes: msg.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
-            },
-            msg.trace
-              ? (scan) =>
-                  reply({
-                    type: "watch-trace",
-                    ms: scan.ms,
-                    rows: scan.rows,
-                    bytes: scan.bytes,
-                  })
-              : undefined,
-          );
+          host.watch(msg.name, {
+            maxWalBytes: msg.maxWalBytes,
+            compactionMemoryBytes: compactionMemoryOf(msg.compactionMemoryBytes),
+          });
           return;
         case "unwatch":
           host.unwatch(msg.name);
@@ -556,10 +536,7 @@ export function attachEngineHostPort(
 }
 
 /** Tab-side client over a MessagePort. */
-export function createPortIngestClient(
-  port: MessagePort,
-  onWatchScan?: (scan: WatchScan) => void,
-): IngestClient {
+export function createPortIngestClient(port: MessagePort): IngestClient {
   let nextId = 1;
   const pending = new Map<
     number,
@@ -568,10 +545,6 @@ export function createPortIngestClient(
 
   const onMessage = (ev: MessageEvent<HostToClient>) => {
     const msg = ev.data;
-    if (msg.type === "watch-trace") {
-      onWatchScan?.(msg);
-      return;
-    }
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
@@ -589,8 +562,8 @@ export function createPortIngestClient(
     });
 
   return {
-    async ingest(name: string, through: number, waitForCompaction = false) {
-      const res = await request({ type: "ingest", id: nextId++, name, through, waitForCompaction });
+    async ingest(name: string, waitForCompaction = false) {
+      const res = await request({ type: "ingest", id: nextId++, name, waitForCompaction });
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
     watch(name, policy) {
@@ -599,7 +572,6 @@ export function createPortIngestClient(
         name,
         maxWalBytes: policy.maxWalBytes,
         compactionMemoryBytes: policy.compactionMemoryBytes,
-        ...(onWatchScan ? { trace: true } : {}),
       };
       port.postMessage(msg);
     },
@@ -621,7 +593,7 @@ export function createPortIngestClient(
 
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
-    ingest: (name, through, waitForCompaction) => host.ingest(name, through, waitForCompaction),
+    ingest: (name, waitForCompaction) => host.ingest(name, waitForCompaction),
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
     stats: (name) => host.stats(name),

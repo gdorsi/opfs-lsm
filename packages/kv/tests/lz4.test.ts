@@ -3,7 +3,7 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep } from "../src/host/compact.js";
 import { decodeSst as decodeWasm, encodeRun, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
-import { publishGeneration } from "../src/store/generation.js";
+import { loadLatestGeneration, publishGeneration } from "../src/store/generation.js";
 import { lz4DecompressJs, useLz4Decoder } from "../src/store/lz4.js";
 import { untilHit } from "../src/store/cursor.js";
 import { decodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
@@ -132,7 +132,7 @@ describe("compaction codec", () => {
     await publish(fs, path, body);
     // A size past L1's target makes the run a compaction input without writing 40 MB.
     await publishGeneration(fs, { generation: 1, runs: [{ path, ...end, bytes: 50_000_000 }], tombstoneSeq: 0, through: 0 });
-    const step = await mergeNextStep(fs, budget);
+    const step = await mergeNextStep(fs, budget, (await loadLatestGeneration(fs))!, 0);
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
     return { out: out.path, bytes, raw: body };
@@ -158,7 +158,7 @@ describe("compaction codec", () => {
       runs.push({ path, ...end });
     }
     await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 0 });
-    const step = await mergeNextStep(fs, budget);
+    const step = await mergeNextStep(fs, budget, (await loadLatestGeneration(fs))!, 0);
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
     expect(out.path.startsWith("l1/")).toBe(true);

@@ -10,7 +10,7 @@ import {
   type GenerationMeta,
 } from "./store/generation.js";
 
-export type Reconciled = {
+type Reconciled = {
   /** The recorded generation. Its manifest and the WAL hold one log prefix. */
   readonly generation: number;
   /**

@@ -6,6 +6,11 @@ const MiB = 1024 * KiB;
 /** What `openDb` assumes when the app sets no `compactionMemoryBytes`. */
 export const DEFAULT_COMPACTION_MEMORY_BYTES = 32 * MiB;
 
+/** The app's `compactionMemoryBytes`, or the default unless it is positive. `openDb` and the host's port both read it through here. */
+export function compactionMemoryOf(asked: number | undefined): number {
+  return asked !== undefined && asked > 0 ? asked : DEFAULT_COMPACTION_MEMORY_BYTES;
+}
+
 /**
  * Every openDb replays the whole uningested WAL on the tab's main thread, at
  * a cost per row. 1 MiB keeps that replay near 40 ms with ~100-byte ops
@@ -98,13 +103,12 @@ const YIELD_BYTES = 1 * MiB;
  *   8 MiB at the default) and below what they need together (19 MiB). It
  *   fires after an overlap, not after every flush.
  *
- * A figure below the minimum counts as the minimum, and NaN as the default.
+ * A figure below the minimum counts as the minimum.
  * Past 64 MiB only the recycle threshold grows: the sweep that chose the
  * cap on S measured no higher.
  */
 export function hostBudget(compactionMemoryBytes: number): HostBudget {
-  const budget = Number.isNaN(compactionMemoryBytes) ? DEFAULT_COMPACTION_MEMORY_BYTES : compactionMemoryBytes;
-  const b = Math.max(MIN_COMPACTION_MEMORY_BYTES, budget);
+  const b = Math.max(MIN_COMPACTION_MEMORY_BYTES, compactionMemoryBytes);
   const flushRunBytes = Math.floor((Math.min(TARGET_RUN_BYTES, b / 16) * 7) / 8);
   const merge = b - MODULE_BYTES - FLUSH_COST * flushRunBytes;
   const maxSources = Math.min(MAX_SOURCES, Math.floor(merge / (2 * MIN_CHUNK_BYTES + SOURCE_BYTES)));

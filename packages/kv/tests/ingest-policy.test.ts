@@ -340,14 +340,13 @@ describe("ingest policy", () => {
     await reopened.close();
   });
 
-  it("a second request for the same flush publishes nothing new", async () => {
+  it("flushes asked for together publish one run", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
     const db = await open(host, fs, "a", 1e9);
     await db.put(utf("a"), utf("1"));
-    expect((await host.ingest(NAME, 1)).generation).toBe(1);
-    await db.put(utf("b"), utf("2"));
-    expect((await host.ingest(NAME, 1)).generation).toBe(1);
+    const flushes = await Promise.all([host.ingest(NAME), host.ingest(NAME)]);
+    expect(flushes.map((f) => f.generation)).toEqual([1, 1]);
     expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1);
     await db.close();
   });

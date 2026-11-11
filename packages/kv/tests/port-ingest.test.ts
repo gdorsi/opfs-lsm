@@ -46,7 +46,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     const { port1, port2 } = new MessageChannel();
     attachEngineHostPort(port1, new EngineHost(() => fs));
     const client = createPortIngestClient(port2);
-    const err = await client.ingest("port-db", 1).catch((e: unknown) => e);
+    const err = await client.ingest("port-db").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CorruptDatabaseError);
     expect((err as OpfsLsmError).code).toBe("corrupt");
     client.close();

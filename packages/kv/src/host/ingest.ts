@@ -19,7 +19,7 @@ export type IngestResult = {
 };
 
 /** What bounds one `ingestChunk`. */
-export type ChunkLimits = {
+type ChunkLimits = {
   /** Op bytes of WAL records folded into the run. At least one record is taken. */
   readonly maxBytes: number;
   /** The L0 run count at which no more runs are published. */
@@ -27,9 +27,9 @@ export type ChunkLimits = {
 };
 
 /** What `ingestChunk` did. */
-export type Chunk = IngestResult & {
+type Chunk = IngestResult & {
   /**
-   * "empty" when no record through `through` was waiting, and "stopped" when
+   * "empty" when no record up to `through` was waiting, and "stopped" when
    * some were but L0 holds `l0Stop` runs. Neither published anything.
    */
   readonly kind: "folded" | "empty" | "stopped";
@@ -39,9 +39,10 @@ export type Chunk = IngestResult & {
  * Fold the oldest uningested WAL records into one L0, publish generation, and
  * advance ingestedThrough. It takes at most `maxBytes` of op bytes, and at
  * least one record, so a backlog takes several calls and each run stays
- * small. Compaction runs separately. Folds nothing when every seq through
- * `through` is already ingested, so tabs that ask for the same flush get one
- * L0, and when L0 is full, so compaction can catch up. Removes no file: the
+ * small. Compaction runs separately. `through` is the WAL head the fold read
+ * when it started: it folds nothing once every seq up to it is ingested, so
+ * records acked during a fold wait for the next one, and nothing when L0 is
+ * full, so compaction can catch up. Removes no file: the
  * host removes old manifests once no tab is loading a generation
  * (`HostedDb.fold`).
  *

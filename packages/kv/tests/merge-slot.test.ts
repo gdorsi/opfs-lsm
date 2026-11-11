@@ -111,7 +111,7 @@ async function database(name: string) {
   const flushRun = async () => {
     await db.put(enc.encode(`${name}/k${next}`), enc.encode(`v${next}`));
     next++;
-    await host.ingest(name, Number.POSITIVE_INFINITY);
+    await host.ingest(name);
   };
   return { host, db, hold, opened, flushRun };
 }
@@ -154,7 +154,7 @@ describe("two databases compacting in one context", () => {
 
     stop.release();
     await vi.waitFor(async () => expect((await b.host.stats(B)).compactionSteps).toBe(1));
-    await a.host.ingest(A, Number.POSITIVE_INFINITY, true);
+    await a.host.ingest(A, true);
 
     expect((await a.host.stats(A)).compactionSteps).toBe(1);
     expect(b.opened.length).toBeGreaterThan(0);
@@ -175,7 +175,7 @@ describe("two databases compacting in one context", () => {
     expect((await a.host.stats(A)).flushes).toBe(5);
     expect((await a.host.stats(A)).compactionSteps).toBe(0);
     stop.release();
-    await a.host.ingest(A, Number.POSITIVE_INFINITY, true);
+    await a.host.ingest(A, true);
     expect(await readAll(a.db, A, 5)).toEqual(["v0", "v1", "v2", "v3", "v4"]);
     await a.db.close();
   });

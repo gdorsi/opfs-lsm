@@ -108,7 +108,7 @@ export class Sut {
   /** Wait for compaction in flight, and run one more pass. Folds no WAL. */
   settle(): Promise<unknown> {
     this.release();
-    return this.host.ingest(this.name, 0, true);
+    return this.host.compact(this.name);
   }
 
   async dispose(): Promise<void> {
@@ -403,7 +403,7 @@ class HoldCompactionCmd implements Cmd {
 class FlushCmd implements Cmd {
   check = () => true;
   async run(_m: Model, r: Sut): Promise<void> {
-    await r.host.ingest(r.name, Number.POSITIVE_INFINITY, false);
+    await r.host.ingest(r.name);
   }
   toString = () => "flush (compaction in background)";
 }

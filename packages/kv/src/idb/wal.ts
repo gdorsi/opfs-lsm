@@ -38,11 +38,6 @@ export type WalMeta = {
   readonly top: number;
 };
 
-export type WalReadProfile = {
-  ms: number;
-  rows: number;
-};
-
 /** What a tab needs to bring its memtable up to the WAL head. */
 export type WalTail = {
   readonly head: number;
@@ -325,15 +320,10 @@ export class IdBWal {
   }
 
   /** The tail after `since`, from one readonly transaction. */
-  async tail(since: number, profile?: WalReadProfile): Promise<WalTail> {
-    const started = profile ? performance.now() : 0;
+  async tail(since: number): Promise<WalTail> {
     // The reads are the result. Waiting for `complete` as well is one more trip.
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const tail = await readTail(tx, since);
-    if (profile) {
-      profile.ms = performance.now() - started;
-      profile.rows = tail.records.length;
-    }
     return tail;
   }
 
@@ -528,8 +518,8 @@ export class IdBWal {
     expect: WalMeta,
     generation: number,
     through: number,
-    floor = through,
-    top = generation,
+    floor: number,
+    top: number,
   ): Promise<boolean> {
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
