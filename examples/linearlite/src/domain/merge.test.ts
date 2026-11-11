@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { applyLocal, kanbanBetween, mergeIncoming } from "./merge.ts";
+import { applyLocal, kanbanBetween, mergeIncoming, restore } from "./merge.ts";
 import type { Comment, Issue, ServerRow } from "./model.ts";
 
 const issue = (over: Partial<Issue> = {}): Issue => ({
@@ -170,6 +170,28 @@ describe("mergeIncoming", () => {
     const next = mergeIncoming(local, row);
     assert.equal(next?.version, 3);
     assert.deepEqual(next?.dirty, { body: 4 });
+  });
+});
+
+describe("restore", () => {
+  const edited = () => applyLocal(issue({ version: 9 }), { title: "Mine", status: 4 }, 20);
+
+  it("replaces a row whose edit the server refused with the server's row, clean, even when its version is older", () => {
+    const back = restore(edited(), server({ title: "Theirs", version: 5 }));
+    assert.deepEqual(back, server({ title: "Theirs", version: 5 }));
+    assert.equal((back as Issue).dirty, undefined);
+  });
+
+  it("deletes a row the server has never had, which is what a refused create leaves", () => {
+    assert.equal(restore(edited(), null), null);
+  });
+
+  it("deletes a row the server holds as a tombstone", () => {
+    assert.equal(restore(edited(), server({ deleted: true, version: 12 })), null);
+  });
+
+  it("leaves a row that is no longer stored alone", () => {
+    assert.equal(restore(undefined, server()), undefined);
   });
 });
 

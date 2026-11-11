@@ -40,6 +40,16 @@ export function mergeIncoming<T extends Tombstoned>(
   return result.deleted && result.dirty === undefined ? null : result;
 }
 
+/**
+ * Reset a row to the server's state after the server refused an edit of it. Unlike `mergeIncoming` it takes the
+ * server's row whatever its version, since the local version may be ahead of what the server holds, and drops
+ * every dirty field. No server row, or a tombstone, deletes the local one. A row that is no longer stored stays so.
+ */
+export function restore<T extends Tombstoned>(local: T | undefined, server: Omit<T, "dirty"> | null): T | null | undefined {
+  if (local === undefined) return undefined;
+  return server === null || server.deleted ? null : (server as T);
+}
+
 function unacked(dirty: Clocks | undefined, acked: Clocks | undefined): Clocks | undefined {
   if (dirty === undefined || acked === undefined) return dirty;
   const rest = Object.entries(dirty).filter(([f, clock]) => acked[f] !== clock);

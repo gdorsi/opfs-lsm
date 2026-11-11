@@ -1,8 +1,8 @@
 import { kvCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection } from "@tanstack/db";
-import { mergeIncoming } from "../domain/merge.ts";
+import { mergeIncoming, restore } from "../domain/merge.ts";
 import type { Clocks, Rows, ServerRow, Stream, SyncState } from "../domain/model.ts";
-import { MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse } from "../domain/wire.ts";
+import { MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse, type RowResponse } from "../domain/wire.ts";
 import { backoffMs, pushOp, rowKey } from "./ops.ts";
 import { openStore, type OutboxMark, type Store } from "./store.ts";
 
@@ -228,7 +228,7 @@ class Leader {
 
   /**
    * A refused batch is retried one op at a time, so one bad op cannot wedge sync. An op the server refuses on its
-   * own is dropped: its fields stop being dirty and the next pull of that row restores the server's values.
+   * own is dropped: the row is reset to what the server holds, or deleted when the server has none.
    */
   private async send(batch: readonly Outgoing[]): Promise<void> {
     let res: PushResponse;
@@ -253,12 +253,12 @@ class Leader {
     }
   }
 
+  /** A pull would not do: it skips a row whose version it already has, and a refused create has no server row to pull. */
   private async drop({ op, key }: Outgoing): Promise<void> {
-    await transactOf(this.store, op.stream)([key], ([local]) => {
-      if (local === undefined) return [undefined];
-      const { dirty: _dirty, ...clean } = local;
-      return [mergeIncoming(local, clean, op.clocks)];
-    });
+    const res = await request<RowResponse>(this.store.user, `/api/row?stream=${op.stream}&id=${encodeURIComponent(op.id)}`);
+    this.checkEpoch(res.epoch);
+    const server = res.row as unknown as Omit<Rows[typeof op.stream], "dirty"> | null;
+    await transactOf(this.store, op.stream)([key], ([local]) => [restore<Rows[typeof op.stream]>(local, server)]);
   }
 
   private async save(patch: Partial<SyncState>): Promise<void> {

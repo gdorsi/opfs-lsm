@@ -130,6 +130,13 @@ describe("push", () => {
     assert.equal(detail(db, "i-new").comments[0]?.body, "edited");
   });
 
+  it("leaves the server unchanged when it refuses a single op", () => {
+    const head = readHead(db);
+    assert.throws(() => push(db, [edit("never-created", { title: "x" }, { title: 1 })], "ada"), (e) => e instanceof WireError && e.status === 409);
+    assert.equal(readHead(db), head);
+    assert.equal(row(db, "issues", "never-created").row, null);
+  });
+
   it("rolls the whole request back when one op is refused", () => {
     const head = readHead(db);
     const id = pull(db, "issues", 0, 1).rows[0]!.id;
