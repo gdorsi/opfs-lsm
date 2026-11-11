@@ -10,8 +10,9 @@ of 100,000 issues with 0–1 comment each.
 kv on OPFS holds the whole replica in every browser. TanStack DB collections are the read model: issue summaries
 are in memory in full, descriptions and comments only while a screen shows them. Every write, a local edit or a
 row from the server, is one kv read-modify-write (`utils.transact`), so there is one write path and one merge
-rule. Each row carries its own unsent edits (`dirty`), which is the outbox, the "not synced" mark and the conflict
-guard at once. One tab per browser, elected with Web Locks, talks to the server. The server is SQLite where every
+rule. Each row carries its own unsent edits (`dirty`), which is the "not synced" mark and the conflict guard. The
+outbox is those rows, found by a live query over `dirty` issues and, because bodies and comments load on demand and
+cannot be scanned, by small eager `outbox` marks naming the ones with unsent edits. One tab per browser, elected with Web Locks, talks to the server. The server is SQLite where every
 row carries the global version that last changed it, so "what changed since V" is an index scan, not a log.
 
 ## Why the data is split (measured)
@@ -53,6 +54,8 @@ export interface Comment extends Synced {                                       
   readonly created: number; deleted: boolean;
 }
 export type Stream = "issues" | "bodies" | "comments";
+/** Eager, one per body or comment with unsent edits; the row itself still holds `dirty`. */
+export interface OutboxMark { readonly key: string; readonly stream: "bodies" | "comments"; readonly rowKey: string; readonly nonce: string }
 /** One eager row per browser (`id: "sync"`), written by the leader, read by every tab's status bar. */
 export interface SyncState {
   readonly id: "sync"; epoch: string | null; cursors: Record<Stream, number>; head: number;
@@ -102,6 +105,12 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
   push every dirty row (fields = current values of dirty fields; a row with `version 0` pushes all fields with
   `create`), then pull each stream until `more` is false. Push before pull, so acked fields merge before the pull
   brings the same rows. Failure: back off 1 s → 30 s, mark `online: false`.
+- **Outbox marks.** A command writes the mark, then the row. The leader reads the marked rows, pushes them, and
+  removes a mark only if its `nonce` is unchanged, so an edit made while the push was in flight keeps its mark. A
+  mark on a clean row (a crash between the two writes) pushes nothing and is removed.
+- **Refused pushes.** A push the server refuses with a 4xx is retried op by op, so one bad op cannot wedge sync. An
+  op still refused is dropped: the leader fetches that row from `/api/row` and replaces the local row with it,
+  clean, or deletes the local row when the server has none (a refused create). It warns in the console.
 - **First sync.** `issues` first, so list and board fill page by page; then `bodies` and `comments` in the
   background. A detail view opened before its body arrives calls `/api/detail` from its own tab and writes the
   result with the same `mergeIncoming`.
