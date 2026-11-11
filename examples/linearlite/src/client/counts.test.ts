@@ -7,7 +7,7 @@ import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import type { Issue, PriorityCode, StatusCode } from "../domain/model.ts";
 import { countByStatus, countTotal } from "./counts.ts";
 import { parseIssueFilter } from "./filter.ts";
-import { schema, type IssueDocs } from "./store.ts";
+import { schema, stored, type IssueDocs } from "./store.ts";
 
 const TITLES = [
   "Fix 100% CPU",
@@ -53,7 +53,7 @@ let docs: IssueDocs;
 before(async () => {
   kv = await openHarnessDb({ name: `linearlite-counts-${process.pid}`, forceMemory: true });
   docs = (await openDocStore(kv, schema)).collection("issues");
-  await docs.putMany(issues);
+  await docs.putMany(issues.map(stored));
 });
 after(() => kv.close());
 

@@ -1,6 +1,6 @@
 import { STATUSES, type Issue, type StatusCode } from "../domain/model.ts";
 import type { IssueFilter } from "./filter.ts";
-import type { IssueDocs } from "./store.ts";
+import { priorityOrder, type IssueDocs } from "./store.ts";
 
 type Snap = Parameters<Parameters<IssueDocs["view"]>[0]>[0];
 
@@ -51,7 +51,9 @@ export function countByStatus(issues: IssueDocs, filter: IssueFilter): Promise<n
         const parts =
           filter.priority.length === 0
             ? [snap.count({ index: "byStatus", eq: [false, s] })]
-            : filter.priority.map((p) => snap.count({ index: "byPriority", eq: [false, p, s] }));
+            : filter.priority.map((p) =>
+                snap.count({ index: "byPriority", eq: [false, p], gte: priorityOrder(p, s, 0), lt: priorityOrder(p, s + 1, 0) }),
+              );
         counts[s] = (await Promise.all(parts)).reduce((a, b) => a + b, 0);
       }),
     );
