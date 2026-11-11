@@ -91,7 +91,7 @@ If read and write performance of the DB is not a concern in your app.
 | Package | What it is | Status |
 | --- | --- | --- |
 | [`@opfs-lsm/kv`](packages/kv) | The key-value store. Start here. | Beta |
-| [`@opfs-lsm/tanstack-db`](packages/tanstack-db) | Persistence for TanStack DB collections, with other tabs' writes arriving live. | Beta |
+| [`@opfs-lsm/tanstack-db`](packages/tanstack-db) | TanStack DB collections kept in docstore, with other tabs' writes arriving live and on-demand queries read through docstore's indexes. | Beta |
 | [`@opfs-lsm/yjs`](packages/yjs) | A Yjs provider shaped like y-indexeddb. | Beta |
 | [`@opfs-lsm/automerge`](packages/automerge) | A storage adapter for automerge-repo. | Beta |
 | [`@opfs-lsm/docstore`](packages/docstore) | A document store with declared indexes, paged queries, snapshot reads and a change feed. | Beta |

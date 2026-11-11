@@ -7,6 +7,6 @@ export default defineConfig({
   // kv's SharedWorker loads its wasm glue with dynamic import(), which classic workers can't resolve.
   worker: { format: "es" },
   // Keep kv as real files so `new URL("…", import.meta.url)` finds the worker and wasm next to them.
-  optimizeDeps: { exclude: ["@opfs-lsm/kv", "@opfs-lsm/tanstack-db"] },
+  optimizeDeps: { exclude: ["@opfs-lsm/kv", "@opfs-lsm/docstore", "@opfs-lsm/tanstack-db"] },
   plugins: [tanstackStart(), react()],
 });

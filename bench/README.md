@@ -26,7 +26,7 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 |---|---|---|
 | `kv` | kv (`openDb`, SharedWorker host) | a hand-written IndexedDB key-value store: one object store, one transaction per batch, `getAll` pages for scans |
 | `table` | docstore (`packages/docstore`) | Dexie |
-| `tanstack` | `kvCollectionOptions` from `@opfs-lsm/tanstack-db` (`packages/tanstack-db`) | TanStack DB's `indexedDBCollectionOptions` |
+| `tanstack` | `docstoreCollectionOptions` from `@opfs-lsm/tanstack-db` (`packages/tanstack-db`), eager, over a docstore collection with no indexes | TanStack DB's `indexedDBCollectionOptions` |
 | `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | `KvPersistence` from `@opfs-lsm/yjs` (`packages/yjs`) | y-indexeddb |
 

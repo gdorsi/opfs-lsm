@@ -1,9 +1,7 @@
-import { kvCollectionOptions } from "@opfs-lsm/tanstack-db";
-import { createCollection } from "@tanstack/db";
 import { mergeIncoming, restore } from "../domain/merge.ts";
 import type { Clocks, Rows, ServerRow, Stream, SyncState } from "../domain/model.ts";
 import { MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse, type RowResponse } from "../domain/wire.ts";
-import { backoffMs, pushOp, rowKey } from "./ops.ts";
+import { backoffMs, pushOp } from "./ops.ts";
 import { openStore, type OutboxMark, type Store } from "./store.ts";
 
 const PULL_LIMIT = 2000;
@@ -62,7 +60,7 @@ async function read<T, K extends string>(transact: Transact<T, K>, keys: readonl
 async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: readonly ServerRow<S>[], acked?: readonly Clocks[]) {
   const incoming = rows as unknown as readonly Omit<Rows[S], "dirty">[];
   await transactOf(store, stream)(
-    incoming.map((row) => rowKey(stream, row)),
+    incoming.map((row) => row.id),
     (locals) => incoming.map((row, i) => mergeIncoming<Rows[S]>(locals[i], row, acked?.[i])),
   );
 }
@@ -203,7 +201,7 @@ class Leader {
       const op = pushOp("issues", row);
       if (op) outgoing.push({ op, key: row.id });
     }
-    const marks: OutboxMark[] = [...outbox.values()].map(({ key, stream, rowKey, nonce }) => ({ key, stream, rowKey, nonce }));
+    const marks: OutboxMark[] = [...outbox.values()].map(({ id, stream, rowKey, nonce }) => ({ id, stream, rowKey, nonce }));
     for (const stream of BACKGROUND) {
       const keys = marks.filter((m) => m.stream === stream).map((m) => m.rowKey);
       if (keys.length === 0) continue;
@@ -216,7 +214,7 @@ class Leader {
     for (let i = 0; i < outgoing.length; i += MAX_OPS) await this.send(outgoing.slice(i, i + MAX_OPS));
     if (marks.length > 0) {
       await outbox.utils.transact(
-        marks.map((m) => m.key),
+        marks.map((m) => m.id),
         (stored) => stored.map((m, i) => (m?.nonce === marks[i]!.nonce ? null : undefined)),
       );
     }
@@ -264,18 +262,11 @@ class Leader {
   }
 
   private async wipe(epoch: string): Promise<void> {
-    const { db, issues, outbox } = this.store;
+    const { docs, issues, outbox } = this.store;
     await issues.preload();
     await clear(issues.utils.transact, [...issues.keys()]);
     await clear(outbox.utils.transact, [...outbox.keys()]);
-    for (const name of BACKGROUND) {
-      const all = createCollection(
-        kvCollectionOptions({ db, name, id: `linearlite-wipe-${name}`, getKey: (r: { key?: string; id: string }) => r.key ?? r.id }),
-      );
-      await all.preload();
-      await clear(all.utils.transact, [...all.keys()]);
-      await all.cleanup();
-    }
+    for (const name of BACKGROUND) await docs.collection(name).clear();
     this.head = undefined;
     this.marked.clear();
     await this.save({ ...EMPTY, epoch });

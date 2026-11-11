@@ -31,8 +31,8 @@ async function editIssue(id: string, patch: IssuePatch): Promise<void> {
 }
 
 function mark(store: Store, stream: OutboxMark["stream"], rowKey: string): Promise<void> {
-  const key = outboxKey(stream, rowKey);
-  return store.outbox.utils.transact([key], () => [{ key, stream, rowKey, nonce: crypto.randomUUID() }]);
+  const id = outboxKey(stream, rowKey);
+  return store.outbox.utils.transact([id], () => [{ id, stream, rowKey, nonce: crypto.randomUUID() }]);
 }
 
 export const setStatus = (id: string, status: StatusCode) => editIssue(id, { status });
@@ -101,7 +101,7 @@ export async function addComment(issueId: string, text: string): Promise<string>
     version: 0,
     dirty: allDirty(MUTABLE_FIELDS.comments, clock),
   };
-  await mark(store, "comments", key);
-  await store.comments.utils.transact([key], () => [comment]);
+  await mark(store, "comments", id);
+  await store.comments.utils.transact([id], () => [comment]);
   return id;
 }

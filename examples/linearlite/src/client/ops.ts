@@ -13,10 +13,6 @@ export function pushOp<S extends Stream>(stream: S, row: Rows[S]): PushOp | unde
   return { stream, id: values.id as string, fields, clocks: dirty, ...(create && { create: true }) } as PushOp;
 }
 
-export function rowKey<S extends Stream>(stream: S, row: Omit<Rows[S], "dirty">): string {
-  return stream === "comments" ? (row as unknown as Rows["comments"]).key : row.id;
-}
-
 const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 30_000;
 

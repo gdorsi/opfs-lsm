@@ -11,6 +11,7 @@
     "seed": "node scripts/seed.ts"
   },
   "dependencies": {
+    "@opfs-lsm/docstore": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
     "@opfs-lsm/tanstack-db": "workspace:*",
     "@tanstack/db": "1.0.0-rc.1.4",

@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { applyLocal } from "../domain/merge.ts";
 import type { Comment, Issue } from "../domain/model.ts";
 import { parsePushRequest } from "../domain/wire.ts";
-import { backoffMs, pushOp, rowKey } from "./ops.ts";
+import { backoffMs, pushOp } from "./ops.ts";
 
 const issue = (over: Partial<Issue> = {}): Issue => ({
   id: "i1",
@@ -62,13 +62,6 @@ describe("pushOp", () => {
       pushOp("comments", comment)!,
     ];
     assert.deepEqual(parsePushRequest(JSON.parse(JSON.stringify({ ops }))), { ops });
-  });
-});
-
-describe("rowKey", () => {
-  it("keys a comment by issue and id, anything else by id", () => {
-    assert.equal(rowKey("comments", comment), "i1/c1");
-    assert.equal(rowKey("issues", issue()), "i1");
   });
 });
 
