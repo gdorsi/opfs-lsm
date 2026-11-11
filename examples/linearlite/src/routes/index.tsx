@@ -26,7 +26,7 @@ export const Route = createFileRoute("/")({
 
 function Smoke() {
   const { smoke, sqlite } = Route.useLoaderData();
-  const { data } = useLiveQuery((q) => q.from({ s: smoke }), [smoke]);
+  const { data } = useLiveQuery((q) => q.from({ s: smoke }));
   return (
     <main>
       <p id="sqlite">sqlite {sqlite}</p>
