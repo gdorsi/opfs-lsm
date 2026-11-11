@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS comment_issue ON comment (issue_id);
 type Dbrow = Record<string, SQLOutputValue>;
 
 /** How one stream's row maps to its table. Column 0 is `id`, the last is `version`. */
-export interface Codec<R> {
+interface Codec<R> {
   readonly table: string;
   readonly columns: readonly string[];
   fromDb(r: Dbrow): R;

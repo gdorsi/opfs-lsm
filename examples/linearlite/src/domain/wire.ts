@@ -56,8 +56,8 @@ export interface DetailResponse {
 }
 
 export const MAX_OPS = 1000;
-export const MAX_PULL_LIMIT = 10_000;
-export const DEFAULT_PULL_LIMIT = 1000;
+const MAX_PULL_LIMIT = 10_000;
+const DEFAULT_PULL_LIMIT = 1000;
 const MAX_TITLE = 500;
 const MAX_DESCRIPTION = 200_000;
 const MAX_COMMENT = 50_000;

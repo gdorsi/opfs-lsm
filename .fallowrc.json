@@ -21,9 +21,18 @@
     "wasm-pack"
   ],
   "ignoreDependencies": [
-    "@automerge/automerge-repo-storage-indexeddb"
+    "@automerge/automerge-repo-storage-indexeddb",
+    "@tanstack/react-virtual"
   ],
   "ignoreExports": [
+    {
+      "file": "examples/linearlite/src/domain/model.ts",
+      "exports": [
+        "STATUS_LABELS",
+        "PRIORITY_LABELS",
+        "SyncState"
+      ]
+    },
     {
       "file": "packages/kv/src/store/engine.ts",
       "exports": [

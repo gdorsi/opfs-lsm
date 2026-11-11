@@ -72,10 +72,5 @@ export const MUTABLE_FIELDS = {
 export type IssuePatch = Partial<Pick<Issue, "title" | "status" | "priority" | "kanbanorder" | "deleted">>;
 export type BodyPatch = Partial<Pick<Body, "description">>;
 export type CommentPatch = Partial<Pick<Comment, "body" | "deleted">>;
-export interface Patches {
-  issues: IssuePatch;
-  bodies: BodyPatch;
-  comments: CommentPatch;
-}
 /** The patch type for a row type. */
 export type Patch<T extends Synced> = T extends Issue ? IssuePatch : T extends Body ? BodyPatch : T extends Comment ? CommentPatch : never;
