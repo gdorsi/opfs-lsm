@@ -3,6 +3,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Body, Comment, Issue, StatusCode, Stream } from "../domain/model.ts";
 import type { IssueFilter } from "./filter.ts";
+import { backoffMs } from "./ops.ts";
 import { filtered, windowQuery } from "./query.ts";
 import { openedStore } from "./store.ts";
 import { fetchDetail } from "./sync.ts";
@@ -87,7 +88,8 @@ export type IssueDetail =
 
 /**
  * The description and comments, read from kv while the view is mounted. A body this replica lacks (backfill has not
- * reached it) is fetched from the server once.
+ * reached it) is fetched from the server, retried with backoff and on `online` until it answers; only an answer
+ * without a body makes the detail "missing".
  */
 export function useIssueDetail(id: string): IssueDetail {
   const { bodies, comments } = openedStore();
@@ -103,19 +105,44 @@ export function useIssueDetail(id: string): IssueDetail {
       .where(({ c }) => and(eq(c.issue_id, id), eq(c.deleted, false)))
       .orderBy(({ c }) => c.created, "asc"),
   );
-  const [fetched, setFetched] = useState<{ id: string; done: boolean } | undefined>();
+  const [fetched, setFetched] = useState<string | undefined>();
   const absent = body.isReady && body.data === undefined;
   useEffect(() => {
-    if (!absent || fetched?.id === id) return;
-    setFetched({ id, done: false });
-    fetchDetail(id)
-      .catch((err: unknown) => console.warn(`linearlite could not fetch issue ${id}`, err))
-      .finally(() => setFetched((f) => (f?.id === id ? { id, done: true } : f)));
-  }, [absent, fetched, id]);
+    if (!absent) return;
+    let live = true;
+    let failures = 0;
+    let inFlight = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = () => {
+      if (!live || inFlight) return;
+      clearTimeout(timer);
+      inFlight = true;
+      fetchDetail(id).then(
+        () => {
+          inFlight = false;
+          if (live) setFetched(id);
+        },
+        (err: unknown) => {
+          inFlight = false;
+          if (!live) return;
+          failures++;
+          console.warn(`linearlite could not fetch issue ${id}, retrying in ${backoffMs(failures)} ms`, err);
+          timer = setTimeout(attempt, backoffMs(failures));
+        },
+      );
+    };
+    addEventListener("online", attempt);
+    attempt();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      removeEventListener("online", attempt);
+    };
+  }, [absent, id]);
 
   if (!body.isReady || !thread.isReady) return { kind: "loading" };
   if (body.data) return { kind: "ready", body: body.data, comments: thread.data };
-  return fetched?.id === id && fetched.done ? { kind: "missing", comments: thread.data } : { kind: "loading" };
+  return fetched === id ? { kind: "missing", comments: thread.data } : { kind: "loading" };
 }
 
 export type SyncStatus =
