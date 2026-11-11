@@ -506,7 +506,7 @@ export function attachEngineHostPort(
           const { generation } = await host.ingest(
             msg.name,
             msg.through,
-            msg.waitForCompaction,
+            msg.settle,
           );
           reply({ type: "ingest-ok", id: msg.id, generation });
           return;
@@ -590,7 +590,7 @@ export function createPortIngestClient(
 
   return {
     async ingest(name: string, through: number, waitForCompaction = false) {
-      const res = await request({ type: "ingest", id: nextId++, name, through, waitForCompaction });
+      const res = await request({ type: "ingest", id: nextId++, name, through, settle: waitForCompaction });
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
     watch(name, policy) {
