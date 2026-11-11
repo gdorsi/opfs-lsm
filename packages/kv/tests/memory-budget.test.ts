@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { EngineHost, MemoryFs, createLocalIngestClient, openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
+import { EngineHost, MemoryFs, createLocalIngestClient, openHarnessDb, __resetMemoryFsForTests, ingest } from "../src/testing.js";
 import type { OpenFile } from "../src/opfs/async-fs.js";
 import type { PageCache } from "../src/store/page-cache.js";
 import type { Db } from "../src/index.js";
@@ -68,9 +68,9 @@ function filler(n: number): string {
 const valueOf = (i: number, tag: string) => ` ${tag} t${i % 5} ${filler(1000)}`;
 
 /** Three overlapping L0 runs of about 1.5 MB each, then a few memtable writes over them. */
-async function seed3Runs(fs: TracingFs, host: EngineHost, memoryBudget: number) {
+async function seed3Runs(fs: TracingFs, host: EngineHost, cacheBytes: number) {
   const model = new Map<string, string>();
-  const db = await open(fs, host, memoryBudget);
+  const db = await open(fs, host, cacheBytes);
   for (let r = 0; r < RUNS; r++) {
     await db.batch((tx) => {
       for (let j = 0; j < ROWS_PER_RUN; j++) {
@@ -80,7 +80,7 @@ async function seed3Runs(fs: TracingFs, host: EngineHost, memoryBudget: number) 
         model.set(dec.decode(key(i)), v);
       }
     });
-    await db.ingest();
+    await ingest(db);
   }
   for (let i = 0; i < 300; i += 7) {
     await db.put(key(i), enc.encode(" mem t9"));
@@ -93,14 +93,14 @@ async function seed3Runs(fs: TracingFs, host: EngineHost, memoryBudget: number) 
   return { db, model };
 }
 
-function open(fs: TracingFs, host: EngineHost, memoryBudget: number): Promise<Db> {
+function open(fs: TracingFs, host: EngineHost, cacheBytes: number): Promise<Db> {
   return openHarnessDb({
     name: NAME,
     writerId: "w1",
     fs,
     ingest: createLocalIngestClient(host),
     ingestPolicy: { maxWalBytes: 1e12 },
-    memoryBudget,
+    cacheBytes,
   });
 }
 
@@ -114,7 +114,7 @@ function expectWithinBudget(db: Db): void {
 const sorted = (model: Map<string, string>) => [...model].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 const show = (rows: { key: Uint8Array; value: Uint8Array }[]) => rows.map((r) => `${dec.decode(r.key)}=${dec.decode(r.value)}`);
 
-describe("memoryBudget smaller than one run", () => {
+describe("cacheBytes smaller than one run", () => {
   it("answers get, range, search and update correctly while it evicts", async () => {
     const fs = new TracingFs();
     const host = new EngineHost(() => fs);

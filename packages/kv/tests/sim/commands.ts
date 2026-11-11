@@ -2,7 +2,7 @@ import fc from "fast-check";
 import { expect } from "vitest";
 import type { AsyncFs, Db, Entry } from "../../src/index.js";
 import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { openHarnessDb } from "../../src/testing.js";
+import { openHarnessDb, ingest } from "../../src/testing.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 
@@ -374,12 +374,12 @@ class SyncCmd implements Cmd {
   toString = () => "sync";
 }
 
-/** `db.ingest()`: flush the WAL to L0 and wait for the compaction it starts. */
+/** `ingest(db)`: flush the WAL to L0 and wait for the compaction it starts. */
 class IngestCmd implements Cmd {
   check = () => true;
   async run(_m: Model, r: Sut): Promise<void> {
     r.release();
-    await r.db.ingest();
+    await ingest(r.db);
   }
   toString = () => "ingest";
 }

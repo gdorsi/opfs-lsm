@@ -10,7 +10,7 @@ import { ingestChunk } from "../src/host/ingest.js";
 import { IdBWal } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { decodeGeneration } from "../src/store/generation.js";
-import { __resetMemoryFsForTests, openHarnessDb } from "../src/testing.js";
+import { __resetMemoryFsForTests, openHarnessDb, ingest } from "../src/testing.js";
 
 const NAME = "bounded-flush";
 const enc = new TextEncoder();
@@ -126,7 +126,7 @@ describe("a flush of a large backlog", () => {
     await db.put(key(0), value(50, 100));
     await db.delete(key(1));
 
-    await db.ingest();
+    await ingest(db);
 
     const runs = await l0Runs(published);
     expect(runs.map((r) => r.keys.length)).toEqual([10, 10, 5]);
@@ -245,7 +245,7 @@ describe("a flush of a large backlog", () => {
     // The first chunk made five L0 runs, the install took four of them, two chunks followed.
     expect(generations.slice(install - 1).map(l0Count)).toEqual([5, 1, 2, 3]);
 
-    await db.ingest();
+    await ingest(db);
     for (let i = 0; i < 13; i++) expect(await db.get(key(i))).toEqual(value(i, 100));
     await db.close();
   });
@@ -296,7 +296,7 @@ describe("a flush with L0 full", () => {
     // The install took the four runs, and the fifth record became the one run after it.
     expect(generations.slice(install).map(l0Count)).toEqual([0, 1]);
     expect((await t.host.stats(NAME)).memory.l0Stops).toBe(1);
-    await t.db.ingest();
+    await ingest(t.db);
     for (let i = 0; i < 5; i++) expect(await t.db.get(key(i))).toEqual(value(i, 100));
     await t.db.close();
   });

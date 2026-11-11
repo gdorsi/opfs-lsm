@@ -10,7 +10,7 @@ import {
   type OpfsLsmError,
 } from "../src/index.js";
 import { reclaimManifests } from "../src/store/generation.js";
-import { openHarnessDb } from "../src/testing.js";
+import { openHarnessDb, ingest } from "../src/testing.js";
 import { checkDatabase, deleteWal } from "./sim/check-database.js";
 import { FaultFs, Faults } from "./sim/fault-fs.js";
 
@@ -53,14 +53,14 @@ describe("a createWritable swap file a browser crash left in m/", () => {
     const open = () => openHarnessDb({ name: NAME, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
     let db = await open();
     await db.put(utf("a"), utf("1"));
-    await db.ingest();
+    await ingest(db);
     await db.close();
     // The browser died while the host wrote manifest 2.
     await touch(fs, `${mft(2)}.crswap`);
     expect((await checkDatabase(fs, NAME)).swapFiles).toEqual([`${mft(2)}.crswap`]);
     db = await open();
     await db.put(utf("b"), utf("2"));
-    await db.ingest();
+    await ingest(db);
     await db.close();
     const report = await checkDatabase(fs, NAME);
     expect(report.swapFiles).toEqual([]);
@@ -117,7 +117,7 @@ describe("an OPFS write that fails with QuotaExceededError in the host", () => {
     faults.kinds = new Set(["fs-write"]);
     faults.failAt = 1;
     faults.persistent = true;
-    const err = await db.ingest().catch((e: unknown) => e);
+    const err = await ingest(db).catch((e: unknown) => e);
     expect(faults.injected, "the quota error fired").toBeGreaterThan(0);
     expect(err).toBeInstanceOf(StorageFullError);
     expect((err as OpfsLsmError).code).toBe("quota");
@@ -126,7 +126,7 @@ describe("an OPFS write that fails with QuotaExceededError in the host", () => {
     await db.close();
     expect((await checkDatabase(mem, NAME)).problems).toEqual([]);
     db = await open();
-    await db.ingest();
+    await ingest(db);
     expect(await db.get(utf("a"))).toEqual(utf("1"));
     await db.close();
     port1.close();

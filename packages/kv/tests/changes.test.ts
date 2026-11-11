@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChangeEvent, Db, Entry } from "../src/index.js";
-import { openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
+import { openHarnessDb, __resetMemoryFsForTests, ingest } from "../src/testing.js";
 
 const NAME = "changes-test";
 const enc = new TextEncoder();
@@ -95,8 +95,8 @@ describe("changes()", () => {
     expect(await db.batch(() => {}), "an empty batch writes nothing").toBe(4);
     expect(seqs(events)).toEqual([1, 2, 3, 4]);
 
-    await db.ingest();
-    expect(events.at(-1)).toEqual({ kind: "ingest", writerId: "w1" });
+    await ingest(db);
+    expect(seqs(events), "a flush announces nothing").toEqual([1, 2, 3, 4]);
 
     await db.close();
     expect(events.at(-1)).toEqual({ kind: "closed" });
@@ -167,7 +167,7 @@ describe("changes()", () => {
 
     await writer.delete(b("x"));
     await writer.put(b("y"), b("1"));
-    await writer.ingest();
+    await ingest(writer);
     const after = await writer.put(b("z"), b("2"));
     await behind.sync();
 

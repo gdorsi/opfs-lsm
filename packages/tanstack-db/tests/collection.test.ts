@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterEach, test } from "node:test";
 import type { ChangeEvent, Db } from "@opfs-lsm/kv";
-import { openHarnessDb } from "@opfs-lsm/kv/testing";
+import { openHarnessDb, ingest } from "@opfs-lsm/kv/testing";
 import { collectionOptions, createCollection, createTransaction, DbClient } from "@tanstack/db";
 import { kvCollectionOptions } from "../src/index.ts";
 
@@ -221,7 +221,7 @@ test("a tab that falls behind a flush reloads and matches the writer", async () 
   behind.changes((e) => kinds.push(e.kind));
   await writer.delete("gone").when("settled");
   await writer.insert({ id: "kept", title: "folded" }).when("settled");
-  await w.ingest();
+  await ingest(w);
   await writer.insert({ id: "late", title: "after" }).when("settled");
   await behind.sync();
 
@@ -278,7 +278,7 @@ test("a gap at a seq already synced still reloads, as after a repair", async () 
   await until(reader, () => reader.has("announced"), "the announced row");
   assert.equal(reader.has("unannounced"), false);
 
-  tap.emit({ kind: "gap", through: await r.view((snap) => snap.walHead) });
+  tap.emit({ kind: "gap", through: await r.view((snap) => snap.seq) });
   await until(reader, () => reader.has("unannounced"), "the reload after the gap");
   assert.deepEqual(plain(reader.toArray), plain(writer.toArray));
 });

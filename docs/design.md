@@ -280,7 +280,7 @@ stored bytes, before it allocates.
 A tab holds each run of its installed generation open and reads it on demand. The first read
 loads the footer, the bloom filter and the block index. Each later read loads the 32 KB page of
 whole blocks that it needs. All of it lives in one page cache per tab, capped by
-`openDb({ memoryBudget })`, 256 MiB by default.
+`openDb({ cacheBytes })`, 256 MiB by default.
 
 A read is synchronous while its bytes are cached. Otherwise it returns a miss, and the caller
 awaits the load and reads again. A point get:
@@ -347,7 +347,7 @@ source filters on its own, one block at a time, and only the hits are copied out
 that holds the key with a non-matching value or a tombstone drops the older hit.
 
 A `view` pins `appliedThrough`, the installed generation and the memtable chunks. Writes that
-commit during the callback are invisible to it. `rangeFollow` scans a range and point-reads one
+commit during the callback are invisible to it. `rangeJoin` scans a range and point-reads one
 key per entry under one such pin.
 
 # Multi-tab coordination
@@ -412,7 +412,7 @@ flush reads the WAL, so a missed broadcast delays a flush and loses nothing.
 
 After a failed flush, the host waits for another `maxWalBytes` of writes or the next open.
 
-`db.ingest()` flushes through the end of the log and waits for the compaction it starts.
+`ingest(db)` from `@opfs-lsm/kv/testing` flushes through the end of the log and waits for the compaction it starts.
 
 ## Flush
 

@@ -4,7 +4,8 @@ import {
 } from "../src/index.js";
 import {
   openHarnessDb,
-  __resetMemoryFsForTests
+  __resetMemoryFsForTests,
+  ingest,
 } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 
@@ -75,7 +76,7 @@ describe("generation recorded in IndexedDB", () => {
   it("a view pinned before a batch sees none of it after ingest", async () => {
     const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: new MemoryFs(), ingestPolicy: quiet });
     await db.put(utf("z"), utf("0"));
-    await db.ingest();
+    await ingest(db);
     await db.put(utf("a"), utf("1"));
 
     const seen = await db.view(async (snap) => {
@@ -83,7 +84,7 @@ describe("generation recorded in IndexedDB", () => {
         tx.put(utf("a"), utf("2"));
         tx.put(utf("b"), utf("2"));
       });
-      await db.ingest();
+      await ingest(db);
       return [text(await snap.get(utf("a"))), text(await snap.get(utf("b")))];
     });
 
@@ -97,7 +98,7 @@ describe("generation recorded in IndexedDB", () => {
     const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, ingestPolicy: quiet });
     for (let i = 0; i < 6; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
-      await db.ingest();
+      await ingest(db);
     }
     expect(await inner.list("m")).toHaveLength(1);
     for (let i = 0; i < 6; i++) {
@@ -110,7 +111,7 @@ describe("generation recorded in IndexedDB", () => {
     const o = observedFs(new MemoryFs());
     const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: o.fs, ingestPolicy: quiet });
     for (let i = 0; i < 20; i++) await db.put(utf(`k${i}`), utf(`v${i}`));
-    await db.ingest();
+    await ingest(db);
     const before = o.lists();
     for (let i = 0; i < 20; i++) {
       expect(text(await db.get(utf(`k${i}`)))).toBe(`v${i}`);

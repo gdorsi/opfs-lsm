@@ -1,5 +1,5 @@
 /**
- * Test harness. bench/ also uses `readStats` and `settle`. Apps should import
+ * Test harness. bench/ also uses `ingest`, `readStats` and `settle`. Apps should import
  * from `@opfs-lsm/kv` only.
  */
 export {
@@ -16,6 +16,7 @@ export {
 } from "./host/engine-host.js";
 export type { IngestClient } from "./host/protocol.js";
 export {
+  ingest,
   readStats,
   settle,
   type IoCount,

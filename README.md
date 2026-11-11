@@ -40,11 +40,11 @@ In the browser, `openDb` opens OPFS and starts that SharedWorker. In Node it use
 | Option | Role |
 | --- | --- |
 | `name` | Database name. Tabs that share this name share one WAL. |
-| `memoryBudget` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
+| `cacheBytes` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
 | `memtableBytes` | Bytes of rows this tab holds that are not yet flushed to OPFS, counted as key bytes, value bytes, and an estimate per row. Default 16 MiB. A smaller request is raised to 1 MiB. At 7/8 of it the tab asks the host to flush and keeps writing. At the limit a write waits until the host returns that flush, so a writing tab's memtable stays near the limit. A host that cannot flush does not hold writes for good. When tabs differ, the host flushes once the WAL passes the smallest ask: 1 MiB, or 7/8 of `memtableBytes` when that is lower. |
 | `compactionMemoryBytes` | Bytes the SharedWorker may spend on flushing and compacting this database: its wasm heap and the run data in flight. Default 32 MiB. A smaller request is raised to 8 MiB. A smaller figure gives smaller flush runs and a smaller read window, and under about 17.5 MiB fewer runs in one compaction step. The host's figures stop growing at 64 MiB. When tabs differ, the host uses the smallest, until the last tab closes the database. It counts memory that is alive, not garbage the browser has not collected yet. |
 
-Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB flush.
+Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `ingestPolicy`, `writerId`, `allowEphemeral`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `ingestPolicy.maxWalBytes` overrides the 1 MiB flush. `ingest(db)` from the same entry flushes the memtable now and waits for the compaction it starts.
 
 ### `Db`
 
@@ -59,11 +59,10 @@ Keys and values are `Uint8Array`.
 | `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack, with the record's seq. |
 | `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
 | `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `reverse: true` yields the same keys from the largest down, and `limit` keeps the largest. `valueContains` keeps live puts whose current value holds every pattern. |
-| `rangeFollow(range, follow)` | Scan a range, then point-read each follow key, on the memtable and SST generation pinned for the call. |
-| `view(body)` | Read-only snapshot pinned to the WAL head and the installed OPFS generation when the view opens. |
+| `rangeJoin(range, keyOf)` | Scan a range and join each entry to the value at `keyOf(entry)`, as an index entry joins its row. The scan and the reads see one state. |
+| `view(body)` | Read-only snapshot of the state when the view opens. `snap.seq` is the seq of the last record it includes, counted as write acks and `changes` count it. |
 | `changes(listener)` | Subscribe to every WAL record this handle applies, from any tab, with its ops, once each and in seq order. A `gap` event means the handle skipped records a flush folded, so read again. Returns unsubscribe. |
 | `sync()` | Catch up to every write acked before the call from any tab. |
-| `ingest()` | Flush the memtable now and wait for the compaction it starts. |
 | `close()` | Close this tab's handle. |
 
 ```ts
@@ -73,7 +72,6 @@ await db.batch((tx) => {
 });
 
 await db.sync();
-await db.ingest();
 ```
 
 ### Errors
@@ -83,7 +81,7 @@ Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A h
 | Class | `code` | Meaning | What to do |
 | --- | --- | --- | --- |
 | `StorageUnavailableError` | `unavailable` | The page has no SharedWorker or OPFS, or the browser's IndexedDB store failed to open. `cause` holds the browser's error when there is one. | For a failed IndexedDB open, retry `openDb`, or reload the page. Chrome can damage its own IndexedDB store when it crashes, and then deletes it or keeps failing the open. If it deletes it, the writes not yet flushed to OPFS are lost and the flushed data is kept. |
-| `StorageFullError` | `quota` | The browser refused a flush or compaction write because the origin is out of storage quota. | Free space, then call `ingest()` again. The acked writes stay in the WAL. |
+| `StorageFullError` | `quota` | The browser refused a flush or compaction write because the origin is out of storage quota. | The host rejects the flush, and no `Db` method surfaces that. The acked writes stay in the WAL, and the host flushes again after another 1 MiB of writes or the next `openDb`. `ingest(db)` from `@opfs-lsm/kv/testing` flushes now and rejects with this error. |
 | `CorruptDatabaseError` | `corrupt` | A file of the database does not decode, or a file it needs is gone. | Do not retry. The engine changes nothing. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
 | `ConstraintError` | `constraint` | A key, value or batch is not valid or is over a limit. | Fix the call. |
@@ -119,7 +117,7 @@ const byEmail = await users.query({ index: "byEmail", eq: ["a@example.com"] });
 const newest = await users.query({ index: "byOrg", eq: ["acme"], reverse: true, limit: 20 });
 ```
 
-`openDocStore(kv, schema)` uses the `kv` handle you opened. You keep closing it and calling `changes` and `ingest` on it. A collection has `get`, `getMany`, `put`, `putMany`, `modify`, `delete`, `deleteMany`, `clear`, `query`, `queryIds` and `count`. Each write is one kv transaction that also maintains the indexes. The index kinds (sorted, multi, text), schema versions, query rules, key order, errors and limits are in [packages/docstore/README.md](packages/docstore/README.md).
+`openDocStore(kv, schema)` uses the `kv` handle you opened. You keep closing it and calling `changes` on it. A collection has `get`, `getMany`, `put`, `putMany`, `modify`, `delete`, `deleteMany`, `clear`, `query`, `queryIds` and `count`. Each write is one kv transaction that also maintains the indexes. The index kinds (sorted, multi, text), schema versions, query rules, key order, errors and limits are in [packages/docstore/README.md](packages/docstore/README.md).
 
 ## Clone and run
 

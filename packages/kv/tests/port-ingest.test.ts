@@ -8,7 +8,8 @@ import {
 } from "../src/index.js";
 import {
   openHarnessDb,
-  __resetMemoryFsForTests
+  __resetMemoryFsForTests,
+  ingest as ingestDb,
 } from "../src/testing.js";
 import { CorruptDatabaseError, OpfsLsmError } from "../src/errors.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
@@ -35,7 +36,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     const fs = new MemoryFs();
     const db = await openHarnessDb({ name: "port-db", fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
     await db.put(utf("k"), utf("v"));
-    await db.ingest();
+    await ingestDb(db);
     await db.close();
     // The recorded manifest no longer decodes: the host refuses to flush.
     const [name] = await fs.list("m");
@@ -68,7 +69,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
       ingest,
     });
     await a.put(utf("k"), utf("v"));
-    const { generation } = await a.ingest();
+    const { generation } = await ingestDb(a);
     expect(generation).toBe(1);
 
     const b = await openHarnessDb({
@@ -122,7 +123,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
       ingest: createLocalIngestClient(host),
     });
     await a.put(utf("a"), utf("1"));
-    const [g1, g2] = await Promise.all([a.ingest(), a.ingest()]);
+    const [g1, g2] = await Promise.all([ingestDb(a), ingestDb(a)]);
     // First may publish gen 1; second is empty and returns same generation.
     expect(Math.max(g1.generation, g2.generation)).toBe(1);
     await a.close();

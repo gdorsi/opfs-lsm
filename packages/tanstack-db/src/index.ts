@@ -165,8 +165,6 @@ class Run {
         // A repair's gap can name a seq this run synced, and still change what reads return.
         if (this.phase.kind !== "stopped") this.load();
         return;
-      case "ingest":
-        return;
       case "closed":
         this.stop();
         this.p.fail(new ClosedError("database is closed"));
@@ -191,7 +189,7 @@ class Run {
       .view(async (snap) => {
         const rows: Entry[] = [];
         for await (const entry of snap.range(prefixBound(this.prefix))) rows.push(entry);
-        return { at: snap.walHead, rows };
+        return { at: snap.seq, rows };
       })
       .then(
         (snapshot) => {

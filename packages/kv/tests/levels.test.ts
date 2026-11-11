@@ -5,7 +5,8 @@ import {
 } from "../src/index.js";
 import {
   openHarnessDb,
-  __resetMemoryFsForTests
+  __resetMemoryFsForTests,
+  ingest,
 } from "../src/testing.js";
 import { loadLatestGeneration, type RunMeta } from "../src/store/generation.js";
 import { planCompaction, replaceRuns, type CompactionPlan } from "../src/store/levels.js";
@@ -126,10 +127,10 @@ describe("bottom compaction", () => {
     });
     await db.put(enc.encode("a"), enc.encode("1"));
     await db.put(enc.encode("b"), enc.encode("1"));
-    await db.ingest();
+    await ingest(db);
     for (let i = 0; i < 3; i++) {
       await db.delete(enc.encode("a"));
-      await db.ingest();
+      await ingest(db);
     }
     const runs = (await loadLatestGeneration(fs))!.runs;
     expect(runs).toHaveLength(1);

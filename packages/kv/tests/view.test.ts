@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   openHarnessDb,
-  __resetMemoryFsForTests
+  __resetMemoryFsForTests,
+  ingest,
 } from "../src/testing.js";
 
 const NAME = "view-test";
@@ -44,7 +45,7 @@ describe("view snapshot", () => {
       return {
         a: a ? dec.decode(a) : undefined,
         b: b ? dec.decode(b) : undefined,
-        head: snap.walHead,
+        head: snap.seq,
       };
     });
 
@@ -114,12 +115,12 @@ describe("reverse range", () => {
     await db.batch((tx) => {
       for (let i = 0; i < 3000; i += 2) tx.put(key(i), enc.encode(`sst${i}`));
     });
-    await db.ingest();
+    await ingest(db);
     await db.batch((tx) => {
       for (let i = 0; i < 3000; i += 3) tx.put(key(i), enc.encode(`l0-${i}`));
       for (let i = 2; i < 3000; i += 10) tx.delete(key(i));
     });
-    await db.ingest();
+    await ingest(db);
     await db.batch((tx) => {
       for (let i = 0; i < 3000; i += 5) tx.put(key(i), enc.encode(`mem${i}`));
       for (let i = 1; i < 3000; i += 14) tx.delete(key(i));
@@ -185,7 +186,7 @@ describe("range with valueContains", () => {
     await db.put(enc.encode("c"), enc.encode(" red plum"));
     await db.put(enc.encode("e"), enc.encode(" red fig"));
     await db.put(enc.encode("f"), enc.encode(" blue"));
-    await db.ingest();
+    await ingest(db);
     await db.put(enc.encode("b"), enc.encode(" green pear"));
     await db.delete(enc.encode("c"));
     await db.put(enc.encode("d"), enc.encode(" red kiwi"));
@@ -260,7 +261,7 @@ describe("range with valueContains", () => {
     const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", ingestPolicy: { maxWalBytes: 1 << 30 } });
     await db.put(enc.encode("a"), enc.encode(" red apple"));
     await db.put(enc.encode("b"), enc.encode(" red pear"));
-    await db.ingest();
+    await ingest(db);
     await db.put(enc.encode("c"), enc.encode(" red plum"));
     const owned = await db.view(async (snap) => {
       const flags: boolean[] = [];
