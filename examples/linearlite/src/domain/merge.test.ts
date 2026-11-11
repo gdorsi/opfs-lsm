@@ -17,7 +17,7 @@ const issue = (over: Partial<Issue> = {}): Issue => ({
   ...over,
 });
 const server = (over: Partial<Issue> = {}): ServerRow<"issues"> => {
-  const { dirty: _dirty, ...row } = issue(over);
+  const { dirty: _dirty, pending: _pending, ...row } = issue(over);
   return row;
 };
 
@@ -27,6 +27,7 @@ describe("applyLocal", () => {
     assert.equal(next.status, 3);
     assert.equal(next.title, "Renamed");
     assert.deepEqual(next.dirty, { status: 10, title: 10 });
+    assert.equal(next.pending, true);
     assert.equal(next.version, 5);
   });
 
@@ -111,10 +112,13 @@ describe("mergeIncoming", () => {
       assert.equal(next?.version, 7);
     });
 
-    it("drops the dirty map once every field is confirmed", () => {
-      const local = applyLocal(issue(), { title: "Mine" }, 10);
-      const next = mergeIncoming(local, server({ version: 7, title: "Mine" }), { title: 10 });
+    it("drops the dirty map and the pending mark once every field is confirmed", () => {
+      const local = applyLocal(issue(), { title: "Mine", status: 3 }, 10);
+      const partly = mergeIncoming(local, server({ version: 7, title: "Mine", status: 3 }), { title: 10 });
+      assert.equal(partly?.pending, true);
+      const next = mergeIncoming(partly!, server({ version: 8, title: "Mine", status: 3 }), { status: 10 });
       assert.equal(next?.dirty, undefined);
+      assert.ok(next && !("pending" in next));
     });
 
     it("keeps a field dirty when the acked clock is older than its current one", () => {
@@ -200,6 +204,7 @@ describe("restore", () => {
     const back = restore(again, server({ title: "Theirs", version: 5 }), SENT) as Issue;
     assert.equal(back.title, "Again");
     assert.deepEqual(back.dirty, { title: 21 });
+    assert.equal(back.pending, true);
     assert.equal(back.status, server().status);
     assert.equal(back.version, 5);
   });

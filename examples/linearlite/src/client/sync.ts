@@ -58,7 +58,7 @@ async function read<T, K extends string>(transact: Transact<T, K>, keys: readonl
 }
 
 async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: readonly ServerRow<S>[], acked?: readonly Clocks[]) {
-  const incoming = rows as unknown as readonly Omit<Rows[S], "dirty">[];
+  const incoming = rows as unknown as readonly Omit<Rows[S], "dirty" | "pending">[];
   await transactOf(store, stream)(
     incoming.map((row) => row.id),
     (locals) => incoming.map((row, i) => mergeIncoming<Rows[S]>(locals[i], row, acked?.[i])),
@@ -251,7 +251,7 @@ class Leader {
   private async drop({ op, key }: Outgoing): Promise<void> {
     const res = await request<RowResponse>(this.store.user, `/api/row?stream=${op.stream}&id=${encodeURIComponent(op.id)}`);
     this.checkEpoch(res.epoch);
-    const server = res.row as unknown as Omit<Rows[typeof op.stream], "dirty"> | null;
+    const server = res.row as unknown as Omit<Rows[typeof op.stream], "dirty" | "pending"> | null;
     await transactOf(this.store, op.stream)([key], ([local]) => [restore<Rows[typeof op.stream]>(local, server, op.clocks)]);
   }
 
