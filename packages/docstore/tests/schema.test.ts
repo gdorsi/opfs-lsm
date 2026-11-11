@@ -183,6 +183,31 @@ describe("opening a schema", () => {
     ]);
   });
 
+  it("deletes every key of a dropped collection, and the older schema's handle can no longer use it", async () => {
+    type Note = { id: string; body: string };
+    const name = freshName();
+    const both = defineSchema<{ todos: Todo; notes: Note }>()({
+      version: 1,
+      collections: { todos: { byCreated }, notes: { byBody: { on: "body" } } },
+    });
+    const old = await at(name, both);
+    await old.store.collection("todos").putMany(rows(5));
+    await old.store.collection("notes").putMany(Array.from({ length: 50 }, (_, i) => ({ id: `n${i}`, body: `b${i}` })));
+    const notes = await storedPrefix(old.kv, "notes");
+    const next = await at(
+      name,
+      defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated } }, drop: ["notes"] }),
+    );
+    await next.store.whenIdle();
+    const catalog = await storedCatalog(next.kv);
+    expect(catalog.collections["notes"]).toBeUndefined();
+    expect(catalog.dropped).toEqual([]);
+    expect(await keysUnder(next.kv, notes)).toBe(0);
+    expect(await next.store.collection("todos").count({ index: "byCreated" })).toBe(5);
+    expect(await codeOf(old.store.collection("notes").get("n1"))).toBe("schema");
+    expect(await codeOf(old.store.collection("notes").put({ id: "n1", body: "x" }))).toBe("schema");
+  });
+
   it("opens an older schema after a newer one is stored, writing and reading its unchanged indexes", async () => {
     const name = freshName();
     await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated } } }));

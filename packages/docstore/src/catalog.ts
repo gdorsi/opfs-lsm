@@ -69,6 +69,8 @@ export type DroppedPrefix = { readonly collection: number } | { readonly collect
 export type DeclaredSchema = {
   readonly version: number;
   readonly collections: ReadonlyMap<string, ReadonlyMap<string, IndexSpec>>;
+  /** Collections whose documents and indexes a higher version deletes. */
+  readonly drop: ReadonlySet<string>;
 };
 
 function badSchema(message: string): never {
@@ -110,7 +112,14 @@ export function normalizeSchema(decl: AnySchema): DeclaredSchema {
     }
     collections.set(name, specs);
   }
-  return { version: decl.version, collections };
+  const drop = new Set<string>();
+  if (decl.drop !== undefined && !Array.isArray(decl.drop)) badSchema("drop must be an array of collection names");
+  for (const name of decl.drop ?? []) {
+    if (typeof name !== "string" || !NAME.test(name)) badSchema(`drop: ${JSON.stringify(name)} must match ${NAME}`);
+    if (collections.has(name)) badSchema(`"${name}" is both declared and dropped`);
+    drop.add(name);
+  }
+  return { version: decl.version, collections, drop };
 }
 
 function sameSpec(a: IndexSpec, b: IndexSpec): boolean {
@@ -211,6 +220,9 @@ export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredS
           badSchema(`version ${declared.version} is stored with a different "${name}"; bump the version to change it`);
         }
       }
+      for (const name of declared.drop) {
+        if (stored.collections[name]) badSchema(`version ${declared.version} is stored with "${name}"; bump the version to drop it`);
+      }
       return { kind: "keep" };
     }
     return { kind: "write", catalog: upgrade(stored, declared) };
@@ -228,7 +240,14 @@ function fresh(declared: DeclaredSchema): StoredCatalog {
 function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog {
   let nextCollectionId = stored.nextCollectionId;
   const collections = { ...stored.collections };
-  const dropped = [...stored.dropped];
+  let dropped = [...stored.dropped];
+  for (const name of declared.drop) {
+    const old = collections[name];
+    if (!old) continue;
+    delete collections[name];
+    // The collection prefix covers its index prefixes.
+    dropped = [...dropped.filter((p) => p.collection !== old.id), { collection: old.id }];
+  }
   for (const [name, specs] of declared.collections) {
     const old = collections[name];
     const id = old?.id ?? nextCollectionId++;

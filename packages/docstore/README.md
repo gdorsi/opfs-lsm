@@ -71,12 +71,13 @@ Each index has a name, unique within its collection, and one of three kinds. `on
 |---|---|
 | No catalog stored | Stores this schema. Every index starts ready. |
 | Lower than stored | Uses the stored catalog unchanged. |
-| Equal to stored | Uses the stored catalog. Throws `"schema"` if a declared collection's indexes differ from the stored ones. |
-| Higher than stored | Stores this schema. A new or changed index starts building. A removed or changed index's keys are swept. |
+| Equal to stored | Uses the stored catalog. Throws `"schema"` if a declared collection's indexes differ from the stored ones, or a collection named in `drop` is still stored. |
+| Higher than stored | Stores this schema. A new or changed index starts building. A removed or changed index's keys are swept. A collection named in `drop` leaves the catalog and its keys are swept. |
 
 - Open resolves once every index the schema declares is ready or failed.
 - A building index is filled from the rows in the background. A handle runs the backfill when it opens or clears the collection, so a backfill cut short by a closed tab resumes on the next open.
 - A collection the new schema leaves out keeps its documents and indexes. A later schema that declares it again sees them.
+- To delete a collection, name it in `drop` (`{ version: 3, collections: { … }, drop: ["notes"] }`). A name may not be both declared and dropped, and a name not stored is ignored. Handles on an older schema get `"schema"` from the dropped collection. A later schema that declares the name again starts it empty.
 - A backfill that finds two documents with one unique value, or a value an index cannot hold, marks the index failed. Queries on a failed index throw `"index-failed"` with the ids. The next version bump rebuilds it.
 - Writes maintain every building or ready index the stored catalog holds, including indexes this handle's schema does not declare.
 - A query reads an index only if the schema declares it with the stored definition and the index is ready. A query on a failed index throws `"index-failed"`. A query on any other index throws `"schema"`.

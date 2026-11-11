@@ -16,10 +16,11 @@ import { DocStoreError } from "../src/errors.js";
 import type { IndexId } from "../src/keys.js";
 
 type Collections = Record<string, Record<string, object>>;
-const declare = (version: number, collections: Collections) => normalizeSchema({ version, collections });
+const declare = (version: number, collections: Collections, drop?: string[]) =>
+  normalizeSchema(drop ? { version, collections, drop } : { version, collections });
 
-function open(stored: StoredCatalog | undefined, version: number, collections: Collections): StoredCatalog {
-  const r = reconcile(stored, declare(version, collections));
+function open(stored: StoredCatalog | undefined, version: number, collections: Collections, drop?: string[]): StoredCatalog {
+  const r = reconcile(stored, declare(version, collections, drop));
   if (r.kind === "error") throw r.error;
   return r.kind === "write" ? r.catalog : stored!;
 }
@@ -93,6 +94,27 @@ describe("reconcile", () => {
     expect(c2.dropped).toEqual([]);
     const c3 = open(c2, 3, v1);
     expect(c3.collections["notes"]).toEqual(c1.collections["notes"]);
+  });
+
+  it("at a higher version drops a collection it lists in drop, replacing its index prefixes with its collection prefix", () => {
+    const c1 = open(undefined, 1, v1);
+    const notes = c1.collections["notes"]!.id;
+    const c2 = open(c1, 2, { todos: v1["todos"]!, notes: {} });
+    expect(c2.dropped).toEqual([{ collection: notes, index: idOf(c1, "notes", "byC") }]);
+    const c3 = open(c2, 3, { todos: v1["todos"]! }, ["notes", "never"]);
+    expect(c3.collections["notes"]).toBeUndefined();
+    expect(c3.collections["todos"]).toEqual(c1.collections["todos"]);
+    expect(c3.dropped).toEqual([{ collection: notes }]);
+    expect(reconcile(c3, declare(3, { todos: v1["todos"]! }, ["notes"]))).toEqual({ kind: "keep" });
+    const c4 = open(c3, 4, v1);
+    expect(c4.collections["notes"]!.id).not.toBe(notes);
+    expect(c4.collections["notes"]!.indexes["byC"]!.state).toEqual({ kind: "ready" });
+  });
+
+  it("refuses a drop at the stored version while the collection is stored", () => {
+    const c = open(undefined, 1, v1);
+    const r = reconcile(c, declare(1, { todos: v1["todos"]! }, ["notes"]));
+    expect(r.kind === "error" && r.error.code).toBe("schema");
   });
 
   it("makes a collection new at a higher version ready at once", () => {
@@ -209,6 +231,9 @@ describe("normalizeSchema", () => {
     ["nine paths", { version: 1, collections: { a: { x: { on: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] } } } }],
     ["a repeated path", { version: 1, collections: { a: { x: { on: ["b", "b"] } } } }],
     ["a unique text index", { version: 1, collections: { a: { x: { on: "b", text: "c", unique: true } } } }],
+    ["a drop that is not an array", { version: 1, collections: {}, drop: "a" }],
+    ["a dropped name with a dash", { version: 1, collections: {}, drop: ["a-b"] }],
+    ["a collection both declared and dropped", { version: 1, collections: { a: {} }, drop: ["a"] }],
   ])("refuses %s with code schema", (_, decl) => {
     expect(codeOf(() => normalizeSchema(decl as never))).toBe("schema");
   });

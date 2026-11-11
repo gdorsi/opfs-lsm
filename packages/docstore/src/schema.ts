@@ -104,6 +104,11 @@ type SchemaDecl<Docs extends DocsMap> = {
   /** An integer >= 1, bumped on every change to `collections`. */
   readonly version: number;
   readonly collections: { readonly [C in keyof Docs]: IndexDecls<Docs[C]> };
+  /**
+   * Collections to delete, with every document and index, when this version
+   * is stored. A collection only left out of `collections` is kept.
+   */
+  readonly drop?: readonly string[];
 };
 
 declare const docsType: unique symbol;
@@ -129,6 +134,7 @@ export function defineSchema<Docs extends DocsMap>(): <const Decl extends Schema
 export type AnySchema = {
   readonly version: number;
   readonly collections: { readonly [collection: string]: { readonly [index: string]: object } };
+  readonly drop?: readonly string[];
   readonly [docsType]?: DocsMap;
 };
 
