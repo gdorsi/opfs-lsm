@@ -3,7 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as commands from "../client/commands.ts";
 import type { IssueFilter } from "../client/filter.ts";
-import { useIssueWindow } from "../client/hooks.ts";
+import { LIST_WINDOW, useIssueWindow } from "../client/hooks.ts";
 import type { Issue } from "../domain/model.ts";
 import { formatDate, initial, shortId } from "./format.ts";
 import { isTyping, keepSearch, useCreateModal, useIssueFilter, useKeys, useSetFilter } from "./nav.ts";
@@ -12,7 +12,6 @@ import { Toolbar } from "./toolbar.tsx";
 
 const ROW = 40;
 const OVERSCAN = 12;
-const WINDOW = 100;
 const LEAD = 30;
 
 /**
@@ -95,7 +94,7 @@ function VirtualList({ filterKey: key, rows, offset, total, setRange }: ListProp
   useEffect(() => {
     if (items.length === 0) return;
     const loaded = first >= offset && last < offset + rows.length;
-    if (!loaded) setRange(Math.max(0, first - LEAD), Math.max(0, first - LEAD) + WINDOW);
+    if (!loaded) setRange(Math.max(0, first - LEAD), Math.max(0, first - LEAD) + LIST_WINDOW);
   }, [first, last, offset, rows.length, items.length, setRange]);
 
   const open = (issue: Issue) => void navigate({ to: "/issue/$id", params: { id: issue.id }, search: keepSearch });

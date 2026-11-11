@@ -8,7 +8,7 @@ import { filtered, windowQuery } from "./query.ts";
 import { openedStore } from "./store.ts";
 import { fetchDetail } from "./sync.ts";
 
-const LIST_WINDOW = 100;
+export const LIST_WINDOW = 100;
 const COLUMN_WINDOW = 50;
 
 type IssueWindow = { readonly rows: readonly Issue[]; readonly offset: number; setRange(start: number, end: number): void };
