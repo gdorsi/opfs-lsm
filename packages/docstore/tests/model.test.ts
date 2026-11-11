@@ -114,6 +114,7 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
           break;
         case "query":
           await checkQuery(c(), [...model.values()], cmd.index, cmd.q, cmd.page);
+          await c().view((snap) => checkQuery(snap, [...model.values()], cmd.index, cmd.q, cmd.page));
           break;
         case "getMany":
           expect(await c().getMany(cmd.ids)).toEqual(cmd.ids.map((id) => model.get(id)));

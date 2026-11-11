@@ -1,4 +1,4 @@
-import { prefixBound, type BatchTx, type Db, type Entry } from "@opfs-lsm/kv";
+import { prefixBound, type BatchTx, type Db, type Entry, type ViewSnapshot } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import type { StoredCatalog } from "../src/catalog.js";
 import { CATALOG_KEY, ROOT, collectionPrefix, indexPrefix, type CollectionId, type IndexId } from "../src/keys.js";
@@ -94,6 +94,14 @@ export function recording(kv: Db): { readonly db: Db; readonly updates: UpdateRe
       return out;
     });
   return { db: wrap(kv, { update }), updates };
+}
+
+/** `kv` whose view snapshots read through `over(snap)` where it names a method, and through `snap` otherwise. */
+export function wrapViews(kv: Db, over: (snap: ViewSnapshot) => Partial<ViewSnapshot>): Db {
+  return wrap(kv, {
+    view: <T>(body: (snap: ViewSnapshot) => Promise<T> | T) =>
+      kv.view((snap) => body({ seq: snap.seq, get: (k) => snap.get(k), range: (r) => snap.range(r), ...over(snap) })),
+  });
 }
 
 export function wrap(kv: Db, over: Partial<Db>): Db {

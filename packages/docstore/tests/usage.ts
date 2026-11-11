@@ -1,4 +1,4 @@
-import { defineSchema, type DocStore, type Query } from "../src/index.js";
+import { defineSchema, type DocStore, type IndexInfo, type Query } from "../src/index.js";
 
 type Todo = {
   id: string;
@@ -59,6 +59,21 @@ export async function misuse(store: DocStore<typeof todoSchema>): Promise<void> 
   store.collection("nope");
   // @ts-expect-error a put needs every field the type requires
   await store.collection("todos").put({ id: "x", title: "t" });
+}
+
+export async function snapshotsAndChanges(store: DocStore<typeof todoSchema>): Promise<void> {
+  const todos = store.collection("todos");
+  const kinds: IndexInfo["kind"][] = [...todos.indexes.values()].map((i) => i.kind);
+  await todos.view(async (snap) => {
+    const seq: number = snap.seq;
+    const page = await snap.query({ index: "byCreated", gte: seq, limit: 10 });
+    const first: string | undefined = page.docs[0]?.title;
+    // @ts-expect-error not an index of todos
+    await snap.query({ index: "byCreatd" });
+    // @ts-expect-error createdAt is a number
+    await snap.count({ index: "byCreated", gte: "2024" });
+    return [kinds, first, await snap.getMany(["a"])];
+  });
 }
 
 type Note = { id: string; owner: string; slug: string; tags: string[]; updatedAt: number; body: string };

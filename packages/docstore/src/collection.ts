@@ -1,23 +1,16 @@
-import type { Entry, Range } from "@opfs-lsm/kv";
+import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { decodeDoc, diffEntries, encodeDoc, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import {
-  bytesEqual,
-  concat,
-  encodeCursor,
-  entryId,
-  idBytes,
-  keyString,
-  parseId,
-  scanPlan,
-  type DocId,
-} from "./keys.js";
-import type { Cursor, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
+import { CATALOG_KEY, bytesEqual, concat, idBytes, keyString, parseId, type DocId } from "./keys.js";
+import type { IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
+import { CollectionReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
 
 export interface Collection<T extends JsonDoc, Ix> {
   readonly name: string;
+  /** The indexes this handle's schema declares for the collection, by name. */
+  readonly indexes: ReadonlyMap<string, IndexInfo>;
 
   /** The stored document, or undefined. */
   get(id: string): Promise<T | undefined>;
@@ -63,7 +56,13 @@ export interface Collection<T extends JsonDoc, Ix> {
   queryIds(q: Query<T, Ix>): Promise<IdPage>;
   /** How many entries `query` would walk, stopping at `limit` if given. */
   count(q: Query<T, Ix>): Promise<number>;
-}
+
+  /**
+   * Reads from one kv snapshot: every read in `body` sees the same state,
+   * whatever is written meanwhile. `body` runs once. A write made inside
+   * `body` is not visible to its snapshot.
+   */
+  view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R>;}
 
 export const RETRY: unique symbol = Symbol("retry");
 
@@ -184,44 +183,25 @@ function uniqueError(incoming: string, owner: string): DocStoreError {
   return new DocStoreError("unique", `"${incoming}" and "${owner}" would share a unique value`, [incoming, owner]);
 }
 
-function limitOf(limit: unknown): number | undefined {
-  if (limit === undefined) return undefined;
-  if (typeof limit === "number" && Number.isInteger(limit) && limit >= 1) return limit;
-  throw new DocStoreError("query", "limit must be a positive integer");
-}
-
-function withLimit(range: Range, limit: number | undefined): Range {
-  return limit === undefined ? range : { ...range, limit };
-}
-
-function nextOf(keys: readonly Uint8Array[], limit: number | undefined): { next?: Cursor } {
-  return limit !== undefined && keys.length > limit ? { next: encodeCursor(keys[limit - 1]!) } : {};
-}
-
-async function collect(entries: AsyncIterable<Entry>): Promise<Entry[]> {
-  const out: Entry[] = [];
-  for await (const e of entries) out.push(e);
-  return out;
-}
-
 export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> {
   constructor(
     private readonly store: StoreCore,
     readonly name: string,
+    readonly indexes: ReadonlyMap<string, IndexInfo>,
   ) {}
 
+  /** Point reads need no snapshot: a read that straddles a `clear` or a schema change is a read before it. */
+  private async live(): Promise<CollectionReader<T, Ix>> {
+    const { kv } = this.store;
+    return new CollectionReader(kv, this.store.collectionIn(await kv.get(CATALOG_KEY), this.name));
+  }
+
   async get(id: string): Promise<T | undefined> {
-    const idb = idBytes(parseId(id));
-    const coll = await this.store.current(this.name);
-    const bytes = await this.store.kv.get(concat(coll.rows.prefix, idb));
-    return bytes && (decodeDoc(bytes) as unknown as T);
+    return (await this.live()).get(id);
   }
 
   async getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
-    const idbs = ids.map((id) => idBytes(parseId(id)));
-    const coll = await this.store.current(this.name);
-    const rows = await Promise.all(idbs.map((b) => this.store.kv.get(concat(coll.rows.prefix, b))));
-    return rows.map((bytes) => bytes && (decodeDoc(bytes) as unknown as T));
+    return (await this.live()).getMany(ids);
   }
 
   put(doc: T): Promise<void> {
@@ -286,47 +266,21 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     return this.store.clear(this.name);
   }
 
-  async query(q: Query<T, Ix>): Promise<Page<T>> {
-    const input = q as QueryInput;
-    const limit = limitOf(input.limit);
-    return this.store.read(this.name, input.index, async (target) => {
-      const range = withLimit(scanPlan(target, input).range, limit === undefined ? undefined : limit + 1);
-      if (target.kind === "rows") {
-        const hits = await collect(this.store.kv.range(range));
-        const docs = hits.slice(0, limit).map((h) => decodeDoc(h.value) as unknown as T);
-        return { docs, ...nextOf(hits.map((h) => h.key), limit) };
-      }
-      let joins = 0;
-      const hits = await this.store.kv.rangeJoin(range, (e) =>
-        limit === undefined || joins++ < limit ? concat(target.rowPrefix, entryId(target, e.key, e.value)) : undefined,
-      );
-      const docs: T[] = [];
-      for (const { joined } of hits.slice(0, limit)) {
-        if (joined === undefined) return RETRY;
-        docs.push(decodeDoc(joined) as unknown as T);
-      }
-      return { docs, ...nextOf(hits.map((h) => h.entry.key), limit) };
-    });
+  query(q: Query<T, Ix>): Promise<Page<T>> {
+    return this.view((snap) => snap.query(q));
   }
 
-  async queryIds(q: Query<T, Ix>): Promise<IdPage> {
-    const input = q as QueryInput;
-    const limit = limitOf(input.limit);
-    return this.store.read(this.name, input.index, async (target) => {
-      const range = withLimit(scanPlan(target, input).range, limit === undefined ? undefined : limit + 1);
-      const hits = await collect(this.store.kv.range(range));
-      const ids = hits.slice(0, limit).map((h) => fromUtf8.decode(entryId(target, h.key, h.value)));
-      return { ids, ...nextOf(hits.map((h) => h.key), limit) };
-    });
+  queryIds(q: Query<T, Ix>): Promise<IdPage> {
+    return this.view((snap) => snap.queryIds(q));
   }
 
-  async count(q: Query<T, Ix>): Promise<number> {
-    const input = q as QueryInput;
-    const limit = limitOf(input.limit);
-    return this.store.read(this.name, input.index, async (target) => {
-      let n = 0;
-      for await (const _ of this.store.kv.range(withLimit(scanPlan(target, input).range, limit))) n++;
-      return n;
-    });
+  count(q: Query<T, Ix>): Promise<number> {
+    return this.view((snap) => snap.count(q));
+  }
+
+  view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R> {
+    return this.store.kv.view(async (snap) =>
+      body(new SnapshotReader<T, Ix>(snap, this.store.collectionIn(await snap.get(CATALOG_KEY), this.name))),
+    );
   }
 }
