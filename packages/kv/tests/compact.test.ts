@@ -72,6 +72,7 @@ describe("L0 compaction", () => {
         return fs.open(path);
       },
       removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
+      removeAll: () => fs.removeAll(),
       create: (path) => fs.create(path),
     };
     const host = new EngineHost(() => hostFs);

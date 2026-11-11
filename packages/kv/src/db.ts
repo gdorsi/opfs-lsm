@@ -241,6 +241,15 @@ export interface Db {
    */
   sync(): Promise<void>;
   close(): Promise<void>;
+  /**
+   * Delete every record of this database, in every tab, and close this
+   * handle. Other tabs' handles on it close too, with a `closed` change
+   * event. Cost does not grow with the data: it deletes the IndexedDB WAL
+   * and one OPFS directory per level, not the files one by one. Waits for
+   * a flush or compaction step already running. `openDb` with the same name
+   * afterwards opens an empty database.
+   */
+  dangerousDestroy(): Promise<void>;
 }
 
 const defaultFsByName = new Map<string, MemoryFs>();
@@ -460,7 +469,10 @@ type Layers = {
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
 
-/** A tab posts each record it appends. The host posts `ingest` for a new generation. */
+/**
+ * A tab posts each record it appends, and `destroyed` after `dangerousDestroy`.
+ * The host posts `ingest` for a new generation.
+ */
 type BusMessage =
   | {
       readonly kind: "append";
@@ -468,7 +480,7 @@ type BusMessage =
       readonly seq: number;
       readonly ops: readonly CheckedOp[];
     }
-  | { readonly kind: "ingest"; readonly writerId: string };
+  | { readonly kind: "ingest" | "destroyed"; readonly writerId: string };
 
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
@@ -530,7 +542,9 @@ class DbImpl implements Db {
 
   private onMessage(data: BusMessage | null): void {
     if (this.closed || !data || data.writerId === this.writerId) return;
-    if (data.kind === "append") {
+    if (data.kind === "destroyed") {
+      void this.close();
+    } else if (data.kind === "append") {
       if (this.applyRecord({ seq: data.seq, ops: data.ops }) === "gap") {
         void this.sync().catch(() => undefined);
       }
@@ -544,7 +558,7 @@ class DbImpl implements Db {
     if (this.closed) throw new ClosedError("database is closed");
   }
 
-  private broadcast(message: Extract<BusMessage, { kind: "append" }>): void {
+  private broadcast(message: Exclude<BusMessage, { kind: "ingest" }>): void {
     if (this.closed) return;
     this.bus?.postMessage(message);
   }
@@ -1054,6 +1068,13 @@ class DbImpl implements Db {
     );
     await this.sync();
     return result;
+  }
+
+  async dangerousDestroy(): Promise<void> {
+    this.ensureOpen();
+    await this.ingestClient.destroy(this.name);
+    this.broadcast({ kind: "destroyed", writerId: this.writerId });
+    await this.close();
   }
 
   async close(): Promise<void> {

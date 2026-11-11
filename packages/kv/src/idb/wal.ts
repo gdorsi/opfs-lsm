@@ -324,6 +324,18 @@ export class IdBWal {
     if (!this.open) this.db.close();
   }
 
+  /**
+   * Delete the WAL database. Every open connection closes on the
+   * `versionchange` this fires, so the delete waits for none of them.
+   */
+  static destroy(dbName: DbName): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.deleteDatabase(idbName(dbName));
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }
+
   /** The tail after `since`, from one readonly transaction. */
   async tail(since: number, profile?: WalReadProfile): Promise<WalTail> {
     const started = profile ? performance.now() : 0;

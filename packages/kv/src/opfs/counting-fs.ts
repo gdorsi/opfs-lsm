@@ -92,6 +92,11 @@ export class CountingFs implements AsyncFs {
     return removed;
   }
 
+  async removeAll(): Promise<void> {
+    await this.inner.removeAll();
+    this.sizes.clear();
+  }
+
   async create(path: string): Promise<FileWriter> {
     const writer = await this.inner.create(path);
     let bytes = 0;

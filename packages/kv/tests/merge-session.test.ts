@@ -429,6 +429,7 @@ describe("the compaction driver", () => {
           list: (d) => inner.list(d),
           remove: (p) => inner.remove(p),
           removeUnlessOpen: (p) => inner.removeUnlessOpen(p),
+          removeAll: () => inner.removeAll(),
           create: async (path): Promise<FileWriter> => {
             faults.tick("create");
             const w = await inner.create(path);
@@ -513,6 +514,7 @@ describe("a compaction step at full size", () => {
         list: (d) => base.list(d),
         remove: (p) => base.remove(p),
         removeUnlessOpen: (p) => base.removeUnlessOpen(p),
+        removeAll: () => base.removeAll(),
         open: async (path) => {
           const file = await base.open(path);
           return file && { size: file.size, read: (o, l) => (reads.push(l), file.read(o, l)), close: () => file.close() };

@@ -168,6 +168,10 @@ export class FaultFs implements AsyncFs {
     });
   }
 
+  removeAll() {
+    return this.site("fs-write", "remove all", () => this.inner.removeAll());
+  }
+
   create(path: string): Promise<FileWriter> {
     return this.site("fs-write", `create ${path}`, async () => {
       if ((await this.inner.read(path, 0, 0)) === undefined) {

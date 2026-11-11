@@ -285,6 +285,10 @@ class World {
         await this.yield(`${who} remove ${path}`);
         return fs.removeUnlessOpen(path);
       },
+      removeAll: async () => {
+        await this.yield(`${who} remove all`);
+        return fs.removeAll();
+      },
       create: async (path) => {
         await this.yield(`${who} create ${path}`);
         return fs.create(path);

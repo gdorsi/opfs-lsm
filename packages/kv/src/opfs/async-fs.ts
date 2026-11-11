@@ -36,6 +36,12 @@ export interface AsyncFs {
   remove(path: string): Promise<void>;
   /** Remove `path` unless some tab holds it open. True when it is gone. */
   removeUnlessOpen(path: string): Promise<boolean>;
+  /**
+   * Remove every file of this database, open or not. Readers holding a file
+   * fail on their next read. Costs one call per top-level directory, not one
+   * per file.
+   */
+  removeAll(): Promise<void>;
   /** Replace published file only when finish resolves. No append. */
   create(path: string): Promise<FileWriter>;
 }

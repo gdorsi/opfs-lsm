@@ -132,6 +132,11 @@ export class EngineHost {
   unwatch(name: string): void {
     this.db(name).unwatch();
   }
+
+  /** Delete every record and file of `name`. See `Db.dangerousDestroy`. */
+  async destroy(name: string): Promise<void> {
+    await this.db(name).destroy();
+  }
 }
 
 /**
@@ -163,6 +168,8 @@ class HostedDb {
    * records another generation makes the host check again.
    */
   private trusted: number | undefined;
+  /** Set while `destroy` waits for the locks, so a compaction pass stops at its next step. */
+  private destroying = false;
   /** Run compaction passes until no request arrives during one. */
   private readonly compact = coalesced(() =>
     withLock(compactLock(this.name), () => this.compactPass()),
@@ -400,6 +407,30 @@ class HostedDb {
     })();
   }
 
+  /**
+   * Delete the WAL and every run and manifest. Holds the compaction and
+   * ingest locks, so no flush or merge writes meanwhile, and a merge
+   * running when it is called stops after its current step. Deletes the
+   * WAL first: once it is gone no tab can commit, and a retry after a
+   * failed file removal finds a database to open.
+   */
+  async destroy(): Promise<void> {
+    this.destroying = true;
+    try {
+      await withLock(compactLock(this.name), () =>
+        this.exclusive(async () => {
+          await IdBWal.destroy(this.name);
+          await (await this.fs()).removeAll();
+          this.trusted = undefined;
+          this.retired = undefined;
+          if (this.watching) this.watching.pendingBytes = 0;
+        }),
+      );
+    } finally {
+      this.destroying = false;
+    }
+  }
+
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
     return this.publishTurn(() => withLock(ingestLock(this.name), fn));
   }
@@ -418,7 +449,7 @@ class HostedDb {
     if (this.retired?.size !== 0) {
       await this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal)));
     }
-    for (let i = 0; i < MAX_COMPACTION_STEPS; i++) {
+    for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
       const meta = await this.withWal((wal) => wal.meta());
       const base = await loadGeneration(fs, meta.generation ?? 0);
       // Gone when a flush installed a newer generation since: plan again.
@@ -535,6 +566,10 @@ export function attachEngineHostPort(
         case "stats":
           reply({ type: "stats-ok", id: msg.id, stats: await host.stats(msg.name) });
           return;
+        case "destroy":
+          await host.destroy(msg.name);
+          reply({ type: "destroy-ok", id: msg.id });
+          return;
         default: {
           const _exhaustive: never = msg;
           void _exhaustive;
@@ -607,6 +642,9 @@ export function createPortIngestClient(
       const msg: ClientToHost = { type: "unwatch", name };
       port.postMessage(msg);
     },
+    async destroy(name) {
+      await request({ type: "destroy", id: nextId++, name });
+    },
     async stats(name) {
       const res = await request({ type: "stats", id: nextId++, name });
       return (res as Extract<HostToClient, { type: "stats-ok" }>).stats;
@@ -624,6 +662,7 @@ export function createLocalIngestClient(host: EngineHost): IngestClient {
     ingest: (name, through, waitForCompaction) => host.ingest(name, through, waitForCompaction),
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
+    destroy: (name) => host.destroy(name),
     stats: (name) => host.stats(name),
     close: () => undefined,
   };

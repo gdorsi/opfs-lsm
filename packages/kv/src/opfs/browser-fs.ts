@@ -158,6 +158,16 @@ export class BrowserFs implements AsyncFs {
     await dir.removeEntry(fileName);
   }
 
+  async removeAll(): Promise<void> {
+    for (const name of await this.list("")) {
+      try {
+        await this.root.removeEntry(name, { recursive: true });
+      } catch (err) {
+        if (!isNotFound(err)) throw err;
+      }
+    }
+  }
+
   async create(path: string): Promise<FileWriter> {
     const handle = await this.fileHandle(path, true);
     // Default createWritable: new staged version, no keepExistingData.

@@ -53,6 +53,7 @@ function hostFs(inner: MemoryFs) {
     list: (dir) => inner.list(dir),
     remove: (path) => inner.remove(path),
     removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
+    removeAll: () => inner.removeAll(),
     create: async (path) => {
       await hold.create?.(path);
       const writer = await inner.create(path);
