@@ -520,7 +520,8 @@ class DbImpl implements Db {
 
   private onMessage(data: BusMessage): void {
     if (this.closed) return;
-    if (data.kind === "ingest") {
+    // An `ingest`, or a message this build does not know: catch up from the WAL.
+    if (data?.kind !== "append") {
       void this.sync().catch(() => undefined);
       return;
     }
