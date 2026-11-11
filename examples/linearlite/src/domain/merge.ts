@@ -1,0 +1,64 @@
+import { generateKeyBetween } from "fractional-indexing";
+import type { Clocks, Patch, Synced } from "./model.ts";
+
+type Tombstoned = Synced & { readonly deleted?: boolean };
+
+export function applyLocal<T extends Synced>(row: T, patch: Patch<T>, clock: number): T {
+  const current = row as Record<string, unknown>;
+  const changed = Object.entries(patch as Record<string, unknown>).filter(([f, v]) => v !== undefined && current[f] !== v);
+  if (changed.length === 0) return row;
+  const dirty: Record<string, number> = { ...row.dirty };
+  for (const [f] of changed) dirty[f] = clock;
+  return { ...row, ...Object.fromEntries(changed), dirty };
+}
+
+export function mergeIncoming<T extends Tombstoned>(
+  local: T | undefined,
+  incoming: Omit<T, "dirty">,
+  acked?: Clocks,
+): T | null | undefined {
+  if (local === undefined) return incoming.deleted ? undefined : (incoming as T);
+
+  const remaining = unacked(local.dirty, acked);
+  const cleared = remaining !== local.dirty;
+  const newer = incoming.version > local.version;
+  if (!newer && !cleared) return undefined;
+
+  const kept: Record<string, unknown> = {};
+  for (const f in remaining) kept[f] = (local as Record<string, unknown>)[f];
+  const { dirty: _dirty, ...base } = newer ? (incoming as Record<string, unknown>) : (local as Record<string, unknown>);
+  const merged = { ...base, ...kept, version: Math.max(incoming.version, local.version) } as unknown as T;
+  const result = Object.keys(remaining ?? {}).length > 0 ? ({ ...merged, dirty: remaining } as T) : merged;
+  return result.deleted && result.dirty === undefined ? null : result;
+}
+
+/**
+ * Reset a row to the server's state after the server refused an edit of it. Unlike `mergeIncoming` it takes the
+ * server's row whatever its version, since the local version may be ahead of what the server holds, and drops the
+ * dirty fields whose clocks are the `refused` ones. A field edited again since the push keeps its value and stays
+ * dirty. No server row, or a tombstone, deletes the local one. A row that is no longer stored stays so.
+ */
+export function restore<T extends Tombstoned>(
+  local: T | undefined,
+  server: Omit<T, "dirty"> | null,
+  refused: Clocks,
+): T | null | undefined {
+  if (local === undefined) return undefined;
+  if (server === null || server.deleted) return null;
+  const remaining = unacked(local.dirty, refused);
+  if (remaining === undefined || Object.keys(remaining).length === 0) return server as T;
+  const kept: Record<string, unknown> = {};
+  for (const f in remaining) kept[f] = (local as Record<string, unknown>)[f];
+  return { ...server, ...kept, dirty: remaining } as unknown as T;
+}
+
+function unacked(dirty: Clocks | undefined, acked: Clocks | undefined): Clocks | undefined {
+  if (dirty === undefined || acked === undefined) return dirty;
+  const rest = Object.entries(dirty).filter(([f, clock]) => acked[f] !== clock);
+  return rest.length === Object.keys(dirty).length ? dirty : Object.fromEntries(rest);
+}
+
+export function kanbanBetween(before: string | null, after: string | null): string {
+  if (before !== null && after !== null && before >= after) return generateKeyBetween(before, null);
+  return generateKeyBetween(before, after);
+}

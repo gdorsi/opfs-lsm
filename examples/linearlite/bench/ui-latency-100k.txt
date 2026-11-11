@@ -1,0 +1,5 @@
+100k issues in the replica, headless Chrome, vite dev (unminified React), ms. Script: bench/ui-latency.js
+status chip on -> rows painted {'n': 10, 'p50': 52.5, 'min': 44.9, 'max': 291.3}
+status chip off -> rows painted {'n': 10, 'p50': 163.6, 'min': 140.3, 'max': 242.9}
+search keystroke -> rows painted (80 ms debounce included) {'n': 10, 'p50': 170.2, 'min': 167.1, 'max': 249.6}
+list -> detail, title painted {'n': 10, 'p50': 16.5, 'min': 12.9, 'max': 42.8}

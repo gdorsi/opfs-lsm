@@ -1,0 +1,12 @@
+seed list: {"shape":"list","n":100000,"size":100000,"comments":0,"seeded":100000,"seedMs":1395,"openMs":41,"loadMs":2,"firstQueryMs":9,"queryRows":50,"heapMB":242}
+seed all:  {"shape":"all","n":100000,"size":100000,"comments":49734,"seeded":100000,"seedMs":2504,"openMs":35,"loadMs":2,"firstQueryMs":10,"queryRows":50,"heapMB":643}
+cold list: {"shape":"list","n":100000,"size":100000,"comments":0,"seeded":0,"seedMs":0,"openMs":22,"loadMs":878,"firstQueryMs":8,"queryRows":50,"heapMB":238}
+cold all: {"shape":"all","n":100000,"size":100000,"comments":49734,"seeded":0,"seedMs":0,"openMs":38,"loadMs":1403,"firstQueryMs":9,"queryRows":50,"heapMB":440}
+cold all: {"shape":"all","n":100000,"size":100000,"comments":49734,"seeded":0,"seedMs":0,"openMs":19,"loadMs":1456,"firstQueryMs":9,"queryRows":50,"heapMB":437}
+cold list: {"shape":"list","n":100000,"size":100000,"comments":0,"seeded":0,"seedMs":0,"openMs":19,"loadMs":1052,"firstQueryMs":10,"queryRows":50,"heapMB":238}
+cold list: {"shape":"list","n":100000,"size":100000,"comments":0,"seeded":0,"seedMs":0,"openMs":16,"loadMs":776,"firstQueryMs":8,"queryRows":50,"heapMB":238}
+cold all: {"shape":"all","n":100000,"size":100000,"comments":49734,"seeded":0,"seedMs":0,"openMs":14,"loadMs":1351,"firstQueryMs":8,"queryRows":50,"heapMB":442}
+cold all: {"shape":"all","n":100000,"size":100000,"comments":49734,"seeded":0,"seedMs":0,"openMs":32,"loadMs":5623,"firstQueryMs":16,"queryRows":50,"heapMB":384}
+cold list: {"shape":"list","n":100000,"size":100000,"comments":0,"seeded":0,"seedMs":0,"openMs":25,"loadMs":947,"firstQueryMs":9,"queryRows":50,"heapMB":238}
+cold list: {"shape":"list","n":100000,"size":100000,"comments":0,"seeded":0,"seedMs":0,"openMs":21,"loadMs":1011,"firstQueryMs":9,"queryRows":50,"heapMB":238}
+cold all: {"shape":"all","n":100000,"size":100000,"comments":49734,"seeded":0,"seedMs":0,"openMs":22,"loadMs":1767,"firstQueryMs":9,"queryRows":50,"heapMB":389}

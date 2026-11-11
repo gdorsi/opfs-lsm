@@ -4,7 +4,16 @@ import { randomUUID } from "node:crypto";
 import { afterEach, test } from "node:test";
 import type { ChangeEvent, Db } from "@opfs-lsm/kv";
 import { openHarnessDb, ingest } from "@opfs-lsm/kv/testing";
-import { collectionOptions, createCollection, createTransaction, DbClient } from "@tanstack/db";
+import {
+  collectionOptions,
+  createCollection,
+  createLiveQueryCollection,
+  createTransaction,
+  DbClient,
+  eq,
+  parseLoadSubsetOptions,
+  type LoadSubsetOptions,
+} from "@tanstack/db";
 import { kvCollectionOptions } from "../src/index.ts";
 
 type Todo = { id: string; title: string };
@@ -14,7 +23,7 @@ const opened: Db[] = [];
 const collections: { cleanup(): Promise<void> }[] = [];
 
 afterEach(async () => {
-  for (const c of collections.splice(0)) await c.cleanup();
+  for (const c of collections.splice(0).reverse()) await c.cleanup();
   for (const db of opened.splice(0)) await db.close();
 });
 
@@ -230,7 +239,6 @@ test("a tab that falls behind a flush reloads and matches the writer", async () 
   assert.deepEqual(plain(reader.toArray), plain(writer.toArray));
 });
 
-/** A db whose change feed the test can thin out and add to. */
 function tappedFeed(db: Db) {
   const listeners = new Set<(event: ChangeEvent) => void>();
   let hide = 0;
@@ -396,4 +404,359 @@ test("closing the db fails the collection, keeps its rows and rejects later writ
   await assert.rejects(late.when("settled"));
   assert.equal(c.has("2"), false);
   assert.equal(c.size, 1);
+});
+
+test("transact puts, deletes and leaves rows by what merge returns, and the collection shows it on resolve", async () => {
+  const db = await open(dbName());
+  const c = todos(db);
+  await c.preload();
+  await c.insert([
+    { id: "a", title: "A" },
+    { id: "b", title: "B" },
+    { id: "c", title: "C" },
+  ]).when("settled");
+
+  let seen: ReadonlyArray<Todo | undefined> = [];
+  await c.utils.transact(["a", "b", "c", "d"], (rows) => {
+    seen = rows;
+    return [{ id: "a", title: `${rows[0]!.title}!` }, null, undefined, { id: "d", title: "D" }];
+  });
+
+  assert.deepEqual(seen, [{ id: "a", title: "A" }, { id: "b", title: "B" }, { id: "c", title: "C" }, undefined]);
+  assert.deepEqual(plain(c.toArray), [
+    { id: "a", title: "A!" },
+    { id: "c", title: "C" },
+    { id: "d", title: "D" },
+  ]);
+});
+
+test("transact merges against a row another handle wrote after this collection loaded", async () => {
+  const name = dbName();
+  const writer = todos(await open(name));
+  const reader = todos(await openWithoutBus(name));
+  await Promise.all([writer.preload(), reader.preload()]);
+  await writer.insert({ id: "1", title: "from the writer" }).when("settled");
+  assert.equal(reader.has("1"), false);
+
+  let seen: Todo | undefined;
+  await reader.utils.transact(["1"], ([row]) => {
+    seen = row;
+    return [{ id: "1", title: `${row!.title}, merged` }];
+  });
+
+  assert.deepEqual(seen, { id: "1", title: "from the writer" });
+  assert.deepEqual(plain(reader.toArray), [{ id: "1", title: "from the writer, merged" }]);
+});
+
+test("transact writes nothing when merge returns the wrong length, a mismatched key or throws", async () => {
+  const db = await open(dbName());
+  const c = todos(db);
+  await c.preload();
+  await c.insert({ id: "a", title: "A" }).when("settled");
+  const appends: number[] = [];
+  db.changes((e) => {
+    if (e.kind === "append") appends.push(e.seq);
+  });
+
+  await assert.rejects(c.utils.transact(["a", "b"], () => [null]), RangeError);
+  await assert.rejects(c.utils.transact(["a", "b"], () => [null, { id: "c", title: "C" }]), TypeError);
+  await assert.rejects(
+    c.utils.transact(["a"], () => {
+      throw new Error("no");
+    }),
+    /no/,
+  );
+
+  assert.deepEqual(appends, []);
+  const reloaded = todos(db);
+  await reloaded.preload();
+  assert.deepEqual(plain(reloaded.toArray), [{ id: "a", title: "A" }]);
+});
+
+test("a transact during the first load resolves once the collection shows the write", async () => {
+  const db = await open(dbName());
+  const gate = gatedView(db);
+  const c = todos(gate.db);
+  const loaded = c.preload();
+  await gate.reached;
+
+  const appended = Promise.withResolvers<void>();
+  db.changes((e) => {
+    if (e.kind === "append") appended.resolve();
+  });
+
+  const written = c.utils.transact(["x"], () => [{ id: "x", title: "X" }]);
+  let resolved = false;
+  void written.then(() => (resolved = true));
+  await appended.promise;
+  await new Promise((r) => setImmediate(r));
+  assert.equal(resolved, false, "transact waits for the load that will show its write");
+  gate.open();
+  await written;
+
+  assert.deepEqual(plain(c.toArray), [{ id: "x", title: "X" }]);
+  await loaded;
+});
+
+type Comment = { key: string; issue_id: string; body: string };
+type Body = { id: string; description: string };
+
+function eqValue(options: LoadSubsetOptions, field: string): unknown {
+  const filter = parseLoadSubsetOptions(options).filters.find((f) => f.operator === "eq" && f.field.join(".") === field);
+  if (!filter) throw new Error(`load ${field} with eq`);
+  return filter.value;
+}
+
+function comments(db: Db) {
+  const c = createCollection(
+    kvCollectionOptions({
+      db,
+      name: "comments",
+      getKey: (r: Comment) => r.key,
+      onDemand: { plan: (options) => ({ prefix: `${String(eqValue(options, "issue_id"))}/` }) },
+    }),
+  );
+  collections.push(c);
+  return c;
+}
+
+function bodies(db: Db) {
+  const c = createCollection(
+    kvCollectionOptions({
+      db,
+      name: "bodies",
+      getKey: (r: Body) => r.id,
+      onDemand: { plan: (options) => ({ keys: [String(eqValue(options, "id"))] }) },
+    }),
+  );
+  collections.push(c);
+  return c;
+}
+
+function eagerComments(db: Db) {
+  const c = createCollection(kvCollectionOptions({ db, name: "comments", getKey: (r: Comment) => r.key }));
+  collections.push(c);
+  return c;
+}
+
+function commentsOf(c: ReturnType<typeof comments>, issue: string) {
+  const q = createLiveQueryCollection((q) => q.from({ c }).where(({ c }) => eq(c.issue_id, issue)));
+  collections.push(q);
+  return q;
+}
+
+const comment = (issue: string, n: number, body = `${issue}${n}`): Comment => ({ key: `${issue}/${n}`, issue_id: issue, body });
+
+test("an on-demand collection is ready at once and holds only what a live query loads by prefix", async () => {
+  const name = dbName();
+  const writer = eagerComments(await open(name));
+  await writer.preload();
+  await writer.insert([comment("X", 1), comment("X", 2), comment("Y", 1), comment("XY", 1)]).when("settled");
+
+  const c = comments(await open(name));
+  c.startSyncImmediate();
+  assert.equal(c.isReady(), true);
+  assert.equal(c.size, 0);
+
+  const ofX = commentsOf(c, "X");
+  await ofX.preload();
+
+  assert.deepEqual(plain(ofX.toArray).map((r) => r.key), ["X/1", "X/2"]);
+  assert.deepEqual([...c.keys()].sort(), ["X/1", "X/2"]);
+});
+
+test("an on-demand collection loads by keys", async () => {
+  const name = dbName();
+  const db = await open(name);
+  const c = bodies(db);
+  await c.utils.transact(["A", "B"], () => [
+    { id: "A", description: "a" },
+    { id: "B", description: "b" },
+  ]);
+  assert.equal(c.size, 0, "a write no plan covers stays out of memory");
+
+  const q = createLiveQueryCollection((q) => q.from({ b: c }).where(({ b }) => eq(b.id, "B")));
+  collections.push(q);
+  await q.preload();
+
+  assert.deepEqual(plain(q.toArray), [{ id: "B", description: "b" }]);
+  assert.deepEqual([...c.keys()], ["B"]);
+  await c.utils.transact(["B"], ([row]) => [{ ...row!, description: "b2" }]);
+  assert.equal(c.get("B")?.description, "b2", "a transact on a covered key shows on resolve");
+});
+
+test("another handle's writes reach a loaded subset, and writes outside it stay out of memory", async () => {
+  const name = dbName();
+  const writer = eagerComments(await open(name));
+  const c = comments(await open(name));
+  await writer.preload();
+  const ofX = commentsOf(c, "X");
+  await ofX.preload();
+
+  await writer.insert(comment("Y", 1)).when("settled");
+  await writer.insert(comment("X", 1)).when("settled");
+  await until(ofX, () => ofX.size === 1, "the X comment");
+  await writer.update("X/1", (d) => {
+    d.body = "edited";
+  }).when("settled");
+  await until(ofX, () => ofX.get("X/1")?.body === "edited", "the edit");
+  await writer.delete("X/1").when("settled");
+  await until(c, () => !c.has("X/1"), "the delete");
+
+  assert.equal(c.has("Y/1"), false);
+  assert.equal(c.size, 0);
+});
+
+test("cleaning up a live query unloads its rows, and a row two queries share stays until both go", async () => {
+  const name = dbName();
+  const db = await open(name);
+  const c = bodies(db);
+  await c.utils.transact(["A", "B"], () => [
+    { id: "A", description: "a" },
+    { id: "B", description: "b" },
+  ]);
+  const byId = (id: string) => {
+    const q = createLiveQueryCollection((q) => q.from({ b: c }).where(({ b }) => eq(b.id, id)));
+    collections.push(q);
+    return q;
+  };
+  const [first, second, other] = [byId("A"), byId("A"), byId("B")];
+  await Promise.all([first.preload(), second.preload(), other.preload()]);
+  assert.deepEqual([...c.keys()].sort(), ["A", "B"]);
+
+  await other.cleanup();
+  await until(c, () => !c.has("B"), "B to unload");
+  await first.cleanup();
+  assert.equal(c.has("A"), true, "the second query still holds A");
+  await second.cleanup();
+  await until(c, () => c.size === 0, "A to unload");
+
+  await c.utils.transact(["A"], () => [{ id: "A", description: "later" }]);
+  assert.equal(c.size, 0, "an unloaded key no longer follows writes");
+});
+
+test("a write that lands while a subset loads is not lost", async () => {
+  const name = dbName();
+  const writer = eagerComments(await open(name));
+  await writer.preload();
+  await writer.insert(comment("X", 1, "old")).when("settled");
+
+  const r = await open(name);
+  const gate = gatedView(r);
+  const c = comments(gate.db);
+  const ofX = commentsOf(c, "X");
+  const loaded = ofX.preload();
+  await gate.reached;
+
+  await writer.update("X/1", (d) => {
+    d.body = "new";
+  }).when("settled");
+  await writer.insert(comment("X", 2)).when("settled");
+  await r.sync();
+  gate.open();
+  await loaded;
+
+  assert.deepEqual(
+    ofX.toArray.map((r) => [r.key, r.body]).sort(),
+    [
+      ["X/1", "new"],
+      ["X/2", "X2"],
+    ],
+  );
+});
+
+test("a gap reloads every loaded subset, its puts and its deletes", async () => {
+  const name = dbName();
+  const w = await open(name);
+  const r = await open(name);
+  const tap = tappedFeed(r);
+  const writer = eagerComments(w);
+  const c = comments(tap.db);
+  await writer.preload();
+  await writer.insert(comment("X", 1)).when("settled");
+  await r.sync();
+  const ofX = commentsOf(c, "X");
+  await ofX.preload();
+  assert.equal(ofX.size, 1);
+
+  tap.hideNextAppend();
+  await writer.delete("X/1").when("settled");
+  tap.hideNextAppend();
+  await writer.insert(comment("X", 2)).when("settled");
+  await r.sync();
+  assert.deepEqual([...c.keys()], ["X/1"]);
+
+  tap.emit({ kind: "gap", through: await r.view((snap) => snap.seq) });
+  await until(c, () => c.has("X/2") && !c.has("X/1"), "the reload after the gap");
+});
+
+test("a plan that throws fails that query's load", async () => {
+  const c = comments(await open(dbName()));
+  const q = createLiveQueryCollection((q) => q.from({ c }));
+  collections.push(q);
+
+  await assert.rejects(q.preload(), /load issue_id with eq/);
+});
+
+test("loading the same options twice supersedes the first fetch, which then never commits", async () => {
+  const name = dbName();
+  const writer = bodies(await open(name));
+  await writer.utils.transact(["A"], () => [{ id: "A", description: "old" }]);
+
+  const r = await open(name);
+  const slow = Promise.withResolvers<void>();
+  const firstReached = Promise.withResolvers<void>();
+  let views = 0;
+  const db = new Proxy(r, {
+    get(target, prop) {
+      if (prop === "view") {
+        return <T>(body: Parameters<Db["view"]>[0]) => {
+          const mine = ++views;
+          return target.view(async (snap) => {
+            if (mine === 1) {
+              firstReached.resolve();
+              await slow.promise;
+            }
+            return body(snap) as T;
+          });
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const config = kvCollectionOptions({
+    db,
+    name: "bodies",
+    getKey: (r: Body) => r.id,
+    onDemand: { plan: () => ({ keys: ["A"] }) },
+  });
+  const commits: Body[][] = [];
+  let batch: Body[] = [];
+  const handle = config.sync.sync({
+    collection: undefined as never,
+    begin: () => (batch = []),
+    write: (m) => batch.push((m as { value: Body }).value),
+    commit: () => void commits.push(batch),
+    markReady: () => {},
+    truncate: () => {},
+    metadata: undefined as never,
+  } as never) as { cleanup(): void; loadSubset(o: LoadSubsetOptions): Promise<void> };
+
+  const options: LoadSubsetOptions = {};
+  const first = handle.loadSubset(options);
+  await firstReached.promise;
+  await writer.utils.transact(["A"], () => [{ id: "A", description: "new" }]);
+  await r.sync();
+  const second = handle.loadSubset(options);
+  await second;
+  slow.resolve();
+  await first;
+
+  assert.deepEqual(
+    commits.flat().map((r) => r.description),
+    commits.flat().map(() => "new"),
+    "the superseded fetch never commits its older snapshot",
+  );
+  handle.cleanup();
 });
