@@ -7,7 +7,8 @@
     "build": "vite build",
     "start": "node .output/server/index.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test"
+    "test": "node --test",
+    "seed": "node scripts/seed.ts"
   },
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*",
