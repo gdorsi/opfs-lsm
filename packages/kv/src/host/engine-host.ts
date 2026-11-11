@@ -1,6 +1,6 @@
 import { checkDbName, opsBytes, type DbName } from "../check.js";
 import { codeOfError } from "../errors.js";
-import { IdBWal } from "../idb/wal.js";
+import { IdBWal, uningestedBytes } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty } from "../recover.js";
 import { CountingFs } from "../opfs/counting-fs.js";
@@ -337,7 +337,7 @@ class HostedDb {
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
-    void this.withWal((wal) => wal.uningestedBytes(watch.maxWalBytes)).then(
+    void this.withWal((wal) => uningestedBytes(wal, watch.maxWalBytes)).then(
       (waiting) => {
         watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
         this.maybeIngest(watch);

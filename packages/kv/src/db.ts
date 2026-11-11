@@ -21,7 +21,7 @@ import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type IngestClient } from "./host/protocol.js";
 import { layersChannel } from "./locks.js";
-import { IdBWal, type WalTail } from "./idb/wal.js";
+import { TabWal, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, untilHit, type Maybe } from "./store/cursor.js";
@@ -264,7 +264,7 @@ export function prefixBound(prefix: Uint8Array): {
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
 type DbInternals = {
   readonly name: DbName;
-  readonly wal: IdBWal;
+  readonly wal: TabWal;
   readonly fs: CountingFs;
   readonly ingest: IngestClient;
   /** Flush the memtable now and wait for the compaction it starts. */
@@ -294,7 +294,7 @@ async function connect(
   readonly fs: AsyncFs;
   readonly ingest: IngestClient;
   readonly ownsIngestClient: boolean;
-  readonly walOpen: Promise<IdBWal> | undefined;
+  readonly walOpen: Promise<TabWal> | undefined;
 }> {
   if (backing.fs) {
     return { fs: backing.fs, ingest: backing.ingest, ownsIngestClient: false, walOpen: undefined };
@@ -305,7 +305,7 @@ async function connect(
     );
   }
   // IndexedDB opens while OPFS does.
-  const walOpen = IdBWal.open(name);
+  const walOpen = TabWal.open(name);
   walOpen.catch(() => undefined);
   let fs: AsyncFs;
   try {
@@ -365,7 +365,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   // The host has the bare fs, so the tab's IO counts only here.
   const tabFs = new CountingFs(fs);
 
-  const wal = await timed(trace, "idb-open", () => walOpen ?? IdBWal.open(name));
+  const wal = await timed(trace, "idb-open", () => walOpen ?? TabWal.open(name));
   // Pair the WAL with a manifest before the first read or write. The
   // recorded manifest's runs are checked by the first sync, which loads them.
   await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
@@ -493,7 +493,7 @@ class DbImpl implements Db {
   constructor(
     readonly name: DbName,
     readonly writerId: WriterId,
-    private readonly wal: IdBWal,
+    private readonly wal: TabWal,
     private readonly fs: AsyncFs,
     private readonly cache: PageCache,
     private readonly ingestClient: IngestClient,

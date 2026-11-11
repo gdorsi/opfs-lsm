@@ -34,8 +34,5 @@
         "encodeSst"
       ]
     }
-  ],
-  "usedClassMembers": [
-    "uningestedBytes"
   ]
 }

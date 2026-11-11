@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns } from "../src/store/block-scan.js";
+import { encodeRunIn } from "../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../src/store/generation.js";
 import { lz4Decompress } from "../src/store/lz4.js";
 import { PageCache } from "../src/store/page-cache.js";
@@ -169,7 +170,7 @@ describe("wasm traps", () => {
         // KW1 panicked here.
       }
     }
-    expect(decodeSst(wasm.encodeRun(entries, false).body)).toHaveLength(entries.length);
+    expect(decodeSst(encodeRunIn(wasm, entries, false).body)).toHaveLength(entries.length);
   });
 
   // A trap that is not a panic on input: wasm memory cannot grow to 4 GiB.

@@ -294,7 +294,7 @@ function sourceSync(): string[] {
   };
   need("host/ingest.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*publishL0[\s\S]*publishGeneration[\s\S]*through: last[\s\S]*advanceIngested/, "ingest builds on the recorded generation and numbers past the top manifest");
   need("host/compact.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*through: meta\.through[\s\S]*raiseGeneration/, "install builds on the recorded generation");
-  need("idb/wal.ts", /async advanceIngested[\s\S]*delete\(IDBKeyRange\.upperBound\(existing\)\)/, "advanceIngested keeps the records it folds until the next ingest");
+  need("idb/wal.ts", /async function advanceIngested[\s\S]*delete\(IDBKeyRange\.upperBound\(existing\)\)/, "advanceIngested keeps the records it folds until the next ingest");
   need("idb/wal.ts", /Math\.max\(head, through, floor\)/, "adopt raises head past every seq a manifest names");
   need("idb/wal.ts", /meta\.put\(Math\.max\(knownTop, top, generation\), META_TOP\)/, "adopt keeps the highest manifest number seen");
   need("recover.ts", /Math\.max\(numbers\[0\] \?\? 0, meta\.top, meta\.generation \?\? 0\)/, "new manifests number past every number in use");
@@ -306,9 +306,9 @@ function sourceSync(): string[] {
   need("db.ts", /if \(step === "gone"\) \{\s*if \(\+\+gone >= GENERATION_RETRIES\)[^\n]*\n\s*await this\.repair\(\);/, "a load that finds files gone under the lock repairs");
   need("host/engine-host.ts", /ingestChunk\([^;]*this\.trusted[^;]*;\s*[^\n]*\n\s*await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");
   need("host/engine-host.ts", /await unlessHeld\(this\.name, async \(\) => \{\s*const \{ generation \} = await reconcile\(wal, fs, this\.trusted\);[\s\S]*reclaimManifests\(fs, generation\);[\s\S]*liveRuns\(fs, generation\)/, "reclaim removes manifests then runs after reconciling, unless a tab holds the reclaim lock");
-  need("host/compact.ts", /await wal\.raiseGeneration\(generation\);\s*return generation;/, "install removes no file");
-  need("recover.ts", /export async function recordEmpty[\s\S]*?highestThrough\(fs, numbers, meta\.head\)[\s\S]*?wal\.empty\(meta, floor \+ 1, top\)/, "destroy records generation 0 past every seq the WAL or a manifest names");
-  need("idb/wal.ts", /async empty\([\s\S]*?durability: "strict"[\s\S]*?meta\.put\(top, META_DESTROYED_TOP\)/, "the destroy commit is strict and records destroyedTop");
+  need("host/compact.ts", /await raiseGeneration\(wal, generation\);\s*return generation;/, "install removes no file");
+  need("recover.ts", /export async function recordEmpty[\s\S]*?highestThrough\(fs, numbers, meta\.head\)[\s\S]*?emptyWal\(wal, meta, floor \+ 1, top\)/, "destroy records generation 0 past every seq the WAL or a manifest names");
+  need("idb/wal.ts", /async function emptyWal\([\s\S]*?durability: "strict"[\s\S]*?meta\.put\(top, META_DESTROYED_TOP\)/, "the destroy commit is strict and records destroyedTop");
   need("recover.ts", /for \(const n of numbers\) \{\s*if \(n <= meta\.destroyedTop\) break;/, "rule 3 adopts no manifest from before a destroy");
   need("host/engine-host.ts", /await recordEmpty\(wal, fs\);[\s\S]*?await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, Number\.POSITIVE_INFINITY\)\);\s*await this\.reclaim\(fs, wal\);/, "destroy commits, then removes the manifests and sweeps, each unless a tab holds the reclaim lock");
   return out;

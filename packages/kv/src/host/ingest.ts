@@ -1,6 +1,7 @@
 import { opsBytes } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
+import { advanceIngested, getIngestedThrough, listUningested } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, type Trusted } from "../recover.js";
 import {
@@ -59,8 +60,8 @@ export async function ingestChunk(
   limits: ChunkLimits,
 ): Promise<Chunk> {
   const base = await reconcile(wal, fs, trusted);
-  const ingested = await wal.getIngestedThrough();
-  const records = ingested >= through ? [] : await wal.listUningested({ maxBytes: limits.maxBytes });
+  const ingested = await getIngestedThrough(wal);
+  const records = ingested >= through ? [] : await listUningested(wal, { maxBytes: limits.maxBytes });
   if (records.length === 0) {
     return { kind: "empty", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
@@ -83,6 +84,6 @@ export async function ingestChunk(
   });
   let foldedBytes = 0;
   for (const r of records) foldedBytes += opsBytes(r.ops);
-  await wal.advanceIngested(last, generation);
+  await advanceIngested(wal, last, generation);
   return { kind: "folded", generation, ingestedThrough: last, foldedBytes };
 }

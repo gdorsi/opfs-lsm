@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns, unpackHits } from "../src/store/block-scan.js";
-import { encodeSst as encodeSstWasm, type MergeSpec } from "../src/store/engine.js";
+import { encodeSst as encodeSstWasm, openMergeIn, type MergeSpec } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { openMergeTs } from "../tests/oracle/merge-ts.js";
 import { BlockEntries, blockBytes, decodeSst, encodeSst, type EncodedRun, type SstEntry } from "../src/store/sst.js";
@@ -187,7 +187,7 @@ describe("wasm against TypeScript", () => {
     "merge the same runs to the same entries",
     async () => {
       const openWasm = (spec: MergeSpec) => {
-        const core = wasm.openMerge(spec);
+        const core = openMergeIn(wasm, spec);
         if (!core) throw new Error("the test engine already holds a session");
         return core;
       };

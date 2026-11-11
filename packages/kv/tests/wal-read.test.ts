@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
-import { IdBWal } from "../src/idb/wal.js";
+import { TabWal, advanceIngested, listUningested } from "../src/idb/wal.js";
 
 const NAME = "wal-read-test";
 const IDB = `opfs-lsm-wal/${NAME}`;
@@ -55,8 +55,8 @@ function deleteSeq(seq: number): Promise<void> {
   });
 }
 
-async function seeded(count: number): Promise<IdBWal> {
-  const wal = await IdBWal.open(checkDbName(NAME));
+async function seeded(count: number): Promise<TabWal> {
+  const wal = await TabWal.open(checkDbName(NAME));
   for (let i = 1; i <= count; i++) await wal.append(put(i));
   return wal;
 }
@@ -70,14 +70,14 @@ beforeEach(wipe);
 describe("WAL read", () => {
   it("returns every record after since and after ingestedThrough", async () => {
     const wal = await seeded(12);
-    await wal.advanceIngested(4, 1);
+    await advanceIngested(wal, 4, 1);
     const tail = await wal.tail(2);
     expect(tail.head).toBe(12);
     expect(tail.ingestedThrough).toBe(4);
     expect(summary(tail.records)).toEqual(
       Array.from({ length: 8 }, (_, i) => `${i + 5}:k${i + 5}`),
     );
-    expect(summary(await wal.listUningested({ maxBytes: 1 << 30 }))).toEqual(summary(tail.records));
+    expect(summary(await listUningested(wal, { maxBytes: 1 << 30 }))).toEqual(summary(tail.records));
     expect(summary((await wal.tail(10)).records)).toEqual(["11:k11", "12:k12"]);
     expect((await wal.tail(12)).records).toEqual([]);
     wal.close();
@@ -91,7 +91,7 @@ describe("WAL read", () => {
   });
 
   it("round-trips a batch of puts, an empty value and a delete as bytes", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     const big = new Uint8Array(70_000).map((_, i) => i & 0xff);
     await wal.append([
       { type: "put", key: checkKey(enc.encode("a")), value: checkValue(big) },
@@ -115,14 +115,14 @@ describe("WAL read", () => {
   });
 
   it("rejects a row that is not bytes", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     await rawRow(1, [{ type: "put", key: new ArrayBuffer(1), value: new ArrayBuffer(1) }]);
     await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: not bytes");
     wal.close();
   });
 
   it("rejects a truncated row", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     const row = new Uint8Array([0, 10, 0, 0, 0, 1, 2]);
     await rawRow(1, row.buffer);
     await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: truncated");
@@ -139,43 +139,43 @@ const seqs = (records: readonly { seq: number }[]) => records.map((r) => r.seq);
 
 describe("WAL read with a byte cap", () => {
   it("returns the oldest records that fit, up to the cap", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     for (let i = 0; i < 6; i++) await wal.append(sized(10));
-    expect(seqs(await wal.listUningested({ maxBytes: 35 }))).toEqual([1, 2, 3]);
-    expect(seqs(await wal.listUningested({ maxBytes: 30 }))).toEqual([1, 2, 3]);
-    expect(seqs(await wal.listUningested({ maxBytes: 29 }))).toEqual([1, 2]);
-    await wal.advanceIngested(3, 1);
-    expect(seqs(await wal.listUningested({ maxBytes: 1000 }))).toEqual([4, 5, 6]);
-    expect(summary(await wal.listUningested({ maxBytes: 1000 }))).toEqual(
-      summary(await wal.listUningested({ maxBytes: 1 << 30 })),
+    expect(seqs(await listUningested(wal, { maxBytes: 35 }))).toEqual([1, 2, 3]);
+    expect(seqs(await listUningested(wal, { maxBytes: 30 }))).toEqual([1, 2, 3]);
+    expect(seqs(await listUningested(wal, { maxBytes: 29 }))).toEqual([1, 2]);
+    await advanceIngested(wal, 3, 1);
+    expect(seqs(await listUningested(wal, { maxBytes: 1000 }))).toEqual([4, 5, 6]);
+    expect(summary(await listUningested(wal, { maxBytes: 1000 }))).toEqual(
+      summary(await listUningested(wal, { maxBytes: 1 << 30 })),
     );
     wal.close();
   });
 
   it("returns a record over the cap alone and never joins it to its neighbors", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     for (const bytes of [5, 100, 5, 5]) await wal.append(sized(bytes));
-    expect(seqs(await wal.listUningested({ maxBytes: 20 }))).toEqual([1]);
-    await wal.advanceIngested(1, 1);
-    expect(seqs(await wal.listUningested({ maxBytes: 20 }))).toEqual([2]);
-    await wal.advanceIngested(2, 2);
-    expect(seqs(await wal.listUningested({ maxBytes: 20 }))).toEqual([3, 4]);
-    expect(seqs(await wal.listUningested({ maxBytes: 1 }))).toEqual([3]);
+    expect(seqs(await listUningested(wal, { maxBytes: 20 }))).toEqual([1]);
+    await advanceIngested(wal, 1, 1);
+    expect(seqs(await listUningested(wal, { maxBytes: 20 }))).toEqual([2]);
+    await advanceIngested(wal, 2, 2);
+    expect(seqs(await listUningested(wal, { maxBytes: 20 }))).toEqual([3, 4]);
+    expect(seqs(await listUningested(wal, { maxBytes: 1 }))).toEqual([3]);
     wal.close();
   });
 
   it("returns nothing when everything is ingested", async () => {
     const wal = await seeded(3);
-    await wal.advanceIngested(3, 1);
-    expect(await wal.listUningested({ maxBytes: 10 })).toEqual([]);
+    await advanceIngested(wal, 3, 1);
+    expect(await listUningested(wal, { maxBytes: 10 })).toEqual([]);
     wal.close();
   });
 
   it("reads about a cap's worth of the log, not all of it", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     for (let i = 0; i < 300; i++) await wal.append(sized(10));
     const getAll = vi.spyOn(IDBObjectStore.prototype, "getAll");
-    const records = await wal.listUningested({ maxBytes: 100 });
+    const records = await listUningested(wal, { maxBytes: 100 });
     const rowsRead = getAll.mock.results.reduce(
       (n, r) => n + (r.value as IDBRequest<unknown[]>).result.length,
       0,
@@ -189,7 +189,7 @@ describe("WAL read with a byte cap", () => {
   it("still reports a gap in the log", async () => {
     const wal = await seeded(5);
     await deleteSeq(3);
-    await expect(wal.listUningested({ maxBytes: 1000 })).rejects.toThrow("wal gap in seqs");
+    await expect(listUningested(wal, { maxBytes: 1000 })).rejects.toThrow("wal gap in seqs");
     wal.close();
   });
 });

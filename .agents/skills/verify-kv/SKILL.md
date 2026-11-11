@@ -68,7 +68,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | WalOverSst | `pointGet` |
 | ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
 | CompactPreserve | `latestSstEntry`, the pick of the merge session and its oracle (`before` in `merge.rs`, `Session.run` in `tests/oracle/merge-ts.ts`) |
-| PowerPrefix | `reconcile`, `IdBWal.adopt`, `IdBWal.advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `HostedDb.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, destroy committing generation 0 past every seq at strict durability before it removes a file, recovery skipping manifests up to `destroyedTop`, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
+| PowerPrefix | `reconcile`, `IdBWal.adopt`, `advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `HostedDb.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, destroy committing generation 0 past every seq at strict durability before it removes a file, recovery skipping manifests up to `destroyedTop`, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`) |
 
 **Sync commit:** `8138007237b19dd658127df296f9e65294e3a309` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
