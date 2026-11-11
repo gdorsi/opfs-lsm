@@ -15,8 +15,13 @@ import "fake-indexeddb/auto";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
-import { openHarnessDb } from "../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../src/testing.js";
 import { encodeSst as encodeSstWasm, ensureEngine, engineUsingWasm } from "../src/store/engine.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
 import { mergeRuns } from "../tests/runs.js";
@@ -56,7 +61,7 @@ async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Arr
       tx.delete(utf(`todo/${String(round * 7).padStart(4, "0")}`));
     });
     await db.put(utf(`i/byDone/${round}`), new Uint8Array(0));
-    await db.ingest();
+    await ingest(db);
   }
   await db.put(utf("todo/9999"), utf('{"title":"left in the WAL"}'));
   await db.delete(utf("todo/0001"));

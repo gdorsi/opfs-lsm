@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  EngineHost,
-  MemoryFs,
-  attachEngineHostPort,
-  createPortIngestClient,
-} from "../src/index.js";
 import type { WatchScan } from "../src/host/engine-host.js";
 import {
   openHarnessDb,
   __resetMemoryFsForTests,
   type OpenSpan,
   type OpenTrace,
+  EngineHost,
+  MemoryFs,
+  attachEngineHostPort,
+  createPortIngestClient,
 } from "../src/testing.js";
 
 const NAME = "open-trace";

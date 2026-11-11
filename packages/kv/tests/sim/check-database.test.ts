@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { openHarnessDb } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import {
   loadGeneration,
   publishGeneration,
@@ -26,7 +31,7 @@ async function seeded() {
     await db.put(utf(`k${i}`), utf(`v${i}`));
     await db.put(utf(`k${i + 1}`), utf(`w${i}`));
     if (i === 2) await db.delete(utf("k0"));
-    await db.ingest();
+    await ingest(db);
   }
   await db.put(utf("tail"), utf("t"));
   await db.close();
@@ -78,7 +83,7 @@ describe("checkDatabase", () => {
     // One L0 run after compaction; flush another so there are two.
     const db = await openHarnessDb({ name: NAME, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
     await db.put(utf("k5"), utf("newest"));
-    await db.ingest();
+    await ingest(db);
     await db.close();
     const g2 = await recordedGeneration();
     const m2 = (await loadGeneration(fs, g2))!;

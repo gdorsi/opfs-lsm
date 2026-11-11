@@ -19,7 +19,7 @@ async function reopen(db: Db, name: string, trim?: number) {
 }
 
 test("updates round-trip and documents stay apart", async () => {
-  const db = await openHarnessDb({ name: dbName() });
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const a = await reopen(db, "a");
   const ab = await reopen(db, "a/b");
   a.doc.getText("t").insert(0, "hello");
@@ -37,7 +37,7 @@ test("updates round-trip and documents stay apart", async () => {
 });
 
 test("a load at the trim size merges updates into one", async () => {
-  const db = await openHarnessDb({ name: dbName() });
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const first = await reopen(db, "doc", 10);
   for (let i = 0; i < 12; i++) first.doc.getText("t").insert(i, "x");
   await first.p.destroy();

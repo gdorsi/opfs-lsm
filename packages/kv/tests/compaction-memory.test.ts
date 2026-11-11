@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  __resetMemoryFsForTests,
+  openHarnessDb,
+  type HarnessOpenOptions,
+  ingest,
   EngineHost,
   MemoryFs,
   attachEngineHostPort,
   createLocalIngestClient,
   createPortIngestClient,
   type IngestClient,
-} from "../src/index.js";
-import { __resetMemoryFsForTests, openHarnessDb, type HarnessOpenOptions } from "../src/testing.js";
+} from "../src/testing.js";
 
 const NAME = "compaction-memory";
 const MiB = 1024 * 1024;
@@ -50,7 +53,7 @@ async function runsFlushed(
   }
   const value = new Uint8Array(40_000);
   for (let i = 0; i < 110; i++) await tabs[0]!.put(enc.encode(`k${String(i).padStart(3, "0")}`), value);
-  await tabs[0]!.ingest();
+  await ingest(tabs[0]!);
   await host.ingest(NAME, Number.POSITIVE_INFINITY, true);
   const { flushes } = await host.stats(NAME);
   await Promise.all(tabs.map((tab) => tab.close()));

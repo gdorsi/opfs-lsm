@@ -1,8 +1,14 @@
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
-import { EngineHost, MemoryFs, createLocalIngestClient, type AsyncFs } from "../../src/index.js";
 import { holdingFiles } from "../../src/host/protocol.js";
-import { openHarnessDb } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest as ingestDb,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+  type AsyncFs,
+} from "../../src/testing.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { commandsArb, Model, Sut } from "./commands.js";
 import { describeOp, FaultFs, Faults, type DurableOp } from "./fault-fs.js";
@@ -302,14 +308,14 @@ describe("risks to target first (research note)", () => {
     try {
       await t.load(ops, cut);
       let db = await t.open();
-      await db.ingest();
+      await ingestDb(db);
       const listed = (await checkDatabase(t.fs, t.name)).runs;
       expect(listed, "the re-fold lists l0/1-2.sst once").toEqual(["l0/1-2.sst"]);
       // Three more flushes make four L0 runs: compaction.
       for (const [i, key] of ["c", "d", "e"].entries()) {
         await db.put(new TextEncoder().encode(key), new TextEncoder().encode(`${key}${i}`));
         log.append([{ type: "put", key: new TextEncoder().encode(key), value: new TextEncoder().encode(`${key}${i}`) }]);
-        await db.ingest();
+        await ingestDb(db);
       }
       await db.close();
       await t.host.ingest(t.name, 0, true);
@@ -546,7 +552,7 @@ describe("power loss: OPFS ahead of IndexedDB (found by this suite)", () => {
       expect(dec.decode((await db.get(enc.encode("b")))!)).toBe("b1");
       await db.put(enc.encode("a"), enc.encode("a9"));
       await db.put(enc.encode("z"), enc.encode("z1"));
-      await db.ingest();
+      await ingestDb(db);
       await db.close();
       const again = await t.open();
       // Every state since the reopen held b=b1; the new writes did not touch b.
@@ -578,7 +584,7 @@ describe("crash leftovers", () => {
       await t.host.ingest(t.name, 0, true); // the first pass sweeps
       const db = await t.open();
       await db.put(new TextEncoder().encode("x"), new TextEncoder().encode("x1"));
-      await db.ingest();
+      await ingestDb(db);
       await db.close();
       await t.host.ingest(t.name, 0, true);
       expect((await checkDatabase(t.fs, t.name)).orphans).toEqual([]);

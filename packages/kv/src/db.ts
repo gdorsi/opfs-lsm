@@ -30,6 +30,7 @@ import { reconcile } from "./recover.js";
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
+import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { CountingFs } from "./opfs/counting-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
@@ -66,7 +67,7 @@ export type OpenOptions = {
    * 1 MiB. It does not cover the memtable, the wasm heap, or values handed
    * to the caller. Each `openDb` has its own budget.
    */
-  readonly memoryBudget?: number;
+  readonly cacheBytes?: number;
   /**
    * Bytes this tab's memtable may hold: the rows written and not yet flushed
    * to OPFS, counted as key bytes, value bytes and an estimate per row.
@@ -98,13 +99,12 @@ const MIN_MEMORY_BUDGET = 1024 * 1024;
 export type HarnessOpenOptions = OpenOptions & {
   /**
    * SST/generation filesystem used for reads on this tab.
-   * Must match what the ingest host publishes to.
-   * Omit in the browser to use OPFS. Omit in Node to use MemoryFs.
+   * Must match what the ingest host publishes to. Omit for OPFS.
    */
   readonly fs?: AsyncFs;
   /**
-   * Ingest client. Omit in the browser for the package SharedWorker.
-   * Omit in Node/tests for an in-process EngineHost.
+   * Ingest client. Omit for the package SharedWorker when the fs is OPFS,
+   * and for an in-process EngineHost on a given or memory fs.
    */
   readonly ingest?: IngestClient;
   /** Stable writer id (tests / debugging). Default: random UUID. */
@@ -112,15 +112,11 @@ export type HarnessOpenOptions = OpenOptions & {
   /** When the ingest host flushes the WAL to an OPFS run. */
   readonly ingestPolicy?: Partial<IngestPolicy>;
   /**
-   * Force the Node/test path (MemoryFs + local host) even in a browser.
+   * Keep the run files in a MemoryFs shared by every open of this name in
+   * the process, with an in-process EngineHost. The only way to get memory
+   * storage without passing `fs`: an open that cannot reach OPFS rejects.
    */
   readonly forceMemory?: boolean;
-  /**
-   * Use MemoryFs when this page has no SharedWorker or OPFS.
-   * Data lives only until the page closes. Ignored when OPFS can open,
-   * and ignored in Node, which already defaults to MemoryFs.
-   */
-  readonly allowEphemeral?: boolean;
   /**
    * When set, open records phase durations here. The host scan and wasm
    * init can append after the open promise resolves.
@@ -197,8 +193,7 @@ export interface Db {
    * commit, with the record's seq. A batch with no ops writes nothing and
    * resolves with the seq this handle has applied through. Other tabs see
    * the write when its BroadcastChannel message arrives, a moment after the
-   * ack, or after their next `sync()`. The ingest host flushes the WAL to
-   * OPFS per ingestPolicy.
+   * ack, or after their next `sync()`.
    */
   batch(build: (tx: BatchTx) => void): Promise<number>;
   /**
@@ -211,18 +206,19 @@ export interface Db {
     body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T>;
   /**
-   * Scan `range`, then point-read `follow(entry)` for each entry that returns a
-   * key. The scan and the reads use one pinned memtable and one held
+   * Scan `range` and join each entry to the value at `keyOf(entry)`, as an
+   * index entry joins its row. `joined` is undefined when `keyOf` returns no
+   * key or the key has no value. The scan and the reads use one pinned memtable and one held
    * generation, so they see the same state although a page load can make them
    * wait. Writes that land meanwhile are not seen.
    */
-  rangeFollow(
+  rangeJoin(
     range: Range,
-    follow: (entry: Entry) => Uint8Array | undefined,
-  ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]>;
+    keyOf: (entry: Entry) => Uint8Array | undefined,
+  ): Promise<{ readonly entry: Entry; readonly joined: Uint8Array | undefined }[]>;
   range(range?: Range): AsyncIterable<Entry>;
   /**
-   * Read-only snapshot: pinned WAL head + OPFS generation at open.
+   * Read-only snapshot of every record through `snap.seq`.
    * Writes that commit during the callback are invisible to `snap`.
    */
   view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T>;
@@ -237,8 +233,6 @@ export interface Db {
    * writes otherwise arrive over BroadcastChannel, a moment after their ack.
    */
   sync(): Promise<void>;
-  /** Flush the memtable now and wait for the compaction it starts. */
-  ingest(): Promise<{ generation: number }>;
   close(): Promise<void>;
 }
 
@@ -292,6 +286,8 @@ export type DbInternals = {
   readonly wal: IdBWal;
   readonly fs: CountingFs;
   readonly ingest: IngestClient;
+  /** Flush the memtable now and wait for the compaction it starts. */
+  readonly flush: () => Promise<{ generation: number }>;
 };
 
 const internals = new WeakMap<Db, DbInternals>();
@@ -310,15 +306,13 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const trace = options.trace;
   const openAt = trace ? performance.now() : 0;
   const name = checkDbName(options.name);
-  // Reads unpack LZ4 blocks faster once wasm loads. Until then they use the JS decoder.
+  // Started first, so the module loads while the rest of open runs.
   const wasmAt = trace ? performance.now() : 0;
   const engine = ensureEngine();
-  if (trace) {
-    void engine.then(
-      () => span(trace, "wasm", performance.now() - wasmAt),
-      () => span(trace, "wasm-error", performance.now() - wasmAt),
-    );
-  }
+  void engine.then(
+    () => span(trace, "wasm", performance.now() - wasmAt),
+    () => span(trace, "wasm-error", performance.now() - wasmAt),
+  );
   const policy: IngestPolicy = {
     ...DEFAULT_INGEST_POLICY,
     ...options.ingestPolicy,
@@ -329,45 +323,37 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   let ingest = options.ingest;
   let ownsIngestClient = false;
 
-  const callerChoseStorage =
-    options.forceMemory === true || fs !== undefined || ingest !== undefined;
-  const browserOpfs = canUseBrowserOpfs();
-  const useBrowser = !callerChoseStorage && browserOpfs;
-
-  if (
-    typeof document !== "undefined" &&
-    !callerChoseStorage &&
-    !browserOpfs &&
-    options.allowEphemeral !== true
-  ) {
+  // Memory is never a fallback: only a harness that asks for it gets it.
+  if (!fs && options.forceMemory === true) fs = defaultMemoryFs(name);
+  if (!fs && !canUseBrowserOpfs()) {
     throw new StorageUnavailableError(
-      "browser openDb needs SharedWorker and navigator.storage.getDirectory",
+      "openDb needs SharedWorker and navigator.storage.getDirectory",
     );
   }
 
-  if (useBrowser) {
+  if (!fs) {
     const opfsAt = trace ? performance.now() : 0;
     fs = await openBrowserFs(name);
     span(trace, "opfs", performance.now() - opfsAt);
-    const workerAt = trace ? performance.now() : 0;
-    // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
-    // only emit a worker chunk for this exact shape. Built in a helper, Vite
-    // treated it as a plain asset and inlined the unbundled entry as a
-    // data: URL whose relative imports could not resolve.
-    const worker = new SharedWorker(
-      new URL("./host/shared-worker.js", import.meta.url),
-      { type: "module", name: `opfs-lsm:${name}` },
-    );
-    span(trace, "worker-ctor", performance.now() - workerAt);
-    ingest = createPortIngestClient(
-      worker.port,
-      trace ? (scan) => recordWatchScan(trace, scan) : undefined,
-    );
-    ownsIngestClient = true;
-  } else {
-    if (!fs) fs = defaultMemoryFs(name);
-    if (!ingest) ingest = localIngest(name, fs);
+    if (!ingest) {
+      const workerAt = trace ? performance.now() : 0;
+      // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
+      // only emit a worker chunk for this exact shape. Built in a helper, Vite
+      // treated it as a plain asset and inlined the unbundled entry as a
+      // data: URL whose relative imports could not resolve.
+      const worker = new SharedWorker(
+        new URL("./host/shared-worker.js", import.meta.url),
+        { type: "module", name: `opfs-lsm:${name}` },
+      );
+      span(trace, "worker-ctor", performance.now() - workerAt);
+      ingest = createPortIngestClient(
+        worker.port,
+        trace ? (scan) => recordWatchScan(trace, scan) : undefined,
+      );
+      ownsIngestClient = true;
+    }
   }
+  ingest ??= localIngest(name, fs);
   // Wrapped after the local host got the bare fs, so its IO counts only on the host.
   const tabFs = new CountingFs(fs);
 
@@ -381,7 +367,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   span(trace, "generation", performance.now() - generationAt);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
-    Math.max(MIN_MEMORY_BUDGET, options.memoryBudget ?? DEFAULT_BUDGET),
+    Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
   );
   const db = new DbImpl(
     name,
@@ -394,7 +380,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     caps,
     trace,
   );
-  internals.set(db, { name, wal, fs: tabFs, ingest });
+  internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
   const syncAt = trace ? performance.now() : 0;
   await db.sync();
   span(trace, "sync", performance.now() - syncAt);
@@ -404,6 +390,13 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     maxWalBytes: Math.min(policy.maxWalBytes, caps.soft),
     compactionMemoryBytes: options.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
   });
+  // The host cannot flush without the module, so a page that cannot load it does not open.
+  try {
+    await engine;
+  } catch (err) {
+    await db.close();
+    throw err;
+  }
   span(trace, "open", performance.now() - openAt);
   return db;
 }
@@ -460,12 +453,15 @@ type Layers = {
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
 
-type BusMessage = {
-  readonly kind: "append" | "ingest";
-  readonly writerId: string;
-  readonly seq?: number;
-  readonly ops?: readonly CheckedOp[];
-};
+/** A tab posts each record it appends. The host posts `ingest` for a new generation. */
+type BusMessage =
+  | {
+      readonly kind: "append";
+      readonly writerId: string;
+      readonly seq: number;
+      readonly ops: readonly CheckedOp[];
+    }
+  | { readonly kind: "ingest"; readonly writerId: string };
 
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
@@ -494,8 +490,7 @@ class DbImpl implements Db {
   private loaded: Layers | undefined;
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
-  private syncing: Promise<void> | undefined;
-  private syncAgain = false;
+  private readonly catchUpToWal = coalesced(() => this.syncOnce());
   private readonly changeBus = new ChangeBus();
   /** Applied and not yet announced, in seq order. Drained outside IndexedDB callbacks. */
   private unannounced: ChangeEvent[] = [];
@@ -530,14 +525,13 @@ class DbImpl implements Db {
 
   private onMessage(data: BusMessage | null): void {
     if (this.closed || !data || data.writerId === this.writerId) return;
-    if (data.kind === "append" && data.seq !== undefined && data.ops) {
+    if (data.kind === "append") {
       if (this.applyRecord({ seq: data.seq, ops: data.ops }) === "gap") {
         void this.sync().catch(() => undefined);
       }
       this.announce();
     } else {
       void this.sync().catch(() => undefined);
-      this.emit({ kind: "ingest", writerId: data.writerId });
     }
   }
 
@@ -545,7 +539,7 @@ class DbImpl implements Db {
     if (this.closed) throw new ClosedError("database is closed");
   }
 
-  private broadcast(message: BusMessage): void {
+  private broadcast(message: Extract<BusMessage, { kind: "append" }>): void {
     if (this.closed) return;
     this.bus?.postMessage(message);
   }
@@ -724,21 +718,7 @@ class DbImpl implements Db {
    */
   async sync(): Promise<void> {
     this.ensureOpen();
-    if (this.syncing) {
-      this.syncAgain = true;
-      return this.syncing;
-    }
-    this.syncing = (async () => {
-      try {
-        do {
-          this.syncAgain = false;
-          await this.syncOnce();
-        } while (this.syncAgain);
-      } finally {
-        this.syncing = undefined;
-      }
-    })();
-    return this.syncing;
+    return this.catchUpToWal();
   }
 
   /**
@@ -992,27 +972,27 @@ class DbImpl implements Db {
     return out.result;
   }
 
-  async rangeFollow(
+  async rangeJoin(
     range: Range,
-    follow: (entry: Entry) => Uint8Array | undefined,
-  ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]> {
+    keyOf: (entry: Entry) => Uint8Array | undefined,
+  ): Promise<{ readonly entry: Entry; readonly joined: Uint8Array | undefined }[]> {
     this.ensureOpen();
     const bounds = boundsOf(range);
     const rows = this.mem.pin();
     const layers = this.installed;
     this.retain(layers);
     try {
-      const out: { entry: Entry; value: Uint8Array | undefined }[] = [];
+      const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
       for await (const entry of scanLayers(rows.range(bounds), layers.levels, bounds, range)) {
-        const key = follow(entry);
-        let value: Uint8Array | undefined;
+        const key = keyOf(entry);
+        let joined: Uint8Array | undefined;
         if (key !== undefined) {
           const k = checkKey(key);
           const row = rows.get(k);
           const got = row ? valueOf(row) : pointGetSst(layers.levels, k);
-          value = got instanceof Miss ? await settle(() => pointGetSst(layers.levels, k)) : got;
+          joined = got instanceof Miss ? await settle(() => pointGetSst(layers.levels, k)) : got;
         }
-        out.push({ entry, value });
+        out.push({ entry, joined });
       }
       return out;
     } finally {
@@ -1041,7 +1021,6 @@ class DbImpl implements Db {
     this.retain(layers);
     const snap = new ViewSnapshotImpl(
       this.mem.appliedThrough,
-      layers.generation,
       this.mem.pin(),
       layers.levels,
       () => {
@@ -1062,23 +1041,14 @@ class DbImpl implements Db {
     return this.changeBus.subscribe(listener);
   }
 
-  ingest(): Promise<{ generation: number }> {
-    return this.flush(true);
-  }
-
-  /** Have the host flush the WAL, tell the other tabs if that moved the generation, and load it. */
-  private async flush(settle: boolean): Promise<{ generation: number }> {
+  /** Have the host flush the WAL, and load what it published. */
+  async flush(settle: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
-    const before = this.installed.generation;
     const result = await this.ingestClient.ingest(
       this.name,
       Number.POSITIVE_INFINITY,
       settle,
     );
-    if (result.generation !== before) {
-      this.emit({ kind: "ingest", writerId: this.writerId });
-      this.broadcast({ kind: "ingest", writerId: this.writerId });
-    }
     await this.sync();
     return result;
   }

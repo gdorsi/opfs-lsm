@@ -1,17 +1,17 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { compareBytes, keyToString } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep, pumpMerge } from "../src/host/compact.js";
-import { MemoryFs } from "../src/index.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../src/opfs/async-fs.js";
 import type { MergeCore, MergeSpec } from "../src/store/engine.js";
 import { publishGeneration, type RunMeta } from "../src/store/generation.js";
-import { openMergeTs } from "../src/store/merge-ts.js";
+import { openMergeTs } from "./oracle/merge-ts.js";
 import { decodeSst, encodeRun, entryRecordSize, sstKeyRange, type SstCodec, type SstEntry } from "../src/store/sst.js";
 import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
 import { publish } from "./runs.js";
+import { MemoryFs } from "../src/testing.js";
 
 /**
  * The TypeScript merge session against the wasm one, both pumped by the
@@ -502,23 +502,8 @@ describe("a compaction step at full size", () => {
     return [...sources, l1];
   }
 
-  /** The same `mergeNextStep`, from a copy of the modules whose engine finds no wasm module. */
-  async function withoutWasm(): Promise<typeof import("../src/host/compact.js")> {
-    vi.resetModules();
-    const g = globalThis as { __OPFS_LSM_ENGINE_URL?: string };
-    g.__OPFS_LSM_ENGINE_URL = "./no-such-engine.wasm";
-    try {
-      const engine = await import("../src/store/engine.js");
-      await engine.ensureEngine();
-      expect(engine.engineUsingWasm()).toBe(false);
-      return await import("../src/host/compact.js");
-    } finally {
-      delete g.__OPFS_LSM_ENGINE_URL;
-    }
-  }
-
   it(
-    "streams windows of each input and writes each run in several writes, the same runs from wasm and TypeScript",
+    "streams windows of each input and writes each run in several writes",
     async () => {
       const reads: number[] = [];
       const writes = new Map<string, number>();
@@ -553,14 +538,6 @@ describe("a compaction step at full size", () => {
       const bodies = await Promise.all(step.outputs.map(async (o) => (await base.read(o.path, 0, Infinity))!));
       expect(plain(bodies.flatMap((b) => decodeSst(b)))).toEqual(plain(expected.entries));
       expect(step.droppedSeq).toBe(expected.droppedSeq);
-
-      const tsFs = new MemoryFs();
-      await database(tsFs);
-      const tsStep = (await (await withoutWasm()).mergeNextStep(tsFs, budget))!;
-      expect(tsStep.inputs).toEqual(step.inputs);
-      expect(tsStep.outputs).toEqual(step.outputs);
-      expect(tsStep.droppedSeq).toBe(step.droppedSeq);
-      for (const [i, out] of tsStep.outputs.entries()) expect(same((await tsFs.read(out.path, 0, Infinity))!, bodies[i]!)).toBe(true);
     },
     60_000,
   );

@@ -15,8 +15,6 @@ export type ChangeEvent =
   | { readonly kind: "append"; readonly seq: number; readonly ops: readonly ChangeOp[] }
   /** The handle's state moved to `through` past records it never announced. Read again. */
   | { readonly kind: "gap"; readonly through: number }
-  /** A flush moved rows from the WAL to OPFS runs. What reads return did not change. */
-  | { readonly kind: "ingest"; readonly writerId: string }
   /** The last event: the handle closed. */
   | { readonly kind: "closed" };
 

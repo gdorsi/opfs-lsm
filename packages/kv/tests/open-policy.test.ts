@@ -62,14 +62,6 @@ async function deleteIdb(): Promise<void> {
   });
 }
 
-async function roundTrip(): Promise<void> {
-  const db = await openDb({ name: NAME });
-  await db.put(enc.encode("k"), enc.encode("v"));
-  const got = await db.get(enc.encode("k"));
-  expect(got && dec.decode(got)).toBe("v");
-  await db.close();
-}
-
 const saved = snap();
 
 afterEach(async () => {
@@ -79,9 +71,15 @@ afterEach(async () => {
 });
 
 describe("openDb storage policy", () => {
-  it("keeps the in-memory default when there is no document", async () => {
+  it("rejects where there is no document and no OPFS, as in Node", async () => {
     expect(typeof document).toBe("undefined");
-    await roundTrip();
+    await expect(openDb({ name: NAME })).rejects.toBeInstanceOf(StorageUnavailableError);
+  });
+
+  it("rejects in a context with OPFS and no SharedWorker, as in a dedicated WebWorker", async () => {
+    installCaps(() => Promise.reject(new Error("opfs-getDirectory")));
+    Reflect.deleteProperty(globalThis, "SharedWorker");
+    await expect(openDb({ name: NAME })).rejects.toBeInstanceOf(StorageUnavailableError);
   });
 
   it("throws StorageUnavailableError on a page that cannot open OPFS", async () => {
@@ -94,16 +92,8 @@ describe("openDb storage policy", () => {
     });
   });
 
-  it("keeps the page in memory when allowEphemeral is set and OPFS is missing", async () => {
-    installDocument();
-    const db = await openHarnessDb({
-      name: NAME,
-      allowEphemeral: true,
-    });
-    await db.put(enc.encode("k"), enc.encode("v"));
-    const got = await db.get(enc.encode("k"));
-    expect(got && dec.decode(got)).toBe("v");
-    await db.close();
+  it("a harness open that names no fs does not get memory either", async () => {
+    await expect(openHarnessDb({ name: NAME, writerId: "w1" })).rejects.toBeInstanceOf(StorageUnavailableError);
   });
 
   it("forceMemory selects memory even when OPFS capabilities exist", async () => {
@@ -119,14 +109,10 @@ describe("openDb storage policy", () => {
     await db.close();
   });
 
-  it("still opens OPFS when both capabilities exist and allowEphemeral is set", async () => {
-    installDocument();
+  it("opens OPFS when both capabilities exist, with or without a document", async () => {
     installCaps(() => Promise.reject(new Error("opfs-getDirectory")));
-    await expect(
-      openHarnessDb({
-        name: NAME,
-        allowEphemeral: true,
-      }),
-    ).rejects.toThrow("opfs-getDirectory");
+    await expect(openDb({ name: NAME })).rejects.toThrow("opfs-getDirectory");
+    installDocument();
+    await expect(openDb({ name: NAME })).rejects.toThrow("opfs-getDirectory");
   });
 });

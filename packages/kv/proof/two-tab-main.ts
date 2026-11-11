@@ -41,13 +41,12 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 type Handle = {
-  put(key: Uint8Array, value: Uint8Array): Promise<void>;
+  put(key: Uint8Array, value: Uint8Array): Promise<unknown>;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   ingest(): Promise<{ generation: number }>;
   range(): AsyncIterable<{ key: Uint8Array; value: Uint8Array }>;
   view<T>(
     body: (snap: {
-      readonly generation: number;
       get(key: Uint8Array): Promise<Uint8Array | undefined>;
     }) => Promise<T>,
   ): Promise<T>;
@@ -113,24 +112,17 @@ async function openHandle(
   testing: typeof import("../dist/testing.js"),
   writerId: string,
   shared?: {
-    fs: Awaited<ReturnType<typeof mod.openBrowserFs>>;
-    ingest: ReturnType<typeof mod.createLocalIngestClient>;
+    fs: Awaited<ReturnType<typeof testing.openBrowserFs>>;
+    ingest: ReturnType<typeof testing.createLocalIngestClient>;
   },
 ): Promise<Handle> {
-  if (shared) {
-    return testing.openHarnessDb({
-      name: DB_NAME,
-      writerId,
-      fs: shared.fs,
-      ingest: shared.ingest,
-      ingestPolicy: quiet,
-    });
-  }
-  return testing.openHarnessDb({
+  const db = await testing.openHarnessDb({
     name: DB_NAME,
     writerId,
     ingestPolicy: quiet,
+    ...(shared ? { fs: shared.fs, ingest: shared.ingest } : {}),
   });
+  return Object.assign(db, { ingest: () => testing.ingest(db) });
 }
 
 async function scenario(self: Handle, other: OtherTab): Promise<void> {
@@ -152,10 +144,9 @@ async function scenario(self: Handle, other: OtherTab): Promise<void> {
 
   const pin = await self.view(async (snap) => {
     const before = text(await snap.get(enc.encode("k")));
-    const generation = snap.generation;
     const ingested = await other.ingest();
     const after = text(await snap.get(enc.encode("k")));
-    return { before, after, generation, ingested };
+    return { before, after, generation: seeded.generation, ingested };
   });
   must(pin.before === "v", `pinned get before ingest was ${pin.before}`);
   must(pin.after === "v", `pinned get after ingest was ${pin.after}`);
@@ -320,9 +311,9 @@ async function run(): Promise<void> {
   const mod = await import("../dist/index.js");
   const testing = await import("../dist/testing.js");
   if (LOCAL) {
-    const fs = await mod.openBrowserFs(DB_NAME);
-    const host = new mod.EngineHost(() => fs);
-    const ingest = mod.createLocalIngestClient(host);
+    const fs = await testing.openBrowserFs(DB_NAME);
+    const host = new testing.EngineHost(() => fs);
+    const ingest = testing.createLocalIngestClient(host);
     const shared = { fs, ingest };
     const self = await openHandle(mod, testing, "tab-a", shared);
     const otherDb = await openHandle(mod, testing, "tab-b", shared);

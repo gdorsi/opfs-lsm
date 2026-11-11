@@ -4,7 +4,8 @@ import {
 } from "../src/index.js";
 import {
   openHarnessDb,
-  __resetMemoryFsForTests
+  __resetMemoryFsForTests,
+  ingest,
 } from "../src/testing.js";
 import { MemoryFs } from "../src/opfs/memory-fs.js";
 
@@ -29,7 +30,7 @@ afterEach(async () => {
 
 describe("shared IDB WAL", () => {
   it("put resolves after IDB commit and get sees the row", async () => {
-    const db = await openHarnessDb({ name: "notes", writerId: "w1" });
+    const db = await openHarnessDb({ name: "notes", writerId: "w1", forceMemory: true });
     await db.put(utf("a"), utf("1"));
     const v = await db.get(utf("a"));
     expect(v && new TextDecoder().decode(v)).toBe("1");
@@ -81,7 +82,7 @@ describe("ingest", () => {
     const fs = new MemoryFs();
     const a = await openHarnessDb({ name: "notes", writerId: "w1", fs });
     await a.put(utf("a"), utf("from-a"));
-    const { generation } = await a.ingest();
+    const { generation } = await ingest(a);
     expect(generation).toBe(1);
 
     const b = await openHarnessDb({ name: "notes", writerId: "w2", fs });
@@ -95,8 +96,8 @@ describe("ingest", () => {
     const fs = new MemoryFs();
     const a = await openHarnessDb({ name: "notes", writerId: "w1", fs });
     await a.put(utf("k"), utf("v"));
-    expect((await a.ingest()).generation).toBe(1);
-    expect((await a.ingest()).generation).toBe(1);
+    expect((await ingest(a)).generation).toBe(1);
+    expect((await ingest(a)).generation).toBe(1);
     await a.close();
   });
 
@@ -104,7 +105,7 @@ describe("ingest", () => {
     const fs = new MemoryFs();
     const a = await openHarnessDb({ name: "notes", writerId: "w1", fs });
     await a.put(utf("a"), utf("1"));
-    await a.ingest();
+    await ingest(a);
     const v = await a.get(utf("a"));
     expect(v && new TextDecoder().decode(v)).toBe("1");
     await a.close();
@@ -113,7 +114,7 @@ describe("ingest", () => {
 
 describe("batch + prefixBound", () => {
   it("batch is one IDB append", async () => {
-    const db = await openHarnessDb({ name: "notes2", writerId: "w1" });
+    const db = await openHarnessDb({ name: "notes2", writerId: "w1", forceMemory: true });
     await db.batch((tx) => {
       tx.put(utf("note/1"), utf("x"));
       tx.put(utf("note/2"), utf("y"));
@@ -127,12 +128,12 @@ describe("batch + prefixBound", () => {
   });
 
   it("range reads one state while writes and an ingest land mid-scan", async () => {
-    const db = await openHarnessDb({ name: "notes2", writerId: "w1" });
+    const db = await openHarnessDb({ name: "notes2", writerId: "w1", forceMemory: true });
     await db.batch((tx) => {
       tx.put(utf("note/1"), utf("x"));
       tx.put(utf("note/3"), utf("z"));
     });
-    await db.ingest();
+    await ingest(db);
     await db.put(utf("note/2"), utf("y"));
     const seen: string[] = [];
     for await (const e of db.range(prefixBound(utf("note/")))) {
@@ -140,7 +141,7 @@ describe("batch + prefixBound", () => {
       if (seen.length === 1) {
         await db.put(utf("note/1b"), utf("new"));
         await db.delete(utf("note/3"));
-        await db.ingest();
+        await ingest(db);
       }
     }
     expect(seen).toEqual(["note/1=x", "note/2=y", "note/3=z"]);
@@ -155,7 +156,7 @@ describe("ingest", () => {
     const a = await openHarnessDb({ name: "notes", writerId: "w1", fs, ingestPolicy: policy });
     const value = (i: number) => new Uint8Array(1 << 20).fill(i);
     for (let i = 0; i < 70; i++) await a.put(utf(`k${String(i).padStart(2, "0")}`), value(i));
-    await a.ingest();
+    await ingest(a);
     const b = await openHarnessDb({ name: "notes", writerId: "w2", fs, ingestPolicy: policy });
     for (let i = 0; i < 70; i++) {
       expect((await b.get(utf(`k${String(i).padStart(2, "0")}`)))?.[0]).toBe(i);

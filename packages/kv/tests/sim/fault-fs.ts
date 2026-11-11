@@ -1,5 +1,5 @@
 import type { AsyncFs, FileWriter } from "../../src/opfs/async-fs.js";
-import { MemoryFs } from "../../src/index.js";
+import { MemoryFs } from "../../src/testing.js";
 
 /**
  * Fault injection for the two stores (docs/research/corruption-hardening-test-suite.md,

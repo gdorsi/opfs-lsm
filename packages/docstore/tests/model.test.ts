@@ -14,6 +14,7 @@ import { MODEL, checkQuery, queryArb, schema, textArb, type Doc } from "./docs.j
 import { codeOf, docstoreKeys, freshName, openKv, storedCatalog } from "./harness.js";
 import { expected, stored } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
+import { ingest } from "@opfs-lsm/kv/testing";
 
 const env = process.env;
 const RUNS = Number(env["DOCSTORE_MODEL_RUNS"] ?? 100);
@@ -118,7 +119,7 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
           expect(await c().getMany(cmd.ids)).toEqual(cmd.ids.map((id) => model.get(id)));
           break;
         case "ingest":
-          await kv.ingest();
+          await ingest(kv);
           break;
         case "reopen":
           if (cmd.idle) await store.whenIdle();

@@ -53,15 +53,7 @@ export async function mergeNextStep(
   const plan = planCompaction(meta.runs, { maxSources: budget.maxSources });
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
-  const write = () => inMergeSlot(() => writeStep(fs, plan, name, budget));
-  let merged: Merged;
-  try {
-    merged = await write();
-  } catch (err) {
-    if (!(err instanceof WebAssembly.RuntimeError)) throw err;
-    // The trap dropped wasm for this context, so the TypeScript session runs the step.
-    merged = await write();
-  }
+  const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget));
   return { inputs: plan.inputs.map((r) => r.path), ...merged };
 }
 
@@ -156,7 +148,7 @@ export async function pumpMerge(
  * Swap the step's inputs for its output in the recorded generation and
  * record the result in IDB. The inputs and the old manifests stay on
  * disk: tabs may still read them, so the host retires them (see
- * `EngineHost.reclaim`). Run under the ingest lock.
+ * `HostedDb.reclaim`). Run under the ingest lock.
  */
 export async function installStep(
   fs: AsyncFs,

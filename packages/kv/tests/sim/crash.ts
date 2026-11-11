@@ -1,8 +1,13 @@
 import { compareBytes } from "../../src/bytes.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
 import { __resetMergeSlotForTests } from "../../src/host/merge-slot.js";
 import { __restartEngineForTests } from "../../src/store/engine.js";
-import { openHarnessDb } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import type { Db } from "../../src/index.js";
 import { checkDatabase, decodeWalRow, deleteWal, type DatabaseReport } from "./check-database.js";
 import { describeOp, FaultFs, Faults, fsFiles, materializeFs, type DurableOp } from "./fault-fs.js";
@@ -145,7 +150,7 @@ export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): 
         });
         log.append(ops);
       } else if ("ingest" in step) {
-        await db.ingest();
+        await ingest(db);
       } else {
         await db.close();
         db = await t.open();
@@ -306,7 +311,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   db = await open();
   try {
     await db.put(key, value);
-    await db.ingest();
+    await ingest(db);
     const got = await db.get(key);
     if (!got || show(got) !== show(value)) throw new Error(`write after recovery read back ${got && show(got)}`);
   } finally {

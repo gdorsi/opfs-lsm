@@ -12,10 +12,8 @@ import {
 } from "./store/merge.js";
 
 export interface ViewSnapshot {
-  /** WAL head seq pinned when the view opened. */
-  readonly walHead: number;
-  /** OPFS generation pinned when the view opened. */
-  readonly generation: number;
+  /** The seq of the last record the snapshot includes, as write acks and `changes` count it. */
+  readonly seq: number;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   range(range?: Range): AsyncIterable<Entry>;
 }
@@ -61,8 +59,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
 
   constructor(
-    readonly walHead: number,
-    readonly generation: number,
+    readonly seq: number,
     private readonly rows: MemRows,
     private readonly levels: readonly RunLevel[],
     private readonly hold: () => () => void,

@@ -16,7 +16,6 @@ import {
   clearAll,
   generate,
   getSnapshot,
-  ingest,
   nextPage,
   openSecondWindow,
   prevPage,
@@ -89,9 +88,6 @@ function App() {
       <p className="lede">Shared list. Open a second window to see the same rows.</p>
       <p id="status" aria-live="polite">
         {statusText}
-      </p>
-      <p id="generation">
-        {view.generation === undefined ? "" : `generation ${view.generation}`}
       </p>
       <p id="progress">{view.progress}</p>
       <p id="error" role="alert">
@@ -169,9 +165,6 @@ function App() {
         )}
       </ul>
       <p className="actions">
-        <button id="ingest" type="button" onClick={ingest}>
-          Ingest
-        </button>
         <button id="other" type="button" onClick={openSecondWindow}>
           Open second window
         </button>

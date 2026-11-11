@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import { inMergeSlot } from "../src/host/merge-slot.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { ensureEngine, openMerge, type MergeSpec } from "../src/store/engine.js";
-import { __resetMemoryFsForTests, openHarnessDb, type Db } from "../src/testing.js";
+import {
+  __resetMemoryFsForTests,
+  openHarnessDb,
+  type Db,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../src/testing.js";
 
 const enc = new TextEncoder();
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

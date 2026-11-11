@@ -269,7 +269,7 @@ export function expectedRead(entries: readonly SstEntry[], probe: ReadProbe): Re
 }
 
 /**
- * The SharedWorker's full decode of a run (TypeScript fallback). It checks
+ * The SharedWorker's full decode of a run (TypeScript). It checks
  * the CRC, so when `changed` (the bytes differ from what the encoder wrote
  * and the CRC was not rewritten to match) it must throw.
  */

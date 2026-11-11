@@ -24,7 +24,7 @@ export type KvStats = {
 
 function internalsOf(db: Db) {
   const found = dbInternals(db);
-  if (!found) throw new Error("readStats: db was not opened by @opfs-lsm/kv");
+  if (!found) throw new Error("db was not opened by @opfs-lsm/kv");
   return found;
 }
 
@@ -42,6 +42,11 @@ export async function readStats(db: Db): Promise<KvStats> {
   };
 }
 
+/** Flush the memtable now and wait for the compaction it starts. */
+export function ingest(db: Db): Promise<{ generation: number }> {
+  return internalsOf(db).flush();
+}
+
 /**
  * Bring background work to rest: ingest until the generation stops changing.
  * One host compaction pass caps its steps, so a cascade can need several.
@@ -49,7 +54,7 @@ export async function readStats(db: Db): Promise<KvStats> {
 export async function settle(db: Db): Promise<void> {
   let last = -1;
   for (;;) {
-    const { generation } = await db.ingest();
+    const { generation } = await ingest(db);
     if (generation === last) return;
     last = generation;
   }

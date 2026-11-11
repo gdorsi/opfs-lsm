@@ -1,14 +1,12 @@
 /**
- * Engine-core bridge. Loads a module that implements `crates/engine-abi.md`
- * and falls back to the TS SST codec if it is missing (before the wasm is
- * built) or traps.
+ * Engine-core bridge. Loads a module that implements `crates/engine-abi.md`.
+ * The module is required: encoding a run and merging runs have no other
+ * implementation, so a context where it does not load cannot flush.
  */
 import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
-import * as sstTs from "./sst.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
-import { openMergeTs } from "./merge-ts.js";
-import { CorruptDatabaseError } from "../errors.js";
+import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
 
 /**
  * Bytes handed to the module's `init`. A module that reserves once serves
@@ -400,7 +398,7 @@ function setEngine(next: FlatEngine | undefined): void {
 }
 
 /**
- * Benchmarks swap the engine by setting `globalThis.__OPFS_LSM_ENGINE_URL`
+ * A test swaps the engine by setting `globalThis.__OPFS_LSM_ENGINE_URL`
  * (a URL or path of a conformant `.wasm`) before the first engine call in
  * that context; it is read only here.
  */
@@ -410,23 +408,14 @@ function engineUrl(): URL {
   return new URL("../../wasm/engine.wasm", import.meta.url);
 }
 
-async function loadWasm(): Promise<FlatEngine | undefined> {
-  try {
-    const url = engineUrl();
-    // Node/vitest: file:// fetch is broken, so pass bytes. Browser: stream from the URL.
-    const bytes = await readWasmBytes(url);
-    const module = await WebAssembly.compile((bytes ?? (await fetchWasm(url))) as BufferSource);
-    const loaded = flatEngine(await WebAssembly.instantiate(module, {}));
-    wasmModule = module;
-    return loaded;
-  } catch (err) {
-    const env = (globalThis as { process?: { env?: Record<string, string> } })
-      .process?.env;
-    if (env?.OPFS_LSM_DEBUG_WASM) {
-      console.error("wasm load failed", err);
-    }
-    return undefined;
-  }
+async function loadWasm(): Promise<FlatEngine> {
+  const url = engineUrl();
+  // Node/vitest: file:// fetch is broken, so pass bytes. Browser: stream from the URL.
+  const bytes = await readWasmBytes(url);
+  const module = await WebAssembly.compile((bytes ?? (await fetchWasm(url))) as BufferSource);
+  const loaded = flatEngine(await WebAssembly.instantiate(module, {}));
+  wasmModule = module;
+  return loaded;
 }
 
 async function fetchWasm(url: URL): Promise<ArrayBuffer> {
@@ -456,64 +445,78 @@ async function readWasmBytes(wasmUrl: URL): Promise<Uint8Array | undefined> {
   }
 }
 
-export async function ensureEngine(): Promise<void> {
-  if (!initOnce) {
-    initOnce = (async () => {
-      engine = await loadWasm();
-      if (engine) {
-        // They read `engine` at each call: it is replaced when the instance is.
-        useLz4Decoder((src, size) => {
-          try {
-            return engine!.lz4Decompress(src, size);
-          } catch (err) {
-            return afterWasmError(err, "sst lz4 block corrupt", () => lz4DecompressJs(src, size));
-          }
-        });
-        useBlockScanner((framed, lz4, patterns) => {
-          try {
-            return engine!.scanBlockContains(framed, lz4, patterns);
-          } catch (err) {
-            if (err instanceof WebAssembly.RuntimeError) dropWasm();
-            if (err instanceof CorruptDatabaseError || err instanceof EngineCapacityError) throw err;
-            throw new CorruptDatabaseError(`sst block corrupt: ${String(err)}`);
-          }
-        });
+/**
+ * Load the module once per context. Rejects with `StorageUnavailableError`
+ * when it does not load, and the next call tries again.
+ */
+export function ensureEngine(): Promise<void> {
+  initOnce ??= (async () => {
+    try {
+      setEngine(await loadWasm());
+    } catch (cause) {
+      initOnce = undefined;
+      const detail = cause instanceof Error ? ` (${cause.message})` : "";
+      throw new StorageUnavailableError(`the wasm engine failed to load${detail}`, { cause });
+    }
+    // They read `engine` at each call: it is replaced when the instance is.
+    useLz4Decoder((src, size) => {
+      try {
+        return engine!.lz4Decompress(src, size);
+      } catch (err) {
+        if (!afterTrap(err)) throw corrupt(err, "sst lz4 block corrupt");
+        // The JS decoder says whether the block is corrupt or the module is wrong.
+        return lz4DecompressJs(src, size);
       }
-    })();
-  }
-  await initOnce;
+    });
+    useBlockScanner((framed, lz4, patterns) => {
+      try {
+        return engine!.scanBlockContains(framed, lz4, patterns);
+      } catch (err) {
+        afterTrap(err);
+        throw corrupt(err, "sst block corrupt");
+      }
+    });
+  })();
+  return initOnce;
+}
+
+/** The loaded engine. */
+async function loaded(): Promise<FlatEngine> {
+  await ensureEngine();
+  return engine!;
 }
 
 /**
- * Stop using wasm in this context. A trap does not unwind, so the trapped
+ * True when `err` is a wasm trap. A trap does not unwind, so the trapped
  * call's frames stay on the instance's shadow stack: a few thousand traps use
- * it up and every later call fails. The TypeScript codec takes over instead.
+ * it up and every later call fails. A fresh instance takes over.
  */
-function dropWasm(): void {
-  setEngine(undefined);
-  useLz4Decoder(undefined);
-  useBlockScanner(undefined);
+function afterTrap(err: unknown): boolean {
+  if (!(err instanceof WebAssembly.RuntimeError)) return false;
+  restartEngine();
+  return true;
 }
 
-/**
- * A wasm call over run bytes failed. A bad status means the bytes are
- * corrupt (or the capacity is too small) and is rethrown as is. A trap drops
- * wasm and runs the call again in TypeScript, which gives the honest answer.
- */
-function afterWasmError<T>(err: unknown, what: string, fallback: () => T): T {
-  if (err instanceof WebAssembly.RuntimeError) {
-    dropWasm();
-    return fallback();
+/** A bad status means the bytes are corrupt, or the capacity is too small, and is thrown as is. */
+function corrupt(err: unknown, what: string): unknown {
+  if (err instanceof CorruptDatabaseError || err instanceof EngineCapacityError) return err;
+  return new CorruptDatabaseError(`${what}: ${String(err)}`);
+}
+
+function restartEngine(): void {
+  if (!wasmModule) return;
+  try {
+    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, {})));
+  } catch {
+    // No memory for a second instance: the old one stays.
   }
-  if (err instanceof CorruptDatabaseError || err instanceof EngineCapacityError) throw err;
-  throw new CorruptDatabaseError(`${what}: ${String(err)}`);
 }
 
 export function engineUsingWasm(): boolean {
   return engine !== undefined;
 }
 
-/** What this context's wasm engine holds, for `HostStats.memory`. Zero without wasm. */
+/** What this context's wasm engine holds, for `HostStats.memory`. Zero before it loads. */
 export type EngineMemory = {
   /** The current instance's memory. Talc never gives memory back, so it only grows until a recycle. */
   wasmBytes: number;
@@ -561,26 +564,23 @@ export function recycleEngine(maxBytes: number): boolean {
  * death restarts the engine for the next host.
  */
 export function __restartEngineForTests(): void {
-  if (engine && wasmModule) setEngine(flatEngine(new WebAssembly.Instance(wasmModule, {})));
+  if (engine) restartEngine();
 }
 
 /**
  * A run of `entries` with what the encoder reports at its end: the size and
- * the key range the manifest records. Without wasm, every run is written
- * raw: readers take either codec.
+ * the key range the manifest records.
  */
 export async function encodeRun(
   entries: readonly SstEntry[],
   codec: SstCodec = "raw",
 ): Promise<EncodedRun> {
-  await ensureEngine();
-  if (!engine) return sstTs.encodeRun(entries);
+  const wasm = await loaded();
   try {
-    return engine.encodeRun(entries, codec === "lz4");
+    return wasm.encodeRun(entries, codec === "lz4");
   } catch (err) {
-    if (!(err instanceof WebAssembly.RuntimeError)) throw err;
-    dropWasm();
-    return sstTs.encodeRun(entries);
+    afterTrap(err);
+    throw err;
   }
 }
 
@@ -593,44 +593,32 @@ export async function encodeSst(
 }
 
 export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
-  await ensureEngine();
-  if (!engine) return sstTs.decodeSst(buf);
+  const wasm = await loaded();
   try {
-    return engine.decodeSst(buf);
+    return wasm.decodeSst(buf);
   } catch (err) {
-    return afterWasmError(err, "sst corrupt", () => sstTs.decodeSst(buf));
+    afterTrap(err);
+    throw corrupt(err, "sst corrupt");
   }
 }
 
 /**
- * A merge session over `spec`: wasm's when the module is loaded, the
- * TypeScript one when it did not load or trapped, whose runs are raw. A
- * trap in the wasm session drops wasm for this context, as any trap does.
- * The caller holds the merge slot, since the module has one session.
+ * A merge session over `spec`. A trap in it restarts the engine, as any
+ * trap does, and the session is gone with the old instance. The caller
+ * holds the merge slot, since the module has one session.
  */
 export async function openMerge(spec: MergeSpec): Promise<MergeCore> {
-  await ensureEngine();
+  const wasm = await loaded();
   mergeReservedBytes = Math.max(mergeReservedBytes, (spec.sources.length + 1) * spec.chunkBytes);
-  if (engine) {
-    try {
-      return dropWasmOnTrap(engine.openMerge(spec));
-    } catch (err) {
-      if (!(err instanceof WebAssembly.RuntimeError)) throw err;
-      dropWasm();
-    }
-  }
-  return openMergeTs(spec);
-}
-
-function dropWasmOnTrap(core: MergeCore): MergeCore {
   const guard = <T>(call: () => T): T => {
     try {
       return call();
     } catch (err) {
-      if (err instanceof WebAssembly.RuntimeError) dropWasm();
+      afterTrap(err);
       throw err;
     }
   };
+  const core = guard(() => wasm.openMerge(spec));
   return {
     pump: () => guard(() => core.pump()),
     feed: (source, bytes) => guard(() => core.feed(source, bytes)),
@@ -638,9 +626,8 @@ function dropWasmOnTrap(core: MergeCore): MergeCore {
       try {
         core.close();
       } catch (err) {
-        // The instance trapped and is dropped: nothing is left to close.
-        if (!(err instanceof WebAssembly.RuntimeError)) throw err;
-        dropWasm();
+        // The instance trapped and was replaced: nothing is left to close.
+        if (!afterTrap(err)) throw err;
       }
     },
   };

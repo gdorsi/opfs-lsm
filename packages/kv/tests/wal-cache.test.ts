@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  openHarnessDb,
+  __resetMemoryFsForTests,
+  ingest as ingestDb,
   EngineHost,
   MemoryFs,
   attachEngineHostPort,
-  createPortIngestClient
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests
+  createPortIngestClient,
 } from "../src/testing.js";
 
 const NAME = "wal-cache-test";
@@ -56,7 +55,7 @@ describe("memtable reads", () => {
       ingestPolicy: { maxWalBytes: 1 << 30 },
     });
     await db.put(enc.encode("k"), enc.encode("v"));
-    await db.ingest();
+    await ingestDb(db);
     expect(dec.decode(await db.get(enc.encode("k")))).toBe("v");
     await db.close();
   });
@@ -86,7 +85,7 @@ describe("memtable reads", () => {
     });
 
     await a.put(enc.encode("seed"), enc.encode("s"));
-    await a.ingest();
+    await ingestDb(a);
     expect(dec.decode((await a.get(enc.encode("seed")))!)).toBe("s");
 
     await b.put(enc.encode("k"), enc.encode("v"));

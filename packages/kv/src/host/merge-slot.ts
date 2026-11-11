@@ -1,4 +1,6 @@
-let tail: Promise<unknown> = Promise.resolve();
+import { serial } from "../turns.js";
+
+let slot = serial();
 
 /**
  * Run `merge` once every merge asked for before it has settled. A JS context
@@ -8,12 +10,7 @@ let tail: Promise<unknown> = Promise.resolve();
  * between a merge's pumps.
  */
 export function inMergeSlot<T>(merge: () => Promise<T>): Promise<T> {
-  const run = tail.then(merge);
-  tail = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
+  return slot(merge);
 }
 
 /**
@@ -22,5 +19,5 @@ export function inMergeSlot<T>(merge: () => Promise<T>): Promise<T> {
  * clears the queue for the next host.
  */
 export function __resetMergeSlotForTests(): void {
-  tail = Promise.resolve();
+  slot = serial();
 }

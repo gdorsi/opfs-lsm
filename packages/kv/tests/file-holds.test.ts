@@ -5,6 +5,7 @@ import {
   createLocalIngestClient,
   openHarnessDb,
   __resetMemoryFsForTests,
+  ingest,
 } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { BrowserFs } from "../src/opfs/browser-fs.js";
@@ -49,7 +50,7 @@ async function openWithHost(fs: MemoryFs) {
 async function threeRuns(db: Awaited<ReturnType<typeof openWithHost>>["db"]) {
   for (let i = 0; i < 3; i++) {
     await db.put(utf(`k${i}`), utf(`v${i}`));
-    await db.ingest();
+    await ingest(db);
   }
 }
 
@@ -66,8 +67,8 @@ describe("run files outlive compaction while a tab reads them", () => {
 
     const seen = await db.view(async (snap) => {
       await db.put(utf("k3"), utf("v3"));
-      await db.ingest();
-      await db.ingest();
+      await ingest(db);
+      await ingest(db);
       expect(l1(fs).length).toBeGreaterThan(0);
       expect(l0(fs)).toEqual(expect.arrayContaining(inputs));
       const got: string[] = [];
@@ -78,7 +79,7 @@ describe("run files outlive compaction while a tab reads them", () => {
     });
     expect(seen).toEqual({ got: ["v0", "v1", "v2"], keys: ["k0", "k1", "k2"], k3: undefined });
 
-    await db.ingest();
+    await ingest(db);
     expect(l0(fs)).toEqual([]);
     for (let i = 0; i < 4; i++) expect(dec.decode((await db.get(utf(`k${i}`)))!)).toBe(`v${i}`);
     await db.close();
@@ -93,14 +94,14 @@ describe("run files outlive compaction while a tab reads them", () => {
     const it = db.range()[Symbol.asyncIterator]();
     expect(dec.decode((await it.next()).value!.key)).toBe("k0");
     await db.put(utf("k3"), utf("v3"));
-    await db.ingest();
-    await db.ingest();
+    await ingest(db);
+    await ingest(db);
     expect(l1(fs).length).toBeGreaterThan(0);
     expect(l0(fs)).toEqual(expect.arrayContaining(inputs));
     expect(dec.decode((await it.next()).value!.key)).toBe("k1");
 
     await it.return!();
-    await db.ingest();
+    await ingest(db);
     expect(l0(fs)).toEqual([]);
     await db.close();
   });
@@ -130,7 +131,7 @@ describe("host boot sweep", () => {
     }
 
     const { db } = await openWithHost(fs);
-    await db.ingest();
+    await ingest(db);
     expect(fs.publishedPaths().filter((p) => /^l\d+\//.test(p)).sort()).toEqual([...live].sort());
     for (let i = 0; i < 3; i++) expect(dec.decode((await db.get(utf(`k${i}`)))!)).toBe(`v${i}`);
     await db.close();

@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { AsyncFs } from "../../src/index.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { openHarnessDb } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest as ingestDb,
+  type AsyncFs,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import { deleteWal } from "./check-database.js";
 
 /**
@@ -72,14 +77,14 @@ describe("model suite regressions", () => {
     g.BroadcastChannel = channel;
     try {
       await a.put(utf("k"), utf("v1"));
-      await a.ingest(); // generation 1: seq 1
+      await ingestDb(a); // generation 1: seq 1
       const parked: (() => void)[] = [];
       held = parked;
       const staleSync = b.sync(); // reads a tail naming generation 1, then waits to open its run
       await until(() => parked.length > 0);
       held = undefined;
       await a.put(utf("k"), utf("v2"));
-      await a.ingest(); // generation 2: seqs 1..2
+      await ingestDb(a); // generation 2: seqs 1..2
       // b's update catches up to generation 2 inside its transaction.
       const seen = await b.update([utf("k")], ([v], tx) => {
         tx.put(utf("y"), utf("1"));

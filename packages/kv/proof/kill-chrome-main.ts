@@ -7,8 +7,8 @@
  * `/src/*.js` is served from `dist/`, so `checkDatabase` (tests/sim) and
  * the engine share one module graph and one wasm instance.
  */
-import { OpfsLsmError, ensureEngine } from "../src/index.js";
-import { openBrowserFs, openHarnessDb } from "../src/testing.js";
+import { OpfsLsmError } from "../src/index.js";
+import { openBrowserFs, openHarnessDb, ingest, ensureEngine } from "../src/testing.js";
 import { checkDatabase, walMeta, walRows } from "../tests/sim/check-database.js";
 import { decodeGeneration, listRuns } from "../src/store/generation.js";
 import { decodeSst } from "../src/store/sst.js";
@@ -140,7 +140,7 @@ async function stop(): Promise<WorkResult> {
 async function ingestNow(): Promise<{ ok: boolean; generation: number | null; error: ReturnType<typeof errorInfo> | null }> {
   if (!work) throw new Error("no workload handle");
   try {
-    const { generation } = await withTimeout(work.db.ingest(), 20_000, "ingest");
+    const { generation } = await withTimeout(ingest(work.db), 20_000, "ingest");
     return { ok: true, generation, error: null };
   } catch (err) {
     return { ok: false, generation: null, error: errorInfo(err) };
@@ -220,7 +220,7 @@ async function check(cfg: CheckConfig): Promise<CheckResult> {
     const t0 = performance.now();
     const generationBefore = out.before.generation ?? 0;
     await db.put(enc.encode("~probe"), enc.encode(cfg.probe));
-    const { generation: generationAfter } = await withTimeout(db.ingest(), 20_000, "ingest after restart");
+    const { generation: generationAfter } = await withTimeout(ingest(db), 20_000, "ingest after restart");
     const probe = await db.get(enc.encode("~probe"));
     out.restart = {
       generationBefore,
@@ -337,7 +337,7 @@ async function restartInPlace(
   try {
     db = await withTimeout(openHarnessDb({ name, writerId: "in-place", ingestPolicy: { maxWalBytes: 1 << 30 } }), 15_000, "open");
     seq = await db.put(enc.encode("~in-place"), enc.encode(value));
-    await withTimeout(db.ingest(), 15_000, "ingest");
+    await withTimeout(ingest(db), 15_000, "ingest");
     return { ok: true, ms: Math.round(performance.now() - t0), seq, error: null };
   } catch (err) {
     return { ok: false, ms: Math.round(performance.now() - t0), seq, error: errorInfo(err).message };

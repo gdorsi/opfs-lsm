@@ -30,7 +30,7 @@ const hits = await todos.queryIds({ index: "search", match: "mil" });
 
 ## Open a store
 
-`openDocStore(kv, schema)` returns a `DocStore`. The caller opens `kv`, closes it, and keeps using it for `changes`, `ingest`, and other layers. Keys that start with byte `0x64` belong to this package.
+`openDocStore(kv, schema)` returns a `DocStore`. The caller opens `kv`, closes it, and keeps using it for `changes` and other layers. Keys that start with byte `0x64` belong to this package.
 
 `DocStore` has two methods:
 

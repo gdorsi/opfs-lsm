@@ -1,13 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  openHarnessDb,
+  __resetMemoryFsForTests,
+  ingest,
   EngineHost,
   MemoryFs,
   createLocalIngestClient,
-  type ChangeEvent
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests
 } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
@@ -42,7 +40,7 @@ describe("L0 compaction", () => {
 
     for (let i = 0; i < 4; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
-      await db.ingest();
+      await ingest(db);
     }
 
     expect(fs.publishedPaths().some((p) => p.startsWith("l1/"))).toBe(true);
@@ -51,7 +49,7 @@ describe("L0 compaction", () => {
       expect(v && new TextDecoder().decode(v)).toBe(`v${i}`);
     }
 
-    await db.ingest();
+    await ingest(db);
     expect(fs.publishedPaths().filter((p) => p.startsWith("l0/"))).toEqual([]);
     await db.close();
   });
@@ -84,9 +82,6 @@ describe("L0 compaction", () => {
       ingest: createLocalIngestClient(host),
       ingestPolicy: { maxWalBytes: 1e12 },
     });
-    const events: ChangeEvent[] = [];
-    db.changes((e) => events.push(e));
-
     for (let i = 0; i < 4; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
       await host.ingest("compact", Number.POSITIVE_INFINITY);
@@ -101,10 +96,9 @@ describe("L0 compaction", () => {
     const runs = (await loadLatestGeneration(fs))!.runs;
     expect(runs[0]!.path).toMatch(/^l0\//);
     expect(runs.slice(1).every((r) => r.path.startsWith("l1/"))).toBe(true);
-    await db.ingest();
+    await ingest(db);
     expect(new TextDecoder().decode(await db.get(utf("k0")))).toBe("newer");
     expect(new TextDecoder().decode(await db.get(utf("k3")))).toBe("v3");
-    expect(events.some((e) => e.kind === "ingest" && e.writerId === "engine-host")).toBe(true);
     await db.close();
   });
 });

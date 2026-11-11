@@ -296,14 +296,14 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
         const docs = hits.slice(0, limit).map((h) => decodeDoc(h.value) as unknown as T);
         return { docs, ...nextOf(hits.map((h) => h.key), limit) };
       }
-      let followed = 0;
-      const hits = await this.store.kv.rangeFollow(range, (e) =>
-        limit === undefined || followed++ < limit ? concat(target.rowPrefix, entryId(target, e.key, e.value)) : undefined,
+      let joins = 0;
+      const hits = await this.store.kv.rangeJoin(range, (e) =>
+        limit === undefined || joins++ < limit ? concat(target.rowPrefix, entryId(target, e.key, e.value)) : undefined,
       );
       const docs: T[] = [];
-      for (const { value } of hits.slice(0, limit)) {
-        if (value === undefined) return RETRY;
-        docs.push(decodeDoc(value) as unknown as T);
+      for (const { joined } of hits.slice(0, limit)) {
+        if (joined === undefined) return RETRY;
+        docs.push(decodeDoc(joined) as unknown as T);
       }
       return { docs, ...nextOf(hits.map((h) => h.entry.key), limit) };
     });

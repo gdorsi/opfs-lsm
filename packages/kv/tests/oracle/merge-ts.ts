@@ -1,7 +1,7 @@
-import { compareBytes } from "../bytes.js";
-import { CorruptDatabaseError } from "../errors.js";
-import { crc32 } from "./crc32.js";
-import type { Demand, MergeCore, MergeSpec, MergeStop } from "./engine.js";
+import { compareBytes } from "../../src/bytes.js";
+import { CorruptDatabaseError } from "../../src/errors.js";
+import { crc32 } from "../../src/store/crc32.js";
+import type { Demand, MergeCore, MergeSpec, MergeStop } from "../../src/store/engine.js";
 import {
   blockLengths,
   decodeBlock,
@@ -13,18 +13,14 @@ import {
   type SstCodec,
   type SstEntry,
   type SstFooter,
-} from "./sst.js";
+} from "../../src/store/sst.js";
 
 /**
  * The merge session in TypeScript (crates/engine-abi.md, "Merge session"),
- * for a context without the wasm one: the module did not load, or it
- * trapped. It asks for the same reads and merges by the same rules, but
- * holds more. It decodes each read's blocks at once,
- * about `chunkBytes` per source (B in all), and gathers an output run's
- * entries up to `targetBytes` of encoded size before it encodes them, so it
- * holds about B plus twice `targetBytes`: B + 8 MiB for compaction. Nothing
- * enforces that. Its runs are raw whatever `spec.codec` says: readers take
- * either.
+ * as an oracle for the wasm one. It asks for the same reads and merges by
+ * the same rules, but holds more: it decodes each read's blocks at once and
+ * gathers an output run's entries before it encodes them. Its runs are raw
+ * whatever `spec.codec` says.
  */
 export function openMergeTs(spec: MergeSpec): MergeCore {
   return new Session(spec);

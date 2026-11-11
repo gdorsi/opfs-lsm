@@ -1,9 +1,15 @@
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { CommitError, CorruptDatabaseError } from "../../src/errors.js";
-import { EngineHost, MemoryFs, createLocalIngestClient, type Db } from "../../src/index.js";
+import { type Db } from "../../src/index.js";
 import { encodeRun, ensureEngine } from "../../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../../src/store/generation.js";
-import { openHarnessDb } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import { mergeRuns } from "../runs.js";
 import { checkDatabase, deleteWal, walMeta, walRows, walStore } from "./check-database.js";
 
@@ -76,7 +82,7 @@ async function standard(): Promise<Fixture> {
       tx.delete(utf(gone));
       state.delete(gone);
     });
-    if (round < 5) await db.ingest();
+    if (round < 5) await ingest(db);
   }
   await db.put(utf("tail"), utf("in the WAL"));
   state.set("tail", "in the WAL");
@@ -185,7 +191,7 @@ async function exercise(f: Fixture): Promise<Report> {
     return "ok";
   });
   await step(r, "flush", async () => {
-    await db!.ingest();
+    await ingest(db!);
     return str(await db!.get(utf("new"))) === "new value" ? "ok" : "wrong";
   });
   // Four more flushes: enough to compact every L0 run, and L1 with them.
@@ -193,7 +199,7 @@ async function exercise(f: Fixture): Promise<Report> {
     for (let i = 0; i < 4; i++) {
       await db!.put(utf(`c${i}`), utf(`c${i}`));
       f.state.set(`c${i}`, `c${i}`);
-      await db!.ingest();
+      await ingest(db!);
     }
     return "ok";
   });
@@ -302,7 +308,7 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
   });
 
   // KW2: with wasm, compaction's decode threw the Rust error as a bare
-  // string ("CrcMismatch") out of `db.ingest()`, not CorruptDatabaseError.
+  // string ("CrcMismatch") out of `ingest(db)`, not CorruptDatabaseError.
   it("KW2: compaction over a corrupt run fails with CorruptDatabaseError", async () => {
     const r = await run("L0 run: data byte flipped (KW2)", standard, async (f) => corruptFile(f.fs, await l0(f), flipAt(() => 12)));
     expect(r.compact).toBe("corrupt");
@@ -535,12 +541,12 @@ describe("open handles follow a repair to an older manifest", () => {
     }
     const [a, b] = handles as [Db, Db];
     await a.put(utf("a"), utf("1"));
-    await a.ingest();
+    await ingest(a);
     const first = (await fs.read("m/0000000000000001.mft", 0, Number.POSITIVE_INFINITY))!;
     await a.put(utf("b"), utf("2"));
-    await a.ingest();
+    await ingest(a);
     await b.put(utf("c"), utf("3"));
-    await b.ingest();
+    await ingest(b);
     expect((await walMeta(name)).generation).toBe(3);
     await lose(fs, first);
     await a.put(utf("d"), utf("4"));
