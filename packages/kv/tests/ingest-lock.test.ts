@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  openHarnessDb,
+  __resetMemoryFsForTests,
+  ingest,
   EngineHost,
   MemoryFs,
-  createLocalIngestClient
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests
+  createLocalIngestClient,
 } from "../src/testing.js";
 
 const enc = new TextEncoder();
@@ -52,7 +51,7 @@ describe("ingest across two hosts", () => {
     for (let round = 0; round < 6; round++) {
       await a.put(utf(`a${round}`), utf(`${round}`));
       await b.put(utf(`b${round}`), utf(`${round}`));
-      await Promise.all([a.ingest(), b.ingest()]);
+      await Promise.all([ingest(a), ingest(b)]);
     }
     const fresh = await openHarnessDb({
       name: "lock-db",

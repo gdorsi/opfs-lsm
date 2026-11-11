@@ -3,7 +3,6 @@ import { compareBytes, keyToString } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep, pumpMerge } from "../src/host/compact.js";
-import { MemoryFs } from "../src/index.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../src/opfs/async-fs.js";
 import type { MergeCore, MergeSpec } from "../src/store/engine.js";
 import { publishGeneration, type RunMeta } from "../src/store/generation.js";
@@ -12,6 +11,7 @@ import { decodeSst, encodeRun, entryRecordSize, sstKeyRange, type SstCodec, type
 import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
 import { publish } from "./runs.js";
+import { MemoryFs } from "../src/testing.js";
 
 /**
  * The TypeScript merge session against the wasm one, both pumped by the

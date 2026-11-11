@@ -30,17 +30,13 @@ The page can also seed a large random dataset, filter it, sort it, and page thro
 
    Type a count in **Generate random todos** and click **Generate**. Titles are 2 to 5 random words. Generation writes 1,000 rows per batch and reports progress. **Filter todos** narrows the list to todos where each typed word occurs inside a word of the title, ignoring case, so "mil" and "lk" both find "Buy milk". It resets to page 1, and search results are newest first. The sort selector switches between **Newest first**, **Oldest first**, and **Title A–Z** when no filter is set. **Prev**/**Next** move through the cursor stack; returning to an earlier page does not rescan from the start of the database. **Clear all** deletes the seeded rows in batches.
 
-5. Click **Ingest** in either window.
-
-   Both lists still show the rows. The next read uses the new OPFS generation. The window that clicked **Ingest** shows `generation N` under the status line.
-
 To start from an empty database, open `http://127.0.0.1:4173/?name=fresh`. The name must match `[A-Za-z0-9_-]{1,64}`.
 
 Set `TODO_PORT` to change the port. Set `TODO_NO_OPEN=1` to skip opening a browser.
 
 ## Modules
 
-`store.ts` is the page store: it opens kv and the docstore once at module level (top-level await, like the DOM version did), declares the schema, subscribes to `kv.changes`, serializes writes through one promise chain, owns the pager cursor stack, and exposes actions. React reads it with `useSyncExternalStore(store.subscribe, store.getSnapshot)` — components hold no effects and no async state. The snapshot shape (`rows`, `hasNext`, `pageIndex`, `filter`, `sort`, `progress`, `error`, `generation`, `bulkBusy`) mirrors what the DOM version wrote straight into elements. `index.html` keeps a static `opening` line inside `#root`, painted while the module opens and loads the first page.
+`store.ts` is the page store: it opens kv and the docstore once at module level (top-level await, like the DOM version did), declares the schema, subscribes to `kv.changes`, serializes writes through one promise chain, owns the pager cursor stack, and exposes actions. React reads it with `useSyncExternalStore(store.subscribe, store.getSnapshot)` — components hold no effects and no async state. The snapshot shape (`rows`, `hasNext`, `pageIndex`, `filter`, `sort`, `progress`, `error`, `bulkBusy`) mirrors what the DOM version wrote straight into elements. `index.html` keeps a static `opening` line inside `#root`, painted while the module opens and loads the first page.
 
 `main.tsx` is the React layer: render the snapshot, dispatch actions, and own the two uncontrolled inputs plus the filter-input debounce (a typing concern, not store state). Vite resolves both `@opfs-lsm/kv` and `@opfs-lsm/docstore` from the workspace packages, so `index.html` needs no import map. Writes, deletes, and bulk jobs still go through the headless model. `tsconfig.json` typechecks the sources with `strict: true`; the collection is assigned to `TodoStore`, so a query the schema does not declare fails to compile.
 

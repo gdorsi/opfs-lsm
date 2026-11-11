@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../../src/bytes.js";
-import { EngineHost, type Db } from "../../src/index.js";
+import { type Db } from "../../src/index.js";
 import { checkDatabase } from "./check-database.js";
 import type { SiteKind } from "./fault-fs.js";
 import { installFaultWal } from "./fault-wal.js";
 import { committedLog, Traced } from "./crash.js";
 import { show, type Oracle, type OracleEntry } from "./oracle.js";
+import { ingest as ingestDb, EngineHost } from "../../src/testing.js";
 
 /**
  * I/O-error sweep (docs/research/corruption-hardening-test-suite.md,
@@ -191,7 +192,7 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
           break;
         case "ingest":
           await call("ingest", async () => {
-            await h.ingest();
+            await ingestDb(h);
             return {};
           });
           break;
@@ -342,7 +343,7 @@ describe("I/O errors: found by this suite", () => {
     try {
       const db = await t.open();
       await db.put(utf("a"), utf("a1"));
-      await db.ingest().catch(() => undefined);
+      await ingestDb(db).catch(() => undefined);
       await db.close();
       expect(t.faults.injected, "the fault fired").toBe(1);
       t.faults.heal();

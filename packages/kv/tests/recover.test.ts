@@ -2,11 +2,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { IdBWal } from "../src/idb/wal.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import { reconcile } from "../src/recover.js";
 import { crc32 } from "../src/store/crc32.js";
 import { publishGeneration, type GenerationMeta } from "../src/store/generation.js";
-import { openHarnessDb } from "../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../src/testing.js";
 import { publish } from "./runs.js";
 import { checkDatabase, deleteWal, walRows, walStore } from "./sim/check-database.js";
 
@@ -354,7 +359,7 @@ describe("a deleted WAL", () => {
   async function seeded(open: () => ReturnType<typeof openHarnessDb>) {
     const db = await open();
     await db.put(enc.encode("a"), enc.encode("1"));
-    await db.ingest();
+    await ingest(db);
     await db.put(enc.encode("b"), enc.encode("2"));
     return db;
   }
@@ -369,7 +374,7 @@ describe("a deleted WAL", () => {
     expect(text(await db.get(enc.encode("a")))).toBe("1");
     expect(await db.get(enc.encode("b"))).toBeUndefined();
     await db.put(enc.encode("c"), enc.encode("3"));
-    await db.ingest();
+    await ingest(db);
     await db.close();
     const report = await checkDatabase(fs, name);
     expect(report.problems).toEqual([]);
@@ -388,7 +393,7 @@ describe("a deleted WAL", () => {
     const db = await open();
     expect(text(await db.get(enc.encode("a")))).toBe("1");
     await db.put(enc.encode("c"), enc.encode("3"));
-    await db.ingest();
+    await ingest(db);
     await db.close();
     await old.close().catch(() => undefined);
     const report = await checkDatabase(fs, name);
@@ -408,7 +413,7 @@ describe("a database written before manifests held run sizes", () => {
     const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
     const db = await open();
     await db.put(enc.encode("a"), enc.encode("1"));
-    await db.ingest();
+    await ingest(db);
     await db.close();
 
     const path = `m/${[...(await fs.list("m"))].sort().at(-1)!}`;

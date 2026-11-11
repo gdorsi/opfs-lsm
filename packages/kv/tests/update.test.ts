@@ -1,12 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  MemoryFs,
-  prefixBound
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests
-} from "../src/testing.js";
+import { prefixBound } from "../src/index.js";
+import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { checkBatch, checkDbName } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
 
@@ -51,7 +45,7 @@ describe("update", () => {
     const fs = new MemoryFs();
     const writer = await openHarnessDb({ name: NAME, writerId: "w", fs, forceMemory: true, ingestPolicy: quiet });
     await writer.put(utf("k"), utf("1"));
-    await writer.ingest();
+    await ingest(writer);
     const reader = await openHarnessDb({ name: NAME, writerId: "r", fs, forceMemory: true, ingestPolicy: quiet });
     const seen = await reader.update([utf("k"), utf("absent")], (values) =>
       values.map(text),
@@ -91,23 +85,23 @@ describe("update", () => {
   });
 });
 
-describe("rangeFollow", () => {
-  it("follows each entry to its target across the log and an SST", async () => {
+describe("rangeJoin", () => {
+  it("joins each entry to its target across the log and an SST", async () => {
     const fs = new MemoryFs();
     const writer = await openHarnessDb({ name: NAME, writerId: "w", fs, forceMemory: true, ingestPolicy: quiet });
     await writer.batch((tx) => {
       tx.put(utf("doc/1"), utf("one"));
       tx.put(utf("idx/1"), utf("doc/1"));
     });
-    await writer.ingest();
+    await ingest(writer);
     await writer.batch((tx) => {
       tx.put(utf("doc/2"), utf("two"));
       tx.put(utf("idx/2"), utf("doc/2"));
       tx.put(utf("idx/3"), utf("doc/missing"));
     });
     const reader = await openHarnessDb({ name: NAME, writerId: "r", fs, forceMemory: true, ingestPolicy: quiet });
-    const hits = await reader.rangeFollow(prefixBound(utf("idx/")), (e) => e.value);
-    expect(hits.map((h) => [text(h.entry.key), text(h.value)])).toEqual([
+    const hits = await reader.rangeJoin(prefixBound(utf("idx/")), (e) => e.value);
+    expect(hits.map((h) => [text(h.entry.key), text(h.joined)])).toEqual([
       ["idx/1", "one"],
       ["idx/2", "two"],
       ["idx/3", undefined],
@@ -116,7 +110,7 @@ describe("rangeFollow", () => {
     await reader.close();
   });
 
-  it("follows the entries of a reverse range, last first", async () => {
+  it("joins the entries of a reverse range, last first", async () => {
     const fs = new MemoryFs();
     const db = await openHarnessDb({ name: NAME, writerId: "w", fs, forceMemory: true, ingestPolicy: quiet });
     await db.batch((tx) => {
@@ -125,20 +119,20 @@ describe("rangeFollow", () => {
         tx.put(utf(`idx/${i}`), utf(`doc/${i}`));
       }
     });
-    await db.ingest();
+    await ingest(db);
     await db.batch((tx) => {
       tx.put(utf("doc/5"), utf("doc 5"));
       tx.put(utf("idx/5"), utf("doc/5"));
       tx.delete(utf("idx/2"));
       tx.put(utf("doc/3"), utf("doc 3, newer"));
     });
-    const shown = (hits: Awaited<ReturnType<typeof db.rangeFollow>>) =>
-      hits.map((h) => `${text(h.entry.key)}>${text(h.value)}`);
-    const forward = shown(await db.rangeFollow(prefixBound(utf("idx/")), (e) => e.value));
+    const shown = (hits: Awaited<ReturnType<typeof db.rangeJoin>>) =>
+      hits.map((h) => `${text(h.entry.key)}>${text(h.joined)}`);
+    const forward = shown(await db.rangeJoin(prefixBound(utf("idx/")), (e) => e.value));
     expect(forward).toHaveLength(4);
     for (const limit of [undefined, 1, 3]) {
       const range = { ...prefixBound(utf("idx/")), reverse: true, ...(limit !== undefined ? { limit } : {}) };
-      expect(shown(await db.rangeFollow(range, (e) => e.value))).toEqual([...forward].reverse().slice(0, limit));
+      expect(shown(await db.rangeJoin(range, (e) => e.value))).toEqual([...forward].reverse().slice(0, limit));
     }
     await db.close();
   });

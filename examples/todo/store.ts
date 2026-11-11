@@ -68,7 +68,6 @@ export type TodoState = {
   readonly sort: SortKey;
   readonly progress: string;
   readonly error: string;
-  readonly generation: number | undefined;
   /** True while a bulk job (generate / clear) is in flight. */
   readonly bulkBusy: boolean;
 };
@@ -88,7 +87,6 @@ let state: TodoState = {
       : openError === undefined
         ? ""
         : String(openError),
-  generation: undefined,
   bulkBusy: false,
 };
 
@@ -250,17 +248,6 @@ export function nextPage(): void {
   pager.index += 1;
   setState({ pageIndex: pager.index });
   void refresh().catch(showError);
-}
-
-export function ingest(): void {
-  if (!db) {
-    showError(new Error("database not open"));
-    return;
-  }
-  void run(async () => {
-    const result = await db.kv.ingest();
-    setState({ generation: result.generation });
-  });
 }
 
 /** Flip `done` (one read-modify-write; indexes do not change). */

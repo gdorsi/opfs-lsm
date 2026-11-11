@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MemoryFs } from "../src/index.js";
+import { MemoryFs } from "../src/testing.js";
 
 describe("MemoryFs publish-on-finish", () => {
   it("keeps stages invisible until finish", async () => {

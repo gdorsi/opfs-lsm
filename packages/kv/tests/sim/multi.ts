@@ -1,10 +1,16 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import fc from "fast-check";
 import { expect } from "vitest";
-import type { AsyncFs, Db, Entry } from "../../src/index.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
+import type { Db, Entry } from "../../src/index.js";
 import { IdBWal } from "../../src/idb/wal.js";
-import { openHarnessDb } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  type AsyncFs,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { expectEntries, SIM_HOST_LIMITS } from "./commands.js";
 import { checkHistory, History, type NewOp, type OpOf, type ViewRead } from "./history.js";
@@ -638,10 +644,10 @@ class SyncCmd extends SlotCmd {
   name = () => "sync";
 }
 
-/** `db.ingest()`: flush through the head and wait for the compaction it starts. */
+/** `ingest(db)`: flush through the head and wait for the compaction it starts. */
 class IngestCmd extends SlotCmd {
   async run(_m: Model, w: World): Promise<void> {
-    await w.start(this.slot, "ingest", {}, async (db) => void (await db.ingest()), this.wait);
+    await w.start(this.slot, "ingest", {}, async (db) => void (await ingest(db)), this.wait);
   }
   name = () => "ingest";
 }

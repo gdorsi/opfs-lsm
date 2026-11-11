@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import type { HostBudget } from "../src/host/budget.js";
 import {
   encodeSst,
@@ -11,7 +10,15 @@ import {
   type MergeSpec,
 } from "../src/store/engine.js";
 import { settle as settleRead } from "../src/store/cursor.js";
-import { __resetMemoryFsForTests, openHarnessDb, readStats } from "../src/testing.js";
+import {
+  __resetMemoryFsForTests,
+  openHarnessDb,
+  readStats,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../src/testing.js";
 import { drain, readerOfBytes } from "./runs.js";
 
 const MiB = 1024 * 1024;
@@ -135,7 +142,7 @@ describe("the host's recycle points", () => {
     });
     for (let round = 0; round < rounds; round++) {
       for (let i = 0; i < perFlush; i++) await db.put(utf(`k${round}-${i}`), new Uint8Array(40_000));
-      await db.ingest();
+      await ingest(db);
     }
     const { host: stats } = await readStats(db);
     await db.close();

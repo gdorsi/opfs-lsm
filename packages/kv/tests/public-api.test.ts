@@ -107,10 +107,9 @@ describe("public API", () => {
     );
     expect(viewed).toBe("2");
 
-    const ingested = await db.ingest();
+    const ingested = await testing.ingest(db);
     expect(ingested.generation).toBeGreaterThan(0);
     expect(kinds).toContain("append");
-    expect(kinds).toContain("ingest");
     stop();
 
     await db.close();

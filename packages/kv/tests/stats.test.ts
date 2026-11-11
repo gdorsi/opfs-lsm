@@ -1,16 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  openHarnessDb,
+  readStats,
+  settle,
+  __resetMemoryFsForTests,
+  ingest as ingestDb,
   EngineHost,
   MemoryFs,
   attachEngineHostPort,
   createLocalIngestClient,
   createPortIngestClient,
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  readStats,
-  settle,
-  __resetMemoryFsForTests,
 } from "../src/testing.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { CountingFs } from "../src/opfs/counting-fs.js";
@@ -106,7 +105,7 @@ describe("readStats", () => {
       walBytes += putRecordBytes(key, value);
       folded += key.byteLength + value.byteLength;
       await db.put(key, value);
-      await db.ingest();
+      await ingestDb(db);
     }
     await settle(db);
 
@@ -149,7 +148,7 @@ describe("readStats", () => {
     // Snapshots: later IO does not change an earlier result.
     const before = stats.host.fs.written.l0!.calls;
     await db.put(utf("late"), utf("x"));
-    await db.ingest();
+    await ingestDb(db);
     expect(stats.host.fs.written.l0!.calls).toBe(before);
     expect((await readStats(db)).host.fs.written.l0!.calls).toBe(before + 1);
     await db.close();
@@ -171,7 +170,7 @@ describe("readStats", () => {
     }
     await settle(db);
     const settled = (await readStats(db)).host;
-    expect((await db.ingest()).generation).toBe(settled.generation);
+    expect((await ingestDb(db)).generation).toBe(settled.generation);
     expect((await readStats(db)).host.compactionSteps).toBe(settled.compactionSteps);
     await db.close();
   });
@@ -192,7 +191,7 @@ describe("readStats", () => {
     const key = utf("k");
     const value = utf("v");
     await db.put(key, value);
-    await db.ingest();
+    await ingestDb(db);
 
     const stats = await readStats(db);
     expect(stats.tab.walAppends).toBe(1);

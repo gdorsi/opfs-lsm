@@ -66,7 +66,7 @@ export type OpenOptions = {
    * 1 MiB. It does not cover the memtable, the wasm heap, or values handed
    * to the caller. Each `openDb` has its own budget.
    */
-  readonly memoryBudget?: number;
+  readonly cacheBytes?: number;
   /**
    * Bytes this tab's memtable may hold: the rows written and not yet flushed
    * to OPFS, counted as key bytes, value bytes and an estimate per row.
@@ -197,8 +197,7 @@ export interface Db {
    * commit, with the record's seq. A batch with no ops writes nothing and
    * resolves with the seq this handle has applied through. Other tabs see
    * the write when its BroadcastChannel message arrives, a moment after the
-   * ack, or after their next `sync()`. The ingest host flushes the WAL to
-   * OPFS per ingestPolicy.
+   * ack, or after their next `sync()`.
    */
   batch(build: (tx: BatchTx) => void): Promise<number>;
   /**
@@ -211,18 +210,19 @@ export interface Db {
     body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T>;
   /**
-   * Scan `range`, then point-read `follow(entry)` for each entry that returns a
-   * key. The scan and the reads use one pinned memtable and one held
+   * Scan `range` and join each entry to the value at `keyOf(entry)`, as an
+   * index entry joins its row. `joined` is undefined when `keyOf` returns no
+   * key or the key has no value. The scan and the reads use one pinned memtable and one held
    * generation, so they see the same state although a page load can make them
    * wait. Writes that land meanwhile are not seen.
    */
-  rangeFollow(
+  rangeJoin(
     range: Range,
-    follow: (entry: Entry) => Uint8Array | undefined,
-  ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]>;
+    keyOf: (entry: Entry) => Uint8Array | undefined,
+  ): Promise<{ readonly entry: Entry; readonly joined: Uint8Array | undefined }[]>;
   range(range?: Range): AsyncIterable<Entry>;
   /**
-   * Read-only snapshot: pinned WAL head + OPFS generation at open.
+   * Read-only snapshot of every record through `snap.seq`.
    * Writes that commit during the callback are invisible to `snap`.
    */
   view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T>;
@@ -237,8 +237,6 @@ export interface Db {
    * writes otherwise arrive over BroadcastChannel, a moment after their ack.
    */
   sync(): Promise<void>;
-  /** Flush the memtable now and wait for the compaction it starts. */
-  ingest(): Promise<{ generation: number }>;
   close(): Promise<void>;
 }
 
@@ -292,6 +290,8 @@ export type DbInternals = {
   readonly wal: IdBWal;
   readonly fs: CountingFs;
   readonly ingest: IngestClient;
+  /** Flush the memtable now and wait for the compaction it starts. */
+  readonly flush: () => Promise<{ generation: number }>;
 };
 
 const internals = new WeakMap<Db, DbInternals>();
@@ -381,7 +381,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   span(trace, "generation", performance.now() - generationAt);
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const cache = new PageCache(
-    Math.max(MIN_MEMORY_BUDGET, options.memoryBudget ?? DEFAULT_BUDGET),
+    Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
   );
   const db = new DbImpl(
     name,
@@ -394,7 +394,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
     caps,
     trace,
   );
-  internals.set(db, { name, wal, fs: tabFs, ingest });
+  internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
   const syncAt = trace ? performance.now() : 0;
   await db.sync();
   span(trace, "sync", performance.now() - syncAt);
@@ -537,7 +537,6 @@ class DbImpl implements Db {
       this.announce();
     } else {
       void this.sync().catch(() => undefined);
-      this.emit({ kind: "ingest", writerId: data.writerId });
     }
   }
 
@@ -992,27 +991,27 @@ class DbImpl implements Db {
     return out.result;
   }
 
-  async rangeFollow(
+  async rangeJoin(
     range: Range,
-    follow: (entry: Entry) => Uint8Array | undefined,
-  ): Promise<{ readonly entry: Entry; readonly value: Uint8Array | undefined }[]> {
+    keyOf: (entry: Entry) => Uint8Array | undefined,
+  ): Promise<{ readonly entry: Entry; readonly joined: Uint8Array | undefined }[]> {
     this.ensureOpen();
     const bounds = boundsOf(range);
     const rows = this.mem.pin();
     const layers = this.installed;
     this.retain(layers);
     try {
-      const out: { entry: Entry; value: Uint8Array | undefined }[] = [];
+      const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
       for await (const entry of scanLayers(rows.range(bounds), layers.levels, bounds, range)) {
-        const key = follow(entry);
-        let value: Uint8Array | undefined;
+        const key = keyOf(entry);
+        let joined: Uint8Array | undefined;
         if (key !== undefined) {
           const k = checkKey(key);
           const row = rows.get(k);
           const got = row ? valueOf(row) : pointGetSst(layers.levels, k);
-          value = got instanceof Miss ? await settle(() => pointGetSst(layers.levels, k)) : got;
+          joined = got instanceof Miss ? await settle(() => pointGetSst(layers.levels, k)) : got;
         }
-        out.push({ entry, value });
+        out.push({ entry, joined });
       }
       return out;
     } finally {
@@ -1041,7 +1040,6 @@ class DbImpl implements Db {
     this.retain(layers);
     const snap = new ViewSnapshotImpl(
       this.mem.appliedThrough,
-      layers.generation,
       this.mem.pin(),
       layers.levels,
       () => {
@@ -1062,12 +1060,8 @@ class DbImpl implements Db {
     return this.changeBus.subscribe(listener);
   }
 
-  ingest(): Promise<{ generation: number }> {
-    return this.flush(true);
-  }
-
   /** Have the host flush the WAL, tell the other tabs if that moved the generation, and load it. */
-  private async flush(settle: boolean): Promise<{ generation: number }> {
+  async flush(settle: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
     const before = this.installed.generation;
     const result = await this.ingestClient.ingest(
@@ -1075,10 +1069,7 @@ class DbImpl implements Db {
       Number.POSITIVE_INFINITY,
       settle,
     );
-    if (result.generation !== before) {
-      this.emit({ kind: "ingest", writerId: this.writerId });
-      this.broadcast({ kind: "ingest", writerId: this.writerId });
-    }
+    if (result.generation !== before) this.broadcast({ kind: "ingest", writerId: this.writerId });
     await this.sync();
     return result;
   }

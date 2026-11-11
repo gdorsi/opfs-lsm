@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { type Db } from "../src/index.js";
 import {
+  openHarnessDb,
+  __resetMemoryFsForTests,
+  ingest,
   EngineHost,
   MemoryFs,
   createLocalIngestClient,
   type AsyncFs,
-  type ChangeEvent,
-  type Db,
-  type IngestPolicy
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests
+  type IngestPolicy,
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
@@ -54,12 +52,9 @@ async function twoTabs(policy: IngestPolicy) {
   return { fs, a, b };
 }
 
-function ingestEvents(db: Db): ChangeEvent[] {
-  const events: ChangeEvent[] = [];
-  db.changes((e) => {
-    if (e.kind === "ingest") events.push(e);
-  });
-  return events;
+/** Resolves once the host has published a generation. */
+function flushed(fs: AsyncFs): Promise<void> {
+  return vi.waitFor(async () => expect(await loadLatestGeneration(fs)).toBeDefined(), WAIT);
 }
 
 async function settle(): Promise<void> {
@@ -106,13 +101,12 @@ function l0Fs() {
 describe("ingest policy", () => {
   it("the host ingests once the waiting WAL passes maxWalBytes, whichever tab wrote", async () => {
     const { fs, a, b } = await twoTabs({ maxWalBytes: 100 });
-    const seen = ingestEvents(a);
     await a.put(utf("a"), new Uint8Array(60));
     await settle();
     expect(await loadLatestGeneration(fs)).toBeUndefined();
     await b.put(utf("b"), new Uint8Array(60));
     await b.put(utf("c"), new Uint8Array(1));
-    await vi.waitFor(() => expect(seen).toHaveLength(1), WAIT);
+    await flushed(fs);
     await settle();
     const gen = await loadLatestGeneration(fs);
     expect(gen?.runs).toHaveLength(1);
@@ -321,7 +315,7 @@ describe("ingest policy", () => {
     expect(dec.decode(await db.get(utf("a")))).toBe("2");
     await db.put(utf("b"), utf("3"));
     expect(dec.decode(await db.get(utf("b")))).toBe("3");
-    await db.ingest();
+    await ingest(db);
     await db.close();
     expect((await checkDatabase(fs, name)).problems).toEqual([]);
     const reopened = await openHarnessDb({
@@ -404,13 +398,12 @@ describe("ingest policy", () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
     const reader = await open(host, fs, "reader", { maxWalBytes: 100 });
-    const seen = ingestEvents(reader);
     const writer = await open(host, fs, "writer", { maxWalBytes: 100 });
     // Let the open's WAL measurement finish, so only the append can trigger.
     await settle();
     await writer.put(utf("k"), new Uint8Array(150));
     await writer.close();
-    await vi.waitFor(() => expect(seen).toHaveLength(1), WAIT);
+    await flushed(fs);
     await reader.sync();
     expect((await reader.get(utf("k")))?.byteLength).toBe(150);
     expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1);

@@ -1,12 +1,7 @@
 import { crc32 } from "../src/store/crc32.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
-import {
-  MemoryFs
-} from "../src/index.js";
-import {
-  __resetMemoryFsForTests
-} from "../src/testing.js";
+import { __resetMemoryFsForTests, MemoryFs } from "../src/testing.js";
 import {
   decodeGeneration,
   encodeGeneration,
