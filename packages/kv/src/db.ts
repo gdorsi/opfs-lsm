@@ -322,6 +322,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   );
   const caps = memtableCaps(options.memtableBytes);
 
+  let walOpen: Promise<IdBWal> | undefined;
   let fs = options.fs;
   let ingest = options.ingest;
   let ownsIngestClient = false;
@@ -336,7 +337,15 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
 
   if (!fs) {
     const opfsAt = trace ? performance.now() : 0;
-    fs = await openBrowserFs(name);
+    // IndexedDB opens while OPFS does.
+    walOpen = IdBWal.open(name);
+    walOpen.catch(() => undefined);
+    try {
+      fs = await openBrowserFs(name);
+    } catch (err) {
+      void walOpen.then((w) => w.close(), () => undefined);
+      throw err;
+    }
     span(trace, "opfs", performance.now() - opfsAt);
     if (!ingest) {
       const workerAt = trace ? performance.now() : 0;
@@ -361,7 +370,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   const tabFs = new CountingFs(fs);
 
   const idbAt = trace ? performance.now() : 0;
-  const wal = await IdBWal.open(name);
+  const wal = await (walOpen ?? IdBWal.open(name));
   span(trace, "idb-open", performance.now() - idbAt);
   const generationAt = trace ? performance.now() : 0;
   // Pair the WAL with a manifest before the first read or write. The
