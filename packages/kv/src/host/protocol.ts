@@ -89,8 +89,7 @@ export type ClientToHost =
       readonly trace?: boolean;
     }
   | { readonly type: "unwatch"; readonly name: string }
-  | { readonly type: "stats"; readonly id: number; readonly name: string }
-  | { readonly type: "ping"; readonly id: number };
+  | { readonly type: "stats"; readonly id: number; readonly name: string };
 
 export type HostToClient =
   | {
@@ -111,8 +110,7 @@ export type HostToClient =
       readonly rows: number;
       readonly bytes: number;
     }
-  | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats }
-  | { readonly type: "pong"; readonly id: number };
+  | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats };
 
 export type IngestClient = {
   /**

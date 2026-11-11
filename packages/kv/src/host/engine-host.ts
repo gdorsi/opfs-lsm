@@ -499,9 +499,6 @@ export function attachEngineHostPort(
     const reply = (m: HostToClient) => port.postMessage(m);
     try {
       switch (msg.type) {
-        case "ping":
-          reply({ type: "pong", id: msg.id });
-          return;
         case "ingest": {
           const { generation } = await host.ingest(
             msg.name,
