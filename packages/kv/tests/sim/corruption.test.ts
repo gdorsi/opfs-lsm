@@ -371,9 +371,8 @@ describe("recovery never turns corruption into data loss", () => {
 
   /** A flush that has a seq to fold, and the compaction after it, on a host that never saw the database. */
   async function hostFlushAndCompact(f: Fixture): Promise<Outcome> {
-    const { head } = await walMeta(f.name);
     try {
-      await new EngineHost(() => f.fs).ingest(f.name, head, true);
+      await new EngineHost(() => f.fs).ingest(f.name, true);
       return "ok";
     } catch (err) {
       return err instanceof CorruptDatabaseError ? "corrupt" : `THREW ${String(err)}`;

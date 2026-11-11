@@ -212,7 +212,7 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
     // Heal, then the same host recovers, and the database reopens whole.
     t.faults.heal();
     if (db) await guard(db.close(), "close after heal").catch(() => undefined);
-    await guard(t.host.ingest(t.name, Number.POSITIVE_INFINITY, true), "host flush after heal");
+    await guard(t.host.ingest(t.name, true), "host flush after heal");
     const log = committedLog(t.faults.ops);
     checkEvents(events, log);
     const again = await guard(t.open(), "open after heal");
@@ -223,7 +223,7 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
     const report = await checkDatabase(t.fs, t.name);
     expect(report.problems, "checkDatabase after heal").toEqual([]);
     expectState(report.state, log.stateAt(), "files after heal");
-    await new EngineHost(() => t.fs).ingest(t.name, 0, true);
+    await new EngineHost(() => t.fs).compact(t.name);
     const swept = await checkDatabase(t.fs, t.name);
     expect(swept.orphans, "orphans after a fresh host's sweep").toEqual([]);
     expect(swept.staleManifests, "stale manifests after a fresh host's sweep").toEqual([]);

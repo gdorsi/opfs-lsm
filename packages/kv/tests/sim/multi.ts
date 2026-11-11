@@ -376,7 +376,7 @@ class World {
     // A failed run leaves tasks the scheduler never released.
     await this.s.waitAll().catch(() => undefined);
     for (let i = 0; i < this.slots.length; i++) if (this.slots[i]) await this.close(i).catch(() => undefined);
-    await this.host.ingest(this.name, 0, true).catch(() => undefined);
+    await this.host.compact(this.name).catch(() => undefined);
     await deleteWal(this.name);
     world = undefined;
   }
@@ -676,7 +676,7 @@ class CloseCmd implements Cmd {
 class FlushCmd implements Cmd {
   constructor(private readonly wait: boolean) {}
   check = () => true;
-  run = (_m: Model, w: World) => w.hostWork(() => w.host.ingest(w.name, Number.POSITIVE_INFINITY, false), this.wait);
+  run = (_m: Model, w: World) => w.hostWork(() => w.host.ingest(w.name), this.wait);
   toString = () => `host flush${waitTag(this.wait)}`;
 }
 
@@ -684,7 +684,7 @@ class FlushCmd implements Cmd {
 class CompactCmd implements Cmd {
   constructor(private readonly wait: boolean) {}
   check = () => true;
-  run = (_m: Model, w: World) => w.hostWork(() => w.host.ingest(w.name, 0, true), this.wait);
+  run = (_m: Model, w: World) => w.hostWork(() => w.host.compact(w.name), this.wait);
   toString = () => `host compact${waitTag(this.wait)}`;
 }
 
@@ -784,7 +784,7 @@ export async function runWorld(
     expect(counterOf(oracle.valueAt(COUNTER)), "counter after every committed increment").toBe(increments);
 
     // The files: quiesce the host, then the integrity check against the oracle.
-    await w.host.ingest(name, 0, true);
+    await w.host.compact(name);
     const report = await checkDatabase(w.fs, name);
     expect(report.problems, "checkDatabase problems").toEqual([]);
     expect(report.orphans, "orphan runs").toEqual([]);

@@ -76,6 +76,7 @@ export type ClientToHost =
       readonly type: "ingest";
       readonly id: number;
       readonly name: string;
+      /** Always the whole WAL. A SharedWorker of an older build reads it as the seq to flush through. */
       readonly through: number;
       readonly waitForCompaction: boolean;
     }
@@ -114,14 +115,10 @@ export type HostToClient =
 
 export type IngestClient = {
   /**
-   * Flush every WAL record through `through`. A no-op when they are already
-   * in OPFS. With `waitForCompaction`, resolve once compaction has finished too.
+   * Flush every WAL record acked before the call. A no-op when they are
+   * already in OPFS. With `waitForCompaction`, resolve once compaction has finished too.
    */
-  ingest(
-    name: string,
-    through: number,
-    waitForCompaction?: boolean,
-  ): Promise<{ generation: number }>;
+  ingest(name: string, waitForCompaction?: boolean): Promise<{ generation: number }>;
   /**
    * Have the host ingest `name` on its own once the WAL waiting for ingest
    * passes `policy.maxWalBytes`, starting with what is already waiting, and

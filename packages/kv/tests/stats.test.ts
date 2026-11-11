@@ -167,7 +167,7 @@ describe("readStats", () => {
     });
     for (let i = 0; i < 9; i++) {
       await db.put(utf(`k${i}`), utf(`v${i}`));
-      await host.ingest(NAME, Number.POSITIVE_INFINITY);
+      await host.ingest(NAME);
     }
     await settle(db);
     const settled = (await readStats(db)).host;

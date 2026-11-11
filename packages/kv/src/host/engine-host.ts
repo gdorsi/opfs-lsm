@@ -107,16 +107,16 @@ export class EngineHost {
   }
 
   /**
-   * Flush every WAL record through `through` into an L0 run, then start
-   * compaction in the background. With `waitForCompaction`, also wait until the levels
-   * are in shape.
+   * Flush the WAL into L0 runs, then start compaction in the background.
+   * With `waitForCompaction`, also wait until the levels are in shape.
    */
-  async ingest(
-    name: string,
-    through: number,
-    waitForCompaction = false,
-  ): Promise<{ generation: number }> {
-    return this.db(name).ingest(through, waitForCompaction);
+  async ingest(name: string, waitForCompaction = false): Promise<{ generation: number }> {
+    return this.db(name).ingest(waitForCompaction);
+  }
+
+  /** Wait for a flush in flight, then compact until the levels are in shape. Folds no WAL. */
+  async compact(name: string): Promise<void> {
+    return this.db(name).compactNow();
   }
 
   /**
@@ -212,8 +212,8 @@ class HostedDb {
     });
   }
 
-  async ingest(through: number, waitForCompaction: boolean): Promise<{ generation: number }> {
-    const { generation } = await this.fold(through);
+  async ingest(waitForCompaction: boolean): Promise<{ generation: number }> {
+    const { generation } = await this.fold();
     const compaction = this.compact();
     if (!waitForCompaction) {
       compaction.catch(() => undefined);
@@ -223,6 +223,12 @@ class HostedDb {
     return {
       generation: await this.withWal(async (wal) => (await wal.meta()).generation ?? 0),
     };
+  }
+
+  async compactNow(): Promise<void> {
+    const fs = await this.fs();
+    await this.foldTurn(() => this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal))));
+    await this.compact();
   }
 
   /**
@@ -235,14 +241,13 @@ class HostedDb {
    * `l0StopRuns` runs it publishes none, and waits for compaction instead.
    * A fold that published a run tells the tabs, whoever asked for it.
    */
-  private fold(through: number): Promise<IngestResult> {
-    return this.foldTurn(() => this.foldRuns(through));
+  private fold(): Promise<IngestResult> {
+    return this.foldTurn(() => this.foldRuns());
   }
 
-  private async foldRuns(through: number): Promise<IngestResult> {
+  private async foldRuns(): Promise<IngestResult> {
     const fs = await this.fs();
-    const head = await this.withWal(async (wal) => (await wal.meta()).head);
-    const target = Math.min(through, head);
+    const target = await this.withWal(async (wal) => (await wal.meta()).head);
     let foldedBytes = 0;
     let pastStop = false;
     try {
@@ -385,7 +390,7 @@ class HostedDb {
     watch.state = "ingesting";
     void (async () => {
       try {
-        const { foldedBytes } = await this.fold(Number.POSITIVE_INFINITY);
+        const { foldedBytes } = await this.fold();
         // Nothing was waiting, so the count was ahead of the WAL. Without
         // this, it would stay over the trigger and ingest in a loop.
         if (foldedBytes === 0) watch.pendingBytes = 0;
@@ -500,11 +505,7 @@ export function attachEngineHostPort(
     try {
       switch (msg.type) {
         case "ingest": {
-          const { generation } = await host.ingest(
-            msg.name,
-            msg.through,
-            msg.waitForCompaction,
-          );
+          const { generation } = await host.ingest(msg.name, msg.waitForCompaction);
           reply({ type: "ingest-ok", id: msg.id, generation });
           return;
         }
@@ -586,8 +587,8 @@ export function createPortIngestClient(
     });
 
   return {
-    async ingest(name: string, through: number, waitForCompaction = false) {
-      const res = await request({ type: "ingest", id: nextId++, name, through, waitForCompaction });
+    async ingest(name: string, waitForCompaction = false) {
+      const res = await request({ type: "ingest", id: nextId++, name, through: Number.POSITIVE_INFINITY, waitForCompaction });
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
     watch(name, policy) {
@@ -618,7 +619,7 @@ export function createPortIngestClient(
 
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
-    ingest: (name, through, waitForCompaction) => host.ingest(name, through, waitForCompaction),
+    ingest: (name, waitForCompaction) => host.ingest(name, waitForCompaction),
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
     stats: (name) => host.stats(name),

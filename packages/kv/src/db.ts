@@ -1047,11 +1047,7 @@ class DbImpl implements Db {
   /** Have the host flush the WAL, and load what it published. */
   async flush(waitForCompaction: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
-    const result = await this.ingestClient.ingest(
-      this.name,
-      Number.POSITIVE_INFINITY,
-      waitForCompaction,
-    );
+    const result = await this.ingestClient.ingest(this.name, waitForCompaction);
     await this.sync();
     return result;
   }
