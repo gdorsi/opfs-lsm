@@ -98,7 +98,6 @@ const VISIBLE = `(async () => {
   const { store, commands, createLiveQueryCollection } = globalThis.__linearlite;
   const lq = createLiveQueryCollection((q) => q.from({ i: store.issues }).orderBy(({ i }) => i.modified, "desc").limit(100));
   await lq.preload();
-  const labels = ["Backlog", "Todo", "In Progress", "Done", "Canceled"];
   const out = [];
   for (const { id, status } of lq.toArray.slice(20, 40)) {
     const next = (status + 1) % 5;
@@ -109,9 +108,9 @@ const VISIBLE = `(async () => {
     });
     const dom = new Promise((resolve) => {
       const mo = new MutationObserver(() => {
-        if (document.querySelector("#issue-" + CSS.escape(id) + " .status")?.textContent === labels[next]) { mo.disconnect(); resolve(performance.now()); }
+        if (document.querySelector("#issue-" + CSS.escape(id))?.getAttribute("data-status") === String(next)) { mo.disconnect(); resolve(performance.now()); }
       });
-      mo.observe(document.querySelector("tbody"), { subtree: true, childList: true, characterData: true });
+      mo.observe(document.querySelector(".rows"), { subtree: true, childList: true, attributes: true, attributeFilter: ["data-status"] });
     });
     const t0 = performance.now();
     await commands.setStatus(id, next);
@@ -209,8 +208,8 @@ const run: Record<string, () => Promise<void>> = {
       ab(b.session, "network", "route", "**/api/**", "--abort");
       ab(b.session, "open", `${origin}/issues`);
       const m = await waitMark(b, "first-rows");
-      const sync = evaluate<string>(b.session, `document.querySelector("#sync").textContent`);
-      const rows = evaluate<number>(b.session, `document.querySelectorAll("tbody tr").length`);
+      const sync = evaluate<string>(b.session, `document.querySelector(".sync").textContent`);
+      const rows = evaluate<number>(b.session, `document.querySelectorAll(".row[data-id]").length`);
       times.push(m["first-rows"]!);
       print({ scenario: "warm", run: i, ...m, rows, sync });
       await quit(b, true);
@@ -224,7 +223,7 @@ const run: Record<string, () => Promise<void>> = {
     const A = `${b.session}@t1`;
     const B = `${b.session}@t2`;
     ab(b.session, "tab", "new", `${origin}/issues`);
-    await waitFor("tab B rows", () => (evaluate<number>(B, `document.querySelectorAll("tbody tr").length`) > 0 ? true : undefined));
+    await waitFor("tab B rows", () => (evaluate<number>(B, `document.querySelectorAll(".row[data-id]").length`) > 0 ? true : undefined));
     print({ scenario: "tabs", leaderA: "leader" in evaluate<Record<string, number>>(A, marks), leaderB: "leader" in evaluate<Record<string, number>>(B, marks) });
     const read = (s: string) => Number(evaluate<string>(s, seenAt));
     print({ scenario: "tabs", metric: "A->B", ...summary(crossEdits(A, B, 10, read)) });
@@ -272,7 +271,7 @@ const run: Record<string, () => Promise<void>> = {
     await sleep(4000);
     const ids = JSON.stringify(edits.map((e) => e.id));
     const dirtyOffline = evaluate<boolean[]>(b.session, `JSON.stringify(${ids}.map((id) => !!globalThis.__linearlite.store.issues.get(id).dirty))`);
-    const statusOffline = evaluate<string>(b.session, `document.querySelector("#sync").textContent`);
+    const statusOffline = evaluate<string>(b.session, `document.querySelector(".sync").textContent`);
     const serverOffline = await Promise.all(edits.map((e) => serverIssue(e.id).then((r) => r?.status)));
     const t0 = Date.now();
     ab(b.session, "set", "offline", "off");
@@ -289,7 +288,7 @@ const run: Record<string, () => Promise<void>> = {
       serverOffline,
       reconnectToAckedMs: ackMs,
       serverOnline,
-      statusOnline: evaluate<string>(b.session, `document.querySelector("#sync").textContent`),
+      statusOnline: evaluate<string>(b.session, `document.querySelector(".sync").textContent`),
     });
     await quit(b);
   },
