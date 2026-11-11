@@ -96,7 +96,7 @@ describe("changes()", () => {
     expect(seqs(events)).toEqual([1, 2, 3, 4]);
 
     await ingest(db);
-    expect(seqs(events), "a flush announces nothing").toEqual([1, 2, 3, 4]);
+    expect(events.map((e) => e.kind), "a flush announces nothing").toEqual(["append", "append", "append", "append"]);
 
     await db.close();
     expect(events.at(-1)).toEqual({ kind: "closed" });

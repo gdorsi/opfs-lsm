@@ -44,7 +44,7 @@ export interface DocStore<S extends AnySchema> {
  * Bring the stored catalog in line with `schema` and return the store. Open
  * waits for the indexes `schema` declares, so each is ready or failed once
  * it resolves. The caller owns `kv`: it opened it and closes it, and keeps
- * using it for `changes`, `ingest` and other layers. Keys starting with
+ * using it for `changes` and other layers. Keys starting with
  * 0x64 belong to this package.
  */
 export async function openDocStore<S extends AnySchema>(kv: Db, schema: S): Promise<DocStore<S>> {

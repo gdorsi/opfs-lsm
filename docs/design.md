@@ -549,7 +549,6 @@ ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
 * The promise of `put`, `delete` or `batch` resolves with its seq, after its record was announced.
 * `gap` replaces the records that a handle skipped because a flush folded them before it read
   them. A listener reads again.
-* `ingest` says that a flush moved rows to OPFS without changing what reads return.
 * `closed` is the last event.
 
 # Recovery

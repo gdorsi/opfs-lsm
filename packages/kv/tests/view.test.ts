@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe("view snapshot", () => {
-  it("pins WAL head so later puts are invisible", async () => {
+  it("pins its seq so later puts are invisible", async () => {
     const db = await openHarnessDb({
       name: NAME,
       forceMemory: true,
@@ -45,10 +45,11 @@ describe("view snapshot", () => {
       return {
         a: a ? dec.decode(a) : undefined,
         b: b ? dec.decode(b) : undefined,
-        head: snap.seq,
+        seq: snap.seq,
       };
     });
 
+    expect(seen.seq, "the seq of the one put before the view").toBe(1);
     expect(seen.a).toBe("1");
     expect(seen.b).toBeUndefined();
     expect(dec.decode((await db.get(enc.encode("a")))!)).toBe("2");
