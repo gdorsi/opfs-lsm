@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { encodeSst as encodeWasm, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { decodeSst, encodeSst, sstGet, type SstEntry } from "../src/store/sst.js";
-import { Miss, settle, type LayerEntry, type ScanBounds } from "../src/store/cursor.js";
+import { Miss, untilHit, type LayerEntry, type ScanBounds } from "../src/store/cursor.js";
 import { compareBytes } from "../src/bytes.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
 import { drain, readerOfBytes } from "./runs.js";
@@ -12,7 +12,7 @@ const show = (e: SstEntry | undefined) => (e ? `${[...e.key]}:${e.kind}:${e.seq}
 async function expectReaderAgreesWithDecode(body: Uint8Array): Promise<void> {
   const all = decodeSst(body);
   const reader = readerOfBytes(body);
-  const get = (k: Uint8Array) => settle(() => reader.get(k));
+  const get = (k: Uint8Array) => untilHit(() => reader.get(k));
   expect((await Promise.all(all.map((e) => get(e.key)))).map(show)).toEqual(all.map(show));
   const misses = [...all.map((e) => cat(e.key, Uint8Array.of(0))), utf("i/")];
   expect((await Promise.all(misses.map(get))).map(show)).toEqual(misses.map((k) => show(sstGet(all, k))));

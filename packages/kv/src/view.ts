@@ -2,7 +2,7 @@ import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { settle, type ScanBounds } from "./store/cursor.js";
+import { untilHit, type ScanBounds } from "./store/cursor.js";
 import {
   arrayCursor,
   mergeCursors,
@@ -78,7 +78,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     this.ensureOpen();
     const k = checkKey(key);
     const row = this.rows.get(k);
-    return settle(() => pointGet(row, this.levels, k));
+    return untilHit(() => pointGet(row, this.levels, k));
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {

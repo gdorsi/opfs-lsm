@@ -88,7 +88,7 @@ export type ClientToHost =
       readonly id: number;
       readonly name: string;
       readonly through: number;
-      readonly settle: boolean;
+      readonly waitForCompaction: boolean;
     }
   | {
       readonly type: "watch";
@@ -128,12 +128,12 @@ export type HostToClient =
 export type IngestClient = {
   /**
    * Flush every WAL record through `through`. A no-op when they are already
-   * in OPFS. With `settle`, resolve once compaction has finished too.
+   * in OPFS. With `waitForCompaction`, resolve once compaction has finished too.
    */
   ingest(
     name: string,
     through: number,
-    settle?: boolean,
+    waitForCompaction?: boolean,
   ): Promise<{ generation: number }>;
   /**
    * Have the host ingest `name` on its own once the WAL waiting for ingest

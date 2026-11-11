@@ -4,7 +4,7 @@
  */
 import { encodeSst, sstKeyRange } from "../../src/store/sst.js";
 import { pointGet, runLevels, type RunLevel } from "../../src/store/merge.js";
-import { settle } from "../../src/store/cursor.js";
+import { untilHit } from "../../src/store/cursor.js";
 import { PageCache } from "../../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../../src/store/sst-reader.js";
 import type { MemRow } from "../../src/store/memtable.js";
@@ -67,7 +67,7 @@ for (const mem of KINDS) {
   for (const sst of KINDS) {
     n++;
     const levels = readers(sst);
-    const got = await settle(() => pointGet(memRow(mem), levels, KEY));
+    const got = await untilHit(() => pointGet(memRow(mem), levels, KEY));
     const want = expected(mem, sst);
     if (!eq(got, want)) {
       console.error(

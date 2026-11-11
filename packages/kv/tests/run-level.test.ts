@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
-import { settle } from "../src/store/cursor.js";
+import { untilHit } from "../src/store/cursor.js";
 import { latestSstEntry, mergeCursors, runLevels } from "../src/store/merge.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
@@ -81,9 +81,9 @@ describe("runLevels", () => {
     const show = (e: SstEntry | undefined) =>
       e && `${dec.decode(e.key)}:${e.kind}:${e.kind === "put" ? dec.decode(e.value) : ""}`;
     for (let i = -2; i < 125; i++) {
-      const all = await Promise.all(readers.map((r) => settle(() => r.get(key(i)))));
+      const all = await Promise.all(readers.map((r) => untilHit(() => r.get(key(i)))));
       const want = all.find((e) => e !== undefined);
-      expect(show(await settle(() => latestSstEntry(levels, key(i))))).toEqual(show(want));
+      expect(show(await untilHit(() => latestSstEntry(levels, key(i))))).toEqual(show(want));
     }
   });
 

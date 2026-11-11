@@ -28,7 +28,7 @@ import { holdingFiles, layersChannel, type IngestClient } from "./host/protocol.
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
-import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
+import { allMissed, Miss, untilHit, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
@@ -900,7 +900,7 @@ class DbImpl implements Db {
     this.retain(layers);
     try {
       await first.ready;
-      return await settle(() => attempt(layers.levels));
+      return await untilHit(() => attempt(layers.levels));
     } finally {
       this.release(layers);
     }
@@ -984,7 +984,7 @@ class DbImpl implements Db {
           const k = checkKey(key);
           const row = rows.get(k);
           const got = pointGet(row, layers.levels, k);
-          joined = got instanceof Miss ? await settle(() => pointGet(row, layers.levels, k)) : got;
+          joined = got instanceof Miss ? await untilHit(() => pointGet(row, layers.levels, k)) : got;
         }
         out.push({ entry, joined });
       }
@@ -1036,12 +1036,12 @@ class DbImpl implements Db {
   }
 
   /** Have the host flush the WAL, and load what it published. */
-  async flush(settle: boolean): Promise<{ generation: number }> {
+  async flush(waitForCompaction: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
     const result = await this.ingestClient.ingest(
       this.name,
       Number.POSITIVE_INFINITY,
-      settle,
+      waitForCompaction,
     );
     await this.sync();
     return result;

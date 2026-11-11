@@ -91,7 +91,7 @@ export function filterCursor(cursor: LayerCursor, patterns: readonly Uint8Array[
  * Re-runs a sync read until it stops missing. Terminates because the
  * bytes a Miss fills stay pinned until the retry touches them.
  */
-export async function settle<T>(attempt: () => Maybe<T>): Promise<T> {
+export async function untilHit<T>(attempt: () => Maybe<T>): Promise<T> {
   for (;;) {
     const r = attempt();
     if (!(r instanceof Miss)) return r;

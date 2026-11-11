@@ -108,15 +108,15 @@ export class EngineHost {
 
   /**
    * Flush every WAL record through `through` into an L0 run, then start
-   * compaction in the background. With `settle`, also wait until the levels
+   * compaction in the background. With `waitForCompaction`, also wait until the levels
    * are in shape.
    */
   async ingest(
     name: string,
     through: number,
-    settle = false,
+    waitForCompaction = false,
   ): Promise<{ generation: number }> {
-    return this.db(name).ingest(through, settle);
+    return this.db(name).ingest(through, waitForCompaction);
   }
 
   /**
@@ -149,7 +149,7 @@ class HostedDb {
   private readonly publishTurn = serial();
   private readonly foldTurn = serial();
   /** Settles at the next compaction install, for a flush that waits on a full L0. */
-  private nextInstall: { readonly settled: Promise<void>; readonly settle: () => void } | undefined;
+  private nextInstall: { readonly settled: Promise<void>; readonly resolve: () => void } | undefined;
   private watching: IngestWatch | undefined;
   /**
    * Run files out of every live generation that a tab still held at the
@@ -214,10 +214,10 @@ class HostedDb {
     });
   }
 
-  async ingest(through: number, settle: boolean): Promise<{ generation: number }> {
+  async ingest(through: number, waitForCompaction: boolean): Promise<{ generation: number }> {
     const { generation } = await this.fold(through);
     const compaction = this.compact();
-    if (!settle) {
+    if (!waitForCompaction) {
       compaction.catch(() => undefined);
       return { generation };
     }
@@ -291,8 +291,8 @@ class HostedDb {
   /** A promise for the next compaction install. */
   private installSignal(): Promise<void> {
     if (!this.nextInstall) {
-      let settle!: () => void;
-      this.nextInstall = { settled: new Promise<void>((resolve) => (settle = resolve)), settle };
+      let resolve!: () => void;
+      this.nextInstall = { settled: new Promise<void>((r) => (resolve = r)), resolve };
     }
     return this.nextInstall.settled;
   }
@@ -300,7 +300,7 @@ class HostedDb {
   private installLanded(): void {
     const next = this.nextInstall;
     this.nextInstall = undefined;
-    next?.settle();
+    next?.resolve();
   }
 
   /**
@@ -509,7 +509,7 @@ export function attachEngineHostPort(
           const { generation } = await host.ingest(
             msg.name,
             msg.through,
-            msg.settle,
+            msg.waitForCompaction,
           );
           reply({ type: "ingest-ok", id: msg.id, generation });
           return;
@@ -592,8 +592,8 @@ export function createPortIngestClient(
     });
 
   return {
-    async ingest(name: string, through: number, settle = false) {
-      const res = await request({ type: "ingest", id: nextId++, name, through, settle });
+    async ingest(name: string, through: number, waitForCompaction = false) {
+      const res = await request({ type: "ingest", id: nextId++, name, through, waitForCompaction });
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
     watch(name, policy) {
@@ -624,7 +624,7 @@ export function createPortIngestClient(
 
 export function createLocalIngestClient(host: EngineHost): IngestClient {
   return {
-    ingest: (name, through, settle) => host.ingest(name, through, settle),
+    ingest: (name, through, waitForCompaction) => host.ingest(name, through, waitForCompaction),
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
     stats: (name) => host.stats(name),

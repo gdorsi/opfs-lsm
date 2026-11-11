@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { Miss, settle } from "../src/store/cursor.js";
+import { Miss, untilHit } from "../src/store/cursor.js";
 import { metaKey, pageKey, PageCache, type Admit } from "../src/store/page-cache.js";
 
 function harness(budget: number) {
   const cache = new PageCache(budget);
   let loads = 0;
   const fetch = (key: number, admit: Admit, bytes: number) =>
-    settle(() =>
+    untilHit(() =>
       cache.lookup(key, admit, async () => {
         loads++;
         return { value: key, bytes };
