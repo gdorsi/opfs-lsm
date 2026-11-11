@@ -168,10 +168,10 @@ Exit 0. The log ends with `All 5 formal checks passed`. Each check prints a `PAS
 - `PASS WalOverSst` (on real `pointGet`)
 - `PASS ViewPin` (copy-on-write memtable pin present)
 - `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source)
-- `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, six `broken variant caught` lines show the model fails each known wrong design.
+- `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, eight `broken variant caught` lines show the model fails each known wrong design.
 - `PASS CorruptRefuse` (a run of the recorded manifest removed after every workload: open refuses and nothing writes, unless a manifest that holds every ingested seq stands in)
 
-The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:power-loss`. `formal:power-loss` runs every workload twice: with reclaim, and with a tab holding the reclaim lock throughout, so the host removes no manifest or run. `FORMAL_POWER_CMDS` (default 6) and `FORMAL_POWER_CRASHES` (default 2) widen the power-loss bound; 7 commands or 3 crashes take about 11 s. Each exits 0 on a pass. A failure prints a shortest path or a counterexample and exits non-zero.
+The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:power-loss`. `formal:power-loss` runs every workload twice: with reclaim, and with a tab holding the reclaim lock throughout, so the host removes no manifest or run. Its workloads mix appends, ingests, compactions and destroys. `FORMAL_POWER_CMDS` (default 6) and `FORMAL_POWER_CRASHES` (default 2) widen the power-loss bound; the default bound takes about a minute. Each exits 0 on a pass. A failure prints a shortest path or a counterexample and exits non-zero.
 
 The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `0aad344c5784b9302cf83f0fba62d1f35b19e543`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
 

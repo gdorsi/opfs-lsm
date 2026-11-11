@@ -67,20 +67,15 @@ export async function reconcile(
   fs: AsyncFs,
   trusted: Trusted,
 ): Promise<Reconciled> {
-  for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
-    const [meta, numbers] = await Promise.all([wal.meta(), manifestNumbers(fs)]);
-    const top = Math.max(numbers[0] ?? 0, meta.top, meta.generation ?? 0);
+  return untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
     const pick = await choose(fs, meta, numbers, trusted);
     if (!pick) return { generation: meta.generation!, top };
     // No seq any manifest on disk names is handed out again, so a manifest
     // that is not intact now never becomes intact with other writes.
-    let floor = pick.through;
-    for (const n of numbers) floor = Math.max(floor, (await readManifest(fs, n))?.through ?? 0);
-    if (await wal.adopt(meta, pick.generation, pick.through, floor, top)) {
-      return { generation: pick.generation, top };
-    }
-  }
-  throw new CorruptDatabaseError("the WAL kept changing while recovery read it");
+    const floor = await highestThrough(fs, numbers, pick.through);
+    const adopted = await wal.adopt(meta, pick.generation, pick.through, floor, top);
+    return adopted ? { generation: pick.generation, top } : undefined;
+  });
 }
 
 /**
@@ -93,15 +88,39 @@ export async function reconcile(
  * removed after, and new manifests number past every one of them.
  */
 export async function recordEmpty(wal: IdBWal, fs: AsyncFs): Promise<void> {
+  await untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
+    const floor = await highestThrough(fs, numbers, meta.head);
+    return (await wal.adopt(meta, 0, 0, floor + 1, top)) || undefined;
+  });
+}
+
+/** What `meta` and `m/` held when a writer read them, and the number new manifests go past. */
+type Seen = { readonly meta: WalMeta; readonly numbers: readonly number[]; readonly top: number };
+
+/**
+ * Read `meta` and `m/`, then run `record`, which adopts against them.
+ * Undefined from `record` means another tab or host changed `meta` first,
+ * so read and run it again.
+ */
+async function untilAdopted<T>(
+  wal: IdBWal,
+  fs: AsyncFs,
+  record: (seen: Seen) => Promise<T | undefined>,
+): Promise<T> {
   for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
-    const meta = await wal.meta();
-    const numbers = await manifestNumbers(fs);
+    const [meta, numbers] = await Promise.all([wal.meta(), manifestNumbers(fs)]);
     const top = Math.max(numbers[0] ?? 0, meta.top, meta.generation ?? 0);
-    let floor = meta.head;
-    for (const n of numbers) floor = Math.max(floor, (await readManifest(fs, n))?.through ?? 0);
-    if (await wal.adopt(meta, 0, 0, floor + 1, top)) return;
+    const out = await record({ meta, numbers, top });
+    if (out !== undefined) return out;
   }
-  throw new CorruptDatabaseError("the WAL kept changing while destroy read it");
+  throw new CorruptDatabaseError("the WAL kept changing while it was read");
+}
+
+/** The highest `through` of the manifests `numbers`, and at least `from`. */
+async function highestThrough(fs: AsyncFs, numbers: readonly number[], from: number): Promise<number> {
+  let floor = from;
+  for (const n of numbers) floor = Math.max(floor, (await readManifest(fs, n))?.through ?? 0);
+  return floor;
 }
 
 /** The manifest to record instead of the recorded one, or undefined to keep it. */

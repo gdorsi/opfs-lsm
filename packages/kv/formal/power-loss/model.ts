@@ -12,6 +12,9 @@
  */
 
 export type Write = { readonly seq: number; readonly id: number };
+
+/** In `Sys.acked`, a destroy: the writes before it are gone. Write ids start at 1. */
+export const DESTROYED = 0;
 export type Manifest = {
   readonly gen: number;
   readonly through: number;
@@ -63,6 +66,10 @@ export type Variant = {
    * recovery records an older manifest or generation 0 and drops the WAL.
    */
   readonly lossyRecovery?: boolean;
+  /** Destroy removes the files before its IndexedDB commit. */
+  readonly destroyFilesFirst?: boolean;
+  /** Destroy removes the runs before the manifests. */
+  readonly destroyRunsFirst?: boolean;
   /**
    * A tab holds the reclaim lock through the whole run, so the host's
    * manifest and run removals are all skipped (`unlessHeld`). Not a broken
@@ -125,7 +132,7 @@ const ZERO: Manifest = { gen: 0, through: 0, runs: [] };
 /** Live stores plus the trace of durable ops the engine wrote to them. */
 export class Sys {
   readonly ops: Op[] = [];
-  /** Write ids in the order they were acked. */
+  /** Write ids in the order they were acked, and `DESTROYED` for each destroy. */
   readonly acked: number[] = [];
 
   constructor(
@@ -243,6 +250,38 @@ export class Sys {
     this.write({ store: "opfs", label: `publish m/${gen}`, manifest: { gen, through: now.through, runs } });
     this.write({ store: "idb", label: `raiseGeneration ${gen}`, generation: Math.max(this.idb.generation ?? 0, gen) });
     this.sweep();
+  }
+
+  /**
+   * `HostedDb.destroy`: `recordEmpty` (generation 0, head past every seq the
+   * WAL or a manifest names), then `removeAllFiles`. The order inside `m/` is
+   * unspecified, so manifests go newest first, the recorded one before the
+   * older ones a held reclaim lock kept. Removes regardless of that lock.
+   */
+  destroy(): void {
+    const numbers = this.numbers();
+    const top = Math.max(numbers[0] ?? 0, this.idb.top, this.idb.generation ?? 0);
+    let floor = this.idb.head;
+    for (const n of numbers) floor = Math.max(floor, this.manifest(n)!.through);
+    const removeAll = () => {
+      const manifests = () => {
+        for (const n of numbers) this.write({ store: "opfs", label: `remove m/${n}`, rmManifest: n });
+      };
+      const runs = () => {
+        for (const p of [...this.opfs.runs.keys()].sort()) this.write({ store: "opfs", label: `remove ${p}`, rmRun: p });
+      };
+      if (this.v.destroyRunsFirst) {
+        runs();
+        manifests();
+      } else {
+        manifests();
+        runs();
+      }
+    };
+    if (this.v.destroyFilesFirst) removeAll();
+    this.write({ store: "idb", label: "destroy", deleteTo: this.idb.head, head: floor + 1, ingested: floor + 1, generation: 0, top });
+    this.acked.push(DESTROYED);
+    if (!this.v.destroyFilesFirst) removeAll();
   }
 
   /**

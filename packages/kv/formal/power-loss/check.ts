@@ -5,13 +5,13 @@
  * Run: pnpm --filter @opfs-lsm/kv formal:power-loss
  *
  * Every workload of up to MAX_CMDS appends, ingests (of every waiting
- * record, or of the oldest one: a chunk of a flush) and compactions runs on
- * the model in model.ts. For every pair (IndexedDB prefix, OPFS prefix) of
+ * record, or of the oldest one: a chunk of a flush), compactions and
+ * destroys runs on the model in model.ts. For every pair (IndexedDB prefix, OPFS prefix) of
  * its durable ops: open (`reconcile`), read, recover (sweep, ingest,
  * compact), keep writing, and crash again at every pair of the recovery's
  * ops. Properties:
- * - PowerPrefix: every read is the set of writes of one log prefix, and the
- *   database always opens;
+ * - PowerPrefix: every read is the state after one log prefix (the writes
+ *   since its last destroy), and the database always opens;
  * - ProcessAll: a cut that is a prefix of the global order (a process
  *   crash) reads every acked write;
  * - RecoveryStable: recovery's ingest and compaction change no read, leave
@@ -19,7 +19,8 @@
  * Every workload runs twice: once with reclaim, and once with a tab holding
  * the reclaim lock throughout, so the host removes no manifest or run.
  * Broken variants (build on the newest manifest, no head raise, no
- * fallback, no newer-manifest adoption) must each fail, so the model is
+ * fallback, no newer-manifest adoption, destroy files before its commit or
+ * runs before manifests) must each fail, so the model is
  * strong enough to see the bugs the crash suite found.
  *
  * CorruptRefuse: after every workload, a run of the recorded manifest is
@@ -32,13 +33,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cloneIdb, cloneOpfs, emptyIdb, emptyOpfs, Refused, replay, Stuck, Sys, type Idb, type Op, type Opfs, type Variant } from "./model.js";
+import { cloneIdb, cloneOpfs, DESTROYED, emptyIdb, emptyOpfs, Refused, replay, Stuck, Sys, type Idb, type Op, type Opfs, type Variant } from "./model.js";
 
 const MAX_CMDS = Number(process.env.FORMAL_POWER_CMDS ?? 6);
 /** Power losses in a row: the first, then one during or after each recovery. */
 const CRASHES = Number(process.env.FORMAL_POWER_CRASHES ?? 2);
-type Cmd = "append" | "ingest" | "ingestOne" | "compact";
-const CMDS: Cmd[] = ["append", "ingest", "ingestOne", "compact"];
+type Cmd = "append" | "ingest" | "ingestOne" | "compact" | "destroy";
+const CMDS: Cmd[] = ["append", "ingest", "ingestOne", "compact", "destroy"];
 /** Writes after the first recovery, before the second crash. */
 const AFTER: Cmd[] = ["append", "ingest", "append", "compact"];
 
@@ -57,17 +58,24 @@ function run(sys: Sys, cmd: Cmd): void {
   if (cmd === "append") sys.append();
   else if (cmd === "ingest") sys.ingest();
   else if (cmd === "ingestOne") sys.ingest(true);
+  else if (cmd === "destroy") sys.destroy();
   else sys.compact();
 }
 
-/** The length of the log prefix whose writes are `got`, or a violation. */
+/** The writes `log[0..k)` leaves: those since its last destroy. */
+function stateAt(log: readonly number[], k: number): Set<number> {
+  const prefix = log.slice(0, k);
+  return new Set(prefix.slice(prefix.lastIndexOf(DESTROYED) + 1));
+}
+
+function same(a: Set<number>, b: Set<number>): boolean {
+  return a.size === b.size && [...a].every((id) => b.has(id));
+}
+
+/** The longest log prefix whose state is `got`, or a violation. */
 function prefixOf(got: Set<number>, log: readonly number[], what: string): number {
-  const k = got.size;
-  const want = new Set(log.slice(0, k));
-  if (k > log.length || [...got].some((id) => !want.has(id))) {
-    throw new Violation(`${what}: read {${[...got].sort((a, b) => a - b).join(",")}}, not a prefix of log [${log.join(",")}]`);
-  }
-  return k;
+  for (let k = log.length; k >= 0; k--) if (same(stateAt(log, k), got)) return k;
+  throw new Violation(`${what}: read {${[...got].sort((a, b) => a - b).join(",")}}, not the state after a prefix of log [${log.join(",")}]`);
 }
 
 function read(sys: Sys, what: string): Set<number> {
@@ -110,6 +118,7 @@ function committed(ops: readonly Op[], idb: number): number[] {
     if (op.store !== "idb") continue;
     if (i++ >= idb) break;
     if (op.label.startsWith("append")) for (const [, id] of op.put ?? []) out.push(id);
+    if (op.label === "destroy") out.push(DESTROYED);
   }
   return out;
 }
@@ -125,8 +134,8 @@ function recover(st: { idb: Idb; opfs: Opfs }, log: readonly number[], mustHold:
   const sys = new Sys(cloneIdb(st.idb), cloneOpfs(st.opfs), v, 1000 * depth + 1);
   const opened = read(sys, `${where}: open`);
   const k = prefixOf(opened, log, `${where}: open`);
-  if (mustHold !== undefined && k !== mustHold) {
-    throw new Violation(`${where}: a process crash lost acked writes: read ${k} of ${mustHold}`);
+  if (mustHold !== undefined && !same(opened, stateAt(log, mustHold))) {
+    throw new Violation(`${where}: a process crash lost acked writes: read the state after ${k} of ${mustHold}`);
   }
   const kept = log.slice(0, k);
   for (const name of ["sweep", "ingest", "compact"] as const) {
@@ -215,7 +224,7 @@ function checkCorruptRun(cmds: readonly Cmd[], v: Variant): string | undefined {
         if (err instanceof Refused || err instanceof Stuck) return `${where}: refused, though a manifest holds every ingested seq`;
         throw err;
       }
-      if (live.acked.some((id) => !got.has(id))) return `${where}: the stand-in lost acked writes`;
+      if (!same(got, stateAt(live.acked, live.acked.length))) return `${where}: the stand-in lost acked writes`;
       standIns++;
       continue;
     }
@@ -268,11 +277,14 @@ function sourceSync(): string[] {
   need("host/engine-host.ts", /ingestChunk\([^;]*this\.trusted[^;]*;\s*[^\n]*\n\s*await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");
   need("host/engine-host.ts", /await unlessHeld\(this\.name, async \(\) => \{\s*const \{ generation \} = await reconcile\(wal, fs, this\.trusted\);[\s\S]*reclaimManifests\(fs, generation\);[\s\S]*liveRuns\(fs, generation\)/, "reclaim removes manifests then runs after reconciling, unless a tab holds the reclaim lock");
   need("host/compact.ts", /await wal\.raiseGeneration\(generation\);\s*return generation;/, "install removes no file");
+  need("recover.ts", /export async function recordEmpty[\s\S]*?highestThrough\(fs, numbers, meta\.head\)[\s\S]*?wal\.adopt\(meta, 0, 0, floor \+ 1, top\)/, "destroy records generation 0 past every seq the WAL or a manifest names");
+  need("host/engine-host.ts", /recordEmpty\(wal, fs\)\);[\s\S]*?await removeAllFiles\(fs\);/, "destroy commits before it removes a file");
+  need("store/generation.ts", /export async function removeAllFiles[\s\S]*?await fs\.removeTree\("m"\);\s*for \(const name of await fs\.list\(""\)\) await fs\.removeTree\(name\);/, "destroy removes the manifests before the runs");
   return out;
 }
 
 function main(): void {
-  console.log(`bound: workloads of up to ${MAX_CMDS} appends/ingests/compactions, every (IndexedDB, OPFS) prefix pair,`);
+  console.log(`bound: workloads of up to ${MAX_CMDS} appends/ingests/compactions/destroys, every (IndexedDB, OPFS) prefix pair,`);
   console.log(`       then recovery + [${AFTER.join(", ")}] and every pair of the next crash, ${CRASHES} crashes deep`);
   console.log("property: PowerPrefix, ProcessAll, RecoveryStable");
 
@@ -289,6 +301,8 @@ function main(): void {
     ["no fallback when the recorded manifest is gone", { noFallback: true }],
     ["a newer manifest past the head is never adopted", { noNewerAdopt: true }],
     ["a manifest number is reused after recovery records an older one", { reuseNumbers: true }],
+    ["destroy removes the files before its commit", { destroyFilesFirst: true }],
+    ["destroy removes the runs before the manifests", { destroyRunsFirst: true }],
   ];
   for (const [name, v] of broken) {
     const found = explore(v, MAX_CMDS, 1);
