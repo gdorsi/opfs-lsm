@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { loadLatestGeneration, type RunMeta } from "../src/store/generation.js";
 import { planCompaction, replaceRuns, type CompactionPlan } from "../src/store/levels.js";
-import { decodeSst } from "../src/store/engine.js";
+import { decodeSst } from "../src/store/sst.js";
 
 const enc = new TextEncoder();
 
@@ -129,7 +129,7 @@ describe("bottom compaction", () => {
     expect(runs).toHaveLength(1);
     const file = (await fs.read(runs[0]!.path, 0, 1 << 30))!;
     expect(runs[0]!.bytes).toBe(file.byteLength);
-    const entries = await decodeSst(file);
+    const entries = decodeSst(file);
     expect(entries.map((e) => e.kind)).toEqual(["put"]);
     expect(await db.get(enc.encode("a"))).toBeUndefined();
     expect(new TextDecoder().decode((await db.get(enc.encode("b")))!)).toBe("1");

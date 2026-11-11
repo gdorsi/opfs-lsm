@@ -1,5 +1,6 @@
 import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
+import { raiseGeneration } from "../idb/wal.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../opfs/async-fs.js";
 import { reconcile, type Trusted } from "../recover.js";
 import { openMerge, type MergeCore } from "../store/engine.js";
@@ -168,6 +169,6 @@ export async function installStep(
     tombstoneSeq: Math.max(meta.tombstoneSeq, step.droppedSeq),
     through: meta.through,
   });
-  await wal.raiseGeneration(generation);
+  await raiseGeneration(wal, generation);
   return generation;
 }

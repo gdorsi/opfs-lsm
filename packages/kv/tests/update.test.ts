@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prefixBound } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { checkBatch, checkDbName } from "../src/check.js";
-import { IdBWal } from "../src/idb/wal.js";
+import { TabWal } from "../src/idb/wal.js";
 
 const NAME = "update";
 const enc = new TextEncoder();
@@ -59,7 +59,7 @@ describe("update", () => {
     const fs = new MemoryFs();
     const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, maxWalBytes });
     await db.put(utf("n"), utf("1"));
-    const silent = await IdBWal.open(checkDbName(NAME));
+    const silent = await TabWal.open(checkDbName(NAME));
     await silent.appendAfter(0, () => ({
       ops: checkBatch([{ type: "put", key: utf("n"), value: utf("5") }]),
       result: undefined,

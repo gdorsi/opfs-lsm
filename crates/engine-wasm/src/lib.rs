@@ -228,31 +228,6 @@ pub unsafe extern "C" fn encode_sst(ptr: *const u8, len: usize, lz4: i32) -> i32
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn decode_sst(ptr: *const u8, len: usize) -> i32 {
-    let entries = match engine_core::decode_sst(bytes(ptr, len)) {
-        Ok(e) => e,
-        Err(e) => return finish(Err(error_code(e))),
-    };
-    show_result(|out| {
-        for e in &entries {
-            let (tag, key, value, seq) = match e {
-                Entry::Put { key, value, seq } => (TAG_PUT, key, Some(value), *seq),
-                Entry::Del { key, seq } => (TAG_DEL, key, None, *seq),
-            };
-            out.push(tag);
-            out.extend_from_slice(&seq.to_le_bytes());
-            out.extend_from_slice(&(key.len() as u32).to_le_bytes());
-            out.extend_from_slice(key);
-            if let Some(v) = value {
-                out.extend_from_slice(&(v.len() as u32).to_le_bytes());
-                out.extend_from_slice(v);
-            }
-        }
-    });
-    0
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn lz4_decompress(ptr: *const u8, len: usize, size: u32) -> i32 {
     finish(lz4_unpack(bytes(ptr, len), size as usize).map_err(error_code))
 }

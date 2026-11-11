@@ -57,14 +57,13 @@ const DONE = 5;
 const DEMAND_BYTES = 16;
 const RUN_HEAD_BYTES = 16;
 
-type Exports = {
+export type EngineExports = {
   memory: WebAssembly.Memory;
   init(capacity: number): number;
   input_ptr(len: number): number;
   result_ptr(): number;
   result_len(): number;
   encode_sst(ptr: number, len: number, lz4: number): number;
-  decode_sst(ptr: number, len: number): number;
   lz4_decompress(ptr: number, len: number, size: number): number;
   scan_block_contains(ptr: number, len: number, lz4: number, patPtr: number, patLen: number): number;
   merge_open(
@@ -136,20 +135,25 @@ export interface MergeCore {
 
 /**
  * One engine module behind typed calls. Everything crosses as flat bytes;
- * this is the only place that packs and unpacks them. Results are copied
- * out of wasm memory once, so decoded entries stay valid after later calls.
+ * this file is the only place that packs and unpacks them. Results are
+ * copied out of wasm memory once, so they stay valid after later calls.
+ *
+ * The methods are what a tab calls on its reads. What only the host calls,
+ * `encodeRunIn` and `openMergeIn`, are functions over the engine, so a
+ * bundle that never encodes or merges does not carry them.
  */
 export type FlatEngine = {
-  encodeRun(entries: readonly SstEntry[], lz4: boolean): EncodedRun;
-  decodeSst(buf: Uint8Array): SstEntry[];
+  readonly ex: EngineExports;
+  /** The bytes handed to the module's `init`. */
+  readonly capacity: number;
+  /** Write `len` bytes through `fill`, run `op`, return a copy of the result. */
+  call(name: string, len: number, fill: (into: Uint8Array) => void, op: (ptr: number) => number): Uint8Array;
   lz4Decompress(src: Uint8Array, size: number): Uint8Array;
   scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
-  /** The module's merge session. It holds one at a time, so a second open throws: the host takes turns (`inMergeSlot`). */
-  openMerge(spec: MergeSpec): MergeCore;
   /** The module's memory. It only grows. */
   memoryBytes(): number;
-  /** Whether a merge session is open, from its `openMerge` to its `close`. */
-  sessionOpen(): boolean;
+  /** Whether a merge session is open, from its `openMergeIn` to its `close`. */
+  sessionOpen: boolean;
 };
 
 const TAG_PUT = 1;
@@ -157,12 +161,10 @@ const TAG_DEL = 2;
 const TWO_32 = 0x1_0000_0000;
 
 export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAPACITY): FlatEngine {
-  const ex = instance.exports as unknown as Exports;
+  const ex = instance.exports as unknown as EngineExports;
   const status = ex.init(capacity);
   if (status < 0) throw statusError("init", status, 0, capacity);
-  let sessionIsOpen = false;
 
-  /** Write `len` bytes through `fill`, run `op`, return a copy of the result. */
   function call(
     name: string,
     len: number,
@@ -179,44 +181,9 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
   }
 
   return {
-    encodeRun(entries, lz4) {
-      let size = 0;
-      for (const e of entries) {
-        size += 1 + 8 + 4 + e.key.byteLength + (e.kind === "put" ? 4 + e.value.byteLength : 0);
-      }
-      const out = call(
-        "encode_sst",
-        size,
-        (into) => {
-          const view = new DataView(into.buffer, into.byteOffset, into.byteLength);
-          let o = 0;
-          for (const e of entries) {
-            const seq = e.seq ?? 0;
-            view.setUint8(o, e.kind === "put" ? TAG_PUT : TAG_DEL);
-            view.setUint32(o + 1, seq % TWO_32, true);
-            view.setUint32(o + 5, Math.floor(seq / TWO_32), true);
-            view.setUint32(o + 9, e.key.byteLength, true);
-            into.set(e.key, o + 13);
-            o += 13 + e.key.byteLength;
-            if (e.kind === "put") {
-              view.setUint32(o, e.value.byteLength, true);
-              into.set(e.value, o + 4);
-              o += 4 + e.value.byteLength;
-            }
-          }
-        },
-        (ptr) => ex.encode_sst(ptr, size, lz4 ? 1 : 0),
-      );
-      return readRun(out);
-    },
-
-    decodeSst(buf) {
-      const out = call("decode_sst", buf.byteLength, (into) => into.set(buf), (ptr) =>
-        ex.decode_sst(ptr, buf.byteLength),
-      );
-      return unpackEntries(out);
-    },
-
+    ex,
+    capacity,
+    call,
     lz4Decompress(src, size) {
       return call("lz4_decompress", src.byteLength, (into) => into.set(src), (ptr) =>
         ex.lz4_decompress(ptr, src.byteLength, size),
@@ -237,96 +204,132 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
       );
     },
 
-    openMerge(spec) {
-      let words = 1;
-      let inputBytes = 0;
-      for (const runs of spec.sources) {
-        words += 1 + runs.length;
-        for (const size of runs) inputBytes += size;
-      }
-      const len = 4 * words;
-      // Addresses are u32 and come back as i32: past 2 GiB they read negative.
-      const ptr = ex.input_ptr(len) >>> 0;
-      if (ptr === 0) throw new EngineCapacityError("merge_open", len, capacity);
-      const list = new DataView(ex.memory.buffer, ptr, len);
-      let o = 0;
-      const put = (v: number) => {
-        list.setUint32(o, v, true);
-        o += 4;
-      };
-      put(spec.sources.length);
-      for (const runs of spec.sources) {
-        put(runs.length);
-        for (const size of runs) put(size);
-      }
-      const opened = ex.merge_open(
-        ptr,
-        len,
-        spec.dropTombstones ? 1 : 0,
-        spec.targetBytes,
-        spec.codec === "lz4" ? 1 : 0,
-        spec.chunkBytes,
-        spec.tailBytes,
-        spec.yieldBytes,
-      );
-      if (opened < 0) throw statusError("merge_open", opened, inputBytes, capacity);
-      sessionIsOpen = true;
-      // The module holds one session and `merge_close` drops whichever is
-      // open, so a closed handle must not reach a session opened after it.
-      let closed = false;
-      const live = () => {
-        if (closed) throw new Error("merge session closed");
-      };
-      return {
-        pump() {
-          live();
-          const code = ex.merge_pump();
-          if (code < 0) throw statusError("merge_pump", code, inputBytes, capacity);
-          const result = new Uint8Array(ex.memory.buffer, ex.result_ptr() >>> 0, ex.result_len());
-          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
-          switch (code) {
-            case NEED: {
-              const demands: Demand[] = [];
-              for (let o = 0; o < result.byteLength; o += DEMAND_BYTES) {
-                demands.push({
-                  source: view.getUint32(o, true),
-                  run: view.getUint32(o + 4, true),
-                  offset: view.getUint32(o + 8, true),
-                  length: view.getUint32(o + 12, true),
-                });
-              }
-              return { kind: "need", demands };
-            }
-            case WRITE:
-              return { kind: "write", bytes: result.slice() };
-            case RUN_END:
-              return { kind: "run-end", end: readEnd(result, view, RUN_HEAD_BYTES) };
-            case YIELD:
-              return { kind: "yield" };
-            case DONE:
-              return { kind: "done", droppedSeq: view.getUint32(0, true) + view.getUint32(4, true) * TWO_32 };
-            default:
-              throw new Error(`merge_pump: unknown stop ${code}`);
-          }
-        },
-        feed(source, bytes) {
-          live();
-          const at = ex.merge_feed(source, bytes.byteLength) >>> 0;
-          if (at === 0) throw new Error(`merge_feed: source ${source} has no unfed demand of ${bytes.byteLength} bytes`);
-          new Uint8Array(ex.memory.buffer, at, bytes.byteLength).set(bytes);
-        },
-        close() {
-          if (closed) return;
-          closed = true;
-          sessionIsOpen = false;
-          ex.merge_close();
-        },
-      };
-    },
-
     memoryBytes: () => ex.memory.buffer.byteLength,
+    sessionOpen: false,
+  };
+}
 
-    sessionOpen: () => sessionIsOpen,
+/** `entries` as one run, encoded by `engine`. */
+export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz4: boolean): EncodedRun {
+  let size = 0;
+  for (const e of entries) {
+    size += 1 + 8 + 4 + e.key.byteLength + (e.kind === "put" ? 4 + e.value.byteLength : 0);
+  }
+  const out = engine.call(
+    "encode_sst",
+    size,
+    (into) => {
+      const view = new DataView(into.buffer, into.byteOffset, into.byteLength);
+      let o = 0;
+      for (const e of entries) {
+        const seq = e.seq ?? 0;
+        view.setUint8(o, e.kind === "put" ? TAG_PUT : TAG_DEL);
+        view.setUint32(o + 1, seq % TWO_32, true);
+        view.setUint32(o + 5, Math.floor(seq / TWO_32), true);
+        view.setUint32(o + 9, e.key.byteLength, true);
+        into.set(e.key, o + 13);
+        o += 13 + e.key.byteLength;
+        if (e.kind === "put") {
+          view.setUint32(o, e.value.byteLength, true);
+          into.set(e.value, o + 4);
+          o += 4 + e.value.byteLength;
+        }
+      }
+    },
+    (ptr) => engine.ex.encode_sst(ptr, size, lz4 ? 1 : 0),
+  );
+  return readRun(out);
+}
+
+/**
+ * `engine`'s merge session. The module holds one at a time, so a second open
+ * throws: the host takes turns (`inMergeSlot`).
+ */
+export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
+  const { ex, capacity } = engine;
+  let words = 1;
+  let inputBytes = 0;
+  for (const runs of spec.sources) {
+    words += 1 + runs.length;
+    for (const size of runs) inputBytes += size;
+  }
+  const len = 4 * words;
+  // Addresses are u32 and come back as i32: past 2 GiB they read negative.
+  const ptr = ex.input_ptr(len) >>> 0;
+  if (ptr === 0) throw new EngineCapacityError("merge_open", len, capacity);
+  const list = new DataView(ex.memory.buffer, ptr, len);
+  let o = 0;
+  const put = (v: number) => {
+    list.setUint32(o, v, true);
+    o += 4;
+  };
+  put(spec.sources.length);
+  for (const runs of spec.sources) {
+    put(runs.length);
+    for (const size of runs) put(size);
+  }
+  const opened = ex.merge_open(
+    ptr,
+    len,
+    spec.dropTombstones ? 1 : 0,
+    spec.targetBytes,
+    spec.codec === "lz4" ? 1 : 0,
+    spec.chunkBytes,
+    spec.tailBytes,
+    spec.yieldBytes,
+  );
+  if (opened < 0) throw statusError("merge_open", opened, inputBytes, capacity);
+  engine.sessionOpen = true;
+  // The module holds one session and `merge_close` drops whichever is
+  // open, so a closed handle must not reach a session opened after it.
+  let closed = false;
+  const live = () => {
+    if (closed) throw new Error("merge session closed");
+  };
+  return {
+    pump() {
+      live();
+      const code = ex.merge_pump();
+      if (code < 0) throw statusError("merge_pump", code, inputBytes, capacity);
+      const result = new Uint8Array(ex.memory.buffer, ex.result_ptr() >>> 0, ex.result_len());
+      const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
+      switch (code) {
+        case NEED: {
+          const demands: Demand[] = [];
+          for (let o = 0; o < result.byteLength; o += DEMAND_BYTES) {
+            demands.push({
+              source: view.getUint32(o, true),
+              run: view.getUint32(o + 4, true),
+              offset: view.getUint32(o + 8, true),
+              length: view.getUint32(o + 12, true),
+            });
+          }
+          return { kind: "need", demands };
+        }
+        case WRITE:
+          return { kind: "write", bytes: result.slice() };
+        case RUN_END:
+          return { kind: "run-end", end: readEnd(result, view, RUN_HEAD_BYTES) };
+        case YIELD:
+          return { kind: "yield" };
+        case DONE:
+          return { kind: "done", droppedSeq: view.getUint32(0, true) + view.getUint32(4, true) * TWO_32 };
+        default:
+          throw new Error(`merge_pump: unknown stop ${code}`);
+      }
+    },
+    feed(source, bytes) {
+      live();
+      const at = ex.merge_feed(source, bytes.byteLength) >>> 0;
+      if (at === 0) throw new Error(`merge_feed: source ${source} has no unfed demand of ${bytes.byteLength} bytes`);
+      new Uint8Array(ex.memory.buffer, at, bytes.byteLength).set(bytes);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      engine.sessionOpen = false;
+      ex.merge_close();
+    },
   };
 }
 
@@ -358,28 +361,6 @@ function statusError(op: string, code: number, inputBytes: number, capacity: num
   const bug = HOST_BUGS[code];
   if (bug) return new Error(`${op}: ${bug} (status ${code})`);
   return new CorruptDatabaseError(`${op}: ${STATUS_NAMES[code] ?? "corrupt"} (status ${code})`);
-}
-
-/** Key and value are views into `bytes`, the one copy the call made. */
-function unpackEntries(bytes: Uint8Array): SstEntry[] {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const entries: SstEntry[] = [];
-  let o = 0;
-  while (o < bytes.byteLength) {
-    const tag = view.getUint8(o);
-    const seq = view.getUint32(o + 1, true) + view.getUint32(o + 5, true) * TWO_32;
-    const keyLen = view.getUint32(o + 9, true);
-    const key = bytes.subarray(o + 13, o + 13 + keyLen);
-    o += 13 + keyLen;
-    if (tag === TAG_PUT) {
-      const valueLen = view.getUint32(o, true);
-      entries.push({ kind: "put", key, value: bytes.subarray(o + 4, o + 4 + valueLen), seq });
-      o += 4 + valueLen;
-    } else {
-      entries.push({ kind: "del", key, seq });
-    }
-  }
-  return entries;
 }
 
 let engine: FlatEngine | undefined;
@@ -547,7 +528,7 @@ export function engineMemory(): EngineMemory {
  * are copies, and the decoder hooks read `engine` at each call.
  */
 export function recycleEngine(maxBytes: number): boolean {
-  if (!engine || !wasmModule || engine.sessionOpen() || engine.memoryBytes() <= maxBytes) return false;
+  if (!engine || !wasmModule || engine.sessionOpen || engine.memoryBytes() <= maxBytes) return false;
   try {
     setEngine(flatEngine(new WebAssembly.Instance(wasmModule, {})));
   } catch {
@@ -577,7 +558,7 @@ export async function encodeRun(
 ): Promise<EncodedRun> {
   const wasm = await loaded();
   try {
-    return wasm.encodeRun(entries, codec === "lz4");
+    return encodeRunIn(wasm, entries, codec === "lz4");
   } catch (err) {
     afterTrap(err);
     throw err;
@@ -590,16 +571,6 @@ export async function encodeSst(
   codec: SstCodec = "raw",
 ): Promise<Uint8Array> {
   return (await encodeRun(entries, codec)).body;
-}
-
-export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
-  const wasm = await loaded();
-  try {
-    return wasm.decodeSst(buf);
-  } catch (err) {
-    afterTrap(err);
-    throw corrupt(err, "sst corrupt");
-  }
 }
 
 /**
@@ -618,7 +589,7 @@ export async function openMerge(spec: MergeSpec): Promise<MergeCore> {
       throw err;
     }
   };
-  const core = guard(() => wasm.openMerge(spec));
+  const core = guard(() => openMergeIn(wasm, spec));
   return {
     pump: () => guard(() => core.pump()),
     feed: (source, bytes) => guard(() => core.feed(source, bytes)),

@@ -11,7 +11,7 @@ import {
   readStats,
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
-import { IdBWal } from "../src/idb/wal.js";
+import { TabWal, advanceIngested, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 import { checkDatabase, deleteWal, walStore } from "./sim/check-database.js";
 
@@ -161,8 +161,8 @@ describe("ingest policy", () => {
           req.onsuccess = req.onerror = req.onblocked = () => resolve();
         }),
     );
-    const wal = await IdBWal.open(checkDbName(name));
-    expect(await wal.uningestedBytes(1 << 30)).toBe(0);
+    const wal = await TabWal.open(checkDbName(name));
+    expect(await uningestedBytes(wal, 1 << 30)).toBe(0);
     const first = {
       type: "put" as const,
       key: checkKey(utf("a")),
@@ -175,21 +175,21 @@ describe("ingest policy", () => {
     };
     const seq = await wal.append([first]);
     expect(seq).toBe(1);
-    expect(await wal.uningestedBytes(1 << 30)).toBe(opsBytes([first]));
+    expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([first]));
     const next = await wal.append([second]);
     expect(next).toBe(2);
-    await wal.advanceIngested(seq ?? 0, 1);
-    expect(await wal.uningestedBytes(1 << 30)).toBe(opsBytes([second]));
-    expect((await wal.listUningested({ maxBytes: 1 << 30 })).map((record) => record.seq)).toEqual([2]);
+    await advanceIngested(wal, seq ?? 0, 1);
+    expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([second]));
+    expect((await listUningested(wal, { maxBytes: 1 << 30 })).map((record) => record.seq)).toEqual([2]);
     await wal.append([first]);
     const secondBytes = opsBytes([second]);
     const bothBytes = secondBytes + opsBytes([first]);
-    expect(await wal.uningestedBytes(1 << 20), "under the cap: exact").toBe(bothBytes);
+    expect(await uningestedBytes(wal, 1 << 20), "under the cap: exact").toBe(bothBytes);
     // Seq 2 is 5 bytes and seq 3 is 11. A cap of 5 stops after seq 2 with
     // bytes == cap, so it cannot tell a partial sum from the cap itself.
     expect(secondBytes).toBe(5);
-    expect(await wal.uningestedBytes(8), "early stop, bytes under the cap").toBe(8);
-    expect(await wal.uningestedBytes(4), "early stop, the first record past the cap").toBe(secondBytes);
+    expect(await uningestedBytes(wal, 8), "early stop, bytes under the cap").toBe(8);
+    expect(await uningestedBytes(wal, 4), "early stop, the first record past the cap").toBe(secondBytes);
     expect(bothBytes).toBeGreaterThan(8);
     wal.close();
   });
@@ -197,7 +197,7 @@ describe("ingest policy", () => {
   it("reports the cap once the total passes it, and the exact total at or under it", async () => {
     const name = `${NAME}-bytes`;
     onTestFinished(() => deleteWal(name));
-    const wal = await IdBWal.open(checkDbName(name));
+    const wal = await TabWal.open(checkDbName(name));
     const op = (n: number) => [
       {
         type: "put" as const,
@@ -211,19 +211,19 @@ describe("ingest policy", () => {
     await wal.append(op(10));
     const full = size(20) + size(18) + size(10);
     expect(full).toBe(51);
-    expect(await wal.uningestedBytes(1 << 30)).toBe(full);
-    expect(await wal.uningestedBytes(full + 1), "one over the total: exact").toBe(full);
-    expect(await wal.uningestedBytes(full), "exactly the total").toBe(full);
-    expect(await wal.uningestedBytes(full - 1), "one under the total: the cap").toBe(full - 1);
-    expect(await wal.uningestedBytes(size(20)), "cap on a record boundary, with more left").toBe(size(20));
-    const pastFirst = await wal.uningestedBytes(size(20) - 1);
+    expect(await uningestedBytes(wal, 1 << 30)).toBe(full);
+    expect(await uningestedBytes(wal, full + 1), "one over the total: exact").toBe(full);
+    expect(await uningestedBytes(wal, full), "exactly the total").toBe(full);
+    expect(await uningestedBytes(wal, full - 1), "one under the total: the cap").toBe(full - 1);
+    expect(await uningestedBytes(wal, size(20)), "cap on a record boundary, with more left").toBe(size(20));
+    const pastFirst = await uningestedBytes(wal, size(20) - 1);
     expect(pastFirst, "a record larger than the cap still says the WAL is over it").toBeGreaterThanOrEqual(size(20) - 1);
     expect(pastFirst).toBeLessThan(full);
-    await wal.advanceIngested(1, 1);
+    await advanceIngested(wal, 1, 1);
     const rest = size(18) + size(10);
-    expect(await wal.uningestedBytes(1 << 30), "ingested rows are not counted").toBe(rest);
-    expect(await wal.uningestedBytes(rest)).toBe(rest);
-    expect(await wal.uningestedBytes(rest - 1)).toBe(rest - 1);
+    expect(await uningestedBytes(wal, 1 << 30), "ingested rows are not counted").toBe(rest);
+    expect(await uningestedBytes(wal, rest)).toBe(rest);
+    expect(await uningestedBytes(wal, rest - 1)).toBe(rest - 1);
     wal.close();
   });
 
@@ -294,7 +294,7 @@ describe("ingest policy", () => {
       key: checkKey(utf("a")),
       value: checkValue(utf("2")),
     };
-    const wal = await IdBWal.open(checkDbName(name));
+    const wal = await TabWal.open(checkDbName(name));
     await wal.append([first]);
     await wal.append([second]);
     await wal.close();
@@ -304,10 +304,10 @@ describe("ingest policy", () => {
       meta.put(1, "head");
       meta.put(123_456, "pendingBytes");
     });
-    const again = await IdBWal.open(checkDbName(name));
+    const again = await TabWal.open(checkDbName(name));
     expect((await again.meta()).head).toBe(2);
     expect((await again.tail(0)).records.map((r) => r.seq)).toEqual([1, 2]);
-    expect(await again.uningestedBytes(1 << 30)).toBe(opsBytes([first]) + opsBytes([second]));
+    expect(await uningestedBytes(again, 1 << 30)).toBe(opsBytes([first]) + opsBytes([second]));
     again.close();
 
     const fs = new MemoryFs();
@@ -369,7 +369,7 @@ describe("ingest policy", () => {
     const limit = 4_000;
     const { a, b } = await twoTabs(limit);
     const keys = Array.from({ length: 50 }, (_, i) => utf(`key/${String(i).padStart(4, "0")}`));
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     const waiting = async () => (await wal.tail(0)).records.reduce((n, r) => n + opsBytes(r.ops), 0);
     for (let round = 0; round < 40; round++) {
       await a.batch((tx) => {
@@ -431,8 +431,8 @@ describe("ingest policy", () => {
 
     state.hold = undefined;
     release();
-    const wal = await IdBWal.open(checkDbName(NAME));
-    await vi.waitFor(async () => expect(await wal.getIngestedThrough()).toBe(5), WAIT);
+    const wal = await TabWal.open(checkDbName(NAME));
+    await vi.waitFor(async () => expect(await getIngestedThrough(wal)).toBe(5), WAIT);
     wal.close();
     expect(state.started).toBe(2);
     expect(state.maxInFlight).toBe(1);

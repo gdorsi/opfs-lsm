@@ -3,19 +3,14 @@
  * from `@opfs-lsm/kv` only.
  */
 export {
-  openDbWith as openHarnessDb,
-  destroyDbWith as destroyHarnessDb,
+  openHarnessDb,
+  destroyHarnessDb,
   __resetMemoryFsForTests,
   type HarnessOpenOptions,
-  type OpenSpan,
-  type OpenTrace,
-} from "./db.js";
-export {
-  EngineHost,
-  attachEngineHostPort,
-  createLocalIngestClient,
-  createPortIngestClient,
-} from "./host/engine-host.js";
+} from "./harness.js";
+export type { OpenSpan, OpenTrace } from "./db.js";
+export { EngineHost, attachEngineHostPort, createLocalIngestClient } from "./host/engine-host.js";
+export { createPortIngestClient } from "./host/port-client.js";
 export type { IngestClient } from "./host/protocol.js";
 export {
   ingest,

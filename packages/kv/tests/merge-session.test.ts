@@ -4,7 +4,7 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep, pumpMerge } from "../src/host/compact.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../src/opfs/async-fs.js";
-import type { MergeCore, MergeSpec } from "../src/store/engine.js";
+import { encodeRunIn, openMergeIn, type MergeCore, type MergeSpec } from "../src/store/engine.js";
 import { loadLatestGeneration, publishGeneration, type RunMeta } from "../src/store/generation.js";
 import { openMergeTs } from "./oracle/merge-ts.js";
 import { decodeSst, encodeRun, entryRecordSize, sstKeyRange, type SstCodec, type SstEntry } from "../src/store/sst.js";
@@ -80,7 +80,7 @@ function source(r: Rng, seq: { next: number }): Source {
     from = cut;
   }
   if (r.chance(0.1)) pieces.splice(r.below(pieces.length + 1), 0, []);
-  const runs = pieces.map((p) => (r.chance(0.5) ? encodeRun(p).body : wasm.encodeRun(p, true).body));
+  const runs = pieces.map((p) => (r.chance(0.5) ? encodeRun(p).body : encodeRunIn(wasm, p, true).body));
   return { runs, entries };
 }
 
@@ -144,7 +144,7 @@ async function merge(
   }
 }
 
-const openWasm = (spec: MergeSpec): MergeCore => wasm.openMerge(spec);
+const openWasm = (spec: MergeSpec): MergeCore => openMergeIn(wasm, spec);
 
 type Case = { fs: MemoryFs; sources: Source[]; paths: string[][]; spec: MergeSpec };
 
@@ -272,7 +272,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
       for (const tailBytes of [44, 60]) expect((await merge(fs, open, intact(tailBytes), [["in/blockless.sst"]], label)).runs).toEqual([]);
     }
 
-    const runs = [blockless(), encodeRun([]).body, encodeRun(puts("a", "b", "c")).body, wasm.encodeRun(puts("a", "b", "c"), true).body];
+    const runs = [blockless(), encodeRun([]).body, encodeRun(puts("a", "b", "c")).body, encodeRunIn(wasm, puts("a", "b", "c"), true).body];
     for (const run of runs) {
       for (let at = 0; at < run.byteLength; at++) {
         const bad = run.slice();

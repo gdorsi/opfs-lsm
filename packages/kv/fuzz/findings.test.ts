@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns } from "../src/store/block-scan.js";
-import { decodeSst as decodeSstEngine } from "../src/store/engine.js";
+import { encodeRunIn } from "../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../src/store/generation.js";
 import { lz4Decompress } from "../src/store/lz4.js";
 import { PageCache } from "../src/store/page-cache.js";
@@ -142,30 +142,15 @@ describe("decoder bugs the fuzzers found", () => {
     expect(() => wasm.scanBlockContains(block, false, packPatterns([]))).not.toThrow(WebAssembly.RuntimeError);
   });
 
-  // KB2 in wasm, past the CRC only: `decode_sst` reserved the footer's
-  // entry count, which overflowed capacity on wasm32 and panicked.
-  it("KB2: decode_sst does not panic on a CRC-valid run with a huge entry count", () => {
-    const buf = encodeSst(entries);
-    footer(buf).setUint32(0, 0xffffffff, true);
-    fixSstCrc(buf);
-    expect(() => wasm.decodeSst(buf)).not.toThrow(WebAssembly.RuntimeError);
-  });
-
-  // KW2, SharedWorker with wasm. `decode_sst_js` and `merge_ssts_js` threw
-  // the Rust error as a bare string ("CrcMismatch"). `engine.decodeSst` and
-  // the compaction merge passed it on, so a compaction over a corrupt run
-  // failed with a string, not CorruptDatabaseError. They now wrap it, and
-  // the port carries the error's code so the tab rethrows the same class.
+  // KW2, SharedWorker with wasm. The module threw the Rust error as a bare
+  // string ("CrcMismatch") and the compaction merge passed it on, so a
+  // compaction over a corrupt run failed with a string, not
+  // CorruptDatabaseError. The engine now wraps it, and the port carries the
+  // error's code so the tab rethrows the same class.
   it("KW2: a compaction over a run with a bad CRC throws CorruptDatabaseError", async () => {
     const buf = encodeSst(entries);
     buf[5]! ^= 1;
     await expect(corruptWithinBounds("merge session", () => mergeRuns([[buf]]))).resolves.toBeUndefined();
-  });
-
-  it("KW2: decodeSst (engine) over a run with a bad CRC throws CorruptDatabaseError", async () => {
-    const buf = encodeSst(entries);
-    buf[5]! ^= 1;
-    await expect(corruptWithinBounds("decodeSst", () => decodeSstEngine(buf))).resolves.toBeUndefined();
   });
 });
 
@@ -185,8 +170,7 @@ describe("wasm traps", () => {
         // KW1 panicked here.
       }
     }
-    const run = encodeSst(entries);
-    expect(wasm.decodeSst(run)).toHaveLength(entries.length);
+    expect(decodeSst(encodeRunIn(wasm, entries, false).body)).toHaveLength(entries.length);
   });
 
   // A trap that is not a panic on input: wasm memory cannot grow to 4 GiB.
@@ -201,8 +185,7 @@ describe("wasm traps", () => {
     const src = new Uint8Array(17_000_000);
     expect(() => lz4.lz4Decompress(src, 0xfffffff0)).toThrow(errors.CorruptDatabaseError);
     expect(engine.engineUsingWasm()).toBe(true);
-    const run = await engine.encodeSst(entries);
-    expect(await engine.decodeSst(run)).toHaveLength(entries.length);
+    expect(decodeSst(await engine.encodeSst(entries))).toHaveLength(entries.length);
     vi.resetModules();
   });
 });

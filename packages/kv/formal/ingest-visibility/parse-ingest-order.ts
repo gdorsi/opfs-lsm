@@ -8,8 +8,7 @@ export type IngestStep =
   | "publishGeneration"
   | "advanceIngested";
 
-const STEP_RE =
-  /\b(?:await\s+)?(?:wal\.)?advanceIngested\b|\b(?:await\s+)?publishGeneration\b|\b(?:await\s+)?publishL0\b/g;
+const STEP_RE = /\b(?:advanceIngested|publishGeneration|publishL0)\(/g;
 
 const NAME_RE = /(publishL0|publishGeneration|advanceIngested)/;
 
@@ -23,10 +22,10 @@ function ingestSourcePath(): string {
 }
 
 function parseIngestOrder(source: string): IngestStep[] {
-  const nonEmpty = source.match(
-    /\n( *)if\s*\(\s*records\.length\s*===\s*0\s*\)\s*\{[\s\S]*?\}\s*else\s*\{([\s\S]*?)\n\1\}/,
-  );
-  const body = nonEmpty?.[2] ?? source;
+  // From the function on, so the imports that name the steps do not count.
+  const start = source.indexOf("export async function ingestChunk(");
+  if (start < 0) throw new Error("parseIngestOrder: ingestChunk not found");
+  const body = source.slice(start);
   const steps: IngestStep[] = [];
   for (const hit of body.matchAll(STEP_RE)) {
     const name = hit[0].match(NAME_RE)?.[1] as IngestStep | undefined;

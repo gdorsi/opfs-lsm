@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ingest, MemoryFs, openHarnessDb, readStats, __resetMemoryFsForTests } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
-import { IdBWal } from "../src/idb/wal.js";
+import { TabWal } from "../src/idb/wal.js";
 
 const NAME = "group-commit";
 const IDB = `opfs-lsm-wal/${NAME}`;
@@ -26,7 +26,7 @@ function wipe(): Promise<void> {
 
 /** Move the head `by` seqs past the key generator, as a recovery that moves the head past the records does. */
 async function raiseFloor(by: number): Promise<number> {
-  const wal = await IdBWal.open(checkDbName(NAME));
+  const wal = await TabWal.open(checkDbName(NAME));
   const meta = await wal.meta();
   expect(await wal.adopt(meta, meta.generation ?? 0, meta.ingestedThrough, meta.head + by, meta.generation ?? 0)).toBe(true);
   wal.close();
@@ -44,7 +44,7 @@ afterEach(() => {
 
 describe("WAL group commit", () => {
   it("writes appends issued in one turn as one transaction, one seq each, in call order", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     const seqs = await Promise.all([1, 2, 3, 4, 5].map((i) => wal.append(put(i))));
     expect(seqs).toEqual([1, 2, 3, 4, 5]);
     expect(wal.groupSizes).toEqual([undefined, undefined, 1]);
@@ -54,7 +54,7 @@ describe("WAL group commit", () => {
   });
 
   it("groups the appends that arrive while a group commits into the next one", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     const first = wal.append(put(1));
     await Promise.resolve();
     await new Promise((r) => setTimeout(r, 0));
@@ -67,7 +67,7 @@ describe("WAL group commit", () => {
   });
 
   it("rejects every caller of an aborted group and consumes no seq", async () => {
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     const proto = IDBDatabase.prototype;
     const real = proto.transaction;
     let armed = true;
@@ -89,7 +89,7 @@ describe("WAL group commit", () => {
 
   it("resolves every caller of a stale group with undefined, and keeps no record", async () => {
     await raiseFloor(10);
-    const wal = await IdBWal.open(checkDbName(NAME));
+    const wal = await TabWal.open(checkDbName(NAME));
     expect(await Promise.all([1, 2, 3].map((i) => wal.append(put(i))))).toEqual([
       undefined,
       undefined,

@@ -1,5 +1,6 @@
 import { CorruptDatabaseError } from "./errors.js";
 import type { IdBWal, WalMeta } from "./idb/wal.js";
+import { emptyWal } from "./idb/wal.js";
 import type { AsyncFs } from "./opfs/async-fs.js";
 import {
   GENERATION_ZERO,
@@ -94,7 +95,7 @@ export async function reconcile(
 export async function recordEmpty(wal: IdBWal, fs: AsyncFs): Promise<void> {
   await untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
     const floor = await highestThrough(fs, numbers, meta.head);
-    return (await wal.empty(meta, floor + 1, top)) || undefined;
+    return (await emptyWal(wal, meta, floor + 1, top)) || undefined;
   });
 }
 

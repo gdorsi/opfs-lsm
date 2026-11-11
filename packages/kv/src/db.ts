@@ -18,10 +18,10 @@ import {
   StorageUnavailableError,
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
-import { EngineHost, createLocalIngestClient, createPortIngestClient } from "./host/engine-host.js";
+import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type IngestClient } from "./host/protocol.js";
 import { layersChannel } from "./locks.js";
-import { IdBWal, type WalTail } from "./idb/wal.js";
+import { TabWal, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, untilHit, type Maybe } from "./store/cursor.js";
@@ -29,7 +29,6 @@ import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { CountingFs } from "./opfs/counting-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
-import { MemoryFs } from "./opfs/memory-fs.js";
 import {
   loadGeneration,
   type RunMeta,
@@ -88,20 +87,16 @@ export type OpenOptions = {
 const MIN_MEMORY_BUDGET = 1024 * 1024;
 
 /**
- * Harness / test open options (`openHarnessDb` in `@opfs-lsm/kv/testing`).
- * Not part of the app-facing API.
+ * Where the run files live and who flushes them. An fs comes with the client
+ * of the host that publishes to it. Without one the fs is OPFS, and the client
+ * is the package SharedWorker's unless one is given.
  */
-export type HarnessOpenOptions = OpenOptions & {
-  /**
-   * SST/generation filesystem used for reads on this tab.
-   * Must match what the ingest host publishes to. Omit for OPFS.
-   */
-  readonly fs?: AsyncFs;
-  /**
-   * Ingest client. Omit for the package SharedWorker when the fs is OPFS,
-   * and for an in-process EngineHost on a given or memory fs.
-   */
-  readonly ingest?: IngestClient;
+export type Backing =
+  | { readonly fs: AsyncFs; readonly ingest: IngestClient }
+  | { readonly fs?: undefined; readonly ingest?: IngestClient };
+
+/** Open options for tests and benches, on top of the public ones. */
+export type OpenKnobs = {
   /** Stable writer id (tests / debugging). Default: random UUID. */
   readonly writerId?: string;
   /**
@@ -113,15 +108,12 @@ export type HarnessOpenOptions = OpenOptions & {
    * or responsive. When tabs pass different limits, the host uses the smallest.
    */
   readonly maxWalBytes?: number;
-  /**
-   * Keep the run files in a MemoryFs shared by every open of this name in
-   * the process, with an in-process EngineHost. The only way to get memory
-   * storage without passing `fs`: an open that cannot reach OPFS rejects.
-   */
-  readonly forceMemory?: boolean;
   /** When set, open records phase durations here. Wasm init can append after the open promise resolves. */
   readonly trace?: OpenTrace;
 };
+
+/** What `openDbWith` takes. `openHarnessDb` in `@opfs-lsm/kv/testing` builds it. */
+export type OpenWithOptions = OpenOptions & OpenKnobs & Backing;
 
 /** One timed piece of open. `endedAt` is `performance.now()` on this thread. */
 export type OpenSpan = {
@@ -251,27 +243,6 @@ export interface Db {
   dangerousDestroy(): Promise<void>;
 }
 
-const defaultFsByName = new Map<string, MemoryFs>();
-const defaultHosts = new Map<string, EngineHost>();
-
-function defaultMemoryFs(name: DbName): MemoryFs {
-  let fs = defaultFsByName.get(name);
-  if (!fs) {
-    fs = new MemoryFs();
-    defaultFsByName.set(name, fs);
-  }
-  return fs;
-}
-
-function localIngest(name: DbName, fs: AsyncFs): IngestClient {
-  let host = defaultHosts.get(name);
-  if (!host) {
-    host = new EngineHost(() => fs);
-    defaultHosts.set(name, host);
-  }
-  return createLocalIngestClient(host);
-}
-
 function canUseBrowserOpfs(): boolean {
   return (
     typeof SharedWorker !== "undefined" &&
@@ -279,11 +250,6 @@ function canUseBrowserOpfs(): boolean {
     !!navigator.storage &&
     typeof navigator.storage.getDirectory === "function"
   );
-}
-
-export function __resetMemoryFsForTests(name: string): void {
-  defaultFsByName.delete(name);
-  defaultHosts.delete(name);
 }
 
 export function prefixBound(prefix: Uint8Array): {
@@ -298,7 +264,7 @@ export function prefixBound(prefix: Uint8Array): {
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
 type DbInternals = {
   readonly name: DbName;
-  readonly wal: IdBWal;
+  readonly wal: TabWal;
   readonly fs: CountingFs;
   readonly ingest: IngestClient;
   /** Flush the memtable now and wait for the compaction it starts. */
@@ -317,58 +283,47 @@ export async function openDb(options: OpenOptions): Promise<Db> {
 }
 
 /**
- * The fs and ingest client for `name`: the ones `options` gives, else OPFS
- * and the package SharedWorker, else an in-process host on `options.fs` or a
- * memory fs. `walOpen` is set when IndexedDB opened alongside OPFS.
+ * The fs and ingest client for `name`: the backing's, else OPFS and the
+ * package SharedWorker. `walOpen` is set when IndexedDB opened alongside OPFS.
  */
 async function connect(
   name: DbName,
-  options: HarnessOpenOptions,
+  backing: Backing,
   trace: OpenTrace | undefined,
 ): Promise<{
   readonly fs: AsyncFs;
   readonly ingest: IngestClient;
   readonly ownsIngestClient: boolean;
-  readonly walOpen: Promise<IdBWal> | undefined;
+  readonly walOpen: Promise<TabWal> | undefined;
 }> {
-  let walOpen: Promise<IdBWal> | undefined;
-  let fs = options.fs;
-  let ingest = options.ingest;
-  let ownsIngestClient = false;
-
-  // Memory is never a fallback: only a harness that asks for it gets it.
-  if (!fs && options.forceMemory === true) fs = defaultMemoryFs(name);
-  if (!fs && !canUseBrowserOpfs()) {
+  if (backing.fs) {
+    return { fs: backing.fs, ingest: backing.ingest, ownsIngestClient: false, walOpen: undefined };
+  }
+  if (!canUseBrowserOpfs()) {
     throw new StorageUnavailableError(
       "openDb needs SharedWorker and navigator.storage.getDirectory",
     );
   }
-
-  if (!fs) {
-    // IndexedDB opens while OPFS does.
-    walOpen = IdBWal.open(name);
-    walOpen.catch(() => undefined);
-    try {
-      fs = await timed(trace, "opfs", () => openBrowserFs(name));
-    } catch (err) {
-      void walOpen.then((w) => w.close(), () => undefined);
-      throw err;
-    }
-    if (!ingest) {
-      // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
-      // only emit a worker chunk for this exact shape. Built in a helper, Vite
-      // treated it as a plain asset and inlined the unbundled entry as a
-      // data: URL whose relative imports could not resolve.
-      const worker = new SharedWorker(
-        new URL("./host/shared-worker.js", import.meta.url),
-        { type: "module", name: `opfs-lsm:${name}` },
-      );
-      ingest = createPortIngestClient(worker.port);
-      ownsIngestClient = true;
-    }
+  // IndexedDB opens while OPFS does.
+  const walOpen = TabWal.open(name);
+  walOpen.catch(() => undefined);
+  let fs: AsyncFs;
+  try {
+    fs = await timed(trace, "opfs", () => openBrowserFs(name));
+  } catch (err) {
+    void walOpen.then((w) => w.close(), () => undefined);
+    throw err;
   }
-  ingest ??= localIngest(name, fs);
-  return { fs, ingest, ownsIngestClient, walOpen };
+  if (backing.ingest) return { fs, ingest: backing.ingest, ownsIngestClient: false, walOpen };
+  // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
+  // only emit a worker chunk for this exact shape. Built in a helper, Vite
+  // treated it as a plain asset and inlined the unbundled entry as a
+  // data: URL whose relative imports could not resolve.
+  const worker = new SharedWorker(
+    new URL("./host/shared-worker.js", import.meta.url),
+    { type: "module", name: `opfs-lsm:${name}` },
+  );
+  return { fs, ingest: createPortIngestClient(worker.port), ownsIngestClient: true, walOpen };
 }
 
 /**
@@ -380,8 +335,8 @@ export async function destroyDb(name: string): Promise<void> {
   return destroyDbWith({ name });
 }
 
-/** `destroyDb` with the harness options of `openDbWith`. */
-export async function destroyDbWith(options: HarnessOpenOptions): Promise<void> {
+/** `destroyDb` on a given backing. */
+export async function destroyDbWith(options: { readonly name: string } & Backing): Promise<void> {
   const name = checkDbName(options.name);
   const { ingest, ownsIngestClient, walOpen } = await connect(name, options, undefined);
   void walOpen?.then((w) => w.close(), () => undefined);
@@ -393,11 +348,11 @@ export async function destroyDbWith(options: HarnessOpenOptions): Promise<void> 
 }
 
 /** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
-export function openDbWith(options: HarnessOpenOptions): Promise<Db> {
+export function openDbWith(options: OpenWithOptions): Promise<Db> {
   return timed(options.trace, "open", () => openTraced(options));
 }
 
-async function openTraced(options: HarnessOpenOptions): Promise<Db> {
+async function openTraced(options: OpenWithOptions): Promise<Db> {
   const trace = options.trace;
   const name = checkDbName(options.name);
   // Started first, so the module loads while the rest of open runs.
@@ -407,10 +362,10 @@ async function openTraced(options: HarnessOpenOptions): Promise<Db> {
   const caps = memtableCaps(options.memtableBytes);
 
   const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, trace);
-  // Wrapped after the local host got the bare fs, so its IO counts only on the host.
+  // The host has the bare fs, so the tab's IO counts only here.
   const tabFs = new CountingFs(fs);
 
-  const wal = await timed(trace, "idb-open", () => walOpen ?? IdBWal.open(name));
+  const wal = await timed(trace, "idb-open", () => walOpen ?? TabWal.open(name));
   // Pair the WAL with a manifest before the first read or write. The
   // recorded manifest's runs are checked by the first sync, which loads them.
   await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
@@ -538,7 +493,7 @@ class DbImpl implements Db {
   constructor(
     readonly name: DbName,
     readonly writerId: WriterId,
-    private readonly wal: IdBWal,
+    private readonly wal: TabWal,
     private readonly fs: AsyncFs,
     private readonly cache: PageCache,
     private readonly ingestClient: IngestClient,

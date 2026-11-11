@@ -10,7 +10,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { flatEngine, type FlatEngine } from "../src/store/engine.js";
+import { encodeRunIn, flatEngine, openMergeIn, type FlatEngine } from "../src/store/engine.js";
 import type { SstEntry } from "../src/store/sst.js";
 
 const KiB = 1024;
@@ -58,7 +58,7 @@ async function flush(): Promise<void> {
   for (const f of [0.875, 1, 1.75, 2, 3.5, 4]) {
     const { engine, bytes } = await fresh();
     const entries = sortedEntries(f * MiB, 1);
-    for (let i = 0; i < 3; i++) engine.encodeRun(entries, false);
+    for (let i = 0; i < 3; i++) encodeRunIn(engine, entries, false);
     console.log(`${f.toFixed(3)} | ${mib(bytes())}`);
   }
 }
@@ -74,17 +74,17 @@ async function merge({ sources, flushMiB, chunk, tail }: Shape, flushEvery?: num
   for (let i = 0; i < sources - 1; i++) {
     const entries = sortedEntries(flushMiB * MiB, seq);
     seq += entries.length;
-    files.push([maker.engine.encodeRun(entries, false).body.slice()]);
+    files.push([encodeRunIn(maker.engine, entries, false).body.slice()]);
   }
   const perRun = Math.floor((4 * MiB) / 133);
   const ids = [...new Set(Array.from({ length: 10 * perRun }, () => random() % POOL))].sort((a, b) => a - b);
   const l1: Uint8Array[] = [];
   for (let at = 0; at < ids.length; at += perRun) {
     const slice = ids.slice(at, at + perRun).map((id, i) => entry(id, 1 + i));
-    l1.push(maker.engine.encodeRun(slice, false).body.slice());
+    l1.push(encodeRunIn(maker.engine, slice, false).body.slice());
   }
   files.push(l1);
-  const core = engine.openMerge({
+  const core = openMergeIn(engine, {
     sources: files.map((runs) => runs.map((run) => run.byteLength)),
     dropTombstones: false,
     targetBytes: 4 * MiB,
@@ -103,7 +103,7 @@ async function merge({ sources, flushMiB, chunk, tail }: Shape, flushEvery?: num
     if (stop.kind === "done") break;
     if (stop.kind !== "need") continue;
     if (flushEvery && ++needs % flushEvery === 0) {
-      engine.encodeRun(flushEntries, false);
+      encodeRunIn(engine, flushEntries, false);
       peak = Math.max(peak, bytes());
     }
     for (const d of stop.demands) core.feed(d.source, files[d.source]![d.run]!.slice(d.offset, d.offset + d.length));
