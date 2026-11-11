@@ -8,14 +8,49 @@ A key-value store for the browser, built to be the storage layer under local-fir
 > - Tests on mobile browsers.
 > - Final storage formats. The WAL and SST layouts still change while we tune performance.
 
-## Why kv instead of IndexedDB
+## Why an external DB instead of IndexedDB?
 
-A sync engine needs three things from browser storage: fast writes, fast reads, and one consistent view across tabs. IndexedDB gives the third only with glue code, and is slow at the first two. `@opfs-lsm/kv` gives all three.
+Everyone who has worked with IndexedDB ends up realizing that it has many shortcomings. Nolan Lawson [put it this way](https://nolanlawson.com/2021/08/22/speeding-up-indexeddb-reads-and-writes/): "IndexedDB has a lot of detractors, and I think most of the criticism is justified."
 
-- **Every tab shares one database.** Each tab opens the same name. `changes` delivers every write from every tab to every open handle, once each and in order. A handle that falls behind gets a `gap` event and reads again. Your engine needs no `BroadcastChannel` code and no leader election.
-- **Every write has a sequence number.** `put`, `delete` and `batch` resolve with the seq of their record, and `changes` and `view` report the same numbers. Use them as a cursor for an outbox or a sync checkpoint.
-- **Reads are consistent.** `view` reads a snapshot that later writes do not change. `update` reads keys and writes in one transaction, with no window for another tab to write in between.
-- **Point reads never touch IndexedDB.** They come from memory and from sorted files in the Origin Private File System (OPFS), with Bloom filters that answer a missing key without a disk read.
+- **IndexedDB [is slow](https://rxdb.info/slow-indexeddb.html). Not slow like a database on a cheap server, even slower!**
+- **No live subscription.** So you have to build your own if you want multiple tabs to be in sync.
+- **A few other quirks.** Like auto-committed transactions and others, described [here](https://gist.github.com/pesterhazy/4de96193af89a6dd5ce682ce2adff49a).
+
+Now we have raw file access through the Origin Private File System (OPFS), but building something good on top of it is REALLY HARD!
+
+The synchronous API is in practice unusable for a production-ready DB:
+
+- It exists only in a dedicated WebWorker.
+- Only one tab can open a file at a time. The modes that lift this limit, `read-only` and `readwrite-unsafe`, are supported only by Chrome and Edge. Notion [built on this API](https://www.notion.com/blog/how-we-sped-up-notion-in-the-browser-with-wasm-sqlite) and found that "any attempt to open the SQLite database in a subsequent tab will simply throw an error". It ended up with a SharedWorker that picks one "active tab" to run every query.
+- With the current state of browsers, it is impossible to build something that survives all the freezing and throttling that browsers apply to background tabs.
+
+That leaves us with the OPFS async API, which is also quite challenging to use when building a DB, because writes are applied as full file snapshots: a write shows up only when the file is closed, and it replaces the whole file.
+
+With `@opfs-lsm/kv` I'm using the following design to work around the limits of the async API:
+
+- The architecture is a [log-structured merge tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree) (LSM), as in LevelDB and RocksDB. Its data files, called SST files, are written once and never changed, which fits an API that publishes whole files.
+- Only a SharedWorker writes to OPFS, and only when it flushes the write-ahead log (WAL) into a new SST file or compacts existing ones.
+- Every tab reads the SST files directly, so a read sends no message to a worker.
+- The WAL is persisted in IndexedDB, whose transactions already put the writes of every tab in one order, so inserts don't require any kind of coordination on our side.
+
+More detail is in [How it works](#how-it-works).
+
+## What do you offer?
+
+`@opfs-lsm/kv` is designed to be as fast and as small as possible, and to work as a building block that handles persistence for higher-level solutions (CRDTs, sync engines, etc.).
+
+It is a key-value store that supports all the features required to:
+
+- build an indexed database (see [`@opfs-lsm/docstore`](packages/docstore) for a reference implementation)
+- build a cache storage with TTL (TODO)
+
+It offers:
+
+- **Live subscriptions.** It is easy to subscribe to changes in the DB, including the ones coming from other tabs.
+- **A sequence number for every write.** `put`, `delete` and `batch` resolve with the seq of their record, and `changes` and `view` report the same numbers. Use them as a cursor for an outbox or a sync checkpoint.
+- **Consistent reads.** `view` reads a snapshot that later writes do not change. `update` reads keys and writes in one transaction, with no window for another tab to write in between.
+- **Ordered scans.** `range` scans a key range or a prefix, forward or in reverse, with a limit. `rangeJoin` scans index entries and reads the row of each one, all from one state.
+- **Bytes in, bytes out.** Keys and values are `Uint8Array`, so the encoding is yours.
 
 ### Benchmarks
 
@@ -49,9 +84,7 @@ For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yj
 
 ### When IndexedDB is still the better fit
 
-- Your app opens a database and closes it after a handful of reads. Opening kv starts a SharedWorker and loads a wasm engine, which costs about 8 ms.
-- Your app writes one key at a time and awaits each write. Each kv write is also one IndexedDB transaction, so kv cannot beat IndexedDB there.
-- Your app must run where SharedWorker, OPFS or WebAssembly is missing. See [Browser support](#browser-support).
+If read and write performance of the DB is not a concern in your app.
 
 ## Packages
 
