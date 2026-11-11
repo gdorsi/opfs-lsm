@@ -184,6 +184,7 @@ const fsKinds: [string, () => AsyncFs][] = [
       new BrowserFs(
         new FakeDir() as unknown as FileSystemDirectoryHandle,
         checkDbName(`holds-${++browserDbs}`),
+        navigator.locks,
       ),
   ],
 ];
