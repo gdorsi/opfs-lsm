@@ -32,7 +32,7 @@ tx.mutate(() => {
 await tx.when("settled");
 ```
 
-To read rows and write the result with nothing landing in between, from this tab or another, use `utils.transact`. `merge` gets the stored rows in the order of the keys, `undefined` for a missing one, and returns one entry per key: a row to put, `null` to delete, or `undefined` to leave it. It is one kv `update`, and the promise resolves once the collection shows the write. A `merge` that throws, returns the wrong number of entries, or returns a row under another key writes nothing.
+To read rows and write the result with nothing landing in between, from this tab or another, use `utils.transact`. `merge` gets the stored rows in the order of the keys, `undefined` for a missing one, and returns one entry per key: a row to put, `null` to delete, or `undefined` to leave it. It is one kv `update`, and the promise resolves once the collection shows the write. An eager collection always shows it. An on-demand collection shows it only for keys a loaded plan covers; a write to any other key persists but stays out of memory. A `merge` that throws, returns the wrong number of entries, or returns a row under another key writes nothing.
 
 ```ts
 await todos.utils.transact(["1"], ([todo]) => [todo ? { ...todo, done: !todo.done } : undefined]);

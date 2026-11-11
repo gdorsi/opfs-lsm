@@ -61,9 +61,11 @@ export interface KvCollectionUtils<T extends object = Row, TKey extends string |
    * between the read and the write, from this tab or another. `merge` gets the
    * stored rows in the order of `keys` (undefined = absent) and returns one
    * entry per key: a row to store, `null` to delete, `undefined` to leave as
-   * is. Resolves once this collection shows the write. Rejects, writing
-   * nothing, when `merge` throws, returns the wrong number of entries, or
-   * returns a row whose key is not its slot's.
+   * is. Resolves once this collection shows the write, when it will show it:
+   * always for an eager collection, and for an on-demand one only for keys a
+   * loaded plan covers. A write to an uncovered key persists but stays out of
+   * memory. Rejects, writing nothing, when `merge` throws, returns the wrong
+   * number of entries, or returns a row whose key is not its slot's.
    */
   transact(
     keys: readonly TKey[],
