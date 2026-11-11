@@ -58,6 +58,12 @@ async function shown(search: Record<string, string>, status?: StatusCode) {
 const ids = (rows: Issue[]) => rows.slice(0, WINDOW).map((i) => i.id);
 
 describe("the list's sorts", () => {
+  it("sorts by modified, newest first, holding about one window", async () => {
+    const { ids: got, held } = await shown({});
+    assert.deepEqual(got, ids(live().sort((a, b) => desc(a.modified, b.modified))));
+    assert.ok(held < 2 * WINDOW, `holds ${held} issues`);
+  });
+
   it("sorts by priority, then status, then newest, holding about one window", async () => {
     const { ids: got, held } = await shown({ sort: "priority", dir: "desc" });
     assert.deepEqual(got, ids(live().sort(byPriority)));

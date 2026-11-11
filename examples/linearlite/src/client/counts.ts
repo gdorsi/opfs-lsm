@@ -21,10 +21,7 @@ const wordsOf = (text: string) =>
  */
 async function searched(snap: Snap, filter: IssueFilter): Promise<Issue[]> {
   const words = wordsOf(filter.q);
-  const { docs } =
-    words.length === 0
-      ? await snap.query({ index: "byModified", eq: [false] })
-      : await snap.query({ index: "search", eq: [false], match: words.join(" ") });
+  const { docs } = await snap.query({ index: "search", eq: [false], ...(words.length > 0 && { match: words.join(" ") }) });
   const needle = filter.q.toLowerCase();
   return docs.filter(
     (i) =>

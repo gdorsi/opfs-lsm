@@ -18,10 +18,9 @@ export const stored = (issue: Issue): StoredIssue => ({
 
 /** The reads each issue index serves are in DESIGN.md, "Indexes". */
 export const schema = defineSchema<{ issues: StoredIssue; bodies: Body; comments: Comment; sync: SyncState }>()({
-  version: 3,
+  version: 4,
   collections: {
     issues: {
-      byModified: { on: ["deleted", "modified"] },
       byCreated: { on: ["deleted", "created"] },
       byTitle: { on: ["deleted", "title"] },
       byPriority: { on: ["deleted", "priority", "priorityOrder"] },
