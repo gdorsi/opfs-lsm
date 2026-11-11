@@ -461,12 +461,15 @@ type Layers = {
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
 
-type BusMessage = {
-  readonly kind: "append" | "ingest";
-  readonly writerId: string;
-  readonly seq?: number;
-  readonly ops?: readonly CheckedOp[];
-};
+/** A tab posts each record it appends. The host posts `ingest` for a new generation. */
+type BusMessage =
+  | {
+      readonly kind: "append";
+      readonly writerId: string;
+      readonly seq: number;
+      readonly ops: readonly CheckedOp[];
+    }
+  | { readonly kind: "ingest"; readonly writerId: string };
 
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
@@ -530,7 +533,7 @@ class DbImpl implements Db {
 
   private onMessage(data: BusMessage | null): void {
     if (this.closed || !data || data.writerId === this.writerId) return;
-    if (data.kind === "append" && data.seq !== undefined && data.ops) {
+    if (data.kind === "append") {
       if (this.applyRecord({ seq: data.seq, ops: data.ops }) === "gap") {
         void this.sync().catch(() => undefined);
       }
@@ -544,7 +547,7 @@ class DbImpl implements Db {
     if (this.closed) throw new ClosedError("database is closed");
   }
 
-  private broadcast(message: BusMessage): void {
+  private broadcast(message: Extract<BusMessage, { kind: "append" }>): void {
     if (this.closed) return;
     this.bus?.postMessage(message);
   }
@@ -1046,16 +1049,14 @@ class DbImpl implements Db {
     return this.changeBus.subscribe(listener);
   }
 
-  /** Have the host flush the WAL, tell the other tabs if that moved the generation, and load it. */
+  /** Have the host flush the WAL, and load what it published. */
   async flush(settle: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
-    const before = this.installed.generation;
     const result = await this.ingestClient.ingest(
       this.name,
       Number.POSITIVE_INFINITY,
       settle,
     );
-    if (result.generation !== before) this.broadcast({ kind: "ingest", writerId: this.writerId });
     await this.sync();
     return result;
   }

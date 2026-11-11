@@ -235,6 +235,7 @@ class HostedDb {
    * whole backlog. Records acked after the fold starts are left for the next
    * flush, so a steady writer cannot keep one fold going. While L0 holds
    * `l0StopRuns` runs it publishes none, and waits for compaction instead.
+   * A fold that published a run tells the tabs, whoever asked for it.
    */
   private fold(through: number): Promise<IngestResult> {
     return this.foldTurn(() => this.foldRuns(through));
@@ -246,40 +247,44 @@ class HostedDb {
     const target = Math.min(through, head);
     let foldedBytes = 0;
     let pastStop = false;
-    for (;;) {
-      const budget = this.budget();
-      // Taken before the attempt, so an install that lands during it is not missed.
-      const installed = this.installSignal();
-      const chunk = await this.exclusive(() =>
-        this.withWal(async (wal) => {
-          const folded = await ingestChunk(wal, fs, target, this.trust, {
-            maxBytes: budget.flushRunBytes,
-            l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
-          });
-          // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-          await unlessHeld(this.name, () => reclaimManifests(fs, folded.generation));
-          return folded;
-        }),
-      );
-      recycleEngine(budget.wasmRecycleBytes);
-      pastStop = false;
-      this.trusted = chunk.generation;
-      if (chunk.kind === "stopped") {
-        this.counts.l0Stops += 1;
-        pastStop = (await this.waitForInstall(installed)) === "idle";
-        continue;
+    try {
+      for (;;) {
+        const budget = this.budget();
+        // Taken before the attempt, so an install that lands during it is not missed.
+        const installed = this.installSignal();
+        const chunk = await this.exclusive(() =>
+          this.withWal(async (wal) => {
+            const folded = await ingestChunk(wal, fs, target, this.trust, {
+              maxBytes: budget.flushRunBytes,
+              l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
+            });
+            // Skipped while a tab loads a generation; the next flush or reclaim removes them.
+            await unlessHeld(this.name, () => reclaimManifests(fs, folded.generation));
+            return folded;
+          }),
+        );
+        recycleEngine(budget.wasmRecycleBytes);
+        pastStop = false;
+        this.trusted = chunk.generation;
+        if (chunk.kind === "stopped") {
+          this.counts.l0Stops += 1;
+          pastStop = (await this.waitForInstall(installed)) === "idle";
+          continue;
+        }
+        foldedBytes += chunk.foldedBytes;
+        this.counts.foldedBytes += chunk.foldedBytes;
+        if (chunk.kind === "folded") this.counts.flushes += 1;
+        const watch = this.watching;
+        if (watch) {
+          watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
+          watch.triggerAt = watch.maxWalBytes;
+        }
+        if (chunk.kind === "empty" || chunk.ingestedThrough >= target) {
+          return { generation: chunk.generation, ingestedThrough: chunk.ingestedThrough, foldedBytes };
+        }
       }
-      foldedBytes += chunk.foldedBytes;
-      this.counts.foldedBytes += chunk.foldedBytes;
-      if (chunk.kind === "folded") this.counts.flushes += 1;
-      const watch = this.watching;
-      if (watch) {
-        watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
-        watch.triggerAt = watch.maxWalBytes;
-      }
-      if (chunk.kind === "empty" || chunk.ingestedThrough >= target) {
-        return { generation: chunk.generation, ingestedThrough: chunk.ingestedThrough, foldedBytes };
-      }
+    } finally {
+      if (foldedBytes > 0) announceGeneration(this.name);
     }
   }
 
@@ -383,10 +388,9 @@ class HostedDb {
     void (async () => {
       try {
         const { foldedBytes } = await this.fold(Number.POSITIVE_INFINITY);
-        if (foldedBytes > 0) announceGeneration(this.name);
         // Nothing was waiting, so the count was ahead of the WAL. Without
         // this, it would stay over the trigger and ingest in a loop.
-        else watch.pendingBytes = 0;
+        if (foldedBytes === 0) watch.pendingBytes = 0;
         this.compact().catch(() => undefined);
       } catch (err) {
         console.error(`opfs-lsm: ingest of ${this.name} failed`, err);
