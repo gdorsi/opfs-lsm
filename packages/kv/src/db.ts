@@ -99,13 +99,12 @@ const MIN_MEMORY_BUDGET = 1024 * 1024;
 export type HarnessOpenOptions = OpenOptions & {
   /**
    * SST/generation filesystem used for reads on this tab.
-   * Must match what the ingest host publishes to.
-   * Omit in the browser to use OPFS. Omit in Node to use MemoryFs.
+   * Must match what the ingest host publishes to. Omit for OPFS.
    */
   readonly fs?: AsyncFs;
   /**
-   * Ingest client. Omit in the browser for the package SharedWorker.
-   * Omit in Node/tests for an in-process EngineHost.
+   * Ingest client. Omit for the package SharedWorker when the fs is OPFS,
+   * and for an in-process EngineHost on a given or memory fs.
    */
   readonly ingest?: IngestClient;
   /** Stable writer id (tests / debugging). Default: random UUID. */
@@ -113,15 +112,11 @@ export type HarnessOpenOptions = OpenOptions & {
   /** When the ingest host flushes the WAL to an OPFS run. */
   readonly ingestPolicy?: Partial<IngestPolicy>;
   /**
-   * Force the Node/test path (MemoryFs + local host) even in a browser.
+   * Keep the run files in a MemoryFs shared by every open of this name in
+   * the process, with an in-process EngineHost. The only way to get memory
+   * storage without passing `fs`: an open that cannot reach OPFS rejects.
    */
   readonly forceMemory?: boolean;
-  /**
-   * Use MemoryFs when this page has no SharedWorker or OPFS.
-   * Data lives only until the page closes. Ignored when OPFS can open,
-   * and ignored in Node, which already defaults to MemoryFs.
-   */
-  readonly allowEphemeral?: boolean;
   /**
    * When set, open records phase durations here. The host scan and wasm
    * init can append after the open promise resolves.
@@ -328,45 +323,37 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   let ingest = options.ingest;
   let ownsIngestClient = false;
 
-  const callerChoseStorage =
-    options.forceMemory === true || fs !== undefined || ingest !== undefined;
-  const browserOpfs = canUseBrowserOpfs();
-  const useBrowser = !callerChoseStorage && browserOpfs;
-
-  if (
-    typeof document !== "undefined" &&
-    !callerChoseStorage &&
-    !browserOpfs &&
-    options.allowEphemeral !== true
-  ) {
+  // Memory is never a fallback: only a harness that asks for it gets it.
+  if (!fs && options.forceMemory === true) fs = defaultMemoryFs(name);
+  if (!fs && !canUseBrowserOpfs()) {
     throw new StorageUnavailableError(
-      "browser openDb needs SharedWorker and navigator.storage.getDirectory",
+      "openDb needs SharedWorker and navigator.storage.getDirectory",
     );
   }
 
-  if (useBrowser) {
+  if (!fs) {
     const opfsAt = trace ? performance.now() : 0;
     fs = await openBrowserFs(name);
     span(trace, "opfs", performance.now() - opfsAt);
-    const workerAt = trace ? performance.now() : 0;
-    // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
-    // only emit a worker chunk for this exact shape. Built in a helper, Vite
-    // treated it as a plain asset and inlined the unbundled entry as a
-    // data: URL whose relative imports could not resolve.
-    const worker = new SharedWorker(
-      new URL("./host/shared-worker.js", import.meta.url),
-      { type: "module", name: `opfs-lsm:${name}` },
-    );
-    span(trace, "worker-ctor", performance.now() - workerAt);
-    ingest = createPortIngestClient(
-      worker.port,
-      trace ? (scan) => recordWatchScan(trace, scan) : undefined,
-    );
-    ownsIngestClient = true;
-  } else {
-    if (!fs) fs = defaultMemoryFs(name);
-    if (!ingest) ingest = localIngest(name, fs);
+    if (!ingest) {
+      const workerAt = trace ? performance.now() : 0;
+      // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
+      // only emit a worker chunk for this exact shape. Built in a helper, Vite
+      // treated it as a plain asset and inlined the unbundled entry as a
+      // data: URL whose relative imports could not resolve.
+      const worker = new SharedWorker(
+        new URL("./host/shared-worker.js", import.meta.url),
+        { type: "module", name: `opfs-lsm:${name}` },
+      );
+      span(trace, "worker-ctor", performance.now() - workerAt);
+      ingest = createPortIngestClient(
+        worker.port,
+        trace ? (scan) => recordWatchScan(trace, scan) : undefined,
+      );
+      ownsIngestClient = true;
+    }
   }
+  ingest ??= localIngest(name, fs);
   // Wrapped after the local host got the bare fs, so its IO counts only on the host.
   const tabFs = new CountingFs(fs);
 
