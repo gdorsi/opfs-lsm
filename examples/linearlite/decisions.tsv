@@ -1,0 +1,7 @@
+ts	phase	decision	why	evidence	result
+2026-11-11T09:48:14Z	frame	read 'TanStack DB adapter' as this repo's @opfs-lsm/tanstack-db	the monorepo ships that adapter and the request sits in this repo	packages/tanstack-db/README.md	assumed, user can correct
+2026-11-11T09:48:14Z	frame	set the scale target at 100k issues with 0-1 comment each	LinearLite's own README targets that dataset	github electric-sql/electric examples/linearlite README	fixed
+2026-11-11T09:48:14Z	frame	based the branch on origin/main, not the current branch	current branch has one unmerged kv API commit (dd3efaa)	git log origin/main..refactor/kv-db-surface	fixed
+2026-11-11T09:48:14Z	scaffold	proved Start + kv over OPFS + node:sqlite load together before designing on them	the riskiest infra seam, every later step needs it	commit 5b3774b; agent-browser: sqlite 3.51.3, rows 0->1, 1 after reload	VERIFIED
+2026-11-11T09:48:14Z	harness	wrote a seeded generator with LinearLite distributions	every scale number needs the same reproducible dataset	commit 5983222; 100k issues 53.2MB, list fields 21.8MB, 49734 comments 27.5MB	VERIFIED deterministic
+2026-11-11T09:48:14Z	design	ran an architect arena: opus and sonnet runners, judge skipped	both cross-judge pool entries are the parent's family	scratchpad arena-linearlite/	open
