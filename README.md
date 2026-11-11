@@ -88,7 +88,20 @@ The promise from `put`, `delete` or `batch` is the ack. When it resolves, the wr
 
 `@opfs-lsm/kv` needs SharedWorker, OPFS, IndexedDB and WebAssembly in the page. Where one is missing, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
 
-The engine is tested in desktop Chrome. Firefox, Safari and mobile browsers are not tested yet.
+Three APIs set the minimum version in every browser. Everything else kv uses shipped earlier, including Web Locks, BroadcastChannel and the WebAssembly features in the engine.
+
+| API | Chrome, Edge | Firefox | Safari | Chrome Android, Android WebView | Firefox Android | Safari iOS |
+| --- | --- | --- | --- | --- | --- | --- |
+| `SharedWorker` with `type: "module"` | 80 | 114 | 16 | 148 | 114 | 16 |
+| OPFS `FileSystemFileHandle.createWritable()` | 86 | 111 | 26 | 109 | 111 | 26 |
+| `structuredClone()` | 98 | 94 | 15.4 | 98 | 94 | 15.4 |
+| **Minimum for kv** | **98** | **114** | **26** | **148** | **114** | **26** |
+
+- Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26.
+- Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so kv does not run there.
+- `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119 and Firefox 121.
+
+Versions are from [MDN browser-compat-data](https://github.com/mdn/browser-compat-data) 8.1.8. The engine is tested in desktop Chrome. Firefox, Safari and mobile browsers are not tested yet.
 
 ## How it works
 
