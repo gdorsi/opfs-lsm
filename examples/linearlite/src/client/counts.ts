@@ -59,7 +59,10 @@ export function countByStatus(issues: IssueDocs, filter: IssueFilter): Promise<n
   });
 }
 
-/** Live issues under `filter`. A query of one plain word is exact from the text index's entries alone. */
+/**
+ * Live issues under `filter`. A query of one plain word is counted from the text index's entries alone: the index
+ * normalizes titles to NFC and `ilike` does not, so this agrees with the list for titles stored in NFC.
+ */
 export async function countTotal(issues: IssueDocs, filter: IssueFilter): Promise<number> {
   const words = wordsOf(filter.q);
   const plain = words.length === 1 && words[0] === filter.q.toLowerCase();

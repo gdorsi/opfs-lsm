@@ -5,7 +5,7 @@ import { createCollection, createLiveQueryCollection, eq } from "@tanstack/db";
 import type { Body, Comment, Issue, SyncState } from "../domain/model.ts";
 
 /** The reads each issue index serves are in DESIGN.md, "Indexes". */
-const schema = defineSchema<{ issues: Issue; bodies: Body; comments: Comment; sync: SyncState }>()({
+export const schema = defineSchema<{ issues: Issue; bodies: Body; comments: Comment; sync: SyncState }>()({
   version: 2,
   collections: {
     issues: {
