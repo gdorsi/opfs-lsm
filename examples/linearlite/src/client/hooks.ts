@@ -89,9 +89,11 @@ const ABOVE = 200;
 /**
  * The list's live query and the window in it. Without an anchor the query starts at the top of the order; with one
  * it starts at the anchor's sort value, `base` rows down the list. Windows up to `reach` rows into it move it.
+ * `origin` is the filter's top query: a placement made under another filter, or under this one before a switch away
+ * and back, is not used.
  */
 type Placement = {
-  readonly key: string;
+  readonly origin: ReturnType<typeof windowQuery>;
   readonly anchor: Anchor | undefined;
   readonly query: ReturnType<typeof windowQuery>;
   readonly offset: number;
@@ -107,9 +109,12 @@ type Placement = {
 export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly total: number | undefined } {
   const { issues, docs } = openedStore();
   const key = JSON.stringify(filter);
-  const top = useMemo<Placement>(() => ({ key, anchor: undefined, query: windowQuery(issues, filter, LIST_WINDOW), offset: 0, reach: REACH }), [key]);
+  const top = useMemo<Placement>(() => {
+    const query = windowQuery(issues, filter, LIST_WINDOW);
+    return { origin: query, anchor: undefined, query, offset: 0, reach: REACH };
+  }, [key]);
   const [placed, setPlaced] = useState<Placement>();
-  const placement = placed?.key === key ? placed : top;
+  const placement = placed?.origin === top.origin ? placed : top;
   const { data } = useLiveQuery(placement.query);
   const { anchor } = placement;
   const before = useIssueRead(JSON.stringify([key, anchor?.value]), anchor && ((d) => countBefore(d, filter, anchor.value)));
@@ -123,7 +128,7 @@ export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly to
       const limit = Math.max(LIST_WINDOW, to - from);
       const ask = ++asked.current;
       const place = (anchor: Anchor | undefined, offset: number) =>
-        setPlaced({ key, anchor, query: windowQuery(issues, filter, limit, undefined, { from: anchor?.value, offset }), offset, reach: offset + REACH });
+        setPlaced({ origin: top.origin, anchor, query: windowQuery(issues, filter, limit, undefined, { from: anchor?.value, offset }), offset, reach: offset + REACH });
       const move = (p: Placement, offset: number) => {
         const current = p.query.utils.getWindow();
         if (current?.offset !== offset || current.limit !== limit) void p.query.utils.setWindow({ offset, limit });
@@ -146,7 +151,7 @@ export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly to
         },
       );
     },
-    [key, top],
+    [top],
   );
   const total = useIssueRead(counted(filter), (d) => countTotal(d, filter));
   return { rows: data, offset: base + placement.offset, setRange, total };
