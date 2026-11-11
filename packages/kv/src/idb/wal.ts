@@ -273,6 +273,14 @@ export class IdBWal {
   appendedRecords = 0;
   /** Encoded bytes of those records. */
   appendedBytes = 0;
+  /** `append` transactions that committed. `appendedRecords / appendedCommits` is the mean group size. */
+  appendedCommits = 0;
+  private queued: {
+    readonly record: ArrayBuffer;
+    readonly resolve: (seq: number | undefined) => void;
+    readonly reject: (err: unknown) => void;
+  }[] = [];
+  private writing = false;
 
   private constructor(
     readonly dbName: DbName,
@@ -345,39 +353,83 @@ export class IdBWal {
   }
 
   /**
-   * Append `ops` under the key IndexedDB assigns. The record is the only
-   * write. The key generator is past every key in `wal`, so the key can
-   * only fail to pass the head when recovery raised the floor: undefined
-   * then, and the caller appends with `appendAfter`, which writes an
-   * explicit key and moves the generator forward. An aborted transaction
-   * gives its key back, so committed seqs stay gapless.
+   * Append `ops` under the key IndexedDB assigns. Appends that arrive while
+   * a transaction is open wait, and the next transaction writes all of them,
+   * one `add` each, so every record keeps its own seq. A group commits or
+   * aborts as a whole. Resolves with the seq once the transaction completes,
+   * in seq order within a group.
+   *
+   * The record is the only write. The key generator is past every key in
+   * `wal`, so the key can only fail to pass the head when recovery raised
+   * the floor: undefined then, for every append of the group, and the caller
+   * appends with `appendAfter`, which writes an explicit key and moves the
+   * generator forward. An aborted transaction gives its keys back, so
+   * committed seqs stay gapless.
    */
-  async append(ops: readonly CheckedOp[]): Promise<number | undefined> {
-    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
-    const done = txDone(tx);
-    const floor = tx.objectStore(META_STORE).get(META_HEAD);
-    const record = encodeOps(ops);
-    const add = tx.objectStore(WAL_STORE).add(record);
-    let seq: number | undefined;
-    let stale = false;
-    add.onsuccess = () => {
-      const key = add.result as number;
-      if (key <= num(floor.result)) {
-        stale = true;
-        tx.abort();
-        return;
-      }
-      seq = key;
+  append(ops: readonly CheckedOp[]): Promise<number | undefined> {
+    return new Promise((resolve, reject) => {
+      this.queued.push({ record: encodeOps(ops), resolve, reject });
+      if (!this.writing) this.commit();
+    });
+  }
+
+  /** Writes everything queued in one transaction. At most one runs at a time. */
+  private commit(): void {
+    const group = this.queued;
+    this.queued = [];
+    this.writing = true;
+    const fail = (err: unknown) => {
+      this.next();
+      for (const q of group) q.reject(err);
     };
+    let tx: IDBTransaction;
     try {
-      await done;
+      tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     } catch (err) {
-      if (stale) return undefined;
-      throw err;
+      fail(err);
+      return;
     }
-    this.appendedRecords += 1;
-    this.appendedBytes += record.byteLength;
-    return seq;
+    const floor = tx.objectStore(META_STORE).get(META_HEAD);
+    const wal = tx.objectStore(WAL_STORE);
+    const seqs: number[] = [];
+    let stale = false;
+    let thrown: unknown;
+    try {
+      for (const [i, q] of group.entries()) {
+        const add = wal.add(q.record);
+        add.onsuccess = () => {
+          seqs[i] = add.result as number;
+          if (i === 0 && seqs[0]! <= num(floor.result)) {
+            stale = true;
+            tx.abort();
+          }
+        };
+      }
+    } catch (err) {
+      thrown = err;
+      tx.abort();
+    }
+    tx.oncomplete = () => {
+      this.appendedCommits += 1;
+      this.appendedRecords += group.length;
+      for (const q of group) this.appendedBytes += q.record.byteLength;
+      this.next();
+      for (const [i, q] of group.entries()) q.resolve(seqs[i]);
+    };
+    tx.onabort = () => {
+      if (stale) {
+        this.next();
+        for (const q of group) q.resolve(undefined);
+      } else {
+        fail(thrown ?? tx.error ?? new CommitError("idb tx aborted"));
+      }
+    };
+  }
+
+  /** The open transaction ended: start the group that queued behind it. */
+  private next(): void {
+    this.writing = false;
+    if (this.queued.length > 0) this.commit();
   }
 
   async meta(): Promise<WalMeta> {

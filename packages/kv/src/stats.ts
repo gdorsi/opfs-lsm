@@ -9,6 +9,8 @@ export type KvStats = {
   tab: {
     /** WAL records this Db handle appended. */
     walAppends: number;
+    /** IndexedDB transactions those appends used; appends that queued behind an open one share it. */
+    walCommits: number;
     /** Encoded record bytes handed to IndexedDB, excluding meta puts. */
     walBytes: number;
     /** This tab's OPFS IO (open load, installs). */
@@ -29,6 +31,7 @@ export async function readStats(db: Db): Promise<KvStats> {
   return {
     tab: {
       walAppends: wal.appendedRecords,
+      walCommits: wal.appendedCommits,
       walBytes: wal.appendedBytes,
       fs: structuredClone(fs.counters),
     },

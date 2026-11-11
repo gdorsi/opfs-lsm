@@ -89,6 +89,12 @@ because `appendAfter` would write `floor + 1` onto a key this build already took
 IndexedDB serializes `readwrite` transactions on the same stores, so two tabs cannot take the
 same seq. An aborted transaction reverts the key generator, so committed seqs stay gapless.
 
+A tab has at most one such append transaction open. Appends that arrive while it is open wait,
+and the next transaction writes all of them: one `add` per append, so each keeps its own seq, in
+call order. The group commits or aborts as a whole. An abort gives every key back and rejects
+every append in the group, and the stale case of step 3 sends every append in the group to the
+explicit-key path. A writer that awaits each write sees no group.
+
 `update(keys, body)` reads the tail, applies it to the memtable, runs the synchronous `body` and
 adds the batch at `head + 1`, all in one transaction. It cannot conflict with another writer.
 

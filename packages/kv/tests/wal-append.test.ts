@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChangeEvent } from "../src/index.js";
-import { openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
+import { openHarnessDb, readStats, __resetMemoryFsForTests } from "../src/testing.js";
 
 const NAME = "wal-append-test";
 const IDB = `opfs-lsm-wal/${NAME}`;
@@ -76,5 +76,74 @@ describe("blind writes", () => {
     expect(text(await two.get(enc.encode("first")))).toBe("1");
     await one.close();
     await two.close();
+  });
+});
+
+describe("group commit", () => {
+  it("writes overlapping appends in one transaction, one seq each, landing in seq order", async () => {
+    const db = await open("w0");
+    const landed: number[] = [];
+    db.changes((e: ChangeEvent) => {
+      if (e.kind === "append") landed.push(e.seq!);
+    });
+    const before = await readStats(db);
+    const acks = await Promise.all(
+      Array.from({ length: 6 }, (_, i) => db.put(enc.encode(`k${i}`), enc.encode(`v${i}`))),
+    );
+    const after = await readStats(db);
+    // The first append opens a transaction at once. The other five queue behind it.
+    expect(after.tab.walAppends - before.tab.walAppends).toBe(6);
+    expect(after.tab.walCommits - before.tab.walCommits).toBe(2);
+    expect(acks).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(landed).toEqual(acks);
+    for (let i = 0; i < 6; i++) expect(text(await db.get(enc.encode(`k${i}`)))).toBe(`v${i}`);
+    await db.close();
+  });
+
+  it("falls back to an explicit key for every append of a stale group", async () => {
+    await (await open("w0")).close();
+    await setMeta({ head: 50, ingestedThrough: 50 });
+    const db = await open("w1");
+    const seqs = await Promise.all(
+      Array.from({ length: 4 }, (_, i) => db.put(enc.encode(`k${i}`), enc.encode(`v${i}`))),
+    );
+    expect(seqs).toEqual([51, 52, 53, 54]);
+    await db.close();
+    const reopened = await open("w2");
+    for (let i = 0; i < 4; i++) expect(text(await reopened.get(enc.encode(`k${i}`)))).toBe(`v${i}`);
+    await reopened.close();
+  });
+
+  it("rejects every append of a group that aborts and consumes no seq", async () => {
+    const db = await open("w0");
+    await db.put(enc.encode("a"), enc.encode("1"));
+    const add = IDBObjectStore.prototype.add;
+    let calls = 0;
+    const spy = vi.spyOn(IDBObjectStore.prototype, "add").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<IDBObjectStore["add"]>
+    ) {
+      // Put "a" and b0 each ran alone. Fail the second add of the group b1..b3 share.
+      calls += 1;
+      if (calls === 4) throw new Error("injected");
+      return add.apply(this, args);
+    });
+    const writes = Array.from({ length: 4 }, (_, i) =>
+      db.put(enc.encode(`b${i}`), enc.encode("x")).then(
+        () => "ok",
+        (err: Error) => err.message,
+      ),
+    );
+    const results = await Promise.all(writes);
+    spy.mockRestore();
+    // Put 0 left alone in its own transaction, puts 1..3 shared the group that failed.
+    expect(results).toEqual(["ok", "injected", "injected", "injected"]);
+    expect(await db.put(enc.encode("c"), enc.encode("2"))).toBe(3);
+    expect(text(await db.get(enc.encode("b1")))).toBeUndefined();
+    await db.close();
+    const reopened = await open("w1");
+    expect(text(await reopened.get(enc.encode("c")))).toBe("2");
+    expect(text(await reopened.get(enc.encode("b0")))).toBe("x");
+    await reopened.close();
   });
 });
