@@ -263,6 +263,21 @@ async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
   return { head, generation, ingestedThrough, records };
 }
 
+type GroupEntry = {
+  readonly record: ArrayBuffer;
+  seq: number | undefined;
+  readonly resolve: (seq: number | undefined) => void;
+  readonly reject: (err: unknown) => void;
+};
+
+type Group = {
+  readonly tx: IDBTransaction;
+  readonly entries: GroupEntry[];
+  /** False once an `add` found the transaction inactive. */
+  active: boolean;
+  readonly landed: (entry: GroupEntry, key: number) => void;
+};
+
 /**
  * One shared IDB database for every tab of a database name. The WAL is the
  * only durable copy of a write until ingest folds it into an SST. Each tab
@@ -273,6 +288,16 @@ export class IdBWal {
   appendedRecords = 0;
   /** Encoded bytes of those records. */
   appendedBytes = 0;
+  /**
+   * Committed groups by size: entry i counts groups of 2^i to 2^(i+1) - 1
+   * records. Test and bench only.
+   */
+  groupSizes: number[] = [];
+  /** The group whose transaction is open, from its creation to its end. */
+  private open: Group | undefined;
+  /** Appends that arrived after `open` went inactive: the next group. */
+  private queued: GroupEntry[] = [];
+  private closing = false;
 
   private constructor(
     readonly dbName: DbName,
@@ -283,8 +308,10 @@ export class IdBWal {
     return new IdBWal(dbName, await openIdb(dbName));
   }
 
+  /** Closes the connection once the groups already started or queued commit. */
   close(): void {
-    this.db.close();
+    this.closing = true;
+    if (!this.open) this.db.close();
   }
 
   /** The tail after `since`, from one readonly transaction. */
@@ -345,39 +372,110 @@ export class IdBWal {
   }
 
   /**
-   * Append `ops` under the key IndexedDB assigns. The record is the only
-   * write. The key generator is past every key in `wal`, so the key can
-   * only fail to pass the head when recovery raised the floor: undefined
-   * then, and the caller appends with `appendAfter`, which writes an
-   * explicit key and moves the generator forward. An aborted transaction
-   * gives its key back, so committed seqs stay gapless.
+   * Append `ops` under the key IndexedDB assigns, by group commit: appends
+   * that arrive while a group's transaction is active join it, and appends
+   * that arrive while it commits form the next group. A group is one
+   * readwrite transaction with one `add` per record, so each record keeps
+   * its own seq, and the records commit or abort together. Each caller
+   * resolves when its group commits, in seq order; a failed group rejects
+   * every caller in it. The key generator is past every key in `wal`, so a
+   * key can only fail to pass the head when recovery raised the floor: the
+   * group aborts and every caller gets undefined, and appends with
+   * `appendAfter`, which writes an explicit key and moves the generator
+   * forward. An aborted transaction gives its keys back, so committed seqs
+   * stay gapless.
    */
-  async append(ops: readonly CheckedOp[]): Promise<number | undefined> {
-    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
-    const done = txDone(tx);
-    const floor = tx.objectStore(META_STORE).get(META_HEAD);
-    const record = encodeOps(ops);
-    const add = tx.objectStore(WAL_STORE).add(record);
-    let seq: number | undefined;
-    let stale = false;
-    add.onsuccess = () => {
-      const key = add.result as number;
-      if (key <= num(floor.result)) {
-        stale = true;
-        tx.abort();
-        return;
-      }
-      seq = key;
-    };
+  append(ops: readonly CheckedOp[]): Promise<number | undefined> {
+    return new Promise((resolve, reject) => {
+      const entry: GroupEntry = { record: encodeOps(ops), seq: undefined, resolve, reject };
+      if (this.open && this.join(this.open, entry)) return;
+      if (this.open) this.queued.push(entry);
+      else this.commitGroup([entry]);
+    });
+  }
+
+  /** Add `entry` to `group` while its transaction is still active. */
+  private join(group: Group, entry: GroupEntry): boolean {
+    if (!group.active) return false;
     try {
-      await done;
+      const add = group.tx.objectStore(WAL_STORE).add(entry.record);
+      add.onsuccess = () => group.landed(entry, add.result as number);
     } catch (err) {
-      if (stale) return undefined;
+      if (err instanceof DOMException && err.name === "TransactionInactiveError") {
+        group.active = false;
+        return false;
+      }
       throw err;
     }
-    this.appendedRecords += 1;
-    this.appendedBytes += record.byteLength;
-    return seq;
+    group.entries.push(entry);
+    return true;
+  }
+
+  private commitGroup(entries: GroupEntry[]): void {
+    let tx: IDBTransaction;
+    try {
+      tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+    } catch (err) {
+      for (const entry of entries) entry.reject(err);
+      this.next();
+      return;
+    }
+    const floor = tx.objectStore(META_STORE).get(META_HEAD);
+    let stale = false;
+    const group: Group = {
+      tx,
+      entries: [],
+      active: true,
+      landed: (entry, key) => {
+        if (stale) return;
+        if (key <= num(floor.result)) {
+          stale = true;
+          tx.abort();
+          return;
+        }
+        entry.seq = key;
+      },
+    };
+    this.open = group;
+    for (const entry of entries) {
+      if (!this.join(group, entry)) {
+        // Unreachable: the transaction was created in this turn.
+        throw new CommitError("wal group transaction inactive at open");
+      }
+    }
+    txDone(tx).then(
+      () => {
+        const bucket = 31 - Math.clz32(group.entries.length);
+        this.groupSizes[bucket] = (this.groupSizes[bucket] ?? 0) + 1;
+        for (const entry of group.entries) {
+          this.appendedRecords += 1;
+          this.appendedBytes += entry.record.byteLength;
+        }
+        this.finish(group);
+        for (const entry of group.entries) entry.resolve(entry.seq);
+      },
+      (err: unknown) => {
+        this.finish(group);
+        for (const entry of group.entries) {
+          if (stale) entry.resolve(undefined);
+          else entry.reject(err);
+        }
+      },
+    );
+  }
+
+  private finish(group: Group): void {
+    if (this.open === group) this.open = undefined;
+    this.next();
+  }
+
+  /** Start the next group from the queue, or close when `close` waits on it. */
+  private next(): void {
+    if (this.open) return;
+    const entries = this.queued;
+    this.queued = [];
+    if (entries.length > 0) this.commitGroup(entries);
+    else if (this.closing) this.db.close();
   }
 
   async meta(): Promise<WalMeta> {
