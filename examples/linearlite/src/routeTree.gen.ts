@@ -9,18 +9,19 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
+import { Route as AppRouteImport } from './routes/_app'
 import { Route as IssuesRouteImport } from './routes/issues'
-import { Route as SpikeRouteImport } from './routes/spike'
+import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppBoardRouteImport } from './routes/_app/board'
 import { Route as ApiDetailRouteImport } from './routes/api/detail'
 import { Route as ApiEventsRouteImport } from './routes/api/events'
 import { Route as ApiPullRouteImport } from './routes/api/pull'
 import { Route as ApiPushRouteImport } from './routes/api/push'
 import { Route as ApiRowRouteImport } from './routes/api/row'
+import { Route as AppIssueIdRouteImport } from './routes/_app/issue.$id'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const AppRoute = AppRouteImport.update({
+  id: '/_app',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IssuesRoute = IssuesRouteImport.update({
@@ -28,10 +29,15 @@ const IssuesRoute = IssuesRouteImport.update({
   path: '/issues',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SpikeRoute = SpikeRouteImport.update({
-  id: '/spike',
-  path: '/spike',
-  getParentRoute: () => rootRouteImport,
+const AppIndexRoute = AppIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppBoardRoute = AppBoardRouteImport.update({
+  id: '/board',
+  path: '/board',
+  getParentRoute: () => AppRoute,
 } as any)
 const ApiDetailRoute = ApiDetailRouteImport.update({
   id: '/api/detail',
@@ -58,75 +64,87 @@ const ApiRowRoute = ApiRowRouteImport.update({
   path: '/api/row',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppIssueIdRoute = AppIssueIdRouteImport.update({
+  id: '/issue/$id',
+  path: '/issue/$id',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/': typeof AppIndexRoute
   '/issues': typeof IssuesRoute
-  '/spike': typeof SpikeRoute
+  '/board': typeof AppBoardRoute
   '/api/detail': typeof ApiDetailRoute
   '/api/events': typeof ApiEventsRoute
   '/api/pull': typeof ApiPullRoute
   '/api/push': typeof ApiPushRoute
   '/api/row': typeof ApiRowRoute
+  '/issue/$id': typeof AppIssueIdRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
   '/issues': typeof IssuesRoute
-  '/spike': typeof SpikeRoute
+  '/board': typeof AppBoardRoute
   '/api/detail': typeof ApiDetailRoute
   '/api/events': typeof ApiEventsRoute
   '/api/pull': typeof ApiPullRoute
   '/api/push': typeof ApiPushRoute
   '/api/row': typeof ApiRowRoute
+  '/': typeof AppIndexRoute
+  '/issue/$id': typeof AppIssueIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
+  '/_app': typeof AppRouteWithChildren
   '/issues': typeof IssuesRoute
-  '/spike': typeof SpikeRoute
+  '/_app/board': typeof AppBoardRoute
   '/api/detail': typeof ApiDetailRoute
   '/api/events': typeof ApiEventsRoute
   '/api/pull': typeof ApiPullRoute
   '/api/push': typeof ApiPushRoute
   '/api/row': typeof ApiRowRoute
+  '/_app/': typeof AppIndexRoute
+  '/_app/issue/$id': typeof AppIssueIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/issues'
-    | '/spike'
+    | '/board'
     | '/api/detail'
     | '/api/events'
     | '/api/pull'
     | '/api/push'
     | '/api/row'
+    | '/issue/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/'
     | '/issues'
-    | '/spike'
+    | '/board'
     | '/api/detail'
     | '/api/events'
     | '/api/pull'
     | '/api/push'
     | '/api/row'
+    | '/'
+    | '/issue/$id'
   id:
     | '__root__'
-    | '/'
+    | '/_app'
     | '/issues'
-    | '/spike'
+    | '/_app/board'
     | '/api/detail'
     | '/api/events'
     | '/api/pull'
     | '/api/push'
     | '/api/row'
+    | '/_app/'
+    | '/_app/issue/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  AppRoute: typeof AppRouteWithChildren
   IssuesRoute: typeof IssuesRoute
-  SpikeRoute: typeof SpikeRoute
   ApiDetailRoute: typeof ApiDetailRoute
   ApiEventsRoute: typeof ApiEventsRoute
   ApiPullRoute: typeof ApiPullRoute
@@ -136,11 +154,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
+    '/_app': {
+      id: '/_app'
+      path: ''
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+      preLoaderRoute: typeof AppRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/issues': {
@@ -150,12 +168,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IssuesRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/spike': {
-      id: '/spike'
-      path: '/spike'
-      fullPath: '/spike'
-      preLoaderRoute: typeof SpikeRouteImport
-      parentRoute: typeof rootRouteImport
+    '/_app/': {
+      id: '/_app/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/board': {
+      id: '/_app/board'
+      path: '/board'
+      fullPath: '/board'
+      preLoaderRoute: typeof AppBoardRouteImport
+      parentRoute: typeof AppRoute
     }
     '/api/detail': {
       id: '/api/detail'
@@ -192,13 +217,33 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiRowRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/issue/$id': {
+      id: '/_app/issue/$id'
+      path: '/issue/$id'
+      fullPath: '/issue/$id'
+      preLoaderRoute: typeof AppIssueIdRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
+interface AppRouteChildren {
+  AppBoardRoute: typeof AppBoardRoute
+  AppIndexRoute: typeof AppIndexRoute
+  AppIssueIdRoute: typeof AppIssueIdRoute
+}
+
+const AppRouteChildren: AppRouteChildren = {
+  AppBoardRoute: AppBoardRoute,
+  AppIndexRoute: AppIndexRoute,
+  AppIssueIdRoute: AppIssueIdRoute,
+}
+
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  AppRoute: AppRouteWithChildren,
   IssuesRoute: IssuesRoute,
-  SpikeRoute: SpikeRoute,
   ApiDetailRoute: ApiDetailRoute,
   ApiEventsRoute: ApiEventsRoute,
   ApiPullRoute: ApiPullRoute,
