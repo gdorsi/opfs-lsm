@@ -1,4 +1,5 @@
 import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
+import { levelOfDir } from "../store/levels.js";
 
 /** Calls and bytes for one path class. */
 export type IoCount = { calls: number; bytes: number };
@@ -23,7 +24,7 @@ function emptyIoCounters(): IoCounters {
 function pathClass(path: string): string {
   const slash = path.indexOf("/");
   const head = slash < 0 ? "" : path.slice(0, slash);
-  return head === "m" || /^l\d+$/.test(head) ? head : "other";
+  return head === "m" || levelOfDir(head) !== undefined ? head : "other";
 }
 
 function add(into: Record<string, IoCount>, path: string, bytes: number): void {

@@ -40,10 +40,16 @@ export type CompactionPlan = {
   readonly bottom: boolean;
 };
 
+/** n for an `l<n>` directory name, undefined for any other name. */
+export function levelOfDir(dir: string): number | undefined {
+  const m = /^l(\d+)$/.exec(dir);
+  return m ? Number(m[1]) : undefined;
+}
+
 /** 0 for L0, n for Ln. Undefined when the path has no `l<n>/` prefix. */
 export function levelOf(path: string): number | undefined {
-  const m = /^l(\d+)\//.exec(path);
-  return m ? Number(m[1]) : undefined;
+  const slash = path.indexOf("/");
+  return slash < 0 ? undefined : levelOfDir(path.slice(0, slash));
 }
 
 export function levelRunPath(level: number, name: string): string {

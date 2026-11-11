@@ -2,10 +2,10 @@ import type { AsyncFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { crc32 } from "./crc32.js";
 import { encodeRun } from "./engine.js";
+import { levelOfDir, levelRunPath } from "./levels.js";
 import type { RunEnd, SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
-const L0_PREFIX = "l0/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
 /** Version 3 records each run's byte size next to its key range. */
@@ -213,7 +213,7 @@ export async function publishL0(
   name: string,
   entries: readonly SstEntry[],
 ): Promise<RunMeta> {
-  const path = `${L0_PREFIX}${name}.sst`;
+  const path = levelRunPath(0, name);
   const { body, end } = await encodeRun(entries);
   const w = await fs.create(path);
   await w.write(body);
@@ -298,7 +298,7 @@ export async function liveRuns(fs: AsyncFs, recorded: number): Promise<string[]>
 export async function listRuns(fs: AsyncFs): Promise<string[]> {
   const out: string[] = [];
   for (const dir of await fs.list("")) {
-    if (!/^l\d+$/.test(dir)) continue;
+    if (levelOfDir(dir) === undefined) continue;
     for (const name of await fs.list(dir)) out.push(`${dir}/${name}`);
   }
   return out;
