@@ -105,6 +105,9 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
       async () => expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1),
       { timeout: 2000, interval: 5 },
     );
+    // The manifest is on disk before the host records it and compacts. Wait for
+    // the host to go idle, or it writes to the next test's WAL of the same name.
+    await ingestDb(db);
     await db.close();
     ingest.close();
     port1.close();
