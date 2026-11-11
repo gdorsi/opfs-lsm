@@ -30,6 +30,7 @@ import { reconcile } from "./recover.js";
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, settle, type Maybe } from "./store/cursor.js";
 import { DEFAULT_INGEST_POLICY, type IngestPolicy } from "./ingest-policy.js";
+import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { CountingFs } from "./opfs/counting-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
@@ -494,8 +495,7 @@ class DbImpl implements Db {
   private loaded: Layers | undefined;
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
-  private syncing: Promise<void> | undefined;
-  private syncAgain = false;
+  private readonly catchUpToWal = coalesced(() => this.syncOnce());
   private readonly changeBus = new ChangeBus();
   /** Applied and not yet announced, in seq order. Drained outside IndexedDB callbacks. */
   private unannounced: ChangeEvent[] = [];
@@ -723,21 +723,7 @@ class DbImpl implements Db {
    */
   async sync(): Promise<void> {
     this.ensureOpen();
-    if (this.syncing) {
-      this.syncAgain = true;
-      return this.syncing;
-    }
-    this.syncing = (async () => {
-      try {
-        do {
-          this.syncAgain = false;
-          await this.syncOnce();
-        } while (this.syncAgain);
-      } finally {
-        this.syncing = undefined;
-      }
-    })();
-    return this.syncing;
+    return this.catchUpToWal();
   }
 
   /**
