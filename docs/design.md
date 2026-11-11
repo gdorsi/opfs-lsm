@@ -90,7 +90,9 @@ IndexedDB serializes `readwrite` transactions on the same stores, so two tabs ca
 same seq. An aborted transaction reverts the key generator, so committed seqs stay gapless.
 
 `update(keys, body)` reads the tail, applies it to the memtable, runs the synchronous `body` and
-adds the batch at `head + 1`, all in one transaction. It cannot conflict with another writer.
+adds the batch at `head + 1`, all in one transaction. It cannot conflict with another writer. It
+asks IndexedDB to commit as soon as the add is queued, so the commit does not wait for the add's
+result to reach the tab.
 
 The ack is the `complete` event of the transaction, at the default IndexedDB durability. A
 commit survives a tab crash. It may not survive a power loss. The record joins the memtable of

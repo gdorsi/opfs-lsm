@@ -338,6 +338,9 @@ export class IdBWal {
     const seq = tail.head + 1;
     const record = encodeOps(decision.ops);
     tx.objectStore(WAL_STORE).add(record, seq);
+    // Without this, Chrome waits for the add's success event to reach the
+    // tab before it commits: one more round trip per write.
+    tx.commit();
     await done;
     this.appendedRecords += 1;
     this.appendedBytes += record.byteLength;
