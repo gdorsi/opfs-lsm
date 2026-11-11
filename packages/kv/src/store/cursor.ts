@@ -42,12 +42,7 @@ export function entryCursor(entries: readonly LayerEntry[], reverse = false): La
   let i = reverse ? entries.length - 1 : 0;
   return {
     peek() {
-      const e = entries[i];
-      if (!e) return undefined;
-      if (e.kind === "put" && e.value) {
-        return { key: e.key, kind: "put", value: e.value };
-      }
-      return { key: e.key, kind: "del" };
+      return entries[i];
     },
     next() {
       i += step;

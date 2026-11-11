@@ -2,9 +2,8 @@ import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { untilHit, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, untilHit, type ScanBounds } from "./store/cursor.js";
 import {
-  arrayCursor,
   mergeCursors,
   pointGet,
   scanMatching,
@@ -44,7 +43,7 @@ export function scanLayers(
   return patterns && patterns.length > 0
     ? scanMatching(rows, levels, patterns, bounds, range.limit, reverse)
     : mergeCursors(
-        [arrayCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse))],
+        [entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse))],
         range?.limit,
         reverse,
       );

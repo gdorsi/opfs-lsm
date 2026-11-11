@@ -225,17 +225,6 @@ export function runLevels(
   return out;
 }
 
-export function arrayCursor(rows: readonly MemRow[], reverse = false): LayerCursor {
-  return entryCursor(
-    rows.map((row) =>
-      row.kind === "put" && row.value
-        ? { key: row.key, kind: "put" as const, value: row.value }
-        : { key: row.key, kind: "del" as const },
-    ),
-    reverse,
-  );
-}
-
 /** The newest entry for one key and the source it came from. */
 type Winner = { readonly entry: LayerEntry; readonly source: number };
 
@@ -340,7 +329,7 @@ export async function* scanMatching(
   reverse = false,
 ): AsyncGenerator<Entry> {
   const merge = new Merge(
-    [filterCursor(arrayCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
+    [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
     reverse,
   );
   let yielded = 0;
