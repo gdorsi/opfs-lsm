@@ -1,7 +1,5 @@
 import { generateNKeysBetween } from "fractional-indexing";
-
-const STATUSES = ["backlog", "todo", "in_progress", "done", "canceled"] as const;
-const PRIORITIES = ["none", "urgent", "high", "medium", "low"] as const;
+import { PRIORITIES, STATUSES } from "../src/domain/model.ts";
 
 export type SeedIssue = {
   id: string;
