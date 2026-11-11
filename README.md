@@ -8,7 +8,7 @@ A key-value store for the browser, built to be the storage layer under local-fir
 > - Tests on mobile browsers.
 > - Final storage formats. The WAL and SST layouts still change while we tune performance.
 
-## Why an external DB instead of IndexedDB?
+## Why not just use IndexedDB?
 
 Everyone who has worked with IndexedDB ends up realizing that it has many shortcomings. Nolan Lawson [put it this way](https://nolanlawson.com/2021/08/22/speeding-up-indexeddb-reads-and-writes/): "IndexedDB has a lot of detractors, and I think most of the criticism is justified."
 
@@ -35,7 +35,7 @@ With `@opfs-lsm/kv` I'm using the following design to work around the limits of 
 
 More detail is in [How it works](#how-it-works).
 
-## What do you offer?
+## What kv offers
 
 `@opfs-lsm/kv` is designed to be as fast and as small as possible, and to work as a building block that handles persistence for higher-level solutions (CRDTs, sync engines, etc.).
 
