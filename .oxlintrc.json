@@ -19,5 +19,28 @@
   "rules": {
     "vitest/no-conditional-expect": "off",
     "vitest/no-standalone-expect": "off"
-  }
+  },
+  "overrides": [
+    {
+      "files": [
+        "bench/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "fake-indexeddb",
+                  "fake-indexeddb/*"
+                ],
+                "message": "Benchmarks must run on the browser's real IndexedDB."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }
