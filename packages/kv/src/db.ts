@@ -17,14 +17,14 @@ import {
   CorruptDatabaseError,
   StorageUnavailableError,
 } from "./errors.js";
-import { DEFAULT_COMPACTION_MEMORY_BYTES, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
+import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import {
   EngineHost,
   createLocalIngestClient,
   createPortIngestClient,
   type WatchScan,
 } from "./host/engine-host.js";
-import { holdingFiles, type IngestClient } from "./host/protocol.js";
+import { holdingFiles, type BusMessage, type IngestClient } from "./host/protocol.js";
 import { layersChannel } from "./locks.js";
 import { IdBWal, type WalReadProfile, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
@@ -399,7 +399,7 @@ export async function openDbWith(options: HarnessOpenOptions): Promise<Db> {
   // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
   ingest.watch(name, {
     maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
-    compactionMemoryBytes: options.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
+    compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
   });
   // The host cannot flush without the module, so a page that cannot load it does not open.
   try {
@@ -460,16 +460,6 @@ type Layers = {
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
 
-/** A tab posts each record it appends. The host posts `ingest` for a new generation. */
-type BusMessage =
-  | {
-      readonly kind: "append";
-      readonly writerId: string;
-      readonly seq: number;
-      readonly ops: readonly CheckedOp[];
-    }
-  | { readonly kind: "ingest"; readonly writerId: string };
-
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
 const GENERATION_GONE =
@@ -502,7 +492,7 @@ class DbImpl implements Db {
   /** A repair may have recorded another manifest, so the next install can change what reads return. */
   private repaired = false;
   private readonly bus: BroadcastChannel | undefined;
-  private readonly onBusMessage: ((ev: MessageEvent) => void) | undefined;
+  private readonly onBusMessage: ((ev: MessageEvent<BusMessage>) => void) | undefined;
   private readonly pressure: Backpressure;
 
   constructor(
@@ -523,21 +513,22 @@ class DbImpl implements Db {
     );
     if (typeof BroadcastChannel !== "undefined") {
       this.bus = new BroadcastChannel(layersChannel(name));
-      this.onBusMessage = (ev: MessageEvent) => this.onMessage(ev.data);
+      this.onBusMessage = (ev: MessageEvent<BusMessage>) => this.onMessage(ev.data);
       this.bus.addEventListener("message", this.onBusMessage);
     }
   }
 
-  private onMessage(data: BusMessage | null): void {
-    if (this.closed || !data || data.writerId === this.writerId) return;
-    if (data.kind === "append") {
-      if (this.applyRecord({ seq: data.seq, ops: data.ops }) === "gap") {
-        void this.sync().catch(() => undefined);
-      }
-      this.announce();
-    } else {
+  private onMessage(data: BusMessage): void {
+    if (this.closed) return;
+    if (data.kind === "ingest") {
+      void this.sync().catch(() => undefined);
+      return;
+    }
+    if (data.writerId === this.writerId) return;
+    if (this.applyRecord({ seq: data.seq, ops: data.ops }) === "gap") {
       void this.sync().catch(() => undefined);
     }
+    this.announce();
   }
 
   private ensureOpen(): void {

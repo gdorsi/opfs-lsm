@@ -1,4 +1,4 @@
-import { checkDbName, opsBytes, type CheckedOp, type DbName } from "../check.js";
+import { checkDbName, opsBytes, type DbName } from "../check.js";
 import { codeOfError, errorOfCode } from "../errors.js";
 import { IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
@@ -13,11 +13,12 @@ import {
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
-import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
+import { compactionMemoryOf, DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
   unlessHeld,
+  type BusMessage,
   type ClientToHost,
   type HostStats,
   type HostToClient,
@@ -62,9 +63,6 @@ type IngestWatch = {
   watchers: number;
   bus: BroadcastChannel | undefined;
 };
-
-/** The `append` messages tabs post on `layersChannel` (see `DbImpl.broadcast`). */
-type AppendHint = { readonly kind: string; readonly ops?: readonly CheckedOp[] };
 
 /** Background pending-byte read. `rows` stays 0: the host does not list the WAL. */
 export type WatchScan = {
@@ -334,13 +332,10 @@ class HostedDb {
   }
 
   watch(policy: WatchPolicy, onScan?: (scan: WatchScan) => void): void {
-    // A tab of an older build sends no figure, and NaN would win every later `Math.min`.
-    const compactionMemoryBytes =
-      policy.compactionMemoryBytes > 0 ? policy.compactionMemoryBytes : DEFAULT_COMPACTION_MEMORY_BYTES;
-    const watch = this.watching ?? this.startWatch({ ...policy, compactionMemoryBytes });
+    const watch = this.watching ?? this.startWatch(policy);
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
-    watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, compactionMemoryBytes);
+    watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
     const scanAt = onScan ? performance.now() : 0;
     void this.withWal((wal) => wal.uningestedBytes(watch.maxWalBytes)).then(
@@ -381,8 +376,8 @@ class HostedDb {
     };
     if (typeof BroadcastChannel !== "undefined") {
       watch.bus = new BroadcastChannel(layersChannel(this.name));
-      watch.bus.onmessage = (ev: MessageEvent<AppendHint | null>) => {
-        if (ev.data?.kind !== "append" || !ev.data.ops) return;
+      watch.bus.onmessage = (ev: MessageEvent<BusMessage>) => {
+        if (ev.data.kind !== "append") return;
         watch.pendingBytes += opsBytes(ev.data.ops);
         this.maybeIngest(watch);
       };
@@ -487,7 +482,8 @@ class HostedDb {
 function announceGeneration(dbName: DbName): void {
   if (typeof BroadcastChannel === "undefined") return;
   const bus = new BroadcastChannel(layersChannel(dbName));
-  bus.postMessage({ kind: "ingest", writerId: "engine-host" });
+  const message: BusMessage = { kind: "ingest" };
+  bus.postMessage(message);
   bus.close();
 }
 
@@ -527,7 +523,7 @@ export function attachEngineHostPort(
             msg.name,
             {
               maxWalBytes: msg.maxWalBytes,
-              compactionMemoryBytes: msg.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES,
+              compactionMemoryBytes: compactionMemoryOf(msg.compactionMemoryBytes),
             },
             msg.trace
               ? (scan) =>
