@@ -127,7 +127,7 @@ describe("readStats", () => {
     expect(memory.wasmPeakBytes).toBeGreaterThanOrEqual(memory.wasmBytes);
     // The step reserved a window per source and one for the output run.
     expect(memory.mergeReservedBytes).toBeGreaterThanOrEqual(5 * hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES).chunkBytes);
-    expect(memory.l0Stops).toBe(0);
+    expect(stats.host.l0Stops).toBe(0);
     // The host writes, the tab does not.
     expect(stats.tab.fs.written).toEqual({});
 
@@ -208,8 +208,8 @@ describe("readStats", () => {
       wasmPeakBytes: expect.any(Number),
       mergeReservedBytes: expect.any(Number),
       recycles: expect.any(Number),
-      l0Stops: 0,
     });
+    expect(stats.host.l0Stops).toBe(0);
 
     await db.close();
     ingest.close();

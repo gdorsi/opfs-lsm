@@ -203,13 +203,12 @@ class HostedDb {
       entry.bytes += run.bytes;
       byLevel.set(level, entry);
     }
-    const { l0Stops, ...counts } = this.counts;
     return structuredClone({
       fs: fs.counters,
-      ...counts,
+      ...this.counts,
       generation: latest?.generation ?? 0,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
-      memory: { ...engineMemory(), l0Stops },
+      memory: engineMemory(),
     });
   }
 
