@@ -1,3 +1,4 @@
+import type { CheckedOp, WriterId } from "../check.js";
 import type { ErrorCode } from "../errors.js";
 import { reclaimLock, webLocks } from "../locks.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
@@ -41,6 +42,16 @@ export type WatchPolicy = {
   readonly compactionMemoryBytes: number;
 };
 
+/** What goes on `layersChannel`: a tab posts each record it appends, the host posts `ingest` for a new generation. */
+export type BusMessage =
+  | {
+      readonly kind: "append";
+      readonly writerId: WriterId;
+      readonly seq: number;
+      readonly ops: readonly CheckedOp[];
+    }
+  | { readonly kind: "ingest" };
+
 /**
  * Run `fn` holding the reclaim lock shared. While any tab holds it, the
  * host removes no run file and no manifest, so a generation recorded
@@ -76,22 +87,18 @@ export type ClientToHost =
       readonly type: "ingest";
       readonly id: number;
       readonly name: string;
-      readonly through: number;
       readonly waitForCompaction: boolean;
     }
   | {
       readonly type: "watch";
       readonly name: string;
       readonly maxWalBytes: number;
-      /** Absent from a tab of a build before the option existed. The host then assumes the default. */
+      /** Absent from a tab of a build before the option existed. */
       readonly compactionMemoryBytes?: number;
-      /** Ask the host to report the background WAL scan. Open does not wait for it. */
-      readonly trace?: boolean;
     }
   | { readonly type: "unwatch"; readonly name: string }
   | { readonly type: "destroy"; readonly id: number; readonly name: string }
-  | { readonly type: "stats"; readonly id: number; readonly name: string }
-  | { readonly type: "ping"; readonly id: number };
+  | { readonly type: "stats"; readonly id: number; readonly name: string };
 
 export type HostToClient =
   | {
@@ -106,26 +113,15 @@ export type HostToClient =
       /** The `OpfsLsmError` code, so the tab rethrows the same class. */
       readonly code?: ErrorCode;
     }
-  | {
-      readonly type: "watch-trace";
-      readonly ms: number;
-      readonly rows: number;
-      readonly bytes: number;
-    }
   | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats }
-  | { readonly type: "destroy-ok"; readonly id: number }
-  | { readonly type: "pong"; readonly id: number };
+  | { readonly type: "destroy-ok"; readonly id: number };
 
 export type IngestClient = {
   /**
-   * Flush every WAL record through `through`. A no-op when they are already
-   * in OPFS. With `waitForCompaction`, resolve once compaction has finished too.
+   * Flush every WAL record acked before the call. A no-op when they are
+   * already in OPFS. With `waitForCompaction`, resolve once compaction has finished too.
    */
-  ingest(
-    name: string,
-    through: number,
-    waitForCompaction?: boolean,
-  ): Promise<{ generation: number }>;
+  ingest(name: string, waitForCompaction?: boolean): Promise<{ generation: number }>;
   /**
    * Have the host ingest `name` on its own once the WAL waiting for ingest
    * passes `policy.maxWalBytes`, starting with what is already waiting, and

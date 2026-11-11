@@ -80,7 +80,7 @@ function bytesOf(runs: readonly RunMeta[]): number {
   return runs.reduce((n, r) => n + r.bytes, 0);
 }
 
-export type PlanLimits = {
+type PlanLimits = {
   /**
    * The most sources a step reads. A step holds a window of each, so its
    * memory grows with the source count and not with the inputs' size. L0

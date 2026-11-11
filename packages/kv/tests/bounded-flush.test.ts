@@ -157,21 +157,10 @@ describe("a flush of a large backlog", () => {
     await db.put(key(2), value(2, 50));
     await db.put(key(3), value(3, 50));
 
-    await host.ingest(NAME, Number.POSITIVE_INFINITY);
+    await host.ingest(NAME);
 
     const runs = await l0Runs(published);
     expect(runs.map((r) => r.keys)).toEqual([[keyName(0)], [keyName(1)], [keyName(2), keyName(3)]]);
-    await db.close();
-  });
-
-  it("stops after the chunk that reaches `through`", async () => {
-    const { db, host } = await setup(350);
-    for (let i = 0; i < 9; i++) await db.put(key(i), value(i, 100));
-
-    await host.ingest(NAME, 4);
-
-    expect((await walMeta()).ingestedThrough).toBe(6);
-    expect((await host.stats(NAME)).flushes).toBe(2);
     await db.close();
   });
 
@@ -180,14 +169,14 @@ describe("a flush of a large backlog", () => {
     for (let i = 0; i < 9; i++) await db.put(key(i), value(i, 100));
     const first = stopNextL0(hold);
 
-    const flush = host.ingest(NAME, Number.POSITIVE_INFINITY);
+    const flush = host.ingest(NAME);
     await vi.waitFor(() => expect(first.state.stopped).toBe(true));
     for (let i = 9; i < 18; i++) await db.put(key(i), value(i, 100));
     first.release();
     await flush;
 
     expect(await walMeta()).toMatchObject({ head: 18, ingestedThrough: 9 });
-    await host.ingest(NAME, Number.POSITIVE_INFINITY);
+    await host.ingest(NAME);
     expect(await walMeta()).toMatchObject({ head: 18, ingestedThrough: 18 });
     await db.close();
   });
@@ -197,11 +186,11 @@ describe("a flush of a large backlog", () => {
     for (let i = 0; i < 9; i++) await db.put(key(i), value(i, 100));
     const first = stopNextL0(hold);
     let firstEnded = false;
-    const flush = host.ingest(NAME, Number.POSITIVE_INFINITY).then(() => (firstEnded = true));
+    const flush = host.ingest(NAME).then(() => (firstEnded = true));
     await vi.waitFor(() => expect(first.state.stopped).toBe(true));
 
-    // Asks for nothing new. It must still come back after the flush in flight, not between its runs.
-    const next = host.ingest(NAME, 0);
+    // Every record is already in the flush in flight. It must still come back after it, not between its runs.
+    const next = host.ingest(NAME);
     first.release();
     await next;
     expect(firstEnded).toBe(true);
@@ -222,13 +211,13 @@ describe("a flush of a large backlog", () => {
     // The fourth L0 run starts a merge of the four, which stops at its first open.
     for (let i = 0; i < 4; i++) {
       await db.put(key(i), value(i, 100));
-      await host.ingest(NAME, Number.POSITIVE_INFINITY);
+      await host.ingest(NAME);
     }
     await vi.waitFor(() => expect(merging).toBe(true));
 
     for (let i = 4; i < 13; i++) await db.put(key(i), value(i, 100));
     const first = stopNextL0(hold);
-    const flush = host.ingest(NAME, Number.POSITIVE_INFINITY);
+    const flush = host.ingest(NAME);
     await vi.waitFor(() => expect(first.state.stopped).toBe(true));
 
     // The merge ends while the first chunk holds the ingest section, so its install queues behind it.
@@ -268,7 +257,7 @@ describe("a flush with L0 full", () => {
     };
     for (let i = 0; i < 4; i++) {
       await t.db.put(key(i), value(i, 100));
-      await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
+      await t.host.ingest(NAME);
     }
     await vi.waitFor(() => expect(merging).toBe(true));
     return () => release();
@@ -282,7 +271,7 @@ describe("a flush with L0 full", () => {
     const releaseMerge = await fullL0(t);
     await t.db.put(key(4), value(4, 100));
     let flushed = false;
-    const flush = t.host.ingest(NAME, Number.POSITIVE_INFINITY).then(() => (flushed = true));
+    const flush = t.host.ingest(NAME).then(() => (flushed = true));
 
     await vi.waitFor(async () => expect((await t.host.stats(NAME)).l0Stops).toBe(1));
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -308,7 +297,7 @@ describe("a flush with L0 full", () => {
     const t = await setup(350, 2);
     for (let i = 0; i < 4; i++) {
       await t.db.put(key(i), value(i, 100));
-      await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
+      await t.host.ingest(NAME);
     }
     expect(await l0Runs(t.published)).toHaveLength(4);
     expect((await t.host.stats(NAME)).l0Stops).toBe(2);
@@ -322,10 +311,10 @@ describe("a flush with L0 full", () => {
     };
     for (let i = 0; i < 4; i++) {
       await t.db.put(key(i), value(i, 100));
-      await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
+      await t.host.ingest(NAME);
     }
     await t.db.put(key(4), value(4, 100));
-    await t.host.ingest(NAME, Number.POSITIVE_INFINITY);
+    await t.host.ingest(NAME);
     expect(await l0Runs(t.published)).toHaveLength(5);
     expect((await t.host.stats(NAME)).l0Stops).toBeGreaterThanOrEqual(1);
     await t.db.close();

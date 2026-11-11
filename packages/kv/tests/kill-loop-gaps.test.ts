@@ -93,7 +93,7 @@ describe("an indexedDB.open that fails with UnknownError", () => {
     const { port1, port2 } = new MessageChannel();
     attachEngineHostPort(port1, new EngineHost(() => new MemoryFs()));
     const client = createPortIngestClient(port2);
-    const err = await client.ingest(NAME, 1).catch((e: unknown) => e);
+    const err = await client.ingest(NAME).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StorageUnavailableError);
     expect((err as Error).message).toMatch(/IndexedDB/);
     client.close();

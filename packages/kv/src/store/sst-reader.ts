@@ -26,7 +26,7 @@ export const PAGE_TARGET = 32 * 1024;
 const TAIL_GUESS = 128 * 1024;
 
 /** An immutable run file of known size. `OpenFile` is one. */
-export type RunFile = {
+type RunFile = {
   readonly size: number;
   /** Exactly `length` bytes at `offset`. */
   read(offset: number, length: number): Promise<Uint8Array>;

@@ -330,7 +330,7 @@ describe("risks to target first (research note)", () => {
         await ingestDb(db);
       }
       await db.close();
-      await t.host.ingest(t.name, 0, true);
+      await t.host.compact(t.name);
       const report = await checkDatabase(t.fs, t.name);
       expect(report.problems).toEqual([]);
       expect(report.orphans).toEqual([]);
@@ -384,7 +384,7 @@ describe("risks to target first: false corruption", () => {
     let n = 0;
     const flush = async () => {
       await a.put(enc.encode(`k${n % 3}`), enc.encode(`v${n++}`));
-      await host.ingest(name, Number.POSITIVE_INFINITY, true);
+      await host.ingest(name, true);
     };
     try {
       await flush();
@@ -442,7 +442,7 @@ describe("generation loads under churn", () => {
       if (!churning) return;
       for (let i = 0; i < 4; i++) {
         await a.put(enc.encode(`k${n % 5}`), enc.encode(`v${n++}`));
-        await host.ingest(name, Number.POSITIVE_INFINITY, true);
+        await host.ingest(name, true);
       }
       churns++;
     };
@@ -467,7 +467,7 @@ describe("generation loads under churn", () => {
     try {
       for (let round = 0; round < 40; round++) {
         await a.put(enc.encode("round"), enc.encode(`r${round}`));
-        await host.ingest(name, Number.POSITIVE_INFINITY, true);
+        await host.ingest(name, true);
         churning = true;
         await b.sync();
         churning = false;
@@ -497,7 +497,7 @@ describe("generation loads under churn", () => {
     let n = 0;
     const flush = async () => {
       await a.put(enc.encode(`k${n % 3}`), enc.encode(`v${n++}`));
-      await host.ingest(name, Number.POSITIVE_INFINITY, true);
+      await host.ingest(name, true);
     };
     let release!: () => void;
     let granted = false;
@@ -593,12 +593,12 @@ describe("crash leftovers", () => {
     const t = new Traced(`leak-${++runs}`);
     try {
       await t.load(ops, cut);
-      await t.host.ingest(t.name, 0, true); // the first pass sweeps
+      await t.host.compact(t.name); // the first pass sweeps
       const db = await t.open();
       await db.put(new TextEncoder().encode("x"), new TextEncoder().encode("x1"));
       await ingestDb(db);
       await db.close();
-      await t.host.ingest(t.name, 0, true);
+      await t.host.compact(t.name);
       expect((await checkDatabase(t.fs, t.name)).orphans).toEqual([]);
     } finally {
       await t.dispose();

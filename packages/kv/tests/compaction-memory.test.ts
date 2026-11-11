@@ -54,7 +54,7 @@ async function runsFlushed(
   const value = new Uint8Array(40_000);
   for (let i = 0; i < 110; i++) await tabs[0]!.put(enc.encode(`k${String(i).padStart(3, "0")}`), value);
   await ingest(tabs[0]!);
-  await host.ingest(NAME, Number.POSITIVE_INFINITY, true);
+  await host.ingest(NAME, true);
   const { flushes } = await host.stats(NAME);
   await Promise.all(tabs.map((tab) => tab.close()));
   close();

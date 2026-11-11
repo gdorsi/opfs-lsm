@@ -319,7 +319,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   }
 
   // 2. Recovery: a fresh host flushes, compacts and reclaims what the crash left.
-  await host.ingest(name, Number.POSITIVE_INFINITY, true);
+  await host.ingest(name, true);
   const report = await checkDatabase(fs, name);
   expectFiles(report, oracle, prefixes, "after recovery");
 
@@ -338,7 +338,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   // A host that swept before the write keeps runs the write retired until
   // it restarts (see "crash leftovers" in crash-enum.test.ts), so the last
   // sweep is a fresh host's.
-  await new EngineHost(() => fs).ingest(name, 0, true);
+  await new EngineHost(() => fs).compact(name);
   const after = await checkDatabase(fs, name);
   const withWrite = after.state.filter((e) => compareBytes(e.key, key) !== 0);
   expectFiles({ ...after, state: withWrite }, oracle, prefixes, "after a write on the recovered database");
