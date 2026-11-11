@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as IssuesRouteImport } from './routes/issues'
 import { Route as SpikeRouteImport } from './routes/spike'
 import { Route as ApiDetailRouteImport } from './routes/api/detail'
 import { Route as ApiEventsRouteImport } from './routes/api/events'
@@ -20,6 +21,11 @@ import { Route as ApiRowRouteImport } from './routes/api/row'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const IssuesRoute = IssuesRouteImport.update({
+  id: '/issues',
+  path: '/issues',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SpikeRoute = SpikeRouteImport.update({
@@ -55,6 +61,7 @@ const ApiRowRoute = ApiRowRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/issues': typeof IssuesRoute
   '/spike': typeof SpikeRoute
   '/api/detail': typeof ApiDetailRoute
   '/api/events': typeof ApiEventsRoute
@@ -64,6 +71,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/issues': typeof IssuesRoute
   '/spike': typeof SpikeRoute
   '/api/detail': typeof ApiDetailRoute
   '/api/events': typeof ApiEventsRoute
@@ -74,6 +82,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/issues': typeof IssuesRoute
   '/spike': typeof SpikeRoute
   '/api/detail': typeof ApiDetailRoute
   '/api/events': typeof ApiEventsRoute
@@ -85,6 +94,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/issues'
     | '/spike'
     | '/api/detail'
     | '/api/events'
@@ -94,6 +104,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/issues'
     | '/spike'
     | '/api/detail'
     | '/api/events'
@@ -103,6 +114,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/issues'
     | '/spike'
     | '/api/detail'
     | '/api/events'
@@ -113,6 +125,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  IssuesRoute: typeof IssuesRoute
   SpikeRoute: typeof SpikeRoute
   ApiDetailRoute: typeof ApiDetailRoute
   ApiEventsRoute: typeof ApiEventsRoute
@@ -128,6 +141,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/issues': {
+      id: '/issues'
+      path: '/issues'
+      fullPath: '/issues'
+      preLoaderRoute: typeof IssuesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/spike': {
@@ -177,6 +197,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  IssuesRoute: IssuesRoute,
   SpikeRoute: SpikeRoute,
   ApiDetailRoute: ApiDetailRoute,
   ApiEventsRoute: ApiEventsRoute,

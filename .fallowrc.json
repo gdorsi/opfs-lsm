@@ -34,6 +34,22 @@
       ]
     },
     {
+      "file": "examples/linearlite/src/client/hooks.ts",
+      "exports": [
+        "useBoardColumn",
+        "useStatusCounts",
+        "useIssue",
+        "useIssueDetail",
+        "IssueDetail"
+      ]
+    },
+    {
+      "file": "examples/linearlite/src/client/filter.ts",
+      "exports": [
+        "SORT_FIELDS"
+      ]
+    },
+    {
       "file": "packages/kv/src/store/engine.ts",
       "exports": [
         "encodeRun",

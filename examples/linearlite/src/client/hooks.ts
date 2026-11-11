@@ -1,0 +1,170 @@
+import { and, count, createLiveQueryCollection, eq, ilike, inArray, type Ref } from "@tanstack/db";
+import { useLiveQuery } from "@tanstack/react-db";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { Body, Comment, Issue, StatusCode, Stream } from "../domain/model.ts";
+import type { IssueFilter } from "./filter.ts";
+import { openedStore, type Store } from "./store.ts";
+import { fetchDetail } from "./sync.ts";
+
+const LIST_WINDOW = 100;
+const COLUMN_WINDOW = 50;
+
+/** The filter as a `where`. Tombstones are always out. */
+function matches(i: Ref<Issue>, filter: IssueFilter, status?: StatusCode) {
+  const terms = [
+    eq(i.deleted, false),
+    ...(status !== undefined ? [eq(i.status, status)] : filter.status.length > 0 ? [inArray(i.status, [...filter.status])] : []),
+    ...(filter.priority.length > 0 ? [inArray(i.priority, [...filter.priority])] : []),
+    ...(filter.q !== "" ? [ilike(i.title, `%${filter.q}%`)] : []),
+  ];
+  const [first, second, ...rest] = terms;
+  return second === undefined ? first! : and(first!, second, ...rest);
+}
+
+type IssueWindow = { readonly rows: readonly Issue[]; readonly offset: number; setRange(start: number, end: number): void };
+
+const windowQuery = (issues: Store["issues"], filter: IssueFilter, size: number, status?: StatusCode) =>
+  createLiveQueryCollection((q) =>
+    q
+      .from({ i: issues })
+      .where(({ i }) => matches(i, filter, status))
+      .orderBy(({ i }) => (status === undefined ? i[filter.sort] : i.kanbanorder), status === undefined ? filter.dir : "asc")
+      .limit(size),
+  );
+
+/** An ordered live query that holds only `[offset, offset + limit)` and moves with `setWindow`. `key` names the query. */
+function useWindow(key: string, build: () => ReturnType<typeof windowQuery>, size: number): IssueWindow {
+  const query = useMemo(build, [key]);
+  const { data } = useLiveQuery(query);
+  const [offset, setOffset] = useState(0);
+  useEffect(() => setOffset(0), [query]);
+  const setRange = useCallback(
+    (start: number, end: number) => {
+      const next = { offset: Math.max(0, start), limit: Math.max(size, end - start) };
+      const current = query.utils.getWindow();
+      if (current?.offset === next.offset && current.limit === next.limit) return;
+      void query.utils.setWindow(next);
+      setOffset(next.offset);
+    },
+    [query, size],
+  );
+  return { rows: data, offset, setRange };
+}
+
+/**
+ * The list: `rows` are the issues at `[offset, offset + rows.length)` of the filtered, sorted result and `total` is
+ * its length. Call `setRange` with the virtualizer's visible range; the window keeps at least 100 rows.
+ */
+export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly total: number } {
+  const { issues } = openedStore();
+  const view = useWindow(JSON.stringify(filter), () => windowQuery(issues, filter, LIST_WINDOW), LIST_WINDOW);
+  const { data } = useLiveQuery((q) =>
+    q
+      .from({ i: issues })
+      .where(({ i }) => matches(i, filter))
+      .select(({ i }) => ({ n: count(i.id) }))
+      .findOne(),
+  );
+  return { ...view, total: data?.n ?? 0 };
+}
+
+/** One board column in `kanbanorder`, from the top. Grow it with `setRange(0, n)` as the column scrolls. */
+export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWindow {
+  const { issues } = openedStore();
+  return useWindow(JSON.stringify([status, filter]), () => windowQuery(issues, filter, COLUMN_WINDOW, status), COLUMN_WINDOW);
+}
+
+/** Issues per status under the filter, indexed by status code. */
+export function useStatusCounts(filter: IssueFilter): readonly number[] {
+  const { issues } = openedStore();
+  const { data } = useLiveQuery((q) =>
+    q
+      .from({ i: issues })
+      .where(({ i }) => matches(i, filter))
+      .groupBy(({ i }) => i.status)
+      .select(({ i }) => ({ status: i.status, n: count(i.id) })),
+  );
+  return useMemo(() => {
+    const counts = [0, 0, 0, 0, 0];
+    for (const { status, n } of data) counts[status] = n;
+    return counts;
+  }, [data]);
+}
+
+/** The issue summary, from memory. Undefined while the store loads and for an unknown or deleted id. */
+export function useIssue(id: string): Issue | undefined {
+  const { issues } = openedStore();
+  const { data } = useLiveQuery((q) =>
+    q
+      .from({ i: issues })
+      .where(({ i }) => and(eq(i.id, id), eq(i.deleted, false)))
+      .findOne(),
+  );
+  return data;
+}
+
+export type IssueDetail =
+  | { readonly kind: "loading" }
+  /** Neither this replica nor the server has a body for the issue. */
+  | { readonly kind: "missing"; readonly comments: readonly Comment[] }
+  | { readonly kind: "ready"; readonly body: Body; readonly comments: readonly Comment[] };
+
+/**
+ * The description and comments, read from kv while the view is mounted. A body this replica lacks (backfill has not
+ * reached it) is fetched from the server once.
+ */
+export function useIssueDetail(id: string): IssueDetail {
+  const { bodies, comments } = openedStore();
+  const body = useLiveQuery((q) =>
+    q
+      .from({ b: bodies })
+      .where(({ b }) => eq(b.id, id))
+      .findOne(),
+  );
+  const thread = useLiveQuery((q) =>
+    q
+      .from({ c: comments })
+      .where(({ c }) => and(eq(c.issue_id, id), eq(c.deleted, false)))
+      .orderBy(({ c }) => c.created, "asc"),
+  );
+  const [fetched, setFetched] = useState<{ id: string; done: boolean } | undefined>();
+  const absent = body.isReady && body.data === undefined;
+  useEffect(() => {
+    if (!absent || fetched?.id === id) return;
+    setFetched({ id, done: false });
+    fetchDetail(id)
+      .catch((err: unknown) => console.warn(`linearlite could not fetch issue ${id}`, err))
+      .finally(() => setFetched((f) => (f?.id === id ? { id, done: true } : f)));
+  }, [absent, fetched, id]);
+
+  if (!body.isReady || !thread.isReady) return { kind: "loading" };
+  if (body.data) return { kind: "ready", body: body.data, comments: thread.data };
+  return fetched?.id === id && fetched.done ? { kind: "missing", comments: thread.data } : { kind: "loading" };
+}
+
+export type SyncStatus =
+  /** No leader has written sync state yet: a fresh profile before its first response. */
+  | { readonly kind: "starting"; readonly unsynced: number }
+  | { readonly kind: "offline"; readonly unsynced: number }
+  /** `cursor` of `head` is how far the stream has pulled, in server versions. */
+  | { readonly kind: "syncing"; readonly stream: Stream; readonly cursor: number; readonly head: number; readonly unsynced: number }
+  | { readonly kind: "idle"; readonly unsynced: number };
+
+/** For the status bar, in every tab: the leader writes the state to kv, and each tab reads it. */
+export function useSyncStatus(): SyncStatus {
+  const { sync, dirtyIssues, outbox } = openedStore();
+  const { data: state } = useLiveQuery((q) =>
+    q
+      .from({ s: sync })
+      .where(({ s }) => eq(s.id, "sync"))
+      .findOne(),
+  );
+  const { data: dirty } = useLiveQuery(dirtyIssues);
+  const { data: marks } = useLiveQuery(outbox);
+  const unsynced = dirty.length + marks.length;
+  if (!state) return { kind: "starting", unsynced };
+  if (!state.online) return { kind: "offline", unsynced };
+  const behind = (["issues", "bodies", "comments"] as const).find((s) => !state.caughtUp[s]);
+  if (behind) return { kind: "syncing", stream: behind, cursor: state.cursors[behind], head: state.head, unsynced };
+  return { kind: "idle", unsynced };
+}
