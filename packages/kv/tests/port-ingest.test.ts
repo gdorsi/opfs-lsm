@@ -1,15 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  openHarnessDb,
+  __resetMemoryFsForTests,
+  ingest as ingestDb,
   EngineHost,
   MemoryFs,
   attachEngineHostPort,
   createLocalIngestClient,
-  createPortIngestClient
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests,
-  ingest as ingestDb,
+  createPortIngestClient,
 } from "../src/testing.js";
 import { CorruptDatabaseError, OpfsLsmError } from "../src/errors.js";
 import { loadLatestGeneration } from "../src/store/generation.js";

@@ -84,18 +84,3 @@ export function bloomMightContain(filter: BloomFilter, key: Uint8Array): boolean
   }
   return true;
 }
-
-export function encodeBloom(filter: BloomFilter): Uint8Array {
-  const out = new Uint8Array(4 + filter.bits.byteLength);
-  new DataView(out.buffer).setUint16(0, filter.hashCount, true);
-  new DataView(out.buffer).setUint16(2, filter.bits.byteLength, true);
-  out.set(filter.bits, 4);
-  return out;
-}
-
-export function decodeBloom(buf: Uint8Array): BloomFilter {
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const hashCount = view.getUint16(0, true);
-  const len = view.getUint16(2, true);
-  return { hashCount, bits: buf.slice(4, 4 + len) };
-}

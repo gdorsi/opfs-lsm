@@ -15,8 +15,13 @@ import "fake-indexeddb/auto";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
-import { openHarnessDb, ingest } from "../src/testing.js";
+import {
+  openHarnessDb,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../src/testing.js";
 import { encodeSst as encodeSstWasm, ensureEngine, engineUsingWasm } from "../src/store/engine.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
 import { mergeRuns } from "../tests/runs.js";

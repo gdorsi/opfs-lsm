@@ -1,13 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  EngineHost,
-  MemoryFs,
-  createLocalIngestClient
-} from "../src/index.js";
-import {
   openHarnessDb,
   __resetMemoryFsForTests,
   ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
 } from "../src/testing.js";
 
 const enc = new TextEncoder();

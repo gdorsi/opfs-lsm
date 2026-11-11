@@ -87,7 +87,7 @@ Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A h
 | `ConstraintError` | `constraint` | A key, value or batch is not valid or is over a limit. | Fix the call. |
 | `ClosedError` | `closed` | The handle is closed. | Open a new one. |
 
-Advanced exports include `prefixBound`, `EngineHost`, `BrowserFs`, `MemoryFs`, and the error classes above. The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
+`@opfs-lsm/kv` also exports `prefixBound` and the error classes above. The harness that tests use (`EngineHost`, `MemoryFs`, `openHarnessDb`) is in `@opfs-lsm/kv/testing`. The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
 
 ## `@opfs-lsm/docstore`
 

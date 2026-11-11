@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../src/index.js";
 import type { HostBudget } from "../src/host/budget.js";
 import {
   encodeSst,
@@ -11,7 +10,15 @@ import {
   type MergeSpec,
 } from "../src/store/engine.js";
 import { settle as settleRead } from "../src/store/cursor.js";
-import { __resetMemoryFsForTests, openHarnessDb, readStats, ingest } from "../src/testing.js";
+import {
+  __resetMemoryFsForTests,
+  openHarnessDb,
+  readStats,
+  ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../src/testing.js";
 import { drain, readerOfBytes } from "./runs.js";
 
 const MiB = 1024 * 1024;

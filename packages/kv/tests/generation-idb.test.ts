@@ -1,12 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  MemoryFs
-} from "../src/index.js";
-import {
-  openHarnessDb,
-  __resetMemoryFsForTests,
-  ingest,
-} from "../src/testing.js";
+import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 
 const NAME = "generation-idb";

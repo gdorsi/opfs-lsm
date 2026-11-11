@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import {
-  EngineHost,
-  MemoryFs,
-  createLocalIngestClient,
-  type AsyncFs,
-  type Db,
-  type IngestPolicy
-} from "../src/index.js";
+import { type Db } from "../src/index.js";
 import {
   openHarnessDb,
   __resetMemoryFsForTests,
   ingest,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+  type AsyncFs,
+  type IngestPolicy,
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";

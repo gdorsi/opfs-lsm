@@ -400,7 +400,7 @@ function setEngine(next: FlatEngine | undefined): void {
 }
 
 /**
- * Benchmarks swap the engine by setting `globalThis.__OPFS_LSM_ENGINE_URL`
+ * A test swaps the engine by setting `globalThis.__OPFS_LSM_ENGINE_URL`
  * (a URL or path of a conformant `.wasm`) before the first engine call in
  * that context; it is read only here.
  */

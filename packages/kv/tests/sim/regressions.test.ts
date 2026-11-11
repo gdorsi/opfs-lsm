@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { AsyncFs } from "../../src/index.js";
-import { EngineHost, MemoryFs, createLocalIngestClient } from "../../src/index.js";
-import { openHarnessDb, ingest as ingestDb } from "../../src/testing.js";
+import {
+  openHarnessDb,
+  ingest as ingestDb,
+  type AsyncFs,
+  EngineHost,
+  MemoryFs,
+  createLocalIngestClient,
+} from "../../src/testing.js";
 import { deleteWal } from "./check-database.js";
 
 /**

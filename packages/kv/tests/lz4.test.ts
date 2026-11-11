@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep } from "../src/host/compact.js";
-import { MemoryFs } from "../src/index.js";
 import { decodeSst as decodeWasm, encodeRun, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { publishGeneration } from "../src/store/generation.js";
 import { lz4DecompressJs, useLz4Decoder } from "../src/store/lz4.js";
@@ -10,6 +9,7 @@ import { settle } from "../src/store/cursor.js";
 import { decodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
 import { drain, publish, readerOfBytes } from "./runs.js";
+import { MemoryFs } from "../src/testing.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

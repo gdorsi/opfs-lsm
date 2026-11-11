@@ -5,8 +5,14 @@
  * run asks for it. The wasm engine must be live, or L2 runs are not LZ4 and
  * every number is off.
  */
-import { engineUsingWasm, ensureEngine, openDb, type Db } from "@opfs-lsm/kv";
-import { readStats, settle, type KvStats } from "@opfs-lsm/kv/testing";
+import { openDb, type Db } from "@opfs-lsm/kv";
+import {
+  readStats,
+  settle,
+  type KvStats,
+  engineUsingWasm,
+  ensureEngine,
+} from "@opfs-lsm/kv/testing";
 
 export async function openKv(name: string): Promise<Db> {
   const db = await openDb({ name, ...compactionMemory() });

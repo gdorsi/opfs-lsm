@@ -3,8 +3,6 @@ import {
   bloomAdd,
   bloomMightContain,
   createBloom,
-  decodeBloom,
-  encodeBloom,
 } from "../src/store/bloom.js";
 
 const enc = new TextEncoder();
@@ -23,13 +21,5 @@ describe("bloom", () => {
       if (bloomMightContain(filter, enc.encode(`miss${i}`))) falsePos++;
     }
     expect(falsePos).toBeLessThan(40);
-  });
-
-  it("round-trips encoding", () => {
-    const filter = createBloom(10);
-    bloomAdd(filter, enc.encode("a"));
-    const again = decodeBloom(encodeBloom(filter));
-    expect(bloomMightContain(again, enc.encode("a"))).toBe(true);
-    expect(again.hashCount).toBe(filter.hashCount);
   });
 });
