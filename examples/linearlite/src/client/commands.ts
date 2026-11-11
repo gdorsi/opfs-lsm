@@ -1,3 +1,4 @@
+import { eq, queryOnce } from "@tanstack/db";
 import { applyLocal, kanbanBetween } from "../domain/merge.ts";
 import {
   commentKey,
@@ -61,16 +62,19 @@ export async function createIssue(input: { title: string; description: string; s
   const store = await openStore();
   const id = crypto.randomUUID();
   const clock = tick();
-  let first: string | null = null;
-  for (const i of store.issues.values()) {
-    if (i.status === input.status && (first === null || i.kanbanorder < first)) first = i.kanbanorder;
-  }
+  const [top] = await queryOnce((q) =>
+    q
+      .from({ i: store.issues })
+      .where(({ i }) => eq(i.status, input.status))
+      .orderBy(({ i }) => i.kanbanorder, "asc")
+      .limit(1),
+  );
   const issue: Issue = {
     id,
     title: input.title,
     status: input.status,
     priority: input.priority,
-    kanbanorder: kanbanBetween(null, first),
+    kanbanorder: kanbanBetween(null, top?.kanbanorder ?? null),
     username: store.user,
     created: clock,
     modified: clock,
