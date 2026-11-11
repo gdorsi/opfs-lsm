@@ -68,13 +68,18 @@ A row that is not an `ArrayBuffer`, or that ends inside an op, is rejected as co
 
 ## Append
 
-`put`, `delete` and `batch` append in one `readwrite` transaction over `wal` and `meta`:
+`put`, `delete` and `batch` append by group commit. A tab has at most one append transaction
+open. Appends that arrive while it is active join it, and appends that arrive while it commits
+form the next group. A group is one `readwrite` transaction over `wal` and `meta`:
 
 1. Read the `head` floor from `meta`.
-2. `add` the encoded ops with no key. The key generator of the store assigns the seq.
-3. If the seq is not past the floor, abort and append again at an explicit key, `head + 1`.
+2. `add` each record of the group, in call order, with no key. The key generator of the store
+   assigns each its seq.
+3. If a seq is not past the floor, abort, and each write of the group appends again on its own
+   at an explicit key, `head + 1`.
 
-The record is the only write. The head, the seq of the last committed batch, is the last key in
+The records are the only writes. A group commits or aborts as a whole, and a failed group fails
+every write in it. The head, the seq of the last committed batch, is the last key in
 `wal`, or the `head` floor when that is higher. Only recovery writes the floor, so step 3 aborts
 only after a recovery.
 
@@ -92,7 +97,8 @@ same seq. An aborted transaction reverts the key generator, so committed seqs st
 `update(keys, body)` reads the tail, applies it to the memtable, runs the synchronous `body` and
 adds the batch at `head + 1`, all in one transaction. It cannot conflict with another writer.
 
-The ack is the `complete` event of the transaction, at the default IndexedDB durability. A
+The ack is the `complete` event of the transaction, at the default IndexedDB durability. The
+writes of a group are acked in seq order. A
 commit survives a tab crash. It may not survive a power loss. The record joins the memtable of
 the tab before the ack resolves. If its seq is not the next one, another tab appended first, and
 the tab reads the tail before it resolves. At the ack, the writer sees its own write and every

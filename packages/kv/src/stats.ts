@@ -9,6 +9,11 @@ export type KvStats = {
   tab: {
     /** WAL records this Db handle appended. */
     walAppends: number;
+    /**
+     * Group-commit transactions (puts, deletes and batches; not updates)
+     * by size: entry i counts groups of 2^i to 2^(i+1) - 1 records.
+     */
+    walGroupSizes: number[];
     /** Encoded record bytes handed to IndexedDB, excluding meta puts. */
     walBytes: number;
     /** This tab's OPFS IO (open load, installs). */
@@ -29,6 +34,7 @@ export async function readStats(db: Db): Promise<KvStats> {
   return {
     tab: {
       walAppends: wal.appendedRecords,
+      walGroupSizes: [...wal.groupSizes],
       walBytes: wal.appendedBytes,
       fs: structuredClone(fs.counters),
     },
