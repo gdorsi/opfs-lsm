@@ -1,5 +1,6 @@
 import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
+import { followCollection, type CollectionChange } from "./changes.js";
 import { decodeDoc, diffEntries, encodeDoc, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { CATALOG_KEY, bytesEqual, concat, idBytes, keyString, parseId, type DocId } from "./keys.js";
@@ -78,7 +79,16 @@ export interface Collection<T extends JsonDoc, Ix> {
    * whatever is written meanwhile. `body` runs once. A write made inside
    * `body` is not visible to its snapshot.
    */
-  view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R>;}
+  view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R>;
+  /**
+   * Every change to this collection's documents, from this handle, other
+   * handles and other tabs, in kv seq order. Index entries are not reported.
+   * Returns the unsubscribe function. To read the collection and then follow
+   * it without a hole, subscribe first, then `view`, and ignore events with a
+   * seq at or below `snap.seq`.
+   */
+  changes(listener: (change: CollectionChange<T>) => void): () => void;
+}
 
 export const RETRY: unique symbol = Symbol("retry");
 
@@ -343,5 +353,9 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     return this.store.kv.view(async (snap) =>
       body(new SnapshotReader<T, Ix>(snap, this.store.collectionIn(await snap.get(CATALOG_KEY), this.name))),
     );
+  }
+
+  changes(listener: (change: CollectionChange<T>) => void): () => void {
+    return followCollection(this.store.kv, this.name, listener);
   }
 }

@@ -14,6 +14,18 @@ export function openKv(name: string): Promise<Db> {
   return openHarnessDb({ name, forceMemory: true, maxWalBytes: 1 << 30 });
 }
 
+/** A handle that gets no BroadcastChannel message, so it learns of other writes only through `sync()`. */
+export async function openKvWithoutBus(name: string): Promise<Db> {
+  const g = globalThis as { BroadcastChannel?: unknown };
+  const real = g.BroadcastChannel;
+  g.BroadcastChannel = undefined;
+  try {
+    return await openKv(name);
+  } finally {
+    g.BroadcastChannel = real;
+  }
+}
+
 export async function docstoreKeys(kv: Db): Promise<Entry[]> {
   const out: Entry[] = [];
   for await (const e of kv.range({ start: Uint8Array.of(ROOT), endExclusive: Uint8Array.of(ROOT + 1) })) out.push(e);

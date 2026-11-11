@@ -1,6 +1,7 @@
 /**
  * Random histories of writes, clears, reads, ingests and reopens on one
- * database, checked against an in-memory map of the documents.
+ * database, checked against an in-memory map of the documents. A reader that
+ * follows the change feed from a snapshot must end up with the same map.
  *
  * Replay a failure: DOCSTORE_MODEL_SEED=<seed> DOCSTORE_MODEL_PATH=<path> pnpm exec vitest run tests/model.test.ts
  * Sweep longer:     DOCSTORE_MODEL_RUNS=2000 pnpm exec vitest run tests/model.test.ts
@@ -11,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { openDocStore, type DocStore } from "../src/index.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
 import { MODEL, checkQuery, queryArb, schema, textArb, type Doc } from "./docs.js";
+import { mirror } from "./mirror.js";
 import { codeOf, docstoreKeys, freshName, openKv, storedCatalog } from "./harness.js";
 import { expected, stored } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
@@ -84,6 +86,7 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
   let store: DocStore<typeof schema> = await openDocStore(kv, schema);
   let model = new Map<string, Doc>();
   const c = () => store.collection("docs");
+  let reader = mirror(c());
   try {
     for (const cmd of cmds) {
       switch (cmd.kind) {
@@ -163,12 +166,15 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
           break;
         case "reopen":
           if (cmd.idle) await store.whenIdle();
+          reader.stop();
           await kv.close();
           kv = await openKv(name);
           store = await openDocStore(kv, schema);
+          reader = mirror(c());
           break;
       }
     }
+    await reader.reaches(model);
     await store.whenIdle();
     const docs = [...model.values()];
     const entries = Object.values(MODEL).reduce((n, ix) => n + expected(docs, ix, {}).length, 0);

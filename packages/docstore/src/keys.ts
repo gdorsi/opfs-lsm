@@ -102,6 +102,12 @@ export function bytesEqual(a: Uint8Array | undefined, b: Uint8Array | undefined)
   return true;
 }
 
+export function hasPrefix(key: Uint8Array, prefix: Uint8Array): boolean {
+  if (key.length < prefix.length) return false;
+  for (let i = 0; i < prefix.length; i++) if (key[i] !== prefix[i]) return false;
+  return true;
+}
+
 export function keyString(key: Uint8Array): string {
   return String.fromCharCode.apply(null, key as unknown as number[]);
 }
