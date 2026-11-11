@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryFs } from "../src/index.js";
-import { openHarnessDb, readStats, __resetMemoryFsForTests } from "../src/testing.js";
+import { ingest, MemoryFs, openHarnessDb, readStats, __resetMemoryFsForTests } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
 import { IdBWal } from "../src/idb/wal.js";
 
@@ -106,7 +105,7 @@ describe("WAL group commit", () => {
     const fs = new MemoryFs();
     const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, ingestPolicy: quiet });
     await db.put(utf("k0"), utf("v0"));
-    await db.ingest();
+    await ingest(db);
     const floor = await raiseFloor(10);
     const seqs = await Promise.all([1, 2, 3].map((i) => db.put(utf(`k${i}`), utf(`v${i}`))));
     expect(seqs).toEqual([floor + 1, floor + 2, floor + 3]);
