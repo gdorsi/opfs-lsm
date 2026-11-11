@@ -21,7 +21,7 @@ pnpm rich-text:example
 
 ## Add a changeset when you change a published package
 
-The repository publishes four packages to npm: `@opfs-lsm/kv`, `@opfs-lsm/tanstack-db`, `@opfs-lsm/yjs`, and `@opfs-lsm/automerge`. `@opfs-lsm/docstore` is a private experiment and never publishes. [Changesets](https://github.com/changesets/changesets) versions them and writes each package's `CHANGELOG.md`.
+The repository publishes five packages to npm: `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/tanstack-db`, `@opfs-lsm/yjs`, and `@opfs-lsm/automerge`. [Changesets](https://github.com/changesets/changesets) versions them and writes each package's `CHANGELOG.md`.
 
 If your pull request changes what one of these packages does, add a changeset:
 

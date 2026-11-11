@@ -1,8 +1,7 @@
 {
   "name": "@opfs-lsm/docstore",
   "version": "0.1.0",
-  "private": true,
-  "description": "Experiment, not published: a document store with declared indexes, used to test @opfs-lsm/kv",
+  "description": "A document store with declared indexes, paged queries, snapshot reads and a change feed, on @opfs-lsm/kv",
   "keywords": [
     "opfs",
     "indexeddb",
@@ -34,7 +33,11 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build",
     "test": "tsc -p tsconfig.test.json && vitest run"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*"

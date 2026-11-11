@@ -94,9 +94,9 @@ If read and write performance of the DB is not a concern in your app.
 | [`@opfs-lsm/tanstack-db`](packages/tanstack-db) | Persistence for TanStack DB collections, with other tabs' writes arriving live. | Beta |
 | [`@opfs-lsm/yjs`](packages/yjs) | A Yjs provider shaped like y-indexeddb. | Beta |
 | [`@opfs-lsm/automerge`](packages/automerge) | A storage adapter for automerge-repo. | Beta |
-| [`@opfs-lsm/docstore`](packages/docstore) | A document store with declared indexes. | Experiment, not published |
+| [`@opfs-lsm/docstore`](packages/docstore) | A document store with declared indexes, paged queries, snapshot reads and a change feed. | Beta |
 
-Each adapter keeps many documents or collections in one kv database. `@opfs-lsm/docstore` exists to test the kv API from the point of view of a query layer. It can change heavily or go away.
+Each adapter keeps many documents or collections in one kv database. `@opfs-lsm/docstore` is the query layer on top of kv: JSON documents in collections, with indexes declared in a versioned schema.
 
 The packages are not on npm yet. Until the first release, build them from source as [CONTRIBUTING.md](CONTRIBUTING.md) describes.
 
