@@ -13,3 +13,6 @@ packages/kv/.arena-readpath
 examples/todo/dist
 examples/rich-text/dist
 .claude/worktrees
+examples/linearlite/dist
+examples/linearlite/.tanstack
+examples/linearlite/data
