@@ -25,12 +25,16 @@ const replay = env["DOCSTORE_MODEL_SEED"]
 type Cmd =
   | { readonly kind: "putMany"; readonly docs: readonly Doc[] }
   | { readonly kind: "modify"; readonly id: string; readonly patch: Partial<Doc> }
+  | { readonly kind: "modifyMany"; readonly slots: readonly Slot[] }
   | { readonly kind: "deleteMany"; readonly ids: readonly string[] }
   | { readonly kind: "clear" }
   | { readonly kind: "query"; readonly index: string | undefined; readonly q: QueryInput; readonly page: number }
   | { readonly kind: "getMany"; readonly ids: readonly string[] }
   | { readonly kind: "ingest" }
   | { readonly kind: "reopen"; readonly idle: boolean };
+
+/** What one slot of a `modifyMany` call does to its document. */
+type Slot = { readonly id: string; readonly act: "set" | "delete" | "leave"; readonly patch: Partial<Doc> };
 
 const ids = fc.constantFrom("a", "aa", "ab", "b", "\u0000", "a\u0000", "😀", "z");
 const uArb = fc.option(fc.constantFrom<Scalar>(null, true, 1, -0, "x", "y"), { nil: undefined });
@@ -46,6 +50,15 @@ const docArb: fc.Arbitrary<Doc> = fc.record({ id: ids, ...fields }, { requiredKe
 const cmdArb: fc.Arbitrary<Cmd> = fc.oneof(
   { weight: 6, arbitrary: fc.uniqueArray(docArb, { selector: (d) => d.id, minLength: 1, maxLength: 4 }).map((docs) => ({ kind: "putMany" as const, docs })) },
   { weight: 3, arbitrary: fc.record({ id: ids, patch: fc.record(fields, { requiredKeys: [] }) }).map((m) => ({ kind: "modify" as const, ...m })) },
+  {
+    weight: 3,
+    arbitrary: fc
+      .uniqueArray(
+        fc.record({ id: ids, act: fc.constantFrom("set", "set", "delete", "leave"), patch: fc.record(fields, { requiredKeys: [] }) }),
+        { selector: (s) => s.id, minLength: 1, maxLength: 4 },
+      )
+      .map((slots) => ({ kind: "modifyMany" as const, slots })),
+  },
   { weight: 2, arbitrary: fc.array(ids, { minLength: 1, maxLength: 3 }).map((ids) => ({ kind: "deleteMany" as const, ids })) },
   { weight: 1, arbitrary: fc.constant({ kind: "clear" as const }) },
   { weight: 5, arbitrary: fc.tuple(queryArb, fc.integer({ min: 1, max: 5 })).map(([{ index, q }, page]) => ({ kind: "query" as const, index, q, page })) },
@@ -98,6 +111,32 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
             expect(await codeOf(c().modify(cmd.id, fn))).toBe("unique");
           } else {
             expect(await c().modify(cmd.id, fn)).toEqual(doc);
+            model = next;
+          }
+          break;
+        }
+        case "modifyMany": {
+          const ids = cmd.slots.map((s) => s.id);
+          const next = new Map(model);
+          const results = cmd.slots.map((s) => {
+            if (s.act === "leave") return undefined;
+            if (s.act === "delete") return null;
+            return { ...next.get(s.id), ...s.patch, id: s.id } as Doc;
+          });
+          results.forEach((r, i) => {
+            if (r === null) next.delete(ids[i]!);
+            else if (r) next.set(ids[i]!, stored(r));
+          });
+          let given: readonly (Doc | undefined)[] = [];
+          const fn = (docs: readonly (Doc | undefined)[]) => {
+            given = structuredClone(docs);
+            return results;
+          };
+          if (sharesUnique(next.values())) {
+            expect(await codeOf(c().modifyMany(ids, fn))).toBe("unique");
+          } else {
+            await c().modifyMany(ids, fn);
+            expect(given).toEqual(ids.map((id) => model.get(id)));
             model = next;
           }
           break;

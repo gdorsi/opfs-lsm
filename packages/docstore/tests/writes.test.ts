@@ -1,7 +1,7 @@
 import type { Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
 import { defineSchema, openDocStore, type Query } from "../src/index.js";
-import { codeOf, freshName, openKv, recording } from "./harness.js";
+import { codeOf, freshName, openKv, recording, wrap } from "./harness.js";
 
 type Note = {
   id: string;
@@ -161,6 +161,167 @@ describe("modify", () => {
     await c.put({ id: "1", n: 1 });
     expect(await codeOf(c.modify("1", (d) => ({ ...d, id: "2", n: 2 })))).toBe("document");
     expect(await c.getMany(["1", "2"])).toEqual([{ id: "1", n: 1 }, undefined]);
+  });
+});
+
+describe("modifyMany", () => {
+  it("creates, replaces, deletes and leaves documents in one kv transaction, with every index in step", async () => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const { db, updates } = recording(kv);
+    const c = (await openDocStore(db, schema)).collection("notes");
+    const replaced: Note = { id: "replace", title: "old", createdAt: 1, slug: "r", tags: ["x"] };
+    const deleted: Note = { id: "delete", title: "gone", createdAt: 2, slug: "d", tags: ["y"] };
+    const left: Note = { id: "leave", title: "same", createdAt: 3, slug: "l" };
+    await c.putMany([replaced, deleted, left]);
+    updates.length = 0;
+
+    let given: unknown;
+    await c.modifyMany(["create", "replace", "delete", "leave"], (docs) => {
+      given = docs;
+      return [
+        { id: "create", title: "new", createdAt: 4, slug: "c" },
+        { id: "replace", title: "new", createdAt: 5, slug: "r2", tags: ["z"] },
+        null,
+        undefined,
+      ];
+    });
+
+    expect(given).toEqual([undefined, replaced, deleted, left]);
+    expect(updates).toHaveLength(1);
+    expect(await c.getMany(["create", "replace", "delete", "leave"])).toEqual([
+      { id: "create", title: "new", createdAt: 4, slug: "c" },
+      { id: "replace", title: "new", createdAt: 5, slug: "r2", tags: ["z"] },
+      undefined,
+      left,
+    ]);
+    expect((await c.queryIds({ index: "byCreated" })).ids).toEqual(["leave", "create", "replace"]);
+    expect((await c.queryIds({ index: "bySlug" })).ids).toEqual(["create", "leave", "replace"]);
+    expect((await c.queryIds({ index: "byTag" })).ids).toEqual(["replace"]);
+    expect(await c.count({ index: "byTitle" })).toBe(3);
+  });
+
+  it("writes no kv op when every slot is left as is or already holds what fn returned", async () => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const { db, updates } = recording(kv);
+    const c = (await openDocStore(db, schema)).collection("notes");
+    await c.putMany([{ id: "a", n: 1 }, { id: "b", n: 2 }]);
+    updates.length = 0;
+    await c.modifyMany(["a", "b", "missing"], ([a]) => [a, undefined, null]);
+    expect(updates).toEqual([{ reads: 4, puts: 0, deletes: 0 }]);
+  });
+
+  it("accepts no ids", async () => {
+    const { notes: c } = await notes();
+    await c.modifyMany([], (docs) => docs);
+    expect(await c.count({})).toBe(0);
+  });
+
+  it.each<[string, readonly string[], (docs: readonly (Note | undefined)[]) => readonly (Note | null | undefined)[]]>([
+    ["a repeated id", ["a", "a"], () => [{ id: "a", n: 9 }, { id: "a", n: 9 }]],
+    ["a result with too few entries", ["a", "b"], () => [{ id: "a", n: 9 }]],
+    ["a result with too many entries", ["a"], () => [{ id: "a", n: 9 }, undefined]],
+    ["a document under another id", ["a", "b"], () => [{ id: "a", n: 9 }, { id: "a", n: 9 }]],
+    ["a bad id", ["a", ""], () => [{ id: "a", n: 9 }, null]],
+    ["a result that is not an array", ["a"], () => ({ id: "a", n: 9 }) as never],
+    ["a value an index cannot hold", ["a", "b"], () => [{ id: "a", n: 9 }, { id: "b", title: { x: 1 } as unknown as string }]],
+  ])("throws document for %s, and stores nothing", async (_, ids, fn) => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const { db, updates } = recording(kv);
+    const c = (await openDocStore(db, schema)).collection("notes");
+    await c.putMany([{ id: "a", n: 1 }, { id: "b", n: 2 }]);
+    updates.length = 0;
+    expect(await codeOf(c.modifyMany(ids, fn))).toBe("document");
+    expect(updates).toEqual([]);
+    expect(await c.getMany(["a", "b"])).toEqual([{ id: "a", n: 1 }, { id: "b", n: 2 }]);
+  });
+
+  it("does not call fn for a repeated id, and passes on what fn throws without storing anything", async () => {
+    const { notes: c } = await notes();
+    await c.put({ id: "a", n: 1 });
+    let calls = 0;
+    await codeOf(c.modifyMany(["a", "a"], () => (calls++, [])));
+    expect(calls).toBe(0);
+    await expect(
+      c.modifyMany(["a"], () => {
+        throw new Error("from fn");
+      }),
+    ).rejects.toThrow("from fn");
+    expect(await c.get("a")).toEqual({ id: "a", n: 1 });
+  });
+
+  it("stores nothing of a call that takes a unique value, whether its owner is outside the call or left as is in it", async () => {
+    const { notes: c } = await notes();
+    await c.putMany([
+      { id: "a", slug: "x" },
+      { id: "b", slug: "y" },
+      { id: "c", slug: "z" },
+    ]);
+    const before = await c.getMany(["a", "b", "c"]);
+    expect(await codeOf(c.modifyMany(["a", "b"], ([a, b]) => [{ ...a!, slug: "z" }, { ...b!, n: 1 }]))).toBe("unique");
+    expect(await codeOf(c.modifyMany(["a", "b"], ([a, b]) => [{ ...a!, slug: "y", n: 1 }, b]))).toBe("unique");
+    expect(await codeOf(c.modifyMany(["a", "b"], () => [{ id: "a", slug: "s" }, { id: "b", slug: "s" }]))).toBe("unique");
+    expect(await c.getMany(["a", "b", "c"])).toEqual(before);
+    expect((await c.queryIds({ index: "bySlug" })).ids).toEqual(["a", "b", "c"]);
+  });
+
+  it("lets a call swap unique values between its documents, and frees a value it deletes", async () => {
+    const { notes: c } = await notes();
+    await c.putMany([
+      { id: "a", slug: "x" },
+      { id: "b", slug: "y" },
+      { id: "c", slug: "z" },
+    ]);
+    await c.modifyMany(["a", "b", "c"], ([a, b]) => [{ ...a!, slug: "y" }, { ...b!, slug: "x" }, null]);
+    await c.put({ id: "d", slug: "z" });
+    expect((await c.query({ index: "bySlug" })).docs).toEqual([
+      { id: "b", slug: "x" },
+      { id: "a", slug: "y" },
+      { id: "d", slug: "z" },
+    ]);
+  });
+
+  it("indexes the change when fn edits the document it was given in place and returns it", async () => {
+    const { notes: c } = await notes();
+    await c.put({ id: "a", title: "t", tags: ["x"] });
+    await c.modifyMany(["a"], ([a]) => {
+      a!.tags!.push("y");
+      return [a];
+    });
+    expect((await c.queryIds({ index: "byTag", eq: ["y"] })).ids).toEqual(["a"]);
+    expect(await c.count({ index: "byTag" })).toBe(2);
+  });
+
+  it("runs fn again when a document it left as is changed after fn read it", async () => {
+    const name = freshName();
+    const other = await notes(name);
+    const kv = await openKv(name);
+    open.push(kv);
+    let armed = true;
+    const held = wrap(kv, {
+      get: async (key) => {
+        const value = await kv.get(key);
+        if (armed && new TextDecoder().decode(key).endsWith("limit")) {
+          armed = false;
+          await other.notes.put({ id: "limit", n: 5 });
+          await kv.sync();
+        }
+        return value;
+      },
+    });
+    const c = (await openDocStore(held, schema)).collection("notes");
+    armed = false;
+    await c.putMany([{ id: "limit", n: 1 }, { id: "counter", n: 0 }]);
+    armed = true;
+    const seen: (number | undefined)[] = [];
+    await c.modifyMany(["limit", "counter"], ([limit, counter]) => {
+      seen.push(limit!.n);
+      return [undefined, { ...counter!, n: limit!.n! * 10 }];
+    });
+    expect(seen).toEqual([1, 5]);
+    expect(await c.get("counter")).toEqual({ id: "counter", n: 50 });
   });
 });
 
@@ -332,6 +493,20 @@ describe("two handles on one database", () => {
     expect((rejected as PromiseRejectedResult).reason).toMatchObject({ code: "unique" });
     await a.kv.sync();
     expect((await a.notes.queryIds({ index: "bySlug" })).ids).toHaveLength(1);
+  });
+
+  it("loses no update when both handles change the same two documents at once, 50 times each", async () => {
+    const { a, b } = await pair();
+    await a.notes.putMany([{ id: "x", n: 0 }, { id: "y", n: 0 }]);
+    await b.kv.sync();
+    const bump = async (c: typeof a.notes) => {
+      for (let i = 0; i < 50; i++) {
+        await c.modifyMany(["x", "y"], ([x, y]) => [{ ...x!, n: x!.n! + 1 }, { ...y!, n: y!.n! + 2 }]);
+      }
+    };
+    await Promise.all([bump(a.notes), bump(b.notes)]);
+    await a.kv.sync();
+    expect(await a.notes.getMany(["x", "y"])).toEqual([{ id: "x", n: 100 }, { id: "y", n: 200 }]);
   });
 
   it("applies 50 increments from each handle through modify", async () => {

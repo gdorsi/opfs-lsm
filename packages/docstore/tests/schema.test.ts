@@ -326,6 +326,22 @@ describe("indexes the stored data cannot fill", () => {
     expect((await todos.queryIds({ index: "bySlug", eq: ["y"] })).ids).toEqual(["r0550"]);
   });
 
+  it("keeps a unique entry the backfill gave one row when modifyMany changes the other row that shared its value and deletes a third", async () => {
+    const name = freshName();
+    const old = await at(name, v1);
+    const docs = rows(600).map((d, i) => (i === 0 || i === 550 ? { ...d, slug: "x" } : d));
+    await old.store.collection("todos").putMany(docs);
+    const held = gate(await kvOn(name), "range", 1);
+    const opening = openOn(held.db, unique(2));
+    await held.arrived(2);
+    await old.store.collection("todos").modifyMany(["r0550", "r0001"], ([shared]) => [{ ...shared!, slug: "y" }, null]);
+    held.release();
+    const todos = (await opening).collection("todos");
+    expect((await todos.queryIds({ index: "bySlug", eq: ["x"] })).ids).toEqual(["r0000"]);
+    expect((await todos.queryIds({ index: "bySlug", eq: ["y"] })).ids).toEqual(["r0550"]);
+    expect(await todos.count({ index: "byCreated" })).toBe(599);
+  });
+
   it("fails a unique index when a write gave a row's value to another row before the backfill reached that row", async () => {
     const name = freshName();
     const old = await at(name, v1);

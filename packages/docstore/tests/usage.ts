@@ -74,6 +74,9 @@ export async function snapshotsAndChanges(store: DocStore<typeof todoSchema>): P
     await snap.count({ index: "byCreated", gte: "2024" });
     return [kinds, first, await snap.getMany(["a"])];
   });
+  await todos.modifyMany(["a", "b"], ([a, b]) => [a && { ...a, done: true }, b ? null : undefined]);
+  // @ts-expect-error a todo has no such field
+  await todos.modifyMany(["a"], () => [{ id: "a", nope: 1 }]);
 }
 
 type Note = { id: string; owner: string; slug: string; tags: string[]; updatedAt: number; body: string };
