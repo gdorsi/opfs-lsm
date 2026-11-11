@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   EngineCapacityError,
-  decodeSst,
   encodeRun,
   encodeSst,
   engineUsingWasm,
@@ -11,7 +10,7 @@ import {
 import { CorruptDatabaseError } from "../src/errors.js";
 import { crc32 } from "../src/store/crc32.js";
 import { untilHit } from "../src/store/cursor.js";
-import { encodeRun as encodeRunTs, sstKeyRange, type EncodedRun, type SstEntry } from "../src/store/sst.js";
+import { decodeSst, encodeRun as encodeRunTs, sstKeyRange, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { mergeRuns, readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
@@ -25,7 +24,7 @@ describe("engine WASM", () => {
       { kind: "put", key: utf("a"), value: utf("1") },
       { kind: "del", key: utf("b") },
     ]);
-    const entries = await decodeSst(body);
+    const entries = decodeSst(body);
     expect(entries).toHaveLength(2);
     // Sorted by key: "a" put, then "b" del
     expect(entries[0]!.kind).toBe("put");
@@ -45,7 +44,7 @@ describe("engine WASM", () => {
       );
     const { runs } = await mergeRuns([[await half(0)], [await half(30_000)]]);
     expect(runs).toHaveLength(1);
-    expect(await decodeSst(runs[0]!.body)).toHaveLength(60_000);
+    expect(decodeSst(runs[0]!.body)).toHaveLength(60_000);
     const reader = readerOfBytes(runs[0]!.body);
     expect((await untilHit(() => reader.get(utf("k00059999"))))?.kind).toBe("put");
   });
@@ -61,7 +60,7 @@ describe("engine WASM", () => {
     );
     const { runs } = await mergeRuns([[body]], { targetBytes: 16 * 1024 });
     expect(runs.length).toBeGreaterThan(5);
-    const keys = (await Promise.all(runs.map((r) => decodeSst(r.body)))).flat().map((e) => new TextDecoder().decode(e.key));
+    const keys = runs.flatMap((r) => decodeSst(r.body)).map((e) => new TextDecoder().decode(e.key));
     expect(keys).toEqual(Array.from({ length: 1000 }, (_, i) => `k${String(i).padStart(4, "0")}`));
     for (const r of runs.slice(0, -1)) expect(r.body.byteLength).toBeLessThan(20 * 1024);
     for (const r of runs) expectReportMatchesFile(r);
@@ -135,7 +134,7 @@ describe("a run whose keys are out of order", () => {
     await ensureEngine();
     expect(engineUsingWasm()).toBe(true);
     const sst = misordered();
-    expect((await decodeSst(sst)).map((e) => new TextDecoder().decode(e.key))).toEqual(["b", "a"]);
+    expect(decodeSst(sst).map((e) => new TextDecoder().decode(e.key))).toEqual(["b", "a"]);
     await expect(mergeRuns([[sst]])).rejects.toThrow(CorruptDatabaseError);
     // A target of 1 byte cuts after every entry, so each key opens an output run of its own.
     await expect(mergeRuns([[sst]], { targetBytes: 1 })).rejects.toThrow("keys out of order");
@@ -144,22 +143,20 @@ describe("a run whose keys are out of order", () => {
 });
 
 describe("engine bridge", () => {
-  it("keeps decoded entries valid after later calls", async () => {
+  it("keeps an encoded run valid after later calls", async () => {
     await ensureEngine();
-    const first = await decodeSst(
-      await encodeSst([
-        { kind: "put", key: utf("alpha"), value: utf("one"), seq: 7 },
-        { kind: "del", key: utf("beta"), seq: 2 ** 33 + 5 },
-      ]),
-    );
-    const big = await encodeSst(
+    const run = await encodeSst([
+      { kind: "put", key: utf("alpha"), value: utf("one"), seq: 7 },
+      { kind: "del", key: utf("beta"), seq: 2 ** 33 + 5 },
+    ]);
+    await encodeSst(
       Array.from({ length: 5000 }, (_, i) => ({
         kind: "put" as const,
         key: utf(`z${String(i).padStart(6, "0")}`),
         value: new Uint8Array(200).fill(0xee),
       })),
     );
-    await decodeSst(big);
+    const first = decodeSst(run);
     const text = (b: Uint8Array) => new TextDecoder().decode(b);
     expect(text(first[0]!.key)).toBe("alpha");
     expect(first[0]!.kind === "put" && text(first[0]!.value)).toBe("one");
@@ -182,7 +179,6 @@ describe("engine status codes", () => {
         result_ptr: () => 0,
         result_len: () => 0,
         encode_sst: fail,
-        decode_sst: fail,
         lz4_decompress: fail,
         scan_block_contains: fail,
         merge_open: fail,
@@ -192,22 +188,22 @@ describe("engine status codes", () => {
 
   it("turns a negative status into CorruptDatabaseError", () => {
     const engine = flatEngine(stub(-4));
-    expect(() => engine.decodeSst(new Uint8Array(4))).toThrow(CorruptDatabaseError);
     expect(() => engine.lz4Decompress(new Uint8Array(4), 8)).toThrow(CorruptDatabaseError);
+    expect(() => engine.scanBlockContains(new Uint8Array(4), false, new Uint8Array(0))).toThrow(CorruptDatabaseError);
   });
 
   it("turns -11 into an error naming the operation, input size and capacity", () => {
     const engine = flatEngine(stub(-11), 1234);
-    const run = () => engine.decodeSst(new Uint8Array(40));
+    const run = () => engine.lz4Decompress(new Uint8Array(40), 8);
     expect(run).toThrow(EngineCapacityError);
     expect(run).not.toThrow(CorruptDatabaseError);
-    expect(run).toThrow(/decode_sst.*40 bytes.*1234/);
+    expect(run).toThrow(/lz4_decompress.*40 bytes.*1234/);
   });
 
   it("reports a refused input region as a capacity error", () => {
     const instance = stub(0);
     (instance.exports as unknown as { input_ptr: () => number }).input_ptr = () => 0;
-    expect(() => flatEngine(instance, 99).decodeSst(new Uint8Array(40))).toThrow(EngineCapacityError);
+    expect(() => flatEngine(instance, 99).lz4Decompress(new Uint8Array(40), 8)).toThrow(EngineCapacityError);
   });
 });
 

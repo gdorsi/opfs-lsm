@@ -39,10 +39,6 @@ encode_sst(ptr, len, lz4: i32) -> i32
     Input: entry records (below). Result: one run record (below), the SST
     and what the encoder knows about it.
 
-decode_sst(ptr, len) -> i32
-    Input: one SST. Result: entry records in key order. The record stream
-    for a given SST is identical across implementations.
-
 lz4_decompress(ptr, len, size: u32) -> i32
     Input: one LZ4 block body. Result: exactly `size` bytes, or -10.
 

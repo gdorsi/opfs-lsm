@@ -9,7 +9,7 @@ import { openMergeTs } from "../tests/oracle/merge-ts.js";
 import { BlockEntries, blockBytes, decodeSst, encodeSst, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { mergeRuns } from "../tests/runs.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
-import { bounded, framedBlocks, repairSst, RuleBroken, tally, type Repair } from "./targets.js";
+import { bounded, framedBlocks, RuleBroken, tally } from "./targets.js";
 import { loadWasm, type FlatEngine } from "./wasm.js";
 
 /**
@@ -71,7 +71,6 @@ function tsOutcome<T>(what: string, fn: () => T): Outcome<T> {
 
 type Codec = "raw" | "lz4";
 const runArb = fc.record({ entries: entriesArb, codec: fc.constantFrom<Codec>("raw", "lz4"), blockTarget: fc.constantFrom(64, 512, 4096) });
-const repairArb = fc.constantFrom<Repair>("none", "crc", "trailer");
 
 async function encodeRun(r: { entries: SstEntry[]; codec: Codec; blockTarget: number }): Promise<Uint8Array> {
   return r.codec === "raw" ? encodeSst(r.entries, r.blockTarget) : encodeSstWasm(r.entries, "lz4");
@@ -79,22 +78,6 @@ async function encodeRun(r: { entries: SstEntry[]; codec: Codec; blockTarget: nu
 
 const plain = (es: readonly { kind: string; key: Uint8Array; value?: Uint8Array; seq?: number }[]) =>
   es.map((e) => ({ kind: e.kind, key: [...e.key], value: e.value ? [...e.value] : undefined, seq: e.seq ?? 0 }));
-
-/** Both decoders of a whole run. The wasm one is what the SharedWorker runs. */
-async function decodeBoth(buf: Uint8Array, changed: boolean): Promise<void> {
-  await bounded("decode_sst (both)", () => {
-    const w = wasmOutcome("decodeSst", () => wasm.decodeSst(buf));
-    const t = tsOutcome("decodeSst", () => decodeSst(buf));
-    if (changed && (w.ok || t.ok)) throw new RuleBroken(`${w.ok ? "wasm" : "TypeScript"} decoded a run whose bytes changed under its CRC`);
-    if (w.ok && t.ok) {
-      expect(plain(w.value)).toEqual(plain(t.value));
-      count("decode: both decoded, same entries");
-    } else if (w.ok !== t.ok) {
-      // Only past a rewritten CRC: bytes written on purpose.
-      count(`decode: only ${w.ok ? "wasm" : "TypeScript"} decoded (CRC rewritten)`);
-    } else count("decode: both rejected");
-  });
-}
 
 /** Both block scans of one framed block: `scanBlockContains` and the TypeScript cursor a tab falls back to. */
 async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array): Promise<"same" | "differ" | "rejected"> {
@@ -128,34 +111,14 @@ const hot = new TextEncoder().encode(" hot");
 
 describe("wasm against TypeScript", () => {
   it(
-    "decode the same runs to the same entries",
+    "TypeScript decodes the runs either side encodes",
     async () => {
       await expect(
         fc.assert(
           fc.asyncProperty(runArb, async (r) => {
             const buf = await encodeRun(r);
-            await decodeBoth(buf, false);
             const sorted = [...r.entries].sort((a, b) => compareBytes(a.key, b.key));
             expect(plain(decodeSst(buf))).toEqual(plain(sorted));
-          }),
-          params,
-        ),
-      ).resolves.toBeUndefined();
-    },
-    TIMEOUT,
-  );
-
-  it(
-    "both reject a run changed under its CRC, and neither breaks a rule past a rewritten one",
-    async () => {
-      await expect(
-        fc.assert(
-          fc.asyncProperty(runArb, runArb, mutationsArb, repairArb, async (r, o, ms, repair) => {
-            const orig = await encodeRun(r);
-            const other = await encodeRun(o);
-            const buf = applyMutations(orig, ms, other);
-            repairSst(buf, repair);
-            await decodeBoth(buf, repair === "none" && !sameBytes(buf, orig) && !sameBytes(buf, other));
           }),
           params,
         ),

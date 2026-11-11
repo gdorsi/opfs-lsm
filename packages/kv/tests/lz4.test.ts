@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep } from "../src/host/compact.js";
-import { decodeSst as decodeWasm, encodeRun, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
+import { encodeRun, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
 import { loadLatestGeneration, publishGeneration } from "../src/store/generation.js";
 import { lz4DecompressJs, useLz4Decoder } from "../src/store/lz4.js";
 import { untilHit } from "../src/store/cursor.js";
@@ -64,7 +64,6 @@ describe("LZ4 runs", () => {
     expect(packed.byteLength).toBeLessThan(raw.byteLength);
     const want = show(decodeSst(raw));
     expect(show(decodeSst(packed))).toEqual(want);
-    expect(show(await decodeWasm(packed))).toEqual(want);
 
     const a = readerOfBytes(raw);
     const b = readerOfBytes(packed);

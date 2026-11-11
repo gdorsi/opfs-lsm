@@ -64,7 +64,6 @@ type Exports = {
   result_ptr(): number;
   result_len(): number;
   encode_sst(ptr: number, len: number, lz4: number): number;
-  decode_sst(ptr: number, len: number): number;
   lz4_decompress(ptr: number, len: number, size: number): number;
   scan_block_contains(ptr: number, len: number, lz4: number, patPtr: number, patLen: number): number;
   merge_open(
@@ -141,7 +140,6 @@ export interface MergeCore {
  */
 export type FlatEngine = {
   encodeRun(entries: readonly SstEntry[], lz4: boolean): EncodedRun;
-  decodeSst(buf: Uint8Array): SstEntry[];
   lz4Decompress(src: Uint8Array, size: number): Uint8Array;
   scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
   /** The module's merge session. It holds one at a time, so a second open throws: the host takes turns (`inMergeSlot`). */
@@ -208,13 +206,6 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
         (ptr) => ex.encode_sst(ptr, size, lz4 ? 1 : 0),
       );
       return readRun(out);
-    },
-
-    decodeSst(buf) {
-      const out = call("decode_sst", buf.byteLength, (into) => into.set(buf), (ptr) =>
-        ex.decode_sst(ptr, buf.byteLength),
-      );
-      return unpackEntries(out);
     },
 
     lz4Decompress(src, size) {
@@ -358,28 +349,6 @@ function statusError(op: string, code: number, inputBytes: number, capacity: num
   const bug = HOST_BUGS[code];
   if (bug) return new Error(`${op}: ${bug} (status ${code})`);
   return new CorruptDatabaseError(`${op}: ${STATUS_NAMES[code] ?? "corrupt"} (status ${code})`);
-}
-
-/** Key and value are views into `bytes`, the one copy the call made. */
-function unpackEntries(bytes: Uint8Array): SstEntry[] {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const entries: SstEntry[] = [];
-  let o = 0;
-  while (o < bytes.byteLength) {
-    const tag = view.getUint8(o);
-    const seq = view.getUint32(o + 1, true) + view.getUint32(o + 5, true) * TWO_32;
-    const keyLen = view.getUint32(o + 9, true);
-    const key = bytes.subarray(o + 13, o + 13 + keyLen);
-    o += 13 + keyLen;
-    if (tag === TAG_PUT) {
-      const valueLen = view.getUint32(o, true);
-      entries.push({ kind: "put", key, value: bytes.subarray(o + 4, o + 4 + valueLen), seq });
-      o += 4 + valueLen;
-    } else {
-      entries.push({ kind: "del", key, seq });
-    }
-  }
-  return entries;
 }
 
 let engine: FlatEngine | undefined;
@@ -590,16 +559,6 @@ export async function encodeSst(
   codec: SstCodec = "raw",
 ): Promise<Uint8Array> {
   return (await encodeRun(entries, codec)).body;
-}
-
-export async function decodeSst(buf: Uint8Array): Promise<SstEntry[]> {
-  const wasm = await loaded();
-  try {
-    return wasm.decodeSst(buf);
-  } catch (err) {
-    afterTrap(err);
-    throw corrupt(err, "sst corrupt");
-  }
 }
 
 /**

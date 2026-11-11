@@ -12,7 +12,7 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../src/testing.js";
-import { decodeSst } from "../src/store/engine.js";
+import { decodeSst } from "../src/store/sst.js";
 
 const NAME = "bounded-flush";
 const enc = new TextEncoder();
@@ -89,7 +89,7 @@ async function l0Runs(published: readonly Published[]) {
   const runs: { keys: string[]; opBytes: number }[] = [];
   for (const { path, bytes } of published) {
     if (!path.startsWith("l0/")) continue;
-    const entries = await decodeSst(bytes);
+    const entries = decodeSst(bytes);
     runs.push({
       keys: entries.map((e) => dec.decode(e.key)),
       opBytes: entries.reduce((n, e) => n + e.key.byteLength + (e.kind === "put" ? e.value.byteLength : 0), 0),
