@@ -77,7 +77,8 @@ export type ClientToHost =
       readonly id: number;
       readonly name: string;
       readonly through: number;
-      readonly waitForCompaction: boolean;
+      /** `waitForCompaction`. The wire name predates it, and tabs and SharedWorkers of different builds must agree on it. */
+      readonly settle: boolean;
     }
   | {
       readonly type: "watch";

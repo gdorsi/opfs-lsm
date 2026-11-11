@@ -1,7 +1,7 @@
 import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
-import { CorruptDatabaseError } from "../errors.js";
-import { runLock } from "../locks.js";
+import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
+import { runLock, webLocks } from "../locks.js";
 import { coalesceReads } from "./coalesce-reads.js";
 
 function splitPath(path: string): string[] {
@@ -42,6 +42,7 @@ export class BrowserFs implements AsyncFs {
   constructor(
     private readonly root: FileSystemDirectoryHandle,
     private readonly dbName: DbName,
+    private readonly locks: LockManager,
   ) {}
 
   private lockName(path: string): string {
@@ -52,7 +53,7 @@ export class BrowserFs implements AsyncFs {
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));
     await new Promise<void>((granted, failed) => {
-      navigator.locks
+      this.locks
         .request(this.lockName(path), { mode: "shared" }, () => {
           granted();
           return held;
@@ -81,7 +82,7 @@ export class BrowserFs implements AsyncFs {
   }
 
   async removeUnlessOpen(path: string): Promise<boolean> {
-    return await navigator.locks.request(
+    return await this.locks.request(
       this.lockName(path),
       { mode: "exclusive", ifAvailable: true },
       async (lock) => {
@@ -184,8 +185,10 @@ function isNotFound(err: unknown): boolean {
 /** Open (or create) `opfs-lsm/<name>/` under the origin private file system. */
 export async function openBrowserFs(name: string): Promise<BrowserFs> {
   const dbName: DbName = checkDbName(name);
+  const locks = webLocks();
+  if (!locks) throw new StorageUnavailableError("OPFS storage needs Web Locks");
   const root = await navigator.storage.getDirectory();
   const lsm = await root.getDirectoryHandle("opfs-lsm", { create: true });
   const db = await lsm.getDirectoryHandle(dbName, { create: true });
-  return new BrowserFs(db, dbName);
+  return new BrowserFs(db, dbName, locks);
 }

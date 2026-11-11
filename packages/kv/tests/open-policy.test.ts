@@ -50,6 +50,7 @@ function installCaps(getDirectory: () => Promise<never>): void {
   putGlobal("SharedWorker", class SharedWorker {});
   putGlobal("navigator", {
     storage: { getDirectory },
+    locks: {},
   });
 }
 
@@ -114,5 +115,11 @@ describe("openDb storage policy", () => {
     await expect(openDb({ name: NAME })).rejects.toThrow("opfs-getDirectory");
     installDocument();
     await expect(openDb({ name: NAME })).rejects.toThrow("opfs-getDirectory");
+  });
+
+  it("rejects before touching OPFS where there are no Web Locks", async () => {
+    installCaps(() => Promise.reject(new Error("opfs-getDirectory")));
+    putGlobal("navigator", { storage: navigator.storage });
+    await expect(openDb({ name: NAME })).rejects.toBeInstanceOf(StorageUnavailableError);
   });
 });
