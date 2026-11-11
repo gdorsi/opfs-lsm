@@ -5,6 +5,7 @@ import type {
   ChangeMessageOrDeleteKeyMessage,
   CollectionConfig,
   InferSchemaOutput,
+  LoadSubsetOptions,
   PendingMutation,
   SyncConfig,
   UtilsRecord,
@@ -25,7 +26,7 @@ export type { RowCodec } from "./keys.js";
 
 /**
  * A TanStack collection config without the parts this adapter owns: it
- * persists every mutation itself and syncs eagerly.
+ * persists every mutation itself and chooses the sync mode from `onDemand`.
  */
 export interface KvCollectionConfig<
   T extends object,
@@ -38,6 +39,14 @@ export interface KvCollectionConfig<
   name: string;
   /** JSON by default. It must round-trip the rows `schema` outputs. */
   codec?: RowCodec<T>;
+  /**
+   * Absent: the collection loads every row on start. Present: it loads only
+   * what live queries ask for (`syncMode: "on-demand"`). `plan` turns a
+   * query's subset into the rows to read: some keys, or every string key that
+   * starts with `prefix`. A row stays in memory while a loaded plan covers it.
+   * A plan that throws loads nothing, and the live query stays `loading`.
+   */
+  onDemand?: { plan(options: LoadSubsetOptions): { readonly keys: readonly TKey[] } | { readonly prefix: string } };
 }
 
 export interface KvCollectionUtils<T extends object = Row, TKey extends string | number = string | number>
@@ -86,21 +95,23 @@ type KvOptions = CollectionConfig<Row, RowKey, StandardSchemaV1, KvCollectionUti
 };
 
 function build(config: KvCollectionConfig<Row, StandardSchemaV1>): KvOptions {
-  const { db, name, codec = jsonCodec<Row>(), ...base } = config;
+  const { db, name, codec = jsonCodec<Row>(), onDemand, ...base } = config;
   const prefix = collectionPrefix(name);
   const id = base.id ?? `opfs-lsm:${db.name}:${name}`;
-  let current: Run | undefined;
+  let current: Run | DemandRun | undefined;
   let owner: unknown;
 
   const sync: SyncConfig<Row, RowKey>["sync"] = (params) => {
     owner = params.collection;
-    const run = new Run(db, prefix, codec, params);
+    const run = onDemand ? new DemandRun(db, prefix, codec, params, onDemand) : new Run(db, prefix, codec, params);
     current = run;
     run.start();
-    return () => {
+    const cleanup = () => {
       run.stop();
       if (current === run) current = undefined;
     };
+    if (run instanceof Run) return cleanup;
+    return { cleanup, loadSubset: (options) => run.load(options), unloadSubset: (options) => run.unload(options) };
   };
 
   const persist = async (mutations: ReadonlyArray<PendingMutation<any>>): Promise<void> => {
@@ -146,6 +157,7 @@ function build(config: KvCollectionConfig<Row, StandardSchemaV1>): KvOptions {
   const options: KvOptions = {
     ...base,
     id,
+    syncMode: onDemand ? "on-demand" : "eager",
     sync: { sync, rowUpdateMode: "full" },
     onInsert: handler,
     onUpdate: handler,
@@ -279,5 +291,204 @@ class Run {
       return;
     }
     this.syncedThrough = Math.max(this.syncedThrough, snapshot?.at ?? 0, events.at(-1)?.seq ?? 0);
+  }
+}
+
+/** What one loaded subset reads and keeps in memory. */
+type Plan = { readonly keys: ReadonlySet<RowKey> } | { readonly prefix: string };
+type Demand = { readonly options: LoadSubsetOptions; readonly plan: Plan; phase: Loading | Loaded };
+type Loaded = { readonly kind: "loaded" } | { readonly kind: "released" };
+type DemandPhase =
+  | { readonly kind: "live"; readonly demands: Map<LoadSubsetOptions, Demand>; readonly synced: Set<RowKey> }
+  | { readonly kind: "stopped" };
+type Write = { readonly key: RowKey; readonly row: Row | undefined };
+
+function covers(plan: Plan, key: RowKey): boolean {
+  return "prefix" in plan ? typeof key === "string" && key.startsWith(plan.prefix) : plan.keys.has(key);
+}
+
+/**
+ * An on-demand sync run. Each loaded subset (a `Demand`) reads its plan in
+ * one view, and the change feed applies only ops some demand covers. A
+ * loading demand buffers every append, as `Run` does, and replays the ones
+ * past its snapshot, so a write that lands during the read is not lost.
+ */
+class DemandRun {
+  private phase: DemandPhase = { kind: "stopped" };
+  private unsubscribe: (() => void) | undefined;
+
+  constructor(
+    private readonly db: Db,
+    private readonly prefix: CollectionPrefix,
+    private readonly codec: RowCodec<Row>,
+    private readonly p: SyncParams,
+    private readonly planner: NonNullable<KvCollectionConfig<Row, never, RowKey>["onDemand"]>,
+  ) {}
+
+  start(): void {
+    try {
+      this.unsubscribe = this.db.changes((event) => this.onChange(event));
+    } catch (err) {
+      this.p.fail(err);
+      return;
+    }
+    this.phase = { kind: "live", demands: new Map(), synced: new Set() };
+    this.p.markReady();
+  }
+
+  stop(): void {
+    const was = this.phase;
+    this.phase = { kind: "stopped" };
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    if (was.kind === "stopped") return;
+    for (const demand of was.demands.values()) this.release(demand);
+  }
+
+  settled(): Promise<void> {
+    if (this.phase.kind === "stopped") return Promise.resolve();
+    const loading = [...this.phase.demands.values()].flatMap((d) =>
+      d.phase.kind === "loading" ? [d.phase.done.promise.catch(() => undefined)] : [],
+    );
+    return Promise.all(loading).then(() => undefined);
+  }
+
+  load(options: LoadSubsetOptions): Promise<void> {
+    if (this.phase.kind === "stopped") return Promise.reject(new Error("the sync run has stopped"));
+    const planned = this.planner.plan(options);
+    const plan: Plan = "prefix" in planned ? { prefix: planned.prefix } : { keys: new Set(planned.keys) };
+    const demand: Demand = { options, plan, phase: { kind: "loaded" } };
+    this.phase.demands.set(options, demand);
+    return this.fetch(demand).done.promise;
+  }
+
+  unload(options: LoadSubsetOptions): void {
+    if (this.phase.kind === "stopped") return;
+    const demand = this.phase.demands.get(options);
+    if (!demand) return;
+    this.phase.demands.delete(options);
+    this.release(demand);
+    const { demands, synced } = this.phase;
+    const gone = [...synced].filter((key) => ![...demands.values()].some((d) => covers(d.plan, key)));
+    this.apply(gone.map((key) => ({ key, row: undefined })));
+  }
+
+  private release(demand: Demand): void {
+    const was = demand.phase;
+    demand.phase = { kind: "released" };
+    if (was.kind === "loading") was.done.resolve();
+  }
+
+  private onChange(event: ChangeEvent): void {
+    if (this.phase.kind === "stopped") return;
+    switch (event.kind) {
+      case "append": {
+        const demands = [...this.phase.demands.values()];
+        for (const d of demands) if (d.phase.kind === "loading") d.phase.buffer.push(event);
+        this.apply(this.writesOf([event], (key) => demands.some((d) => covers(d.plan, key))));
+        return;
+      }
+      case "gap":
+        for (const demand of this.phase.demands.values()) this.fetch(demand);
+        return;
+      case "closed":
+        this.stop();
+        this.p.fail(new ClosedError("database is closed"));
+        return;
+      default: {
+        const unreachable: never = event;
+        return unreachable;
+      }
+    }
+  }
+
+  /** Reads the demand's rows. A fetch during a fetch restarts it and keeps its buffer and its waiters. */
+  private fetch(demand: Demand): Loading {
+    const prev = demand.phase.kind === "loading" ? demand.phase : undefined;
+    const mine: Loading = {
+      kind: "loading",
+      buffer: prev?.buffer ?? [],
+      done: prev?.done ?? Promise.withResolvers<void>(),
+    };
+    demand.phase = mine;
+    const { plan } = demand;
+    void this.db
+      .view(async (snap) => {
+        let rows: Entry[];
+        if ("prefix" in plan) {
+          rows = [];
+          for await (const entry of snap.range(prefixBound(encodeRowKey(this.prefix, plan.prefix)))) rows.push(entry);
+        } else {
+          const keys = [...plan.keys].map((key) => encodeRowKey(this.prefix, key));
+          const values = await Promise.all(keys.map((key) => snap.get(key)));
+          rows = keys.flatMap((key, i) => (values[i] === undefined ? [] : [{ key, value: values[i]! }]));
+        }
+        return { at: snap.seq, rows };
+      })
+      .then((snapshot) => {
+        if (demand.phase !== mine || this.phase.kind === "stopped") return;
+        const writes: Write[] = snapshot.rows.map((entry) => ({
+          key: decodeRowKey(this.prefix, entry.key),
+          row: this.codec.decode(entry.value),
+        }));
+        const present = new Set(writes.map((w) => w.key));
+        for (const key of this.phase.synced) {
+          if (covers(plan, key) && !present.has(key)) writes.push({ key, row: undefined });
+        }
+        const later = mine.buffer.filter((e) => e.seq > snapshot.at);
+        writes.push(...this.writesOf(later, (key) => covers(plan, key)));
+        const receipt = this.commit(writes);
+        demand.phase = { kind: "loaded" };
+        mine.done.resolve(receipt === true ? undefined : receipt);
+      })
+      .catch((err: unknown) => {
+        if (demand.phase !== mine) return;
+        if (this.phase.kind === "live") this.phase.demands.delete(demand.options);
+        demand.phase = { kind: "released" };
+        mine.done.reject(err);
+      });
+    return mine;
+  }
+
+  private writesOf(events: readonly Append[], wanted: (key: RowKey) => boolean): Write[] {
+    const writes: Write[] = [];
+    for (const event of events) {
+      for (const op of event.ops) {
+        if (!hasPrefix(this.prefix, op.key)) continue;
+        const key = decodeRowKey(this.prefix, op.key);
+        if (!wanted(key)) continue;
+        writes.push({ key, row: op.type === "put" ? this.codec.decode(op.value) : undefined });
+      }
+    }
+    return writes;
+  }
+
+  /** Commits writes from the change feed, where a bad row stops the run as it does in `Run`. */
+  private apply(writes: readonly Write[]): void {
+    try {
+      this.commit(writes);
+    } catch (err) {
+      this.stop();
+      this.p.fail(err);
+    }
+  }
+
+  /** A delete of a row this run never synced would name a key TanStack does not hold, so it is dropped. */
+  private commit(writes: readonly Write[]): true | Promise<void> {
+    if (this.phase.kind === "stopped") return true;
+    const { synced } = this.phase;
+    const messages: ChangeMessageOrDeleteKeyMessage<Row, RowKey>[] = [];
+    for (const { key, row } of writes) {
+      if (row) {
+        synced.add(key);
+        messages.push({ type: "update", value: row });
+      } else if (synced.delete(key)) {
+        messages.push({ type: "delete", key });
+      }
+    }
+    if (messages.length === 0) return true;
+    this.p.begin();
+    for (const message of messages) this.p.write(message);
+    return this.p.commit();
   }
 }
