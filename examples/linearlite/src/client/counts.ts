@@ -1,8 +1,10 @@
+import type { Scalar } from "@opfs-lsm/docstore";
 import { STATUSES, type Issue, type StatusCode } from "../domain/model.ts";
-import type { IssueFilter } from "./filter.ts";
+import type { IssueFilter, SortField } from "./filter.ts";
 import type { IssueDocs } from "./store.ts";
 
 type Snap = Parameters<Parameters<IssueDocs["view"]>[0]>[0];
+type IssueQuery = Parameters<IssueDocs["count"]>[0];
 
 const ALL = STATUSES.map((_, code) => code as StatusCode);
 const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
@@ -70,4 +72,51 @@ export async function countTotal(issues: IssueDocs, filter: IssueFilter): Promis
     return issues.count({ index: "search", eq: [false], match: words[0]! });
   }
   return (await countByStatus(issues, filter)).reduce((a, b) => a + b, 0);
+}
+
+/** The index of each sort: `deleted`, then the sort field, so `eq: [false]` lists every live issue in list order. */
+const SORT_INDEX = {
+  modified: "byModified",
+  created: "byCreated",
+  title: "byTitle",
+  priority: "byPriority",
+  status: "byStatus",
+} as const satisfies Record<SortField, string>;
+
+/** Whether the list under `filter` shows every live issue, so its sort index lists exactly its rows, in its order. */
+export const unfiltered = (filter: IssueFilter) => filter.status.length === 0 && filter.priority.length === 0 && filter.q === "";
+
+/** Every live issue in the list's order, or only those whose sort value passes `bound`. */
+const inOrder = (filter: IssueFilter, bound: { readonly gt?: Scalar; readonly lt?: Scalar } = {}) =>
+  ({ index: SORT_INDEX[filter.sort], eq: [false], ...(filter.dir === "desc" && { reverse: true }), ...bound }) as IssueQuery;
+
+/** Live issues that sort strictly before `value` in the unfiltered list. Reads index entries only. */
+export function countBefore(issues: Pick<Snap, "count">, filter: IssueFilter, value: Scalar): Promise<number> {
+  return issues.count(inOrder(filter, filter.dir === "desc" ? { gt: value } : { lt: value }));
+}
+
+/** A row's sort value, and how many rows of the unfiltered list sort strictly before that value. */
+export type Anchor = { readonly value: Scalar; readonly base: number };
+
+/** Rows before row `n` whose documents `locate` reads to count the rows tied with it. */
+const NEAR = 64;
+
+/**
+ * The anchor of row `n` of the unfiltered list, or undefined if the list is shorter. It walks `n` index entries
+ * without their documents, then reads rows `n - 64` to `n`: the rows tied with row `n` among them are the rows
+ * between the anchor's `base` and `n`. A tie that runs past them is counted from the index.
+ */
+export function locate(issues: IssueDocs, filter: IssueFilter, n: number): Promise<Anchor | undefined> {
+  return issues.view(async (snap) => {
+    const skip = Math.max(0, n - NEAR);
+    const { next } = skip > 0 ? await snap.queryIds({ ...inOrder(filter), limit: skip }) : {};
+    if (skip > 0 && next === undefined) return undefined;
+    const { docs } = await snap.query({ ...inOrder(filter), limit: n - skip + 1, ...(next !== undefined && { after: next }) });
+    if (docs.length < n - skip + 1) return undefined;
+    const value = docs.at(-1)![filter.sort];
+    let ties = 0;
+    while (ties < docs.length - 1 && docs[docs.length - 2 - ties]![filter.sort] === value) ties++;
+    const base = skip > 0 && ties === docs.length - 1 ? await countBefore(snap, filter, value) : n - ties;
+    return { value, base };
+  });
 }
