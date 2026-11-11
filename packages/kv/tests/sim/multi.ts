@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fc from "fast-check";
 import { expect } from "vitest";
 import type { Db, Entry } from "../../src/index.js";
-import { TabWal } from "../../src/idb/wal.js";
+import { TabWal, decodeOps } from "../../src/idb/wal.js";
 import {
   openHarnessDb,
   ingest,
@@ -58,10 +58,10 @@ export function installSeams(): Restore {
   const proto = TabWal.prototype;
   const append = proto.append;
   const appendAfter = proto.appendAfter;
-  proto.append = async function (this: TabWal, ops) {
+  proto.append = async function (this: TabWal, record) {
     const op = currentOp.getStore();
-    const seq = await append.call(this, ops);
-    if (seq !== undefined) world?.history.commit(op, ops, seq);
+    const seq = await append.call(this, record);
+    if (seq !== undefined) world?.history.commit(op, decodeOps(record), seq);
     return seq;
   };
   proto.appendAfter = async function (this: TabWal, since: number, decide: Parameters<typeof appendAfter>[1]) {

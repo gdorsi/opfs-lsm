@@ -5,6 +5,7 @@ import {
   checkDbName,
   checkKey,
   newWriterId,
+  opsBytes,
   type CheckedKey,
   type CheckedOp,
   type DbName,
@@ -21,7 +22,7 @@ import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type IngestClient } from "./host/protocol.js";
 import { layersChannel } from "./locks.js";
-import { TabWal, type WalTail } from "./idb/wal.js";
+import { TabWal, decodeOps, encodeOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, untilHit, type Maybe } from "./store/cursor.js";
@@ -516,12 +517,12 @@ class DbImpl implements Db {
   private onMessage(data: BusMessage): void {
     if (this.closed) return;
     // An `ingest`, or a message this build does not know: catch up from the WAL.
-    if (data?.kind !== "append") {
+    if (data?.kind !== "row" || !(data.record instanceof ArrayBuffer)) {
       void this.sync().catch(() => undefined);
       return;
     }
     if (data.writerId === this.writerId) return;
-    if (this.applyRecord({ seq: data.seq, ops: data.ops }) === "gap") {
+    if (this.applyRecord({ seq: data.seq, ops: decodeOps(data.record) }) === "gap") {
       void this.sync().catch(() => undefined);
     }
     this.announce();
@@ -531,7 +532,7 @@ class DbImpl implements Db {
     if (this.closed) throw new ClosedError("database is closed");
   }
 
-  private broadcast(message: Extract<BusMessage, { kind: "append" }>): void {
+  private broadcast(message: Extract<BusMessage, { kind: "row" }>): void {
     if (this.closed) return;
     this.bus?.postMessage(message);
   }
@@ -791,11 +792,11 @@ class DbImpl implements Db {
    * the ack resolves. A gap means another tab appended first: catch up,
    * which reads the record too.
    */
-  private async landed(seq: number, ops: readonly CheckedOp[]): Promise<void> {
+  private async landed(seq: number, ops: readonly CheckedOp[], record: ArrayBuffer): Promise<void> {
     if (this.applyRecord({ seq, ops }) === "gap" && !this.closed) await this.sync();
     this.pressure.landed();
     this.announce();
-    this.broadcast({ kind: "append", writerId: this.writerId, seq, ops });
+    this.broadcast({ kind: "row", writerId: this.writerId, seq, record, bytes: opsBytes(ops) });
   }
 
   /**
@@ -852,7 +853,7 @@ class DbImpl implements Db {
         await miss?.ready.catch(() => undefined);
       }
     });
-    if (out.seq !== undefined) await this.landed(out.seq, out.ops);
+    if (out.seq !== undefined) await this.landed(out.seq, out.ops, out.record);
     return out;
   }
 
@@ -911,9 +912,10 @@ class DbImpl implements Db {
     const ops = collectBatch(build);
     if (ops.length === 0) return this.mem.appliedThrough;
     if (this.pressure.full) await this.admit();
-    const seq = await this.wal.append(ops);
+    const record = encodeOps(ops);
+    const seq = await this.wal.append(record);
     if (seq === undefined) return (await this.write(() => ({ ops, result: undefined }))).seq!;
-    await this.landed(seq, ops);
+    await this.landed(seq, ops, record);
     return seq;
   }
 

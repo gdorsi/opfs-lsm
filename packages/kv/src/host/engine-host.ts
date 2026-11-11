@@ -1,4 +1,4 @@
-import { checkDbName, opsBytes, type DbName } from "../check.js";
+import { checkDbName, type DbName } from "../check.js";
 import { codeOfError } from "../errors.js";
 import { IdBWal, uningestedBytes } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
@@ -369,8 +369,8 @@ class HostedDb {
     if (typeof BroadcastChannel !== "undefined") {
       watch.bus = new BroadcastChannel(layersChannel(this.name));
       watch.bus.onmessage = (ev: MessageEvent<BusMessage>) => {
-        if (ev.data.kind !== "append") return;
-        watch.pendingBytes += opsBytes(ev.data.ops);
+        if (ev.data.kind !== "row") return;
+        watch.pendingBytes += ev.data.bytes;
         this.maybeIngest(watch);
       };
     }
