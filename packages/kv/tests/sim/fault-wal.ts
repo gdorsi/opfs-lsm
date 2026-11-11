@@ -6,12 +6,15 @@ import { walStore } from "./check-database.js";
 /**
  * The IndexedDB side of `Faults`, as a harness seam over fake-indexeddb
  * with no change to `IdBWal`: `installFaultWal` wraps `put`, `add` and
- * `delete` of `IDBObjectStore.prototype`. For a database registered with
+ * `delete` of `IDBObjectStore.prototype`, and `commit` of
+ * `IDBTransaction.prototype`. For a database registered with
  * `traceWal`:
  * - every readwrite transaction that writes is a fault site, at its first
  *   write. A fault aborts it before it commits (a microtask later, so the
  *   engine's synchronous writes in the same task still run), the way a
- *   failed commit or `QuotaExceededError` does;
+ *   failed commit or `QuotaExceededError` does. A faulted transaction that
+ *   calls `commit()` in that task aborts there instead, since `abort()`
+ *   throws once a commit has started;
  * - every committed one is one durable op, recorded at `complete` with its
  *   writes, so a crash state can replay a prefix of them (`materializeWal`).
  */
@@ -78,10 +81,18 @@ export function installFaultWal(): () => void {
     if (state) state.muts.push({ kind: "delete", store: this.name, key });
     return req;
   };
+  const txProto = globalThis.IDBTransaction.prototype;
+  const { commit } = txProto;
+  txProto.commit = function (this: IDBTransaction) {
+    const state = txs.get(this);
+    if (state && state.verdict !== "ok") this.abort();
+    else commit.call(this);
+  };
   return () => {
     proto.put = put;
     proto.add = add;
     proto.delete = del;
+    txProto.commit = commit;
   };
 }
 
