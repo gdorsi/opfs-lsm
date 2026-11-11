@@ -21,7 +21,7 @@ lines.forEach((line, i) => {
 const headings = new Set(
   lines.filter((line) => line.startsWith("#")).map((line) => line.replace(/^#+\s*/, "").trim()),
 );
-const citations = execFileSync("git", ["grep", "-nE", 'design\\.md, "[^"]+"'], { cwd: root, encoding: "utf8" });
+const citations = execFileSync("git", ["grep", "-nE", 'design\\.md, "[^"]+"', "--", ":!scripts/check-docs.mjs"], { cwd: root, encoding: "utf8" });
 for (const hit of citations.trim().split("\n")) {
   for (const [, heading] of hit.matchAll(/design\.md, "([^"]+)"/g)) {
     if (!headings.has(heading)) errors.push(`${hit.split(":").slice(0, 2).join(":")}: cites design.md, "${heading}", which is not a heading.`);
