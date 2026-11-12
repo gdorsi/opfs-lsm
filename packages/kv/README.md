@@ -84,6 +84,10 @@ await db.put(key, value, { expiresAt: Date.now() + 60_000 });
 
 Every tab judges expiry with its own `Date.now()`, never earlier than the time the SharedWorker judged the files it reads at, so a tab whose clock runs behind sees a row expire no later than the SharedWorker's clock says.
 
+### Disk space
+
+Expired rows, deleted rows and rows a range delete removed leave the disk when the SharedWorker's compaction rewrites the SST file that holds them. Besides keeping the levels in shape, it rewrites a file once about half of it is dead, and it drops a file a range delete covers whole without rewriting anything. It judges what is dead from statistics each file carries, so a file can wait until a little past half. The SharedWorker has no timer: it compacts after a flush and when a tab opens the database, so rows that expire while a database sits idle stay on disk until one of those.
+
 ## Errors
 
 Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A host error keeps its class when it crosses the SharedWorker port.

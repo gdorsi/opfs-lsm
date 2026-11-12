@@ -170,8 +170,10 @@ A host that cannot help does not stop writes. The thresholds are checked only on
 
 # SST file format
 
-A run is one SST file: sorted data blocks, a bloom filter, a block index and a footer. Its
-byte layout is in [sst-format.md](sst-format.md).
+A run is one SST file: sorted data blocks, a bloom filter, a block index, statistics and a
+footer. Its byte layout is in [sst-format.md](sst-format.md). The statistics count the run's
+entries, tombstones and bytes, and spread its bytes by seq, by expiry and by key; the encoder
+builds them in the pass that writes the run, and the manifest carries a copy for the planner.
 
 ## Reading a run
 
@@ -199,8 +201,8 @@ A manifest, `m/<generation>.mft`, lists the runs of one generation. Its byte lay
 past it. An ingest sets it to the last seq it folded. A compaction keeps the value of its base.
 
 A manifest also holds the marks of the range deletes up to `through` that its runs may still hold
-versions for, for each run its `marksThrough` (see [Range deletes](#range-deletes)), and
-`judgedNow` (see [Expiry](#expiry)).
+versions for, for each run its `marksThrough` (see [Range deletes](#range-deletes)) and
+statistics (see [SST file format](#sst-file-format)), and `judgedNow` (see [Expiry](#expiry)).
 
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
@@ -280,6 +282,10 @@ than its base's. A run may hold a tombstone in place of a put that expired at th
 reader below it could see a key absent that its own clock still holds live; the floor rules
 that out.
 
+An expired row leaves the disk when a compaction step rewrites its run (see
+[Planning](#planning)). The host has no timer: in an idle database that waits for the next
+flush or open, each of which starts a compaction pass.
+
 # Multi-tab coordination
 
 ## Seeing other tabs' writes
@@ -338,7 +344,7 @@ host flushes. The limit is the smallest any open tab asked for, and each tab ask
 7/8 of its `memtableBytes`.
 
 `openDb` registers the tab with the host. The host then measures the uningested records, so a
-database left over the limit catches up on open. The count only decides when to flush. Every
+database left over the limit catches up on open, and otherwise starts a compaction pass. The count only decides when to flush. Every
 flush reads the WAL, so a missed broadcast delays a flush and loses nothing.
 
 After a failed flush, the host waits for another `maxWalBytes` of writes or the next open.
@@ -396,19 +402,32 @@ Levels are created as they fill, with no maximum depth. Budgets count bytes on d
 
 ## Planning
 
-The planner reads only the manifest. It scores each level and serves the highest score. On a tie
-the shallower level wins.
+The planner is a function of the manifest and a time, the host's clock reading floored by the
+manifest's `judgedNow`; it reads no run. It returns the first step that applies:
 
-* L0 scores its run count over 4, and reports at 4 runs. Its step merges the oldest L0 runs, at
-  most `l0StopRuns`, with the L1 runs whose ranges overlap them.
-* A deeper level scores its bytes over its budget, and reports past 1. Its step picks the run
-  whose overlapping bytes in the next level are the smallest fraction of its own size, and merges
-  it with those runs into the next level.
-* When no level reports, a mark step rewrites the first run that overlaps a piece past its
-  `marksThrough`, by the L0 step or alone into its own level, and absorbs every mark there is.
+1. **Drop.** A run that one mark covers whole, every piece over its key range with a `through`
+   at or past its largest seq, leaves the manifest with no merge.
+2. **Shape.** The planner scores each level and serves the highest score; on a tie the
+   shallower level wins. L0 scores its run count over 4 and reports at 4 runs; its step merges
+   the oldest L0 runs, at most `l0StopRuns`, with the L1 runs they overlap. A deeper level
+   scores its bytes over its budget and reports past 1; its step picks the run whose
+   overlapping bytes in the next level are the smallest fraction of its own size, and merges it
+   with those runs into the next level.
+3. **Dead rows.** The run whose dead share is largest, once it reaches 1/2: of its entry bytes,
+   those expired at the time or covered by a mark it has not absorbed, or of its entries, the
+   tombstones. A bottom run is rewritten alone. Above the bottom, a run dead mostly by marks is
+   rewritten alone; otherwise it goes down with the runs it overlaps in the next level, toward
+   the versions its tombstones hide. An L0 run counts only expired and covered bytes, so a
+   delete-heavy flush does not rewrite L1 each time, and takes the L0 step.
+4. **Marks.** Among the runs that overlap a piece past their `marksThrough`, the one a mark
+   covers most is rewritten, by the L0 step or alone into its own level, absorbing every mark.
 
 Scoring lets L0 pass 4 runs while a deeper level is further over budget. If L0 always went
-first, L1 would never be pushed down.
+first, L1 would never be pushed down. At 1/2 a rewrite writes at most twice what it frees. The
+dead share is an estimate from the statistics: within 1/16 of a run's bytes on seq and expiry,
+plus half a block on keys, and key and seq taken as independent for a mark that holds part of
+both. Every step removes runs, moves bytes down, or leaves runs with no expired put and no
+unabsorbed mark, so with no new writes the planner runs out of steps.
 
 A plan is `bottom` when no run below the output level overlaps the inputs. Only a bottom merge
 drops tombstones.
@@ -426,7 +445,7 @@ between two keys and asks the host for one thing:
 |---|---|
 | NEED | reads the listed byte ranges of the inputs and feeds them in |
 | WRITE | writes the bytes to the open output run |
-| RUN_END | finishes that file and records its size and key range |
+| RUN_END | finishes that file and records its size and statistics |
 | YIELD | gives the event loop a turn |
 | DONE | installs the outputs |
 
@@ -436,7 +455,8 @@ the last entries of that run. It cuts the output into runs of about 4 MiB of rec
 `c<top + 1>.<i>`.
 
 The memory a step holds does not depend on the size of its inputs: about one read window of
-blocks per source, plus the open output block and its bloom and index rows. If any input is corrupt, or any
+blocks per source, plus the open output block, its bloom and index rows, and 12 bytes of
+statistics per entry of the open output run, 12 more for a put with an expiry. If any input is corrupt, or any
 read or write fails, the host deletes every output and installs nothing.
 
 ## Memory budget
@@ -474,6 +494,8 @@ under the exclusive section, the host:
 3. Raises `meta.generation` to `top + 1`.
 4. Reclaims: deletes the older manifests, and the input runs that no tab holds open. While a tab
    holds the reclaim lock, it deletes nothing and tries again on the next pass.
+
+A drop installs the same way with no outputs and no time of its own.
 
 A pass runs up to 8 steps. A request that arrives during a pass starts another pass.
 
