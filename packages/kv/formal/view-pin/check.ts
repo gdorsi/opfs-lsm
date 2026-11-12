@@ -33,8 +33,8 @@ function initial(): State {
 /**
  * The pin holds when db.ts hands the view `mem.pin()` and the read point of
  * marks it captured then, `pin()` marks every chunk shared, a write copies a
- * shared chunk before it changes it, a range delete puts a filtered copy in
- * place of the chunk, and the memtable's marks are replaced, never edited.
+ * shared chunk before it changes it, a range delete rebuilds the chunks as
+ * fresh arrays, and the memtable's marks are replaced, never edited.
  */
 function viewPinsInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -44,7 +44,8 @@ function viewPinsInSource(): boolean {
   const mem = read("store/memtable.ts");
   return (
     /new ViewSnapshotImpl\([^)]*this\.mem\.pin\(\),\s*layers\.levels,\s*this\.point\(\)/s.test(db) &&
-    /const keep = rows\.filter\([\s\S]*?this\.chunks\[c\] = keep;/.test(mem) &&
+    /case "deleteRange": \{[\s\S]*?this\.rebuild\(/.test(mem) &&
+    /const rows = keep\.slice\(i, i \+ CHUNK_ROWS\);\s*this\.chunks\.push\(rows\)/.test(mem) &&
     /this\.held = joinMarks\(this\.held, /.test(mem) &&
     /pin\(\)[^{]*\{\s*this\.owned\.fill\(false\)/.test(mem) &&
     /if \(!this\.owned\[c\]\) \{\s*this\.chunks\[c\] = this\.chunks\[c\]!\.slice\(\);/.test(mem)

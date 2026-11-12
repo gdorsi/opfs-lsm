@@ -1,6 +1,6 @@
 import { compareBytes, keyToString } from "../bytes.js";
 import { joinMarks, markCursor, markTable, NO_MARKS, type Marks } from "./marks.js";
-import { marksOf, type WalRecord } from "./memtable.js";
+import type { WalRecord } from "./memtable.js";
 import type { SstEntry } from "./sst.js";
 
 export type Folded = {
@@ -21,7 +21,10 @@ export function foldRecords(records: readonly WalRecord[]): Folded {
   let marks = NO_MARKS;
   for (const rec of records) {
     for (const op of rec.ops) {
-      if (op.type === "deleteRange") continue;
+      if (op.type === "deleteRange") {
+        marks = joinMarks(marks, markTable({ ...op, at: rec.seq }));
+        continue;
+      }
       map.set(
         keyToString(op.key),
         op.type === "put"
@@ -29,7 +32,6 @@ export function foldRecords(records: readonly WalRecord[]): Folded {
           : { kind: "del", key: op.key, seq: rec.seq },
       );
     }
-    for (const mark of marksOf(rec)) marks = joinMarks(marks, markTable(mark));
   }
   const entries = [...map.values()].sort((a, b) => compareBytes(a.key, b.key));
   if (marks.empty) return { entries, marks };
