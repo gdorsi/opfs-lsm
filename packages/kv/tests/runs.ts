@@ -1,7 +1,7 @@
 import { pumpMerge } from "../src/host/compact.js";
 import { MemoryFs } from "../src/opfs/memory-fs.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
-import { Miss, type LayerCursor, type LayerEntry } from "../src/store/cursor.js";
+import { untilHit, type LayerCursor, type LayerEntry } from "../src/store/cursor.js";
 import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { sstKeyRange, type EncodedRun, type SstCodec } from "../src/store/sst.js";
@@ -18,11 +18,7 @@ export function readerOfBytes(buf: Uint8Array, cache = new PageCache()): SstRead
 export async function drain(cursor: LayerCursor): Promise<LayerEntry[]> {
   const out: LayerEntry[] = [];
   for (;;) {
-    const e = cursor.peek();
-    if (e instanceof Miss) {
-      await e.ready;
-      continue;
-    }
+    const e = await untilHit(() => cursor.peek());
     if (!e) return out;
     out.push(e);
     cursor.next();

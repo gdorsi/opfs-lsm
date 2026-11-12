@@ -55,8 +55,10 @@ export type Fill = readonly [key: number, value: unknown];
 
 /**
  * Bytes a sync read needs and does not have yet. The read has already
- * started, and `ready` resolves with what it loaded. A value rather than
- * an exception, so a merge holding several sources keeps their positions.
+ * started, and `ready` resolves with what it loaded. The cache may evict
+ * those bytes at once, so retry through a `ReadSet`, which keeps them. A
+ * value rather than an exception, so a merge holding several sources keeps
+ * their positions.
  */
 export class Miss {
   constructor(readonly ready: Promise<readonly Fill[]>) {}
