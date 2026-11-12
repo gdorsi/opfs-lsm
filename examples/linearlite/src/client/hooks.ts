@@ -35,11 +35,14 @@ function useWindow(key: string, build: () => ReturnType<typeof windowQuery>, siz
 
 const yieldTask: Pause = () => new Promise((resolve) => setTimeout(resolve));
 
+/** A hidden tab paints no frame and wakes its timers about once a second, so a recount there does not pause. */
+const recountPause = (): Pause | undefined => (document.hidden ? undefined : yieldTask);
+
 /**
  * `read` of the stored issues, run again after every change to them. One read runs at a time. Changes during a read
  * start one more, four times that read's duration after it and at least 250 ms, so a first sync, which changes the
  * issues every few milliseconds, spends at most a fifth of the main thread counting them. A read after a change
- * pauses between steps, so it does not hold up a frame in this tab or any other; the first read for `key` does not,
+ * pauses between steps in a visible tab, so it does not hold up a frame there; the first read for `key` does not,
  * since the screen waits on it. Undefined until the first read for `key` resolves.
  */
 function useIssueRead<T>(key: string, read: (issues: IssueDocs, pause?: Pause) => Promise<T>): T | undefined {
@@ -63,12 +66,12 @@ function useIssueRead<T>(key: string, read: (issues: IssueDocs, pause?: Pause) =
         console.warn("linearlite could not count issues", err);
       }
       running = false;
-      if (live && again) timer = setTimeout(() => void run(yieldTask), Math.max(250, 4 * (performance.now() - t0)));
+      if (live && again) timer = setTimeout(() => void run(recountPause()), Math.max(250, 4 * (performance.now() - t0)));
     };
     const off = issues.changes((event) => {
       if (event.kind === "closed") return;
       if (running || timer !== undefined) again = true;
-      else void run(yieldTask);
+      else void run(recountPause());
     });
     void run();
     return () => {
