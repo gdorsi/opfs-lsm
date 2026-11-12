@@ -443,25 +443,35 @@ class HostedDb {
 
   private async compactPass(): Promise<void> {
     const fs = await this.fs();
-    await this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal)));
-    for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
-      const meta = await this.withWal((wal) => wal.meta());
-      const base = await loadGeneration(fs, meta.generation ?? 0);
-      // Gone when a flush installed a newer generation since: plan again.
-      if (!base) continue;
-      const budget = this.budget();
-      const step = await mergeNextStep(fs, budget, base, meta.top);
-      recycleEngine(budget.wasmRecycleBytes);
-      if (!step) return;
-      await this.exclusive(() =>
-        this.withWal(async (wal) => {
-          this.trusted = await installStep(fs, wal, step, this.trusted);
-          await this.reclaim(fs, wal);
-        }),
-      );
-      this.counts.compactionSteps += 1;
-      this.installLanded();
-      announceGeneration(this.name);
+    let swept = false;
+    try {
+      for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
+        const meta = await this.withWal((wal) => wal.meta());
+        const base = await loadGeneration(fs, meta.generation ?? 0);
+        // Gone when a flush installed a newer generation since: plan again.
+        if (!base) continue;
+        const budget = this.budget();
+        const step = await mergeNextStep(fs, budget, base, meta.top);
+        recycleEngine(budget.wasmRecycleBytes);
+        if (!step) return;
+        await this.exclusive(() =>
+          this.withWal(async (wal) => {
+            this.trusted = await installStep(fs, wal, step, this.trusted);
+            await this.reclaim(fs, wal);
+          }),
+        );
+        swept = true;
+        this.counts.compactionSteps += 1;
+        this.installLanded();
+        announceGeneration(this.name);
+      }
+    } finally {
+      // A pass that installed nothing sweeps once, for the files an earlier
+      // pass had to leave. Last, so it never delays a merge that a full L0
+      // waits for, and best-effort: the next pass sweeps again.
+      if (!swept && !this.destroying) {
+        await this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal))).catch(() => undefined);
+      }
     }
   }
 
