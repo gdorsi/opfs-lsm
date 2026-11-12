@@ -3,6 +3,11 @@
  * Mirrors pointGetSst (newest level first) and the merge session's pick
  * (the smallest head key; on a tie the earlier, newer source).
  *
+ * Expiry: a merge judged at `judgeNow` writes a winning put expired at that
+ * time as a tombstone, and drops it at the bottom. Over an older run the
+ * merge did not take, every read at a time >= judgeNow (the readers' floor,
+ * the manifest's judgedNow) sees the same before and after.
+ *
  * Sync: latestSstEntry walks levels newest-first; the merge session and its
  * TypeScript oracle keep the earlier source on a tie (`a < b` in merge.rs,
  * `< 0` in tests/oracle/merge-ts.ts).
@@ -11,7 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-type Entry = { kind: "put"; value: number } | { kind: "del" } | undefined;
+type Entry = { kind: "put"; value: number; exp?: number } | { kind: "del" } | undefined;
 
 /** One SST run: map key → put/del. Keys are "a"|"b". */
 type Run = Record<string, Entry>;
@@ -75,11 +80,12 @@ function mergeFn(): (runs: readonly Run[]) => Run {
   return newestFirstInSource() ? mergeCorrect : mergeBroken;
 }
 
-/** All small run lists: 0–3 runs, each key miss/put1/put2/del. */
+/** All small run lists: 0–2 runs, each key miss/put1/put2/expiring put/del. */
 const CELL: Entry[] = [
   undefined,
   { kind: "put", value: 1 },
   { kind: "put", value: 2 },
+  { kind: "put", value: 3, exp: 1 },
   { kind: "del" },
 ];
 
@@ -122,6 +128,92 @@ for (const runs of allRuns(2)) {
   }
 }
 
+// --- Expiry.
+
+/** What a read at `now` returns for the newest version `e`. */
+function visible(e: Entry, now: number): number | undefined {
+  return e?.kind === "put" && !(e.exp !== undefined && e.exp <= now) ? e.value : undefined;
+}
+
+type Judge = (e: Entry, judgeNow: number, bottom: boolean) => Entry;
+
+/** merge.rs `entry_at` and the drop: an expired winner is a tombstone, which the bottom drops. */
+const judgeCorrect: Judge = (e, judgeNow, bottom) => {
+  const out: Entry = e?.kind === "put" && e.exp !== undefined && e.exp <= judgeNow ? { kind: "del" } : e;
+  return bottom && out?.kind === "del" ? undefined : out;
+};
+/** Broken: an expired winner is dropped above the bottom too, so the older version under it comes back. */
+const judgeDropsAnywhere: Judge = (e, judgeNow, bottom) =>
+  e?.kind === "put" && e.exp !== undefined && e.exp <= judgeNow ? undefined : judgeCorrect(e, judgeNow, bottom);
+
+/** Older runs a merge leaves alone: none (a bottom merge), or one holding every key. */
+const BELOW: Run[] = [{}, { a: { kind: "put", value: 9 }, b: { kind: "put", value: 9 } }];
+const TIMES = [0, 1, 2];
+
+/**
+ * The first case where a read differs before and after, if any. With
+ * `floor`, reads happen at judgeNow or later only, as the manifest's
+ * judgedNow makes them.
+ */
+function expiryCounterexample(judge: Judge, floor = true): string | undefined {
+  for (const runs of allRuns(2)) {
+    const merged = merge(runs);
+    for (const below of BELOW) {
+      const bottom = Object.keys(below).length === 0;
+      for (const judgeNow of TIMES) {
+        const out: Run = {};
+        for (const key of KEYS) {
+          const e = judge(merged[key], judgeNow, bottom);
+          if (e !== undefined) out[key] = e;
+        }
+        for (const now of TIMES.filter((t) => !floor || t >= judgeNow)) {
+          for (const key of KEYS) {
+            const before = visible(layerGet([...runs, below], key), now);
+            const after = visible(layerGet([out, below], key), now);
+            if (before !== after) {
+              return `key=${key} judgeNow=${judgeNow} now=${now} before=${before} after=${after} runs=${JSON.stringify(runs)} below=${JSON.stringify(below)}`;
+            }
+          }
+        }
+        if (judge === judgeCorrect && floor) cases++;
+      }
+    }
+  }
+  return undefined;
+}
+
+const expiryBug = expiryCounterexample(judgeCorrect);
+if (expiryBug) {
+  console.error(`FAIL CompactPreserve (expiry): ${expiryBug}`);
+  process.exit(1);
+}
+for (const [name, broken, floor] of [
+  ["an expired put drops above the bottom", judgeDropsAnywhere, true],
+  ["a reader reads below the judgedNow of the runs it reads", judgeCorrect, false],
+] as const) {
+  if (!expiryCounterexample(broken, floor)) {
+    console.error(`FAIL CompactPreserve (expiry): broken variant not caught: ${name}`);
+    process.exit(1);
+  }
+  console.log(`  broken variant caught: ${name}`);
+}
+
+/** merge.rs and the TypeScript session judge the winner before the drop, at the session's judgeNow. */
+function judgesWinnerInSource(): boolean {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const read = (rel: string) => fs.readFileSync(path.resolve(here, rel), "utf8");
+  const engine = read("../../../../crates/engine-core/src/merge.rs");
+  const session = read("../../tests/oracle/merge-ts.ts");
+  return (
+    /let\s+entry\s*=\s*winner\.entry_at\(\s*self\.judge_now\s*\)\s*;/.test(engine) &&
+    /expired\(\s*winner\s*,\s*\{\s*now:\s*this\.judgeNow\s*\}\s*\)\s*\?\s*\{\s*kind:\s*"del"/.test(session)
+  );
+}
+if (!judgesWinnerInSource()) {
+  console.error("FAIL CompactPreserve — merge.rs / tests/oracle/merge-ts.ts no longer judge the winner at judgeNow");
+  process.exit(1);
+}
+
 if (!newestFirstInSource()) {
   console.error(
     "FAIL CompactPreserve — read.ts / merge.rs / tests/oracle/merge-ts.ts no longer newest-first get / newer source wins a tie",
@@ -130,5 +222,5 @@ if (!newestFirstInSource()) {
 }
 
 console.log(
-  `PASS CompactPreserve — ${cases} run lists, newest-first latestSstEntry and newer-wins merge sessions`,
+  `PASS CompactPreserve — ${cases} run lists and expiry judgments, newest-first latestSstEntry, newer-wins merge sessions, expired winners judged before the drop`,
 );

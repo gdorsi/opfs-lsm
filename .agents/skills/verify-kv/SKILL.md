@@ -10,9 +10,9 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | Id | Property (plain) | Harm if broken |
 |---|---|---|
 | **NoLostAcks** | After WAL `put`/`batch` ack, `get` still sees the value until a later write supersedes it — including across `ingestChunk`. | Client saw success; later `get` misses because `advanceIngested` beat `publishGeneration`. |
-| **WalOverSst** | Uningested WAL wins over SST (including tombstones). | Stale SST value or resurrected key after delete. |
-| **ViewPin** | `view()` / `ViewSnapshotImpl` get ignores WAL appends after the pin. | Snapshot is not stable mid-callback. |
-| **CompactPreserve** | Newest-first SST merge / compaction keeps the same per-key visible entry as layered get. | Compact drops or resurrects keys. |
+| **WalOverSst** | Uningested WAL wins over SST (including tombstones and expired puts); a newest version expired at the read's time hides older ones. | Stale SST value or resurrected key after delete or expiry. |
+| **ViewPin** | `view()` / `ViewSnapshotImpl` get ignores WAL appends, range deletes and deadlines passing after the pin. | Snapshot is not stable mid-callback. |
+| **CompactPreserve** | Newest-first SST merge / compaction keeps the same per-key visible entry as layered get, also when it judges expiry, for reads at or after its `judgeNow`. | Compact drops or resurrects keys. |
 | **PowerPrefix** | After any power loss (IndexedDB and OPFS each keep a prefix of their own writes, unordered), the database opens and reads the state after one log prefix (a destroy is an entry that deletes every write before it, and once a file op after its strict commit survives, the read is from after it: DestroyHolds); a process crash keeps every acked write; recovery leaves a healthy database. No power-loss state is refused as corrupt; a missing run of the recorded manifest is refused with nothing written, unless a manifest holding every ingested seq stands in (CorruptRefuse). | Database will not open, reads a state no prefix of the log produced, or recovery drops data still on disk. |
 
 ## When to run
@@ -45,9 +45,9 @@ Exit `0` = all selected checks pass. Failures print a shortest path (or countere
 | Check | Bound |
 |---|---|
 | NoLostAcks | 1 key, ≤2 appends, one in-flight ingest; omits compact, multi-tab cache, crash |
-| WalOverSst | 1 key; all WAL×SST hit kinds (`miss`/`tomb`/two values) on **real** `pointGet` |
-| ViewPin | ≤3 appends; models pin vs live binding; omits SST generation bump mid-view |
-| CompactPreserve | ≤2 sources of one run, keys `{a,b}`, cell ∈ {miss, put1, put2, del}; omits Bloom false negatives, reclaim races |
+| WalOverSst | 1 key; all WAL×SST hit kinds (`miss`/`tomb`/two values/expiring) × marks × a time before and at the deadline on **real** `pointGet` |
+| ViewPin | ≤3 appends, ≤2 range deletes, ≤2 deadlines; models pin vs live binding; omits SST generation bump mid-view |
+| CompactPreserve | ≤2 sources of one run, keys `{a,b}`, cell ∈ {miss, put1, put2, expiring put, del}; expiry: judgeNow and read times in {0,1,2}, with and without an older run the merge leaves; omits Bloom false negatives, reclaim races |
 | PowerPrefix | Workloads of ≤6 appends/ingests/compactions (`FORMAL_POWER_CMDS`; an ingest folds every waiting record or only the oldest, a flush chunk), every (IndexedDB, OPFS) prefix pair, recovery then 4 more commands, and every pair of the next power loss, 2 deep (`FORMAL_POWER_CRASHES`). Writes are abstract ids, so values and folding are not modeled; one tab, one host, compaction merges every run of the base. Every workload runs with reclaim and again with a tab holding the reclaim lock (no removals). Tab-side retry liveness under the lock is not modeled (crash-enum churn tests). Must also catch 6 broken variants. CorruptRefuse removes each run of the recorded manifest after every workload (with and without the lock). |
 
 A pass is for the model/domain above, not the whole browser stack (SharedWorker ports, IDB quirks, OPFS crashes).
@@ -55,8 +55,8 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 ## Reading failures
 
 - **NoLostAcks:** path with `advanceIngested` before `publishGeneration` and model `resolveGet` undefined.
-- **ViewPin:** `view.get` sees a post-pin append; or `db.ts` no longer passes `this.mem.pin()` into `ViewSnapshotImpl`, or `memtable.ts` drops the copy-on-write pin.
-- **CompactPreserve:** before/after merge disagree; or `read.ts` no longer gets newest-first, or `merge.rs` / `tests/oracle/merge-ts.ts` no longer keep the newer source on a tie.
+- **ViewPin:** `view.get` sees a post-pin append; or `db.ts` no longer passes `this.mem.pin()` into `ViewSnapshotImpl`, or no longer takes the read point's time once from the clock floored at the installed `judgedNow`, or `memtable.ts` drops the copy-on-write pin.
+- **CompactPreserve:** before/after merge disagree; or `read.ts` no longer gets newest-first, or `merge.rs` / `tests/oracle/merge-ts.ts` no longer keep the newer source on a tie, or no longer judge the winner's expiry at `judgeNow` before the drop. Two broken expiry variants must be caught: dropping an expired put above the bottom, and reading below `judgeNow`.
 - **PowerPrefix:** the first crash state (what each store kept), then each nested recovery crash, and the read that is not a prefix, the open that fails, or the `checkDatabase`-style problem. `model too weak` means a broken variant passed: the model lost a behavior the product depends on. `source sync` names a product decision the model encodes that the code no longer makes.
 - **Modeling error:** path impossible in TS, or parser/source-sync out of date — fix the formal files, do not weaken the property.
 

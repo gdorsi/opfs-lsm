@@ -1,7 +1,8 @@
 /**
- * View pin: after the view opens, get must ignore later WAL appends and
- * later range deletes. Mirrors ViewSnapshotImpl copying the drained mem rows
- * and holding the read point of marks it opened with.
+ * View pin: after the view opens, get must ignore later WAL appends, later
+ * range deletes and the clock passing the live row's deadline. Mirrors
+ * ViewSnapshotImpl copying the drained mem rows and holding the read point
+ * (marks and time) it opened with.
  *
  * Sync: the constructor must copy `rows` so later appends cannot mutate the
  * pin, and a range delete must replace a chunk rather than edit it.
@@ -17,17 +18,20 @@ type State = {
   pinned: number | undefined | "closed";
   nextVal: number;
   deletes: number;
+  /** Deadlines passed: the live row was written expiring and the clock reached it. */
+  ticks: number;
 };
 
 type Action =
   | { type: "append" }
   | { type: "deleteRange" }
+  | { type: "tick" }
   | { type: "openView" }
   | { type: "viewGet" }
   | { type: "closeView" };
 
 function initial(): State {
-  return { live: undefined, pinned: "closed", nextVal: 1, deletes: 0 };
+  return { live: undefined, pinned: "closed", nextVal: 1, deletes: 0, ticks: 0 };
 }
 
 /**
@@ -35,6 +39,8 @@ function initial(): State {
  * marks it captured then, `pin()` marks every chunk shared, a write copies a
  * shared chunk before it changes it, a range delete puts a filtered copy in
  * place of the chunk, and the memtable's marks are replaced, never edited.
+ * The read point takes its time once, from the clock floored at the
+ * installed manifest's judgedNow.
  */
 function viewPinsInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -44,6 +50,7 @@ function viewPinsInSource(): boolean {
   const mem = read("store/memtable.ts");
   return (
     /new ViewSnapshotImpl\([^)]*this\.mem\.pin\(\),\s*layers\.levels,\s*this\.point\(\)/s.test(db) &&
+    /private point\(\): ReadPoint \{\s*const now = this\.clock\.now\(this\.installed\.judgedNow\);/.test(db) &&
     /const keep = rows\.filter\([\s\S]*?this\.chunks\[c\] = keep;/.test(mem) &&
     /this\.held = joinMarks\(this\.held, /.test(mem) &&
     /pin\(\)[^{]*\{\s*this\.owned\.fill\(false\)/.test(mem) &&
@@ -55,6 +62,7 @@ function enabled(s: State): Action[] {
   const out: Action[] = [];
   if (s.nextVal <= 3) out.push({ type: "append" });
   if (s.deletes < 2 && s.live !== undefined) out.push({ type: "deleteRange" });
+  if (s.ticks < 2 && s.live !== undefined) out.push({ type: "tick" });
   if (s.pinned === "closed") out.push({ type: "openView" });
   else {
     out.push({ type: "viewGet" });
@@ -69,6 +77,8 @@ function step(s: State, a: Action): State {
       return { ...s, live: s.nextVal, nextVal: s.nextVal + 1 };
     case "deleteRange":
       return { ...s, live: undefined, deletes: s.deletes + 1 };
+    case "tick":
+      return { ...s, live: undefined, ticks: s.ticks + 1 };
     case "openView":
       // Correct: pin current live. Broken (no row copy): stay coupled to live.
       if (!viewPinsInSource()) {
@@ -121,6 +131,8 @@ function label(a: Action): string {
       return "WAL append (after pin possible)";
     case "deleteRange":
       return "range delete over the key";
+    case "tick":
+      return "the clock passes the live row's deadline";
     case "openView":
       return "openViewSnapshot (pin)";
     case "viewGet":
