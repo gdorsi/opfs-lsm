@@ -8,6 +8,11 @@
  * merge did not take, every read at a time >= judgeNow (the readers' floor,
  * the manifest's judgedNow) sees the same before and after.
  *
+ * Range deletes: a merge drops a winner the base manifest's marks cover,
+ * and its output claims the base manifest's marks only. Every reader at or
+ * past the install, whose marks join the base's and any later ones and
+ * retire what no run can still hold, reads what it read before.
+ *
  * Sync: latestSstEntry walks levels newest-first; the merge session and its
  * TypeScript oracle keep the earlier source on a tie (`a < b` in merge.rs,
  * `< 0` in tests/oracle/merge-ts.ts).
@@ -214,6 +219,107 @@ if (!judgesWinnerInSource()) {
   process.exit(1);
 }
 
+// --- Range deletes.
+//
+// One key, three versions: two merge inputs and an older run the merge does
+// not take, seqs 1 (below) to 3 (newest). The base manifest's `through` is 3
+// and its mark covers seqs up to `base`. A flush between the merge and its
+// install adds a later mark (at 4) covering seqs up to `late`. The merge
+// drops a winner its base mark covers; its output claims `marksThrough`; the
+// install joins both marks and retires the piece once every run holding the
+// key claims its `at`. Every read at or past the install must agree with a
+// read of the inputs under both marks. Per-key pieces retire at least as
+// eagerly as key ranges, which overlap more runs.
+
+type Version = { kind: "put"; value: number } | { kind: "del" } | undefined;
+type Held = { readonly v: Version; readonly seq: number; readonly marksThrough: number };
+
+const BASE_THROUGH = 3;
+const LATE_AT = 4;
+const VERSIONS: Version[] = [undefined, { kind: "put", value: 1 }, { kind: "del" }];
+
+/** A read under a mark of `through` (0: none): the newest version, unless it is a delete or covered. */
+function readUnder(runs: readonly Held[], through: number): number | undefined {
+  const newest = runs.find((r) => r.v !== undefined);
+  return newest?.v?.kind === "put" && newest.seq > through ? newest.v.value : undefined;
+}
+
+type MergeRule = (winner: Held, base: number, bottom: boolean) => Version;
+
+/** merge.rs `next_key`: a winner the base mark covers is gone; a delete drops at the bottom. */
+const markCorrect: MergeRule = (w, base, bottom) => (w.seq <= base ? undefined : bottom && w.v?.kind === "del" ? undefined : w.v);
+/** Broken: covers one seq past the mark, so a live winner is dropped and the older version comes back. */
+const markOneTooHigh: MergeRule = (w, base, bottom) => (w.seq <= base + 1 ? undefined : markCorrect(w, base, bottom));
+
+function marksCounterexample(rule: MergeRule, claim: number): string | undefined {
+  for (const [v0, v1, vb] of VERSIONS.flatMap((a) => VERSIONS.flatMap((b) => VERSIONS.map((c) => [a, b, c] as const)))) {
+    for (const base of [0, 1, 2]) {
+      for (const late of [0, 1, 2, 3]) {
+        for (const belowThrough of [0, BASE_THROUGH]) {
+          // A run that claims the base mark holds no version it covers.
+          if (belowThrough >= BASE_THROUGH && vb !== undefined && base >= 1) continue;
+          const inputs: Held[] = [
+            { v: v0, seq: 3, marksThrough: 0 },
+            { v: v1, seq: 2, marksThrough: 0 },
+          ];
+          const below: Held = { v: vb, seq: 1, marksThrough: belowThrough };
+          const winner = inputs.find((r) => r.v !== undefined);
+          const out: Held | undefined = winner && { v: rule(winner, base, vb === undefined), seq: winner.seq, marksThrough: claim };
+          // join: the larger through wins, with its at; on a tie, the smaller at.
+          const piece = late > base ? { through: late, at: LATE_AT } : { through: base, at: base > 0 ? BASE_THROUGH : 0 };
+          const after = [...(out?.v ? [out] : []), below];
+          const blocked = after.some((r) => r.v !== undefined && r.marksThrough < piece.at);
+          const retired = piece.through > 0 && !blocked ? 0 : piece.through;
+          const before = readUnder([...inputs, below], piece.through);
+          const got = readUnder(after, retired);
+          if (before !== got) {
+            return `versions=${JSON.stringify([v0, v1, vb])} base=${base} late=${late} below.marksThrough=${belowThrough} before=${before} after=${got}`;
+          }
+          if (rule === markCorrect && claim === BASE_THROUGH) cases++;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+const marksBug = marksCounterexample(markCorrect, BASE_THROUGH);
+if (marksBug) {
+  console.error(`FAIL CompactPreserve (range deletes): ${marksBug}`);
+  process.exit(1);
+}
+for (const [name, rule, claim] of [
+  ["a merge drops a winner one seq past its mark", markOneTooHigh, BASE_THROUGH],
+  ["an output claims a mark the merge never saw", markCorrect, LATE_AT],
+] as const) {
+  if (!marksCounterexample(rule, claim)) {
+    console.error(`FAIL CompactPreserve (range deletes): broken variant not caught: ${name}`);
+    process.exit(1);
+  }
+  console.log(`  broken variant caught: ${name}`);
+}
+
+/**
+ * merge.rs drops a covered winner before it judges expiry, the TypeScript
+ * session does the same, and an output claims the base manifest's through.
+ */
+function appliesMarksInSource(): boolean {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const read = (rel: string) => fs.readFileSync(path.resolve(here, rel), "utf8");
+  const engine = read("../../../../crates/engine-core/src/merge.rs");
+  const session = read("../../tests/oracle/merge-ts.ts");
+  const compact = read("../../src/host/compact.ts");
+  return (
+    /if\s+covers\(\s*self\.mark_cursor\.at\([^;]*winner\.seq\s*\)\s*\{\s*self\.retire\(w\);\s*return\s+Ok\(\(\)\);\s*\}\s*let\s+entry\s*=\s*winner\.entry_at/.test(engine) &&
+    /if\s*\(\s*covered\(\s*this\.marks\s*,\s*winner\.key\s*,\s*winner\.seq\s*\)\s*\)\s*return;/.test(session) &&
+    /marksThrough:\s*base\.through\s*\}/.test(compact)
+  );
+}
+if (!appliesMarksInSource()) {
+  console.error("FAIL CompactPreserve — merge.rs / merge-ts.ts / compact.ts no longer drop a covered winner first and claim base.through");
+  process.exit(1);
+}
+
 if (!newestFirstInSource()) {
   console.error(
     "FAIL CompactPreserve — read.ts / merge.rs / tests/oracle/merge-ts.ts no longer newest-first get / newer source wins a tie",
@@ -222,5 +328,5 @@ if (!newestFirstInSource()) {
 }
 
 console.log(
-  `PASS CompactPreserve — ${cases} run lists and expiry judgments, newest-first latestSstEntry, newer-wins merge sessions, expired winners judged before the drop`,
+  `PASS CompactPreserve — ${cases} run lists, expiry judgments and range delete layouts, newest-first latestSstEntry, newer-wins merge sessions, expired winners judged before the drop, covered winners dropped and only the base marks claimed`,
 );
