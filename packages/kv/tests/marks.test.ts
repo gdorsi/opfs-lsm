@@ -44,7 +44,8 @@ function naive(list: readonly Mark[], key: Uint8Array, seq: number): boolean {
   return list.some((m) => inRange(m, key) && seq <= m.through);
 }
 
-const same = (a: Marks, b: Marks) => expect([...encodeMarks(a)]).toEqual([...encodeMarks(b)]);
+/** Two tables are the same when they encode the same. */
+const bytesOf = (m: Marks) => [...encodeMarks(m)];
 
 describe("marks", () => {
   it("answers as the naive list of marks does", () => {
@@ -59,9 +60,9 @@ describe("marks", () => {
     fc.assert(
       fc.property(marksArb, marksArb, marksArb, (x, y, z) => {
         const [a, b, c] = [fold(x), fold(y), fold(z)];
-        same(joinMarks(a, b), joinMarks(b, a));
-        same(joinMarks(joinMarks(a, b), c), joinMarks(a, joinMarks(b, c)));
-        same(joinMarks(a, a), a);
+        expect(bytesOf(joinMarks(a, b))).toEqual(bytesOf(joinMarks(b, a)));
+        expect(bytesOf(joinMarks(joinMarks(a, b), c))).toEqual(bytesOf(joinMarks(a, joinMarks(b, c))));
+        expect(bytesOf(joinMarks(a, a))).toEqual(bytesOf(a));
       }),
     );
   });
@@ -128,7 +129,7 @@ describe("marks", () => {
         const bytes = encodeMarks(marks);
         const { marks: back, end } = decodeMarks(bytes, 0, bytes.byteLength, 1000);
         expect(end).toBe(bytes.byteLength);
-        same(back, marks);
+        expect(bytesOf(back)).toEqual(bytesOf(marks));
         expect(() => decodeMarks(bytes, 0, bytes.byteLength - 1, 1000)).toThrow(CorruptDatabaseError);
         if (!marks.empty) expect(() => decodeMarks(bytes, 0, bytes.byteLength, 0)).toThrow(CorruptDatabaseError);
       }),
