@@ -68,6 +68,8 @@ const STAGES: Record<string, { before(db: Db): Promise<unknown>; after(db: Db): 
   "rows flushed, delete in the memtable": { before: ingest, after: async () => {} },
   "rows and delete flushed": { before: ingest, after: ingest },
   "rows in the memtable, delete flushed with them": { before: async () => {}, after: ingest },
+  "rows compacted, delete flushed": { before: compact, after: ingest },
+  "rows and delete compacted": { before: compact, after: compact },
 };
 
 const ROWS = ["a", "m/1", "m/2", "m/3", "z"];
