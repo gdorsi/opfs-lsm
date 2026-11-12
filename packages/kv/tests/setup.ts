@@ -1,5 +1,8 @@
 import "fake-indexeddb/auto";
-import { expect } from "vitest";
+import { afterEach, expect } from "vitest";
+import { __settleOpensForTests } from "../src/harness.js";
+
+afterEach(__settleOpensForTests);
 
 // `toEqual` walks a Uint8Array as a generic object, and the sims compare
 // thousands of keys and values per history. Two arrays of the same class are

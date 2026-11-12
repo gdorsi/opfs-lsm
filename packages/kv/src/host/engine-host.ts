@@ -129,6 +129,11 @@ export class EngineHost {
     this.db(name).unwatch();
   }
 
+  /** Settles once the work each database's last open started has. */
+  async opened(): Promise<void> {
+    await Promise.all([...this.dbs.values()].map((db) => db.openPass));
+  }
+
   /** Delete every record and file of `name`. See `Db.dangerousDestroy`. */
   async destroy(name: string): Promise<void> {
     await this.db(name).destroy();
@@ -166,6 +171,8 @@ class HostedDb {
   private trusted: number | undefined;
   /** Set while `destroy` waits for the locks, so a compaction pass stops at its next step. */
   private destroying = false;
+  /** The last `watch`'s work: its WAL read and the compaction pass after it. */
+  openPass: Promise<void> = Promise.resolve();
   /** Run compaction passes until no request arrives during one. */
   private readonly compact = coalesced(() =>
     withLock(compactLock(this.name), () => this.compactPass()),
@@ -343,16 +350,20 @@ class HostedDb {
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
     watch.triggerAt = watch.maxWalBytes;
-    void this.withWal((wal) => uningestedBytes(wal, watch.maxWalBytes)).then(
-      (waiting) => {
+    const opened = this.withWal((wal) => uningestedBytes(wal, watch.maxWalBytes)).then(
+      async (waiting) => {
         watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
         this.maybeIngest(watch);
+        // The host has no timer: an open is the one moment, besides a flush,
+        // when rows that expired while the database sat idle get purged.
+        if (watch.state === "idle") await this.compact().catch(() => undefined);
       },
       (err: unknown) => {
         if (isClosedDatabase(err)) return;
         console.error(`opfs-lsm: reading the WAL of ${this.name} failed`, err);
       },
     );
+    this.openPass = opened;
   }
 
   unwatch(): void {

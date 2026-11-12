@@ -33,6 +33,7 @@ export type HarnessOpenOptions = OpenOptions &
 
 const memoryFsByName = new Map<string, MemoryFs>();
 const localHosts = new Map<string, EngineHost>();
+const everyLocalHost = new Set<EngineHost>();
 
 function memoryFs(name: string): MemoryFs {
   let fs = memoryFsByName.get(name);
@@ -48,6 +49,7 @@ function localIngest(name: string, fs: AsyncFs, clock: (() => number) | undefine
   if (!host) {
     host = new EngineHost(() => fs, {}, clock ? new WallClock(clock) : contextClock);
     localHosts.set(name, host);
+    everyLocalHost.add(host);
   }
   return createLocalIngestClient(host);
 }
@@ -67,6 +69,16 @@ export async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
 
 export async function destroyHarnessDb(options: HarnessOpenOptions): Promise<void> {
   return destroyDbWith({ name: options.name, ...backingOf(options) });
+}
+
+/**
+ * Wait for the compaction pass each open of a harness host started. A pass
+ * outlives the handle that started it, and fake IndexedDB keeps a name's
+ * WAL across tests, so a test would otherwise see the last one's installs.
+ */
+export async function __settleOpensForTests(): Promise<void> {
+  await Promise.all([...everyLocalHost].map((host) => host.opened()));
+  everyLocalHost.clear();
 }
 
 export function __resetMemoryFsForTests(name: string): void {
