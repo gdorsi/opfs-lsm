@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns, unpackHits } from "../src/store/block-scan.js";
+import type { LayerEntry } from "../src/store/cursor.js";
 import { encodeSst as encodeSstWasm, openMergeIn, type MergeSpec } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { openMergeTs } from "../tests/oracle/merge-ts.js";
@@ -86,15 +87,15 @@ async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array): 
     const t = tsOutcome("BlockEntries", () => {
       const b = blockBytes(framed, new DataView(framed.buffer, framed.byteOffset, framed.byteLength), 0, { offset: 0, length: framed.byteLength }, lz4 ? "lz4" : "raw");
       const walk = new BlockEntries(b);
-      const out: { key: Uint8Array; value: Uint8Array }[] = [];
+      const out: LayerEntry[] = [];
       for (let e = walk.next(); e; e = walk.next()) {
         if (out.length > 255 * framed.byteLength + 16) throw new RuleBroken("BlockEntries did not end");
-        if (e.kind === "put" && contains(e.value!, pattern)) out.push({ key: e.key, value: e.value! });
+        if (e.kind === "put" && contains(e.value!, pattern)) out.push(e);
       }
       return out;
     });
     if (!w.ok || !t.ok) return w.ok === t.ok ? "rejected" : "differ";
-    const show = (hs: { key: Uint8Array; value: Uint8Array }[]) => hs.map((h) => [[...h.key], [...h.value]]);
+    const show = (hs: { key: Uint8Array; value?: Uint8Array; seq: number }[]) => hs.map((h) => [[...h.key], [...h.value!], h.seq]);
     return JSON.stringify(show(w.value)) === JSON.stringify(show(t.value)) ? "same" : "differ";
   });
 }

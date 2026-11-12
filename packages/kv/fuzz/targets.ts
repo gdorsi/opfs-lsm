@@ -19,7 +19,7 @@ import { compareBytes } from "../src/bytes.js";
 import { CommitError, CorruptDatabaseError } from "../src/errors.js";
 import { decodeOps } from "../src/idb/wal.js";
 import { crc32 } from "../src/store/crc32.js";
-import { Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanHit } from "../src/store/cursor.js";
+import { Miss, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
 import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { PageCache } from "../src/store/page-cache.js";
@@ -163,8 +163,8 @@ async function settleBounded<T>(what: string, attempt: () => Maybe<T>, tries = 6
 }
 
 /** Every entry of `cursor`, failing when it yields more than `max`. */
-async function drainBounded<E extends ScanHit>(what: string, cursor: LayerCursor<E>, max: number): Promise<E[]> {
-  const out: E[] = [];
+async function drainBounded(what: string, cursor: LayerCursor, max: number): Promise<LayerEntry[]> {
+  const out: LayerEntry[] = [];
   let misses = 0;
   for (;;) {
     const e = cursor.peek();
@@ -193,10 +193,10 @@ export type ReadResult = {
   readonly gets: (SstEntry | undefined | "error")[];
   readonly scan: LayerEntry[] | "error";
   readonly seek: LayerEntry[] | "error";
-  readonly contains: ScanHit[] | "error";
+  readonly contains: LayerEntry[] | "error";
   readonly reverse: LayerEntry[] | "error";
   readonly reverseSeek: LayerEntry[] | "error";
-  readonly reverseContains: ScanHit[] | "error";
+  readonly reverseContains: LayerEntry[] | "error";
 };
 
 /**
@@ -225,10 +225,8 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
     const seek = await one("SstReader.cursor (seek)", () =>
       drainBounded("SstReader.cursor (seek)", reader.cursor(mid ? { start: mid } : undefined), max),
     );
-    // The wasm block filter reports no seq and the JS one does: compare hits without it.
-    const hits = (es: ScanHit[]): ScanHit[] => es.map(({ seq: _seq, ...hit }) => hit);
-    const contains = await one("SstReader.scanContains", async () =>
-      hits(await drainBounded("SstReader.scanContains", reader.scanContains([probe.pattern]), max)),
+    const contains = await one("SstReader.scanContains", () =>
+      drainBounded("SstReader.scanContains", reader.scanContains([probe.pattern]), max),
     );
     const reverse = await one("SstReader.cursor (reverse)", () =>
       drainBounded("SstReader.cursor (reverse)", reader.cursor(undefined, true), max),
@@ -236,8 +234,8 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
     const reverseSeek = await one("SstReader.cursor (reverse seek)", () =>
       drainBounded("SstReader.cursor (reverse seek)", reader.cursor(mid ? { endExclusive: mid } : undefined, true), max),
     );
-    const reverseContains = await one("SstReader.scanContains (reverse)", async () =>
-      hits(await drainBounded("SstReader.scanContains (reverse)", reader.scanContains([probe.pattern], undefined, true), max)),
+    const reverseContains = await one("SstReader.scanContains (reverse)", () =>
+      drainBounded("SstReader.scanContains (reverse)", reader.scanContains([probe.pattern], undefined, true), max),
     );
     reader.close();
     return { gets, scan, seek, contains, reverse, reverseSeek, reverseContains };
@@ -249,7 +247,6 @@ export function expectedRead(entries: readonly SstEntry[], probe: ReadProbe): Re
   const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
   const layer = (e: SstEntry): LayerEntry =>
     e.kind === "put" ? { key: e.key, kind: "put", value: e.value, seq: e.seq } : { key: e.key, kind: "del", seq: e.seq };
-  const hit = (e: SstEntry): ScanHit => (e.kind === "put" ? { key: e.key, kind: "put", value: e.value } : { key: e.key, kind: "del" });
   const mid = probe.keys[probe.keys.length >> 1];
   const holds = (v: Uint8Array) => {
     const p = probe.pattern;
@@ -260,7 +257,7 @@ export function expectedRead(entries: readonly SstEntry[], probe: ReadProbe): Re
     }
     return false;
   };
-  const contains = sorted.filter((e) => e.kind === "put" && holds(e.value)).map(hit);
+  const contains = sorted.filter((e) => e.kind === "put" && holds(e.value)).map(layer);
   return {
     gets: probe.keys.map((k) => sorted.find((e) => compareBytes(e.key, k) === 0)),
     scan: sorted.map(layer),

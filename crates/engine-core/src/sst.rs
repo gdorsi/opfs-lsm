@@ -714,8 +714,8 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 /// says whether it is a u32 length plus LZ4 bytes or raw), whose value
 /// contains every pattern. Records are read in place, so a raw block that
 /// misses allocates nothing. An LZ4 block is unpacked first, and that unpack is
-/// most of the cost of a miss. Hits come back packed: `u32 key_len, u32 value_len, key, value`,
-/// little-endian, in key order.
+/// most of the cost of a miss. Hits come back packed: `u32 key_len, u32 value_len, u64 seq, key,
+/// value`, little-endian, in key order.
 pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]]) -> Result<Vec<u8>, SstError> {
     let unpacked;
     let block = match codec {
@@ -735,6 +735,7 @@ pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]]) -> R
         if patterns.iter().all(|p| contains(value, p)) {
             out.extend_from_slice(&((record.prefix.len() + record.suffix.len()) as u32).to_le_bytes());
             out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            out.extend_from_slice(&record.seq.to_le_bytes());
             out.extend_from_slice(record.prefix);
             out.extend_from_slice(record.suffix);
             out.extend_from_slice(value);
@@ -870,13 +871,14 @@ mod tests {
         assert_eq!(decoded[2].seq(), 1 << 40);
     }
 
-    fn hits(packed: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    fn hits(packed: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u64)> {
         let mut out = Vec::new();
         let mut o = 0;
         while o < packed.len() {
             let (k, v) = (read_u32(packed, o) as usize, read_u32(packed, o + 4) as usize);
-            o += 8;
-            out.push((packed[o..o + k].to_vec(), packed[o + k..o + k + v].to_vec()));
+            let seq = u64::from_le_bytes(packed[o + 8..o + 16].try_into().unwrap());
+            o += 16;
+            out.push((packed[o..o + k].to_vec(), packed[o + k..o + k + v].to_vec(), seq));
             o += k + v;
         }
         out
@@ -888,11 +890,11 @@ mod tests {
             .map(|i| put(format!("s/t/{i:08}").as_bytes(), format!(" word{} common{}", i % 7, i % 3).as_bytes(), i + 1))
             .collect();
         entries.push(Entry::Del { key: b"s/t/zzdel".to_vec(), seq: 999 });
-        let want = |pats: &[&[u8]]| -> Vec<(Vec<u8>, Vec<u8>)> {
+        let want = |pats: &[&[u8]]| -> Vec<(Vec<u8>, Vec<u8>, u64)> {
             entries
                 .iter()
                 .filter_map(|e| match e {
-                    Entry::Put { key, value, .. } if pats.iter().all(|p| contains(value, p)) => Some((key.clone(), value.clone())),
+                    Entry::Put { key, value, seq } if pats.iter().all(|p| contains(value, p)) => Some((key.clone(), value.clone(), *seq)),
                     _ => None,
                 })
                 .collect()
@@ -901,7 +903,7 @@ mod tests {
             let sst = encode_sst(&entries, codec);
             let layout = read_footer(&sst[sst.len() - FOOTER_BYTES..], sst.len()).unwrap();
             let mut o = layout.index_start;
-            let mut got: Vec<Vec<(Vec<u8>, Vec<u8>)>> = vec![vec![]; 4];
+            let mut got: Vec<Vec<(Vec<u8>, Vec<u8>, u64)>> = vec![vec![]; 4];
             for _ in 0..layout.block_count {
                 let first = read_u32(&sst, o) as usize;
                 o += 4 + first;

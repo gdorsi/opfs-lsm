@@ -223,9 +223,7 @@ that holds the key with a non-matching value or a tombstone drops the older hit.
 Every read judges the versions it finds in runs against one read point: the marks of the
 installed generation joined with those of the memtable, taken in the same turn as the layers it
 reads. A version from a run is skipped when a mark covers it (see
-[Range deletes](#range-deletes)), and then an older source does not win in its place. A
-`valueContains` hit from a run carries no seq, so when a mark covers its key, the run's level
-is asked for the seq.
+[Range deletes](#range-deletes)), and then an older source does not win in its place.
 
 A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the read
 point. Writes that commit during the callback are invisible to it. `rangeJoin` scans a range

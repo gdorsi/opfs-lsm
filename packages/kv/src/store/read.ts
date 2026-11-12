@@ -8,9 +8,9 @@ import {
   Miss,
   untilHit,
   type LayerCursor,
+  type LayerEntry,
   type Maybe,
   type ScanBounds,
-  type ScanHit,
 } from "./cursor.js";
 import { markCursor, throughAt, type Marks, type Seq } from "./marks.js";
 import type { SstEntry } from "./sst.js";
@@ -171,7 +171,7 @@ export class RunLevel {
   }
 
   /** The puts in `bounds` whose value holds every pattern, in key order or backward. */
-  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
+  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor {
     return this.concat(bounds, reverse, (run) => run.scanContains(patterns, bounds, reverse));
   }
 
@@ -180,11 +180,11 @@ export class RunLevel {
    * Backward it starts at the last run below `endExclusive` and steps to the
    * run before.
    */
-  private concat<E extends ScanHit>(
+  private concat(
     bounds: ScanBounds | undefined,
     reverse: boolean,
-    cursorOf: (run: SstReader) => LayerCursor<E>,
-  ): LayerCursor<E> {
+    cursorOf: (run: SstReader) => LayerCursor,
+  ): LayerCursor {
     const { runs } = this;
     const start = bounds?.start;
     const end = bounds?.endExclusive;
@@ -235,7 +235,7 @@ export function runLevels(
 }
 
 /** The newest entry for one key and the source it came from. */
-type Winner<E> = { readonly entry: E; readonly source: number };
+type Winner = { readonly entry: LayerEntry; readonly source: number };
 
 /**
  * A heap merge of `cursors`, newest (smallest index) first, one key at a
@@ -244,19 +244,19 @@ type Winner<E> = { readonly entry: E; readonly source: number };
  * start of the next step, the first step peeks every source, so a cold
  * merge gathers every source's miss into one parallel round of reads.
  */
-class Merge<E extends ScanHit> {
+class Merge {
   private readonly heap: MinHeap;
   private pending: number[];
 
   constructor(
-    private readonly cursors: readonly LayerCursor<E>[],
+    private readonly cursors: readonly LayerCursor[],
     reverse: boolean,
   ) {
     this.heap = new MinHeap(reverse ? heapGreater : heapLess);
     this.pending = cursors.map((_, i) => i);
   }
 
-  next(): Maybe<Winner<E> | undefined> {
+  next(): Maybe<Winner | undefined> {
     const { cursors, heap } = this;
     if (this.pending.length > 0) {
       let misses: Miss[] | undefined;
@@ -275,7 +275,7 @@ class Merge<E extends ScanHit> {
     }
     const top = heap.pop();
     if (!top) return undefined;
-    const entry = cursors[top.source]!.peek() as E;
+    const entry = cursors[top.source]!.peek() as LayerEntry;
     cursors[top.source]!.next();
     this.pending.push(top.source);
     while (heap.length > 0 && compareBytes(heap.peek()!.key, entry.key) === 0) {
@@ -337,11 +337,11 @@ export async function* scanMatching(
   limit?: number,
   reverse = false,
 ): AsyncGenerator<Entry> {
-  const merge = new Merge<ScanHit>(
+  const merge = new Merge(
     [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
     reverse,
   );
-  const marksAt = markCursor(marks, reverse);
+  const through = markCursor(marks, reverse);
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
@@ -355,21 +355,8 @@ export async function* scanMatching(
       let newer = shadowed(levels, source - 1, entry.key);
       if (newer instanceof Miss) newer = await untilHit(() => shadowed(levels, source - 1, entry.key), newer);
       if (newer) continue;
-      const through = marksAt.at(entry.key);
-      if (through > 0) {
-        let seq = entry.seq;
-        if (seq === undefined) {
-          // The block filter reports no seq, so the hit's own level is asked for it.
-          let own = levels[source - 1]!.get(entry.key);
-          while (own instanceof Miss) {
-            await own.ready;
-            own = levels[source - 1]!.get(entry.key);
-          }
-          seq = own?.seq ?? 0;
-        }
-        if (seq <= through) continue;
-      }
     }
+    if (gone(entry, through.at(entry.key))) continue;
     yield { key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) };
     yielded += 1;
   }

@@ -2,7 +2,7 @@ import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomMightContain, type BloomFilter } from "./bloom.js";
-import { filterCursor, Miss, type LayerCursor, type Maybe, type ScanBounds, type ScanHit } from "./cursor.js";
+import { filterCursor, Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanBounds } from "./cursor.js";
 import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
 import {
   BlockEntries,
@@ -113,7 +113,7 @@ export class SstReader {
    * With the wasm engine each block is decoded and matched there and only
    * hits cross back. Without it the cursor does the same work key by key.
    */
-  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
+  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor {
     const scan = blockScanner();
     if (!scan) return filterCursor(this.cursor(bounds, reverse), patterns);
     const packed = packPatterns(patterns);
@@ -124,7 +124,7 @@ export class SstReader {
       return () => {
         for (let h = walk.next(); !h.done; h = walk.next()) {
           if (seek && outside(h.value.key, seek)) continue;
-          return { key: h.value.key, kind: "put" as const, value: h.value.value };
+          return h.value;
         }
         return undefined;
       };
@@ -145,7 +145,7 @@ export class SstReader {
    * Scans admit pages to probation. Only entering a block can miss, and a
    * miss leaves the cursor where it was.
    */
-  private blocks<E extends ScanHit>(
+  private blocks(
     bounds: ScanBounds | undefined,
     reverse: boolean,
     open: (
@@ -153,8 +153,8 @@ export class SstReader {
       seek: Uint8Array | undefined,
       framed: Uint8Array,
       lz4: boolean,
-    ) => () => E | undefined,
-  ): LayerCursor<E> {
+    ) => () => LayerEntry | undefined,
+  ): LayerCursor {
     const start = bounds?.start;
     const end = bounds?.endExclusive;
     const stopAt = reverse ? start : end;
@@ -165,9 +165,9 @@ export class SstReader {
     // The page the cursor is in. Looking it up again per block would count
     // as reuse and promote every page a single scan passes.
     let at: { p: number; page: Page } | undefined;
-    let take: (() => E | undefined) | undefined;
-    let cur: E | undefined | null = null;
-    const peek = (): E | undefined | Miss => {
+    let take: (() => LayerEntry | undefined) | undefined;
+    let cur: LayerEntry | undefined | null = null;
+    const peek = (): LayerEntry | undefined | Miss => {
       if (cur !== null) return cur;
       for (;;) {
         const e = take?.();
