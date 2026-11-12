@@ -44,3 +44,33 @@ offline   three status edits, a description and a comment written offline: all f
           reads "Offline · 5 unsynced", the server has none of them; 330 ms after reconnect every one is acked and
           on the server.
 visible   an edit in the same tab to its live query 3.1 ms (2.7-12.1), to the DOM 3.5 ms (3-12.5), n=60.
+
+Sort keys: B before (cec65c9) and after, each issue carrying `priorityOrder` and `statusOrder`. Same machine and
+server, interleaved one run per build per round under the machine lock: warm over 5 rounds on a profile from one
+first sync per build, first sync over 10 rounds. 1-min load 3.5-11.4.
+
+                                       before                 after
+warm first-rows                  113 (108-122)          114 (106-124)
+warm rows-total                  158 (152-168)          161 (153-169)
+warm heapMB                         25 (25-25)             26 (26-26)
+first-sync first-rows            131 (122-263)          130 (122-152)
+first-sync caught-up:issues  3,968 (3,859-4,300)    4,546 (4,041-5,088)
+first-sync caught-up:bodies  6,313 (6,178-7,527)    6,970 (6,276-7,502)
+first-sync caught-up:comments 7,808 (7,694-9,659)   8,512 (7,749-9,060)
+first-sync storageMB             132 (124-168)          142 (131-178)
+
+Paired by round, the after build catches issues up 610 ms later (median of 10; later in 9). The keys add about 100
+bytes per issue across the document and its `byPriority` and `byStatus` entries (10 MB more after a first sync),
+and kv's write path, the largest share of a first sync (first-sync-100k.txt, section 3), handles every byte.
+
+The edit scenarios on the after build, against a copy of the server database, RUNS=1. All pass.
+
+tabs      tab A -> tab B 2.5 ms (2-4.6), tab B -> tab A 2.2 ms (2-4.2), n=10 each; the handover's edit is acked 79 ms
+          after the leader closes.
+users     bob -> ann 5.9 ms (5.5-20.5), n=10.
+offline   five edits pending offline, acked 57 ms after reconnecting.
+visible   to the live query 3.2 ms (2.8-30.8), to the DOM 3.6 ms (3.2-27.4), n=60.
+
+A replica written before the keys existed, with three status edits pending, reopened online on the after build: the
+leader pushed the edits (the server holds all three), cleared the replica and pulled it again under format 3 in
+5.7 s. The first 2,000 issues read back carry both keys, and `byPriority` counts all 19,696 of priority 4.
