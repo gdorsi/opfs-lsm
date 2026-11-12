@@ -31,11 +31,14 @@ async function searched(snap: Snap, filter: IssueFilter): Promise<Issue[]> {
   );
 }
 
+/** Awaited between the counts of two statuses. A recount no one waits on passes one that lets a frame paint. */
+export type Pause = () => Promise<void>;
+
 /**
  * Live issues under `filter` per status, indexed by status code; a status the filter leaves out counts 0. Without a
- * query it counts index entries and reads no document.
+ * query it counts index entries and reads no document. Without `pause` the statuses are counted at once.
  */
-export function countByStatus(issues: IssueDocs, filter: IssueFilter): Promise<number[]> {
+export function countByStatus(issues: IssueDocs, filter: IssueFilter, pause?: Pause): Promise<number[]> {
   return issues.view(async (snap) => {
     const counts = ALL.map(() => 0);
     const statuses = filter.status.length > 0 ? filter.status : ALL;
@@ -43,17 +46,22 @@ export function countByStatus(issues: IssueDocs, filter: IssueFilter): Promise<n
       for (const i of await searched(snap, filter)) counts[i.status]!++;
       return counts;
     }
-    await Promise.all(
-      statuses.map(async (s) => {
-        const parts =
-          filter.priority.length === 0
-            ? [snap.count({ index: "byStatus", eq: [false, s] })]
-            : filter.priority.map((p) =>
-                snap.count({ index: "byPriority", eq: [false, p], gte: priorityOrder(p, s, 0), lt: priorityOrder(p, s + 1, 0) }),
-              );
-        counts[s] = (await Promise.all(parts)).reduce((a, b) => a + b, 0);
-      }),
-    );
+    const count = async (s: StatusCode) => {
+      const parts =
+        filter.priority.length === 0
+          ? [snap.count({ index: "byStatus", eq: [false, s] })]
+          : filter.priority.map((p) =>
+              snap.count({ index: "byPriority", eq: [false, p], gte: priorityOrder(p, s, 0), lt: priorityOrder(p, s + 1, 0) }),
+            );
+      counts[s] = (await Promise.all(parts)).reduce((a, b) => a + b, 0);
+    };
+    if (!pause) await Promise.all(statuses.map(count));
+    else {
+      for (const s of statuses) {
+        await count(s);
+        await pause();
+      }
+    }
     return counts;
   });
 }
@@ -62,11 +70,11 @@ export function countByStatus(issues: IssueDocs, filter: IssueFilter): Promise<n
  * Live issues under `filter`. A query of one plain word is counted from the text index's entries alone: the index
  * normalizes titles to NFC and `ilike` does not, so this agrees with the list for titles stored in NFC.
  */
-export async function countTotal(issues: IssueDocs, filter: IssueFilter): Promise<number> {
+export async function countTotal(issues: IssueDocs, filter: IssueFilter, pause?: Pause): Promise<number> {
   const words = wordsOf(filter.q);
   const plain = words.length === 1 && words[0] === filter.q.toLowerCase();
   if (plain && filter.status.length === 0 && filter.priority.length === 0) {
     return issues.count({ index: "search", eq: [false], match: words[0]! });
   }
-  return (await countByStatus(issues, filter)).reduce((a, b) => a + b, 0);
+  return (await countByStatus(issues, filter, pause)).reduce((a, b) => a + b, 0);
 }

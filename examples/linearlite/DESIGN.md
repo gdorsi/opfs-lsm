@@ -236,8 +236,12 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   stored in NFC, as typed text is (the index normalizes, `ilike` does not). `useIssueRead` reads again after
   every change to issues, one read at a time, and waits four times the last read's duration, at least 250 ms,
   before the next. A first sync changes issues every few milliseconds, and counting 100,000 entries then takes
-  up to a fifth of the main thread instead of half. The counts depend on the filter and the query, not the
-  sort, so a sort change keeps them.
+  up to a fifth of the main thread instead of half. A read after a change pauses between the statuses it counts,
+  so a recount holds up no frame, in the tab that edited or any other visible one. A hidden tab paints nothing
+  and wakes its timers about once a second, so it counts them all at once, as the first read for a filter does,
+  since the screen waits on it. Counters kept from changes would save the 32 ms count itself, but
+  every issue write would update one document, which a clear, an epoch change or a gap would have to recompute.
+  The counts depend on the filter and the query, not the sort, so a sort change keeps them.
 - **Deep scroll.** TanStack loads an ordered window without an index on its field as a prefix: a jump to row
   50,000 asks for the first 50,100 rows, and the adapter reads and parses them: 846 ms the first time, one frame
   after that, since the rows stay in memory, also once the list scrolls back to the top. The list does not work
@@ -291,7 +295,8 @@ latter. Interaction times end at the next painted frame, so they move in ~16.7 m
 
 Edits on B (`tabs`, `users`, `offline`, `visible`) all pass: an edit in one tab reaches the other tab's list in
 2.2 and 1.8 ms p50 (each direction, n=10); another user's edit in 7 ms through the server; five edits made offline
-are acked 330 ms after reconnecting; a tab's own edit reaches its DOM in 3.5 ms.
+are acked 330 ms after reconnecting; a tab's own edit reaches its DOM in 3.5 ms. The longest frame in the second
+after an edit is 20 ms, against 19 ms on an idle page (`frames`, `bench/ui-latency-100k.txt`).
 
 Where B is slower than A, and whose cost it is:
 

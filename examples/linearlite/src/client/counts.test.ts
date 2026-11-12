@@ -79,4 +79,16 @@ describe("issue counts", () => {
       }
     }
   });
+
+  it("pause after each status they count, and count the same as without pauses", async () => {
+    for (const [status, priority] of filters) {
+      const filter = parseIssueFilter({ status: status.join(","), priority: priority.join(",") });
+      let pauses = 0;
+      const pause = async () => {
+        pauses++;
+      };
+      assert.deepEqual(await countByStatus(docs, filter, pause), await countByStatus(docs, filter));
+      assert.equal(pauses, status.length > 0 ? status.length : 5);
+    }
+  });
 });
