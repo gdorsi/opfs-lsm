@@ -930,7 +930,7 @@ class DbImpl implements Db {
     const held = new ReadSet();
     const out = await this.write(() => {
       const values = held.attempt(() => this.readKeys(ks, this.installed.levels));
-      if (values instanceof Miss) return values;
+      if (values instanceof Miss) return held.keep(values);
       let result!: T;
       const ops = collectBatch((tx) => {
         result = body(values, tx);

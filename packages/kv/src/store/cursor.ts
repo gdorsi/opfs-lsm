@@ -97,7 +97,7 @@ export function filterCursor(cursor: LayerCursor, patterns: readonly Uint8Array[
 export class ReadSet {
   private readonly held: HeldReads = new Map();
 
-  /** Runs a sync read against this set. */
+  /** Runs a read against this set. `read` must be synchronous: a lookup after an await would not see the set. */
   attempt<T>(read: () => T): T {
     const outer = reading;
     reading = this.held;
@@ -112,8 +112,22 @@ export class ReadSet {
   async settle<T>(read: () => Maybe<T>, first: Maybe<T> = this.attempt(read)): Promise<T> {
     for (let r = first; ; r = this.attempt(read)) {
       if (!(r instanceof Miss)) return r;
-      for (const [key, value] of await r.ready) this.held.set(key, value);
+      this.add(await r.ready);
     }
+  }
+
+  /** `miss`, with what it loads added to this set, for a caller that awaits it itself. */
+  keep(miss: Miss): Miss {
+    return new Miss(
+      miss.ready.then((fills) => {
+        this.add(fills);
+        return fills;
+      }),
+    );
+  }
+
+  private add(fills: readonly Fill[]): void {
+    for (const [key, value] of fills) this.held.set(key, value);
   }
 }
 

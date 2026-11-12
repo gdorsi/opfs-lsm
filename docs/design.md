@@ -290,7 +290,7 @@ whole blocks that it needs. All of it lives in one page cache per tab, capped by
 `openDb({ cacheBytes })`, 256 MiB by default.
 
 A read is synchronous while its bytes are cached. Otherwise the caller awaits the load and reads
-again, keeping what it loaded outside the cap until the operation ends. A point get:
+again, keeping what it read outside the cap. A value over the cap is never cached. A point get:
 
 1. Rejects the key if it falls outside the first and last keys of the run.
 2. Rejects it if the bloom filter says no.
