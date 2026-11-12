@@ -35,6 +35,8 @@ import {
   loadGeneration,
   type RunMeta,
 } from "./store/generation.js";
+import type { ReadPoint } from "./store/judge.js";
+import { joinMarks, NO_MARKS, type Marks } from "./store/marks.js";
 import { pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
@@ -470,6 +472,8 @@ type Layers = {
   /** The readers as scan sources, newest first. */
   readonly levels: readonly RunLevel[];
   readonly tombstoneSeq: number;
+  /** The manifest's marks: the range deletes its runs may still hold covered versions for. */
+  readonly marks: Marks;
   refs: number;
 };
 
@@ -501,6 +505,7 @@ class DbImpl implements Db {
     runs: [],
     levels: [],
     tombstoneSeq: 0,
+    marks: NO_MARKS,
     refs: 1,
   };
   /** The newest generation loaded and not yet installed. */
@@ -516,6 +521,8 @@ class DbImpl implements Db {
   private readonly bus: BroadcastChannel | undefined;
   private readonly onBusMessage: ((ev: MessageEvent<BusMessage>) => void) | undefined;
   private readonly pressure: Backpressure;
+  /** The last read point and the two tables it joined. */
+  private lastPoint: { readonly installed: Marks; readonly mem: Marks; readonly at: ReadPoint } | undefined;
 
   constructor(
     readonly name: DbName,
@@ -645,6 +652,7 @@ class DbImpl implements Db {
       runs: held,
       levels: runLevels(paths, held.map((r) => r.reader)),
       tombstoneSeq: meta.tombstoneSeq,
+      marks: NO_MARKS,
       refs: 1,
     };
     return true;
@@ -904,15 +912,31 @@ class DbImpl implements Db {
     }
   }
 
+  /**
+   * What an operation judges rows against: the installed marks joined with
+   * the memtable's. Take it in the turn that captures the installed levels,
+   * and keep it for the whole operation.
+   */
+  private point(): ReadPoint {
+    const installed = this.installed.marks;
+    const mem = this.mem.marks;
+    const last = this.lastPoint;
+    if (last?.installed === installed && last.mem === mem) return last.at;
+    const at = { marks: joinMarks(installed, mem) };
+    this.lastPoint = { installed, mem, at };
+    return at;
+  }
+
   /** Every key read, or one Miss for all the bytes they lack. */
   private readKeys(
     ks: readonly CheckedKey[],
     levels: readonly RunLevel[],
+    at: ReadPoint,
   ): Maybe<(Uint8Array | undefined)[]> {
     const values: (Uint8Array | undefined)[] = [];
     let misses: Miss[] | undefined;
     for (const k of ks) {
-      const v = pointGet(this.mem.get(k), levels, k);
+      const v = pointGet(this.mem.get(k), levels, k, at);
       if (v instanceof Miss) (misses ??= []).push(v);
       else values.push(v);
     }
@@ -923,7 +947,8 @@ class DbImpl implements Db {
     this.ensureOpen();
     const k = checkKey(key);
     const row = this.mem.get(k);
-    return this.settleInstalled((levels) => pointGet(row, levels, k));
+    const at = this.point();
+    return this.settleInstalled((levels) => pointGet(row, levels, k, at));
   }
 
   put(key: Uint8Array, value: Uint8Array): Promise<number> {
@@ -955,7 +980,7 @@ class DbImpl implements Db {
     // One set for the warm reads and the read inside the transaction, which cannot wait for a load.
     const held = new ReadSet();
     const out = await this.write(() => {
-      const values = held.attempt(() => this.readKeys(ks, this.installed.levels));
+      const values = held.attempt(() => this.readKeys(ks, this.installed.levels, this.point()));
       if (values instanceof Miss) return held.keep(values);
       let result!: T;
       const ops = collectBatch((tx) => {
@@ -963,7 +988,10 @@ class DbImpl implements Db {
         return result;
       });
       return { ops, result };
-    }, () => this.settleInstalled((levels) => this.readKeys(ks, levels), held));
+    }, () => {
+      const at = this.point();
+      return this.settleInstalled((levels) => this.readKeys(ks, levels, at), held);
+    });
     return out.result;
   }
 
@@ -975,17 +1003,18 @@ class DbImpl implements Db {
     const bounds = boundsOf(range);
     const rows = this.mem.pin();
     const layers = this.installed;
+    const at = this.point();
     this.retain(layers);
     try {
       const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
-      for await (const entry of scanLayers(rows.range(bounds), layers.levels, bounds, range)) {
+      for await (const entry of scanLayers(rows.range(bounds), layers.levels, at, bounds, range)) {
         const key = keyOf(entry);
         let joined: Uint8Array | undefined;
         if (key !== undefined) {
           const k = checkKey(key);
           const row = rows.get(k);
-          const got = pointGet(row, layers.levels, k);
-          joined = got instanceof Miss ? await untilHit(() => pointGet(row, layers.levels, k), got) : got;
+          const got = pointGet(row, layers.levels, k, at);
+          joined = got instanceof Miss ? await untilHit(() => pointGet(row, layers.levels, k, at), got) : got;
         }
         out.push({ entry, joined });
       }
@@ -999,9 +1028,10 @@ class DbImpl implements Db {
     this.ensureOpen();
     const bounds = boundsOf(range);
     const layers = this.installed;
+    const at = this.point();
     this.retain(layers);
     try {
-      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, bounds, range)) {
+      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, at, bounds, range)) {
         this.ensureOpen();
         yield entry;
       }
@@ -1018,6 +1048,7 @@ class DbImpl implements Db {
       this.mem.appliedThrough,
       this.mem.pin(),
       layers.levels,
+      this.point(),
       () => {
         this.retain(layers);
         return () => this.release(layers);

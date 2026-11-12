@@ -8,10 +8,12 @@ import {
   Miss,
   untilHit,
   type LayerCursor,
-  type LayerEntry,
   type Maybe,
   type ScanBounds,
+  type ScanHit,
 } from "./cursor.js";
+import { dead, type ReadPoint } from "./judge.js";
+import { markCursor } from "./marks.js";
 import type { SstEntry } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
 import type { Entry } from "../db.js";
@@ -85,16 +87,22 @@ class MinHeap {
 
 /**
  * `mem` is the row from the key-ordered mem store, or undefined on miss.
- * Levels are newest-first. Returned bytes are a fresh Uint8Array.
+ * Levels are newest-first. Returned bytes are a fresh Uint8Array. A memtable
+ * row needs no mark check: the memtable removed the rows its own marks
+ * cover, and the installed marks stop below every row it holds.
  */
 export function pointGet(
   mem: MemRow | undefined,
   levels: readonly RunLevel[],
   key: Uint8Array,
+  at: ReadPoint,
 ): Maybe<Uint8Array | undefined> {
   if (mem?.kind === "del") return undefined;
   if (mem?.kind === "put") return new Uint8Array(mem.value!);
-  return pointGetSst(levels, key);
+  const hit = latestSstEntry(levels, key);
+  if (hit instanceof Miss) return hit;
+  if (!hit || dead(hit, at)) return undefined;
+  return hit.kind === "put" ? new Uint8Array(hit.value) : undefined;
 }
 
 /**
@@ -111,16 +119,6 @@ export function latestSstEntry(
     if (hit) return hit;
   }
   return undefined;
-}
-
-/** Newest run wins. A tombstone hides older puts. */
-function pointGetSst(
-  levels: readonly RunLevel[],
-  key: Uint8Array,
-): Maybe<Uint8Array | undefined> {
-  const hit = latestSstEntry(levels, key);
-  if (hit instanceof Miss) return hit;
-  return hit?.kind === "put" ? new Uint8Array(hit.value) : undefined;
 }
 
 type Ranged = SstReader & { readonly range: NonNullable<SstReader["range"]> };
@@ -163,7 +161,7 @@ export class RunLevel {
   }
 
   /** The puts in `bounds` whose value holds every pattern, in key order or backward. */
-  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor {
+  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
     return this.concat(bounds, reverse, (run) => run.scanContains(patterns, bounds, reverse));
   }
 
@@ -172,7 +170,11 @@ export class RunLevel {
    * Backward it starts at the last run below `endExclusive` and steps to the
    * run before.
    */
-  private concat(bounds: ScanBounds | undefined, reverse: boolean, cursorOf: (run: SstReader) => LayerCursor): LayerCursor {
+  private concat<E extends ScanHit>(
+    bounds: ScanBounds | undefined,
+    reverse: boolean,
+    cursorOf: (run: SstReader) => LayerCursor<E>,
+  ): LayerCursor<E> {
     const { runs } = this;
     const start = bounds?.start;
     const end = bounds?.endExclusive;
@@ -223,7 +225,7 @@ export function runLevels(
 }
 
 /** The newest entry for one key and the source it came from. */
-type Winner = { readonly entry: LayerEntry; readonly source: number };
+type Winner<E> = { readonly entry: E; readonly source: number };
 
 /**
  * A heap merge of `cursors`, newest (smallest index) first, one key at a
@@ -232,19 +234,19 @@ type Winner = { readonly entry: LayerEntry; readonly source: number };
  * start of the next step, the first step peeks every source, so a cold
  * merge gathers every source's miss into one parallel round of reads.
  */
-class Merge {
+class Merge<E extends ScanHit> {
   private readonly heap: MinHeap;
   private pending: number[];
 
   constructor(
-    private readonly cursors: readonly LayerCursor[],
+    private readonly cursors: readonly LayerCursor<E>[],
     reverse: boolean,
   ) {
     this.heap = new MinHeap(reverse ? heapGreater : heapLess);
     this.pending = cursors.map((_, i) => i);
   }
 
-  next(): Maybe<Winner | undefined> {
+  next(): Maybe<Winner<E> | undefined> {
     const { cursors, heap } = this;
     if (this.pending.length > 0) {
       let misses: Miss[] | undefined;
@@ -263,7 +265,7 @@ class Merge {
     }
     const top = heap.pop();
     if (!top) return undefined;
-    const entry = cursors[top.source]!.peek() as LayerEntry;
+    const entry = cursors[top.source]!.peek() as E;
     cursors[top.source]!.next();
     this.pending.push(top.source);
     while (heap.length > 0 && compareBytes(heap.peek()!.key, entry.key) === 0) {
@@ -277,22 +279,24 @@ class Merge {
 
 /**
  * `cursors[0]` is newest. Yields live puts only, up to `limit`. With `reverse`
- * every cursor runs backward and so does the merge.
- * Tombstones are not counted and not yielded. Awaits only on a miss.
+ * every cursor runs backward and so does the merge. Tombstones and covered
+ * versions are not counted and not yielded. Awaits only on a miss.
  */
 export async function* mergeCursors(
   cursors: readonly LayerCursor[],
+  at: ReadPoint,
   limit?: number,
   reverse = false,
 ): AsyncGenerator<Entry> {
   const merge = new Merge(cursors, reverse);
+  const marks = markCursor(at.marks, reverse);
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
     let w = merge.next();
     if (w instanceof Miss) w = await untilHit(() => merge.next(), w);
     if (!w) return;
-    if (w.entry.kind === "del") continue;
+    if (dead(w.entry, at, marks)) continue;
     yield {
       key: new Uint8Array(w.entry.key),
       value: new Uint8Array(w.entry.value!),
@@ -318,14 +322,16 @@ export async function* scanMatching(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
   patterns: readonly Uint8Array[],
+  at: ReadPoint,
   bounds?: ScanBounds,
   limit?: number,
   reverse = false,
 ): AsyncGenerator<Entry> {
-  const merge = new Merge(
+  const merge = new Merge<ScanHit>(
     [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
     reverse,
   );
+  const marks = markCursor(at.marks, reverse);
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
@@ -339,6 +345,20 @@ export async function* scanMatching(
       let newer = shadowed(levels, source - 1, entry.key);
       if (newer instanceof Miss) newer = await untilHit(() => shadowed(levels, source - 1, entry.key), newer);
       if (newer) continue;
+      const through = marks.at(entry.key);
+      if (through > 0) {
+        let seq = entry.seq;
+        if (seq === undefined) {
+          // The block filter reports no seq, so the hit's own level is asked for it.
+          let own = levels[source - 1]!.get(entry.key);
+          while (own instanceof Miss) {
+            await own.ready;
+            own = levels[source - 1]!.get(entry.key);
+          }
+          seq = own?.seq ?? 0;
+        }
+        if (seq <= through) continue;
+      }
     }
     yield { key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) };
     yielded += 1;

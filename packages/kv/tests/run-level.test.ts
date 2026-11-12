@@ -5,6 +5,7 @@ import { latestSstEntry, mergeCursors, runLevels } from "../src/store/read.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
 import { collect, readerOfBytes } from "./runs.js";
+import { NO_MARKS } from "../src/store/marks.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -40,7 +41,7 @@ function range(from: number, to: number, step: number): number[] {
 }
 
 async function scan(cursors: Parameters<typeof mergeCursors>[0], limit?: number, reverse?: boolean): Promise<string[]> {
-  return (await collect(mergeCursors(cursors, limit, reverse))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
+  return (await collect(mergeCursors(cursors, { marks: NO_MARKS }, limit, reverse))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
 }
 
 describe("runLevels", () => {

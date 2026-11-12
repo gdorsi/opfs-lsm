@@ -714,7 +714,8 @@ export class BlockEntries {
     const w = this.w;
     w.next();
     const key = w.key();
-    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value() } : { key, kind: "del" };
+    const seq = w.seq();
+    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value(), seq } : { key, kind: "del", seq };
   }
 }
 
@@ -741,7 +742,8 @@ export class ReverseBlockEntries {
     w.o = at;
     w.next();
     const key = w.key();
-    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value() } : { key, kind: "del" };
+    const seq = w.seq();
+    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value(), seq } : { key, kind: "del", seq };
   }
 }
 

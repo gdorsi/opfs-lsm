@@ -63,6 +63,7 @@ async function compact(db: Db): Promise<void> {
  */
 const STAGES: Record<string, { before(db: Db): Promise<unknown>; after(db: Db): Promise<unknown> }> = {
   "rows and delete in the memtable": { before: async () => {}, after: async () => {} },
+  "rows flushed, delete in the memtable": { before: ingest, after: async () => {} },
 };
 
 const ROWS = ["a", "m/1", "m/2", "m/3", "z"];

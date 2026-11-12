@@ -3,6 +3,7 @@ import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
 import { entryCursor, untilHit, type ScanBounds } from "./store/cursor.js";
+import type { ReadPoint } from "./store/judge.js";
 import {
   mergeCursors,
   pointGet,
@@ -35,22 +36,25 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 export function scanLayers(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
+  at: ReadPoint,
   bounds: ScanBounds | undefined,
   range: Range | undefined,
 ): AsyncGenerator<Entry> {
   const patterns = range?.valueContains;
   const reverse = range?.reverse ?? false;
   return patterns && patterns.length > 0
-    ? scanMatching(rows, levels, patterns, bounds, range.limit, reverse)
+    ? scanMatching(rows, levels, patterns, at, bounds, range.limit, reverse)
     : mergeCursors(
         [entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse))],
+        at,
         range?.limit,
         reverse,
       );
 }
 
 /**
- * Pinned memtable rows plus the SST readers opened for that generation.
+ * Pinned memtable rows plus the SST readers opened for that generation, and
+ * the read point taken with them.
  * `hold` keeps those readers open and returns its release, so a `range`
  * iterator that outlives the view callback still reads open files.
  */
@@ -61,6 +65,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     readonly seq: number,
     private readonly rows: MemRows,
     private readonly levels: readonly RunLevel[],
+    private readonly at: ReadPoint,
     private readonly hold: () => () => void,
   ) {}
 
@@ -77,7 +82,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     this.ensureOpen();
     const k = checkKey(key);
     const row = this.rows.get(k);
-    return untilHit(() => pointGet(row, this.levels, k));
+    return untilHit(() => pointGet(row, this.levels, k, this.at));
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {
@@ -85,7 +90,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     const bounds = boundsOf(range);
     const release = this.hold();
     try {
-      for await (const entry of scanLayers(this.rows.range(bounds), this.levels, bounds, range)) {
+      for await (const entry of scanLayers(this.rows.range(bounds), this.levels, this.at, bounds, range)) {
         this.ensureOpen();
         yield entry;
       }
