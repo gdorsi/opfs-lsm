@@ -5,10 +5,11 @@ The byte layout of a manifest, `m/<generation>.mft`. What a manifest means is in
 
 ```
 | u32 magic       "OLGN" (0x4f4c474e)                                        |
-| u32 version     4                                                          |
+| u32 version     5                                                          |
 | u64 generation                                                             |
 | u64 tombstoneSeq                                                           |
 | u64 through                                                                |
+| u64 judgedNow   epoch ms                                                   |
 | marks block                                                                |
 | u32 run count                                                              |
 | run 0                                                                      |
@@ -36,6 +37,9 @@ per piece:
 ```
 
 `tombstoneSeq` is the highest seq of any delete that a bottom-level compaction dropped.
+
+`judgedNow` is the time a reader of the manifest reads at, at the least: its runs may hold a
+tombstone in place of a put that expired by then ([design.md](design.md#expiry)).
 
 `bytes` and the key range let the compaction planner size and route levels without opening a
 file. The level of a run is in its path.

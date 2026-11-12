@@ -58,11 +58,12 @@ Each acked `put`, `delete`, `batch` or `update` is one record in the `wal` store
 seq. The value is one `ArrayBuffer` that holds the ops of the batch back to back:
 
 ```
-| u8 type         0 = put, 1 = delete, 3 = range delete                      |
+| u8 type         0 = put, 1 = delete, 2 = put with expiry, 3 = range delete |
 | u32 key length                                                             |
 | key             the start key, for a range delete                          |
 | u32 value length                                    (puts only)            |
 | value                                               (puts only)            |
+| u64 expiresAt   epoch ms                            (type 2 only)          |
 | u8 has end                                          (range deletes only)   |
 | u32 end length, end                                 (if has end)           |
 | u64 through     as the writer asked                 (range deletes only)   |
@@ -71,8 +72,8 @@ seq. The value is one `ArrayBuffer` that holds the ops of the batch back to back
 A writer that gives no `through` stores 2^53 − 1. The record's seq bounds it (see
 [Range deletes](#range-deletes)), so the stored value never needs the seq the record will get.
 
-A row that is not an `ArrayBuffer`, that ends inside an op, or that holds a range delete whose
-start is not below its end, is rejected as corrupt.
+A row that is not an `ArrayBuffer`, that ends inside an op, that holds a range delete whose
+start is not below its end, or an `expiresAt` of 0 or past 2^53 − 1, is rejected as corrupt.
 
 ## Append
 
@@ -135,7 +136,7 @@ Each tab holds one memtable. It holds the WAL records in `(ingestedThrough, appl
 where `ingestedThrough` is that of the installed generation, folded to one row per key:
 
 ```
-MemRow = { key, seq, kind: "put" | "del", value? }
+MemRow = { key, seq, kind: "put" | "del", value?, expiresAt? }
 ```
 
 Rows are kept in key order, in chunks of 512 to 1024 rows. Records apply in seq order with no
@@ -198,7 +199,8 @@ A manifest, `m/<generation>.mft`, lists the runs of one generation. Its byte lay
 past it. An ingest sets it to the last seq it folded. A compaction keeps the value of its base.
 
 A manifest also holds the marks of the range deletes up to `through` that its runs may still hold
-versions for, and for each run its `marksThrough` (see [Range deletes](#range-deletes)).
+versions for, for each run its `marksThrough` (see [Range deletes](#range-deletes)), and
+`judgedNow` (see [Expiry](#expiry)).
 
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
@@ -217,19 +219,21 @@ key order, and only the runs the scan reaches. `reverse` returns the same keys i
 order. Bloom filters play no part in a scan.
 
 `range({ valueContains })` keeps the live puts whose current value holds every pattern. Each
-source filters on its own, one block at a time, and only the hits are copied out. A newer source
-that holds the key with a non-matching value or a tombstone drops the older hit.
+source filters on its own, one block at a time, and only the hits are copied out.
 
-Every read judges the versions it finds in runs against one read point: the marks of the
-installed generation joined with those of the memtable, taken in the same turn as the layers it
-reads. A version from a run is skipped when a mark covers it (see
-[Range deletes](#range-deletes)), and then an older source does not win in its place. A
-`valueContains` hit from a run carries no seq, so when a mark covers its key, the run's level
-is asked for the seq.
+Every read judges the newest version of each key against one read point, taken in the same
+turn as the layers it reads and kept across every key and every cache miss of the operation: a
+time (see [Expiry](#expiry)) and the marks of the installed generation joined with those of the
+memtable. The newest version reads as absent when it is a tombstone, when it expired at the
+time, or when a mark covers it (see [Range deletes](#range-deletes)), and then an older source
+does not win in its place. A `valueContains` filter skips expired puts in each source, and a
+newer source that holds the key at all drops an older hit. A hit from a run carries no seq, so
+when a mark covers its key, the run's level is asked for the seq.
 
 A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the read
-point. Writes that commit during the callback are invisible to it. `rangeJoin` scans a range
-and point-reads one key per entry under one such pin.
+point. Writes that commit and deadlines that pass during the callback are invisible to it.
+`rangeJoin` scans a range and point-reads one key per entry under one such pin. `update` reads
+all its keys at one read point.
 
 # Range deletes
 
@@ -256,6 +260,27 @@ A piece retires, falling back to `through` 0, when every run that overlaps it ha
 `marksThrough` at or past its `at`: no run left can hold a version it covers. Each flush and each
 compaction install retires the manifest's marks against its new runs. A covered version that a
 run still holds stays on disk until a newer version of its key replaces it in a merge.
+
+# Expiry
+
+`put(key, value, { expiresAt })` writes a row that reads as absent from `expiresAt` on, epoch ms,
+a safe integer above 0; anything else is a `ConstraintError`. A put without it never expires.
+Change events carry it. An expired newest version hides the older versions of its key as a
+tombstone does.
+
+Each JS context has one wall clock: a reading is the largest of `Date.now()`, every earlier
+reading, and the `judgedNow` of the manifest the reader has installed. A read point takes one
+reading.
+
+The host takes one reading per flush run and one per compaction step, never below `judgedNow` of
+the manifest it builds on. A flush writes a put expired at that time as a tombstone with its seq.
+So does a merge for its winning version of a key; a bottom merge then drops it with the other
+tombstones. A put that expires later keeps its `expiresAt`.
+
+A manifest's `judgedNow` is the highest reading any of its runs was judged at, and never lower
+than its base's. A run may hold a tombstone in place of a put that expired at that time, so a
+reader below it could see a key absent that its own clock still holds live; the floor rules
+that out.
 
 # Multi-tab coordination
 
@@ -334,12 +359,12 @@ For each run, under the exclusive section for the database, the host:
    manifest number in use is `top`.
 2. Reads the WAL records above `ingestedThrough`, oldest first, up to `flushRunBytes`. A run
    takes at least one record.
-3. Folds them to the last op per key, in key order, keeping the seq of each op, and drops each
-   op that a range delete of the same records covers.
+3. Folds them to the last op per key, in key order, keeping the seq of each op, drops each
+   op that a range delete of the same records covers, and judges expiry (see [Expiry](#expiry)).
 4. Writes `l0/<first>-<last>.sst`, unless no op is left.
 5. Writes manifest `top + 1` with `through = <last>`, listing the new run in front of the runs
-   of manifest `G`, and the marks of `G` joined with those of the records (see
-   [Range deletes](#range-deletes)).
+   of manifest `G`, the marks of `G` joined with those of the records (see
+   [Range deletes](#range-deletes)), and `judgedNow` set to the time of step 3.
 6. In one IndexedDB transaction, sets `ingestedThrough = <last>`, raises `generation` to
    `top + 1` and truncates the WAL.
 7. Deletes the manifests older than the recorded generation, unless a tab holds the reclaim
@@ -405,7 +430,8 @@ between two keys and asks the host for one thing:
 | YIELD | gives the event loop a turn |
 | DONE | installs the outputs |
 
-For a key, the newest source wins. The session checks the CRC of every input run before it uses
+For a key, the newest source wins, judged for expiry at the step's time (see
+[Expiry](#expiry)). The session checks the CRC of every input run before it uses
 the last entries of that run. It cuts the output into runs of about 4 MiB of records, named
 `c<top + 1>.<i>`.
 
@@ -443,8 +469,8 @@ under the exclusive section, the host:
 
 1. Reconciles, and checks that every input is still in the recorded manifest `G`.
 2. Writes manifest `top + 1`, with the inputs replaced by the outputs, `tombstoneSeq` raised to
-   the highest dropped tombstone, and the `through` and marks of `G`, retired against the new
-   runs.
+   the highest dropped tombstone, `judgedNow` raised to the step's time, and the `through` and
+   marks of `G`, retired against the new runs.
 3. Raises `meta.generation` to `top + 1`.
 4. Reclaims: deletes the older manifests, and the input runs that no tab holds open. While a tab
    holds the reclaim lock, it deletes nothing and tries again on the next pass.
