@@ -25,7 +25,7 @@ import { layersChannel } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
-import { allMissed, Miss, untilHit, type Maybe } from "./store/cursor.js";
+import { allMissed, Miss, ReadSet, untilHit, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { CountingFs } from "./opfs/counting-fs.js";
@@ -864,14 +864,15 @@ class DbImpl implements Db {
    */
   private async settleInstalled<T>(
     attempt: (levels: readonly RunLevel[]) => Maybe<T>,
+    held?: ReadSet,
   ): Promise<T> {
     const layers = this.installed;
-    const first = attempt(layers.levels);
+    const read = () => attempt(layers.levels);
+    const first = held ? held.attempt(read) : read();
     if (!(first instanceof Miss)) return first;
     this.retain(layers);
     try {
-      await first.ready;
-      return await untilHit(() => attempt(layers.levels));
+      return await (held ?? new ReadSet()).settle(read, first);
     } finally {
       this.release(layers);
     }
@@ -925,16 +926,18 @@ class DbImpl implements Db {
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
+    // One set for the warm reads and the read inside the transaction, which cannot wait for a load.
+    const held = new ReadSet();
     const out = await this.write(() => {
-      const values = this.readKeys(ks, this.installed.levels);
-      if (values instanceof Miss) return values;
+      const values = held.attempt(() => this.readKeys(ks, this.installed.levels));
+      if (values instanceof Miss) return held.keep(values);
       let result!: T;
       const ops = collectBatch((tx) => {
         result = body(values, tx);
         return result;
       });
       return { ops, result };
-    }, () => this.settleInstalled((levels) => this.readKeys(ks, levels)));
+    }, () => this.settleInstalled((levels) => this.readKeys(ks, levels), held));
     return out.result;
   }
 
@@ -956,7 +959,7 @@ class DbImpl implements Db {
           const k = checkKey(key);
           const row = rows.get(k);
           const got = pointGet(row, layers.levels, k);
-          joined = got instanceof Miss ? await untilHit(() => pointGet(row, layers.levels, k)) : got;
+          joined = got instanceof Miss ? await untilHit(() => pointGet(row, layers.levels, k), got) : got;
         }
         out.push({ entry, joined });
       }
