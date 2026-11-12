@@ -41,6 +41,8 @@ export type DatabaseReport = {
   readonly swapFiles: readonly string[];
   /** Live entries of the runs plus the WAL, newest wins, in key order. */
   readonly state: readonly OracleEntry[];
+  /** Pieces of the recorded manifest's marks with a mark: range deletes not yet retired. */
+  readonly marks: number;
   /** Every broken rule. Empty for a healthy database. */
   readonly problems: readonly string[];
 };
@@ -202,6 +204,7 @@ export async function checkDatabase(fs: AsyncFs, name: string, now = Date.now())
     emptyManifests: emptyManifests.sort((a, b) => a - b),
     swapFiles: swapFiles.sort(),
     state: live_,
+    marks: pieces.filter((p) => p.through > 0).length,
     problems,
   };
 }

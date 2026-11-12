@@ -56,16 +56,17 @@ export async function mergeNextStep(
   clock: WallClock,
 ): Promise<CompactionOutput | undefined> {
   const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
-  const plan = planCompaction(base.runs, { maxSources: budget.maxSources });
+  const plan = planCompaction(base, { maxSources: budget.maxSources });
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   const judgedNow = clock.now(base.judgedNow);
   const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget, judgedNow, base.marks));
-  // An output claims only the marks all its inputs had absorbed.
-  const marksThrough = Math.min(...plan.inputs.map((r) => r.marksThrough));
   return {
     inputs: plan.inputs.map((r) => r.path),
-    outputs: merged.outputs.map((run) => ({ ...run, marksThrough })),
+    // Every mark at or below `base.through` is in `base.marks`, or retired
+    // because no input held a version it covers. A mark the manifest gains
+    // before the install is past `base.through`, and this claims none of it.
+    outputs: merged.outputs.map((run) => ({ ...run, marksThrough: base.through })),
     droppedSeq: merged.droppedSeq,
     judgedNow,
   };

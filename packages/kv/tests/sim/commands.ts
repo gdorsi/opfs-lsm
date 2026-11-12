@@ -10,7 +10,7 @@ import {
   createLocalIngestClient,
 } from "../../src/testing.js";
 import { WallClock } from "../../src/clock.js";
-import { checkDatabase, deleteWal } from "./check-database.js";
+import { checkDatabase, deleteWal, walMeta } from "./check-database.js";
 import { compareBytes } from "../../src/bytes.js";
 import { applyOps, Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 
@@ -480,14 +480,24 @@ class ReopenCmd implements Cmd {
 /**
  * Quiesce, then run the integrity check and compare the on-disk state with
  * the oracle. With background ingest on, only closing the handle stops the
- * host from starting another one, so the check closes and reopens.
+ * host from starting another one, so the check closes and reopens. Once
+ * compaction has nothing left to do, every run has absorbed every range
+ * delete, and the marks have retired.
  */
 class CheckCmd implements Cmd {
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
     if (r.background) await r.db.close();
-    await r.settle();
+    let generation: number | undefined;
+    for (let pass = 0; ; pass++) {
+      await r.settle();
+      const now = (await walMeta(r.name)).generation;
+      if (now === generation) break;
+      expect(pass, "compaction settles").toBeLessThan(50);
+      generation = now;
+    }
     await expectHealthy(m, r, r.background);
+    expect((await checkDatabase(r.fs, r.name, r.time.now)).marks, "marks left once compaction settles").toBe(0);
     if (r.background) {
       await r.open();
       m.reader.synced(m.oracle.head);

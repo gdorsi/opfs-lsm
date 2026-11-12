@@ -175,6 +175,24 @@ export type RunMarkInfo = {
   readonly marksThrough: Seq;
 };
 
+/** Whether `run` may still hold a version the mark of `pieces[i]` covers. */
+function blocks(run: RunMarkInfo, pieces: readonly Piece[], i: number): boolean {
+  const piece = pieces[i]!;
+  const end = pieces[i + 1]?.start;
+  return (
+    piece.through > 0 &&
+    run.marksThrough < piece.at &&
+    run.range !== undefined &&
+    compareBytes(run.range.largest, piece.start) >= 0 &&
+    (end === undefined || compareBytes(run.range.smallest, end) < 0)
+  );
+}
+
+/** Whether `run` may still hold a version some mark of `marks` covers: a run a merge must rewrite before those marks retire. */
+export function unabsorbed(marks: Marks, run: RunMarkInfo): boolean {
+  return !marks.empty && marks.pieces.some((_, i) => blocks(run, marks.pieces, i));
+}
+
 /**
  * Lowers to 0 every piece that no run of `runs` can still hold a covered
  * version for: each run that overlaps the piece has `marksThrough >= at`.
@@ -188,16 +206,7 @@ export function retireMarks(marks: Marks, runs: readonly RunMarkInfo[]): Marks {
   const out: Piece[] = [];
   let changed = false;
   pieces.forEach((piece, i) => {
-    const end = pieces[i + 1]?.start;
-    const blocked =
-      piece.through > 0 &&
-      runs.some(
-        (run) =>
-          run.marksThrough < piece.at &&
-          run.range !== undefined &&
-          compareBytes(run.range.largest, piece.start) >= 0 &&
-          (end === undefined || compareBytes(run.range.smallest, end) < 0),
-      );
+    const blocked = runs.some((run) => blocks(run, pieces, i));
     if (piece.through > 0 && !blocked) changed = true;
     if (blocked) push(out, piece.start, piece.through, piece.at);
     else push(out, piece.start, 0, 0);
