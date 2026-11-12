@@ -106,11 +106,25 @@ const DESTROY: Step[] = [
   put("h", "h1"), ingest,
 ];
 
+/**
+ * Range deletes over flushed rows, unflushed rows and their own flush, one
+ * that a later write into its range outlives, and the compaction of runs
+ * that still hold covered versions.
+ */
+const RANGE_DELETE: Step[] = [
+  many("n", 20, "x"), put("a", "a1"), ingest,
+  { deleteRange: "n/0005", end: "n/0015" }, put("n/0010", "y1"), ingest,
+  put("m", "m1"), { deleteRange: "m", end: "n" }, put("b", "b1"), ingest,
+  { deleteRange: "n/" }, put("n/0001", "y2"), ingest,
+  reopen, put("c", "c1"), ingest,
+];
+
 const WORKLOADS: [string, Step[]][] = [
   ["ingest", INGEST],
   ["compaction", COMPACTION],
   ["cascade", CASCADE],
   ["destroy", DESTROY],
+  ["range delete", RANGE_DELETE],
 ];
 
 let runs = 0;
