@@ -9,7 +9,9 @@ import {
 } from "../src/store/engine.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { crc32 } from "../src/store/crc32.js";
+import { packMarks } from "../src/store/block-scan.js";
 import { untilHit } from "../src/store/cursor.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import { decodeSst, encodeRun as encodeRunTs, sstKeyRange, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { mergeRuns, readerOfBytes } from "./runs.js";
 
@@ -189,7 +191,7 @@ describe("engine status codes", () => {
   it("turns a negative status into CorruptDatabaseError", () => {
     const engine = flatEngine(stub(-4));
     expect(() => engine.lz4Decompress(new Uint8Array(4), 8)).toThrow(CorruptDatabaseError);
-    expect(() => engine.scanBlockContains(new Uint8Array(4), false, new Uint8Array(0), 0)).toThrow(CorruptDatabaseError);
+    expect(() => engine.scanBlockContains(new Uint8Array(4), false, new Uint8Array(0), packMarks(NO_MARKS), 0)).toThrow(CorruptDatabaseError);
   });
 
   it("turns -11 into an error naming the operation, input size and capacity", () => {

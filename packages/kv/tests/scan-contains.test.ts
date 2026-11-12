@@ -8,6 +8,9 @@ import type { SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
 import type { LayerCursor } from "../src/store/cursor.js";
 import { drain, readerOfBytes } from "./runs.js";
+import { NO_MARKS } from "../src/store/marks.js";
+
+const LIVE = { now: 0, marks: NO_MARKS };
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -52,18 +55,18 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
     const reader = readerOfBytes(await encodeSst(entries, codec));
     for (const patterns of [pats(" w3"), pats(" w3", " c0"), pats(" nope"), pats(" w")]) {
       for (const bounds of [undefined, { start: enc.encode("k/00100") }, { endExclusive: enc.encode("k/00450") }, { start: enc.encode("k/00123"), endExclusive: enc.encode("k/00321") }]) {
-        expect(await keys(reader.scanContains(patterns, 0, bounds))).toEqual(await expected(reader, patterns, bounds));
+        expect(await keys(reader.scanContains(patterns, LIVE, bounds))).toEqual(await expected(reader, patterns, bounds));
       }
     }
-    expect(await keys(reader.scanContains(pats(" w0"), 0))).not.toContain("k/00007z");
+    expect(await keys(reader.scanContains(pats(" w0"), LIVE))).not.toContain("k/00007z");
   });
 
   it("gives the forward hits backward", async () => {
     const reader = readerOfBytes(await encodeSst(entries, codec));
     for (const patterns of [pats(" w3"), pats(" w3", " c0"), pats(" nope"), pats(" w")]) {
       for (const bounds of allBounds) {
-        const forward = await keys(reader.scanContains(patterns, 0, bounds));
-        expect(await keys(reader.scanContains(patterns, 0, bounds, true))).toEqual([...forward].reverse());
+        const forward = await keys(reader.scanContains(patterns, LIVE, bounds));
+        expect(await keys(reader.scanContains(patterns, LIVE, bounds, true))).toEqual([...forward].reverse());
       }
     }
   });
@@ -73,9 +76,9 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
     const prev = useBlockScanner(undefined);
     try {
       for (const bounds of allBounds) {
-        const forward = await keys(reader.scanContains(pats(" w3", " c0"), 0, bounds));
+        const forward = await keys(reader.scanContains(pats(" w3", " c0"), LIVE, bounds));
         expect(forward).toEqual(await expected(reader, pats(" w3", " c0"), bounds));
-        expect(await keys(reader.scanContains(pats(" w3", " c0"), 0, bounds, true))).toEqual([...forward].reverse());
+        expect(await keys(reader.scanContains(pats(" w3", " c0"), LIVE, bounds, true))).toEqual([...forward].reverse());
       }
     } finally {
       useBlockScanner(prev);
@@ -86,7 +89,7 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
     const reader = readerOfBytes(await encodeSst(entries, codec));
     const prev = useBlockScanner(undefined);
     try {
-      expect(await keys(reader.scanContains(pats(" w3", " c0"), 0))).toEqual(await expected(reader, pats(" w3", " c0")));
+      expect(await keys(reader.scanContains(pats(" w3", " c0"), LIVE))).toEqual(await expected(reader, pats(" w3", " c0")));
     } finally {
       useBlockScanner(prev);
     }
@@ -96,11 +99,11 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
     const sst = await encodeSst(entries, codec);
     const head = new DataView(sst.buffer, sst.byteOffset);
     head.setUint32(0, head.getUint32(0, true) + 1, true);
-    await expect(drain(readerOfBytes(sst).scanContains(pats(" w3"), 0))).rejects.toThrow(CorruptDatabaseError);
+    await expect(drain(readerOfBytes(sst).scanContains(pats(" w3"), LIVE))).rejects.toThrow(CorruptDatabaseError);
   });
 
   it("hands each scan hit its own buffer", async () => {
-    const rows = await drain(readerOfBytes(await encodeSst(entries, codec)).scanContains(pats(" w3"), 0));
+    const rows = await drain(readerOfBytes(await encodeSst(entries, codec)).scanContains(pats(" w3"), LIVE));
     expect(rows.length).toBeGreaterThan(1);
     const owned = rows.flatMap((e) => [e.key, e.value!]).map((b) => b.byteOffset === 0 && b.buffer.byteLength === b.byteLength);
     expect(owned.every(Boolean)).toBe(true);
@@ -114,12 +117,12 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
     const hi = readerOfBytes(await encodeSst(entries.slice(half), codec));
     const level = new RunLevel([lo, hi]);
     const bounds = { start: enc.encode("k/00200"), endExclusive: enc.encode("k/00400") };
-    expect(await keys(level.scanContains(pats(" w3"), 0, bounds))).toEqual(
+    expect(await keys(level.scanContains(pats(" w3"), LIVE, bounds))).toEqual(
       (await expected(lo, pats(" w3"), bounds)).concat(await expected(hi, pats(" w3"), bounds)),
     );
     for (const b of allBounds) {
-      const forward = await keys(level.scanContains(pats(" w3"), 0, b));
-      expect(await keys(level.scanContains(pats(" w3"), 0, b, true))).toEqual([...forward].reverse());
+      const forward = await keys(level.scanContains(pats(" w3"), LIVE, b));
+      expect(await keys(level.scanContains(pats(" w3"), LIVE, b, true))).toEqual([...forward].reverse());
     }
   });
 });

@@ -6,6 +6,7 @@
 import { entryRecordSize, type EncodedRun, type RunEnd, type SstCodec, type SstEntry } from "./sst.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
+import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
 
 /**
@@ -41,6 +42,7 @@ const STATUS_NAMES: Record<number, string> = {
   [-10]: "bad block",
   [-12]: "patterns truncated",
   [-14]: "keys out of order",
+  [-17]: "bad marks",
 };
 /** The host broke the session protocol: a bug, not corrupt data. */
 const HOST_BUGS: Record<number, string> = {
@@ -65,7 +67,16 @@ export type EngineExports = {
   result_len(): number;
   encode_sst(ptr: number, len: number, lz4: number): number;
   lz4_decompress(ptr: number, len: number, size: number): number;
-  scan_block_contains(ptr: number, len: number, lz4: number, patPtr: number, patLen: number, judgeNow: number): number;
+  scan_block_contains(
+    ptr: number,
+    len: number,
+    lz4: number,
+    patPtr: number,
+    patLen: number,
+    marksPtr: number,
+    marksLen: number,
+    judgeNow: number,
+  ): number;
   merge_open(
     ptr: number,
     len: number,
@@ -101,6 +112,8 @@ export type MergeSpec = {
    * its seq, or dropped with the tombstones. 0 judges nothing.
    */
   readonly judgeNow: number;
+  /** The base manifest's marks: a winner one covers is dropped. */
+  readonly marks: Marks;
   /** Close an output run once its entries' `entryRecordSize`s reach this. */
   readonly targetBytes: number;
   readonly codec: SstCodec;
@@ -155,7 +168,8 @@ export type FlatEngine = {
   /** Write `len` bytes through `fill`, run `op`, return a copy of the result. */
   call(name: string, len: number, fill: (into: Uint8Array) => void, op: (ptr: number) => number): Uint8Array;
   lz4Decompress(src: Uint8Array, size: number): Uint8Array;
-  scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array, now: number): Uint8Array;
+  /** `patterns` and `marks` packed (`packPatterns`, `encodeMarks`). */
+  scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array, marks: Uint8Array, now: number): Uint8Array;
   /** The module's memory. It only grows. */
   memoryBytes(): number;
   /** Whether a merge session is open, from its `openMergeIn` to its `close`. */
@@ -197,17 +211,19 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
       );
     },
 
-    scanBlockContains(framed, lz4, patterns, now) {
-      const len = framed.byteLength + patterns.byteLength;
+    scanBlockContains(framed, lz4, patterns, marks, now) {
+      const pat = framed.byteLength;
+      const mark = pat + patterns.byteLength;
       return call(
         "scan_block_contains",
-        len,
+        mark + marks.byteLength,
         (into) => {
           into.set(framed);
-          into.set(patterns, framed.byteLength);
+          into.set(patterns, pat);
+          into.set(marks, mark);
         },
         (ptr) =>
-          ex.scan_block_contains(ptr, framed.byteLength, lz4 ? 1 : 0, ptr + framed.byteLength, patterns.byteLength, now),
+          ex.scan_block_contains(ptr, pat, lz4 ? 1 : 0, ptr + pat, patterns.byteLength, ptr + mark, marks.byteLength, now),
       );
     },
 
@@ -265,7 +281,8 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
     words += 1 + runs.length;
     for (const size of runs) inputBytes += size;
   }
-  const len = 4 * words;
+  const marks = encodeMarks(spec.marks);
+  const len = 4 * words + marks.byteLength;
   // Addresses are u32 and come back as i32: past 2 GiB they read negative.
   const ptr = ex.input_ptr(len) >>> 0;
   if (ptr === 0) throw new EngineCapacityError("merge_open", len, capacity);
@@ -280,6 +297,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
     put(runs.length);
     for (const size of runs) put(size);
   }
+  new Uint8Array(ex.memory.buffer, ptr + o, marks.byteLength).set(marks);
   const opened = ex.merge_open(
     ptr,
     len,
@@ -462,9 +480,9 @@ export function ensureEngine(): Promise<void> {
         return lz4DecompressJs(src, size);
       }
     });
-    useBlockScanner((framed, lz4, patterns, now) => {
+    useBlockScanner((framed, lz4, patterns, marks, now) => {
       try {
-        return engine!.scanBlockContains(framed, lz4, patterns, now);
+        return engine!.scanBlockContains(framed, lz4, patterns, marks, now);
       } catch (err) {
         afterTrap(err);
         throw corrupt(err, "sst block corrupt");

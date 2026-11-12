@@ -10,6 +10,7 @@ import {
   type MergeSpec,
 } from "../src/store/engine.js";
 import { untilHit } from "../src/store/cursor.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import {
   __resetMemoryFsForTests,
   openHarnessDb,
@@ -60,6 +61,7 @@ describe("recycleEngine", () => {
       sources: [[1000]],
       dropTombstones: false,
       judgeNow: 0,
+      marks: NO_MARKS,
       targetBytes: 4 * MiB,
       codec: "raw",
       chunkBytes: 64 * 1024,
@@ -106,7 +108,7 @@ describe("recycleEngine", () => {
 
     recycleEngine(0);
     const freshForScan = engineMemory().wasmBytes;
-    const hits = await drain(readerOfBytes(run).scanContains([new Uint8Array([7, 7, 7])], 0));
+    const hits = await drain(readerOfBytes(run).scanContains([new Uint8Array([7, 7, 7])], { now: 0, marks: NO_MARKS }));
     expect(hits.map((h) => dec.decode(h.key))).toEqual(["big"]);
     expect(engineMemory().wasmBytes).toBeGreaterThan(freshForScan + 2 * MiB);
   });

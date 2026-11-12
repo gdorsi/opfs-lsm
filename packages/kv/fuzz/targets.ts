@@ -22,6 +22,7 @@ import { crc32 } from "../src/store/crc32.js";
 import { Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanHit } from "../src/store/cursor.js";
 import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { decodeSst, type KeyRange, type SstEntry } from "../src/store/sst.js";
@@ -228,7 +229,7 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
     // The wasm block filter reports no seq and the JS one does: compare hits without it.
     const hits = (es: ScanHit[]): ScanHit[] => es.map(({ key, kind, value }) => (value === undefined ? { key, kind } : { key, kind, value }));
     const contains = await one("SstReader.scanContains", async () =>
-      hits(await drainBounded("SstReader.scanContains", reader.scanContains([probe.pattern], 0), max)),
+      hits(await drainBounded("SstReader.scanContains", reader.scanContains([probe.pattern], { now: 0, marks: NO_MARKS }), max)),
     );
     const reverse = await one("SstReader.cursor (reverse)", () =>
       drainBounded("SstReader.cursor (reverse)", reader.cursor(undefined, true), max),
@@ -237,7 +238,7 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
       drainBounded("SstReader.cursor (reverse seek)", reader.cursor(mid ? { endExclusive: mid } : undefined, true), max),
     );
     const reverseContains = await one("SstReader.scanContains (reverse)", async () =>
-      hits(await drainBounded("SstReader.scanContains (reverse)", reader.scanContains([probe.pattern], 0, undefined, true), max)),
+      hits(await drainBounded("SstReader.scanContains (reverse)", reader.scanContains([probe.pattern], { now: 0, marks: NO_MARKS }, undefined, true), max)),
     );
     reader.close();
     return { gets, scan, seek, contains, reverse, reverseSeek, reverseContains };

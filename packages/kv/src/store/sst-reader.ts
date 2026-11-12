@@ -1,8 +1,9 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
-import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
+import { blockScanner, packMarks, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomMightContain, type BloomFilter } from "./bloom.js";
 import { filterCursor, Miss, type LayerCursor, type Maybe, type ScanBounds, type ScanHit } from "./cursor.js";
+import type { ReadPoint } from "./judge.js";
 import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
 import {
   BlockEntries,
@@ -109,18 +110,19 @@ export class SstReader {
 
   /**
    * The puts in `bounds` whose value holds every pattern, in key order or
-   * with `reverse` from the largest key down, skipping the puts expired at
-   * `now`. With the wasm engine each block is decoded and matched there and
-   * only hits cross back. Without it the cursor does the same work key by
-   * key.
+   * with `reverse` from the largest key down, skipping the puts dead at `at`:
+   * expired, or covered by a mark. With the wasm engine each block is
+   * decoded and matched there and only hits cross back. Without it the
+   * cursor does the same work key by key.
    */
-  scanContains(patterns: readonly Uint8Array[], now: number, bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
+  scanContains(patterns: readonly Uint8Array[], at: ReadPoint, bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
     const scan = blockScanner();
-    if (!scan) return filterCursor(this.cursor(bounds, reverse), patterns, now);
+    if (!scan) return filterCursor(this.cursor(bounds, reverse), patterns, at, reverse);
     const packed = packPatterns(patterns);
+    const marks = packMarks(at.marks);
     const outside = reverse ? isAtOrAbove : isBelow;
     return this.blocks(bounds, reverse, (_block, seek, framed, lz4) => {
-      const hits = unpackHits(scan(framed, lz4, packed, now));
+      const hits = unpackHits(scan(framed, lz4, packed, marks, at.now));
       const walk = reverse ? [...hits].reverse().values() : hits;
       return () => {
         for (let h = walk.next(); !h.done; h = walk.next()) {

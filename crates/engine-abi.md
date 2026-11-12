@@ -42,12 +42,14 @@ encode_sst(ptr, len, lz4: i32) -> i32
 lz4_decompress(ptr, len, size: u32) -> i32
     Input: one LZ4 block body. Result: exactly `size` bytes, or -10.
 
-scan_block_contains(ptr, len, lz4: i32, pat_ptr, pat_len, judge_now: f64) -> i32
+scan_block_contains(ptr, len, lz4: i32, pat_ptr, pat_len, marks_ptr, marks_len,
+                    judge_now: f64) -> i32
     Input: one framed data block as the SST block index frames it (with
-    the u32 size prefix when `lz4`), and a pattern list. Both live in the
-    input region; `pat_ptr` may point anywhere inside it. Result: hit
-    records in key order, without the puts whose expiry is at or before
-    `judge_now` (epoch ms).
+    the u32 size prefix when `lz4`), a pattern list and a marks block. All
+    three live in the input region; `pat_ptr` and `marks_ptr` may point
+    anywhere inside it. Result: hit records in key order, without the puts
+    whose expiry is at or before `judge_now` (epoch ms) and those a mark
+    covers. -17 for a malformed marks block.
 ```
 
 ### Merge session
@@ -59,10 +61,12 @@ one session.
 ```text
 merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32,
            chunk_bytes, tail_bytes, yield_bytes, judge_now: f64) -> i32
-    Input: source list (below), newest source first. Reserves the working
-    set: about `chunk_bytes` per source plus the output buffer. Returns 0,
-    -13 while a session is open, -5 for a malformed list, -1 for a run
-    shorter than a footer, or -11 when the working set cannot be reserved.
+    Input: source list (below), newest source first, then a marks block,
+    which the session copies. Reserves the working set: about `chunk_bytes`
+    per source plus the output buffer. Returns 0, -13 while a session is
+    open, -5 for a malformed list, -17 for a malformed marks block, -1 for
+    a run shorter than a footer, or -11 when the working set cannot be
+    reserved.
 
 merge_pump() -> i32
     Merge until the host has to act, always between two keys. Returns
@@ -98,7 +102,9 @@ sources the newest wins; within a source the last duplicate of a key wins,
 across block and run boundaries. A source whose keys go back fails with -14.
 Output runs are cut at key boundaries once their entries, sized as entry
 records (below), reach `target_bytes`, and written with `lz4`'s codec.
-A winning put whose expiry is at or before `judge_now` is written as a
+A winner that a mark covers is dropped, delete or put, whatever
+`drop_tombstones` says, and its seq is not a dropped seq. Otherwise a
+winning put whose expiry is at or before `judge_now` is written as a
 delete with its seq, so it drops like one when `drop_tombstones` is set.
 
 ## Wire formats
@@ -116,7 +122,18 @@ run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_le
 source list      u32 count · repeated: u32 run_count · run_count × u32 size
 demand record    u32 source · u32 run · u32 offset · u32 len
 run head         u32 entries · u32 size · u32 first_key_len · u32 last_key_len
+marks block      u32 piece_count (at least 1) · repeated: u32 start_len
+                 · start · u64 through · u64 at
 ```
+
+A marks block is the manifest's encoding (`docs/manifest-format.md`), so
+the caller passes the bytes it already has. Piece *i* holds the keys from
+its `start` up to the next piece's: a version of one of them written at a
+seq from 1 to `through` is covered, and `through` 0 covers nothing. The
+module checks that the first start is empty, that starts strictly
+increase and that nothing follows the last piece, and ignores `at`. Keys
+only increase within a block and within a merge, so a cursor steps
+through the pieces beside them.
 
 A run record carries what the manifest records about a run, so the caller
 never reads the SST back for it. `entries` is 0 for an empty run, whose two
@@ -134,7 +151,7 @@ when the run is complete.
 -2  BAD_MAGIC          -6  BAD_TAG            -10  BAD_BLOCK (incl. LZ4) -14  OUT_OF_ORDER
 -3  BAD_VERSION        -7  TRAILING_GARBAGE   -11  OUT_OF_MEMORY       -15  NO_SESSION
 -4  CRC_MISMATCH       -8  COUNT_MISMATCH     -12  PATTERNS_TRUNCATED  -16  UNFED
--99 other
+-17 BAD_MARKS          -99 other
 ```
 
 The loader maps any negative status to `CorruptDatabaseError`, except

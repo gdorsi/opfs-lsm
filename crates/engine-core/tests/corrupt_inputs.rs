@@ -16,7 +16,7 @@
 
 mod support;
 
-use engine_core::{decode_sst, encode_sst, scan_block_contains, Codec, Entry};
+use engine_core::{decode_sst, encode_sst, scan_block_contains, Codec, Entry, Marks};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use support::corrupt::{self, fix_crc, sample_entries, FOOTER_BYTES};
@@ -345,7 +345,7 @@ fn the_wrapper_run_decodes_a_block_as_the_engine_writes_it() {
 #[test]
 fn kb1_an_lz4_block_size_does_not_size_an_allocation() {
     let framed = [0xff, 0xff, 0xff, 0x7f, 0x10, 0x41];
-    let (out, largest) = largest_alloc(|| scan_block_contains(&framed, Codec::Lz4, &[], 0));
+    let (out, largest) = largest_alloc(|| scan_block_contains(&framed, Codec::Lz4, &[], 0, Marks::NONE));
     assert!(out.is_err());
     assert!(largest <= ALLOC_LIMIT, "allocated {largest} bytes for a 6-byte block");
 }

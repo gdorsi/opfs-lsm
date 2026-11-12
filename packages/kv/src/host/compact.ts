@@ -20,7 +20,7 @@ import {
   TARGET_RUN_BYTES,
   type CompactionPlan,
 } from "../store/levels.js";
-import { retireMarks } from "../store/marks.js";
+import { retireMarks, type Marks } from "../store/marks.js";
 import type { HostBudget } from "./budget.js";
 import { inMergeSlot } from "./merge-slot.js";
 
@@ -60,8 +60,8 @@ export async function mergeNextStep(
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   const judgedNow = clock.now(base.judgedNow);
-  const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget, judgedNow));
-  // The merge applies no range delete, so an output has applied only those all its inputs had.
+  const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget, judgedNow, base.marks));
+  // An output claims only the marks all its inputs had absorbed.
   const marksThrough = Math.min(...plan.inputs.map((r) => r.marksThrough));
   return {
     inputs: plan.inputs.map((r) => r.path),
@@ -77,6 +77,7 @@ async function writeStep(
   name: (i: number) => string,
   budget: HostBudget,
   judgeNow: number,
+  marks: Marks,
 ): Promise<Merged> {
   const inputs: OpenFile[][] = [];
   let merge: MergeCore | undefined;
@@ -94,6 +95,7 @@ async function writeStep(
       sources: inputs.map((files) => files.map((f) => f.size)),
       dropTombstones: plan.bottom,
       judgeNow,
+      marks,
       targetBytes: TARGET_RUN_BYTES,
       codec: codecForLevel(plan.outputLevel),
       chunkBytes: budget.chunkBytes,

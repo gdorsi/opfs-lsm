@@ -159,9 +159,9 @@ export class RunLevel {
     return this.concat(bounds, reverse, (run) => run.cursor(bounds, reverse));
   }
 
-  /** The puts in `bounds` whose value holds every pattern, in key order or backward. See `SstReader.scanContains` for `now`. */
-  scanContains(patterns: readonly Uint8Array[], now: number, bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
-    return this.concat(bounds, reverse, (run) => run.scanContains(patterns, now, bounds, reverse));
+  /** The puts in `bounds` live at `at` whose value holds every pattern, in key order or backward. */
+  scanContains(patterns: readonly Uint8Array[], at: ReadPoint, bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
+    return this.concat(bounds, reverse, (run) => run.scanContains(patterns, at, bounds, reverse));
   }
 
   /**
@@ -310,12 +310,13 @@ export async function* mergeCursors(
  * the memtable slice for `bounds`, ascending and newer than every level.
  *
  * Each source filters on its own: memtable rows in JS, each level's runs in
- * wasm per block, so a block with no hit costs no JS per row. The newest
- * source that matches a key wins the merge. A newer source can still hold
- * that key with a value that does not match, or a tombstone, so the key is
- * kept only when no newer source holds it. That check asks only the newer
- * sources, mostly their Bloom filters, and leaves the page the match came
- * from untouched, so a scan does not count as reuse in the cache.
+ * wasm per block, so a block with no hit costs no JS per row. A source drops
+ * its dead versions itself, so the newest source that matches a key wins the
+ * merge. A newer source can still hold that key with a value that does not
+ * match, a tombstone or a dead version, so the key is kept only when no
+ * newer source holds it. That check asks only the newer sources, mostly
+ * their Bloom filters, and leaves the page the match came from untouched, so
+ * a scan does not count as reuse in the cache.
  */
 export async function* scanMatching(
   rows: readonly MemRow[],
@@ -328,12 +329,11 @@ export async function* scanMatching(
 ): AsyncGenerator<Entry> {
   const merge = new Merge<ScanHit>(
     [
-      filterCursor(entryCursor(rows, reverse), patterns, at.now),
-      ...levels.map((level) => level.scanContains(patterns, at.now, bounds, reverse)),
+      filterCursor(entryCursor(rows, reverse), patterns, at, reverse),
+      ...levels.map((level) => level.scanContains(patterns, at, bounds, reverse)),
     ],
     reverse,
   );
-  const marks = markCursor(at.marks, reverse);
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
@@ -347,20 +347,6 @@ export async function* scanMatching(
       let newer = shadowed(levels, source - 1, entry.key);
       if (newer instanceof Miss) newer = await untilHit(() => shadowed(levels, source - 1, entry.key), newer);
       if (newer) continue;
-      const through = marks.at(entry.key);
-      if (through > 0) {
-        let seq = entry.seq;
-        if (seq === undefined) {
-          // The block filter reports no seq, so the hit's own level is asked for it.
-          let own = levels[source - 1]!.get(entry.key);
-          while (own instanceof Miss) {
-            await own.ready;
-            own = levels[source - 1]!.get(entry.key);
-          }
-          seq = own?.seq ?? 0;
-        }
-        if (seq <= through) continue;
-      }
     }
     yield { key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) };
     yielded += 1;

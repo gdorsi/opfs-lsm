@@ -19,6 +19,7 @@
 //! `chunk_bytes` plus one block of bytes not yet written.
 
 use crate::crc32::{crc32, crc32_combine, Crc32};
+use crate::marks::{covers, MarkCursor, Marks};
 use crate::sst::{
     entry_size, expired, lz4_size_fits, read_footer, read_u32, BlockWalk, Codec, Entry, EntryRef, Layout, OutOfOrder,
     Record, RunEnd, SstError, SstWriter, BLOCK_TARGET, FOOTER_BYTES,
@@ -130,6 +131,9 @@ pub struct MergeSession {
     ended: RunEnd,
     drop_tombstones: bool,
     judge_now: u64,
+    /// The marks block of the base manifest, without its count.
+    marks: Vec<u8>,
+    mark_cursor: MarkCursor,
     target_bytes: usize,
     chunk_bytes: usize,
     yield_bytes: usize,
@@ -171,9 +175,10 @@ enum Next {
 
 impl MergeSession {
     /// A session over `sources`, newest first, each a list of run sizes in
-    /// key order. Reserves the working set, so a host that cannot afford it
-    /// learns so before it reads anything.
-    pub fn open(config: MergeConfig, sources: &[Vec<u32>]) -> Result<MergeSession, MergeError> {
+    /// key order, that drops every winner `marks` covers. Reserves the
+    /// working set, so a host that cannot afford it learns so before it
+    /// reads anything.
+    pub fn open(config: MergeConfig, sources: &[Vec<u32>], marks: Marks<'_>) -> Result<MergeSession, MergeError> {
         for runs in sources {
             if runs.iter().any(|&size| (size as usize) < FOOTER_BYTES) {
                 return Err(MergeError::Corrupt(SstError::TooShort));
@@ -194,6 +199,9 @@ impl MergeSession {
         demands.try_reserve_exact(n)?;
         let mut out = Vec::new();
         out.try_reserve_exact(config.chunk_bytes.saturating_add(OUT_SLACK))?;
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(marks.bytes().len())?;
+        owned.extend_from_slice(marks.bytes());
         Ok(MergeSession {
             sources: list,
             heap,
@@ -205,6 +213,8 @@ impl MergeSession {
             ended: RunEnd { entries: 0, size: 0, first_key: Vec::new(), last_key: Vec::new() },
             drop_tombstones: config.drop_tombstones,
             judge_now: config.judge_now,
+            marks: owned,
+            mark_cursor: MarkCursor::default(),
             target_bytes: config.target_bytes,
             chunk_bytes: config.chunk_bytes.max(1),
             yield_bytes: config.yield_bytes.max(1),
@@ -338,8 +348,10 @@ impl MergeSession {
 
     /// Settle the smallest key: the newest source's entry wins, the same key
     /// in older sources is shadowed, and each of those sources moves on. A
-    /// winning put expired at `judge_now` must keep hiding the older
-    /// versions, so it goes on as a tombstone.
+    /// winner a mark covers is dropped in any merge: every older version of
+    /// its key has a smaller seq, so the same mark covers it too. A winning
+    /// put expired at `judge_now` must keep hiding the older versions, so it
+    /// goes on as a tombstone.
     fn next_key(&mut self) -> Result<(), MergeError> {
         let w = heap_pop(&mut self.heap, &self.sources);
         while let Some(&t) = self.heap.first() {
@@ -350,6 +362,10 @@ impl MergeSession {
             self.retire(t);
         }
         let winner = &self.sources[w as usize].cur;
+        if covers(self.mark_cursor.at(Marks::trusted(&self.marks), &winner.key, &[]), winner.seq) {
+            self.retire(w);
+            return Ok(());
+        }
         let entry = winner.entry_at(self.judge_now);
         match entry {
             EntryRef::Del { seq, .. } if self.drop_tombstones => self.dropped = self.dropped.max(seq),

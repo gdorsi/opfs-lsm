@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { packPatterns } from "../src/store/block-scan.js";
+import { packMarks, packPatterns } from "../src/store/block-scan.js";
 import { encodeRunIn } from "../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../src/store/generation.js";
 import { lz4Decompress } from "../src/store/lz4.js";
@@ -143,7 +143,7 @@ describe("decoder bugs the fuzzers found", () => {
   // does. The checks are now `key_len > end - o`, with `o <= end`.
   it("KW1: scan_block_contains does not panic on a varint near 2^32", () => {
     const block = new Uint8Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3]);
-    expect(() => wasm.scanBlockContains(block, false, packPatterns([]), 0)).not.toThrow(WebAssembly.RuntimeError);
+    expect(() => wasm.scanBlockContains(block, false, packPatterns([]), packMarks(NO_MARKS), 0)).not.toThrow(WebAssembly.RuntimeError);
   });
 
   // KW2, SharedWorker with wasm. The module threw the Rust error as a bare
@@ -169,7 +169,7 @@ describe("wasm traps", () => {
     const block = new Uint8Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3]);
     for (let i = 0; i < 5_000; i++) {
       try {
-        wasm.scanBlockContains(block, false, packPatterns([]), 0);
+        wasm.scanBlockContains(block, false, packPatterns([]), packMarks(NO_MARKS), 0);
       } catch {
         // KW1 panicked here.
       }

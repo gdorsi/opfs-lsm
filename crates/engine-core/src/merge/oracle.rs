@@ -4,7 +4,8 @@
 //! both on purpose.
 //!
 //! It takes one SST per source. A test gives a source of several runs as one
-//! SST of their entries in order.
+//! SST of their entries in order, and the marks as (start, through) pieces
+//! in key order, the first starting at the empty key.
 
 use crate::sst::{decode_sst, entry_size, Codec, EncodedRun, Entry, SstError, SstWriter};
 use alloc::vec::Vec;
@@ -63,9 +64,11 @@ pub(crate) fn merge_sst_bytes(
     sst_bytes: &[Vec<u8>],
     drop_tombstones: bool,
     judge_now: u64,
+    marks: &[(Vec<u8>, u64)],
     target_bytes: usize,
     codec: Codec,
 ) -> Result<(Vec<EncodedRun>, u64), SstError> {
+    let through_at = |key: &[u8]| marks.iter().rev().find(|(start, _)| start.as_slice() <= key).map_or(0, |&(_, t)| t);
     let mut inputs = sst_bytes
         .iter()
         .map(|bytes| decode_sst(bytes).map(Vec::into_iter))
@@ -104,6 +107,10 @@ pub(crate) fn merge_sst_bytes(
                 }
             };
             heap.replace_top(replacement.map(|entry| Head { entry, run: shadowed_run }));
+        }
+        let through = through_at(entry.key());
+        if through > 0 && entry.seq() <= through {
+            continue;
         }
         let entry = match entry {
             Entry::Put { key, seq, expires_at: Some(at), .. } if at <= judge_now => Entry::Del { key, seq },

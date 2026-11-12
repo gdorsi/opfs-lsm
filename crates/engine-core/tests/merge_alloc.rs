@@ -6,7 +6,7 @@
 //! LZ4 output is the exception: lz4_flex 0.11 allocates its hash table for
 //! every block it compresses, with no way to pass one in.
 
-use engine_core::{encode_sst, Codec, Entry, MergeConfig, MergeSession, Stop};
+use engine_core::{encode_sst, Codec, Entry, Marks, MergeConfig, MergeSession, Stop};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -70,6 +70,24 @@ fn sources() -> (Vec<Vec<Vec<u8>>>, usize) {
     (sources, newest.len() + middle.len() + oldest.len())
 }
 
+/// A mark every 1,000 keys, each over the first 500 keys of its thousand
+/// and the seqs up to 20,000, so the session walks 60 pieces as it merges.
+fn marks() -> Vec<u8> {
+    let mut pieces: Vec<(Vec<u8>, u64)> = vec![(Vec::new(), 0)];
+    for k in (0..30_000).step_by(1_000) {
+        pieces.push((format!("key/{k:08}").into_bytes(), 20_000));
+        pieces.push((format!("key/{:08}", k + 500).into_bytes(), 0));
+    }
+    let mut out = (pieces.len() as u32).to_le_bytes().to_vec();
+    for (start, through) in pieces {
+        out.extend_from_slice(&(start.len() as u32).to_le_bytes());
+        out.extend_from_slice(&start);
+        out.extend_from_slice(&through.to_le_bytes());
+        out.extend_from_slice(&(if through == 0 { 0u64 } else { 30_001 }).to_le_bytes());
+    }
+    out
+}
+
 struct Warm {
     allocs: usize,
     runs: usize,
@@ -90,7 +108,8 @@ fn warm_allocations(codec: Codec) -> Warm {
         tail_bytes: 128 * 1024,
         yield_bytes: 1024 * 1024,
     };
-    let mut session = MergeSession::open(config, &sizes).unwrap();
+    let marks = marks();
+    let mut session = MergeSession::open(config, &sizes, Marks::parse(&marks).unwrap()).unwrap();
     let (mut ended, mut warm) = (0, Warm { allocs: 0, runs: 0, blocks: 0 });
     let mut run = Vec::new();
     loop {

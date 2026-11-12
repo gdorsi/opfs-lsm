@@ -13,7 +13,7 @@ use alloc::{vec, vec::Vec};
 
 use core::cell::UnsafeCell;
 use engine_core::{
-    encode_run_into, lz4_unpack, Codec, Entry, MergeConfig, MergeError, MergeSession, RunEnd, SstError, Stop,
+    encode_run_into, lz4_unpack, Codec, Entry, Marks, MergeConfig, MergeError, MergeSession, RunEnd, SstError, Stop,
 };
 
 const TAG_PUT: u8 = 1;
@@ -28,6 +28,7 @@ const SESSION_OPEN: i32 = -13;
 const OUT_OF_ORDER: i32 = -14;
 const NO_SESSION: i32 = -15;
 const UNFED: i32 = -16;
+const BAD_MARKS: i32 = -17;
 
 const NEED: i32 = 1;
 const WRITE: i32 = 2;
@@ -241,6 +242,8 @@ pub unsafe extern "C" fn scan_block_contains(
     lz4: i32,
     pat_ptr: *const u8,
     pat_len: usize,
+    marks_ptr: *const u8,
+    marks_len: usize,
     judge_now: f64,
 ) -> i32 {
     let mut r = Reader {
@@ -254,14 +257,18 @@ pub unsafe extern "C" fn scan_block_contains(
         };
         pats.push(p);
     }
+    let Ok(marks) = Marks::parse(bytes(marks_ptr, marks_len)) else {
+        return finish(Err(BAD_MARKS));
+    };
     // `as` saturates, and a NaN or negative time judges nothing.
     let now = judge_now as u64;
-    finish(engine_core::scan_block_contains(bytes(ptr, len), codec(lz4), &pats, now).map_err(error_code))
+    finish(engine_core::scan_block_contains(bytes(ptr, len), codec(lz4), &pats, now, marks).map_err(error_code))
 }
 
-/// Open the module's merge session. Input: source list. Fails with -13
-/// while a session is open, -5 for a malformed list, -1 for a run shorter
-/// than a footer, and -11 when its working set cannot be reserved.
+/// Open the module's merge session. Input: source list, then marks block.
+/// Fails with -13 while a session is open, -5 for a malformed list, -17 for
+/// a malformed marks block, -1 for a run shorter than a footer, and -11 when
+/// its working set cannot be reserved.
 #[no_mangle]
 pub unsafe extern "C" fn merge_open(
     ptr: *const u8,
@@ -294,9 +301,7 @@ pub unsafe extern "C" fn merge_open(
         }
         sources.push(sizes);
     }
-    if !r.done() {
-        return TRUNCATED;
-    }
+    let Ok(marks) = Marks::parse(&r.buf[r.o..]) else { return BAD_MARKS };
     let config = MergeConfig {
         drop_tombstones: drop_tombstones != 0,
         judge_now: judge_now as u64,
@@ -307,7 +312,7 @@ pub unsafe extern "C" fn merge_open(
         tail_bytes: tail_bytes as usize,
         yield_bytes: yield_bytes as usize,
     };
-    match MergeSession::open(config, &sources) {
+    match MergeSession::open(config, &sources, marks) {
         Ok(s) => {
             *slot = Some(s);
             0

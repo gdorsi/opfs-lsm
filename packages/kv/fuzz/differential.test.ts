@@ -2,7 +2,8 @@ import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { packPatterns, unpackHits } from "../src/store/block-scan.js";
+import { packMarks, packPatterns, unpackHits } from "../src/store/block-scan.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import { encodeSst as encodeSstWasm, openMergeIn, type MergeSpec } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { openMergeTs } from "../tests/oracle/merge-ts.js";
@@ -85,7 +86,7 @@ const SCAN_NOW = 20;
 /** Both block scans of one framed block: `scanBlockContains` and the TypeScript cursor a tab falls back to. */
 async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array): Promise<"same" | "differ" | "rejected"> {
   return bounded("scan_block_contains (both)", () => {
-    const w = wasmOutcome("scanBlockContains", () => [...unpackHits(wasm.scanBlockContains(framed, lz4, packPatterns([pattern]), SCAN_NOW))]);
+    const w = wasmOutcome("scanBlockContains", () => [...unpackHits(wasm.scanBlockContains(framed, lz4, packPatterns([pattern]), packMarks(NO_MARKS), SCAN_NOW))]);
     const t = tsOutcome("BlockEntries", () => {
       const b = blockBytes(framed, new DataView(framed.buffer, framed.byteOffset, framed.byteLength), 0, { offset: 0, length: framed.byteLength }, lz4 ? "lz4" : "raw");
       const walk = new BlockEntries(b);

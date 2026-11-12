@@ -1,5 +1,6 @@
 import { compareBytes, containsAll } from "../bytes.js";
-import { expired } from "./judge.js";
+import { dead, type ReadPoint } from "./judge.js";
+import { markCursor } from "./marks.js";
 
 /** A matching put from a run's block filter, which reports no seq. */
 export type ScanHit = {
@@ -7,7 +8,6 @@ export type ScanHit = {
   readonly kind: "put" | "del";
   /** Present iff kind === "put". */
   readonly value?: Uint8Array;
-  readonly seq?: number;
 };
 
 export type LayerEntry = ScanHit & {
@@ -82,13 +82,19 @@ export function allMissed(misses: readonly Miss[]): Miss {
   return new Miss(Promise.all(misses.map((m) => m.ready)).then((fills) => fills.flat()));
 }
 
-/** The puts of `cursor` whose value holds every pattern. */
-export function filterCursor<E extends LayerEntry>(cursor: LayerCursor<E>, patterns: readonly Uint8Array[], now: number): LayerCursor<E> {
+/** The puts of `cursor` live at `at` whose value holds every pattern. */
+export function filterCursor<E extends LayerEntry>(
+  cursor: LayerCursor<E>,
+  patterns: readonly Uint8Array[],
+  at: ReadPoint,
+  reverse = false,
+): LayerCursor<E> {
+  const marks = markCursor(at.marks, reverse);
   return {
     peek() {
       for (;;) {
         const e = cursor.peek();
-        if (!e || e instanceof Miss || (e.kind === "put" && !expired(e, { now }) && containsAll(e.value!, patterns))) return e;
+        if (!e || e instanceof Miss || (!dead(e, at, marks) && containsAll(e.value!, patterns))) return e;
         cursor.next();
       }
     },

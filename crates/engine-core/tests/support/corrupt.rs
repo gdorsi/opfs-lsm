@@ -18,8 +18,8 @@
 #![allow(dead_code)]
 
 use engine_core::{
-    decode_block, decode_sst, encode_sst, scan_block_contains, Codec, EncodedRun, Entry, MergeConfig, MergeError,
-    MergeSession, Stop,
+    decode_block, decode_sst, encode_sst, scan_block_contains, Codec, EncodedRun, Entry, Marks, MergeConfig,
+    MergeError, MergeSession, Stop,
 };
 use std::collections::BTreeMap;
 
@@ -105,7 +105,7 @@ pub fn check_decode(buf: &[u8]) {
     let codec = if f.codec == 1 { Codec::Lz4 } else { Codec::Raw };
     let mut hits = Vec::new();
     for framed in framed_blocks(buf) {
-        let packed = scan_block_contains(framed, codec, &[], 0).expect("a block of a run that decodes must scan");
+        let packed = scan_block_contains(framed, codec, &[], 0, Marks::NONE).expect("a block of a run that decodes must scan");
         hits.extend(unpack_hits(&packed));
     }
     let puts: Vec<(Vec<u8>, Vec<u8>)> = entries
@@ -144,7 +144,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 /// run decodes, and its puts not expired at `now` and filtered by the
 /// patterns are the hits.
 pub fn check_scan(framed: &[u8], codec: Codec, patterns: &[&[u8]], now: u64) {
-    let Ok(packed) = scan_block_contains(framed, codec, patterns, now) else { return };
+    let Ok(packed) = scan_block_contains(framed, codec, patterns, now, Marks::NONE) else { return };
     let hits = unpack_hits(&packed);
     for (_, value) in &hits {
         assert!(patterns.iter().all(|p| contains(value, p)), "a hit holds every pattern");
@@ -224,7 +224,7 @@ pub fn blocks_tile(buf: &[u8]) -> bool {
 /// first) to its end, feeding each `Need` in an order picked by `seed`.
 pub fn drive_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) -> Result<(Vec<EncodedRun>, u64), MergeError> {
     let sizes: Vec<Vec<u32>> = sources.iter().map(|runs| runs.iter().map(|r| r.len() as u32).collect()).collect();
-    let mut session = MergeSession::open(config, &sizes)?;
+    let mut session = MergeSession::open(config, &sizes, Marks::NONE)?;
     let mut state = seed | 1;
     let (mut runs, mut bytes) = (Vec::new(), Vec::new());
     loop {
@@ -390,7 +390,7 @@ pub fn check_block(framed: &[u8], codec: Codec) {
         Ok(entries) => {
             let run = wrap_block(framed, codec, entries.len() as u32);
             assert_eq!(decode_sst(&run).expect("a block that decodes alone decodes in a run"), entries);
-            let packed = scan_block_contains(framed, codec, &[], 0).expect("a block that decodes scans");
+            let packed = scan_block_contains(framed, codec, &[], 0, Marks::NONE).expect("a block that decodes scans");
             let puts: Vec<(Vec<u8>, Vec<u8>)> = entries
                 .into_iter()
                 .filter_map(|e| match e {
@@ -403,7 +403,7 @@ pub fn check_block(framed: &[u8], codec: Codec) {
         Err(_) => {
             // Records are read before the count is checked, so any count does.
             assert!(decode_sst(&wrap_block(framed, codec, 0)).is_err(), "a block refused alone is refused in a run");
-            assert!(scan_block_contains(framed, codec, &[], 0).is_err(), "a block refused alone is refused by a scan");
+            assert!(scan_block_contains(framed, codec, &[], 0, Marks::NONE).is_err(), "a block refused alone is refused by a scan");
         }
     }
 }

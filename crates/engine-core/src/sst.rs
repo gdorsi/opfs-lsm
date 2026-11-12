@@ -6,6 +6,7 @@
 
 use crate::bloom::{bloom_from_hashes, key_hash};
 use crate::crc32::{crc32, Crc32};
+use crate::marks::{covers, MarkCursor, Marks};
 use alloc::vec::Vec;
 use core::mem;
 
@@ -750,12 +751,18 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 
 /// The puts of one data block of a run, as the block index frames it (`codec`
 /// says whether it is a u32 length plus LZ4 bytes or raw), whose value
-/// contains every pattern and that have not expired at `now` (epoch ms).
-/// Records are read in place, so a raw block that misses allocates nothing.
-/// An LZ4 block is unpacked first, and that unpack is most of the cost of a
-/// miss. Hits come back packed: `u32 key_len, u32 value_len, key, value`,
-/// little-endian, in key order.
-pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]], now: u64) -> Result<Vec<u8>, SstError> {
+/// contains every pattern, that have not expired at `now` (epoch ms) and
+/// that no mark of `marks` covers. Records are read in place, so a raw block
+/// that misses allocates nothing. An LZ4 block is unpacked first, and that
+/// unpack is most of the cost of a miss. Hits come back packed: `u32
+/// key_len, u32 value_len, key, value`, little-endian, in key order.
+pub fn scan_block_contains(
+    framed: &[u8],
+    codec: Codec,
+    patterns: &[&[u8]],
+    now: u64,
+    marks: Marks<'_>,
+) -> Result<Vec<u8>, SstError> {
     let unpacked;
     let block = match codec {
         Codec::Raw => framed,
@@ -768,10 +775,14 @@ pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]], now:
         }
     };
     let mut walk = BlockWalk::new(block)?;
+    let mut cursor = MarkCursor::default();
     let mut out = Vec::new();
     while let Some(record) = walk.next(block)? {
         let Some(value) = record.value else { continue };
-        if !expired(record.expires_at, now) && patterns.iter().all(|p| contains(value, p)) {
+        if !expired(record.expires_at, now)
+            && !covers(cursor.at(marks, record.prefix, record.suffix), record.seq)
+            && patterns.iter().all(|p| contains(value, p))
+        {
             out.extend_from_slice(&((record.prefix.len() + record.suffix.len()) as u32).to_le_bytes());
             out.extend_from_slice(&(value.len() as u32).to_le_bytes());
             out.extend_from_slice(record.prefix);
@@ -937,11 +948,40 @@ mod tests {
         let sst = encode_sst(&entries, Codec::Raw);
         let layout = read_footer(&sst[sst.len() - FOOTER_BYTES..], sst.len()).unwrap();
         let framed = &sst[..layout.data_len];
-        let keys = |now| hits(&scan_block_contains(framed, Codec::Raw, &[b"hit"], now).unwrap()).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        let keys = |now| hits(&scan_block_contains(framed, Codec::Raw, &[b"hit"], now, Marks::NONE).unwrap()).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
         assert_eq!(keys(0), [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()], "now 0 judges nothing");
         assert_eq!(keys(9), [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
         assert_eq!(keys(10), [b"b".to_vec(), b"c".to_vec()], "gone at its deadline");
         assert_eq!(keys(u64::MAX), [b"c".to_vec()]);
+    }
+
+    /// Keys share a prefix across each block, so the scan compares a mark's
+    /// start against keys it holds in two parts.
+    #[test]
+    fn a_block_scan_skips_the_puts_a_mark_covers() {
+        let key = |i: u64| format!("s/t/{i:08}").into_bytes();
+        let entries: Vec<Entry> = (0..400u64).map(|i| put(&key(i), b"hit", i + 1)).collect();
+        let (k100, k200, k300) = (key(100), key(200), key(300));
+        let marks = crate::marks::block(&[(b"", 0, 0), (&k100, 150, 401), (&k200, 0, 0), (&k300, 1_000, 1_001)]);
+        let marks = Marks::parse(&marks).unwrap();
+        let live = |i: u64| !((100..150).contains(&i) || i >= 300);
+        let want: Vec<Vec<u8>> = (0..400).filter(|&i| live(i)).map(key).collect();
+        for codec in [Codec::Raw, Codec::Lz4] {
+            let sst = encode_sst(&entries, codec);
+            let layout = read_footer(&sst[sst.len() - FOOTER_BYTES..], sst.len()).unwrap();
+            assert!(layout.block_count > 1, "{codec:?} spans several blocks");
+            let mut got = Vec::new();
+            let mut o = layout.index_start;
+            for _ in 0..layout.block_count {
+                o += 4 + read_u32(&sst, o) as usize;
+                o += 4 + read_u32(&sst, o) as usize;
+                let (offset, length) = (read_u32(&sst, o) as usize, read_u32(&sst, o + 4) as usize);
+                o += 8;
+                let framed = &sst[offset..offset + length];
+                got.extend(hits(&scan_block_contains(framed, codec, &[b"hit"], 0, marks).unwrap()).into_iter().map(|(k, _)| k));
+            }
+            assert_eq!(got, want, "{codec:?}");
+        }
     }
 
     #[test]
@@ -991,7 +1031,7 @@ mod tests {
                 o += 8;
                 let framed = &sst[offset..offset + length];
                 for (i, pats) in [&[b" word3".as_slice()][..], &[b" word3", b" common0"], &[b" nope"], &[]].iter().enumerate() {
-                    got[i].extend(hits(&scan_block_contains(framed, codec, pats, 0).unwrap()));
+                    got[i].extend(hits(&scan_block_contains(framed, codec, pats, 0, Marks::NONE).unwrap()));
                 }
             }
             assert!(layout.block_count > 1, "{codec:?} spans several blocks");

@@ -1,12 +1,14 @@
 import { CorruptDatabaseError } from "../errors.js";
+import { encodeMarks, type Marks } from "./marks.js";
 
 /**
  * Scans one data block, framed as the run's block index frames it, and returns
- * the puts not expired at `now` (epoch ms) whose value holds every pattern as
- * `u32 keyLen, u32 valueLen, key, value` records. `patterns` is each pattern
- * as a u32 length then its bytes.
+ * the puts not expired at `now` (epoch ms) and not covered by `marks` whose
+ * value holds every pattern as `u32 keyLen, u32 valueLen, key, value` records.
+ * `patterns` is each pattern as a u32 length then its bytes, and `marks` the
+ * marks block (`packMarks`).
  */
-type BlockScanner = (framed: Uint8Array, lz4: boolean, patterns: Uint8Array, now: number) => Uint8Array;
+type BlockScanner = (framed: Uint8Array, lz4: boolean, patterns: Uint8Array, marks: Uint8Array, now: number) => Uint8Array;
 
 /** Set once the wasm engine loads. Without it a run is scanned through its cursor. */
 let wasmScanner: BlockScanner | undefined;
@@ -30,6 +32,18 @@ export function packPatterns(patterns: readonly Uint8Array[]): Uint8Array {
     view.setUint32(o, p.length, true);
     out.set(p, o + 4);
     o += 4 + p.length;
+  }
+  return out;
+}
+
+const packed = new WeakMap<Marks, Uint8Array>();
+
+/** `marks` encoded once per table: every scan of a read point and every run it reaches share it. */
+export function packMarks(marks: Marks): Uint8Array {
+  let out = packed.get(marks);
+  if (!out) {
+    out = encodeMarks(marks);
+    packed.set(marks, out);
   }
   return out;
 }

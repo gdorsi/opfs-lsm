@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { inMergeSlot } from "../src/host/merge-slot.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { ensureEngine, openMerge, type MergeSpec } from "../src/store/engine.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import {
   __resetMemoryFsForTests,
   openHarnessDb,
@@ -53,6 +54,7 @@ describe("the wasm engine's session", () => {
     tailBytes: 64 * 1024,
     yieldBytes: 1024 * 1024,
     judgeNow: 0,
+    marks: NO_MARKS,
   };
 
   it("refuses a second session instead of handing out the TypeScript one", async () => {
