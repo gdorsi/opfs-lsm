@@ -197,6 +197,7 @@ window from an index whose leading fields the `where` pins and whose next field 
 | `useIssue(id)`, a detail fetch | the documents by id, no index |
 | unsynced rows | `pending`, sparse: only rows with `pending: true` have an entry |
 | list total, board column counts | `byStatus` per status, `byPriority` per priority and status, `search` for a query |
+| the sort value of row N of the unfiltered list, and the rows before it (deep scroll) | the sort's index, entries only, plus 65 documents |
 
 Each index costs first-sync time and storage. At 100k issues, seven indexes catch `issues` up in 4.2 s and three
 (`byModified`, `byStatus`, `pending`) in 3.3 s, about 240 ms per index (`bench/first-sync-100k.txt`). A missing
@@ -224,10 +225,17 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   before the next. A first sync changes issues every few milliseconds, and counting 100,000 entries then takes
   up to a fifth of the main thread instead of half. The counts depend on the filter and the query, not the
   sort, so a sort change keeps them.
-- **Deep scroll.** TanStack loads an ordered window without an index on its field as a prefix: a jump to row
-  50,000 asks for the first 50,100 rows, and the adapter reads and parses them: 846 ms the first time, one frame
-  after that, since the rows stay in memory, also once the list scrolls back to the top. The list does not work
-  around it; see [Measured](#measured).
+- **Deep scroll.** TanStack serves a window at offset N from the first N rows plus the window, and keeps them
+  once the list scrolls back. So a window deep in the unfiltered list is its own live query, anchored at a sort
+  value. `locate` (`src/client/counts.ts`) walks the sort's index to row N without reading documents, reads the
+  64 rows before it, and returns row N's sort value and `base`, the rows that sort strictly before that value. The
+  window's query keeps the filter's `where` plus `sort <= value` (`>=` ascending), so the adapter reads it as one
+  range of the same index, and its rows sit `base` rows down the list. `base` is counted from the index again
+  after every change, as the total is, so after a write that moves a row across the anchor the window is drawn
+  one row off until that count returns: one frame in the `live` check of `bench/deep-jump-100k.txt`. A window
+  within 1,000 rows past its anchor moves inside that query; one further down, or above the anchor, anchors again
+  200 rows above its first row. Windows in the first 1,000 rows, and every filtered list, stay one query from the
+  top, which TanStack loads as a prefix.
 - **Scroll.** The list keeps its scroll position per filter for the session, in memory, not in the URL, so Back
   from an issue lands where the user left.
 - **Board.** Five column queries ordered by `kanbanorder`, windows growing as a column scrolls, counts from
@@ -245,7 +253,8 @@ and counts a step only once the rows and the toolbar total are right, so one scr
 build, one per build per round under a machine-wide lock; p50 (min–max) in ms. A is this app before issues moved to
 docstore indexes (a631954, eager issues through the kv adapter), B this design, C the same app on TanStack DB's
 SQLite persisted collection (`spike/linearlite-sqlite`), eager and on demand. The interaction rows for A and B are
-round 2 of `bench/ui-latency-100k.txt`, C's are round 1. Raw lines, commands and machine load are in
+round 2 of `bench/ui-latency-100k.txt`, C's are round 1, and B's jump and heap rows are round 3, with deep windows
+anchored at their row (`bench/deep-jump-100k.txt`). Raw lines, commands and machine load are in
 `bench/client-100k-prod.txt` and `bench/ui-latency-100k.txt`; what each read costs inside B is at the end of the
 latter. Interaction times end at the next painted frame, so they move in ~16.7 ms steps.
 
@@ -266,10 +275,10 @@ latter. Interaction times end at the next painted frame, so they move in ~16.7 m
 | sort modified → priority | 706 (700–709) | 760 (755–777) | 73.4 | 73.5 | TanStack loads the ~19,700 issues tied with the window's last row (89 ms to read) and takes them in |
 | search keystroke (80 ms debounce) | 144 (142–145) | 123 (117–138) | 197 | 1,610 | the debounce, then the `search` entries for the word |
 | list → detail, title painted | 14.5 (13.9–15.7) | 16.6 (16–17.9) | 59.6 | 127 | not the read: the live query by id finds the list's row at once (under 1 ms) |
-| jump to row 5,000, first | 37.5 (37.1–58.7) | 158 (152–169) | 42.3 | 994 | TanStack asks for the first 5,100 rows; reading them takes 26 ms |
-| jump to row 50,000, first | 343 (318–346) | 846 (817–894) | 198 | 1,188 | TanStack asks for the first 50,100 rows; reading them takes 266 ms, TanStack takes in the rest |
-| jump to row 50,000, later | 63.3 (60–87.1) | 15.3 (14.4–17.7) | 41.7 | 45.4 | one frame: the rows stayed in memory |
-| heap after the interactions, MB | 161 | 79 | 141 | 153 | the 50,058 rows the deep jump loaded |
+| jump to row 5,000, first | 37.5 (37.1–58.7) | 50.6 (36.6–67.8) | 42.3 | 994 | walking ~4,800 `byModified` entries to the row, then a 100-row window; 158 before the anchor |
+| jump to row 50,000, first | 343 (318–346) | 123 (121–129) | 198 | 1,188 | walking ~49,800 `byModified` entries: 110 ms the first time in a page, 31 after; 849 before the anchor, when TanStack loaded the first 50,100 rows |
+| jump to row 50,000, later | 63.3 (60–87.1) | 85 (75.2–88.4) | 41.7 | 45.4 | the walk again and a new live query: no rows above the window stay in memory (15 before the anchor, when they did) |
+| heap after the interactions, MB | 161 | 58 (53–109) | 141 | 153 | 700 issues held, 100 and 48 MB 12 s later once TanStack drops the deep window's query; the rest above the warm start's 25 MB is not broken down. 79 before the anchor, with the 50,058 rows the jump loaded |
 
 Edits on B (`tabs`, `users`, `offline`, `visible`) all pass: an edit in one tab reaches the other tab's list in
 2.2 and 1.8 ms p50 (each direction, n=10); another user's edit in 7 ms through the server; five edits made offline
@@ -286,11 +295,10 @@ Where B is slower than A, and whose cost it is:
   BTree index). Every issue in the window shares the priority of its last row, and TanStack then loads every row
   with that value, with no limit: 19,700 issues. TanStack owns the load; LinearLite could avoid it by sorting on a
   key that is unique per issue (priority, then modified, in one field) at the cost of one more index per sort.
-- **First jump deep into the list**, 158 ms to row 5,000 and 846 ms to row 50,000, against 38 and 343. TanStack
-  loads a window without a TanStack index on the sort field as a prefix (offset + limit rows), and the adapter
-  reads and parses all of them, then TanStack keeps them after the list scrolls back. A read that skips index
-  entries without reading their documents (docstore) and a load that asks only for the window (TanStack) would
-  make the first jump cost what a later one does.
+- **Later jumps deep into the list**, 85 ms to row 50,000 against 63, and the first jump to row 5,000, 51
+  against 38. B keeps no rows above its window, so each jump from the top walks the sort index to the row again
+  (31 ms warm for 49,800 entries) and starts a new live query. The first jump to row 50,000 goes the other way:
+  123 ms against 343.
 - **Priority filter**, 33 ms against 27: B reads and counts what A already holds (above).
 - **List → detail** is a wash: 16.6 against 14.5 ms here, 14.6 against 23.1 ms in round 1.
 
