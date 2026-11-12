@@ -104,3 +104,33 @@ A status or priority filter under the default order reads `search` pages and fil
 the rows tied with the window's last row come from `search` at `[false, modified]`. A first run, before the adapter
 preferred the index a `where` pins whole, read that tie from `byStatus`: every issue of the status, 119 ms for a
 status chip.
+
+Recounts that pause: B without `byModified` (before) and with a recount after a change pausing between statuses
+(after). 5 rounds, one run per build per round under the machine lock. 1-min load 3.9 p50 (3.5-4.4).
+
+Longest frame in the second after a status edit, offline, on a copy of the profile (bench/edit-frames.js, 12
+edits a run; node bench/client.ts <origin> frames). An idle page's longest frame is 19 ms.
+
+                                   before                after
+longest frame after an edit, ms    41 (36-62)            20 (19-26)        60 edits each
+edits with a frame over 20 ms      60 of 60              25 of 60
+
+                                                            before                 after
+status chip on                                    20.1 (18.6-29.5)      27.9 (19.9-30.9)
+status chip off                                   47.2 (46.9-49.2)      49.1 (46.1-58.2)
+priority filter on                                33.8 (18.3-43.7)      36.1 (28.9-44.3)
+sort modified <-> created                         14.1 (13.8-14.3)        14.1 (13.3-15)
+sort modified -> priority                         14.3 (13.1-15.2)      14.1 (12.1-14.7)
+sort modified -> status                           15.1 (13.8-19.8)      13.4 (13.1-15.7)
+search keystroke (80 ms debounce included)           125 (115-129)         128 (126-129)
+list -> detail, title painted                      10.2 (6.2-16.9)        7.2 (5.5-19.1)
+scroll jump to row 5000                               14.9 (14-15)      15.3 (14.3-16.6)
+scroll jump to row 5000, first jump                  165 (157-180)         159 (158-162)
+scroll jump to row 50000                          14.9 (13.9-15.4)      14.4 (13.7-15.1)
+scroll jump to row 50000, first jump                 858 (826-938)         842 (834-909)
+heap after the script, MB                              82 (82-82)            82 (82-82)
+
+The chip and filter rows move in frame steps either way; the first count for a filter does not pause. A build that
+paused on every count, the first one too, took the same 20 ms frames but painted a warm start's total 35 ms later
+(150 -> 188 ms, paired median over 5 rounds), and a priority filter one frame later: between the statuses, the rest
+of the start-up work ran first.
