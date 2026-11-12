@@ -16,6 +16,11 @@ export function compactLock(name: string): string {
   return `opfs-lsm-compact/${name}`;
 }
 
+/** Held by the one handle that answers pressure offers, while it has a handler. */
+export function pressureLock(name: string): string {
+  return `opfs-lsm-pressure/${name}`;
+}
+
 export function ingestLock(name: string): string {
   return `opfs-lsm-ingest/${name}`;
 }

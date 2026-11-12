@@ -38,6 +38,7 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
         name,
         maxWalBytes: policy.maxWalBytes,
         compactionMemoryBytes: policy.compactionMemoryBytes,
+        maxBytes: policy.maxBytes,
       };
       port.postMessage(msg);
     },

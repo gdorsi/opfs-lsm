@@ -10,6 +10,7 @@ import {
   loadGeneration,
   reclaimManifests,
   reclaimRuns,
+  type GenerationMeta,
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
@@ -51,6 +52,8 @@ type IngestWatch = {
   maxWalBytes: number;
   /** The smallest `compactionMemoryBytes` any watching tab asked for. */
   compactionMemoryBytes: number;
+  /** The smallest `maxBytes` any watching tab asked for; infinite while none did. */
+  maxBytes: number;
   /** Op bytes heard or measured and not yet folded into a run. */
   pendingBytes: number;
   /**
@@ -161,6 +164,11 @@ class HostedDb {
   private trusted: number | undefined;
   /** Set while `destroy` waits for the locks, so a compaction pass stops at its next step. */
   private destroying = false;
+  /**
+   * The open pressure offer, or the seq the manifest must reach before the
+   * cap is measured again: an answer's writes count once a flush holds them.
+   */
+  private offer: Extract<BusMessage, { kind: "pressure" }> | { readonly after: number } = { after: 0 };
   /** Run compaction passes until no request arrives during one. */
   private readonly compact = coalesced(() =>
     withLock(compactLock(this.name), () => this.compactPass()),
@@ -336,6 +344,9 @@ class HostedDb {
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
+    watch.maxBytes = Math.min(watch.maxBytes, policy.maxBytes ?? Infinity);
+    // A pass measures the cap, so a database already over it gets an offer without waiting for a write.
+    if (policy.maxBytes !== undefined) this.compact().catch(() => undefined);
     watch.triggerAt = watch.maxWalBytes;
     void this.withWal((wal) => uningestedBytes(wal, watch.maxWalBytes)).then(
       (waiting) => {
@@ -354,12 +365,14 @@ class HostedDb {
     if (!watch || --watch.watchers > 0) return;
     watch.bus?.close();
     this.watching = undefined;
+    this.offer = { after: 0 };
   }
 
   private startWatch(policy: WatchPolicy): IngestWatch {
     const watch: IngestWatch = {
       maxWalBytes: policy.maxWalBytes,
       compactionMemoryBytes: policy.compactionMemoryBytes,
+      maxBytes: Infinity,
       pendingBytes: 0,
       triggerAt: policy.maxWalBytes,
       state: "idle",
@@ -369,9 +382,19 @@ class HostedDb {
     if (typeof BroadcastChannel !== "undefined") {
       watch.bus = new BroadcastChannel(layersChannel(this.name));
       watch.bus.onmessage = (ev: MessageEvent<BusMessage>) => {
-        if (ev.data.kind !== "row") return;
-        watch.pendingBytes += ev.data.bytes;
-        this.maybeIngest(watch);
+        const msg = ev.data;
+        if (msg.kind === "row") {
+          watch.pendingBytes += msg.bytes;
+          this.maybeIngest(watch);
+        } else if (msg.kind === "pressure-pull" && "pressure" in this.offer) {
+          watch.bus?.postMessage(this.offer);
+        } else if (msg.kind === "pressure-done" && "pressure" in this.offer) {
+          this.offer = { after: Infinity };
+          this.withWal((wal) => wal.meta()).then(
+            ({ head }) => (this.offer = { after: head }),
+            () => (this.offer = { after: 0 }),
+          );
+        }
       };
     }
     this.watching = watch;
@@ -461,7 +484,7 @@ class HostedDb {
       const budget = this.budget();
       const step = await mergeNextStep(fs, budget, base, meta.top);
       recycleEngine(budget.wasmRecycleBytes);
-      if (!step) return;
+      if (!step) return this.measure(base);
       await this.exclusive(() =>
         this.withWal(async (wal) => {
           this.trusted = await installStep(fs, wal, step, this.trusted);
@@ -474,6 +497,20 @@ class HostedDb {
       this.installLanded();
       announceGeneration(this.name);
     }
+  }
+
+  /**
+   * Offer pressure when `base`, which a pass found in shape, is over the
+   * cap. Writes nothing: the host never removes a row for the cap.
+   */
+  private measure(base: GenerationMeta): void {
+    const watch = this.watching;
+    if (!watch?.bus || "pressure" in this.offer || base.through < this.offer.after) return;
+    const bytes = base.runs.reduce((n, run) => n + run.bytes, 0);
+    if (bytes <= watch.maxBytes) return;
+    const need = bytes - Math.floor((watch.maxBytes * 7) / 8);
+    this.offer = { kind: "pressure", pressure: { bytes, maxBytes: watch.maxBytes, need } };
+    watch.bus.postMessage(this.offer);
   }
 
   /**
@@ -544,6 +581,7 @@ export function attachEngineHostPort(
           host.watch(msg.name, {
             maxWalBytes: msg.maxWalBytes,
             compactionMemoryBytes: compactionMemoryOf(msg.compactionMemoryBytes),
+            maxBytes: msg.maxBytes,
           });
           return;
         case "unwatch":

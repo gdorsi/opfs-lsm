@@ -258,6 +258,39 @@ A piece retires, falling back to `through` 0, when every run that overlaps it ha
 compaction install retires the manifest's marks against its new runs, and a mark step (see
 [Planning](#planning)) rewrites the runs that hold a piece back, so its rows leave the disk.
 
+# Size cap
+
+`openDb({ maxBytes })` asks the database to stay under a size. kv measures and asks: it never
+removes a row or writes to the WAL for the cap, and a write never waits for it or fails because of
+it. The host holds the smallest `maxBytes` any open tab passed, until the last tab closes the
+database. Nothing about the cap is stored.
+
+**Measure.** A compaction pass that finds nothing left to plan measures its manifest: `bytes` is
+the sum of its runs' file bytes. A pass runs after each flush and when a tab opens the database
+with `maxBytes`. Covered and overwritten versions count until a merge drops them; the WAL and the
+retired runs a `view` holds do not count.
+
+**Offer.** Over the cap, the host posts `{ kind: "pressure", pressure: { bytes, maxBytes, need } }`
+on the layers channel, with `need` the bytes over 7/8 of the cap. It holds one of two states:
+
+| State | Event | Next |
+|---|---|---|
+| after `s` | a measure over the cap, of a manifest whose `through` is at least `s` | open, posted |
+| open | `pressure-pull` | open, posted again |
+| open | `pressure-done` | after the WAL head |
+| any | the last tab closes the database | after 0 |
+
+An answer counts only once a flush holds what the handlers wrote, so the host asks again at most
+once per flush. A new host starts at "after 0".
+
+**Answer.** A handle with an `onPressure` handler asks for the Web Lock
+`opfs-lsm-pressure/<name>` and keeps it while it has one. On the grant it posts `pressure-pull`,
+for an offer posted while another handle held the lock. Only the holder answers: it calls its
+handlers in turn, then posts `pressure-done`, whether they resolved or threw. A holder that closes
+mid-answer, or whose tab goes away, posts nothing, and the next holder pulls the offer. A handle
+opened with `maxBytes` and no handler asks for the lock shared with `ifAvailable` on each offer;
+granted, no handle answers, and it warns.
+
 # Multi-tab coordination
 
 ## Seeing other tabs' writes
