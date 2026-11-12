@@ -6,7 +6,7 @@ import { levelOfDir, levelRunPath } from "./levels.js";
 import { decodeMarks, encodeMarks, NO_MARKS, type Marks } from "./marks.js";
 import { decodeStats, encodeStats } from "./run-stats.js";
 import type { RunStats } from "./run-stats.js";
-import type { KeyRange, RunEnd, SstEntry } from "./sst.js";
+import type { KeyRange, SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
 /** Magic ASCII "OLGN". */

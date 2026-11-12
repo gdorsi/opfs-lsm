@@ -98,7 +98,7 @@ describe("publishL0", () => {
   });
 
   it("writes no run without an entry", async () => {
-    await expect(publishL0(new MemoryFs(), "0-0", [], 0)).rejects.toThrow();
+    await expect(publishL0(new MemoryFs(), "0-0", [], 0)).rejects.toThrow("an L0 run needs an entry");
   });
 });
 

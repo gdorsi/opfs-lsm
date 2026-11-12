@@ -1,4 +1,4 @@
-import { TARGET_RUN_BYTES } from "../store/levels.js";
+import { L1_TARGET_BYTES, TARGET_RUN_BYTES } from "../store/levels.js";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -52,6 +52,8 @@ export type HostBudget = {
   readonly yieldBytes: number;
   /** Wasm memory past which the engine is re-instantiated at the next idle point. */
   readonly wasmRecycleBytes: number;
+  /** Bytes of L1 past which it compacts into L2; each deeper level holds ten times more. Not memory: tests lower it to build deep levels. */
+  readonly l1TargetBytes: number;
 };
 
 /** The wasm module's memory when idle. */
@@ -122,5 +124,6 @@ export function hostBudget(compactionMemoryBytes: number): HostBudget {
     l0StopRuns: maxSources - 1,
     yieldBytes: YIELD_BYTES,
     wasmRecycleBytes: Math.floor(b / 2),
+    l1TargetBytes: L1_TARGET_BYTES,
   };
 }

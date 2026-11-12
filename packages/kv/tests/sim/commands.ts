@@ -10,6 +10,9 @@ import {
   createLocalIngestClient,
 } from "../../src/testing.js";
 import { WallClock } from "../../src/clock.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../../src/host/budget.js";
+import { loadLatestGeneration } from "../../src/store/generation.js";
+import { planCompaction } from "../../src/store/levels.js";
 import { checkDatabase, deleteWal, walMeta } from "./check-database.js";
 import { compareBytes } from "../../src/bytes.js";
 import { applyOps, Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
@@ -37,10 +40,11 @@ export class Model {
 
 /**
  * Small flush runs, so a flush of a few records, or of one large one, spans
- * several L0 runs. No L0 stop: a command can hold compaction, and a flush
- * waiting for it would wait on a command that never comes.
+ * several L0 runs, and a small L1 target, so the runs reach L2 and below.
+ * No L0 stop: a command can hold compaction, and a flush waiting for it
+ * would wait on a command that never comes.
  */
-export const SIM_HOST_LIMITS = { flushRunBytes: 8 * 1024, l0StopRuns: Number.POSITIVE_INFINITY };
+export const SIM_HOST_LIMITS = { flushRunBytes: 8 * 1024, l0StopRuns: Number.POSITIVE_INFINITY, l1TargetBytes: 32 * 1024 };
 
 /** The system under test: one handle, its host, and the files they share. */
 export class Sut {
@@ -498,6 +502,12 @@ class CheckCmd implements Cmd {
     }
     await expectHealthy(m, r, r.background);
     expect((await checkDatabase(r.fs, r.name, r.time.now)).marks, "marks left once compaction settles").toBe(0);
+    const settled = await loadLatestGeneration(r.fs);
+    if (settled) {
+      const now = Math.max(r.time.now, settled.judgedNow);
+      const limits = { maxSources: hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES).maxSources, l1Target: SIM_HOST_LIMITS.l1TargetBytes };
+      expect(planCompaction(settled, now, limits), "a step left once compaction settles").toBeUndefined();
+    }
     if (r.background) {
       await r.open();
       m.reader.synced(m.oracle.head);

@@ -18,7 +18,7 @@ import {
   planCompaction,
   replaceRuns,
   TARGET_RUN_BYTES,
-  type CompactionPlan,
+  type MergePlan,
 } from "../store/levels.js";
 import { retireMarks, type Marks } from "../store/marks.js";
 import type { HostBudget } from "./budget.js";
@@ -39,8 +39,9 @@ type CompactionOutput = {
 type Merged = { readonly outputs: readonly MergedRun[]; readonly droppedSeq: number };
 
 /**
- * Plan one step on `base`, the recorded generation, merge its inputs, and
- * write the output runs. Needs no ingest lock: a flush meanwhile only adds
+ * Plan one step on `base`, the recorded generation, at the clock floored by
+ * its `judgedNow`, merge its inputs, and write the output runs. A drop step
+ * writes nothing. Needs no ingest lock: a flush meanwhile only adds
  * L0 runs in front of the inputs, which stay contiguous and keep their
  * bottom status. Outputs are named
  * past every manifest number in use (`knownTop`, IndexedDB's
@@ -55,14 +56,16 @@ export async function mergeNextStep(
   knownTop: number,
   clock: WallClock,
 ): Promise<CompactionOutput | undefined> {
-  const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
-  const plan = planCompaction(base, { maxSources: budget.maxSources });
-  if (!plan) return undefined;
-  const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   const judgedNow = clock.now(base.judgedNow);
+  const plan = planCompaction(base, judgedNow, { maxSources: budget.maxSources, l1Target: budget.l1TargetBytes });
+  if (!plan) return undefined;
+  const inputs = plan.inputs.map((r) => r.path);
+  if (plan.kind === "drop") return { inputs, outputs: [], droppedSeq: 0, judgedNow: base.judgedNow };
+  const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
+  const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget, judgedNow, base.marks));
   return {
-    inputs: plan.inputs.map((r) => r.path),
+    inputs,
     // Every mark at or below `base.through` is in `base.marks`, or retired
     // because no input held a version it covers. A mark the manifest gains
     // before the install is past `base.through`, and this claims none of it.
@@ -74,7 +77,7 @@ export async function mergeNextStep(
 
 async function writeStep(
   fs: AsyncFs,
-  plan: CompactionPlan,
+  plan: MergePlan,
   name: (i: number) => string,
   budget: HostBudget,
   judgeNow: number,

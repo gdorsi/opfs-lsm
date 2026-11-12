@@ -1,6 +1,7 @@
 import { compareBytes } from "../bytes.js";
 import type { GenerationMeta, RunMeta } from "./generation.js";
-import { unabsorbed } from "./marks.js";
+import { unabsorbed, type Marks } from "./marks.js";
+import { coveredBytes, deadBytes, expiredBytes, whollyCovered } from "./run-stats.js";
 import type { KeyRange, SstCodec } from "./sst.js";
 
 /**
@@ -12,7 +13,7 @@ import type { KeyRange, SstCodec } from "./sst.js";
 const L0_RUNS_TO_COMPACT = 4;
 const LEVEL_RATIO = 10;
 /** Ten compaction-sized runs (`TARGET_RUN_BYTES`). */
-const L1_TARGET_BYTES = 40 * 1024 * 1024;
+export const L1_TARGET_BYTES = 40 * 1024 * 1024;
 /** Compaction cuts its output into runs of about this size. */
 export const TARGET_RUN_BYTES = 4 * 1024 * 1024;
 
@@ -27,19 +28,29 @@ export function codecForLevel(level: number): SstCodec {
   return level >= 2 ? "lz4" : "raw";
 }
 
-export type CompactionPlan = {
-  /**
-   * Newest first. A source is runs a merge reads back to back as one
-   * key-ordered stream: each L0 run alone, and the overlapped runs of the
-   * level below together, since they do not overlap each other.
-   */
-  readonly sources: readonly (readonly RunMeta[])[];
-  /** The runs of `sources`, in manifest order, so newest first. */
-  readonly inputs: readonly RunMeta[];
-  readonly outputLevel: number;
-  /** No run below the output level overlaps the inputs, so tombstones have nothing left to hide. */
-  readonly bottom: boolean;
-};
+/**
+ * One compaction step. A merge reads its sources and writes the output
+ * level's runs in place of its inputs. A drop removes runs a range delete
+ * wholly covers, and writes nothing.
+ */
+export type CompactionPlan =
+  | {
+      readonly kind: "merge";
+      /**
+       * Newest first. A source is runs a merge reads back to back as one
+       * key-ordered stream: each L0 run alone, and the overlapped runs of the
+       * level below together, since they do not overlap each other.
+       */
+      readonly sources: readonly (readonly RunMeta[])[];
+      /** The runs of `sources`, in manifest order, so newest first. */
+      readonly inputs: readonly RunMeta[];
+      readonly outputLevel: number;
+      /** No run below the output level overlaps the inputs, so tombstones have nothing left to hide. */
+      readonly bottom: boolean;
+    }
+  | { readonly kind: "drop"; readonly inputs: readonly RunMeta[] };
+
+export type MergePlan = Extract<CompactionPlan, { kind: "merge" }>;
 
 /** n for an `l<n>` directory name, undefined for any other name. */
 export function levelOfDir(dir: string): number | undefined {
@@ -93,20 +104,59 @@ type PlanLimits = {
 };
 
 /**
- * The next compaction step, or undefined when the layout is in shape and
- * every run has absorbed the marks over it. Once no level is over its
- * target, a mark step rewrites a run a mark may still cover: nothing else
- * rewrites a level under its target, and a mark retires only once every run
- * under it absorbed it. Each step's output absorbs every mark of the
- * manifest, so the steps end.
+ * A run is rewritten though its level is in shape once this share of it is
+ * dead: of its entry bytes, those a read finds absent, or of its entries,
+ * the tombstones. By bytes, the rewrite writes at most twice what it frees.
+ * A tombstone frees little itself; it stands for the version it hides
+ * below, which only a merge that reaches it frees.
+ */
+const DEAD_SHARE_TO_REWRITE = 1 / 2;
+
+/** Shares of `run`: dead entry bytes, covered entry bytes, expired entry bytes, and tombstones by count. */
+function deadShares(run: RunMeta, marks: Marks, now: number) {
+  const { entryBytes, entries, tombstones } = run.stats;
+  const bytes = Math.max(1, entryBytes);
+  return {
+    dead: deadBytes(run, marks, now) / bytes,
+    covered: coveredBytes(run, marks) / bytes,
+    expired: expiredBytes(run.stats, now) / bytes,
+    tombstones: tombstones / entries,
+  };
+}
+
+/**
+ * The next compaction step on the manifest at `now`, or undefined when the
+ * layout is in shape, no run is half dead, and every run has absorbed the
+ * marks over it. In order:
+ *
+ * 1. Drop the runs a mark wholly covers. Costs no merge.
+ * 2. The level furthest over its target, as one step.
+ * 3. The run with the largest dead share at or past `DEAD_SHARE_TO_REWRITE`.
+ *    At the bottom it is rewritten alone, which drops its tombstones and
+ *    expired puts. Above, a run dead mostly by marks is rewritten alone,
+ *    which drops what they cover and turns its expired puts to tombstones;
+ *    one dead mostly by tombstones or expired puts goes down with the runs
+ *    it overlaps in the next level, toward the versions they hide. An L0
+ *    run counts only its expired and covered bytes, and takes the L0 step.
+ * 4. The run a mark covers most, among those that have not absorbed a mark
+ *    over them; a mark retires only once every run under it absorbed it.
+ *
+ * Every step makes progress: a drop or a merge into a deeper level removes
+ * runs or moves bytes down, and a rewrite in place leaves outputs with no
+ * expired put and no unabsorbed mark, so they come back only as runs pushed
+ * down. So the steps end without new writes.
  */
 export function planCompaction(
   { runs, marks }: Pick<GenerationMeta, "runs" | "marks">,
+  now: number,
   { maxSources, l1Target = L1_TARGET_BYTES }: PlanLimits,
 ): CompactionPlan | undefined {
+  const dropped = runs.filter((r) => levelOf(r.path) !== undefined && whollyCovered(r.stats, marks));
+  if (dropped.length > 0) return { kind: "drop", inputs: dropped };
+
   const inLevel = (level: number | undefined) =>
     runs.filter((r) => levelOf(r.path) === level);
-  const plan = (sources: RunMeta[][], outputLevel: number): CompactionPlan => {
+  const plan = (sources: RunMeta[][], outputLevel: number): MergePlan => {
     const taken = sources.filter((s) => s.length > 0);
     const inputs = taken.flat();
     const range = span(inputs);
@@ -115,6 +165,7 @@ export function planCompaction(
       return (level === undefined || level > outputLevel) && !inputs.includes(r);
     });
     return {
+      kind: "merge",
       sources: taken,
       inputs,
       outputLevel,
@@ -139,19 +190,44 @@ export function planCompaction(
     const range = span(taken);
     return plan([...taken.map((r) => [r]), inLevel(1).filter((r) => overlaps(r.range, range))], 1);
   };
+  /** `run` with the runs it overlaps in the next level. */
+  const pushDown = (run: RunMeta, level: number) =>
+    plan([[run], inLevel(level + 1).filter((n) => overlaps(n.range, run.range))], level + 1);
   if (best.level === 0) return l0Step();
-  if (best.level < 0) {
-    const stale = runs.find((r) => levelOf(r.path) !== undefined && unabsorbed(marks, r));
-    if (!stale) return undefined;
-    const level = levelOf(stale.path)!;
-    return level === 0 ? l0Step() : plan([[stale]], level);
+  if (best.level > 0) {
+    const files = inLevel(best.level);
+    const next = inLevel(best.level + 1);
+    const cost = (r: RunMeta) =>
+      bytesOf(next.filter((n) => overlaps(n.range, r.range))) / Math.max(1, r.bytes);
+    return pushDown(files.reduce((a, r) => (cost(r) < cost(a) ? r : a)), best.level);
   }
-  const files = inLevel(best.level);
-  const next = inLevel(best.level + 1);
-  const cost = (r: RunMeta) =>
-    bytesOf(next.filter((n) => overlaps(n.range, r.range))) / Math.max(1, r.bytes);
-  const pick = files.reduce((a, r) => (cost(r) < cost(a) ? r : a));
-  return plan([[pick], next.filter((n) => overlaps(n.range, pick.range))], best.level + 1);
+
+  const leveled = runs.filter((r) => levelOf(r.path) !== undefined);
+  // An L0 run's tombstones wait for the L0 step: a delete-heavy flush
+  // would otherwise rewrite the L1 runs it overlaps at every flush.
+  const dead = leveled
+    .map((run) => ({ run, ...deadShares(run, marks, now) }))
+    .map((d) => ({ ...d, share: levelOf(d.run.path) === 0 ? d.covered + d.expired : Math.max(d.dead, d.tombstones) }))
+    .filter((d) => d.share >= DEAD_SHARE_TO_REWRITE)
+    .reduce<{ run: RunMeta; covered: number; tombstones: number; expired: number; share: number } | undefined>(
+      (a, d) => (a && a.share >= d.share ? a : d),
+      undefined,
+    );
+  if (dead) {
+    const level = levelOf(dead.run.path)!;
+    if (level === 0) return l0Step();
+    const alone = plan([[dead.run]], level);
+    if (alone.bottom || dead.covered >= Math.max(dead.expired, dead.tombstones)) return alone;
+    return pushDown(dead.run, level);
+  }
+
+  const stale = leveled
+    .filter((r) => unabsorbed(marks, r))
+    .map((run) => ({ run, covered: coveredBytes(run, marks) }))
+    .reduce<{ run: RunMeta; covered: number } | undefined>((a, s) => (a && a.covered >= s.covered ? a : s), undefined);
+  if (!stale) return undefined;
+  const level = levelOf(stale.run.path)!;
+  return level === 0 ? l0Step() : plan([[stale.run]], level);
 }
 
 /**

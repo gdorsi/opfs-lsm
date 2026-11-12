@@ -122,6 +122,8 @@ describe("run statistics", () => {
           lo += Math.max(0, k - keySlack + s - seqSlack - total);
           hi += Math.min(k + keySlack, s + seqSlack);
         });
+        expect(exact).toBeGreaterThanOrEqual(Math.min(lo, total) - 1e-9);
+        expect(exact).toBeLessThanOrEqual(Math.min(hi, total) + 1e-9);
         const estimate = coveredBytes({ stats, marksThrough: 0 }, marks);
         expect(estimate).toBeGreaterThanOrEqual(Math.min(lo, total) - 1e-9);
         expect(estimate).toBeLessThanOrEqual(Math.min(hi, total) + 1e-9);
@@ -154,7 +156,7 @@ describe("run statistics", () => {
     fc.assert(
       fc.property(entriesArb, fc.array(markArb, { maxLength: 4 }), (entries, list) => {
         const marks = marksOf(list);
-        if (whollyCovered(statsOf(entries), marks)) expect(entries.every((e) => covered(marks, e.key, e.seq))).toBe(true);
+        expect(!whollyCovered(statsOf(entries), marks) || entries.every((e) => covered(marks, e.key, e.seq))).toBe(true);
       }),
     );
   });
