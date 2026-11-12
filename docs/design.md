@@ -335,10 +335,10 @@ key per entry under one such pin.
 
 ## Seeing other tabs' writes
 
-After its append commits, a tab posts `{ kind: "row", seq, record, bytes }` on the BroadcastChannel
-`opfs-lsm-layers/<name>`: the WAL row it appended, and the key and value bytes of its ops. Every
-other tab applies the record to its memtable. If the record does not follow the `appliedThrough`
-of that tab, the tab reads the WAL tail instead.
+After its append commits, a tab posts `{ kind: "row", writerId, seq, record, bytes }` on the
+BroadcastChannel `opfs-lsm-layers/<name>`: the WAL row it appended, and the key and value bytes of
+its ops. Every other tab applies the record to its memtable. If the record does not follow the
+`appliedThrough` of that tab, the tab reads the WAL tail instead.
 
 A tab therefore sees the write of another tab a moment after its ack. `db.sync()` closes the
 gap: it reads the WAL tail and applies everything acked before the call. The broadcast is an
@@ -445,14 +445,14 @@ Levels are created as they fill, with no maximum depth. Budgets count bytes on d
 
 ## Planning
 
-The planner reads only the manifest. It scores each level and serves the highest score above 1.
-On a tie the shallower level wins.
+The planner reads only the manifest. It scores each level and serves the highest score. On a tie
+the shallower level wins.
 
-* L0 scores its run count over 4. Its step merges the oldest L0 runs, at most `l0StopRuns`,
-  with the L1 runs whose ranges overlap them.
-* A deeper level scores its bytes over its budget. Its step picks the run whose overlapping
-  bytes in the next level are the smallest fraction of its own size, and merges it with those
-  runs into the next level.
+* L0 scores its run count over 4, and reports at 4 runs. Its step merges the oldest L0 runs, at
+  most `l0StopRuns`, with the L1 runs whose ranges overlap them.
+* A deeper level scores its bytes over its budget, and reports past 1. Its step picks the run
+  whose overlapping bytes in the next level are the smallest fraction of its own size, and merges
+  it with those runs into the next level.
 
 Scoring lets L0 pass 4 runs while a deeper level is further over budget. If L0 always went
 first, L1 would never be pushed down.
@@ -561,8 +561,7 @@ ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
 * Every applied seq is announced once, in seq order, after reads can see it.
 * The promise of `put`, `delete` or `batch` resolves with its seq, after its record was announced.
 * `gap` replaces the records that a handle skipped because a flush folded them before it read
-  them. A listener reads again.
-* `ingest` says that a flush moved rows to OPFS without changing what reads return.
+  them, or because a repair recorded another generation. A listener reads again.
 * `closed` is the last event.
 
 # Recovery
@@ -605,9 +604,8 @@ ignored.
 Recording is one IndexedDB transaction. It writes only if `meta` still reads what reconcile
 read. It pairs the manifest with the WAL:
 
-* If `through` is at or past `ingestedThrough`, `ingestedThrough` becomes `through`.
-* If `through` is below `ingestedThrough` and the WAL holds every seq above `through`, those
-  seqs are uningested again.
+* With `head` unchanged, `ingestedThrough` becomes `through` when `through` is at or past it, and
+  the seqs above `through` are uningested again when the WAL holds all of them.
 * Otherwise every record is dropped and `ingestedThrough` moves to the new `head`. The database
   is the manifest alone.
 

@@ -1,6 +1,6 @@
 # opfs-lsm
 
-A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 7× faster than IndexedDB, reads up to 30× faster, and every tab of an origin shares one database with a live change feed.
+A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 7× faster than IndexedDB, reads up to 127× faster, and every tab of an origin shares one database with a live change feed.
 
 > [!WARNING]
 > opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next. Two things are missing before a stable release:
@@ -80,7 +80,7 @@ Importing `@opfs-lsm/kv` adds **17.0 kB** of JavaScript to your main bundle (gzi
 | wasm engine | 16.4 kB | 35.8 kB | on the first `openDb`, one file for the tab and the SharedWorker |
 | **Total after open** | **44.9 kB** | **118.7 kB** | |
 
-For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 27.9 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](bench/README.md#bundle-size).
+For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 27.9 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](bench/README.md#bundle-size).
 
 ### When IndexedDB is still the better fit
 
@@ -132,7 +132,7 @@ The promise from `put`, `delete` or `batch` is the ack. When it resolves, the wr
 
 ## Browser support
 
-`@opfs-lsm/kv` needs SharedWorker, OPFS, IndexedDB and WebAssembly in the page. Where one is missing, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
+`@opfs-lsm/kv` needs SharedWorker, OPFS, IndexedDB and WebAssembly in the page. Where SharedWorker or OPFS is missing, or the wasm engine or the IndexedDB store fails to load, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
 
 Three APIs set the minimum version in every browser. Everything else kv uses shipped earlier, including Web Locks, BroadcastChannel and the WebAssembly features in the engine.
 
@@ -140,8 +140,8 @@ Three APIs set the minimum version in every browser. Everything else kv uses shi
 | --- | --- | --- | --- | --- | --- | --- |
 | `SharedWorker` with `type: "module"` | 80 | 114 | 16 | 148 | 114 | 16 |
 | OPFS `FileSystemFileHandle.createWritable()` | 86 | 111 | 26 | 109 | 111 | 26 |
-| `structuredClone()` | 98 | 94 | 15.4 | 98 | 94 | 15.4 |
-| **Minimum for kv** | **98** | **114** | **26** | **148** | **114** | **26** |
+| `crypto.randomUUID()` | 92 | 95 | 15.4 | 92 | 95 | 15.4 |
+| **Minimum for kv** | **92** | **114** | **26** | **148** | **114** | **26** |
 
 - Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26.
 - Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so kv does not run there.
