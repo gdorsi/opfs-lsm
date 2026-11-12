@@ -24,6 +24,7 @@ import {
   CATALOG_KEY,
   after,
   bytesEqual,
+  compareBytes,
   collectionPrefix,
   indexPrefix,
   keyString,
@@ -135,6 +136,13 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     if (event.kind === "gap") this.stale = true;
     if (event.kind !== "append") return;
     for (const op of event.ops) {
+      if (op.type === "deleteRange") {
+        const covers =
+          compareBytes(op.start, CATALOG_KEY) <= 0 &&
+          (op.endExclusive === undefined || compareBytes(op.endExclusive, CATALOG_KEY) > 0);
+        if (covers) this.stale = true;
+        continue;
+      }
       if (!bytesEqual(op.key, CATALOG_KEY)) continue;
       this.catalogWrites++;
       try {
