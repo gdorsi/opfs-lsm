@@ -219,7 +219,7 @@ function appliesMarksInSource(): boolean {
   const compact = read("../../src/host/compact.ts");
   return (
     /if\s+self\.through\s*>\s*0\s*&&\s*winner\.seq\s*<=\s*self\.through\s*\{\s*self\.retire\(w\);\s*return\s+Ok\(\(\)\);\s*\}\s*match\s+winner\.kind/.test(engine) &&
-    /private\s+emit\(e:\s*SstEntry\):\s*void\s*\{\s*if\s*\(\s*covered\(\s*this\.marks\s*,\s*e\.key\s*,\s*e\.seq\s*\)\s*\)\s*return;/.test(session) &&
+    /private\s+emit\(e:\s*SstEntry\):\s*void\s*\{\s*if\s*\(\s*!this\.marks\.empty\s*&&\s*e\.seq\s*<=\s*throughAt\(\s*this\.marks\s*,\s*e\.key\s*\)\s*\)\s*return;/.test(session) &&
     /marksThrough:\s*base\.through\s*\}/.test(compact)
   );
 }

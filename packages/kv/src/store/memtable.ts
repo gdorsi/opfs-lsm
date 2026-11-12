@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import { ROW_OVERHEAD, type RecordOp } from "../check.js";
+import { ROW_OVERHEAD, type CheckedOp } from "../check.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
 import { joinMarks, markTable, NO_MARKS, type Mark, type Marks } from "./marks.js";
 
@@ -13,21 +13,8 @@ export type MemRow = {
 
 export type WalRecord = {
   readonly seq: number;
-  readonly ops: readonly RecordOp[];
+  readonly ops: readonly CheckedOp[];
 };
-
-/** The range deletes of `record`, each at the record's seq. */
-export function marksOf(record: WalRecord): Mark[] {
-  const out: Mark[] = [];
-  for (const op of record.ops) {
-    if (op.type === "deleteRange") out.push({ ...op, at: record.seq });
-  }
-  return out;
-}
-
-function foldMarks(marks: readonly Mark[]): Marks {
-  return marks.reduce((acc, m) => joinMarks(acc, markTable(m)), NO_MARKS);
-}
 
 /** Reads over rows in key order, live or pinned. */
 export interface MemRows {
@@ -152,8 +139,14 @@ export class Memtable extends Chunks {
           this.put({ key: op.key, seq: record.seq, kind: "del" });
           break;
         case "deleteRange": {
+          const { start, endExclusive: end, through } = op;
+          // The rows' own seqs are below this record, so op order does not matter.
+          this.rebuild(
+            this.range().filter(
+              (row) => row.seq > through || compareBytes(row.key, start) < 0 || (end !== undefined && compareBytes(row.key, end) >= 0),
+            ),
+          );
           const mark = { ...op, at: record.seq };
-          this.removeCovered(mark);
           this.markLog.push(mark);
           this.held = joinMarks(this.held, markTable(mark));
           break;
@@ -162,33 +155,6 @@ export class Memtable extends Chunks {
     }
     this.applied = record.seq;
     return "applied";
-  }
-
-  /** Remove the rows `mark` covers. Their own seqs are below the mark's record, so op order does not matter. */
-  private removeCovered(mark: Mark): void {
-    const { start, endExclusive: end, through } = mark;
-    for (let c = chunkFor(this.firsts, start); c < this.chunks.length; c++) {
-      if (end && c > 0 && compareBytes(this.firsts[c]!, end) >= 0) break;
-      const rows = this.chunks[c]!;
-      const lo = lowerBoundKeys(rows, start);
-      const hi = end ? lowerBoundKeys(rows, end) : rows.length;
-      let gone = 0;
-      for (let i = lo; i < hi; i++) if (rows[i]!.seq <= through) gone++;
-      if (gone === 0) continue;
-      const keep = rows.filter((row, i) => {
-        if (i < lo || i >= hi || row.seq > through) return true;
-        this.live -= rowBytes(row);
-        return false;
-      });
-      this.chunks[c] = keep;
-      this.owned[c] = true;
-    }
-    for (let c = this.chunks.length - 1; c > 0; c--) {
-      if (this.chunks[c]!.length > 0) continue;
-      this.chunks.splice(c, 1);
-      this.firsts.splice(c, 1);
-      this.owned.splice(c, 1);
-    }
   }
 
   private put(row: MemRow): void {
@@ -224,12 +190,17 @@ export class Memtable extends Chunks {
     if (through <= this.ingested) return false;
     this.ingested = through;
     const jumped = through > this.applied;
-    if (this.markLog.length > 0) {
+    if (this.markLog[0] && this.markLog[0].at <= through) {
       this.markLog = this.markLog.filter((m) => m.at > through);
-      this.held = foldMarks(this.markLog);
+      this.held = this.markLog.reduce((acc, m) => joinMarks(acc, markTable(m)), NO_MARKS);
     }
-    const keep = jumped ? [] : this.range().filter((row) => row.seq > through);
     this.applied = Math.max(this.applied, through);
+    this.rebuild(jumped ? [] : this.range().filter((row) => row.seq > through));
+    return jumped;
+  }
+
+  /** Replaces every chunk with `keep`, in fresh arrays, so a pin keeps what it read. */
+  private rebuild(keep: readonly MemRow[]): void {
     this.chunks = [];
     this.firsts = [];
     this.live = 0;
@@ -242,6 +213,5 @@ export class Memtable extends Chunks {
     if (this.chunks.length === 0) this.chunks.push([]);
     this.firsts[0] = new Uint8Array(0);
     this.owned = this.chunks.map(() => true);
-    return jumped;
   }
 }

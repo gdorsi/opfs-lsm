@@ -35,7 +35,6 @@ import {
   loadGeneration,
   type RunMeta,
 } from "./store/generation.js";
-import type { ReadPoint } from "./store/judge.js";
 import { joinMarks, NO_MARKS, type Marks } from "./store/marks.js";
 import { pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
@@ -522,7 +521,7 @@ class DbImpl implements Db {
   private readonly onBusMessage: ((ev: MessageEvent<BusMessage>) => void) | undefined;
   private readonly pressure: Backpressure;
   /** The last read point and the two tables it joined. */
-  private lastPoint: { readonly installed: Marks; readonly mem: Marks; readonly at: ReadPoint } | undefined;
+  private lastPoint: { readonly installed: Marks; readonly mem: Marks; readonly at: Marks } | undefined;
 
   constructor(
     readonly name: DbName,
@@ -917,12 +916,12 @@ class DbImpl implements Db {
    * the memtable's. Take it in the turn that captures the installed levels,
    * and keep it for the whole operation.
    */
-  private point(): ReadPoint {
+  private point(): Marks {
     const installed = this.installed.marks;
     const mem = this.mem.marks;
     const last = this.lastPoint;
     if (last?.installed === installed && last.mem === mem) return last.at;
-    const at = { marks: joinMarks(installed, mem) };
+    const at = joinMarks(installed, mem);
     this.lastPoint = { installed, mem, at };
     return at;
   }
@@ -931,7 +930,7 @@ class DbImpl implements Db {
   private readKeys(
     ks: readonly CheckedKey[],
     levels: readonly RunLevel[],
-    at: ReadPoint,
+    at: Marks,
   ): Maybe<(Uint8Array | undefined)[]> {
     const values: (Uint8Array | undefined)[] = [];
     let misses: Miss[] | undefined;

@@ -1,15 +1,10 @@
 import { compareBytes, containsAll } from "../bytes.js";
 
-/** A matching put from a run's block filter, which reports no seq. */
-export type ScanHit = {
+export type LayerEntry = {
   readonly key: Uint8Array;
   readonly kind: "put" | "del";
   /** Present iff kind === "put". */
   readonly value?: Uint8Array;
-  readonly seq?: number;
-};
-
-export type LayerEntry = ScanHit & {
   /** The WAL seq that wrote the entry. */
   readonly seq: number;
 };
@@ -25,8 +20,8 @@ export type ScanBounds = {
  * the next entry's bytes are not resident: the cursor has not moved, and
  * peeking again after `ready` resolves continues from the same place.
  */
-export interface LayerCursor<E extends ScanHit = LayerEntry> {
-  peek(): E | undefined | Miss;
+export interface LayerCursor {
+  peek(): LayerEntry | undefined | Miss;
   next(): void;
 }
 
@@ -44,7 +39,7 @@ export function lowerBoundKeys(
   return lo;
 }
 
-export function entryCursor<E extends ScanHit>(entries: readonly E[], reverse = false): LayerCursor<E> {
+export function entryCursor(entries: readonly LayerEntry[], reverse = false): LayerCursor {
   const step = reverse ? -1 : 1;
   let i = reverse ? entries.length - 1 : 0;
   return {
@@ -80,7 +75,7 @@ export function allMissed(misses: readonly Miss[]): Miss {
 }
 
 /** The puts of `cursor` whose value holds every pattern. */
-export function filterCursor<E extends ScanHit>(cursor: LayerCursor<E>, patterns: readonly Uint8Array[]): LayerCursor<E> {
+export function filterCursor(cursor: LayerCursor, patterns: readonly Uint8Array[]): LayerCursor {
   return {
     peek() {
       for (;;) {

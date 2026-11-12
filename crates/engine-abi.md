@@ -109,7 +109,7 @@ All integers little-endian.
 entry record     u8 tag (1 put, 2 del) · u64 seq · u32 key_len · key
                  · for put only: u32 value_len · value
 pattern list     repeated: u32 len · bytes
-hit record       u32 key_len · u32 value_len · key · value
+hit record       u32 key_len · u32 value_len · u64 seq · key · value
 run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_len
                  · sst (size bytes) · first_key · last_key
 source list      u32 count · repeated: u32 run_count · run_count × u32 size

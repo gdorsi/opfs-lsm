@@ -1,7 +1,6 @@
 import { compareBytes } from "../bytes.js";
-import { opsBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName, type RecordOp } from "../check.js";
+import { opsBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName } from "../check.js";
 import { CommitError, StorageUnavailableError } from "../errors.js";
-import { resolveThrough } from "../store/marks.js";
 import type { WalRecord } from "../store/memtable.js";
 
 /**
@@ -79,8 +78,11 @@ const EMPTY_RECORD = new ArrayBuffer(0);
 const OP_PUT = 0;
 const OP_DEL = 1;
 const OP_DELETE_RANGE = 3;
-/** The `through` stored for a range delete that asked for none: every row before its batch. */
-const BEFORE_THIS_BATCH = Number.MAX_SAFE_INTEGER;
+
+/** A range delete asked for `asked` in the record at `seq` never covers its own batch. */
+function resolveThrough(asked: number, seq: number): number {
+  return Math.max(0, Math.min(asked, seq - 1));
+}
 
 /**
  * A WAL row is one ArrayBuffer of ops back to back (design.md, "WAL
@@ -110,7 +112,7 @@ export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
       bytes(op.start);
       view.setUint8(at++, op.endExclusive ? 1 : 0);
       if (op.endExclusive) bytes(op.endExclusive);
-      view.setBigUint64(at, BigInt(op.through ?? BEFORE_THIS_BATCH), true);
+      view.setBigUint64(at, BigInt(op.through), true);
       at += 8;
       continue;
     }
@@ -122,11 +124,9 @@ export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
 }
 
 /** The ops of `record` with each range delete's `through` resolved against `seq`. */
-export function resolveOps(ops: readonly CheckedOp[], seq: number): readonly RecordOp[] {
-  if (!ops.some((op) => op.type === "deleteRange")) return ops as readonly RecordOp[];
-  return ops.map((op) =>
-    op.type === "deleteRange" ? { ...op, through: resolveThrough(op.through ?? BEFORE_THIS_BATCH, seq) } : op,
-  );
+export function resolveOps(ops: readonly CheckedOp[], seq: number): readonly CheckedOp[] {
+  if (!ops.some((op) => op.type === "deleteRange")) return ops;
+  return ops.map((op) => (op.type === "deleteRange" ? { ...op, through: resolveThrough(op.through, seq) } : op));
 }
 
 /**
@@ -134,11 +134,11 @@ export function resolveOps(ops: readonly CheckedOp[], seq: number): readonly Rec
  * buffer, which nothing else holds. Exported for the decoder fuzz tests
  * (`packages/kv/fuzz/`).
  */
-export function decodeOps(raw: unknown, seq: number): RecordOp[] {
+export function decodeOps(raw: unknown, seq: number): CheckedOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new CommitError("corrupt wal row: not bytes");
   const bytes = new Uint8Array(raw);
   const view = new DataView(raw);
-  const ops: RecordOp[] = [];
+  const ops: CheckedOp[] = [];
   let at = 0;
   const take = (length: number): Uint8Array => {
     if (at + length > bytes.byteLength) throw new CommitError("corrupt wal row: truncated");
@@ -167,7 +167,7 @@ export function decodeOps(raw: unknown, seq: number): RecordOp[] {
       const end = hasEnd === 1 ? (take(u32()) as CheckedKey) : undefined;
       const stored = take(8);
       const through = new DataView(stored.buffer, stored.byteOffset, 8).getBigUint64(0, true);
-      if (through > BigInt(BEFORE_THIS_BATCH)) throw new CommitError("corrupt wal row: through");
+      if (through > BigInt(Number.MAX_SAFE_INTEGER)) throw new CommitError("corrupt wal row: through");
       if (end && compareBytes(key, end) >= 0) throw new CommitError("corrupt wal row: empty range");
       ops.push({
         type: "deleteRange",
