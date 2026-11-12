@@ -1,5 +1,58 @@
-100k issues in the replica, headless Chrome, vite dev (unminified React), ms. Script: bench/ui-latency.js
-status chip on -> rows painted {'n': 10, 'p50': 52.5, 'min': 44.9, 'max': 291.3}
-status chip off -> rows painted {'n': 10, 'p50': 163.6, 'min': 140.3, 'max': 242.9}
-search keystroke -> rows painted (80 ms debounce included) {'n': 10, 'p50': 170.2, 'min': 167.1, 'max': 249.6}
-list -> detail, title painted {'n': 10, 'p50': 16.5, 'min': 12.9, 'max': 42.8}
+LinearLite list interactions at 100k issues on production builds. Builds, machine and server as in
+client-100k-prod.txt. PROFILE=<a profile one first sync filled> node bench/client.ts <origin> ui runs
+bench/ui-latency.js in the page: it reads only the DOM, and a step counts only once the rows and the toolbar total
+are right (expected values computed from the server's rows). ms from the click or keystroke to the next painted
+frame, so values move in steps of a frame (~16.7 ms). Each run takes 10 samples per row (5 for sort -> priority,
+3 per jump); a cell is the p50 (min-max) over 5 runs of each run's p50, one run per build per round under the
+machine lock. "first jump" is a run's first jump to that row, before any earlier jump loaded rows.
+
+Round 1, all four builds (B before its counts stopped depending on the sort):
+
+                                                                 A                     B                    Ce                    Co
+status chip on                                    43.1 (28.5-44.3)      46.3 (28.3-47.8)      42.6 (28.6-43.1)   1,088 (1,059-1,158)
+status chip off                                     117 (99.1-118)        65.5 (48.2-66)         190 (147-196)         146 (133-148)
+priority filter on                                  40.8 (27-42.6)      48.2 (30.5-49.1)      39.9 (27.9-42.4)   1,109 (1,038-1,163)
+sort modified <-> created                         13.1 (12.5-14.5)      59.4 (41.1-59.6)        13.7 (13-14.6)          14 (13-14.5)
+sort modified -> priority                            681 (680-702)         779 (764-799)      73.4 (60.3-77.5)      73.5 (54.2-74.3)
+search keystroke (80 ms debounce included)           162 (142-162)         122 (118-128)         197 (191-213)   1,610 (1,494-1,648)
+list -> detail, title painted                     23.1 (15.1-23.9)       14.6 (7.9-17.8)        59.6 (33.4-63)         127 (122-179)
+scroll jump to row 5000                           26.2 (15.1-27.5)      14.7 (13.8-15.4)      18.2 (15.3-18.7)      17.2 (15.2-18.4)
+scroll jump to row 5000, first jump               50.5 (38.1-53.9)         169 (164-177)      42.3 (29.6-44.1)       994 (898-1,222)
+scroll jump to row 50000                            91.1 (60.1-95)      15.5 (13.8-15.9)      41.7 (31.9-47.4)      45.4 (32.9-47.9)
+scroll jump to row 50000, first jump                 329 (319-339)         791 (703-877)         198 (197-214)   1,188 (1,147-1,198)
+heap after the script, MB                            159 (159-164)            79 (79-79)         141 (138-143)         153 (153-154)
+1-min load at each run's start 3.0 p50 (2.3-7.2)
+
+Round 2, A and B, B with the counts keyed by filter and query only (the sort no longer recounts):
+
+                                                                 A                     B
+status chip on                                    28.3 (27.7-29.3)      29.3 (19.9-30.3)
+status chip off                                     96.1 (95.4-99)      48.8 (47.2-59.5)
+priority filter on                                  27.1 (27-28.1)        33 (29.5-45.5)
+sort modified <-> created                           14.5 (13.5-15)        14 (13.8-14.3)
+sort modified -> priority                            706 (700-709)         760 (755-777)
+search keystroke (80 ms debounce included)           144 (142-145)         123 (117-138)
+list -> detail, title painted                     14.5 (13.9-15.7)        16.6 (16-17.9)
+scroll jump to row 5000                           15.3 (14.6-16.4)      14.8 (14.1-15.6)
+scroll jump to row 5000, first jump               37.5 (37.1-58.7)         158 (152-169)
+scroll jump to row 50000                            63.3 (60-87.1)      15.3 (14.4-17.7)
+scroll jump to row 50000, first jump                 343 (318-346)         846 (817-894)
+heap after the script, MB                            161 (159-170)           79 (79-131)
+1-min load at each run's start 3.8 p50 (3.0-5.4)
+
+What B's reads cost, timed inside a warm B page by calling docstore on the page's store (`__linearlite.store.docs`);
+p50 of 5, of 3 for the large reads:
+
+count, 5 x byStatus (the unfiltered total, 100,000 entries)       31.9 ms
+count, one byStatus range (20,084 entries)                          5.9 ms
+count, priority 0 (5 x byPriority [false, 0, s])                    6.6 ms
+byModified, first 100 documents                                     0.5 ms
+byModified, first 431 documents (fills 100 rows of status 0)        1.8 ms
+byModified, first 585 documents (fills 100 rows of priority 0)      3.1 ms
+byPriority [false, 4], 19,696 documents (the priority sort's tie)  88.8 ms
+byModified, first 5,100 documents (the jump to row 5,000)          25.7 ms
+byModified, first 50,100 documents (the jump to row 50,000)       266.4 ms
+live query by id of a row the list holds                     0.2-0.8 ms, the row there at once
+
+TanStack issues held (screenshot run): 100 on the list; 19,693 after a sort by priority; 50,058 after the jump to
+row 50,000, and still 50,058 once the list is back at the top.

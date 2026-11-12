@@ -211,6 +211,44 @@ function uniqueError(incoming: string, owner: string): DocStoreError {
 
 type Slot = EncodedDoc | null | undefined;
 
+/**
+ * Run `fn` on the rows `olds` and plan the writes of the slots it changed,
+ * against those rows. `changed` lists the slot of each id in the plan.
+ */
+function planModify<T extends JsonDoc>(
+  coll: BoundCollection,
+  docIds: readonly DocId[],
+  idbs: readonly Uint8Array[],
+  olds: readonly (Uint8Array | undefined)[],
+  fn: (docs: readonly (T | undefined)[]) => readonly (T | null | undefined)[],
+): { readonly next: readonly Slot[]; readonly changed: readonly number[]; readonly plan: WritePlan<number> } {
+  const docs = olds.map((bytes) => bytes && decodeDoc(bytes));
+  // Before `fn`, which may change the objects it is given.
+  const priors = olds.map((bytes, i) => priorOf(coll, idbs[i]!, bytes, docs[i]));
+
+  const out = fn(docs as unknown as (T | undefined)[]);
+  if (!Array.isArray(out) || out.length !== docIds.length) {
+    throw new DocStoreError("document", `fn must return one entry for each of the ${docIds.length} ids`);
+  }
+  const next = out.map((d, i): Slot => {
+    if (d === undefined || d === null) return d;
+    const encoded = encodeDoc(d);
+    if (encoded.id !== docIds[i]) {
+      throw new DocStoreError("document", `fn returned a document with id "${encoded.id}" for "${docIds[i]}"`);
+    }
+    return encoded;
+  });
+
+  const changed = next.flatMap((d, i) => (d === undefined ? [] : [i]));
+  const plan = planChanges(
+    coll,
+    changed.map((i) => docIds[i]!),
+    changed.map((i) => next[i] ?? undefined),
+    changed.map((i) => priors[i]!),
+  );
+  return { next, changed, plan };
+}
+
 export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> {
   constructor(
     private readonly store: StoreCore,
@@ -258,10 +296,12 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
   }
 
   /**
-   * Optimistic: the rows are read before the transaction, the unique keys to
-   * read depend on the new documents, which depend on the old rows. The
-   * transaction commits only if every row, the ones `fn` left included, still
-   * holds the bytes `fn` saw. Returns what each slot became.
+   * Without a unique index the transaction reads only the rows, so `fn`
+   * runs inside it, on what it read. A unique index adds the owners of the
+   * values `fn` returns, and kv takes its keys up front: then the rows are
+   * read before the transaction, and it commits only if every row, the ones
+   * `fn` left included, still holds the bytes `fn` saw. Returns what each
+   * slot became.
    */
   private async transact(
     ids: readonly string[],
@@ -272,32 +312,19 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     const idbs = docIds.map(idBytes);
     return this.store.write(this.name, async (coll): Promise<WritePlan<readonly Slot[]>> => {
       const rowKeys = idbs.map((b) => concat(coll.rows.prefix, b));
-      const olds = await Promise.all(rowKeys.map((k) => this.store.kv.get(k)));
-      const docs = olds.map((bytes) => bytes && decodeDoc(bytes));
-      // Before `fn`, which may change the objects it is given.
-      const priors = olds.map((bytes, i) => priorOf(coll, idbs[i]!, bytes, docs[i]));
-
-      const out = fn(docs as unknown as (T | undefined)[]);
-      if (!Array.isArray(out) || out.length !== docIds.length) {
-        throw new DocStoreError("document", `fn must return one entry for each of the ${docIds.length} ids`);
+      if (!coll.maintained.some((p) => p.target.kind === "unique")) {
+        return {
+          keys: rowKeys,
+          apply: (olds, tx) => {
+            const { next, changed, plan } = planModify(coll, docIds, idbs, olds, fn);
+            plan.apply(changed.map((i) => olds[i]), tx);
+            return next;
+          },
+        };
       }
-      const next = out.map((d, i): Slot => {
-        if (d === undefined || d === null) return d;
-        const encoded = encodeDoc(d);
-        if (encoded.id !== docIds[i]) {
-          throw new DocStoreError("document", `fn returned a document with id "${encoded.id}" for "${docIds[i]}"`);
-        }
-        return encoded;
-      });
-
-      const changed = next.flatMap((d, i) => (d === undefined ? [] : [i]));
+      const olds = await Promise.all(rowKeys.map((k) => this.store.kv.get(k)));
+      const { next, plan } = planModify(coll, docIds, idbs, olds, fn);
       const left = next.flatMap((d, i) => (d === undefined ? [i] : []));
-      const plan = planChanges(
-        coll,
-        changed.map((i) => docIds[i]!),
-        changed.map((i) => next[i] ?? undefined),
-        changed.map((i) => priors[i]!),
-      );
       return {
         keys: [...plan.keys, ...left.map((i) => rowKeys[i]!)],
         apply: (values, tx) => {

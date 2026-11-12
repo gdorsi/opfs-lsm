@@ -86,7 +86,7 @@ const open = createLiveQueryCollection((q) =>
 
 This reads the newest 50 rows of each of the `byStatus` ranges `[false, 1]` and `[false, 2]`, then the rows tied with the 50th.
 
-A row stays in memory while some loaded query keeps it, and follows every tab's writes. A query without a limit keeps every row its `where` matches. An ordered window keeps the matching rows at or before its last row, so a row that moves past it leaves memory, and TanStack asks for more when the window runs short. When the last live query on a subset goes away, the rows no other loaded query keeps leave memory. A `gap` reads every loaded query again.
+A row stays in memory while some loaded query keeps it, and follows every tab's writes. A query without a limit keeps every row its `where` matches. An ordered window keeps the matching rows at or before its last row, so a row that moves past it leaves memory, and TanStack asks for more when the window runs short. A window whose load found fewer rows than its limit keeps every new match until it holds its limit, then the rows at or before the one at its limit, as if it loaded again. When the last live query on a subset goes away, the rows no other loaded query keeps leave memory. A `gap` reads every loaded query again.
 
 TanStack computes `count`, `groupBy` and other aggregates in memory, and gives the adapter only the query's `where`. An aggregate over an on-demand collection therefore loads every row the `where` matches, and reports a partial number until that load ends. To count without loading rows, ask docstore, which walks the index entries, and count again when the collection changes:
 

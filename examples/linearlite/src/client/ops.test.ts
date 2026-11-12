@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { applyLocal } from "../domain/merge.ts";
-import type { Comment, Issue } from "../domain/model.ts";
+import type { Comment, Issue, Stream } from "../domain/model.ts";
 import { parsePushRequest } from "../domain/wire.ts";
-import { backoffMs, pushOp } from "./ops.ts";
+import { backoffMs, Pager, pushOp } from "./ops.ts";
 
 const issue = (over: Partial<Issue> = {}): Issue => ({
   id: "i1",
@@ -68,5 +68,49 @@ describe("pushOp", () => {
 describe("backoffMs", () => {
   it("doubles from 1 s and stops at 30 s", () => {
     assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 50].map(backoffMs), [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+  });
+});
+
+describe("Pager", () => {
+  /** A server of two-row pages up to cursor `end` that fails the first ask of `down`, and every page asked of it. */
+  const server = (end: number, down?: string) => {
+    const asked: string[] = [];
+    const pager = new Pager(async (stream: Stream, after: number) => {
+      asked.push(`${stream}@${after}`);
+      if (`${stream}@${after}` === down && asked.indexOf(down) === asked.length - 1) throw new Error("down");
+      return { after, next: after + 2, more: after + 2 < end };
+    });
+    return { asked, pager };
+  };
+
+  it("asks for the next page as soon as a page arrives, and serves that cursor from it", async () => {
+    const { asked, pager } = server(6);
+    assert.equal((await pager.page("issues", 0)).after, 0);
+    assert.deepEqual(asked, ["issues@0", "issues@2"]);
+    assert.equal((await pager.page("issues", 2)).after, 2);
+    assert.equal((await pager.page("issues", 4)).after, 4);
+    assert.deepEqual(asked, ["issues@0", "issues@2", "issues@4"], "nothing past the last page");
+  });
+
+  it("asks again for another stream or cursor, and after forget", async () => {
+    const { asked, pager } = server(100);
+    await pager.page("issues", 0);
+    await pager.page("bodies", 0);
+    await pager.page("issues", 2);
+    await pager.page("issues", 6);
+    pager.forget();
+    await pager.page("issues", 8);
+    assert.deepEqual(asked, ["issues@0", "issues@2", "bodies@0", "bodies@2", "issues@2", "issues@4", "issues@6", "issues@8", "issues@8", "issues@10"]);
+  });
+
+  it("fails only the call that uses a page asked ahead that failed", async () => {
+    const { pager } = server(100, "issues@2");
+    await pager.page("issues", 0);
+    await assert.rejects(pager.page("issues", 2), /down/);
+    assert.equal((await pager.page("issues", 2)).after, 2);
+    const failing = server(100, "issues@2");
+    await failing.pager.page("issues", 0);
+    failing.pager.forget();
+    assert.equal((await failing.pager.page("bodies", 0)).after, 0);
   });
 });

@@ -1,42 +1,48 @@
 import { defineSchema, openDocStore, type DocStore } from "@opfs-lsm/docstore";
 import { openDb, type Db } from "@opfs-lsm/kv";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
-import { BTreeIndex, createCollection, createLiveQueryCollection, isUndefined, not } from "@tanstack/db";
+import { createCollection, createLiveQueryCollection, eq } from "@tanstack/db";
 import type { Body, Comment, Issue, SyncState } from "../domain/model.ts";
 
-export type OutboxMark = {
-  readonly id: string;
-  readonly stream: "bodies" | "comments";
-  readonly rowKey: string;
-  readonly nonce: string;
-};
-
-export const outboxKey = (stream: OutboxMark["stream"], rowKey: string) => `${stream}:${rowKey}`;
-
-const schema = defineSchema<{ issues: Issue; bodies: Body; comments: Comment; sync: SyncState; outbox: OutboxMark }>()({
-  version: 1,
+/** The reads each issue index serves are in DESIGN.md, "Indexes". */
+export const schema = defineSchema<{ issues: Issue; bodies: Body; comments: Comment; sync: SyncState }>()({
+  version: 2,
   collections: {
-    issues: {},
-    bodies: {},
-    comments: { byIssue: { on: "issue_id" } },
+    issues: {
+      byModified: { on: ["deleted", "modified"] },
+      byCreated: { on: ["deleted", "created"] },
+      byTitle: { on: ["deleted", "title"] },
+      byPriority: { on: ["deleted", "priority", "status"] },
+      byStatus: { on: ["deleted", "status", "kanbanorder"] },
+      search: { on: ["deleted", "modified"], text: "title" },
+      pending: { on: "pending" },
+    },
+    bodies: { pending: { on: "pending" } },
+    comments: { byIssue: { on: "issue_id" }, pending: { on: "pending" } },
     sync: {},
-    outbox: {},
   },
+  drop: ["outbox"],
 });
 
-type Docs = DocStore<typeof schema>;
+export type Docs = DocStore<typeof schema>;
+const issueDocs = (docs: Docs) => docs.collection("issues");
+export type IssueDocs = ReturnType<typeof issueDocs>;
 
 function collections(docs: Docs) {
-  const issues = createCollection(docstoreCollectionOptions({ collection: docs.collection("issues") }));
-  for (const field of ["status", "priority", "modified", "created", "kanbanorder"] as const) {
-    issues.createIndex((i) => i[field], { indexType: BTreeIndex });
-  }
+  const issues = createCollection(
+    docstoreCollectionOptions({
+      collection: issueDocs(docs),
+      syncMode: "on-demand",
+      defaultStringCollation: { stringSort: "lexical" },
+    }),
+  );
   const bodies = createCollection(docstoreCollectionOptions({ collection: docs.collection("bodies"), syncMode: "on-demand" }));
   const comments = createCollection(docstoreCollectionOptions({ collection: docs.collection("comments"), syncMode: "on-demand" }));
   const sync = createCollection(docstoreCollectionOptions({ collection: docs.collection("sync") }));
-  const outbox = createCollection(docstoreCollectionOptions({ collection: docs.collection("outbox") }));
-  const dirtyIssues = createLiveQueryCollection((q) => q.from({ i: issues }).where(({ i }) => not(isUndefined(i.dirty))));
-  return { issues, bodies, comments, sync, outbox, dirtyIssues };
+  const dirtyIssues = createLiveQueryCollection((q) => q.from({ i: issues }).where(({ i }) => eq(i.pending, true)));
+  const dirtyBodies = createLiveQueryCollection((q) => q.from({ b: bodies }).where(({ b }) => eq(b.pending, true)));
+  const dirtyComments = createLiveQueryCollection((q) => q.from({ c: comments }).where(({ c }) => eq(c.pending, true)));
+  return { issues, bodies, comments, sync, dirtyIssues, dirtyBodies, dirtyComments };
 }
 
 export type Store = ReturnType<typeof collections> & {
@@ -54,7 +60,7 @@ export function openStore(): Promise<Store> {
     const db = await openDb({ name: params.get("db") ?? "linearlite" });
     const docs = await openDocStore(db, schema);
     const store: Store = { db, docs, user: params.get("user") ?? "anonymous", ...collections(docs) };
-    await Promise.all([store.issues.preload(), store.sync.preload(), store.outbox.preload()]);
+    await store.sync.preload();
     opened = store;
     return store;
   })());

@@ -72,6 +72,8 @@ function metaOpt(meta: IDBObjectStore, key: string): Promise<number | undefined>
   return reqToPromise(meta.get(key)).then((raw) => (typeof raw === "number" ? raw : undefined));
 }
 
+const EMPTY_RECORD = new ArrayBuffer(0);
+
 const OP_PUT = 0;
 const OP_DEL = 1;
 
@@ -81,7 +83,7 @@ const OP_DEL = 1;
  * IndexedDB clones one buffer per row instead of an array of op objects with
  * a buffer per key and value.
  */
-function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
+export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
   let size = 0;
   for (const op of ops) {
     size += 5 + op.key.byteLength + (op.type === "put" ? 4 + op.value.byteLength : 0);
@@ -447,6 +449,8 @@ export class TabWal extends IdBWal {
     | {
         readonly seq: number | undefined;
         readonly ops: readonly CheckedOp[];
+        /** The row written: `encodeOps(ops)`. Empty when nothing was. */
+        readonly record: ArrayBuffer;
         readonly result: R;
       }
     | undefined
@@ -464,7 +468,7 @@ export class TabWal extends IdBWal {
     }
     if (!decision || decision.ops.length === 0) {
       await done;
-      return decision && { seq: undefined, ops: [], result: decision.result };
+      return decision && { seq: undefined, ops: [], record: EMPTY_RECORD, result: decision.result };
     }
     const seq = tail.head + 1;
     const record = encodeOps(decision.ops);
@@ -475,11 +479,11 @@ export class TabWal extends IdBWal {
     await done;
     this.appendedRecords += 1;
     this.appendedBytes += record.byteLength;
-    return { seq, ops: decision.ops, result: decision.result };
+    return { seq, ops: decision.ops, record, result: decision.result };
   }
 
   /**
-   * Append `ops` under the key IndexedDB assigns, by group commit: appends
+   * Append `record` (`encodeOps`) under the key IndexedDB assigns, by group commit: appends
    * that arrive while a group's transaction is active join it, and appends
    * that arrive while it commits form the next group. A group is one
    * readwrite transaction with one `add` per record, so each record keeps
@@ -492,9 +496,9 @@ export class TabWal extends IdBWal {
    * forward. An aborted transaction gives its keys back, so committed seqs
    * stay gapless.
    */
-  append(ops: readonly CheckedOp[]): Promise<number | undefined> {
+  append(record: ArrayBuffer): Promise<number | undefined> {
     return new Promise((resolve, reject) => {
-      const entry: GroupEntry = { record: encodeOps(ops), seq: undefined, resolve, reject };
+      const entry: GroupEntry = { record, seq: undefined, resolve, reject };
       if (this.open && this.join(this.open, entry)) return;
       if (this.open) this.queued.push(entry);
       else this.commitGroup([entry]);

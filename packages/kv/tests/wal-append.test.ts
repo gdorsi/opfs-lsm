@@ -78,3 +78,20 @@ describe("blind writes", () => {
     await two.close();
   });
 });
+
+describe("keys and values", () => {
+  it("rejects a key or a value whose buffer was detached, and stores empty ones", async () => {
+    const db = await open("w1");
+    const detached = () => {
+      const bytes = enc.encode("gone");
+      structuredClone(bytes.buffer, { transfer: [bytes.buffer] });
+      return bytes;
+    };
+    await expect(db.put(detached(), enc.encode("v"))).rejects.toThrow("key buffer is detached");
+    await expect(db.put(enc.encode("k"), detached())).rejects.toThrow("value buffer is detached");
+    await db.put(new Uint8Array(0), new Uint8Array(0));
+    expect(await db.get(new Uint8Array(0))).toEqual(new Uint8Array(0));
+    expect(await db.get(enc.encode("k"))).toBeUndefined();
+    await db.close();
+  });
+});

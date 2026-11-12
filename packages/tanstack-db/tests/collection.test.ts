@@ -710,6 +710,24 @@ test("a row that moves past an ordered window's last row leaves memory, and the 
   assert.equal(c.has("i49"), false);
 });
 
+test("a window that loaded short keeps only its page once writes fill it, and then leaves out rows that sort past it", async () => {
+  const name = dbName();
+  const other = (await open(name)).store.collection("issues");
+  const c = onDemand((await open(name)).store.collection("issues"));
+  const top = newest(c, 5);
+  await top.preload();
+  assert.equal(top.size, 0);
+
+  for (let i = 49; i >= 0; i -= 10) await other.putMany(Array.from({ length: 10 }, (_, j) => ({ id: `i${i - j}`, modified: i - j })));
+  await until(top, () => c.size === 5, "the rows past the window to leave memory");
+  assert.deepEqual(top.toArray.map((i) => i.id), ["i49", "i48", "i47", "i46", "i45"]);
+
+  await other.put({ id: "past", modified: 10 });
+  await other.put({ id: "into", modified: 100 });
+  await until(top, () => top.toArray[0]?.id === "into", "the row that sorts first");
+  assert.equal(c.has("past"), false);
+});
+
 test("a window shortened by writes that land while its load is in flight refills once the load settles", async () => {
   const name = dbName();
   const other = (await open(name)).store.collection("issues");
