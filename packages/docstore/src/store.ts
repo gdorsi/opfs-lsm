@@ -121,8 +121,13 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     private readonly declared: DeclaredSchema,
     private bound: Bound,
   ) {
-    // Never unsubscribed: the store lives as long as `kv`, which drops its listeners when it closes.
-    kv.changes((event) => this.follow(event));
+    // The store has no close. The listener lets it go once nothing else holds it, and kv drops the listener when it closes.
+    const store = new WeakRef(this);
+    const off = kv.changes((event) => {
+      const live = store.deref();
+      if (live) live.follow(event);
+      else off();
+    });
   }
 
   /** Keep `bound` at the catalog kv last announced, so point reads need not read it. */
