@@ -1,4 +1,5 @@
 import { compareBytes } from "../../src/bytes.js";
+import { WallClock } from "../../src/clock.js";
 import { __resetMergeSlotForTests } from "../../src/host/merge-slot.js";
 import { __restartEngineForTests } from "../../src/store/engine.js";
 import {
@@ -242,7 +243,8 @@ export function committedLog(ops: readonly DurableOp[]): Oracle {
       if (m.store !== "wal" || m.kind !== "put") continue;
       rows.set(m.key as number, decodeWalRow(m.value).map((o): OracleOp => {
         if ("start" in o) return { type: "deleteRange", ...o };
-        return o.value === undefined ? { type: "del", key: o.key } : { type: "put", key: o.key, value: o.value };
+        if (o.value === undefined) return { type: "del", key: o.key };
+        return { type: "put", key: o.key, value: o.value, ...(o.expiresAt === undefined ? {} : { expiresAt: o.expiresAt }) };
       }));
     }
   }
@@ -307,9 +309,11 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   await materializeWal(name, ops, cut.idb);
   const fs = await materializeFs(ops, cut.opfs);
   const head = headAt(ops, cut.idb);
-  const host = new EngineHost(() => fs);
+  // Every read and every judgment happen at the oracle's time, the last of the history.
+  const clock = () => oracle.now;
+  const host = new EngineHost(() => fs, {}, new WallClock(clock));
   const open = () =>
-    openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1 << 30 });
+    openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1 << 30, clock });
 
   // 1. It opens, and reads one log prefix: exactly `head` after a process crash.
   let db: Db;
@@ -327,7 +331,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
 
   // 2. Recovery: a fresh host flushes, compacts and reclaims what the crash left.
   await host.ingest(name, true);
-  const report = await checkDatabase(fs, name);
+  const report = await checkDatabase(fs, name, oracle.now);
   expectFiles(report, oracle, prefixes, "after recovery");
 
   // 3. Keep going: a write and an ingest on top of the recovered files.
@@ -345,8 +349,8 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   // A host that swept before the write keeps runs the write retired until
   // it restarts (see "crash leftovers" in crash-enum.test.ts), so the last
   // sweep is a fresh host's.
-  await new EngineHost(() => fs).compact(name);
-  const after = await checkDatabase(fs, name);
+  await new EngineHost(() => fs, {}, new WallClock(clock)).compact(name);
+  const after = await checkDatabase(fs, name, oracle.now);
   const withWrite = after.state.filter((e) => compareBytes(e.key, key) !== 0);
   expectFiles({ ...after, state: withWrite }, oracle, prefixes, "after a write on the recovered database");
 }

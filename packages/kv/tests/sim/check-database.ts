@@ -54,7 +54,8 @@ type Meta = {
   generation: number | undefined;
 };
 
-export async function checkDatabase(fs: AsyncFs, name: string): Promise<DatabaseReport> {
+/** `now` is the time the state is judged at, raised to the recorded manifest's `judgedNow` as a reader's is. */
+export async function checkDatabase(fs: AsyncFs, name: string, now = Date.now()): Promise<DatabaseReport> {
   const problems: string[] = [];
   const meta = await walMeta(name);
   const { head, ingestedThrough, generation } = meta;
@@ -132,6 +133,9 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
   // reopen would adopt it (design.md, "Recovery").
   for (const m of manifests.values()) {
     if (m.generation > recorded && m.through > head) problems.push(`manifest ${m.generation} through ${m.through} past head ${head}`);
+    if (current && m.generation > recorded && m.judgedNow < current.judgedNow) {
+      problems.push(`manifest ${m.generation} judgedNow ${m.judgedNow} below the recorded ${current.judgedNow}`);
+    }
   }
 
   // --- Runs of the recorded manifest.
@@ -156,10 +160,13 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
 
   // --- The state a reader should see: runs oldest first under the
   // manifest's marks, then the WAL with its range deletes.
-  const state = new Map<string, { key: Uint8Array; value: Uint8Array | undefined; seq: number }>();
+  const state = new Map<string, { key: Uint8Array; value: Uint8Array | undefined; seq: number; expiresAt?: number | undefined }>();
   for (let i = decoded.length - 1; i >= 0; i--) {
     for (const e of decoded[i] ?? []) {
-      state.set(keyToString(e.key), { key: e.key, value: e.kind === "put" ? e.value : undefined, seq: e.seq });
+      state.set(
+        keyToString(e.key),
+        e.kind === "put" ? { key: e.key, value: e.value, seq: e.seq, expiresAt: e.expiresAt } : { key: e.key, value: undefined, seq: e.seq },
+      );
     }
   }
   for (const [id, row] of state) {
@@ -168,7 +175,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
   for (const { seq, ops } of wal) {
     for (const op of ops) {
       if ("key" in op) {
-        state.set(keyToString(op.key), { key: op.key, value: op.value, seq });
+        state.set(keyToString(op.key), { key: op.key, value: op.value, seq, expiresAt: op.expiresAt });
         continue;
       }
       const through = Math.min(op.through, seq - 1);
@@ -179,7 +186,10 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     }
   }
   const live_: OracleEntry[] = [];
-  for (const { key, value } of state.values()) if (value !== undefined) live_.push({ key, value });
+  const judge = Math.max(now, current?.judgedNow ?? 0);
+  for (const { key, value, expiresAt } of state.values()) {
+    if (value !== undefined && !(expiresAt !== undefined && expiresAt <= judge)) live_.push({ key, value });
+  }
   live_.sort((a, b) => compareBytes(a.key, b.key));
 
   return {
@@ -333,7 +343,7 @@ function checkOrder(
 
 /** A put (`value`) or a delete; or a range delete with the `through` its writer asked for. */
 export type WalOp =
-  | { key: Uint8Array; value: Uint8Array | undefined }
+  | { key: Uint8Array; value: Uint8Array | undefined; expiresAt?: number }
   | { start: Uint8Array; endExclusive?: Uint8Array; through: number };
 
 /** The piece of a manifest's marks that holds `key`, or undefined when there are none. */
@@ -348,8 +358,8 @@ function pieceOf<P extends { readonly start: Uint8Array }>(pieces: readonly P[],
 
 /**
  * design.md, "WAL records": per op, u8 type | u32 keyLen | key | put: u32
- * valueLen | value; a range delete: u8 3 | u32 startLen | start | u8 has end
- * | end: u32 endLen | end | u64 through.
+ * valueLen | value | (type 2) u64 expiresAt; a range delete: u8 3 | u32
+ * startLen | start | u8 has end | end: u32 endLen | end | u64 through.
  */
 export function decodeWalRow(raw: unknown): WalOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new Error("not an ArrayBuffer");
@@ -373,6 +383,10 @@ export function decodeWalRow(raw: unknown): WalOp[] {
     const type = bytes[at++];
     const key = take(u32());
     if (type === 0) ops.push({ key, value: take(u32()) });
+    else if (type === 2) {
+      const value = take(u32());
+      ops.push({ key, value, expiresAt: Number(new DataView(take(8).buffer).getBigUint64(0, true)) });
+    }
     else if (type === 1) ops.push({ key, value: undefined });
     else if (type === 3) {
       const end = take(1)[0] === 1 ? take(u32()) : undefined;

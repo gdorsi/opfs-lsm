@@ -9,6 +9,7 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../../src/testing.js";
+import { WallClock } from "../../src/clock.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { compareBytes } from "../../src/bytes.js";
 import { applyOps, Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
@@ -45,7 +46,10 @@ export const SIM_HOST_LIMITS = { flushRunBytes: 8 * 1024, l0StopRuns: Number.POS
 export class Sut {
   /** While set, the host's run opens wait: a compaction stalls before its merge. */
   private gate: { readonly opened: Promise<void>; readonly open: () => void } | undefined;
-  readonly host = new EngineHost(() => this.hostFs(), SIM_HOST_LIMITS);
+  /** The clock of the handle and the host, which only `TickCmd` moves, with the oracle's. */
+  readonly time = { now: 0 };
+  private readonly clock = () => this.time.now;
+  readonly host = new EngineHost(() => this.hostFs(), SIM_HOST_LIMITS, new WallClock(this.clock));
   db!: Db;
   /** Seqs `changes` announced. The handle is the only writer, so each is one of its own appends. */
   readonly appended: number[] = [];
@@ -67,6 +71,7 @@ export class Sut {
       fs: this.fs,
       ingest: createLocalIngestClient(this.host),
       maxWalBytes: this.maxWalBytes,
+      clock: this.clock,
     });
     db.changes((e) => {
       if (e.kind === "append") this.appended.push(e.seq);
@@ -159,8 +164,9 @@ const valueArb: fc.Arbitrary<ValueSpec> = fc.record({
 
 /** A range delete from `start` to `end` (to the end of the keys when absent or not above it), `back` seqs below the head. */
 type DeleteRangeSpec = { readonly type: "deleteRange"; readonly start: number; readonly end?: number; readonly back?: number };
+/** `expiresIn`: the put's expiresAt, from the time it is written; 0 or less has already passed. */
 type OpSpec =
-  | { readonly type: "put"; readonly key: number; readonly value: ValueSpec }
+  | { readonly type: "put"; readonly key: number; readonly value: ValueSpec; readonly expiresIn?: number }
   | { readonly type: "del"; readonly key: number }
   | DeleteRangeSpec;
 const deleteRangeArb: fc.Arbitrary<DeleteRangeSpec> = fc.record(
@@ -168,7 +174,11 @@ const deleteRangeArb: fc.Arbitrary<DeleteRangeSpec> = fc.record(
   { requiredKeys: ["type", "start"] },
 );
 const opArb: fc.Arbitrary<OpSpec> = fc.oneof(
-  { weight: 6, arbitrary: fc.record({ type: fc.constant("put" as const), key: keyArb, value: valueArb }) },
+  { weight: 4, arbitrary: fc.record({ type: fc.constant("put" as const), key: keyArb, value: valueArb }) },
+  {
+    weight: 2,
+    arbitrary: fc.record({ type: fc.constant("put" as const), key: keyArb, value: valueArb, expiresIn: fc.integer({ min: -3, max: 40 }) }),
+  },
   { weight: 4, arbitrary: fc.record({ type: fc.constant("del" as const), key: keyArb }) },
   { weight: 1, arbitrary: deleteRangeArb },
 );
@@ -205,7 +215,7 @@ const keyName = (i: number) => show(KEYS[i]!);
 function opName(op: OpSpec): string {
   switch (op.type) {
     case "put":
-      return `put ${keyName(op.key)} ${op.value.size}${op.value.fill}`;
+      return `put ${keyName(op.key)} ${op.value.size}${op.value.fill}${op.expiresIn === undefined ? "" : ` expiring in ${op.expiresIn}`}`;
     case "del":
       return `del ${keyName(op.key)}`;
     case "deleteRange":
@@ -220,7 +230,12 @@ function opsOf(m: Model, specs: readonly OpSpec[]): OracleOp[] {
   return specs.map((op): OracleOp => {
     switch (op.type) {
       case "put":
-        return { type: "put", key: KEYS[op.key]!, value: m.value(op.value) };
+        return {
+          type: "put",
+          key: KEYS[op.key]!,
+          value: m.value(op.value),
+          ...(op.expiresIn === undefined ? {} : { expiresAt: Math.max(1, m.oracle.now + op.expiresIn) }),
+        };
       case "del":
         return { type: "del", key: KEYS[op.key]! };
       case "deleteRange": {
@@ -240,7 +255,7 @@ function opsOf(m: Model, specs: readonly OpSpec[]): OracleOp[] {
 /** One op through its shortcut, several in one batch. */
 function writeOps(db: Db, ops: readonly OracleOp[]): Promise<number> {
   const op = ops.length === 1 ? ops[0]! : undefined;
-  if (op?.type === "put") return db.put(op.key, op.value);
+  if (op?.type === "put") return db.put(op.key, op.value, op.expiresAt === undefined ? undefined : { expiresAt: op.expiresAt });
   if (op?.type === "del") return db.delete(op.key);
   return db.batch((tx) => applyOps(tx, ops));
 }
@@ -368,6 +383,7 @@ class ViewCmd implements Cmd {
         if (i === this.writeAt) {
           const ops = opsOf(m, [this.op]);
           await write(m, r, ops, () => writeOps(r.db, ops));
+          tick(m, r, 10);
         }
         const read = this.reads[i];
         if (!read) continue;
@@ -383,7 +399,22 @@ class ViewCmd implements Cmd {
   }
   toString = () =>
     `view[${this.reads.map((x) => (x.kind === "get" ? `get ${keyName(x.key)}` : `range ${rangeName(x.range)}`)).join("; ")}]` +
-    (this.writeAt !== undefined ? ` with ${opName(this.op)} before read ${this.writeAt}` : "");
+    (this.writeAt !== undefined ? ` with ${opName(this.op)} and a tick before read ${this.writeAt}` : "");
+}
+
+/** Move the clock of the handle, the host and the oracle together. */
+function tick(m: Model, r: Sut, ms: number): void {
+  r.time.now += ms;
+  m.oracle.now = r.time.now;
+}
+
+class TickCmd implements Cmd {
+  constructor(private readonly ms: number) {}
+  check = () => true;
+  async run(m: Model, r: Sut): Promise<void> {
+    tick(m, r, this.ms);
+  }
+  toString = () => `tick ${this.ms}`;
 }
 
 // --- Coordination and lifecycle.
@@ -471,7 +502,7 @@ class CheckCmd implements Cmd {
  * new generation, which arrives over BroadcastChannel.
  */
 export async function expectHealthy(m: Model, r: Sut, closed: boolean): Promise<void> {
-  const report = await checkDatabase(r.fs, r.name);
+  const report = await checkDatabase(r.fs, r.name, r.time.now);
   expect(report.problems, "checkDatabase problems").toEqual([]);
   if (closed) expect(report.orphans, "orphan runs").toEqual([]);
   expect(report.staleManifests, "stale manifests").toEqual([]);
@@ -510,6 +541,8 @@ export const commandsArb = (replayPath?: string, maxCommands = 80) => fc.command
       .tuple(fc.array(readArb, { minLength: 1, maxLength: 4 }), fc.option(fc.nat({ max: 4 }), { nil: undefined }), opArb)
       .map(([reads, at, op]) => new ViewCmd(reads, at, op)),
     fc.constant(new SyncCmd()),
+    fc.integer({ min: 1, max: 20 }).map((ms) => new TickCmd(ms)),
+    fc.integer({ min: 1, max: 20 }).map((ms) => new TickCmd(ms)),
     fc.constant(new IngestCmd()),
     fc.constant(new IngestCmd()),
     fc.constant(new FlushCmd()),

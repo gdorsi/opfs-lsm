@@ -22,6 +22,26 @@ describe("oracle", () => {
     expect(o.rangeAt({ start: utf("b") }, 1)).toEqual([]);
   });
 
+  it("reads a key whose newest version expired as absent, with every older version", () => {
+    const o = new Oracle();
+    o.append([{ type: "put", key: utf("a"), value: utf("1") }]);
+    o.append([{ type: "put", key: utf("a"), value: utf("2"), expiresAt: 10 }]);
+    expect(o.valueAt(utf("a"))).toEqual(utf("2"));
+    o.now = 10;
+    expect(o.valueAt(utf("a"))).toBeUndefined();
+    expect(o.valueAt(utf("a"), 1)).toEqual(utf("1"));
+    expect(o.valueAt(utf("a"), 2, 9)).toEqual(utf("2"));
+  });
+
+  it("judges a view at the time it opened", () => {
+    const o = new Oracle();
+    o.append([{ type: "put", key: utf("a"), value: utf("1"), expiresAt: 10 }]);
+    const v = new Reader(o).view();
+    o.now = 10;
+    expect(() => v.get(utf("a"), utf("1"))).not.toThrow();
+    expect(() => new Reader(o).get(utf("a"), utf("1"))).toThrow(/not a prefix/);
+  });
+
   it("reads a range backward before it takes the limit", () => {
     const o = new Oracle();
     o.append([

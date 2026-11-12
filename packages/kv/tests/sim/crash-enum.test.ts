@@ -216,7 +216,7 @@ async function randomHistory(cmds: Iterable<fc.AsyncCommand<Model, Sut, false>>,
     await fc.asyncModelRun(() => ({ model, real: sut }), cmds);
     await sut.db.close();
     await sut.settle();
-    expect((await checkDatabase(sut.fs, name)).problems).toEqual([]);
+    expect((await checkDatabase(sut.fs, name, sut.time.now)).problems).toEqual([]);
   } finally {
     unregister();
     await sut.dispose();
