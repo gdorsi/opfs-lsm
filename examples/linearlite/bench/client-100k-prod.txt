@@ -106,3 +106,15 @@ tabs      tab A -> tab B 2.2 ms (1.9-5.2), tab B -> tab A 1.9 ms (1.8-8.4), n=10
 users     bob -> ann 7.8 ms (5.2-12.2), n=10.
 offline   five edits pending offline, acked 317 ms after reconnecting.
 visible   to the live query 3.4 ms (2.8-12.9), to the DOM 4 ms (3.2-13.5), n=60.
+
+The offline ack time moves in steps of the scenario's 250 ms poll. Run 4 more times per build, interleaved: before
+326, 63, 323, 342 ms; after 309, 319, 311, 313 ms.
+
+The after build again once a hidden tab counts at once, RUNS=1. All pass. The longest frame after an edit is
+20 ms (19-22) over 24 edits.
+
+tabs      tab A -> tab B 2.3 ms (1.8-5.1), tab B -> tab A 2.2 ms (1.9-3.8), n=10 each; the handover's edit is acked
+          68 ms after the leader closes.
+users     bob -> ann 7.4 ms (5.8-52.8), n=10.
+offline   five edits pending offline, acked 318 ms after reconnecting.
+visible   to the live query 3.1 ms (2.7-20.7), to the DOM 3.6 ms (3.1-21.4), n=60.
