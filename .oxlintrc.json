@@ -14,7 +14,8 @@
     "target/**",
     ".scratch/**",
     ".claude/**",
-    ".agents/**"
+    ".agents/**",
+    "**/.vitepress/cache/**"
   ],
   "rules": {
     "vitest/no-conditional-expect": "off",

@@ -1,0 +1,15 @@
+{
+  "name": "@opfs-lsm/site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "github-slugger": "2.0.0",
+    "markdown-it": "14.3.3",
+    "vitepress": "1.6.4"
+  }
+}
