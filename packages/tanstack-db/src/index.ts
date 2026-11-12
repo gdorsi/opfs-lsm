@@ -12,7 +12,7 @@ import type {
   UtilsRecord,
 } from "@tanstack/db";
 import { conjuncts, ownPath, planLoad, type Plan } from "./plan.js";
-import { atOrBefore, read, type Boundary, type Snapshot } from "./read.js";
+import { atOrBefore, boundaryOf, read, type Boundary, type Snapshot } from "./read.js";
 
 /**
  * A TanStack collection config without the parts this adapter owns: it keys
@@ -350,8 +350,10 @@ class DemandRun {
     switch (event.kind) {
       case "append": {
         for (const load of this.phase.loads) load.buffer.push(event);
-        const batch = new Batch(this.phase.synced);
+        const { synced } = this.phase;
+        const batch = new Batch(synced);
         for (const change of event.changes) this.decide(batch, change, event.seq);
+        if (this.bound()) for (const [id, row] of synced) if (!this.wants(row.doc)) batch.remove(id);
         this.apply(batch);
         return;
       }
@@ -383,6 +385,28 @@ class DemandRun {
       if (!d.state.boundary || atOrBefore(doc, d.state.boundary)) return true;
     }
     return false;
+  }
+
+  /**
+   * A limited demand whose load found fewer rows than its limit has no
+   * boundary, so it keeps every row it matches, and it has taken each one
+   * written since. Once those reach its limit, it takes the boundary a load
+   * would set now, and the rows past it can go. Returns whether one did.
+   */
+  private bound(): boolean {
+    if (this.phase.kind === "stopped") return false;
+    let bounded = false;
+    for (const d of this.phase.demands.values()) {
+      const first = d.reads[0];
+      if (d.state.kind !== "loaded" || d.state.boundary || first?.plan.kind !== "ranges" || !first.plan.first) continue;
+      const held: JsonDoc[] = [];
+      for (const row of this.phase.synced.values()) if (first.match(row.doc)) held.push(row.doc);
+      const boundary = boundaryOf(held, first.plan.first);
+      if (!boundary) continue;
+      d.state = { ...d.state, boundary };
+      bounded = true;
+    }
+    return bounded;
   }
 
   private decide(batch: Batch, change: DocChange<JsonDoc>, seq: number): void {
@@ -434,6 +458,7 @@ class DemandRun {
         });
         const loaded = batch.messages.length;
         for (const event of load.buffer) for (const change of event.changes) this.decide(batch, change, event.seq);
+        this.bound();
         for (const [id, row] of synced) if (!this.wants(row.doc)) batch.remove(id);
         if (batch.messages.length > loaded) this.changedMidLoad = true;
         const receipt = this.commit(batch);

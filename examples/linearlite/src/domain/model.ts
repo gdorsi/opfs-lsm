@@ -9,9 +9,14 @@ export type PriorityCode = 0 | 1 | 2 | 3 | 4;
 export type Stream = (typeof STREAMS)[number];
 
 export type Clocks = Readonly<Record<string, number>>;
+/**
+ * `dirty`: field -> local edit clock of an edit the server has not acknowledged, absent when clean. `pending` is
+ * `true` exactly when `dirty` is present, so a sparse index lists the rows with unsent edits.
+ */
 export type Synced = {
   readonly version: number;
   readonly dirty?: Clocks;
+  readonly pending?: true;
 };
 
 export type Issue = Synced & {
@@ -53,7 +58,7 @@ export interface Rows {
   bodies: Body;
   comments: Comment;
 }
-export type ServerRow<S extends Stream = Stream> = S extends Stream ? Omit<Rows[S], "dirty"> : never;
+export type ServerRow<S extends Stream = Stream> = S extends Stream ? Omit<Rows[S], "dirty" | "pending"> : never;
 
 export const commentKey = (issueId: string, id: string) => `${issueId}/${id}`;
 

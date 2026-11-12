@@ -1,9 +1,46 @@
-production build (vite build + vite preview), 100k issues seeded newest-first, headless Chrome, 3 runs each
-node bench/client.ts http://127.0.0.1:4182 first-sync      then, in a separate process, warm
-{"scenario":"first-sync","metric":"first-rows","n":3,"p50":153,"min":151,"max":175}
-{"scenario":"first-sync","metric":"caught-up:issues","n":3,"p50":3373,"min":2977,"max":3423}
-{"scenario":"first-sync","metric":"caught-up:bodies","n":3,"p50":6589,"min":5835,"max":6741}
-{"scenario":"first-sync","metric":"caught-up:comments","n":3,"p50":8586,"min":7868,"max":8647}
-{"scenario":"warm","metric":"first-rows","n":3,"p50":1130,"min":1113,"max":1253}
-visible, tabs, users and offline drive commands through a dev-only global, so they run under vite dev only.
-warm timed out once when run after first-sync in the same process; alone it passes. Harness issue, not the app.
+LinearLite at 100k issues on production builds: warm start, first sync, edits.
+Apple M5 Max, macOS 26.6.2, headless Chrome 157.0.8103.39. One server database seeded with `pnpm seed 100000`
+(100,000 issues, 49,734 comments), served by `vite build` + `vite preview` of each build. ms from navigation; heap
+after a forced GC and the origin's storage (navigator.storage.estimate), MB. p50 (min-max) over 5 runs: one run per
+build per round, each under a machine-wide lock, RUNS=1 per invocation of node bench/client.ts.
+
+A   main before this change (a631954): issues eager through the kv adapter
+B   this branch: every stream on demand through docstore indexes
+Ce  TanStack DB's SQLite persisted collection on the same app (spike/linearlite-sqlite, 3e1f616), eager
+Co  the same, on demand
+
+warm: PROFILE=<a profile one first sync filled> node bench/client.ts <origin> warm. Offline: pull and the event
+stream are routed to fail, so nothing but the replica feeds the page. first-rows = the list's first rows painted;
+rows-total = the rows and the toolbar total both right. Heap and storage once the page settles.
+
+                                           A                     B                    Ce                    Co
+first-rows                     886 (876-898)         106 (105-107)   1,091 (1,081-1,131)   2,056 (2,046-2,097)
+rows-total                     888 (878-899)         150 (150-152)   1,093 (1,083-1,133)   2,056 (2,046-2,097)
+heapMB                         139 (139-140)            25 (25-26)         119 (119-119)         134 (134-134)
+storageMB                      233 (233-233)         156 (156-156)         183 (183-183)         208 (208-208)
+1-min load at each run's start 2.9 p50 (2.5-3.4)
+
+first-sync: node bench/client.ts <origin> first-sync, a fresh profile per run, pull page 2,000. Heap and storage
+when comments catch up; storage then depends on how much of kv's WAL has been ingested.
+
+                                           A                     B                    Ce                    Co
+first-rows                     139 (133-151)         134 (124-141)         212 (208-219)         212 (208-222)
+caught-up:issues         2,417 (2,389-2,497)   3,935 (3,846-4,249)  9,940 (9,437-10,496) 11,121 (9,999-11,260)
+caught-up:bodies         4,418 (4,379-4,504)   6,349 (6,200-6,692) 11,903 (11,343-12,446) 13,173 (11,908-13,435)
+caught-up:comments       5,713 (5,685-5,841)   7,814 (7,750-8,190) 13,345 (12,749-13,791) 14,474 (13,733-14,739)
+heapMB                         322 (157-326)            22 (12-38)         181 (166-208)         190 (168-381)
+storageMB                      215 (170-238)         170 (121-177)         353 (329-372)         359 (339-377)
+1-min load at each run's start 4.2 p50 (3.4-5.3)
+
+B's edit scenarios, against a copy of the server database: node bench/client.ts <origin> tabs | users | offline |
+visible, RUNS=1, after a first sync. 1-min load 2.9-4.7. All pass.
+
+tabs      an edit in one tab to the row in the other tab's live query (same browser, kv's change feed):
+          tab A -> tab B 2.2 ms (2.1-5), tab B -> tab A 1.8 ms (1.8-3.4), n=10 each.
+          The leader tab goes offline with an edit pending in the other tab, then closes: the other tab takes the
+          Web Lock, leads, and pushes the edit; acked 73 ms after the close, server value as expected.
+users     bob's edit to ann's screen, two browsers through the server: 7 ms (5.1-17.4), n=10.
+offline   three status edits, a description and a comment written offline: all five rows pending, the status bar
+          reads "Offline · 5 unsynced", the server has none of them; 330 ms after reconnect every one is acked and
+          on the server.
+visible   an edit in the same tab to its live query 3.1 ms (2.7-12.1), to the DOM 3.5 ms (3-12.5), n=60.
