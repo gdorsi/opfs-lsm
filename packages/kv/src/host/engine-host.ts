@@ -470,7 +470,7 @@ class HostedDb {
       // pass had to leave. Last, so it never delays a merge that a full L0
       // waits for, and best-effort: the next pass sweeps again.
       if (!swept && !this.destroying) {
-        await this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal))).catch(() => undefined);
+        await this.exclusive(() => this.withWal((wal) => this.sweepIdle(fs, wal))).catch(() => undefined);
       }
     }
   }
@@ -493,10 +493,26 @@ class HostedDb {
     await unlessHeld(this.name, async () => {
       const { generation } = await reconcile(wal, fs, this.trusted);
       this.trusted = generation;
-      await reclaimManifests(fs, generation);
-      await reclaimRuns(fs, await listRuns(fs), await liveRuns(fs, generation));
+      await sweep(fs, generation);
     });
   }
+
+  /**
+   * The sweep of a pass that installed nothing. It repairs nothing: when
+   * the recorded generation is not the one this host last checked, it
+   * leaves the files, the next flush reconciles, and a later pass sweeps.
+   */
+  private async sweepIdle(fs: AsyncFs, wal: IdBWal): Promise<void> {
+    await unlessHeld(this.name, async () => {
+      const generation = (await wal.meta()).generation ?? 0;
+      if (generation === this.trusted) await sweep(fs, generation);
+    });
+  }
+}
+
+async function sweep(fs: AsyncFs, generation: number): Promise<void> {
+  await reclaimManifests(fs, generation);
+  await reclaimRuns(fs, await listRuns(fs), await liveRuns(fs, generation));
 }
 
 /** Tell the tabs to install the new generation and drop the merged runs. */
