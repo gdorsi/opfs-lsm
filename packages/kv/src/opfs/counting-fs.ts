@@ -13,8 +13,8 @@ export type IoCounters = {
   written: Record<string, IoCount>;
   /** Bytes `read` and open-file reads returned. */
   read: Record<string, IoCount>;
-  /** Files `remove` or `removeUnlessOpen` deleted. Bytes when this fs finished the file, else 0. */
-  removed: Record<string, IoCount>;
+  /** Files `remove` or `removeUnlessOpen` deleted. */
+  removed: Record<string, number>;
 };
 
 function emptyIoCounters(): IoCounters {
@@ -34,15 +34,10 @@ function add(into: Record<string, IoCount>, path: string, bytes: number): void {
   count.bytes += bytes;
 }
 
-/**
- * Counts every IO call of `inner` by path class. Integer adds per call,
- * never per key. Also remembers the size of each file it finished, so a
- * later remove knows it without a read.
- */
+/** Counts every IO call of `inner` by path class. Integer adds per call, never per key. */
 export class CountingFs implements AsyncFs {
   readonly inner: AsyncFs;
   readonly counters: IoCounters;
-  private readonly sizes = new Map<string, number>();
 
   constructor(inner: AsyncFs, counters: IoCounters = emptyIoCounters()) {
     this.inner = inner;
@@ -79,17 +74,18 @@ export class CountingFs implements AsyncFs {
 
   async remove(path: string): Promise<void> {
     await this.inner.remove(path);
-    add(this.counters.removed, path, this.sizes.get(path) ?? 0);
-    this.sizes.delete(path);
+    this.countRemoved(path);
   }
 
   async removeUnlessOpen(path: string): Promise<boolean> {
     const removed = await this.inner.removeUnlessOpen(path);
-    if (removed) {
-      add(this.counters.removed, path, this.sizes.get(path) ?? 0);
-      this.sizes.delete(path);
-    }
+    if (removed) this.countRemoved(path);
     return removed;
+  }
+
+  private countRemoved(path: string): void {
+    const key = pathClass(path);
+    this.counters.removed[key] = (this.counters.removed[key] ?? 0) + 1;
   }
 
   async create(path: string): Promise<FileWriter> {
@@ -103,7 +99,6 @@ export class CountingFs implements AsyncFs {
       finish: async () => {
         await writer.finish();
         add(this.counters.written, path, bytes);
-        this.sizes.set(path, bytes);
       },
       abort: () => writer.abort(),
     };

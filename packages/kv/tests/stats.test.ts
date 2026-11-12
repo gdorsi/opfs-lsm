@@ -75,13 +75,7 @@ describe("CountingFs", () => {
       l0: { calls: 2, bytes: 14 },
       l9: { calls: 1, bytes: 0 },
     });
-    expect(fs.counters.removed).toEqual({
-      // Size remembered from finish.
-      l0: { calls: 1, bytes: 10 },
-      // Not finished by this fs, so no size.
-      l3: { calls: 1, bytes: 0 },
-      m: { calls: 1, bytes: 0 },
-    });
+    expect(fs.counters.removed).toEqual({ l0: 1, l3: 1, m: 1 });
   });
 });
 
@@ -120,7 +114,7 @@ describe("readStats", () => {
     expect(stats.host.fs.written.l1!.bytes).toBeGreaterThan(0);
     expect(stats.host.fs.written.m!.calls).toBeGreaterThanOrEqual(5);
     expect(stats.host.fs.read.l0!.calls).toBeGreaterThanOrEqual(4);
-    expect(stats.host.fs.removed.l0!.calls).toBe(4);
+    expect(stats.host.fs.removed.l0).toBe(4);
     expect(stats.host.compactionSteps).toBeGreaterThanOrEqual(1);
     const { memory } = stats.host;
     expect(memory.wasmBytes).toBeGreaterThan(0);
@@ -142,9 +136,11 @@ describe("readStats", () => {
       [...runsByLevel].sort((a, b) => a[0] - b[0]),
     );
     expect(stats.host.layout.every((l) => l.bytes > 0)).toBe(true);
-    expect(stats.host.layout.find((l) => l.level === 1)!.bytes).toBe(
-      stats.host.fs.written.l1!.bytes - (stats.host.fs.removed.l1?.bytes ?? 0),
-    );
+    let l1FileBytes = 0;
+    for (const run of latest.runs) {
+      if (levelOf(run.path) === 1) l1FileBytes += (await fs.read(run.path, 0, Number.POSITIVE_INFINITY))!.byteLength;
+    }
+    expect(stats.host.layout.find((l) => l.level === 1)!.bytes).toBe(l1FileBytes);
 
     // Snapshots: later IO does not change an earlier result.
     const before = stats.host.fs.written.l0!.calls;
