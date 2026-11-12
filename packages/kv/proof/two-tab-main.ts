@@ -1,5 +1,7 @@
 /**
  * Tab A puts, warms SST readers, and must still get the key after tab B ingests.
+ * Then tab A range-deletes rows, some flushed and some not, and tab B must
+ * read them as absent before and after it ingests.
  *
  *   ?auto=1&role=a     leader tab
  *   ?auto=1&role=b     peer tab
@@ -42,6 +44,11 @@ const dec = new TextDecoder();
 
 type Handle = {
   put(key: Uint8Array, value: Uint8Array): Promise<unknown>;
+  batch(
+    body: (tx: {
+      deleteRange(bounds: { start?: Uint8Array; endExclusive?: Uint8Array }): void;
+    }) => void,
+  ): Promise<unknown>;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   ingest(): Promise<{ generation: number }>;
   range(): AsyncIterable<{ key: Uint8Array; value: Uint8Array }>;
@@ -173,6 +180,24 @@ async function scenario(self: Handle, other: OtherTab): Promise<void> {
   const seen = await other.get("after");
   must(seen === "yes", `other tab get after ingest was ${seen}`);
   log("other tab saw after=yes");
+
+  await self.put(enc.encode("gone/1"), enc.encode("x"));
+  await self.ingest();
+  await self.put(enc.encode("gone/2"), enc.encode("x"));
+  await self.put(enc.encode("gone0"), enc.encode("kept"));
+  must((await other.get("gone/1")) === "x", "other tab missed gone/1 before the range delete");
+  await self.batch((tx) =>
+    tx.deleteRange({ start: enc.encode("gone/"), endExclusive: enc.encode("gone0") }),
+  );
+  for (const key of ["gone/1", "gone/2"]) {
+    const got = await other.get(key);
+    must(got === null, `other tab read ${key}=${got} after the range delete`);
+  }
+  must((await other.get("gone0")) === "kept", "range delete reached past its end");
+  await other.ingest();
+  const flushed = await other.get("gone/1");
+  must(flushed === null, `other tab read gone/1=${flushed} after ingesting the range delete`);
+  log("other tab saw gone/1 and gone/2 absent after the range delete");
 
   if (NOBC) {
     must(bcPosts > 0, "BroadcastChannel replacement was not used");
