@@ -205,7 +205,6 @@ Evidence that would change this: a measurement showing the per-op object cost in
 - The 185 bytes per op object figure. It comes from the task brief. The repo's own figure is the 256-byte `ROW_OVERHEAD` estimate.
 - PR 180 itself was not read. Its effect is taken from the task brief. `check.ts` on `main` at `b95d132` still has the op cap.
 - Whether empty keys are rejected anywhere outside `check.ts`. If they are, the zero-byte batch case in section 1 does not arise; the small-key case still does.
-- Whether a single `put` goes through the 8 MiB batch check. The value limit is 16 MiB and the batch limit is 8 MiB; how they interact on the `put` path was not traced.
 - Any per-transaction size limit in IndexedDB. None was found in the Chromium renderer files or Firefox files read; the browser-side back ends were not searched. Chromium's newer SQLite back end for IndexedDB was not read at all.
 - WebKit's per-value limit. Only a quota check was found in three files.
 - That Chromium's 64 KiB wrap applies to a bare `ArrayBuffer` value. The threshold is confirmed; the path was not traced.

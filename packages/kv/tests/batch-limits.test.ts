@@ -58,6 +58,15 @@ describe("batch limits", () => {
     await db.close();
   });
 
+  it("limits one value by the batch limit: 7 MiB is stored, 8 MiB is rejected", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1" });
+    await db.put(key(1), new Uint8Array(7 * 1024 * 1024));
+    expect((await db.get(key(1)))?.byteLength).toBe(7 * 1024 * 1024);
+    await expect(db.put(key(2), new Uint8Array(8 * 1024 * 1024))).rejects.toBeInstanceOf(ConstraintError);
+    expect(await db.get(key(2))).toBeUndefined();
+    await db.close();
+  });
+
   it("rejects a batch over 8 MiB of keys and values and writes none of it", async () => {
     const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1" });
     const value = new Uint8Array(1024 * 1024);

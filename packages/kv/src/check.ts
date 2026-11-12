@@ -2,7 +2,6 @@ import { ConstraintError } from "./errors.js";
 
 const LIMITS = {
   keyBytes: 8 * 1024,
-  valueBytes: 16 * 1024 * 1024,
   batchBytes: 8 * 1024 * 1024,
 } as const;
 
@@ -51,9 +50,6 @@ export function checkKey(bytes: Uint8Array): CheckedKey {
 
 export function checkValue(bytes: Uint8Array): CheckedValue {
   assertBuffer(bytes, "value");
-  if (bytes.byteLength > LIMITS.valueBytes) {
-    throw new ConstraintError(`value longer than ${LIMITS.valueBytes} bytes`);
-  }
   return new Uint8Array(bytes) as CheckedValue;
 }
 
@@ -70,22 +66,21 @@ export function checkBatch(
   let bytes = 0;
   const out: CheckedOp[] = [];
   for (const op of ops) {
-    const key = checkKey(op.key);
-    bytes += ROW_OVERHEAD + key.byteLength;
-    if (op.type === "put") {
-      if (op.value === undefined) {
-        throw new ConstraintError("put requires a value");
-      }
-      const value = checkValue(op.value);
-      bytes += value.byteLength;
-      out.push({ type: "put", key, value });
-    } else {
-      out.push({ type: "del", key });
+    if (op.type === "put" && op.value === undefined) {
+      throw new ConstraintError("put requires a value");
     }
+    // Counted before the copies below, so an oversized value is never copied.
+    bytes += ROW_OVERHEAD + op.key.byteLength + (op.value?.byteLength ?? 0);
     if (bytes > LIMITS.batchBytes) {
       throw new ConstraintError(
         `batch larger than ${LIMITS.batchBytes} bytes, counting ${ROW_OVERHEAD} bytes per op`,
       );
+    }
+    const key = checkKey(op.key);
+    if (op.type === "put") {
+      out.push({ type: "put", key, value: checkValue(op.value!) });
+    } else {
+      out.push({ type: "del", key });
     }
   }
   return out;
