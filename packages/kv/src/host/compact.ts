@@ -52,15 +52,15 @@ export async function mergeNextStep(
   knownTop: number,
 ): Promise<CompactionOutput | undefined> {
   const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
-  const plan = planCompaction(base.runs, { maxSources: budget.maxSources });
+  const plan = planCompaction(base, { maxSources: budget.maxSources });
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget, base));
-  // Claims only what every input claims, though the merge applied the marks of `base` too.
-  const marksThrough = Math.min(...plan.inputs.map((r) => r.marksThrough));
   return {
     inputs: plan.inputs.map((r) => r.path),
-    outputs: merged.outputs.map((run) => ({ ...run, marksThrough })),
+    // The merge applied every mark of `base`. One the manifest gains before
+    // the install is past `base.through`, so the output claims none of it.
+    outputs: merged.outputs.map((run) => ({ ...run, marksThrough: base.through })),
     droppedSeq: merged.droppedSeq,
   };
 }

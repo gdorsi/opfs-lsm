@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConstraintError, prefixBound, type ChangeEvent, type Db } from "../src/index.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
-import { throughAt } from "../src/store/marks.js";
-import { __resetMemoryFsForTests, ingest, MemoryFs, openHarnessDb } from "../src/testing.js";
+import { decodeSst } from "../src/store/sst.js";
+import { __resetMemoryFsForTests, ingest, MemoryFs, openHarnessDb, settle } from "../src/testing.js";
 
 const NAME = "delete-range-test";
 const enc = new TextEncoder();
@@ -210,21 +210,54 @@ describe("deleteRange", () => {
     await expect(db.batch((tx) => tx.deleteRange({}, { through: 1.5 }))).rejects.toThrow(ConstraintError);
   });
 
-  it("leaves the manifest once every run that overlaps its range was written after it", async () => {
+  it("gives its space back once compaction settles: rows leave the disk and the mark retires", async () => {
     const db = await open();
-    await db.put(b("q/1"), b("flushed before"));
-    await ingest(db);
-    await db.batch((tx) => tx.deleteRange(prefixBound(b("q/"))));
-    await writeRows(db);
-    await db.batch((tx) => tx.deleteRange(M));
-    await db.put(b("m/9"), b("after"));
-    await ingest(db);
+    const oracle = new Map<string, string>();
+    const value = (k: string) => `${k}:${"x".repeat(200)}`;
+    for (let chunk = 0; chunk < 8; chunk++) {
+      await db.batch((tx) => {
+        for (let i = 0; i < 300; i++) {
+          const k = `big/${String(chunk * 300 + i).padStart(5, "0")}`;
+          tx.put(b(k), b(value(k)));
+          oracle.set(k, value(k));
+        }
+        for (const k of [`a/${chunk}`, `c/${chunk}`]) {
+          tx.put(b(k), b(value(k)));
+          oracle.set(k, value(k));
+        }
+      });
+      await ingest(db);
+    }
+    await settle(db);
+    const disk = async () => {
+      const meta = (await loadLatestGeneration(fs))!;
+      let entries = 0;
+      for (const run of meta.runs) entries += decodeSst((await fs.read(run.path, 0, Number.POSITIVE_INFINITY))!).length;
+      return { meta, entries, bytes: meta.runs.reduce((n, r) => n + r.bytes, 0) };
+    };
+    const before = await disk();
+    expect(before.entries).toBe(oracle.size);
+    expect(before.meta.runs.every((r) => !r.path.startsWith("l0/")), "the rows sit in compacted runs").toBe(true);
 
-    const { marks } = (await loadLatestGeneration(fs))!;
-    expect(throughAt(marks, b("q/1"))).toBeGreaterThan(0);
-    expect(throughAt(marks, b("m/1"))).toBe(0);
-    expect(await keys(db, M)).toEqual(["m/9=after"]);
-    expect(await keys(db, prefixBound(b("q/")))).toEqual([]);
+    await db.batch((tx) => tx.deleteRange(prefixBound(b("big/"))));
+    for (const k of [...oracle.keys()]) if (k.startsWith("big/")) oracle.delete(k);
+    await settle(db);
+
+    const after = await disk();
+    expect(after.meta.marks.empty, "the mark retired").toBe(true);
+    expect(after.entries).toBe(oracle.size);
+    expect(after.bytes).toBeLessThan(before.bytes / 20);
+    const want = [...oracle].sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, v]) => `${k}=${v}`);
+    const reads = async (db: Db) => {
+      expect(await keys(db)).toEqual(want);
+      expect(await keys(db, { reverse: true })).toEqual([...want].reverse());
+      expect(await keys(db, { valueContains: [b(":x")] })).toEqual(want);
+      for (const k of ["big/00000", "big/02399", "a/3", "c/7"]) expect(s(await db.get(b(k)))).toBe(oracle.get(k));
+    };
+    await reads(db);
+    await db.close();
+    opened.splice(0);
+    await reads(await open("w2"));
   });
 
   it("with no bounds removes every row written before it", async () => {

@@ -1,5 +1,6 @@
 import { compareBytes } from "../bytes.js";
-import type { RunMeta } from "./generation.js";
+import type { GenerationMeta, RunMeta } from "./generation.js";
+import { retireMarks } from "./marks.js";
 import type { KeyRange, SstCodec } from "./sst.js";
 
 /**
@@ -91,9 +92,14 @@ type PlanLimits = {
   readonly l1Target?: number;
 };
 
-/** The next compaction step, or undefined when the layout is in shape. */
+/**
+ * The next compaction step, or undefined when the layout is in shape and no
+ * run holds back a mark. Once no level is over its target, a mark step
+ * rewrites a run that keeps a mark from retiring. Its output absorbs every
+ * mark of the manifest, so the steps end.
+ */
 export function planCompaction(
-  runs: readonly RunMeta[],
+  { runs, marks }: Pick<GenerationMeta, "runs" | "marks">,
   { maxSources, l1Target = L1_TARGET_BYTES }: PlanLimits,
 ): CompactionPlan | undefined {
   const inLevel = (level: number | undefined) =>
@@ -125,13 +131,20 @@ export function planCompaction(
     if (score > 1 && score > best.score) best = { level, score };
   }
 
+  if (best.level < 0) {
+    // A run holds back a mark when the mark survives retiring against that run alone.
+    const stale = runs.find((r) => !retireMarks(marks, [r]).empty);
+    if (!stale) return undefined;
+    const level = levelOf(stale.path)!;
+    if (level > 0) return plan([[stale]], level);
+    best = { level, score: 0 };
+  }
   if (best.level === 0) {
     // The oldest ones, so the L0 runs left behind stay newer than L1.
     const taken = l0.slice(-(maxSources - 1));
     const range = span(taken);
     return plan([...taken.map((r) => [r]), inLevel(1).filter((r) => overlaps(r.range, range))], 1);
   }
-  if (best.level < 0) return undefined;
   const files = inLevel(best.level);
   const next = inLevel(best.level + 1);
   const cost = (r: RunMeta) =>
