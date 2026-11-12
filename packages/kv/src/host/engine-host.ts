@@ -344,9 +344,11 @@ class HostedDb {
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
-    watch.maxBytes = Math.min(watch.maxBytes, policy.maxBytes ?? Infinity);
-    // A pass measures the cap, so a database already over it gets an offer without waiting for a write.
-    if (policy.maxBytes !== undefined) this.compact().catch(() => undefined);
+    if (policy.maxBytes !== undefined && policy.maxBytes < watch.maxBytes) {
+      watch.maxBytes = policy.maxBytes;
+      // A pass measures the cap, so a database already over it gets an offer without waiting for a write.
+      this.compact().catch(() => undefined);
+    }
     watch.triggerAt = watch.maxWalBytes;
     void this.withWal((wal) => uningestedBytes(wal, watch.maxWalBytes)).then(
       (waiting) => {
@@ -505,7 +507,7 @@ class HostedDb {
    */
   private measure(base: GenerationMeta): void {
     const watch = this.watching;
-    if (!watch?.bus || "pressure" in this.offer || base.through < this.offer.after) return;
+    if (!watch?.bus || watch.maxBytes === Infinity || "pressure" in this.offer || base.through < this.offer.after) return;
     const bytes = base.runs.reduce((n, run) => n + run.bytes, 0);
     if (bytes <= watch.maxBytes) return;
     const need = bytes - Math.floor((watch.maxBytes * 7) / 8);

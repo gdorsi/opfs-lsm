@@ -66,14 +66,6 @@ function marksOf(pieces: readonly Piece[]): Marks {
 
 export const NO_MARKS: Marks = marksOf([{ start: EMPTY_KEY, through: 0, at: 0 }]);
 
-/**
- * The effective `through` of a range delete asked for `asked` in the record
- * at `seq`: a mark never covers its own batch.
- */
-export function resolveThrough(asked: number, seq: Seq): Seq {
-  return Math.max(0, Math.min(asked, seq - 1));
-}
-
 /** Appends `piece`, merged into the last one when both say the same. */
 function push(out: Piece[], start: Uint8Array, through: Seq, at: Seq): void {
   const last = out[out.length - 1];
@@ -84,7 +76,6 @@ function push(out: Piece[], start: Uint8Array, through: Seq, at: Seq): void {
 /** The table of a single mark. */
 export function markTable(mark: Mark): Marks {
   if (mark.through === 0) return NO_MARKS;
-  if (mark.endExclusive && compareBytes(mark.start, mark.endExclusive) >= 0) return NO_MARKS;
   const out: Piece[] = mark.start.byteLength > 0 ? [{ start: EMPTY_KEY, through: 0, at: 0 }] : [];
   push(out, mark.start, mark.through, mark.at);
   if (mark.endExclusive) push(out, mark.endExclusive, 0, 0);
@@ -138,38 +129,34 @@ export function throughAt(marks: Marks, key: Uint8Array): Seq {
   return marks.empty ? 0 : marks.pieces[pieceAt(marks.pieces, key)]!.through;
 }
 
-/** Whether the version of `key` written at `seq` is gone. */
-export function covered(marks: Marks, key: Uint8Array, seq: Seq): boolean {
-  return !marks.empty && seq <= throughAt(marks, key);
-}
-
 /**
  * `throughAt` for keys that only increase, or only decrease with `reverse`.
  * Amortized O(1) per call.
  */
 export type MarkCursor = { at(key: Uint8Array): Seq };
 
+const NO_MARK_CURSOR: MarkCursor = { at: () => 0 };
+
 export function markCursor(marks: Marks, reverse = false): MarkCursor {
   const { pieces } = marks;
-  if (marks.empty) return { at: () => 0 };
+  if (marks.empty) return NO_MARK_CURSOR;
   let i = reverse ? pieces.length - 1 : 0;
-  return reverse
-    ? {
-        at(key) {
-          while (i > 0 && compareBytes(pieces[i]!.start, key) > 0) i--;
-          return pieces[i]!.through;
-        },
+  return {
+    at(key) {
+      while (
+        reverse
+          ? i > 0 && compareBytes(pieces[i]!.start, key) > 0
+          : i + 1 < pieces.length && compareBytes(pieces[i + 1]!.start, key) <= 0
+      ) {
+        i += reverse ? -1 : 1;
       }
-    : {
-        at(key) {
-          while (i + 1 < pieces.length && compareBytes(pieces[i + 1]!.start, key) <= 0) i++;
-          return pieces[i]!.through;
-        },
-      };
+      return pieces[i]!.through;
+    },
+  };
 }
 
 /** What retirement needs to know about a run. */
-export type RunMarkInfo = {
+type RunMarkInfo = {
   readonly range?: { readonly smallest: Uint8Array; readonly largest: Uint8Array };
   /** Every mark with `at <= marksThrough` was applied when this run was written. */
   readonly marksThrough: Seq;
@@ -183,7 +170,6 @@ export type RunMarkInfo = {
  * for anything it can read.
  */
 export function retireMarks(marks: Marks, runs: readonly RunMarkInfo[]): Marks {
-  if (marks.empty) return marks;
   const { pieces } = marks;
   const out: Piece[] = [];
   let changed = false;

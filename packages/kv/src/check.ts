@@ -27,21 +27,12 @@ export type CheckedOp =
       /** Empty: from the first key. */
       readonly start: CheckedKey;
       readonly endExclusive?: CheckedKey;
-      /** As the caller asked. Undefined: every row written before this batch. */
-      readonly through?: number;
-    };
-
-/**
- * An op of a committed record. A range delete's `through` is resolved
- * against the record's seq and is always below it, so a batch never removes
- * its own writes.
- */
-export type RecordOp =
-  | Exclude<CheckedOp, { type: "deleteRange" }>
-  | {
-      readonly type: "deleteRange";
-      readonly start: CheckedKey;
-      readonly endExclusive?: CheckedKey;
+      /**
+       * As the caller asked, `Number.MAX_SAFE_INTEGER` for every row written
+       * before this batch. In a committed record it is resolved against the
+       * record's seq and always below it, so a batch never removes its own
+       * writes.
+       */
       readonly through: number;
     };
 
@@ -93,7 +84,7 @@ export function checkValue(bytes: Uint8Array): CheckedValue {
 }
 
 /** Key and value bytes of an op: a range delete counts its bounds. */
-function opBytes(op: BatchOp | RecordOp): number {
+function opBytes(op: BatchOp): number {
   switch (op.type) {
     case "put":
       return op.key.byteLength + op.value.byteLength;
@@ -105,7 +96,7 @@ function opBytes(op: BatchOp | RecordOp): number {
 }
 
 /** Key and value bytes of a batch's ops. The batch limit adds `ROW_OVERHEAD` per op to this. */
-export function opsBytes(ops: readonly (CheckedOp | RecordOp)[]): number {
+export function opsBytes(ops: readonly CheckedOp[]): number {
   let bytes = 0;
   for (const op of ops) bytes += opBytes(op);
   return bytes;
@@ -120,12 +111,7 @@ function checkDeleteRange(op: Extract<BatchOp, { type: "deleteRange" }>): Checke
   if (op.through !== undefined && !(Number.isSafeInteger(op.through) && op.through >= 0)) {
     throw new ConstraintError(`deleteRange through must be a safe integer >= 0: got ${op.through}`);
   }
-  return {
-    type: "deleteRange",
-    start,
-    ...(end ? { endExclusive: end } : {}),
-    ...(op.through !== undefined ? { through: op.through } : {}),
-  };
+  return { type: "deleteRange", start, ...(end ? { endExclusive: end } : {}), through: op.through ?? Number.MAX_SAFE_INTEGER };
 }
 
 export function checkBatch(ops: readonly BatchOp[]): readonly CheckedOp[] {

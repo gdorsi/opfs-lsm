@@ -84,7 +84,7 @@ for (const mem of KINDS) {
     for (const mark of MARKS) {
       n++;
       const levels = readers(sst);
-      const at = { marks: marks(mark) };
+      const at = marks(mark);
       const got = await untilHit(() => pointGet(memRow(mem), levels, KEY, at));
       const want = expected(mem, sst, mark);
       if (!eq(got, want)) {

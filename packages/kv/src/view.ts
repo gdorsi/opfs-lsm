@@ -3,7 +3,7 @@ import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
 import { entryCursor, untilHit, type ScanBounds } from "./store/cursor.js";
-import type { ReadPoint } from "./store/judge.js";
+import type { Marks } from "./store/marks.js";
 import {
   mergeCursors,
   pointGet,
@@ -36,7 +36,7 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 export function scanLayers(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
-  at: ReadPoint,
+  at: Marks,
   bounds: ScanBounds | undefined,
   range: Range | undefined,
 ): AsyncGenerator<Entry> {
@@ -65,7 +65,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     readonly seq: number,
     private readonly rows: MemRows,
     private readonly levels: readonly RunLevel[],
-    private readonly at: ReadPoint,
+    private readonly at: Marks,
     private readonly hold: () => () => void,
   ) {}
 

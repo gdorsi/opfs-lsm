@@ -1,7 +1,7 @@
 import { compareBytes } from "../../src/bytes.js";
 import { CorruptDatabaseError } from "../../src/errors.js";
 import { crc32 } from "../../src/store/crc32.js";
-import { covered, type Marks } from "../../src/store/marks.js";
+import { throughAt, type Marks } from "../../src/store/marks.js";
 import type { Demand, MergeCore, MergeSpec, MergeStop } from "../../src/store/engine.js";
 import {
   blockLengths,
@@ -148,7 +148,7 @@ class Session implements MergeCore {
   }
 
   private emit(e: SstEntry): void {
-    if (covered(this.marks, e.key, e.seq)) return;
+    if (!this.marks.empty && e.seq <= throughAt(this.marks, e.key)) return;
     if (e.kind === "del" && this.dropTombstones) {
       this.dropped = Math.max(this.dropped, e.seq ?? 0);
       return;

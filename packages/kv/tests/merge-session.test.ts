@@ -12,7 +12,7 @@ import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
 import { publish } from "./runs.js";
 import { MemoryFs } from "../src/testing.js";
-import { covered, joinMarks, markTable, NO_MARKS, type Marks } from "../src/store/marks.js";
+import { joinMarks, markTable, NO_MARKS, throughAt, type Marks } from "../src/store/marks.js";
 
 /**
  * The TypeScript merge session against the wasm one, both pumped by the
@@ -110,7 +110,7 @@ function fold(sources: readonly Source[], drop: boolean, marks: Marks): { entrie
   let droppedSeq = 0;
   const entries: SstEntry[] = [];
   for (const e of [...byKey.values()].sort((a, b) => compareBytes(a.key, b.key))) {
-    if (covered(marks, e.key, e.seq)) continue;
+    if (!marks.empty && e.seq <= throughAt(marks, e.key)) continue;
     if (drop && e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
     else entries.push(e);
   }
