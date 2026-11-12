@@ -2,13 +2,14 @@ import { mergeIncoming, restore } from "../domain/merge.ts";
 import type { Clocks, Rows, ServerRow, Stream, SyncState } from "../domain/model.ts";
 import { MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse, type RowResponse } from "../domain/wire.ts";
 import { backoffMs, Pager, pushOp } from "./ops.ts";
-import { openStore, type Store } from "./store.ts";
+import { FORMAT, openStore, transact, type Store } from "./store.ts";
 
 const PULL_LIMIT = 2000;
 const BACKGROUND = ["bodies", "comments"] as const;
 
 const EMPTY: SyncState = {
   id: "sync",
+  format: FORMAT,
   epoch: null,
   cursors: { issues: 0, bodies: 0, comments: 0 },
   head: 0,
@@ -46,8 +47,6 @@ type Transact<T, K extends string = string> = (
   merge: (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<T | null | undefined>,
 ) => Promise<void>;
 
-const transactOf = <S extends Stream>(store: Store, stream: S) => store[stream].utils.transact as unknown as Transact<Rows[S]>;
-
 async function read<T, K extends string>(transact: Transact<T, K>, keys: readonly K[]): Promise<ReadonlyArray<T | undefined>> {
   let rows: ReadonlyArray<T | undefined> = [];
   await transact(keys, (stored) => {
@@ -72,7 +71,9 @@ async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: 
   const step = rowsPerBatch(store, stream);
   for (let at = 0; at < incoming.length; at += step) {
     const slice = incoming.slice(at, at + step);
-    await transactOf(store, stream)(
+    await transact(
+      store,
+      stream,
       slice.map((row) => row.id),
       (locals) => slice.map((row, i) => mergeIncoming<Rows[S]>(locals[i], row, acked?.[at + i])),
     );
@@ -162,6 +163,7 @@ class Leader {
 
   private async cycle(loop: { wake: boolean }): Promise<void> {
     await this.push();
+    if (this.state.format !== FORMAT) await this.wipe(this.state.epoch);
     await this.catchUpIssues(loop);
     for (const stream of BACKGROUND) {
       while (this.stale(stream)) {
@@ -266,7 +268,7 @@ class Leader {
     const res = await request<RowResponse>(this.store.user, `/api/row?stream=${op.stream}&id=${encodeURIComponent(op.id)}`);
     this.checkEpoch(res.epoch);
     const server = res.row as unknown as Omit<Rows[typeof op.stream], "dirty" | "pending"> | null;
-    await transactOf(this.store, op.stream)([key], ([local]) => [restore<Rows[typeof op.stream]>(local, server, op.clocks)]);
+    await transact(this.store, op.stream, [key], ([local]) => [restore<Rows[typeof op.stream]>(local, server, op.clocks)]);
   }
 
   private async save(patch: Partial<SyncState>): Promise<void> {
@@ -275,7 +277,7 @@ class Leader {
     await this.store.sync.utils.transact(["sync"], () => [state]);
   }
 
-  private async wipe(epoch: string): Promise<void> {
+  private async wipe(epoch: string | null): Promise<void> {
     const { docs } = this.store;
     for (const name of ["issues", ...BACKGROUND] as const) await docs.collection(name).clear();
     this.pager.forget();

@@ -56,9 +56,9 @@ await todos.utils.transact(["1"], ([todo]) => [todo ? { ...todo, done: !todo.don
 With `syncMode: "on-demand"`, the collection is ready at once and holds only what live queries load. TanStack sends each query's `where`, `orderBy` and `limit`, and the adapter reads the rows in one `view`:
 
 - A `where` that pins `id` with `eq` or `inArray` reads those documents.
-- Otherwise it reads the index whose leading fields the `where` pins with `eq` or `inArray`: one range per combination of pinned values, at most 64, narrowed by a `gt`, `gte`, `lt` or `lte` on the next field.
+- Otherwise it reads the index whose leading fields the `where` pins with `eq` or `inArray`: one range per combination of pinned values, at most 64, narrowed by a `gt`, `gte`, `lt` or `lte` on the next field. Among the indexes that pin the most fields, a load without `orderBy` (TanStack's load of the rows tied with a window's last row is one) takes the one with the fewest fields left unpinned, so a `where` that pins an index whole reads only its rows.
 - With `orderBy` and `limit`, it prefers an index that lists the pinned fields, then the order field. It reads each range in order, in pages, until it has `limit` matching rows, and merges the ranges.
-- A text index is read only when the `where` holds a `like` or `ilike` on its text field. The pattern's words become its `match`.
+- A text index is read as a sorted index is, which lets one index serve both a search and the plain order. When the `where` holds a `like` or `ilike` on its text field, the pattern's words become its `match`, and the read prefers it to an index that pins as many fields. Without a `match`, a sorted index wins a tie.
 - Anything else reads every document.
 
 Every row read is checked against the `where`, so the index changes what a load costs, never what it loads. Multi indexes are not read.
@@ -100,7 +100,7 @@ After an optimistic `update` or `delete` moves a row out of an ordered window, T
 
 What the index order assumes:
 
-- An index has no entry for a document that lacks one of its fields. A query reads a document through an index only if the document has every field the index names, so store `null` rather than leaving a field out.
+- An index has no entry for a document that lacks one of its fields. A query reads a document through an index only if the document has every field the index names, so store `null` rather than leaving a field out. A text index also has no entry for a document without a string at its text field, so store a string there, empty if need be.
 - A field the query orders by holds one type, plus `null`. The index orders `null`, then `false` and `true`, then numbers, then strings. TanStack compares mixed types its own way.
 - The index orders strings by code point. With `stringSort: "lexical"`, TanStack compares UTF-16 units, which agree except between U+E000 to U+FFFF and characters past U+FFFF. TanStack's default, `"locale"`, orders strings by locale. A locale order is still read in pages while the rows hold numbers or booleans; a window that holds a string reads every matching row instead. Set `defaultStringCollation: { stringSort: "lexical" }` to read string orders in pages.
 - Text search finds a pattern's words inside the words of the text after NFC normalization. An `ilike` on text stored in another normal form can match a row the index misses.

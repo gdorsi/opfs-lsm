@@ -110,11 +110,11 @@ function orderOf(clause: IR.OrderByClause | undefined): Order | undefined {
   return { path, reverse: direction === "desc", nulls, lexical: stringSort === "lexical" };
 }
 
-/** The index paths that may be read: sorted and text indexes. A text index holds only documents with a string at `text`. */
-function usable(info: IndexInfo, facts: Facts): boolean {
-  if (info.kind === "sorted") return true;
-  return info.kind === "text" && info.text !== undefined && facts.words.has(info.text);
-}
+/**
+ * Sorted and text indexes may be read. A text index holds only documents with a string at `text`, so reading one
+ * assumes every document has one, as reading any index assumes every document has its `on` paths.
+ */
+const usable = (info: IndexInfo) => info.kind !== "multi";
 
 function matchOf(info: IndexInfo, facts: Facts): string | undefined {
   const words = info.text === undefined ? undefined : facts.words.get(info.text);
@@ -180,7 +180,7 @@ function boundsOn(path: string, facts: Facts): Pick<DocstoreQuery, "gt" | "gte" 
 function orderedRanges(facts: Facts, order: Order, indexes: ReadonlyMap<string, IndexInfo>): DocstoreQuery[] | undefined {
   const choices: Choice[] = [];
   for (const [name, info] of indexes) {
-    if (!usable(info, facts)) continue;
+    if (!usable(info)) continue;
     const at = info.on.indexOf(order.path);
     if (at < 0 || pinnedPrefix(info.on, facts, at) < at) continue;
     const own = facts.pins.get(order.path)?.length ?? 1;
@@ -210,17 +210,20 @@ function orderedRanges(facts: Facts, order: Order, indexes: ReadonlyMap<string, 
   });
 }
 
-/** The index with the longest pinned prefix, then a bound on the next component, then a text match. */
+/**
+ * The index with the longest pinned prefix, then a bound on the next component, then a text match, then the fewest
+ * components left unpinned: an index the `where` pins whole reads only the rows it matches.
+ */
 function unorderedRanges(facts: Facts, indexes: ReadonlyMap<string, IndexInfo>): Plan | undefined {
   const choices: Choice[] = [];
   for (const [name, info] of indexes) {
-    if (!usable(info, facts)) continue;
+    if (!usable(info)) continue;
     const k = pinnedPrefix(info.on, facts, info.on.length);
     const next = info.on[k];
     const bounded = next !== undefined && (facts.lower.has(next) || facts.upper.has(next)) ? 1 : 0;
     const match = matchOf(info, facts) === undefined ? 0 : 1;
     if (k === 0 && !bounded && !match) continue;
-    choices.push({ name, info, k, score: [k, bounded, match, info.kind === "sorted" ? 1 : 0, -info.on.length] });
+    choices.push({ name, info, k, score: [k, bounded, match, -info.on.length, info.kind === "sorted" ? 1 : 0] });
   }
   const choice = best(choices);
   if (!choice) return undefined;
