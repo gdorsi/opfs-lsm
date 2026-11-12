@@ -67,7 +67,7 @@ Medians of 5 runs in headless Chrome 157 on an Apple M2 Pro, 100,000 entries wit
 | Single put, awaited one at a time | 4.0k ops/s | 3.3k ops/s | 0.8× |
 | Cold open | 1.1 ms | 7.7 ms | 0.1× |
 
-The framework adapters show the same shape. TanStack DB bulk inserts run at 83k rows/s against 11k on its IndexedDB adapter, and a cold load of about 91,000 rows takes 570 ms against 1.0 s. Loading 500 Yjs notes cold runs at 9.3k notes/s against 2.4k on y-indexeddb.
+The framework adapters show the same shape. TanStack DB bulk inserts run at 88k rows/s against 11k on its IndexedDB adapter, and a cold load of about 91,000 rows takes 540 ms against 1.0 s. Loading 500 Yjs notes cold runs at 9.3k notes/s against 2.4k on y-indexeddb.
 
 ### Bundle size
 
