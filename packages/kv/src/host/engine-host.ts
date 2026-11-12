@@ -15,6 +15,7 @@ import {
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
 import { compactionMemoryOf, DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
+import { answerOffer, decideCap, IDLE, type OfferState } from "./cap.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
@@ -52,6 +53,8 @@ type IngestWatch = {
   maxWalBytes: number;
   /** The smallest `compactionMemoryBytes` any watching tab asked for. */
   compactionMemoryBytes: number;
+  /** The smallest `maxBytes` any watching tab asked for; undefined while none did. */
+  maxBytes: number | undefined;
   /** Op bytes heard or measured and not yet folded into a run. */
   pendingBytes: number;
   /**
@@ -129,6 +132,16 @@ export class EngineHost {
     this.db(name).unwatch();
   }
 
+  /** The tab holding the pressure lock answered offer `id` of `name`. */
+  async pressureDone(name: string, id: string): Promise<void> {
+    return this.db(name).pressureDone(id);
+  }
+
+  /** Broadcast the open pressure offer of `name` again, if there is one. */
+  pullPressure(name: string): void {
+    this.db(name).pullPressure();
+  }
+
   /** Settles once the work each database's last open started has. */
   async opened(): Promise<void> {
     await Promise.all([...this.dbs.values()].map((db) => db.openPass));
@@ -173,6 +186,12 @@ class HostedDb {
   private destroying = false;
   /** The last `watch`'s work: its WAL read and the compaction pass after it. */
   openPass: Promise<void> = Promise.resolve();
+  /** Compaction passes started. A pass measures the cap when it ends. */
+  private passes = 0;
+  private offer: OfferState = IDLE;
+  /** Offer ids are `<epoch>.<n>`, so a tab never takes a new host's offer for one it answered. */
+  private readonly epoch = Math.random().toString(36).slice(2);
+  private offers = 0;
   /** Run compaction passes until no request arrives during one. */
   private readonly compact = coalesced(() =>
     withLock(compactLock(this.name), () => this.compactPass()),
@@ -349,6 +368,7 @@ class HostedDb {
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
+    if (policy.maxBytes !== undefined) watch.maxBytes = Math.min(watch.maxBytes ?? Infinity, policy.maxBytes);
     watch.triggerAt = watch.maxWalBytes;
     const opened = this.withWal((wal) => uningestedBytes(wal, watch.maxWalBytes)).then(
       async (waiting) => {
@@ -371,12 +391,14 @@ class HostedDb {
     if (!watch || --watch.watchers > 0) return;
     watch.bus?.close();
     this.watching = undefined;
+    this.offer = IDLE;
   }
 
   private startWatch(policy: WatchPolicy): IngestWatch {
     const watch: IngestWatch = {
       maxWalBytes: policy.maxWalBytes,
       compactionMemoryBytes: policy.compactionMemoryBytes,
+      maxBytes: undefined,
       pendingBytes: 0,
       triggerAt: policy.maxWalBytes,
       state: "idle",
@@ -466,6 +488,54 @@ class HostedDb {
   }
 
   private async compactPass(): Promise<void> {
+    const pass = ++this.passes;
+    try {
+      await this.compactSteps();
+    } finally {
+      await this.measureCap(pass).catch((err: unknown) => {
+        if (!isClosedDatabase(err)) console.error(`opfs-lsm: measuring ${this.name} against maxBytes failed`, err);
+      });
+    }
+  }
+
+  /**
+   * Measure the recorded manifest against the cap and broadcast a new offer
+   * if one is due (`decideCap`). Writes nothing: the host never removes a
+   * row for the cap.
+   */
+  private async measureCap(pass: number): Promise<void> {
+    const watch = this.watching;
+    if (watch?.maxBytes === undefined || !watch.bus) return;
+    const fs = await this.fs();
+    const meta = await loadGeneration(fs, (await this.withWal((wal) => wal.meta())).generation ?? 0);
+    if (!meta || this.watching !== watch) return;
+    const { next, post } = decideCap(this.offer, {
+      meta,
+      now: this.clock.now(meta.judgedNow),
+      maxBytes: Math.max(watch.maxBytes, this.budget().minMaxBytes),
+      pass,
+      id: `${this.epoch}.${this.offers + 1}`,
+    });
+    this.offer = next;
+    if (!post) return;
+    this.offers += 1;
+    watch.bus.postMessage({ kind: "pressure", ...post } satisfies BusMessage);
+  }
+
+  /** Reads the WAL head, so the next offer waits until the manifest holds what the handlers wrote. */
+  async pressureDone(id: string): Promise<void> {
+    if (this.offer.kind !== "offered" || this.offer.id !== id) return;
+    const { head } = await this.withWal((wal) => wal.meta());
+    this.offer = answerOffer(this.offer, id, head, this.passes);
+  }
+
+  pullPressure(): void {
+    const offer = this.offer;
+    if (offer.kind !== "offered") return;
+    this.watching?.bus?.postMessage({ kind: "pressure", id: offer.id, pressure: offer.pressure } satisfies BusMessage);
+  }
+
+  private async compactSteps(): Promise<void> {
     const fs = await this.fs();
     if (this.retired?.size !== 0) {
       await this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal)));
@@ -561,7 +631,14 @@ export function attachEngineHostPort(
           host.watch(msg.name, {
             maxWalBytes: msg.maxWalBytes,
             compactionMemoryBytes: compactionMemoryOf(msg.compactionMemoryBytes),
+            maxBytes: msg.maxBytes,
           });
+          return;
+        case "pressure-done":
+          await host.pressureDone(msg.name, msg.id);
+          return;
+        case "pressure-pull":
+          host.pullPressure(msg.name);
           return;
         case "unwatch":
           host.unwatch(msg.name);
@@ -598,6 +675,10 @@ export function createLocalIngestClient(host: EngineHost): IngestClient {
     ingest: (name, waitForCompaction) => host.ingest(name, waitForCompaction),
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
+    pressureDone: (name, id) => {
+      void host.pressureDone(name, id).catch(() => undefined);
+    },
+    pullPressure: (name) => host.pullPressure(name),
     destroy: (name) => host.destroy(name),
     stats: (name) => host.stats(name),
     close: () => undefined,

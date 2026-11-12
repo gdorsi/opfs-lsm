@@ -21,6 +21,7 @@ describe("hostBudget", () => {
       yieldBytes: 1 * MiB,
       wasmRecycleBytes: 16 * MiB,
       l1TargetBytes: 40 * MiB,
+      minMaxBytes: 16 * MiB,
     });
   });
 
@@ -36,6 +37,7 @@ describe("hostBudget", () => {
         yieldBytes: 1 * MiB,
         wasmRecycleBytes: 4 * MiB,
         l1TargetBytes: 40 * MiB,
+        minMaxBytes: 16 * MiB,
       },
     ],
     [
@@ -49,6 +51,7 @@ describe("hostBudget", () => {
         yieldBytes: 1 * MiB,
         wasmRecycleBytes: 8 * MiB,
         l1TargetBytes: 40 * MiB,
+        minMaxBytes: 16 * MiB,
       },
     ],
     [
@@ -62,6 +65,7 @@ describe("hostBudget", () => {
         yieldBytes: 1 * MiB,
         wasmRecycleBytes: 32 * MiB,
         l1TargetBytes: 40 * MiB,
+        minMaxBytes: 16 * MiB,
       },
     ],
   ])("shrinks and grows with the budget: %i bytes", (budget, expected) => {

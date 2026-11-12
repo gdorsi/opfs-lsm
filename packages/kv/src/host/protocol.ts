@@ -2,6 +2,7 @@ import type { WriterId } from "../check.js";
 import type { ErrorCode } from "../errors.js";
 import { reclaimLock, webLocks } from "../locks.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
+import type { Offer } from "./cap.js";
 
 /** What the host counted for one database since it started. Test and bench only. */
 export type HostStats = {
@@ -40,10 +41,13 @@ export type WatchPolicy = {
   readonly maxWalBytes: number;
   /** The tab's `compactionMemoryBytes`, which sets the host's `hostBudget`. */
   readonly compactionMemoryBytes: number;
+  /** The tab's `maxBytes`. Absent: this tab asks for no cap. */
+  readonly maxBytes?: number | undefined;
 };
 
 /**
- * What goes on `layersChannel`: a tab posts each record it appends, the host posts `ingest` for a new generation.
+ * What goes on `layersChannel`: a tab posts each record it appends, the host posts `ingest` for a new
+ * generation and `pressure` for an offer over `maxBytes`, which only the tab holding `pressureLock` answers.
  * A build that does not know a kind catches up from the WAL, so a new shape takes a new kind.
  */
 export type BusMessage =
@@ -56,7 +60,8 @@ export type BusMessage =
       /** The key and value bytes of its ops (`opsBytes`), for the host's ingest trigger. */
       readonly bytes: number;
     }
-  | { readonly kind: "ingest" };
+  | { readonly kind: "ingest" }
+  | ({ readonly kind: "pressure" } & Offer);
 
 /**
  * Run `fn` holding the reclaim lock shared. While any tab holds it, the
@@ -101,8 +106,13 @@ export type ClientToHost =
       readonly maxWalBytes: number;
       /** Absent from a tab of a build before the option existed. */
       readonly compactionMemoryBytes?: number;
+      readonly maxBytes?: number | undefined;
     }
   | { readonly type: "unwatch"; readonly name: string }
+  /** The handlers of the tab holding the pressure lock settled for offer `id`. */
+  | { readonly type: "pressure-done"; readonly name: string; readonly id: string }
+  /** A tab just took the pressure lock: post the open offer again, if there is one. */
+  | { readonly type: "pressure-pull"; readonly name: string }
   | { readonly type: "destroy"; readonly id: number; readonly name: string }
   | { readonly type: "stats"; readonly id: number; readonly name: string };
 
@@ -130,12 +140,17 @@ export type IngestClient = {
   ingest(name: string, waitForCompaction?: boolean): Promise<{ generation: number }>;
   /**
    * Have the host ingest `name` on its own once the WAL waiting for ingest
-   * passes `policy.maxWalBytes`, starting with what is already waiting, and
-   * hold its flushes and compactions to `policy.compactionMemoryBytes`.
+   * passes `policy.maxWalBytes`, starting with what is already waiting,
+   * hold its flushes and compactions to `policy.compactionMemoryBytes`, and
+   * offer pressure over `policy.maxBytes`.
    */
   watch(name: string, policy: WatchPolicy): void;
   /** This tab no longer needs the host to watch `name`. */
   unwatch(name: string): void;
+  /** This tab answered pressure offer `id`. */
+  pressureDone(name: string, id: string): void;
+  /** Broadcast the open pressure offer again, if there is one. */
+  pullPressure(name: string): void;
   /** Delete every file and WAL record of `name`. See `Db.dangerousDestroy`. */
   destroy(name: string): Promise<void>;
   /** Host counters for `name`. Test and bench only. */

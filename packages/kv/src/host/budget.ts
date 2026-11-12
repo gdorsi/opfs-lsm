@@ -54,6 +54,8 @@ export type HostBudget = {
   readonly wasmRecycleBytes: number;
   /** Bytes of L1 past which it compacts into L2; each deeper level holds ten times more. Not memory: tests lower it to build deep levels. */
   readonly l1TargetBytes: number;
+  /** The smallest `maxBytes` the host holds; a smaller ask counts as this. Not memory: tests lower it. */
+  readonly minMaxBytes: number;
 };
 
 /** The wasm module's memory when idle. */
@@ -78,6 +80,8 @@ const TAIL_BYTES = 128 * KiB;
  */
 const MAX_SOURCES = 49;
 const YIELD_BYTES = 1 * MiB;
+/** Below this a cap would be offered again after nearly every flush run. */
+const MIN_MAX_BYTES = 16 * MiB;
 
 /**
  * Every figure the host derives from `compactionMemoryBytes` (B), the memory
@@ -125,5 +129,6 @@ export function hostBudget(compactionMemoryBytes: number): HostBudget {
     yieldBytes: YIELD_BYTES,
     wasmRecycleBytes: Math.floor(b / 2),
     l1TargetBytes: L1_TARGET_BYTES,
+    minMaxBytes: MIN_MAX_BYTES,
   };
 }

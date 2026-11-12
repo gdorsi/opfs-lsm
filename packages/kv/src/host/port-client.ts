@@ -38,7 +38,16 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
         name,
         maxWalBytes: policy.maxWalBytes,
         compactionMemoryBytes: policy.compactionMemoryBytes,
+        maxBytes: policy.maxBytes,
       };
+      port.postMessage(msg);
+    },
+    pressureDone(name, id) {
+      const msg: ClientToHost = { type: "pressure-done", name, id };
+      port.postMessage(msg);
+    },
+    pullPressure(name) {
+      const msg: ClientToHost = { type: "pressure-pull", name };
       port.postMessage(msg);
     },
     unwatch(name) {
