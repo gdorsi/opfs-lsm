@@ -24,6 +24,7 @@ import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type IngestClient } from "./host/protocol.js";
 import { layersChannel } from "./locks.js";
+import { joinPressure, type PressureHandler, type PressureMember } from "./pressure.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
@@ -55,6 +56,8 @@ import {
 } from "./changes.js";
 
 export type { ViewSnapshot } from "./view.js";
+export type { Pressure } from "./host/cap.js";
+export type { PressureHandler } from "./pressure.js";
 export type { ChangeEvent, ChangeListener, ChangeKind, ChangeOp } from "./changes.js";
 
 /** Public open options. Apps pass a database name; the library owns the rest. */
@@ -86,6 +89,17 @@ export type OpenOptions = {
    * collected yet.
    */
   readonly compactionMemoryBytes?: number;
+  /**
+   * Entry bytes (key plus value lengths) of live rows in the run files that
+   * the database should stay under. kv measures and asks; it never removes a
+   * row to hold the cap. Over it, one tab's `onPressure` handlers remove
+   * what they choose. A write never waits for the cap and is never refused
+   * because of it. The host holds the smallest value any open tab passed,
+   * until the last tab closes the database, and at least 16 MiB. With no
+   * handler in any tab, each tab with a handle opened with `maxBytes` warns
+   * once per offer and the database keeps growing. A positive safe integer.
+   */
+  readonly maxBytes?: number;
 };
 
 /** Below this, one page per merge source may not fit. */
@@ -117,6 +131,8 @@ export type OpenKnobs = {
   readonly trace?: OpenTrace;
   /** Epoch ms that expiry is judged at. Default: `Date.now`, shared by every handle in the context. */
   readonly clock?: () => number;
+  /** Handles with the same `tab` answer pressure as one tab. Default: one tab per context. */
+  readonly tab?: string;
 };
 
 /** What `openDbWith` takes. `openHarnessDb` in `@opfs-lsm/kv/testing` builds it. */
@@ -261,6 +277,20 @@ export interface Db {
    * unsubscribe function.
    */
   changes(listener: ChangeListener): () => void;
+  /**
+   * Answer offers to bring the database back under `maxBytes`. Only on a
+   * handle opened with `maxBytes`, else `ConstraintError`. While a handler
+   * is registered, the tab asks for the Web Lock `opfs-lsm-pressure/<name>`,
+   * and only the tab holding it is called: every handler of that tab, one
+   * after another, once per offer. A handler removes what it chooses with
+   * ordinary writes, which are consistent and reach `changes()` as usual. kv
+   * tells the host when they settle, resolved or rejected. The host offers
+   * again only once a flush holds those writes and a later compaction pass
+   * still finds the database over the cap, so a handler must be safe to run
+   * again. When the holder closes or its tab goes away, the next tab with a
+   * handler gets the lock and the open offer. Returns unsubscribe.
+   */
+  onPressure(handler: PressureHandler): () => void;
   /**
    * Catch up to every write acked before the call, from any tab. Other tabs'
    * writes otherwise arrive over BroadcastChannel, a moment after their ack.
@@ -408,6 +438,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   // recorded manifest's runs are checked by the first sync, which loads them.
   await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
+  const maxBytes = checkMaxBytes(options.maxBytes);
   const cache = new PageCache(
     Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
   );
@@ -421,6 +452,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
     ownsIngestClient,
     caps,
     options.clock ? new WallClock(options.clock) : contextClock,
+    maxBytes === undefined ? undefined : joinPressure(options.tab ?? "", name, ingest),
     trace,
   );
   internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
@@ -429,6 +461,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   ingest.watch(name, {
     maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
     compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
+    maxBytes,
   });
   // The host cannot flush without the module, so a page that cannot load it does not open.
   try {
@@ -438,6 +471,11 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
     throw err;
   }
   return db;
+}
+
+function checkMaxBytes(asked: number | undefined): number | undefined {
+  if (asked === undefined || (Number.isSafeInteger(asked) && asked > 0)) return asked;
+  throw new ConstraintError("maxBytes must be a positive safe integer");
 }
 
 function collectBatch(
@@ -549,6 +587,8 @@ class DbImpl implements Db {
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
     private readonly clock: WallClock,
+    /** Set on a handle opened with `maxBytes`. */
+    private readonly capped: PressureMember | undefined,
     private readonly trace?: OpenTrace,
   ) {
     this.pressure = new Backpressure(
@@ -565,6 +605,10 @@ class DbImpl implements Db {
 
   private onMessage(data: BusMessage): void {
     if (this.closed) return;
+    if (data?.kind === "pressure") {
+      this.capped?.tab.offer(data);
+      return;
+    }
     // An `ingest`, or a message this build does not know: catch up from the WAL.
     if (data?.kind !== "row" || !(data.record instanceof ArrayBuffer)) {
       void this.sync().catch(() => undefined);
@@ -1086,6 +1130,12 @@ class DbImpl implements Db {
     return this.changeBus.subscribe(listener);
   }
 
+  onPressure(handler: PressureHandler): () => void {
+    this.ensureOpen();
+    if (!this.capped) throw new ConstraintError("onPressure needs a handle opened with maxBytes");
+    return this.capped.tab.register(this.capped, handler);
+  }
+
   /** Have the host flush the WAL, and load what it published. */
   async flush(waitForCompaction: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
@@ -1112,6 +1162,7 @@ class DbImpl implements Db {
       this.bus.removeEventListener("message", this.onBusMessage);
       this.bus.close();
     }
+    this.capped?.tab.leave(this.capped);
     this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
     this.wal.close();
