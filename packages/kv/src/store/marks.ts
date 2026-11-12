@@ -138,11 +138,6 @@ export function throughAt(marks: Marks, key: Uint8Array): Seq {
   return marks.empty ? 0 : marks.pieces[pieceAt(marks.pieces, key)]!.through;
 }
 
-/** Whether the version of `key` written at `seq` is gone. */
-export function covered(marks: Marks, key: Uint8Array, seq: Seq): boolean {
-  return !marks.empty && seq <= throughAt(marks, key);
-}
-
 /**
  * `throughAt` for keys that only increase, or only decrease with `reverse`.
  * Amortized O(1) per call.
@@ -169,7 +164,7 @@ export function markCursor(marks: Marks, reverse = false): MarkCursor {
 }
 
 /** What retirement needs to know about a run. */
-export type RunMarkInfo = {
+type RunMarkInfo = {
   readonly range?: { readonly smallest: Uint8Array; readonly largest: Uint8Array };
   /** Every mark with `at <= marksThrough` was applied when this run was written. */
   readonly marksThrough: Seq;

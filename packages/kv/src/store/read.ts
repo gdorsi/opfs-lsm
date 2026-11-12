@@ -12,8 +12,7 @@ import {
   type ScanBounds,
   type ScanHit,
 } from "./cursor.js";
-import { dead, type ReadPoint } from "./judge.js";
-import { markCursor } from "./marks.js";
+import { markCursor, throughAt, type Marks, type Seq } from "./marks.js";
 import type { SstEntry } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
 import type { Entry } from "../db.js";
@@ -86,6 +85,17 @@ class MinHeap {
 }
 
 /**
+ * The rule every read applies to the newest version of a key, once the
+ * memtable, the level order or the merge heap chose it: the version is gone
+ * when it is a delete or a mark covers it. A covered newest version means
+ * every older one is covered too, since they have the same key and smaller
+ * seqs.
+ */
+function gone(v: { readonly kind: "put" | "del"; readonly seq: Seq }, through: Seq): boolean {
+  return v.kind === "del" || v.seq <= through;
+}
+
+/**
  * `mem` is the row from the key-ordered mem store, or undefined on miss.
  * Levels are newest-first. Returned bytes are a fresh Uint8Array. A memtable
  * row needs no mark check: the memtable removed the rows its own marks
@@ -95,13 +105,13 @@ export function pointGet(
   mem: MemRow | undefined,
   levels: readonly RunLevel[],
   key: Uint8Array,
-  at: ReadPoint,
+  marks: Marks,
 ): Maybe<Uint8Array | undefined> {
   if (mem?.kind === "del") return undefined;
   if (mem?.kind === "put") return new Uint8Array(mem.value!);
   const hit = latestSstEntry(levels, key);
   if (hit instanceof Miss) return hit;
-  if (!hit || dead(hit, at)) return undefined;
+  if (!hit || gone(hit, throughAt(marks, key))) return undefined;
   return hit.kind === "put" ? new Uint8Array(hit.value) : undefined;
 }
 
@@ -284,19 +294,19 @@ class Merge<E extends ScanHit> {
  */
 export async function* mergeCursors(
   cursors: readonly LayerCursor[],
-  at: ReadPoint,
+  marks: Marks,
   limit?: number,
   reverse = false,
 ): AsyncGenerator<Entry> {
   const merge = new Merge(cursors, reverse);
-  const marks = markCursor(at.marks, reverse);
+  const through = markCursor(marks, reverse);
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
     let w = merge.next();
     if (w instanceof Miss) w = await untilHit(() => merge.next(), w);
     if (!w) return;
-    if (dead(w.entry, at, marks)) continue;
+    if (gone(w.entry, through.at(w.entry.key))) continue;
     yield {
       key: new Uint8Array(w.entry.key),
       value: new Uint8Array(w.entry.value!),
@@ -322,7 +332,7 @@ export async function* scanMatching(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
   patterns: readonly Uint8Array[],
-  at: ReadPoint,
+  marks: Marks,
   bounds?: ScanBounds,
   limit?: number,
   reverse = false,
@@ -331,7 +341,7 @@ export async function* scanMatching(
     [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
     reverse,
   );
-  const marks = markCursor(at.marks, reverse);
+  const marksAt = markCursor(marks, reverse);
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
@@ -345,7 +355,7 @@ export async function* scanMatching(
       let newer = shadowed(levels, source - 1, entry.key);
       if (newer instanceof Miss) newer = await untilHit(() => shadowed(levels, source - 1, entry.key), newer);
       if (newer) continue;
-      const through = marks.at(entry.key);
+      const through = marksAt.at(entry.key);
       if (through > 0) {
         let seq = entry.seq;
         if (seq === undefined) {

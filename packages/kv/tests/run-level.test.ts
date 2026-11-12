@@ -41,7 +41,7 @@ function range(from: number, to: number, step: number): number[] {
 }
 
 async function scan(cursors: Parameters<typeof mergeCursors>[0], limit?: number, reverse?: boolean): Promise<string[]> {
-  return (await collect(mergeCursors(cursors, { marks: NO_MARKS }, limit, reverse))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
+  return (await collect(mergeCursors(cursors, NO_MARKS, limit, reverse))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
 }
 
 describe("runLevels", () => {

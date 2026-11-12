@@ -135,9 +135,9 @@ describe("sst", () => {
       { kind: "del", key: utf("b"), seq: 2 },
     ]);
     const levels = runLevels(["l0/2-2.sst", "l0/1-1.sst"], [readerOfBytes(newer), readerOfBytes(older)]);
-    expect(await untilHit(() => pointGet(undefined, levels, utf("a"), { marks: NO_MARKS }))).toEqual(utf("new"));
-    expect(await untilHit(() => pointGet(undefined, levels, utf("b"), { marks: NO_MARKS }))).toBeUndefined();
-    expect(await untilHit(() => pointGet(undefined, levels, utf("c"), { marks: NO_MARKS }))).toBeUndefined();
+    expect(await untilHit(() => pointGet(undefined, levels, utf("a"), NO_MARKS))).toEqual(utf("new"));
+    expect(await untilHit(() => pointGet(undefined, levels, utf("b"), NO_MARKS))).toBeUndefined();
+    expect(await untilHit(() => pointGet(undefined, levels, utf("c"), NO_MARKS))).toBeUndefined();
   });
 
   it("cursor seeks one block and stops before endExclusive", async () => {

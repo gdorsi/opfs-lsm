@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import {
-  covered,
   decodeMarks,
   encodeMarks,
   joinMarks,
@@ -14,8 +13,9 @@ import {
   throughAt,
   type Mark,
   type Marks,
-  type RunMarkInfo,
 } from "../src/store/marks.js";
+
+type RunMarkInfo = Parameters<typeof retireMarks>[1][number];
 
 const keyArb = fc.uint8Array({ minLength: 0, maxLength: 3, max: 3 });
 const markArb: fc.Arbitrary<Mark> = fc
@@ -51,7 +51,7 @@ describe("marks", () => {
   it("answers as the naive list of marks does", () => {
     fc.assert(
       fc.property(marksArb, keyArb, fc.integer({ min: 1, max: 25 }), (list, key, seq) => {
-        expect(covered(fold(list), key, seq)).toBe(naive(list, key, seq));
+        expect(seq <= throughAt(fold(list), key)).toBe(naive(list, key, seq));
       }),
     );
   });
@@ -105,7 +105,7 @@ describe("marks", () => {
           const retired = retireMarks(marks, runs);
           for (const [key, seq] of versions) {
             if (!runs.some((run) => holdable(list, run, key, seq))) continue;
-            expect(covered(retired, key, seq)).toBe(covered(marks, key, seq));
+            expect(seq <= throughAt(retired, key)).toBe(seq <= throughAt(marks, key));
           }
         },
       ),
