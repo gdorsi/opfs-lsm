@@ -517,10 +517,10 @@ under the exclusive section, the host:
 2. Writes manifest `top + 1`, with the inputs replaced by the outputs, `tombstoneSeq` raised to
    the highest dropped tombstone, and the `through` of `G`.
 3. Raises `meta.generation` to `top + 1`.
-4. Reclaims: deletes the older manifests, and the input runs that no tab holds open. While a tab
-   holds the reclaim lock, it deletes nothing and tries again on the next pass.
+4. Sweeps: deletes the older manifests, and every run outside `top + 1` that no tab holds open.
+   While a tab holds the reclaim lock, it deletes nothing and tries again on the next pass.
 
-A pass runs up to 8 steps. A request that arrives during a pass starts another pass.
+A pass runs up to 8 steps, and sweeps if it installs none. A request during a pass starts another.
 
 # Destroy
 
@@ -647,8 +647,7 @@ A **process crash** keeps every completed write of both stores. Every acked writ
 | Compaction outputs written, before install | The outputs are garbage. |
 | Destroy's transaction, before its removes finish | The database is empty. The files left are garbage. |
 
-Every sweep lists the run files and removes each one that the recorded manifest does not list
-and no tab holds open.
+A sweep lists the run files and removes those the recorded manifest lacks and no tab holds open.
 
 A **power loss** keeps a prefix of the commits of IndexedDB and a prefix of the file operations
 of OPFS, independently.
