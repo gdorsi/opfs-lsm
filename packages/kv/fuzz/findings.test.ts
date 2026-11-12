@@ -142,7 +142,7 @@ describe("decoder bugs the fuzzers found", () => {
   // does. The checks are now `key_len > end - o`, with `o <= end`.
   it("KW1: scan_block_contains does not panic on a varint near 2^32", () => {
     const block = new Uint8Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3]);
-    expect(() => wasm.scanBlockContains(block, false, packPatterns([]))).not.toThrow(WebAssembly.RuntimeError);
+    expect(() => wasm.scanBlockContains(block, false, packPatterns([]), 0)).not.toThrow(WebAssembly.RuntimeError);
   });
 
   // KW2, SharedWorker with wasm. The module threw the Rust error as a bare
@@ -168,7 +168,7 @@ describe("wasm traps", () => {
     const block = new Uint8Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3]);
     for (let i = 0; i < 5_000; i++) {
       try {
-        wasm.scanBlockContains(block, false, packPatterns([]));
+        wasm.scanBlockContains(block, false, packPatterns([]), 0);
       } catch {
         // KW1 panicked here.
       }

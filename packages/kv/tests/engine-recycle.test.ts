@@ -59,6 +59,7 @@ describe("recycleEngine", () => {
     const spec: MergeSpec = {
       sources: [[1000]],
       dropTombstones: false,
+      judgeNow: 0,
       targetBytes: 4 * MiB,
       codec: "raw",
       chunkBytes: 64 * 1024,
@@ -105,7 +106,7 @@ describe("recycleEngine", () => {
 
     recycleEngine(0);
     const freshForScan = engineMemory().wasmBytes;
-    const hits = await drain(readerOfBytes(run).scanContains([new Uint8Array([7, 7, 7])]));
+    const hits = await drain(readerOfBytes(run).scanContains([new Uint8Array([7, 7, 7])], 0));
     expect(hits.map((h) => dec.decode(h.key))).toEqual(["big"]);
     expect(engineMemory().wasmBytes).toBeGreaterThan(freshForScan + 2 * MiB);
   });

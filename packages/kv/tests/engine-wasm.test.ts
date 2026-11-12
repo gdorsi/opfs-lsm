@@ -189,7 +189,7 @@ describe("engine status codes", () => {
   it("turns a negative status into CorruptDatabaseError", () => {
     const engine = flatEngine(stub(-4));
     expect(() => engine.lz4Decompress(new Uint8Array(4), 8)).toThrow(CorruptDatabaseError);
-    expect(() => engine.scanBlockContains(new Uint8Array(4), false, new Uint8Array(0))).toThrow(CorruptDatabaseError);
+    expect(() => engine.scanBlockContains(new Uint8Array(4), false, new Uint8Array(0), 0)).toThrow(CorruptDatabaseError);
   });
 
   it("turns -11 into an error naming the operation, input size and capacity", () => {

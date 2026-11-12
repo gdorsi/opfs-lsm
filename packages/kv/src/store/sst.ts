@@ -7,7 +7,7 @@ import { lz4Decompress } from "./lz4.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 const SST_MAGIC = 0x4f4c5354;
-const VERSION = 1;
+const VERSION = 2;
 export const SST_FOOTER_BYTES = 44;
 /**
  * The most Bloom hashes a footer may name. The encoder writes 7; a get
@@ -26,6 +26,8 @@ const CODECS: readonly SstCodec[] = ["raw", "lz4"];
 
 const TAG_PUT = 1;
 const TAG_DEL = 2;
+/** A put with an expiry: a u64 epoch-ms `expiresAt` follows the seq. */
+const TAG_PUT_EXPIRING = 3;
 
 /** Target encoded size of one data block. */
 export const SST_BLOCK_TARGET = 4 * 1024;
@@ -53,6 +55,8 @@ export type SstEntry =
       readonly key: Uint8Array;
       readonly value: Uint8Array;
       readonly seq: number;
+      /** Epoch ms from which the put reads as absent. Absent: never. */
+      readonly expiresAt?: number;
     }
   | { readonly kind: "del"; readonly key: Uint8Array; readonly seq: number };
 
@@ -87,14 +91,18 @@ type BlockIndexEntry = {
 };
 
 /**
- * Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
- * records use varints and a shared prefix, so they are never larger.
- * Compaction cuts runs by this without encoding them.
+ * Upper bound on an encoded record: tag, seq, expiry, and u32 lengths.
+ * On-disk records use varints and a shared prefix, so they are never
+ * larger. Compaction cuts runs by this without encoding them.
  */
 export function entryRecordSize(e: SstEntry): number {
   let n = 1 + 8 + 4 + e.key.byteLength;
-  if (e.kind === "put") n += 4 + e.value.byteLength;
+  if (e.kind === "put") n += 4 + e.value.byteLength + expiryBytes(e);
   return n;
+}
+
+function expiryBytes(e: SstEntry): number {
+  return e.kind === "put" && e.expiresAt !== undefined ? 8 : 0;
 }
 
 function varintLen(v: number): number {
@@ -130,7 +138,7 @@ function commonPrefix(a: Uint8Array, b: Uint8Array): number {
  */
 function recordOverhead(e: SstEntry): number {
   const n = 1 + 8 + varintLen(e.key.byteLength);
-  return e.kind === "put" ? n + varintLen(e.value.byteLength) + e.value.byteLength : n;
+  return e.kind === "put" ? n + expiryBytes(e) + varintLen(e.value.byteLength) + e.value.byteLength : n;
 }
 
 /**
@@ -178,7 +186,7 @@ function encodeBlock(block: readonly SstEntry[]): Uint8Array {
   for (const e of block) {
     const s = e.key.byteLength - p;
     size += 1 + 8 + varintLen(s) + s;
-    if (e.kind === "put") size += varintLen(e.value.byteLength) + e.value.byteLength;
+    if (e.kind === "put") size += expiryBytes(e) + varintLen(e.value.byteLength) + e.value.byteLength;
   }
   const out = new Uint8Array(size);
   const view = new DataView(out.buffer);
@@ -197,11 +205,17 @@ function encodeBlock(block: readonly SstEntry[]): Uint8Array {
   return out;
 }
 
-/** u8 tag | u64 seq | varint suffixLen | suffix | (put) varint valLen | value */
+/** u8 tag | u64 seq | (tag 3) u64 expiresAt | varint suffixLen | suffix | (put) varint valLen | value */
 function writeRecord(out: Uint8Array, view: DataView, o: number, e: SstEntry, prefixLen: number): number {
-  out[o++] = e.kind === "put" ? TAG_PUT : TAG_DEL;
+  const expiresAt = e.kind === "put" ? e.expiresAt : undefined;
+  out[o++] = e.kind === "del" ? TAG_DEL : expiresAt === undefined ? TAG_PUT : TAG_PUT_EXPIRING;
   view.setBigUint64(o, BigInt(e.seq), true);
-  o = writeVarint(out, o + 8, e.key.byteLength - prefixLen);
+  o += 8;
+  if (expiresAt !== undefined) {
+    view.setBigUint64(o, BigInt(expiresAt), true);
+    o += 8;
+  }
+  o = writeVarint(out, o, e.key.byteLength - prefixLen);
   out.set(e.key.subarray(prefixLen), o);
   o += e.key.byteLength - prefixLen;
   if (e.kind === "put") {
@@ -220,6 +234,8 @@ function writeRecord(out: Uint8Array, view: DataView, o: number, e: SstEntry, pr
 class RecordWalker {
   tag = 0;
   seqAt = 0;
+  /** Where the record's expiry is, 0 for a record with none. */
+  expiresAt = 0;
   keyAt = 0;
   keyLen = 0;
   valAt = 0;
@@ -265,6 +281,12 @@ class RecordWalker {
     const tag = buf[o]!;
     this.seqAt = o + 1;
     o += 9;
+    if (tag === TAG_PUT_EXPIRING) {
+      this.expiresAt = o;
+      o += 8;
+    } else {
+      this.expiresAt = 0;
+    }
     let n = buf[o]!;
     if (n < 0x80) o++;
     else {
@@ -275,7 +297,7 @@ class RecordWalker {
     this.keyAt = o;
     this.keyLen = n;
     o += n;
-    if (tag === TAG_PUT) {
+    if (tag === TAG_PUT || tag === TAG_PUT_EXPIRING) {
       n = buf[o]!;
       if (n < 0x80) o++;
       else {
@@ -318,7 +340,10 @@ class RecordWalker {
   entry(): SstEntry {
     const key = this.key();
     const seq = this.seq();
-    return this.tag === TAG_PUT ? { kind: "put", key, value: this.value(), seq } : { kind: "del", key, seq };
+    if (this.tag === TAG_DEL) return { kind: "del", key, seq };
+    const value = this.value();
+    if (this.expiresAt === 0) return { kind: "put", key, value, seq };
+    return { kind: "put", key, value, seq, expiresAt: Number(this.view.getBigUint64(this.expiresAt, true)) };
   }
 
   /** Every remaining record, checking the block holds nothing after them. */
@@ -349,14 +374,14 @@ class RecordWalker {
 }
 
 /**
- * Encode SST version 1 with raw blocks. LZ4 blocks come only from the wasm encoder.
+ * Encode SST version 2 with raw blocks. LZ4 blocks come only from the wasm encoder.
  *   data blocks (see `encodeBlock`)
  *   bloom bits
  *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
  *   footer, 44 bytes:
  *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
  *     u32 bloomHashCount | u32 indexOffset | u32 indexLen | u32 codec
- *     u32 crc32 of every byte before it | u32 version=1 | u32 magic
+ *     u32 crc32 of every byte before it | u32 version=2 | u32 magic
  */
 export function encodeRun(
   entries: readonly SstEntry[],
@@ -711,11 +736,8 @@ export class BlockEntries {
   next(): LayerEntry | undefined {
     if (this.left === 0) return undefined;
     this.left--;
-    const w = this.w;
-    w.next();
-    const key = w.key();
-    const seq = w.seq();
-    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value(), seq } : { key, kind: "del", seq };
+    this.w.next();
+    return this.w.entry();
   }
 }
 
@@ -741,9 +763,7 @@ export class ReverseBlockEntries {
     const w = this.w;
     w.o = at;
     w.next();
-    const key = w.key();
-    const seq = w.seq();
-    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value(), seq } : { key, kind: "del", seq };
+    return w.entry();
   }
 }
 

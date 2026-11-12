@@ -15,7 +15,17 @@ export type Version = {
   readonly kind: "put" | "del";
   readonly key: Uint8Array;
   readonly seq: Seq;
+  readonly expiresAt?: number;
 };
+
+/**
+ * Whether a put with this expiry reads as absent at `at.now`. A flush or a
+ * merge that is not at the bottom writes such a put as a tombstone with its
+ * seq, because older versions of the key may live longer.
+ */
+export function expired(v: { readonly expiresAt?: number }, at: { readonly now: number }): boolean {
+  return v.expiresAt !== undefined && v.expiresAt <= at.now;
+}
 
 /**
  * Whether the newest version of a key reads as absent. Applied only after

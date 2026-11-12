@@ -20,8 +20,8 @@
 
 use crate::crc32::{crc32, crc32_combine, Crc32};
 use crate::sst::{
-    entry_size, lz4_size_fits, read_footer, read_u32, BlockWalk, Codec, Entry, EntryRef, Layout, OutOfOrder, Record,
-    RunEnd, SstError, SstWriter, BLOCK_TARGET, FOOTER_BYTES,
+    entry_size, expired, lz4_size_fits, read_footer, read_u32, BlockWalk, Codec, Entry, EntryRef, Layout, OutOfOrder,
+    Record, RunEnd, SstError, SstWriter, BLOCK_TARGET, FOOTER_BYTES,
 };
 use alloc::collections::TryReserveError;
 use alloc::vec::Vec;
@@ -39,6 +39,10 @@ pub struct MergeConfig {
     /// Drop tombstones that win. Only for a step whose output is the bottom
     /// level, where no older value is left for a tombstone to hide.
     pub drop_tombstones: bool,
+    /// Epoch ms. A winning put whose expiry is at or before it is written as
+    /// a tombstone with its seq, or dropped with the tombstones. 0 judges
+    /// nothing.
+    pub judge_now: u64,
     /// Close an output run once its entries' `entry_size`s reach this.
     pub target_bytes: usize,
     pub codec: Codec,
@@ -73,7 +77,7 @@ pub enum Stop<'a> {
     /// About `yield_bytes` of input were merged since the pump began.
     Yield,
     /// Every input was read and every run's CRC matched. Holds the highest
-    /// seq of a dropped tombstone, or 0.
+    /// seq of a dropped tombstone or expired put, or 0.
     Done(u64),
 }
 
@@ -125,6 +129,7 @@ pub struct MergeSession {
     /// The run `RunEnd` reports.
     ended: RunEnd,
     drop_tombstones: bool,
+    judge_now: u64,
     target_bytes: usize,
     chunk_bytes: usize,
     yield_bytes: usize,
@@ -199,6 +204,7 @@ impl MergeSession {
             output: Output::Filling { size: 0 },
             ended: RunEnd { entries: 0, size: 0, first_key: Vec::new(), last_key: Vec::new() },
             drop_tombstones: config.drop_tombstones,
+            judge_now: config.judge_now,
             target_bytes: config.target_bytes,
             chunk_bytes: config.chunk_bytes.max(1),
             yield_bytes: config.yield_bytes.max(1),
@@ -331,7 +337,9 @@ impl MergeSession {
     }
 
     /// Settle the smallest key: the newest source's entry wins, the same key
-    /// in older sources is shadowed, and each of those sources moves on.
+    /// in older sources is shadowed, and each of those sources moves on. A
+    /// winning put expired at `judge_now` must keep hiding the older
+    /// versions, so it goes on as a tombstone.
     fn next_key(&mut self) -> Result<(), MergeError> {
         let w = heap_pop(&mut self.heap, &self.sources);
         while let Some(&t) = self.heap.first() {
@@ -342,10 +350,10 @@ impl MergeSession {
             self.retire(t);
         }
         let winner = &self.sources[w as usize].cur;
-        match winner.kind {
-            Kind::Del if self.drop_tombstones => self.dropped = self.dropped.max(winner.seq),
+        let entry = winner.entry_at(self.judge_now);
+        match entry {
+            EntryRef::Del { seq, .. } if self.drop_tombstones => self.dropped = self.dropped.max(seq),
             _ => {
-                let entry = winner.entry();
                 let size = match self.output {
                     Output::Filling { size } => size,
                     Output::Finished => 0,
@@ -492,6 +500,7 @@ struct Slot {
     value: Vec<u8>,
     seq: u64,
     kind: Kind,
+    expires_at: Option<u64>,
 }
 
 impl Slot {
@@ -499,7 +508,7 @@ impl Slot {
         let (mut key, mut value) = (Vec::new(), Vec::new());
         key.try_reserve_exact(64)?;
         value.try_reserve_exact(256)?;
-        Ok(Slot { key, value, seq: 0, kind: Kind::Del })
+        Ok(Slot { key, value, seq: 0, kind: Kind::Del, expires_at: None })
     }
 
     fn fill(&mut self, record: &Record<'_>) -> Result<(), MergeError> {
@@ -508,6 +517,7 @@ impl Slot {
         self.key.extend_from_slice(record.prefix);
         self.key.extend_from_slice(record.suffix);
         self.seq = record.seq;
+        self.expires_at = record.expires_at;
         match record.value {
             Some(value) => {
                 self.value.clear();
@@ -520,10 +530,13 @@ impl Slot {
         Ok(())
     }
 
-    fn entry(&self) -> EntryRef<'_> {
+    /// The entry as it is at `now`: a put expired by then is a tombstone.
+    fn entry_at(&self, now: u64) -> EntryRef<'_> {
         match self.kind {
-            Kind::Put => EntryRef::Put { key: &self.key, value: &self.value, seq: self.seq },
-            Kind::Del => EntryRef::Del { key: &self.key, seq: self.seq },
+            Kind::Put if !expired(self.expires_at, now) => {
+                EntryRef::Put { key: &self.key, value: &self.value, seq: self.seq, expires_at: self.expires_at }
+            }
+            _ => EntryRef::Del { key: &self.key, seq: self.seq },
         }
     }
 }

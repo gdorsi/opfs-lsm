@@ -18,6 +18,7 @@ use engine_core::{
 
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
+const TAG_PUT_EXPIRING: u8 = 3;
 
 const TRUNCATED: i32 = -5;
 const BAD_TAG: i32 = -6;
@@ -173,13 +174,14 @@ fn parse_entries(buf: &[u8]) -> Result<Vec<Entry>, i32> {
     while !r.done() {
         let tag = r.take(1).ok_or(TRUNCATED)?[0];
         let seq = r.u64().ok_or(TRUNCATED)?;
+        let expires_at = if tag == TAG_PUT_EXPIRING { Some(r.u64().ok_or(TRUNCATED)?) } else { None };
         let klen = r.u32().ok_or(TRUNCATED)?;
         let key = r.take(klen).ok_or(TRUNCATED)?.to_vec();
         out.push(match tag {
-            TAG_PUT => {
+            TAG_PUT | TAG_PUT_EXPIRING => {
                 let vlen = r.u32().ok_or(TRUNCATED)?;
                 let value = r.take(vlen).ok_or(TRUNCATED)?.to_vec();
-                Entry::Put { key, value, seq }
+                Entry::Put { key, value, seq, expires_at }
             }
             TAG_DEL => Entry::Del { key, seq },
             _ => return Err(BAD_TAG),
@@ -239,6 +241,7 @@ pub unsafe extern "C" fn scan_block_contains(
     lz4: i32,
     pat_ptr: *const u8,
     pat_len: usize,
+    judge_now: f64,
 ) -> i32 {
     let mut r = Reader {
         buf: bytes(pat_ptr, pat_len),
@@ -251,7 +254,9 @@ pub unsafe extern "C" fn scan_block_contains(
         };
         pats.push(p);
     }
-    finish(engine_core::scan_block_contains(bytes(ptr, len), codec(lz4), &pats).map_err(error_code))
+    // `as` saturates, and a NaN or negative time judges nothing.
+    let now = judge_now as u64;
+    finish(engine_core::scan_block_contains(bytes(ptr, len), codec(lz4), &pats, now).map_err(error_code))
 }
 
 /// Open the module's merge session. Input: source list. Fails with -13
@@ -267,6 +272,7 @@ pub unsafe extern "C" fn merge_open(
     chunk_bytes: u32,
     tail_bytes: u32,
     yield_bytes: u32,
+    judge_now: f64,
 ) -> i32 {
     show(&[]);
     let slot = session();
@@ -293,6 +299,7 @@ pub unsafe extern "C" fn merge_open(
     }
     let config = MergeConfig {
         drop_tombstones: drop_tombstones != 0,
+        judge_now: judge_now as u64,
         // `as` saturates, so Number.MAX_SAFE_INTEGER becomes usize::MAX.
         target_bytes: target_bytes as usize,
         codec: codec(lz4),

@@ -127,12 +127,14 @@ export const entriesArb: fc.Arbitrary<SstEntry[]> = fc
         { weight: 1, arbitrary: fc.integer({ min: 4097, max: 6000 }).map((n) => new Uint8Array(n).fill(0x68)) },
       ),
       seq: fc.integer({ min: 0, max: 2 ** 40 }),
+      expiresAt: fc.option(fc.integer({ min: 1, max: Number.MAX_SAFE_INTEGER }), { nil: undefined, freq: 4 }),
     }),
     { selector: (e) => e.key, maxLength: 80 },
   )
   .map((rows) =>
     rows.map((r): SstEntry => {
       const key = new TextEncoder().encode(`t/${r.key}`);
-      return r.del ? { kind: "del", key, seq: r.seq } : { kind: "put", key, value: r.value, seq: r.seq };
+      if (r.del) return { kind: "del", key, seq: r.seq };
+      return { kind: "put", key, value: r.value, seq: r.seq, ...(r.expiresAt === undefined ? {} : { expiresAt: r.expiresAt }) };
     }),
   );

@@ -226,9 +226,9 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
       drainBounded("SstReader.cursor (seek)", reader.cursor(mid ? { start: mid } : undefined), max),
     );
     // The wasm block filter reports no seq and the JS one does: compare hits without it.
-    const hits = (es: ScanHit[]): ScanHit[] => es.map(({ seq: _seq, ...hit }) => hit);
+    const hits = (es: ScanHit[]): ScanHit[] => es.map(({ key, kind, value }) => (value === undefined ? { key, kind } : { key, kind, value }));
     const contains = await one("SstReader.scanContains", async () =>
-      hits(await drainBounded("SstReader.scanContains", reader.scanContains([probe.pattern]), max)),
+      hits(await drainBounded("SstReader.scanContains", reader.scanContains([probe.pattern], 0), max)),
     );
     const reverse = await one("SstReader.cursor (reverse)", () =>
       drainBounded("SstReader.cursor (reverse)", reader.cursor(undefined, true), max),
@@ -237,7 +237,7 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
       drainBounded("SstReader.cursor (reverse seek)", reader.cursor(mid ? { endExclusive: mid } : undefined, true), max),
     );
     const reverseContains = await one("SstReader.scanContains (reverse)", async () =>
-      hits(await drainBounded("SstReader.scanContains (reverse)", reader.scanContains([probe.pattern], undefined, true), max)),
+      hits(await drainBounded("SstReader.scanContains (reverse)", reader.scanContains([probe.pattern], 0, undefined, true), max)),
     );
     reader.close();
     return { gets, scan, seek, contains, reverse, reverseSeek, reverseContains };
@@ -248,7 +248,9 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
 export function expectedRead(entries: readonly SstEntry[], probe: ReadProbe): ReadResult {
   const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
   const layer = (e: SstEntry): LayerEntry =>
-    e.kind === "put" ? { key: e.key, kind: "put", value: e.value, seq: e.seq } : { key: e.key, kind: "del", seq: e.seq };
+    e.kind === "put"
+      ? { key: e.key, kind: "put", value: e.value, seq: e.seq, ...(e.expiresAt === undefined ? {} : { expiresAt: e.expiresAt }) }
+      : { key: e.key, kind: "del", seq: e.seq };
   const hit = (e: SstEntry): ScanHit => (e.kind === "put" ? { key: e.key, kind: "put", value: e.value } : { key: e.key, kind: "del" });
   const mid = probe.keys[probe.keys.length >> 1];
   const holds = (v: Uint8Array) => {

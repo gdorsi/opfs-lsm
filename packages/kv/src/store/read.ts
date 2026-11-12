@@ -160,9 +160,9 @@ export class RunLevel {
     return this.concat(bounds, reverse, (run) => run.cursor(bounds, reverse));
   }
 
-  /** The puts in `bounds` whose value holds every pattern, in key order or backward. */
-  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
-    return this.concat(bounds, reverse, (run) => run.scanContains(patterns, bounds, reverse));
+  /** The puts in `bounds` whose value holds every pattern, in key order or backward. See `SstReader.scanContains` for `now`. */
+  scanContains(patterns: readonly Uint8Array[], now: number, bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
+    return this.concat(bounds, reverse, (run) => run.scanContains(patterns, now, bounds, reverse));
   }
 
   /**
@@ -328,7 +328,7 @@ export async function* scanMatching(
   reverse = false,
 ): AsyncGenerator<Entry> {
   const merge = new Merge<ScanHit>(
-    [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
+    [filterCursor(entryCursor(rows, reverse), patterns, 0), ...levels.map((level) => level.scanContains(patterns, 0, bounds, reverse))],
     reverse,
   );
   const marks = markCursor(at.marks, reverse);

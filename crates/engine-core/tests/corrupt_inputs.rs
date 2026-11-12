@@ -130,7 +130,7 @@ fn valid_run(rng: &mut Rng) -> (Vec<u8>, Codec) {
     let n = [0, 1, 3, 20, 200][rng.below(5)];
     let mut entries = sample_entries(n, rng.below(1000) as u64);
     if rng.chance(4) {
-        entries.push(Entry::Put { key: b"zz/big".to_vec(), value: vec![b'v'; 5000 + rng.below(3000)], seq: 9 });
+        entries.push(Entry::Put { key: b"zz/big".to_vec(), value: vec![b'v'; 5000 + rng.below(3000)], seq: 9, expires_at: None });
     }
     (encode_sst(&entries, codec), codec)
 }
@@ -237,15 +237,15 @@ fn scan_block_contains_survives_mutated_blocks() {
                 mutate(rng, &mut framed);
             }
             let pattern: &[u8] = [&b""[..], b" hot", b"\"n\":1", b"zz"][rng.below(4)];
-            let mut out = vec![codec as u8, pattern.len() as u8];
+            let mut out = vec![codec as u8 | (rng.below(64) as u8) << 1, pattern.len() as u8];
             out.extend_from_slice(pattern);
             out.extend_from_slice(&framed);
             out
         },
         |case| {
-            let (codec, pattern, framed) = corrupt::scan_case(case).unwrap();
+            let (codec, pattern, now, framed) = corrupt::scan_case(case).unwrap();
             let patterns: Vec<&[u8]> = if pattern.is_empty() { vec![] } else { vec![&pattern] };
-            corrupt::check_scan(framed, codec, &patterns);
+            corrupt::check_scan(framed, codec, &patterns, now);
         },
     );
 }
@@ -276,7 +276,7 @@ fn a_merge_session_fails_on_a_corrupt_input_and_folds_valid_ones() {
         6,
         |rng| {
             let sources: Vec<Vec<Vec<u8>>> = (0..rng.below(4) + 1).map(|_| session_source(rng)).collect();
-            let flags = rng.below(16) as u8;
+            let flags = rng.below(256) as u8;
             corrupt::encode_session_case(&sources, flags, rng.below(8) as u8, rng.next() as u8, rng.next() as u8)
         },
         |case| {
@@ -345,7 +345,7 @@ fn the_wrapper_run_decodes_a_block_as_the_engine_writes_it() {
 #[test]
 fn kb1_an_lz4_block_size_does_not_size_an_allocation() {
     let framed = [0xff, 0xff, 0xff, 0x7f, 0x10, 0x41];
-    let (out, largest) = largest_alloc(|| scan_block_contains(&framed, Codec::Lz4, &[]));
+    let (out, largest) = largest_alloc(|| scan_block_contains(&framed, Codec::Lz4, &[], 0));
     assert!(out.is_err());
     assert!(largest <= ALLOC_LIMIT, "allocated {largest} bytes for a 6-byte block");
 }

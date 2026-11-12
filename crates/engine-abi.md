@@ -42,11 +42,12 @@ encode_sst(ptr, len, lz4: i32) -> i32
 lz4_decompress(ptr, len, size: u32) -> i32
     Input: one LZ4 block body. Result: exactly `size` bytes, or -10.
 
-scan_block_contains(ptr, len, lz4: i32, pat_ptr, pat_len) -> i32
+scan_block_contains(ptr, len, lz4: i32, pat_ptr, pat_len, judge_now: f64) -> i32
     Input: one framed data block as the SST block index frames it (with
     the u32 size prefix when `lz4`), and a pattern list. Both live in the
     input region; `pat_ptr` may point anywhere inside it. Result: hit
-    records in key order.
+    records in key order, without the puts whose expiry is at or before
+    `judge_now` (epoch ms).
 ```
 
 ### Merge session
@@ -57,7 +58,7 @@ one session.
 
 ```text
 merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32,
-           chunk_bytes, tail_bytes, yield_bytes) -> i32
+           chunk_bytes, tail_bytes, yield_bytes, judge_now: f64) -> i32
     Input: source list (below), newest source first. Reserves the working
     set: about `chunk_bytes` per source plus the output buffer. Returns 0,
     -13 while a session is open, -5 for a malformed list, -1 for a run
@@ -97,14 +98,17 @@ sources the newest wins; within a source the last duplicate of a key wins,
 across block and run boundaries. A source whose keys go back fails with -14.
 Output runs are cut at key boundaries once their entries, sized as entry
 records (below), reach `target_bytes`, and written with `lz4`'s codec.
+A winning put whose expiry is at or before `judge_now` is written as a
+delete with its seq, so it drops like one when `drop_tombstones` is set.
 
 ## Wire formats
 
 All integers little-endian.
 
 ```text
-entry record     u8 tag (1 put, 2 del) · u64 seq · u32 key_len · key
-                 · for put only: u32 value_len · value
+entry record     u8 tag (1 put, 2 del, 3 put with expiry) · u64 seq
+                 · (tag 3 only) u64 expires_at · u32 key_len · key
+                 · (tags 1 and 3) u32 value_len · value
 pattern list     repeated: u32 len · bytes
 hit record       u32 key_len · u32 value_len · key · value
 run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_len

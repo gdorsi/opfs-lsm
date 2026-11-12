@@ -70,7 +70,8 @@ fn entries(rng: &mut Rng) -> Vec<Entry> {
             Entry::Del { key, seq }
         } else {
             let len = if shape == 3 { rng.below(30) } else { value_len(rng) };
-            Entry::Put { key, value: rng.bytes(len), seq }
+            let expires_at = if rng.chance(3) { Some(rng.next() >> rng.below(64)) } else { None };
+            Entry::Put { key, value: rng.bytes(len), seq, expires_at }
         });
     }
     if rng.chance(2) {
@@ -118,7 +119,7 @@ fn random_runs_encode_to_the_reference_bytes() {
 
 #[test]
 fn named_shapes_encode_to_the_reference_bytes() {
-    let put = |k: &[u8], v: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: v.to_vec(), seq };
+    let put = |k: &[u8], v: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: v.to_vec(), seq, expires_at: None };
     let del = |k: &[u8], seq: u64| Entry::Del { key: k.to_vec(), seq };
     let cases: Vec<(&str, Vec<Entry>)> = vec![
         ("empty", vec![]),
@@ -144,7 +145,7 @@ fn named_shapes_encode_to_the_reference_bytes() {
 /// being cut to the next one.
 #[test]
 fn a_block_may_fill_the_target_exactly() {
-    let put = |k: &[u8], v: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: v.to_vec(), seq };
+    let put = |k: &[u8], v: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: v.to_vec(), seq, expires_at: None };
     let mut exact = 0;
     for pad in 0..400 {
         let mut entries: Vec<Entry> = (0..30).map(|i| put(format!("k{i:02}").as_bytes(), &[b'x'; 120], i)).collect();
@@ -257,7 +258,7 @@ fn a_writer_is_ready_for_the_next_run_after_finish() {
 
 #[test]
 fn a_key_below_the_last_is_refused_and_changes_nothing() {
-    let put = |k: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: b"v".to_vec(), seq };
+    let put = |k: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: b"v".to_vec(), seq, expires_at: None };
     for codec in [Codec::Raw, Codec::Lz4] {
         let mut writer = SstWriter::new(codec);
         let mut out = Vec::new();
@@ -278,8 +279,8 @@ fn an_unsorted_pair_across_a_block_boundary_is_refused() {
     let mut writer = SstWriter::new(Codec::Raw);
     let mut out = Vec::new();
     let big = vec![1u8; 3_000];
-    writer.push(EntryRef::Put { key: b"m", value: &big, seq: 1 }, &mut out).unwrap();
-    writer.push(EntryRef::Put { key: b"n", value: &big, seq: 2 }, &mut out).unwrap();
+    writer.push(EntryRef::Put { key: b"m", value: &big, seq: 1, expires_at: None }, &mut out).unwrap();
+    writer.push(EntryRef::Put { key: b"n", value: &big, seq: 2, expires_at: None }, &mut out).unwrap();
     assert!(!out.is_empty(), "the first block is out");
     assert_eq!(writer.push(EntryRef::Del { key: b"a", seq: 3 }, &mut out), Err(OutOfOrder));
 }
@@ -294,7 +295,7 @@ fn the_open_block_is_held_in_no_more_bytes_than_it_is_written_in() {
     let mut most = 0;
     for i in 0..4_000 {
         let k = key(&mut rng, i, 3);
-        writer.push(EntryRef::Put { key: &k, value: b"v", seq: i as u64 }, &mut out).unwrap();
+        writer.push(EntryRef::Put { key: &k, value: b"v", seq: i as u64, expires_at: None }, &mut out).unwrap();
         most = most.max(writer.staged.len());
         out.clear();
     }
@@ -307,7 +308,7 @@ fn the_open_block_is_held_in_no_more_bytes_than_it_is_written_in() {
 fn a_two_entry_run_has_the_documented_bytes() {
     let mut writer = SstWriter::new(Codec::Raw);
     let mut out = Vec::new();
-    writer.push(EntryRef::Put { key: b"ab", value: b"1", seq: 5 }, &mut out).unwrap();
+    writer.push(EntryRef::Put { key: b"ab", value: b"1", seq: 5, expires_at: None }, &mut out).unwrap();
     writer.push(EntryRef::Del { key: b"ac", seq: 6 }, &mut out).unwrap();
     let end = writer.finish(&mut out);
 
@@ -333,6 +334,6 @@ fn a_two_entry_run_has_the_documented_bytes() {
         [2, 1, block.len(), bloom_len, 7, index_at, index.len(), 0]
     );
     assert_eq!(field(8) as u32, crc32(&out[..out.len() - 12]));
-    assert_eq!((field(9), field(10) as u32), (1, MAGIC));
+    assert_eq!((field(9), field(10) as u32), (2, MAGIC));
     assert_eq!(end, RunEnd { entries: 2, size: out.len(), first_key: b"ab".to_vec(), last_key: b"ac".to_vec() });
 }

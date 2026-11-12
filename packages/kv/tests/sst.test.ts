@@ -31,7 +31,7 @@ describe("sst", () => {
     const body = encodeSst([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     expect(view.getUint32(0, true)).toBe(1); // first block's record count
-    expect(view.getUint32(body.byteLength - 8, true)).toBe(1); // version
+    expect(view.getUint32(body.byteLength - 8, true)).toBe(2); // version
     expect(view.getUint32(body.byteLength - 4, true)).toBe(0x4f4c5354); // magic
   });
 

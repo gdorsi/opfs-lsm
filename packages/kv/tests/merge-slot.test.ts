@@ -52,6 +52,7 @@ describe("the wasm engine's session", () => {
     chunkBytes: 64 * 1024,
     tailBytes: 64 * 1024,
     yieldBytes: 1024 * 1024,
+    judgeNow: 0,
   };
 
   it("refuses a second session instead of handing out the TypeScript one", async () => {

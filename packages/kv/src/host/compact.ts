@@ -86,6 +86,7 @@ async function writeStep(
     merge = await openMerge({
       sources: inputs.map((files) => files.map((f) => f.size)),
       dropTombstones: plan.bottom,
+      judgeNow: 0,
       targetBytes: TARGET_RUN_BYTES,
       codec: codecForLevel(plan.outputLevel),
       chunkBytes: budget.chunkBytes,

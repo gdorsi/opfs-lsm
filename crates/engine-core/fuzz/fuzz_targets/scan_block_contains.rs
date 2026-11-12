@@ -8,7 +8,7 @@ mod corrupt;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let Some((codec, pattern, framed)) = corrupt::scan_case(data) else { return };
+    let Some((codec, pattern, now, framed)) = corrupt::scan_case(data) else { return };
     let patterns: Vec<&[u8]> = if pattern.is_empty() { vec![] } else { vec![&pattern] };
-    corrupt::check_scan(framed, codec, &patterns);
+    corrupt::check_scan(framed, codec, &patterns, now);
 });

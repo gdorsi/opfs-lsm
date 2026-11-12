@@ -1,6 +1,7 @@
 import { compareBytes } from "../../src/bytes.js";
 import { CorruptDatabaseError } from "../../src/errors.js";
 import { crc32 } from "../../src/store/crc32.js";
+import { expired } from "../../src/store/judge.js";
 import type { Demand, MergeCore, MergeSpec, MergeStop } from "../../src/store/engine.js";
 import {
   blockLengths,
@@ -39,6 +40,7 @@ class Session implements MergeCore {
   private readonly sources: Source[];
   private readonly pace = { consumed: 0 };
   private readonly dropTombstones: boolean;
+  private readonly judgeNow: number;
   private readonly targetBytes: number;
   private readonly chunkBytes: number;
   private readonly yieldBytes: number;
@@ -58,6 +60,7 @@ class Session implements MergeCore {
     const tailBytes = Math.max(SST_FOOTER_BYTES, spec.tailBytes);
     this.sources = spec.sources.map((runs, i) => new Source(new Reader(i, runs, this.chunkBytes, tailBytes, this.pace)));
     this.dropTombstones = spec.dropTombstones;
+    this.judgeNow = spec.judgeNow;
     this.targetBytes = spec.targetBytes;
     this.yieldBytes = Math.max(1, spec.yieldBytes);
   }
@@ -144,7 +147,8 @@ class Session implements MergeCore {
     }
   }
 
-  private emit(e: SstEntry): void {
+  private emit(winner: SstEntry): void {
+    const e: SstEntry = winner.kind === "put" && expired(winner, { now: this.judgeNow }) ? { kind: "del", key: winner.key, seq: winner.seq } : winner;
     if (e.kind === "del" && this.dropTombstones) {
       this.dropped = Math.max(this.dropped, e.seq ?? 0);
       return;

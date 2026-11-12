@@ -3,7 +3,7 @@
  * The module is required: encoding a run and merging runs have no other
  * implementation, so a context where it does not load cannot flush.
  */
-import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
+import { entryRecordSize, type EncodedRun, type RunEnd, type SstCodec, type SstEntry } from "./sst.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
 import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
@@ -65,7 +65,7 @@ export type EngineExports = {
   result_len(): number;
   encode_sst(ptr: number, len: number, lz4: number): number;
   lz4_decompress(ptr: number, len: number, size: number): number;
-  scan_block_contains(ptr: number, len: number, lz4: number, patPtr: number, patLen: number): number;
+  scan_block_contains(ptr: number, len: number, lz4: number, patPtr: number, patLen: number, judgeNow: number): number;
   merge_open(
     ptr: number,
     len: number,
@@ -75,6 +75,7 @@ export type EngineExports = {
     chunkBytes: number,
     tailBytes: number,
     yieldBytes: number,
+    judgeNow: number,
   ): number;
   merge_pump(): number;
   merge_feed(source: number, len: number): number;
@@ -95,6 +96,11 @@ export type MergeSpec = {
   readonly sources: readonly (readonly number[])[];
   /** Drop the tombstones that win: only when the output is the bottom level. */
   readonly dropTombstones: boolean;
+  /**
+   * Epoch ms. A winning put expired by then is written as a tombstone with
+   * its seq, or dropped with the tombstones. 0 judges nothing.
+   */
+  readonly judgeNow: number;
   /** Close an output run once its entries' `entryRecordSize`s reach this. */
   readonly targetBytes: number;
   readonly codec: SstCodec;
@@ -149,7 +155,7 @@ export type FlatEngine = {
   /** Write `len` bytes through `fill`, run `op`, return a copy of the result. */
   call(name: string, len: number, fill: (into: Uint8Array) => void, op: (ptr: number) => number): Uint8Array;
   lz4Decompress(src: Uint8Array, size: number): Uint8Array;
-  scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
+  scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array, now: number): Uint8Array;
   /** The module's memory. It only grows. */
   memoryBytes(): number;
   /** Whether a merge session is open, from its `openMergeIn` to its `close`. */
@@ -158,6 +164,7 @@ export type FlatEngine = {
 
 const TAG_PUT = 1;
 const TAG_DEL = 2;
+const TAG_PUT_EXPIRING = 3;
 const TWO_32 = 0x1_0000_0000;
 
 export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAPACITY): FlatEngine {
@@ -190,7 +197,7 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
       );
     },
 
-    scanBlockContains(framed, lz4, patterns) {
+    scanBlockContains(framed, lz4, patterns, now) {
       const len = framed.byteLength + patterns.byteLength;
       return call(
         "scan_block_contains",
@@ -200,7 +207,7 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
           into.set(patterns, framed.byteLength);
         },
         (ptr) =>
-          ex.scan_block_contains(ptr, framed.byteLength, lz4 ? 1 : 0, ptr + framed.byteLength, patterns.byteLength),
+          ex.scan_block_contains(ptr, framed.byteLength, lz4 ? 1 : 0, ptr + framed.byteLength, patterns.byteLength, now),
       );
     },
 
@@ -213,7 +220,7 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
 export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz4: boolean): EncodedRun {
   let size = 0;
   for (const e of entries) {
-    size += 1 + 8 + 4 + e.key.byteLength + (e.kind === "put" ? 4 + e.value.byteLength : 0);
+    size += entryRecordSize(e);
   }
   const out = engine.call(
     "encode_sst",
@@ -221,14 +228,19 @@ export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz
     (into) => {
       const view = new DataView(into.buffer, into.byteOffset, into.byteLength);
       let o = 0;
+      const u64 = (v: number) => {
+        view.setUint32(o, v % TWO_32, true);
+        view.setUint32(o + 4, Math.floor(v / TWO_32), true);
+        o += 8;
+      };
       for (const e of entries) {
-        const seq = e.seq;
-        view.setUint8(o, e.kind === "put" ? TAG_PUT : TAG_DEL);
-        view.setUint32(o + 1, seq % TWO_32, true);
-        view.setUint32(o + 5, Math.floor(seq / TWO_32), true);
-        view.setUint32(o + 9, e.key.byteLength, true);
-        into.set(e.key, o + 13);
-        o += 13 + e.key.byteLength;
+        const expiresAt = e.kind === "put" ? e.expiresAt : undefined;
+        view.setUint8(o++, e.kind === "del" ? TAG_DEL : expiresAt === undefined ? TAG_PUT : TAG_PUT_EXPIRING);
+        u64(e.seq);
+        if (expiresAt !== undefined) u64(expiresAt);
+        view.setUint32(o, e.key.byteLength, true);
+        into.set(e.key, o + 4);
+        o += 4 + e.key.byteLength;
         if (e.kind === "put") {
           view.setUint32(o, e.value.byteLength, true);
           into.set(e.value, o + 4);
@@ -277,6 +289,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
     spec.chunkBytes,
     spec.tailBytes,
     spec.yieldBytes,
+    spec.judgeNow,
   );
   if (opened < 0) throw statusError("merge_open", opened, inputBytes, capacity);
   engine.sessionOpen = true;
@@ -449,9 +462,9 @@ export function ensureEngine(): Promise<void> {
         return lz4DecompressJs(src, size);
       }
     });
-    useBlockScanner((framed, lz4, patterns) => {
+    useBlockScanner((framed, lz4, patterns, now) => {
       try {
-        return engine!.scanBlockContains(framed, lz4, patterns);
+        return engine!.scanBlockContains(framed, lz4, patterns, now);
       } catch (err) {
         afterTrap(err);
         throw corrupt(err, "sst block corrupt");

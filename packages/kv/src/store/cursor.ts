@@ -1,4 +1,5 @@
 import { compareBytes, containsAll } from "../bytes.js";
+import { expired } from "./judge.js";
 
 /** A matching put from a run's block filter, which reports no seq. */
 export type ScanHit = {
@@ -12,6 +13,8 @@ export type ScanHit = {
 export type LayerEntry = ScanHit & {
   /** The WAL seq that wrote the entry. */
   readonly seq: number;
+  /** A put's expiry, epoch ms. */
+  readonly expiresAt?: number;
 };
 
 export type ScanBounds = {
@@ -80,12 +83,12 @@ export function allMissed(misses: readonly Miss[]): Miss {
 }
 
 /** The puts of `cursor` whose value holds every pattern. */
-export function filterCursor<E extends ScanHit>(cursor: LayerCursor<E>, patterns: readonly Uint8Array[]): LayerCursor<E> {
+export function filterCursor<E extends LayerEntry>(cursor: LayerCursor<E>, patterns: readonly Uint8Array[], now: number): LayerCursor<E> {
   return {
     peek() {
       for (;;) {
         const e = cursor.peek();
-        if (!e || e instanceof Miss || (e.kind === "put" && containsAll(e.value!, patterns))) return e;
+        if (!e || e instanceof Miss || (e.kind === "put" && !expired(e, { now }) && containsAll(e.value!, patterns))) return e;
         cursor.next();
       }
     },

@@ -1,4 +1,4 @@
-//! SST format, version 1. Data blocks first, then the bloom filter, the
+//! SST format, version 2. Data blocks first, then the bloom filter, the
 //! block index, and a 44-byte footer. Each block stores its shared key
 //! prefix once; records hold the suffix and use varint lengths. Magic and
 //! version sit in the last 8 bytes.
@@ -15,10 +15,12 @@ mod reference;
 mod writer_tests;
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 pub(crate) const FOOTER_BYTES: usize = 44;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
+/// A put with an expiry: a u64 epoch-ms `expires_at` follows the seq.
+const TAG_PUT_EXPIRING: u8 = 3;
 pub(crate) const BLOCK_TARGET: usize = 4 * 1024;
 /// A block stores the offset of every `OFFSET_STRIDE`th record after
 /// the first, so a get binary-searches them and walks at most
@@ -53,9 +55,10 @@ impl Codec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// `seq` is the WAL seq that wrote the entry.
+/// `seq` is the WAL seq that wrote the entry. A put with `expires_at` reads
+/// as absent from that epoch ms on.
 pub enum Entry {
-    Put { key: Vec<u8>, value: Vec<u8>, seq: u64 },
+    Put { key: Vec<u8>, value: Vec<u8>, seq: u64, expires_at: Option<u64> },
     Del { key: Vec<u8>, seq: u64 },
 }
 
@@ -78,7 +81,7 @@ impl Entry {
 /// next entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryRef<'a> {
-    Put { key: &'a [u8], value: &'a [u8], seq: u64 },
+    Put { key: &'a [u8], value: &'a [u8], seq: u64, expires_at: Option<u64> },
     Del { key: &'a [u8], seq: u64 },
 }
 
@@ -93,7 +96,7 @@ impl<'a> EntryRef<'a> {
 impl<'a> From<&'a Entry> for EntryRef<'a> {
     fn from(e: &'a Entry) -> Self {
         match e {
-            Entry::Put { key, value, seq } => EntryRef::Put { key, value, seq: *seq },
+            Entry::Put { key, value, seq, expires_at } => EntryRef::Put { key, value, seq: *seq, expires_at: *expires_at },
             Entry::Del { key, seq } => EntryRef::Del { key, seq: *seq },
         }
     }
@@ -161,15 +164,23 @@ pub struct EncodedRun {
     pub end: RunEnd,
 }
 
-/// Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
-/// records use varints and a shared prefix, so they are never larger.
-/// Compaction cuts runs by this without encoding them.
+/// Upper bound on an encoded record: tag, seq, expiry, and u32 lengths.
+/// On-disk records use varints and a shared prefix, so they are never
+/// larger. Compaction cuts runs by this without encoding them.
 pub(crate) fn entry_size(e: EntryRef<'_>) -> usize {
     let mut n = 1 + 8 + 4 + e.key().len();
-    if let EntryRef::Put { value, .. } = e {
-        n += 4 + value.len();
+    if let EntryRef::Put { value, expires_at, .. } = e {
+        n += 4 + value.len() + expiry_len(expires_at);
     }
     n
+}
+
+fn expiry_len(expires_at: Option<u64>) -> usize {
+    if expires_at.is_some() {
+        8
+    } else {
+        0
+    }
 }
 
 pub(crate) fn read_u32(buf: &[u8], o: usize) -> u32 {
@@ -226,7 +237,7 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
 fn record_overhead(e: EntryRef<'_>) -> usize {
     let n = 1 + 8 + varint_len(e.key().len());
     match e {
-        EntryRef::Put { value, .. } => n + varint_len(value.len()) + value.len(),
+        EntryRef::Put { value, expires_at, .. } => n + expiry_len(expires_at) + varint_len(value.len()) + value.len(),
         EntryRef::Del { .. } => n,
     }
 }
@@ -242,6 +253,7 @@ struct Staged {
     rest: usize,
     /// None for a tombstone.
     value: Option<usize>,
+    expires_at: Option<u64>,
 }
 
 /// The bytes a run has emitted so far, and their CRC.
@@ -345,11 +357,11 @@ impl SstWriter {
             self.first.clear();
             self.first.extend_from_slice(key);
         }
-        let (seq, value) = match e {
-            EntryRef::Put { value, seq, .. } => (seq, Some(value)),
-            EntryRef::Del { seq, .. } => (seq, None),
+        let (seq, value, expires_at) = match e {
+            EntryRef::Put { value, seq, expires_at, .. } => (seq, Some(value), expires_at),
+            EntryRef::Del { seq, .. } => (seq, None, None),
         };
-        self.recs.push(Staged { seq, shared, rest: key.len() - shared, value: value.map(<[u8]>::len) });
+        self.recs.push(Staged { seq, shared, rest: key.len() - shared, value: value.map(<[u8]>::len), expires_at });
         self.staged.extend_from_slice(&key[shared..]);
         if let Some(value) = value {
             self.staged.extend_from_slice(value);
@@ -372,7 +384,7 @@ impl SstWriter {
     ///   data blocks | bloom bits | block index | footer (44 bytes)
     /// The footer is u32 entry count, block count, bloom offset, bloom length,
     /// bloom hash count, index offset, index length, codec, then a u32 CRC of
-    /// every byte before it, u32 version 1 and u32 magic.
+    /// every byte before it, u32 version 2 and u32 magic.
     pub fn finish(&mut self, out: &mut Vec<u8>) -> RunEnd {
         if !self.recs.is_empty() || self.blocks == 0 {
             self.cut(out);
@@ -433,7 +445,8 @@ impl SstWriter {
     /// for sorted keys is the first and last key's. `offsets[j]` is where
     /// record `(j + 1) * OFFSET_STRIDE` starts, from the start of the block.
     /// A record is
-    ///   u8 tag | u64 seq | varint suffixLen | suffix | (put) varint valLen | value
+    ///   u8 tag | u64 seq | (tag 3) u64 expiresAt | varint suffixLen | suffix
+    ///   | (put) varint valLen | value
     /// An LZ4 block is then framed with its uncompressed length.
     fn cut(&mut self, out: &mut Vec<u8>) {
         let p = self.recs.last().map_or(0, |r| r.shared);
@@ -451,8 +464,15 @@ impl SstWriter {
             let head = &self.first[p..r.shared];
             let rest = &self.staged[at..at + r.rest];
             at += r.rest;
-            block.push(if r.value.is_some() { TAG_PUT } else { TAG_DEL });
+            block.push(match (r.value, r.expires_at) {
+                (None, _) => TAG_DEL,
+                (Some(_), None) => TAG_PUT,
+                (Some(_), Some(_)) => TAG_PUT_EXPIRING,
+            });
             block.extend_from_slice(&r.seq.to_le_bytes());
+            if let Some(at) = r.expires_at {
+                block.extend_from_slice(&at.to_le_bytes());
+            }
             write_varint(block, head.len() + rest.len());
             block.extend_from_slice(head);
             block.extend_from_slice(rest);
@@ -543,7 +563,7 @@ fn merge_sort<'a>(v: &mut [&'a Entry], buf: &mut [&'a Entry]) {
     }
 }
 
-/// Encode SST version 1 (layout in `SstWriter::finish`) from entries in any
+/// Encode SST version 2 (layout in `SstWriter::finish`) from entries in any
 /// order, appending the run to `out`. Equal keys keep their order in `entries`.
 pub fn encode_run_into(entries: &[Entry], codec: Codec, out: &mut Vec<u8>) -> RunEnd {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
@@ -599,6 +619,8 @@ pub(crate) struct Record<'b> {
     pub(crate) suffix: &'b [u8],
     /// `None` for a tombstone.
     pub(crate) value: Option<&'b [u8]>,
+    /// Always `None` for a tombstone.
+    pub(crate) expires_at: Option<u64>,
 }
 
 impl Record<'_> {
@@ -607,10 +629,16 @@ impl Record<'_> {
         key.extend_from_slice(self.prefix);
         key.extend_from_slice(self.suffix);
         match self.value {
-            Some(value) => Entry::Put { key, value: value.to_vec(), seq: self.seq },
+            Some(value) => Entry::Put { key, value: value.to_vec(), seq: self.seq, expires_at: self.expires_at },
             None => Entry::Del { key, seq: self.seq },
         }
     }
+}
+
+/// Whether a put with `expires_at` reads as absent at `now`, epoch ms. A
+/// `now` of 0 judges nothing: an expiry is at least 1.
+pub(crate) fn expired(expires_at: Option<u64>, now: u64) -> bool {
+    expires_at.is_some_and(|at| at <= now)
 }
 
 /// A cursor over the records of one unpacked data block:
@@ -660,6 +688,16 @@ impl BlockWalk {
         }
         let seq = u64::from_le_bytes(block[o..o + 8].try_into().unwrap());
         o += 8;
+        let expires_at = if tag == TAG_PUT_EXPIRING {
+            if end - o < 8 {
+                return Err(SstError::Truncated);
+            }
+            let at = u64::from_le_bytes(block[o..o + 8].try_into().unwrap());
+            o += 8;
+            Some(at)
+        } else {
+            None
+        };
         let key_len = read_varint(block, &mut o, end)?;
         if key_len > end - o {
             return Err(SstError::Truncated);
@@ -667,7 +705,7 @@ impl BlockWalk {
         let suffix = &block[o..o + key_len];
         o += key_len;
         let value = match tag {
-            TAG_PUT => {
+            TAG_PUT | TAG_PUT_EXPIRING => {
                 let val_len = read_varint(block, &mut o, end)?;
                 if val_len > end - o {
                     return Err(SstError::Truncated);
@@ -682,7 +720,7 @@ impl BlockWalk {
         self.o = o;
         self.left -= 1;
         let prefix = &block[self.prefix_at..self.prefix_at + self.prefix_len];
-        Ok(Some(Record { seq, prefix, suffix, value }))
+        Ok(Some(Record { seq, prefix, suffix, value, expires_at }))
     }
 }
 
@@ -712,11 +750,12 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 
 /// The puts of one data block of a run, as the block index frames it (`codec`
 /// says whether it is a u32 length plus LZ4 bytes or raw), whose value
-/// contains every pattern. Records are read in place, so a raw block that
-/// misses allocates nothing. An LZ4 block is unpacked first, and that unpack is
-/// most of the cost of a miss. Hits come back packed: `u32 key_len, u32 value_len, key, value`,
+/// contains every pattern and that have not expired at `now` (epoch ms).
+/// Records are read in place, so a raw block that misses allocates nothing.
+/// An LZ4 block is unpacked first, and that unpack is most of the cost of a
+/// miss. Hits come back packed: `u32 key_len, u32 value_len, key, value`,
 /// little-endian, in key order.
-pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]]) -> Result<Vec<u8>, SstError> {
+pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]], now: u64) -> Result<Vec<u8>, SstError> {
     let unpacked;
     let block = match codec {
         Codec::Raw => framed,
@@ -732,7 +771,7 @@ pub fn scan_block_contains(framed: &[u8], codec: Codec, patterns: &[&[u8]]) -> R
     let mut out = Vec::new();
     while let Some(record) = walk.next(block)? {
         let Some(value) = record.value else { continue };
-        if patterns.iter().all(|p| contains(value, p)) {
+        if !expired(record.expires_at, now) && patterns.iter().all(|p| contains(value, p)) {
             out.extend_from_slice(&((record.prefix.len() + record.suffix.len()) as u32).to_le_bytes());
             out.extend_from_slice(&(value.len() as u32).to_le_bytes());
             out.extend_from_slice(record.prefix);
@@ -858,16 +897,57 @@ mod tests {
     #[test]
     fn round_trip_keeps_seq() {
         let entries = vec![
-            Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 },
+            Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7, expires_at: None },
             Entry::Del { key: b"a".to_vec(), seq: 9 },
-            Entry::Put { key: b"c".to_vec(), value: b"3".to_vec(), seq: 1 << 40 },
+            Entry::Put { key: b"c".to_vec(), value: b"3".to_vec(), seq: 1 << 40, expires_at: None },
         ];
         let bytes = encode_sst(&entries, Codec::Raw);
         assert_eq!(read_u32(&bytes, bytes.len() - 8), VERSION);
         let decoded = decode_sst(&bytes).unwrap();
         assert_eq!(decoded[0], Entry::Del { key: b"a".to_vec(), seq: 9 });
-        assert_eq!(decoded[1], Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 });
+        assert_eq!(decoded[1], Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7, expires_at: None });
         assert_eq!(decoded[2].seq(), 1 << 40);
+    }
+
+    #[test]
+    fn a_put_with_an_expiry_round_trips_as_tag_3() {
+        let entries = vec![
+            Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 3, expires_at: Some(1_700_000_000_000) },
+            Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 4, expires_at: None },
+            Entry::Put { key: b"c".to_vec(), value: vec![], seq: 5, expires_at: Some(u64::MAX) },
+        ];
+        for codec in [Codec::Raw, Codec::Lz4] {
+            assert_eq!(decode_sst(&encode_sst(&entries, codec)).unwrap(), entries, "{codec:?}");
+        }
+        let bytes = encode_sst(&entries[..1], Codec::Raw);
+        let record = 4 + 1 + 1;
+        assert_eq!(bytes[record], TAG_PUT_EXPIRING);
+        assert_eq!(read_u64(&bytes, record + 9), 1_700_000_000_000, "expiry follows the seq");
+        assert_eq!(entry_size((&entries[0]).into()), entry_size((&entries[1]).into()) + 8);
+    }
+
+    fn read_u64(buf: &[u8], o: usize) -> u64 {
+        u64::from_le_bytes(buf[o..o + 8].try_into().unwrap())
+    }
+
+    #[test]
+    fn a_block_scan_skips_a_put_expired_at_now() {
+        let put = |k: &[u8], seq, expires_at| Entry::Put { key: k.to_vec(), value: b"hit".to_vec(), seq, expires_at };
+        let entries = vec![put(b"a", 1, Some(10)), put(b"b", 2, Some(11)), put(b"c", 3, None)];
+        let sst = encode_sst(&entries, Codec::Raw);
+        let layout = read_footer(&sst[sst.len() - FOOTER_BYTES..], sst.len()).unwrap();
+        let framed = &sst[..layout.data_len];
+        let keys = |now| hits(&scan_block_contains(framed, Codec::Raw, &[b"hit"], now).unwrap()).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        assert_eq!(keys(0), [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()], "now 0 judges nothing");
+        assert_eq!(keys(9), [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+        assert_eq!(keys(10), [b"b".to_vec(), b"c".to_vec()], "gone at its deadline");
+        assert_eq!(keys(u64::MAX), [b"c".to_vec()]);
+    }
+
+    #[test]
+    fn rejects_a_tag_3_record_cut_inside_its_expiry() {
+        let block = [1, 0, 0, 0, 0, TAG_PUT_EXPIRING, 1, 0, 0, 0, 0, 0, 0, 0, 7, 7];
+        assert_eq!(read_block(&block), Err(SstError::Truncated));
     }
 
     fn hits(packed: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -911,7 +991,7 @@ mod tests {
                 o += 8;
                 let framed = &sst[offset..offset + length];
                 for (i, pats) in [&[b" word3".as_slice()][..], &[b" word3", b" common0"], &[b" nope"], &[]].iter().enumerate() {
-                    got[i].extend(hits(&scan_block_contains(framed, codec, pats).unwrap()));
+                    got[i].extend(hits(&scan_block_contains(framed, codec, pats, 0).unwrap()));
                 }
             }
             assert!(layout.block_count > 1, "{codec:?} spans several blocks");
@@ -931,7 +1011,7 @@ mod tests {
     }
 
     fn put(key: &[u8], value: &[u8], seq: u64) -> Entry {
-        Entry::Put { key: key.to_vec(), value: value.to_vec(), seq }
+        Entry::Put { key: key.to_vec(), value: value.to_vec(), seq, expires_at: None }
     }
 
     fn round_trip(entries: Vec<Entry>) {
@@ -1032,6 +1112,7 @@ mod tests {
                 key: format!("todo/{i:013}").into_bytes(),
                 value: format!("{{\"title\":\"buy milk {}\",\"done\":false}}", i % 7).into_bytes(),
                 seq: i,
+                expires_at: None,
             })
             .collect()
     }
@@ -1086,7 +1167,7 @@ mod tests {
 
     #[test]
     fn data_comes_first_and_the_footer_last() {
-        let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 }];
+        let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7, expires_at: None }];
         let bytes = encode_sst(&entries, Codec::Raw);
         assert_eq!(read_u32(&bytes, 0), 1, "first block's record count");
         assert_eq!(read_u32(&bytes, bytes.len() - 4), MAGIC);
@@ -1094,7 +1175,7 @@ mod tests {
 
     #[test]
     fn rejects_a_flipped_data_byte() {
-        let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 }];
+        let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7, expires_at: None }];
         let mut bytes = encode_sst(&entries, Codec::Raw);
         bytes[5] ^= 0xff;
         assert_eq!(decode_sst(&bytes), Err(SstError::CrcMismatch));
@@ -1105,7 +1186,7 @@ mod tests {
         let mut entries = Vec::new();
         for i in 0..200 {
             let key = format!("k{i:04}").into_bytes();
-            entries.push(Entry::Put { key, value: vec![b'x'; 64], seq: i });
+            entries.push(Entry::Put { key, value: vec![b'x'; 64], seq: i, expires_at: None });
         }
         let bytes = encode_sst(&entries, Codec::Raw);
         let block_count = read_u32(&bytes, bytes.len() - FOOTER_BYTES + 4);
@@ -1118,7 +1199,7 @@ mod tests {
     #[test]
     fn bloom_past_64_kib() {
         let entries: Vec<Entry> = (0..60_000u64)
-            .map(|i| Entry::Put { key: format!("k{i:08}").into_bytes(), value: b"v".to_vec(), seq: i })
+            .map(|i| Entry::Put { key: format!("k{i:08}").into_bytes(), value: b"v".to_vec(), seq: i, expires_at: None })
             .collect();
         let bytes = encode_sst(&entries, Codec::Raw);
         assert!(read_u32(&bytes, bytes.len() - FOOTER_BYTES + 12) > u16::MAX as u32);

@@ -62,6 +62,7 @@ impl Heads {
 pub(crate) fn merge_sst_bytes(
     sst_bytes: &[Vec<u8>],
     drop_tombstones: bool,
+    judge_now: u64,
     target_bytes: usize,
     codec: Codec,
 ) -> Result<(Vec<EncodedRun>, u64), SstError> {
@@ -104,6 +105,10 @@ pub(crate) fn merge_sst_bytes(
             };
             heap.replace_top(replacement.map(|entry| Head { entry, run: shadowed_run }));
         }
+        let entry = match entry {
+            Entry::Put { key, seq, expires_at: Some(at), .. } if at <= judge_now => Entry::Del { key, seq },
+            other => other,
+        };
         if drop_tombstones && matches!(entry, Entry::Del { .. }) {
             dropped = dropped.max(entry.seq());
             continue;

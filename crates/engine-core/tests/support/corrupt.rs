@@ -105,7 +105,7 @@ pub fn check_decode(buf: &[u8]) {
     let codec = if f.codec == 1 { Codec::Lz4 } else { Codec::Raw };
     let mut hits = Vec::new();
     for framed in framed_blocks(buf) {
-        let packed = scan_block_contains(framed, codec, &[]).expect("a block of a run that decodes must scan");
+        let packed = scan_block_contains(framed, codec, &[], 0).expect("a block of a run that decodes must scan");
         hits.extend(unpack_hits(&packed));
     }
     let puts: Vec<(Vec<u8>, Vec<u8>)> = entries
@@ -141,9 +141,10 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 
 /// `scan_block_contains` on arbitrary framed bytes. Every hit holds every
 /// pattern. When the scan succeeds, the same block wrapped in a one-block
-/// run decodes, and its puts filtered by the patterns are the hits.
-pub fn check_scan(framed: &[u8], codec: Codec, patterns: &[&[u8]]) {
-    let Ok(packed) = scan_block_contains(framed, codec, patterns) else { return };
+/// run decodes, and its puts not expired at `now` and filtered by the
+/// patterns are the hits.
+pub fn check_scan(framed: &[u8], codec: Codec, patterns: &[&[u8]], now: u64) {
+    let Ok(packed) = scan_block_contains(framed, codec, patterns, now) else { return };
     let hits = unpack_hits(&packed);
     for (_, value) in &hits {
         assert!(patterns.iter().all(|p| contains(value, p)), "a hit holds every pattern");
@@ -154,7 +155,11 @@ pub fn check_scan(framed: &[u8], codec: Codec, patterns: &[&[u8]]) {
     let want: Vec<(Vec<u8>, Vec<u8>)> = entries
         .into_iter()
         .filter_map(|e| match e {
-            Entry::Put { key, value, .. } if patterns.iter().all(|p| contains(&value, p)) => Some((key, value)),
+            Entry::Put { key, value, expires_at, .. }
+                if expires_at.is_none_or(|at| at > now) && patterns.iter().all(|p| contains(&value, p)) =>
+            {
+                Some((key, value))
+            }
             _ => None,
         })
         .collect();
@@ -188,7 +193,7 @@ pub fn wrap_block(framed: &[u8], codec: Codec, count: u32) -> Vec<u8> {
     }
     let sum = crc32(&out);
     out.extend_from_slice(&sum.to_le_bytes());
-    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&0x4f4c_5354u32.to_le_bytes());
     out
 }
@@ -294,7 +299,11 @@ pub fn check_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) {
     let mut map: BTreeMap<Vec<u8>, Entry> = BTreeMap::new();
     for source in decoded.iter().rev() {
         for e in source {
-            map.insert(e.key().to_vec(), e.clone());
+            let e = match e.clone() {
+                Entry::Put { key, seq, expires_at: Some(at), .. } if at <= config.judge_now => Entry::Del { key, seq },
+                other => other,
+            };
+            map.insert(e.key().to_vec(), e);
         }
     }
     let mut want_dropped = 0;
@@ -315,7 +324,7 @@ pub fn check_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) {
 /// Split fuzz bytes into a session: five header bytes, then each run as a
 /// u16 length and that many bytes, at most 8 runs. Byte 0: bit 0 drops
 /// tombstones, bit 1 writes LZ4, bit 2 fixes each run's CRC, bit 3 yields
-/// after every block. Byte 1 picks the target size (0 for none). Byte 2: bit
+/// after every block, bits 4 to 7 are the expiry judge time. Byte 1 picks the target size (0 for none). Byte 2: bit
 /// `i` puts run `i + 1` in the same source as run `i`. Byte 3 picks the
 /// chunk (low nibble) and tail (high nibble) sizes. Byte 4 seeds the feed
 /// order.
@@ -341,6 +350,7 @@ pub fn session_case(data: &[u8]) -> Option<(Vec<Vec<Vec<u8>>>, MergeConfig, u64)
     }
     let config = MergeConfig {
         drop_tombstones: flags & 1 != 0,
+        judge_now: u64::from(flags >> 4),
         target_bytes: if target == 0 { usize::MAX } else { 64 * target as usize },
         codec: if flags & 2 != 0 { Codec::Lz4 } else { Codec::Raw },
         chunk_bytes: [1, 37, 64, 512, 4096, 65536][(sizes & 0x0f) as usize % 6],
@@ -380,7 +390,7 @@ pub fn check_block(framed: &[u8], codec: Codec) {
         Ok(entries) => {
             let run = wrap_block(framed, codec, entries.len() as u32);
             assert_eq!(decode_sst(&run).expect("a block that decodes alone decodes in a run"), entries);
-            let packed = scan_block_contains(framed, codec, &[]).expect("a block that decodes scans");
+            let packed = scan_block_contains(framed, codec, &[], 0).expect("a block that decodes scans");
             let puts: Vec<(Vec<u8>, Vec<u8>)> = entries
                 .into_iter()
                 .filter_map(|e| match e {
@@ -393,7 +403,7 @@ pub fn check_block(framed: &[u8], codec: Codec) {
         Err(_) => {
             // Records are read before the count is checked, so any count does.
             assert!(decode_sst(&wrap_block(framed, codec, 0)).is_err(), "a block refused alone is refused in a run");
-            assert!(scan_block_contains(framed, codec, &[]).is_err(), "a block refused alone is refused by a scan");
+            assert!(scan_block_contains(framed, codec, &[], 0).is_err(), "a block refused alone is refused by a scan");
         }
     }
 }
@@ -405,19 +415,19 @@ pub fn block_case(data: &[u8]) -> Option<(Codec, &[u8])> {
     Some((if flags & 1 != 0 { Codec::Lz4 } else { Codec::Raw }, framed))
 }
 
-/// Split fuzz bytes into a scan call: byte 0 bit 0 picks LZ4, byte 1 is the
-/// length of one pattern (0 for none, at most 8), then the pattern, then
-/// the framed block.
-pub fn scan_case(data: &[u8]) -> Option<(Codec, Vec<u8>, &[u8])> {
+/// Split fuzz bytes into a scan call: byte 0 bit 0 picks LZ4 and bits 1 to
+/// 7 are the expiry judge time, byte 1 is the length of one pattern (0 for
+/// none, at most 8), then the pattern, then the framed block.
+pub fn scan_case(data: &[u8]) -> Option<(Codec, Vec<u8>, u64, &[u8])> {
     let (&flags, rest) = data.split_first()?;
     let (&n, rest) = rest.split_first()?;
     let n = (n as usize % 9).min(rest.len());
     let codec = if flags & 1 != 0 { Codec::Lz4 } else { Codec::Raw };
-    Some((codec, rest[..n].to_vec(), &rest[n..]))
+    Some((codec, rest[..n].to_vec(), u64::from(flags >> 1), &rest[n..]))
 }
 
 /// Entries for seeding: `n` keys under a shared prefix, some tombstones,
-/// values that hold " hot" or " cold".
+/// some puts with an expiry, values that hold " hot" or " cold".
 pub fn sample_entries(n: u64, seed: u64) -> Vec<Entry> {
     (0..n)
         .map(|i| {
@@ -426,7 +436,8 @@ pub fn sample_entries(n: u64, seed: u64) -> Vec<Entry> {
                 Entry::Del { key, seq: i + 1 }
             } else {
                 let value = format!("{{\"n\":{i},\"tag\":\"{}\"}}", if i % 3 == 0 { " hot" } else { " cold" }).into_bytes();
-                Entry::Put { key, value, seq: i + 1 }
+                let expires_at = if i % 4 == 1 { Some(i + 1) } else { None };
+                Entry::Put { key, value, seq: i + 1, expires_at }
             }
         })
         .collect()

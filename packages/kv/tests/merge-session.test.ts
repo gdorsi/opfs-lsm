@@ -70,7 +70,13 @@ function source(r: Rng, seq: { next: number }): Source {
     entries.push(
       r.chance(0.2)
         ? { kind: "del", key, seq: seq.next++ }
-        : { kind: "put", key, value: new Uint8Array(size).fill(k & 0xff), seq: seq.next++ },
+        : {
+            kind: "put",
+            key,
+            value: new Uint8Array(size).fill(k & 0xff),
+            seq: seq.next++,
+            ...(r.chance(0.3) ? { expiresAt: 1 + r.below(40) } : {}),
+          },
     );
   }
   const cuts = [...new Set(Array.from({ length: r.below(4) }, () => r.below(n + 1)))].sort((a, b) => a - b);
@@ -85,13 +91,18 @@ function source(r: Rng, seq: { next: number }): Source {
   return { runs, entries };
 }
 
-/** The newest-wins fold: oldest source first, so newer sources and later duplicates overwrite. */
-function fold(sources: readonly Source[], drop: boolean): { entries: SstEntry[]; droppedSeq: number } {
+/**
+ * The newest-wins fold: oldest source first, so newer sources and later
+ * duplicates overwrite. A winner that expired at `now` is a tombstone.
+ */
+function fold(sources: readonly Source[], drop: boolean, now: number): { entries: SstEntry[]; droppedSeq: number } {
   const byKey = new Map<string, SstEntry>();
   for (let i = sources.length - 1; i >= 0; i--) for (const e of sources[i]!.entries) byKey.set(keyToString(e.key), e);
   let droppedSeq = 0;
   const entries: SstEntry[] = [];
-  for (const e of [...byKey.values()].sort((a, b) => compareBytes(a.key, b.key))) {
+  for (const newest of [...byKey.values()].sort((a, b) => compareBytes(a.key, b.key))) {
+    const e: SstEntry =
+      newest.kind === "put" && newest.expiresAt !== undefined && newest.expiresAt <= now ? { kind: "del", key: newest.key, seq: newest.seq } : newest;
     if (drop && e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
     else entries.push(e);
   }
@@ -117,7 +128,7 @@ function cut(entries: readonly SstEntry[], target: number): SstEntry[][] {
 }
 
 const plain = (entries: readonly SstEntry[]) =>
-  entries.map((e) => `${e.kind} ${keyToString(e.key)} ${e.seq} ${e.kind === "put" ? keyToString(e.value) : ""}`);
+  entries.map((e) => `${e.kind} ${keyToString(e.key)} ${e.seq} ${e.kind === "put" ? `${keyToString(e.value)} ${e.expiresAt ?? ""}` : ""}`);
 
 const same = (a: Uint8Array, b: Uint8Array) => Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(b);
 
@@ -164,6 +175,7 @@ async function makeCase(r: Rng): Promise<Case> {
     chunkBytes: r.pick([1, 37, 512, 4096, 64 * 1024]),
     tailBytes: r.pick([0, 44, 45, 100, 1000, 4096, 128 * 1024]),
     yieldBytes: r.pick([1, 1000, Number.MAX_SAFE_INTEGER]),
+    judgeNow: r.pick([0, 0, 10, 20, 40]),
   };
   return { fs, sources, paths, spec };
 }
@@ -175,7 +187,7 @@ describe("the TypeScript and wasm merge sessions, through the compaction driver"
       const r = rng(SEED);
       for (let c = 0; c < CASES; c++) {
         const { fs, sources, paths, spec } = await makeCase(r);
-        const expected = fold(sources, spec.dropTombstones);
+        const expected = fold(sources, spec.dropTombstones, spec.judgeNow);
         const ts = await merge(fs, openMergeTs, spec, paths, "ts");
         const w = await merge(fs, openWasm, spec, paths, "wasm");
         for (const out of [ts, w]) {
@@ -236,6 +248,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
       chunkBytes: 64,
       tailBytes: 64,
       yieldBytes: Number.MAX_SAFE_INTEGER,
+      judgeNow: 0,
     };
     const out: unknown[] = [];
     for (const [label, open] of [["ts", openMergeTs], ["wasm", openWasm]] as const) {
@@ -251,7 +264,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
     const run = new Uint8Array(bloom + 44);
     const f = footer(run);
     [0, 0, 0, bloom, 7, bloom, 0, 0].forEach((v, i) => f.setUint32(4 * i, v, true));
-    f.setUint32(36, 1, true);
+    f.setUint32(36, 2, true);
     f.setUint32(40, 0x4f4c5354, true);
     fixSstCrc(run);
     return run;
@@ -268,6 +281,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
       chunkBytes: 16,
       tailBytes,
       yieldBytes: Number.MAX_SAFE_INTEGER,
+      judgeNow: 0,
     });
     for (const [label, open] of [["ts", openMergeTs], ["wasm", openWasm]] as const) {
       for (const tailBytes of [44, 60]) expect((await merge(fs, open, intact(tailBytes), [["in/blockless.sst"]], label)).runs).toEqual([]);
@@ -289,6 +303,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
             chunkBytes: 16,
             tailBytes,
             yieldBytes: Number.MAX_SAFE_INTEGER,
+            judgeNow: 0,
           };
           for (const [label, open] of [["ts", openMergeTs], ["wasm", openWasm]] as const) {
             await expect(merge(fs, open, spec, [["in/0.0.sst"]], label)).rejects.toThrow(CorruptDatabaseError);
@@ -334,6 +349,7 @@ describe("a session's protocol, in both sessions", () => {
       chunkBytes: 1024,
       tailBytes: 1024,
       yieldBytes: Number.MAX_SAFE_INTEGER,
+      judgeNow: 0,
     };
     for (const open of [openMergeTs, openWasm]) {
       const core = open(spec);
@@ -372,6 +388,7 @@ describe("a session's protocol, in both sessions", () => {
       chunkBytes: 1024,
       tailBytes: 1024,
       yieldBytes: Number.MAX_SAFE_INTEGER,
+      judgeNow: 0,
     };
     const first = openWasm(spec);
     first.close();
@@ -419,6 +436,7 @@ describe("the compaction driver", () => {
       chunkBytes: 300,
       tailBytes: 100,
       yieldBytes: 1000,
+      judgeNow: 0,
     };
     for (const [label, open] of [["ts", openMergeTs], ["wasm", openWasm]] as const) {
       const kinds = new Set<string>();
@@ -535,7 +553,7 @@ describe("a compaction step at full size", () => {
       expect(reads.reduce((a, b) => a + b)).toBeGreaterThanOrEqual(inputBytes);
       expect(writes.get(step.outputs[0]!.path)).toBeGreaterThanOrEqual(8);
 
-      const expected = fold(sources.map((entries) => ({ runs: [], entries })), true);
+      const expected = fold(sources.map((entries) => ({ runs: [], entries })), true, 0);
       const bodies = await Promise.all(step.outputs.map(async (o) => (await base.read(o.path, 0, Infinity))!));
       expect(plain(bodies.flatMap((b) => decodeSst(b)))).toEqual(plain(expected.entries));
       expect(step.droppedSeq).toBe(expected.droppedSeq);

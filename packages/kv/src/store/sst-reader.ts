@@ -109,17 +109,18 @@ export class SstReader {
 
   /**
    * The puts in `bounds` whose value holds every pattern, in key order or
-   * with `reverse` from the largest key down.
-   * With the wasm engine each block is decoded and matched there and only
-   * hits cross back. Without it the cursor does the same work key by key.
+   * with `reverse` from the largest key down, skipping the puts expired at
+   * `now`. With the wasm engine each block is decoded and matched there and
+   * only hits cross back. Without it the cursor does the same work key by
+   * key.
    */
-  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
+  scanContains(patterns: readonly Uint8Array[], now: number, bounds?: ScanBounds, reverse = false): LayerCursor<ScanHit> {
     const scan = blockScanner();
-    if (!scan) return filterCursor(this.cursor(bounds, reverse), patterns);
+    if (!scan) return filterCursor(this.cursor(bounds, reverse), patterns, now);
     const packed = packPatterns(patterns);
     const outside = reverse ? isAtOrAbove : isBelow;
     return this.blocks(bounds, reverse, (_block, seek, framed, lz4) => {
-      const hits = unpackHits(scan(framed, lz4, packed));
+      const hits = unpackHits(scan(framed, lz4, packed, now));
       const walk = reverse ? [...hits].reverse().values() : hits;
       return () => {
         for (let h = walk.next(); !h.done; h = walk.next()) {

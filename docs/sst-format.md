@@ -62,8 +62,9 @@ refer to the stored bytes.
 ## Record
 
 ```
-| u8 tag          1 = put, 2 = delete                                        |
+| u8 tag          1 = put, 2 = delete, 3 = put with expiry                   |
 | u64 seq         the WAL seq that wrote the key                             |
+| u64 expiresAt   epoch ms                            (tag 3 only)           |
 | varint suffix length                                                       |
 | suffix          the key after the block prefix                             |
 | varint value length                                 (puts only)            |
@@ -106,7 +107,7 @@ One entry per data block, in block order.
 
 `crc32` is the IEEE CRC-32 of every byte before the field.
 
-`version` must be 1. Any other version is rejected.
+`version` must be 2. Any other version is rejected.
 
 `magic` must be `OLST` (0x4f4c5354).
 

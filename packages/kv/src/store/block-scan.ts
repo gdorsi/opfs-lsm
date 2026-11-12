@@ -2,10 +2,11 @@ import { CorruptDatabaseError } from "../errors.js";
 
 /**
  * Scans one data block, framed as the run's block index frames it, and returns
- * the puts whose value holds every pattern as `u32 keyLen, u32 valueLen, key,
- * value` records. `patterns` is each pattern as a u32 length then its bytes.
+ * the puts not expired at `now` (epoch ms) whose value holds every pattern as
+ * `u32 keyLen, u32 valueLen, key, value` records. `patterns` is each pattern
+ * as a u32 length then its bytes.
  */
-type BlockScanner = (framed: Uint8Array, lz4: boolean, patterns: Uint8Array) => Uint8Array;
+type BlockScanner = (framed: Uint8Array, lz4: boolean, patterns: Uint8Array, now: number) => Uint8Array;
 
 /** Set once the wasm engine loads. Without it a run is scanned through its cursor. */
 let wasmScanner: BlockScanner | undefined;

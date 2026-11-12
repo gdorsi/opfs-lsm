@@ -47,6 +47,7 @@ export async function mergeRuns(
   sources: readonly (readonly Uint8Array[])[],
   options: {
     readonly dropTombstones?: boolean;
+    readonly judgeNow?: number;
     readonly targetBytes?: number;
     readonly codec?: SstCodec;
     readonly open?: (spec: MergeSpec) => MergeCore | Promise<MergeCore>;
@@ -59,6 +60,7 @@ export async function mergeRuns(
   const core = await (options.open ?? openMerge)({
     sources: sources.map((runs) => runs.map((run) => run.byteLength)),
     dropTombstones: options.dropTombstones ?? false,
+    judgeNow: options.judgeNow ?? 0,
     targetBytes: options.targetBytes ?? Number.MAX_SAFE_INTEGER,
     codec: options.codec ?? "raw",
     chunkBytes: 64 * 1024,

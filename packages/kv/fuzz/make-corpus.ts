@@ -110,6 +110,11 @@ async function main(): Promise<void> {
   const edgeRuns = [
     encodeSst([]),
     encodeSst([{ kind: "put", key: utf("big"), value: new Uint8Array(6000).fill(0x61), seq: 1 }]),
+    encodeSst([
+      { kind: "put", key: utf("exp/a"), value: utf("gone at 10"), seq: 1, expiresAt: 10 },
+      { kind: "put", key: utf("exp/b"), value: utf("gone at 30"), seq: 2, expiresAt: 30 },
+      { kind: "del", key: utf("exp/c"), seq: 3 },
+    ]),
     encodeSst([...todoEntries(30), { kind: "del", key: utf("todo/zz"), seq: 99 }], 256),
   ];
   const runs = [...db.runs, ...lz4Runs, ...edgeRuns].filter((r) => r.byteLength < 60_000);

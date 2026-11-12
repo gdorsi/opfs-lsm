@@ -11,10 +11,11 @@ use crate::crc32::crc32;
 use alloc::{vec, vec::Vec};
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const FOOTER_BYTES: usize = 44;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
+const TAG_PUT_EXPIRING: u8 = 3;
 const BLOCK_TARGET: usize = 4 * 1024;
 const OFFSET_STRIDE: usize = 4;
 
@@ -51,7 +52,8 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
 fn record_overhead(e: &Entry) -> usize {
     let n = 1 + 8 + varint_len(e.key().len());
     match e {
-        Entry::Put { value, .. } => n + varint_len(value.len()) + value.len(),
+        Entry::Put { value, expires_at: None, .. } => n + varint_len(value.len()) + value.len(),
+        Entry::Put { value, expires_at: Some(_), .. } => n + 8 + varint_len(value.len()) + value.len(),
         Entry::Del { .. } => n,
     }
 }
@@ -107,10 +109,14 @@ fn encode_block(block: &[&Entry]) -> Vec<u8> {
 fn write_record(out: &mut Vec<u8>, e: &Entry, prefix_len: usize) {
     let suffix = &e.key()[prefix_len..];
     out.push(match e {
-        Entry::Put { .. } => TAG_PUT,
+        Entry::Put { expires_at: None, .. } => TAG_PUT,
+        Entry::Put { expires_at: Some(_), .. } => TAG_PUT_EXPIRING,
         Entry::Del { .. } => TAG_DEL,
     });
     out.extend_from_slice(&e.seq().to_le_bytes());
+    if let Entry::Put { expires_at: Some(at), .. } = e {
+        out.extend_from_slice(&at.to_le_bytes());
+    }
     write_varint(out, suffix.len());
     out.extend_from_slice(suffix);
     if let Entry::Put { value, .. } = e {

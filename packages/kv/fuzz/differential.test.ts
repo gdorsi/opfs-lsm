@@ -79,17 +79,21 @@ async function encodeRun(r: { entries: SstEntry[]; codec: Codec; blockTarget: nu
 const plain = (es: readonly { kind: string; key: Uint8Array; value?: Uint8Array; seq?: number }[]) =>
   es.map((e) => ({ kind: e.kind, key: [...e.key], value: e.value ? [...e.value] : undefined, seq: e.seq ?? 0 }));
 
+/** The scans judge expiry at this epoch ms, inside the expiries the seeds hold. */
+const SCAN_NOW = 20;
+
 /** Both block scans of one framed block: `scanBlockContains` and the TypeScript cursor a tab falls back to. */
 async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array): Promise<"same" | "differ" | "rejected"> {
   return bounded("scan_block_contains (both)", () => {
-    const w = wasmOutcome("scanBlockContains", () => [...unpackHits(wasm.scanBlockContains(framed, lz4, packPatterns([pattern])))]);
+    const w = wasmOutcome("scanBlockContains", () => [...unpackHits(wasm.scanBlockContains(framed, lz4, packPatterns([pattern]), SCAN_NOW))]);
     const t = tsOutcome("BlockEntries", () => {
       const b = blockBytes(framed, new DataView(framed.buffer, framed.byteOffset, framed.byteLength), 0, { offset: 0, length: framed.byteLength }, lz4 ? "lz4" : "raw");
       const walk = new BlockEntries(b);
       const out: { key: Uint8Array; value: Uint8Array }[] = [];
       for (let e = walk.next(); e; e = walk.next()) {
         if (out.length > 255 * framed.byteLength + 16) throw new RuleBroken("BlockEntries did not end");
-        if (e.kind === "put" && contains(e.value!, pattern)) out.push({ key: e.key, value: e.value! });
+        const live = e.expiresAt === undefined || e.expiresAt > SCAN_NOW;
+        if (e.kind === "put" && live && contains(e.value!, pattern)) out.push({ key: e.key, value: e.value! });
       }
       return out;
     });

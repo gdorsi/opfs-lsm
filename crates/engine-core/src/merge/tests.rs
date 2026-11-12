@@ -41,7 +41,11 @@ fn env(name: &str, default: u64) -> u64 {
 }
 
 fn put(key: &[u8], value: &[u8], seq: u64) -> Entry {
-    Entry::Put { key: key.to_vec(), value: value.to_vec(), seq }
+    Entry::Put { key: key.to_vec(), value: value.to_vec(), seq, expires_at: None }
+}
+
+fn put_until(key: &[u8], value: &[u8], seq: u64, expires_at: u64) -> Entry {
+    Entry::Put { key: key.to_vec(), value: value.to_vec(), seq, expires_at: Some(expires_at) }
 }
 
 fn del(key: &[u8], seq: u64) -> Entry {
@@ -105,6 +109,7 @@ fn drive(config: MergeConfig, sources: &[Vec<Vec<u8>>], host: &mut Host) -> Resu
 fn config(drop_tombstones: bool, target_bytes: usize, codec: Codec) -> MergeConfig {
     MergeConfig {
         drop_tombstones,
+        judge_now: 0,
         target_bytes,
         codec,
         chunk_bytes: 256 * 1024,
@@ -146,7 +151,8 @@ fn as_one_run(runs: &[Vec<u8>]) -> Vec<u8> {
 
 fn assert_matches_oracle(cfg: MergeConfig, sources: &[Vec<Vec<u8>>], host: &mut Host, context: &str) {
     let inputs: Vec<Vec<u8>> = sources.iter().map(|runs| as_one_run(runs)).collect();
-    let (want, want_dropped) = oracle::merge_sst_bytes(&inputs, cfg.drop_tombstones, cfg.target_bytes, cfg.codec).unwrap();
+    let (want, want_dropped) =
+        oracle::merge_sst_bytes(&inputs, cfg.drop_tombstones, cfg.judge_now, cfg.target_bytes, cfg.codec).unwrap();
     let (got, dropped) = drive(cfg, sources, host).unwrap_or_else(|e| panic!("{context}: {e:?}"));
     assert_eq!(dropped, want_dropped, "{context}: dropped seq");
     assert_eq!(got.len(), want.len(), "{context}: output runs");
@@ -174,7 +180,8 @@ fn source_entries(rng: &mut Rng, keys: usize) -> Vec<Entry> {
                 2..=9 => big,
                 _ => rng.below(40),
             };
-            Entry::Put { key, value: rng.bytes(len), seq }
+            let expires_at = if rng.chance(3) { Some(1 + rng.below(30) as u64) } else { None };
+            Entry::Put { key, value: rng.bytes(len), seq, expires_at }
         })
         .collect();
     out.sort_by(|a, b| a.key().cmp(b.key()));
@@ -200,6 +207,7 @@ fn split_runs(rng: &mut Rng, entries: &[Entry]) -> Vec<Vec<u8>> {
 fn random_config(rng: &mut Rng) -> MergeConfig {
     MergeConfig {
         drop_tombstones: rng.chance(2),
+        judge_now: rng.pick(&[0, 1, 10, 20, u64::MAX]),
         target_bytes: rng.pick(&[0, 1, 40, 120, 1_000, 64 * 1024, usize::MAX]),
         codec: if rng.chance(2) { Codec::Raw } else { Codec::Lz4 },
         chunk_bytes: rng.pick(&[0, 1, 37, 512, 4096, 64 * 1024, 256 * 1024]),
@@ -303,6 +311,30 @@ fn bottom_merge_drops_tombstones() {
     let (out, dropped) = merge(&[newer, older], true, usize::MAX, Codec::Raw).unwrap();
     assert_eq!(entries(&out), vec![put(b"b", b"1", 1)]);
     assert_eq!(dropped, 5);
+}
+
+/// A put expired at `judge_now` must keep hiding older versions, so a merge
+/// that is not at the bottom writes it as a tombstone with its own seq. A
+/// bottom merge drops it like a tombstone. A put that expires later is kept
+/// with its expiry.
+#[test]
+fn an_expired_put_becomes_a_tombstone_or_drops_at_the_bottom() {
+    let older = encode_sst(&[put(b"a", b"old", 1), put(b"b", b"old", 1), put(b"c", b"old", 1)], Codec::Raw);
+    let newer = encode_sst(&[put_until(b"a", b"new", 4, 10), put_until(b"b", b"new", 5, 11), put(b"c", b"new", 6)], Codec::Raw);
+    let with = |drop_tombstones, judge_now| {
+        let sources = [vec![newer.clone()], vec![older.clone()]];
+        let cfg = MergeConfig { judge_now, ..config(drop_tombstones, usize::MAX, Codec::Raw) };
+        assert_matches_oracle(cfg, &sources, &mut host(9), "expiry");
+        drive(cfg, &sources, &mut host(9)).unwrap()
+    };
+    let (out, dropped) = with(false, 10);
+    assert_eq!(entries(&out), vec![del(b"a", 4), put_until(b"b", b"new", 5, 11), put(b"c", b"new", 6)]);
+    assert_eq!(dropped, 0);
+    let (out, dropped) = with(true, 10);
+    assert_eq!(entries(&out), vec![put_until(b"b", b"new", 5, 11), put(b"c", b"new", 6)]);
+    assert_eq!(dropped, 4);
+    let (out, _) = with(false, 0);
+    assert_eq!(entries(&out), vec![put_until(b"a", b"new", 4, 10), put_until(b"b", b"new", 5, 11), put(b"c", b"new", 6)], "0 judges nothing");
 }
 
 #[test]
