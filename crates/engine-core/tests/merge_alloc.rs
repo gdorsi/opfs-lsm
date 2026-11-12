@@ -89,7 +89,7 @@ fn warm_allocations(codec: Codec) -> Warm {
         tail_bytes: 128 * 1024,
         yield_bytes: 1024 * 1024,
     };
-    let mut session = MergeSession::open(config, &sizes).unwrap();
+    let mut session = MergeSession::open(config, &sizes, &[]).unwrap();
     let (mut ended, mut warm) = (0, Warm { allocs: 0, runs: 0, blocks: 0 });
     let mut run = Vec::new();
     loop {

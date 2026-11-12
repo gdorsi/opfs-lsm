@@ -1,6 +1,7 @@
 import { compareBytes } from "../../src/bytes.js";
 import { CorruptDatabaseError } from "../../src/errors.js";
 import { crc32 } from "../../src/store/crc32.js";
+import { covered, type Marks } from "../../src/store/marks.js";
 import type { Demand, MergeCore, MergeSpec, MergeStop } from "../../src/store/engine.js";
 import {
   blockLengths,
@@ -39,6 +40,7 @@ class Session implements MergeCore {
   private readonly sources: Source[];
   private readonly pace = { consumed: 0 };
   private readonly dropTombstones: boolean;
+  private readonly marks: Marks;
   private readonly targetBytes: number;
   private readonly chunkBytes: number;
   private readonly yieldBytes: number;
@@ -58,6 +60,7 @@ class Session implements MergeCore {
     const tailBytes = Math.max(SST_FOOTER_BYTES, spec.tailBytes);
     this.sources = spec.sources.map((runs, i) => new Source(new Reader(i, runs, this.chunkBytes, tailBytes, this.pace)));
     this.dropTombstones = spec.dropTombstones;
+    this.marks = spec.marks;
     this.targetBytes = spec.targetBytes;
     this.yieldBytes = Math.max(1, spec.yieldBytes);
   }
@@ -145,6 +148,7 @@ class Session implements MergeCore {
   }
 
   private emit(e: SstEntry): void {
+    if (covered(this.marks, e.key, e.seq)) return;
     if (e.kind === "del" && this.dropTombstones) {
       this.dropped = Math.max(this.dropped, e.seq ?? 0);
       return;

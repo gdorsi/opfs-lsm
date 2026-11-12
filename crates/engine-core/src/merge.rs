@@ -125,6 +125,13 @@ pub struct MergeSession {
     /// The run `RunEnd` reports.
     ended: RunEnd,
     drop_tombstones: bool,
+    /// The base manifest's marks block (crates/engine-abi.md, "Wire
+    /// formats"). Winners come in key order, so `mark_at`, the offset of the
+    /// next piece not yet entered, only moves forward from past the piece
+    /// count; `through` is the mark of the piece entered last.
+    marks: Vec<u8>,
+    mark_at: usize,
+    through: u64,
     target_bytes: usize,
     chunk_bytes: usize,
     yield_bytes: usize,
@@ -166,9 +173,10 @@ enum Next {
 
 impl MergeSession {
     /// A session over `sources`, newest first, each a list of run sizes in
-    /// key order. Reserves the working set, so a host that cannot afford it
-    /// learns so before it reads anything.
-    pub fn open(config: MergeConfig, sources: &[Vec<u32>]) -> Result<MergeSession, MergeError> {
+    /// key order, that drops every winner a mark of `marks` covers. Reserves
+    /// the working set, so a host that cannot afford it learns so before it
+    /// reads anything.
+    pub fn open(config: MergeConfig, sources: &[Vec<u32>], marks: &[u8]) -> Result<MergeSession, MergeError> {
         for runs in sources {
             if runs.iter().any(|&size| (size as usize) < FOOTER_BYTES) {
                 return Err(MergeError::Corrupt(SstError::TooShort));
@@ -189,6 +197,9 @@ impl MergeSession {
         demands.try_reserve_exact(n)?;
         let mut out = Vec::new();
         out.try_reserve_exact(config.chunk_bytes.saturating_add(OUT_SLACK))?;
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(marks.len())?;
+        owned.extend_from_slice(marks);
         Ok(MergeSession {
             sources: list,
             heap,
@@ -199,6 +210,9 @@ impl MergeSession {
             output: Output::Filling { size: 0 },
             ended: RunEnd { entries: 0, size: 0, first_key: Vec::new(), last_key: Vec::new() },
             drop_tombstones: config.drop_tombstones,
+            marks: owned,
+            mark_at: 4,
+            through: 0,
             target_bytes: config.target_bytes,
             chunk_bytes: config.chunk_bytes.max(1),
             yield_bytes: config.yield_bytes.max(1),
@@ -331,7 +345,9 @@ impl MergeSession {
     }
 
     /// Settle the smallest key: the newest source's entry wins, the same key
-    /// in older sources is shadowed, and each of those sources moves on.
+    /// in older sources is shadowed, and each of those sources moves on. A
+    /// winner a mark covers is dropped in any merge: every older version of
+    /// its key has a smaller seq, so the same mark covers it too.
     fn next_key(&mut self) -> Result<(), MergeError> {
         let w = heap_pop(&mut self.heap, &self.sources);
         while let Some(&t) = self.heap.first() {
@@ -342,6 +358,19 @@ impl MergeSession {
             self.retire(t);
         }
         let winner = &self.sources[w as usize].cur;
+        while self.mark_at < self.marks.len() {
+            let start = self.mark_at + 4;
+            let end = start + read_u32(&self.marks, self.mark_at) as usize;
+            if self.marks[start..end] > winner.key[..] {
+                break;
+            }
+            self.through = u64::from_le_bytes(self.marks[end..end + 8].try_into().unwrap());
+            self.mark_at = end + 16;
+        }
+        if self.through > 0 && winner.seq <= self.through {
+            self.retire(w);
+            return Ok(());
+        }
         match winner.kind {
             Kind::Del if self.drop_tombstones => self.dropped = self.dropped.max(winner.seq),
             _ => {

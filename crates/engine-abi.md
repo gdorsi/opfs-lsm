@@ -58,7 +58,8 @@ one session.
 ```text
 merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32,
            chunk_bytes, tail_bytes, yield_bytes) -> i32
-    Input: source list (below), newest source first. Reserves the working
+    Input: source list (below), newest source first, then the base
+    manifest's marks block, which the session copies. Reserves the working
     set: about `chunk_bytes` per source plus the output buffer. Returns 0,
     -13 while a session is open, -5 for a malformed list, -1 for a run
     shorter than a footer, or -11 when the working set cannot be reserved.
@@ -97,6 +98,8 @@ sources the newest wins; within a source the last duplicate of a key wins,
 across block and run boundaries. A source whose keys go back fails with -14.
 Output runs are cut at key boundaries once their entries, sized as entry
 records (below), reach `target_bytes`, and written with `lz4`'s codec.
+A winner whose seq is at or below the `through` of the marks piece that
+holds its key is dropped, delete or put, and its seq is not a dropped seq.
 
 ## Wire formats
 
@@ -112,6 +115,8 @@ run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_le
 source list      u32 count · repeated: u32 run_count · run_count × u32 size
 demand record    u32 source · u32 run · u32 offset · u32 len
 run head         u32 entries · u32 size · u32 first_key_len · u32 last_key_len
+marks block      the manifest's encoding (docs/manifest-format.md); `through`
+                 0 is no mark, and the module ignores `at`
 ```
 
 A run record carries what the manifest records about a run, so the caller

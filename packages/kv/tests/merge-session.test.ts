@@ -12,7 +12,7 @@ import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
 import { publish } from "./runs.js";
 import { MemoryFs } from "../src/testing.js";
-import { NO_MARKS } from "../src/store/marks.js";
+import { covered, joinMarks, markTable, NO_MARKS, type Marks } from "../src/store/marks.js";
 
 /**
  * The TypeScript merge session against the wasm one, both pumped by the
@@ -85,13 +85,32 @@ function source(r: Rng, seq: { next: number }): Source {
   return { runs, entries };
 }
 
-/** The newest-wins fold: oldest source first, so newer sources and later duplicates overwrite. */
-function fold(sources: readonly Source[], drop: boolean): { entries: SstEntry[]; droppedSeq: number } {
+/**
+ * Up to three range deletes over the `key/` keys, joined, each through a seq
+ * of the case, so some winners are covered and some are just past it.
+ */
+function randomMarks(r: Rng, seqs: number): Marks {
+  let marks = NO_MARKS;
+  for (let i = r.below(4); i > 0; i--) {
+    const from = r.below(60);
+    const through = 1 + r.below(seqs);
+    const end = r.chance(0.2) ? undefined : utf(`key/${String(from + 1 + r.below(40)).padStart(5, "0")}${r.chance(0.3) ? "!" : ""}`);
+    marks = joinMarks(marks, markTable({ start: utf(`key/${String(from).padStart(5, "0")}`), endExclusive: end, through, at: through + 1 }));
+  }
+  return marks;
+}
+
+/**
+ * The newest-wins fold: oldest source first, so newer sources and later
+ * duplicates overwrite. A winner a mark covers is gone.
+ */
+function fold(sources: readonly Source[], drop: boolean, marks: Marks): { entries: SstEntry[]; droppedSeq: number } {
   const byKey = new Map<string, SstEntry>();
   for (let i = sources.length - 1; i >= 0; i--) for (const e of sources[i]!.entries) byKey.set(keyToString(e.key), e);
   let droppedSeq = 0;
   const entries: SstEntry[] = [];
   for (const e of [...byKey.values()].sort((a, b) => compareBytes(a.key, b.key))) {
+    if (covered(marks, e.key, e.seq)) continue;
     if (drop && e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
     else entries.push(e);
   }
@@ -164,6 +183,7 @@ async function makeCase(r: Rng): Promise<Case> {
     chunkBytes: r.pick([1, 37, 512, 4096, 64 * 1024]),
     tailBytes: r.pick([0, 44, 45, 100, 1000, 4096, 128 * 1024]),
     yieldBytes: r.pick([1, 1000, Number.MAX_SAFE_INTEGER]),
+    marks: r.chance(0.5) ? NO_MARKS : randomMarks(r, seq.next),
   };
   return { fs, sources, paths, spec };
 }
@@ -175,7 +195,7 @@ describe("the TypeScript and wasm merge sessions, through the compaction driver"
       const r = rng(SEED);
       for (let c = 0; c < CASES; c++) {
         const { fs, sources, paths, spec } = await makeCase(r);
-        const expected = fold(sources, spec.dropTombstones);
+        const expected = fold(sources, spec.dropTombstones, spec.marks);
         const ts = await merge(fs, openMergeTs, spec, paths, "ts");
         const w = await merge(fs, openWasm, spec, paths, "wasm");
         for (const out of [ts, w]) {
@@ -231,6 +251,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
     const spec: MergeSpec = {
       sources: [runs.map((run) => run.byteLength)],
       dropTombstones: false,
+      marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
       codec: "raw",
       chunkBytes: 64,
@@ -263,6 +284,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
     const intact = (tailBytes: number): MergeSpec => ({
       sources: [[blockless().byteLength]],
       dropTombstones: false,
+      marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
       codec: "raw",
       chunkBytes: 16,
@@ -284,6 +306,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
           const spec: MergeSpec = {
             sources: [[bad.byteLength]],
             dropTombstones: false,
+            marks: NO_MARKS,
             targetBytes: Number.MAX_SAFE_INTEGER,
             codec: "raw",
             chunkBytes: 16,
@@ -329,6 +352,7 @@ describe("a session's protocol, in both sessions", () => {
     const spec: MergeSpec = {
       sources: [[a.byteLength], [b.byteLength]],
       dropTombstones: false,
+      marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
       codec: "raw",
       chunkBytes: 1024,
@@ -367,6 +391,7 @@ describe("a session's protocol, in both sessions", () => {
     const spec: MergeSpec = {
       sources: [[a.byteLength]],
       dropTombstones: false,
+      marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
       codec: "raw",
       chunkBytes: 1024,
@@ -414,6 +439,7 @@ describe("the compaction driver", () => {
     const spec: MergeSpec = {
       sources: sources.map((s) => s.runs.map((run) => run.byteLength)),
       dropTombstones: false,
+      marks: NO_MARKS,
       targetBytes: 200,
       codec: "lz4",
       chunkBytes: 300,
@@ -535,7 +561,7 @@ describe("a compaction step at full size", () => {
       expect(reads.reduce((a, b) => a + b)).toBeGreaterThanOrEqual(inputBytes);
       expect(writes.get(step.outputs[0]!.path)).toBeGreaterThanOrEqual(8);
 
-      const expected = fold(sources.map((entries) => ({ runs: [], entries })), true);
+      const expected = fold(sources.map((entries) => ({ runs: [], entries })), true, NO_MARKS);
       const bodies = await Promise.all(step.outputs.map(async (o) => (await base.read(o.path, 0, Infinity))!));
       expect(plain(bodies.flatMap((b) => decodeSst(b)))).toEqual(plain(expected.entries));
       expect(step.droppedSeq).toBe(expected.droppedSeq);

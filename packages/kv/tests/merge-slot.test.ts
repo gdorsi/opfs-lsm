@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { inMergeSlot } from "../src/host/merge-slot.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { ensureEngine, openMerge, type MergeSpec } from "../src/store/engine.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import {
   __resetMemoryFsForTests,
   openHarnessDb,
@@ -47,6 +48,7 @@ describe("the wasm engine's session", () => {
   const spec: MergeSpec = {
     sources: [[1000]],
     dropTombstones: false,
+    marks: NO_MARKS,
     targetBytes: 4 * 1024 * 1024,
     codec: "raw",
     chunkBytes: 64 * 1024,

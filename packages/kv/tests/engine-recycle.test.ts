@@ -9,6 +9,7 @@ import {
   recycleEngine,
   type MergeSpec,
 } from "../src/store/engine.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import { untilHit } from "../src/store/cursor.js";
 import {
   __resetMemoryFsForTests,
@@ -59,6 +60,7 @@ describe("recycleEngine", () => {
     const spec: MergeSpec = {
       sources: [[1000]],
       dropTombstones: false,
+      marks: NO_MARKS,
       targetBytes: 4 * MiB,
       codec: "raw",
       chunkBytes: 64 * 1024,
