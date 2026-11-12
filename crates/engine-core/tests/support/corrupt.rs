@@ -23,7 +23,7 @@ use engine_core::{
 };
 use std::collections::BTreeMap;
 
-pub const FOOTER_BYTES: usize = 44;
+pub const FOOTER_BYTES: usize = 52;
 
 /// CRC-32 (IEEE), bit by bit. The engine's own is private; this one is slow
 /// and obviously right.
@@ -71,7 +71,7 @@ pub fn footer(buf: &[u8]) -> Option<Footer> {
     }
     let at = buf.len() - FOOTER_BYTES;
     let f = |i: usize| u32_at(buf, at + 4 * i).unwrap();
-    Some(Footer { entry_count: f(0), block_count: f(1), data_len: f(2), index_start: f(5), index_end: at, codec: f(7) })
+    Some(Footer { entry_count: f(0), block_count: f(1), data_len: f(2), index_start: f(5), index_end: f(8) as usize, codec: f(7) })
 }
 
 /// The framed bytes of every data block the index names, as a tab would
@@ -188,12 +188,13 @@ pub fn wrap_block(framed: &[u8], codec: Codec, count: u32) -> Vec<u8> {
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&data_len.to_le_bytes());
     let index_len = out.len() as u32 - index_start;
-    for v in [count, 1, data_len, 0, 1, index_start, index_len, codec as u32] {
+    let stats_start = out.len() as u32;
+    for v in [count, 1, data_len, 0, 1, index_start, index_len, codec as u32, stats_start, 0] {
         out.extend_from_slice(&v.to_le_bytes());
     }
     let sum = crc32(&out);
     out.extend_from_slice(&sum.to_le_bytes());
-    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
     out.extend_from_slice(&0x4f4c_5354u32.to_le_bytes());
     out
 }

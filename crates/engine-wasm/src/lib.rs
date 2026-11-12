@@ -36,8 +36,9 @@ const RUN_END: i32 = 3;
 const YIELD: i32 = 4;
 const DONE: i32 = 5;
 
-/// Bytes of a run record's fixed head: entries, size, first and last key length.
-const RUN_HEAD: usize = 16;
+/// Bytes of a run record's fixed head: entries, size, first and last key
+/// length, statistics length.
+const RUN_HEAD: usize = 20;
 
 /// The module is single-threaded, so a static handed out by `&mut` is never
 /// aliased across calls.
@@ -95,7 +96,7 @@ fn error_code(e: SstError) -> i32 {
 /// The fixed head of a run record, from what the writer reported.
 fn run_head(end: &RunEnd) -> [u8; RUN_HEAD] {
     let mut head = [0u8; RUN_HEAD];
-    let fields = [end.entries, end.size, end.first_key.len(), end.last_key.len()];
+    let fields = [end.entries, end.size, end.first_key.len(), end.last_key.len(), end.stats.len()];
     for (slot, n) in head.chunks_exact_mut(4).zip(fields) {
         slot.copy_from_slice(&(n as u32).to_le_bytes());
     }
@@ -226,6 +227,7 @@ pub unsafe extern "C" fn encode_sst(ptr: *const u8, len: usize, lz4: i32) -> i32
         out[..RUN_HEAD].copy_from_slice(&run_head(&end));
         out.extend_from_slice(&end.first_key);
         out.extend_from_slice(&end.last_key);
+        out.extend_from_slice(&end.stats);
         out
     }))
 }
@@ -348,6 +350,7 @@ pub extern "C" fn merge_pump() -> i32 {
                 out.extend_from_slice(&run_head(end));
                 out.extend_from_slice(&end.first_key);
                 out.extend_from_slice(&end.last_key);
+                out.extend_from_slice(&end.stats);
             });
             RUN_END
         }

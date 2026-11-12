@@ -5,10 +5,38 @@ import { untilHit, type LayerCursor, type LayerEntry } from "../src/store/cursor
 import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.js";
 import { NO_MARKS, type Marks } from "../src/store/marks.js";
 import { PageCache } from "../src/store/page-cache.js";
-import { sstKeyRange, type EncodedRun, type SstCodec } from "../src/store/sst.js";
+import type { RunMeta } from "../src/store/generation.js";
+import { encodeRun, sstKeyRange, type EncodedRun, type RunEnd, type SstCodec, type SstEntry } from "../src/store/sst.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 
 export { bytesFile };
+
+const enc = new TextEncoder();
+const bytesOf = (key: string | Uint8Array) => (typeof key === "string" ? enc.encode(key) : key);
+
+/** The manifest entry of a run the encoder reported as `end`, at `path`. */
+export function listed(path: string, end: RunEnd, marksThrough = 0): RunMeta {
+  if (!end.stats) throw new Error("a listed run needs an entry");
+  return { path, bytes: end.bytes, range: end.range, stats: end.stats, marksThrough };
+}
+
+/**
+ * A manifest entry of `bytes` for a run of `entries`, or of a put at each
+ * end of `[smallest, largest]` at seq 1, with the statistics its encoder
+ * writes.
+ */
+export function listedRun(
+  path: string,
+  bytes: number,
+  contents: { readonly smallest: string | Uint8Array; readonly largest?: string | Uint8Array } | readonly SstEntry[],
+  marksThrough = 0,
+): RunMeta {
+  const entries: readonly SstEntry[] =
+    "smallest" in contents
+      ? [contents.smallest, contents.largest ?? contents.smallest].map((k) => ({ kind: "put", key: bytesOf(k), value: new Uint8Array(10), seq: 1 }))
+      : contents;
+  return { ...listed(path, encodeRun(entries).end, marksThrough), bytes };
+}
 
 /** A lazy reader over a run held in memory, routed by the range its manifest entry would record. */
 export function readerOfBytes(buf: Uint8Array, cache = new PageCache()): SstReader {

@@ -7,6 +7,7 @@ import { entryRecordSize, type EncodedRun, type RunEnd, type SstCodec, type SstE
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
 import { encodeMarks, type Marks } from "./marks.js";
+import { decodeStats } from "./run-stats.js";
 import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
 
 /**
@@ -57,7 +58,7 @@ const RUN_END = 3;
 const YIELD = 4;
 const DONE = 5;
 const DEMAND_BYTES = 16;
-const RUN_HEAD_BYTES = 16;
+const RUN_HEAD_BYTES = 20;
 
 export type EngineExports = {
   memory: WebAssembly.Memory;
@@ -374,16 +375,22 @@ function readRun(bytes: Uint8Array): EncodedRun {
   return { body: bytes.subarray(RUN_HEAD_BYTES, keys), end: readEnd(bytes, view, keys) };
 }
 
-/** The `RunEnd` of the run head that `bytes` starts with, whose two keys start at `keys`. Copies the keys. */
+/**
+ * The `RunEnd` of the run head that `bytes` starts with, whose two keys and
+ * statistics start at `keys`. Copies the keys.
+ */
 function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
   const entries = view.getUint32(0, true);
   const size = view.getUint32(4, true);
   const firstLen = view.getUint32(8, true);
   const lastLen = view.getUint32(12, true);
+  const statsLen = view.getUint32(16, true);
   if (entries === 0) return { bytes: size };
+  const stats = keys + firstLen + lastLen;
   return {
     bytes: size,
-    range: { smallest: bytes.slice(keys, keys + firstLen), largest: bytes.slice(keys + firstLen, keys + firstLen + lastLen) },
+    range: { smallest: bytes.slice(keys, keys + firstLen), largest: bytes.slice(keys + firstLen, stats) },
+    stats: decodeStats(bytes, stats, stats + statsLen, Number.MAX_SAFE_INTEGER),
   };
 }
 

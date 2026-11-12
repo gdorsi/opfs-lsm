@@ -158,7 +158,7 @@ fn mutate(rng: &mut Rng, buf: &mut Vec<u8>) {
         }
         3 if len >= 4 => {
             // A length field inflated: aim at the footer half the time.
-            let at = if rng.chance(2) && len >= FOOTER_BYTES { len - FOOTER_BYTES + 4 * rng.below(8) } else { rng.below(len - 3) };
+            let at = if rng.chance(2) && len >= FOOTER_BYTES { len - FOOTER_BYTES + 4 * rng.below(10) } else { rng.below(len - 3) };
             let v: u32 = [u32::MAX, u32::MAX / 2, 0x0100_0000, len as u32 * 2, rng.next() as u32][rng.below(5)];
             buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
         }

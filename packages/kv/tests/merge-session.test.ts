@@ -11,7 +11,7 @@ import { openMergeTs } from "./oracle/merge-ts.js";
 import { decodeSst, encodeRun, entryRecordSize, sstKeyRange, type SstCodec, type SstEntry } from "../src/store/sst.js";
 import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
-import { publish } from "./runs.js";
+import { listed, publish } from "./runs.js";
 import { MemoryFs } from "../src/testing.js";
 import { joinMarks, markTable, NO_MARKS, throughAt, type Marks } from "../src/store/marks.js";
 
@@ -260,7 +260,7 @@ describe("the TypeScript and wasm merge sessions, through the compaction driver"
 
 describe("what a CRC cannot catch, both sessions refuse", () => {
   const puts = (...keys: string[]): SstEntry[] => keys.map((k, i) => ({ kind: "put", key: utf(k), value: utf("v"), seq: i + 1 }));
-  const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - 44, 44);
+  const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - 52, 52);
 
   /** What each session ends with over one source of `runs`: the error it threw, or "done". */
   async function ends(runs: Uint8Array[]): Promise<unknown[]> {
@@ -289,11 +289,11 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
   /** A run with no data blocks, which no encoder writes (an empty run gets one empty block): bloom bits, no index, a footer. */
   function blockless(): Uint8Array {
     const bloom = 8;
-    const run = new Uint8Array(bloom + 44);
+    const run = new Uint8Array(bloom + 52);
     const f = footer(run);
-    [0, 0, 0, bloom, 7, bloom, 0, 0].forEach((v, i) => f.setUint32(4 * i, v, true));
-    f.setUint32(36, 2, true);
-    f.setUint32(40, 0x4f4c5354, true);
+    [0, 0, 0, bloom, 7, bloom, 0, 0, bloom, 0].forEach((v, i) => f.setUint32(4 * i, v, true));
+    f.setUint32(44, 3, true);
+    f.setUint32(48, 0x4f4c5354, true);
     fixSstCrc(run);
     return run;
   }
@@ -545,12 +545,12 @@ describe("a compaction step at full size", () => {
     for (const [i, entries] of sources.entries()) {
       const { body, end } = encodeRun(entries);
       await publish(fs, `l0/${10 - i}.sst`, body);
-      metas.push({ path: `l0/${10 - i}.sst`, ...end, marksThrough: 0 });
+      metas.push(listed(`l0/${10 - i}.sst`, end));
     }
     const { body, end } = encodeRun(l1);
     await publish(fs, "l1/c1.0.sst", body);
-    metas.push({ path: "l1/c1.0.sst", ...end, marksThrough: 0 });
-    await publishGeneration(fs, { generation: 1, runs: metas, tombstoneSeq: 0, through: 0, judgedNow: 0, marks: NO_MARKS });
+    metas.push(listed("l1/c1.0.sst", end));
+    await publishGeneration(fs, { generation: 1, runs: metas, tombstoneSeq: 0, through: seq, judgedNow: 0, marks: NO_MARKS });
     return [...sources, l1];
   }
 

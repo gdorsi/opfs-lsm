@@ -144,9 +144,9 @@ export async function pumpMerge(
           await open.writer.write(stop.bytes);
           break;
         case "run-end":
-          if (!open) throw new Error("merge ended an output run it never wrote");
+          if (!open || !stop.end.stats) throw new Error("merge ended an output run it never wrote");
           await open.writer.finish();
-          outputs.push({ path: open.path, ...stop.end });
+          outputs.push({ path: open.path, bytes: stop.end.bytes, range: stop.end.range, stats: stop.end.stats });
           open = undefined;
           break;
         case "yield":

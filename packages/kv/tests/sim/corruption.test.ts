@@ -285,7 +285,7 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
   it("L0, the index offset field inflated", async () => {
     const r = await run("L0 run: footer index offset inflated", standard, async (f) =>
       corruptFile(f.fs, await l0(f), (b) => {
-        new DataView(b.buffer).setUint32(b.byteLength - 44 + 20, 0x7fffffff, true);
+        new DataView(b.buffer).setUint32(b.byteLength - 52 + 20, 0x7fffffff, true);
         return b;
       }),
     );

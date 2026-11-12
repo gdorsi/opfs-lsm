@@ -131,7 +131,7 @@ fn warm_allocations(codec: Codec) -> Warm {
                 ended += 1;
                 if ended > 2 {
                     warm.runs += 1;
-                    let footer = run.len() - 44;
+                    let footer = run.len() - 52;
                     warm.blocks += u32::from_le_bytes(run[footer + 4..footer + 8].try_into().unwrap()) as usize;
                 }
                 run.clear();
@@ -151,7 +151,8 @@ fn a_warm_session_allocates_per_run_not_per_entry() {
     let raw = warm_allocations(Codec::Raw);
     assert!(raw.runs >= 4, "{} warm runs", raw.runs);
     // `finish` builds the bloom filter and hands the run's first and last key
-    // to `RunEnd`, which the next run's first push allocates again.
+    // and a copy of its statistics to `RunEnd`, which the next run's first
+    // push allocates again.
     assert!(raw.allocs <= 4 * raw.runs + 8, "{} allocations over {} warm runs of raw output", raw.allocs, raw.runs);
     assert!(raw.allocs * 100 < entries, "{} allocations for {entries} input entries", raw.allocs);
 

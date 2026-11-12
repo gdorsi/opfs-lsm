@@ -5,7 +5,7 @@ The byte layout of a manifest, `m/<generation>.mft`. What a manifest means is in
 
 ```
 | u32 magic       "OLGN" (0x4f4c474e)                                        |
-| u32 version     5                                                          |
+| u32 version     6                                                          |
 | u64 generation                                                             |
 | u64 tombstoneSeq                                                           |
 | u64 through                                                                |
@@ -20,9 +20,9 @@ per run:
 | u16 path length                                                            |
 | path            UTF-8, relative to the database root                       |
 | u32 bytes       size of the run file                                       |
-| u8 has range                                                               |
-| u32 length, smallest key, u32 length, largest key   (if has range)         |
 | u64 marksThrough                                                           |
+| u32 statistics length                                                      |
+| statistics      the run's statistics section                               |
 
 marks block:
 | u32 piece count (at least 1)                                               |
@@ -41,8 +41,9 @@ per piece:
 `judgedNow` is the time a reader of the manifest reads at, at the least: its runs may hold a
 tombstone in place of a put that expired by then ([design.md](design.md#expiry)).
 
-`bytes` and the key range let the compaction planner size and route levels without opening a
-file. The level of a run is in its path.
+`bytes` and the statistics ([sst-format.md](sst-format.md#statistics)) let the compaction
+planner size and route levels without opening a file. A run's key range is the first and last
+point of its key spread. The level of a run is in its path.
 
 Runs are listed L0 first, newest first. Each deeper level follows, with its runs sorted by
 smallest key. Reads use that order directly.
@@ -57,5 +58,6 @@ starts strictly increase, and two adjacent pieces never hold the same `through` 
 version that a range delete from a record at or below it covers.
 
 A reader rejects any other version as corrupt, and a marks block that breaks its rules, a
-piece with `at` at or below its nonzero `through` or past the manifest's `through`, or a run
-whose `marksThrough` is past it.
+piece with `at` at or below its nonzero `through` or past the manifest's `through`, a run
+whose `marksThrough` or largest seq is past it, or statistics with no entry, counts past the
+entries, or a spread out of order or whose bytes do not end at the run's.

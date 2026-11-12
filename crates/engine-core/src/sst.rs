@@ -1,5 +1,5 @@
-//! SST format, version 2. Data blocks first, then the bloom filter, the
-//! block index, and a 44-byte footer. Each block stores its shared key
+//! SST format, version 3. Data blocks first, then the bloom filter, the
+//! block index, the statistics, and a 52-byte footer. Each block stores its shared key
 //! prefix once; records hold the suffix and use varint lengths. Magic and
 //! version sit in the last 8 bytes.
 //! Must stay byte-compatible with `packages/kv/src/store/sst.ts`.
@@ -7,6 +7,7 @@
 use crate::bloom::{bloom_from_hashes, key_hash};
 use crate::crc32::{crc32, Crc32};
 use crate::marks::{covers, MarkCursor, Marks};
+use crate::stats::StatsBuilder;
 use alloc::vec::Vec;
 use core::mem;
 
@@ -16,8 +17,8 @@ mod reference;
 mod writer_tests;
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
-const VERSION: u32 = 2;
-pub(crate) const FOOTER_BYTES: usize = 44;
+const VERSION: u32 = 3;
+pub(crate) const FOOTER_BYTES: usize = 52;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 /// A put with an expiry: a u64 epoch-ms `expires_at` follows the seq.
@@ -156,6 +157,8 @@ pub struct RunEnd {
     /// entries, and also when its only key is empty, so `entries` says which.
     pub first_key: Vec<u8>,
     pub last_key: Vec<u8>,
+    /// The run's statistics section, as the file stores it.
+    pub stats: Vec<u8>,
 }
 
 /// A run's bytes and its `RunEnd`.
@@ -300,6 +303,9 @@ pub struct SstWriter {
     entries: usize,
     first_key: Vec<u8>,
     last_key: Vec<u8>,
+    stats: StatsBuilder,
+    /// The statistics section of the last run, kept for its capacity.
+    stats_bytes: Vec<u8>,
 }
 
 impl SstWriter {
@@ -321,6 +327,8 @@ impl SstWriter {
             entries: 0,
             first_key: Vec::new(),
             last_key: Vec::new(),
+            stats: StatsBuilder::default(),
+            stats_bytes: Vec::new(),
         }
     }
 
@@ -373,6 +381,7 @@ impl SstWriter {
         if self.entries == 0 {
             self.first_key.extend_from_slice(key);
         }
+        self.stats.push(key == self.first_key.as_slice(), seq, value.is_none(), expires_at, key.len() + value.map_or(0, <[u8]>::len));
         self.last_key.clear();
         self.last_key.extend_from_slice(key);
         self.entries += 1;
@@ -380,12 +389,13 @@ impl SstWriter {
     }
 
     /// End the run: close the open block, then append the bloom filter, the
-    /// index and the footer to `out`. Together with what `push` appended,
-    /// `out` holds the run.
-    ///   data blocks | bloom bits | block index | footer (44 bytes)
+    /// index, the statistics and the footer to `out`. Together with what
+    /// `push` appended, `out` holds the run.
+    ///   data blocks | bloom bits | block index | statistics | footer (52 bytes)
     /// The footer is u32 entry count, block count, bloom offset, bloom length,
-    /// bloom hash count, index offset, index length, codec, then a u32 CRC of
-    /// every byte before it, u32 version 2 and u32 magic.
+    /// bloom hash count, index offset, index length, codec, statistics
+    /// offset, statistics length, then a u32 CRC of every byte before it,
+    /// u32 version 3 and u32 magic.
     pub fn finish(&mut self, out: &mut Vec<u8>) -> RunEnd {
         if !self.recs.is_empty() || self.blocks == 0 {
             self.cut(out);
@@ -395,8 +405,13 @@ impl SstWriter {
         self.sent.emit(out, &bloom.bits);
         let index_offset = self.sent.bytes;
         self.sent.emit(out, &self.index);
+        let stats_offset = self.sent.bytes;
+        let mut stats = mem::take(&mut self.stats_bytes);
+        stats.clear();
+        self.stats.finish(&self.index, &self.first_key, &mut stats);
+        self.sent.emit(out, &stats);
 
-        let mut footer = [0u8; 32];
+        let mut footer = [0u8; 40];
         let fields = [
             self.entries,
             self.blocks,
@@ -406,6 +421,8 @@ impl SstWriter {
             index_offset,
             self.index.len(),
             self.codec as usize,
+            stats_offset,
+            stats.len(),
         ];
         for (slot, field) in footer.chunks_exact_mut(4).zip(fields) {
             slot.copy_from_slice(&(field as u32).to_le_bytes());
@@ -420,7 +437,9 @@ impl SstWriter {
             size: self.sent.bytes + 12,
             first_key: mem::take(&mut self.first_key),
             last_key: mem::take(&mut self.last_key),
+            stats: stats.clone(),
         };
+        self.stats_bytes = stats;
         self.reset();
         end
     }
@@ -517,6 +536,7 @@ impl SstWriter {
         self.keys = 0;
         self.overhead = 0;
         self.blocks += 1;
+        self.stats.end_block();
     }
 }
 
@@ -564,7 +584,7 @@ fn merge_sort<'a>(v: &mut [&'a Entry], buf: &mut [&'a Entry]) {
     }
 }
 
-/// Encode SST version 2 (layout in `SstWriter::finish`) from entries in any
+/// Encode SST version 3 (layout in `SstWriter::finish`) from entries in any
 /// order, appending the run to `out`. Equal keys keep their order in `entries`.
 pub fn encode_run_into(entries: &[Entry], codec: Codec, out: &mut Vec<u8>) -> RunEnd {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
@@ -807,7 +827,7 @@ pub(crate) struct Layout {
 }
 
 /// Check the last `FOOTER_BYTES` of a run of `size` bytes and say where its
-/// sections are. The footer is 8 u32 fields, then CRC, version, and magic.
+/// sections are. The footer is 10 u32 fields, then CRC, version, and magic.
 pub(crate) fn read_footer(footer: &[u8], size: usize) -> Result<Layout, SstError> {
     let magic = read_u32(footer, FOOTER_BYTES - 4);
     if magic != MAGIC {
@@ -820,7 +840,11 @@ pub(crate) fn read_footer(footer: &[u8], size: usize) -> Result<Layout, SstError
     let at = size - FOOTER_BYTES;
     let field = |i: usize| read_u32(footer, 4 * i) as usize;
     let (bloom_offset, bloom_len, index_offset, index_len) = (field(2), field(3), field(5), field(6));
-    if bloom_offset.checked_add(bloom_len) != Some(index_offset) || index_offset.checked_add(index_len) != Some(at) {
+    let (stats_offset, stats_len) = (field(8), field(9));
+    if bloom_offset.checked_add(bloom_len) != Some(index_offset)
+        || index_offset.checked_add(index_len) != Some(stats_offset)
+        || stats_offset.checked_add(stats_len) != Some(at)
+    {
         return Err(SstError::Truncated);
     }
     Ok(Layout {
@@ -828,8 +852,8 @@ pub(crate) fn read_footer(footer: &[u8], size: usize) -> Result<Layout, SstError
         block_count: field(1),
         data_len: bloom_offset,
         index_start: index_offset,
-        index_end: at,
-        crc_off: at + 32,
+        index_end: stats_offset,
+        crc_off: at + 40,
         codec: Codec::from_u32(field(7) as u32)?,
     })
 }
@@ -1162,7 +1186,7 @@ mod tests {
         let entries = todo_rows(2_000);
         let raw = encode_sst(&entries, Codec::Raw);
         let packed = encode_sst(&entries, Codec::Lz4);
-        assert_eq!(read_u32(&packed, packed.len() - 16), Codec::Lz4 as u32);
+        assert_eq!(read_u32(&packed, packed.len() - 24), Codec::Lz4 as u32);
         assert!(packed.len() * 2 < raw.len(), "{} vs {}", packed.len(), raw.len());
         assert_eq!(decode_sst(&packed).unwrap(), decode_sst(&raw).unwrap());
     }
@@ -1197,7 +1221,7 @@ mod tests {
     #[test]
     fn rejects_an_unknown_codec() {
         let mut bytes = encode_sst(&todo_rows(3), Codec::Raw);
-        let at = bytes.len() - 16;
+        let at = bytes.len() - 24;
         bytes[at] = 9;
         let crc_off = bytes.len() - 12;
         let sum = crc32(&bytes[..crc_off]);

@@ -3,9 +3,9 @@
 The byte layout of a run, `l<n>/*.sst`. How a tab reads one is in
 [design.md](design.md#reading-a-run).
 
-A run is data blocks, a bloom filter, a block index and a fixed-size footer, back to back. A
-writer produces the sections in that order without knowing the key count up front. A reader
-finds the footer as the last 44 bytes of the file.
+A run is data blocks, a bloom filter, a block index, its statistics and a fixed-size footer,
+back to back. A writer produces the sections in that order without knowing the key count up
+front. A reader finds the footer as the last 52 bytes of the file.
 
 ```
 ================================== SST file ==================================
@@ -19,7 +19,9 @@ finds the footer as the last 44 bytes of the file.
 | ...                                                                        |
 | index entry N-1                                                            |
 ------------------------------------------------------------------------------
-| footer (44 bytes)                                                          |
+| statistics                                                                 |
+------------------------------------------------------------------------------
+| footer (52 bytes)                                                          |
 ==============================================================================
 ```
 
@@ -84,7 +86,38 @@ One entry per data block, in block order.
 | u32 block length                                                           |
 ```
 
-## Footer (44 bytes)
+## Statistics
+
+What the compaction planner knows of a run without reading it. The host copies the section
+into the run's manifest entry ([manifest-format.md](manifest-format.md)); tabs never read it.
+Entry bytes are the key length plus the value length of an entry, and a tombstone's are its key
+length.
+
+```
+| u32 entries                                                                |
+| u32 entry bytes                                                            |
+| u32 tombstones                                                             |
+| u32 tombstone bytes                                                        |
+| u8 n (0 or 9) · n × ( u64 seq · u32 through )            by seq            |
+| u8 n (0 or 9) · n × ( u64 expiresAt · u32 through )      by expiry         |
+| u8 n (0 or 9) · n × ( u32 key length · key · u32 through ) by key          |
+```
+
+Each spread is nine points in order, or none. `through` is the entry bytes of the entries at
+or below the point. The seq spread covers every entry and the expiry spread the puts with an
+expiry; each has none when its entries do.
+
+On seq and expiry, point 0 is the smallest value and point 8 the largest, and point *j* of 1 to
+7 is the smallest value at or below which lie *j*/8 of the bytes. The bytes at or below any
+value then lie between the point below it and the next eighth, so the midpoint of the two is
+within 1/16 of the run's bytes.
+
+On keys, point 0 is the first key. Point *j* of 1 to 8 is the last key of the first data block
+that ends with *j*/8 of the bytes behind it, so point 8 is the last key. The bytes below any key
+lie between two neighbouring points, within 1/16 of the run's bytes plus half a block of the
+midpoint.
+
+## Footer (52 bytes)
 
 ```
 <----------------------------------- 4 bytes ----------------------------------->
@@ -96,6 +129,8 @@ One entry per data block, in block order.
 | index offset                                                                  |
 | index length                                                                  |
 | codec                                                                         |
+| statistics offset                                                             |
+| statistics length                                                             |
 | crc32                                                                         |
 | version                                                                       |
 | magic                                                                         |
@@ -107,7 +142,7 @@ One entry per data block, in block order.
 
 `crc32` is the IEEE CRC-32 of every byte before the field.
 
-`version` must be 2. Any other version is rejected.
+`version` must be 3. Any other version is rejected.
 
 `magic` must be `OLST` (0x4f4c5354).
 

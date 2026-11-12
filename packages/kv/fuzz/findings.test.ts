@@ -8,7 +8,7 @@ import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { decodeSst, encodeSst, readFooter } from "../src/store/sst.js";
 import { untilHit } from "../src/store/cursor.js";
-import { mergeRuns } from "../tests/runs.js";
+import { listedRun, mergeRuns } from "../tests/runs.js";
 import { bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
 import { loadWasm, withoutWasm, type FlatEngine } from "./wasm.js";
 import { NO_MARKS } from "../src/store/marks.js";
@@ -33,7 +33,7 @@ const entries = Array.from({ length: 40 }, (_, i) => ({
   value: utf(`value ${i}`),
   seq: i + 1,
 }));
-const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - 44, 44);
+const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - 52, 52);
 const range = { smallest: entries[0]!.key, largest: entries[entries.length - 1]!.key };
 
 /** A tab's get of `key` from run bytes `buf`, as `SstReader` does it. */
@@ -123,10 +123,10 @@ describe("decoder bugs the fuzzers found", () => {
     const m = encodeGeneration({
       generation: 1,
       tombstoneSeq: 0,
-      through: 0,
+      through: 1,
       judgedNow: 0,
       marks: NO_MARKS,
-      runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") }, marksThrough: 0 }],
+      runs: [listedRun("l1/a.sst", 100, { smallest: utf("a"), largest: utf("b") })],
     });
     // Run count and the first path length, inflated (found by "manifests ... reject every change").
     // The run count follows the 40-byte header and the 24-byte empty marks block.

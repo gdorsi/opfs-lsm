@@ -77,7 +77,7 @@ describe("sst format", () => {
   it("reads blocks of a single record backward", async () => {
     const entries = indexWorkload(40);
     const body = encodeSst(entries, 1);
-    expect(new DataView(body.buffer).getUint32(body.byteLength - 40, true)).toBe(entries.length);
+    expect(new DataView(body.buffer).getUint32(body.byteLength - 52, true)).toBe(entries.length);
     const sorted = decodeSst(body);
     const keys = sorted.map((e) => e.key);
     const reader = readerOfBytes(body);
@@ -135,8 +135,8 @@ describe("sst format", () => {
   it("fills blocks to the target in encoded bytes", () => {
     const body = encodeSst(indexWorkload(2_000));
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    const blocks = view.getUint32(body.byteLength - 40, true);
-    const dataLen = view.getUint32(body.byteLength - 36, true);
+    const blocks = view.getUint32(body.byteLength - 48, true);
+    const dataLen = view.getUint32(body.byteLength - 44, true);
     expect(dataLen / blocks).toBeGreaterThan(4096 * 0.9);
     expect(dataLen / blocks).toBeLessThanOrEqual(4096);
   });

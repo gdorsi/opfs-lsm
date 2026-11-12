@@ -73,8 +73,8 @@ merge_pump() -> i32
       1 NEED     result: demand records. Read each, `merge_feed` it, pump.
       2 WRITE    result: the next bytes of the open output run, in the
                  session's buffer. Copy them out before the next call.
-      3 RUN_END  result: run head (below) · first_key · last_key. Every byte
-                 of the run was in a WRITE.
+      3 RUN_END  result: run head (below) · first_key · last_key · stats.
+                 Every byte of the run was in a WRITE.
       4 YIELD    about `yield_bytes` of input were merged; result empty.
       5 DONE     result: u64 dropped_seq. Every run's CRC matched.
     or a negative error code. -16 (UNFED) means a demand was not fed yet
@@ -118,10 +118,11 @@ entry record     u8 tag (1 put, 2 del, 3 put with expiry) · u64 seq
 pattern list     repeated: u32 len · bytes
 hit record       u32 key_len · u32 value_len · key · value
 run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_len
-                 · sst (size bytes) · first_key · last_key
+                 · u32 stats_len · sst (size bytes) · first_key · last_key · stats
 source list      u32 count · repeated: u32 run_count · run_count × u32 size
 demand record    u32 source · u32 run · u32 offset · u32 len
 run head         u32 entries · u32 size · u32 first_key_len · u32 last_key_len
+                 · u32 stats_len
 marks block      u32 piece_count (at least 1) · repeated: u32 start_len
                  · start · u64 through · u64 at
 ```
@@ -138,8 +139,9 @@ through the pieces beside them.
 A run record carries what the manifest records about a run, so the caller
 never reads the SST back for it. `entries` is 0 for an empty run, whose two
 keys are empty; it is what tells an empty run from one whose only key is
-the empty key. The keys follow the SST because the encoder only knows them
-when the run is complete.
+the empty key. The keys and `stats`, the run's statistics section
+(`docs/sst-format.md`, "Statistics"), follow the SST because the encoder
+only knows them when the run is complete.
 
 `target_bytes` is an `f64` so JS can pass `Number.MAX_SAFE_INTEGER` for
 "one output run"; implementations saturate it to their address size.
@@ -171,7 +173,8 @@ reserves its working set in `merge_open` and grows its input buffers (for
 a block, a run's bloom and index, or an entry larger than any before)
 without aborting, so it returns -11 instead. The output writer's per-run
 state (one bloom hash per key and one index row per block of the open
-run) still grows with the run, bounded by `target_bytes`, and running
+run, and 12 bytes per entry and per put with an expiry for its
+statistics) still grows with the run, bounded by `target_bytes`, and running
 out of memory there aborts as it does outside a session.
 
 The contract carries `capacity` and -11 so that an implementation that

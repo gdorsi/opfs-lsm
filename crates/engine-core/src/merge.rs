@@ -15,7 +15,7 @@
 //! What it holds, whatever the inputs' size: per source about `chunk_bytes` of
 //! framed blocks (more only for a block, or a run's bloom and index, that is
 //! larger), one unpacked block and two entries; for the output, one open block, a bloom
-//! hash and an index row per key and block of the open run, and up to
+//! hash, an index row and the statistics rows per key and block of the open run, and up to
 //! `chunk_bytes` plus one block of bytes not yet written.
 
 use crate::crc32::{crc32, crc32_combine, Crc32};
@@ -210,7 +210,7 @@ impl MergeSession {
             writer: SstWriter::new(config.codec),
             out,
             output: Output::Filling { size: 0 },
-            ended: RunEnd { entries: 0, size: 0, first_key: Vec::new(), last_key: Vec::new() },
+            ended: RunEnd { entries: 0, size: 0, first_key: Vec::new(), last_key: Vec::new(), stats: Vec::new() },
             drop_tombstones: config.drop_tombstones,
             judge_now: config.judge_now,
             marks: owned,

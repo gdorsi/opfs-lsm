@@ -327,13 +327,35 @@ fn a_two_entry_run_has_the_documented_bytes() {
     index.extend_from_slice(&(block.len() as u32).to_le_bytes());
     assert_eq!(&out[index_at..index_at + index.len()], &index[..]);
 
+    // 2 entries of 5 entry bytes, 1 tombstone of 2; the seq spread holds 5
+    // (3 bytes) through 4/8 and 6 (5 bytes) after; no expiry; keys "ab" (3
+    // bytes), then the one block's last key "ac" (5 bytes) at every level.
+    let mut stats = Vec::new();
+    for n in [2u32, 5, 1, 2] {
+        stats.extend_from_slice(&n.to_le_bytes());
+    }
+    stats.push(9);
+    for (seq, through) in [(5u64, 3u32), (5, 3), (5, 3), (5, 3), (5, 3), (6, 5), (6, 5), (6, 5), (6, 5)] {
+        stats.extend_from_slice(&seq.to_le_bytes());
+        stats.extend_from_slice(&through.to_le_bytes());
+    }
+    stats.push(0);
+    stats.push(9);
+    for (key, through) in [(b"ab", 3u32), (b"ac", 5), (b"ac", 5), (b"ac", 5), (b"ac", 5), (b"ac", 5), (b"ac", 5), (b"ac", 5), (b"ac", 5)] {
+        stats.extend_from_slice(&2u32.to_le_bytes());
+        stats.extend_from_slice(key);
+        stats.extend_from_slice(&through.to_le_bytes());
+    }
+    let stats_at = index_at + index.len();
+    assert_eq!(&out[stats_at..stats_at + stats.len()], &stats[..]);
+
     let footer = &out[out.len() - FOOTER_BYTES..];
     let field = |i: usize| u32::from_le_bytes(footer[4 * i..4 * i + 4].try_into().unwrap()) as usize;
     assert_eq!(
-        [field(0), field(1), field(2), field(3), field(4), field(5), field(6), field(7)],
-        [2, 1, block.len(), bloom_len, 7, index_at, index.len(), 0]
+        (0..10).map(field).collect::<Vec<_>>(),
+        [2, 1, block.len(), bloom_len, 7, index_at, index.len(), 0, stats_at, stats.len()]
     );
-    assert_eq!(field(8) as u32, crc32(&out[..out.len() - 12]));
-    assert_eq!((field(9), field(10) as u32), (2, MAGIC));
-    assert_eq!(end, RunEnd { entries: 2, size: out.len(), first_key: b"ab".to_vec(), last_key: b"ac".to_vec() });
+    assert_eq!(field(10) as u32, crc32(&out[..out.len() - 12]));
+    assert_eq!((field(11), field(12) as u32), (3, MAGIC));
+    assert_eq!(end, RunEnd { entries: 2, size: out.len(), first_key: b"ab".to_vec(), last_key: b"ac".to_vec(), stats });
 }

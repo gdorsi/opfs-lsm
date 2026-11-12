@@ -4,11 +4,12 @@ import type { LayerEntry } from "./cursor.js";
 import { bloomAdd, createBloom, type BloomFilter } from "./bloom.js";
 import { crc32 } from "./crc32.js";
 import { lz4Decompress } from "./lz4.js";
+import { encodeStats, type Point, type RunStats } from "./run-stats.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 const SST_MAGIC = 0x4f4c5354;
-const VERSION = 2;
-export const SST_FOOTER_BYTES = 44;
+const VERSION = 3;
+export const SST_FOOTER_BYTES = 52;
 /**
  * The most Bloom hashes a footer may name. The encoder writes 7; a get
  * loops once per hash, so a corrupt count must not set its cost.
@@ -68,14 +69,13 @@ export type KeyRange = {
 
 /**
  * What an encoder reports when a run ends, and what the manifest records, so
- * nobody reads a run back for its size or its keys.
+ * nobody reads a run back for its size, its keys or its statistics. An
+ * empty run has neither keys nor statistics.
  */
 export type RunEnd = {
   /** Bytes of the whole run file. */
   readonly bytes: number;
-  /** Undefined for an empty run, which has no keys. */
-  readonly range?: KeyRange;
-};
+} & ({ readonly range?: undefined; readonly stats?: undefined } | { readonly range: KeyRange; readonly stats: RunStats });
 
 /** A run's bytes and its `RunEnd`. */
 export type EncodedRun = {
@@ -374,14 +374,16 @@ class RecordWalker {
 }
 
 /**
- * Encode SST version 2 with raw blocks. LZ4 blocks come only from the wasm encoder.
+ * Encode SST version 3 with raw blocks. LZ4 blocks come only from the wasm encoder.
  *   data blocks (see `encodeBlock`)
  *   bloom bits
  *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
- *   footer, 44 bytes:
+ *   statistics (see `runStats`)
+ *   footer, 52 bytes:
  *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
  *     u32 bloomHashCount | u32 indexOffset | u32 indexLen | u32 codec
- *     u32 crc32 of every byte before it | u32 version=2 | u32 magic
+ *     u32 statsOffset | u32 statsLen
+ *     u32 crc32 of every byte before it | u32 version=3 | u32 magic
  */
 export function encodeRun(
   entries: readonly SstEntry[],
@@ -414,7 +416,9 @@ export function encodeRun(
     indexSize += 4 + ix.firstKey.byteLength + 4 + ix.lastKey.byteLength + 8;
   }
 
-  const out = new Uint8Array(dataLen + bloom.bits.byteLength + indexSize + SST_FOOTER_BYTES);
+  const stats = runStats(blocks);
+  const statsBytes = encodeStats(stats);
+  const out = new Uint8Array(dataLen + bloom.bits.byteLength + indexSize + statsBytes.byteLength + SST_FOOTER_BYTES);
   const view = new DataView(out.buffer);
   let o = 0;
   for (const blob of blockBlobs) {
@@ -439,6 +443,9 @@ export function encodeRun(
     view.setUint32(o, ix.length, true);
     o += 4;
   }
+  const statsOffset = o;
+  out.set(statsBytes, o);
+  o += statsBytes.byteLength;
 
   for (const field of [
     sorted.length,
@@ -449,6 +456,8 @@ export function encodeRun(
     indexOffset,
     indexSize,
     CODECS.indexOf("raw"),
+    statsOffset,
+    statsBytes.byteLength,
   ]) {
     view.setUint32(o, field, true);
     o += 4;
@@ -460,10 +469,66 @@ export function encodeRun(
   const last = sorted[sorted.length - 1];
   return {
     body: out,
-    end: {
-      bytes: out.byteLength,
-      ...(first && last && { range: { smallest: first.key.slice(), largest: last.key.slice() } }),
-    },
+    end:
+      first && last
+        ? { bytes: out.byteLength, range: { smallest: first.key.slice(), largest: last.key.slice() }, stats }
+        : { bytes: out.byteLength },
+  };
+}
+
+function entryBytes(e: SstEntry): number {
+  return e.key.byteLength + (e.kind === "put" ? e.value.byteLength : 0);
+}
+
+/** A spread of (value, entry bytes) pairs: see `Spread` in run-stats.ts. */
+function numericSpread(items: { at: number; bytes: number }[]): Point<number>[] {
+  if (items.length === 0) return [];
+  items.sort((a, b) => a.at - b.at);
+  const total = items.reduce((n, i) => n + i.bytes, 0);
+  const points: Point<number>[] = [];
+  let level = 1;
+  let cum = 0;
+  for (let i = 0; i < items.length; ) {
+    const at = items[i]!.at;
+    while (i < items.length && items[i]!.at === at) cum += items[i++]!.bytes;
+    if (at === items[0]!.at) points.push({ at, through: cum });
+    for (; level < 8 && 8 * cum >= level * total; level++) points.push({ at, through: cum });
+  }
+  points.push({ at: items[items.length - 1]!.at, through: total });
+  return points;
+}
+
+/**
+ * The statistics the encoder writes for a run cut into `blocks`, in key
+ * order. The wasm encoder computes the same in Rust.
+ */
+function runStats(blocks: readonly (readonly SstEntry[])[]): RunStats {
+  const sorted = blocks.flat();
+  const total = sorted.reduce((n, e) => n + entryBytes(e), 0);
+  const dels = sorted.filter((e) => e.kind === "del");
+  const byKey: Point<Uint8Array>[] = [];
+  const first = sorted[0];
+  if (first) {
+    let through = 0;
+    for (const e of sorted) if (compareBytes(e.key, first.key) === 0) through += entryBytes(e);
+    byKey.push({ at: first.key, through });
+    let end = 0;
+    let level = 1;
+    for (const block of blocks) {
+      for (const e of block) end += entryBytes(e);
+      for (; level <= 8 && 8 * end >= level * total; level++) byKey.push({ at: block[block.length - 1]!.key, through: end });
+    }
+  }
+  return {
+    entries: sorted.length,
+    entryBytes: total,
+    tombstones: dels.length,
+    tombstoneBytes: dels.reduce((n, e) => n + entryBytes(e), 0),
+    bySeq: numericSpread(sorted.map((e) => ({ at: e.seq, bytes: entryBytes(e) }))),
+    byExpiry: numericSpread(
+      sorted.flatMap((e) => (e.kind === "put" && e.expiresAt !== undefined ? [{ at: e.expiresAt, bytes: entryBytes(e) }] : [])),
+    ),
+    byKey,
   };
 }
 
@@ -494,13 +559,13 @@ export type SstFooter = {
   dataLen: number;
   bloomHashCount: number;
   indexStart: number;
-  /** Where the footer starts, which is also where the index ends. */
+  /** Where the index ends and the statistics start. */
   indexEnd: number;
   codec: SstCodec;
 };
 
 /**
- * Footer is 8 u32 fields, then CRC, version, and magic. Rejects any other
+ * Footer is 10 u32 fields, then CRC, version, and magic. Rejects any other
  * version. `tail` is the last `tail.byteLength` bytes of a `fileSize`-byte run.
  */
 export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
@@ -512,24 +577,24 @@ export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
   if (version !== VERSION) throw new CorruptDatabaseError(`unsupported sst version ${version}`);
   const at = tail.byteLength - SST_FOOTER_BYTES;
   const field = (i: number) => view.getUint32(at + 4 * i, true);
-  const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen, codecId] =
-    [0, 1, 2, 3, 4, 5, 6, 7].map(field) as [number, number, number, number, number, number, number, number];
+  const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen, codecId, statsOffset, statsLen] =
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(field) as [number, number, number, number, number, number, number, number, number, number];
   const footer = fileSize - SST_FOOTER_BYTES;
-  if (indexOffset !== bloomOffset + bloomLen || indexOffset + indexLen !== footer) {
+  if (indexOffset !== bloomOffset + bloomLen || indexOffset + indexLen !== statsOffset || statsOffset + statsLen !== footer) {
     throw new CorruptDatabaseError("sst footer sections OOB");
   }
   const codec = CODECS[codecId];
   if (!codec) throw new CorruptDatabaseError(`unsupported sst codec ${codecId}`);
   if (bloomHashCount > MAX_BLOOM_HASHES) throw new CorruptDatabaseError(`sst bloom hash count ${bloomHashCount}`);
   if (blockCount * MIN_INDEX_ENTRY_BYTES > indexLen) throw new CorruptDatabaseError("sst block count past the index");
-  return { entryCount, blockCount, dataLen: bloomOffset, bloomHashCount, indexStart: indexOffset, indexEnd: footer, codec };
+  return { entryCount, blockCount, dataLen: bloomOffset, bloomHashCount, indexStart: indexOffset, indexEnd: statsOffset, codec };
 }
 
 function parseFooter(buf: Uint8Array): BlockLayout {
   const f = readFooter(buf, buf.byteLength);
   return {
     view: new DataView(buf.buffer, buf.byteOffset, buf.byteLength),
-    crcOff: f.indexEnd + 32,
+    crcOff: buf.byteLength - 12,
     entryCount: f.entryCount,
     blockCount: f.blockCount,
     dataLen: f.dataLen,

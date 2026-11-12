@@ -4,19 +4,24 @@ import { crc32 } from "./crc32.js";
 import { encodeRun } from "./engine.js";
 import { levelOfDir, levelRunPath } from "./levels.js";
 import { decodeMarks, encodeMarks, NO_MARKS, type Marks } from "./marks.js";
-import type { RunEnd, SstEntry } from "./sst.js";
+import { decodeStats, encodeStats } from "./run-stats.js";
+import type { RunStats } from "./run-stats.js";
+import type { KeyRange, RunEnd, SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-/** Version 5 records `judgedNow`. */
-const GEN_VERSION = 5;
+/** Version 6 records each run's statistics. */
+const GEN_VERSION = 6;
 
 /**
  * A run of the generation: what the encoder reported when it wrote the file
- * (`RunEnd`), and where the file is.
+ * (`RunEnd`), and where the file is. A listed run is never empty.
  */
-export type RunMeta = RunEnd & {
+export type RunMeta = {
+  readonly bytes: number;
+  readonly range: KeyRange;
+  readonly stats: RunStats;
   /** Relative to the db root: `l<n>/<name>.sst`. The directory is the level, see levels.ts. */
   readonly path: string;
   /**
@@ -63,11 +68,11 @@ function genPath(generation: number): string {
 export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const enc = new TextEncoder();
   const paths = meta.runs.map((r) => enc.encode(r.path));
+  const stats = meta.runs.map((r) => encodeStats(r.stats));
   const marks = encodeMarks(meta.marks);
   let size = 4 + 4 + 8 + 8 + 8 + 8 + marks.byteLength + 4;
-  meta.runs.forEach((r, i) => {
-    size += 2 + paths[i]!.byteLength + 4 + 1 + 8;
-    if (r.range) size += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
+  meta.runs.forEach((_, i) => {
+    size += 2 + paths[i]!.byteLength + 4 + 8 + 4 + stats[i]!.byteLength;
   });
   size += 4;
   const out = new Uint8Array(size);
@@ -97,15 +102,11 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
     o += p.byteLength;
     view.setUint32(o, r.bytes, true);
     o += 4;
-    out[o++] = r.range ? 1 : 0;
-    for (const key of r.range ? [r.range.smallest, r.range.largest] : []) {
-      view.setUint32(o, key.byteLength, true);
-      o += 4;
-      out.set(key, o);
-      o += key.byteLength;
-    }
     view.setBigUint64(o, BigInt(r.marksThrough), true);
     o += 8;
+    view.setUint32(o, stats[i]!.byteLength, true);
+    out.set(stats[i]!, o + 4);
+    o += 4 + stats[i]!.byteLength;
   });
   view.setUint32(o, crc32(out.subarray(0, o)), true);
   return out;
@@ -141,21 +142,19 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     o += n;
     return o - n;
   };
-  const key = (): Uint8Array => {
-    const len = view.getUint32(take(4), true);
-    const at = take(len);
-    return buf.slice(at, at + len);
-  };
   const runCount = view.getUint32(take(4), true);
   for (let i = 0; i < runCount; i++) {
     const len = view.getUint16(take(2), true);
     const at = take(len);
     const path = dec.decode(buf.subarray(at, at + len));
     const bytes = view.getUint32(take(4), true);
-    const range = buf[take(1)] === 1 ? { smallest: key(), largest: key() } : undefined;
     const marksThrough = Number(view.getBigUint64(take(8), true));
     if (marksThrough > through) throw new CorruptDatabaseError("generation run past through");
-    runs.push(range ? { path, bytes, range, marksThrough } : { path, bytes, marksThrough });
+    const statsLen = view.getUint32(take(4), true);
+    const from = take(statsLen);
+    const stats = decodeStats(buf, from, from + statsLen, through);
+    const range = { smallest: stats.byKey[0]!.at, largest: stats.byKey[stats.byKey.length - 1]!.at };
+    runs.push({ path, bytes, range, stats, marksThrough });
   }
   if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
   return { generation, runs, tombstoneSeq, through, judgedNow, marks };
@@ -239,10 +238,11 @@ export async function publishL0(
 ): Promise<RunMeta> {
   const path = levelRunPath(0, name);
   const { body, end } = await encodeRun(entries);
+  if (!end.stats) throw new Error("an L0 run needs an entry");
   const w = await fs.create(path);
   await w.write(body);
   await w.finish();
-  return { path, ...end, marksThrough };
+  return { path, bytes: end.bytes, range: end.range, stats: end.stats, marksThrough };
 }
 
 /** The manifest of `generation`, or undefined when a newer publish removed it. */

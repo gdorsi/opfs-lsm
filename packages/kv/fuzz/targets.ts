@@ -41,7 +41,7 @@ const TIME_LIMIT_MS = Number(env.KV_FUZZ_TIME_LIMIT_MS ?? 2000);
 /** Bytes one target call may allocate in ArrayBuffers or wasm memory. */
 const ALLOC_LIMIT = 64 << 20;
 
-const FOOTER_BYTES = 44;
+const FOOTER_BYTES = 52;
 
 const u32 = (b: Uint8Array, o: number): number | undefined =>
   o >= 0 && o + 4 <= b.byteLength ? new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(o, true) : undefined;
@@ -62,7 +62,7 @@ export type Repair = "none" | "crc" | "trailer";
 export function repairSst(buf: Uint8Array, how: Repair): void {
   if (how === "trailer" && buf.byteLength >= FOOTER_BYTES) {
     const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    view.setUint32(buf.byteLength - 8, 1, true);
+    view.setUint32(buf.byteLength - 8, 3, true);
     view.setUint32(buf.byteLength - 4, 0x4f4c5354, true);
   }
   if (how !== "none") fixSstCrc(buf);

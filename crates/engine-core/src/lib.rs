@@ -8,6 +8,7 @@ mod crc32;
 mod marks;
 mod merge;
 mod sst;
+mod stats;
 
 pub use bloom::{
     bloom_add, bloom_add_hash, bloom_from_hashes, bloom_might_contain, bloom_params, create_bloom,

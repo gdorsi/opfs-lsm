@@ -355,8 +355,8 @@ class Reader {
 
   /** Index the run from `meta`, its bytes from the end of its data on. */
   private startBlocks(footer: SstFooter, meta: Uint8Array): Blocks {
-    // The CRC sits after the footer's eight fields and covers every byte before it.
-    const crcAt = footer.indexEnd + 32 - footer.dataLen;
+    // The CRC is the third field from the end and covers every byte before it.
+    const crcAt = meta.byteLength - 12;
     const layout: Layout = {
       codec: footer.codec,
       dataLen: footer.dataLen,

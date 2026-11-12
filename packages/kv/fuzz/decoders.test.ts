@@ -22,6 +22,7 @@ import {
 } from "./targets.js";
 import { loadWasm, withoutWasm } from "./wasm.js";
 import { joinMarks, markTable, NO_MARKS, type Marks } from "../src/store/marks.js";
+import { listedRun } from "../tests/runs.js";
 
 /**
  * Byte-mutation properties over every decoder of on-disk and IndexedDB
@@ -218,15 +219,31 @@ const manifestArb: fc.Arbitrary<GenerationMeta> = fc.integer({ min: 0, max: 2 **
     judgedNow: fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }),
     marks: marksArb(through),
     runs: fc.array(
-      fc.record(
-        {
+      fc
+        .record({
           path: fc.constantFrom("l0/f1.sst", "l1/c7.0.sst", "l2/c9.3.sst"),
           bytes: fc.integer({ min: 0, max: 2 ** 32 - 1 }),
-          range: fc.record({ smallest: fc.uint8Array({ maxLength: 12 }), largest: fc.uint8Array({ maxLength: 12 }) }),
           marksThrough: fc.integer({ min: 0, max: through }),
-        },
-        { requiredKeys: ["path", "bytes", "marksThrough"] },
-      ),
+          entries: fc.array(
+            fc.record({
+              key: fc.uint8Array({ maxLength: 12 }),
+              seq: fc.integer({ min: 0, max: through }),
+              del: fc.boolean(),
+              expiresAt: fc.option(fc.integer({ min: 1, max: Number.MAX_SAFE_INTEGER }), { nil: undefined }),
+            }),
+            { minLength: 1, maxLength: 5 },
+          ),
+        })
+        .map(({ path, bytes, marksThrough, entries }) =>
+          listedRun(
+            path,
+            bytes,
+            entries.map(({ key, seq, del, expiresAt }): SstEntry =>
+              del ? { kind: "del", key, seq } : { kind: "put", key, value: new Uint8Array(3), seq, ...(expiresAt === undefined ? {} : { expiresAt }) },
+            ),
+            marksThrough,
+          ),
+        ),
       { maxLength: 6 },
     ),
   }),

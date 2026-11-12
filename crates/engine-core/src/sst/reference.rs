@@ -11,8 +11,8 @@ use crate::crc32::crc32;
 use alloc::{vec, vec::Vec};
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
-const VERSION: u32 = 2;
-const FOOTER_BYTES: usize = 44;
+const VERSION: u32 = 3;
+const FOOTER_BYTES: usize = 52;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 const TAG_PUT_EXPIRING: u8 = 3;
@@ -193,7 +193,8 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
         index_size += 4 + first.len() + 4 + last.len() + 8;
     }
 
-    let total = data_len + bloom.bits.len() + index_size + FOOTER_BYTES;
+    let stats = stats(&sorted, &blocks);
+    let total = data_len + bloom.bits.len() + index_size + stats.len() + FOOTER_BYTES;
     let mut out = vec![0u8; total];
     let mut o = 0usize;
     for blob in &block_blobs {
@@ -214,6 +215,9 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
         write_u32(&mut out, &mut o, *offset);
         write_u32(&mut out, &mut o, *length);
     }
+    let stats_offset = o;
+    out[o..o + stats.len()].copy_from_slice(&stats);
+    o += stats.len();
 
     for field in [
         sorted.len(),
@@ -224,6 +228,8 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
         index_offset,
         index_size,
         codec as usize,
+        stats_offset,
+        stats.len(),
     ] {
         write_u32(&mut out, &mut o, field as u32);
     }
@@ -232,5 +238,86 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
     write_u32(&mut out, &mut o, VERSION);
     write_u32(&mut out, &mut o, MAGIC);
     debug_assert_eq!(o, out.len());
+    out
+}
+
+fn entry_bytes(e: &Entry) -> u64 {
+    match e {
+        Entry::Put { key, value, .. } => (key.len() + value.len()) as u64,
+        Entry::Del { key, .. } => key.len() as u64,
+    }
+}
+
+/// The statistics section, from its definition: totals, then for seq and
+/// for expiry the smallest value, for each j of 1 to 7 the smallest value
+/// whose bytes at or below it reach j/8 of all, and the largest value; for
+/// keys the first key, then for each j of 1 to 8 the last key of the first
+/// block whose end reaches j/8 of the bytes.
+fn stats(sorted: &[&Entry], blocks: &[&[&Entry]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let total: u64 = sorted.iter().map(|e| entry_bytes(e)).sum();
+    let dels: Vec<&&Entry> = sorted.iter().filter(|e| matches!(e, Entry::Del { .. })).collect();
+    let del_bytes: u64 = dels.iter().map(|e| entry_bytes(e)).sum();
+    for n in [sorted.len() as u64, total, dels.len() as u64, del_bytes] {
+        out.extend_from_slice(&(n as u32).to_le_bytes());
+    }
+    let seqs: Vec<(u64, u64)> = sorted.iter().map(|e| (e.seq(), entry_bytes(e))).collect();
+    let expiries: Vec<(u64, u64)> = sorted
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Put { expires_at: Some(at), .. } => Some((*at, entry_bytes(e))),
+            _ => None,
+        })
+        .collect();
+    for mut axis in [seqs, expiries] {
+        if axis.is_empty() {
+            out.push(0);
+            continue;
+        }
+        axis.sort();
+        let all: u64 = axis.iter().map(|a| a.1).sum();
+        // (value, bytes at or below it), one per distinct value.
+        let mut cdf: Vec<(u64, u64)> = Vec::new();
+        let mut below = 0;
+        for &(v, bytes) in &axis {
+            below += bytes;
+            match cdf.last_mut() {
+                Some(last) if last.0 == v => last.1 = below,
+                _ => cdf.push((v, below)),
+            }
+        }
+        let mut points = vec![cdf[0]];
+        for j in 1..8u64 {
+            points.push(*cdf.iter().find(|&&(_, f)| 8 * f >= j * all).unwrap());
+        }
+        points.push(*cdf.last().unwrap());
+        out.push(9);
+        for (v, f) in points {
+            out.extend_from_slice(&v.to_le_bytes());
+            out.extend_from_slice(&(f as u32).to_le_bytes());
+        }
+    }
+    if sorted.is_empty() {
+        out.push(0);
+        return out;
+    }
+    out.push(9);
+    let key_point = |out: &mut Vec<u8>, key: &[u8], through: u64| {
+        out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        out.extend_from_slice(key);
+        out.extend_from_slice(&(through as u32).to_le_bytes());
+    };
+    let first = sorted[0].key();
+    key_point(&mut out, first, sorted.iter().filter(|e| e.key() == first).map(|e| entry_bytes(e)).sum());
+    let mut ends = Vec::new();
+    let mut end = 0;
+    for block in blocks {
+        end += block.iter().map(|e| entry_bytes(e)).sum::<u64>();
+        ends.push((block.last().unwrap().key(), end));
+    }
+    for j in 1..=8u64 {
+        let (key, through) = ends.iter().find(|(_, end)| 8 * end >= j * total).unwrap();
+        key_point(&mut out, key, *through);
+    }
     out
 }

@@ -9,7 +9,7 @@ import { lz4DecompressJs, useLz4Decoder } from "../src/store/lz4.js";
 import { untilHit } from "../src/store/cursor.js";
 import { decodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
-import { drain, publish, readerOfBytes } from "./runs.js";
+import { drain, listed, publish, readerOfBytes } from "./runs.js";
 import { MemoryFs } from "../src/testing.js";
 import { NO_MARKS } from "../src/store/marks.js";
 
@@ -132,14 +132,14 @@ describe("compaction codec", () => {
     const { body, end } = await encodeRun(todoRows(0));
     await publish(fs, path, body);
     // A size past L1's target makes the run a compaction input without writing 40 MB.
-    await publishGeneration(fs, { generation: 1, runs: [{ path, ...end, bytes: 50_000_000, marksThrough: 0 }], tombstoneSeq: 0, through: 0, judgedNow: 0, marks: NO_MARKS });
+    await publishGeneration(fs, { generation: 1, runs: [{ ...listed(path, end), bytes: 50_000_000 }], tombstoneSeq: 0, through: 1_000_000, judgedNow: 0, marks: NO_MARKS });
     const step = await mergeNextStep(fs, budget, (await loadLatestGeneration(fs))!, 0, new WallClock(() => 0));
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
     return { out: out.path, bytes, raw: body };
   }
 
-  const codecOf = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset).getUint32(b.byteLength - 16, true);
+  const codecOf = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset).getUint32(b.byteLength - 24, true);
 
   it("writes LZ4 runs into L2", async () => {
     const { out, bytes, raw } = await stepFrom("l1/c1.0.sst");
@@ -156,9 +156,9 @@ describe("compaction codec", () => {
       const { body, end } = await encodeRun(todoRows(i * 2_000));
       const path = `l0/${i}.sst`;
       await publish(fs, path, body);
-      runs.push({ path, ...end, marksThrough: 0 });
+      runs.push(listed(path, end));
     }
-    await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 0, judgedNow: 0, marks: NO_MARKS });
+    await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 1_000_000, judgedNow: 0, marks: NO_MARKS });
     const step = await mergeNextStep(fs, budget, (await loadLatestGeneration(fs))!, 0, new WallClock(() => 0));
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
