@@ -60,6 +60,7 @@ Read `features/README.md`, then the feature file. Drive through the helper so st
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench-smoke
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-nobc
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-local
+.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive pressure
 ```
 
 Harness mapping (repo-native; do not invent a second browser stack):
@@ -69,6 +70,7 @@ Harness mapping (repo-native; do not invent a second browser stack):
 | `two-tab` | `pnpm --filter @opfs-lsm/kv two-tab` |
 | `two-tab-nobc` | `TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
+| `pressure` | `TWO_TAB_PRESSURE=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `bench <args…>` | `pnpm bench <args…>`: a selector (`kv/`, `table/`, `automerge/`, `yjs/`, or one workload such as `kv/fillrandom`) plus optional `--size`, `--reps`, `--contenders` |
 | `bench-smoke` | `pnpm bench:smoke` |
 
@@ -76,6 +78,7 @@ Stable proof strings (from harness stdout, not DOM coordinates):
 
 - Two-tab SharedWorker: `tabs=2`, `mode=SharedWorker`, `two-tab ok`, exit `0`.
 - Two-tab local: `tabs=1`, `mode=local EngineHost`, `two-tab ok`, exit `0`.
+- Size cap: `tabs=2`, `mode=SharedWorker`, `pressure answered by tab`, `both tabs read`, `no handler: one warning in each tab`, `pressure ok`, exit `0`.
 - Bench and bench-smoke: one `## <family>/<workload>: <title>` section per workload with a row per contender, no `## Failed runs` section, exit `0`. Every read is checked against a model, so exit `0` means every value was right.
 
 Pages (served only while a drive runs): `#run` / `#out` in `packages/kv/proof/two-tab.html`. Auto mode uses `?auto=1`; agents should not click `Run` unless debugging a hung auto session. The bench pages are built into `bench/.out` and driven by `bench/cli.ts`.

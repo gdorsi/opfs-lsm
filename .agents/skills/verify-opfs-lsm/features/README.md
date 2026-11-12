@@ -16,7 +16,7 @@ Formal model checkers live under `verify-kv` and are not listed here.
 
 - Prefer the SharedWorker path (default). Opt into `two-tab-local` only when proving the in-page `EngineHost` path.
 - Treat harness stdout as the user-visible proof log (`#out` content posted to `/two-tab-results`, and the bench report tables).
-- Keep env flags literal: `TWO_TAB_NOBC=1`, `TWO_TAB_LOCAL=1`.
+- Keep env flags literal: `TWO_TAB_NOBC=1`, `TWO_TAB_LOCAL=1`, `TWO_TAB_PRESSURE=1`.
 - Every harness closes its Chrome and uses a fresh temp profile, so there is no profile to clean up.
 - Do not delete `artifacts/` during cleanup.
 
@@ -39,3 +39,4 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior, 
 - [Benchmark suite](./bench.md) — `pnpm bench <family>/` for kv vs IndexedDB, docstore vs Dexie, the Automerge adapter, and Yjs `KvPersistence`, with every read checked; `bench-smoke` for all of them at size `tiny`.
 - [Two-tab without BroadcastChannel](./two-tab-nobc.md) — same scenario with BC silenced.
 - [Two-tab local EngineHost](./two-tab-local.md) — one page, two handles, no SharedWorker.
+- [Size cap across two tabs](./pressure.md) — `maxBytes` offers answered by one tab's handler, and the warning when no tab has one.
