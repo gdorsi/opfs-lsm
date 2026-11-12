@@ -211,8 +211,8 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   /**
    * Apply a transition in one `update([CATALOG_KEY])`. Transitions return
    * undefined once applied, so a repeat writes nothing. `bound` holds the
-   * result once this resolves: kv announces a write before it resolves it,
-   * and `follow` adopts it.
+   * result once this resolves: kv announces a write before it resolves it
+   * (the contract on kv's `ChangeEvent`), and `follow` adopts it.
    */
   private async editCatalog(edit: (c: StoredCatalog) => StoredCatalog | undefined): Promise<void> {
     await this.kv.update([CATALOG_KEY], ([stored], tx) => {
