@@ -2,7 +2,7 @@ import { and, eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Body, Comment, Issue, StatusCode, Stream } from "../domain/model.ts";
-import { countBefore, countByStatus, countTotal, locate, unfiltered, type Anchor } from "./counts.ts";
+import { countBefore, countByStatus, countTotal, anchors, locate, type Anchor } from "./counts.ts";
 import type { IssueFilter } from "./filter.ts";
 import { backoffMs } from "./ops.ts";
 import { windowQuery } from "./query.ts";
@@ -104,7 +104,7 @@ type Placement = {
  * The list's rows. TanStack loads a window at offset N as the first N rows plus the window, so a window deep in the
  * unfiltered list gets its own live query that starts at the sort value of its first row (`locate`). Its rows sit
  * `base` rows down the list, where `base` counts the rows before that value and is counted again on every change.
- * A filtered list keeps one query from the top.
+ * A filtered list, and the list by title, keep one query from the top (`anchors`).
  */
 export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly total: number | undefined } {
   const { issues, docs } = openedStore();
@@ -135,7 +135,7 @@ export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly to
         if (p.offset !== offset) setPlaced({ ...p, offset, reach: Math.max(p.reach, offset + REACH) });
       };
       const { placement: p, base: b } = latest.current;
-      if (!unfiltered(filter) || start < REACH) return p.anchor ? place(undefined, start) : move(p, start);
+      if (!anchors(filter) || start < REACH) return p.anchor ? place(undefined, start) : move(p, start);
       if (p.anchor && start >= b && start - b <= p.reach) return move(p, start - b);
       void locate(docs.collection("issues"), filter, start - ABOVE).then(
         (found) => {

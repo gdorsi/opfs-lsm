@@ -74,7 +74,10 @@ export async function countTotal(issues: IssueDocs, filter: IssueFilter): Promis
   return (await countByStatus(issues, filter)).reduce((a, b) => a + b, 0);
 }
 
-/** The index of each sort: `deleted`, then the sort field, so `eq: [false]` lists every live issue in list order. */
+/**
+ * The index of each sort: `deleted`, then the sort field, so `eq: [false]` lists every live issue by its sort value.
+ * Issues with the same value come in the index's order, not the list's.
+ */
 const SORT_INDEX = {
   modified: "byModified",
   created: "byCreated",
@@ -83,26 +86,31 @@ const SORT_INDEX = {
   status: "byStatus",
 } as const satisfies Record<SortField, string>;
 
-/** Whether the list under `filter` shows every live issue, so its sort index lists exactly its rows, in its order. */
-export const unfiltered = (filter: IssueFilter) => filter.status.length === 0 && filter.priority.length === 0 && filter.q === "";
+/**
+ * Whether a deep window of the list under `filter` can start at a sort value: the list shows every live issue, and
+ * its sort index orders the values as the list does. Titles do not: the index orders strings by code point and
+ * TanStack by UTF-16 unit, and the two disagree between a character past U+FFFF and one from U+E000 to U+FFFF.
+ */
+export const anchors = (filter: IssueFilter) =>
+  filter.status.length === 0 && filter.priority.length === 0 && filter.q === "" && filter.sort !== "title";
 
-/** Every live issue in the list's order, or only those whose sort value passes `bound`. */
+/** Every live issue by sort value, or only those whose sort value passes `bound`. */
 const inOrder = (filter: IssueFilter, bound: { readonly gt?: Scalar; readonly lt?: Scalar } = {}) =>
   ({ index: SORT_INDEX[filter.sort], eq: [false], ...(filter.dir === "desc" && { reverse: true }), ...bound }) as IssueQuery;
 
-/** Live issues that sort strictly before `value` in the unfiltered list. Reads index entries only. */
+/** Live issues that sort strictly before `value` in a list that `anchors`. Reads index entries only. */
 export function countBefore(issues: Pick<Snap, "count">, filter: IssueFilter, value: Scalar): Promise<number> {
   return issues.count(inOrder(filter, filter.dir === "desc" ? { gt: value } : { lt: value }));
 }
 
-/** A row's sort value, and how many rows of the unfiltered list sort strictly before that value. */
+/** A row's sort value, and how many rows of a list that `anchors` sort strictly before that value. */
 export type Anchor = { readonly value: Scalar; readonly base: number };
 
 /** Rows before row `n` whose documents `locate` reads to count the rows tied with it. */
 const NEAR = 64;
 
 /**
- * The anchor of row `n` of the unfiltered list, or undefined if the list is shorter. It walks `n` index entries
+ * The anchor of row `n` of a list that `anchors`, or undefined if the list is shorter. It walks `n` index entries
  * without their documents, then reads rows `n - 64` to `n`: the rows tied with row `n` among them are the rows
  * between the anchor's `base` and `n`. A tie that runs past them is counted from the index.
  */

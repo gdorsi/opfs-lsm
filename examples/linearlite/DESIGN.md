@@ -234,8 +234,10 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   after every change, as the total is, so after a write that moves a row across the anchor the window is drawn
   one row off until that count returns: one frame in the `live` check of `bench/deep-jump-100k.txt`. A window
   within 1,000 rows past its anchor moves inside that query; one further down, or above the anchor, anchors again
-  200 rows above its first row. Windows in the first 1,000 rows, and every filtered list, stay one query from the
-  top, which TanStack loads as a prefix.
+  200 rows above its first row. Windows in the first 1,000 rows, every filtered list, and the list by title stay
+  one query from the top, which TanStack loads as a prefix. Titles are left out because the index orders strings
+  by code point and TanStack by UTF-16 unit: a title with an emoji and one with a character from U+E000 to U+FFFF
+  come in opposite orders, so a row's place in the index is not always its place in the list.
 - **Scroll.** The list keeps its scroll position per filter for the session, in memory, not in the URL, so Back
   from an issue lands where the user left.
 - **Board.** Five column queries ordered by `kanbanorder`, windows growing as a column scrolls, counts from

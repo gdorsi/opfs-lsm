@@ -7,7 +7,7 @@ import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, localOnlyCollectionOptions } from "@tanstack/db";
 import type { Issue, PriorityCode, StatusCode } from "../domain/model.ts";
-import { countBefore, locate } from "./counts.ts";
+import { anchors, countBefore, locate } from "./counts.ts";
 import { parseIssueFilter, SORT_FIELDS, type IssueFilter } from "./filter.ts";
 import { windowQuery } from "./query.ts";
 import { schema, type IssueDocs, type Store } from "./store.ts";
@@ -80,6 +80,15 @@ describe("the list's anchored window", () => {
         await q.cleanup();
       }
     }
+  });
+
+  it("does not anchor the list by title, whose index orders an emoji after U+FF21 and whose list orders it before", () => {
+    const [emoji, fullwidth] = ["\u{1F600}", "\uFF21"];
+    assert.ok(emoji < fullwidth, "the list's order");
+    assert.ok(Buffer.compare(Buffer.from(emoji), Buffer.from(fullwidth)) > 0, "the index's order");
+    for (const dir of ["asc", "desc"] as const) assert.equal(anchors(parseIssueFilter({ sort: "title", dir })), false);
+    for (const sort of SORT_FIELDS) if (sort !== "title") assert.equal(anchors(parseIssueFilter({ sort })), true, sort);
+    assert.equal(anchors(parseIssueFilter({ q: "a" })), false);
   });
 
   it("has no anchor past the end of the list", async () => {
