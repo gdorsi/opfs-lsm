@@ -83,9 +83,10 @@ export type MarkedRun = { readonly stats: RunStats; readonly marksThrough: Seq }
  * key and seq are taken as independent within a run. The truth lies
  * between `max(0, k + s - total)` and `min(k, s)` for the piece's key bytes
  * `k` and seq bytes `s`, which are exact when the piece holds every key of
- * the run or every seq of it, the shape of most range deletes.
+ * the run or every seq of it, the shape of most range deletes. With
+ * `atOrBelow`, only the covered entries written at or below that seq.
  */
-export function coveredBytes(run: MarkedRun, marks: Marks): number {
+export function coveredBytes(run: MarkedRun, marks: Marks, atOrBelow: Seq = Number.POSITIVE_INFINITY): number {
   const { stats, marksThrough } = run;
   if (marks.empty) return 0;
   const total = stats.entryBytes;
@@ -97,7 +98,7 @@ export function coveredBytes(run: MarkedRun, marks: Marks): number {
     const end = marks.pieces[i + 1]?.start;
     if (compareBytes(piece.start, last) > 0 || (end && compareBytes(end, first) <= 0)) return;
     const keys = (end ? bytesBelowKey(stats.byKey, end) : total) - bytesBelowKey(stats.byKey, piece.start);
-    const seqs = bytesAtOrBelow(stats.bySeq, piece.through);
+    const seqs = bytesAtOrBelow(stats.bySeq, Math.min(piece.through, atOrBelow));
     covered += total === 0 ? 0 : (Math.max(0, keys) * seqs) / total;
   });
   return Math.min(total, covered);

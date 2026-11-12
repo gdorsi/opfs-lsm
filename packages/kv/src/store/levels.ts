@@ -69,7 +69,7 @@ export function levelRunPath(level: number, name: string): string {
 }
 
 /** A missing range is unbounded. */
-function overlaps(a: KeyRange | undefined, b: KeyRange | undefined): boolean {
+export function overlaps(a: KeyRange | undefined, b: KeyRange | undefined): boolean {
   if (!a || !b) return true;
   return compareBytes(a.smallest, b.largest) <= 0 && compareBytes(b.smallest, a.largest) <= 0;
 }
