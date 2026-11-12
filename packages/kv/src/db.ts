@@ -1,5 +1,6 @@
 import { Backpressure, memtableCaps, type MemtableCaps } from "./backpressure.js";
 import { successor } from "./bytes.js";
+import { contextClock, WallClock } from "./clock.js";
 import {
   checkBatch,
   checkDbName,
@@ -114,6 +115,8 @@ export type OpenKnobs = {
   readonly maxWalBytes?: number;
   /** When set, open records phase durations here. Wasm init can append after the open promise resolves. */
   readonly trace?: OpenTrace;
+  /** Epoch ms that expiry is judged at. Default: `Date.now`, shared by every handle in the context. */
+  readonly clock?: () => number;
 };
 
 /** What `openDbWith` takes. `openHarnessDb` in `@opfs-lsm/kv/testing` builds it. */
@@ -179,6 +182,14 @@ export type KeyBounds = {
   readonly endExclusive?: Uint8Array;
 };
 
+export type PutOptions = {
+  /**
+   * Epoch ms, a safe integer > 0. From this time on the row reads as absent,
+   * and older versions of its key with it. Default: the row never expires.
+   */
+  readonly expiresAt?: number;
+};
+
 export type DeleteRangeOptions = {
   /**
    * Remove only rows last written at or before this seq: a write's ack, a
@@ -190,7 +201,7 @@ export type DeleteRangeOptions = {
 };
 
 export interface BatchTx {
-  put(key: Uint8Array, value: Uint8Array): void;
+  put(key: Uint8Array, value: Uint8Array, options?: PutOptions): void;
   delete(key: Uint8Array): void;
   /**
    * Every row in `bounds` last written at or before `through` reads as
@@ -207,7 +218,7 @@ export interface Db {
   readonly writerId: WriterId;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   /** Resolves with the WAL seq of the record, as `batch` does. */
-  put(key: Uint8Array, value: Uint8Array): Promise<number>;
+  put(key: Uint8Array, value: Uint8Array, options?: PutOptions): Promise<number>;
   /** Resolves with the WAL seq of the record, as `batch` does. */
   delete(key: Uint8Array): Promise<number>;
   /**
@@ -409,6 +420,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
     ingest,
     ownsIngestClient,
     caps,
+    options.clock ? new WallClock(options.clock) : contextClock,
     trace,
   );
   internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
@@ -433,8 +445,8 @@ function collectBatch(
 ): readonly CheckedOp[] {
   const ops: BatchOp[] = [];
   const ret = build({
-    put: (key, value) => {
-      ops.push({ type: "put", key, value });
+    put: (key, value, options) => {
+      ops.push({ type: "put", key, value, expiresAt: options?.expiresAt });
     },
     delete: (key) => {
       ops.push({ type: "del", key });
@@ -533,6 +545,7 @@ class DbImpl implements Db {
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
+    private readonly clock: WallClock,
     private readonly trace?: OpenTrace,
   ) {
     this.pressure = new Backpressure(
@@ -913,16 +926,18 @@ class DbImpl implements Db {
   }
 
   /**
-   * What an operation judges rows against: the installed marks joined with
-   * the memtable's. Take it in the turn that captures the installed levels,
-   * and keep it for the whole operation.
+   * What an operation judges rows against: the clock, and the installed
+   * marks joined with the memtable's. Take it in the turn that captures the
+   * installed levels, and keep it for the whole operation.
    */
   private point(): ReadPoint {
+    const now = this.clock.now();
     const installed = this.installed.marks;
     const mem = this.mem.marks;
     const last = this.lastPoint;
-    if (last?.installed === installed && last.mem === mem) return last.at;
-    const at = { marks: joinMarks(installed, mem) };
+    const same = last?.installed === installed && last.mem === mem;
+    if (same && last.at.now === now) return last.at;
+    const at = { now, marks: same ? last.at.marks : joinMarks(installed, mem) };
     this.lastPoint = { installed, mem, at };
     return at;
   }
@@ -951,8 +966,8 @@ class DbImpl implements Db {
     return this.settleInstalled((levels) => pointGet(row, levels, k, at));
   }
 
-  put(key: Uint8Array, value: Uint8Array): Promise<number> {
-    return this.batch((tx) => tx.put(key, value));
+  put(key: Uint8Array, value: Uint8Array, options?: PutOptions): Promise<number> {
+    return this.batch((tx) => tx.put(key, value, options));
   }
 
   delete(key: Uint8Array): Promise<number> {

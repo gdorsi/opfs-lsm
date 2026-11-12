@@ -3,7 +3,8 @@
  * write to them. Switch on `type` exhaustively: a `deleteRange` has no `key`.
  */
 export type ChangeOp =
-  | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array }
+  /** `expiresAt` (epoch ms) when the put was written with one. */
+  | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array; readonly expiresAt?: number }
   | { readonly type: "del"; readonly key: Uint8Array }
   /**
    * Every row in [start, endExclusive) last written at or before seq

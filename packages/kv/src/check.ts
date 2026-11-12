@@ -19,8 +19,11 @@ export type WriterId = string & { readonly __brand: "WriterId" };
 export type CheckedKey = Uint8Array & { readonly __brand: "CheckedKey" };
 export type CheckedValue = Uint8Array & { readonly __brand: "CheckedValue" };
 
+/** Epoch ms, a positive safe integer. */
+export type ExpiresAt = number & { readonly __brand: "ExpiresAt" };
+
 export type CheckedOp =
-  | { readonly type: "put"; readonly key: CheckedKey; readonly value: CheckedValue }
+  | { readonly type: "put"; readonly key: CheckedKey; readonly value: CheckedValue; readonly expiresAt?: ExpiresAt }
   | { readonly type: "del"; readonly key: CheckedKey }
   | {
       readonly type: "deleteRange";
@@ -47,7 +50,7 @@ export type RecordOp =
 
 /** An op as `BatchTx` collects it, before `checkBatch`. */
 export type BatchOp =
-  | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array }
+  | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array; readonly expiresAt?: number | undefined }
   | { readonly type: "del"; readonly key: Uint8Array }
   | {
       readonly type: "deleteRange";
@@ -90,6 +93,13 @@ export function checkKey(bytes: Uint8Array): CheckedKey {
 export function checkValue(bytes: Uint8Array): CheckedValue {
   assertBuffer(bytes, "value");
   return new Uint8Array(bytes) as CheckedValue;
+}
+
+function checkExpiresAt(at: unknown): ExpiresAt {
+  if (!(Number.isSafeInteger(at) && (at as number) > 0)) {
+    throw new ConstraintError(`expiresAt must be epoch ms, a safe integer > 0: got ${String(at)}`);
+  }
+  return at as ExpiresAt;
 }
 
 /** Key and value bytes of an op: a range delete counts its bounds. */
@@ -144,7 +154,12 @@ export function checkBatch(ops: readonly BatchOp[]): readonly CheckedOp[] {
     }
     switch (op.type) {
       case "put":
-        out.push({ type: "put", key: checkKey(op.key), value: checkValue(op.value) });
+        out.push({
+          type: "put",
+          key: checkKey(op.key),
+          value: checkValue(op.value),
+          ...(op.expiresAt === undefined ? {} : { expiresAt: checkExpiresAt(op.expiresAt) }),
+        });
         break;
       case "del":
         out.push({ type: "del", key: checkKey(op.key) });

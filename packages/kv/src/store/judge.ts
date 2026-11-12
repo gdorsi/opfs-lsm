@@ -6,6 +6,8 @@ import { throughAt, type MarkCursor, type Marks, type Seq } from "./marks.js";
  * every Miss retry and every key. A `view` pins it.
  */
 export type ReadPoint = {
+  /** Epoch ms. A put whose `expiresAt` is at or before it reads as absent. */
+  readonly now: number;
   /** join(installed manifest's marks, memtable's marks). */
   readonly marks: Marks;
 };
@@ -28,14 +30,15 @@ export function expired(v: { readonly expiresAt?: number }, at: { readonly now: 
 }
 
 /**
- * Whether the newest version of a key reads as absent. Applied only after
- * the memtable, the level order or the merge heap chose that version: a
- * covered newest version means every older one is covered too, since they
- * have the same key and smaller seqs. `cursor` replaces the binary search
- * in key-ordered scans.
+ * Whether the newest version of a key reads as absent: a delete, an expired
+ * put, or one a mark covers. Applied only after the memtable, the level
+ * order or the merge heap chose that version, so an expired put hides the
+ * older ones as a delete would. A covered newest version means every older
+ * one is covered too, since they have the same key and smaller seqs.
+ * `cursor` replaces the binary search in key-ordered scans.
  */
 export function dead(v: Version, at: ReadPoint, cursor?: MarkCursor): boolean {
-  if (v.kind === "del") return true;
+  if (v.kind === "del" || expired(v, at)) return true;
   if (at.marks.empty) return false;
   return v.seq <= (cursor ? cursor.at(v.key) : throughAt(at.marks, v.key));
 }

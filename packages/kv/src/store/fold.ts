@@ -25,7 +25,9 @@ export function foldRecords(records: readonly WalRecord[]): Folded {
       map.set(
         keyToString(op.key),
         op.type === "put"
-          ? { kind: "put", key: op.key, value: op.value, seq: rec.seq }
+          ? op.expiresAt === undefined
+            ? { kind: "put", key: op.key, value: op.value, seq: rec.seq }
+            : { kind: "put", key: op.key, value: op.value, seq: rec.seq, expiresAt: op.expiresAt }
           : { kind: "del", key: op.key, seq: rec.seq },
       );
     }

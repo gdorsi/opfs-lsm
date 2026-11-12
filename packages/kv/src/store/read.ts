@@ -12,7 +12,7 @@ import {
   type ScanBounds,
   type ScanHit,
 } from "./cursor.js";
-import { dead, type ReadPoint } from "./judge.js";
+import { dead, expired, type ReadPoint } from "./judge.js";
 import { markCursor } from "./marks.js";
 import type { SstEntry } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
@@ -97,8 +97,7 @@ export function pointGet(
   key: Uint8Array,
   at: ReadPoint,
 ): Maybe<Uint8Array | undefined> {
-  if (mem?.kind === "del") return undefined;
-  if (mem?.kind === "put") return new Uint8Array(mem.value!);
+  if (mem) return mem.kind === "put" && !expired(mem, at) ? new Uint8Array(mem.value!) : undefined;
   const hit = latestSstEntry(levels, key);
   if (hit instanceof Miss) return hit;
   if (!hit || dead(hit, at)) return undefined;
@@ -328,7 +327,10 @@ export async function* scanMatching(
   reverse = false,
 ): AsyncGenerator<Entry> {
   const merge = new Merge<ScanHit>(
-    [filterCursor(entryCursor(rows, reverse), patterns, 0), ...levels.map((level) => level.scanContains(patterns, 0, bounds, reverse))],
+    [
+      filterCursor(entryCursor(rows, reverse), patterns, at.now),
+      ...levels.map((level) => level.scanContains(patterns, at.now, bounds, reverse)),
+    ],
     reverse,
   );
   const marks = markCursor(at.marks, reverse);

@@ -9,6 +9,8 @@ export type MemRow = {
   readonly seq: number;
   readonly kind: "put" | "del";
   readonly value?: Uint8Array;
+  /** A put's expiry, epoch ms. */
+  readonly expiresAt?: number;
 };
 
 export type WalRecord = {
@@ -146,7 +148,11 @@ export class Memtable extends Chunks {
     for (const op of record.ops) {
       switch (op.type) {
         case "put":
-          this.put({ key: op.key, seq: record.seq, kind: "put", value: op.value });
+          this.put(
+            op.expiresAt === undefined
+              ? { key: op.key, seq: record.seq, kind: "put", value: op.value }
+              : { key: op.key, seq: record.seq, kind: "put", value: op.value, expiresAt: op.expiresAt },
+          );
           break;
         case "del":
           this.put({ key: op.key, seq: record.seq, kind: "del" });

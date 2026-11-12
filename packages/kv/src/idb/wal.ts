@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import { opsBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName, type RecordOp } from "../check.js";
+import { opsBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName, type ExpiresAt, type RecordOp } from "../check.js";
 import { CommitError, StorageUnavailableError } from "../errors.js";
 import { resolveThrough } from "../store/marks.js";
 import type { WalRecord } from "../store/memtable.js";
@@ -78,6 +78,8 @@ const EMPTY_RECORD = new ArrayBuffer(0);
 
 const OP_PUT = 0;
 const OP_DEL = 1;
+/** A put followed by its u64 `expiresAt`. */
+const OP_PUT_EXPIRING = 2;
 const OP_DELETE_RANGE = 3;
 /** The `through` stored for a range delete that asked for none: every row before its batch. */
 const BEFORE_THIS_BATCH = Number.MAX_SAFE_INTEGER;
@@ -94,7 +96,7 @@ export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
     size +=
       op.type === "deleteRange"
         ? 1 + 4 + op.start.byteLength + 1 + (op.endExclusive ? 4 + op.endExclusive.byteLength : 0) + 8
-        : 5 + op.key.byteLength + (op.type === "put" ? 4 + op.value.byteLength : 0);
+        : 5 + op.key.byteLength + (op.type === "put" ? 4 + op.value.byteLength + (op.expiresAt === undefined ? 0 : 8) : 0);
   }
   const out = new Uint8Array(size);
   const view = new DataView(out.buffer);
@@ -114,9 +116,18 @@ export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
       at += 8;
       continue;
     }
-    view.setUint8(at++, op.type === "put" ? OP_PUT : OP_DEL);
+    if (op.type === "del") {
+      view.setUint8(at++, OP_DEL);
+      bytes(op.key);
+      continue;
+    }
+    view.setUint8(at++, op.expiresAt === undefined ? OP_PUT : OP_PUT_EXPIRING);
     bytes(op.key);
-    if (op.type === "put") bytes(op.value);
+    bytes(op.value);
+    if (op.expiresAt !== undefined) {
+      view.setBigUint64(at, BigInt(op.expiresAt), true);
+      at += 8;
+    }
   }
   return out.buffer;
 }
@@ -159,6 +170,12 @@ export function decodeOps(raw: unknown, seq: number): RecordOp[] {
     if (type === OP_PUT) {
       const value = take(u32()) as CheckedValue;
       ops.push({ type: "put", key, value });
+    } else if (type === OP_PUT_EXPIRING) {
+      const value = take(u32()) as CheckedValue;
+      const stored = take(8);
+      const expiresAt = new DataView(stored.buffer, stored.byteOffset, 8).getBigUint64(0, true);
+      if (expiresAt === 0n || expiresAt > BigInt(Number.MAX_SAFE_INTEGER)) throw new CommitError("corrupt wal row: expiresAt");
+      ops.push({ type: "put", key, value, expiresAt: Number(expiresAt) as ExpiresAt });
     } else if (type === OP_DEL) {
       ops.push({ type: "del", key });
     } else if (type === OP_DELETE_RANGE) {
