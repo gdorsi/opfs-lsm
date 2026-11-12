@@ -443,7 +443,7 @@ class HostedDb {
 
   private async compactPass(): Promise<void> {
     const fs = await this.fs();
-    let swept = false;
+    let installed = false;
     try {
       for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
         const meta = await this.withWal((wal) => wal.meta());
@@ -460,7 +460,7 @@ class HostedDb {
             await this.reclaim(fs, wal);
           }),
         );
-        swept = true;
+        installed = true;
         this.counts.compactionSteps += 1;
         this.installLanded();
         announceGeneration(this.name);
@@ -469,7 +469,7 @@ class HostedDb {
       // A pass that installed nothing sweeps once, for the files an earlier
       // pass had to leave. Last, so it never delays a merge that a full L0
       // waits for, and best-effort: the next pass sweeps again.
-      if (!swept && !this.destroying) {
+      if (!installed && !this.destroying) {
         await this.exclusive(() => this.withWal((wal) => this.sweepIdle(fs, wal))).catch(() => undefined);
       }
     }
@@ -501,6 +501,8 @@ class HostedDb {
    * The sweep of a pass that installed nothing. It repairs nothing: when
    * the recorded generation is not the one this host last checked, it
    * leaves the files, the next flush reconciles, and a later pass sweeps.
+   * It needs no reconcile for the one it did check: `sweep` reads that
+   * manifest before it removes anything, and stops if it is gone.
    */
   private async sweepIdle(fs: AsyncFs, wal: IdBWal): Promise<void> {
     await unlessHeld(this.name, async () => {
@@ -510,9 +512,11 @@ class HostedDb {
   }
 }
 
+/** Reads the manifest of `generation` first, so a missing one throws before any file goes. */
 async function sweep(fs: AsyncFs, generation: number): Promise<void> {
+  const live = await liveRuns(fs, generation);
   await reclaimManifests(fs, generation);
-  await reclaimRuns(fs, await listRuns(fs), await liveRuns(fs, generation));
+  await reclaimRuns(fs, await listRuns(fs), live);
 }
 
 /** Tell the tabs to install the new generation and drop the merged runs. */

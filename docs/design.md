@@ -539,7 +539,7 @@ that `openDb` refuses as corrupt. The host:
 3. Posts `{ kind: "ingest" }`. Each tab installs generation 0 at its next `sync` or append, as
    it would any generation, and its memtable drops every row. Handles stay open, and each
    reports a `gap` change event.
-4. Removes every manifest, then sweeps: against generation 0, every run is retired. Both skip
+4. Removes every manifest, then sweeps: against generation 0, every run goes. Both skip
    while a tab holds the reclaim lock, and the sweep skips each run a tab still holds open, as
    any sweep does. A tab holds its runs until it installs generation 0, or until a `view` that
    started before the destroy ends, and that view reads the old data meanwhile.
