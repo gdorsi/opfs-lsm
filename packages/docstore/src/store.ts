@@ -1,4 +1,4 @@
-import { CorruptDatabaseError, prefixBound, type BatchTx, type Db, type Entry } from "@opfs-lsm/kv";
+import { CorruptDatabaseError, prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry } from "@opfs-lsm/kv";
 import {
   bind,
   clearCollection,
@@ -79,6 +79,8 @@ export type WritePlan<R> = {
 
 export interface StoreCore {
   readonly kv: Db;
+  /** The collection in this handle's catalog, for a point read outside a snapshot. */
+  collectionNow(name: string): Promise<BoundCollection>;
   /** The collection in the catalog `bytes`, which a kv snapshot read. */
   collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection;
   /** One kv `update`, planned against this handle's catalog and planned again whenever the stored catalog differs. */
@@ -104,12 +106,65 @@ const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll
 
 class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   private readonly jobs = new Map<string, Promise<void>>();
+  /**
+   * `bound` may be behind the stored catalog: the next point read reads it
+   * again. Set by a kv gap, which may have skipped a catalog write, and at
+   * open, for a write between open's read and the subscription.
+   */
+  private stale = true;
+  private rereading: Promise<void> | undefined;
+  /** Catalog writes the feed delivered, so a reread that one overtook is dropped. */
+  private catalogWrites = 0;
 
   constructor(
     readonly kv: Db,
     private readonly declared: DeclaredSchema,
     private bound: Bound,
-  ) {}
+  ) {
+    // The store has no close. The listener lets it go once nothing else holds it, and kv drops the listener when it closes.
+    const store = new WeakRef(this);
+    const off = kv.changes((event) => {
+      const live = store.deref();
+      if (live) live.follow(event);
+      else off();
+    });
+  }
+
+  /** Keep `bound` at the catalog kv last announced, so point reads need not read it. */
+  private follow(event: ChangeEvent): void {
+    if (event.kind === "gap") this.stale = true;
+    if (event.kind !== "append") return;
+    for (const op of event.ops) {
+      if (!bytesEqual(op.key, CATALOG_KEY)) continue;
+      this.catalogWrites++;
+      try {
+        // Copied: the bytes are a view of a memtable chunk, which `bound` would keep alive.
+        this.adopt(op.type === "put" ? op.value.slice() : undefined);
+      } catch {
+        // The reread throws it to the reader.
+        this.stale = true;
+      }
+    }
+  }
+
+  async collectionNow(name: string): Promise<BoundCollection> {
+    while (this.stale || this.rereading) await (this.rereading ??= this.reread());
+    return collectionOf(this.bound, name);
+  }
+
+  private async reread(): Promise<void> {
+    this.stale = false;
+    const seen = this.catalogWrites;
+    try {
+      const bytes = await this.kv.get(CATALOG_KEY);
+      if (seen === this.catalogWrites) this.adopt(bytes);
+    } catch (err) {
+      this.stale = true;
+      throw err;
+    } finally {
+      this.rereading = undefined;
+    }
+  }
 
   collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>> {
     return new CollectionImpl(this, name, describeIndexes(this.declared.collections.get(name)));
@@ -153,16 +208,17 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     this.startJobs();
   }
 
-  /** Apply a transition in one `update([CATALOG_KEY])`. Transitions return undefined once applied, so a repeat writes nothing. */
+  /**
+   * Apply a transition in one `update([CATALOG_KEY])`. Transitions return
+   * undefined once applied, so a repeat writes nothing. `bound` holds the
+   * result once this resolves: kv announces a write before it resolves it
+   * (the contract on kv's `ChangeEvent`), and `follow` adopts it.
+   */
   private async editCatalog(edit: (c: StoredCatalog) => StoredCatalog | undefined): Promise<void> {
-    const bytes = await this.kv.update([CATALOG_KEY], ([stored], tx) => {
+    await this.kv.update([CATALOG_KEY], ([stored], tx) => {
       const next = edit(this.adopt(stored).catalog);
-      if (!next) return stored!;
-      const out = encodeCatalog(next);
-      tx.put(CATALOG_KEY, out);
-      return out;
+      if (next) tx.put(CATALOG_KEY, encodeCatalog(next));
     });
-    this.adopt(bytes);
   }
 
   private adopt(bytes: Uint8Array | undefined): Bound {
