@@ -10,13 +10,14 @@ import type { Issue, PriorityCode, StatusCode } from "../domain/model.ts";
 import { anchors, countBefore, locate } from "./counts.ts";
 import { parseIssueFilter, SORT_FIELDS, type IssueFilter } from "./filter.ts";
 import { windowQuery } from "./query.ts";
-import { schema, type IssueDocs, type Store } from "./store.ts";
+import { schema, stored, type IssueDocs, type Store, type StoredIssue } from "./store.ts";
 
 const N = 400;
 const SIZE = 30;
 
 /** Few distinct values per field, so every sort has ties, and priority and status ties longer than `locate` reads. */
-const issue = (k: number): Issue => ({
+const issue = (k: number): StoredIssue =>
+  stored({
   id: `i${String((k * 7919) % 1000).padStart(3, "0")}-${k}`,
   title: ["alpha", "beta", "gamma", "delta"][k % 4]! + (k % 13),
   status: (k % 5) as StatusCode,
@@ -27,7 +28,7 @@ const issue = (k: number): Issue => ({
   modified: Math.floor(k / 3),
   deleted: k % 17 === 0,
   version: 1,
-});
+  });
 
 let kv: Db;
 let docs: IssueDocs;
@@ -43,7 +44,7 @@ before(async () => {
     docstoreCollectionOptions({ collection: docs, syncMode: "on-demand", defaultStringCollation: { stringSort: "lexical" } }),
   ) as unknown as Store["issues"];
   every = createCollection(
-    localOnlyCollectionOptions<Issue>({ id: "every", getKey: (i) => i.id, initialData: all, defaultStringCollation: { stringSort: "lexical" } }),
+    localOnlyCollectionOptions<StoredIssue>({ id: "every", getKey: (i) => i.id, initialData: all, defaultStringCollation: { stringSort: "lexical" } }),
   ) as unknown as Store["issues"];
 });
 after(async () => {
@@ -74,6 +75,7 @@ describe("the list's anchored window", () => {
         const anchor = await locate(docs, filter, n);
         assert.ok(anchor, what);
         assert.ok(anchor.base <= n, what);
+        assert.equal(await countBefore(docs, filter, anchor.value), anchor.base, what);
         const q = windowQuery(issues, filter, SIZE, undefined, { from: anchor.value, offset: n - anchor.base });
         await q.preload();
         assert.deepEqual(ids(q), await expected(filter, n), what);
@@ -106,9 +108,9 @@ describe("the list's anchored window", () => {
     await q.preload();
     const byModified = () => every.toArray.filter((i) => !i.deleted).sort((a, b) => b.modified - a.modified || (a.id < b.id ? -1 : 1));
     const write = async (id: string, change: Partial<Issue>) => {
-      const doc = { ...every.get(id)!, ...change };
+      const doc = stored({ ...every.get(id)!, ...change });
       await docs.put(doc);
-      every.update(id, (draft) => Object.assign(draft, change));
+      every.update(id, (draft) => Object.assign(draft, doc));
     };
     const at = (k: number) => byModified()[k]!.id;
     for (const [what, run] of [

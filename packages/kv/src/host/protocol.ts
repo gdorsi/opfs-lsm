@@ -1,4 +1,4 @@
-import type { CheckedOp, WriterId } from "../check.js";
+import type { WriterId } from "../check.js";
 import type { ErrorCode } from "../errors.js";
 import { reclaimLock, webLocks } from "../locks.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
@@ -42,13 +42,19 @@ export type WatchPolicy = {
   readonly compactionMemoryBytes: number;
 };
 
-/** What goes on `layersChannel`: a tab posts each record it appends, the host posts `ingest` for a new generation. */
+/**
+ * What goes on `layersChannel`: a tab posts each record it appends, the host posts `ingest` for a new generation.
+ * A build that does not know a kind catches up from the WAL, so a new shape takes a new kind.
+ */
 export type BusMessage =
   | {
-      readonly kind: "append";
+      readonly kind: "row";
       readonly writerId: WriterId;
       readonly seq: number;
-      readonly ops: readonly CheckedOp[];
+      /** The WAL row of `seq`. One buffer clones in one copy; the ops it holds would clone one by one. */
+      readonly record: ArrayBuffer;
+      /** The key and value bytes of its ops (`opsBytes`), for the host's ingest trigger. */
+      readonly bytes: number;
     }
   | { readonly kind: "ingest" };
 

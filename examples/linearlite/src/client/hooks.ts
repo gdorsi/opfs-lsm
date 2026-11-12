@@ -2,7 +2,7 @@ import { and, eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Body, Comment, Issue, StatusCode, Stream } from "../domain/model.ts";
-import { countBefore, countByStatus, countTotal, anchors, locate, type Anchor } from "./counts.ts";
+import { anchors, countBefore, countByStatus, countTotal, locate, type Anchor, type Pause } from "./counts.ts";
 import type { IssueFilter } from "./filter.ts";
 import { backoffMs } from "./ops.ts";
 import { windowQuery } from "./query.ts";
@@ -33,13 +33,19 @@ function useWindow(key: string, build: () => ReturnType<typeof windowQuery>, siz
   return { rows: data, offset, setRange };
 }
 
+const yieldTask: Pause = () => new Promise((resolve) => setTimeout(resolve));
+
+/** A hidden tab paints no frame and wakes its timers about once a second, so a recount there does not pause. */
+const recountPause = (): Pause | undefined => (document.hidden ? undefined : yieldTask);
+
 /**
  * `read` of the stored issues, run again after every change to them. One read runs at a time. Changes during a read
  * start one more, four times that read's duration after it and at least 250 ms, so a first sync, which changes the
- * issues every few milliseconds, spends at most a fifth of the main thread counting them. Undefined until the first
- * read for `key` resolves, and without a `read`.
+ * issues every few milliseconds, spends at most a fifth of the main thread counting them. A read after a change
+ * pauses between steps in a visible tab, so it does not hold up a frame there; the first read for `key` does not,
+ * since the screen waits on it. Undefined until the first read for `key` resolves, and without a `read`.
  */
-function useIssueRead<T>(key: string, read: ((issues: IssueDocs) => Promise<T>) | undefined): T | undefined {
+function useIssueRead<T>(key: string, read: ((issues: IssueDocs, pause?: Pause) => Promise<T>) | undefined): T | undefined {
   const { docs } = openedStore();
   const [result, setResult] = useState<{ readonly key: string; readonly value: T }>();
   useEffect(() => {
@@ -49,24 +55,24 @@ function useIssueRead<T>(key: string, read: ((issues: IssueDocs) => Promise<T>) 
     let running = false;
     let again = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const run = async () => {
+    const run = async (pause?: Pause) => {
       timer = undefined;
       running = true;
       again = false;
       const t0 = performance.now();
       try {
-        const value = await read(issues);
+        const value = await read(issues, pause);
         if (live) setResult({ key, value });
       } catch (err) {
         console.warn("linearlite could not count issues", err);
       }
       running = false;
-      if (live && again) timer = setTimeout(() => void run(), Math.max(250, 4 * (performance.now() - t0)));
+      if (live && again) timer = setTimeout(() => void run(recountPause()), Math.max(250, 4 * (performance.now() - t0)));
     };
     const off = issues.changes((event) => {
       if (event.kind === "closed") return;
       if (running || timer !== undefined) again = true;
-      else void run();
+      else void run(recountPause());
     });
     void run();
     return () => {
@@ -153,7 +159,7 @@ export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly to
     },
     [top],
   );
-  const total = useIssueRead(counted(filter), (d) => countTotal(d, filter));
+  const total = useIssueRead(counted(filter), (d, pause) => countTotal(d, filter, pause));
   return { rows: data, offset: base + placement.offset, setRange, total };
 }
 
@@ -164,7 +170,7 @@ export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWi
 
 /** Issues under `filter` per status code; undefined until counted. */
 export function useStatusCounts(filter: IssueFilter): readonly number[] | undefined {
-  return useIssueRead(counted(filter), (docs) => countByStatus(docs, filter));
+  return useIssueRead(counted(filter), (docs, pause) => countByStatus(docs, filter, pause));
 }
 
 export function useIssue(id: string): Issue | undefined {

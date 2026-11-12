@@ -7,7 +7,7 @@ import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import type { Issue, PriorityCode, StatusCode } from "../domain/model.ts";
 import { countByStatus, countTotal } from "./counts.ts";
 import { parseIssueFilter } from "./filter.ts";
-import { schema, type IssueDocs } from "./store.ts";
+import { schema, stored, type IssueDocs } from "./store.ts";
 
 const TITLES = [
   "Fix 100% CPU",
@@ -53,7 +53,7 @@ let docs: IssueDocs;
 before(async () => {
   kv = await openHarnessDb({ name: `linearlite-counts-${process.pid}`, forceMemory: true });
   docs = (await openDocStore(kv, schema)).collection("issues");
-  await docs.putMany(issues);
+  await docs.putMany(issues.map(stored));
 });
 after(() => kv.close());
 
@@ -77,6 +77,18 @@ describe("issue counts", () => {
         const perStatus = [0, 1, 2, 3, 4].map((s) => want.filter((i) => i.status === s).length);
         assert.deepEqual(await countByStatus(docs, filter), perStatus, what);
       }
+    }
+  });
+
+  it("pause after each status they count, and count the same as without pauses", async () => {
+    for (const [status, priority] of filters) {
+      const filter = parseIssueFilter({ status: status.join(","), priority: priority.join(",") });
+      let pauses = 0;
+      const pause = async () => {
+        pauses++;
+      };
+      assert.deepEqual(await countByStatus(docs, filter, pause), await countByStatus(docs, filter));
+      assert.equal(pauses, status.length > 0 ? status.length : 5);
     }
   });
 });

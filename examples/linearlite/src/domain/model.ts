@@ -46,6 +46,8 @@ export type Comment = Synced & {
 
 export type SyncState = {
   readonly id: "sync";
+  /** The store's `FORMAT` when the rows were written. */
+  format: number;
   epoch: string | null;
   cursors: Record<Stream, number>;
   head: number;

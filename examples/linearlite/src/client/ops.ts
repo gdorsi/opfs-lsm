@@ -13,6 +13,35 @@ export function pushOp<S extends Stream>(stream: S, row: Rows[S]): PushOp | unde
   return { stream, id: values.id as string, fields, clocks: dirty, ...(create && { create: true }) } as PushOp;
 }
 
+/**
+ * Pulled pages, each asking for the next one as soon as it arrives, so the next page travels while this one merges.
+ * `forget` drops the page asked for ahead: after a push, a pull must not bring rows from before it.
+ */
+export class Pager<P extends { readonly next: number; readonly more: boolean }> {
+  private readonly fetchPage: (stream: Stream, after: number) => Promise<P>;
+  private ahead: { readonly stream: Stream; readonly after: number; readonly page: Promise<P> } | undefined;
+
+  constructor(fetchPage: (stream: Stream, after: number) => Promise<P>) {
+    this.fetchPage = fetchPage;
+  }
+
+  async page(stream: Stream, after: number): Promise<P> {
+    const ahead = this.ahead;
+    this.ahead = undefined;
+    const page = await (ahead?.stream === stream && ahead.after === after ? ahead.page : this.fetchPage(stream, after));
+    if (page.more) {
+      const next = this.fetchPage(stream, page.next);
+      next.catch(() => undefined);
+      this.ahead = { stream, after: page.next, page: next };
+    }
+    return page;
+  }
+
+  forget(): void {
+    this.ahead = undefined;
+  }
+}
+
 const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 30_000;
 

@@ -115,6 +115,14 @@
     await sleep(200);
   }
   out["sort modified -> priority -> rows painted"] = stats(toPriority);
+  const toStatus = [];
+  for (let i = 0; i < RUNS / 2; i++) {
+    toStatus.push(await sortTo("Status", () => first()?.dataset.status === "4" && rows().every((r) => r.dataset.status === "4")));
+    await sleep(200);
+    await sortTo("Modified", () => tops.Modified.has(first()?.dataset.id));
+    await sleep(200);
+  }
+  out["sort modified -> status -> rows painted"] = stats(toStatus);
 
   const input = document.getElementById("search");
   const type = (value) => {

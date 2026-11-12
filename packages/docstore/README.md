@@ -111,7 +111,7 @@ Each index has a name, unique within its collection, and one of three kinds. `on
 
 Each write method is one kv transaction. If another handle changed the catalog since this handle last read it, the write reads the new catalog and runs again.
 
-`modify` and `modifyMany` read the documents first, run `fn`, and commit only if every document `fn` saw still holds the same bytes, so no write from another handle or tab is lost. Otherwise they read again and run `fn` again. A slot `modifyMany` leaves as is counts as read: if that document changed, `fn` runs again. `fn` must be pure.
+No write from another handle or tab lands between the read of `modify` and `modifyMany` and their write. In a collection without a unique index, they read the documents and run `fn` inside one kv transaction. With a unique index, the keys to read depend on what `fn` returns, so they read the documents first, run `fn`, and commit only if every document `fn` saw still holds the same bytes. Otherwise they read again and run `fn` again. A slot `modifyMany` leaves as is counts as read: if that document changed, `fn` runs again. `fn` must be pure.
 
 `modifyMany` throws `"document"` and stores nothing for a repeated id, a result that is not one entry per id, or a document under another id than its slot's. It checks unique indexes across the whole call, so two documents can swap values.
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
 import { ingestChunk } from "../src/host/ingest.js";
-import { TabWal, getIngestedThrough } from "../src/idb/wal.js";
+import { TabWal, encodeOps, getIngestedThrough } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { decodeGeneration } from "../src/store/generation.js";
 import {
@@ -327,7 +327,7 @@ describe("a flush with L0 full", () => {
       const put = (i: number): CheckedOp[] => [
         { type: "put", key: checkKey(key(i)), value: checkValue(value(i, 100)) },
       ];
-      for (let i = 0; i < 3; i++) await wal.append(put(i));
+      for (let i = 0; i < 3; i++) await wal.append(encodeOps(put(i)));
       // 100 op bytes a record and a cap of 100: one record a run.
       const limits = { maxBytes: 100, l0Stop: 2 };
       const chunk = (through: number) => ingestChunk(wal, fs, through, undefined, limits);

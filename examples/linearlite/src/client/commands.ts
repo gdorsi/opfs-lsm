@@ -10,7 +10,7 @@ import {
   type PriorityCode,
   type StatusCode,
 } from "../domain/model.ts";
-import { openStore } from "./store.ts";
+import { openStore, transact } from "./store.ts";
 
 let last = 0;
 function tick(): number {
@@ -21,9 +21,9 @@ function tick(): number {
 const allDirty = (fields: readonly string[], clock: number) => Object.fromEntries(fields.map((f) => [f, clock]));
 
 async function editIssue(id: string, patch: IssuePatch): Promise<void> {
-  const { issues } = await openStore();
+  const store = await openStore();
   const clock = tick();
-  await issues.utils.transact([id], ([row]) => {
+  await transact(store, "issues", [id], ([row]) => {
     if (row === undefined) return [undefined];
     const next = applyLocal(row, patch, clock);
     return [next === row ? undefined : { ...next, modified: clock }];
@@ -56,7 +56,7 @@ export async function createIssue(input: { title: string; description: string; s
     q
       .from({ i: store.issues })
       .where(({ i }) => and(eq(i.deleted, false), eq(i.status, input.status)))
-      .orderBy(({ i }) => i.kanbanorder, "asc")
+      .orderBy(({ i }) => i.statusOrder, "asc")
       .limit(1),
   );
   const issue = withDirty<Issue>(
@@ -75,7 +75,7 @@ export async function createIssue(input: { title: string; description: string; s
     allDirty(MUTABLE_FIELDS.issues, clock),
   );
   const body = withDirty<Body>({ id, description: input.description, version: 0 }, { description: clock });
-  await store.issues.utils.transact([id], () => [issue]);
+  await transact(store, "issues", [id], () => [issue]);
   await store.bodies.utils.transact([id], () => [body]);
   return id;
 }
