@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -344,6 +344,27 @@ const run: Record<string, () => Promise<void>> = {
       print({ scenario: "ui", origin, ...out, heapMBAfter: heapMB });
     } finally {
       await quit(b, true);
+      if (owned) rmSync(profile, { recursive: true, force: true });
+    }
+  },
+
+  /** The longest frame after each of twelve offline status edits (`bench/edit-frames.js`), on a copy of the profile. */
+  async frames() {
+    const { profile, owned } = await syncedProfile();
+    const copy = mkdtempSync(join(tmpdir(), "linearlite-"));
+    cpSync(profile, copy, { recursive: true });
+    const { length: total } = await serverIssues();
+    const b = await warmStart("frames", copy, total);
+    try {
+      await waitMark(b, "bench:rows-total", 60_000);
+      await sleep(Number(process.env.SETTLE ?? 4000));
+      const script = readFileSync(new URL("./edit-frames.js", import.meta.url), "utf8");
+      evaluate(b.session, `(() => { globalThis.__frames = undefined; ${script.trim()}.then((r) => (globalThis.__frames = r), (e) => (globalThis.__frames = JSON.stringify({ error: String(e?.stack ?? e) }))); return "started"; })()`);
+      const out = await waitFor("edit-frames.js", () => evaluate<{ idle: number; edits: number[] } | "">(b.session, `globalThis.__frames ?? ""`) || undefined, 120_000);
+      if (!Array.isArray(out.edits)) throw new Error(`edit-frames.js: ${JSON.stringify(out)}`);
+      print({ scenario: "frames", origin, idle: Math.round(out.idle), longest: summary(out.edits) });
+    } finally {
+      await quit(b);
       if (owned) rmSync(profile, { recursive: true, force: true });
     }
   },
