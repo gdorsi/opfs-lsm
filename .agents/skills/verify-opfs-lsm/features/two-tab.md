@@ -26,7 +26,7 @@ Preconditions:
 - **Run SharedWorker two-tab.** Execute `.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab`. Exit code `0`.
 - **Confirm two pages.** Stdout contains `tabs=2`.
 - **Confirm SharedWorker mode.** Stdout contains `mode=SharedWorker` and does not claim local EngineHost as the only mode.
-- **Confirm scenario.** Stdout contains `warm seed generation=`, `pinned generation=`, `fresh k=v`, `range has k`, `other tab saw after=yes`, and `two-tab ok`.
+- **Confirm scenario.** Stdout contains `warm seed generation=`, `pinned generation=`, `fresh k=v`, `range has k`, `other tab saw after=yes`, `other tab saw ttl present before its deadline and absent after`, and `two-tab ok`.
 - **Proof.** Keep `artifacts/two-tab/<run-id>/stdout.txt` and `exit_code.txt`. The log must include `two-tab ok` and `tabs=2`.
 
 ## Gotchas

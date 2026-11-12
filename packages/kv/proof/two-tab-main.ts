@@ -1,7 +1,9 @@
 /**
  * Tab A puts, warms SST readers, and must still get the key after tab B ingests.
  * Then tab A range-deletes rows, some flushed and some not, and tab B must
- * read them as absent before and after it ingests.
+ * read them as absent before and after it ingests. Last, tab A puts a row
+ * with an expiry: tab B reads it before the deadline, also after it
+ * ingests the row, and reads it as absent once the deadline passes.
  *
  *   ?auto=1&role=a     leader tab
  *   ?auto=1&role=b     peer tab
@@ -43,7 +45,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 type Handle = {
-  put(key: Uint8Array, value: Uint8Array): Promise<unknown>;
+  put(key: Uint8Array, value: Uint8Array, options?: { expiresAt?: number }): Promise<unknown>;
   batch(
     body: (tx: {
       deleteRange(bounds: { start?: Uint8Array; endExclusive?: Uint8Array }): void;
@@ -198,6 +200,21 @@ async function scenario(self: Handle, other: OtherTab): Promise<void> {
   const flushed = await other.get("gone/1");
   must(flushed === null, `other tab read gone/1=${flushed} after ingesting the range delete`);
   log("other tab saw gone/1 and gone/2 absent after the range delete");
+
+  const deadline = Date.now() + 2_000;
+  await self.put(enc.encode("ttl"), enc.encode("live"), { expiresAt: deadline });
+  const early = await other.get("ttl");
+  must(early === "live", `other tab read ttl=${early} before its deadline`);
+  await other.ingest();
+  const flushedEarly = await other.get("ttl");
+  must(Date.now() < deadline, "the expiry step ran past its deadline before the second read");
+  must(flushedEarly === "live", `other tab read ttl=${flushedEarly} after ingesting it, before its deadline`);
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()) + 50));
+  const late = await other.get("ttl");
+  must(late === null, `other tab read ttl=${late} after its deadline`);
+  const own = text(await self.get(enc.encode("ttl")));
+  must(own === null, `tab A read ttl=${own} after its deadline`);
+  log("other tab saw ttl present before its deadline and absent after");
 
   if (NOBC) {
     must(bcPosts > 0, "BroadcastChannel replacement was not used");
