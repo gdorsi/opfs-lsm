@@ -41,7 +41,7 @@ async function walWith(appends: number): Promise<TabWal> {
 /** A manifest with one (fake) non-empty run per name. */
 async function manifest(fs: MemoryFs, generation: number, through: number, runs: string[]): Promise<GenerationMeta> {
   for (const path of runs) await publish(fs, path, new Uint8Array([1]));
-  const meta = { generation, runs: runs.map((path) => ({ path, bytes: 1, marksThrough: through })), tombstoneSeq: 0, through, marks: NO_MARKS };
+  const meta = { generation, runs: runs.map((path) => ({ path, bytes: 1, marksThrough: through })), tombstoneSeq: 0, through, judgedNow: 0, marks: NO_MARKS };
   await publishGeneration(fs, meta);
   return meta;
 }

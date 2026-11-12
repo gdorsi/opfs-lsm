@@ -110,7 +110,7 @@ async function deep(): Promise<Fixture> {
   const { body, end } = await encodeRun(entries, "lz4");
   const path = "l2/c1.0.sst";
   await put(fs, path, body);
-  await put(fs, "m/0000000000000001.mft", encodeGeneration({ generation: 1, runs: [{ path, ...end, marksThrough: 300 }], tombstoneSeq: 0, through: 300, marks: NO_MARKS }));
+  await put(fs, "m/0000000000000001.mft", encodeGeneration({ generation: 1, runs: [{ path, ...end, marksThrough: 300 }], tombstoneSeq: 0, through: 300, judgedNow: 0, marks: NO_MARKS }));
   return { name, fs, state };
 }
 

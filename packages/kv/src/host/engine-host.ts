@@ -1,6 +1,7 @@
 import { checkDbName, type DbName } from "../check.js";
 import { codeOfError } from "../errors.js";
 import { IdBWal, uningestedBytes } from "../idb/wal.js";
+import { contextClock, type WallClock } from "../clock.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty } from "../recover.js";
 import { CountingFs } from "../opfs/counting-fs.js";
@@ -72,17 +73,21 @@ type IngestWatch = {
 export class EngineHost {
   private readonly dbs = new Map<DbName, HostedDb>();
 
-  /** `overrides` replace figures of the budget, for tests that need a small flush run or no L0 stop. */
+  /**
+   * `overrides` replace figures of the budget, for tests that need a small
+   * flush run or no L0 stop. `clock` judges expiry in flushes and merges.
+   */
   constructor(
     private readonly fsFactory: FsFactory,
     private readonly overrides: Partial<HostBudget> = {},
+    private readonly clock: WallClock = contextClock,
   ) {}
 
   private db(name: string): HostedDb {
     const dbName = checkDbName(name);
     let db = this.dbs.get(dbName);
     if (!db) {
-      db = new HostedDb(dbName, this.fsFactory, this.overrides);
+      db = new HostedDb(dbName, this.fsFactory, this.overrides, this.clock);
       this.dbs.set(dbName, db);
     }
     return db;
@@ -170,6 +175,7 @@ class HostedDb {
     private readonly name: DbName,
     private readonly fsFactory: FsFactory,
     private readonly overrides: Partial<HostBudget>,
+    private readonly clock: WallClock,
   ) {}
 
   private budget(): HostBudget {
@@ -271,7 +277,7 @@ class HostedDb {
             const folded = await ingestChunk(wal, fs, target, this.trusted, {
               maxBytes: budget.flushRunBytes,
               l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
-            });
+            }, this.clock);
             // Skipped while a tab loads a generation; the next flush or reclaim removes them.
             await unlessHeld(this.name, () => reclaimManifests(fs, folded.generation));
             return folded;
@@ -459,7 +465,7 @@ class HostedDb {
       // Gone when a flush installed a newer generation since: plan again.
       if (!base) continue;
       const budget = this.budget();
-      const step = await mergeNextStep(fs, budget, base, meta.top);
+      const step = await mergeNextStep(fs, budget, base, meta.top, this.clock);
       recycleEngine(budget.wasmRecycleBytes);
       if (!step) return;
       await this.exclusive(() =>

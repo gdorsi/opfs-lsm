@@ -1,4 +1,5 @@
 import { compareBytes, keyToString } from "../bytes.js";
+import { expired } from "./judge.js";
 import { joinMarks, markCursor, markTable, NO_MARKS, type Marks } from "./marks.js";
 import { marksOf, type WalRecord } from "./memtable.js";
 import type { SstEntry } from "./sst.js";
@@ -15,8 +16,10 @@ export type Folded = {
  * own range deletes. Filtering the final entries is exact: an entry is
  * covered only by a mark whose `through` reaches its seq, which sits in a
  * later record, and a later write of the key is what the fold kept instead.
+ * A last put expired at `judgeNow` becomes a tombstone with its seq, which
+ * still hides the older versions in the levels.
  */
-export function foldRecords(records: readonly WalRecord[]): Folded {
+export function foldRecords(records: readonly WalRecord[], judgeNow: number): Folded {
   const map = new Map<string, SstEntry>();
   let marks = NO_MARKS;
   for (const rec of records) {
@@ -33,7 +36,10 @@ export function foldRecords(records: readonly WalRecord[]): Folded {
     }
     for (const mark of marksOf(rec)) marks = joinMarks(marks, markTable(mark));
   }
-  const entries = [...map.values()].sort((a, b) => compareBytes(a.key, b.key));
+  const now = { now: judgeNow };
+  const entries = [...map.values()]
+    .map((e): SstEntry => (e.kind === "put" && expired(e, now) ? { kind: "del", key: e.key, seq: e.seq } : e))
+    .sort((a, b) => compareBytes(a.key, b.key));
   if (marks.empty) return { entries, marks };
   const cursor = markCursor(marks);
   return { entries: entries.filter((e) => e.seq > cursor.at(e.key)), marks };

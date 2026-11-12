@@ -5,6 +5,7 @@
  */
 import { checkDbName } from "./check.js";
 import { destroyDbWith, openDbWith, type Backing, type Db, type OpenKnobs, type OpenOptions } from "./db.js";
+import { contextClock, WallClock } from "./clock.js";
 import { EngineHost, createLocalIngestClient } from "./host/engine-host.js";
 import type { IngestClient } from "./host/protocol.js";
 import type { AsyncFs } from "./opfs/async-fs.js";
@@ -42,10 +43,10 @@ function memoryFs(name: string): MemoryFs {
   return fs;
 }
 
-function localIngest(name: string, fs: AsyncFs): IngestClient {
+function localIngest(name: string, fs: AsyncFs, clock: (() => number) | undefined): IngestClient {
   let host = localHosts.get(name);
   if (!host) {
-    host = new EngineHost(() => fs);
+    host = new EngineHost(() => fs, {}, clock ? new WallClock(clock) : contextClock);
     localHosts.set(name, host);
   }
   return createLocalIngestClient(host);
@@ -55,7 +56,7 @@ function backingOf(options: HarnessOpenOptions): Backing {
   const name = checkDbName(options.name);
   // Memory is never a fallback: only a harness that asks for it gets it.
   const fs = options.fs ?? (options.forceMemory === true ? memoryFs(name) : undefined);
-  if (fs) return { fs, ingest: options.ingest ?? localIngest(name, fs) };
+  if (fs) return { fs, ingest: options.ingest ?? localIngest(name, fs, options.clock) };
   return options.ingest ? { ingest: options.ingest } : {};
 }
 

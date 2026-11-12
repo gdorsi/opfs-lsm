@@ -2,6 +2,7 @@ import { opsBytes } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import { advanceIngested, getIngestedThrough, listUningested } from "../idb/wal.js";
+import type { WallClock } from "../clock.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, type Trusted } from "../recover.js";
 import {
@@ -59,6 +60,7 @@ export async function ingestChunk(
   through: number,
   trusted: Trusted,
   limits: ChunkLimits,
+  clock: WallClock,
 ): Promise<Chunk> {
   const base = await reconcile(wal, fs, trusted);
   const ingested = await getIngestedThrough(wal);
@@ -71,7 +73,8 @@ export async function ingestChunk(
   if (prev.runs.filter((r) => levelOf(r.path) === 0).length >= limits.l0Stop) {
     return { kind: "stopped", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
-  const folded = foldRecords(records);
+  const judgedNow = clock.now(prev.judgedNow);
+  const folded = foldRecords(records, judgedNow);
   const first = records[0]!.seq;
   const last = records[records.length - 1]!.seq;
 
@@ -84,6 +87,7 @@ export async function ingestChunk(
     runs,
     tombstoneSeq: prev.tombstoneSeq,
     through: last,
+    judgedNow,
     marks: retireMarks(joinMarks(prev.marks, folded.marks), runs),
   });
   let foldedBytes = 0;

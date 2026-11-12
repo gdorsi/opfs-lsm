@@ -22,6 +22,7 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../src/testing.js";
+import { WallClock } from "../src/clock.js";
 import { encodeSst as encodeSstWasm, ensureEngine, engineUsingWasm } from "../src/store/engine.js";
 import { encodeSst, type SstEntry } from "../src/store/sst.js";
 import { mergeRuns } from "../tests/runs.js";
@@ -57,8 +58,10 @@ const cat = (...parts: (Uint8Array | number[])[]) => {
  */
 async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Array[]; walRows: Uint8Array[] }> {
   const fs = new MemoryFs();
-  const host = new EngineHost(() => fs);
-  const open = () => openHarnessDb({ name: "corpus", fs, ingest: createLocalIngestClient(host) });
+  // A fixed clock, so the manifests' judgedNow and the seeds stay the same bytes.
+  const clock = () => 1_700_000_000_000;
+  const host = new EngineHost(() => fs, {}, new WallClock(clock));
+  const open = () => openHarnessDb({ name: "corpus", fs, ingest: createLocalIngestClient(host), clock });
   let db = await open();
   for (let round = 0; round < 5; round++) {
     await db.batch((tx) => {
@@ -70,6 +73,7 @@ async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Arr
     await ingest(db);
   }
   await db.put(utf("todo/9999"), utf('{"title":"left in the WAL"}'));
+  await db.put(utf("session/1"), utf("token"), { expiresAt: 4_102_444_800_000 });
   await db.delete(utf("todo/0001"));
   await db.batch((tx) => tx.deleteRange({ start: utf("todo/0100") }, { through: 3 }));
   await db.close();

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WallClock } from "../src/clock.js";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
 import { ingestChunk } from "../src/host/ingest.js";
 import { TabWal, encodeOps, getIngestedThrough } from "../src/idb/wal.js";
@@ -330,7 +331,7 @@ describe("a flush with L0 full", () => {
       for (let i = 0; i < 3; i++) await wal.append(encodeOps(put(i)));
       // 100 op bytes a record and a cap of 100: one record a run.
       const limits = { maxBytes: 100, l0Stop: 2 };
-      const chunk = (through: number) => ingestChunk(wal, fs, through, undefined, limits);
+      const chunk = (through: number) => ingestChunk(wal, fs, through, undefined, limits, new WallClock(() => 0));
 
       expect((await chunk(3)).kind).toBe("folded");
       expect((await chunk(3)).kind).toBe("folded");

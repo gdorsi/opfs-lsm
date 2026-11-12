@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import { WallClock } from "../src/clock.js";
 import { compareBytes, keyToString } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
@@ -517,7 +518,7 @@ describe("a compaction step at full size", () => {
     const { body, end } = encodeRun(l1);
     await publish(fs, "l1/c1.0.sst", body);
     metas.push({ path: "l1/c1.0.sst", ...end, marksThrough: 0 });
-    await publishGeneration(fs, { generation: 1, runs: metas, tombstoneSeq: 0, through: 0, marks: NO_MARKS });
+    await publishGeneration(fs, { generation: 1, runs: metas, tombstoneSeq: 0, through: 0, judgedNow: 0, marks: NO_MARKS });
     return [...sources, l1];
   }
 
@@ -543,7 +544,7 @@ describe("a compaction step at full size", () => {
       };
       const sources = await database(watched);
       const budget = hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES);
-      const step = (await mergeNextStep(watched, budget, (await loadLatestGeneration(watched))!, 0))!;
+      const step = (await mergeNextStep(watched, budget, (await loadLatestGeneration(watched))!, 0, new WallClock(() => 0)))!;
 
       const sizes = await Promise.all(step.inputs.map(async (p) => (await base.read(p, 0, Infinity))!.byteLength));
       const inputBytes = sizes.reduce((a, b) => a + b, 0);

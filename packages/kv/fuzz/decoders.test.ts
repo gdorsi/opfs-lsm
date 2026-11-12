@@ -215,6 +215,7 @@ const manifestArb: fc.Arbitrary<GenerationMeta> = fc.integer({ min: 0, max: 2 **
     generation: fc.integer({ min: 0, max: 2 ** 40 }),
     tombstoneSeq: fc.integer({ min: 0, max: 2 ** 40 }),
     through: fc.constant(through),
+    judgedNow: fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }),
     marks: marksArb(through),
     runs: fc.array(
       fc.record(

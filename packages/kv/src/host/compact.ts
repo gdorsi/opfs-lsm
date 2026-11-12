@@ -1,6 +1,7 @@
 import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import { raiseGeneration } from "../idb/wal.js";
+import type { WallClock } from "../clock.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../opfs/async-fs.js";
 import { reconcile, type Trusted } from "../recover.js";
 import { openMerge, type MergeCore } from "../store/engine.js";
@@ -31,6 +32,8 @@ type CompactionOutput = {
   readonly inputs: readonly string[];
   readonly outputs: readonly RunMeta[];
   readonly droppedSeq: number;
+  /** The time the merge judged expiry at. */
+  readonly judgedNow: number;
 };
 
 type Merged = { readonly outputs: readonly MergedRun[]; readonly droppedSeq: number };
@@ -50,18 +53,21 @@ export async function mergeNextStep(
   budget: HostBudget,
   base: GenerationMeta,
   knownTop: number,
+  clock: WallClock,
 ): Promise<CompactionOutput | undefined> {
   const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
   const plan = planCompaction(base.runs, { maxSources: budget.maxSources });
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
-  const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget));
+  const judgedNow = clock.now(base.judgedNow);
+  const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget, judgedNow));
   // The merge applies no range delete, so an output has applied only those all its inputs had.
   const marksThrough = Math.min(...plan.inputs.map((r) => r.marksThrough));
   return {
     inputs: plan.inputs.map((r) => r.path),
     outputs: merged.outputs.map((run) => ({ ...run, marksThrough })),
     droppedSeq: merged.droppedSeq,
+    judgedNow,
   };
 }
 
@@ -70,6 +76,7 @@ async function writeStep(
   plan: CompactionPlan,
   name: (i: number) => string,
   budget: HostBudget,
+  judgeNow: number,
 ): Promise<Merged> {
   const inputs: OpenFile[][] = [];
   let merge: MergeCore | undefined;
@@ -86,7 +93,7 @@ async function writeStep(
     merge = await openMerge({
       sources: inputs.map((files) => files.map((f) => f.size)),
       dropTombstones: plan.bottom,
-      judgeNow: 0,
+      judgeNow,
       targetBytes: TARGET_RUN_BYTES,
       codec: codecForLevel(plan.outputLevel),
       chunkBytes: budget.chunkBytes,
@@ -179,6 +186,7 @@ export async function installStep(
     runs,
     tombstoneSeq: Math.max(meta.tombstoneSeq, step.droppedSeq),
     through: meta.through,
+    judgedNow: Math.max(meta.judgedNow, step.judgedNow),
     marks: retireMarks(meta.marks, runs),
   });
   await raiseGeneration(wal, generation);

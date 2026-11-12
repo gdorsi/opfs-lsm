@@ -484,6 +484,8 @@ type Layers = {
   /** The readers as scan sources, newest first. */
   readonly levels: readonly RunLevel[];
   readonly tombstoneSeq: number;
+  /** The manifest's `judgedNow`: the clock floor for reads of these runs. */
+  readonly judgedNow: number;
   /** The manifest's marks: the range deletes its runs may still hold covered versions for. */
   readonly marks: Marks;
   refs: number;
@@ -517,6 +519,7 @@ class DbImpl implements Db {
     runs: [],
     levels: [],
     tombstoneSeq: 0,
+    judgedNow: 0,
     marks: NO_MARKS,
     refs: 1,
   };
@@ -665,6 +668,7 @@ class DbImpl implements Db {
       runs: held,
       levels: runLevels(paths, held.map((r) => r.reader)),
       tombstoneSeq: meta.tombstoneSeq,
+      judgedNow: meta.judgedNow,
       marks: meta.marks,
       refs: 1,
     };
@@ -931,7 +935,7 @@ class DbImpl implements Db {
    * installed levels, and keep it for the whole operation.
    */
   private point(): ReadPoint {
-    const now = this.clock.now();
+    const now = this.clock.now(this.installed.judgedNow);
     const installed = this.installed.marks;
     const mem = this.mem.marks;
     const last = this.lastPoint;
