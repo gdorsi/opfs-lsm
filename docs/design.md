@@ -226,9 +226,8 @@ turn as the layers it reads and kept across every key and every cache miss of th
 time (see [Expiry](#expiry)) and the marks of the installed generation joined with those of the
 memtable. The newest version reads as absent when it is a tombstone, when it expired at the
 time, or when a mark covers it (see [Range deletes](#range-deletes)), and then an older source
-does not win in its place. A `valueContains` filter skips expired puts in each source, and a
-newer source that holds the key at all drops an older hit. A hit from a run carries no seq, so
-when a mark covers its key, the run's level is asked for the seq.
+does not win in its place. A `valueContains` filter skips the versions each source holds that
+read as absent, and a newer source that holds the key at all drops an older hit.
 
 A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the read
 point. Writes that commit and deadlines that pass during the callback are invisible to it.
@@ -245,21 +244,20 @@ later write into the range is read as usual.
 The range deletes in effect form the mark table, a step function over the key space. Each piece
 holds the highest `through` that covers its keys and `at`, the seq of the record that set it.
 Folding a range delete is a pointwise max, so folding records twice or in another order gives the
-same table. A lookup is one binary search, and a scan walks the pieces beside its keys.
+same table.
 
 A version is judged in the layer that holds it:
 
-* The memtable removes covered rows when it applies the record, so its rows need no check.
-* A flush drops the ops its own records' range deletes cover, then joins those marks into the
-  manifest's.
-* A run records `marksThrough`: every range delete from a record at or below it was applied
-  before the run was written. A flushed run takes the last seq it folded. A compaction output
-  takes the lowest `marksThrough` of its inputs, because a merge applies no range delete.
+* The memtable removes covered rows as it applies a record, and a flush drops covered ops.
+* A merge drops a winning version a mark of its base manifest covers, tombstones included, at
+  any level: every older version of the key has a smaller seq, so the mark covers it too.
+* A run records `marksThrough`: it holds no version a range delete from a record at or below it
+  covers. A flushed run takes the last seq it folded, a compaction output its base's `through`.
 
 A piece retires, falling back to `through` 0, when every run that overlaps it has
-`marksThrough` at or past its `at`: no run left can hold a version it covers. Each flush and each
-compaction install retires the manifest's marks against its new runs. A covered version that a
-run still holds stays on disk until a newer version of its key replaces it in a merge.
+`marksThrough` at or past its `at`: no run left can hold a version it covers. Each flush and
+compaction install retires marks against its new runs, and a [mark step](#planning) rewrites
+the runs that block a piece, so its rows leave the disk.
 
 # Expiry
 
@@ -406,6 +404,8 @@ the shallower level wins.
 * A deeper level scores its bytes over its budget, and reports past 1. Its step picks the run
   whose overlapping bytes in the next level are the smallest fraction of its own size, and merges
   it with those runs into the next level.
+* When no level reports, a mark step rewrites the first run that overlaps a piece past its
+  `marksThrough`, by the L0 step or alone into its own level, and absorbs every mark there is.
 
 Scoring lets L0 pass 4 runs while a deeper level is further over budget. If L0 always went
 first, L1 would never be pushed down.
@@ -430,8 +430,8 @@ between two keys and asks the host for one thing:
 | YIELD | gives the event loop a turn |
 | DONE | installs the outputs |
 
-For a key, the newest source wins, judged for expiry at the step's time (see
-[Expiry](#expiry)). The session checks the CRC of every input run before it uses
+For a key, the newest source wins, dropped when a mark covers it (see
+[Range deletes](#range-deletes)) and judged for expiry at the step's time (see [Expiry](#expiry)). The session checks the CRC of every input run before it uses
 the last entries of that run. It cuts the output into runs of about 4 MiB of records, named
 `c<top + 1>.<i>`.
 
