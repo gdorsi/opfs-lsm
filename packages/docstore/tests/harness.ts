@@ -100,6 +100,7 @@ export function recording(kv: Db): { readonly db: Db; readonly updates: UpdateRe
           record.deletes++;
           tx.delete(k);
         },
+        deleteRange: (bounds, options) => tx.deleteRange(bounds, options),
       };
       const out = body(values, counted);
       updates.push(record);
