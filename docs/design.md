@@ -289,9 +289,8 @@ loads the footer, the bloom filter and the block index. Each later read loads th
 whole blocks that it needs. All of it lives in one page cache per tab, capped by
 `openDb({ cacheBytes })`, 256 MiB by default.
 
-A read is synchronous while its bytes are cached. Otherwise it returns a miss, and the caller
-awaits the load and reads again. Until it ends, an operation keeps the bytes it loaded, outside
-the cap, so the cache may evict them before the retry. A point get:
+A read is synchronous while its bytes are cached. Otherwise the caller awaits the load and reads
+again, keeping what it loaded outside the cap until the operation ends. A point get:
 
 1. Rejects the key if it falls outside the first and last keys of the run.
 2. Rejects it if the bloom filter says no.
