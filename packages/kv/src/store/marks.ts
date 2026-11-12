@@ -66,14 +66,6 @@ function marksOf(pieces: readonly Piece[]): Marks {
 
 export const NO_MARKS: Marks = marksOf([{ start: EMPTY_KEY, through: 0, at: 0 }]);
 
-/**
- * The effective `through` of a range delete asked for `asked` in the record
- * at `seq`: a mark never covers its own batch.
- */
-export function resolveThrough(asked: number, seq: Seq): Seq {
-  return Math.max(0, Math.min(asked, seq - 1));
-}
-
 /** Appends `piece`, merged into the last one when both say the same. */
 function push(out: Piece[], start: Uint8Array, through: Seq, at: Seq): void {
   const last = out[out.length - 1];
@@ -84,7 +76,6 @@ function push(out: Piece[], start: Uint8Array, through: Seq, at: Seq): void {
 /** The table of a single mark. */
 export function markTable(mark: Mark): Marks {
   if (mark.through === 0) return NO_MARKS;
-  if (mark.endExclusive && compareBytes(mark.start, mark.endExclusive) >= 0) return NO_MARKS;
   const out: Piece[] = mark.start.byteLength > 0 ? [{ start: EMPTY_KEY, through: 0, at: 0 }] : [];
   push(out, mark.start, mark.through, mark.at);
   if (mark.endExclusive) push(out, mark.endExclusive, 0, 0);

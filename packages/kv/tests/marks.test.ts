@@ -28,7 +28,8 @@ const markArb: fc.Arbitrary<Mark> = fc
   .map(({ a, b, through, gap }) => {
     const [start, end] = b && compareBytes(b, a) < 0 ? [b, a] : [a, b];
     return { start, ...(end ? { endExclusive: end } : {}), through, at: through + gap };
-  });
+  })
+  .filter((m) => !m.endExclusive || compareBytes(m.start, m.endExclusive) < 0);
 const marksArb = fc.array(markArb, { maxLength: 8 });
 
 function fold(list: readonly Mark[]): Marks {
