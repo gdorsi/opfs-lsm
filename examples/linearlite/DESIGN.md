@@ -97,7 +97,7 @@ p50, to DOM 3.5 ms (`visible`, production build, 60 edits).
 **Write chunking.** kv caps one write batch at 10,000 ops. A docstore write of a row is one op for the row plus,
 per index, at most a delete of its old entry and a put of its new one, so a row costs at most `1 + 2 × indexes`
 ops. A pulled page of 2,000 rows is merged in slices of `floor(10000 / (1 + 2 × indexes))` rows, each its own
-`transact`: 666 issues (seven indexes), 3,333 bodies (one), 2,000 comments (two). The slice size is read from the
+`transact`: 769 issues (six indexes), 3,333 bodies (one), 2,000 comments (two). The slice size is read from the
 collection's `indexes`, so adding an index cannot push a page over the cap. Slicing loses nothing a crash could
 not already lose: a merge is idempotent and the cursor advances only after the whole page.
 
@@ -177,7 +177,6 @@ reloads every loaded query.
 ```ts
 // src/client/store.ts
 issues: {
-  byModified: { on: ["deleted", "modified"] },
   byCreated:  { on: ["deleted", "created"] },
   byTitle:    { on: ["deleted", "title"] },
   byPriority: { on: ["deleted", "priority", "priorityOrder"] },
@@ -202,7 +201,7 @@ filter, the list pins every code, and the adapter reads one range per code and m
 
 | read | index |
 |---|---|
-| list sorted by modified, created or title, either direction, and its tie load (`eq(field, boundary)`) | `byModified`, `byCreated`, `byTitle`; a status or priority filter reads the same pages and filters them |
+| list sorted by modified, created or title, either direction, and its tie load (`eq(field, boundary)`) | `search` read without a `match`, `byCreated`, `byTitle`; a status or priority filter reads the same pages and filters them |
 | list sorted by priority (`priorityOrder`), one range per priority, and its tie load | `byPriority` |
 | list sorted by status (`statusOrder`), one range per status; a board column (`status = s`, by `statusOrder`) | `byStatus` |
 | title search under the default sort | `search`: the entries holding every word of the query, newest first, then `ilike` in memory |
@@ -214,8 +213,9 @@ filter, the list pins every code, and the adapter reads one range per code and m
 Each index costs first-sync time and storage. At 100k issues, seven indexes catch `issues` up in 4.2 s and three
 (`byModified`, `byStatus`, `pending`) in 3.3 s, about 240 ms per index (`bench/first-sync-100k.txt`). A missing
 sort index costs more: that sort reads and holds all 100,000 issues, as an eager collection does. So every sort
-keeps its index. Two are candidates to merge: `search` holds an entry per row ordered as `byModified` is, and could
-serve the plain list too if the adapter read a text index without a `match`.
+keeps an index, and the default sort shares one with title search: `search` holds an entry per issue ordered by
+`modified`, and the adapter reads a text index without a `match` as it reads a sorted one. Without a separate
+`byModified`, issues catch up 540 ms sooner (`bench/first-sync-100k.txt`, section 4).
 
 Known, not fixed here: the adapter's `onUpdate` persists the row as the editing tab last saw it, so a tab with a
 stale copy can erase a newer field another tab wrote. This app never calls `collection.update`.
@@ -260,8 +260,8 @@ build, one per build per round under a machine-wide lock; p50 (min–max) in ms.
 docstore indexes (a631954, eager issues through the kv adapter), B this design, C the same app on TanStack DB's
 SQLite persisted collection (`spike/linearlite-sqlite`), eager and on demand. The interaction rows for A and B are
 round 2 of `bench/ui-latency-100k.txt`, C's are round 1; B's sort by priority and by status are from its "Sort keys"
-section, and A and C were not timed on a sort by status. B's first sync is from the "Sort keys" section of
-`bench/client-100k-prod.txt`. Raw lines, commands and machine load are in
+section, and A and C were not timed on a sort by status. B's first sync is from section 4 of
+`bench/first-sync-100k.txt`. Raw lines, commands and machine load are in
 `bench/client-100k-prod.txt` and `bench/ui-latency-100k.txt`; what each read costs inside B is at the end of the
 latter. Interaction times end at the next painted frame, so they move in ~16.7 ms steps.
 
@@ -271,10 +271,10 @@ latter. Interaction times end at the next painted frame, so they move in ~16.7 m
 | warm start, rows and total | 888 (878–899) | 150 (150–152) | 1,093 | 2,056 | the total counts 100,000 `byStatus` entries, 32 ms |
 | heap after warm start, MB | 139 | 25 | 119 | 134 | |
 | storage, MB | 233 | 156 | 183 | 208 | |
-| first sync, first rows | 139 (133–151) | 130 (122–152) | 212 | 212 | the first pull page |
-| first sync, issues caught up | 2,417 (2,389–2,497) | 4,546 (4,041–5,088) | 9,940 | 11,121 | the index entries: kv's write path and docstore's index planning (`bench/first-sync-100k.txt`) |
-| first sync, comments caught up | 5,713 (5,685–5,841) | 8,512 (7,749–9,060) | 13,345 | 14,474 | the same, for three streams |
-| heap after first sync, MB | 322 (157–326) | 14 (11–59) | 181 | 190 | |
+| first sync, first rows | 139 (133–151) | 141 (125–162) | 212 | 212 | the first pull page |
+| first sync, issues caught up | 2,417 (2,389–2,497) | 3,826 (3,689–4,141) | 9,940 | 11,121 | the index entries: kv's write path and docstore's index planning (`bench/first-sync-100k.txt`) |
+| first sync, comments caught up | 5,713 (5,685–5,841) | 7,687 (7,493–8,503) | 13,345 | 14,474 | the same, for three streams |
+| heap after first sync, MB | 322 (157–326) | 13 (10–23) | 181 | 190 | |
 | status chip on | 28.3 (27.7–29.3) | 29.3 (19.9–30.3) | 42.6 | 1,088 | reads take ~8 ms of it: 431 documents to fill the window, 20k entries counted |
 | status chip off | 96.1 (95.4–99) | 48.8 (47.2–59.5) | 190 | 146 | counting 100,000 entries, 32 ms |
 | priority filter on | 27.1 (27–28.1) | 33 (29.5–45.5) | 39.9 | 1,109 | 585 documents read to fill the window (3 ms), 20k entries counted (7 ms) |
@@ -294,8 +294,8 @@ are acked 330 ms after reconnecting; a tab's own edit reaches its DOM in 3.5 ms.
 
 Where B is slower than A, and whose cost it is:
 
-- **First sync**, 2.1 s later for issues and 2.8 s for comments. Each issue writes seven keys instead of one (the
-  document and an entry in six indexes; `pending` has none for a synced row), and each key is appended to kv's
+- **First sync**, 1.4 s later for issues and 2.0 s for comments. Each issue writes six keys instead of one (the
+  document and an entry in five indexes; `pending` has none for a synced row), and each key is appended to kv's
   WAL, applied to its memtable and posted to other tabs, and the next merge reads the stored row back to plan the
   index changes. The two sort keys add about 100 bytes per issue to those writes and 610 ms to the sync. kv's
   broadcast posts every op even with no other tab open; that is kv's to change. Fewer indexes buy back ~240 ms each

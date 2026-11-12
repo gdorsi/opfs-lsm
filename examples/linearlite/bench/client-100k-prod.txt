@@ -74,3 +74,12 @@ visible   to the live query 3.2 ms (2.8-30.8), to the DOM 3.6 ms (3.2-27.4), n=6
 A replica written before the keys existed, with three status edits pending, reopened online on the after build: the
 leader pushed the edits (the server holds all three), cleared the replica and pulled it again under format 3 in
 5.7 s. The first 2,000 issues read back carry both keys, and `byPriority` counts all 19,696 of priority 4.
+
+One index fewer (`byModified` dropped): warm start and first sync are in first-sync-100k.txt, section 4. The edit
+scenarios on that build, against a copy of the server database, RUNS=1. All pass.
+
+tabs      tab A -> tab B 2.3 ms (1.9-5), tab B -> tab A 2.1 ms (1.9-3.6), n=10 each; the handover's edit is acked
+          76 ms after the leader closes.
+users     bob -> ann 6.2 ms (4.8-40.9), n=10.
+offline   five edits pending offline, acked 64 ms after reconnecting.
+visible   to the live query 3.2 ms (2.6-24.4), to the DOM 3.6 ms (3.1-25), n=60.
