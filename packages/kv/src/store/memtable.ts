@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import type { CheckedOp } from "../check.js";
+import { ROW_OVERHEAD, type CheckedOp } from "../check.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
 
 /** The latest op for one user key, and the WAL seq that wrote it. */
@@ -24,14 +24,6 @@ export interface MemRows {
 
 /** Rows per chunk after a split. A chunk splits when it passes twice this. */
 const CHUNK_ROWS = 512;
-
-/**
- * What a row costs besides its key and value bytes: the row object, two
- * Uint8Array views, and for a row this tab wrote, their buffers. V8 in Node
- * holds 290 to 510 bytes. Chrome compresses pointers, so 256 is an estimate
- * for it.
- */
-const ROW_OVERHEAD = 256;
 
 function rowBytes(row: MemRow): number {
   return ROW_OVERHEAD + row.key.byteLength + (row.value?.byteLength ?? 0);

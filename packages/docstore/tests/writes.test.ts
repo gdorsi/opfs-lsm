@@ -91,10 +91,19 @@ describe("putMany", () => {
     await c.put({ id: "owner", slug: "taken" });
     expect(await codeOf(c.putMany([{ id: "a" }, { id: "" }]))).toBe("document");
     expect(await codeOf(c.putMany([{ id: "a" }, { id: "b", slug: "taken" }]))).toBe("unique");
-    const many = Array.from({ length: 2_600 }, (_, i) => ({ id: `big${i}`, createdAt: i, slug: `s${i}`, title: "t" }));
+    const body = "x".repeat(1024 * 1024);
+    const many = Array.from({ length: 9 }, (_, i) => ({ id: `big${i}`, body }));
     expect(await codeOf(c.putMany(many))).toBe("constraint");
     expect(await c.getMany(["a", "b", "big0"])).toEqual([undefined, undefined, undefined]);
     expect(await c.count({})).toBe(1);
+  });
+
+  it("stores a batch of more than 10,000 kv ops", async () => {
+    const { notes: c } = await notes();
+    const many = Array.from({ length: 4_000 }, (_, i) => ({ id: `n${i}`, createdAt: i, slug: `s${i}`, title: "t" }));
+    await c.putMany(many);
+    expect(await c.count({})).toBe(4_000);
+    expect(await c.count({ index: "bySlug" })).toBe(4_000);
   });
 
   it("throws document for one id given twice and writes nothing", async () => {

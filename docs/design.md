@@ -666,9 +666,7 @@ of OPFS, independently.
 | Limit | Value |
 |---|---|
 | Key | 8 KiB |
-| Value | 16 MiB |
-| Ops per batch | 10,000 |
-| Bytes per batch | 8 MiB |
+| Batch | 8 MiB, counted as the key bytes, the value bytes and 256 bytes for each op. A `put` is a batch of one op, so this is also the limit of a value. |
 | Database name | `[A-Za-z0-9_-]{1,64}` |
 
 # Where code runs
