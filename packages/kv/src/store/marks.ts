@@ -135,23 +135,24 @@ export function throughAt(marks: Marks, key: Uint8Array): Seq {
  */
 export type MarkCursor = { at(key: Uint8Array): Seq };
 
+const NO_MARK_CURSOR: MarkCursor = { at: () => 0 };
+
 export function markCursor(marks: Marks, reverse = false): MarkCursor {
   const { pieces } = marks;
-  if (marks.empty) return { at: () => 0 };
+  if (marks.empty) return NO_MARK_CURSOR;
   let i = reverse ? pieces.length - 1 : 0;
-  return reverse
-    ? {
-        at(key) {
-          while (i > 0 && compareBytes(pieces[i]!.start, key) > 0) i--;
-          return pieces[i]!.through;
-        },
+  return {
+    at(key) {
+      while (
+        reverse
+          ? i > 0 && compareBytes(pieces[i]!.start, key) > 0
+          : i + 1 < pieces.length && compareBytes(pieces[i + 1]!.start, key) <= 0
+      ) {
+        i += reverse ? -1 : 1;
       }
-    : {
-        at(key) {
-          while (i + 1 < pieces.length && compareBytes(pieces[i + 1]!.start, key) <= 0) i++;
-          return pieces[i]!.through;
-        },
-      };
+      return pieces[i]!.through;
+    },
+  };
 }
 
 /** What retirement needs to know about a run. */
@@ -169,7 +170,6 @@ type RunMarkInfo = {
  * for anything it can read.
  */
 export function retireMarks(marks: Marks, runs: readonly RunMarkInfo[]): Marks {
-  if (marks.empty) return marks;
   const { pieces } = marks;
   const out: Piece[] = [];
   let changed = false;

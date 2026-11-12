@@ -34,7 +34,6 @@ export function foldRecords(records: readonly WalRecord[]): Folded {
     }
   }
   const entries = [...map.values()].sort((a, b) => compareBytes(a.key, b.key));
-  if (marks.empty) return { entries, marks };
   const cursor = markCursor(marks);
   return { entries: entries.filter((e) => e.seq > cursor.at(e.key)), marks };
 }
