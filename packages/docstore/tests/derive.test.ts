@@ -148,6 +148,13 @@ describe("diffEntries", () => {
     expect(write.map((e) => new TextDecoder().decode(e.value))).toEqual(["new"]);
   });
 
+  it("writes every entry of a new document and removes none, and the reverse for a deleted one", () => {
+    const c = coll({ a: { on: "a" }, tags: { on: "tags", multi: true } });
+    const doc = derive(c, { id, a: 1, tags: ["x", "y"] });
+    expect(diffEntries([], doc)).toEqual({ remove: [], write: doc });
+    expect(diffEntries(doc, [])).toEqual({ remove: doc.map((e) => e.key), write: [] });
+  });
+
   it("removes only the entry of a removed tag", () => {
     const c = coll({ tags: { on: "tags", multi: true } });
     expect(diffEntries(derive(c, { id, tags: ["a", "b"] }), derive(c, { id, tags: ["b"] }))).toEqual({

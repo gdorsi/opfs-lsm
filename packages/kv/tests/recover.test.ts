@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { TabWal, advanceIngested, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { TabWal, encodeOps, advanceIngested, listUningested, uningestedBytes } from "../src/idb/wal.js";
 import { reconcile, recordEmpty } from "../src/recover.js";
 import { crc32 } from "../src/store/crc32.js";
 import { publishGeneration, type GenerationMeta } from "../src/store/generation.js";
@@ -33,7 +33,7 @@ function put(i: number): CheckedOp[] {
 async function walWith(appends: number): Promise<TabWal> {
   name = `recover-${++n}`;
   const wal = await TabWal.open(checkDbName(name));
-  for (let i = 1; i <= appends; i++) await wal.append(put(i));
+  for (let i = 1; i <= appends; i++) await wal.append(encodeOps(put(i)));
   return wal;
 }
 
@@ -154,7 +154,7 @@ describe("reconcile", () => {
     expect(await wal.meta()).toMatchObject({ head: 2, ingestedThrough: 2, generation: 1 });
     // The key generator is behind the head, so the blind append gives way
     // and the explicit one takes seq 3.
-    expect(await wal.append(put(3))).toBeUndefined();
+    expect(await wal.append(encodeOps(put(3)))).toBeUndefined();
     expect((await wal.appendAfter(2, () => ({ ops: put(3), result: 0 })))?.seq).toBe(3);
     wal.close();
   });
@@ -308,7 +308,7 @@ describe("reconcile", () => {
   it("writes nothing when the WAL changed since it was read", async () => {
     const wal = await walWith(1);
     const stale = await wal.meta();
-    await wal.append(put(2));
+    await wal.append(encodeOps(put(2)));
     expect(await wal.adopt(stale, 0, 0, 0, 0)).toBe(false);
     expect(await wal.meta()).toEqual({ head: 2, ingestedThrough: 0, generation: undefined, top: 0, destroyedTop: 0 });
     wal.close();
@@ -558,7 +558,7 @@ describe("an older build sharing the database", () => {
     // Open records the floor. Appends after that leave it there; an open
     // that finds records already waiting snaps the floor up to them.
     expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 0 });
-    for (let i = 1; i <= 4; i++) await wal.append(put(i));
+    for (let i = 1; i <= 4; i++) await wal.append(encodeOps(put(i)));
     await advanceIngested(wal, 2, 1);
     expect((await legacyMeta(name)).head).toBe(0);
     expect((await wal.meta()).head).toBe(4);

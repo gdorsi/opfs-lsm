@@ -335,9 +335,10 @@ key per entry under one such pin.
 
 ## Seeing other tabs' writes
 
-After its append commits, a tab posts `{ kind: "append", seq, ops }` on the BroadcastChannel
-`opfs-lsm-layers/<name>`. Every other tab applies the record to its memtable. If the record does
-not follow the `appliedThrough` of that tab, the tab reads the WAL tail instead.
+After its append commits, a tab posts `{ kind: "row", seq, record, bytes }` on the BroadcastChannel
+`opfs-lsm-layers/<name>`: the WAL row it appended, and the key and value bytes of its ops. Every
+other tab applies the record to its memtable. If the record does not follow the `appliedThrough`
+of that tab, the tab reads the WAL tail instead.
 
 A tab therefore sees the write of another tab a moment after its ack. `db.sync()` closes the
 gap: it reads the WAL tail and applies everything acked before the call. The broadcast is an
@@ -383,7 +384,7 @@ Ingest moves WAL records into L0 runs. It runs in the host.
 ## Trigger
 
 Per database, the host keeps `pendingBytes`, the key and value bytes of the ops that are not yet
-folded. Each append broadcast adds to it. When it reaches `maxWalBytes`, 1 MiB by default, the
+folded. Each append broadcast adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
 host flushes. The limit is the smallest any open tab asked for, and each tab asks for at most
 7/8 of its `memtableBytes`.
 

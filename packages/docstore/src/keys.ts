@@ -96,7 +96,8 @@ export function after(key: Uint8Array): Uint8Array {
 const ZERO = Uint8Array.of(0);
 
 export function bytesEqual(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b;
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;

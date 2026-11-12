@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ingest, MemoryFs, openHarnessDb, readStats, __resetMemoryFsForTests } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
-import { TabWal } from "../src/idb/wal.js";
+import { TabWal, encodeOps } from "../src/idb/wal.js";
 
 const NAME = "group-commit";
 const IDB = `opfs-lsm-wal/${NAME}`;
@@ -45,7 +45,7 @@ afterEach(() => {
 describe("WAL group commit", () => {
   it("writes appends issued in one turn as one transaction, one seq each, in call order", async () => {
     const wal = await TabWal.open(checkDbName(NAME));
-    const seqs = await Promise.all([1, 2, 3, 4, 5].map((i) => wal.append(put(i))));
+    const seqs = await Promise.all([1, 2, 3, 4, 5].map((i) => wal.append(encodeOps(put(i)))));
     expect(seqs).toEqual([1, 2, 3, 4, 5]);
     expect(wal.groupSizes).toEqual([undefined, undefined, 1]);
     const tail = await wal.tail(0);
@@ -55,10 +55,10 @@ describe("WAL group commit", () => {
 
   it("groups the appends that arrive while a group commits into the next one", async () => {
     const wal = await TabWal.open(checkDbName(NAME));
-    const first = wal.append(put(1));
+    const first = wal.append(encodeOps(put(1)));
     await Promise.resolve();
     await new Promise((r) => setTimeout(r, 0));
-    const rest = [2, 3, 4].map((i) => wal.append(put(i)));
+    const rest = [2, 3, 4].map((i) => wal.append(encodeOps(put(i))));
     expect(await Promise.all([first, ...rest])).toEqual([1, 2, 3, 4]);
     // One group of 1, one of 3 (or 1 + 3 merged when the first was still active).
     const groups = wal.groupSizes.reduce((a, n) => a + (n ?? 0), 0);
@@ -79,9 +79,9 @@ describe("WAL group commit", () => {
       }
       return tx;
     });
-    const outcomes = await Promise.allSettled([1, 2, 3].map((i) => wal.append(put(i))));
+    const outcomes = await Promise.allSettled([1, 2, 3].map((i) => wal.append(encodeOps(put(i)))));
     expect(outcomes.map((o) => o.status)).toEqual(["rejected", "rejected", "rejected"]);
-    expect(await wal.append(put(4))).toBe(1);
+    expect(await wal.append(encodeOps(put(4)))).toBe(1);
     const tail = await wal.tail(0);
     expect(tail.records.map((r) => [r.seq, text(r.ops[0]!.key)])).toEqual([[1, "k4"]]);
     wal.close();
@@ -90,7 +90,7 @@ describe("WAL group commit", () => {
   it("resolves every caller of a stale group with undefined, and keeps no record", async () => {
     await raiseFloor(10);
     const wal = await TabWal.open(checkDbName(NAME));
-    expect(await Promise.all([1, 2, 3].map((i) => wal.append(put(i))))).toEqual([
+    expect(await Promise.all([1, 2, 3].map((i) => wal.append(encodeOps(put(i)))))).toEqual([
       undefined,
       undefined,
       undefined,
