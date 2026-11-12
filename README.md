@@ -94,6 +94,7 @@ If read and write performance of the DB is not a concern in your app.
 | [`@opfs-lsm/tanstack-db`](packages/tanstack-db) | TanStack DB collections kept in docstore, with other tabs' writes arriving live and on-demand queries read through docstore's indexes. | Beta |
 | [`@opfs-lsm/yjs`](packages/yjs) | A Yjs provider shaped like y-indexeddb. | Beta |
 | [`@opfs-lsm/automerge`](packages/automerge) | A storage adapter for automerge-repo. | Beta |
+| [`@opfs-lsm/fate`](packages/fate) | Persistence storage for the fate data client, shaped like fate's IndexedDB storage. | Beta |
 | [`@opfs-lsm/docstore`](packages/docstore) | A document store with declared indexes, paged queries, snapshot reads and a change feed. | Beta |
 
 Each adapter keeps many documents or collections in one kv database. `@opfs-lsm/docstore` is the query layer on top of kv: JSON documents in collections, with indexes declared in a versioned schema.
