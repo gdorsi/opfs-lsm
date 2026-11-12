@@ -6,6 +6,7 @@ import {
   filterCursor,
   lowerBoundKeys,
   Miss,
+  untilHit,
   type LayerCursor,
   type LayerEntry,
   type Maybe,
@@ -289,10 +290,7 @@ export async function* mergeCursors(
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
     let w = merge.next();
-    while (w instanceof Miss) {
-      await w.ready;
-      w = merge.next();
-    }
+    if (w instanceof Miss) w = await untilHit(() => merge.next(), w);
     if (!w) return;
     if (w.entry.kind === "del") continue;
     yield {
@@ -332,20 +330,14 @@ export async function* scanMatching(
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
     let w = merge.next();
-    while (w instanceof Miss) {
-      await w.ready;
-      w = merge.next();
-    }
+    if (w instanceof Miss) w = await untilHit(() => merge.next(), w);
     if (!w) return;
     const { entry, source } = w;
     if (source > 0) {
       const i = lowerBoundKeys(rows, entry.key);
       if (i < rows.length && compareBytes(rows[i]!.key, entry.key) === 0) continue;
       let newer = shadowed(levels, source - 1, entry.key);
-      while (newer instanceof Miss) {
-        await newer.ready;
-        newer = shadowed(levels, source - 1, entry.key);
-      }
+      if (newer instanceof Miss) newer = await untilHit(() => shadowed(levels, source - 1, entry.key), newer);
       if (newer) continue;
     }
     yield { key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Miss, untilHit } from "../src/store/cursor.js";
+import { allMissed, Miss, untilHit } from "../src/store/cursor.js";
 import { metaKey, pageKey, PageCache, type Admit } from "../src/store/page-cache.js";
 
 function harness(budget: number) {
@@ -37,28 +37,39 @@ describe("page cache", () => {
     expect(cache.usage()).toMatchObject({ resident: 9_500, metadata: 0 });
   });
 
-  it("keeps a filled entry until its retry, even past the budget", async () => {
+  it("a read gets a value larger than the budget with one load", async () => {
     const { cache, fetch, loads } = harness(1_000);
-    await fetch(pageKey(0, 0), "main", 1_500);
+    expect(await fetch(pageKey(0, 0), "main", 1_500)).toBe(pageKey(0, 0));
     expect(loads()).toBe(1);
-    expect(cache.usage()).toMatchObject({ resident: 0, pinned: 0 });
-
-    const miss = cache.lookup(pageKey(0, 1), "main", async () => ({ value: 1, bytes: 800 }));
-    expect(miss).toBeInstanceOf(Miss);
-    await (miss as Miss).ready;
-    expect(cache.usage()).toMatchObject({ resident: 800, pinned: 800 });
-    expect(cache.lookup(pageKey(0, 1), "main", () => Promise.reject(new Error("reloaded")))).toBe(1);
-    expect(cache.usage().pinned).toBe(0);
+    expect(cache.usage().resident).toBe(0);
   });
 
-  it("is back within budget once concurrent misses have retried", async () => {
+  it("stays within budget while concurrent misses land", async () => {
     const { cache, fetch, loads } = harness(2_000);
     const keys = Array.from({ length: 50 }, (_, i) => pageKey(0, i));
     expect(await Promise.all(keys.map((key) => fetch(key, "main", 1_000)))).toEqual(keys);
     expect(loads()).toBe(50);
-    const usage = cache.usage();
-    expect(usage.pinned).toBe(0);
-    expect(usage.resident).toBeLessThanOrEqual(2_000);
+    expect(cache.usage().resident).toBeLessThanOrEqual(2_000);
+  });
+
+  it("one read of many keys ends when they outweigh the budget", async () => {
+    const cache = new PageCache(32_000);
+    let loads = 0;
+    const keys = Array.from({ length: 9_000 }, (_, i) => pageKey(0, i));
+    const readAll = () => {
+      const misses: Miss[] = [];
+      for (const key of keys) {
+        const v = cache.lookup(key, "main", async () => {
+          loads++;
+          return { value: key, bytes: 1_000 };
+        });
+        if (v instanceof Miss) misses.push(v);
+      }
+      return misses.length > 0 ? allMissed(misses) : keys;
+    };
+    expect(await untilHit(readAll)).toBe(keys);
+    expect(loads).toBe(keys.length);
+    expect(cache.usage().resident).toBeLessThanOrEqual(32_000);
   });
 
   it("drops a run's entries, and a load that lands after the drop", async () => {

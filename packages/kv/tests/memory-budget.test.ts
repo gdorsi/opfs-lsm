@@ -108,7 +108,7 @@ const usage = (db: Db) => (db as unknown as { cache: PageCache }).cache.usage();
 
 function expectWithinBudget(db: Db): void {
   const u = usage(db);
-  expect(u.resident).toBeLessThanOrEqual(Math.max(u.budget, u.pinned));
+  expect(u.resident).toBeLessThanOrEqual(u.budget);
 }
 
 const sorted = (model: Map<string, string>) => [...model].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));

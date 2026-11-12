@@ -131,7 +131,7 @@ describe("lazy sst reader", () => {
           const missKey = cat(e.key, Uint8Array.of(0));
           expect(show(await untilHit(() => reader.get(missKey)))).toBe(show(sstGet(all, missKey)));
           const u = cache.usage();
-          expect(u.resident).toBeLessThanOrEqual(Math.max(u.budget, u.pinned));
+          expect(u.resident).toBeLessThanOrEqual(u.budget);
           minMeta = Math.min(minMeta, u.metadata);
         }
       }

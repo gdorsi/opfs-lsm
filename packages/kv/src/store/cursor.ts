@@ -50,20 +50,24 @@ export function entryCursor(entries: readonly LayerEntry[], reverse = false): La
   };
 }
 
+/** A cache key and the value loaded for it. */
+export type Fill = readonly [key: number, value: unknown];
+
 /**
  * Bytes a sync read needs and does not have yet. The read has already
- * started; once `ready` resolves, the same call hits. A value rather than
+ * started, and `ready` resolves with what it loaded. A value rather than
  * an exception, so a merge holding several sources keeps their positions.
  */
 export class Miss {
-  constructor(readonly ready: Promise<void>) {}
+  constructor(readonly ready: Promise<readonly Fill[]>) {}
 }
 
 export type Maybe<T> = T | Miss;
 
 /** One Miss that is ready when all of `misses` are. */
 export function allMissed(misses: readonly Miss[]): Miss {
-  return misses.length === 1 ? misses[0]! : new Miss(Promise.all(misses.map((m) => m.ready)).then(() => undefined));
+  if (misses.length === 1) return misses[0]!;
+  return new Miss(Promise.all(misses.map((m) => m.ready)).then((fills) => fills.flat()));
 }
 
 /** The puts of `cursor` whose value holds every pattern. */
@@ -83,13 +87,50 @@ export function filterCursor(cursor: LayerCursor, patterns: readonly Uint8Array[
 }
 
 /**
- * Re-runs a sync read until it stops missing. Terminates because the
- * bytes a Miss fills stay pinned until the retry touches them.
+ * What one operation has read so far, held outside the page cache. A cache
+ * lookup made inside `attempt` takes its value from here and adds what it
+ * finds, and `settle` adds what each Miss loaded. So a retry misses only on
+ * bytes no earlier round asked for, whatever the cache evicted in between.
  */
-export async function untilHit<T>(attempt: () => Maybe<T>): Promise<T> {
-  for (;;) {
-    const r = attempt();
-    if (!(r instanceof Miss)) return r;
-    await r.ready;
+export class ReadSet {
+  private readonly held: HeldReads = new Map();
+
+  /** Runs a sync read against this set. */
+  attempt<T>(read: () => T): T {
+    const outer = reading;
+    reading = this.held;
+    try {
+      return read();
+    } finally {
+      reading = outer;
+    }
   }
+
+  /** Re-runs `read` until it stops missing. `first` is a result `read` already gave. */
+  async settle<T>(read: () => Maybe<T>, first: Maybe<T> = this.attempt(read)): Promise<T> {
+    for (let r = first; ; r = this.attempt(read)) {
+      if (!(r instanceof Miss)) return r;
+      for (const [key, value] of await r.ready) this.held.set(key, value);
+    }
+  }
+}
+
+/** Cache key to value. Run ids are unique across caches, so a key names one value. */
+type HeldReads = Map<number, unknown>;
+
+// Set only for the span of one sync `attempt`, so a read never sees another operation's set.
+let reading: HeldReads | undefined;
+
+/** The set of the read now running, if it has one. */
+export function heldReads(): HeldReads | undefined {
+  return reading;
+}
+
+/**
+ * Re-runs a sync read until it stops missing, holding what it loads. Pass
+ * the Miss a first try outside any set returned, so the usual hit
+ * allocates nothing.
+ */
+export function untilHit<T>(attempt: () => Maybe<T>, first?: Miss): Promise<T> {
+  return new ReadSet().settle(attempt, first);
 }
