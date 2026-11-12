@@ -210,8 +210,9 @@ filter, the list pins every code, and the adapter reads one range per code and m
 | unsynced rows | `pending`, sparse: only rows with `pending: true` have an entry |
 | list total, board column counts | `byStatus` per status; `byPriority` per priority, bounded by `priorityOrder` per status; `search` for a query |
 
-Each index costs first-sync time and storage. At 100k issues, seven indexes catch `issues` up in 4.2 s and three
-(`byModified`, `byStatus`, `pending`) in 3.3 s, about 240 ms per index (`bench/first-sync-100k.txt`). A missing
+Each index costs first-sync time and storage, about 240 ms of first sync per index at 100k issues: measured when
+the collection had seven, a `byModified` among them, `issues` caught up in 4.2 s with all seven and in 3.3 s with
+three of them (`byModified`, `byStatus`, `pending`) (`bench/first-sync-100k.txt`). It has six now. A missing
 sort index costs more: that sort reads and holds all 100,000 issues, as an eager collection does. So every sort
 keeps an index, and the default sort shares one with title search: `search` holds an entry per issue ordered by
 `modified`, and the adapter reads a text index without a `match` as it reads a sorted one. Without a separate
