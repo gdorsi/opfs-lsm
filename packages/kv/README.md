@@ -44,12 +44,12 @@ Keys and values are `Uint8Array`.
 | `get(key)` | Point read from the memtable and SST files. Does not touch IndexedDB. |
 | `put(key, value)` | Append one put. Resolves on WAL ack, with the record's seq. |
 | `delete(key)` | Append one delete. Resolves on WAL ack, with the record's seq. |
-| `batch(build)` | Build puts and deletes synchronously. Resolves on one WAL ack, with the record's seq. |
+| `batch(build)` | Build puts, deletes and range deletes synchronously. Resolves on one WAL ack, with the record's seq. |
 | `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
 | `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `reverse: true` yields the same keys from the largest down, and `limit` keeps the largest. `valueContains` keeps live puts whose current value holds every pattern. |
 | `rangeJoin(range, keyOf)` | Scan a range and join each entry to the value at `keyOf(entry)`, as an index entry joins its row. The scan and the reads see one state. |
 | `view(body)` | Read-only snapshot of the state when the view opens. `snap.seq` is the seq of the last record it includes, counted as write acks and `changes` count it. |
-| `changes(listener)` | Subscribe to every WAL record this handle applies, from any tab, with its ops, once each and in seq order. A `gap` event means the handle skipped records a flush folded, so read again. Returns unsubscribe. |
+| `changes(listener)` | Subscribe to every WAL record this handle applies, from any tab, with its ops, once each and in seq order. A range delete comes as a `deleteRange` op with its bounds and its `through`, resolved. A `gap` event means the handle skipped records a flush folded, so read again. Returns unsubscribe. |
 | `sync()` | Catch up to every write acked before the call from any tab. |
 | `close()` | Close this tab's handle. |
 | `dangerousDestroy()` | Delete every record, in every tab. Writes acked before it are gone, and writes after it land in the empty database. Every handle stays open: this one reads empty when it resolves, other tabs at their next `sync` or write, each with a `gap` event. The host removes the files no tab is reading, and the rest once their tabs move on. Waits for a flush or compaction step already running. Once it resolves, the deleted records never come back, even after a power loss. A crash before that leaves the database as if it had not run. |
@@ -62,6 +62,17 @@ await db.batch((tx) => {
 
 await db.sync();
 ```
+
+### Range deletes
+
+`tx.deleteRange(bounds, options?)` removes every row in `[start, endExclusive)` in one op, however many rows that is. A bound left out is open: `deleteRange({})` removes every row. It removes the rows written before its batch, never the puts in its own batch, and a later put into the range is read as usual. `options.through` narrows it to the rows last written at a seq of at most `through`, as a write's ack returns it, so a range delete does not remove a row another tab wrote after the caller read the range. Reads in this tab skip the removed rows once the ack resolves, other tabs once they apply the record and at the latest after their next `sync`, and a `view` opened before the range delete keeps reading them. A removed row that was not yet flushed is never written to OPFS. One already in an SST file stays in it, and reads skip it.
+
+```ts
+const seq = await db.put(key, value);
+await db.batch((tx) => tx.deleteRange(prefixBound(prefix), { through: seq }));
+```
+
+An empty or inverted range, or a `through` that is not a whole number of at least 0, throws `ConstraintError`.
 
 ## Errors
 
@@ -76,4 +87,4 @@ Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A h
 | `ConstraintError` | `constraint` | A key, value or batch is not valid or is over a limit. | Fix the call. |
 | `ClosedError` | `closed` | The handle is closed. | Open a new one. |
 
-`@opfs-lsm/kv` also exports `prefixBound` and the error classes above. The harness that tests use (`EngineHost`, `MemoryFs`, `openHarnessDb`) is in `@opfs-lsm/kv/testing`. The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
+`@opfs-lsm/kv` also exports `prefixBound`, the `KeyBounds` and `DeleteRangeOptions` types of `deleteRange`, and the error classes above. The harness that tests use (`EngineHost`, `MemoryFs`, `openHarnessDb`) is in `@opfs-lsm/kv/testing`. The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
