@@ -114,7 +114,9 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
 - **Loop.** On start, on every SSE hint, on a local edit (a live query over `pending` rows) and on `online`:
   push every dirty row (fields = current values of dirty fields; a row with `version 0` pushes all fields with
   `create`), then pull each stream until `more` is false. Push before pull, so acked fields merge before the pull
-  brings the same rows. Failure: back off 1 s → 30 s, mark `online: false`.
+  brings the same rows. The next page is asked for as soon as a page arrives, so it travels while this one
+  merges; a push that sends anything drops it, so no pull brings rows from before a push. Failure: back off
+  1 s → 30 s, mark `online: false`.
 - **Outbox.** Issues, bodies and comments each have a sparse `pending` index, and the leader pushes the rows
   three live queries over `eq(pending, true)` read from it, a range of the unsent rows only. An ack clears just
   the fields whose clocks it confirms, so an edit made while the push was in flight stays pending. There is no
