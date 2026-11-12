@@ -6,6 +6,7 @@ import {
   checkKey,
   newWriterId,
   opsBytes,
+  type BatchOp,
   type CheckedKey,
   type CheckedOp,
   type DbName,
@@ -22,7 +23,7 @@ import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type IngestClient } from "./host/protocol.js";
 import { layersChannel } from "./locks.js";
-import { TabWal, decodeOps, encodeOps, type WalTail } from "./idb/wal.js";
+import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, ReadSet, untilHit, type Maybe } from "./store/cursor.js";
@@ -170,9 +171,32 @@ export type Range = {
 
 export type Entry = { readonly key: Uint8Array; readonly value: Uint8Array };
 
+/** `start` inclusive, `endExclusive` exclusive, either open. `prefixBound` returns one. */
+export type KeyBounds = {
+  readonly start?: Uint8Array;
+  readonly endExclusive?: Uint8Array;
+};
+
+export type DeleteRangeOptions = {
+  /**
+   * Remove only rows last written at or before this seq: a write's ack, a
+   * `view`'s `snap.seq`, a change event's seq. Default: every row written
+   * before this batch. Either way it stops below this batch's own seq, so a
+   * range delete never removes its batch's writes.
+   */
+  readonly through?: number;
+};
+
 export interface BatchTx {
   put(key: Uint8Array, value: Uint8Array): void;
   delete(key: Uint8Array): void;
+  /**
+   * Every row in `bounds` last written at or before `through` reads as
+   * absent from this batch on, in every tab, and older versions of those
+   * keys with it. One op whatever the range holds: it leaves no tombstone
+   * per key. `ConstraintError` when `start` is not below `endExclusive`.
+   */
+  deleteRange(bounds: KeyBounds, options?: DeleteRangeOptions): void;
 }
 
 export interface Db {
@@ -405,14 +429,16 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
 function collectBatch(
   build: (tx: BatchTx) => unknown,
 ): readonly CheckedOp[] {
-  const ops: { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[] =
-    [];
+  const ops: BatchOp[] = [];
   const ret = build({
     put: (key, value) => {
       ops.push({ type: "put", key, value });
     },
     delete: (key) => {
       ops.push({ type: "del", key });
+    },
+    deleteRange: (bounds, options) => {
+      ops.push({ type: "deleteRange", start: bounds.start, endExclusive: bounds.endExclusive, through: options?.through });
     },
   });
   if (
@@ -522,7 +548,7 @@ class DbImpl implements Db {
       return;
     }
     if (data.writerId === this.writerId) return;
-    if (this.applyRecord({ seq: data.seq, ops: decodeOps(data.record) }) === "gap") {
+    if (this.applyRecord({ seq: data.seq, ops: decodeOps(data.record, data.seq) }) === "gap") {
       void this.sync().catch(() => undefined);
     }
     this.announce();
@@ -793,7 +819,7 @@ class DbImpl implements Db {
    * which reads the record too.
    */
   private async landed(seq: number, ops: readonly CheckedOp[], record: ArrayBuffer): Promise<void> {
-    if (this.applyRecord({ seq, ops }) === "gap" && !this.closed) await this.sync();
+    if (this.applyRecord({ seq, ops: resolveOps(ops, seq) }) === "gap" && !this.closed) await this.sync();
     this.pressure.landed();
     this.announce();
     this.broadcast({ kind: "row", writerId: this.writerId, seq, record, bytes: opsBytes(ops) });

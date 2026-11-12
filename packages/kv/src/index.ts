@@ -5,6 +5,8 @@ export {
   type OpenOptions,
   type Db,
   type BatchTx,
+  type KeyBounds,
+  type DeleteRangeOptions,
   type Entry,
   type Range,
   type ViewSnapshot,

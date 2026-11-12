@@ -55,9 +55,9 @@ describe("sst", () => {
 
   it("round-trips puts and deletes", () => {
     const body = encodeSst([
-      { kind: "put", key: utf("b"), value: utf("2") },
-      { kind: "del", key: utf("a") },
-      { kind: "put", key: utf("c"), value: utf("3") },
+      { kind: "put", key: utf("b"), value: utf("2"), seq: 1 },
+      { kind: "del", key: utf("a"), seq: 2 },
+      { kind: "put", key: utf("c"), value: utf("3"), seq: 3 },
     ]);
     const entries = decodeSst(body);
     expect(entries.map((e) => e.kind + ":" + new TextDecoder().decode(e.key))).toEqual([
@@ -68,7 +68,7 @@ describe("sst", () => {
   });
 
   it("rejects corrupt crc", () => {
-    const body = encodeSst([{ kind: "put", key: utf("a"), value: utf("1") }]);
+    const body = encodeSst([{ kind: "put", key: utf("a"), value: utf("1"), seq: 1 }]);
     body[5] ^= 0xff;
     expect(() => decodeSst(body)).toThrow(CorruptDatabaseError);
   });
@@ -78,6 +78,7 @@ describe("sst", () => {
       kind: "put" as const,
       key: utf(`k${String(i).padStart(4, "0")}`),
       value: utf(`v${i}`),
+      seq: i + 1,
     }));
     const body = encodeSst(entries, 256);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
@@ -90,6 +91,7 @@ describe("sst", () => {
       kind: "put" as const,
       key: utf(`k${String(i).padStart(3, "0")}`),
       value: utf(`v${i}`),
+      seq: i + 1,
     }));
     const body = encodeSst(entries, 200);
     const reader = readerOfBytes(body);
@@ -97,7 +99,7 @@ describe("sst", () => {
       kind: "put",
       key: utf("k040"),
       value: utf("v40"),
-      seq: 0,
+      seq: 41,
     });
     expect(await untilHit(() => reader.get(utf("missing")))).toBeUndefined();
   });
@@ -124,12 +126,12 @@ describe("sst", () => {
 
   it("newest run wins and a tombstone hides the older put", async () => {
     const older = encodeSst([
-      { kind: "put", key: utf("a"), value: utf("old") },
-      { kind: "put", key: utf("b"), value: utf("1") },
+      { kind: "put", key: utf("a"), value: utf("old"), seq: 1 },
+      { kind: "put", key: utf("b"), value: utf("1"), seq: 1 },
     ]);
     const newer = encodeSst([
-      { kind: "put", key: utf("a"), value: utf("new") },
-      { kind: "del", key: utf("b") },
+      { kind: "put", key: utf("a"), value: utf("new"), seq: 2 },
+      { kind: "del", key: utf("b"), seq: 2 },
     ]);
     const levels = runLevels(["l0/2-2.sst", "l0/1-1.sst"], [readerOfBytes(newer), readerOfBytes(older)]);
     expect(await untilHit(() => pointGet(undefined, levels, utf("a")))).toEqual(utf("new"));
@@ -142,6 +144,7 @@ describe("sst", () => {
       kind: "put" as const,
       key: utf(`k${String(i).padStart(3, "0")}`),
       value: utf(`v${i}`),
+      seq: i + 1,
     }));
     const reader = readerOfBytes(encodeSst(entries, 200));
     const got = (await drain(reader.cursor({ start: utf("k040"), endExclusive: utf("k043") }))).map((e) =>

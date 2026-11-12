@@ -1,3 +1,4 @@
+import { compareBytes } from "./bytes.js";
 import { ConstraintError } from "./errors.js";
 
 const LIMITS = {
@@ -20,7 +21,40 @@ export type CheckedValue = Uint8Array & { readonly __brand: "CheckedValue" };
 
 export type CheckedOp =
   | { readonly type: "put"; readonly key: CheckedKey; readonly value: CheckedValue }
-  | { readonly type: "del"; readonly key: CheckedKey };
+  | { readonly type: "del"; readonly key: CheckedKey }
+  | {
+      readonly type: "deleteRange";
+      /** Empty: from the first key. */
+      readonly start: CheckedKey;
+      readonly endExclusive?: CheckedKey;
+      /** As the caller asked. Undefined: every row written before this batch. */
+      readonly through?: number;
+    };
+
+/**
+ * An op of a committed record. A range delete's `through` is resolved
+ * against the record's seq and is always below it, so a batch never removes
+ * its own writes.
+ */
+export type RecordOp =
+  | Exclude<CheckedOp, { type: "deleteRange" }>
+  | {
+      readonly type: "deleteRange";
+      readonly start: CheckedKey;
+      readonly endExclusive?: CheckedKey;
+      readonly through: number;
+    };
+
+/** An op as `BatchTx` collects it, before `checkBatch`. */
+export type BatchOp =
+  | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array }
+  | { readonly type: "del"; readonly key: Uint8Array }
+  | {
+      readonly type: "deleteRange";
+      readonly start?: Uint8Array | undefined;
+      readonly endExclusive?: Uint8Array | undefined;
+      readonly through?: number | undefined;
+    };
 
 const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -58,16 +92,43 @@ export function checkValue(bytes: Uint8Array): CheckedValue {
   return new Uint8Array(bytes) as CheckedValue;
 }
 
+/** Key and value bytes of an op: a range delete counts its bounds. */
+function opBytes(op: BatchOp | RecordOp): number {
+  switch (op.type) {
+    case "put":
+      return op.key.byteLength + op.value.byteLength;
+    case "del":
+      return op.key.byteLength;
+    case "deleteRange":
+      return (op.start?.byteLength ?? 0) + (op.endExclusive?.byteLength ?? 0);
+  }
+}
+
 /** Key and value bytes of a batch's ops. The batch limit adds `ROW_OVERHEAD` per op to this. */
-export function opsBytes(ops: readonly CheckedOp[]): number {
+export function opsBytes(ops: readonly (CheckedOp | RecordOp)[]): number {
   let bytes = 0;
-  for (const op of ops) bytes += op.key.byteLength + (op.type === "put" ? op.value.byteLength : 0);
+  for (const op of ops) bytes += opBytes(op);
   return bytes;
 }
 
-export function checkBatch(
-  ops: readonly { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[],
-): readonly CheckedOp[] {
+function checkDeleteRange(op: Extract<BatchOp, { type: "deleteRange" }>): CheckedOp {
+  const start = checkKey(op.start ?? new Uint8Array(0));
+  const end = op.endExclusive && checkKey(op.endExclusive);
+  if (end && compareBytes(start, end) >= 0) {
+    throw new ConstraintError("deleteRange needs start below endExclusive");
+  }
+  if (op.through !== undefined && !(Number.isSafeInteger(op.through) && op.through >= 0)) {
+    throw new ConstraintError(`deleteRange through must be a safe integer >= 0: got ${op.through}`);
+  }
+  return {
+    type: "deleteRange",
+    start,
+    ...(end ? { endExclusive: end } : {}),
+    ...(op.through !== undefined ? { through: op.through } : {}),
+  };
+}
+
+export function checkBatch(ops: readonly BatchOp[]): readonly CheckedOp[] {
   let bytes = 0;
   const out: CheckedOp[] = [];
   for (const op of ops) {
@@ -75,17 +136,22 @@ export function checkBatch(
       throw new ConstraintError("put requires a value");
     }
     // Counted before the copies below, so an oversized value is never copied.
-    bytes += ROW_OVERHEAD + op.key.byteLength + (op.value?.byteLength ?? 0);
+    bytes += ROW_OVERHEAD + opBytes(op);
     if (bytes > LIMITS.batchBytes) {
       throw new ConstraintError(
         `batch larger than ${LIMITS.batchBytes} bytes, counting ${ROW_OVERHEAD} bytes per op`,
       );
     }
-    const key = checkKey(op.key);
-    if (op.type === "put") {
-      out.push({ type: "put", key, value: checkValue(op.value!) });
-    } else {
-      out.push({ type: "del", key });
+    switch (op.type) {
+      case "put":
+        out.push({ type: "put", key: checkKey(op.key), value: checkValue(op.value) });
+        break;
+      case "del":
+        out.push({ type: "del", key: checkKey(op.key) });
+        break;
+      case "deleteRange":
+        out.push(checkDeleteRange(op));
+        break;
     }
   }
   return out;

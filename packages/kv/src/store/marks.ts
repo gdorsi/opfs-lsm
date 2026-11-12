@@ -58,7 +58,7 @@ export type Mark = {
   readonly at: Seq;
 };
 
-const EMPTY_KEY = new Uint8Array(0);
+const EMPTY_KEY: Uint8Array = new Uint8Array(0);
 
 function marksOf(pieces: readonly Piece[]): Marks {
   return { pieces, empty: pieces.length === 1 && pieces[0]!.through === 0 } as Marks;
@@ -106,7 +106,7 @@ export function joinMarks(a: Marks, b: Marks): Marks {
   const out: Piece[] = [];
   let i = 0;
   let j = 0;
-  let start = EMPTY_KEY;
+  let start: Uint8Array = EMPTY_KEY;
   for (;;) {
     const won = higher(pa[i]!, pb[j]!);
     push(out, start, won.through, won.at);

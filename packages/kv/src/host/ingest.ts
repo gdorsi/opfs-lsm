@@ -70,7 +70,7 @@ export async function ingestChunk(
   if (prev.runs.filter((r) => levelOf(r.path) === 0).length >= limits.l0Stop) {
     return { kind: "stopped", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
-  const entries = foldRecords(records);
+  const { entries } = foldRecords(records);
   const first = records[0]!.seq;
   const last = records[records.length - 1]!.seq;
 

@@ -222,7 +222,7 @@ export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz
       const view = new DataView(into.buffer, into.byteOffset, into.byteLength);
       let o = 0;
       for (const e of entries) {
-        const seq = e.seq ?? 0;
+        const seq = e.seq;
         view.setUint8(o, e.kind === "put" ? TAG_PUT : TAG_DEL);
         view.setUint32(o + 1, seq % TWO_32, true);
         view.setUint32(o + 5, Math.floor(seq / TWO_32), true);

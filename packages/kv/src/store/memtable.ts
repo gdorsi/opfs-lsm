@@ -1,6 +1,7 @@
 import { compareBytes } from "../bytes.js";
-import { ROW_OVERHEAD, type CheckedOp } from "../check.js";
+import { ROW_OVERHEAD, type RecordOp } from "../check.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
+import { joinMarks, markTable, NO_MARKS, type Mark, type Marks } from "./marks.js";
 
 /** The latest op for one user key, and the WAL seq that wrote it. */
 export type MemRow = {
@@ -12,8 +13,21 @@ export type MemRow = {
 
 export type WalRecord = {
   readonly seq: number;
-  readonly ops: readonly CheckedOp[];
+  readonly ops: readonly RecordOp[];
 };
+
+/** The range deletes of `record`, each at the record's seq. */
+export function marksOf(record: WalRecord): Mark[] {
+  const out: Mark[] = [];
+  for (const op of record.ops) {
+    if (op.type === "deleteRange") out.push({ ...op, at: record.seq });
+  }
+  return out;
+}
+
+function foldMarks(marks: readonly Mark[]): Marks {
+  return marks.reduce((acc, m) => joinMarks(acc, markTable(m)), NO_MARKS);
+}
 
 /** Reads over rows in key order, live or pinned. */
 export interface MemRows {
@@ -79,8 +93,13 @@ class Chunks implements MemRows {
 /**
  * One tab's in-memory view of the WAL: the records above the installed
  * SST generation's ingestedThrough, up to appliedThrough, folded to one row
- * per key, in key order. Records must be applied in seq order with no gaps,
- * so every read sees the state after one WAL prefix.
+ * per key, in key order, under their own range deletes. Records must be
+ * applied in seq order with no gaps, so every read sees the state after one
+ * WAL prefix.
+ *
+ * A row a range delete covers is removed when that record applies, so no
+ * row held is covered by `marks`, and a manifest's marks, whose `through`
+ * is below its own `through`, cover none either.
  *
  * A pin shares chunks with the live table. The live table copies a shared
  * chunk before it writes to it, so a pin costs one array of chunk
@@ -92,6 +111,9 @@ export class Memtable extends Chunks {
   private applied = 0;
   private ingested = 0;
   private live = 0;
+  /** The range deletes of the records held, oldest first. */
+  private markLog: Mark[] = [];
+  private held: Marks = NO_MARKS;
 
   constructor() {
     super([[]], [new Uint8Array(0)]);
@@ -106,6 +128,11 @@ export class Memtable extends Chunks {
     return this.live;
   }
 
+  /** The join of the range deletes of the records held. Replaced, never mutated, when it changes. */
+  get marks(): Marks {
+    return this.held;
+  }
+
   /** The rows as they are now. Later writes don't change what it reads. */
   pin(): MemRows {
     this.owned.fill(false);
@@ -117,14 +144,51 @@ export class Memtable extends Chunks {
     if (record.seq <= this.applied) return "already";
     if (record.seq !== this.applied + 1) return "gap";
     for (const op of record.ops) {
-      this.put(
-        op.type === "put"
-          ? { key: op.key, seq: record.seq, kind: "put", value: op.value }
-          : { key: op.key, seq: record.seq, kind: "del" },
-      );
+      switch (op.type) {
+        case "put":
+          this.put({ key: op.key, seq: record.seq, kind: "put", value: op.value });
+          break;
+        case "del":
+          this.put({ key: op.key, seq: record.seq, kind: "del" });
+          break;
+        case "deleteRange": {
+          const mark = { ...op, at: record.seq };
+          this.removeCovered(mark);
+          this.markLog.push(mark);
+          this.held = joinMarks(this.held, markTable(mark));
+          break;
+        }
+      }
     }
     this.applied = record.seq;
     return "applied";
+  }
+
+  /** Remove the rows `mark` covers. Their own seqs are below the mark's record, so op order does not matter. */
+  private removeCovered(mark: Mark): void {
+    const { start, endExclusive: end, through } = mark;
+    for (let c = chunkFor(this.firsts, start); c < this.chunks.length; c++) {
+      if (end && c > 0 && compareBytes(this.firsts[c]!, end) >= 0) break;
+      const rows = this.chunks[c]!;
+      const lo = lowerBoundKeys(rows, start);
+      const hi = end ? lowerBoundKeys(rows, end) : rows.length;
+      let gone = 0;
+      for (let i = lo; i < hi; i++) if (rows[i]!.seq <= through) gone++;
+      if (gone === 0) continue;
+      const keep = rows.filter((row, i) => {
+        if (i < lo || i >= hi || row.seq > through) return true;
+        this.live -= rowBytes(row);
+        return false;
+      });
+      this.chunks[c] = keep;
+      this.owned[c] = true;
+    }
+    for (let c = this.chunks.length - 1; c > 0; c--) {
+      if (this.chunks[c]!.length > 0) continue;
+      this.chunks.splice(c, 1);
+      this.firsts.splice(c, 1);
+      this.owned.splice(c, 1);
+    }
   }
 
   private put(row: MemRow): void {
@@ -153,13 +217,17 @@ export class Memtable extends Chunks {
 
   /**
    * The installed SST generation now holds every seq <= `through`. Drop the
-   * rows it covers, and jump past seqs this table never read. True when it
-   * jumped.
+   * rows and range deletes it covers, and jump past seqs this table never
+   * read. True when it jumped.
    */
   advanceTo(through: number): boolean {
     if (through <= this.ingested) return false;
     this.ingested = through;
     const jumped = through > this.applied;
+    if (this.markLog.length > 0) {
+      this.markLog = this.markLog.filter((m) => m.at > through);
+      this.held = foldMarks(this.markLog);
+    }
     const keep = jumped ? [] : this.range().filter((row) => row.seq > through);
     this.applied = Math.max(this.applied, through);
     this.chunks = [];
