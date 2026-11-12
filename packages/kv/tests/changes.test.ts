@@ -123,6 +123,30 @@ describe("changes()", () => {
     expect(onBus, "a record already applied is not announced again").toEqual([event]);
   });
 
+  it("applies another handle's batch from BroadcastChannel, every put and delete in order, with no sync()", async () => {
+    const a = await track(open("wa"));
+    const bus = await track(open("wb"));
+    await a.batch((tx) => {
+      for (let i = 0; i < 2_000; i += 2) tx.put(b(`k${i}`), b("old"));
+    });
+    await bus.sync();
+    const arrived = until(bus, (e) => e.kind === "append");
+
+    await a.batch((tx) => {
+      for (let i = 0; i < 2_000; i++) {
+        if (i % 4 === 0) tx.delete(b(`k${i}`));
+        else tx.put(b(`k${i}`), b(`v${i}`));
+      }
+      tx.put(b("k1"), b("last"));
+    });
+    await arrived;
+    const want = (i: number) => (i === 1 ? "last" : i % 4 === 0 ? undefined : `v${i}`);
+    for (let i = 0; i < 2_000; i++) {
+      const got = await bus.get(b(`k${i}`));
+      expect(got && new TextDecoder().decode(got), `k${i}`).toBe(want(i));
+    }
+  });
+
   it("announces every seq once on each handle, in order, readable when announced, under interleaved writers", async () => {
     const one = await track(open("w1"));
     const two = await track(openWithoutBus("w2"));

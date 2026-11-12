@@ -27,7 +27,12 @@ export function checkDbName(name: string): DbName {
   return name as DbName;
 }
 
+/**
+ * A view of a detached buffer reads as empty, so only an empty one needs the
+ * look at its buffer, which V8 has to allocate for a small array.
+ */
 function assertBuffer(bytes: Uint8Array, label: string): void {
+  if (bytes.byteLength > 0) return;
   const buf = bytes.buffer as ArrayBuffer & { detached?: boolean };
   if (buf.detached === true) {
     throw new ConstraintError(`${label} buffer is detached`);

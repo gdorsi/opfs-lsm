@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
-import { TabWal, advanceIngested, listUningested } from "../src/idb/wal.js";
+import { TabWal, encodeOps, advanceIngested, listUningested } from "../src/idb/wal.js";
 
 const NAME = "wal-read-test";
 const IDB = `opfs-lsm-wal/${NAME}`;
@@ -57,7 +57,7 @@ function deleteSeq(seq: number): Promise<void> {
 
 async function seeded(count: number): Promise<TabWal> {
   const wal = await TabWal.open(checkDbName(NAME));
-  for (let i = 1; i <= count; i++) await wal.append(put(i));
+  for (let i = 1; i <= count; i++) await wal.append(encodeOps(put(i)));
   return wal;
 }
 
@@ -93,12 +93,12 @@ describe("WAL read", () => {
   it("round-trips a batch of puts, an empty value and a delete as bytes", async () => {
     const wal = await TabWal.open(checkDbName(NAME));
     const big = new Uint8Array(70_000).map((_, i) => i & 0xff);
-    await wal.append([
+    await wal.append(encodeOps([
       { type: "put", key: checkKey(enc.encode("a")), value: checkValue(big) },
       { type: "put", key: checkKey(enc.encode("empty")), value: checkValue(new Uint8Array()) },
       { type: "del", key: checkKey(enc.encode("gone")) },
       { type: "put", key: checkKey(enc.encode("z")), value: checkValue(enc.encode("last")) },
-    ]);
+    ]));
     const [record] = (await wal.tail(0)).records;
     const ops = record!.ops;
     expect(ops.map((op) => `${op.type}:${dec.decode(op.key)}`)).toEqual([
@@ -140,7 +140,7 @@ const seqs = (records: readonly { seq: number }[]) => records.map((r) => r.seq);
 describe("WAL read with a byte cap", () => {
   it("returns the oldest records that fit, up to the cap", async () => {
     const wal = await TabWal.open(checkDbName(NAME));
-    for (let i = 0; i < 6; i++) await wal.append(sized(10));
+    for (let i = 0; i < 6; i++) await wal.append(encodeOps(sized(10)));
     expect(seqs(await listUningested(wal, { maxBytes: 35 }))).toEqual([1, 2, 3]);
     expect(seqs(await listUningested(wal, { maxBytes: 30 }))).toEqual([1, 2, 3]);
     expect(seqs(await listUningested(wal, { maxBytes: 29 }))).toEqual([1, 2]);
@@ -154,7 +154,7 @@ describe("WAL read with a byte cap", () => {
 
   it("returns a record over the cap alone and never joins it to its neighbors", async () => {
     const wal = await TabWal.open(checkDbName(NAME));
-    for (const bytes of [5, 100, 5, 5]) await wal.append(sized(bytes));
+    for (const bytes of [5, 100, 5, 5]) await wal.append(encodeOps(sized(bytes)));
     expect(seqs(await listUningested(wal, { maxBytes: 20 }))).toEqual([1]);
     await advanceIngested(wal, 1, 1);
     expect(seqs(await listUningested(wal, { maxBytes: 20 }))).toEqual([2]);
@@ -173,7 +173,7 @@ describe("WAL read with a byte cap", () => {
 
   it("reads about a cap's worth of the log, not all of it", async () => {
     const wal = await TabWal.open(checkDbName(NAME));
-    for (let i = 0; i < 300; i++) await wal.append(sized(10));
+    for (let i = 0; i < 300; i++) await wal.append(encodeOps(sized(10)));
     const getAll = vi.spyOn(IDBObjectStore.prototype, "getAll");
     const records = await listUningested(wal, { maxBytes: 100 });
     const rowsRead = getAll.mock.results.reduce(

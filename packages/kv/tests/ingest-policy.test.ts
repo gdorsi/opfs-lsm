@@ -11,7 +11,7 @@ import {
   readStats,
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
-import { TabWal, advanceIngested, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { TabWal, encodeOps, advanceIngested, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 import { checkDatabase, deleteWal, walStore } from "./sim/check-database.js";
 
@@ -173,15 +173,15 @@ describe("ingest policy", () => {
       key: checkKey(utf("b")),
       value: checkValue(new Uint8Array(4)),
     };
-    const seq = await wal.append([first]);
+    const seq = await wal.append(encodeOps([first]));
     expect(seq).toBe(1);
     expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([first]));
-    const next = await wal.append([second]);
+    const next = await wal.append(encodeOps([second]));
     expect(next).toBe(2);
     await advanceIngested(wal, seq ?? 0, 1);
     expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([second]));
     expect((await listUningested(wal, { maxBytes: 1 << 30 })).map((record) => record.seq)).toEqual([2]);
-    await wal.append([first]);
+    await wal.append(encodeOps([first]));
     const secondBytes = opsBytes([second]);
     const bothBytes = secondBytes + opsBytes([first]);
     expect(await uningestedBytes(wal, 1 << 20), "under the cap: exact").toBe(bothBytes);
@@ -206,9 +206,9 @@ describe("ingest policy", () => {
       },
     ];
     const size = (n: number) => opsBytes(op(n));
-    await wal.append(op(20));
-    await wal.append(op(18));
-    await wal.append(op(10));
+    await wal.append(encodeOps(op(20)));
+    await wal.append(encodeOps(op(18)));
+    await wal.append(encodeOps(op(10)));
     const full = size(20) + size(18) + size(10);
     expect(full).toBe(51);
     expect(await uningestedBytes(wal, 1 << 30)).toBe(full);
@@ -295,8 +295,8 @@ describe("ingest policy", () => {
       value: checkValue(utf("2")),
     };
     const wal = await TabWal.open(checkDbName(name));
-    await wal.append([first]);
-    await wal.append([second]);
+    await wal.append(encodeOps([first]));
+    await wal.append(encodeOps([second]));
     await wal.close();
     // An older build wrote `meta.head` on each append and kept `pendingBytes`.
     // The floor is left behind the last key, and the counter is wrong.
