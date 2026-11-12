@@ -304,49 +304,80 @@ export async function checkManifest(buf: Uint8Array, changed: boolean): Promise<
   });
 }
 
+/** A seq past every safe `through`, at which a range delete decodes to the `through` it stored. */
+const SEQ_PAST_EVERY_THROUGH = 2 ** 53;
+
 /**
  * A WAL row (`decodeOps`). Rows have no checksum: a changed row may decode
  * to other ops. It must throw only `CommitError("corrupt wal ...")`
  * (design.md, "WAL records"), and what it decodes must encode back to the
- * same bytes, so the decoder never invents or drops a byte.
+ * same bytes, so the decoder never invents or drops a byte. At any seq, a
+ * range delete's `through` decodes below that seq.
  */
 export async function checkWalRow(raw: unknown): Promise<void> {
   await bounded("decodeOps", () => {
     let ops: ReturnType<typeof decodeOps>;
     try {
-      ops = decodeOps(raw);
+      ops = decodeOps(raw, SEQ_PAST_EVERY_THROUGH);
     } catch (err) {
       if (err instanceof CommitError && /corrupt wal/.test(err.message)) return;
       throw new RuleBroken(`decodeOps threw ${describe(err)}, not CommitError("corrupt wal ...")`);
     }
-    const back = encodeWalRow(ops.map((op) => (op.type === "put" ? { put: op.key, value: op.value } : { del: op.key })));
+    const back = encodeWalRow(
+      ops.map((op): RowOp => {
+        switch (op.type) {
+          case "put":
+            return { put: op.key, value: op.value };
+          case "del":
+            return { del: op.key };
+          case "deleteRange":
+            return { deleteRange: op.start, ...(op.endExclusive ? { end: op.endExclusive } : {}), through: op.through };
+        }
+      }),
+    );
     const bytes = new Uint8Array(raw as ArrayBuffer);
     if (back.byteLength !== bytes.byteLength || back.some((b, i) => b !== bytes[i])) {
       throw new RuleBroken("decodeOps returned ops that do not encode back to the row");
     }
+    for (const op of decodeOps(raw, 5)) {
+      if (op.type === "deleteRange" && op.through > 4) throw new RuleBroken("a range delete reaches its own record");
+    }
   });
 }
 
-export type RowOp = { readonly put: Uint8Array; readonly value: Uint8Array } | { readonly del: Uint8Array };
+export type RowOp =
+  | { readonly put: Uint8Array; readonly value: Uint8Array }
+  | { readonly del: Uint8Array }
+  | { readonly deleteRange: Uint8Array; readonly end?: Uint8Array; readonly through: number };
 
 /** A WAL row in the format of design.md, "WAL records", written by the harness. */
 export function encodeWalRow(ops: readonly RowOp[]): Uint8Array {
   let size = 0;
-  for (const op of ops) size += "put" in op ? 9 + op.put.byteLength + op.value.byteLength : 5 + op.del.byteLength;
+  for (const op of ops) {
+    if ("deleteRange" in op) size += 1 + 4 + op.deleteRange.byteLength + 1 + (op.end ? 4 + op.end.byteLength : 0) + 8;
+    else size += "put" in op ? 9 + op.put.byteLength + op.value.byteLength : 5 + op.del.byteLength;
+  }
   const out = new Uint8Array(size);
   const view = new DataView(out.buffer);
   let o = 0;
+  const bytes = (b: Uint8Array) => {
+    view.setUint32(o, b.byteLength, true);
+    out.set(b, o + 4);
+    o += 4 + b.byteLength;
+  };
   for (const op of ops) {
-    const key = "put" in op ? op.put : op.del;
-    out[o] = "put" in op ? 0 : 1;
-    view.setUint32(o + 1, key.byteLength, true);
-    out.set(key, o + 5);
-    o += 5 + key.byteLength;
-    if ("put" in op) {
-      view.setUint32(o, op.value.byteLength, true);
-      out.set(op.value, o + 4);
-      o += 4 + op.value.byteLength;
+    if ("deleteRange" in op) {
+      out[o++] = 3;
+      bytes(op.deleteRange);
+      out[o++] = op.end ? 1 : 0;
+      if (op.end) bytes(op.end);
+      view.setBigUint64(o, BigInt(op.through), true);
+      o += 8;
+      continue;
     }
+    out[o++] = "put" in op ? 0 : 1;
+    bytes("put" in op ? op.put : op.del);
+    if ("put" in op) bytes(op.value);
   }
   return out;
 }

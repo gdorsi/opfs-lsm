@@ -12,6 +12,7 @@ import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
 import { publish } from "./runs.js";
 import { MemoryFs } from "../src/testing.js";
+import { NO_MARKS } from "../src/store/marks.js";
 
 /**
  * The TypeScript merge session against the wasm one, both pumped by the
@@ -493,12 +494,12 @@ describe("a compaction step at full size", () => {
     for (const [i, entries] of sources.entries()) {
       const { body, end } = encodeRun(entries);
       await publish(fs, `l0/${10 - i}.sst`, body);
-      metas.push({ path: `l0/${10 - i}.sst`, ...end });
+      metas.push({ path: `l0/${10 - i}.sst`, ...end, marksThrough: 0 });
     }
     const { body, end } = encodeRun(l1);
     await publish(fs, "l1/c1.0.sst", body);
-    metas.push({ path: "l1/c1.0.sst", ...end });
-    await publishGeneration(fs, { generation: 1, runs: metas, tombstoneSeq: 0, through: 0 });
+    metas.push({ path: "l1/c1.0.sst", ...end, marksThrough: 0 });
+    await publishGeneration(fs, { generation: 1, runs: metas, tombstoneSeq: 0, through: 0, marks: NO_MARKS });
     return [...sources, l1];
   }
 

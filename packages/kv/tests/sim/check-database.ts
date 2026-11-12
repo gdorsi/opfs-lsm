@@ -2,6 +2,7 @@ import { compareBytes, keyToString } from "../../src/bytes.js";
 import type { AsyncFs } from "../../src/opfs/async-fs.js";
 import {
   decodeGeneration,
+  GENERATION_ZERO,
   listRuns,
   type GenerationMeta,
   type RunMeta,
@@ -119,7 +120,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     }
   }
   const current: GenerationMeta | undefined =
-    recorded === 0 ? { generation: 0, runs: [], tombstoneSeq: 0, through: 0 } : manifests.get(recorded);
+    recorded === 0 ? GENERATION_ZERO : manifests.get(recorded);
   if (!current) problems.push(`recorded generation ${recorded} has no readable manifest`);
   if (current && current.tombstoneSeq > current.through) {
     problems.push(`tombstoneSeq ${current.tombstoneSeq} past the manifest's through ${current.through}`);

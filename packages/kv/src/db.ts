@@ -652,7 +652,7 @@ class DbImpl implements Db {
       runs: held,
       levels: runLevels(paths, held.map((r) => r.reader)),
       tombstoneSeq: meta.tombstoneSeq,
-      marks: NO_MARKS,
+      marks: meta.marks,
       refs: 1,
     };
     return true;

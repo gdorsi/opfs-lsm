@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConstraintError, prefixBound, type ChangeEvent, type Db } from "../src/index.js";
+import { loadLatestGeneration } from "../src/store/generation.js";
+import { throughAt } from "../src/store/marks.js";
 import { __resetMemoryFsForTests, ingest, MemoryFs, openHarnessDb } from "../src/testing.js";
 
 const NAME = "delete-range-test";
@@ -64,6 +66,8 @@ async function compact(db: Db): Promise<void> {
 const STAGES: Record<string, { before(db: Db): Promise<unknown>; after(db: Db): Promise<unknown> }> = {
   "rows and delete in the memtable": { before: async () => {}, after: async () => {} },
   "rows flushed, delete in the memtable": { before: ingest, after: async () => {} },
+  "rows and delete flushed": { before: ingest, after: ingest },
+  "rows in the memtable, delete flushed with them": { before: async () => {}, after: ingest },
 };
 
 const ROWS = ["a", "m/1", "m/2", "m/3", "z"];
@@ -202,6 +206,23 @@ describe("deleteRange", () => {
     await expect(db.batch((tx) => tx.deleteRange({ start: b("c"), endExclusive: b("b") }))).rejects.toThrow(ConstraintError);
     await expect(db.batch((tx) => tx.deleteRange({}, { through: -1 }))).rejects.toThrow(ConstraintError);
     await expect(db.batch((tx) => tx.deleteRange({}, { through: 1.5 }))).rejects.toThrow(ConstraintError);
+  });
+
+  it("leaves the manifest once every run that overlaps its range was written after it", async () => {
+    const db = await open();
+    await db.put(b("q/1"), b("flushed before"));
+    await ingest(db);
+    await db.batch((tx) => tx.deleteRange(prefixBound(b("q/"))));
+    await writeRows(db);
+    await db.batch((tx) => tx.deleteRange(M));
+    await db.put(b("m/9"), b("after"));
+    await ingest(db);
+
+    const { marks } = (await loadLatestGeneration(fs))!;
+    expect(throughAt(marks, b("q/1"))).toBeGreaterThan(0);
+    expect(throughAt(marks, b("m/1"))).toBe(0);
+    expect(await keys(db, M)).toEqual(["m/9=after"]);
+    expect(await keys(db, prefixBound(b("q/")))).toEqual([]);
   });
 
   it("with no bounds removes every row written before it", async () => {

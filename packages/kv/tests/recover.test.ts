@@ -4,7 +4,7 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { TabWal, encodeOps, advanceIngested, listUningested, uningestedBytes } from "../src/idb/wal.js";
 import { reconcile, recordEmpty } from "../src/recover.js";
 import { crc32 } from "../src/store/crc32.js";
-import { publishGeneration, type GenerationMeta } from "../src/store/generation.js";
+import { decodeGeneration, publishGeneration, type GenerationMeta } from "../src/store/generation.js";
 import {
   openHarnessDb,
   ingest,
@@ -14,6 +14,7 @@ import {
 } from "../src/testing.js";
 import { publish } from "./runs.js";
 import { checkDatabase, deleteWal, walRows, walStore } from "./sim/check-database.js";
+import { NO_MARKS } from "../src/store/marks.js";
 
 /**
  * `reconcile` and `IdBWal.adopt` (design.md, "Recovery"): after a power
@@ -40,7 +41,7 @@ async function walWith(appends: number): Promise<TabWal> {
 /** A manifest with one (fake) non-empty run per name. */
 async function manifest(fs: MemoryFs, generation: number, through: number, runs: string[]): Promise<GenerationMeta> {
   for (const path of runs) await publish(fs, path, new Uint8Array([1]));
-  const meta = { generation, runs: runs.map((path) => ({ path, bytes: 1 })), tombstoneSeq: 0, through };
+  const meta = { generation, runs: runs.map((path) => ({ path, bytes: 1, marksThrough: through })), tombstoneSeq: 0, through, marks: NO_MARKS };
   await publishGeneration(fs, meta);
   return meta;
 }
@@ -416,11 +417,45 @@ describe("a deleted WAL", () => {
   });
 });
 
+describe("range deletes across a fallback to an older manifest", () => {
+  it("step back with the manifest, and the kept WAL records bring them back", async () => {
+    name = `recover-${++n}`;
+    const fs = new MemoryFs();
+    const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+    const text = (v: Uint8Array | undefined) => v && new TextDecoder().decode(v);
+    let db = await open();
+    await db.batch((tx) => {
+      tx.put(enc.encode("m/1"), enc.encode("1"));
+      tx.put(enc.encode("n"), enc.encode("kept"));
+    });
+    await ingest(db);
+    const older = [...(await fs.list("m"))].sort().at(-1)!;
+    const olderBytes = (await fs.read(`m/${older}`, 0, Number.POSITIVE_INFINITY))!;
+    await db.batch((tx) => tx.deleteRange({ start: enc.encode("m/"), endExclusive: enc.encode("m0") }));
+    await ingest(db);
+    await db.close();
+    const newest = [...(await fs.list("m"))].sort().at(-1)!;
+    expect(decodeGeneration((await fs.read(`m/${newest}`, 0, Number.POSITIVE_INFINITY))!).marks.empty).toBe(false);
+
+    // A power loss that keeps the IndexedDB commit of the last flush and loses
+    // its manifest, and with it the removal of the older one that followed.
+    await fs.remove(`m/${newest}`);
+    await publish(fs, `m/${older}`, olderBytes);
+    db = await open();
+    const recorded = (await walStore(name, "readonly", (_wal, meta) => meta.get("generation"))) as number;
+    expect(`${String(recorded).padStart(16, "0")}.mft`).toBe(older);
+    expect(decodeGeneration((await fs.read(`m/${older}`, 0, Number.POSITIVE_INFINITY))!).marks.empty).toBe(true);
+    expect(text(await db.get(enc.encode("m/1")))).toBeUndefined();
+    expect(text(await db.get(enc.encode("n")))).toBe("kept");
+    await db.close();
+  });
+});
+
 /**
- * Manifest version 3 added each run's byte size, and nothing reads versions 1
- * or 2. A database from before it fails to open and keeps its files.
+ * Manifest version 4 added the marks, and nothing reads versions 1 to 3. A
+ * database from before it fails to open and keeps its files.
  */
-describe("a database written before manifests held run sizes", () => {
+describe("a database written before manifests held marks", () => {
   it("is refused at open and left as it was", async () => {
     name = `recover-${++n}`;
     const fs = new MemoryFs();
@@ -432,7 +467,7 @@ describe("a database written before manifests held run sizes", () => {
 
     const path = `m/${[...(await fs.list("m"))].sort().at(-1)!}`;
     const buf = (await fs.read(path, 0, Number.POSITIVE_INFINITY))!;
-    new DataView(buf.buffer).setUint32(4, 2, true);
+    new DataView(buf.buffer).setUint32(4, 3, true);
     new DataView(buf.buffer).setUint32(buf.byteLength - 4, crc32(buf.subarray(0, buf.byteLength - 4)), true);
     const w = await fs.create(path);
     await w.write(buf);

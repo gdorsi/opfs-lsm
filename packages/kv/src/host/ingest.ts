@@ -11,6 +11,7 @@ import {
 } from "../store/generation.js";
 import { foldRecords } from "../store/fold.js";
 import { levelOf } from "../store/levels.js";
+import { joinMarks, retireMarks } from "../store/marks.js";
 
 export type IngestResult = {
   readonly generation: number;
@@ -70,17 +71,20 @@ export async function ingestChunk(
   if (prev.runs.filter((r) => levelOf(r.path) === 0).length >= limits.l0Stop) {
     return { kind: "stopped", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
-  const { entries } = foldRecords(records);
+  const folded = foldRecords(records);
   const first = records[0]!.seq;
   const last = records[records.length - 1]!.seq;
 
   const generation = base.top + 1;
-  const l0 = await publishL0(fs, `${first}-${last}`, entries);
+  // A chunk whose range deletes left no entry publishes no run.
+  const runs =
+    folded.entries.length > 0 ? [await publishL0(fs, `${first}-${last}`, folded.entries, last), ...prev.runs] : prev.runs;
   await publishGeneration(fs, {
     generation,
-    runs: [l0, ...prev.runs],
+    runs,
     tombstoneSeq: prev.tombstoneSeq,
     through: last,
+    marks: retireMarks(joinMarks(prev.marks, folded.marks), runs),
   });
   let foldedBytes = 0;
   for (const r of records) foldedBytes += opsBytes(r.ops);

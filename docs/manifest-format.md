@@ -5,10 +5,11 @@ The byte layout of a manifest, `m/<generation>.mft`. What a manifest means is in
 
 ```
 | u32 magic       "OLGN" (0x4f4c474e)                                        |
-| u32 version     3                                                          |
+| u32 version     4                                                          |
 | u64 generation                                                             |
 | u64 tombstoneSeq                                                           |
 | u64 through                                                                |
+| marks block                                                                |
 | u32 run count                                                              |
 | run 0                                                                      |
 | ...                                                                        |
@@ -20,6 +21,18 @@ per run:
 | u32 bytes       size of the run file                                       |
 | u8 has range                                                               |
 | u32 length, smallest key, u32 length, largest key   (if has range)         |
+| u64 marksThrough                                                           |
+
+marks block:
+| u32 piece count (at least 1)                                               |
+| piece 0                                                                    |
+| ...                                                                        |
+
+per piece:
+| u32 start length                                                           |
+| start           the first key of the piece                                 |
+| u64 through                                                                |
+| u64 at                                                                     |
 ```
 
 `tombstoneSeq` is the highest seq of any delete that a bottom-level compaction dropped.
@@ -30,4 +43,15 @@ file. The level of a run is in its path.
 Runs are listed L0 first, newest first. Each deeper level follows, with its runs sorted by
 smallest key. Reads use that order directly.
 
-A reader rejects any other version as corrupt.
+The marks block is a step function over the key space. Piece *i* covers the keys from its
+`start` up to the next piece's `start`: every version of those keys written at a seq at or
+below `through` is gone. `through` 0 means no range delete covers the piece. `at` is the seq
+of the record whose range delete set `through`. The first piece starts at the empty key,
+starts strictly increase, and two adjacent pieces never hold the same `through` and `at`.
+
+`marksThrough` is the seq through which the run applied range deletes: the run holds no
+version that a range delete from a record at or below it covers.
+
+A reader rejects any other version as corrupt, and a marks block that breaks its rules, a
+piece with `at` at or below its nonzero `through` or past the manifest's `through`, or a run
+whose `marksThrough` is past it.

@@ -12,6 +12,7 @@ import {
 } from "../../src/testing.js";
 import { mergeRuns } from "../runs.js";
 import { checkDatabase, deleteWal, walMeta, walRows, walStore } from "./check-database.js";
+import { NO_MARKS } from "../../src/store/marks.js";
 
 /**
  * End-to-end corruption (docs/research/corruption-hardening-test-suite.md,
@@ -109,7 +110,7 @@ async function deep(): Promise<Fixture> {
   const { body, end } = await encodeRun(entries, "lz4");
   const path = "l2/c1.0.sst";
   await put(fs, path, body);
-  await put(fs, "m/0000000000000001.mft", encodeGeneration({ generation: 1, runs: [{ path, ...end }], tombstoneSeq: 0, through: 300 }));
+  await put(fs, "m/0000000000000001.mft", encodeGeneration({ generation: 1, runs: [{ path, ...end, marksThrough: 300 }], tombstoneSeq: 0, through: 300, marks: NO_MARKS }));
   return { name, fs, state };
 }
 
@@ -409,7 +410,7 @@ describe("recovery never turns corruption into data loss", () => {
     const merged = (await mergeRuns(bodies.map((b) => [b]), { dropTombstones: true })).runs[0]!;
     const path = `l1/c${gen + 1}.0.sst`;
     await put(f.fs, path, merged.body);
-    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [{ path, ...merged.end }] }));
+    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [{ path, ...merged.end, marksThrough: old.through }] }));
     await f.fs.remove(await l0(f));
     expect(await survivors(f)).toBe(f.state.size);
     expect((await walMeta(f.name)).generation).toBe(gen + 1);
