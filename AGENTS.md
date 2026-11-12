@@ -10,6 +10,10 @@ Design principles:
 - Before adding a cache, check whether an architectural change gets the same performance.
 - Decide on purpose what lives in Rust and what lives in TypeScript. Don't keep a split only because it is already there.
 
+## Worktrees
+
+Create worktrees inside `.claude/worktrees/` in the repository, never in the parent directory or elsewhere (for example `.claude/worktrees/my-branch`).
+
 ## docs/design.md
 
 [docs/design.md](docs/design.md) describes the kv engine as it is now: the formats on disk, the protocols, the invariants and the platform assumptions. Keep it a reference:
