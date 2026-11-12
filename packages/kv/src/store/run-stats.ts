@@ -1,6 +1,6 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
-import type { Seq } from "./marks.js";
+import type { Marks, Seq } from "./marks.js";
 
 /**
  * What a run holds, written by the encoder at the end of the run
@@ -37,6 +37,123 @@ export type Point<A> = { readonly at: A; readonly through: number };
 export type Spread<A> = readonly Point<A>[];
 
 const POINTS = 9;
+
+/**
+ * Bytes on a numeric axis at or below `x`. The truth lies between the
+ * point below `x` and the next level, a gap of at most 1/8 of the bytes, so
+ * the midpoint is within 1/16 of them. Exact below the smallest value and
+ * from the largest on.
+ */
+export function bytesAtOrBelow(spread: Spread<number>, x: number): number {
+  const last = spread[POINTS - 1];
+  if (!last || x < spread[0]!.at) return 0;
+  if (x >= last.at) return last.through;
+  let j = 0;
+  while (spread[j + 1]!.at <= x) j++;
+  const hi = Math.min(spread[j + 1]!.through, ((j + 1) * last.through) / 8);
+  return (spread[j]!.through + hi) / 2;
+}
+
+/**
+ * Bytes of the entries whose key sorts below `key`. The truth lies between
+ * two neighbouring points, at most 1/8 of the bytes plus one data block
+ * apart, so the midpoint is within 1/16 of the bytes plus half a block.
+ * Exact at or below the first key and past the last.
+ */
+export function bytesBelowKey(spread: Spread<Uint8Array>, key: Uint8Array): number {
+  const last = spread[POINTS - 1];
+  if (!last || compareBytes(key, spread[0]!.at) <= 0) return 0;
+  if (compareBytes(key, last.at) > 0) return last.through;
+  let j = 0;
+  while (compareBytes(spread[j + 1]!.at, key) < 0) j++;
+  return (spread[j]!.through + spread[j + 1]!.through) / 2;
+}
+
+/** Entry bytes of the puts that expired at `now`. */
+export function expiredBytes(stats: RunStats, now: number): number {
+  return bytesAtOrBelow(stats.byExpiry, now);
+}
+
+/** What the covered estimate needs of a run. */
+export type MarkedRun = { readonly stats: RunStats; readonly marksThrough: Seq };
+
+/**
+ * Entry bytes that a mark the run has not absorbed covers. Per piece, the
+ * key share of its range times the seq share at or below its `through`:
+ * key and seq are taken as independent within a run. The truth lies
+ * between `max(0, k + s - total)` and `min(k, s)` for the piece's key bytes
+ * `k` and seq bytes `s`, which are exact when the piece holds every key of
+ * the run or every seq of it, the shape of most range deletes.
+ */
+export function coveredBytes(run: MarkedRun, marks: Marks): number {
+  const { stats, marksThrough } = run;
+  if (marks.empty) return 0;
+  const total = stats.entryBytes;
+  const first = stats.byKey[0]!.at;
+  const last = stats.byKey[POINTS - 1]!.at;
+  let covered = 0;
+  marks.pieces.forEach((piece, i) => {
+    if (piece.through === 0 || piece.at <= marksThrough) return;
+    const end = marks.pieces[i + 1]?.start;
+    if (compareBytes(piece.start, last) > 0 || (end && compareBytes(end, first) <= 0)) return;
+    const keys = (end ? bytesBelowKey(stats.byKey, end) : total) - bytesBelowKey(stats.byKey, piece.start);
+    const seqs = bytesAtOrBelow(stats.bySeq, piece.through);
+    covered += total === 0 ? 0 : (Math.max(0, keys) * seqs) / total;
+  });
+  return Math.min(total, covered);
+}
+
+/**
+ * Whether every entry of the run is covered: each piece over its key range
+ * has a `through` at or past its largest seq. Never true when an entry is
+ * not covered; false also when a piece that holds none of the run's keys
+ * falls inside its range.
+ */
+export function whollyCovered(stats: RunStats, marks: Marks): boolean {
+  if (marks.empty) return false;
+  const first = stats.byKey[0]!.at;
+  const last = stats.byKey[POINTS - 1]!.at;
+  const maxSeq = stats.bySeq[POINTS - 1]!.at;
+  return marks.pieces.every((piece, i) => {
+    const end = marks.pieces[i + 1]?.start;
+    const outside = compareBytes(piece.start, last) > 0 || (end !== undefined && compareBytes(end, first) <= 0);
+    return outside || (piece.through > 0 && piece.through >= maxSeq);
+  });
+}
+
+/**
+ * Entry bytes of the run that a read at `now` under `marks` finds absent:
+ * tombstones, expired puts and covered entries, the last two taken as
+ * independent of each other.
+ */
+export function deadBytes(run: MarkedRun, marks: Marks, now: number): number {
+  const { entryBytes, tombstoneBytes } = run.stats;
+  if (entryBytes === 0) return 0;
+  const gone = Math.min(entryBytes, tombstoneBytes + expiredBytes(run.stats, now));
+  const covered = coveredBytes(run, marks);
+  return Math.min(entryBytes, gone + covered * (1 - gone / entryBytes));
+}
+
+/**
+ * The entry bytes of the manifest's runs that a read at `now` finds: the
+ * runs' entry bytes less their dead bytes. Older versions of a key that a
+ * newer run overwrote or deleted still count until a merge removes them.
+ */
+export function liveEntryBytes(meta: { readonly runs: readonly MarkedRun[]; readonly marks: Marks }, now: number): number {
+  let live = 0;
+  for (const run of meta.runs) live += run.stats.entryBytes - deadBytes(run, meta.marks, now);
+  return live;
+}
+
+/**
+ * The entry bytes of the manifest's runs written at or below `seq`: what a
+ * range delete over every key through `seq` would cover.
+ */
+export function entryBytesThroughSeq(meta: { readonly runs: readonly MarkedRun[] }, seq: Seq): number {
+  let bytes = 0;
+  for (const { stats } of meta.runs) bytes += bytesAtOrBelow(stats.bySeq, seq);
+  return bytes;
+}
 
 export function encodeStats(stats: RunStats): Uint8Array {
   let size = 16 + 3 + 12 * (stats.bySeq.length + stats.byExpiry.length);
