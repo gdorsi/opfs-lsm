@@ -335,10 +335,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   } finally {
     await db.close();
   }
-  // A host that swept before the write keeps runs the write retired until
-  // it restarts (see "crash leftovers" in crash-enum.test.ts), so the last
-  // sweep is a fresh host's.
-  await new EngineHost(() => fs).compact(name);
+  await host.compact(name);
   const after = await checkDatabase(fs, name);
   const withWrite = after.state.filter((e) => compareBytes(e.key, key) !== 0);
   expectFiles({ ...after, state: withWrite }, oracle, prefixes, "after a write on the recovered database");
