@@ -28,7 +28,7 @@ A database named `<name>` lives in two stores:
 ```
 IndexedDB  "opfs-lsm-wal/<name>"
   ├── wal    seq -> bytes              one record per acked batch
-  └── meta   "head"            -> seq  a floor for the head, written by recovery
+  └── meta   "head"            -> seq  a floor for the head, written by recovery and destroy
              "ingestedThrough" -> seq  every seq <= this is in an SST
              "generation"      -> n    the manifest tabs read
              "topGeneration"   -> n    highest manifest number recovery has seen
@@ -81,8 +81,8 @@ form the next group. A group is one `readwrite` transaction over `wal` and `meta
 
 The records are the only writes. A group commits or aborts as a whole, and a failed group fails
 every write in it. The head, the seq of the last committed batch, is the last key in
-`wal`, or the `head` floor when that is higher. Only recovery writes the floor, so step 3 aborts
-only after a recovery.
+`wal`, or the `head` floor when that is higher. Only recovery and destroy write the floor, so
+step 3 aborts only after a recovery or a destroy.
 
 A tab still running an older build reads that stored floor as the head. It does not see records
 this build appends, and reloading it does not change that, because the floor stays where
@@ -536,13 +536,13 @@ that `openDb` refuses as corrupt. The host:
    is on disk. It drops every WAL record and records generation 0, with `head` and
    `ingestedThrough` one past every seq the WAL or a manifest on disk names, and
    `topGeneration` and `destroyedTop` at the highest manifest number in use.
-3. Posts `{ kind: "ingest" }`. Each tab installs generation 0 at its next `sync` or append, as
-   it would any generation, and its memtable drops every row. Handles stay open, and each
-   reports a `gap` change event.
-4. Removes every manifest, then sweeps: against generation 0, every run goes. Both skip
+3. Removes every manifest, then sweeps: against generation 0, every run goes. Both skip
    while a tab holds the reclaim lock, and the sweep skips each run a tab still holds open, as
    any sweep does. A tab holds its runs until it installs generation 0, or until a `view` that
    started before the destroy ends, and that view reads the old data meanwhile.
+4. Posts `{ kind: "ingest" }`. Each tab installs generation 0 at its next `sync` or append, as
+   it would any generation, and its memtable drops every row. Handles stay open, and each
+   reports a `gap` change event.
 
 `dangerousDestroy` then syncs its own tab, which lets go of its runs, and asks the host for a
 flush, whose compaction pass sweeps them. The runs other tabs held go at a later pass.
@@ -550,7 +550,7 @@ flush, whose compaction pass sweeps them. The runs other tabs held go at a later
 The transaction is the commit point. After it, recovery adopts no manifest on disk, now or
 after later flushes: rule 1 needs a `through` past `head`, rule 2 keeps the recorded generation,
 and rule 3 skips every manifest numbered up to `destroyedTop`. So the files are garbage whether
-or not step 4 finishes. Since the commit is on disk before step 4 starts, no power loss keeps a
+or not step 3 finishes. Since the commit is on disk before step 3 starts, no power loss keeps a
 remove and loses the commit.
 
 # Change events
@@ -578,8 +578,8 @@ true at every prefix of each store:
 
 1. **Every intact manifest is a log prefix.** Its runs hold the fold of exactly the seqs
    `1..through`. A run is written before any manifest lists it, and run paths are never reused.
-2. **WAL records are log entries.** `head` never moves down, and recovery moves it past every
-   seq that any manifest on disk names. New manifests number past `topGeneration`.
+2. **WAL records are log entries.** `head` never moves down, and recovery and destroy move it
+   past every seq that any manifest on disk names. New manifests number past `topGeneration`.
 
 So any intact manifest, followed by the WAL records `through + 1..head` with no gap, is a log
 prefix. Without those records, the manifest alone is one.
@@ -614,7 +614,8 @@ The same transaction moves `head` past the highest `through` of any manifest on 
 
 ## Corruption is not a power loss
 
-OPFS publishes a file whole, and the host removes a run only after every manifest that lists it.
+OPFS publishes a file whole, and the host removes a run only after the recorded manifest stops
+listing it. A manifest numbered past the recorded one is a crash leftover, and its runs may go.
 A power loss therefore never leaves a manifest that fails to decode, or the recorded manifest on
 disk with a run missing. Those states are corruption. Recovery throws `CorruptDatabaseError` and
 writes nothing, so the database stays as it is on disk.
@@ -628,8 +629,9 @@ writes nothing, so the database stays as it is on disk.
 
 * `openDb`, before the first sync. Every tab writes only after its open reconciled.
 * `sync` and appends, when the recorded generation does not load under the reclaim lock.
-* The host, at the start of every flush, compaction install and sweep, under the exclusive
-  section.
+* The host, at the start of every flush and compaction install, under the exclusive section. It
+  reconciles again before a sweep, except one in a pass that installed nothing: that sweep only
+  runs for the generation the host last checked.
 
 # Crash behavior
 
