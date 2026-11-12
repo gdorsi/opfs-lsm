@@ -40,6 +40,31 @@ scroll jump to row 50000, first jump                 343 (318-346)         846 (
 heap after the script, MB                            161 (159-170)           79 (79-131)
 1-min load at each run's start 3.8 p50 (3.0-5.4)
 
+Sort keys, B before (cec65c9) and after: the priority and status sorts order by `priorityOrder` and
+`statusOrder`, keys unique per issue, so the rows TanStack loads as tied with the window's last row are one or two
+instead of about 20,000. Same machine and server, a fresh profile per build from one first sync, 5 rounds, one run
+per build per round under the machine lock (the before build first in odd rounds). The status sort row is new.
+
+                                                            before                 after
+status chip on                                    29.3 (18.6-45.9)      19.6 (15.8-30.4)
+status chip off                                   48.7 (47.2-62.9)      47.8 (45.3-48.2)
+priority filter on                                36.3 (30.6-39.7)        32.9 (28.8-47)
+sort modified <-> created                         14.3 (13.4-15.7)      14.1 (13.6-15.2)
+sort modified -> priority                            768 (760-775)      15.2 (12.8-27.7)
+sort modified -> status                            927 (777-1,103)        13.8 (13.5-16)
+search keystroke (80 ms debounce included)           119 (116-145)         126 (113-130)
+list -> detail, title painted                      12.5 (7.9-16.1)        7.6 (6.6-19.3)
+scroll jump to row 5000                           14.3 (13.9-15.5)      14.5 (13.9-15.8)
+scroll jump to row 5000, first jump                  165 (162-183)         172 (160-190)
+scroll jump to row 50000                          16.2 (14.4-17.2)      14.4 (13.8-14.6)
+scroll jump to row 50000, first jump               870 (842-1,015)         889 (803-985)
+heap after the script, MB                              79 (79-145)            85 (85-85)
+1-min load at each run's start 4.3 p50 (3.7-7.7)
+
+After the change a sort by priority reads the first 100 documents of each of the five `byPriority` ranges, one per
+priority, and merges them; its tie load reads one or two. The heap after the script holds the 50,058 rows of the
+deep jump, each with the two keys.
+
 What B's reads cost, timed inside a warm B page by calling docstore on the page's store (`__linearlite.store.docs`);
 p50 of 5, of 3 for the large reads:
 
