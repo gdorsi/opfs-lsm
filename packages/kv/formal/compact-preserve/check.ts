@@ -13,6 +13,11 @@
  * past the install, whose marks join the base's and any later ones and
  * retire what no run can still hold, reads what it read before.
  *
+ * Planner steps on dead rows: a purge rewrites a run alone and a tombstone
+ * step pushes it into the next level, each a bottom merge only when no
+ * deeper level holds the key; a run a mark wholly covers drops with no
+ * merge. Every read at or past the step reads what it read before.
+ *
  * Sync: latestSstEntry walks levels newest-first; the merge session and its
  * TypeScript oracle keep the earlier source on a tie (`a < b` in merge.rs,
  * `< 0` in tests/oracle/merge-ts.ts).
@@ -320,6 +325,127 @@ if (!appliesMarksInSource()) {
   process.exit(1);
 }
 
+// --- Planner steps on dead rows.
+//
+// One key, four levels newest first: an upper run (seq 4), the step's run
+// (3), the next level's run (2) and a deeper one (1). A purge rewrites the
+// step's run alone in its level; a tombstone step merges it with the next
+// level's run into that level. Either merge is judged at `now` and is a
+// bottom merge only when no deeper level holds the key. Every read at `now`
+// or later must agree before and after.
+
+type Level = { kind: "put"; exp?: number } | { kind: "del" } | undefined;
+const LEVELS: Level[] = [undefined, { kind: "put" }, { kind: "put", exp: 1 }, { kind: "del" }];
+
+function readLevels(levels: readonly Level[], now: number): boolean {
+  const newest = levels.find((l) => l !== undefined);
+  return newest?.kind === "put" && !(newest.exp !== undefined && newest.exp <= now);
+}
+
+/** The merge of `sources` newest first: the newest wins, expired is a tombstone, a tombstone drops at the bottom. */
+function stepMerge(sources: readonly Level[], now: number, bottom: boolean): Level {
+  const w = sources.find((l) => l !== undefined);
+  const judged: Level = w?.kind === "put" && w.exp !== undefined && w.exp <= now ? { kind: "del" } : w;
+  return bottom && judged?.kind === "del" ? undefined : judged;
+}
+
+/** Whether a step whose output lands at `outputLevel` is a bottom merge, given the levels below it. */
+type BottomRule = (deeper: readonly Level[]) => boolean;
+const bottomCorrect: BottomRule = (deeper) => deeper.every((l) => l === undefined);
+/** Broken: a step on dead rows takes itself for a bottom merge, and drops a tombstone that still hides a version. */
+const bottomAlways: BottomRule = () => true;
+
+function stepsCounterexample(bottom: BottomRule): string | undefined {
+  for (const up of LEVELS)
+    for (const run of LEVELS)
+      for (const next of LEVELS)
+        for (const deep of LEVELS)
+          for (const now of TIMES) {
+            const purge = [up, stepMerge([run], now, bottom([next, deep])), next, deep];
+            const push = [up, stepMerge([run, next], now, bottom([deep])), deep];
+            for (const [name, after] of [["purge", purge], ["tombstone step", push]] as const) {
+              for (const t of TIMES.filter((x) => x >= now)) {
+                if (readLevels([up, run, next, deep], t) !== readLevels(after, t)) {
+                  return `${name}: levels=${JSON.stringify([up, run, next, deep])} now=${now} read at ${t}`;
+                }
+              }
+              if (bottom === bottomCorrect) cases++;
+            }
+          }
+  return undefined;
+}
+
+// A run drop: a run holding keys a and b, written at seqs `sa` and `sb`,
+// over a deeper run holding both at seq 0. A mark over both keys covers
+// seqs up to `through`, at seq 4. The planner removes the run, with no
+// merge, when the mark wholly covers it; the install then retires the mark
+// unless the deeper run still holds a version under it.
+
+type DropRule = (sa: number, sb: number, through: number) => boolean;
+const dropCorrect: DropRule = (sa, sb, through) => Math.max(sa, sb) <= through;
+/** Broken: drops a run whose oldest version the mark covers, though a newer one it does not. */
+const dropOnOldest: DropRule = (sa, sb, through) => Math.min(sa, sb) <= through;
+
+function dropCounterexample(rule: DropRule): string | undefined {
+  for (const sa of [1, 2, 3])
+    for (const sb of [1, 2, 3])
+      for (const through of [0, 1, 2, 3])
+        for (const deeper of [false, true]) {
+          const read = (seqs: readonly number[], markThrough: number) => seqs.some((s) => s > markThrough);
+          const dropped = through > 0 && rule(sa, sb, through);
+          const below = deeper ? [0] : [];
+          const retired = !deeper;
+          for (const key of [sa, sb]) {
+            const before = read([key, ...below].slice(0, 1), through);
+            const after = dropped ? read(below, retired ? 0 : through) : before;
+            if (before !== after) return `sa=${sa} sb=${sb} through=${through} deeper=${deeper}`;
+          }
+          if (rule === dropCorrect) cases++;
+        }
+  return undefined;
+}
+
+const stepsBug = stepsCounterexample(bottomCorrect) ?? dropCounterexample(dropCorrect);
+if (stepsBug) {
+  console.error(`FAIL CompactPreserve (planner steps): ${stepsBug}`);
+  process.exit(1);
+}
+for (const [name, caught] of [
+  ["a purge or tombstone step drops a tombstone that still hides a version", stepsCounterexample(bottomAlways)],
+  ["a run drops though a version in it is past the mark", dropCounterexample(dropOnOldest)],
+] as const) {
+  if (!caught) {
+    console.error(`FAIL CompactPreserve (planner steps): broken variant not caught: ${name}`);
+    process.exit(1);
+  }
+  console.log(`  broken variant caught: ${name}`);
+}
+
+/**
+ * The planner's merges are bottom merges only when no deeper run overlaps
+ * them, a run drops only when its largest seq is under the mark, and a drop
+ * installs no output.
+ */
+function plansStepsInSource(): boolean {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const read = (rel: string) => fs.readFileSync(path.resolve(here, rel), "utf8");
+  const levels = read("../../src/store/levels.ts");
+  const stats = read("../../src/store/run-stats.ts");
+  const compact = read("../../src/host/compact.ts");
+  return (
+    /return\s*\(level\s*===\s*undefined\s*\|\|\s*level\s*>\s*outputLevel\)\s*&&\s*!inputs\.includes\(r\)/.test(levels) &&
+    /bottom:\s*!below\.some\(\(r\)\s*=>\s*overlaps\(r\.range,\s*range\)\)/.test(levels) &&
+    /if\s*\(dropped\.length\s*>\s*0\)\s*return\s*\{\s*kind:\s*"drop",\s*inputs:\s*dropped\s*\}/.test(levels) &&
+    /const\s+maxSeq\s*=\s*stats\.bySeq\[POINTS\s*-\s*1\]!\.at;/.test(stats) &&
+    /piece\.through\s*>\s*0\s*&&\s*piece\.through\s*>=\s*maxSeq/.test(stats) &&
+    /plan\.kind\s*===\s*"drop"\)\s*return\s*\{\s*inputs,\s*outputs:\s*\[\]/.test(compact)
+  );
+}
+if (!plansStepsInSource()) {
+  console.error("FAIL CompactPreserve — levels.ts / run-stats.ts / compact.ts no longer plan bottom merges, run drops and drop installs as modeled");
+  process.exit(1);
+}
+
 if (!newestFirstInSource()) {
   console.error(
     "FAIL CompactPreserve — read.ts / merge.rs / tests/oracle/merge-ts.ts no longer newest-first get / newer source wins a tie",
@@ -328,5 +454,5 @@ if (!newestFirstInSource()) {
 }
 
 console.log(
-  `PASS CompactPreserve — ${cases} run lists, expiry judgments and range delete layouts, newest-first latestSstEntry, newer-wins merge sessions, expired winners judged before the drop, covered winners dropped and only the base marks claimed`,
+  `PASS CompactPreserve — ${cases} run lists, expiry judgments and range delete layouts, newest-first latestSstEntry, newer-wins merge sessions, expired winners judged before the drop, covered winners dropped and only the base marks claimed, purges, tombstone steps and run drops`,
 );
