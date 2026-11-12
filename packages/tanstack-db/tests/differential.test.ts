@@ -91,6 +91,13 @@ type Spec = {
     readonly stringSort: "lexical" | "locale";
     /** A second order key, before the id tiebreak. */
     readonly then?: { readonly field: "g" | "n" | "s"; readonly dir: "asc" | "desc" };
+    /** Without it, TanStack breaks ties by the row key. */
+    readonly byId: boolean;
+    /**
+     * An anchored window: only rows at or after this value of the order field, as a list that shows a window deep
+     * in a long order starts its own query there. An index into the field's values.
+     */
+    readonly anchor?: number;
   };
   readonly window?: { readonly offset: number; readonly limit: number };
   readonly moves: readonly { readonly offset: number; readonly limit: number }[];
@@ -110,6 +117,8 @@ const specArb: fc.Arbitrary<Spec> = fc
         then: fc.option(fc.record({ field: fc.constantFrom("g", "n", "s"), dir: fc.constantFrom("asc", "desc") }), {
           nil: undefined,
         }),
+        byId: fc.boolean(),
+        anchor: fc.option(fc.integer({ min: 0, max: STRINGS.length - 1 }), { nil: undefined }),
       }),
       { nil: undefined, freq: 4 },
     ),
@@ -152,10 +161,14 @@ function liveQuery(source: Collection<Doc, string, any>, spec: Spec) {
       b = b.where(({ d }) => rest.reduce((all, c) => and(all, condition(c, d)), condition(first, d)));
     }
     if (!spec.order) return b;
-    const { field, dir, nulls, stringSort, then } = spec.order;
+    const { field, dir, nulls, stringSort, then, byId, anchor } = spec.order;
+    if (anchor !== undefined) {
+      const value = field === "n" ? anchor : STRINGS[anchor]!;
+      b = b.where(({ d }) => (dir === "desc" ? lte : gte)(d[field], value));
+    }
     let o = b.orderBy(({ d }) => d[field], { direction: dir, nulls, stringSort });
     if (then) o = o.orderBy(({ d }) => d[then.field], { direction: then.dir, nulls, stringSort });
-    o = o.orderBy(({ d }) => d.id, { direction: "asc", stringSort: "lexical" });
+    if (byId) o = o.orderBy(({ d }) => d.id, { direction: "asc", stringSort: "lexical" });
     if (spec.window) o = o.limit(spec.window.limit).offset(spec.window.offset);
     return o;
   });

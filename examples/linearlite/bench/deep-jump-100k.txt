@@ -1,0 +1,82 @@
+Deep jumps in the LinearLite list at 100k issues: which design makes the first jump to row 50,000 cheap.
+Machine, Chrome and server as in client-100k-prod.txt (the server a fresh `pnpm seed 100000`). Production builds,
+one profile per build filled by one first sync, warm and offline. One run per build per round, the build order
+rotated each round, each run under the machine-wide lock; p50 (min-max) over 5 runs.
+
+base  PR 179's head (cec65c9): one live query from the top of the order. TanStack loads a window at offset N as
+      the first N rows plus the window (`loadPrefix`), the adapter reads every one of them, and they stay.
+A     base plus a TanStack index on issues (`autoIndex: "eager", defaultIndexType: BTreeIndex`). With an index on
+      the order field TanStack's loader pages with a cursor and asks only for the rows it lacks.
+C     base with the `byModified` reads served from an array of all 100,000 issues loaded before the timed jumps: the
+      floor for keeping the prefix and making its read free.
+B     this branch (a883e6e): a window deep in the unfiltered list is its own live query, anchored at the sort value
+      of its row (`useIssueWindow`, `locate` in src/client/counts.ts).
+
+A and C were throwaway builds of base, not kept; they also logged the adapter's loadSubset calls.
+
+jump: PROFILE=<profile> node bench/client.ts <origin> jump runs bench/deep-scroll.js in the page: from the top, set
+scrollTop to row 5,000 ten times, then to row 50,000 five times, back to the top after each; a jump counts once the
+row at that index is right (ids from the server's order, ties accepted) and no skeleton is in the DOM. "first" is
+the run's first jump to that row; "later" the p50 of the others. Rows held = the issues collection's size. Heap
+after a forced GC, 12 s after the last jump, once TanStack has cleaned up the live queries the list dropped.
+
+                                               base                  A                  C                  B
+jump to row 5,000, first              113 (107-122)      117 (108-121)   37.7 (35.3-38.7)   68.9 (51.5-81.2)
+jump to row 5,000, later             14.6 (14-15.4)   14.9 (14.4-15.3)     13.9 (13.8-15)   31.3 (31.2-32.2)
+jump to row 50,000, first             516 (511-554)      487 (467-499)      234 (222-237)      130 (116-132)
+jump to row 50,000, later            14.8 (14-15.5)   23.9 (19.6-28.2)     14.5 (14-16.1)   66.6 (66.2-82.3)
+rows held after the first jump               50,058             50,058             50,058                700
+rows held at the top, 6 s later              50,058             50,058             50,058                100
+heap, MB                                         64                 75                 77                 30
+
+Why each one lost:
+- A reads the same rows as base. The adapter's log of TanStack's loads: the first jump to 5,000 asks for 4,958
+  rows after a cursor, the first jump to 50,000 for 45,000 more. The cursor saves TanStack re-asking for rows it
+  holds, not reading the rows above the window; the BTree index over 50,058 rows costs 11 MB more.
+- C shows what is left when reading the prefix costs nothing: 234 ms, TanStack taking in the 50,058 rows above
+  and in the window, and keeping them, so memory stays where base is (plus C's array).
+- B walks the sort index's entries down to row N without reading their documents, reads the 65 documents ending
+  at it, and loads a 100-row window bounded by row N's sort value. Most of its first jump is that walk, cold
+  (below). The count of the rows before the anchor runs after the rows show, and again after every change. Its
+  later jumps are slower than base's (31 and 67 ms against 15): a jump from the top places a new query and walks
+  the index again, where base finds the rows in memory. Its memory is the window: 700 rows after the jumps, the
+  100 at the top once TanStack drops the anchored query (gcTime 5 s).
+
+What B's reads cost, timed inside a B page by calling docstore on the page's store, three times in a row, ms:
+
+queryIds byModified reversed, limit 49,758 (the walk to row 49,758)     110, 30.9, 30.5
+query byModified, 1 document after that cursor                           2, 0.1, 0.1
+count byModified gt that row's modified (49,758 entries)                 37, 17.8, 17.9
+count byModified (100,000 entries)                                       52, 29.1, 28.8
+query byModified, first 300 documents                                    17, 1.7, 1.5
+
+scroll: node bench/client.ts <origin> scroll. Jump to row 50,000, then 120 steps of 600 px down and 120 up, then
+600 frames at 200 px per frame (5 rows) each way. Every row in the DOM is checked against the replica's byModified
+order (rows 46,000-54,000) after each step and each frame. One run per build.
+
+                                                         base                 B
+step, ms until the rows are painted, p50 (max)    33.3 (968.5)        33.3 (65.4)
+steps or fling frames with a wrong row                       0                  0
+fling frames with a skeleton in view                         0                  0
+rows held after                                         53,058              3,300
+heap after, MB                                              67                 36
+
+One base step took 968 ms; the run did not record which, so its cause is not measured here.
+
+live: node bench/client.ts <origin> live (on a copy of the profile; the edits go to the replica only, offline).
+Jump to row 50,000, then change the status of the issue at row 100, 50,005 and 60,000; each edit moves that issue
+to row 0. Frames for 2.5 s after the edit, each checked against the expected order. One run per build.
+
+                                               base                       B
+edit above the window (row 100)       0 wrong frames           0 wrong frames
+edit inside the window (row 50,005)   0 wrong frames           1 wrong frame, right from 108 ms
+edit below the window (row 60,000)    0 wrong frames           1 wrong frame, right from 55 ms
+
+B's wrong frame is the anchor's lag: the edited issue leaves the anchored query at once, and the window is drawn
+one row off until the count of rows before the anchor returns.
+
+The list interactions and warm starts of both builds are round 3 of ui-latency-100k.txt: the first jump to row
+50,000 takes 123 ms (121-129) on this branch against 849 (824-942). The edit scenarios pass on this branch
+(node bench/client.ts <origin> tabs users offline visible, one run, its own server database): an edit reaches the
+other tab's list in 2 ms p50 each way (n=10) and another user's in 6.1 ms; five edits made offline are acked
+371 ms after reconnecting; a tab's own edit reaches its DOM in 3.6 ms p50 (n=60).

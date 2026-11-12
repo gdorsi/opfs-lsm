@@ -1,4 +1,5 @@
-import { and, createLiveQueryCollection, eq, ilike, inArray, type InitialQueryBuilder, type Ref } from "@tanstack/db";
+import type { Scalar } from "@opfs-lsm/docstore";
+import { and, createLiveQueryCollection, eq, gte, ilike, inArray, lte, type InitialQueryBuilder, type Ref } from "@tanstack/db";
 import type { StatusCode } from "../domain/model.ts";
 import type { IssueFilter, SortField } from "./filter.ts";
 import type { Store, StoredIssue } from "./store.ts";
@@ -15,7 +16,7 @@ const CODES = [0, 1, 2, 3, 4];
  * What each sort orders by. Priority and status sort on keys unique per issue (`stored`), so the rows TanStack loads
  * as tied with a window's last row are one or two, not a fifth of the issues.
  */
-const ORDER = {
+export const ORDER = {
   modified: "modified",
   created: "created",
   title: "title",
@@ -48,10 +49,16 @@ export function filtered(q: InitialQueryBuilder, issues: Store["issues"], filter
   return base.fn.where(({ i }) => i.title.toLowerCase().includes(needle));
 }
 
-export const windowQuery = (issues: Store["issues"], filter: IssueFilter, size: number, status?: StatusCode) =>
-  createLiveQueryCollection((q) =>
-    filtered(q, issues, filter, status)
-      .orderBy(({ i }) => (status === undefined ? i[ORDER[filter.sort]] : i.statusOrder), status === undefined ? filter.dir : "asc")
-      .limit(size),
-  );
+/** Where the list's window starts: `offset` rows past the first issue whose sort value is `from` or sorts after it. */
+export type ListStart = { readonly from?: Scalar; readonly offset: number };
+
+/** An ordered window of `size` issues under the filter: a board column with `status`, else the list from `start`. */
+export const windowQuery = (issues: Store["issues"], filter: IssueFilter, size: number, status?: StatusCode, start?: ListStart) =>
+  createLiveQueryCollection((q) => {
+    const rows = filtered(q, issues, filter, status);
+    const from = start?.from;
+    const bounded = from === undefined ? rows : rows.where(({ i }) => (filter.dir === "desc" ? lte : gte)(i[ORDER[filter.sort]], from));
+    const ordered = bounded.orderBy(({ i }) => (status === undefined ? i[ORDER[filter.sort]] : i.statusOrder), status === undefined ? filter.dir : "asc");
+    return (start ? ordered.offset(start.offset) : ordered).limit(size);
+  });
 

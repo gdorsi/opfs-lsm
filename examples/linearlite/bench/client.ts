@@ -464,7 +464,37 @@ const run: Record<string, () => Promise<void>> = {
     });
     await quit(b);
   },
+
+  /** Jumps to rows 5,000 and 50,000 and back, then the rows TanStack holds and the heap. */
+  jump: () => deepScroll("jump"),
+  /** Steps and flings around row 50,000, checking each row shown against the replica's order. */
+  scroll: () => deepScroll("scroll"),
+  /** Edits above, inside and below a window at row 50,000; frames until the rows shown are right again. */
+  live: () => deepScroll("live"),
 };
+
+/** Runs `bench/deep-scroll.js` in a warm page. `live` edits issues, so it runs on a copy of the profile. */
+async function deepScroll(mode: "jump" | "scroll" | "live"): Promise<void> {
+  const { profile: synced, owned } = await syncedProfile();
+  const profile = mode === "live" ? mkdtempSync(join(tmpdir(), "linearlite-live-")) : synced;
+  if (mode === "live") cpSync(synced, profile, { recursive: true });
+  const { total, jumps } = truthOf(await serverIssues());
+  const script = readFileSync(new URL("./deep-scroll.js", import.meta.url), "utf8").replace("__TRUTH__", JSON.stringify({ mode, total, jumps }));
+  const b = await warmStart(mode, profile, total);
+  try {
+    await waitMark(b, "bench:rows-total", 60_000);
+    offline(b);
+    await sleep(3000);
+    evaluate(b.session, `(() => { globalThis.__ui = undefined; ${script.trim()}.then((r) => (globalThis.__ui = r), (e) => (globalThis.__ui = JSON.stringify({ error: String(e?.stack ?? e) }))); return "started"; })()`);
+    const out = await waitFor("deep-scroll.js", () => evaluate<Record<string, unknown> | "">(b.session, `globalThis.__ui ?? ""`) || undefined, 900_000);
+    const { heapMB } = evaluate<{ heapMB: number }>(b.session, footprint);
+    print({ scenario: mode, origin, ...out, heapMBAfter: heapMB });
+  } finally {
+    await quit(b, true);
+    if (mode === "live") rmSync(profile, { recursive: true, force: true });
+    if (owned) rmSync(synced, { recursive: true, force: true });
+  }
+}
 
 for (const name of scenarios) {
   const go = run[name];
