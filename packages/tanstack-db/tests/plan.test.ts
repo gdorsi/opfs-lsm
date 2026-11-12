@@ -105,7 +105,7 @@ test("a locale order is still read from the index, marked so a read meeting a st
   ]);
 });
 
-test("a text index is read only for a like on its text, and then with the pattern's words", () => {
+test("a like on a text index's text reads that index with the pattern's words", () => {
   const where = and(eq(ref("deleted"), false), ilike(ref("title"), "%Bug fix%"));
   assert.deepEqual(plan({ where, orderBy: desc("modified"), limit: 5 }), [
     {
@@ -114,8 +114,35 @@ test("a text index is read only for a like on its text, and then with the patter
       first: { order: { path: "modified", reverse: true, nulls: "last", lexical: true }, limit: 5 },
     },
   ]);
-  const [noLike] = plan({ where: eq(ref("deleted"), false), orderBy: desc("modified"), limit: 5 });
-  assert.ok(noLike?.kind === "ranges" && noLike.ranges.every((r) => r.index === "byModified"));
+});
+
+test("without a like, a text index serves its order and its tie load when no sorted index does", () => {
+  const where = eq(ref("deleted"), false);
+  const [both] = plan({ where, orderBy: desc("modified"), limit: 5 });
+  assert.ok(both?.kind === "ranges" && both.ranges.every((r) => r.index === "byModified"));
+
+  const textOnly = new Map([...INDEXES].filter(([name]) => name !== "byModified" && name !== "byStatus"));
+  const only = (options: LoadSubsetOptions) => planLoad(options, textOnly).map((r) => r.plan);
+  assert.deepEqual(only({ where, orderBy: desc("modified"), limit: 5 }), [
+    {
+      kind: "ranges",
+      ranges: [{ index: "search", eq: [false], reverse: true }],
+      first: { order: { path: "modified", reverse: true, nulls: "last", lexical: true }, limit: 5 },
+    },
+  ]);
+  assert.deepEqual(only({ where: and(where, eq(ref("modified"), 7)) }), [{ kind: "ranges", ranges: [{ index: "search", eq: [false, 7] }] }]);
+});
+
+test("between indexes that pin as many fields, a load reads the one they pin whole", () => {
+  const indexes = new Map<string, IndexInfo>([
+    ["byStatus", sorted("deleted", "status", "rank")],
+    ["search", { kind: "text", on: ["deleted", "modified"], unique: false, text: "title" }],
+  ]);
+  const where = and(eq(ref("deleted"), false), inArray(ref("status"), [1]), eq(ref("modified"), 7));
+  assert.deepEqual(
+    planLoad({ where }, indexes).map((r) => r.plan),
+    [{ kind: "ranges", ranges: [{ index: "search", eq: [false, 7] }] }],
+  );
 });
 
 test("a multi index is never read", () => {

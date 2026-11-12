@@ -257,7 +257,7 @@ const seenAt = `(async () => String(await globalThis.__seen))()`;
 const edit = (id: string, status: number) => `(async () => { const t = ${now}; await globalThis.__linearlite.commands.setStatus(${JSON.stringify(id)}, ${status}); return String(t); })()`;
 /** The clean issue at `offset` in the default list order, read from the replica, not from what the page holds. */
 const pickIssue = (offset: number) =>
-  `(async () => { const { docs } = await ${issueDocs}.query({ index: "byModified", eq: [false], reverse: true, limit: ${offset + 200} }); const r = docs.filter((i) => !i.dirty)[${offset}]; return JSON.stringify({ id: r.id, status: r.status }); })()`;
+  `(async () => { const { docs } = await ${issueDocs}.query({ index: "search", eq: [false], reverse: true, limit: ${offset + 200} }); const r = docs.filter((i) => !i.dirty)[${offset}]; return JSON.stringify({ id: r.id, status: r.status }); })()`;
 const dirtyIn = (ids: readonly string[], stream = "issues") =>
   `(async () => JSON.stringify((await globalThis.__linearlite.store.docs.collection(${JSON.stringify(stream)}).getMany(${JSON.stringify(ids)})).map((r) => !!r?.dirty)))()`;
 
