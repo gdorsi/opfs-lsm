@@ -5,6 +5,7 @@
  *   TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_REPEAT=3 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+ *   TWO_TAB_PRESSURE=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -30,7 +31,8 @@ const MIME: Record<string, string> = {
 type ClientCmd =
   | { op: "put"; key: string; value: string }
   | { op: "get"; key: string }
-  | { op: "ingest" };
+  | { op: "ingest" }
+  | { op: "cap"; key: string; value: string };
 
 type PeerCmd = ClientCmd & { id: number };
 
@@ -45,6 +47,8 @@ type PeerResult = {
 type RunOptions = {
   local: boolean;
   nobc: boolean;
+  /** Run the maxBytes scenario instead of the visibility one. */
+  pressure: boolean;
 };
 
 function chromePath(): string {
@@ -84,6 +88,9 @@ function parseClientCmd(value: unknown): ClientCmd | null {
   if (!value || typeof value !== "object") return null;
   const rec = value as { op?: unknown; key?: unknown; value?: unknown };
   if (rec.op === "ingest") return { op: "ingest" };
+  if (rec.op === "cap" && typeof rec.key === "string" && typeof rec.value === "string") {
+    return { op: "cap", key: rec.key, value: rec.value };
+  }
   if (rec.op === "get" && typeof rec.key === "string") {
     return { op: "get", key: rec.key };
   }
@@ -471,6 +478,7 @@ async function runOnce(options: RunOptions): Promise<number> {
 
   const query = new URLSearchParams({ auto: "1", name: "two-tab" });
   if (options.nobc) query.set("nobc", "1");
+  if (options.pressure) query.set("scenario", "pressure");
   if (options.local) query.set("local", "1");
   else query.set("role", "a");
   const tabA = `http://127.0.0.1:${port}/proof/two-tab.html?${query}`;
@@ -480,6 +488,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     role: "b",
   });
   if (options.nobc) tabBQuery.set("nobc", "1");
+  if (options.pressure) tabBQuery.set("scenario", "pressure");
   const tabB = `http://127.0.0.1:${port}/proof/two-tab.html?${tabBQuery}`;
 
   console.log(`Opening ${tabA}`);
@@ -522,8 +531,8 @@ async function runOnce(options: RunOptions): Promise<number> {
     if (parsed.error) {
       console.error(parsed.error);
       exitCode = 1;
-    } else if (!parsed.log?.includes("two-tab ok")) {
-      console.error("missing two-tab ok");
+    } else if (!parsed.log?.includes(options.pressure ? "pressure ok" : "two-tab ok")) {
+      console.error("missing the ok line");
       exitCode = 1;
     } else if (!options.local && !parsed.log.includes("mode=SharedWorker")) {
       console.error("missing SharedWorker mode");
@@ -557,7 +566,7 @@ async function main(): Promise<number> {
     console.error("TWO_TAB_REPEAT must be a positive integer");
     return 1;
   }
-  const options = { local: flag("TWO_TAB_LOCAL"), nobc: flag("TWO_TAB_NOBC") };
+  const options = { local: flag("TWO_TAB_LOCAL"), nobc: flag("TWO_TAB_NOBC"), pressure: flag("TWO_TAB_PRESSURE") };
   for (let i = 0; i < repeat; i += 1) {
     if (repeat > 1) console.log(`run ${i + 1}/${repeat}`);
     const code = await runOnce(options);
