@@ -241,21 +241,22 @@ later write into the range is read as usual.
 The range deletes in effect form the mark table, a step function over the key space. Each piece
 holds the highest `through` that covers its keys and `at`, the seq of the record that set it.
 Folding a range delete is a pointwise max, so folding records twice or in another order gives the
-same table. A lookup is one binary search, and a scan walks the pieces beside its keys.
+same table.
 
 A version is judged in the layer that holds it:
 
 * The memtable removes covered rows when it applies the record, so its rows need no check.
 * A flush drops the ops its own records' range deletes cover, then joins those marks into the
   manifest's.
-* A run records `marksThrough`: every range delete from a record at or below it was applied
-  before the run was written. A flushed run takes the last seq it folded. A compaction output
-  takes the lowest `marksThrough` of its inputs, because a merge applies no range delete.
+* A merge drops a winning version that a mark of its base manifest covers, tombstones included,
+  at any level: every older version of the key has a smaller seq, so the mark covers it too.
+* A run records `marksThrough`: it holds no version a range delete from a record at or below it
+  covers. A flushed run takes the last seq it folded, a compaction output its base's `through`.
 
 A piece retires, falling back to `through` 0, when every run that overlaps it has
 `marksThrough` at or past its `at`: no run left can hold a version it covers. Each flush and each
-compaction install retires the manifest's marks against its new runs. A covered version that a
-run still holds stays on disk until a newer version of its key replaces it in a merge.
+compaction install retires the manifest's marks against its new runs, and a mark step (see
+[Planning](#planning)) rewrites the runs that hold a piece back, so its rows leave the disk.
 
 # Multi-tab coordination
 
@@ -381,6 +382,8 @@ the shallower level wins.
 * A deeper level scores its bytes over its budget, and reports past 1. Its step picks the run
   whose overlapping bytes in the next level are the smallest fraction of its own size, and merges
   it with those runs into the next level.
+* When no level reports, a mark step takes the first run that keeps a piece from retiring: the
+  L0 step for an L0 run, otherwise that run alone, rewritten into its own level.
 
 Scoring lets L0 pass 4 runs while a deeper level is further over budget. If L0 always went
 first, L1 would never be pushed down.
@@ -405,7 +408,7 @@ between two keys and asks the host for one thing:
 | YIELD | gives the event loop a turn |
 | DONE | installs the outputs |
 
-For a key, the newest source wins. The session checks the CRC of every input run before it uses
+For a key, the newest source wins, and is dropped when a mark covers it. The session checks the CRC of every input run before it uses
 the last entries of that run. It cuts the output into runs of about 4 MiB of records, named
 `c<top + 1>.<i>`.
 
