@@ -18,7 +18,11 @@ const NAME = "bounded-flush";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
+const hosts: EngineHost[] = [];
+
 afterEach(async () => {
+  // A compaction pass still running would reconcile the next test's WAL against this test's files.
+  await Promise.all(hosts.splice(0).map((host) => host.compact(NAME).catch(() => undefined)));
   await new Promise<void>((resolve) => {
     const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
     req.onsuccess = req.onerror = req.onblocked = () => resolve();
@@ -74,6 +78,7 @@ async function setup(flushRunBytes: number, l0StopRuns?: number) {
   const { fs, published, hold } = hostFs(inner);
   const limits = l0StopRuns === undefined ? { flushRunBytes } : { flushRunBytes, l0StopRuns };
   const host = new EngineHost(() => fs, limits);
+  hosts.push(host);
   const db = await openHarnessDb({
     name: NAME,
     writerId: "w1",

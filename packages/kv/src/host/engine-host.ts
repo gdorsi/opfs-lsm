@@ -148,12 +148,6 @@ class HostedDb {
   private nextInstall: { readonly settled: Promise<void>; readonly resolve: () => void } | undefined;
   private watching: IngestWatch | undefined;
   /**
-   * Run files out of every live generation that a tab still held at the
-   * last try. A cache of what the manifests and directories say: undefined
-   * means this host has not swept the database yet.
-   */
-  private retired: Set<string> | undefined;
-  /**
    * The generation this host last published or found intact, so `reconcile`
    * checks a recorded manifest's runs once, not on every flush. A tab that
    * records another generation makes the host check again.
@@ -422,7 +416,6 @@ class HostedDb {
             const fs = await this.fs();
             await recordEmpty(wal, fs);
             this.trusted = 0;
-            this.retired = undefined;
             if (this.watching) this.watching.pendingBytes = 0;
             await unlessHeld(this.name, () => reclaimManifests(fs, Number.POSITIVE_INFINITY));
             await this.reclaim(fs, wal);
@@ -450,9 +443,7 @@ class HostedDb {
 
   private async compactPass(): Promise<void> {
     const fs = await this.fs();
-    if (this.retired?.size !== 0) {
-      await this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal)));
-    }
+    await this.exclusive(() => this.withWal((wal) => this.reclaim(fs, wal)));
     for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
       const meta = await this.withWal((wal) => wal.meta());
       const base = await loadGeneration(fs, meta.generation ?? 0);
@@ -465,8 +456,6 @@ class HostedDb {
       await this.exclusive(() =>
         this.withWal(async (wal) => {
           this.trusted = await installStep(fs, wal, step, this.trusted);
-          // No set yet: no reclaim has run, and the first one lists every run.
-          for (const path of step.inputs) this.retired?.add(path);
           await this.reclaim(fs, wal);
         }),
       );
@@ -477,25 +466,25 @@ class HostedDb {
   }
 
   /**
-   * Remove the manifests older than the recorded one and the retired runs
-   * no tab holds. The first call retires every run file outside the live
-   * generations, which also collects what a crash left behind. Needs the
-   * ingest and compaction locks, so no run being written is mistaken for an
-   * orphan. Reconciles first: after a power loss the recorded manifest can
-   * be gone, and sweeping against it would remove the runs recovery needs.
+   * Remove the manifests older than the recorded one, and every run file
+   * outside the recorded generation that no tab holds. The files to go are
+   * read from the directories each time, so whatever left one behind (a
+   * merged input, a crash, a failed install, another host), the next call
+   * removes it. Needs the ingest and compaction locks, so no run being
+   * written is mistaken for an orphan. Reconciles first: after a power loss
+   * the recorded manifest can be gone, and sweeping against it would remove
+   * the runs recovery needs.
    *
    * Skipped, without waiting, while a tab holds the reclaim lock to load a
-   * generation (`holdingFiles`): the retired runs stay retired and the next
-   * pass tries again (design.md, "Loading a generation under churn").
+   * generation (`holdingFiles`): the next pass tries again (design.md,
+   * "Loading a generation under churn").
    */
   private async reclaim(fs: AsyncFs, wal: IdBWal): Promise<void> {
     await unlessHeld(this.name, async () => {
       const { generation } = await reconcile(wal, fs, this.trusted);
       this.trusted = generation;
       await reclaimManifests(fs, generation);
-      const retired = this.retired ?? new Set(await listRuns(fs));
-      const keep = await liveRuns(fs, generation);
-      this.retired = new Set(await reclaimRuns(fs, retired, keep));
+      await reclaimRuns(fs, await listRuns(fs), await liveRuns(fs, generation));
     });
   }
 }

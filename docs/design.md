@@ -647,7 +647,8 @@ A **process crash** keeps every completed write of both stores. Every acked writ
 | Compaction outputs written, before install | The outputs are garbage. |
 | Destroy's transaction, before its removes finish | The database is empty. The files left are garbage. |
 
-The first sweep of a new host removes every run that the recorded manifest does not list.
+Every sweep lists the run files and removes each one that the recorded manifest does not list
+and no tab holds open.
 
 A **power loss** keeps a prefix of the commits of IndexedDB and a prefix of the file operations
 of OPFS, independently.
