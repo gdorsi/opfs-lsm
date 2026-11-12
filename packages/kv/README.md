@@ -31,6 +31,7 @@ const found = await db.get(key);
 | `cacheBytes` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
 | `memtableBytes` | Bytes of rows this tab holds that are not yet flushed to OPFS, counted as key bytes, value bytes, and an estimate per row. Default 16 MiB. A smaller request is raised to 1 MiB. At 7/8 of it the tab asks the host to flush and keeps writing. At the limit a write waits until the host returns that flush, so a writing tab's memtable stays near the limit. A host that cannot flush does not hold writes for good. When tabs differ, the host flushes once the WAL passes the smallest ask: 1 MiB, or 7/8 of `memtableBytes` when that is lower. |
 | `compactionMemoryBytes` | Bytes the SharedWorker may spend on flushing and compacting this database: its wasm heap and the run data in flight. Default 32 MiB. A smaller request is raised to 8 MiB. A smaller figure gives smaller flush runs and a smaller read window, and under about 17.5 MiB fewer runs in one compaction step. The host's figures stop growing at 64 MiB. When tabs differ, the host uses the smallest, until the last tab closes the database. It counts memory that is alive, not garbage the browser has not collected yet. |
+| `maxBytes` | Live bytes the database should stay under: the key and value bytes of the rows reads find in the SST files. kv never removes a row for it. Over it, one tab's `onPressure` handlers remove what they choose (see [Size cap](#size-cap)). A smaller request is raised to 16 MiB. When tabs differ, the host uses the smallest, until the last tab closes the database. |
 
 Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `maxWalBytes`, `writerId`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `maxWalBytes` overrides the 1 MiB flush. `ingest(db)` from the same entry flushes the memtable now and waits for the compaction it starts.
 
@@ -50,6 +51,7 @@ Keys and values are `Uint8Array`.
 | `rangeJoin(range, keyOf)` | Scan a range and join each entry to the value at `keyOf(entry)`, as an index entry joins its row. The scan and the reads see one state. |
 | `view(body)` | Read-only snapshot of the state when the view opens. `snap.seq` is the seq of the last record it includes, counted as write acks and `changes` count it. |
 | `changes(listener)` | Subscribe to every WAL record this handle applies, from any tab, with its ops, once each and in seq order. A put written with an expiry carries its `expiresAt`. A range delete comes as a `deleteRange` op with its bounds and its `through`, resolved. A `gap` event means the handle skipped records a flush folded, so read again. Returns unsubscribe. |
+| `onPressure(handler)` | On a handle opened with `maxBytes`, register a handler that removes rows when the database is over it (see [Size cap](#size-cap)). Returns unsubscribe. |
 | `sync()` | Catch up to every write acked before the call from any tab. |
 | `close()` | Close this tab's handle. |
 | `dangerousDestroy()` | Delete every record, in every tab. Writes acked before it are gone, and writes after it land in the empty database. Every handle stays open: this one reads empty when it resolves, other tabs at their next `sync` or write, each with a `gap` event. The host removes the files no tab is reading, and the rest once their tabs move on. Waits for a flush or compaction step already running. Once it resolves, the deleted records never come back, even after a power loss. A crash before that leaves the database as if it had not run. |
@@ -88,6 +90,47 @@ Every tab judges expiry with its own `Date.now()`, never earlier than the time t
 
 Expired rows, deleted rows and rows a range delete removed leave the disk when the SharedWorker's compaction rewrites the SST file that holds them. Besides keeping the levels in shape, it rewrites a file once about half of it is dead, and it drops a file a range delete covers whole without rewriting anything. It judges what is dead from statistics each file carries, so a file can wait until a little past half. The SharedWorker has no timer: it compacts after a flush and when a tab opens the database, so rows that expire while a database sits idle stay on disk until one of those.
 
+### Size cap
+
+`maxBytes` caps the live bytes of a database, and `db.onPressure(handler)` decides what goes when it is passed. kv measures and asks. It never removes a row on its own, and no write waits for the cap or fails because of it.
+
+After each flush and when a tab opens the database, the SharedWorker estimates the live bytes from statistics each SST file carries. Over `maxBytes`, it offers a `Pressure` to one tab: the tab that holds the Web Lock `opfs-lsm-pressure/<name>`, which every tab with a handler asks for. That tab calls each of its handlers once, in turn, with:
+
+| Field | Meaning |
+| --- | --- |
+| `liveBytes` | The estimate: key plus value bytes of the rows reads find in the SST files. |
+| `maxBytes` | The cap the SharedWorker holds. |
+| `need` | Key plus value bytes to remove to come back to 7/8 of `maxBytes`, so one answer leaves room for more writes. |
+| `through` | A seq: removing every row last written at or before it frees about `need`. |
+
+A handler removes rows with ordinary writes: `tx.delete`, `tx.deleteRange`, or a put with an `expiresAt`. They are as consistent as any write and reach `changes()` as usual. When the handlers settle, resolved or rejected, the SharedWorker waits until a flush holds their writes and a later flush or open measures again, and offers again only if the database is still over. A handler must be safe to run twice: when its tab closes or crashes mid-run, the next tab with a handler gets the same offer.
+
+Oldest writes first, in one op:
+
+```ts
+const db = await openDb({ name: "http-cache", maxBytes: 256 * 1024 * 1024 });
+db.onPressure(async ({ through }) => {
+  await db.batch((tx) => tx.deleteRange({}, { through }));
+});
+```
+
+Whole objects the layer picks, here the least recently used, each removed with every row it owns in one batch:
+
+```ts
+db.onPressure(async ({ need }) => {
+  let freed = 0;
+  for (const doc of await leastRecentlyUsed()) {
+    if (freed >= need) break;
+    await db.batch((tx) => {
+      for (const key of doc.keys) tx.delete(key);
+    });
+    freed += doc.bytes; // key plus value bytes of its rows
+  }
+});
+```
+
+The estimate does not count the WAL, rows a delete or an expiry removed that compaction has not yet rewritten, the files' own bytes, or SST files a long `view` keeps open, so the disk holds more than `maxBytes`. Older versions of an overwritten key count until compaction drops them, so a database that overwrites a lot measures high. With no handler in any tab, nothing holds the cap: each tab with a handle opened with `maxBytes` logs one `console.warn` per offer, and the database keeps growing.
+
 ## Errors
 
 Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A host error keeps its class when it crosses the SharedWorker port.
@@ -101,4 +144,4 @@ Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A h
 | `ConstraintError` | `constraint` | A key, value or batch is not valid or is over a limit. | Fix the call. |
 | `ClosedError` | `closed` | The handle is closed. | Open a new one. |
 
-`@opfs-lsm/kv` also exports `prefixBound`, the `KeyBounds` and `DeleteRangeOptions` types of `deleteRange`, and the error classes above. The harness that tests use (`EngineHost`, `MemoryFs`, `openHarnessDb`) is in `@opfs-lsm/kv/testing`. The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
+`@opfs-lsm/kv` also exports `prefixBound`, the `KeyBounds` and `DeleteRangeOptions` types of `deleteRange`, the `Pressure` and `PressureHandler` types of `onPressure`, and the error classes above. The harness that tests use (`EngineHost`, `MemoryFs`, `openHarnessDb`) is in `@opfs-lsm/kv/testing`. The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.

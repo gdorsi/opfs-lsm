@@ -286,6 +286,55 @@ An expired row leaves the disk when a compaction step rewrites its run (see
 [Planning](#planning)). The host has no timer: in an idle database that waits for the next
 flush or open, each of which starts a compaction pass.
 
+# Size cap
+
+`openDb({ maxBytes })` asks for the database to stay near a size, and `db.onPressure(handler)`
+registers what removes rows when it does not. kv measures and asks. It never removes a row and
+writes nothing to the log for the cap, and a write never waits for it or fails because of it.
+
+**What is measured.** The live bytes: an estimate, from the run statistics of the recorded
+manifest, of the entry bytes (key plus value lengths) that a read finds in the runs. Each run
+counts its entry bytes less its tombstones, its puts expired at the host's clock and the versions
+a mark it has not absorbed covers (see [Planning](#planning) for the bounds). Each tombstone in a
+run that an older run overlaps also takes off one put of the mean size, so a delete counts once
+it is flushed. Not counted, so on disk on top of the cap: the WAL, the dead bytes no merge has
+reached yet, the file format's own bytes, and the retired runs a long `view` holds. Older
+versions of an overwritten key count until a merge drops them, so an overwrite-heavy database
+measures high.
+
+The host holds the smallest `maxBytes` that any open tab passed, at least 16 MiB, until the last
+tab closes the database. Nothing about the cap is stored.
+
+**Offers.** Each compaction pass ends with a measurement: after every flush, and when a tab
+opens the database. Over the cap, the host posts `{ kind: "pressure", id, pressure }` on the
+layers channel, with `pressure = { liveBytes, maxBytes, need, through }`. `need` is the live
+bytes less 7/8 of the cap. `through` is the smallest seq, among the points of the run
+statistics, through which the estimate finds `need` live bytes, so a range delete over every key
+through it frees about `need`. The host keeps one offer at a time:
+
+| State | Event | Next |
+|---|---|---|
+| idle | measured over | offered, posted |
+| offered | measured over | offered with the new numbers, not posted |
+| offered | `pressure-pull` from a tab | offered, posted again |
+| offered | `pressure-done` with its id | answered, with the WAL head and the passes started so far |
+| answered | measured by a later pass, the manifest's `through` at or past that head | as from idle |
+| any | measured at or under the cap | idle |
+
+An answer is judged only once the manifest holds what the handlers wrote, and only passes
+started by a flush or an open measure, so a handler that fails or frees too little is asked at
+most once per pass. A new host starts idle and measures again; an offer id carries a random
+number of its host, so no tab takes a new offer for one it answered.
+
+**Answering.** A tab with a handler asks for the Web Lock `opfs-lsm-pressure/<name>` and keeps
+it while it has one. On the grant it sends `pressure-pull`, since an offer may have come while
+another tab held the lock. Only the holder answers: it calls every handler of the tab in turn,
+once per offer id, then sends `pressure-done`, whether they resolved or threw. A tab that closes
+its last handle with a handler during a run lets go of the lock and sends nothing, as does one
+that goes away; the next holder pulls the offer. A tab with a `maxBytes` handle and no handler
+asks for the lock shared with `ifAvailable`. Granted, no tab answers, and it warns once for that
+offer.
+
 # Multi-tab coordination
 
 ## Seeing other tabs' writes
