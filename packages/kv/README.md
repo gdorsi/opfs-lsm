@@ -275,69 +275,31 @@ await db.view(async (snap) => {
 
 **Note.** A removed row that was not flushed yet never reaches OPFS. One already in an SST file is skipped until compaction rewrites that file and frees its space.
 
-## Size cap
+## Storage quota
 
-With `maxBytes`, the SharedWorker asks an `onPressure` handler to free space once the SST files pass the cap. kv never removes a row itself, and a write never waits for the cap or fails because of it.
+The WAL and the SST files count against the origin's storage quota. Open with `maxBytes`, and the SharedWorker asks an `onPressure` handler to free space. kv never removes a row itself, and a write never waits or fails because of the cap.
 
 ```ts
-import type { Pressure } from "@opfs-lsm/kv";
-
-const db = await openDb({
-  name: "log",
-  maxBytes: 64 * 1024 * 1024
-});
-// Register in the turn openDb resolves. An offer before that logs
-// a warning, then waits for you. With no handler in any tab, each
-// offer logs a warning and the database keeps growing.
-const stop = db.onPressure(dropOldest);
-
+// offer when usage passes 90% of the origin's quota
+await openDb({ name: "log", maxBytes: "quota" });
+// offer when this database's SST files pass 64 MiB
+await openDb({ name: "log", maxBytes: 64 * 1024 * 1024 });
 await openDb({ name: "log", maxBytes: 0 });
 // throws ConstraintError
 ```
 
-Here keys start with a timestamp, so the handler deletes the oldest rows with ordinary writes. `bytes` is the size of the SST files, and `need` is what to free to get back to 4/5 of `maxBytes`.
-
-```ts
-async function dropOldest({ need }: Pressure) {
-  let freed = 0;
-  for await (const { key, value } of db.range()) {
-    if (freed >= need) {
-      // Frees space once compaction rewrites the covered files.
-      // Point deletes can take much longer.
-      await db.batch((tx) =>
-        tx.deleteRange({ endExclusive: key })
-      );
-      return;
-    }
-    freed += key.byteLength + value.byteLength;
-  }
-  await db.batch((tx) => tx.deleteRange({}));
-  // all rows together hold less than need
-}
-```
-
-```ts
-// The offer comes back after a flush while too little was freed,
-// so make the handler safe to run again. One handle answers at a
-// time, and the next offer waits until its handler settles.
-stop(); // unsubscribe
-```
-
-**Note.** `bytes` includes rows that a delete or an overwrite hides until a merge drops them. The engine's [Size cap](../../docs/design.md#size-cap) has how kv measures, offers, and picks the handle that answers.
-
-## Storage quota
-
-The WAL and the SST files count against the origin's storage quota. With `maxBytes: "quota"`, the SharedWorker offers when `navigator.storage.estimate()` reports `usage` over 90% of `quota` (see the engine's [Size cap](../../docs/design.md#size-cap)).
+Here keys start with a timestamp, so the handler drops the oldest rows. `need` is what to free to get back to 4/5 of the cap, and with `"quota"` it counts the whole origin, so free at most half of `bytes`.
 
 ```ts
 const db = await openDb({ name: "log", maxBytes: "quota" });
+// Register in the turn openDb resolves. With no handler, kv logs
+// a warning and the database keeps growing.
 db.onPressure(async ({ bytes, need }) => {
-  // need counts the whole origin, and every database opened with
-  // "quota" is offered all of it
   const goal = Math.min(need, bytes / 2);
   let freed = 0;
   for await (const { key, value } of db.range()) {
     if (freed >= goal) {
+      // a range delete frees space sooner than point deletes
       await db.batch((tx) =>
         tx.deleteRange({ endExclusive: key })
       );
@@ -347,6 +309,8 @@ db.onPressure(async ({ bytes, need }) => {
   }
 });
 ```
+
+The offer comes back after a flush while too little was freed, so make the handler safe to run again. The engine's [Size cap](../../docs/design.md#size-cap) covers how kv measures and which tab answers.
 
 **Note.** If the origin runs out anyway, flushes fail with `StorageFullError`. The acked writes stay in the WAL, and the SharedWorker flushes again after another 1 MiB of writes or the next `openDb`.
 
@@ -408,7 +372,7 @@ dec(await tabB.get(key)); // => "world"
 | `cacheBytes` | 256 MiB, at least 1 MiB | SST pages, Bloom filters and block indexes this tab caches. |
 | `memtableBytes` | 16 MiB, at least 1 MiB | Unflushed rows this tab holds. At the limit a write waits for a flush ([Backpressure](../../docs/design.md#backpressure)). |
 | `compactionMemoryBytes` | 32 MiB, at least 8 MiB | Memory the SharedWorker spends to flush and compact ([Memory budget](../../docs/design.md#memory-budget)). |
-| `maxBytes` | none | SST bytes to stay under, or `"quota"`. See [Size cap](#size-cap). |
+| `maxBytes` | none | `"quota"`, or SST bytes to stay under. See [Storage quota](#storage-quota). |
 
 When tabs pass different values, the SharedWorker uses the smallest `compactionMemoryBytes` and `maxBytes` until the last tab closes the database.
 
