@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChangeEvent } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
+import { checkDbName } from "../src/check.js";
+import { TabWal } from "../src/idb/wal.js";
 
 const NAME = "wal-append-test";
 const IDB = `opfs-lsm-wal/${NAME}`;
@@ -17,21 +19,12 @@ function wipe(): Promise<void> {
   });
 }
 
-function setMeta(values: Record<string, number>): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const open = indexedDB.open(IDB);
-    open.onerror = () => reject(open.error);
-    open.onsuccess = () => {
-      const db = open.result;
-      const tx = db.transaction("meta", "readwrite");
-      for (const [key, value] of Object.entries(values)) tx.objectStore("meta").put(value, key);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => reject(tx.error);
-    };
-  });
+/** Move the head to `head`, past every record, as a recovery that found those seqs in a manifest does. */
+async function raiseHead(head: number): Promise<void> {
+  const wal = await TabWal.open(checkDbName(NAME));
+  const meta = await wal.meta();
+  expect(await wal.adopt(meta, meta.generation ?? 0, meta.ingestedThrough, head, meta.top)).toBe(true);
+  wal.close();
 }
 
 const open = (writerId: string) =>
@@ -47,9 +40,9 @@ afterEach(() => {
 });
 
 describe("blind writes", () => {
-  it("continue past a head the key generator has not reached", async () => {
+  it("continue past a head that recovery moved past the records", async () => {
     await (await open("w0")).close();
-    await setMeta({ head: 50, ingestedThrough: 50 });
+    await raiseHead(50);
 
     const db = await open("w1");
     const seqs: number[] = [];

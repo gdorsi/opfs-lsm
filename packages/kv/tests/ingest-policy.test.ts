@@ -299,7 +299,8 @@ describe("ingest policy", () => {
     await wal.append(encodeOps([second]));
     await wal.close();
     // An older build wrote `meta.head` on each append and kept `pendingBytes`.
-    // The floor is left behind the last key, and the counter is wrong.
+    // This build reads neither: the stored head is behind the last key, and
+    // the counter is wrong.
     await walStore(name, "readwrite", (_wal, meta) => {
       meta.put(1, "head");
       meta.put(123_456, "pendingBytes");
