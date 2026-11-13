@@ -9,7 +9,6 @@ export const FULL_COMPACT_BELOW = 720;
 
 export const SIZES = {
   adapters: { wide: [1152, 372], compact: [358, 962] },
-  bundle: { wide: [620, 400], compact: [358, 492] },
   stack: { wide: [620, 400], compact: [358, 470] },
   sync: { wide: [600, 380], compact: [358, 464] },
 } as const satisfies Record<string, { wide: readonly [number, number]; compact: readonly [number, number] }>;

@@ -27,6 +27,70 @@
   }
 }
 
+/* What kv offers, below the hero: a card per feature, each a name, one line and a few lines of code. */
+.vp-doc .home-features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+  margin: 8px 0 16px;
+}
+
+.vp-doc .home-features > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 16px 16px 4px;
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+}
+
+.vp-doc .home-features h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 24px;
+}
+
+.vp-doc .home-features p {
+  margin: 2px 0 12px;
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* The code fills the rest of its card, so the blocks of a row end on one line. On a phone VitePress runs a code
+   block to the screen's edges, which would leave the card. */
+.vp-doc .home-features div[class*="language-"] {
+  flex: 1;
+  margin: 0 0 12px;
+  border-radius: 8px;
+  background: var(--vp-c-bg);
+}
+
+.vp-doc .home-features div[class*="language-"] pre {
+  padding: 12px 0;
+}
+
+.vp-doc .home-features div[class*="language-"] .lang,
+.vp-doc .home-features div[class*="language-"] .copy {
+  display: none;
+}
+
+.vp-doc .home-features div[class*="language-"] code {
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+@media (max-width: 419px) {
+  .vp-doc .home-features div[class*="language-"] code {
+    font-size: 11.25px;
+  }
+}
+
+.vp-doc .home-features + p {
+  margin: 0 0 56px;
+  font-size: 14px;
+}
+
 /* The libraries that sit on kv: a list of links drawn as cards. */
 .vp-doc .home-adapters ul {
   display: grid;
