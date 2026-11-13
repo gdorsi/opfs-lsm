@@ -20,7 +20,7 @@
     "deadcode": "fallow dead-code",
     "static": "pnpm lint && pnpm check:docs && pnpm deadcode",
     "test": "node scripts/check-readme.mjs && pnpm --filter './packages/*' run build && pnpm run '/^test:(suites|examples)$/'",
-    "test:suites": "pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test && pnpm --filter @opfs-lsm/tanstack-db test",
+    "test:suites": "pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test && pnpm --filter @opfs-lsm/tanstack-db test && pnpm --filter @opfs-lsm/fate test",
     "test:examples": "pnpm --filter './examples/*' run build",
     "test:kv": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/kv test:unit",
     "test:docstore": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/docstore run build && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",

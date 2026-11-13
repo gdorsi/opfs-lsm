@@ -1,6 +1,6 @@
 ---
 name: verify-opfs-lsm
-description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/docstore — SharedWorker two-tab visibility and the bench/ suite (kv vs IndexedDB, docstore vs Dexie, Automerge and Yjs adapters, every read checked). Use when changing openDb, SharedWorker ingest, WAL/SST visibility across tabs, docstore put/get/query, the Automerge or Yjs adapters, or any claim that MemoryFs unit tests alone cannot prove."
+description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/docstore — SharedWorker two-tab visibility and the bench/ suite (kv vs IndexedDB, docstore vs Dexie, Automerge and Yjs adapters, fate persistence, every read checked). Use when changing openDb, SharedWorker ingest, WAL/SST visibility across tabs, docstore put/get/query, the Automerge, Yjs or fate adapters, or any claim that MemoryFs unit tests alone cannot prove."
 ---
 
 # Verify @opfs-lsm (real Chrome)
@@ -57,6 +57,7 @@ Read `features/README.md`, then the feature file. Drive through the helper so st
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench table/
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench automerge/
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench yjs/
+.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench fate/
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench-smoke
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-nobc
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-local
@@ -69,7 +70,7 @@ Harness mapping (repo-native; do not invent a second browser stack):
 | `two-tab` | `pnpm --filter @opfs-lsm/kv two-tab` |
 | `two-tab-nobc` | `TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
-| `bench <args…>` | `pnpm bench <args…>`: a selector (`kv/`, `table/`, `automerge/`, `yjs/`, or one workload such as `kv/fillrandom`) plus optional `--size`, `--reps`, `--contenders` |
+| `bench <args…>` | `pnpm bench <args…>`: a selector (`kv/`, `table/`, `automerge/`, `yjs/`, `fate/`, or one workload such as `kv/fillrandom`) plus optional `--size`, `--reps`, `--contenders` |
 | `bench-smoke` | `pnpm bench:smoke` |
 
 Stable proof strings (from harness stdout, not DOM coordinates):
