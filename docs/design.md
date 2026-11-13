@@ -236,10 +236,10 @@ range when the version's seq is at or below its `through`. A writer may ask for 
 record at seq `s` holds `min(asked, s − 1)`, so a range delete never covers its own batch and a
 later write into the range is read as usual.
 
-The range deletes in effect form the mark table, a step function over the key space. Each piece
-holds the highest `through` that covers its keys and `at`, the seq of the record that set it.
-Folding a range delete is a pointwise max, so folding records twice or in another order gives the
-same table. A lookup is one binary search, and a scan walks the pieces beside its keys.
+The range deletes in effect form the marks, an unordered list of `(start, end, through, at)`,
+where `at` is the seq of the record that holds it. The highest `through` among the marks that
+hold a key judges it, so joining is concatenation. A read checks every live mark, so its cost
+grows with their number until compaction retires them.
 
 A version is judged in the layer that holds it:
 
@@ -250,8 +250,8 @@ A version is judged in the layer that holds it:
   before the run was written. A flushed run takes the last seq it folded. A compaction output
   takes the lowest `marksThrough` of its inputs, because a merge applies no range delete.
 
-A piece retires, falling back to `through` 0, when every run that overlaps it has
-`marksThrough` at or past its `at`: no run left can hold a version it covers. Each flush and each
+A mark retires when every run that overlaps it has `marksThrough` at or past its `at`: no run
+left can hold a version it covers. Each flush and each
 compaction install retires the manifest's marks against its new runs. A covered version that a
 run still holds stays on disk until a newer version of its key replaces it in a merge.
 

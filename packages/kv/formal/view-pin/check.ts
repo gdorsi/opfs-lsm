@@ -46,7 +46,7 @@ function viewPinsInSource(): boolean {
     /new ViewSnapshotImpl\([^)]*this\.mem\.pin\(\),\s*layers\.levels,\s*this\.point\(\)/s.test(db) &&
     /case "deleteRange": \{[\s\S]*?this\.rebuild\(/.test(mem) &&
     /const rows = keep\.slice\(i, i \+ CHUNK_ROWS\);\s*this\.chunks\.push\(rows\)/.test(mem) &&
-    /this\.held = joinMarks\(this\.held, /.test(mem) &&
+    /this\.held = \[\.\.\.this\.held, /.test(mem) &&
     /pin\(\)[^{]*\{\s*this\.owned\.fill\(false\)/.test(mem) &&
     /if \(!this\.owned\[c\]\) \{\s*this\.chunks\[c\] = this\.chunks\[c\]!\.slice\(\);/.test(mem)
   );

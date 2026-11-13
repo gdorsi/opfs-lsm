@@ -1,7 +1,7 @@
 import { compareBytes } from "../bytes.js";
 import { ROW_OVERHEAD, type CheckedOp } from "../check.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
-import { joinMarks, markTable, NO_MARKS, type Mark, type Marks } from "./marks.js";
+import { NO_MARKS, type Marks } from "./marks.js";
 
 /** The latest op for one user key, and the WAL seq that wrote it. */
 export type MemRow = {
@@ -98,8 +98,7 @@ export class Memtable extends Chunks {
   private applied = 0;
   private ingested = 0;
   private live = 0;
-  /** The range deletes of the records held, oldest first. */
-  private markLog: Mark[] = [];
+  /** The range deletes of the records held, oldest first. Replaced, never mutated. */
   private held: Marks = NO_MARKS;
 
   constructor() {
@@ -115,7 +114,7 @@ export class Memtable extends Chunks {
     return this.live;
   }
 
-  /** The join of the range deletes of the records held. Replaced, never mutated, when it changes. */
+  /** The range deletes of the records held. */
   get marks(): Marks {
     return this.held;
   }
@@ -146,9 +145,7 @@ export class Memtable extends Chunks {
               (row) => row.seq > through || compareBytes(row.key, start) < 0 || (end !== undefined && compareBytes(row.key, end) >= 0),
             ),
           );
-          const mark = { ...op, at: record.seq };
-          this.markLog.push(mark);
-          this.held = joinMarks(this.held, markTable(mark));
+          if (through > 0) this.held = [...this.held, { ...op, at: record.seq }];
           break;
         }
       }
@@ -190,10 +187,7 @@ export class Memtable extends Chunks {
     if (through <= this.ingested) return false;
     this.ingested = through;
     const jumped = through > this.applied;
-    if (this.markLog[0] && this.markLog[0].at <= through) {
-      this.markLog = this.markLog.filter((m) => m.at > through);
-      this.held = this.markLog.reduce((acc, m) => joinMarks(acc, markTable(m)), NO_MARKS);
-    }
+    if (this.held[0] && this.held[0].at <= through) this.held = this.held.filter((m) => m.at > through);
     this.applied = Math.max(this.applied, through);
     this.rebuild(jumped ? [] : this.range().filter((row) => row.seq > through));
     return jumped;

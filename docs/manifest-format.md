@@ -24,13 +24,15 @@ per run:
 | u64 marksThrough                                                           |
 
 marks block:
-| u32 piece count (at least 1)                                               |
-| piece 0                                                                    |
+| u32 count       (0 is valid: no marks)                                     |
+| mark 0                                                                     |
 | ...                                                                        |
 
-per piece:
+per mark:
 | u32 start length                                                           |
-| start           the first key of the piece                                 |
+| start           the first key of the range                                 |
+| u8 has end                                                                 |
+| u32 length, end key, exclusive   (if has end)                              |
 | u64 through                                                                |
 | u64 at                                                                     |
 ```
@@ -43,11 +45,10 @@ file. The level of a run is in its path.
 Runs are listed L0 first, newest first. Each deeper level follows, with its runs sorted by
 smallest key. Reads use that order directly.
 
-The marks block holds the pieces of the mark table, and `marksThrough` is a run's claim
-against it. [design.md](design.md#range-deletes) gives the meaning of both. The first piece
-starts at the empty key, starts strictly increase, and two adjacent pieces never hold the same
-`through` and `at`.
+The marks block holds the marks, in no particular order, and `marksThrough` is a run's claim
+against them. [design.md](design.md#range-deletes) gives the meaning of both.
 
 A reader rejects any other version as corrupt, and a marks block that breaks its rules, a
-piece with `at` at or below its nonzero `through` or past the manifest's `through`, or a run
+mark with `through` 0, an end not above its start, `at` at or below its `through` or past the
+manifest's `through`, or a run
 whose `marksThrough` is past it.

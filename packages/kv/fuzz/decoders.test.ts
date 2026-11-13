@@ -21,7 +21,7 @@ import {
   type RowOp,
 } from "./targets.js";
 import { loadWasm, withoutWasm } from "./wasm.js";
-import { joinMarks, markTable, NO_MARKS, type Marks } from "../src/store/marks.js";
+import { NO_MARKS, type Mark, type Marks } from "../src/store/marks.js";
 
 /**
  * Byte-mutation properties over every decoder of on-disk and IndexedDB
@@ -204,10 +204,10 @@ function marksArb(through: number): fc.Arbitrary<Marks> {
     .chain(({ start, size, t }) =>
       fc.integer({ min: t + 1, max: through }).map((at) => {
         const end = size === null ? undefined : new Uint8Array([...start, ...size]);
-        return markTable({ start, ...(end ? { endExclusive: end } : {}), through: t, at });
+        return { start, ...(end ? { endExclusive: end } : {}), through: t, at } satisfies Mark;
       }),
     );
-  return fc.array(mark, { maxLength: 4 }).map((tables) => tables.reduce(joinMarks, NO_MARKS));
+  return fc.array(mark, { maxLength: 4 });
 }
 
 const manifestArb: fc.Arbitrary<GenerationMeta> = fc.integer({ min: 0, max: 2 ** 40 }).chain((through) =>

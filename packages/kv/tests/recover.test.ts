@@ -435,7 +435,7 @@ describe("range deletes across a fallback to an older manifest", () => {
     await ingest(db);
     await db.close();
     const newest = [...(await fs.list("m"))].sort().at(-1)!;
-    expect(decodeGeneration((await fs.read(`m/${newest}`, 0, Number.POSITIVE_INFINITY))!).marks.empty).toBe(false);
+    expect(decodeGeneration((await fs.read(`m/${newest}`, 0, Number.POSITIVE_INFINITY))!).marks.length).toBeGreaterThan(0);
 
     // A power loss that keeps the IndexedDB commit of the last flush and loses
     // its manifest, and with it the removal of the older one that followed.
@@ -444,7 +444,7 @@ describe("range deletes across a fallback to an older manifest", () => {
     db = await open();
     const recorded = (await walStore(name, "readonly", (_wal, meta) => meta.get("generation"))) as number;
     expect(`${String(recorded).padStart(16, "0")}.mft`).toBe(older);
-    expect(decodeGeneration((await fs.read(`m/${older}`, 0, Number.POSITIVE_INFINITY))!).marks.empty).toBe(true);
+    expect(decodeGeneration((await fs.read(`m/${older}`, 0, Number.POSITIVE_INFINITY))!).marks.length).toBe(0);
     expect(text(await db.get(enc.encode("m/1")))).toBeUndefined();
     expect(text(await db.get(enc.encode("n")))).toBe("kept");
     await db.close();

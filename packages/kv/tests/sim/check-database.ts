@@ -1,4 +1,5 @@
 import { compareBytes, keyToString } from "../../src/bytes.js";
+import { throughAt } from "../../src/store/marks.js";
 import type { AsyncFs } from "../../src/opfs/async-fs.js";
 import {
   decodeGeneration,
@@ -136,16 +137,14 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
 
   // --- Runs of the recorded manifest.
   const runs = current?.runs ?? [];
-  const pieces = current?.marks.pieces ?? [];
+  const marks = current?.marks ?? [];
   const decoded: (SstEntry[] | undefined)[] = [];
   for (const run of runs) decoded.push(await checkRun(fs, run, recorded, current?.through ?? 0, problems));
   checkOrder(runs, decoded, problems);
   // A run holds no version that a range delete it applied covers.
   runs.forEach((run, i) => {
-    const covering = (decoded[i] ?? []).find((e) => {
-      const p = pieceOf(pieces, e.key);
-      return p !== undefined && e.seq <= p.through && p.at <= run.marksThrough;
-    });
+    const applied = marks.filter((m) => m.at <= run.marksThrough);
+    const covering = (decoded[i] ?? []).find((e) => e.seq <= throughAt(applied, e.key));
     if (covering) problems.push(`${run.path}: holds ${show(covering.key)} at seq ${covering.seq}, covered by a mark it applied`);
   });
 
@@ -163,7 +162,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     }
   }
   for (const [id, row] of state) {
-    if (row.seq <= (pieceOf(pieces, row.key)?.through ?? 0)) state.delete(id);
+    if (row.seq <= (throughAt(marks, row.key))) state.delete(id);
   }
   for (const { seq, ops } of wal) {
     for (const op of ops) {
@@ -335,16 +334,6 @@ function checkOrder(
 export type WalOp =
   | { key: Uint8Array; value: Uint8Array | undefined }
   | { start: Uint8Array; endExclusive?: Uint8Array; through: number };
-
-/** The piece of a manifest's marks that holds `key`, or undefined when there are none. */
-function pieceOf<P extends { readonly start: Uint8Array }>(pieces: readonly P[], key: Uint8Array): P | undefined {
-  let found: P | undefined;
-  for (const p of pieces) {
-    if (compareBytes(p.start, key) > 0) break;
-    found = p;
-  }
-  return found;
-}
 
 /**
  * design.md, "WAL records": per op, u8 type | u32 keyLen | key | put: u32
