@@ -24,8 +24,8 @@ function wipe(): Promise<void> {
   });
 }
 
-/** Move the head `by` seqs past the key generator, as a recovery that moves the head past the records does. */
-async function raiseFloor(by: number): Promise<number> {
+/** Move the head `by` seqs past the records, as a recovery that found those seqs in a manifest does. */
+async function raiseHead(by: number): Promise<number> {
   const wal = await TabWal.open(checkDbName(NAME));
   const meta = await wal.meta();
   expect(await wal.adopt(meta, meta.generation ?? 0, meta.ingestedThrough, meta.head + by, meta.generation ?? 0)).toBe(true);
@@ -53,6 +53,16 @@ describe("WAL group commit", () => {
     wal.close();
   });
 
+  it("starts the commit before the adds' results reach the tab", async () => {
+    const wal = await TabWal.open(checkDbName(NAME));
+    const commit = vi.spyOn(IDBTransaction.prototype, "commit");
+    const first = wal.append(encodeOps(put(1)));
+    await Promise.resolve();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(await first).toBe(1);
+    wal.close();
+  });
+
   it("groups the appends that arrive while a group commits into the next one", async () => {
     const wal = await TabWal.open(checkDbName(NAME));
     const first = wal.append(encodeOps(put(1)));
@@ -60,9 +70,8 @@ describe("WAL group commit", () => {
     await new Promise((r) => setTimeout(r, 0));
     const rest = [2, 3, 4].map((i) => wal.append(encodeOps(put(i))));
     expect(await Promise.all([first, ...rest])).toEqual([1, 2, 3, 4]);
-    // One group of 1, one of 3 (or 1 + 3 merged when the first was still active).
-    const groups = wal.groupSizes.reduce((a, n) => a + (n ?? 0), 0);
-    expect(groups).toBeLessThanOrEqual(2);
+    // The first group's commit started at the end of its turn, so the rest form a group of 3.
+    expect(wal.groupSizes).toEqual([1, 1]);
     wal.close();
   });
 
@@ -75,7 +84,7 @@ describe("WAL group commit", () => {
       const tx = real.apply(this, args as Parameters<typeof real>);
       if (armed && args[1] === "readwrite") {
         armed = false;
-        queueMicrotask(() => tx.abort());
+        tx.commit = () => tx.abort();
       }
       return tx;
     });
@@ -87,28 +96,25 @@ describe("WAL group commit", () => {
     wal.close();
   });
 
-  it("resolves every caller of a stale group with undefined, and keeps no record", async () => {
-    await raiseFloor(10);
+  it("gives the appends after a raised head the seqs past it", async () => {
+    const head = await raiseHead(10);
     const wal = await TabWal.open(checkDbName(NAME));
-    expect(await Promise.all([1, 2, 3].map((i) => wal.append(encodeOps(put(i)))))).toEqual([
-      undefined,
-      undefined,
-      undefined,
-    ]);
+    const seqs = await Promise.all([1, 2, 3].map((i) => wal.append(encodeOps(put(i)))));
+    expect(seqs).toEqual([head + 1, head + 2, head + 3]);
     const tail = await wal.tail(0);
-    expect(tail.head).toBe(10);
-    expect(tail.records).toEqual([]);
+    expect(tail.head).toBe(head + 3);
+    expect(tail.records.map((r) => r.seq)).toEqual(seqs);
     wal.close();
   });
 
-  it("a stale group falls back to appendAfter: every write lands past the floor, in call order", async () => {
+  it("lands every write after a raised head past it, in call order", async () => {
     const fs = new MemoryFs();
     const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, maxWalBytes });
     await db.put(utf("k0"), utf("v0"));
     await ingest(db);
-    const floor = await raiseFloor(10);
+    const head = await raiseHead(10);
     const seqs = await Promise.all([1, 2, 3].map((i) => db.put(utf(`k${i}`), utf(`v${i}`))));
-    expect(seqs).toEqual([floor + 1, floor + 2, floor + 3]);
+    expect(seqs).toEqual([head + 1, head + 2, head + 3]);
     for (const i of [0, 1, 2, 3]) expect(text(await db.get(utf(`k${i}`)))).toBe(`v${i}`);
     await db.close();
   });
