@@ -99,8 +99,8 @@ sources the newest wins; within a source the last duplicate of a key wins,
 across block and run boundaries. A source whose keys go back fails with -14.
 Output runs are cut at key boundaries once their entries, sized as entry
 records (below), reach `target_bytes`, and written with `lz4`'s codec.
-A winner whose seq is at or below the `through` of the marks piece that
-holds its key is dropped, delete or put, and its seq is not a dropped seq.
+A winner whose seq is at or below the highest `through` among the marks
+that hold its key is dropped, delete or put, and its seq is not a dropped seq.
 
 ## Wire formats
 
@@ -116,8 +116,11 @@ run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_le
 source list      u32 count · repeated: u32 run_count · run_count × u32 size
 demand record    u32 source · u32 run · u32 offset · u32 len
 run head         u32 entries · u32 size · u32 first_key_len · u32 last_key_len
-marks block      the manifest's encoding (docs/manifest-format.md); `through`
-                 0 is no mark, and the module ignores `at`
+marks block      u32 count · per mark: u32 start_len · start · u8 has_end
+                 · (u32 end_len · end, when has_end is 1) · u64 through
+                 · u64 at. The end is exclusive, no end is the end of the
+                 key space. The module ignores `at` and `count`: it reads
+                 marks to the end of the block, so an empty block is no marks
 ```
 
 A run record carries what the manifest records about a run, so the caller

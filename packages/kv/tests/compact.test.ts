@@ -147,7 +147,7 @@ describe("L0 compaction", () => {
     releaseLater();
     await host.ingest("compact", true);
     const absorbed = (await loadLatestGeneration(fs))!;
-    expect(absorbed.marks.empty, "a mark step then absorbs it").toBe(true);
+    expect(absorbed.marks, "a mark step then absorbs it").toEqual([]);
     const onDisk: string[] = [];
     for (const run of absorbed.runs) for (const e of decodeSst((await fs.read(run.path, 0, Infinity))!)) onDisk.push(new TextDecoder().decode(e.key));
     expect(onDisk.sort()).toEqual(["k0", "k3"]);

@@ -4,8 +4,8 @@
 //! both on purpose.
 //!
 //! It takes one SST per source. A test gives a source of several runs as one
-//! SST of their entries in order, and the marks as (start, through) pieces
-//! in key order, the first at the empty key.
+//! SST of their entries in order, and the marks as (start, end, through)
+//! ranges, `None` for no end.
 
 use crate::sst::{decode_sst, entry_size, Codec, EncodedRun, Entry, SstError, SstWriter};
 use alloc::vec::Vec;
@@ -60,10 +60,13 @@ impl Heads {
     }
 }
 
+/// A mark as the oracle takes it: start, exclusive end, through.
+pub(crate) type Mark = (Vec<u8>, Option<Vec<u8>>, u64);
+
 pub(crate) fn merge_sst_bytes(
     sst_bytes: &[Vec<u8>],
     drop_tombstones: bool,
-    marks: &[(Vec<u8>, u64)],
+    marks: &[Mark],
     target_bytes: usize,
     codec: Codec,
 ) -> Result<(Vec<EncodedRun>, u64), SstError> {
@@ -106,7 +109,12 @@ pub(crate) fn merge_sst_bytes(
             };
             heap.replace_top(replacement.map(|entry| Head { entry, run: shadowed_run }));
         }
-        let through = marks.iter().rev().find(|(start, _)| start.as_slice() <= entry.key()).map_or(0, |p| p.1);
+        let through = marks
+            .iter()
+            .filter(|(start, end, _)| start.as_slice() <= entry.key() && end.as_ref().map_or(true, |e| entry.key() < e.as_slice()))
+            .map(|m| m.2)
+            .max()
+            .unwrap_or(0);
         if through > 0 && entry.seq() <= through {
             continue;
         }

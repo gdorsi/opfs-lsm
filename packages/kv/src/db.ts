@@ -35,7 +35,7 @@ import {
   loadGeneration,
   type RunMeta,
 } from "./store/generation.js";
-import { joinMarks, NO_MARKS, type Marks } from "./store/marks.js";
+import { NO_MARKS, type Marks } from "./store/marks.js";
 import { pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
@@ -921,7 +921,7 @@ class DbImpl implements Db {
     const mem = this.mem.marks;
     const last = this.lastPoint;
     if (last?.installed === installed && last.mem === mem) return last.at;
-    const at = joinMarks(installed, mem);
+    const at = mem.length > 0 ? [...installed, ...mem] : installed;
     this.lastPoint = { installed, mem, at };
     return at;
   }

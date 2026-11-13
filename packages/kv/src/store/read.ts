@@ -12,7 +12,7 @@ import {
   type Maybe,
   type ScanBounds,
 } from "./cursor.js";
-import { markCursor, throughAt, type Marks, type Seq } from "./marks.js";
+import { throughAt, type Marks, type Seq } from "./marks.js";
 import type { SstEntry } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
 import type { Entry } from "../db.js";
@@ -299,14 +299,13 @@ export async function* mergeCursors(
   reverse = false,
 ): AsyncGenerator<Entry> {
   const merge = new Merge(cursors, reverse);
-  const through = markCursor(marks, reverse);
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
     let w = merge.next();
     if (w instanceof Miss) w = await untilHit(() => merge.next(), w);
     if (!w) return;
-    if (gone(w.entry, through.at(w.entry.key))) continue;
+    if (gone(w.entry, throughAt(marks, w.entry.key))) continue;
     yield {
       key: new Uint8Array(w.entry.key),
       value: new Uint8Array(w.entry.value!),
@@ -341,7 +340,6 @@ export async function* scanMatching(
     [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
     reverse,
   );
-  const through = markCursor(marks, reverse);
   let yielded = 0;
   for (;;) {
     if (limit !== undefined && yielded >= limit) return;
@@ -356,7 +354,7 @@ export async function* scanMatching(
       if (newer instanceof Miss) newer = await untilHit(() => shadowed(levels, source - 1, entry.key), newer);
       if (newer) continue;
     }
-    if (gone(entry, through.at(entry.key))) continue;
+    if (gone(entry, throughAt(marks, entry.key))) continue;
     yield { key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) };
     yielded += 1;
   }

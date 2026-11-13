@@ -2,6 +2,7 @@
 //! sources, the same output bytes and the same dropped seq, however the host
 //! answers (chunk and tail sizes, feed order, early pumps, yields).
 
+use super::oracle::Mark;
 use super::*;
 use crate::sst::{decode_sst, encode_sst, EncodedRun};
 
@@ -53,19 +54,25 @@ struct Host {
     rng: Rng,
     /// One pump in this many `Need`s comes before every demand is fed.
     early: usize,
-    /// The marks the session opens with: (start, through) pieces in key
-    /// order, the first at the empty key.
-    marks: Vec<(Vec<u8>, u64)>,
+    /// The marks the session opens with.
+    marks: Vec<Mark>,
 }
 
-/// `pieces` as the manifest encodes them. The session ignores `at`.
-fn marks_block(pieces: &[(Vec<u8>, u64)]) -> Vec<u8> {
-    let mut out = (pieces.len() as u32).to_le_bytes().to_vec();
-    for (start, through) in pieces {
-        out.extend_from_slice(&(start.len() as u32).to_le_bytes());
-        out.extend_from_slice(start);
+/// `marks` as the manifest encodes them. The session ignores `at`.
+fn marks_block(marks: &[Mark]) -> Vec<u8> {
+    let mut out = (marks.len() as u32).to_le_bytes().to_vec();
+    let key = |out: &mut Vec<u8>, k: &[u8]| {
+        out.extend_from_slice(&(k.len() as u32).to_le_bytes());
+        out.extend_from_slice(k);
+    };
+    for (start, end, through) in marks {
+        key(&mut out, start);
+        out.push(end.is_some() as u8);
+        if let Some(end) = end {
+            key(&mut out, end);
+        }
         out.extend_from_slice(&through.to_le_bytes());
-        out.extend_from_slice(&(through + (*through > 0) as u64).to_le_bytes());
+        out.extend_from_slice(&(through + 1).to_le_bytes());
     }
     out
 }
@@ -129,7 +136,7 @@ fn config(drop_tombstones: bool, target_bytes: usize, codec: Codec) -> MergeConf
 }
 
 fn host(seed: u64) -> Host {
-    Host { rng: Rng::new(seed), early: 4, marks: vec![(Vec::new(), 0)] }
+    Host { rng: Rng::new(seed), early: 4, marks: Vec::new() }
 }
 
 /// Merge sources of one run each.
@@ -249,31 +256,32 @@ fn random_sources_merge_to_the_oracle_bytes() {
     }
 }
 
-/// Half the time no mark; otherwise up to five pieces over the `k{:04}`
-/// keys, some starting between two keys, with a `through` often at or just
+/// Half the time no mark; otherwise up to five over the `k{:04}` keys, some
+/// bounded, some cut between two keys, with a `through` often at or just
 /// below a seq of the sources, where the rule's edge is.
-fn random_marks(rng: &mut Rng, sources: &[Vec<Vec<u8>>]) -> Vec<(Vec<u8>, u64)> {
+fn random_marks(rng: &mut Rng, sources: &[Vec<Vec<u8>>]) -> Vec<Mark> {
     let seqs: Vec<u64> = sources.iter().flatten().flat_map(|run| decode_sst(run).unwrap()).map(|e| e.seq()).collect();
-    let mut pieces = vec![(Vec::new(), 0)];
     if rng.chance(2) {
-        return pieces;
+        return Vec::new();
     }
-    let mut starts: Vec<Vec<u8>> = (0..rng.below(6)).map(|_| format!("k{:04}", rng.below(401)).into_bytes()).collect();
-    for s in &mut starts {
+    let key = |rng: &mut Rng| {
+        let mut k = format!("k{:04}", rng.below(401)).into_bytes();
         if rng.chance(3) {
-            s.truncate(rng.below(s.len()) + 1);
+            k.truncate(rng.below(k.len()) + 1);
         }
-    }
-    starts.sort();
-    starts.dedup();
-    for start in starts {
-        let through = match rng.below(3) {
-            0 => 0,
-            n => seqs.get(rng.below(seqs.len())).map_or(0, |&s| (s + 1).saturating_sub(n as u64)),
-        };
-        pieces.push((start, through));
-    }
-    pieces
+        k
+    };
+    (0..rng.below(6))
+        .map(|_| {
+            let start = key(rng);
+            let end = if rng.chance(2) { None } else { Some(key(rng)).filter(|e| *e > start) };
+            let through = match rng.below(3) {
+                0 => 1,
+                n => seqs.get(rng.below(seqs.len())).map_or(1, |&s| (s + 1).saturating_sub(n as u64).max(1)),
+            };
+            (start, end, through)
+        })
+        .collect()
 }
 
 /// A winner a mark covers is gone in any merge, tombstone or not, and its
@@ -285,7 +293,7 @@ fn a_winner_a_mark_covers_is_dropped_in_any_merge() {
     let newer = encode_sst(&[del(b"m1", 5), put(b"m2", b"new", 6), put(b"m3", b"new", 7), put(b"m4", b"new", 8)], Codec::Raw);
     let sources = [vec![newer], vec![older]];
     let mut marked = host(13);
-    marked.marks = vec![(Vec::new(), 0), (b"m".to_vec(), 7), (b"n".to_vec(), 0)];
+    marked.marks = vec![(b"m".to_vec(), Some(b"n".to_vec()), 7), (b"m2".to_vec(), None, 3)];
     for drop_tombstones in [false, true] {
         let cfg = config(drop_tombstones, usize::MAX, Codec::Raw);
         assert_matches_oracle(cfg, &sources, &mut marked, "marks");

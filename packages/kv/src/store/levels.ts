@@ -133,7 +133,7 @@ export function planCompaction(
 
   if (best.level < 0) {
     // A run holds back a mark when the mark survives retiring against that run alone.
-    const stale = marks.empty ? undefined : runs.find((r) => !retireMarks(marks, [r]).empty);
+    const stale = marks.length === 0 ? undefined : runs.find((r) => retireMarks(marks, [r]).length > 0);
     if (!stale) return undefined;
     const level = levelOf(stale.path)!;
     if (level > 0) return plan([[stale]], level);
