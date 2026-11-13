@@ -5,7 +5,7 @@ A key-value store for the browser, built to be the storage layer under local-fir
 > [!WARNING]
 > opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next. Two things are missing before a stable release:
 >
-> - Tests on mobile browsers.
+> - Tests in browsers other than desktop Chrome.
 > - Final storage formats. The WAL and SST layouts still change while we tune performance.
 
 ## Why not just use IndexedDB?
@@ -99,7 +99,7 @@ If read and write performance of the DB is not a concern in your app.
 
 Each adapter keeps many documents or collections in one kv database. `@opfs-lsm/docstore` is the query layer on top of kv: JSON documents in collections, with indexes declared in a versioned schema.
 
-The packages are not on npm yet. Until the first release, build them from source as [CONTRIBUTING.md](CONTRIBUTING.md) describes.
+The packages are published on npm. To build them from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quickstart
 
