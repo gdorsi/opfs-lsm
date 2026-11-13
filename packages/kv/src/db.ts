@@ -86,11 +86,13 @@ export type OpenOptions = {
    */
   readonly compactionMemoryBytes?: number;
   /**
-   * Bytes of run files to stay under. kv never removes a row for it: it asks
+   * Bytes of run files to stay under, or `"quota"` for 90% of the browser's
+   * storage quota for the origin. kv never removes a row for it: it asks
    * an `onPressure` handler to, and a write never waits for it. When tabs
-   * differ, the host uses the smallest (design.md, "Size cap").
+   * differ, the host uses the smallest figure and honors `"quota"` too
+   * (design.md, "Size cap").
    */
-  readonly maxBytes?: number;
+  readonly maxBytes?: number | "quota";
 };
 
 /** Frees about `pressure.need` bytes with ordinary writes. See `Db.onPressure`. */
@@ -413,7 +415,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const maxBytes = options.maxBytes;
-  if (maxBytes !== undefined && !(maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
+  if (maxBytes !== undefined && maxBytes !== "quota" && !(maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
   const cache = new PageCache(
     Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
   );
@@ -557,7 +559,7 @@ class DbImpl implements Db {
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
-    private readonly maxBytes: number | undefined,
+    private readonly maxBytes: number | "quota" | undefined,
     private readonly trace?: OpenTrace,
   ) {
     this.pressure = new Backpressure(
@@ -1144,7 +1146,7 @@ class DbImpl implements Db {
       );
       if (free) {
         console.warn(
-          `opfs-lsm: ${this.name} holds ${pressure.bytes} bytes of run files, over maxBytes ${pressure.maxBytes}, and no tab answers onPressure`,
+          `opfs-lsm: ${this.name} holds ${pressure.bytes} bytes, over maxBytes ${pressure.maxBytes}, and no tab answers onPressure`,
         );
       }
     }

@@ -260,15 +260,25 @@ hold a mark back, so its rows leave the disk.
 
 `openDb({ maxBytes })` asks the database to stay under a size. kv measures and asks: it never
 removes a row or writes to the WAL for the cap, and a write never waits for it or fails because of
-it. The host holds the smallest `maxBytes` any open tab passed, until the last tab closes the
-database. Nothing about the cap is stored.
+it. The host holds the smallest numeric `maxBytes` any open tab passed, and whether any tab passed
+`"quota"`, until the last tab closes the database. Both apply at once. Nothing about the cap is
+stored.
 
 **Measure.** A compaction pass that finds nothing left to plan measures its manifest: `bytes` is
 the sum of its runs' file bytes. A pass runs after each flush and when a tab opens the database
 with `maxBytes`. Covered and overwritten versions count until a merge drops them; the WAL and the
 retired runs a `view` holds do not count.
 
-**Offer.** Over the cap, the host posts `{ kind: "pressure", pressure: { bytes, maxBytes, need } }`
+**Quota.** With `"quota"`, a measure that finds the numeric cap met or absent, and no run file on
+disk outside its manifest, reads `navigator.storage.estimate()` after the pass, holding no lock. A
+retired run that a tab still holds counts in the estimate, so the read waits for a pass after it
+is gone. The cap is then 90% of `quota`,
+rounded down, and `bytes` is `usage`. The estimate covers the whole origin (the WAL in IndexedDB,
+other databases, caches) and is approximate, so `bytes` and `need` are origin numbers, and a
+handler may not free `need` from this database alone. A missing or rejected estimate, or one
+without `usage` or `quota`, makes no offer.
+
+**Offer.** Over a cap, the host posts `{ kind: "pressure", pressure: { bytes, maxBytes, need } }`
 on the layers channel, with `need` the bytes over 7/8 of the cap. It holds one of two states:
 
 | State | Event | Next |

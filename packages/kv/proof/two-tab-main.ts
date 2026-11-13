@@ -8,6 +8,7 @@
  *   ?local=1           one page, two handles, one EngineHost
  *   ?nobc=1            drop BroadcastChannel messages before openDb
  *   ?scenario=pressure databases over maxBytes, with a handler in each tab and with none
+ *   ?scenario=quota    maxBytes "quota" over a quota the script overrides: what one answer does to the usage estimate
  */
 const params = new URLSearchParams(location.search);
 const ROLE = params.get("role");
@@ -16,6 +17,7 @@ const NOBC = params.has("nobc");
 const AUTO = params.has("auto");
 const DB_NAME = params.get("name") ?? "two-tab";
 const PRESSURE = params.get("scenario") === "pressure";
+const QUOTA = params.get("scenario") === "quota";
 
 const statusEl = document.getElementById("status")!;
 const out = document.getElementById("out")!;
@@ -113,13 +115,18 @@ async function cap(name: string, mode: CapMode): Promise<CapReport> {
   await entry.db.sync();
   entry.report.rows = 0;
   for await (const _ of entry.db.range()) entry.report.rows += 1;
-  entry.report.bytes = (await testing.readStats(entry.db)).host.layout.reduce((n, l) => n + l.bytes, 0);
+  entry.report.bytes = await sstBytes(entry.db);
   return { ...entry.report };
 }
 
-async function fillPastCap(name: string): Promise<void> {
+type Db = import("../dist/index.js").Db;
+
+async function sstBytes(db: Db): Promise<number> {
+  return (await (await import("../dist/testing.js")).readStats(db)).host.layout.reduce((n, l) => n + l.bytes, 0);
+}
+
+async function fillPastCap(db: Db): Promise<void> {
   const testing = await import("../dist/testing.js");
-  const { db } = capped.get(name)!;
   for (let i = 0; i < CAP_ROWS; i += 16) {
     await db.batch((tx) => {
       for (let j = i; j < i + 16; j++) {
@@ -146,7 +153,7 @@ async function pressureScenario(other: OtherTab): Promise<void> {
   const name = `${DB_NAME}-cap`;
   await cap(name, "oldest");
   await other.cap(name, "oldest");
-  await fillPastCap(name);
+  await fillPastCap(capped.get(name)!.db);
   await poll(async () => (await cap(name, "oldest")).calls + (await other.cap(name, "oldest")).calls > 0, "an answer");
   await (await import("../dist/testing.js")).settle(capped.get(name)!.db);
   const [a, b] = [await cap(name, "oldest"), await other.cap(name, "oldest")];
@@ -160,13 +167,82 @@ async function pressureScenario(other: OtherTab): Promise<void> {
   const bare = `${DB_NAME}-nohandler`;
   await cap(bare, "none");
   await other.cap(bare, "none");
-  await fillPastCap(bare);
+  await fillPastCap(capped.get(bare)!.db);
   await poll(async () => (await cap(bare, "none")).warns > 0 && (await other.cap(bare, "none")).warns > 0, "warnings");
   const [c, d] = [await cap(bare, "none"), await other.cap(bare, "none")];
   must(c.warns === 1 && d.warns === 1, `warnings: tab A ${c.warns}, tab B ${d.warns}`);
   must(c.rows === CAP_ROWS && d.rows === CAP_ROWS, "a row went missing with no handler");
   log("no handler: one warning in each tab");
   log("pressure ok");
+}
+
+/**
+ * Fills a database, then has the script cut the origin's quota to just under
+ * the usage. A handle opened with maxBytes "quota" gets an offer and range
+ * deletes the oldest rows. Prints usage and SST bytes from the handler on,
+ * and how often the handler ran.
+ */
+async function quotaScenario(): Promise<void> {
+  log(`mode=${modeLabel()}`);
+  const testing = await import("../dist/testing.js");
+  const name = `${DB_NAME}-quota`;
+  const filler = await testing.openHarnessDb({ name, maxWalBytes });
+  await fillPastCap(filler);
+  await testing.settle(filler);
+  const usage = async () => (await navigator.storage.estimate()).usage!;
+  const before = await usage();
+  const quota = Math.floor(before / 0.93);
+  const set = await fetch(`/quota?size=${quota}`, { method: "POST" });
+  must(set.ok, `the quota override failed: ${(await set.json()).error}`);
+  log(`usage ${before}, quota of the SharedWorker's estimate set to ${quota}`);
+
+  const db = await testing.openHarnessDb({ name, maxBytes: "quota", maxWalBytes });
+  let t0 = 0;
+  let calls = 0;
+  let answered = 0;
+  let last = before;
+  let lastSst = 0;
+  /** Logs the usage and SST bytes now; a poll logs only when one moved. */
+  const snap = async (what: string, poll = false) => {
+    const [u, sst] = [await usage(), await sstBytes(db)];
+    if (poll && u === last && sst === lastSst) return;
+    [last, lastSst] = [u, sst];
+    log(`+${Math.round(performance.now() - t0)} ms ${what}: usage ${u}, sst ${sst}`);
+  };
+  db.onPressure(async (p) => {
+    t0 ||= performance.now();
+    calls += 1;
+    await snap(`handler ${calls} starts, offer ${JSON.stringify(p)}`);
+    let need = p.need;
+    let end: Uint8Array | undefined;
+    for await (const { key, value } of db.range()) {
+      if (need <= 0) {
+        end = key;
+        break;
+      }
+      need -= key.byteLength + value.byteLength;
+    }
+    await db.batch((tx) => tx.deleteRange(end ? { endExclusive: end } : {}));
+    answered += 1;
+  });
+  for (let i = 0; i < 100 && !calls; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  must(calls, "no offer came");
+  let flushed = 0;
+  for (const end = performance.now() + 10_000; performance.now() < end; ) {
+    if (answered !== flushed) {
+      flushed = answered;
+      await snap("handler resolved");
+      await testing.ingest(db);
+      await snap("flushed");
+      await testing.settle(db);
+      await snap("settled");
+    } else await snap("poll", true);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  log(`unchanged until +${Math.round(performance.now() - t0)} ms, handler calls: ${calls}`);
+  must(calls === 1, `the handler ran ${calls} times for one answer`);
+  must(last < before, `usage went from ${before} to ${last}`);
+  log("quota ok");
 }
 
 type PeerResult = {
@@ -481,7 +557,8 @@ async function run(): Promise<void> {
   }
 
   const db = await openHandle(mod, testing, "tab-a");
-  if (PRESSURE) await pressureScenario(await remoteOther());
+  if (QUOTA) await quotaScenario();
+  else if (PRESSURE) await pressureScenario(await remoteOther());
   else await scenario(db, await remoteOther());
   await db.close();
 }

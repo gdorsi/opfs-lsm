@@ -24,9 +24,10 @@ beforeEach(() => {
 afterEach(async () => {
   for (const db of opened.splice(0)) await db.close();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
-async function open(maxBytes?: number): Promise<Db> {
+async function open(maxBytes?: number | "quota"): Promise<Db> {
   const db = await openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1 << 30, maxBytes });
   opened.push(db);
   return db;
@@ -194,5 +195,59 @@ describe("maxBytes", () => {
     host = new EngineHost(() => fs);
     (await open(CAP)).onPressure(failing);
     await until(() => calls === 3, "the new host's offer, with no write");
+  });
+
+  describe("maxBytes: \"quota\"", () => {
+    const stub = (impl: () => Promise<unknown>) => {
+      const spy = vi.fn<() => Promise<unknown>>(impl);
+      vi.stubGlobal("navigator", { locks: navigator.locks, storage: { estimate: spy } });
+      return spy;
+    };
+    const estimate = (usage?: number, quota?: number) => stub(async () => ({ usage, quota }));
+
+    it("offers when the origin's usage passes 90% of its quota, with the origin's numbers", async () => {
+      const spy = estimate(900, 1000);
+      const db = await open("quota");
+      const calls: Pressure[] = [];
+      db.onPressure(async (p) => void calls.push(p));
+      await fill(db, new Set(), 0, 300);
+      await host.compact(name);
+      await turns();
+      expect(spy).toHaveBeenCalled();
+      expect(calls).toEqual([]);
+
+      estimate(901, 1000);
+      await host.compact(name);
+      await until(() => calls.length === 1, "a quota offer");
+      expect(calls).toEqual([{ bytes: 901, maxBytes: 900, need: 901 - 787 }]);
+    });
+
+    it.each([
+      ["rejects", () => stub(() => Promise.reject(new Error("no estimate")))],
+      ["has no usage or quota", () => estimate()],
+    ])("makes no offer when the estimate %s, and compaction finishes", async (_, stub) => {
+      stub();
+      const db = await open("quota");
+      const calls: Pressure[] = [];
+      db.onPressure(async (p) => void calls.push(p));
+      const model = new Set<number>();
+      await fill(db, model, 0, 300);
+      await host.compact(name);
+      await settle(db);
+      await turns();
+      expect(calls).toEqual([]);
+      expect(await readAll(db)).toEqual(sorted(model));
+    });
+
+    it("still offers for a numeric cap another tab passed", async () => {
+      estimate(1, 1000);
+      const a = await open(CAP);
+      await open("quota");
+      const calls: Pressure[] = [];
+      a.onPressure(async (p) => void calls.push(p));
+      await fill(a, new Set(), 0, 300);
+      await until(() => calls.length === 1, "a numeric offer");
+      expect(calls[0]!.maxBytes).toBe(CAP);
+    });
   });
 });
