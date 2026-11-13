@@ -14,7 +14,7 @@ export default defineContender({
       async attach(docName, doc) {
         const p = new KvPersistence(db, docName, doc);
         await p.whenSynced;
-        return { flush: () => p.flush(), detach: () => p.destroy() };
+        return { flush: () => p.flush(), detach: () => p.destroy(), clear: () => p.clearData() };
       },
     };
   },
