@@ -67,7 +67,20 @@ Medians of 5 runs in headless Chrome 157 on an Apple M5 Max, 100,000 entries wit
 | Single put, awaited one at a time | 6.4k ops/s | 6.2k ops/s | 1.0× |
 | Cold open | 1.3 ms | 9.9 ms | 0.1× |
 
-The framework adapters show the same shape. TanStack DB bulk inserts run at 125k rows/s against 19k on its IndexedDB adapter, and a cold load of about 91,000 rows takes 390 ms against 750 ms. Loading 500 Yjs notes cold runs at 10.1k notes/s against 3.3k on y-indexeddb.
+The framework adapters, each against the IndexedDB option its framework ships, at size `small`:
+
+| Framework | Workload | IndexedDB option | opfs-lsm | |
+| --- | --- | ---: | ---: | ---: |
+| TanStack DB | Bulk insert, 100,000 rows in transactions of 1,000 | 16.1k rows/s | 109k rows/s | 6.8× |
+| TanStack DB | Serial insert, one row per transaction | 3.2k rows/s | 2.5k rows/s | 0.8× |
+| Yjs | Editing trace, one update per keystroke | 1.6k edits/s | 30.4k edits/s | 18× |
+| Yjs | Cold load of 500 notes | 2.8k notes/s | 9.8k notes/s | 3.6× |
+| Automerge | Write 500 notes | 776 notes/s | 812 notes/s | 1.0× |
+| Automerge | Cold load of 500 notes | 1.2k notes/s | 2.4k notes/s | 2.0× |
+| fate | Cold load of 100 lists of 100 records | 1.3k records/s | 3.7k records/s | 2.9× |
+| fate | Queue 300 mutations offline | 231 ops/s | 274 ops/s | 1.2× |
+
+The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and `@nkzw/fate-indexeddb`.
 
 ### Bundle size
 
