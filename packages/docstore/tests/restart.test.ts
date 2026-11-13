@@ -29,7 +29,6 @@ const withoutA = define({ version: 2, collections: { rows: {} } });
 /** 500 rows per chunk, then the empty scan that marks the index ready. */
 const BACKFILL_SCANS = Math.ceil(ROWS / 500) + 1;
 /** 1,000 keys per batch over the rows and their byA entries. */
-const SWEEP_BATCHES = Math.ceil((2 * ROWS) / 1_000);
 const steps = (n: number) => Array.from({ length: n }, (_, k) => k);
 
 async function loaded(): Promise<string> {
@@ -85,8 +84,9 @@ describe("a backfill stopped between chunks", () => {
   });
 });
 
-describe("a sweep stopped between batches", () => {
-  it.each(steps(SWEEP_BATCHES))("of a cleared collection, after %i batches, keeps the prefix listed, and the next open empties it", async (k) => {
+describe("a sweep stopped before its range delete", () => {
+  it("of a cleared collection keeps the prefix listed, and the next open empties it", async () => {
+    const k = 0;
     const kept = rows.slice(0, 3).map((r) => ({ ...r, id: `kept-${r.id}` }));
     const name = await loaded();
     let prefix: Uint8Array | undefined;
@@ -112,7 +112,8 @@ describe("a sweep stopped between batches", () => {
     }
   });
 
-  it.each(steps(Math.ceil(ROWS / 1_000)))("of a removed index, after %i batches, keeps the prefix listed, and the next open empties it", async (k) => {
+  it("of a removed index keeps the prefix listed, and the next open empties it", async () => {
+    const k = 0;
     const name = await loaded();
     const before = await openKv(name);
     const prefix = await storedPrefix(before, "rows", "byA");
