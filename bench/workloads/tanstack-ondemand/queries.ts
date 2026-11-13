@@ -115,14 +115,14 @@ export default defineWorkload({
         checkRows(ctx, got, want, `page of owner ${o} from ${from}`);
         ctx.check(got.every((r, j) => j === 0 || got[j - 1]!.createdAt < r.createdAt), `page of owner ${o} from ${from} is not ascending`);
       }
-    }),
+    }, { page: "fresh" }),
     phase("query-ids", async (ctx, store) => {
       for (let k = 0; k < ctx.params.ops; k++) {
         const want = Array.from({ length: IDS }, () => Math.floor(ctx.rng() * ctx.model.end));
         const unique = [...new Set(want)];
         checkRows(ctx, await run(ctx, store, "ids", { kind: "ids", ids: unique.map(todoId) }, 1), unique, `ids ${unique[0]}…`);
       }
-    }),
+    }, { page: "fresh" }),
     phase("update", async (ctx, store) => {
       const perOwner = Math.ceil(ctx.params.entries / 10 / OWNERS);
       for (let o = 0; o < OWNERS; o++) {
