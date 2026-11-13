@@ -8,7 +8,7 @@ export const Route = createFileRoute("/api/detail")({
   server: {
     handlers: {
       GET: ({ request }) =>
-        respond(() => detail(serverDb(), parseDetailRequest(new URL(request.url).searchParams).id)),
+        respond(() => detail(serverDb(), parseDetailRequest(new URL(request.url).searchParams).ids)),
     },
   },
 });
