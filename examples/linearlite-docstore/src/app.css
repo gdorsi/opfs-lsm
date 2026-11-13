@@ -88,6 +88,7 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .date { width: 56px; flex: none; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 .icon-btn { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 5px; flex: none; }
+.row .icon-btn:hover { background: var(--hover); }
 .avatar { width: 20px; height: 20px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-size: 10px; font-weight: 600; text-transform: uppercase; flex: none; }
 .skel i { display: block; height: 10px; border-radius: 5px; background: var(--hover); }
 .none { padding: 40px; text-align: center; color: var(--muted); }
