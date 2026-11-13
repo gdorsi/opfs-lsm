@@ -79,6 +79,8 @@ Every run record carries peaks sampled every 100 ms over CDP: `Runtime.getHeapUs
 
 `node bench/probes/live-set.ts [workload] [--compaction-memory-bytes N]` measures what is alive in the SharedWorker while a workload runs. A second DevTools session takes a heap snapshot every 500 ms (V8 collects garbage before it writes one) and the probe prints the wasm memory and everything else per snapshot. Each snapshot pauses the worker, so the run's timings mean nothing.
 
+`node bench/probes/cpu-profile.ts <workload> <phase> [--contender kv/kv]` records a V8 CPU profile of one phase, in the tab and in the SharedWorker, and prints self time per function. The build is not minified, so the names are the source's. It writes each `.cpuprofile` to `bench/results/` for DevTools. Profiling slows the run, so compare the shares between functions, not the wall time.
+
 ## Bundle size
 
 `pnpm bench:size` measures what Vite emits for each row in `size/rows.ts`: the import an app writes. "At import" is the entry chunk and its static imports. "After open" adds every file those load later: the SharedWorker chunk, its imports and the `.wasm`. Each file is compressed on its own (gzip -9, brotli 11). `--check` fails when a row is over its brotli budget, and CI runs it. The build also fails if any module is inlined as a `data:` URL, which is how Vite broke kv's SharedWorker before its URL was written inline in the constructor.
