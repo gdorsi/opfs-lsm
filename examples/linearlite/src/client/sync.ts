@@ -76,7 +76,7 @@ async function heldThreads(store: Store, rows: readonly ServerRow[]): Promise<Re
  * Each slice is its own transaction; a crash between two costs a re-pull, since merging a row again changes nothing.
  * With `held` (pulled bodies and comments), a row for an issue outside it is dropped unless the replica has the row.
  */
-export async function mergeServerRows<S extends Stream>(
+async function mergeServerRows<S extends Stream>(
   store: Store,
   stream: S,
   rows: readonly ServerRow<S>[],

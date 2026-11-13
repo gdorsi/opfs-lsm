@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "demo": "pnpm --filter \"@opfs-lsm/example-linearlite^...\" build && pnpm --filter @opfs-lsm/example-linearlite build:demo --outDir ../../../site/.vitepress/dist/demo --emptyOutDir",
+    "demo": "pnpm --filter \"@opfs-lsm/example-linearlite-docstore^...\" build && pnpm --filter @opfs-lsm/example-linearlite-docstore exec vite build --outDir ../../site/.vitepress/dist/demo --emptyOutDir",
     "dev": "pnpm demo && vitepress dev",
     "build": "vitepress build && pnpm demo",
     "check": "tsc -p tsconfig.json",

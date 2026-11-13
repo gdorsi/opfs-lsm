@@ -343,32 +343,3 @@ Where B is slower than A, and whose cost it is:
 
 `bench/spike.sh` ran against a `/spike` route that has since been removed (last at commit f2a16a8); check that
 commit out to rerun it.
-
-## The build with no server
-
-`pnpm build:demo` (`vite.demo.config.ts`, `demo/`) builds the app as static files for a host that runs no code, such
-as the docs website. The screens, the store, the queries and the write path are the ones above. Three things differ:
-
-- **Routes.** `demo/main.tsx` declares the same routes with TanStack Router alone, on hash history and a relative
-  base, so the files run under any path.
-- **Issues.** A dedicated WebWorker runs the server's seed (`scripts/generate.ts`) and the page writes the rows
-  through `mergeServerRows`, the function a first sync writes with. Only issues are written up front. An issue's
-  description and comment are generated from its id when it is first opened.
-- **Sync.** Nothing starts the sync leader. The `sync` row says offline, so an edit keeps its "not synced" mark.
-
-The page that frames the demo drives it with messages (`demo/protocol.ts`): generate and delete. The demo
-times itself and posts the results: the write, each filter change from its navigation to the frame painted with the
-new rows, and each page load from the start of navigation to the first rows. For a page load it also says whether
-the database's SharedWorker was already running, which it reads from the SharedWorker's flush counter.
-
-What each timing on the framing page covers:
-
-- **Write.** From the first call of `mergeServerRows` to the return of the last, for every issue. An issue is one
-  document and its index entries. Generating the issues in the dedicated WebWorker is timed apart and not counted.
-- **Filter.** From the navigation that changes the filter, the sort or the search to the frame painted with the new
-  rows. The count of all matches arrives after it and is not in the figure. The first changes after a write are
-  slower, while the SharedWorker is still compacting what was written.
-- **Reload.** From the start of the frame's navigation to its first rows painted. "Cold" means the page and the
-  database's SharedWorker both restarted, which happens when no other page holds the database open. The operating
-  system still has the files in its cache, so it is not a cold disk. "Page only" means another page kept the
-  SharedWorker running.
