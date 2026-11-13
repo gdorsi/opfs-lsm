@@ -63,7 +63,7 @@ export type Store = ReturnType<typeof collections> & {
 };
 
 /** The shape of stored rows. The sync leader clears a replica written under another format and pulls it again. */
-export const FORMAT = 3;
+export const FORMAT = 4;
 
 type Merge<T> = (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<T | null | undefined>;
 type Transact<T> = (ids: readonly string[], merge: Merge<T>) => Promise<void>;

@@ -1,6 +1,6 @@
-import { mergeIncoming, restore } from "../domain/merge.ts";
+import { mergeIncoming, mergePulled, restore } from "../domain/merge.ts";
 import type { Clocks, Rows, ServerRow, Stream, SyncState } from "../domain/model.ts";
-import { MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse, type RowResponse } from "../domain/wire.ts";
+import { MAX_DETAIL_IDS, MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse, type RowResponse } from "../domain/wire.ts";
 import { backoffMs, Pager, pushOp } from "./ops.ts";
 import { FORMAT, openStore, transact, type Store } from "./store.ts";
 
@@ -65,8 +65,24 @@ const KV_BATCH_OPS = 10_000;
  */
 const rowsPerBatch = (store: Store, stream: Stream) => Math.floor(KV_BATCH_OPS / (1 + 2 * store.docs.collection(stream).indexes.size));
 
-/** Each slice is its own transaction; a crash between two costs a re-pull, since merging a row again changes nothing. */
-async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: readonly ServerRow<S>[], acked?: readonly Clocks[]) {
+/** Of the issues the rows belong to, those whose body the replica holds, which means it holds their whole thread. */
+async function heldThreads(store: Store, rows: readonly ServerRow[]): Promise<ReadonlySet<string>> {
+  const ids = [...new Set(rows.map((r) => ("issue_id" in r ? r.issue_id : r.id)))];
+  const bodies = await store.docs.collection("bodies").getMany(ids);
+  return new Set(ids.filter((_, i) => bodies[i]));
+}
+
+/**
+ * Each slice is its own transaction; a crash between two costs a re-pull, since merging a row again changes nothing.
+ * With `held` (pulled bodies and comments), a row for an issue outside it is dropped unless the replica has the row.
+ */
+async function mergeServerRows<S extends Stream>(
+  store: Store,
+  stream: S,
+  rows: readonly ServerRow<S>[],
+  acked?: readonly Clocks[],
+  held?: ReadonlySet<string>,
+) {
   const incoming = rows as unknown as readonly Omit<Rows[S], "dirty" | "pending">[];
   const step = rowsPerBatch(store, stream);
   for (let at = 0; at < incoming.length; at += step) {
@@ -75,7 +91,12 @@ async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: 
       store,
       stream,
       slice.map((row) => row.id),
-      (locals) => slice.map((row, i) => mergeIncoming<Rows[S]>(locals[i], row, acked?.[at + i])),
+      (locals) =>
+        slice.map((row, i) =>
+          held
+            ? mergePulled<Rows[S]>(locals[i], row, held.has("issue_id" in row ? (row.issue_id as string) : row.id))
+            : mergeIncoming<Rows[S]>(locals[i], row, acked?.[at + i]),
+        ),
     );
   }
 }
@@ -171,6 +192,7 @@ class Leader {
     await this.push();
     if (this.state.format !== FORMAT) await this.wipe(this.state.epoch);
     await this.catchUpIssues(loop);
+    await this.startAtHead();
     for (const stream of BACKGROUND) {
       while (this.stale(stream)) {
         await this.page(stream);
@@ -193,6 +215,24 @@ class Leader {
     }
   }
 
+  /**
+   * Bodies and comments are not pulled from the start: a replica loads an issue's when it becomes visible
+   * (`preloadDetails`), and from here pulls only what changes, for the issues it holds.
+   */
+  private async startAtHead(): Promise<void> {
+    const { caughtUp, cursors } = this.state;
+    if (!caughtUp.bodies || !caughtUp.comments) {
+      await this.save({ cursors: { ...cursors, bodies: this.head!, comments: this.head! }, caughtUp: { ...caughtUp, bodies: true, comments: true } });
+    }
+    for (const stream of BACKGROUND) this.mark(stream);
+  }
+
+  private mark(stream: Stream): void {
+    if (this.marked.has(stream)) return;
+    this.marked.add(stream);
+    performance.mark(`linearlite:caught-up:${stream}`);
+  }
+
   private stale(stream: Stream): boolean {
     return !this.state.caughtUp[stream] || this.head === undefined || this.state.cursors[stream] < this.head;
   }
@@ -200,7 +240,7 @@ class Leader {
   private async page(stream: Stream): Promise<void> {
     const res = await this.pager.page(stream, this.state.cursors[stream]);
     this.checkEpoch(res.epoch);
-    if (res.rows.length > 0) await mergeServerRows(this.store, stream, res.rows);
+    if (res.rows.length > 0) await mergeServerRows(this.store, stream, res.rows, undefined, stream === "issues" ? undefined : await heldThreads(this.store, res.rows));
     this.head = Math.max(this.head ?? 0, res.head);
     await this.save({
       epoch: res.epoch,
@@ -209,10 +249,7 @@ class Leader {
       cursors: { ...this.state.cursors, [stream]: res.next },
       caughtUp: { ...this.state.caughtUp, [stream]: !res.more },
     });
-    if (!res.more && !this.marked.has(stream)) {
-      this.marked.add(stream);
-      performance.mark(`linearlite:caught-up:${stream}`);
-    }
+    if (!res.more) this.mark(stream);
   }
 
   private checkEpoch(epoch: string): void {
@@ -244,24 +281,19 @@ class Leader {
   }
 
   /**
-   * Frees space for kv's size cap: drops every body and comment, which the detail view fetches again on demand,
-   * and moves their cursors to the head so the backlog is not pulled back. Issues stay. Runs right after a push,
-   * and skips while a body or comment still has an unsent edit; the next offer tries again.
+   * Frees space for kv's size cap: drops every body and comment, which are loaded again when their issue is visible
+   * or opened. Issues stay. Runs right after a push, and skips while a body or comment still has an unsent edit;
+   * the next offer tries again.
    */
   private async evict(done: () => void): Promise<void> {
     this.evicting = undefined;
     try {
       const { docs, dirtyBodies, dirtyComments } = this.store;
-      if (this.head === undefined || dirtyBodies.size > 0 || dirtyComments.size > 0) return;
+      if (dirtyBodies.size > 0 || dirtyComments.size > 0) return;
       for (const name of BACKGROUND) {
         // An offer comes back while the issues alone are over the cap; a clear of nothing would still spend a collection id.
         if ((await docs.collection(name).queryIds({ limit: 1 })).ids.length > 0) await docs.collection(name).clear();
       }
-      this.pager.forget();
-      await this.save({
-        cursors: { ...this.state.cursors, bodies: this.head, comments: this.head },
-        caughtUp: { ...this.state.caughtUp, bodies: true, comments: true },
-      });
     } finally {
       done();
     }
@@ -330,9 +362,37 @@ export function startSync(store: Store): void {
   });
 }
 
-export async function fetchDetail(id: string): Promise<void> {
+/** Ids asked for and not answered with a body: in flight, or the server has none. Not asked again until the page reloads. */
+const asked = new Set<string>();
+
+/** Writes the bodies and comments of `ids`, whole threads. Rows join the replica here, unlike a pull's. */
+async function fetchDetails(ids: readonly string[]): Promise<DetailResponse> {
   const store = await openStore();
-  const res = await request<DetailResponse>(store.user, `/api/detail?id=${encodeURIComponent(id)}`);
-  if (res.body) await mergeServerRows(store, "bodies", [res.body]);
+  const res = await request<DetailResponse>(store.user, `/api/detail?${ids.map((id) => `id=${encodeURIComponent(id)}`).join("&")}`);
+  if (res.bodies.length > 0) await mergeServerRows(store, "bodies", res.bodies);
   if (res.comments.length > 0) await mergeServerRows(store, "comments", res.comments);
+  return res;
+}
+
+export const fetchDetail = (id: string) => fetchDetails([id]);
+
+/**
+ * Loads the threads of issues that came into view, in requests of up to `MAX_DETAIL_IDS`. It skips those whose body
+ * the replica holds, those being asked for and those the server has no body for. A failed request is forgotten, so
+ * the ids are asked for again the next time they are seen.
+ */
+export async function preloadDetails(ids: readonly string[]): Promise<void> {
+  const store = await openStore();
+  const held = await store.docs.collection("bodies").getMany(ids);
+  const wanted = ids.filter((id, i) => !held[i] && !asked.has(id));
+  for (let at = 0; at < wanted.length; at += MAX_DETAIL_IDS) {
+    const batch = wanted.slice(at, at + MAX_DETAIL_IDS);
+    for (const id of batch) asked.add(id);
+    try {
+      for (const { id } of (await fetchDetails(batch)).bodies) asked.delete(id);
+    } catch (err) {
+      for (const id of batch) asked.delete(id);
+      console.warn("linearlite could not preload details", err);
+    }
+  }
 }

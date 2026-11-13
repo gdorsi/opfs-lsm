@@ -2,7 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type DragEvent } from "react";
 import * as commands from "../client/commands.ts";
 import type { IssueFilter } from "../client/filter.ts";
-import { useBoardColumn, useStatusCounts } from "../client/hooks.ts";
+import { useBoardColumn, usePreloadDetails, useStatusCounts } from "../client/hooks.ts";
 import { STATUS_LABELS, type Issue, type StatusCode } from "../domain/model.ts";
 import { shortId } from "./format.ts";
 import { PriorityIcon, StatusIcon } from "./icons.tsx";
@@ -40,6 +40,7 @@ interface ColumnProps {
 function Column({ status, count, filter, dragging, setDragging }: ColumnProps) {
   const navigate = useNavigate();
   const { rows, setRange } = useBoardColumn(status, filter);
+  usePreloadDetails(rows.map((r) => r.id));
   const body = useRef<HTMLDivElement>(null);
   const [at, setAt] = useState<number | null>(null);
 

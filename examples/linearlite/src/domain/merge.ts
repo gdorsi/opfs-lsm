@@ -38,6 +38,14 @@ export function mergeIncoming<T extends Tombstoned>(
 }
 
 /**
+ * `mergeIncoming` for a row of the bodies or comments stream that a pull brought: it joins the replica only when the
+ * replica `holds` the issue's thread, so a held body always comes with its comments. A row already stored is merged as ever.
+ */
+export function mergePulled<T extends Tombstoned>(local: T | undefined, incoming: Omit<T, "dirty" | "pending">, holds: boolean) {
+  return local === undefined && !holds ? undefined : mergeIncoming(local, incoming);
+}
+
+/**
  * Reset a row to the server's state after the server refused an edit of it. Unlike `mergeIncoming` it takes the
  * server's row whatever its version, since the local version may be ahead of what the server holds, and drops the
  * dirty fields whose clocks are the `refused` ones. A field edited again since the push keeps its value and stays

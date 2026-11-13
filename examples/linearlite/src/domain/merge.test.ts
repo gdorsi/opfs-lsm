@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { applyLocal, kanbanBetween, mergeIncoming, restore } from "./merge.ts";
+import { applyLocal, kanbanBetween, mergeIncoming, mergePulled, restore } from "./merge.ts";
 import type { Comment, Issue, ServerRow } from "./model.ts";
 
 const issue = (over: Partial<Issue> = {}): Issue => ({
@@ -174,6 +174,19 @@ describe("mergeIncoming", () => {
     const next = mergeIncoming(local, row);
     assert.equal(next?.version, 3);
     assert.deepEqual(next?.dirty, { body: 4 });
+  });
+});
+
+describe("mergePulled", () => {
+  it("drops a row for a thread the replica does not hold, and stores one it does", () => {
+    assert.equal(mergePulled(undefined, server(), false), undefined);
+    assert.deepEqual(mergePulled(undefined, server(), true), server());
+  });
+
+  it("merges into a row it has whether or not the thread is held", () => {
+    const next = mergePulled(issue(), server({ version: 6, title: "Server" }), false);
+    assert.equal(next?.title, "Server");
+    assert.equal(mergePulled(issue(), server({ version: 4 }), true), undefined);
   });
 });
 
