@@ -81,7 +81,8 @@ let opened: Store | undefined;
 export function openStore(): Promise<Store> {
   return (opening ??= (async () => {
     const params = new URLSearchParams(location.search);
-    const db = await openDb({ name: params.get("db") ?? "linearlite" });
+    // `?maxBytes=` sets a byte cap, to see an eviction without filling the disk.
+    const db = await openDb({ name: params.get("db") ?? "linearlite", maxBytes: Number(params.get("maxBytes")) || "quota" });
     const docs = await openDocStore(db, schema);
     const store: Store = { db, docs, user: params.get("user") ?? "anonymous", ...collections(docs) };
     await store.sync.preload();

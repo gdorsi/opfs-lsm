@@ -85,7 +85,7 @@ type Loop =
   | { readonly kind: "running"; wake: boolean }
   | { readonly kind: "waiting"; readonly timer: ReturnType<typeof setTimeout> };
 
-type Reason = "start" | "hint" | "dirty" | "online";
+type Reason = "start" | "hint" | "dirty" | "online" | "pressure";
 
 type Outgoing = { readonly op: PushOp; readonly key: string };
 
@@ -93,6 +93,8 @@ class Leader {
   private loop: Loop = { kind: "idle" };
   private state: SyncState = EMPTY;
   private head: number | undefined;
+  /** Settles the pressure offer being answered. Set while kv waits for this replica to free space. */
+  private evicting: (() => void) | undefined;
   private readonly marked = new Set<Stream>();
   private readonly pullLimit = Number(new URLSearchParams(location.search).get("pull")) || PULL_LIMIT;
   private readonly pager = new Pager((stream, after) =>
@@ -118,6 +120,8 @@ class Leader {
       this.head = Math.max(this.head ?? 0, head);
       this.kick("hint");
     };
+    // The loop evicts between two pages, so no page lands rows after the clear.
+    this.store.db.onPressure(() => new Promise<void>((done) => ((this.evicting = done), this.kick("pressure"))));
     this.kick("start");
   }
 
@@ -156,6 +160,8 @@ class Leader {
     } catch (err) {
       const next = failures + 1;
       console.warn(`linearlite sync failed (${next}), retrying in ${backoffMs(next)} ms`, err);
+      this.evicting?.();
+      this.evicting = undefined;
       if (this.state.online) await this.save({ online: false }).catch(() => undefined);
       this.loop = { kind: "waiting", timer: setTimeout(() => void this.run(next), backoffMs(next)) };
     }
@@ -234,6 +240,31 @@ class Leader {
     }
     if (outgoing.length > 0) this.pager.forget();
     for (let i = 0; i < outgoing.length; i += MAX_OPS) await this.send(outgoing.slice(i, i + MAX_OPS));
+    if (this.evicting) await this.evict(this.evicting);
+  }
+
+  /**
+   * Frees space for kv's size cap: drops every body and comment, which the detail view fetches again on demand,
+   * and moves their cursors to the head so the backlog is not pulled back. Issues stay. Runs right after a push,
+   * and skips while a body or comment still has an unsent edit; the next offer tries again.
+   */
+  private async evict(done: () => void): Promise<void> {
+    this.evicting = undefined;
+    try {
+      const { docs, dirtyBodies, dirtyComments } = this.store;
+      if (this.head === undefined || dirtyBodies.size > 0 || dirtyComments.size > 0) return;
+      for (const name of BACKGROUND) {
+        // An offer comes back while the issues alone are over the cap; a clear of nothing would still spend a collection id.
+        if ((await docs.collection(name).queryIds({ limit: 1 })).ids.length > 0) await docs.collection(name).clear();
+      }
+      this.pager.forget();
+      await this.save({
+        cursors: { ...this.state.cursors, bodies: this.head, comments: this.head },
+        caughtUp: { ...this.state.caughtUp, bodies: true, comments: true },
+      });
+    } finally {
+      done();
+    }
   }
 
   /**

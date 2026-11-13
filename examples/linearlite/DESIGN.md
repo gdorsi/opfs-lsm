@@ -134,6 +134,12 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
   `format` in the sync row other than the store's `FORMAT`, which changes when stored rows change shape; the leader
   pushes unsent edits before that clear. A detail view opened before its body arrives calls `/api/detail` from its
   own tab and writes the result with the same `mergeIncoming`.
+- **Eviction.** The database opens with `maxBytes: "quota"`, so kv asks for space when the origin passes 90% of
+  its storage quota (`?maxBytes=<bytes>` sets a byte cap instead, to see it happen). Only the leader answers. Between
+  two pages, right after a push, it clears `bodies` and `comments` and moves their cursors to the head: the backlog
+  is not pulled back, later changes still arrive, and a detail view fetches what it lacks. Issues stay, and so does
+  everything while a body or comment has an unsent edit. An edit to a body or comment made in the instant between
+  that check and the clear is lost.
 - **Pull order on a first sync.** Pages come in version order. The seed stamps versions newest `modified` first,
   so the first page is the default view's top rows: the list's window fills from the first slice and then holds
   its 100 rows, and every later row sorts past it and stays out of memory. A real server's history arrives in
