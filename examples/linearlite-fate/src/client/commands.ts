@@ -1,6 +1,6 @@
 import { kanbanBetween } from "../domain/kanban.ts";
 import type { IssueFields, IssuePatch, PriorityCode, StatusCode } from "../domain/model.ts";
-import { IssueRowView, openedFate } from "./fate.ts";
+import { IssueRowView, openedFate, type Fate } from "./fate.ts";
 import { onScreen, placeNewIssue } from "./screen.ts";
 
 type Pending = Promise<{ error?: Error }> & { readonly locallyPersisted: Promise<void> };
@@ -17,7 +17,7 @@ function saved(what: string, pending: Pending): Promise<void> {
   return pending.locallyPersisted;
 }
 
-type ListChanges = Pick<Parameters<ReturnType<typeof openedFate>["fate"]["mutations"]["updateIssue"]>[0], "insert" | "remove">;
+type ListChanges = Pick<Parameters<Fate["mutations"]["updateIssue"]>[0], "insert" | "remove">;
 
 function editIssue(id: string, patch: IssuePatch, lists: ListChanges = {}): Promise<void> {
   const { fate } = openedFate();

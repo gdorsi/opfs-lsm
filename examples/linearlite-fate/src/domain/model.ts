@@ -8,8 +8,10 @@ export const PRIORITY_LABELS = ["Urgent", "High", "Medium", "Low", "No priority"
 /** fate's persistence key on the client and the scope of its mutation receipts on the server: they must match. */
 export const PERSISTENCE_KEY = "linearlite";
 
-export type StatusCode = 0 | 1 | 2 | 3 | 4;
-export type PriorityCode = 0 | 1 | 2 | 3 | 4;
+/** Every status code, and every priority code: both run 0 to 4. */
+export const CODES = [0, 1, 2, 3, 4] as const;
+export type StatusCode = (typeof CODES)[number];
+export type PriorityCode = (typeof CODES)[number];
 
 /** An issue's row: what the server's `issue` table holds besides the description, and what lists show. */
 export type IssueFields = {
@@ -52,6 +54,7 @@ export type WindowArgs = FilterArgs & { readonly sort: SortField; readonly dir: 
 /** One board column, by `kanbanorder`, paged forward by fate with `first` and `after`. */
 export type ColumnArgs = { readonly column: StatusCode; readonly priority: readonly PriorityCode[]; readonly q: string; readonly first: number };
 export type StatusCounts = readonly [number, number, number, number, number];
+export const totalOf = (counts: StatusCounts): number => counts.reduce((a, b) => a + b, 0);
 
 /** What the UI renders. `dirty` is on while a mutation naming it waits for the server. */
 export type Issue = IssueFields & { readonly dirty: boolean };

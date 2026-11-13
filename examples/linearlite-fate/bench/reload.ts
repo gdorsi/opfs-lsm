@@ -144,7 +144,7 @@ const WAIT = `const until = async (what, ok, ms = 30000) => {
 async function prepare(kind: Kind, profile: string): Promise<{ total: string; records: number }> {
   const chrome = await launch(profile);
   try {
-    const page = await chrome.open(`${origin}/?storage=${kind}`);
+    const page = await chrome.open(`${origin}/?storage=${kind}&bench`);
     return await page.evaluate(`(async () => {
       ${WAIT}
       const scroller = () => document.querySelector("#scroller");
@@ -157,9 +157,9 @@ async function prepare(kind: Kind, profile: string): Promise<{ total: string; re
       scroller().scrollTop = 0;
       await until("the top", () => loaded(0));
       await until("the total", () => document.querySelector("#count").textContent);
-      await globalThis.__linearlite.fate.persistence.flush();
+      await globalThis.linearliteFate.persistence.flush();
       const part = (tagged, key) => tagged[1].find(([k]) => k === key)?.[1];
-      const records = part(part(globalThis.__linearlite.fate.dehydrate().data, "store"), "records")[1].length;
+      const records = part(part(globalThis.linearliteFate.dehydrate().data, "store"), "records")[1].length;
       return { total: document.querySelector("#count").textContent, records };
     })()`);
   } finally {

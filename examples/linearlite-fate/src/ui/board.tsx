@@ -1,28 +1,27 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type DragEvent } from "react";
 import * as commands from "../client/commands.ts";
-import type { IssueFilter } from "../client/filter.ts";
-import { useBoardColumn, useStatusCounts } from "../client/hooks.ts";
-import { STATUS_LABELS, type Issue, type StatusCode } from "../domain/model.ts";
+import { useBoard, useBoardColumn, type Board } from "../client/hooks.ts";
+import { CODES, STATUS_LABELS, totalOf, type Issue, type StatusCode } from "../domain/model.ts";
 import { shortId } from "./format.ts";
 import { PriorityIcon, StatusIcon } from "./icons.tsx";
 import { keepSearch, useIssueFilter } from "./nav.ts";
 import { Toolbar } from "./toolbar.tsx";
 
-const COLUMNS = [0, 1, 2, 3, 4] as const;
 const GROW = 50;
 const NEAR_BOTTOM = 400;
 
 export function BoardScreen() {
   const filter = useIssueFilter();
-  const counts = useStatusCounts(filter);
+  const board = useBoard(filter);
+  const { counts } = board.result;
   const [dragging, setDragging] = useState<string | null>(null);
   return (
     <>
-      <Toolbar title="Board" count={counts?.reduce((a, b) => a + b, 0)} filter={filter} />
+      <Toolbar title="Board" count={totalOf(counts)} filter={filter} />
       <div className="board">
-        {COLUMNS.map((status) => (
-          <Column key={status} status={status} count={counts?.[status]} filter={filter} dragging={dragging} setDragging={setDragging} />
+        {CODES.map((status) => (
+          <Column key={status} status={status} count={counts[status]} board={board} dragging={dragging} setDragging={setDragging} />
         ))}
       </div>
     </>
@@ -32,14 +31,14 @@ export function BoardScreen() {
 interface ColumnProps {
   readonly status: StatusCode;
   readonly count: number | undefined;
-  readonly filter: IssueFilter;
+  readonly board: Board;
   readonly dragging: string | null;
   setDragging(id: string | null): void;
 }
 
-function Column({ status, count, filter, dragging, setDragging }: ColumnProps) {
+function Column({ status, count, board, dragging, setDragging }: ColumnProps) {
   const navigate = useNavigate();
-  const { rows, setRange } = useBoardColumn(status, filter);
+  const { rows, loadUpTo } = useBoardColumn(board, status);
   const body = useRef<HTMLDivElement>(null);
   const [at, setAt] = useState<number | null>(null);
 
@@ -91,7 +90,7 @@ function Column({ status, count, filter, dragging, setDragging }: ColumnProps) {
         className="cards"
         onScroll={(e) => {
           const el = e.currentTarget;
-          if (rows.length < (count ?? Infinity) && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM) setRange(0, rows.length + GROW);
+          if (rows.length < (count ?? Infinity) && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM) loadUpTo(rows.length + GROW);
         }}
       >
         {count === 0 && <div className="col-empty">No issues</div>}

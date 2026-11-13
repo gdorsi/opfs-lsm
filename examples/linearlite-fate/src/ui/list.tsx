@@ -3,7 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as commands from "../client/commands.ts";
 import type { IssueFilter } from "../client/filter.ts";
-import { LIST_WINDOW, useIssueWindow } from "../client/hooks.ts";
+import { useIssueWindow } from "../client/hooks.ts";
 import type { Issue } from "../domain/model.ts";
 import { formatDate, initial, shortId } from "./format.ts";
 import { isTyping, keepSearch, useCreateModal, useIssueFilter, useKeys, useSetFilter } from "./nav.ts";
@@ -75,10 +75,10 @@ interface ListProps {
   readonly rows: readonly Issue[];
   readonly offset: number;
   readonly total: number;
-  setRange(start: number, end: number): void;
+  setStart(start: number): void;
 }
 
-function VirtualList({ filterKey: key, rows, offset, total, setRange }: ListProps) {
+function VirtualList({ filterKey: key, rows, offset, total, setStart }: ListProps) {
   const navigate = useNavigate();
   const scroller = useRef<HTMLDivElement>(null);
   const [focus, setFocus] = useState<number | null>(null);
@@ -100,8 +100,8 @@ function VirtualList({ filterKey: key, rows, offset, total, setRange }: ListProp
   useEffect(() => {
     if (items.length === 0) return;
     const loaded = first >= offset && last < offset + rows.length;
-    if (!loaded) setRange(Math.max(0, first - LEAD), Math.max(0, first - LEAD) + LIST_WINDOW);
-  }, [first, last, offset, rows.length, items.length, setRange]);
+    if (!loaded) setStart(Math.max(0, first - LEAD));
+  }, [first, last, offset, rows.length, items.length, setStart]);
 
   const open = (issue: Issue) => void navigate({ to: "/issue/$id", params: { id: issue.id }, search: keepSearch });
 

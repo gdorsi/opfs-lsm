@@ -1,8 +1,7 @@
-import { PRIORITY_LABELS, STATUS_LABELS, type PriorityCode, type StatusCode } from "../domain/model.ts";
+import { CODES, PRIORITY_LABELS, STATUS_LABELS, type PriorityCode, type StatusCode } from "../domain/model.ts";
 import { PriorityIcon, StatusIcon } from "./icons.tsx";
 import { item, MenuButton } from "./menu.tsx";
 
-const CODES = [0, 1, 2, 3, 4] as const;
 
 interface PickerProps<T> {
   readonly value: T;

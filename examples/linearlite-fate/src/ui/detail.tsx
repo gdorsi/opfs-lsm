@@ -126,7 +126,7 @@ function TitleField({ issue }: { issue: Issue }) {
 
 function Description({ id }: { id: string }) {
   const detail = useIssueDetail(id);
-  return <DescriptionField id={id} saved={detail.kind === "ready" ? detail.body.description : ""} />;
+  return <DescriptionField id={id} saved={detail.description ?? ""} />;
 }
 
 function DescriptionField({ id, saved }: { id: string; saved: string }) {

@@ -1,6 +1,5 @@
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router";
 import { FateClient } from "react-fate";
-import * as commands from "../client/commands.ts";
 import { openedFate, openFate } from "../client/fate.ts";
 import { parseIssueFilter } from "../client/filter.ts";
 import { keepAppOnDevice } from "../client/offline.ts";
@@ -16,9 +15,7 @@ export const Route = createFileRoute("/_app")({
   }),
   search: { middlewares: [stripSearchParams(DEFAULTS)] },
   loader: async () => {
-    const { fate, storage } = await openFate();
-    // A measurement script drives edits and reads the client through this, on production builds too.
-    Object.assign(globalThis, { __linearlite: { fate, storage, commands } });
+    await openFate();
     keepAppOnDevice();
   },
   pendingMs: 200,

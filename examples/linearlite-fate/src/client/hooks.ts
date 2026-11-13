@@ -1,23 +1,25 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { alias, useListView, useRefetch, useRequest, useView, useViews, type PersistenceSnapshot, type ViewRef } from "react-fate";
-import type { Comment, Issue, StatusCode, StatusCounts } from "../domain/model.ts";
-import { columnArgs, filterArgs, LIST_WINDOW, windowArgs } from "./args.ts";
+import { alias, useListView, useRefetch, useRequest, useView, useViews, type InsertionTarget, type PersistenceSnapshot, type ViewRef } from "react-fate";
+import { byKanbanOrder } from "../domain/kanban.ts";
+import { CODES, totalOf, type Comment, type Issue, type StatusCode, type StatusCounts } from "../domain/model.ts";
+import { columnArgs, filterArgs, windowArgs } from "./args.ts";
 import { ColumnView, CommentsView, CommentView, IssueDetailView, IssueRowView, openedFate, REQUEST, WindowView, type Fate, type StorageKind } from "./fate.ts";
 import type { IssueFilter } from "./filter.ts";
 import { onScreen, useOnScreen } from "./screen.ts";
 
-export { LIST_WINDOW };
 const COLUMN_PAGE = 50;
 /** Reads the cache and restores it from the device; never fetches, suspends or throws. */
 const CACHE_ONLY = { mode: "cache-only" } as const;
-const STATUS_CODES = [0, 1, 2, 3, 4] as const;
 
-type IssueWindow = { readonly rows: readonly Issue[]; readonly offset: number; setRange(start: number, end: number): void };
+const session = () => openedFate().fate.persistence!;
 
 const useSnapshot = (): PersistenceSnapshot => {
-  const session = openedFate().fate.persistence!;
-  return useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const { subscribe, getSnapshot } = session();
+  return useSyncExternalStore(subscribe, getSnapshot);
 };
+
+/** The mutations still waiting for the server; a failed one waits for the user instead. */
+const waiting = (mutations: PersistenceSnapshot["mutations"]) => mutations.filter((m) => m.status !== "failed");
 
 /** Mutation inputs name an issue by `id` and a comment's issue by `issueId`. */
 const named = (input: unknown): string[] => {
@@ -28,37 +30,36 @@ const named = (input: unknown): string[] => {
 /** Ids of issues and comments that a mutation still waiting for the server names. */
 function usePendingIds(): ReadonlySet<string> {
   const { mutations } = useSnapshot();
-  return useMemo(() => new Set(mutations.filter((m) => m.status !== "failed").flatMap((m) => named(m.input))), [mutations]);
+  return useMemo(() => new Set(waiting(mutations).flatMap((m) => named(m.input))), [mutations]);
 }
 
 let delivered = 0;
 let inQueue = new Set<string>();
 const deliveredListeners = new Set<() => void>();
-let watching: (() => void) | undefined;
+let watching = false;
+
+const waitingIds = () => new Set(waiting(session().getSnapshot().mutations).map((m) => m.id));
+
+function subscribeDelivered(listener: () => void): () => void {
+  deliveredListeners.add(listener);
+  if (!watching) {
+    watching = true;
+    inQueue = waitingIds();
+    session().subscribe(() => {
+      const all = new Set(session().getSnapshot().mutations.map((m) => m.id));
+      let answered = 0;
+      for (const id of inQueue) if (!all.has(id)) answered++;
+      inQueue = waitingIds();
+      if (answered === 0) return;
+      delivered += answered;
+      for (const l of deliveredListeners) l();
+    });
+  }
+  return () => deliveredListeners.delete(listener);
+}
 
 /** Mutations the server has answered since the page opened. A screen refetches when it grows, so its counts and windows show what the server now holds. */
-function useDelivered(): number {
-  return useSyncExternalStore(
-    (listener) => {
-      deliveredListeners.add(listener);
-      const session = openedFate().fate.persistence!;
-      const waiting = () => new Set(session.getSnapshot().mutations.flatMap((m) => (m.status === "failed" ? [] : [m.id])));
-      if (!watching) {
-        inQueue = waiting();
-        watching = session.subscribe(() => {
-          const all = new Set(session.getSnapshot().mutations.map((m) => m.id));
-          const answered = [...inQueue].filter((id) => !all.has(id)).length;
-          inQueue = waiting();
-          if (answered === 0) return;
-          delivered += answered;
-          for (const l of deliveredListeners) l();
-        });
-      }
-      return () => deliveredListeners.delete(listener);
-    },
-    () => delivered,
-  );
-}
+const useDelivered = (): number => useSyncExternalStore(subscribeDelivered, () => delivered);
 
 function useRefetchOnDelivery(refetch: () => Promise<unknown>): void {
   const count = useDelivered();
@@ -69,13 +70,15 @@ function useRefetchOnDelivery(refetch: () => Promise<unknown>): void {
   }, [count, refetch]);
 }
 
+/** Drops the rows that read nothing and marks those a pending mutation names. */
+const markDirty = <T extends { readonly id: string }>(rows: readonly (T | null | undefined)[], pending: ReadonlySet<string>) =>
+  rows.flatMap((row) => (row ? [{ ...row, dirty: pending.has(row.id) }] : []));
+
 function useIssueRows(refs: readonly (ViewRef<"Issue"> | null | undefined)[]): readonly Issue[] {
   const data = useViews(IssueRowView, refs);
   const pending = usePendingIds();
-  return useMemo(() => data.flatMap((row) => (row ? [{ ...row, dirty: pending.has(row.id) }] : [])), [data, pending]);
+  return useMemo(() => markDirty(data, pending), [data, pending]);
 }
-
-const sum = (counts: StatusCounts) => counts.reduce((a, b) => a + b, 0);
 
 /** Fetches `request` into the cache and persists it. A failure is returned, not thrown, so what the device holds stays on screen. */
 function useFetched(request: Parameters<Fate["request"]>[0]): unknown {
@@ -100,7 +103,7 @@ function useFetched(request: Parameters<Fate["request"]>[0]): unknown {
  * arrives. The error of a failed fetch reaches the screen only when there is nothing else to show: no rows, or rows of
  * another filter or sort.
  */
-export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly total: number | undefined } {
+export function useIssueWindow(filter: IssueFilter) {
   const key = JSON.stringify(filter);
   const [placed, setPlaced] = useState({ key, offset: 0 });
   const offset = placed.key === key ? placed.offset : 0;
@@ -122,48 +125,56 @@ export function useIssueWindow(filter: IssueFilter): IssueWindow & { readonly to
   const args = shown.issues.args;
   const newestFirst = args.offset === 0 && args.dir === "desc" && (args.sort === "modified" || args.sort === "created");
   useOnScreen(onScreen.top, "list", useMemo(() => (newestFirst && cached ? { filter: shown.counts.args, target: cached.issues } : undefined), [newestFirst, shown, cached]));
-  const setRange = useCallback(
+  /** Moves the window so it holds row `start`. */
+  const setStart = useCallback(
     (start: number) => setPlaced((p) => {
       const next = windowArgs(filter, start).offset;
       return p.key === key && p.offset === next ? p : { key, offset: next };
     }),
     [key],
   );
-  return { rows, offset: held?.offset ?? 0, setRange, total: held && sum(held.result.counts) };
+  return { rows, offset: held?.offset ?? 0, setStart, total: held && totalOf(held.result.counts) };
 }
 
-/** The board's counts and its five columns in one request, so the columns load together. */
-function useBoard(filter: IssueFilter) {
+/**
+ * The board's counts and its five columns in one request, so the columns load together. Call it once per board and
+ * hand the result to each column: every call refetches when a mutation is delivered.
+ */
+/** A column as both hooks read it: a connection for `useListView`, and a list a mutation can insert into. */
+type ColumnConnection = InsertionTarget<"Issue"> & Parameters<typeof useListView>[1];
+
+export function useBoard(filter: IssueFilter) {
   const key = JSON.stringify(filter);
   const request = useMemo(() => {
-    const columns = STATUS_CODES.flatMap((s) => {
+    const columns = CODES.flatMap((s) => {
       const args = columnArgs(s, filter, COLUMN_PAGE);
       return args ? [[`c${s}`, alias("column", { args, list: ColumnView })] as const] : [];
     });
     return { counts: { args: filterArgs(filter), value: true as const }, ...Object.fromEntries(columns) };
   }, [key]);
   const shown = useDeferredValue(request);
-  const result = useRequest(shown, REQUEST) as { counts: StatusCounts } & Record<string, Parameters<typeof useListView>[1]>;
+  const result = useRequest(shown, REQUEST) as { counts: StatusCounts } & Partial<Record<`c${StatusCode}`, ColumnConnection>>;
   useRefetchOnDelivery(useRefetch(shown));
   return { result, shownFilter: shown.counts.args };
 }
+export type Board = ReturnType<typeof useBoard>;
 
 /**
  * One board column by `kanbanorder`, growing a page at a time. Its rows are sorted here too, so a card moved within
  * or into the column takes its place at once; the server orders them the same way.
  */
-export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWindow {
-  const { result, shownFilter } = useBoard(filter);
+export function useBoardColumn({ result, shownFilter }: Board, status: StatusCode) {
   const connection = result[`c${status}`];
   const [items = [], loadNext] = useListView(ColumnView, connection);
   const rows = useIssueRows(items.map((item) => item.node));
-  const sorted = useMemo(() => rows.toSorted((a, b) => (a.kanbanorder < b.kanbanorder ? -1 : a.kanbanorder > b.kanbanorder ? 1 : a.id < b.id ? -1 : 1)), [rows]);
+  const sorted = useMemo(() => rows.toSorted(byKanbanOrder), [rows]);
   const top = sorted[0]?.kanbanorder ?? null;
-  useOnScreen(onScreen.columns, status, useMemo(() => (connection ? { filter: shownFilter, target: connection as never, top } : undefined), [connection, shownFilter, top]));
+  useOnScreen(onScreen.columns, status, useMemo(() => (connection ? { filter: shownFilter, target: connection, top } : undefined), [connection, shownFilter, top]));
   const loading = useRef(false);
-  const setRange = useCallback(
-    (_start: number, end: number) => {
-      if (!loadNext || loading.current || end <= sorted.length) return;
+  /** Loads the next page unless the column already holds `wanted` rows. */
+  const loadUpTo = useCallback(
+    (wanted: number) => {
+      if (!loadNext || loading.current || wanted <= sorted.length) return;
       loading.current = true;
       loadNext()
         .catch((err: unknown) => console.warn("linearlite could not load more of a column", err))
@@ -171,11 +182,7 @@ export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWi
     },
     [loadNext, sorted.length],
   );
-  return { rows: sorted, offset: 0, setRange };
-}
-
-export function useStatusCounts(filter: IssueFilter): StatusCounts {
-  return useBoard(filter).result.counts;
+  return { rows: sorted, loadUpTo };
 }
 
 /**
@@ -199,20 +206,19 @@ export function useIssue(id: string): Issue | undefined {
   return row ? { ...row, dirty: pending.has(row.id) } : undefined;
 }
 
-export type IssueDetail =
-  | { readonly kind: "missing"; readonly comments: readonly Comment[] }
-  | { readonly kind: "ready"; readonly body: { readonly description: string }; readonly comments: readonly Comment[] };
+/** `description` is undefined when there is no such issue. */
+export type IssueDetail = { readonly description: string | undefined; readonly comments: readonly Comment[] };
 
 /** The description and the comments, oldest first. Suspends until they are on the device. */
 export function useIssueDetail(id: string): IssueDetail {
   const { issue } = useRequest({ issue: { id, view: IssueDetailView } }, REQUEST);
   const detail = useView(IssueDetailView, useHeld(id) ? issue : null);
   const [items = []] = useListView(CommentsView, detail?.comments);
-  useOnScreen(onScreen.comments, id, detail?.comments as never);
+  useOnScreen(onScreen.comments, id, detail?.comments);
   const data = useViews(CommentView, items.map((item) => item.node));
   const pending = usePendingIds();
-  const comments = data.flatMap((c) => (c ? [{ ...c, dirty: pending.has(c.id) }] : []));
-  return detail ? { kind: "ready", body: { description: detail.description }, comments } : { kind: "missing", comments };
+  const comments = useMemo(() => markDirty(data, pending), [data, pending]);
+  return { description: detail?.description, comments };
 }
 
 export type SyncStatus = {
@@ -235,11 +241,11 @@ const onlineEvents = (listener: () => void) => {
 export function useSyncStatus(): SyncStatus {
   const snapshot = useSnapshot();
   const online = useSyncExternalStore(onlineEvents, () => navigator.onLine);
-  const waiting = snapshot.mutations.filter((m) => m.status !== "failed");
-  const failed = snapshot.mutations.length - waiting.length;
+  const unsynced = waiting(snapshot.mutations);
+  const failed = snapshot.mutations.length - unsynced.length;
   const error = snapshot.error?.message ?? snapshot.mutations.find((m) => m.status === "failed")?.error;
-  const kind = !online ? "offline" : waiting.some((m) => m.error) ? "retrying" : waiting.length > 0 ? "syncing" : "idle";
-  return { kind, unsynced: waiting.length, failed, error };
+  const kind = !online ? "offline" : unsynced.some((m) => m.error) ? "retrying" : unsynced.length > 0 ? "syncing" : "idle";
+  return { kind, unsynced: unsynced.length, failed, error };
 }
 
 export const useStorageKind = (): StorageKind => openedFate().storage;
