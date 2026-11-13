@@ -11,7 +11,9 @@
   --faint: #60636e;
   --accent: #7b82ff;
   --accent-soft: rgba(123, 130, 255, 0.16);
+  --warn: #e8a93c;
   --danger: #ef6a6a;
+  --ok: #5fcf8a;
   --st-0: #7c7f8a;
   --st-1: #c5c7d0;
   --st-2: #e8b73c;
@@ -36,7 +38,9 @@
     --faint: #9d9fa9;
     --accent: #5a60e6;
     --accent-soft: rgba(90, 96, 230, 0.12);
+    --warn: #c98512;
     --danger: #d2433f;
+    --ok: #2f9e5f;
     --st-0: #8d909b;
     --st-1: #5d606b;
     --st-2: #d19a14;
@@ -146,6 +150,17 @@ svg.ico { display: block; }
 .pill { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--line); }
 .pill:hover { background: var(--hover); }
 
+.modal p { margin: 0; }
+.storage { width: 400px; padding: 20px; gap: 16px; margin-top: 8vh; }
+.storage header { display: flex; gap: 12px; align-items: center; }
+.storage-badge { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.storage h2 { font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--text); }
+.storage header p { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.storage ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; }
+.storage li { display: flex; align-items: center; gap: 8px; }
+.storage li svg { flex: none; color: var(--ok); }
+.storage .btn { height: 34px; width: 100%; }
+
 /* The docs site frames the app as narrow as a phone. */
 @media (max-width: 720px) {
   .sidebar { display: none; }
@@ -153,6 +168,8 @@ svg.ico { display: block; }
   .search { flex: 1 1 100%; }
   .detail-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px 12px 48px; }
   .props { padding-top: 16px; border-top: 1px solid var(--line); margin-top: 16px; }
+  .backdrop { padding-top: 16px; }
+  .storage { margin-top: 0; }
   .search input { width: 100%; }
   .row, .skel { padding: 0 12px; gap: 8px; }
   .row .id, .row .date { display: none; }

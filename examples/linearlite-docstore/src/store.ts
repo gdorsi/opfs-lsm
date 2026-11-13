@@ -9,15 +9,62 @@ import { generateDetail } from "./seed.ts";
 type Docs = DocStore<typeof schema>;
 const issuesOf = (docs: Docs) => docs.collection("issues");
 const detailsOf = (docs: Docs) => docs.collection("details");
+const authoredOf = (docs: Docs) => docs.collection("authored");
+const metaOf = (docs: Docs) => docs.collection("meta");
 type Issues = ReturnType<typeof issuesOf>;
 type IssueQuery = Parameters<Issues["query"]>[0];
 
-export type Store = { readonly db: Db; readonly issues: Issues; readonly details: ReturnType<typeof detailsOf> };
+export type Store = {
+  readonly db: Db;
+  readonly issues: Issues;
+  readonly details: ReturnType<typeof detailsOf>;
+  readonly authored: ReturnType<typeof authoredOf>;
+  readonly meta: ReturnType<typeof metaOf>;
+};
 
-export async function openStore(name: string): Promise<Store> {
-  const db = await openDb({ name });
-  const docs = await openDocStore(db, schema);
-  return { db, issues: issuesOf(docs), details: detailsOf(docs) };
+/**
+ * Opens the database under a size cap: a number of bytes, or `"quota"` for 90% of the origin's storage quota. Past
+ * the cap kv offers to free space, to one tab. That tab removes nothing: it raises the flag every tab shows an alert
+ * for (`watchPressure`), and the user's confirmation frees the space (`freeSpace`).
+ */
+export async function openStore(name: string, maxBytes: number | "quota"): Promise<Store> {
+  const db = await openDb({ name, maxBytes });
+  const opened = openDocStore(db, schema).then((docs): Store => ({ db, issues: issuesOf(docs), details: detailsOf(docs), authored: authoredOf(docs), meta: metaOf(docs) }));
+  // Registered in the turn `openDb` resolves, so an offer made on open finds a handler.
+  db.onPressure(async () => raisePressure(await opened));
+  return opened;
+}
+
+const STORAGE = "storage";
+/** Cached details below which pressure raises no alert: there is too little to free to ask for it. */
+const FLOOR = 100;
+
+/** kv offers again at each flush while the database is over the cap, so this runs often and must stay cheap. */
+async function raisePressure({ details, meta }: Store): Promise<void> {
+  const cached = await details.queryIds({ limit: FLOOR + 1 });
+  if (cached.ids.length <= FLOOR || (await meta.get(STORAGE))?.pressure) return;
+  await meta.put({ id: STORAGE, pressure: true });
+}
+
+/**
+ * Frees space once the user agreed, from any tab: drops every generated description and comment in one range delete
+ * and lowers the flag. Issues stay, and so does what the user wrote. Safe to run twice.
+ */
+export async function freeSpace({ details, meta }: Store): Promise<void> {
+  // A clear of nothing would still spend a collection id.
+  if ((await details.queryIds({ limit: 1 })).ids.length > 0) await details.clear();
+  await meta.put({ id: STORAGE, pressure: false });
+}
+
+/** Calls `listener` with whether pressure waits for the user's yes: now, and each time a tab raises or lowers it. */
+export function watchPressure({ meta }: Store, listener: (pending: boolean) => void): void {
+  const read = () => meta.get(STORAGE).then((row) => listener(row?.pressure === true));
+  meta.changes((event) => {
+    if (event.kind === "gap") return void read();
+    if (event.kind !== "append") return;
+    for (const change of event.changes) if (change.id === STORAGE) listener(!change.deleted && change.doc!.pressure);
+  });
+  void read();
 }
 
 /** The list under one filter, as stored when it is asked. It reads nothing until then. */
@@ -184,9 +231,13 @@ export function viewOf({ issues }: Store, filter: Filter): View {
 export const editIssue = ({ issues }: Store, id: string, patch: Partial<Pick<Issue, "title" | "status" | "priority">>) =>
   issues.modify(id, (issue) => ({ ...issue, ...patch, modified: Date.now() }));
 
-/** The issue's description and comments: read, or made from its id and stored when it is opened for the first time. */
-export async function detailOf({ details }: Store, issue: Issue): Promise<Detail> {
-  const stored = await details.get(issue.id);
+/**
+ * The issue's description and comments. An issue created in the app has the description its author wrote. Any other
+ * has generated ones: read, or made from its id and stored when it is opened for the first time or after `freeSpace`.
+ */
+export async function detailOf({ details, authored }: Store, issue: Issue): Promise<Detail> {
+  const [written, stored] = await Promise.all([authored.get(issue.id), details.get(issue.id)]);
+  if (written) return { id: issue.id, description: written.description, comments: [] };
   if (stored) return stored;
   const made = generateDetail(issue);
   await details.put(made);
@@ -261,8 +312,8 @@ export async function hostOf({ db }: Store): Promise<Host> {
 export type Draft = Pick<Issue, "title" | "status" | "priority"> & { readonly description: string };
 
 /** A new issue under `id`, with its description: two writes, the description first. */
-export async function createIssue({ issues, details }: Store, id: string, { description, ...fields }: Draft): Promise<void> {
+export async function createIssue({ issues, authored }: Store, id: string, { description, ...fields }: Draft): Promise<void> {
   const now = Date.now();
-  await details.put({ id, description, comments: [] });
+  await authored.put({ id, description });
   await issues.put({ id, ...fields, username: "you", created: now, modified: now });
 }

@@ -17,16 +17,25 @@ export type Issue = {
 
 export type Comment = { id: string; body: string; username: string; created: number };
 
-/** What the issue page shows besides the issue. Its id is the issue's. Written the first time the issue is opened. */
+/**
+ * What the issue page shows besides the issue. Its id is the issue's. Generated and written the first time the issue
+ * is opened, so it is a cache: the app removes all of them when storage runs short and makes them again on demand.
+ */
 export type Detail = { id: string; description: string; comments: Comment[] };
+
+/** The description the user wrote for an issue created in the app. Its id is the issue's. Never removed for space. */
+export type Authored = { id: string; description: string };
+
+/** The one row `storage`: kv asked for space and the user has not agreed to free it yet. Every tab reads it. */
+export type Meta = { id: string; pressure: boolean };
 
 /**
  * One index per read of the list. `byModified` is also the text index of the titles: read without a `match`, it
  * lists every issue by `modified`. `byStatus` and `byPriority` hold both codes, so a filter on one or both is a
  * set of ranges, each counted from its entries.
  */
-export const schema = defineSchema<{ issues: Issue; details: Detail }>()({
-  version: 2,
+export const schema = defineSchema<{ issues: Issue; details: Detail; authored: Authored; meta: Meta }>()({
+  version: 3,
   collections: {
     issues: {
       byModified: { on: "modified", text: "title" },
@@ -35,6 +44,8 @@ export const schema = defineSchema<{ issues: Issue; details: Detail }>()({
       byPriority: { on: ["priority", "status", "modified"] },
     },
     details: {},
+    authored: {},
+    meta: {},
   },
 });
 

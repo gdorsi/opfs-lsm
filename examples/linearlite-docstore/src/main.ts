@@ -5,6 +5,7 @@ import { createDetail } from "./detail.ts";
 import { createList, type Change } from "./list.ts";
 import { DEFAULT_FILTER, type Filter } from "./model.ts";
 import { SOURCE, failed, painted, post, type ToDemo } from "./protocol.ts";
+import { createStorageAlert } from "./storage.ts";
 import { createIssue, forgetHost, hostOf, openStore, writeIssues } from "./store.ts";
 import { createToolbar, describe } from "./toolbar.ts";
 
@@ -57,7 +58,8 @@ function showList(shown: boolean) {
 async function main() {
   // Every time this app reports counts from here: the call that opens the database.
   const t0 = performance.now();
-  const store = await openStore(NAME);
+  // `?maxBytes=` sets a byte cap, to see the storage alert without filling the disk.
+  const store = await openStore(NAME, Number(params.get("maxBytes")) || "quota");
   const openedMs = performance.now() - t0;
 
   const detail = createDetail($(".detail"), store);
@@ -203,6 +205,7 @@ async function main() {
   post({ type: "opened", ms: openedMs, issues: rows });
   if (rows === 0) showList(false);
   else post({ type: "first-rows", ms: rowsAt - t0, host: await hostOf(store) });
+  createStorageAlert(store);
   void dropRetired();
 }
 
