@@ -1,6 +1,6 @@
 # opfs-lsm
 
-A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 7× faster than IndexedDB, reads up to 145× faster, and every tab of an origin shares one database with a live change feed.
+A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 8× faster than IndexedDB, reads up to 189× faster, and every tab of an origin shares one database with a live change feed.
 
 > [!WARNING]
 > opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next. Two things are missing before a stable release:
@@ -58,27 +58,28 @@ Medians of 5 runs in headless Chrome 157 on an Apple M5 Max, 100,000 entries wit
 
 | Workload | IndexedDB | kv | |
 | --- | ---: | ---: | ---: |
-| Random writes, batches of 1,000 | 42.2k ops/s | 319k ops/s | 7.6× |
-| Random point reads | 12.6k ops/s | 559k ops/s | 44× |
-| Reads of missing keys | 12.1k ops/s | 1.75M ops/s | 145× |
-| YCSB B: 95% read, 5% update | 12.6k ops/s | 109k ops/s | 8.7× |
-| YCSB E: short range scans | 6.0k ops/s | 16.8k ops/s | 2.8× |
-| Full ordered scan | 589k ops/s | 520k ops/s | 0.9× |
-| Single put, awaited one at a time | 6.4k ops/s | 6.2k ops/s | 1.0× |
-| Cold open | 1.3 ms | 9.9 ms | 0.1× |
+| Random writes, batches of 1,000 | 36.0k ops/s | 293k ops/s | 8.1× |
+| Random point reads | 9.9k ops/s | 484k ops/s | 49× |
+| Reads of missing keys | 8.9k ops/s | 1.69M ops/s | 189× |
+| YCSB B: 95% read, 5% update | 9.1k ops/s | 93.8k ops/s | 10× |
+| YCSB E: short range scans | 5.1k ops/s | 15.9k ops/s | 3.1× |
+| Full ordered scan | 424k ops/s | 439k ops/s | 1.0× |
+| Single put, awaited one at a time | 5.6k ops/s | 5.4k ops/s | 1.0× |
+| Cold open | 1.8 ms | 13.3 ms | 0.1× |
 
 The framework adapters, each against the IndexedDB option its framework ships, at size `small`:
 
 | Framework | Workload | IndexedDB option | opfs-lsm | |
 | --- | --- | ---: | ---: | ---: |
-| TanStack DB | Bulk insert, 100,000 rows in transactions of 1,000 | 16.1k rows/s | 109k rows/s | 6.8× |
-| TanStack DB | Serial insert, one row per transaction | 3.2k rows/s | 2.5k rows/s | 0.8× |
-| Yjs | Editing trace, one update per keystroke | 1.6k edits/s | 30.4k edits/s | 18× |
-| Yjs | Cold load of 500 notes | 2.8k notes/s | 9.8k notes/s | 3.6× |
-| Automerge | Write 500 notes | 776 notes/s | 812 notes/s | 1.0× |
-| Automerge | Cold load of 500 notes | 1.2k notes/s | 2.4k notes/s | 2.0× |
-| fate | Cold load of 100 lists of 100 records | 1.3k records/s | 3.7k records/s | 2.9× |
-| fate | Queue 300 mutations offline | 231 ops/s | 274 ops/s | 1.2× |
+| TanStack DB | Cold load of 91,000 rows | 112k rows/s | 176k rows/s | 1.6× |
+| TanStack DB | Bulk insert, 100,000 rows in transactions of 1,000 | 17.2k rows/s | 115k rows/s | 6.7× |
+| TanStack DB | Serial insert, one row per transaction | 4.7k rows/s | 2.5k rows/s | 0.5× |
+| Yjs | Cold load of 500 notes | 2.0k notes/s | 9.5k notes/s | 4.8× |
+| Yjs | Editing trace, one update per keystroke | 1.4k edits/s | 33.2k edits/s | 23× |
+| Automerge | Cold load of 500 notes | 1.1k notes/s | 2.2k notes/s | 2.0× |
+| Automerge | Write 500 notes | 743 notes/s | 821 notes/s | 1.1× |
+| fate | Cold load of 100 lists of 100 records | 1.0k records/s | 3.4k records/s | 3.3× |
+| fate | Queue 300 mutations offline | 201 ops/s | 263 ops/s | 1.3× |
 
 The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and `@nkzw/fate-indexeddb`.
 

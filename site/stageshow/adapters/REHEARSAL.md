@@ -2,7 +2,7 @@
 
 Gold: `payout-flow`. Kept: one card pinned top and off the bottom, slow arrivals in turn, no cursor, a payoff that holds. Changed: the card spans the page and has a column per framework; each column holds two workloads, with two meters, two rolling figures and a status badge that becomes the result.
 
-Beats: 1 TanStack DB runs: bars grow, figures roll, the badges become "6.8× faster" and "0.8× as fast" … 2 Yjs … 3 Automerge, whose write is "about equal" … 4 fate. Plays once, about 9 s, then rests on the poster (all eight results).
+Beats: 1 TanStack DB runs: bars grow, figures roll, the badges become "1.6× faster" on the cold load and "6.7× faster" on the bulk insert … 2 Yjs … 3 Automerge … 4 fate. The first row of every column is a cold load. Plays once, about 9 s, then rests on the poster (all eight results).
 
 Captured: full width (1152, in a 1280 viewport) and 390, `--states` at both, the reduced-motion poster at both, dark stills at both, and the real home page on the dev server at 1440 and 390.
 
