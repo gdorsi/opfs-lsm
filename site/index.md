@@ -29,25 +29,25 @@ adapters:
     - name: Yjs
       baseline: y-indexeddb
       rows:
-        - workload: Editing trace
-          indexeddb: 1.6k edits/s
-          kv: 30.4k edits/s
-          ratio: 18×
         - workload: Cold load, 500 notes
           indexeddb: 2.8k notes/s
           kv: 9.8k notes/s
           ratio: 3.6×
+        - workload: Editing trace
+          indexeddb: 1.6k edits/s
+          kv: 30.4k edits/s
+          ratio: 18×
     - name: Automerge
       baseline: automerge-repo IndexedDB
       rows:
-        - workload: Write 500 notes
-          indexeddb: 776 notes/s
-          kv: 812 notes/s
-          ratio: 1.0×
         - workload: Cold load, 500 notes
           indexeddb: 1.2k notes/s
           kv: 2.4k notes/s
           ratio: 2.0×
+        - workload: Write 500 notes
+          indexeddb: 776 notes/s
+          kv: 812 notes/s
+          ratio: 1.0×
     - name: fate
       baseline: its IndexedDB persistence
       rows:
@@ -74,11 +74,11 @@ demo:
 
 <HomeDemo />
 
-## Faster than IndexedDB
+## Optimized for fast loads
 
 [The adapter benchmarks](../README.md#benchmarks) · [How they are measured](../bench/README.md)
 
-<Illustration name="adapters" full :data="$frontmatter.adapters" label="The adapter benchmarks, each opfs-lsm adapter against the IndexedDB option of its framework. TanStack DB: bulk insert 109k rows/s against 16.1k, 6.8× faster; serial insert 2.5k rows/s against 3.2k, 0.8× as fast. Yjs against y-indexeddb: editing trace 30.4k edits/s against 1.6k, 18× faster; cold load of 500 notes 9.8k notes/s against 2.8k, 3.6× faster. Automerge against automerge-repo's IndexedDB storage: writing 500 notes 812 notes/s against 776, about equal; cold load of 500 notes 2.4k notes/s against 1.2k, 2.0× faster. fate against its IndexedDB persistence: cold load of 100 lists 3.7k records/s against 1.3k, 2.9× faster; queueing 300 mutations 274 ops/s against 231, 1.2× faster." />
+<Illustration name="adapters" full :data="$frontmatter.adapters" label="The adapter benchmarks, each opfs-lsm adapter against the IndexedDB option of its framework. TanStack DB: bulk insert 109k rows/s against 16.1k, 6.8× faster; serial insert 2.5k rows/s against 3.2k, 0.8× as fast. Yjs against y-indexeddb: cold load of 500 notes 9.8k notes/s against 2.8k, 3.6× faster; editing trace 30.4k edits/s against 1.6k, 18× faster. Automerge against automerge-repo's IndexedDB storage: cold load of 500 notes 2.4k notes/s against 1.2k, 2.0× faster; writing 500 notes 812 notes/s against 776, about equal. fate against its IndexedDB persistence: cold load of 100 lists 3.7k records/s against 1.3k, 2.9× faster; queueing 300 mutations 274 ops/s against 231, 1.2× faster." />
 
 <div class="home-claim flip">
 <div class="home-copy">
