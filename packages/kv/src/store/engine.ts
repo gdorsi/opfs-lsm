@@ -6,6 +6,7 @@
 import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
+import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
 
 /**
@@ -95,6 +96,8 @@ export type MergeSpec = {
   readonly sources: readonly (readonly number[])[];
   /** Drop the tombstones that win: only when the output is the bottom level. */
   readonly dropTombstones: boolean;
+  /** The base manifest's marks: a winner one covers is dropped. */
+  readonly marks: Marks;
   /** Close an output run once its entries' `entryRecordSize`s reach this. */
   readonly targetBytes: number;
   readonly codec: SstCodec;
@@ -253,7 +256,8 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
     words += 1 + runs.length;
     for (const size of runs) inputBytes += size;
   }
-  const len = 4 * words;
+  const marks = encodeMarks(spec.marks);
+  const len = 4 * words + marks.byteLength;
   // Addresses are u32 and come back as i32: past 2 GiB they read negative.
   const ptr = ex.input_ptr(len) >>> 0;
   if (ptr === 0) throw new EngineCapacityError("merge_open", len, capacity);
@@ -268,6 +272,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
     put(runs.length);
     for (const size of runs) put(size);
   }
+  new Uint8Array(ex.memory.buffer, ptr + o, marks.byteLength).set(marks);
   const opened = ex.merge_open(
     ptr,
     len,

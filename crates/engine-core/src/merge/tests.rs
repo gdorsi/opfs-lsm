@@ -2,6 +2,7 @@
 //! sources, the same output bytes and the same dropped seq, however the host
 //! answers (chunk and tail sizes, feed order, early pumps, yields).
 
+use super::oracle::Mark;
 use super::*;
 use crate::sst::{decode_sst, encode_sst, EncodedRun};
 
@@ -53,6 +54,27 @@ struct Host {
     rng: Rng,
     /// One pump in this many `Need`s comes before every demand is fed.
     early: usize,
+    /// The marks the session opens with.
+    marks: Vec<Mark>,
+}
+
+/// `marks` as the manifest encodes them. The session ignores `at`.
+fn marks_block(marks: &[Mark]) -> Vec<u8> {
+    let mut out = (marks.len() as u32).to_le_bytes().to_vec();
+    let key = |out: &mut Vec<u8>, k: &[u8]| {
+        out.extend_from_slice(&(k.len() as u32).to_le_bytes());
+        out.extend_from_slice(k);
+    };
+    for (start, end, through) in marks {
+        key(&mut out, start);
+        out.push(end.is_some() as u8);
+        if let Some(end) = end {
+            key(&mut out, end);
+        }
+        out.extend_from_slice(&through.to_le_bytes());
+        out.extend_from_slice(&(through + 1).to_le_bytes());
+    }
+    out
 }
 
 fn feed(session: &mut MergeSession, sources: &[Vec<Vec<u8>>], d: &Demand) {
@@ -65,7 +87,7 @@ fn feed(session: &mut MergeSession, sources: &[Vec<Vec<u8>>], d: &Demand) {
 /// Drive a session over `sources` (each a list of run bytes) to the end.
 fn drive(config: MergeConfig, sources: &[Vec<Vec<u8>>], host: &mut Host) -> Result<(Vec<EncodedRun>, u64), MergeError> {
     let sizes: Vec<Vec<u32>> = sources.iter().map(|runs| runs.iter().map(|r| r.len() as u32).collect()).collect();
-    let mut session = MergeSession::open(config, &sizes)?;
+    let mut session = MergeSession::open(config, &sizes, &marks_block(&host.marks))?;
     let (mut runs, mut bytes) = (Vec::new(), Vec::new());
     for _ in 0..50_000_000u64 {
         match session.pump()? {
@@ -114,7 +136,7 @@ fn config(drop_tombstones: bool, target_bytes: usize, codec: Codec) -> MergeConf
 }
 
 fn host(seed: u64) -> Host {
-    Host { rng: Rng::new(seed), early: 4 }
+    Host { rng: Rng::new(seed), early: 4, marks: Vec::new() }
 }
 
 /// Merge sources of one run each.
@@ -146,7 +168,8 @@ fn as_one_run(runs: &[Vec<u8>]) -> Vec<u8> {
 
 fn assert_matches_oracle(cfg: MergeConfig, sources: &[Vec<Vec<u8>>], host: &mut Host, context: &str) {
     let inputs: Vec<Vec<u8>> = sources.iter().map(|runs| as_one_run(runs)).collect();
-    let (want, want_dropped) = oracle::merge_sst_bytes(&inputs, cfg.drop_tombstones, cfg.target_bytes, cfg.codec).unwrap();
+    let (want, want_dropped) =
+        oracle::merge_sst_bytes(&inputs, cfg.drop_tombstones, &host.marks, cfg.target_bytes, cfg.codec).unwrap();
     let (got, dropped) = drive(cfg, sources, host).unwrap_or_else(|e| panic!("{context}: {e:?}"));
     assert_eq!(dropped, want_dropped, "{context}: dropped seq");
     assert_eq!(got.len(), want.len(), "{context}: output runs");
@@ -227,8 +250,56 @@ fn random_sources_merge_to_the_oracle_bytes() {
         let mut rng = Rng::new(case);
         let sources = random_sources(&mut rng);
         let cfg = random_config(&mut rng);
-        let context = format!("case {case} ({} sources, {cfg:?})", sources.len());
-        assert_matches_oracle(cfg, &sources, &mut Host { rng: Rng::new(case ^ 0xfeed), early: 3 }, &context);
+        let marks = random_marks(&mut rng, &sources);
+        let context = format!("case {case} ({} sources, {cfg:?}, marks {marks:?})", sources.len());
+        assert_matches_oracle(cfg, &sources, &mut Host { rng: Rng::new(case ^ 0xfeed), early: 3, marks }, &context);
+    }
+}
+
+/// Half the time no mark; otherwise up to five over the `k{:04}` keys, some
+/// bounded, some cut between two keys, with a `through` often at or just
+/// below a seq of the sources, where the rule's edge is.
+fn random_marks(rng: &mut Rng, sources: &[Vec<Vec<u8>>]) -> Vec<Mark> {
+    let seqs: Vec<u64> = sources.iter().flatten().flat_map(|run| decode_sst(run).unwrap()).map(|e| e.seq()).collect();
+    if rng.chance(2) {
+        return Vec::new();
+    }
+    let key = |rng: &mut Rng| {
+        let mut k = format!("k{:04}", rng.below(401)).into_bytes();
+        if rng.chance(3) {
+            k.truncate(rng.below(k.len()) + 1);
+        }
+        k
+    };
+    (0..rng.below(6))
+        .map(|_| {
+            let start = key(rng);
+            let end = if rng.chance(2) { None } else { Some(key(rng)).filter(|e| *e > start) };
+            let through = match rng.below(3) {
+                0 => 1,
+                n => seqs.get(rng.below(seqs.len())).map_or(1, |&s| (s + 1).saturating_sub(n as u64).max(1)),
+            };
+            (start, end, through)
+        })
+        .collect()
+}
+
+/// A winner a mark covers is gone in any merge, tombstone or not, and its
+/// seq is not a dropped tombstone's. A winner past `through`, or outside the
+/// mark, stays.
+#[test]
+fn a_winner_a_mark_covers_is_dropped_in_any_merge() {
+    let older = encode_sst(&[put(b"a", b"old", 1), put(b"m1", b"old", 2), put(b"m2", b"old", 3), put(b"z", b"old", 4)], Codec::Raw);
+    let newer = encode_sst(&[del(b"m1", 5), put(b"m2", b"new", 6), put(b"m3", b"new", 7), put(b"m4", b"new", 8)], Codec::Raw);
+    let sources = [vec![newer], vec![older]];
+    let mut marked = host(13);
+    marked.marks = vec![(b"m".to_vec(), Some(b"n".to_vec()), 7), (b"m2".to_vec(), None, 3)];
+    for drop_tombstones in [false, true] {
+        let cfg = config(drop_tombstones, usize::MAX, Codec::Raw);
+        assert_matches_oracle(cfg, &sources, &mut marked, "marks");
+        let (out, dropped) = drive(cfg, &sources, &mut marked).unwrap();
+        assert_eq!(entries(&out), vec![put(b"a", b"old", 1), put(b"m4", b"new", 8), put(b"z", b"old", 4)]);
+        assert_eq!(dropped, 0);
     }
 }
 
@@ -478,7 +549,7 @@ fn a_value_larger_than_the_window_is_merged() {
 
 fn demand_count(cfg: MergeConfig, sources: &[Vec<Vec<u8>>]) -> usize {
     let sizes: Vec<Vec<u32>> = sources.iter().map(|runs| runs.iter().map(|r| r.len() as u32).collect()).collect();
-    let mut session = MergeSession::open(cfg, &sizes).unwrap();
+    let mut session = MergeSession::open(cfg, &sizes, &[]).unwrap();
     let mut count = 0;
     loop {
         match session.pump().unwrap() {
@@ -515,7 +586,7 @@ fn reads_follow_the_tail_and_the_window() {
 #[test]
 fn feed_takes_only_a_listed_demand() {
     let run = encode_sst(&[put(b"a", b"1", 1)], Codec::Raw);
-    let mut session = MergeSession::open(config(false, usize::MAX, Codec::Raw), &[vec![run.len() as u32]]).unwrap();
+    let mut session = MergeSession::open(config(false, usize::MAX, Codec::Raw), &[vec![run.len() as u32]], &[]).unwrap();
     assert!(session.feed(0, run.len()).is_none(), "nothing asked yet");
     let Ok(Stop::Need(demands)) = session.pump() else { panic!("expected a need") };
     let d = demands[0];
@@ -532,7 +603,7 @@ fn feed_takes_only_a_listed_demand() {
 fn a_failed_session_keeps_failing() {
     let mut run = encode_sst(&[put(b"a", b"1", 1)], Codec::Raw);
     run[0] ^= 1;
-    let mut session = MergeSession::open(config(false, usize::MAX, Codec::Raw), &[vec![run.len() as u32]]).unwrap();
+    let mut session = MergeSession::open(config(false, usize::MAX, Codec::Raw), &[vec![run.len() as u32]], &[]).unwrap();
     let Ok(Stop::Need(_)) = session.pump() else { panic!("expected a need") };
     session.feed(0, run.len()).unwrap().copy_from_slice(&run);
     let err = session.pump().unwrap_err();
@@ -543,7 +614,7 @@ fn a_failed_session_keeps_failing() {
 
 #[test]
 fn a_run_shorter_than_a_footer_is_refused_at_open() {
-    let got = MergeSession::open(config(false, 0, Codec::Raw), &[vec![100, 43]]).err();
+    let got = MergeSession::open(config(false, 0, Codec::Raw), &[vec![100, 43]], &[]).err();
     assert_eq!(got, Some(MergeError::Corrupt(SstError::TooShort)));
 }
 
@@ -554,7 +625,7 @@ fn yields_come_after_about_yield_bytes() {
     let run = encode_sst(&rows, Codec::Raw);
     let mut cfg = config(false, usize::MAX, Codec::Raw);
     cfg.yield_bytes = 64 * 1024;
-    let mut session = MergeSession::open(cfg, &[vec![run.len() as u32]]).unwrap();
+    let mut session = MergeSession::open(cfg, &[vec![run.len() as u32]], &[]).unwrap();
     let mut yields = 0;
     loop {
         match session.pump().unwrap() {

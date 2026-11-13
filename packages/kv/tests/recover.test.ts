@@ -428,17 +428,18 @@ describe("range deletes across a fallback to an older manifest", () => {
     });
     await ingest(db);
     const older = [...(await fs.list("m"))].sort().at(-1)!;
-    const olderBytes = (await fs.read(`m/${older}`, 0, Number.POSITIVE_INFINITY))!;
+    const files = new Map<string, Uint8Array>();
+    for (const path of fs.publishedPaths()) files.set(path, (await fs.read(path, 0, Number.POSITIVE_INFINITY))!);
     await db.batch((tx) => tx.deleteRange({ start: enc.encode("m/"), endExclusive: enc.encode("m0") }));
     await ingest(db);
     await db.close();
-    const newest = [...(await fs.list("m"))].sort().at(-1)!;
-    expect(decodeGeneration((await fs.read(`m/${newest}`, 0, Number.POSITIVE_INFINITY))!).marks.length).toBeGreaterThan(0);
+    expect([...(await fs.list("m"))].sort().at(-1)).not.toBe(older);
 
-    // A power loss that keeps the IndexedDB commit of the last flush and loses
-    // its manifest, and with it the removal of the older one that followed.
-    await fs.remove(`m/${newest}`);
-    await publish(fs, `m/${older}`, olderBytes);
+    // A power loss that keeps every IndexedDB commit and loses every OPFS
+    // write from the flush of the range delete on: its manifest, the merge
+    // that dropped the rows it covers, and the removals after them.
+    for (const path of fs.publishedPaths()) await fs.remove(path);
+    for (const [path, bytes] of files) await publish(fs, path, bytes);
     db = await open();
     const recorded = (await walStore(name, "readonly", (_wal, meta) => meta.get("generation"))) as number;
     expect(`${String(recorded).padStart(16, "0")}.mft`).toBe(older);

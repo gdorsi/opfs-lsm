@@ -254,9 +254,10 @@ pub unsafe extern "C" fn scan_block_contains(
     finish(engine_core::scan_block_contains(bytes(ptr, len), codec(lz4), &pats).map_err(error_code))
 }
 
-/// Open the module's merge session. Input: source list. Fails with -13
-/// while a session is open, -5 for a malformed list, -1 for a run shorter
-/// than a footer, and -11 when its working set cannot be reserved.
+/// Open the module's merge session. Input: source list, then the marks block
+/// the session copies. Fails with -13 while a session is open, -5 for a
+/// malformed list, -1 for a run shorter than a footer, and -11 when its
+/// working set cannot be reserved.
 #[no_mangle]
 pub unsafe extern "C" fn merge_open(
     ptr: *const u8,
@@ -288,9 +289,6 @@ pub unsafe extern "C" fn merge_open(
         }
         sources.push(sizes);
     }
-    if !r.done() {
-        return TRUNCATED;
-    }
     let config = MergeConfig {
         drop_tombstones: drop_tombstones != 0,
         // `as` saturates, so Number.MAX_SAFE_INTEGER becomes usize::MAX.
@@ -300,7 +298,7 @@ pub unsafe extern "C" fn merge_open(
         tail_bytes: tail_bytes as usize,
         yield_bytes: yield_bytes as usize,
     };
-    match MergeSession::open(config, &sources) {
+    match MergeSession::open(config, &sources, &r.buf[r.o..]) {
         Ok(s) => {
             *slot = Some(s);
             0

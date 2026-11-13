@@ -219,7 +219,7 @@ pub fn blocks_tile(buf: &[u8]) -> bool {
 /// first) to its end, feeding each `Need` in an order picked by `seed`.
 pub fn drive_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) -> Result<(Vec<EncodedRun>, u64), MergeError> {
     let sizes: Vec<Vec<u32>> = sources.iter().map(|runs| runs.iter().map(|r| r.len() as u32).collect()).collect();
-    let mut session = MergeSession::open(config, &sizes)?;
+    let mut session = MergeSession::open(config, &sizes, &[])?;
     let mut state = seed | 1;
     let (mut runs, mut bytes) = (Vec::new(), Vec::new());
     loop {

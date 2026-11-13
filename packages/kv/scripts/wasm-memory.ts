@@ -11,6 +11,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { encodeRunIn, flatEngine, openMergeIn, type FlatEngine } from "../src/store/engine.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import type { SstEntry } from "../src/store/sst.js";
 
 const KiB = 1024;
@@ -87,6 +88,7 @@ async function merge({ sources, flushMiB, chunk, tail }: Shape, flushEvery?: num
   const core = openMergeIn(engine, {
     sources: files.map((runs) => runs.map((run) => run.byteLength)),
     dropTombstones: false,
+    marks: NO_MARKS,
     targetBytes: 4 * MiB,
     codec: "raw",
     chunkBytes: chunk,

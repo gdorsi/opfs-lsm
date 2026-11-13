@@ -190,7 +190,7 @@ Exit 0. The log ends with `All 5 formal checks passed`. Each check prints a `PAS
 - `PASS NoLostAcks`
 - `PASS WalOverSst` (on real `pointGet`)
 - `PASS ViewPin` (copy-on-write memtable pin present)
-- `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source)
+- `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source and drop a covered winner, outputs claim the base manifest's marks only), after two `broken variant caught` lines
 - `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, eleven `broken variant caught` lines show the model fails each known wrong design. The model holds the key generator of `wal`, so a crash state that loses commits also loses what they did to it.
 - `PASS CorruptRefuse` (a run of the recorded manifest removed after every workload: open refuses and nothing writes, unless a manifest that holds every ingested seq stands in)
 
