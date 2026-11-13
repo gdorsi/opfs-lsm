@@ -23,8 +23,8 @@ const sections: Section[] = [
     title: "Packages",
     nav: "Packages",
     pages: [
-      { label: "kv", source: "packages/kv/README.md", route: "kv" },
-      { label: "docstore", source: "packages/docstore/README.md", route: "docstore" },
+      { label: "kv", source: "packages/kv/README.md", route: "kv", sidebarSections: true },
+      { label: "docstore", source: "packages/docstore/README.md", route: "docstore", sidebarSections: true },
     ],
   },
   {
