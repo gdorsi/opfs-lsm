@@ -1,9 +1,9 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import * as commands from "../client/commands.ts";
-import type { IssueFilter } from "../client/filter.ts";
-import { LIST_WINDOW, usePreloadDetails, useIssueWindow } from "../client/hooks.ts";
+import * as commands from "../model/commands.ts";
+import type { IssueFilter } from "../model/filter.ts";
+import { LIST_WINDOW, usePreloadDetails, useIssueWindow } from "../app/hooks.ts";
 import type { Issue } from "../domain/model.ts";
 import { formatDate, initial, shortId } from "./format.ts";
 import { isTyping, keepSearch, useCreateModal, useIssueFilter, useKeys, useSetFilter } from "./nav.ts";

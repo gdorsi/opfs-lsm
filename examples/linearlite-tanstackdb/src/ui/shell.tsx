@@ -1,5 +1,5 @@
-import { usePressure } from "../client/hooks.ts";
-import { confirmEviction } from "../client/sync.ts";
+import { usePressure } from "../app/hooks.ts";
+import { confirmEviction } from "../model/sync.ts";
 import { Outlet, useLocation } from "@tanstack/react-router";
 import { useState } from "react";
 import { CreateModal } from "./create.tsx";

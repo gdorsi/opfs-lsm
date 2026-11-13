@@ -1,9 +1,9 @@
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router";
 import { createLiveQueryCollection, eq } from "@tanstack/db";
-import * as commands from "../client/commands.ts";
-import { parseIssueFilter } from "../client/filter.ts";
-import { openStore } from "../client/store.ts";
-import { fetchDetail, startSync } from "../client/sync.ts";
+import * as commands from "../model/commands.ts";
+import { parseIssueFilter } from "../model/filter.ts";
+import { openStore } from "../model/store.ts";
+import { fetchDetail, startSync } from "../model/sync.ts";
 import { Shell } from "../ui/shell.tsx";
 
 const DEFAULTS = { status: [], priority: [], q: "", sort: "modified", dir: "desc" } as const;

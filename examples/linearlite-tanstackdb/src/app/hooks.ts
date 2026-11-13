@@ -3,12 +3,12 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Body, Comment, Issue, StatusCode } from "../domain/model.ts";
 import { STREAMS, type Stream } from "../domain/stores.ts";
-import { anchors, countBefore, countByStatus, countTotal, locate, type Anchor, type Pause } from "./counts.ts";
-import type { IssueFilter } from "./filter.ts";
-import { backoffMs } from "./ops.ts";
-import { windowQuery } from "./query.ts";
-import { openedStore, type IssueDocs } from "./store.ts";
-import { fetchDetail, preloadDetails } from "./sync.ts";
+import { anchors, countBefore, countByStatus, countTotal, locate, type Anchor, type Pause } from "../model/counts.ts";
+import type { IssueFilter } from "../model/filter.ts";
+import { backoffMs } from "../model/ops.ts";
+import { windowQuery } from "../model/query.ts";
+import { openedStore, type IssueDocs } from "../model/store.ts";
+import { fetchDetail, preloadDetails } from "../model/sync.ts";
 
 export const LIST_WINDOW = 100;
 const COLUMN_WINDOW = 50;

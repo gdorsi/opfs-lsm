@@ -2,7 +2,7 @@ import type { ServerRow } from "../domain/model.ts";
 import { WireError } from "../domain/parse.ts";
 import { STREAMS, type Stream } from "../domain/stores.ts";
 import { parsePushRequest } from "../domain/wire.ts";
-import { type Transport, TransportError } from "../client/transport.ts";
+import { type Transport, TransportError } from "../model/transport.ts";
 import { generate, type Generated } from "./generate.ts";
 import { syncServer, type SyncServer, type Tables } from "./protocol.ts";
 

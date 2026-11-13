@@ -81,7 +81,7 @@ from it, and so does the push order: streams apply in table order, so a child fo
 
 ## One write path
 
-`transact(store, stream, ids, merge)` (`src/client/store.ts`, over the adapter's `utils.transact`) writes
+`transact(store, stream, ids, merge)` (`src/model/store.ts`, over the adapter's `utils.transact`) writes
 `merge(currentRows)` in one kv transaction, so nothing can land between the read and the write, in this tab or
 another. For issues it stamps the sort keys from the fields `merge` returns, so no write leaves them stale. Callers
 never use `collection.insert/update`.
@@ -256,7 +256,7 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   few hundred rows. Title search is `ilike`; a query holding `%` or `_` uses a filter function instead, since
   `ilike` has no escape.
 - **Counts.** The scroll height and the toolbar total come from `countTotal` and the board's column counts from
-  `countByStatus` (`src/client/counts.ts`), which count docstore index entries and read no document. A search
+  `countByStatus` (`src/model/counts.ts`), which count docstore index entries and read no document. A search
   counts the documents the `search` index matches whose title contains the query, so the total agrees with the
   list's `ilike`; a query of one plain word is counted from the index entries alone, which is exact for titles
   stored in NFC, as typed text is (the index normalizes, `ilike` does not). `useIssueRead` reads again after
@@ -270,7 +270,7 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   The counts depend on the filter and the query, not the sort, so a sort change keeps them.
 - **Deep scroll.** TanStack serves a window at offset N from the first N rows plus the window, and keeps them
   once the list scrolls back. So a window deep in the unfiltered list is its own live query, anchored at a sort
-  value. `locate` (`src/client/counts.ts`) walks the sort's index to row N without reading documents, reads the
+  value. `locate` (`src/model/counts.ts`) walks the sort's index to row N without reading documents, reads the
   64 rows before it, and returns row N's sort value and `base`, the rows that sort strictly before that value. The
   window's query keeps the filter's `where` plus `sort <= value` (`>=` ascending), so the adapter reads it from the
   sort's own index, and its rows sit `base` rows down the list. `base` is counted from the index again

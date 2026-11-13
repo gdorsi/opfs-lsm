@@ -1,8 +1,8 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type DragEvent } from "react";
-import * as commands from "../client/commands.ts";
-import type { IssueFilter } from "../client/filter.ts";
-import { useBoardColumn, usePreloadDetails, useStatusCounts } from "../client/hooks.ts";
+import * as commands from "../model/commands.ts";
+import type { IssueFilter } from "../model/filter.ts";
+import { useBoardColumn, usePreloadDetails, useStatusCounts } from "../app/hooks.ts";
 import { STATUS_LABELS, type Issue, type StatusCode } from "../domain/model.ts";
 import { shortId } from "./format.ts";
 import { PriorityIcon, StatusIcon } from "./icons.tsx";

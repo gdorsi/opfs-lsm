@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import * as commands from "../client/commands.ts";
-import { useIssue, useIssueDetail } from "../client/hooks.ts";
-import { openedStore } from "../client/store.ts";
+import * as commands from "../model/commands.ts";
+import { useIssue, useIssueDetail } from "../app/hooks.ts";
+import { openedStore } from "../model/store.ts";
 import type { Comment, Issue } from "../domain/model.ts";
 import { useAutosize } from "./autosize.ts";
 import { formatDateTime, initial, shortId } from "./format.ts";

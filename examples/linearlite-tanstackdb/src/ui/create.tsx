@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import * as commands from "../client/commands.ts";
-import type { IssueFilter } from "../client/filter.ts";
+import * as commands from "../model/commands.ts";
+import type { IssueFilter } from "../model/filter.ts";
 import type { PriorityCode, StatusCode } from "../domain/model.ts";
 import { useAutosize } from "./autosize.ts";
 import { PriorityPicker, StatusPicker } from "./pickers.tsx";
