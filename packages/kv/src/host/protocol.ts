@@ -50,7 +50,7 @@ export type Pressure = {
   readonly bytes: number;
   /** The smallest numeric `maxBytes` any tab passed since the database was last closed by all; with `"quota"`, 90% of the origin's quota. */
   readonly maxBytes: number;
-  /** Bytes to free to come back to 7/8 of `maxBytes`. With `"quota"` it counts the whole origin and can pass `bytes`. */
+  /** Bytes to free to come back to 4/5 of `maxBytes`. With `"quota"` it counts the whole origin and can pass `bytes`. */
   readonly need: number;
 };
 
