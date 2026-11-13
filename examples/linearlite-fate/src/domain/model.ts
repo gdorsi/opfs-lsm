@@ -5,8 +5,14 @@ export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
 export const STATUS_LABELS = ["Backlog", "Todo", "In Progress", "Done", "Canceled"] as const;
 export const PRIORITY_LABELS = ["Urgent", "High", "Medium", "Low", "No priority"] as const;
 
-/** fate's persistence key on the client and the scope of its mutation receipts on the server: they must match. */
-export const PERSISTENCE_KEY = "linearlite";
+/**
+ * fate's persistence key on the client and the scope of its mutation receipts on the server: they must match. One per
+ * user, so two users in one browser keep separate caches and queues.
+ */
+export const persistenceKey = (user: string): string => `linearlite:user:${user}`;
+
+/** The user a `?user=` value or `x-linearlite-user` header names, else `anonymous`. */
+export const userName = (raw: string | null): string => (raw !== null && /^[A-Za-z0-9._-]{1,32}$/.test(raw) ? raw : "anonymous");
 
 /** Every status code, and every priority code: both run 0 to 4. */
 export const CODES = [0, 1, 2, 3, 4] as const;
@@ -56,6 +62,3 @@ export type ColumnArgs = { readonly column: StatusCode; readonly priority: reado
 export type StatusCounts = readonly [number, number, number, number, number];
 export const totalOf = (counts: StatusCounts): number => counts.reduce((a, b) => a + b, 0);
 
-/** What the UI renders. `dirty` is on while a mutation naming it waits for the server. */
-export type Issue = IssueFields & { readonly dirty: boolean };
-export type Comment = Omit<CommentEntity, "__typename"> & { readonly dirty: boolean };

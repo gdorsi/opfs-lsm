@@ -1,7 +1,8 @@
+import type { InsertionTarget, ViewRef } from "react-fate";
 import { kanbanBetween } from "../domain/kanban.ts";
-import type { IssueFields, IssuePatch, PriorityCode, StatusCode } from "../domain/model.ts";
-import { IssueRowView, openedFate, type Fate } from "./fate.ts";
-import { onScreen, placeNewIssue } from "./screen.ts";
+import type { IssuePatch, PriorityCode, StatusCode } from "../domain/model.ts";
+import type { Fate } from "./fate.ts";
+import type { NewIssuePlace } from "./place.ts";
 
 type Pending = Promise<{ error?: Error }> & { readonly locallyPersisted: Promise<void> };
 
@@ -19,44 +20,39 @@ function saved(what: string, pending: Pending): Promise<void> {
 
 type ListChanges = Pick<Parameters<Fate["mutations"]["updateIssue"]>[0], "insert" | "remove">;
 
-function editIssue(id: string, patch: IssuePatch, lists: ListChanges = {}): Promise<void> {
-  const { fate } = openedFate();
+function editIssue(fate: Fate, id: string, patch: IssuePatch, lists: ListChanges = {}): Promise<void> {
   return saved("an edit", fate.mutations.updateIssue({ input: { id, ...patch }, optimistic: { ...patch, modified: Date.now() }, ...lists }));
 }
 
-export const setStatus = (id: string, status: StatusCode) => editIssue(id, { status });
-export const setPriority = (id: string, priority: PriorityCode) => editIssue(id, { priority });
-export const setTitle = (id: string, title: string) => editIssue(id, { title });
-export const setDescription = (id: string, description: string) => editIssue(id, { description });
+export const setStatus = (fate: Fate, id: string, status: StatusCode) => editIssue(fate, id, { status });
+export const setPriority = (fate: Fate, id: string, priority: PriorityCode) => editIssue(fate, id, { priority });
+export const setTitle = (fate: Fate, id: string, title: string) => editIssue(fate, id, { title });
+export const setDescription = (fate: Fate, id: string, description: string) => editIssue(fate, id, { description });
 
-export function deleteIssue(id: string): Promise<void> {
-  return saved("a delete", openedFate().fate.mutations.deleteIssue({ input: { id }, delete: true }));
-}
+export const deleteIssue = (fate: Fate, id: string): Promise<void> => saved("a delete", fate.mutations.deleteIssue({ input: { id }, delete: true }));
 
-/** Moves a card between its new neighbours; a move to another column also leaves the old column's list and joins the new one. */
-export function moveIssue(id: string, status: StatusCode, before: string | null, after: string | null): Promise<void> {
-  const { fate } = openedFate();
-  const from = (fate.store.read(`Issue:${id}`) as Partial<IssueFields> | undefined)?.status;
-  const node = fate.ref("Issue", id, IssueRowView);
-  const leave = from !== undefined && from !== status ? onScreen.columns.get(from)?.target : undefined;
-  const join = from !== status ? onScreen.columns.get(status)?.target : undefined;
+/** Moves a card between its new neighbours. A move to another column leaves `from`'s list and joins `to`'s. */
+export function moveIssue(
+  fate: Fate,
+  card: ViewRef<"Issue">,
+  move: { status: StatusCode; before: string | null; after: string | null; from?: InsertionTarget<"Issue">; to?: InsertionTarget<"Issue"> },
+): Promise<void> {
+  const { status, before, after, from, to } = move;
   return editIssue(
-    id,
+    fate,
+    String(card.id),
     { status, kanbanorder: kanbanBetween(before, after) },
-    { ...(leave && { remove: { from: leave, node } }), ...(join && { insert: { into: join, position: "after" } }) },
+    { ...(from && { remove: { from, node: card } }), ...(to && { insert: { into: to, position: "after" } }) },
   );
 }
 
-/**
- * Creates the issue at the top of its column and of the list when they are on screen and their filter lists it.
- * With its whole column on screen the client picks `kanbanorder` from the column's first card; otherwise the server
- * does, and under a filter the card sits above the first one on screen until the server answers.
- */
-export async function createIssue(input: { title: string; description: string; status: StatusCode; priority: PriorityCode }): Promise<string> {
-  const { fate, user } = openedFate();
+export type IssueInput = { title: string; description: string; status: StatusCode; priority: PriorityCode };
+
+/** Creates the issue on top of the lists `place` names; see `placeNewIssue`. */
+export async function createIssue(fate: Fate, user: string, input: IssueInput, place: NewIssuePlace): Promise<string> {
   const id = crypto.randomUUID();
   const now = Date.now();
-  const { into, shownOrder, sentOrder } = placeNewIssue(onScreen, input);
+  const { into, shownOrder, sentOrder } = place;
   await saved(
     "a new issue",
     fate.mutations.createIssue({
@@ -68,10 +64,9 @@ export async function createIssue(input: { title: string; description: string; s
   return id;
 }
 
-export async function addComment(issueId: string, text: string): Promise<string> {
-  const { fate, user } = openedFate();
+/** Adds the comment at the end of `thread`, the issue's comment list as the screen read it. */
+export async function addComment(fate: Fate, user: string, issueId: string, text: string, thread: InsertionTarget<"Comment"> | undefined): Promise<string> {
   const id = crypto.randomUUID();
-  const thread = onScreen.comments.get(issueId);
   await saved(
     "a comment",
     fate.mutations.addComment({
