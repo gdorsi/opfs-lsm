@@ -15,7 +15,8 @@
     ".scratch/**",
     ".claude/**",
     ".agents/**",
-    "**/.vitepress/cache/**"
+    "**/.vitepress/cache/**",
+    "site/stageshow/kit/**"
   ],
   "rules": {
     "vitest/no-conditional-expect": "off",

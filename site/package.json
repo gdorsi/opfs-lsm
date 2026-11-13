@@ -3,13 +3,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vitepress dev",
-    "build": "vitepress build",
+    "demo": "pnpm --filter \"@opfs-lsm/example-linearlite^...\" build && pnpm --filter @opfs-lsm/example-linearlite build:demo --outDir ../../../site/.vitepress/dist/demo --emptyOutDir",
+    "dev": "pnpm demo && vitepress dev",
+    "build": "vitepress build && pnpm demo",
+    "check": "tsc -p tsconfig.json",
     "preview": "vitepress preview"
   },
   "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "github-slugger": "2.0.0",
+    "lucide-react": "0.468.0",
     "markdown-it": "14.3.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^5.9.0",
     "vitepress": "1.6.4"
   }
 }

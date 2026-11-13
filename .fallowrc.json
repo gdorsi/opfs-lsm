@@ -21,12 +21,17 @@
     "docs/research/opfs-worker-probes/*.js",
     "docs/research/opfs-worker-probes/*.mjs"
   ],
+  "ignorePatterns": [
+    "site/stageshow/kit/**"
+  ],
   "ignoreBinaries": [
     "wasm-pack",
     "agent-browser"
   ],
   "ignoreDependencies": [
-    "@automerge/automerge-repo-storage-indexeddb"
+    "@automerge/automerge-repo-storage-indexeddb",
+    "lucide-react",
+    "vue"
   ],
   "ignoreExports": [
     {
