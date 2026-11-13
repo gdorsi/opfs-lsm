@@ -1,0 +1,124 @@
+/* One card, pinned a gutter from the top and both sides, off the bottom. */
+.bn {
+  & .ss-stage {
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--ss-well);
+    font: 12px/1.4 var(--ss-font);
+    color: var(--ss-text-strong);
+  }
+
+  .bn-card {
+    position: absolute;
+    top: 32px;
+    left: 60px;
+    width: 500px;
+    height: 440px;
+    padding: 18px 22px 0;
+    border-radius: 12px;
+    background: var(--ss-surface);
+    box-shadow: var(--ss-shadow-hero);
+  }
+
+  & .ss-stage[data-layout="compact"] .bn-card {
+    top: 24px;
+    left: 16px;
+    width: 326px;
+    height: 460px;
+    padding: 16px 16px 0;
+  }
+
+  .bn-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--ss-line);
+  }
+
+  .bn-title {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .bn-command {
+    font: 11px/1.4 var(--ss-mono);
+    color: var(--ss-text-faint);
+  }
+
+  .bn-group {
+    display: grid;
+    gap: 7px;
+    padding: 13px 0 14px;
+    border-bottom: 1px solid var(--ss-line-faint);
+  }
+
+  .bn-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    height: 20px;
+    margin-bottom: 2px;
+  }
+
+  .bn-name {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  /* One grid for both lines of every workload, so the bars share a left edge and a length. */
+  .bn-line {
+    display: grid;
+    grid-template-columns: 62px minmax(0, 1fr) 84px;
+    align-items: center;
+    gap: 10px;
+    height: 16px;
+  }
+
+  & .ss-stage[data-layout="compact"] .bn-line {
+    grid-template-columns: 64px minmax(0, 1fr) 80px;
+    gap: 8px;
+  }
+
+  .bn-who {
+    color: var(--ss-text);
+  }
+
+  .bn-value {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    white-space: nowrap;
+    color: var(--ss-text);
+    font-variant-numeric: tabular-nums;
+    opacity: 0;
+    transition: opacity 0.8s ease;
+  }
+
+  .bn-group[data-ran] .bn-value {
+    opacity: 1;
+  }
+
+  .bn-value .ss-count {
+    color: var(--ss-text-strong);
+    font-weight: 500;
+  }
+
+  /* "341k" reads as one figure: no hair between the digits and the k. */
+  .bn-value .ss-count {
+    --ss-count-unit-gap: 0px;
+  }
+
+  /* IndexedDB's bar is gray, so the color is kv's alone. */
+  .bn-line .ss-meter[data-tone="ink"] {
+    --ss-meter-tone: var(--ss-text-faint);
+  }
+
+  /* Both bars of a workload grow for the same time, and land with the count beside them. */
+  .bn-line .ss-meter__fill {
+    transition-duration: 0.9s;
+  }
+}
