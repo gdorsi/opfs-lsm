@@ -3,6 +3,7 @@ import { FateClient } from "react-fate";
 import * as commands from "../client/commands.ts";
 import { openedFate, openFate } from "../client/fate.ts";
 import { parseIssueFilter } from "../client/filter.ts";
+import { keepAppOnDevice } from "../client/offline.ts";
 import { Shell } from "../ui/shell.tsx";
 
 const DEFAULTS = { status: [], priority: [], q: "", sort: "modified", dir: "desc" } as const;
@@ -18,6 +19,7 @@ export const Route = createFileRoute("/_app")({
     const { fate, storage } = await openFate();
     // A measurement script drives edits and reads the client through this, on production builds too.
     Object.assign(globalThis, { __linearlite: { fate, storage, commands } });
+    keepAppOnDevice();
   },
   pendingMs: 200,
   pendingMinMs: 0,

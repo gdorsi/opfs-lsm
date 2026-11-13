@@ -102,9 +102,29 @@ which opens an IndexedDB database named `fate`. The footer names the storage in 
 browser only, in the `_app` route's loader, behind a pending screen that the server renders into the page. The route
 sets `pendingMinMs: 0`, so the screen goes away as soon as the open resolves.
 
+The persistence keeps fate's defaults. A saved request lasts 24 hours from its last fetch (`maxAge`), and the cache
+holds 25 MiB by fate's own count of its entries (`maxBytes`), after which fate drops the requests used longest ago.
+A queued mutation lasts 30 days. fate enforces all three through the storage, so they are the same on both storages.
+
 The footer reads fate's persistence snapshot and `navigator.onLine`: offline, server unreachable (fate is retrying
 a delivery), syncing, or idle, with the number of unsynced and failed mutations. A row or card shows the dot while
 a queued or sending mutation names its issue.
+
+## Opening with the server unreachable
+
+A production build registers a ServiceWorker (`src/service-worker.js`, written out as `/sw.js` by the build with
+the build's file list in front). On install it stores the page and every file of the build in a cache named after
+that list, so the stored set is always one whole build, and a new build replaces it.
+
+- A build's files have a content hash in their name and are answered from the cache.
+- The page is asked from the server first. The stored page answers only when the server cannot be reached. So a
+  new build shows on the next load, and the dev server keeps working on an origin where a build registered the
+  worker. Every app route gets the same stored page, because the server renders none of them.
+- `/api/fate` is not touched. fate queues mutations and reads its cache without the worker.
+
+With the server stopped the app opens on any route and paints what fate has cached. A view that was never fetched
+shows the load error with a retry. The dev server registers nothing, because its modules keep their names when
+they change.
 
 ## Left out
 
