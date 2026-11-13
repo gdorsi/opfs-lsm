@@ -1,0 +1,195 @@
+/* The app's window pinned top and right of center, off the right and bottom. The kv card in front of it, its right
+   edge on the window's sidebar line, one gutter from the stage's left and bottom. One 28px gutter. */
+.sy {
+  & .ss-stage {
+    --sy-gutter: 28px;
+    --sy-bleed: 80px;
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--ss-well);
+    font: 12px/1.4 var(--ss-font);
+    color: var(--ss-text-strong);
+  }
+
+  .sy-window {
+    position: absolute;
+    top: var(--sy-gutter);
+    left: 124px;
+    width: 556px;
+    height: 400px;
+    box-shadow: var(--ss-shadow-hero);
+  }
+
+  .sy-app {
+    display: flex;
+    height: 100%;
+    background: var(--ss-surface);
+  }
+
+  .sy-side {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    flex: none;
+    width: 150px;
+    padding: 14px 10px;
+    border-right: 1px solid var(--ss-line);
+    background: var(--ss-canvas);
+  }
+
+  .sy-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 26px;
+    padding: 0 8px;
+    border-radius: 6px;
+  }
+
+  .sy-nav[data-on] {
+    background: var(--ss-ink-2);
+  }
+
+  /* The window runs past the stage's right edge: the content stops a gutter short of what is visible. */
+  .sy-main {
+    flex: 1;
+    min-width: 0;
+    padding: 14px calc(20px + var(--sy-bleed)) 0 20px;
+  }
+
+  .sy-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    height: 28px;
+    margin-bottom: 8px;
+  }
+
+  .sy-title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .sy-badge-icon {
+    width: 12px;
+    height: 12px;
+  }
+
+  /* A status that rolls stays inside its pill: on a line as tall as the type, the roll travels one cap height and
+     its feather ends at the pill's edge. */
+  .sy-sync,
+  .sy-flush {
+    overflow: hidden;
+    line-height: 1;
+  }
+
+  .sy-issue {
+    height: 36px;
+    padding-block: 0;
+    border-radius: 0;
+    border-bottom: 1px solid var(--ss-line-faint);
+    font-size: 12.5px;
+  }
+
+  .sy-status {
+    color: var(--ss-text);
+  }
+
+  /* The kv card. */
+  .sy-kv {
+    position: absolute;
+    left: var(--sy-gutter);
+    bottom: var(--sy-gutter);
+    width: 246px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    background: var(--ss-surface);
+    box-shadow: var(--ss-shadow-satellite);
+  }
+
+  .sy-kv-head {
+    display: grid;
+    gap: 2px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--ss-line);
+  }
+
+  .sy-kv-name {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .sy-kv-size {
+    color: var(--ss-text);
+    font-size: 11.5px;
+  }
+
+  /* The newest keys, three rows tall. The last row's own rule is cut, so the footer's is the only line under it. */
+  .sy-keys {
+    height: 101px;
+    overflow: hidden;
+  }
+
+  .sy-key {
+    height: 34px;
+    padding-block: 0;
+    border-radius: 0;
+    border-bottom: 1px solid var(--ss-line-faint);
+  }
+
+  .sy-mono {
+    font: 11.5px/16px var(--ss-mono);
+  }
+
+  .sy-new {
+    color: var(--ss-accent-text);
+  }
+
+  .sy-pending {
+    color: var(--ss-text);
+  }
+
+  .sy-worker {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ss-line);
+  }
+
+  .sy-worker-name {
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+
+  /* Narrow: the window on top without its sidebar, off the right edge, and the card straddling its foot over the
+     filler rows. */
+  & .ss-stage[data-layout="compact"] {
+    --sy-gutter: 20px;
+    --sy-bleed: 42px;
+  }
+
+  & .ss-stage[data-layout="compact"] .sy-window {
+    top: var(--sy-gutter);
+    left: 40px;
+    width: 360px;
+    height: 300px;
+  }
+
+  & .ss-stage[data-layout="compact"] .sy-side {
+    display: none;
+  }
+
+  & .ss-stage[data-layout="compact"] .sy-main {
+    padding-left: 16px;
+    padding-right: calc(16px + var(--sy-bleed));
+  }
+
+  & .ss-stage[data-layout="compact"] .sy-kv {
+    right: var(--sy-gutter);
+    width: auto;
+  }
+}

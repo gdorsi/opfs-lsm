@@ -10,3 +10,77 @@
   line-height: 18px;
   letter-spacing: 0.02em;
 }
+
+/*
+ * The hero illustration sits beside the copy where its column holds the wide design, 600px, and under the copy
+ * elsewhere. The copy stays left-aligned at every width, which the default theme gives up once a hero has an image.
+ * The default theme's hero rules are scoped, which adds an attribute to each selector: `html .VPHome` outranks them.
+ */
+html .VPHome .VPHero.has-image .container {
+  text-align: left;
+}
+
+html .VPHome .VPHero.has-image .name,
+html .VPHome .VPHero.has-image .text,
+html .VPHome .VPHero.has-image .tagline {
+  margin: 0;
+}
+
+html .VPHome .VPHero.has-image .actions {
+  justify-content: flex-start;
+}
+
+html .VPHome .VPHero.has-image .image {
+  order: 3;
+  margin: 40px 0 0;
+}
+
+html .VPHome .VPHero.has-image .image-container {
+  display: block;
+  width: auto;
+  height: auto;
+  transform: none;
+}
+
+html .VPHome .VPHero.has-image .image-bg {
+  display: none;
+}
+
+@media (min-width: 960px) {
+  html .VPHome .VPHero.has-image .container {
+    flex-direction: column;
+  }
+
+  html .VPHome .VPHero.has-image .main {
+    width: auto;
+  }
+}
+
+@media (min-width: 1280px) {
+  html .VPHome .VPHero.has-image .container {
+    flex-direction: row;
+    gap: 0;
+  }
+
+  html .VPHome .VPHero.has-image .main {
+    max-width: 552px;
+  }
+
+  html .VPHome .VPHero.has-image .image {
+    order: 2;
+    margin: 0;
+  }
+}
+
+/* Its box is the stage's width at most, and switches to the phone design at the stage's threshold by its own width. */
+.hero-illustration {
+  container-type: inline-size;
+  max-width: 600px;
+}
+
+@container (max-width: 599.98px) {
+  .hero-illustration .illustration-stage {
+    max-width: var(--compact-width);
+    aspect-ratio: var(--compact);
+  }
+}
