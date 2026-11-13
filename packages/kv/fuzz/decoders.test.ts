@@ -21,6 +21,7 @@ import {
   type RowOp,
 } from "./targets.js";
 import { loadWasm, withoutWasm } from "./wasm.js";
+import { NO_MARKS, type Mark, type Marks } from "../src/store/marks.js";
 
 /**
  * Byte-mutation properties over every decoder of on-disk and IndexedDB
@@ -195,27 +196,48 @@ describe("decoder properties (fast-check)", () => {
   );
 });
 
-const manifestArb: fc.Arbitrary<GenerationMeta> = fc.record({
-  generation: fc.integer({ min: 0, max: 2 ** 40 }),
-  tombstoneSeq: fc.integer({ min: 0, max: 2 ** 40 }),
-  through: fc.integer({ min: 0, max: 2 ** 40 }),
-  runs: fc.array(
-    fc.record(
-      {
-        path: fc.constantFrom("l0/f1.sst", "l1/c7.0.sst", "l2/c9.3.sst"),
-        bytes: fc.integer({ min: 0, max: 2 ** 32 - 1 }),
-        range: fc.record({ smallest: fc.uint8Array({ maxLength: 12 }), largest: fc.uint8Array({ maxLength: 12 }) }),
-      },
-      { requiredKeys: ["path", "bytes"] },
+/** The marks of a manifest at `through`: range deletes from records at or below it. */
+function marksArb(through: number): fc.Arbitrary<Marks> {
+  if (through < 2) return fc.constant(NO_MARKS);
+  const mark = fc
+    .record({ start: fc.uint8Array({ maxLength: 6 }), size: fc.option(fc.uint8Array({ minLength: 1, maxLength: 2 })), t: fc.integer({ min: 1, max: through - 1 }) })
+    .chain(({ start, size, t }) =>
+      fc.integer({ min: t + 1, max: through }).map((at) => {
+        const end = size === null ? undefined : new Uint8Array([...start, ...size]);
+        return { start, ...(end ? { endExclusive: end } : {}), through: t, at } satisfies Mark;
+      }),
+    );
+  return fc.array(mark, { maxLength: 4 });
+}
+
+const manifestArb: fc.Arbitrary<GenerationMeta> = fc.integer({ min: 0, max: 2 ** 40 }).chain((through) =>
+  fc.record({
+    generation: fc.integer({ min: 0, max: 2 ** 40 }),
+    tombstoneSeq: fc.integer({ min: 0, max: 2 ** 40 }),
+    through: fc.constant(through),
+    marks: marksArb(through),
+    runs: fc.array(
+      fc.record(
+        {
+          path: fc.constantFrom("l0/f1.sst", "l1/c7.0.sst", "l2/c9.3.sst"),
+          bytes: fc.integer({ min: 0, max: 2 ** 32 - 1 }),
+          range: fc.record({ smallest: fc.uint8Array({ maxLength: 12 }), largest: fc.uint8Array({ maxLength: 12 }) }),
+          marksThrough: fc.integer({ min: 0, max: through }),
+        },
+        { requiredKeys: ["path", "bytes", "marksThrough"] },
+      ),
+      { maxLength: 6 },
     ),
-    { maxLength: 6 },
-  ),
-});
+  }),
+);
 
 const walRowArb: fc.Arbitrary<RowOp[]> = fc.array(
   fc.oneof(
     fc.record({ put: fc.uint8Array({ maxLength: 16 }), value: fc.uint8Array({ maxLength: 32 }) }),
     fc.record({ del: fc.uint8Array({ maxLength: 16 }) }),
+    fc
+      .record({ start: fc.uint8Array({ maxLength: 8 }), size: fc.option(fc.uint8Array({ minLength: 1, maxLength: 4 })), through: fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }) })
+      .map(({ start, size, through }) => ({ deleteRange: start, ...(size === null ? {} : { end: new Uint8Array([...start, ...size]) }), through })),
   ),
   { minLength: 1, maxLength: 6 },
 );

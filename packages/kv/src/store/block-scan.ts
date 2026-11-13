@@ -1,9 +1,10 @@
 import { CorruptDatabaseError } from "../errors.js";
+import type { LayerEntry } from "./cursor.js";
 
 /**
  * Scans one data block, framed as the run's block index frames it, and returns
- * the puts whose value holds every pattern as `u32 keyLen, u32 valueLen, key,
- * value` records. `patterns` is each pattern as a u32 length then its bytes.
+ * the puts whose value holds every pattern as `u32 keyLen, u32 valueLen, u64
+ * seq, key, value` records. `patterns` is each pattern as a u32 length then its bytes.
  */
 type BlockScanner = (framed: Uint8Array, lz4: boolean, patterns: Uint8Array) => Uint8Array;
 
@@ -33,16 +34,17 @@ export function packPatterns(patterns: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
-export function* unpackHits(hits: Uint8Array): Generator<{ key: Uint8Array; value: Uint8Array }> {
+export function* unpackHits(hits: Uint8Array): Generator<LayerEntry> {
   const view = new DataView(hits.buffer, hits.byteOffset, hits.byteLength);
   let o = 0;
   while (o < hits.length) {
-    if (o + 8 > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
+    if (o + 16 > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
     const keyLen = view.getUint32(o, true);
     const valueLen = view.getUint32(o + 4, true);
-    o += 8;
+    const seq = Number(view.getBigUint64(o + 8, true));
+    o += 16;
     if (o + keyLen + valueLen > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
-    yield { key: hits.slice(o, o + keyLen), value: hits.slice(o + keyLen, o + keyLen + valueLen) };
+    yield { key: hits.slice(o, o + keyLen), kind: "put", value: hits.slice(o + keyLen, o + keyLen + valueLen), seq };
     o += keyLen + valueLen;
   }
 }

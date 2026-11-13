@@ -19,8 +19,12 @@ import {
   TARGET_RUN_BYTES,
   type CompactionPlan,
 } from "../store/levels.js";
+import { retireMarks } from "../store/marks.js";
 import type { HostBudget } from "./budget.js";
 import { inMergeSlot } from "./merge-slot.js";
+
+/** A run the merge wrote, before it is given a `marksThrough`. */
+type MergedRun = Omit<RunMeta, "marksThrough">;
 
 /** Merged runs written to OPFS and not yet in any generation. */
 type CompactionOutput = {
@@ -29,7 +33,7 @@ type CompactionOutput = {
   readonly droppedSeq: number;
 };
 
-type Merged = Pick<CompactionOutput, "outputs" | "droppedSeq">;
+type Merged = { readonly outputs: readonly MergedRun[]; readonly droppedSeq: number };
 
 /**
  * Plan one step on `base`, the recorded generation, merge its inputs, and
@@ -52,7 +56,13 @@ export async function mergeNextStep(
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget));
-  return { inputs: plan.inputs.map((r) => r.path), ...merged };
+  // The merge applies no range delete, so an output has applied only those all its inputs had.
+  const marksThrough = Math.min(...plan.inputs.map((r) => r.marksThrough));
+  return {
+    inputs: plan.inputs.map((r) => r.path),
+    outputs: merged.outputs.map((run) => ({ ...run, marksThrough })),
+    droppedSeq: merged.droppedSeq,
+  };
 }
 
 async function writeStep(
@@ -102,7 +112,7 @@ export async function pumpMerge(
   inputs: readonly (readonly OpenFile[])[],
   name: (i: number) => string,
 ): Promise<Merged> {
-  const outputs: RunMeta[] = [];
+  const outputs: MergedRun[] = [];
   const created: string[] = [];
   let open: { readonly path: string; readonly writer: FileWriter } | undefined;
   try {
@@ -168,6 +178,7 @@ export async function installStep(
     runs,
     tombstoneSeq: Math.max(meta.tombstoneSeq, step.droppedSeq),
     through: meta.through,
+    marks: retireMarks(meta.marks, runs),
   });
   await raiseGeneration(wal, generation);
   return generation;

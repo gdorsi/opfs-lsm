@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fc from "fast-check";
 import { expect } from "vitest";
 import type { Db, Entry } from "../../src/index.js";
+import { compareBytes } from "../../src/bytes.js";
 import { TabWal, decodeOps } from "../../src/idb/wal.js";
 import {
   openHarnessDb,
@@ -14,7 +15,7 @@ import {
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { expectEntries, SIM_HOST_LIMITS } from "./commands.js";
 import { checkHistory, History, type NewOp, type OpOf, type ViewRead } from "./history.js";
-import { show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
+import { applyOps, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 
 /**
  * Several `Db` handles (stand-ins for tabs) over one `EngineHost`, one
@@ -61,7 +62,7 @@ export function installSeams(): Restore {
   proto.append = async function (this: TabWal, record) {
     const op = currentOp.getStore();
     const seq = await append.call(this, record);
-    if (seq !== undefined) world?.history.commit(op, decodeOps(record), seq);
+    if (seq !== undefined) world?.history.commit(op, decodeOps(record, seq), seq);
     return seq;
   };
   proto.appendAfter = async function (this: TabWal, since: number, decide: Parameters<typeof appendAfter>[1]) {
@@ -412,6 +413,8 @@ const KEYS: readonly Uint8Array[] = [
   utf("k/2"),
   utf("L".repeat(8 * 1024)),
 ];
+/** At the key size limit, so no key extends it. */
+const LONGEST = KEYS[7]!;
 /** Only increments write it, so its value counts them. */
 const COUNTER = utf("ctr");
 const keyArb = fc.nat({ max: KEYS.length - 1 });
@@ -426,10 +429,21 @@ const valueArb: fc.Arbitrary<ValueSpec> = fc.record({
   fill: fc.constantFrom("a", "b"),
 });
 
-type OpSpec = { readonly type: "put"; readonly key: number; readonly value: ValueSpec } | { readonly type: "del"; readonly key: number };
+type OpSpec =
+  | { readonly type: "put"; readonly key: number; readonly value: ValueSpec }
+  | { readonly type: "del"; readonly key: number }
+  /** `through` absolute and small, so it often falls before, inside or past what other handles wrote. */
+  | { readonly type: "deleteRange"; readonly start: number; readonly end: number; readonly through?: number };
 const opArb: fc.Arbitrary<OpSpec> = fc.oneof(
-  { weight: 3, arbitrary: fc.record({ type: fc.constant("put" as const), key: keyArb, value: valueArb }) },
-  { weight: 2, arbitrary: fc.record({ type: fc.constant("del" as const), key: keyArb }) },
+  { weight: 6, arbitrary: fc.record({ type: fc.constant("put" as const), key: keyArb, value: valueArb }) },
+  { weight: 4, arbitrary: fc.record({ type: fc.constant("del" as const), key: keyArb }) },
+  {
+    weight: 1,
+    arbitrary: fc.record(
+      { type: fc.constant("deleteRange" as const), start: keyArb, end: keyArb, through: fc.nat({ max: 40 }) },
+      { requiredKeys: ["type", "start", "end"] },
+    ),
+  },
 );
 
 type RangeSpec = { start?: number; end?: number; limit?: number; contains?: string; reverse?: boolean };
@@ -461,8 +475,16 @@ const readArb: fc.Arbitrary<ReadSpec> = fc.oneof(
 );
 
 const keyName = (i: number) => show(KEYS[i]!);
-const opName = (op: OpSpec) =>
-  op.type === "put" ? `put ${keyName(op.key)} ${op.value.size}${op.value.fill}` : `del ${keyName(op.key)}`;
+function opName(op: OpSpec): string {
+  switch (op.type) {
+    case "put":
+      return `put ${keyName(op.key)} ${op.value.size}${op.value.fill}`;
+    case "del":
+      return `del ${keyName(op.key)}`;
+    case "deleteRange":
+      return `deleteRange ${keyName(op.start)}..${keyName(op.end)}${op.through === undefined ? "" : ` through ${op.through}`}`;
+  }
+}
 const readName = (r: ReadSpec) => (r.kind === "get" ? `get ${keyName(r.key)}` : `range ${JSON.stringify(r.range)}`);
 
 // --- Commands. The model is which slots hold an open handle.
@@ -472,17 +494,38 @@ type Cmd = fc.AsyncCommand<Model, World, false>;
 
 const waitTag = (wait: boolean) => (wait ? "" : " &");
 
-function opsOf(w: World, specs: readonly OpSpec[]): OracleOp[] {
-  return specs.map((op) =>
-    op.type === "put" ? { type: "put", key: KEYS[op.key]!, value: w.value(op.value) } : { type: "del", key: KEYS[op.key]! },
-  );
+/**
+ * A range delete never reaches the counter, whose value must count every
+ * increment. An inverted range is turned around; an empty one becomes the
+ * one key at its start, or everything below it for the longest key.
+ */
+function rangeOfDelete(startIndex: number, endIndex: number): { start: Uint8Array; endExclusive: Uint8Array } {
+  let start = KEYS[startIndex]!;
+  let end = KEYS[endIndex]!;
+  if (compareBytes(start, end) > 0) [start, end] = [end, start];
+  if (compareBytes(start, COUNTER) <= 0 && compareBytes(COUNTER, end) < 0) end = COUNTER;
+  if (compareBytes(start, end) === 0) {
+    if (start.byteLength < LONGEST.byteLength) end = Uint8Array.of(...start, 0);
+    else start = new Uint8Array(0);
+  }
+  return { start, endExclusive: end };
 }
 
-function applyOps(tx: { put(k: Uint8Array, v: Uint8Array): void; delete(k: Uint8Array): void }, ops: readonly OracleOp[]) {
-  for (const op of ops) {
-    if (op.type === "put") tx.put(op.key, op.value);
-    else tx.delete(op.key);
-  }
+function opsOf(w: World, specs: readonly OpSpec[]): OracleOp[] {
+  return specs.map((op): OracleOp => {
+    switch (op.type) {
+      case "put":
+        return { type: "put", key: KEYS[op.key]!, value: w.value(op.value) };
+      case "del":
+        return { type: "del", key: KEYS[op.key]! };
+      case "deleteRange":
+        return {
+          type: "deleteRange",
+          ...rangeOfDelete(op.start, op.end),
+          ...(op.through === undefined ? {} : { through: op.through }),
+        };
+    }
+  });
 }
 
 abstract class SlotCmd implements Cmd {
@@ -509,7 +552,8 @@ class WriteCmd extends SlotCmd {
     await w.start(this.slot, "write", { ops }, (db) => {
       if (ops.length === 1) {
         const op = ops[0]!;
-        return op.type === "put" ? db.put(op.key, op.value) : db.delete(op.key);
+        if (op.type === "put") return db.put(op.key, op.value);
+        if (op.type === "del") return db.delete(op.key);
       }
       return db.batch((tx) => applyOps(tx, ops));
     }, this.wait);

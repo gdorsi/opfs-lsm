@@ -81,6 +81,19 @@ describe("changes", () => {
     expect(fine!.doc).toEqual({ id: "fine", a: 1 });
   });
 
+  it("sends a gap for a kv range delete over the collection's rows, and nothing for one elsewhere", async () => {
+    const { kv, c } = await handle();
+    await c.put({ id: "1", a: 1 });
+    const { events } = listen(c);
+    const rows = concat(await storedPrefix(kv, "docs"), Uint8Array.of(0));
+    await kv.batch((tx) => tx.deleteRange({ start: Uint8Array.of(0xf0) }));
+    await c.put({ id: "2", a: 2 });
+    await kv.batch((tx) => tx.deleteRange({ start: rows }));
+    await c.put({ id: "3", a: 3 });
+    await settled(() => expect(summary(events)).toEqual(["+2", "gap", "+3"]));
+    expect(await c.get("1")).toBeUndefined();
+  });
+
   it("ignores the entries of the indexes and the other collections", async () => {
     type Other = { id: string; x?: number };
     const two = defineSchema<{ docs: Doc; other: Other }>()({

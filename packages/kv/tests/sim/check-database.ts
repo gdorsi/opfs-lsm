@@ -1,7 +1,9 @@
 import { compareBytes, keyToString } from "../../src/bytes.js";
+import { throughAt } from "../../src/store/marks.js";
 import type { AsyncFs } from "../../src/opfs/async-fs.js";
 import {
   decodeGeneration,
+  GENERATION_ZERO,
   listRuns,
   type GenerationMeta,
   type RunMeta,
@@ -119,7 +121,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     }
   }
   const current: GenerationMeta | undefined =
-    recorded === 0 ? { generation: 0, runs: [], tombstoneSeq: 0, through: 0 } : manifests.get(recorded);
+    recorded === 0 ? GENERATION_ZERO : manifests.get(recorded);
   if (!current) problems.push(`recorded generation ${recorded} has no readable manifest`);
   if (current && current.tombstoneSeq > current.through) {
     problems.push(`tombstoneSeq ${current.tombstoneSeq} past the manifest's through ${current.through}`);
@@ -135,24 +137,45 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
 
   // --- Runs of the recorded manifest.
   const runs = current?.runs ?? [];
+  const marks = current?.marks ?? [];
   const decoded: (SstEntry[] | undefined)[] = [];
   for (const run of runs) decoded.push(await checkRun(fs, run, recorded, current?.through ?? 0, problems));
   checkOrder(runs, decoded, problems);
+  // A run holds no version that a range delete it applied covers.
+  runs.forEach((run, i) => {
+    const applied = marks.filter((m) => m.at <= run.marksThrough);
+    const covering = (decoded[i] ?? []).find((e) => e.seq <= throughAt(applied, e.key));
+    if (covering) problems.push(`${run.path}: holds ${show(covering.key)} at seq ${covering.seq}, covered by a mark it applied`);
+  });
 
   // --- Orphans: run files that no manifest from the recorded one on lists.
   const live = new Set<string>();
   for (const m of manifests.values()) for (const r of m.runs) live.add(r.path);
   const orphans = (await listRuns(fs)).filter((p) => !live.has(p)).sort();
 
-  // --- The state a reader should see: runs oldest first, then the WAL.
-  const state = new Map<string, { key: Uint8Array; value: Uint8Array | undefined }>();
+  // --- The state a reader should see: runs oldest first under the
+  // manifest's marks, then the WAL with its range deletes.
+  const state = new Map<string, { key: Uint8Array; value: Uint8Array | undefined; seq: number }>();
   for (let i = decoded.length - 1; i >= 0; i--) {
     for (const e of decoded[i] ?? []) {
-      state.set(keyToString(e.key), { key: e.key, value: e.kind === "put" ? e.value : undefined });
+      state.set(keyToString(e.key), { key: e.key, value: e.kind === "put" ? e.value : undefined, seq: e.seq });
     }
   }
-  for (const { ops } of wal) {
-    for (const op of ops) state.set(keyToString(op.key), { key: op.key, value: op.value });
+  for (const [id, row] of state) {
+    if (row.seq <= (throughAt(marks, row.key))) state.delete(id);
+  }
+  for (const { seq, ops } of wal) {
+    for (const op of ops) {
+      if ("key" in op) {
+        state.set(keyToString(op.key), { key: op.key, value: op.value, seq });
+        continue;
+      }
+      const through = Math.min(op.through, seq - 1);
+      for (const [id, row] of state) {
+        const inside = compareBytes(row.key, op.start) >= 0 && (!op.endExclusive || compareBytes(row.key, op.endExclusive) < 0);
+        if (inside && row.seq <= through) state.delete(id);
+      }
+    }
   }
   const live_: OracleEntry[] = [];
   for (const { key, value } of state.values()) if (value !== undefined) live_.push({ key, value });
@@ -307,9 +330,16 @@ function checkOrder(
   });
 }
 
-export type WalOp = { key: Uint8Array; value: Uint8Array | undefined };
+/** A put (`value`) or a delete; or a range delete with the `through` its writer asked for. */
+export type WalOp =
+  | { key: Uint8Array; value: Uint8Array | undefined }
+  | { start: Uint8Array; endExclusive?: Uint8Array; through: number };
 
-/** design.md, "WAL records": per op, u8 type | u32 keyLen | key | put: u32 valueLen | value. */
+/**
+ * design.md, "WAL records": per op, u8 type | u32 keyLen | key | put: u32
+ * valueLen | value; a range delete: u8 3 | u32 startLen | start | u8 has end
+ * | end: u32 endLen | end | u64 through.
+ */
 export function decodeWalRow(raw: unknown): WalOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new Error("not an ArrayBuffer");
   const bytes = new Uint8Array(raw);
@@ -333,7 +363,11 @@ export function decodeWalRow(raw: unknown): WalOp[] {
     const key = take(u32());
     if (type === 0) ops.push({ key, value: take(u32()) });
     else if (type === 1) ops.push({ key, value: undefined });
-    else throw new Error(`op type ${type}`);
+    else if (type === 3) {
+      const end = take(1)[0] === 1 ? take(u32()) : undefined;
+      const through = Number(new DataView(take(8).buffer).getBigUint64(0, true));
+      ops.push({ start: key, ...(end ? { endExclusive: end } : {}), through });
+    } else throw new Error(`op type ${type}`);
   }
   return ops;
 }

@@ -2,7 +2,7 @@ import { ClosedError, CorruptDatabaseError, type ChangeEvent, type ChangeOp, typ
 import { parseCatalog } from "./catalog.js";
 import { decodeDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { CATALOG_KEY, bytesEqual, hasPrefix, rowPrefix, type CollectionId } from "./keys.js";
+import { CATALOG_KEY, bytesEqual, compareBytes, hasPrefix, rowPrefix, type CollectionId } from "./keys.js";
 import type { JsonDoc } from "./schema.js";
 
 /** `doc` is parsed on first access, so a listener that only needs `id` pays no JSON.parse. `deleted` tells a delete from a put without parsing. */
@@ -30,6 +30,12 @@ function docChange<T extends JsonDoc>(id: string, bytes: Uint8Array | undefined)
       return bytes && (parsed ??= decodeDoc(bytes) as unknown as T);
     },
   };
+}
+
+/** Whether a key starting with `prefix` falls in the range of `op`. */
+function touches(op: Extract<ChangeOp, { type: "deleteRange" }>, prefix: Uint8Array): boolean {
+  const reachesPrefix = op.endExclusive === undefined || compareBytes(op.endExclusive, prefix) > 0;
+  return reachesPrefix && (compareBytes(op.start, prefix) <= 0 || hasPrefix(op.start, prefix));
 }
 
 /** The id of collection `name` in catalog `bytes`, or undefined when the catalog lacks it or this library cannot read it. */
@@ -84,15 +90,26 @@ export function followCollection<T extends JsonDoc>(
   const append = (seq: number, ops: readonly ChangeOp[]) => {
     let changes: DocChange<T>[] = [];
     for (const op of ops) {
-      if (prefix && hasPrefix(op.key, prefix)) {
-        changes.push(docChange<T>(fromUtf8.decode(op.key.subarray(prefix.length)), op.type === "put" ? op.value : undefined));
-      } else if (bytesEqual(op.key, CATALOG_KEY)) {
-        const next = op.type === "put" ? collectionIdIn(op.value, name) : undefined;
-        if (next === id) continue;
-        if (changes.length > 0) emit({ kind: "append", seq, changes });
-        changes = [];
-        follow(next);
-        emit({ kind: "gap" });
+      switch (op.type) {
+        case "put":
+        case "del":
+          if (prefix && hasPrefix(op.key, prefix)) {
+            changes.push(docChange<T>(fromUtf8.decode(op.key.subarray(prefix.length)), op.type === "put" ? op.value : undefined));
+          } else if (bytesEqual(op.key, CATALOG_KEY)) {
+            const next = op.type === "put" ? collectionIdIn(op.value, name) : undefined;
+            if (next === id) continue;
+            if (changes.length > 0) emit({ kind: "append", seq, changes });
+            changes = [];
+            follow(next);
+            emit({ kind: "gap" });
+          }
+          break;
+        case "deleteRange":
+          // The op says which rows are gone only by their seqs, which the feed does not keep.
+          if (!touches(op, CATALOG_KEY) && !(prefix && touches(op, prefix))) break;
+          if (changes.length > 0) emit({ kind: "append", seq, changes });
+          emit({ kind: "gap" });
+          return resync();
       }
     }
     if (changes.length > 0) emit({ kind: "append", seq, changes });

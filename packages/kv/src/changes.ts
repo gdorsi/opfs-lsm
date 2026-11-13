@@ -1,7 +1,22 @@
-/** One op of a WAL record. The bytes are the memtable's: read them, never write to them. */
+/**
+ * One op of a WAL record. The bytes are the memtable's: read them, never
+ * write to them. Switch on `type` exhaustively: a `deleteRange` has no `key`.
+ */
 export type ChangeOp =
   | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array }
-  | { readonly type: "del"; readonly key: Uint8Array };
+  | { readonly type: "del"; readonly key: Uint8Array }
+  /**
+   * Every row in [start, endExclusive) last written at or before seq
+   * `through` is gone. `through` is resolved: always below the event's seq.
+   * A listener that does not know the seq of each row it holds reads the
+   * range again.
+   */
+  | {
+      readonly type: "deleteRange";
+      readonly start: Uint8Array;
+      readonly endExclusive?: Uint8Array;
+      readonly through: number;
+    };
 
 /**
  * For every seq a handle applies, its listeners get exactly one `append`

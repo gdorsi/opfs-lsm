@@ -11,6 +11,7 @@ import { untilHit } from "../src/store/cursor.js";
 import { mergeRuns } from "../tests/runs.js";
 import { bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
 import { loadWasm, withoutWasm, type FlatEngine } from "./wasm.js";
+import { NO_MARKS } from "../src/store/marks.js";
 
 /**
  * Bugs the decoder fuzzing found, each reduced to one input and kept as a
@@ -123,10 +124,12 @@ describe("decoder bugs the fuzzers found", () => {
       generation: 1,
       tombstoneSeq: 0,
       through: 0,
-      runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") } }],
+      marks: NO_MARKS,
+      runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") }, marksThrough: 0 }],
     });
     // Run count and the first path length, inflated (found by "manifests ... reject every change").
-    new DataView(m.buffer).setUint32(34, 0xffffffff, true);
+    // The run count follows the 32-byte header and the 4-byte empty marks block.
+    new DataView(m.buffer).setUint32(38, 0xffffffff, true);
     fixManifestCrc(m);
     await expect(corruptWithinBounds("decodeGeneration", () => decodeGeneration(m))).resolves.toBeUndefined();
   });
