@@ -35,3 +35,12 @@ export function parseIssueFilter(search: Record<string, unknown>): IssueFilter {
     dir: search.dir === "asc" ? "asc" : "desc",
   };
 }
+
+/** The search of a URL with no filter, which the app keeps out of the address bar. */
+export const DEFAULT_SEARCH = { status: [], priority: [], q: "", sort: "modified", dir: "desc" } as const;
+
+/** The app's search: the list's filter, and `new` while the create modal is open. */
+export const parseAppSearch = (search: Record<string, unknown>) => ({
+  ...parseIssueFilter(search),
+  new: search.new === 1 || search.new === "1" ? (1 as const) : undefined,
+});
