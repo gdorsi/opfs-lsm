@@ -87,13 +87,18 @@ async function directoryBytes(dir: FileSystemDirectoryHandle): Promise<{ bytes: 
   let files = 0;
   const entries = (dir as unknown as { values(): AsyncIterable<FileSystemHandle> }).values();
   for await (const entry of entries) {
-    if (entry.kind === "file") {
-      bytes += (await (entry as FileSystemFileHandle).getFile()).size;
-      files++;
-    } else {
-      const inner = await directoryBytes(entry as FileSystemDirectoryHandle);
-      bytes += inner.bytes;
-      files += inner.files;
+    try {
+      if (entry.kind === "file") {
+        bytes += (await (entry as FileSystemFileHandle).getFile()).size;
+        files++;
+      } else {
+        const inner = await directoryBytes(entry as FileSystemDirectoryHandle);
+        bytes += inner.bytes;
+        files += inner.files;
+      }
+    } catch (err) {
+      // The SharedWorker removes the files that compaction merged, so a file listed a moment ago can be gone.
+      if (!(err instanceof DOMException && err.name === "NotFoundError")) throw err;
     }
   }
   return { bytes, files };
@@ -102,8 +107,15 @@ async function directoryBytes(dir: FileSystemDirectoryHandle): Promise<{ bytes: 
 /** What the database holds on disk now: its OPFS directory, read file by file, and the origin's IndexedDB. */
 export async function storedBytes(store: Store): Promise<Stored> {
   const root = await navigator.storage.getDirectory();
-  const dir = await (await root.getDirectoryHandle("opfs-lsm")).getDirectoryHandle(store.db.name);
-  const { bytes, files } = await directoryBytes(dir);
+  const { bytes, files } = await (async () => {
+    try {
+      return await directoryBytes(await (await root.getDirectoryHandle("opfs-lsm")).getDirectoryHandle(store.db.name));
+    } catch (err) {
+      // No directory yet, or Delete removed it.
+      if (err instanceof DOMException && err.name === "NotFoundError") return { bytes: 0, files: 0 };
+      throw err;
+    }
+  })();
   const estimate = (await navigator.storage.estimate()) as StorageEstimate & { usageDetails?: { indexedDB?: number } };
   return { opfsBytes: bytes, files, idbBytes: estimate.usageDetails?.indexedDB };
 }
