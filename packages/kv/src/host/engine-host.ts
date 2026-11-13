@@ -518,22 +518,24 @@ class HostedDb {
   private measure(base: GenerationMeta, fs: AsyncFs): void {
     const watch = this.watching;
     if (!watch) return;
-    this.offerOver(base, base.runs.reduce((n, run) => n + run.bytes, 0), watch.maxBytes);
+    const bytes = base.runs.reduce((n, run) => n + run.bytes, 0);
+    this.offerOver(base, bytes, bytes, watch.maxBytes);
     if (!watch.quota || "pressure" in this.offer) return;
     listRuns(fs)
       .then(async (onDisk) => {
         // A run a tab still holds counts in the estimate: an answer's bytes would look unfreed.
         if (onDisk.length > base.runs.length) return;
         const { usage = 0, quota = Infinity } = (await globalThis.navigator?.storage?.estimate?.()) ?? {};
-        this.offerOver(base, usage, Math.floor(quota * 0.9));
+        this.offerOver(base, bytes, usage, Math.floor(quota * 0.9));
       })
       .catch(() => undefined);
   }
 
-  private offerOver(base: GenerationMeta, bytes: number, maxBytes: number): void {
+  /** `used` is what counts against `maxBytes`: `bytes`, or the origin's usage. */
+  private offerOver(base: GenerationMeta, bytes: number, used: number, maxBytes: number): void {
     const bus = this.watching?.bus;
-    if (!bus || bytes <= maxBytes || "pressure" in this.offer || base.through < this.offer.after) return;
-    this.offer = { kind: "pressure", pressure: { bytes, maxBytes, need: bytes - Math.floor((maxBytes * 7) / 8) } };
+    if (!bus || used <= maxBytes || "pressure" in this.offer || base.through < this.offer.after) return;
+    this.offer = { kind: "pressure", pressure: { bytes, maxBytes, need: used - Math.floor((maxBytes * 7) / 8) } };
     bus.postMessage(this.offer);
   }
 

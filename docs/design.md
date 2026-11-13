@@ -233,7 +233,7 @@ and point-reads one key per entry under one such pin.
 
 A range delete removes every row in `[start, end)` in one op. It covers a version of a key in the
 range when the version's seq is at or below its `through`. A writer may ask for a `through`; the
-record at seq `s` holds `min(asked, s − 1)`, so a range delete never covers its own batch and a
+record at seq `s` takes effect as `min(asked, s − 1)`, so a range delete never covers its own batch and a
 later write into the range is read as usual.
 
 The range deletes in effect form the marks, an unordered list of `(start, end, through, at)`,
@@ -273,9 +273,10 @@ retired runs a `view` holds do not count.
 disk outside its manifest, reads `navigator.storage.estimate()` after the pass, holding no lock. A
 retired run that a tab still holds counts in the estimate, so the read waits for a pass after it
 is gone. The cap is then 90% of `quota`,
-rounded down, and `bytes` is `usage`. The estimate covers the whole origin (the WAL in IndexedDB,
-other databases, caches) and is approximate, so `bytes` and `need` are origin numbers, and a
-handler may not free `need` from this database alone. A missing or rejected estimate, or one
+rounded down, and `need` is `usage` less 7/8 of it. `bytes` stays the sum of the runs' file bytes.
+The estimate covers the whole origin (the WAL in IndexedDB, other databases, caches) and is
+approximate, so `need` can pass `bytes`: a handler that frees `need` regardless empties the
+database. Each database opened with `"quota"` is offered the whole `need`. A missing or rejected estimate, or one
 without `usage` or `quota`, makes no offer.
 
 **Offer.** Over a cap, the host posts `{ kind: "pressure", pressure: { bytes, maxBytes, need } }`
@@ -292,7 +293,8 @@ An answer counts only once a flush holds what the handlers wrote. Handlers that 
 leave the manifest at the WAL head, so the host asks again at most once per compaction pass. A
 pass that stops at its step limit measures nothing: under heavy writes the offer waits for a pass
 that finishes. An open offer keeps the numbers it was posted with, and no other offer follows
-until a holder posts `pressure-done`. A new host starts at "after 0".
+until a holder posts `pressure-done`. The three messages are posted once each: if the channel
+loses one, offers stop until the holder's handle closes. A new host starts at "after 0".
 
 **Answer.** A handle with an `onPressure` handler asks for the Web Lock
 `opfs-lsm-pressure/<name>` and keeps it while it has one. On the grant it posts `pressure-pull`,
@@ -426,7 +428,7 @@ the shallower level wins.
 * A deeper level scores its bytes over its budget, and reports past 1. Its step picks the run
   whose overlapping bytes in the next level are the smallest fraction of its own size, and merges
   it with those runs into the next level.
-* When no level reports, a mark step takes the first run that keeps a piece from retiring: the
+* When no level reports, a mark step takes the first run that keeps a range delete from retiring: the
   L0 step for an L0 run, otherwise that run alone, rewritten into its own level.
 
 Scoring lets L0 pass 4 runs while a deeper level is further over budget. If L0 always went

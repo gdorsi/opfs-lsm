@@ -46,11 +46,11 @@ export type WatchPolicy = {
 
 /** What the host measured over `maxBytes`. See `Db.onPressure`. */
 export type Pressure = {
-  /** Bytes of the run files the recorded manifest lists; with `"quota"`, the origin's usage. */
+  /** Bytes of the run files the recorded manifest lists: what this database can free. */
   readonly bytes: number;
-  /** The smallest numeric `maxBytes` any open tab passed; with `"quota"`, 90% of the origin's quota. */
+  /** The smallest numeric `maxBytes` any tab passed since the database was last closed by all; with `"quota"`, 90% of the origin's quota. */
   readonly maxBytes: number;
-  /** Bytes to free to come back to 7/8 of `maxBytes`. */
+  /** Bytes to free to come back to 7/8 of `maxBytes`. With `"quota"` it counts the whole origin and can pass `bytes`. */
   readonly need: number;
 };
 

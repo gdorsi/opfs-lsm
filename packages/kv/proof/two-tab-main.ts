@@ -88,7 +88,7 @@ const capped = new Map<string, { db: import("../dist/index.js").Db; report: CapR
 
 const warn = console.warn.bind(console);
 console.warn = (...args: unknown[]) => {
-  for (const [name, { report }] of capped) if (String(args[0]).includes(`${name} holds`)) report.warns += 1;
+  for (const [name, { report }] of capped) if (String(args[0]).includes(`${name} must free`)) report.warns += 1;
   warn(...args);
 };
 

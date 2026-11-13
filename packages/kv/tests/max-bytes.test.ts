@@ -76,7 +76,7 @@ function oldestFirst(db: Db, model: Set<number>, calls: Pressure[], measured: nu
 
 describe("maxBytes", () => {
   it("rejects a maxBytes that is not positive", async () => {
-    await expect(open(0)).rejects.toThrow(ConstraintError);
+    for (const bad of [0, -1, NaN]) await expect(open(bad)).rejects.toThrow(ConstraintError);
   });
 
   it("calls one handle's handler once per offer, with the manifest's bytes, and its range delete brings the bytes under the cap", async () => {
@@ -116,7 +116,7 @@ describe("maxBytes", () => {
     await host.compact(name);
     await turns();
     expect(warn).toHaveBeenCalledTimes(2);
-    expect(String(warn.mock.calls[0]![0])).toMatch(`over maxBytes ${CAP}`);
+    expect(String(warn.mock.calls[0]![0])).toMatch(`under maxBytes ${CAP}`);
 
     const calls: Pressure[] = [];
     a.onPressure(async (p) => void calls.push(p));
@@ -205,7 +205,7 @@ describe("maxBytes", () => {
     };
     const estimate = (usage?: number, quota?: number) => stub(async () => ({ usage, quota }));
 
-    it("offers when the origin's usage passes 90% of its quota, with the origin's numbers", async () => {
+    it("offers when the origin's usage passes 90% of its quota, with this database's bytes and the origin's need", async () => {
       const spy = estimate(900, 1000);
       const db = await open("quota");
       const calls: Pressure[] = [];
@@ -219,7 +219,7 @@ describe("maxBytes", () => {
       estimate(901, 1000);
       await host.compact(name);
       await until(() => calls.length === 1, "a quota offer");
-      expect(calls).toEqual([{ bytes: 901, maxBytes: 900, need: 901 - 787 }]);
+      expect(calls).toEqual([{ bytes: await runBytes(), maxBytes: 900, need: 901 - 787 }]);
     });
 
     it.each([
@@ -237,6 +237,35 @@ describe("maxBytes", () => {
       await turns();
       expect(calls).toEqual([]);
       expect(await readAll(db)).toEqual(sorted(model));
+    });
+
+    it("does not read the estimate while a view keeps a superseded run file on disk", async () => {
+      estimate(1, 1000);
+      const db = await open("quota");
+      const calls: Pressure[] = [];
+      db.onPressure(async (p) => void calls.push(p));
+      await fill(db, new Set(), 0, 300);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const read = db.view(async (snap) => {
+        await snap.get(keyOf(0));
+        await held;
+      });
+      await db.batch((tx) => tx.deleteRange({}));
+      await ingest(db);
+      const spy = estimate(901, 1000);
+      await host.compact(name);
+      await turns();
+      expect(spy).not.toHaveBeenCalled();
+
+      release();
+      await read;
+      // One pass sweeps the file, and a pass after it reads the estimate.
+      for (let i = 0; i < 3 && calls.length === 0; i++) {
+        await host.compact(name);
+        await turns();
+      }
+      expect(calls.length).toBe(1);
     });
 
     it("still offers for a numeric cap another tab passed", async () => {
