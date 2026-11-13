@@ -75,7 +75,7 @@ function oldestFirst(db: Db, model: Set<number>, calls: Pressure[], measured: nu
 
 describe("maxBytes", () => {
   it("rejects a maxBytes that is not positive", async () => {
-    await expect(open(0)).rejects.toThrow(ConstraintError);
+    for (const bad of [0, -1, NaN]) await expect(open(bad)).rejects.toThrow(ConstraintError);
   });
 
   it("calls one handle's handler once per offer, with the manifest's bytes, and its range delete brings the bytes under the cap", async () => {

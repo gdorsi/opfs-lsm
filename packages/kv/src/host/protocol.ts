@@ -48,7 +48,7 @@ export type WatchPolicy = {
 export type Pressure = {
   /** Bytes of the run files the recorded manifest lists. */
   readonly bytes: number;
-  /** The smallest `maxBytes` any open tab passed. */
+  /** The smallest `maxBytes` any tab passed since the database was last closed by all. */
   readonly maxBytes: number;
   /** Bytes to free to come back to 7/8 of `maxBytes`. */
   readonly need: number;

@@ -282,7 +282,8 @@ An answer counts only once a flush holds what the handlers wrote. Handlers that 
 leave the manifest at the WAL head, so the host asks again at most once per compaction pass. A
 pass that stops at its step limit measures nothing: under heavy writes the offer waits for a pass
 that finishes. An open offer keeps the numbers it was posted with, and no other offer follows
-until a holder posts `pressure-done`. A new host starts at "after 0".
+until a holder posts `pressure-done`. The three messages are posted once each: if the channel
+loses one, offers stop until the holder's handle closes. A new host starts at "after 0".
 
 **Answer.** A handle with an `onPressure` handler asks for the Web Lock
 `opfs-lsm-pressure/<name>` and keeps it while it has one. On the grant it posts `pressure-pull`,

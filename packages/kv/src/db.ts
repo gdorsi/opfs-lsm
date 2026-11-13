@@ -397,6 +397,7 @@ export function openDbWith(options: OpenWithOptions): Promise<Db> {
 async function openTraced(options: OpenWithOptions): Promise<Db> {
   const trace = options.trace;
   const name = checkDbName(options.name);
+  if (options.maxBytes !== undefined && !(options.maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
   // Started first, so the module loads while the rest of open runs.
   const engine = timed(trace, "wasm", ensureEngine);
   // Awaited last: a throw before that must not leave its rejection unhandled.
@@ -413,7 +414,6 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
   const maxBytes = options.maxBytes;
-  if (maxBytes !== undefined && !(maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
   const cache = new PageCache(
     Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
   );
@@ -581,7 +581,7 @@ class DbImpl implements Db {
       }
       return this.announce();
     }
-    if (data?.kind === "pressure") return void this.answer(data.pressure);
+    if (data?.kind === "pressure") return void this.answer(data.pressure).catch(() => undefined);
     if (data?.kind === "pressure-pull" || data?.kind === "pressure-done") return;
     // An `ingest`, or a message this build does not know: catch up from the WAL.
     void this.sync().catch(() => undefined);
