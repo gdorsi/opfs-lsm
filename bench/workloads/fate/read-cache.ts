@@ -1,14 +1,15 @@
 import type { FateStore } from "../../core/families.ts";
 import { defineWorkload, type Phase, type PhaseContext } from "../../core/types.ts";
-import { jsonBytes, PAGE, pageRequest, record, verifyFromStorage, worldFor } from "../../page/fate.ts";
+import { checkPage, jsonBytes, PAGE, pageRequest, record, verifyFromStorage, worldFor } from "../../page/fate.ts";
 import { permutation } from "../../page/model.ts";
 
 /**
  * fate's request cache: a client saves list requests of 100 records, refreshes
  * some of them, and a later client loads them from storage alone. The server is
- * in memory, so the timed work is fate's persistence over the storage. Untimed
- * check phases load every page again through a client whose server throws, and
- * compare every record with the model.
+ * in memory, so the timed work is fate's persistence over the storage. The cold
+ * load compares each list it loaded with the model. Untimed check phases load
+ * every page again through a client whose server throws, and compare every
+ * record with the model.
  */
 type Ctx = PhaseContext<"fate">;
 
@@ -91,6 +92,7 @@ export default defineWorkload({
         for (let k = 0; k < pages(ctx); k++) {
           const { from, to } = span(ctx, k);
           await ctx.time("load", pageBytes(ctx, k), () => client.request(pageRequest(k) as never), to - from);
+          checkPage(client, k, ctx.params.entries, (i) => record(i, ctx.model.version(i)), ctx.check);
         }
         await ctx.time("flush", 0, () => client.persistence!.flush(), 0);
       },

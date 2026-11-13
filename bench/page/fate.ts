@@ -158,10 +158,25 @@ export function disposeWorld(storage: PersistenceStorage): void {
 const inMemory = (client: FateClient, i: number) => client.store.read(`Issue:${issueId(i)}`) as Partial<Issue> | undefined;
 
 /**
+ * Compare the records of page `k` in the client's memory with `want(i)`. Call
+ * it right after the request for the page resolves: fate frees the records of
+ * requests it released.
+ */
+export function checkPage(client: FateClient, k: number, count: number, want: (i: number) => Issue, check: (ok: boolean, what: string) => void): void {
+  for (let i = k * PAGE; i < Math.min(count, (k + 1) * PAGE); i++) {
+    const got = inMemory(client, i);
+    const expected = want(i);
+    check(
+      got?.id === expected.id && got.title === expected.title && got.status === expected.status && got.priority === expected.priority && got.modified === expected.modified,
+      `record ${i}: got ${JSON.stringify(got)}, want ${JSON.stringify(expected)}`,
+    );
+  }
+}
+
+/**
  * Check every record against `want(i)` by disposing the page's client and
  * loading each page through a new one whose server throws: the only source
- * left is storage. A missing or stale record fails the run. Reading from
- * memory would not do: fate frees the records of requests it released.
+ * left is storage. A missing or stale record fails the run.
  * Leaves no client, so the next phase builds its own.
  */
 export async function verifyFromStorage(
@@ -176,14 +191,7 @@ export async function verifyFromStorage(
   try {
     for (let k = 0; k * PAGE < count; k++) {
       await client.request(pageRequest(k) as never);
-      for (let i = k * PAGE; i < Math.min(count, (k + 1) * PAGE); i++) {
-        const got = inMemory(client, i);
-        const expected = want(i);
-        check(
-          got?.id === expected.id && got.title === expected.title && got.status === expected.status && got.priority === expected.priority && got.modified === expected.modified,
-          `record ${i}: got ${JSON.stringify(got)}, want ${JSON.stringify(expected)}`,
-        );
-      }
+      checkPage(client, k, count, want, check);
     }
   } finally {
     disposeWorld(storage);
