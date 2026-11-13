@@ -1,7 +1,7 @@
 /**
- * What the app and the page that frames it post to each other. Every time is in milliseconds. The times of
- * `opened` and `first-rows` count from the app's call that opens the database, so they leave out fetching and
- * compiling the app's own files.
+ * What the app and the page that frames it post to each other. Every time is in milliseconds. The times count
+ * storage work only. `opened` and `first-rows` start once the kv wasm module is loaded, at the call that opens the
+ * database. `first-rows` and `filter` end when the store returns the rows, before they are drawn.
  */
 export const SOURCE = "linearlite-demo";
 
@@ -27,13 +27,3 @@ export const failed = (err: unknown) => {
   console.error(err);
   post({ type: "failed", message: err instanceof Error ? err.message : String(err) });
 };
-
-/** Resolves with the time of the first task after the next frame is painted. */
-export const painted = () =>
-  new Promise<number>((resolve) =>
-    requestAnimationFrame(() => {
-      const { port1, port2 } = new MessageChannel();
-      port1.onmessage = () => resolve(performance.now());
-      port2.postMessage(0);
-    }),
-  );

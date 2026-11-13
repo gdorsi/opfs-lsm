@@ -125,7 +125,7 @@ const HOSTS: Record<Host, string> = {
         <dd v-else><b class="demo-none">–</b></dd>
       </div>
       <div>
-        <dt>Filter to rows on screen</dt>
+        <dt>Read a filtered page</dt>
         <dd v-if="filtered">
           <b>{{ ms(filtered.rowsMs) }}</b>
           <span>
@@ -135,7 +135,7 @@ const HOSTS: Record<Host, string> = {
         <dd v-else><b class="demo-none">–</b></dd>
       </div>
       <div>
-        <dt>Open to first rows</dt>
+        <dt>Open and read first rows</dt>
         <dd v-if="opened">
           <b>{{ ms(opened.ms) }}</b>
           <span>{{ HOSTS[opened.host] }}</span>
@@ -143,6 +143,7 @@ const HOSTS: Record<Host, string> = {
         <dd v-else><b class="demo-none">–</b></dd>
       </div>
     </dl>
+    <p class="demo-note">Storage time only: each clock starts after the app's code is loaded and stops before the rows are drawn.</p>
     <p v-if="state === 'failed'" class="demo-failed" role="alert">The demo could not run in this browser: {{ failure }}</p>
   </div>
 </template>
