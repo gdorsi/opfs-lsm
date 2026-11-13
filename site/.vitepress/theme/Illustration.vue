@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { useData } from "vitepress";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { SIZES, type SceneName } from "../../stageshow/sizes.ts";
+import { SIZES, STILLS, type SceneName } from "../../stageshow/sizes.ts";
+import { FIGURES } from "./figures.ts";
 
 /**
  * One illustration from `site/stageshow`. They are React components, so this mounts a React root in the browser
  * and renders nothing on the server but a box of the stage's size, which keeps the page from moving when it loads.
  */
-/** `full`: the illustration is as wide as the page, not one column of a claim. */
-const props = defineProps<{ name: SceneName; label: string; data?: Record<string, unknown>; full?: boolean }>();
+/**
+ * `full`: the illustration is as wide as the page, not one column of a claim.
+ * `label`: what a screen reader reads, by default the one in `FIGURES`.
+ */
+const props = defineProps<{ name: SceneName; label?: string; data?: Record<string, unknown>; full?: boolean }>();
 
 const { isDark } = useData();
 const host = ref<HTMLElement>();
@@ -34,7 +38,7 @@ onBeforeUnmount(() => scene?.unmount());
       ref="host"
       class="illustration-stage"
       role="img"
-      :aria-label="label"
+      :aria-label="label ?? FIGURES[name]"
       :style="{
         '--wide': `${size.wide[0]} / ${size.wide[1]}`,
         '--wide-width': `${size.wide[0]}px`,
@@ -42,6 +46,6 @@ onBeforeUnmount(() => scene?.unmount());
         '--compact-width': `${size.compact[0]}px`,
       }"
     />
-    <button class="illustration-replay" type="button" @click="run++">Replay</button>
+    <button v-if="!STILLS.has(name)" class="illustration-replay" type="button" @click="run++">Replay</button>
   </figure>
 </template>

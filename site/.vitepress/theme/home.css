@@ -91,34 +91,6 @@
   font-size: 14px;
 }
 
-/* The libraries that sit on kv: a list of links drawn as cards. */
-.vp-doc .home-adapters ul {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
-  margin: 24px 0 72px;
-  padding: 0;
-  list-style: none;
-}
-
-.vp-doc .home-adapters li {
-  margin: 0;
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: var(--vp-c-bg-soft);
-  color: var(--vp-c-text-2);
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.vp-doc .home-adapters li a {
-  display: block;
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 24px;
-  text-decoration: none;
-}
-
 /* An illustration: a box of the stage's shape, so the page does not move when the stage mounts. */
 .illustration {
   margin: 0;

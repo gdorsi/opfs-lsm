@@ -8,9 +8,13 @@ export const COMPACT_BELOW = 600;
 export const FULL_COMPACT_BELOW = 720;
 
 export const SIZES = {
-  adapters: { wide: [1152, 372], compact: [358, 962] },
+  adapters: { wide: [1152, 600], compact: [358, 1180] },
+  fits: { wide: [1152, 516], compact: [358, 1016] },
+  reopen: { wide: [600, 380], compact: [358, 464] },
   stack: { wide: [620, 400], compact: [358, 470] },
-  sync: { wide: [600, 380], compact: [358, 464] },
 } as const satisfies Record<string, { wide: readonly [number, number]; compact: readonly [number, number] }>;
 
 export type SceneName = keyof typeof SIZES;
+
+/** Illustrations drawn as one still frame. They don't play, so the page shows no Replay button under them. */
+export const STILLS: ReadonlySet<SceneName> = new Set(["fits"]);

@@ -83,6 +83,15 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 
 The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and `@nkzw/fate-indexeddb`. Both TanStack DB collections run in eager mode, the default `syncMode`: a collection loads every row when it opens. `indexedDBCollectionOptions` has no on-demand mode.
 
+In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack/browser-db-sqlite-persistence`, which runs wa-sqlite on OPFS in a dedicated WebWorker. Both collections hold 100,000 rows and load only what a query asks for. The reads, medians of 5 interleaved runs:
+
+| Workload | SQLite | opfs-lsm | |
+| --- | ---: | ---: | ---: |
+| Cold open | 41.6 ms | 11.7 ms | 3.6× |
+| First query after a cold open, 6,250 rows | 65.2 ms | 81.6 ms | 0.80× |
+| Warm query of one owner, 6,250 rows | 116k rows/s | 169k rows/s | 1.5× |
+| 10 rows by id | 1.9k queries/s | 4.1k queries/s | 2.1× |
+
 ### Bundle size
 
 Importing `@opfs-lsm/kv` adds **18.8 kB** of JavaScript to your main bundle (gzip, 54.8 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
@@ -167,6 +176,8 @@ Versions are from [MDN browser-compat-data](https://github.com/mdn/browser-compa
 ## How it works
 
 kv is a log-structured merge tree (LSM). An ack means the write is one row in a write-ahead log (WAL) in IndexedDB, which all tabs share. Each database has one SharedWorker that moves the WAL into sorted, immutable SST files in OPFS and merges those files in the background. Each tab keeps the writes not yet in an SST file in memory, so reads do not go back to the WAL.
+
+<!-- figure: stack -->
 
 The storage layout, the consistency rules and the recovery after a crash are in [docs/design.md](docs/design.md). How each promise is checked, with formal models and kill tests in real Chrome, is in [docs/verification.md](docs/verification.md).
 
