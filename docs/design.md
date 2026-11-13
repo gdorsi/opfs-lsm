@@ -233,7 +233,7 @@ and point-reads one key per entry under one such pin.
 
 A range delete removes every row in `[start, end)` in one op. It covers a version of a key in the
 range when the version's seq is at or below its `through`. A writer may ask for a `through`; the
-record at seq `s` holds `min(asked, s − 1)`, so a range delete never covers its own batch and a
+record at seq `s` takes effect as `min(asked, s − 1)`, so a range delete never covers its own batch and a
 later write into the range is read as usual.
 
 The range deletes in effect form the marks, an unordered list of `(start, end, through, at)`,
