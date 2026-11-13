@@ -5,7 +5,7 @@ A key-value store for the browser, built to be the storage layer under local-fir
 > [!WARNING]
 > opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next. Two things are missing before a stable release:
 >
-> - Tests in browsers other than desktop Chrome.
+> - Tests in Firefox and Safari. Chrome is tested on desktop and on one Android phone.
 > - Final storage formats. The WAL and SST layouts still change while we tune performance.
 
 ## Why not just use IndexedDB?
@@ -150,7 +150,7 @@ The promise from `put`, `delete` or `batch` is the ack. When it resolves, the wr
 
 Three APIs set the minimum version in every browser. Everything else kv uses shipped earlier, including Web Locks, BroadcastChannel and the WebAssembly features in the engine.
 
-| API | Chrome, Edge | Firefox | Safari | Chrome Android, Android WebView | Firefox Android | Safari iOS |
+| API | Chrome, Edge | Firefox | Safari | Chrome Android | Firefox Android | Safari iOS |
 | --- | --- | --- | --- | --- | --- | --- |
 | `SharedWorker` with `type: "module"` | 80 | 114 | 16 | 148 | 114 | 16 |
 | OPFS `FileSystemFileHandle.createWritable()` | 86 | 111 | 26 | 109 | 111 | 26 |
@@ -159,9 +159,17 @@ Three APIs set the minimum version in every browser. Everything else kv uses shi
 
 - Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26.
 - Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so kv does not run there.
+- Android WebView is not supported. MDN lists SharedWorker there from 148, but the WebView we measured (154) has none, so `openDb` rejects with `StorageUnavailableError` in apps and browsers built on it.
 - `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119 and Firefox 121.
 
-Versions are from [MDN browser-compat-data](https://github.com/mdn/browser-compat-data) 8.1.8. The engine is tested in desktop Chrome. Firefox, Safari and mobile browsers are not tested yet.
+Versions are from [MDN browser-compat-data](https://github.com/mdn/browser-compat-data) 8.1.8. The engine is tested in desktop Chrome and on Android. In Chromium 160 on a Pixel 4a, the two-tab proofs and every benchmark workload pass, and no kill in the kill-and-recover loop lost an acked write. The Android run has limits:
+
+- It covers one phone and a Chromium snapshot build, not Chrome stable.
+- Android runs the SharedWorker in the process of the tab that created it. When another tab of the app is in front, that process is confined to two small cores, and ingest and compaction run there.
+- On a locked phone the whole browser is confined to those cores. There, an `ingest()` call after a `StorageFullError` took more than 20 s in 5 of 7 runs. Unlocked, 6 of 6 answered. No acked write was lost.
+- The kill loop cannot observe a crashed tab or kill one renderer on Android, so those two kinds are not covered.
+
+The findings and the scripts that drive a phone over adb are in [docs/research/android-device-run.md](docs/research/android-device-run.md). Firefox, Safari and iOS are not tested yet.
 
 ## How it works
 
