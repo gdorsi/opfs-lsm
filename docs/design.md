@@ -233,7 +233,7 @@ and point-reads one key per entry under one such pin.
 
 A range delete removes every row in `[start, end)` in one op. It covers a version of a key in the
 range when the version's seq is at or below its `through`. A writer may ask for a `through`; the
-record at seq `s` holds `min(asked, s − 1)`, so a range delete never covers its own batch and a
+record at seq `s` takes effect as `min(asked, s − 1)`, so a range delete never covers its own batch and a
 later write into the range is read as usual.
 
 The range deletes in effect form the marks, an unordered list of `(start, end, through, at)`,
@@ -416,7 +416,7 @@ the shallower level wins.
 * A deeper level scores its bytes over its budget, and reports past 1. Its step picks the run
   whose overlapping bytes in the next level are the smallest fraction of its own size, and merges
   it with those runs into the next level.
-* When no level reports, a mark step takes the first run that keeps a piece from retiring: the
+* When no level reports, a mark step takes the first run that keeps a range delete from retiring: the
   L0 step for an L0 run, otherwise that run alone, rewritten into its own level.
 
 Scoring lets L0 pass 4 runs while a deeper level is further over budget. If L0 always went
