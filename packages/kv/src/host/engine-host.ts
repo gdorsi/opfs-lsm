@@ -514,7 +514,7 @@ class HostedDb {
     if (!watch?.bus || watch.maxBytes === Infinity || "pressure" in this.offer || base.through < this.offer.after) return;
     const bytes = base.runs.reduce((n, run) => n + run.bytes, 0);
     if (bytes <= watch.maxBytes) return;
-    const need = bytes - Math.floor((watch.maxBytes * 7) / 8);
+    const need = bytes - Math.floor((watch.maxBytes * 4) / 5);
     this.offer = { kind: "pressure", pressure: { bytes, maxBytes: watch.maxBytes, need } };
     watch.bus.postMessage(this.offer);
   }

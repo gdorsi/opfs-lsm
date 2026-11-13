@@ -78,7 +78,7 @@ An empty or inverted range, or a `through` that is not a whole number of at leas
 
 ### Size cap
 
-When the SST files pass `maxBytes`, the SharedWorker offers `{ bytes, maxBytes, need }` to one handle: `bytes` is the size of the SST files, and `need` is how much to free to come back to 7/8 of `maxBytes`. The handlers of every handle compete for the Web Lock `opfs-lsm-pressure/<name>`, and only the holder's run, one after another. A handler removes what the layer chooses with ordinary writes, so the database stays consistent and other tabs see the removal as any write. If the holder closes or its tab goes away mid-answer, the next handle to take the lock gets the offer.
+When the SST files pass `maxBytes`, the SharedWorker offers `{ bytes, maxBytes, need }` to one handle: `bytes` is the size of the SST files, and `need` is how much to free to come back to 4/5 of `maxBytes`. The handlers of every handle compete for the Web Lock `opfs-lsm-pressure/<name>`, and only the holder's run, one after another. A handler removes what the layer chooses with ordinary writes, so the database stays consistent and other tabs see the removal as any write. If the holder closes or its tab goes away mid-answer, the next handle to take the lock gets the offer.
 
 Here keys start with a timestamp, so the layer drops the oldest rows that hold `need` bytes:
 

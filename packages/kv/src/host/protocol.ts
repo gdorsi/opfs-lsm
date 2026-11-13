@@ -50,7 +50,7 @@ export type Pressure = {
   readonly bytes: number;
   /** The smallest `maxBytes` any tab passed since the database was last closed by all. */
   readonly maxBytes: number;
-  /** Bytes to free to come back to 7/8 of `maxBytes`. */
+  /** Bytes to free to come back to 4/5 of `maxBytes`. */
   readonly need: number;
 };
 

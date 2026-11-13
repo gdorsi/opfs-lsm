@@ -269,7 +269,7 @@ with `maxBytes`. Covered and overwritten versions count until a merge drops them
 retired runs a `view` holds do not count.
 
 **Offer.** Over the cap, the host posts `{ kind: "pressure", pressure: { bytes, maxBytes, need } }`
-on the layers channel, with `need` the bytes over 7/8 of the cap. It holds one of two states:
+on the layers channel, with `need` the bytes over 4/5 of the cap. It holds one of two states:
 
 | State | Event | Next |
 |---|---|---|

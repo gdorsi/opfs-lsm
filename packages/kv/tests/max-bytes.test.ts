@@ -93,7 +93,7 @@ describe("maxBytes", () => {
     await fill(a, model, 150, 300);
     await until(() => calls.length === 1, "one offer");
     const [p] = calls;
-    expect(p).toEqual({ bytes: measured[0], maxBytes: CAP, need: measured[0]! - (CAP * 7) / 8 });
+    expect(p).toEqual({ bytes: measured[0], maxBytes: CAP, need: measured[0]! - (CAP * 4) / 5 });
     await turns();
     await host.compact(name);
     expect(calls.length).toBe(1);
