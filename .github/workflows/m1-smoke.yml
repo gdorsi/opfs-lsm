@@ -66,6 +66,10 @@ jobs:
       - run: pnpm --filter @opfs-lsm/kv kill-chrome --seed 1 --iterations 6
         env:
           CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+      # IndexedDB put back to an older copy while OPFS keeps its files.
+      - run: pnpm --filter @opfs-lsm/kv power-loss-chrome
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
 
   test:
     runs-on: ubuntu-latest

@@ -50,6 +50,7 @@
     "test:unit": "vitest run",
     "two-tab": "pnpm run build && tsx scripts/two-tab.ts",
     "kill-chrome": "pnpm run build && tsx scripts/kill-chrome.ts",
+    "power-loss-chrome": "pnpm run build && tsx scripts/power-loss-chrome.ts",
     "probe:wasm-memory": "tsx scripts/wasm-memory.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",

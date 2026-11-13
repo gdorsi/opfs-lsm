@@ -379,7 +379,7 @@ class HostedDb {
       watch.bus = new BroadcastChannel(layersChannel(this.name));
       watch.bus.onmessage = (ev: MessageEvent<BusMessage>) => {
         const msg = ev.data;
-        if (msg.kind === "row") {
+        if (msg.kind === "rows") {
           watch.pendingBytes += msg.bytes;
           this.maybeIngest(watch);
         } else if (msg.kind === "pressure-pull" && "pressure" in this.offer) {

@@ -55,24 +55,25 @@ export type Pressure = {
 };
 
 /**
- * What goes on `layersChannel`: a tab posts each record it appends, the host posts `ingest` for a new generation
+ * What goes on `layersChannel`: a tab posts the records it appends, the host posts `ingest` for a new generation
  * and `pressure` for an offer over `maxBytes`. The tab holding `pressureLock` posts `pressure-pull` when it takes
  * the lock, for the open offer, and `pressure-done` when its handlers settle.
  * A build that does not know a kind catches up from the WAL, so a new shape takes a new kind.
  */
 export type BusMessage =
   | {
-      readonly kind: "row";
+      readonly kind: "rows";
       readonly writerId: WriterId;
-      readonly seq: number;
-      /** The WAL row of `seq`. One buffer clones in one copy; the ops it holds would clone one by one. */
-      readonly record: ArrayBuffer;
-      /** The key and value bytes of its ops (`opsBytes`), for the host's ingest trigger. */
+      /** WAL rows this tab appended, in the order their acks resolved. One buffer clones in one copy; the ops it holds would clone one by one. */
+      readonly rows: readonly BusRow[];
+      /** The key and value bytes of their ops (`opsBytes`), for the host's ingest trigger. */
       readonly bytes: number;
     }
   | { readonly kind: "ingest" }
   | { readonly kind: "pressure"; readonly pressure: Pressure }
   | { readonly kind: "pressure-pull" | "pressure-done" };
+
+export type BusRow = { readonly seq: number; readonly record: ArrayBuffer };
 
 /**
  * Run `fn` holding the reclaim lock shared. While any tab holds it, the
