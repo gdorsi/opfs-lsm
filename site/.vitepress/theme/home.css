@@ -82,7 +82,7 @@
 
 @media (max-width: 419px) {
   .vp-doc .home-features div[class*="language-"] code {
-    font-size: 11.5px;
+    font-size: 11.25px;
   }
 }
 

@@ -85,16 +85,16 @@ The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexedd
 
 ### Bundle size
 
-Importing `@opfs-lsm/kv` adds **17.2 kB** of JavaScript to your main bundle (gzip, 49.8 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
+Importing `@opfs-lsm/kv` adds **18.8 kB** of JavaScript to your main bundle (gzip, 54.8 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
 
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
-| Main-thread JS | 17.2 kB | 49.8 kB | at import |
-| SharedWorker chunk | 11.5 kB | 33.5 kB | on the first `openDb` |
-| wasm engine | 16.3 kB | 35.8 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **45.1 kB** | **119.1 kB** | |
+| Main-thread JS | 18.8 kB | 54.8 kB | at import |
+| SharedWorker chunk | 12.8 kB | 37.4 kB | on the first `openDb` |
+| wasm engine | 16.6 kB | 36.4 kB | on the first `openDb`, one file for the tab and the SharedWorker |
+| **Total after open** | **48.1 kB** | **128.6 kB** | |
 
-For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.2 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 27.9 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](bench/README.md#bundle-size).
+For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.2 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 29.4 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](bench/README.md#bundle-size).
 
 ### When IndexedDB is still the better fit
 

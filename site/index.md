@@ -60,10 +60,10 @@ adapters:
           kv: 263 ops/s
           ratio: 1.3×
 size:
-  main: 17.2 kB
-  worker: 11.5 kB
-  wasm: 16.3 kB
-  lazy: 27.9 kB
+  main: 18.8 kB
+  worker: 12.8 kB
+  wasm: 16.6 kB
+  lazy: 29.4 kB
 demo:
   count: 100,000
 ---
@@ -78,7 +78,7 @@ Adapters for TanStack DB, Yjs, Automerge and fate
 ```ts
 const todos = createCollection(
   docstoreCollectionOptions({
-    collection: docs.collection("todos"),
+    collection: store.collection("todos"),
   }),
 );
 ```
@@ -144,10 +144,10 @@ await db.view(async (snap) => {
 
 ### Lightweight, with super-fast loads
 
-17.2 kB at import, and cold loads up to 4.8× faster than IndexedDB
+18.8 kB at import, and cold loads up to 4.8× faster than IndexedDB
 
 ```ts
-// 17.2 kB gzip in your main bundle
+// 18.8 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
 // the SharedWorker and wasm load here
 const db = await openDb({ name: "app" });
@@ -175,10 +175,10 @@ const db = await openDb({ name: "app" });
 
 ## Lightweight
 
-17.2 kB are part of the critical path to load, and the rest is loaded lazily · [File by file](../README.md#bundle-size)
+18.8 kB are part of the critical path to load, and the rest is loaded lazily · [File by file](../README.md#bundle-size)
 
 </div>
-<Illustration name="bundle" :data="$frontmatter.size" label="A page imports kv and downloads 17.2 kB. When a click handler calls openDb, the SharedWorker chunk (11.5 kB) and the wasm engine (16.3 kB) load, 27.9 kB more." />
+<Illustration name="bundle" :data="$frontmatter.size" label="A page imports kv and downloads 18.8 kB. When a click handler calls openDb, the SharedWorker chunk (12.8 kB) and the wasm engine (16.6 kB) load, 29.4 kB more." />
 </div>
 
 ## Packages
