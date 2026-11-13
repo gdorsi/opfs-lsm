@@ -15,7 +15,9 @@ write, a local edit or a row from the server, is one read-modify-write (`transac
 path and one merge rule. Each row carries its own unsent edits (`dirty`), which is the "not synced" mark and the
 conflict guard, and a `pending: true` that a sparse index lists, so the outbox is a range read. One tab per
 browser, elected with Web Locks, talks to the server. The server is SQLite where every row carries the global
-version that last changed it, so "what changed since V" is an index scan, not a log.
+version that last changed it, so "what changed since V" is an index scan, not a log. The model (`src/model/`) is
+headless: `openLinearlite({ store, transport })` returns live views, commands and sync, and runs in Node over the
+in-memory server; the app (`src/app/`) brings the browser, the HTTP transport and the sync lock.
 
 ## Why nothing is eager (measured)
 
@@ -65,7 +67,7 @@ export type Stream = "issues" | "bodies" | "comments";   // the streams of STORE
 /** One eager row per browser (`id: "sync"`), written by the leader, read by every tab's status bar. */
 export type SyncState = {
   readonly id: "sync"; format: number; epoch: string | null; cursors: Record<Stream, number>; head: number;
-  online: boolean; caughtUp: Record<Stream, boolean>;
+  online: boolean; caughtUp: Record<Stream, boolean>; evict: "idle" | "asked" | "confirmed";
 };
 ```
 
@@ -118,7 +120,7 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
 ```
 
 - **Leader.** Every tab calls `navigator.locks.request("linearlite:sync", …)` and holds it for its life. The holder
-  runs the loop; the next tab takes over from the cursors in kv when it closes. Other tabs only write local edits.
+  runs the loop (the model's `sync.lead`); the next tab takes over from the cursors in kv when it closes. Other tabs only write local edits.
   kv's change feed is the bus between tabs; there is no tab-to-tab messaging.
 - **Loop.** On start, on every SSE hint, on a local edit (a live query over `pending` rows) and on `online`:
   push every dirty row (fields = current values of dirty fields; a row with `version 0` pushes all fields with
@@ -149,10 +151,10 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
   server reading a thread for `/api/detail` and the body being written is dropped, and shows once it changes.
 - **Eviction.** The database opens with `maxBytes: "quota"`, so kv asks for space when the origin passes 90% of
   its storage quota (`?maxBytes=<bytes>` sets a byte cap instead, to see it happen). Only the leader answers, and it
-  answers at once by setting `pressure` in the shared sync row; nothing is cleared yet. Every tab then shows an
+  answers at once by setting `evict: "asked"` in the shared sync row; nothing is cleared yet. Every tab then shows an
   alert that says cached descriptions and comments will be removed from this device, with one confirm button. A
-  confirm in any tab goes to the leader over a `BroadcastChannel`. Between two pages, right after a push, the leader
-  then clears `bodies` and `comments` and unsets `pressure`: later changes still arrive for the threads that load
+  confirm in any tab moves the row from `asked` to `confirmed`, which wakes the leader. Between two pages, right
+  after a push, the leader then clears `bodies` and `comments` and sets `evict: "idle"`: later changes still arrive for the threads that load
   again, and the screen preloads the ones in view. Issues stay. While a body or comment has an unsent edit nothing is
   cleared, and the confirmation waits for the next push. An edit to a body or comment made in the instant between
   that check and the clear is lost. kv offers again at each flush while still over the cap; the alert is raised only when more than 100 threads
@@ -259,7 +261,7 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   `countByStatus` (`src/model/counts.ts`), which count docstore index entries and read no document. A search
   counts the documents the `search` index matches whose title contains the query, so the total agrees with the
   list's `ilike`; a query of one plain word is counted from the index entries alone, which is exact for titles
-  stored in NFC, as typed text is (the index normalizes, `ilike` does not). `useIssueRead` reads again after
+  stored in NFC, as typed text is (the index normalizes, `ilike` does not). Each count reads again after
   every change to issues, one read at a time, and waits four times the last read's duration, at least 250 ms,
   before the next. A first sync changes issues every few milliseconds, and counting 100,000 entries then takes
   up to a fifth of the main thread instead of half. A read after a change pauses between the statuses it counts,

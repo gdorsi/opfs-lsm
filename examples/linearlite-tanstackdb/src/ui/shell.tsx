@@ -1,5 +1,5 @@
 import { usePressure } from "../app/hooks.ts";
-import { confirmEviction } from "../model/sync.ts";
+import { model } from "../app/open.ts";
 import { Outlet, useLocation } from "@tanstack/react-router";
 import { useState } from "react";
 import { CreateModal } from "./create.tsx";
@@ -89,7 +89,7 @@ function StorageAlert() {
           autoFocus
           onClick={() => {
             setConfirmed(true);
-            confirmEviction();
+            void model().sync.confirmEviction();
           }}
         >
           {!confirmed ? "Remove cached data" : unsent > 0 ? "Waiting for unsent edits…" : "Removing…"}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import * as commands from "../model/commands.ts";
+import { model } from "../app/open.ts";
 import type { IssueFilter } from "../model/filter.ts";
 import type { PriorityCode, StatusCode } from "../domain/model.ts";
 import { useAutosize } from "./autosize.ts";
@@ -18,7 +18,7 @@ export function CreateModal({ filter, onClose }: { filter: IssueFilter; onClose(
   const ready = title.trim() !== "";
   const submit = () => {
     if (!ready) return;
-    void commands.createIssue({ title: title.trim(), description, status, priority });
+    void model().commands.createIssue({ title: title.trim(), description, status, priority });
     onClose();
   };
 

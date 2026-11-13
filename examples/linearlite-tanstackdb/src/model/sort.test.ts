@@ -6,7 +6,6 @@ import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import { generateNKeysBetween } from "fractional-indexing";
 import type { Issue, PriorityCode, StatusCode } from "../domain/model.ts";
-import { memoryServer, memoryTransport } from "../server/memory.ts";
 import { parseIssueFilter } from "./filter.ts";
 import { windowQuery } from "./query.ts";
 import { collections, schema, transact, type Store } from "./store.ts";
@@ -37,7 +36,7 @@ let store: Store;
 before(async () => {
   kv = await openHarnessDb({ name: `linearlite-sort-${process.pid}`, forceMemory: true });
   const docs = await openDocStore(kv, schema);
-  store = { ...collections(docs), db: kv, docs, transport: memoryTransport(memoryServer({ issues: 0 }), "ada") };
+  store = { ...collections(docs), db: kv, docs };
   await transact(
     store,
     "issues",

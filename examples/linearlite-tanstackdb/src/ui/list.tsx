@@ -1,9 +1,9 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import * as commands from "../model/commands.ts";
 import type { IssueFilter } from "../model/filter.ts";
 import { LIST_WINDOW, usePreloadDetails, useIssueWindow } from "../app/hooks.ts";
+import { model } from "../app/open.ts";
 import type { Issue } from "../domain/model.ts";
 import { formatDate, initial, shortId } from "./format.ts";
 import { isTyping, keepSearch, useCreateModal, useIssueFilter, useKeys, useSetFilter } from "./nav.ts";
@@ -143,9 +143,9 @@ function Row({ issue, index, focused, top, onOpen }: { issue: Issue; index: numb
       id={`issue-${issue.id}`}
       onClick={() => onOpen(issue)}
     >
-      <PriorityPicker variant="icon" value={issue.priority} onPick={(p) => void commands.setPriority(issue.id, p)} />
+      <PriorityPicker variant="icon" value={issue.priority} onPick={(p) => void model().commands.setPriority(issue.id, p)} />
       <span className="id">{shortId(issue.id)}</span>
-      <StatusPicker variant="icon" value={issue.status} onPick={(s) => void commands.setStatus(issue.id, s)} />
+      <StatusPicker variant="icon" value={issue.status} onPick={(s) => void model().commands.setStatus(issue.id, s)} />
       <span className="name">{issue.title}</span>
       {issue.dirty ? <span className="dot" title="Not synced yet" data-dirty /> : <span className="dot-slot" />}
       <span className="avatar" title={issue.username}>
