@@ -70,7 +70,7 @@ demo:
 
 ## Try it with 100,000 issues
 
-[LinearLite on docstore](../examples/linearlite-docstore), with no server · [What the timings measure](../examples/linearlite-docstore/README.md#timings)
+[LinearLite on docstore](../examples/linearlite-docstore), with no server
 
 <HomeDemo />
 
