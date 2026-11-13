@@ -105,6 +105,7 @@ const HOSTS: Record<Host, string> = {
 <template>
   <div class="demo" :data-state="state">
     <div class="demo-bar">
+      <span class="demo-tag">iframe</span>
       <button class="demo-btn" type="button" :disabled="state !== 'ready'" @click="reload()">Reload the app</button>
     </div>
 

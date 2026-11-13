@@ -15,13 +15,18 @@ export type Issue = {
   modified: number;
 };
 
+export type Comment = { id: string; body: string; username: string; created: number };
+
+/** What the issue page shows besides the issue. Its id is the issue's. Written the first time the issue is opened. */
+export type Detail = { id: string; description: string; comments: Comment[] };
+
 /**
  * One index per read of the list. `byModified` is also the text index of the titles: read without a `match`, it
  * lists every issue by `modified`. `byStatus` and `byPriority` hold both codes, so a filter on one or both is a
  * set of ranges, each counted from its entries.
  */
-export const schema = defineSchema<{ issues: Issue }>()({
-  version: 1,
+export const schema = defineSchema<{ issues: Issue; details: Detail }>()({
+  version: 2,
   collections: {
     issues: {
       byModified: { on: "modified", text: "title" },
@@ -29,6 +34,7 @@ export const schema = defineSchema<{ issues: Issue }>()({
       byStatus: { on: ["status", "priority", "modified"] },
       byPriority: { on: ["priority", "status", "modified"] },
     },
+    details: {},
   },
 });
 
