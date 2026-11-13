@@ -74,6 +74,12 @@ export type Phase<F extends Family> = {
   readonly timed: boolean;
   /** Record disk footprint and engine counters at the end of this phase. */
   readonly footprint?: boolean;
+  /**
+   * Report the main thread's long tasks during this phase. Opt in only for
+   * phases that model a user interaction: a loop of thousands of awaited
+   * calls with no yield is one giant task, which is not a user metric.
+   */
+  readonly mainThread?: boolean;
   run(ctx: PhaseContext<F>): Promise<void>;
 };
 
@@ -147,6 +153,23 @@ export type Footprint = {
   readonly kv?: KvStats;
 };
 
+/**
+ * The tab's main thread during a phase. Long tasks are the ones over 50 ms, and
+ * blockedMs sums each one's time past 50 ms. Frames are requestAnimationFrame
+ * callbacks. frameIntervalMs is the median step of their vsync timestamps, and
+ * droppedFrames sums round(gap / frameIntervalMs) - 1 over the gaps between
+ * the times the callbacks ran, which catches blocks too short for a long task.
+ */
+export type MainThread = {
+  readonly longTasks: number;
+  readonly longestMs: number;
+  readonly blockedMs: number;
+  readonly frames: number;
+  readonly frameIntervalMs: number;
+  readonly longestFrameMs: number;
+  readonly droppedFrames: number;
+};
+
 export type PhaseResult = {
   readonly name: string;
   readonly page: PageMode;
@@ -157,6 +180,7 @@ export type PhaseResult = {
   readonly userBytes: number;
   readonly latency: Readonly<Record<string, HistogramSnapshot>>;
   readonly footprint?: Footprint;
+  readonly mainThread?: MainThread;
 };
 
 export type HostInfo = {
