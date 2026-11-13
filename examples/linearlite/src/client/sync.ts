@@ -66,7 +66,7 @@ const KV_BATCH_OPS = 10_000;
 const rowsPerBatch = (store: Store, stream: Stream) => Math.floor(KV_BATCH_OPS / (1 + 2 * store.docs.collection(stream).indexes.size));
 
 /** Each slice is its own transaction; a crash between two costs a re-pull, since merging a row again changes nothing. */
-export async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: readonly ServerRow<S>[], acked?: readonly Clocks[]) {
+async function mergeServerRows<S extends Stream>(store: Store, stream: S, rows: readonly ServerRow<S>[], acked?: readonly Clocks[]) {
   const incoming = rows as unknown as readonly Omit<Rows[S], "dirty" | "pending">[];
   const step = rowsPerBatch(store, stream);
   for (let at = 0; at < incoming.length; at += step) {
