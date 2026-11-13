@@ -17,7 +17,7 @@ export const Route = createFileRoute("/_app")({
   search: { middlewares: [stripSearchParams(DEFAULTS)] },
   loader: async () => {
     const store = await openStore();
-    startSync(store);
+    startSync(store, Number(new URLSearchParams(location.search).get("pull")) || undefined);
     // bench/client.ts drives edits through this, on production builds too.
     Object.assign(globalThis, { __linearlite: { store, commands, fetchDetail, createLiveQueryCollection, eq } });
   },

@@ -15,6 +15,12 @@ type Field<V> = {
   readonly mutable?: true;
   /** The name of the server index on the column. Every table is also indexed on `version`. */
   readonly indexed?: string;
+  /** On create, the value when the push leaves the field out. A field a push may carry and has no default is required on create. */
+  readonly default?: V;
+  /** The server sets it on create: `author` to the pushing user, `created` and `modified` to now. `modified` is set again on every change. */
+  readonly stamp?: "author" | "created" | "modified";
+  /** The field holds the id of an issue, which must exist when the row is created. */
+  readonly ref?: "issues";
 };
 
 type StreamSpec<Stored extends { id: string }, Row extends Synced & { id: string }, Derived extends keyof Row = never> = {
@@ -57,10 +63,10 @@ export const STORES = {
       status: { sql: "int", parse: code, mutable: true },
       priority: { sql: "int", parse: code, mutable: true },
       kanbanorder: { sql: "text", parse: kanbanorder, mutable: true },
-      username: { sql: "text" },
-      created: { sql: "int" },
-      modified: { sql: "int" },
-      deleted: { sql: "bool", parse: bool, mutable: true },
+      username: { sql: "text", stamp: "author" },
+      created: { sql: "int", stamp: "created" },
+      modified: { sql: "int", stamp: "modified" },
+      deleted: { sql: "bool", parse: bool, mutable: true, default: false },
       version: { sql: "int" },
     },
   }),
@@ -70,7 +76,7 @@ export const STORES = {
     indexes: { pending: { on: "pending" } },
     table: "body",
     fields: {
-      id: { sql: "text" },
+      id: { sql: "text", ref: "issues" },
       description: { sql: "text", parse: text(MAX_DESCRIPTION), mutable: true },
       version: { sql: "int" },
     },
@@ -82,11 +88,11 @@ export const STORES = {
     table: "comment",
     fields: {
       id: { sql: "text" },
-      issue_id: { sql: "text", parse: id, indexed: "comment_issue" },
+      issue_id: { sql: "text", parse: id, indexed: "comment_issue", ref: "issues" },
       body: { sql: "text", parse: text(MAX_COMMENT, 1), mutable: true },
-      username: { sql: "text" },
-      created: { sql: "int" },
-      deleted: { sql: "bool", parse: bool, mutable: true },
+      username: { sql: "text", stamp: "author" },
+      created: { sql: "int", stamp: "created" },
+      deleted: { sql: "bool", parse: bool, mutable: true, default: false },
       version: { sql: "int" },
     },
     derive: (c) => ({ key: commentKey(c.issue_id, c.id) }),

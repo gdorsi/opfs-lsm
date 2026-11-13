@@ -1,8 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { parsePullRequest } from "../../domain/wire.ts";
-import { serverDb } from "../../server/db.ts";
-import { pull } from "../../server/sync.ts";
 import { respond } from "../../server/http.ts";
+import { appServer } from "../../server/sqlite.ts";
 
 export const Route = createFileRoute("/api/pull")({
   server: {
@@ -10,7 +9,7 @@ export const Route = createFileRoute("/api/pull")({
       GET: ({ request }) =>
         respond(() => {
           const { stream, after, limit } = parsePullRequest(new URL(request.url).searchParams);
-          return pull(serverDb(), stream, after, limit);
+          return appServer().pull(stream, after, limit);
         }),
     },
   },

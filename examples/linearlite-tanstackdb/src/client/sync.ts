@@ -1,9 +1,10 @@
 import { mergeIncoming, mergePulled, restore } from "../domain/merge.ts";
 import type { Clocks, Rows, ServerRow, SyncState } from "../domain/model.ts";
 import { STORES, STREAMS, type Stream } from "../domain/stores.ts";
-import { MAX_DETAIL_IDS, MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse, type RowResponse } from "../domain/wire.ts";
+import { MAX_DETAIL_IDS, MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse } from "../domain/wire.ts";
 import { backoffMs, Pager, pushOp } from "./ops.ts";
 import { FORMAT, openStore, transact, type Store } from "./store.ts";
+import { TransportError } from "./transport.ts";
 
 const PULL_LIMIT = 2000;
 const FULL = STREAMS.filter((s) => STORES[s].pull === "full");
@@ -31,29 +32,12 @@ const EMPTY: SyncState = {
   caughtUp: perStream(false),
 };
 
-class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 class EpochChanged extends Error {
-  constructor(readonly epoch: string) {
+  readonly epoch: string;
+  constructor(epoch: string) {
     super(`the server was reseeded (epoch ${epoch})`);
+    this.epoch = epoch;
   }
-}
-
-async function request<T>(user: string, url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method: body === undefined ? "GET" : "POST",
-    headers: { "content-type": "application/json", "x-linearlite-user": user },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) throw new HttpError(res.status, `${url}: ${res.status} ${await res.text()}`);
-  return (await res.json()) as T;
 }
 
 type Transact<T, K extends string = string> = (
@@ -131,12 +115,13 @@ class Leader {
   /** The user confirmed clearing the cached bodies and comments, and the loop has not done it yet. */
   private confirmed = false;
   private readonly marked = new Set<Stream>();
-  private readonly pullLimit = Number(new URLSearchParams(location.search).get("pull")) || PULL_LIMIT;
-  private readonly pager = new Pager((stream, after) =>
-    request<PullResponse>(this.store.user, `/api/pull?stream=${stream}&after=${after}&limit=${this.pullLimit}`),
-  );
+  private readonly store: Store;
+  private readonly pager: Pager<PullResponse>;
 
-  constructor(private readonly store: Store) {}
+  constructor(store: Store, pullLimit: number) {
+    this.store = store;
+    this.pager = new Pager((stream, after) => store.transport.pull(stream, after, pullLimit));
+  }
 
   async start(): Promise<void> {
     const [saved] = await read(this.store.sync.utils.transact, ["sync"]);
@@ -148,13 +133,12 @@ class Leader {
     dirtyIssues.subscribeChanges(onWrite);
     dirtyBodies.subscribeChanges(onWrite);
     dirtyComments.subscribeChanges(onWrite);
-    addEventListener("online", () => this.kick("online"));
-    new EventSource("/api/events").onmessage = (e: MessageEvent<string>) => {
-      const { head } = JSON.parse(e.data) as { head: number };
+    this.store.transport.watch((head) => {
+      if (head === undefined) return this.kick("online");
       if (!this.state.online) void this.save({ online: true }).catch(() => undefined);
       this.head = Math.max(this.head ?? 0, head);
       this.kick("hint");
-    };
+    });
     // Every tab shows the alert while `pressure` is set. A confirmation from any tab reaches the loop, which
     // evicts after a push, so no page lands rows after the clear.
     this.store.db.onPressure(async () => {
@@ -329,9 +313,9 @@ class Leader {
   private async send(batch: readonly Outgoing[]): Promise<void> {
     let res: PushResponse;
     try {
-      res = await request<PushResponse>(this.store.user, "/api/push", { ops: batch.map((o) => o.op) });
+      res = await this.store.transport.push(batch.map((o) => o.op));
     } catch (err) {
-      if (!(err instanceof HttpError) || err.status >= 500) throw err;
+      if (!(err instanceof TransportError) || err.status >= 500) throw err;
       if (batch.length > 1) {
         for (const one of batch) await this.send([one]);
         return;
@@ -351,7 +335,7 @@ class Leader {
 
   /** A pull would not do: it skips a row whose version it already has, and a refused create has no server row to pull. */
   private async drop({ op, key }: Outgoing): Promise<void> {
-    const res = await request<RowResponse>(this.store.user, `/api/row?stream=${op.stream}&id=${encodeURIComponent(op.id)}`);
+    const res = await this.store.transport.row(op.stream, op.id);
     this.checkEpoch(res.epoch);
     const server = res.row as unknown as Omit<Rows[typeof op.stream], "dirty" | "pending"> | null;
     await transact(this.store, op.stream, [key], ([local]) => [restore<Rows[typeof op.stream]>(local, server, op.clocks)]);
@@ -375,12 +359,12 @@ class Leader {
 
 const started = new WeakSet<Store>();
 
-export function startSync(store: Store): void {
+export function startSync(store: Store, pullLimit = PULL_LIMIT): void {
   if (started.has(store)) return;
   started.add(store);
   void navigator.locks.request("linearlite:sync", () => {
     performance.mark("linearlite:leader");
-    void new Leader(store).start().catch((err: unknown) => console.error("linearlite sync did not start", err));
+    void new Leader(store, pullLimit).start().catch((err: unknown) => console.error("linearlite sync did not start", err));
     return new Promise<never>(() => {});
   });
 }
@@ -391,7 +375,7 @@ const asked = new Set<string>();
 /** Writes the bodies and comments of `ids`, whole threads. Rows join the replica here, unlike a pull's. */
 async function fetchDetails(ids: readonly string[]): Promise<DetailResponse> {
   const store = await openStore();
-  const res = await request<DetailResponse>(store.user, `/api/detail?${ids.map((id) => `id=${encodeURIComponent(id)}`).join("&")}`);
+  const res = await store.transport.detail(ids);
   if (res.bodies.length > 0) await mergeServerRows(store, "bodies", res.bodies);
   if (res.comments.length > 0) await mergeServerRows(store, "comments", res.comments);
   return res;
