@@ -1,0 +1,241 @@
+/* The app's window pinned top and right of center, off the right and bottom. The kv card in front of it, its right
+   edge on the window's sidebar line, one gutter from the stage's left and bottom. One 28px gutter. */
+.sy {
+  & .ss-stage {
+    --sy-gutter: 28px;
+    --sy-bleed: 80px;
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--ss-well);
+    font: 12px/1.4 var(--ss-font);
+    color: var(--ss-text-strong);
+  }
+
+  /* The window's layer, the size of the stage: narrow, it fades the window out above its foot. */
+  .sy-frame {
+    position: absolute;
+    inset: 0;
+  }
+
+  .sy-window {
+    position: absolute;
+    top: var(--sy-gutter);
+    left: 124px;
+    width: 556px;
+    height: 400px;
+    box-shadow: var(--ss-shadow-hero);
+  }
+
+  .sy-app {
+    display: flex;
+    height: 100%;
+    background: var(--ss-surface);
+  }
+
+  .sy-side {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    flex: none;
+    width: 150px;
+    padding: 14px 10px;
+    border-right: 1px solid var(--ss-line);
+    background: var(--ss-canvas);
+  }
+
+  .sy-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 26px;
+    padding: 0 8px;
+    border-radius: 6px;
+  }
+
+  .sy-nav[data-on] {
+    background: var(--ss-ink-2);
+  }
+
+  /* The window runs past the stage's right edge: the content stops a gutter short of what is visible. */
+  .sy-main {
+    flex: 1;
+    min-width: 0;
+    padding: 14px calc(20px + var(--sy-bleed)) 0 20px;
+  }
+
+  .sy-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    height: 28px;
+    margin-bottom: 8px;
+  }
+
+  .sy-title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .sy-badge-icon {
+    width: 12px;
+    height: 12px;
+  }
+
+  /* A status's two phrases share one cell, left-aligned. The cell eases to the width of the phrase showing and never
+     clips: the phrase that would be cut has already faded. */
+  .sy-phrases {
+    display: grid;
+    justify-items: start;
+    transition: width 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .sy-phrases[data-shrink] {
+    transition-delay: 0.1s;
+  }
+
+  .sy-phrase {
+    grid-area: 1 / 1;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.14s ease;
+  }
+
+  .sy-phrase[data-on] {
+    opacity: 1;
+    transition: opacity 0.2s ease 0.12s;
+  }
+
+  .sy-issue {
+    height: 36px;
+    padding-block: 0;
+    border-radius: 0;
+    border-bottom: 1px solid var(--ss-line-faint);
+    font-size: 12.5px;
+  }
+
+  .sy-status {
+    color: var(--ss-text);
+  }
+
+  /* The kv card. */
+  .sy-kv {
+    position: absolute;
+    left: var(--sy-gutter);
+    bottom: var(--sy-gutter);
+    width: 246px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    background: var(--ss-surface);
+    box-shadow: var(--ss-shadow-satellite);
+  }
+
+  .sy-kv-head {
+    display: grid;
+    gap: 4px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--ss-line);
+  }
+
+  .sy-kv-name {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  /* The size leads the card: the one figure on the stage. */
+  .sy-kv-size {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .sy-kv-value {
+    font-size: 22px;
+    font-weight: 600;
+    line-height: 26px;
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .sy-kv-unit {
+    color: var(--ss-text);
+    font-size: 11.5px;
+  }
+
+  /* The newest keys, three rows tall. The last row's own rule is cut, so the footer's is the only line under it,
+     and a row sliding down fades over the last few pixels instead of drawing its rule over the footer's. */
+  .sy-keys {
+    height: 101px;
+    overflow: hidden;
+    mask-image: linear-gradient(#000 calc(100% - 6px), transparent);
+  }
+
+  .sy-key {
+    height: 34px;
+    padding-block: 0;
+    border-radius: 0;
+    border-bottom: 1px solid var(--ss-line-faint);
+  }
+
+  .sy-mono {
+    font: 11.5px/16px var(--ss-mono);
+    transition: color 0.35s ease;
+  }
+
+  .sy-mono[data-new] {
+    color: var(--ss-accent-text);
+  }
+
+  .sy-pending {
+    color: var(--ss-text);
+  }
+
+  .sy-worker {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ss-line);
+  }
+
+  .sy-worker-name {
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+
+  /* Narrow: the window on top without its sidebar, off the right edge, and the card in front of its lower half and
+     past its left edge. What shows of the window stays landscape, so it can't run off the bottom: it fades out
+     behind the card instead, above its foot, and its content stops on the card's right edge. */
+  & .ss-stage[data-layout="compact"] {
+    --sy-gutter: 20px;
+    --sy-bleed: 42px;
+  }
+
+  & .ss-stage[data-layout="compact"] .sy-frame {
+    mask-image: linear-gradient(#000 230px, transparent 300px);
+  }
+
+  & .ss-stage[data-layout="compact"] .sy-window {
+    top: var(--sy-gutter);
+    left: 40px;
+    width: 360px;
+    height: 290px;
+  }
+
+  & .ss-stage[data-layout="compact"] .sy-side {
+    display: none;
+  }
+
+  & .ss-stage[data-layout="compact"] .sy-main {
+    padding-left: var(--sy-gutter);
+    padding-right: calc(var(--sy-gutter) + var(--sy-bleed));
+  }
+
+  & .ss-stage[data-layout="compact"] .sy-kv {
+    right: var(--sy-gutter);
+    width: auto;
+  }
+}
