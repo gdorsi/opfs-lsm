@@ -395,7 +395,9 @@ export function setEngineUrlForTests(url: string | undefined): void {
 }
 
 function engineUrl(): URL {
-  return new URL(engineUrlOverride ?? "../../wasm/engine.wasm", import.meta.url);
+  if (engineUrlOverride !== undefined) return new URL(engineUrlOverride, import.meta.url);
+  // Keep this a literal `new URL(..., import.meta.url)`: bundlers emit the .wasm only for that form.
+  return new URL("../../wasm/engine.wasm", import.meta.url);
 }
 
 async function loadWasm(): Promise<FlatEngine> {
