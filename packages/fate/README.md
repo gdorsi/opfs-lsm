@@ -1,6 +1,6 @@
 # @opfs-lsm/fate
 
-Persistence storage for the fate data client (`@nkzw/fate`) on [`@opfs-lsm/kv`](../kv/README.md). It takes the place of the storage in `@nkzw/fate-indexeddb`.
+Persistence storage for the [fate](https://fate.technology) data client (`@nkzw/fate`) on [`@opfs-lsm/kv`](../kv/README.md). It takes the place of the storage in `@nkzw/fate-indexeddb`.
 
 ```sh
 pnpm add @opfs-lsm/fate @opfs-lsm/kv @nkzw/fate

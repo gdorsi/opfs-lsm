@@ -1,6 +1,6 @@
 # @opfs-lsm/tanstack-db
 
-A TanStack DB collection stored in an [`@opfs-lsm/docstore`](../docstore/README.md) collection. Writes from every tab arrive live.
+A [TanStack DB](https://tanstack.com/db/latest/docs/overview) collection stored in an [`@opfs-lsm/docstore`](../docstore/README.md) collection. Writes from every tab arrive live.
 
 ```sh
 pnpm add @opfs-lsm/tanstack-db @opfs-lsm/docstore @opfs-lsm/kv \

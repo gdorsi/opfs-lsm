@@ -1,6 +1,6 @@
 # @opfs-lsm/automerge
 
-An automerge-repo storage adapter on [`@opfs-lsm/kv`](../kv/README.md).
+An [automerge-repo](https://automerge.org/docs/hello/) storage adapter on [`@opfs-lsm/kv`](../kv/README.md).
 
 ```sh
 pnpm add @opfs-lsm/automerge @opfs-lsm/kv @automerge/automerge-repo

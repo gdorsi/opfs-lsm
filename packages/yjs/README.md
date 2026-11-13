@@ -1,6 +1,6 @@
 # @opfs-lsm/yjs
 
-A Yjs provider on [`@opfs-lsm/kv`](../kv/README.md), shaped like y-indexeddb's `IndexeddbPersistence`.
+A [Yjs](https://docs.yjs.dev) provider on [`@opfs-lsm/kv`](../kv/README.md), shaped like y-indexeddb's `IndexeddbPersistence`.
 
 ```sh
 pnpm add @opfs-lsm/yjs @opfs-lsm/kv yjs
