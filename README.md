@@ -1,11 +1,11 @@
 # opfs-lsm
 
-A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 7× faster than IndexedDB, reads up to 127× faster, and every tab of an origin shares one database with a live change feed.
+A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 11× faster than IndexedDB, reads up to 82× faster, and every tab of an origin shares one database with a live change feed.
 
 > [!WARNING]
 > opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next. Two things are missing before a stable release:
 >
-> - Tests on mobile browsers.
+> - Tests in browsers other than desktop Chrome.
 > - Final storage formats. The WAL and SST layouts still change while we tune performance.
 
 ## Why not just use IndexedDB?
@@ -54,33 +54,33 @@ It offers:
 
 ### Benchmarks
 
-Medians of 5 runs in headless Chrome 157 on an Apple M5 Max, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000. Numbers depend on the machine. To run them yourself, see [bench/README.md](bench/README.md).
+Medians of 5 runs in headless Chrome 157 on an Apple M2 Pro, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000. Numbers depend on the machine. To run them yourself, see [bench/README.md](bench/README.md).
 
 | Workload | IndexedDB | kv | |
 | --- | ---: | ---: | ---: |
-| Random writes, batches of 1,000 | 43.4k ops/s | 302k ops/s | 7.0× |
-| Random point reads | 14.5k ops/s | 429k ops/s | 30× |
-| Reads of missing keys | 13.8k ops/s | 1.75M ops/s | 127× |
-| YCSB B: 95% read, 5% update | 14.5k ops/s | 102k ops/s | 7.0× |
-| YCSB E: short range scans | 6.6k ops/s | 18.3k ops/s | 2.8× |
-| Full ordered scan | 585k ops/s | 604k ops/s | 1.0× |
-| Single put, awaited one at a time | 6.6k ops/s | 5.5k ops/s | 0.8× |
-| Cold open | 1.0 ms | 8.5 ms | 0.1× |
+| Random writes, batches of 1,000 | 23.4k ops/s | 263k ops/s | 11× |
+| Random point reads | 14.3k ops/s | 341k ops/s | 24× |
+| Reads of missing keys | 15.5k ops/s | 1.27M ops/s | 82× |
+| YCSB B: 95% read, 5% update | 13.6k ops/s | 79.5k ops/s | 5.8× |
+| YCSB E: short range scans | 5.0k ops/s | 12.8k ops/s | 2.6× |
+| Full ordered scan | 345k ops/s | 555k ops/s | 1.6× |
+| Single put, awaited one at a time | 4.0k ops/s | 3.3k ops/s | 0.8× |
+| Cold open | 1.1 ms | 7.7 ms | 0.1× |
 
-The framework adapters show the same shape. TanStack DB bulk inserts run at 136k rows/s against 21k on its IndexedDB adapter. Loading 500 Yjs notes cold runs at 11.2k notes/s against 3.6k on y-indexeddb.
+The framework adapters show the same shape. TanStack DB bulk inserts run at 83k rows/s against 11k on its IndexedDB adapter, and a cold load of about 91,000 rows takes 570 ms against 1.0 s. Loading 500 Yjs notes cold runs at 9.3k notes/s against 2.4k on y-indexeddb.
 
 ### Bundle size
 
-Importing `@opfs-lsm/kv` adds **17.0 kB** of JavaScript to your main bundle (gzip, 49.4 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
+Importing `@opfs-lsm/kv` adds **17.1 kB** of JavaScript to your main bundle (gzip, 49.6 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
 
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
-| Main-thread JS | 17.0 kB | 49.4 kB | at import |
+| Main-thread JS | 17.1 kB | 49.6 kB | at import |
 | SharedWorker chunk | 11.5 kB | 33.4 kB | on the first `openDb` |
-| wasm engine | 16.4 kB | 35.8 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **44.9 kB** | **118.7 kB** | |
+| wasm engine | 16.3 kB | 35.8 kB | on the first `openDb`, one file for the tab and the SharedWorker |
+| **Total after open** | **45.0 kB** | **118.8 kB** | |
 
-For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 27.9 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](bench/README.md#bundle-size).
+For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.2 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 27.8 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](bench/README.md#bundle-size).
 
 ### When IndexedDB is still the better fit
 
@@ -94,11 +94,12 @@ If read and write performance of the DB is not a concern in your app.
 | [`@opfs-lsm/tanstack-db`](packages/tanstack-db) | TanStack DB collections kept in docstore, with other tabs' writes arriving live and on-demand queries read through docstore's indexes. | Beta |
 | [`@opfs-lsm/yjs`](packages/yjs) | A Yjs provider shaped like y-indexeddb. | Beta |
 | [`@opfs-lsm/automerge`](packages/automerge) | A storage adapter for automerge-repo. | Beta |
+| [`@opfs-lsm/fate`](packages/fate) | Persistence storage for the fate data client, shaped like fate's IndexedDB storage. | Beta |
 | [`@opfs-lsm/docstore`](packages/docstore) | A document store with declared indexes, paged queries, snapshot reads and a change feed. | Beta |
 
 Each adapter keeps many documents or collections in one kv database. `@opfs-lsm/docstore` is the query layer on top of kv: JSON documents in collections, with indexes declared in a versioned schema.
 
-The packages are not on npm yet. Until the first release, build them from source as [CONTRIBUTING.md](CONTRIBUTING.md) describes.
+The packages are published on npm. To build them from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quickstart
 
