@@ -305,6 +305,17 @@ test("subscribe fires on the handle's own write", () =>
     assert.equal(fired, 1);
   }));
 
+test("subscribe fires for a range delete over the key, and not for one beside it", () =>
+  withDb(async (db, storage) => {
+    let fired = 0;
+    storage.subscribe!("mine", () => fired++);
+    await storage.writeBatch([["mine", 1]]);
+    await db.batch((tx) => tx.deleteRange({ start: new Uint8Array([0xff]) }));
+    assert.equal(fired, 1);
+    await db.batch((tx) => tx.deleteRange({}));
+    assert.equal(fired, 2);
+  }));
+
 test("subscribe fires when the database is destroyed from another handle", () =>
   withTabs(async ({ a, sa, sb }) => {
     await sa.writeBatch([["watched", 1]]);
