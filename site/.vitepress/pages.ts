@@ -23,17 +23,17 @@ const sections: Section[] = [
     title: "Packages",
     nav: "Packages",
     pages: [
-      { label: "kv", source: "packages/kv/README.md", route: "kv" },
-      { label: "docstore", source: "packages/docstore/README.md", route: "docstore" },
+      { label: "kv", source: "packages/kv/README.md", route: "kv", sidebarSections: true },
+      { label: "docstore", source: "packages/docstore/README.md", route: "docstore", sidebarSections: true },
     ],
   },
   {
     title: "Integrations",
     pages: [
-      { label: "TanStack DB", source: "packages/tanstack-db/README.md", route: "tanstack-db" },
-      { label: "Yjs", source: "packages/yjs/README.md", route: "yjs" },
-      { label: "Automerge", source: "packages/automerge/README.md", route: "automerge" },
-      { label: "fate", source: "packages/fate/README.md", route: "fate" },
+      { label: "TanStack DB", source: "packages/tanstack-db/README.md", route: "tanstack-db", sidebarSections: true },
+      { label: "Yjs", source: "packages/yjs/README.md", route: "yjs", sidebarSections: true },
+      { label: "Automerge", source: "packages/automerge/README.md", route: "automerge", sidebarSections: true },
+      { label: "fate", source: "packages/fate/README.md", route: "fate", sidebarSections: true },
     ],
   },
   {
@@ -74,15 +74,14 @@ type Heading = { level: number; text: string; slug: string };
 export const sidebar = (headingsOf: (source: string) => Heading[]) =>
   sections.map((s) => ({
     text: s.title,
-    items: s.pages.map((p) => ({
-      text: p.label,
-      link: url(p),
-      ...(p.sidebarSections && {
-        items: headingsOf(p.source)
-          .filter((h) => h.level === 2)
-          .map((h) => ({ text: h.text, link: `${url(p)}#${h.slug}` })),
-      }),
-    })),
+    items: s.pages.map((p) => {
+      const items = p.sidebarSections
+        ? headingsOf(p.source)
+            .filter((h) => h.level === 2)
+            .map((h) => ({ text: h.text, link: `${url(p)}#${h.slug}` }))
+        : [];
+      return { text: p.label, link: url(p), ...(items.length > 0 && { items, collapsed: true }) };
+    }),
   }));
 
 const siteDir = `${repoRoot}site`;
