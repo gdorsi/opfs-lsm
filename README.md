@@ -81,7 +81,7 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 | fate | Cold load of 100 lists of 100 records | 1.0k records/s | 3.4k records/s | 3.3× |
 | fate | Queue 300 mutations offline | 201 ops/s | 263 ops/s | 1.3× |
 
-The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and `@nkzw/fate-indexeddb`.
+The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and `@nkzw/fate-indexeddb`. Both TanStack DB collections run in eager mode, the default `syncMode`: a collection loads every row when it opens. `indexedDBCollectionOptions` has no on-demand mode.
 
 ### Bundle size
 

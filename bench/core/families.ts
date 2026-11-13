@@ -77,6 +77,26 @@ export type CollectionStore = Common & {
   size(): number;
 };
 
+/** One live query over the todo rows. Each kind is one index read on both sides. */
+export type TodoQuery =
+  | { readonly kind: "owner"; readonly owner: string }
+  /** Up to `limit` rows of `owner` with createdAt >= from, ascending. */
+  | { readonly kind: "page"; readonly owner: string; readonly from: number; readonly limit: number }
+  | { readonly kind: "ids"; readonly ids: readonly string[] };
+
+/** A live query that keeps its rows in the collection until `release`. */
+export type HeldQuery = { readonly rows: readonly Todo[]; release(): Promise<void> };
+
+/** TanStack DB collections in on-demand mode: docstoreCollectionOptions vs TanStack's SQLite persistence. A row is in memory only while a live query holds it. */
+export type OnDemandStore = Common & {
+  /** One TanStack transaction with every row. Resolves once the store persisted it. */
+  insertMany(rows: readonly Todo[]): Promise<void>;
+  /** Starts a live query and resolves once its first result is ready. */
+  hold(q: TodoQuery): Promise<HeldQuery>;
+  /** One transaction that changes each of `ids` with `f`. Every id must be in a held query. */
+  updateMany(ids: readonly string[], f: (row: Todo) => Todo): Promise<void>;
+};
+
 /** Automerge: both contenders are automerge-repo storage adapters; workloads drive a real Repo. */
 export type AutomergeStore = Common & {
   readonly adapter: StorageAdapterInterface;
@@ -104,9 +124,10 @@ export type FamilyStores = {
   kv: KvStore;
   table: TableStore;
   tanstack: CollectionStore;
+  "tanstack-ondemand": OnDemandStore;
   automerge: AutomergeStore;
   yjs: YjsStore;
   fate: FateStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "automerge", "yjs", "fate"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate"];

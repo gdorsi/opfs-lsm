@@ -13,6 +13,7 @@
   "dependencies": {
     "@automerge/automerge-repo-storage-indexeddb": "2.6.0-alpha.5",
     "@automerge/react": "2.6.0-alpha.5",
+    "@journeyapps/wa-sqlite": "^1.7.2",
     "@nkzw/fate": "2.0.1",
     "@nkzw/fate-indexeddb": "2.0.1",
     "@opfs-lsm/automerge": "workspace:*",
@@ -21,7 +22,8 @@
     "@opfs-lsm/kv": "workspace:*",
     "@opfs-lsm/tanstack-db": "workspace:*",
     "@opfs-lsm/yjs": "workspace:*",
-    "@tanstack/db": "1.0.0-rc.1.4",
+    "@tanstack/browser-db-sqlite-persistence": "1.0.0-rc.1.5",
+    "@tanstack/db": "1.0.0-rc.1.5",
     "dexie": "^4.0.11",
     "y-indexeddb": "^9.0.12",
     "yjs": "^13.6.33"
