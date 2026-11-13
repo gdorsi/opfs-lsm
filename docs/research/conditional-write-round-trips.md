@@ -96,11 +96,17 @@ key 50 followed by a delete of it makes the next generated key 51, a reopen keep
 aborted transaction gives its key back, and with `commit()` called in a microtask the adds'
 results are readable at `complete`.
 
-### The baseline does not call `commit()` either
+### Against a baseline that calls `commit()`
 
-The bench's IndexedDB store waits for its `put`'s success event like kv did. With
-`transaction.commit()` after the put, it runs at 9,877 ops/s (p50 90 µs), and kv, at 7,422
-ops/s (p50 110 µs) in that run, is at 0.76 of it (21 runs, 0.62 to 1.22).
+The table above is against the bench's IndexedDB store as it was: it waited for its `put`'s
+success event before the commit, like kv did. A kv put is one IndexedDB transaction plus the
+post of the row, so it can match a tuned IndexedDB write and cannot beat it. The baseline now
+calls `transaction.commit()` after its requests. With that, it runs at 9,877 ops/s (p50 90 µs),
+and kv, at 7,422 ops/s (p50 110 µs) in that run, is at 0.76 of it (21 runs, 0.62 to 1.22).
+
+At `--size small`, the README's row (1,000 puts a run), 21 runs a side gave the baseline 6,393
+ops/s (p50 118 µs) and kv 6,179 ops/s (p50 132 µs): 0.93 per run (0.74 to 1.59). Five runs of
+that size do not agree with each other. The five of one full suite run gave 0.65.
 
 What is left is the `BroadcastChannel` post of each row. At `--size small`, where no ingest
 runs, against that faster baseline (41 runs per side):
