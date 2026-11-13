@@ -29,15 +29,25 @@ byPriority: { on: ["priority", "status", "modified"] },
 
 Only the rows in view are in the document, and only the pages scrolled to are read.
 
-An issue's description and comments are one document of a second collection, `details`, under the issue's id. It is generated from the id and stored the first time the issue is opened, so generating 100,000 issues writes no description.
+An issue's description and comments are one document of a second collection, `details`, under the issue's id. It is generated from the id and stored the first time the issue is opened, so generating 100,000 issues writes no description. `details` is a cache: every document in it can be made again. The description of an issue created in the app is the user's own text, so it goes in a third collection, `authored`.
 
 ## Writes
 
-Each edit of a title, a status or a priority is one `modify` of the issue. A new issue is two writes: its description, then the issue.
+Each edit of a title, a status or a priority is one `modify` of the issue. A new issue is two writes: its description in `authored`, then the issue.
 
 The list does not read again after a write. It listens to the collection's change feed (`changes`), which sends every written issue, from this tab or another. For each one the list takes the row out of its old place and puts it in its new one, and moves the total by one where the filter gains or loses the issue. The feed says what an issue is now, not what it was, so the list uses the copy it holds: a row it has read, or the open issue. When it holds none, as after a write from another tab to an issue it never read, it reads the rows in view again and counts from the index entries.
 
 Generated issues arrive through the same feed. While this tab writes them the list only adds them to its total, and it reads the rows in view once at the end.
+
+## Storage
+
+The database opens with `maxBytes: "quota"`, so kv offers to free space when the origin passes 90% of its storage quota. `?maxBytes=<bytes>` sets a byte cap instead, to see it happen. kv measures after a flush, which about 1 MiB of writes starts.
+
+- kv makes the offer to one tab. That tab removes nothing. If more than 100 details are cached, it sets `pressure` in the row `storage` of the `meta` collection.
+- Every open tab follows that row and shows an alert while `pressure` is set, with one button, "Remove cached data".
+- A click in any tab clears `details`, which is one range delete, and unsets `pressure`. The alert leaves every tab.
+- Issues stay, and so does `authored`. A cleared description is generated again when its issue is opened.
+- kv offers again at each flush while the database is over the cap. Below 100 cached details there is too little to free, so no alert is raised.
 
 ## Timings
 
