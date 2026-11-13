@@ -5,7 +5,7 @@ import { createDetail } from "./detail.ts";
 import { createList, type Change } from "./list.ts";
 import { DEFAULT_FILTER, type Filter } from "./model.ts";
 import { SOURCE, failed, painted, post, type ToDemo } from "./protocol.ts";
-import { createStorageAlert } from "./storage.ts";
+import { capBytes, createStorageAlert, createUsage } from "./storage.ts";
 import { createIssue, forgetHost, hostOf, openStore, writeIssues } from "./store.ts";
 import { createToolbar, describe } from "./toolbar.ts";
 
@@ -22,6 +22,11 @@ document.getElementById("root")!.innerHTML = `
     <div class="spacer"></div>
     <div class="sync">
       <b>Local only</b>
+      <div class="usage">
+        <div class="usage-row"><span>Stored</span><span class="mono" id="used">–</span></div>
+        <div class="bar"><i></i></div>
+        <div class="usage-row"><label for="cap">Cap</label><span><input id="cap" class="mono" type="number" min="0.1" step="any" /> MB</span></div>
+      </div>
       <button class="btn" id="more">Generate ${n(COUNT)} more</button>
       <div class="bar" id="more-bar" hidden><i></i></div>
       <button class="btn" id="delete">Delete the data</button>
@@ -56,10 +61,10 @@ function showList(shown: boolean) {
 }
 
 async function main() {
+  const cap = capBytes(params);
   // Every time this app reports counts from here: the call that opens the database.
   const t0 = performance.now();
-  // `?maxBytes=` sets a byte cap, to see the storage alert without filling the disk.
-  const store = await openStore(NAME, Number(params.get("maxBytes")) || "quota");
+  const store = await openStore(NAME, cap);
   const openedMs = performance.now() - t0;
 
   const detail = createDetail($(".detail"), store);
@@ -206,6 +211,7 @@ async function main() {
   if (rows === 0) showList(false);
   else post({ type: "first-rows", ms: rowsAt - t0, host: await hostOf(store) });
   createStorageAlert(store);
+  createUsage($(".usage"), store, cap);
   void dropRetired();
 }
 

@@ -41,7 +41,9 @@ Generated issues arrive through the same feed. While this tab writes them the li
 
 ## Storage
 
-The database opens with `maxBytes: "quota"`, so kv offers to free space when the origin passes 90% of its storage quota. `?maxBytes=<bytes>` sets a byte cap instead, to see it happen. kv measures after a flush, which about 1 MiB of writes starts.
+The database opens with a numeric `maxBytes`, 100 MB unless the viewer sets another. The sidebar shows the bytes kv counts against it, the run files of the latest manifest, next to a field for the cap. A new cap is kept in `localStorage` and reloads the app, since kv takes it when the database opens. `?maxBytes=<bytes>` overrides both. kv measures after a flush, which about 1 MiB of writes starts.
+
+The cap is a number because Chrome reports `navigator.storage.estimate().quota` as usage plus 10 GiB, so `"quota"` would wait for 90 GiB. kv's host keeps the smallest cap of the tabs that have the database open, so with the app open in other tabs a raised cap waits until they close.
 
 - kv makes the offer to one tab. That tab removes nothing. If more than 100 details are cached, it sets `pressure` in the row `storage` of the `meta` collection.
 - Every open tab follows that row and shows an alert while `pressure` is set, with one button, "Remove cached data".

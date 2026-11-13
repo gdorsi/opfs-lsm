@@ -182,3 +182,11 @@ svg.ico { display: block; }
 .more input:checked { background: var(--accent); }
 .more input:checked::after { transform: translateX(10px); }
 .more:has(input:checked) { color: var(--text); }
+/* The storage panel of the sidebar: what kv counts against the cap, and the cap. */
+.usage { display: flex; flex-direction: column; gap: 6px; padding-bottom: 4px; }
+.usage-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.usage-row .mono { color: var(--text); }
+.usage input { width: 64px; height: 24px; padding: 0 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); color: var(--text); font: inherit; text-align: right; appearance: textfield; outline: none; }
+.usage input::-webkit-inner-spin-button, .usage input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.usage input:focus { border-color: var(--accent); }
+.usage.over .bar > i { background: var(--danger); }

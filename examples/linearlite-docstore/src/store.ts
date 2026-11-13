@@ -23,11 +23,10 @@ export type Store = {
 };
 
 /**
- * Opens the database under a size cap: a number of bytes, or `"quota"` for 90% of the origin's storage quota. Past
- * the cap kv offers to free space, to one tab. That tab removes nothing: it raises the flag every tab shows an alert
+ * Opens the database under a size cap, in bytes. Past the cap kv offers to free space, to one tab. That tab removes nothing: it raises the flag every tab shows an alert
  * for (`watchPressure`), and the user's confirmation frees the space (`freeSpace`).
  */
-export async function openStore(name: string, maxBytes: number | "quota"): Promise<Store> {
+export async function openStore(name: string, maxBytes: number): Promise<Store> {
   const db = await openDb({ name, maxBytes });
   const opened = openDocStore(db, schema).then((docs): Store => ({ db, issues: issuesOf(docs), details: detailsOf(docs), authored: authoredOf(docs), meta: metaOf(docs) }));
   // Registered in the turn `openDb` resolves, so an offer made on open finds a handler.
@@ -285,6 +284,12 @@ export async function writeIssues(
     progress("writing", Math.min(rows.length, at + BATCH));
   }
   return { generateMs, writeMs: performance.now() - t0 };
+}
+
+/** The bytes kv counts against the cap: the run files of the latest manifest. The WAL is not in it until a flush. */
+export async function storedBytes({ db }: Store): Promise<number> {
+  const { host } = await readStats(db);
+  return host.layout.reduce((sum, level) => sum + level.bytes, 0);
 }
 
 const FLUSHES = "linearlite-demo:flushes";

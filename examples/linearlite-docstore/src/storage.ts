@@ -1,6 +1,59 @@
 import { CHECK } from "./icons.ts";
 import { failed } from "./protocol.ts";
-import { freeSpace, watchPressure, type Store } from "./store.ts";
+import { freeSpace, storedBytes, watchPressure, type Store } from "./store.ts";
+
+const MB = 1_000_000;
+const CAP = "linearlite-demo:maxBytes";
+/** Above what 100,000 issues take, so the alert waits until the viewer lowers the cap. */
+const DEFAULT_CAP = 100 * MB;
+
+/** The size cap the database opens with, in bytes: `?maxBytes=`, else the one set in the sidebar, else the default. */
+export function capBytes(params: URLSearchParams): number {
+  const fromUrl = Number(params.get("maxBytes"));
+  if (fromUrl > 0) return fromUrl;
+  let saved = 0;
+  try {
+    saved = Number(localStorage.getItem(CAP));
+  } catch {}
+  return saved > 0 ? saved : DEFAULT_CAP;
+}
+
+const mb = (bytes: number) => `${(bytes / MB).toFixed(bytes < 10 * MB ? 2 : 1)} MB`;
+
+/**
+ * The sidebar's storage panel: the bytes kv counts against the cap, and the cap, which the viewer can change. kv
+ * takes the cap when the database opens, so a new one reloads the app.
+ */
+export function createUsage(panel: HTMLElement, store: Store, cap: number) {
+  const used = panel.querySelector<HTMLElement>("#used")!;
+  const fill = panel.querySelector<HTMLElement>(".bar > i")!;
+  const input = panel.querySelector<HTMLInputElement>("#cap")!;
+  input.value = String(cap / MB);
+  input.onchange = () => {
+    const next = Math.round(Number(input.value) * MB);
+    if (!(next > 0) || next === cap) return void (input.value = String(cap / MB));
+    // Kept for this browser. Without storage, the address carries it.
+    const url = new URL(location.href);
+    try {
+      localStorage.setItem(CAP, String(next));
+      url.searchParams.delete("maxBytes");
+    } catch {
+      url.searchParams.set("maxBytes", String(next));
+    }
+    location.replace(url);
+  };
+  // kv measures after each flush, in the SharedWorker, so the panel asks again every two seconds.
+  const draw = async () => {
+    if (document.hidden) return;
+    const bytes = await storedBytes(store).catch(() => undefined);
+    if (bytes === undefined) return;
+    used.textContent = mb(bytes);
+    fill.style.width = `${Math.min(100, (bytes / cap) * 100)}%`;
+    panel.classList.toggle("over", bytes > cap);
+  };
+  void draw();
+  setInterval(() => void draw(), 2000);
+}
 
 /**
  * The alert every tab shows while storage pressure waits for a yes. Nothing is removed before the click. The tab
