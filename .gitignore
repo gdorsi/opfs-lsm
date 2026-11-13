@@ -21,3 +21,4 @@ examples/linearlite-fate/.tanstack
 examples/linearlite-fate/data
 site/.vitepress/dist
 site/.vitepress/cache
+examples/linearlite/dist-demo
