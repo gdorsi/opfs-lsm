@@ -2,6 +2,10 @@
  * A hand-written IndexedDB key-value store doing the same ops as kv: one
  * object store with binary keys, one readwrite transaction per batch,
  * getAll(range, limit) for scans. Default durability, like kv's WAL.
+ *
+ * Every write calls `commit()` once its requests are issued. Without it,
+ * Chrome waits for the requests' success events to reach the tab before it
+ * commits: one more round trip per transaction. kv's WAL commits the same way.
  */
 import { defineContender } from "../../core/types.ts";
 import { done, openIdb, request } from "../../page/idb.ts";
@@ -13,7 +17,7 @@ const k = (b: Uint8Array) => b as Uint8Array<ArrayBuffer>;
 export default defineContender({
   family: "kv",
   durability: "idb-default",
-  fastPath: "one object store, binary keys; putMany = one readwrite tx; range = getAll(bound, limit)",
+  fastPath: "one object store, binary keys; putMany = one readwrite tx with an explicit commit(); range = getAll(bound, limit)",
   engine: false,
   async open(name) {
     const db = await openIdb(`idb-${name}`, (d) => d.createObjectStore(STORE));
@@ -22,11 +26,13 @@ export default defineContender({
       async putMany(entries) {
         const s = store("readwrite");
         for (const [key, v] of entries) s.put(v, k(key));
+        s.transaction.commit();
         await done(s.transaction);
       },
       async deleteMany(keys) {
         const s = store("readwrite");
         for (const key of keys) s.delete(k(key));
+        s.transaction.commit();
         await done(s.transaction);
       },
       async get(key) {
@@ -40,6 +46,7 @@ export default defineContender({
         const s = store("readwrite");
         const old = await request<Uint8Array | undefined>(s.get(k(key)));
         s.put(f(old), k(key));
+        s.transaction.commit();
         await done(s.transaction);
       },
       settle: async () => {},

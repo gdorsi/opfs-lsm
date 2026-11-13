@@ -67,6 +67,8 @@ export class Sut {
       fs: this.fs,
       ingest: createLocalIngestClient(this.host),
       maxWalBytes: this.maxWalBytes,
+      // The host hears of every append as it lands, so a replay ingests at the same command.
+      rowPostMs: 0,
     });
     db.changes((e) => {
       if (e.kind === "append") this.appended.push(e.seq);
