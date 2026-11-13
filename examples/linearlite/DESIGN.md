@@ -289,7 +289,7 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
 
 ## Measured
 
-`node bench/client.ts <origin> <scenario>` drives headless Chrome against a production build (`vite build`,
+`node bench/client.ts <origin> <scenario>` drives headless Chrome against a production build (`VITE_BENCH=1 vite build`,
 `vite preview`) and a server seeded with `pnpm seed 100000`; `bench/ui-latency.js` times the list from the DOM alone
 and counts a step only once the rows and the toolbar total are right, so one script times every build. Five runs per
 build, one per build per round under a machine-wide lock; p50 (min–max) in ms. A is this app before issues moved to

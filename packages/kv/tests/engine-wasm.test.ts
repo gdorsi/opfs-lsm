@@ -210,9 +210,8 @@ describe("engine status codes", () => {
 describe("a context where the wasm module does not load", () => {
   it("rejects ensureEngine and openDb with StorageUnavailableError, and loads on a later try", async () => {
     vi.resetModules();
-    const g = globalThis as { __OPFS_LSM_ENGINE_URL?: string };
-    g.__OPFS_LSM_ENGINE_URL = "./no-such-engine.wasm";
     const engine = await import("../src/store/engine.js");
+    engine.setEngineUrlForTests("./no-such-engine.wasm");
     const { StorageUnavailableError } = await import("../src/errors.js");
     const { openHarnessDb } = await import("../src/testing.js");
     try {
@@ -221,7 +220,7 @@ describe("a context where the wasm module does not load", () => {
         StorageUnavailableError,
       );
     } finally {
-      delete g.__OPFS_LSM_ENGINE_URL;
+      engine.setEngineUrlForTests(undefined);
     }
     await engine.ensureEngine();
     expect(engine.engineUsingWasm()).toBe(true);
