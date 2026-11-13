@@ -16,8 +16,8 @@ hero:
       text: GitHub
       link: https://github.com/gdorsi/opfs-lsm
 features:
-  - title: 30× faster reads than IndexedDB
-    details: Random point reads run at 429k ops/s, against 14.5k on IndexedDB. Reads of missing keys run 127× faster, and short range scans 2.8× faster. Each tab reads the data files directly, so a read sends no message to a worker. A full ordered scan runs at the same speed, and opening a database is slower.
+  - title: 24× faster reads than IndexedDB
+    details: Random point reads run at 341k ops/s, against 14.3k on IndexedDB. Reads of missing keys run 82× faster, and short range scans 2.6× faster. Each tab reads the data files directly, so a read sends no message to a worker. A single put awaited one at a time is slower, and so is opening a database.
     link: /guide/#benchmarks
     linkText: All benchmarks
   - title: One database for every tab
@@ -28,8 +28,8 @@ features:
     details: put, delete and batch resolve with the sequence number of their record, and the change feed reports the same numbers. Use them as a cursor for an outbox or a sync checkpoint.
     link: /kv/#db
     linkText: Db methods
-  - title: 17.0 kB to import
-    details: Importing kv adds 17.0 kB gzip to your main bundle. The SharedWorker and the WebAssembly engine, compiled code that the browser runs next to your JavaScript, load only when a page opens a database.
+  - title: 17.1 kB to import
+    details: Importing kv adds 17.1 kB gzip to your main bundle. The SharedWorker and the WebAssembly engine, compiled code that the browser runs next to your JavaScript, load only when a page opens a database.
     link: /guide/#bundle-size
     linkText: Bundle size
   - title: Documents and indexes
@@ -43,6 +43,6 @@ features:
 ---
 
 > [!WARNING]
-> opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next. The packages are not on npm yet. Until the first release, build them from source as [Set up and release](../CONTRIBUTING.md) describes.
+> opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next.
 
 On desktop, kv needs Chrome or Edge 92, Firefox 114 or Safari 26. Firefox, Safari and mobile browsers are not tested yet. The [Overview](../README.md#browser-support) lists the minimum per browser.
