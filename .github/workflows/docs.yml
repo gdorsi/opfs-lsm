@@ -23,7 +23,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm install --frozen-lockfile --filter @opfs-lsm/site
+      # The home page frames a build of the LinearLite example, so its packages are installed and built too.
+      - run: pnpm install --frozen-lockfile --filter @opfs-lsm/site --filter "@opfs-lsm/example-linearlite..."
+      - run: pnpm --filter @opfs-lsm/site check
       - run: pnpm docs:build
       - if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
