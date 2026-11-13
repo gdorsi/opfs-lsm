@@ -4,6 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vitepress";
 import { checkSite, githubSlug, headingsOf, linkRule, outlineOf, unregistered } from "./links.ts";
+import { docRules } from "./markdown.ts";
 import { base, github, ignoredByWatcher, nav, pageOf, rewrites, sidebar, srcExclude } from "./pages.ts";
 
 const vitepressRequire = createRequire(import.meta.resolve("vitepress"));
@@ -59,7 +60,10 @@ export default ({ command }: { command: string }) => {
     },
     markdown: {
       anchor: { slugify: githubSlug },
-      config: linkRule(command === "build"),
+      config: (md) => {
+        linkRule(command === "build")(md);
+        docRules(md);
+      },
     },
     transformPageData(page) {
       if (pageOf(page.filePath)?.route) page.frontmatter.outline ??= outlineOf(page.filePath);

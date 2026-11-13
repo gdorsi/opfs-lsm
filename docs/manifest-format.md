@@ -3,7 +3,7 @@
 The byte layout of a manifest, `m/<generation>.mft`. What a manifest means is in
 [design.md](design.md#manifest-format).
 
-```
+```layout
 | u32 magic       "OLGN" (0x4f4c474e)                                        |
 | u32 version     4                                                          |
 | u64 generation                                                             |
@@ -24,7 +24,7 @@ per run:
 | u64 marksThrough                                                           |
 
 marks block:
-| u32 count       (0 is valid: no marks)                                     |
+| u32 count       0 is valid: no marks                                       |
 | mark 0                                                                     |
 | ...                                                                        |
 
@@ -32,7 +32,7 @@ per mark:
 | u32 start length                                                           |
 | start           the first key of the range                                 |
 | u8 has end                                                                 |
-| u32 length, end key, exclusive   (if has end)                              |
+| u32 length, end key   exclusive   (if has end)                             |
 | u64 through                                                                |
 | u64 at                                                                     |
 ```

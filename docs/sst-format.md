@@ -28,7 +28,7 @@ not contiguous.
 
 ## Data block
 
-```
+```layout
 | u32 record count                                                           |
 | varint prefix length                                                       |
 | prefix                                                                     |
@@ -54,14 +54,14 @@ Varints are unsigned LEB128, at most 5 bytes.
 With codec 1 (LZ4), each block is stored packed. Index offsets, the bloom offset and the CRC
 refer to the stored bytes.
 
-```
+```layout
 | u32 unpacked length                                                        |
 | LZ4 block-format bytes of the block above                                  |
 ```
 
 ## Record
 
-```
+```layout
 | u8 tag          1 = put, 2 = delete                                        |
 | u64 seq         the WAL seq that wrote the key                             |
 | varint suffix length                                                       |
@@ -74,7 +74,7 @@ refer to the stored bytes.
 
 One entry per data block, in block order.
 
-```
+```layout
 | u32 first key length                                                       |
 | first key       the smallest key of the block                              |
 | u32 last key length                                                        |

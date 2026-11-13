@@ -21,11 +21,11 @@ This document covers the kv engine only. The packages built on it are not descri
 
 All multi-byte integers are stored in little-endian order.
 
-# Storage layout
+## Storage layout
 
 A database named `<name>` lives in two stores:
 
-```
+```tree
 IndexedDB  "opfs-lsm-wal/<name>"
   ├── wal    seq -> bytes              one record per acked batch
   └── meta   "ingestedThrough" -> seq  every seq <= this is in an SST
@@ -49,14 +49,14 @@ OPFS  opfs-lsm/<name>/
 * The **recorded generation** is the one in `meta.generation`. Tabs read it, and not the newest
   file in `m/`.
 
-# Write-ahead log
+## Write-ahead log
 
-## WAL records
+### WAL records
 
 Each acked `put`, `delete`, `batch` or `update` is one record in the `wal` store. The key is the
 seq. The value is one `ArrayBuffer` that holds the ops of the batch back to back:
 
-```
+```layout
 | u8 type         0 = put, 1 = delete, 3 = range delete                      |
 | u32 key length                                                             |
 | key             the start key, for a range delete                          |
@@ -73,7 +73,7 @@ A writer that gives no `through` stores 2^53 − 1. The record's seq bounds it (
 A row that is not an `ArrayBuffer`, that ends inside an op, or that holds a range delete whose
 start is not below its end, is rejected as corrupt.
 
-## Append
+### Append
 
 `put`, `delete` and `batch` append by group commit. A tab has at most one append transaction
 open. The append that opens it and the appends issued synchronously after it join it, and
@@ -107,7 +107,7 @@ the tab before the ack resolves. If its seq is not the next one, another tab app
 the tab reads the tail before it resolves. At the ack, the writer sees its own write and every
 earlier one.
 
-## Reading the tail
+### Reading the tail
 
 `openDb`, `sync`, a catch-up after an append, and ingest read the same way. One transaction
 reads the head and `ingestedThrough`, then every record in `(max(since, ingestedThrough), head]`,
@@ -117,14 +117,14 @@ whole uningested WAL. `maxWalBytes` bounds that replay.
 Seqs are gapless above `ingestedThrough`, so the position of a record in its range gives its
 seq. A range that returns fewer records than it spans throws `wal gap`.
 
-## Truncation
+### Truncation
 
 An ingest sets `ingestedThrough` and `generation` and deletes every record at or below the
 *previous* `ingestedThrough`, in one transaction. The WAL therefore holds the uningested seqs
 plus the seqs the last ingest folded. Recovery needs the second group when a power loss keeps
 this commit and loses the new run. No read touches them.
 
-# Memtable
+## Memtable
 
 Each tab holds one memtable. It holds the WAL records in `(ingestedThrough, appliedThrough]`,
 where `ingestedThrough` is that of the installed generation, folded to one row per key:
@@ -147,7 +147,7 @@ and a range delete rebuilds the table from the rows it keeps.
 When the installed generation moves forward, the memtable drops the rows that the newly ingested
 seqs wrote, and the marks of the newly ingested records.
 
-## Backpressure
+### Backpressure
 
 `bytes` is the sum over live rows of the key bytes, the value bytes and 256 bytes for the row.
 `openDb({ memtableBytes })` bounds it, 16 MiB by default, with two thresholds:
@@ -162,12 +162,12 @@ One flush is in flight per tab. If the flush fails, or returns without moving th
 the write goes on, and the tab asks again after the memtable grows by another 1/8 of the limit.
 A host that cannot help does not stop writes. The thresholds are checked only on a write.
 
-# SST file format
+## SST file format
 
 A run is one SST file: sorted data blocks, a bloom filter, a block index and a footer. Its
 byte layout is in [sst-format.md](sst-format.md).
 
-## Reading a run
+### Reading a run
 
 A tab holds each run of its installed generation open and reads it on demand. The first read
 loads the footer, the bloom filter and the block index. Each later read loads the 32 KB page of
@@ -184,7 +184,7 @@ again, keeping what it read outside the cap. A value over the cap is never cache
 
 Tabs do not check the CRC. The host checks it when it reads a run as a compaction input.
 
-# Manifest format
+## Manifest format
 
 A manifest, `m/<generation>.mft`, lists the runs of one generation. Its byte layout is in
 [manifest-format.md](manifest-format.md).
@@ -198,7 +198,7 @@ versions for, and for each run its `marksThrough` (see [Range deletes](#range-de
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
 
-# Reads
+## Reads
 
 `get` reads the memtable first. On a miss, it asks the levels of the installed generation,
 newest first, and stops at the first that holds the key. Each L0 run is a level of its own. A
@@ -224,7 +224,7 @@ A `view` pins `appliedThrough`, the installed generation, the memtable chunks an
 point. Writes that commit during the callback are invisible to it. `rangeJoin` scans a range
 and point-reads one key per entry under one such pin.
 
-# Range deletes
+## Range deletes
 
 A range delete removes every row in `[start, end)` in one op. It covers a version of a key in the
 range when the version's seq is at or below its `through`. A writer may ask for a `through`; the
@@ -251,7 +251,7 @@ left can hold a version it covers. Each flush and each compaction install retire
 marks against its new runs, and a mark step (see [Planning](#planning)) rewrites the runs that
 hold a mark back, so its rows leave the disk.
 
-# Size cap
+## Size cap
 
 `openDb({ maxBytes })` asks the database to stay under a size. kv measures and asks: it never
 removes a row or writes to the WAL for the cap, and a write never waits for it or fails because of
@@ -299,9 +299,9 @@ mid-answer, or whose tab goes away, posts nothing, and the next holder pulls the
 opened with `maxBytes` and no handler asks for the lock shared with `ifAvailable` on each offer;
 granted, no handle answers, and it warns.
 
-# Multi-tab coordination
+## Multi-tab coordination
 
-## Seeing other tabs' writes
+### Seeing other tabs' writes
 
 After an append commits, a tab posts `{ kind: "rows", writerId, rows, bytes }` on the
 BroadcastChannel `opfs-lsm-layers/<name>`: the WAL rows it appended, each `{ seq, record }`, and
@@ -316,7 +316,7 @@ A tab therefore sees the write of another tab a moment after its ack, and a few 
 later during a burst. `db.sync()` closes the gap: it reads the WAL tail and applies everything
 acked before the call. The broadcast is an optimization. The WAL tail is the source of truth.
 
-## Installing a generation
+### Installing a generation
 
 A tab installs a generation only when the WAL tail tells it to, during `sync` or an append. The
 installed generation never holds a seq past `appliedThrough`. If the tail names a generation the
@@ -326,7 +326,7 @@ reads the tail again.
 After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and
 tabs call `sync`.
 
-## Loading a generation under churn
+### Loading a generation under churn
 
 The host removes the runs of a replaced generation once no tab holds them open, and a tab holds
 a run only once its open returns. A slow tab could therefore lose every load to a newer
@@ -349,11 +349,11 @@ A tab skips a tail that names a generation below its installed one, unless that 
 its memtable. A stale tail never is. A tail that is ahead comes from a recovery that recorded an
 older manifest and emptied the WAL, and the tab installs that generation.
 
-# Ingest
+## Ingest
 
 Ingest moves WAL records into L0 runs. It runs in the host.
 
-## Trigger
+### Trigger
 
 Per database, the host keeps `pendingBytes`, the key and value bytes of the ops that are not yet
 folded. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
@@ -368,7 +368,7 @@ After a failed flush, the host waits for another `maxWalBytes` of writes or the 
 
 `ingest(db)` from `@opfs-lsm/kv/testing` flushes through the end of the log and waits for the compaction it starts.
 
-## Flush
+### Flush
 
 A flush folds the WAL as it stands when it starts, oldest records first, into one L0 run per
 `flushRunBytes` of op bytes (see [Memory budget](#memory-budget)). One flush runs at a time per database. Records acked
@@ -398,14 +398,14 @@ section between two runs.
 OPFS files are written with `createWritable` and `close`. The browser swaps the file into place
 on `close`, so a reader sees a file whole or not at all.
 
-## L0 stop
+### L0 stop
 
 At `l0StopRuns` L0 runs, a flush publishes nothing and waits for the next compaction step to
 install. The stop is one less than the source limit of a merge, so one step can take all of L0. If the compaction
 pass ends without an install, the flush publishes its run anyway. A compaction that cannot help
 delays a flush by one pass and never blocks it.
 
-# Compaction
+## Compaction
 
 Compaction keeps a leveled layout.
 
@@ -417,7 +417,7 @@ Compaction keeps a leveled layout.
 
 Levels are created as they fill, with no maximum depth. Budgets count bytes on disk.
 
-## Planning
+### Planning
 
 The planner reads only the manifest. It scores each level and serves the highest score. On a tie
 the shallower level wins.
@@ -436,7 +436,7 @@ first, L1 would never be pushed down.
 A plan is `bottom` when no run below the output level overlaps the inputs. Only a bottom merge
 drops tombstones.
 
-## Merging
+### Merging
 
 A step reads its inputs as sources, newest first. Each L0 run is one source. The overlapped runs
 of the next level, which are disjoint, are one source together. A step has at most `maxSources`
@@ -461,7 +461,7 @@ The memory a step holds does not depend on the size of its inputs: about one rea
 blocks per source, plus the open output block and its bloom and index rows. If any input is corrupt, or any
 read or write fails, the host deletes every output and installs nothing.
 
-## Memory budget
+### Memory budget
 
 `openDb({ compactionMemoryBytes })`, 32 MiB by default and at least 8 MiB, is the memory the
 host may spend on flushing and compacting one database. It covers the wasm heap and the run
@@ -483,7 +483,7 @@ merge session. A flush does not wait for a merge. It runs between the pumps of t
 Wasm memory never shrinks. After a flush run or a compaction step, if no merge session is open
 and the instance holds more than the recycle threshold, the host replaces the instance.
 
-## Installing
+### Installing
 
 The merge holds the Web Lock `opfs-lsm-compact/<name>` and its turn among merges, and not the
 exclusive section, so flushes go on while it runs. A flush adds L0 runs in front of the inputs, which leaves the plan valid. To install,
@@ -500,7 +500,7 @@ under the exclusive section, the host:
 A pass runs up to 8 steps, and sweeps if it installs none. A request during a pass starts another,
 and so does a pass that used all 8.
 
-# Destroy
+## Destroy
 
 `db.dangerousDestroy()` and `destroyDb(name)` empty the database. Seen from the log, a destroy
 is one entry that deletes every key: the writes acked before it are gone, and the writes after
@@ -531,7 +531,7 @@ and rule 3 skips every manifest numbered up to `destroyedTop`. So the files are 
 or not step 3 finishes. Since the commit is on disk before step 3 starts, no power loss keeps a
 remove and loses the commit.
 
-# Change events
+## Change events
 
 `db.changes(listener)` reports each WAL record that a handle applies to its memtable, with its
 ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
@@ -542,14 +542,14 @@ ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
   them, or because a repair recorded another generation. A listener reads again.
 * `closed` is the last event.
 
-# Recovery
+## Recovery
 
 Writes go to two stores, and nothing orders one against the other on disk. No OPFS `close` and no
 IndexedDB commit is an fsync, except the commit of a destroy. After a power loss, each store keeps
 a prefix of its own completed writes, and the two prefixes are independent. Acked writes may be lost. The database
 must still open, and read the fold of one prefix of the log.
 
-## The invariant
+### The invariant
 
 A manifest is **intact** when every run it lists is on disk. The write order keeps two facts
 true at every prefix of each store:
@@ -562,7 +562,7 @@ true at every prefix of each store:
 So any intact manifest, followed by the WAL records `through + 1..head` with no gap, is a log
 prefix. Without those records, the manifest alone is one.
 
-## The rule
+### The rule
 
 `reconcile` picks the manifest to record:
 
@@ -577,7 +577,7 @@ In a running database only rule 2 applies. A manifest newer than the recorded on
 of a crash between a publish and its IndexedDB commit. Its seqs are still in the WAL, so it is
 ignored.
 
-## Recording a manifest
+### Recording a manifest
 
 Recording is one IndexedDB transaction. It writes only if `meta` still reads what reconcile
 read. It pairs the manifest with the WAL:
@@ -590,7 +590,7 @@ read. It pairs the manifest with the WAL:
 The same transaction moves `head` past the highest `through` of any manifest on disk, and
 `topGeneration` past every manifest number seen.
 
-## Corruption is not a power loss
+### Corruption is not a power loss
 
 OPFS publishes a file whole, and the host removes a run only after the recorded manifest stops
 listing it. A manifest numbered past the recorded one is a crash leftover, and its runs may go.
@@ -603,7 +603,7 @@ writes nothing, so the database stays as it is on disk.
   past `ingestedThrough` may stand in. Otherwise refuse.
 * Rule 3 meets a manifest that does not decode before it meets an intact one: refuse.
 
-## Who reconciles
+### Who reconciles
 
 * `openDb`, before the first sync. Every tab writes only after its open reconciled.
 * `sync` and appends, when the recorded generation does not load under the reclaim lock.
@@ -611,7 +611,7 @@ writes nothing, so the database stays as it is on disk.
   reconciles again before a sweep, except one in a pass that installed nothing: that sweep only
   runs for the generation the host last checked.
 
-# Crash behavior
+## Crash behavior
 
 Each step writes new files before anything points at them, and deletes files only after nothing
 points at them.
@@ -641,7 +641,7 @@ of OPFS, independently.
 | A destroy's transaction | Any prefix of its removes and of later ops | No manifest from before the destroy is adopted. The database holds a prefix of the writes after it, or none. |
 | Not a destroy's transaction | None of its removes | The commit was not on disk, so no remove had started. As if the destroy had not run. |
 
-# Limits
+## Limits
 
 | Limit | Value |
 |---|---|
@@ -649,7 +649,7 @@ of OPFS, independently.
 | Batch | 8 MiB, counted as the key bytes, the value bytes and 256 bytes for each op. A `put` is a batch of one op, so this is also the limit of a value. |
 | Database name | `[A-Za-z0-9_-]{1,64}` |
 
-# Where code runs
+## Where code runs
 
 | Work | Thread | Language |
 |---|---|---|
@@ -661,7 +661,7 @@ of OPFS, independently.
 A tab reads in TypeScript so that a `get` never posts a message. The wasm module is required:
 `openDb` rejects with `StorageUnavailableError` when it does not load.
 
-# Assumptions about the platform
+## Assumptions about the platform
 
 1. IndexedDB serializes `readwrite` transactions that share a store, across tabs and workers.
    An aborted transaction reverts the key generator of the store. An `add` at an explicit key
