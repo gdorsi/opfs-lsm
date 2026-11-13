@@ -267,6 +267,17 @@ export type SyncStatus =
   | { readonly kind: "syncing"; readonly stream: Stream; readonly cursor: number; readonly head: number; readonly unsynced: number }
   | { readonly kind: "idle"; readonly unsynced: number };
 
+export function usePressure(): boolean {
+  const { sync } = openedStore();
+  const { data } = useLiveQuery((q) =>
+    q
+      .from({ s: sync })
+      .where(({ s }) => eq(s.id, "sync"))
+      .findOne(),
+  );
+  return data?.pressure === true;
+}
+
 export function useSyncStatus(): SyncStatus {
   const { sync, dirtyIssues, dirtyBodies, dirtyComments } = openedStore();
   const { data: state } = useLiveQuery((q) =>

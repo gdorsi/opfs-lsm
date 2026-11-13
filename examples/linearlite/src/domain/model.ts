@@ -53,6 +53,8 @@ export type SyncState = {
   head: number;
   online: boolean;
   caughtUp: Record<Stream, boolean>;
+  /** Set while kv wants space and the user has not yet confirmed clearing the cached bodies and comments. */
+  pressure?: boolean;
 };
 
 export interface Rows {

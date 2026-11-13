@@ -1,3 +1,5 @@
+import { usePressure } from "../client/hooks.ts";
+import { confirmEviction } from "../client/sync.ts";
 import { Outlet, useLocation } from "@tanstack/react-router";
 import { CreateModal } from "./create.tsx";
 import { isTyping, useCreateModal, useGoBack, useIssueFilter, useKeys } from "./nav.ts";
@@ -37,6 +39,22 @@ export function Shell({ creating }: { creating: boolean }) {
       <main className="main">
         <Outlet />
       </main>
+      {usePressure() && (
+        <div className="backdrop">
+          <div className="modal" role="alertdialog" aria-labelledby="storage-title" aria-describedby="storage-text">
+            <h2 id="storage-title">Storage is almost full</h2>
+            <p id="storage-text">
+              Cached descriptions and comments will be removed from this device. They load again when needed, and nothing is lost on the server.
+            </p>
+            <div className="modal-foot">
+              <span className="spacer" />
+              <button className="btn primary" autoFocus onClick={confirmEviction}>
+                Remove cached data
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {creating && <CreateModal filter={filter} onClose={modal.close} />}
     </div>
   );
