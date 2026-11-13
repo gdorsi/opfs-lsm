@@ -2,7 +2,7 @@ import type { AnyRouter } from "@tanstack/react-router";
 import { parseIssueFilter, type IssueFilter } from "../src/client/filter.ts";
 import type { Store } from "../src/client/store.ts";
 import { PRIORITY_LABELS, STATUS_LABELS } from "../src/domain/model.ts";
-import { countIssues, forgetHost, hostOf, storedBytes, writeIssues } from "./data.ts";
+import { countIssues, forgetHost, hostOf, writeIssues } from "./data.ts";
 import { SOURCE, type FromDemo, type ToDemo } from "./protocol.ts";
 
 const post = (message: FromDemo) => {
@@ -23,21 +23,6 @@ const painted = () =>
 const FIRST_ROWS = "linearlite:first-rows";
 
 export const failed = (err: unknown) => post({ type: "failed", message: err instanceof Error ? err.message : String(err) });
-
-/**
- * Reports what is stored until two reads agree. Right after a large write the files of the runs that compaction
- * merged are still on disk, and the SharedWorker removes them over the next seconds.
- */
-async function reportStored(store: Store): Promise<void> {
-  let last = -1;
-  for (let i = 0; i < 20; i++) {
-    const now = await storedBytes(store);
-    post({ type: "stored", stored: now });
-    if (now.opfsBytes === last) return;
-    last = now.opfsBytes;
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-  }
-}
 
 type Generating = { readonly phase: "generating" | "writing"; readonly written: number; readonly total: number };
 type DemoState = { readonly hasIssues: boolean; readonly generating: Generating | undefined };
@@ -64,7 +49,6 @@ export async function generateIssues(store: Store, count: number): Promise<void>
     post({ type: "generated", count, generateMs, writeMs });
     update({ hasIssues: true, generating: undefined });
     await hostOf(store);
-    await reportStored(store);
   } catch (err) {
     update({ generating: undefined });
     failed(err);
@@ -132,7 +116,7 @@ export async function startBridge(store: Store, router: AnyRouter, openedMs: num
   post({ type: "opened", ms: openedMs, issues });
 
   void (async () => {
-    if (issues === 0) return reportStored(store);
+    if (issues === 0) return;
     const ms = await new Promise<number>((resolve) => {
       const seen = performance.getEntriesByName(FIRST_ROWS)[0];
       if (seen) return resolve(seen.startTime);
@@ -143,7 +127,6 @@ export async function startBridge(store: Store, router: AnyRouter, openedMs: num
       }).observe({ type: "mark" });
     });
     post({ type: "first-rows", ms, host: await hostOf(store) });
-    await reportStored(store);
   })().catch(failed);
 
   timeFilters(router);
@@ -152,7 +135,6 @@ export async function startBridge(store: Store, router: AnyRouter, openedMs: num
     if (e.origin !== location.origin || e.data?.source !== SOURCE) return;
     const message = e.data;
     if (message.type === "generate") void generateIssues(store, message.count);
-    else if (message.type === "measure") void reportStored(store).catch(failed);
     else if (message.type === "delete") {
       void store.db.dangerousDestroy().then(() => {
         forgetHost();

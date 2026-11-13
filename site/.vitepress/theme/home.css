@@ -151,13 +151,6 @@
   cursor: default;
 }
 
-.demo-stored {
-  margin-left: auto;
-  color: var(--vp-c-text-2);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-}
-
 .demo-frame {
   display: block;
   width: 100%;

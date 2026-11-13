@@ -341,7 +341,7 @@ as the docs website. The screens, the store, the queries and the write path are 
   description and comment are generated from its id when it is first opened.
 - **Sync.** Nothing starts the sync leader. The `sync` row says offline, so an edit keeps its "not synced" mark.
 
-The page that frames the demo drives it with messages (`demo/protocol.ts`): generate, delete, measure. The demo
+The page that frames the demo drives it with messages (`demo/protocol.ts`): generate and delete. The demo
 times itself and posts the results: the write, each filter change from its navigation to the frame painted with the
 new rows, and each page load from the start of navigation to the first rows. For a page load it also says whether
 the database's SharedWorker was already running, which it reads from the SharedWorker's flush counter.
