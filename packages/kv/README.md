@@ -1,123 +1,281 @@
 # @opfs-lsm/kv
 
-A key-value store for the browser. Keys and values are bytes. Every tab of an origin shares one database, and a write is durable when its promise resolves.
+A key-value store for the browser. Every tab of an origin shares one database, and a write is durable when its promise resolves.
 
-Why to pick it over IndexedDB, the benchmarks, and browser support are in the [repository README](../../README.md). How the engine works is in [docs/design.md](../../docs/design.md).
-
-The promise from `put` or `batch` is the ack. When it resolves, the write is one row in a write-ahead log (WAL) in IndexedDB that every tab shares. Each database name has one SharedWorker, `opfs-lsm:<name>`. It flushes the WAL into sorted SST files in the Origin Private File System (OPFS) once 1 MiB of key and value bytes is waiting, and compacts those files in the background.
-
-## Open a database
+```sh
+pnpm add @opfs-lsm/kv
+```
 
 ```ts
 import { openDb } from "@opfs-lsm/kv";
 
-const db = await openDb({ name: "notes" });
+const enc = (s: string) => new TextEncoder().encode(s);
+const dec = (b?: Uint8Array) => b && new TextDecoder().decode(b);
 
-const key = new TextEncoder().encode("hello");
-const value = new TextEncoder().encode("world");
+const db = await openDb({ name: "notes" });
+const key = enc("hello");
+const value = enc("world");
+
 await db.put(key, value);
-const found = await db.get(key);
+dec(await db.get(key)); // => "world"
 ```
 
-`destroyDb(name)` deletes every record of a database without opening it, so it also works on one that `openDb` refuses with `CorruptDatabaseError`. Open handles behave as after `dangerousDestroy()`.
+Benchmarks against IndexedDB and browser support are in the [repository README](../../README.md). How the engine works is in [docs/design.md](../../docs/design.md).
 
-`openDb` opens OPFS and starts the database's SharedWorker, or joins it when another tab started it. Where SharedWorker or OPFS is missing, as in Node or a dedicated WebWorker, it rejects with `StorageUnavailableError`. It never keeps the data in memory instead. Tests get an in-memory database from `openHarnessDb({ forceMemory: true })` in `@opfs-lsm/kv/testing`.
+## Open a database
 
-## `OpenOptions`
-
-| Option | Role |
-| --- | --- |
-| `name` | Database name. Tabs that share this name share one WAL. |
-| `cacheBytes` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
-| `memtableBytes` | Bytes of rows this tab holds that are not yet flushed to OPFS, counted as key bytes, value bytes, and an estimate per row. Default 16 MiB. A smaller request is raised to 1 MiB. At 7/8 of it the tab asks the host to flush and keeps writing. At the limit a write waits until the host returns that flush, so a writing tab's memtable stays near the limit. A host that cannot flush does not hold writes for good. When tabs differ, the host flushes once the WAL passes the smallest ask: 1 MiB, or 7/8 of `memtableBytes` when that is lower. |
-| `compactionMemoryBytes` | Bytes the SharedWorker may spend on flushing and compacting this database: its wasm heap and the run data in flight. Default 32 MiB. A smaller request is raised to 8 MiB. A smaller figure gives smaller flush runs and a smaller read window, and under about 17.5 MiB fewer runs in one compaction step. The host's figures stop growing at 64 MiB. When tabs differ, the host uses the smallest, until the last tab closes the database. It counts memory that is alive, not garbage the browser has not collected yet. |
-| `maxBytes` | Bytes of SST files the database should stay under, or `"quota"` for 90% of the browser's storage quota for the origin. kv never removes a row for it: it asks an `onPressure` handler to. A write never waits for the cap and is never refused because of it. When tabs differ, the host uses the smallest number and honors `"quota"` too, until the last tab closes the database. See [Size cap](#size-cap) and [Storage quota](#storage-quota). |
-
-Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `maxWalBytes`, `writerId`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `maxWalBytes` overrides the 1 MiB flush. `ingest(db)` from the same entry flushes the memtable now and waits for the compaction it starts.
-
-## `Db`
-
-Keys and values are `Uint8Array`.
-
-| Member | Role |
-| --- | --- |
-| `name` | The name passed to `openDb`. |
-| `get(key)` | Point read from the memtable and SST files. Does not touch IndexedDB. |
-| `put(key, value)` | Append one put. Resolves on WAL ack, with the record's seq. |
-| `delete(key)` | Append one delete. Resolves on WAL ack, with the record's seq. |
-| `batch(build)` | Build puts, deletes and range deletes synchronously. Resolves on one WAL ack, with the record's seq. |
-| `update(keys, body)` | Read `keys` and write in one IndexedDB transaction. No conflict window. |
-| `range(range?)` | Async scan by key range (`start`, `endExclusive`, `limit`). `reverse: true` yields the same keys from the largest down, and `limit` keeps the largest. `valueContains` keeps live puts whose current value holds every pattern. |
-| `rangeJoin(range, keyOf)` | Scan a range and join each entry to the value at `keyOf(entry)`, as an index entry joins its row. The scan and the reads see one state. |
-| `view(body)` | Read-only snapshot of the state when the view opens. `snap.seq` is the seq of the last record it includes, counted as write acks and `changes` count it. |
-| `onPressure(handler)` | Answer the offers to bring the database under `maxBytes`. See [Size cap](#size-cap). Returns unsubscribe. |
-| `changes(listener)` | Subscribe to every WAL record this handle applies, from any tab, with its ops, once each and in seq order. A range delete comes as a `deleteRange` op with its bounds and its `through`, resolved. A `gap` event means the handle skipped records a flush folded, so read again. Returns unsubscribe. |
-| `sync()` | Catch up to every write acked before the call from any tab. |
-| `close()` | Close this tab's handle. |
-| `dangerousDestroy()` | Delete every record, in every tab. Writes acked before it are gone, and writes after it land in the empty database. Every handle stays open: this one reads empty when it resolves, other tabs at their next `sync` or write, each with a `gap` event. The host removes the files no tab is reading, and the rest once their tabs move on. Waits for a flush or compaction step already running. Once it resolves, the deleted records never come back, even after a power loss. A crash before that leaves the database as if it had not run. |
+Keys and values are `Uint8Array`, so the examples use the `enc` and `dec` helpers above.
 
 ```ts
-await db.batch((tx) => {
-  tx.put(key, value);
-  tx.delete(oldKey);
-});
+// Every tab that opens "notes" shares it. A write lands in a write-ahead log (WAL) in IndexedDB.
+// One SharedWorker per name, `opfs-lsm:notes`, flushes the WAL into sorted SST files
+// in the Origin Private File System (OPFS) once 1 MiB is waiting, and compacts them.
+const db = await openDb({ name: "notes" });
 
-await db.sync();
+await openDb({ name: "my notes" }); // throws ConstraintError. Names match /^[A-Za-z0-9_-]{1,64}$/.
+
+// In Node or a dedicated WebWorker, which have no SharedWorker or OPFS:
+await openDb({ name: "notes" }); // throws StorageUnavailableError, never falls back to memory
 ```
 
-### Range deletes
+```ts
+await db.close(); // this tab's handle only
+await db.get(key); // throws ClosedError
+const again = await openDb({ name: "notes" }); // open a new handle instead
+```
 
-`tx.deleteRange(bounds, options?)` removes every row in `[start, endExclusive)` in one op, however many rows that is. A bound left out is open: `deleteRange({})` removes every row. It removes the rows written before its batch, never the puts in its own batch, and a later put into the range is read as usual. `options.through` narrows it to the rows last written at a seq of at most `through`, as a write's ack returns it, so a range delete does not remove a row another tab wrote after the caller read the range. Reads in this tab skip the removed rows once the ack resolves, other tabs once they apply the record and at the latest after their next `sync`, and a `view` opened before the range delete keeps reading them. A removed row that was not yet flushed is never written to OPFS. One already in an SST file is skipped by reads until compaction rewrites that file without it, so its space comes back.
+**Note.** Bundlers that need an explicit worker URL can import `@opfs-lsm/kv/shared-worker`.
+
+## Reads and writes
+
+```ts
+const seq = await db.put(key, value); // resolves on the WAL ack, with the record's seq
+dec(await db.get(key));               // => "world"
+await db.delete(key);                 // resolves with its seq too
+await db.get(key);                    // => undefined
+
+// get reads memory and SST files. It never touches IndexedDB.
+await db.put(new Uint8Array(9 * 1024), value); // throws ConstraintError. Keys are at most 8 KiB.
+await db.put(key, new Uint8Array(9 << 20));    // throws ConstraintError. A batch, value included, is at most 8 MiB.
+```
+
+## Batches
+
+```ts
+// `build` runs synchronously. Every op lands in one WAL record, with one ack.
+// The 8 MiB limit counts key bytes, value bytes, and 256 bytes per op.
+const seq = await db.batch((tx) => {
+  tx.put(enc("a"), enc("1"));
+  tx.put(enc("b"), enc("2"));
+  tx.delete(key);
+});
+
+await db.batch(() => {}); // writes nothing, resolves with the last seq this handle applied
+```
+
+## Read-modify-write
+
+`update` reads `keys` and writes in one IndexedDB transaction, so no other tab's write lands in between.
+
+```ts
+const count = await db.update([enc("count")], ([current], tx) => {
+  // Runs synchronously with the current values, in the order of `keys`. No await in here.
+  const next = Number(dec(current) ?? 0) + 1;
+  tx.put(enc("count"), enc(String(next)));
+  return next;
+});
+count; // => 1
+```
+
+## Range scans
+
+```ts
+import { prefixBound, type KeyBounds } from "@opfs-lsm/kv";
+
+await db.batch((tx) => {
+  tx.put(enc("user/1"), enc("Ada"));
+  tx.put(enc("user/2"), enc("Grace"));
+  tx.put(enc("user/3"), enc("Linus"));
+  tx.put(enc("post/1"), enc("user/2"));
+});
+const users: KeyBounds = prefixBound(enc("user/")); // { start: "user/", endExclusive: "user0" }
+```
+
+```ts
+for await (const { key, value } of db.range(users)) {
+  dec(key); // => "user/1", then "user/2", then "user/3"
+}
+
+db.range({ start: enc("user/2"), endExclusive: enc("user/3") }); // yields "user/2"
+db.range(); // yields every key, in byte order
+```
+
+### `reverse` and `limit`
+
+```ts
+// Same keys, largest first. Bounds stay in key order. `limit` keeps the largest.
+db.range({ ...users, reverse: true, limit: 2 }); // yields "user/3", "user/2"
+
+// To page backward, pass the last key you saw as `endExclusive`.
+db.range({ ...users, endExclusive: enc("user/2"), reverse: true, limit: 2 }); // yields "user/1"
+```
+
+### `valueContains`
+
+```ts
+// Keeps live puts whose current value holds every pattern.
+db.range({ ...users, valueContains: [enc("a"), enc("e")] }); // yields "user/2" (Grace)
+db.range({ ...users, valueContains: [enc("e")], limit: 1 }); // yields "user/2", since limit counts matches
+```
+
+## Joins
+
+`rangeJoin` scans a range and reads the key `keyOf` returns for each entry, the way an index entry points at its row.
+
+```ts
+// post/1 holds its author's key.
+const posts = await db.rangeJoin(prefixBound(enc("post/")), (entry) => entry.value);
+dec(posts[0]?.entry.key); // => "post/1"
+dec(posts[0]?.joined);    // => "Grace"
+
+// `joined` is undefined when keyOf returns undefined or the key has no value.
+// The scan and the joined reads see one state. Writes that land meanwhile are not seen.
+```
+
+## Snapshots
+
+```ts
+const seen = await db.view(async (snap) => {
+  await db.put(enc("user/4"), enc("Barbara"));
+  return snap.get(enc("user/4")); // the state when the view opened
+});
+seen; // => undefined
+
+// snap.range(...) takes the same options as db.range.
+// snap.seq is the seq of the last write the snapshot includes.
+```
+
+## Changes
+
+```ts
+const stop = db.changes((event) => {
+  switch (event.kind) {
+    case "append": // one per WAL record, from any tab, once each, in seq order
+      for (const op of event.ops) console.log(op.type); // "put", "del" or "deleteRange"
+      break;
+    case "gap": // this handle skipped records a flush folded. Read again.
+      break;
+    case "closed": // the last event
+  }
+});
+```
 
 ```ts
 const seq = await db.put(key, value);
-await db.batch((tx) => tx.deleteRange(prefixBound(prefix), { through: seq }));
+// The listener got this before the put resolved:
+// { kind: "append", seq, ops: [{ type: "put", key, value }] }
+stop();
 ```
 
-An empty or inverted range, or a `through` that is not a whole number of at least 0, throws `ConstraintError`.
-
-### Size cap
-
-When the SST files pass `maxBytes`, the SharedWorker offers `{ bytes, maxBytes, need }` to one handle: `bytes` is the size of the SST files, and `need` is how much to free to come back to 4/5 of `maxBytes`. The handlers of every handle compete for the Web Lock `opfs-lsm-pressure/<name>`, and only the holder's run, one after another. A handler removes what the layer chooses with ordinary writes, so the database stays consistent and other tabs see the removal as any write. If the holder closes or its tab goes away mid-answer, the next handle to take the lock gets the offer.
-
-Here keys start with a timestamp, so the layer drops the oldest rows that hold `need` bytes:
+## Other tabs
 
 ```ts
+// Tab A
+await db.put(enc("theme"), enc("dark"));
+
+// Tab B, right after. Without sync, it sees the write a moment later, when A's BroadcastChannel message arrives.
+await db.sync(); // catches up to every write acked before the call, from any tab
+dec(await db.get(enc("theme"))); // => "dark"
+```
+
+## Range deletes
+
+```ts
+// Every row in [start, endExclusive), in one op however many rows that is.
+await db.batch((tx) => tx.deleteRange(users));
+await db.batch((tx) => tx.deleteRange({ endExclusive: enc("m") })); // a missing bound is open
+await db.batch((tx) => tx.deleteRange({})); // every row
+```
+
+```ts
+await db.batch((tx) => {
+  tx.put(enc("user/9"), enc("Ken"));
+  tx.deleteRange(users); // never removes a put of its own batch
+});
+dec(await db.get(enc("user/9"))); // => "Ken"
+```
+
+```ts
+// Remove only rows last written at or before `through`, such as a write's seq, snap.seq, or a change's seq.
+// A row another tab wrote after you read the range stays.
+const seq = await db.put(enc("user/1"), enc("Ada"));
+await db.batch((tx) => tx.deleteRange(users, { through: seq }));
+
+await db.batch((tx) => tx.deleteRange({ start: enc("b"), endExclusive: enc("b") })); // throws ConstraintError
+await db.batch((tx) => tx.deleteRange({}, { through: -1 })); // throws ConstraintError
+```
+
+```ts
+await db.put(enc("user/1"), enc("Ada"));
+await db.view(async (snap) => {
+  await db.batch((tx) => tx.deleteRange(users));
+  await db.get(enc("user/1"));        // => undefined
+  dec(await snap.get(enc("user/1"))); // => "Ada", since a view opened before keeps reading it
+});
+// Other tabs skip the rows once they apply the record, at the latest after their next sync().
+// Change listeners get { type: "deleteRange", start, endExclusive, through }, with `through` resolved.
+```
+
+**Note.** A removed row that was not flushed yet never reaches OPFS. One already in an SST file is skipped until compaction rewrites that file and frees its space.
+
+## Size cap
+
+With `maxBytes`, the SharedWorker asks an `onPressure` handler to free space once the SST files pass the cap. kv never removes a row itself, and a write never waits for the cap or fails because of it.
+
+```ts
+import type { Pressure } from "@opfs-lsm/kv";
+
 const db = await openDb({ name: "log", maxBytes: 64 * 1024 * 1024 });
-db.onPressure(async ({ need }) => {
+// Register in the turn openDb resolves. An offer before that logs a warning, then waits for you.
+// With no handler in any tab, each offer logs a warning and the database keeps growing.
+const stop = db.onPressure(dropOldest);
+
+await openDb({ name: "log", maxBytes: 0 }); // throws ConstraintError
+```
+
+Here keys start with a timestamp, so the handler deletes the oldest rows with ordinary writes. `bytes` is the size of the SST files, and `need` is what to free to get back to 4/5 of `maxBytes`.
+
+```ts
+async function dropOldest({ need }: Pressure) {
   let freed = 0;
-  let end: Uint8Array | undefined;
   for await (const { key, value } of db.range()) {
     if (freed >= need) {
-      end = key;
-      break;
+      // Frees space once compaction rewrites the covered files. Point deletes can take much longer.
+      await db.batch((tx) => tx.deleteRange({ endExclusive: key }));
+      return;
     }
     freed += key.byteLength + value.byteLength;
   }
-  // No `end`: every row together holds less than `need`, so all of them go.
-  await db.batch((tx) => tx.deleteRange(end ? { endExclusive: end } : {}));
-});
+  await db.batch((tx) => tx.deleteRange({})); // all rows together hold less than need
+}
 ```
 
-Answer with `deleteRange`. Its bytes come back once a flush holds it and compaction rewrites the files it covers. A point `delete` frees file bytes only when a merge drops its tombstone at the deepest level, which may be late. The SharedWorker measures again after the next flush, so the offer comes back while the answer freed too little, at most once per compaction pass: a handler must be safe to run again. The next offer waits for the handlers to settle, so a handler that never settles stops the offers. Under writes heavy enough that compaction does not catch up, the offer comes late.
+```ts
+// The offer comes back after a flush while too little was freed, so make the handler safe to run again.
+// One handle answers at a time, and the next offer waits until its handler settles.
+stop(); // unsubscribe
+```
 
-`bytes` counts SST files only. It includes rows that a delete or an overwrite hides and no merge has dropped yet, and leaves out the WAL and the SST files a long `view` keeps open. A handle opened with `maxBytes` and no handler warns once per offer when no handle answers, and the database keeps growing. Call `onPressure` in the same turn that `openDb` resolves: an offer that arrives before the handler logs that warning, and the handler still gets the offer once it registers.
+**Note.** `bytes` includes rows that a delete or an overwrite hides until a merge drops them. The engine's [Size cap](../../docs/design.md#size-cap) has how kv measures, offers, and picks the handle that answers.
 
 ## Storage quota
 
-The browser gives each origin a storage quota. The WAL in IndexedDB and the SST files in OPFS count against it, along with everything else the origin stores. Open the database with `maxBytes: "quota"`, and kv asks an `onPressure` handler to free space before the origin runs out. The offer works as in [Size cap](#size-cap), with these differences:
-
-- The SharedWorker offers when `navigator.storage.estimate()` reports `usage` over 90% of `quota`. `maxBytes` is that 90%, and `need` is how far `usage` is over 4/5 of it.
-- `bytes` is still this database's SST files. The estimate covers the whole origin (the WAL, other databases, caches) and is approximate, so `need` can be larger than `bytes`.
-- Two databases opened with `"quota"` are each offered the whole `need`.
-- Without a usable estimate there is no offer.
-- The SharedWorker reads the estimate only while no superseded SST file is left on disk, so a long `view` that keeps old files open holds the offer back.
-
-Because `need` can be larger than the whole database, cap what the handler frees. Here keys start with a timestamp, so the handler drops the oldest rows, at most half of `bytes` per offer:
+The WAL and the SST files count against the origin's storage quota. With `maxBytes: "quota"`, the SharedWorker offers when `navigator.storage.estimate()` reports `usage` over 90% of `quota` (see the engine's [Size cap](../../docs/design.md#size-cap)).
 
 ```ts
 const db = await openDb({ name: "log", maxBytes: "quota" });
 db.onPressure(async ({ bytes, need }) => {
+  // need counts the whole origin, and every database opened with "quota" is offered all of it
   const goal = Math.min(need, bytes / 2);
   let freed = 0;
   for await (const { key, value } of db.range()) {
@@ -130,19 +288,77 @@ db.onPressure(async ({ bytes, need }) => {
 });
 ```
 
-If the origin runs out anyway, the SharedWorker cannot write SST files. See `StorageFullError` in [Errors](#errors).
+**Note.** If the origin runs out anyway, flushes fail with `StorageFullError`. The acked writes stay in the WAL, and the SharedWorker flushes again after another 1 MiB of writes or the next `openDb`.
+
+## Destroy
+
+```ts
+await db.dangerousDestroy(); // deletes every record, in every tab
+await db.get(key);           // => undefined
+await db.put(key, value);    // writes after it land in the empty database
+
+// Handles stay open. Other tabs read empty at their next sync() or write, each with a `gap` event.
+// It waits for a running flush or compaction step. Once it resolves, the records never come back,
+// even after a power loss. A crash before that leaves the database as if it had not run.
+```
+
+```ts
+import { destroyDb } from "@opfs-lsm/kv";
+
+// Does not open the database, so it also empties one that openDb refuses with CorruptDatabaseError.
+await destroyDb("notes"); // open handles behave as after dangerousDestroy()
+```
+
+## Testing
+
+```ts
+import "fake-indexeddb/auto"; // Node has no IndexedDB
+import { openHarnessDb, ingest } from "@opfs-lsm/kv/testing";
+
+// In memory. Two opens of one name in one process act as two tabs.
+const tabA = await openHarnessDb({ name: "notes", forceMemory: true });
+const tabB = await openHarnessDb({ name: "notes", forceMemory: true });
+
+await tabA.put(key, value);
+await ingest(tabA); // flushes now and waits for the compaction it starts
+await tabB.sync();
+dec(await tabB.get(key)); // => "world"
+```
+
+`openHarnessDb` also takes `fs`, `ingest`, `writerId`, `trace`, and `maxWalBytes`, which replaces the 1 MiB flush trigger.
+
+## Options
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `name` | required | Tabs that pass the same name share one database. |
+| `cacheBytes` | 256 MiB, at least 1 MiB | SST pages, Bloom filters and block indexes this tab caches. |
+| `memtableBytes` | 16 MiB, at least 1 MiB | Unflushed rows this tab holds. At the limit a write waits for a flush ([Backpressure](../../docs/design.md#backpressure)). |
+| `compactionMemoryBytes` | 32 MiB, at least 8 MiB | Memory the SharedWorker spends to flush and compact ([Memory budget](../../docs/design.md#memory-budget)). |
+| `maxBytes` | none | SST bytes to stay under, or `"quota"`. See [Size cap](#size-cap). |
+
+When tabs pass different values, the SharedWorker uses the smallest `compactionMemoryBytes` and `maxBytes` until the last tab closes the database.
 
 ## Errors
 
-Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A host error keeps its class when it crosses the SharedWorker port.
+```ts
+import { OpfsLsmError } from "@opfs-lsm/kv";
 
-| Class | `code` | Meaning | What to do |
+// Errors from the SharedWorker keep their class in the tab.
+try {
+  await db.put(new Uint8Array(9 * 1024), value);
+} catch (err) {
+  if (err instanceof OpfsLsmError) err.code; // => "constraint"
+}
+```
+
+| Class | `code` | When | What to do |
 | --- | --- | --- | --- |
-| `StorageUnavailableError` | `unavailable` | The context has no SharedWorker or OPFS, the wasm engine did not load, or the browser's IndexedDB store failed to open. `cause` holds the browser's error when there is one. | For a failed IndexedDB open, retry `openDb`, or reload the page. Chrome can damage its own IndexedDB store when it crashes, and then deletes it or keeps failing the open. If it deletes it, the writes not yet flushed to OPFS are lost and the flushed data is kept. |
-| `StorageFullError` | `quota` | The browser refused a flush or compaction write because the origin is out of storage quota. | The host rejects the flush, and no `Db` method surfaces that. The acked writes stay in the WAL, and the host flushes again after another 1 MiB of writes or the next `openDb`. `ingest(db)` from `@opfs-lsm/kv/testing` flushes now and rejects with this error. To free space before the origin runs out, see [Storage quota](#storage-quota). |
-| `CorruptDatabaseError` | `corrupt` | A file of the database does not decode, or a file it needs is gone. | Do not retry. The engine changes nothing. `destroyDb(name)` empties the database. |
+| `StorageUnavailableError` | `unavailable` | No SharedWorker or OPFS, the wasm engine did not load, or IndexedDB did not open. `cause` holds the browser's error. | Retry `openDb`, or reload the page. |
+| `StorageFullError` | `quota` | The origin is out of quota, so a flush fails. No `Db` method throws it, but `ingest(db)` does. | Free space. See [Storage quota](#storage-quota). |
+| `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone. kv changes nothing. | Do not retry. `destroyDb(name)` empties it. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
-| `ConstraintError` | `constraint` | A key, value or batch is not valid or is over a limit. | Fix the call. |
+| `ConstraintError` | `constraint` | A name, key, value, batch or range is invalid or over a limit. | Fix the call. |
 | `ClosedError` | `closed` | The handle is closed. | Open a new one. |
 
-`@opfs-lsm/kv` also exports `prefixBound`, the `KeyBounds` and `DeleteRangeOptions` types of `deleteRange`, and the error classes above. The harness that tests use (`EngineHost`, `MemoryFs`, `openHarnessDb`) is in `@opfs-lsm/kv/testing`. The SharedWorker entry `@opfs-lsm/kv/shared-worker` remains for bundlers that need an explicit worker URL.
+**Note.** Chrome can damage its IndexedDB store when it crashes, then delete it or keep failing the open. If it deletes it, writes not flushed to OPFS yet are lost, and flushed data stays.
