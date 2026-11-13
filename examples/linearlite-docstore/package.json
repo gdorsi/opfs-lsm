@@ -1,0 +1,19 @@
+{
+  "name": "@opfs-lsm/example-linearlite-docstore",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "check": "tsc -p tsconfig.json",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@opfs-lsm/docstore": "workspace:*",
+    "@opfs-lsm/kv": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vite": "^8.3.6"
+  }
+}
