@@ -14,7 +14,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | Change | Run |
 | --- | --- |
 | WAL append or ack, `ingestChunk`, `listUningested`, `advanceIngested` | `pnpm --filter @opfs-lsm/kv formal:kv` (or at least `formal:ingest-visibility` and `formal:power-loss`) |
-| The write order of ingest, compaction install or reclaim, `reconcile`, `IdBWal.adopt`, manifest numbering, or the open path | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `kill-chrome --minutes 10` |
+| The write order of ingest, compaction install or reclaim, `reconcile`, `IdBWal.adopt`, manifest numbering, or the open path | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `power-loss-chrome` (see [Lose IndexedDB commits in real Chrome](#lose-indexeddb-commits-in-real-chrome)), then `kill-chrome --minutes 10` |
 | Generation loading in `db.ts` (`syncOnce`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |
 | Point get versus SST, including tombstones (`pointGet`, `readKey`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
 | `view()` or the memtable pin | `formal:view-pin` |
@@ -146,7 +146,7 @@ What the loop showed on Chrome 156 on macOS (CI runs it on Linux):
 
 What it does not show:
 
-- Power loss. A process kill keeps whatever reached the OS, so the loop never sees a write lost after its ack, or IndexedDB and OPFS reaching disk out of order. `crash-enum.test.ts` and `formal:power-loss` model that. The loop cannot.
+- Power loss. A process kill keeps whatever reached the OS, so the loop never sees a write lost after its ack, or IndexedDB and OPFS reaching disk out of order. `crash-enum.test.ts` and `formal:power-loss` model that, and `power-loss-chrome` makes some of those states in real Chrome (below). The loop cannot.
 - Unacked writes. A write the harness never saw acked may be in the log or not. Losing one is allowed, so the loop cannot tell a lost unacked write from one that never committed.
 - Interleavings it does not hit. Kill times are seeded, but scheduling inside Chrome is not.
 - Quota on IndexedDB. Chrome 156 applies `Storage.overrideQuotaForOrigin` to OPFS writes only. IndexedDB commits and `navigator.storage.estimate()` ignore it, so a WAL append never meets a quota error here.
@@ -159,6 +159,25 @@ Four behaviours it found:
 - After `kill -9` of the browser mid-`createWritable`, the writer's swap file stays in OPFS as `<name>.crswap`, visible to directory listings. Chrome does not remove it after a relaunch. In a level directory, reclaim takes it for an orphan run and removes it. In `m/`, manifest reclaim removes it once the recorded generation reaches its number, which is the next flush. A swap file numbered past the recorded generation can belong to a write in progress, so it stays. `checkDatabase` lists these as `swapFiles`, not as problems. The loop prints `swap files in the database directory` when it sees one, and the summary prints the most it saw.
 - While DevTools is attached to the SharedWorker, a tab that opens the database after `Target.closeTarget` gets no working SharedWorker, and its `ingest()` never settles. Detached, a new one starts. The `worker-locks` probe detaches before it closes the worker.
 - Under the OPFS quota, `ingest()` rejects in the tab with `StorageFullError` (code `quota`), whose message is Chrome's `QuotaExceededError` text. The host maps the `QuotaExceededError` name to the code before the reply (`codeOfError`).
+
+## Lose IndexedDB commits in real Chrome
+
+`packages/kv/scripts/power-loss-chrome.ts` makes by hand the state a power loss leaves when OPFS reached the disk and the newest IndexedDB commits did not. While Chrome runs, it copies the IndexedDB directory of the profile. After Chrome quits, the copy replaces the directory, and OPFS keeps its newer files. Then it relaunches and opens the database.
+
+```sh
+pnpm --filter @opfs-lsm/kv power-loss-chrome            # five scenarios, under a minute
+pnpm --filter @opfs-lsm/kv power-loss-chrome --verbose  # also print the WAL keys and ingestedThrough at each step
+```
+
+Exit 0 and a last line `power-loss-chrome ok (5 scenarios)`. Each scenario checks that:
+
+- the relaunched Chrome reads the copy (the loss happened);
+- the open reads a prefix of the writes, at least the ones the kept flush holds;
+- a `put` after the open takes a seq past `ingestedThrough` and every WAL key, and is read back in that tab and after a restart.
+
+The scenarios lose the newest records, every record, or the commit of a second flush, and two of them lose the recovery itself a second time. The key generator of `wal` is in the copied directory, so it goes back with the records. That is the fact fake-indexeddb can only model: an adopt that does not move the key generator fails all five, because the put takes a seq already in use (`the put took seq 8, at or below 20` in the first).
+
+What it does not show: a real power cut. The copy is a whole, consistent directory, and OPFS loses nothing. Every pair of prefixes of the two stores is covered by `crash-enum.test.ts` and `formal:power-loss`, on models of the stores.
 
 ## Run the formal suite
 
@@ -281,7 +300,7 @@ Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
 
 - `bench`: `pnpm bench:smoke --check`, which applies the bundle-size budgets of `pnpm bench:size --check` and then runs the smoke, from one build
 - `two-tab`: `pnpm --filter @opfs-lsm/kv two-tab`
-- `kill-chrome`: `pnpm --filter @opfs-lsm/kv kill-chrome --seed 1 --iterations 6`, the probes and each kill kind once (about a minute)
+- `kill-chrome`: `pnpm --filter @opfs-lsm/kv kill-chrome --seed 1 --iterations 6`, the probes and each kill kind once (about a minute), then `pnpm --filter @opfs-lsm/kv power-loss-chrome`
 - `test`: `pnpm test`
 - `static`: `pnpm lint` and `pnpm deadcode` (oxlint, then fallow; the same two steps as `pnpm static`)
 - `formal`: `pnpm --filter @opfs-lsm/kv formal:kv`
