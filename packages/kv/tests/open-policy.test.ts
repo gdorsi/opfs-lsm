@@ -43,7 +43,8 @@ function restore(prev: Snap): void {
 }
 
 function installDocument(): void {
-  putGlobal("document", { nodeType: 9 });
+  // A handle listens for the page becoming hidden, so the stand-in takes listeners.
+  putGlobal("document", Object.assign(new EventTarget(), { nodeType: 9, visibilityState: "visible" }));
 }
 
 function installCaps(getDirectory: () => Promise<never>): void {

@@ -7,7 +7,7 @@ import type { IssueFilter } from "./filter.ts";
 import { backoffMs } from "./ops.ts";
 import { windowQuery } from "./query.ts";
 import { openedStore, type IssueDocs } from "./store.ts";
-import { fetchDetail } from "./sync.ts";
+import { fetchDetail, preloadDetails } from "./sync.ts";
 
 export const LIST_WINDOW = 100;
 const COLUMN_WINDOW = 50;
@@ -184,14 +184,27 @@ export function useIssue(id: string): Issue | undefined {
   return data;
 }
 
+/** Preload delay: a scroll that passes rows by does not ask for them. */
+const PRELOAD_DELAY_MS = 200;
+
+/** Loads the bodies and comments of the issues on screen, once `ids` has held still for a moment. */
+export function usePreloadDetails(ids: readonly string[]): void {
+  const key = ids.join(","); // ids are [A-Za-z0-9_-]
+  useEffect(() => {
+    if (key === "") return;
+    const timer = setTimeout(() => void preloadDetails(key.split(",")), PRELOAD_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [key]);
+}
+
 export type IssueDetail =
   | { readonly kind: "loading" }
   | { readonly kind: "missing"; readonly comments: readonly Comment[] }
   | { readonly kind: "ready"; readonly body: Body; readonly comments: readonly Comment[] };
 
 /**
- * The description and comments, read from kv while the view is mounted. A body this replica lacks (backfill has not
- * reached it) is fetched from the server, retried with backoff and on `online` until it answers; only an answer
+ * The description and comments, read from kv while the view is mounted. A body this replica lacks (its issue has not
+ * been on screen) is fetched from the server, retried with backoff and on `online` until it answers; only an answer
  * without a body makes the detail "missing".
  */
 export function useIssueDetail(id: string): IssueDetail {
@@ -253,6 +266,20 @@ export type SyncStatus =
   | { readonly kind: "offline"; readonly unsynced: number }
   | { readonly kind: "syncing"; readonly stream: Stream; readonly cursor: number; readonly head: number; readonly unsynced: number }
   | { readonly kind: "idle"; readonly unsynced: number };
+
+/** Whether storage pressure waits for the user's confirmation, and the unsent body and comment edits a removal waits for. */
+export function usePressure(): { readonly pending: boolean; readonly unsent: number } {
+  const { sync, dirtyBodies, dirtyComments } = openedStore();
+  const { data } = useLiveQuery((q) =>
+    q
+      .from({ s: sync })
+      .where(({ s }) => eq(s.id, "sync"))
+      .findOne(),
+  );
+  const { data: bodies } = useLiveQuery(dirtyBodies);
+  const { data: comments } = useLiveQuery(dirtyComments);
+  return { pending: data?.pressure === true, unsent: bodies.length + comments.length };
+}
 
 export function useSyncStatus(): SyncStatus {
   const { sync, dirtyIssues, dirtyBodies, dirtyComments } = openedStore();

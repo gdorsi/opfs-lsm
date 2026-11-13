@@ -11,6 +11,8 @@
     "examples/*/scripts/**/*.ts",
     "examples/*/bench/*.ts",
     "examples/*/bench/*.js",
+    "examples/*/src/service-worker.js",
+    "examples/linearlite-docstore/src/seed-worker.ts",
     "bench/cli.ts",
     "bench/page/main.ts",
     "bench/probes/*.ts",
@@ -19,12 +21,17 @@
     "docs/research/opfs-worker-probes/*.js",
     "docs/research/opfs-worker-probes/*.mjs"
   ],
+  "ignorePatterns": [
+    "site/stageshow/kit/**"
+  ],
   "ignoreBinaries": [
     "wasm-pack",
     "agent-browser"
   ],
   "ignoreDependencies": [
-    "@automerge/automerge-repo-storage-indexeddb"
+    "@automerge/automerge-repo-storage-indexeddb",
+    "lucide-react",
+    "vue"
   ],
   "ignoreExports": [
     {

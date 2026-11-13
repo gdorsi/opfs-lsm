@@ -120,6 +120,32 @@ describe("opening a schema", () => {
     expect((await next.store.collection("todos").queryIds({ index: "byDone", eq: [true] })).ids).toEqual(doneIds(now));
   });
 
+  it("moves a put on a handle with no index from the blind plan to the full one once a newer schema adds an index", async () => {
+    const name = freshName();
+    const bare = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: {} } });
+    const { db, updates } = recording(await kvOn(name));
+    // Deaf to change events, so the old handle learns of the index only when its write reads the catalog.
+    const old = await openOn(wrap(db, { changes: () => () => {} }), bare);
+    const docs = rows(30);
+    await old.collection("todos").putMany(docs);
+    const next = await at(name, v2);
+    updates.length = 0;
+    const late = [
+      { ...docs[0]!, done: !docs[0]!.done },
+      { ...docs[1]!, done: !docs[1]!.done },
+      { id: "late", done: true, createdAt: 100 },
+    ];
+    await old.collection("todos").putMany(late);
+    expect(updates).toEqual([
+      { reads: 1, puts: 0, deletes: 0 },
+      { reads: 4, puts: expect.any(Number), deletes: expect.any(Number) },
+    ]);
+    await next.kv.sync();
+    const now = [...late, ...docs.slice(2)];
+    expect((await next.store.collection("todos").queryIds({ index: "byDone", eq: [true] })).ids).toEqual(doneIds(now));
+    expect(await next.store.collection("todos").count({ index: "byDone" })).toBe(now.length);
+  });
+
   it("never returns a document under a redefined index's old definition, and the old handle may not query it", async () => {
     const name = freshName();
     const old = await at(name, v1);

@@ -156,8 +156,8 @@ class SimChannel {
 }
 
 function describeMessage(data: unknown): string {
-  const m = data as { kind?: string; seq?: number } | null;
-  return `${m?.kind ?? "?"}${m?.seq !== undefined ? ` seq ${m.seq}` : ""}`;
+  const m = data as { kind?: string; rows?: { seq: number }[] } | null;
+  return `${m?.kind ?? "?"}${m?.rows ? ` seq ${m.rows.map((r) => r.seq).join(",")}` : ""}`;
 }
 
 // --- The system under test.
@@ -303,6 +303,11 @@ class World {
         fs: this.wrapFs(`s${session}`),
         ingest: createLocalIngestClient(this.host),
         maxWalBytes: this.maxWalBytes,
+        // No row waits on a timer, so the scheduler owns every delivery. Odd
+        // sessions post each row as it lands. Even ones post their first row
+        // and keep the rest until they close, so one message carries many
+        // rows and the other handles meet them as gaps first.
+        rowPostMs: session % 2 === 1 ? 0 : 3_600_000,
       }));
       this.slots[slot] = { id: session, db };
       this.history.respond(op);

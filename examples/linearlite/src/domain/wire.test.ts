@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { MAX_OPS, parseDetailRequest, parsePullRequest, parsePushRequest, parseUsername, WireError } from "./wire.ts";
+import { MAX_DETAIL_IDS, MAX_OPS, parseDetailRequest, parsePullRequest, parsePushRequest, parseUsername, WireError } from "./wire.ts";
 
 const rejects = (fn: () => unknown) => assert.throws(fn, (e) => e instanceof WireError && e.status === 400);
 
@@ -51,8 +51,11 @@ describe("parsePullRequest", () => {
 
 describe("parseDetailRequest and parseUsername", () => {
   it("validate ids and user names", () => {
-    assert.deepEqual(parseDetailRequest(new URLSearchParams("id=abc-1")), { id: "abc-1" });
+    assert.deepEqual(parseDetailRequest(new URLSearchParams("id=abc-1")), { ids: ["abc-1"] });
+    assert.deepEqual(parseDetailRequest(new URLSearchParams("id=a&id=b&id=a")), { ids: ["a", "b"] });
     rejects(() => parseDetailRequest(new URLSearchParams("")));
+    rejects(() => parseDetailRequest(new URLSearchParams("id=a&id=b c")));
+    rejects(() => parseDetailRequest(new URLSearchParams(Array.from({ length: MAX_DETAIL_IDS + 1 }, (_, i) => `id=i${i}`).join("&"))));
     assert.equal(parseUsername(null), "anonymous");
     assert.equal(parseUsername("ada"), "ada");
     rejects(() => parseUsername("a b"));

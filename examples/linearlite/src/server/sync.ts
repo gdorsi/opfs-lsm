@@ -32,12 +32,14 @@ export function pull<S extends Stream>(db: DatabaseSync, stream: S, after: numbe
   };
 }
 
-export function detail(db: DatabaseSync, id: string): DetailResponse {
+export function detail(db: DatabaseSync, ids: readonly string[]): DetailResponse {
   const s = statements(db);
-  const body = s.streams.bodies.get.get(id);
   return {
-    body: body ? CODECS.bodies.fromDb(body) : null,
-    comments: s.commentsOf.all(id).map((r) => CODECS.comments.fromDb(r)),
+    bodies: ids.flatMap((id) => {
+      const found = s.streams.bodies.get.get(id);
+      return found ? [CODECS.bodies.fromDb(found)] : [];
+    }),
+    comments: ids.flatMap((id) => s.commentsOf.all(id)).map((r) => CODECS.comments.fromDb(r)),
   };
 }
 

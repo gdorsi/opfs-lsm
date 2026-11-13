@@ -104,7 +104,7 @@ await todos.getMany(["t9", "t1"]);
 // getMany reads each document on its own, not from one snapshot
 ```
 
-`putMany` writes in one kv transaction, so every document lands or none does.
+`putMany` writes in one kv transaction, so every document lands or none does. In a collection with no index, it writes every document, even one whose bytes would not change.
 
 ```ts
 await todos.putMany([todo, { ...todo, id: "t2" }]);
@@ -564,7 +564,7 @@ try {
 
 | Error | When | What to do |
 |---|---|---|
-| `"schema"` | The stored catalog and this schema disagree. | Open with the newer schema, or bump `version`. |
+| `"schema"` | The stored catalog and this schema disagree, the catalog lacks the collection, or a queried index is still building. | Open with the newer schema, or bump `version`. Query a building index again later. |
 | `"unique"` | Two documents would share a unique value. | Change or delete one of `ids`. |
 | `"index-failed"` | A query reads an index whose backfill failed. | Fix the documents in `ids`, then bump `version`. |
 | `"query"` | A query is malformed. | Fix the query. |
