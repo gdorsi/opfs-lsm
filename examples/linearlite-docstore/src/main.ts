@@ -1,3 +1,4 @@
+import { destroyDb } from "@opfs-lsm/kv";
 import "./app.css";
 import { createList } from "./list.ts";
 import { DEFAULT_FILTER, type Filter } from "./model.ts";
@@ -121,6 +122,23 @@ async function main() {
   post({ type: "opened", ms: openedMs, issues: rows });
   if (rows === 0) showList(false);
   else post({ type: "first-rows", ms: rowsAt - t0, host: await hostOf(store) });
+  void dropRetired();
+}
+
+/**
+ * The docs home page's earlier demo, the TanStack DB build of LinearLite, kept its issues in a database of this name
+ * with another schema. Removed in the background, once, so a visitor of that version gets the space back.
+ */
+const RETIRED = "opfs-lsm-home";
+
+async function dropRetired(): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    await (await root.getDirectoryHandle("opfs-lsm")).getDirectoryHandle(RETIRED);
+  } catch {
+    return;
+  }
+  await destroyDb(RETIRED).catch(() => undefined);
 }
 
 main().catch(failed);
