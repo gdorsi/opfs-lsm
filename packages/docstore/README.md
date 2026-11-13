@@ -97,7 +97,7 @@ Each index has a name, unique within its collection, and one of three kinds. `on
 | `get(id)` | `T \| undefined` | The stored form. |
 | `getMany(ids)` | `(T \| undefined)[]` | In the order of `ids`. Each document is read on its own, not from one snapshot. |
 | `put(doc)` | `void` | Upsert. Same as `putMany([doc])`. |
-| `putMany(docs)` | `void` | One kv transaction. All documents land or none do. A document whose stored bytes would not change writes nothing. |
+| `putMany(docs)` | `void` | One kv transaction. All documents land or none do. With an index, a document whose stored bytes would not change writes nothing. Without one, the put reads no row and writes every document. |
 | `modify(id, fn)` | `T \| undefined` | `fn` gets the stored form and returns the next document with the same id. `fn` may run more than once. Returns the stored result, or `undefined` without calling `fn` if there is no document. |
 | `modifyMany(ids, fn)` | `void` | Read-modify-write several documents in one kv transaction. `fn` gets the stored forms in the order of `ids` (`undefined` for a missing one) and returns one entry per id: a document to store, whose id is that slot's id; `null` to delete; `undefined` to leave as is. `fn` may run more than once. |
 | `delete(id)` | `boolean` | `true` if there was a document. |

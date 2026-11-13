@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
+    "dev:demo": "vite dev --config vite.demo.config.ts",
+    "build:demo": "vite build --config vite.demo.config.ts",
     "start": "vite preview",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --test",

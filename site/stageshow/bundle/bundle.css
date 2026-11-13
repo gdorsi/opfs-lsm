@@ -1,0 +1,159 @@
+/* A code window pinned top and right of center, off the bottom, with the download card in front of its sidebar. */
+.bd {
+  & .ss-stage {
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--ss-well);
+    font: 12px/1.4 var(--ss-font);
+    color: var(--ss-text-strong);
+  }
+
+  .bd-win {
+    position: absolute;
+    top: 32px;
+    left: 124px;
+    width: 464px;
+    height: 420px;
+  }
+
+  .bd-files {
+    display: grid;
+    align-content: start;
+    gap: 13px;
+    padding: 8px 16px;
+  }
+
+  .bd-editor {
+    position: relative;
+    height: 100%;
+    padding: 12px 0;
+    background: var(--ss-surface);
+  }
+
+  .bd-editor .ss-code {
+    position: relative;
+    font-family: var(--ss-mono);
+    font-size: 11px;
+  }
+
+  /* The line being run: a band across the editor that glides from the import to the call. */
+  .bd-running {
+    position: absolute;
+    top: 12px;
+    left: 0;
+    right: 0;
+    height: 19px;
+    background: var(--ss-accent-soft);
+    box-shadow: inset 2px 0 0 var(--ss-accent);
+    transition: translate 0.7s cubic-bezier(0.45, 0, 0.1, 1);
+  }
+
+  /* In front of the sidebar, its right edge 24px short of the sidebar's line (124 + 140). */
+  .bd-card {
+    position: absolute;
+    top: 68px;
+    left: 32px;
+    width: 208px;
+    display: grid;
+    padding: 16px 18px 6px;
+    border-radius: 12px;
+    background: var(--ss-raised);
+    box-shadow: var(--ss-shadow-satellite);
+  }
+
+  .bd-label {
+    color: var(--ss-text);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .bd-total {
+    margin-top: 2px;
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 30px;
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* What the first openDb adds: its line is there from the start, so the card keeps its size. */
+  .bd-later {
+    margin-bottom: 12px;
+    color: var(--ss-text);
+    font-size: 11.5px;
+    line-height: 16px;
+    font-variant-numeric: tabular-nums;
+    opacity: 0;
+    transition: opacity 0.6s ease;
+  }
+
+  .bd-later b {
+    color: var(--ss-text-strong);
+    font-weight: 600;
+  }
+
+  .bd-later[data-in] {
+    opacity: 1;
+  }
+
+  .bd-list {
+    border-top: 1px solid var(--ss-line);
+  }
+
+  .bd-row {
+    padding-block: 10px;
+    border-radius: 0;
+  }
+
+  /* A file not downloaded yet is a placeholder in the cell its row will take, so the card never changes size. */
+  .bd-slot {
+    display: grid;
+    border-top: 1px solid var(--ss-line-faint);
+  }
+
+  .bd-slot > * {
+    grid-area: 1 / 1;
+  }
+
+  .bd-pending {
+    transition: opacity 0.3s ease;
+  }
+
+  .bd-loaded {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .bd-slot[data-ready] .bd-pending {
+    opacity: 0;
+  }
+
+  .bd-slot[data-ready] .bd-loaded {
+    opacity: 1;
+    transition: opacity 0.4s ease 0.08s;
+  }
+
+  .bd-row .ss-row__meta {
+    color: var(--ss-text-strong);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Narrow: no sidebar. The window runs off the right, past the end of its longest line, and the card sits in
+     front of its lower third, inset from its left edge. */
+  & .ss-stage[data-layout="compact"] .bd-win {
+    top: 24px;
+    left: 24px;
+    width: 420px;
+    height: 230px;
+  }
+
+  & .ss-stage[data-layout="compact"] .bd-editor .ss-code {
+    font-size: 10.5px;
+  }
+
+  & .ss-stage[data-layout="compact"] .bd-card {
+    top: 186px;
+    left: 40px;
+    width: 278px;
+  }
+}
