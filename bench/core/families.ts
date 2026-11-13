@@ -8,6 +8,7 @@
  * `bulkPut`.
  */
 import type { StorageAdapterInterface } from "@automerge/react";
+import type { PersistenceStorage } from "@nkzw/fate/persistence";
 import type { KvStats } from "@opfs-lsm/kv/testing";
 import type * as Y from "yjs";
 
@@ -93,6 +94,11 @@ export type YjsBinding = {
   detach(): Promise<void>;
 };
 
+/** fate's persistence: both contenders are `PersistenceStorage` implementations; workloads build the fate client over `storage`, so both run the same client code. */
+export type FateStore = Common & {
+  readonly storage: PersistenceStorage;
+};
+
 /** Family name → store interface. The directory names under workloads/ and contenders/ are these keys. */
 export type FamilyStores = {
   kv: KvStore;
@@ -100,6 +106,7 @@ export type FamilyStores = {
   tanstack: CollectionStore;
   automerge: AutomergeStore;
   yjs: YjsStore;
+  fate: FateStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "automerge", "yjs"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "automerge", "yjs", "fate"];

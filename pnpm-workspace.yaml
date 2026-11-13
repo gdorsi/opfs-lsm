@@ -5,3 +5,4 @@ packages:
   - "examples/todo"
   - "examples/rich-text"
   - "examples/linearlite"
+  - "examples/linearlite-fate"

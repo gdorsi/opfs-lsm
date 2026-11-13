@@ -272,27 +272,18 @@ export async function reclaimManifests(
 
 /**
  * Remove each path in `drop` that `keep` does not retain and no tab holds
- * open. Returns the paths still there, for the host to retry. A missing file
- * counts as removed, so a rerun after a crash converges.
+ * open. A file that stays, held or failing, goes at a later call.
  */
 export async function reclaimRuns(
   fs: AsyncFs,
-  drop: Iterable<string>,
+  drop: readonly string[],
   keep: readonly string[],
-): Promise<string[]> {
+): Promise<void> {
   const retained = new Set(keep);
-  const held: string[] = [];
-  for (const path of new Set(drop)) {
+  for (const path of drop) {
     if (retained.has(path)) continue;
-    let removed = false;
-    try {
-      removed = await fs.removeUnlessOpen(path);
-    } catch {
-      // Retried on the next tick like a held file.
-    }
-    if (!removed) held.push(path);
+    await fs.removeUnlessOpen(path).catch(() => undefined);
   }
-  return held;
 }
 
 /**
