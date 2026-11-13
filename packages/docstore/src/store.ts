@@ -26,13 +26,14 @@ import {
   bytesEqual,
   compareBytes,
   collectionPrefix,
+  idOf,
   indexPrefix,
   keyString,
   upperOf,
   type CollectionId,
   type IndexId,
 } from "./keys.js";
-import type { AnySchema, CollectionName, DocOf, IndexesOf } from "./schema.js";
+import type { AnySchema, CollectionName, DocOf, IndexInfo, IndexesOf } from "./schema.js";
 
 export interface DocStore<S extends AnySchema> {
   /** A typed handle. Operations on a collection the stored catalog lacks throw "schema". */
@@ -52,18 +53,11 @@ export async function openDocStore<S extends AnySchema>(kv: Db, schema: S): Prom
   const declared = normalizeSchema(schema);
   const { bytes, catalog } = await kv.update([CATALOG_KEY], ([stored], tx) => {
     const current = stored && parseCatalog(stored);
-    const r = reconcile(current, declared);
-    switch (r.kind) {
-      case "error":
-        throw r.error;
-      case "keep":
-        return { bytes: stored!, catalog: current! };
-      case "write": {
-        const out = encodeCatalog(r.catalog);
-        tx.put(CATALOG_KEY, out);
-        return { bytes: out, catalog: r.catalog };
-      }
-    }
+    const next = reconcile(current, declared);
+    if (!next) return { bytes: stored!, catalog: current! };
+    const out = encodeCatalog(next);
+    tx.put(CATALOG_KEY, out);
+    return { bytes: out, catalog: next };
   });
   const store = new DocStoreImpl<S>(kv, declared, bind(bytes, catalog, declared));
   store.startJobs();
@@ -92,7 +86,6 @@ export interface StoreCore {
 const BACKFILL_ROWS = 500;
 const BACKFILL_OPS = 8_000;
 const BACKFILL_BYTES = 4 * 1024 * 1024;
-const fromUtf8 = new TextDecoder();
 
 type Violation = { readonly reason: "unique" | "value"; readonly ids: readonly string[] };
 
@@ -106,6 +99,8 @@ const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll
 
 class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   private readonly jobs = new Map<string, Promise<void>>();
+  /** What each declared collection's handle reports as `indexes`. */
+  private readonly indexInfo: ReadonlyMap<string, ReadonlyMap<string, IndexInfo>>;
   /**
    * `bound` may be behind the stored catalog: the next point read reads it
    * again. Set by a kv gap, which may have skipped a catalog write, and at
@@ -121,6 +116,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     private readonly declared: DeclaredSchema,
     private bound: Bound,
   ) {
+    this.indexInfo = new Map([...declared.collections].map(([name, specs]) => [name, describeIndexes(specs)]));
     // The store has no close. The listener lets it go once nothing else holds it, and kv drops the listener when it closes.
     const store = new WeakRef(this);
     const off = kv.changes((event) => {
@@ -174,7 +170,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   }
 
   collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>> {
-    return new CollectionImpl(this, name, describeIndexes(this.declared.collections.get(name)));
+    return new CollectionImpl(this, name, this.indexInfo.get(name) ?? new Map());
   }
 
   async whenIdle(): Promise<void> {
@@ -307,16 +303,16 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
           let owners = rows.length;
           for (let i = 0; i < rows.length; i++) {
             const entries = derived[i]!;
-            const at = owners;
-            if (unique && Array.isArray(entries)) owners += entries.length;
             const id = ids[i]!;
-            if (!Array.isArray(entries)) return { reason: "value", ids: [fromUtf8.decode(id)] };
+            if (!Array.isArray(entries)) return { reason: "value", ids: [idOf(id)] };
+            const at = owners;
+            if (unique) owners += entries.length;
             for (let j = 0; j < entries.length; j++) {
               const e = entries[j]!;
               if (unique) {
                 const k = keyString(e.key);
                 const owner = values[at + j] ?? claimed.get(k);
-                if (owner && !bytesEqual(owner, id)) return { reason: "unique", ids: [fromUtf8.decode(id), fromUtf8.decode(owner)] };
+                if (owner && !bytesEqual(owner, id)) return { reason: "unique", ids: [idOf(id), idOf(owner)] };
                 claimed.set(k, id);
               }
               puts.push(e);

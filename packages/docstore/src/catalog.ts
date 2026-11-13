@@ -7,6 +7,7 @@
  * decides what the bytes mean and what the next catalog is.
  */
 import { CorruptDatabaseError } from "@opfs-lsm/kv";
+import { isObject } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { indexPrefix, rowPrefix, type CollectionId, type IndexId, type ScanTarget } from "./keys.js";
 import type { AnySchema, IndexInfo } from "./schema.js";
@@ -77,8 +78,6 @@ function badSchema(message: string): never {
   throw new DocStoreError("schema", message);
 }
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-
 function checkPath(path: unknown, where: string): string {
   if (typeof path !== "string" || path.split(".").some((s) => s === "")) {
     badSchema(`${where}: ${JSON.stringify(path)} is not a dot path`);
@@ -88,16 +87,16 @@ function checkPath(path: unknown, where: string): string {
 
 export function normalizeSchema(decl: AnySchema): DeclaredSchema {
   if (!Number.isInteger(decl.version) || decl.version < 1) badSchema("version must be an integer >= 1");
-  if (!isRecord(decl.collections)) badSchema("collections must be an object");
+  if (!isObject(decl.collections)) badSchema("collections must be an object");
   const collections = new Map<string, Map<string, IndexSpec>>();
   for (const [name, indexes] of Object.entries(decl.collections)) {
     if (!NAME.test(name)) badSchema(`collection name ${JSON.stringify(name)} must match ${NAME}`);
-    if (!isRecord(indexes)) badSchema(`collection "${name}" must map index names to indexes`);
+    if (!isObject(indexes)) badSchema(`collection "${name}" must map index names to indexes`);
     const specs = new Map<string, IndexSpec>();
     for (const [index, d] of Object.entries(indexes)) {
       const where = `index "${index}" of "${name}"`;
       if (!NAME.test(index)) badSchema(`${where}: the name must match ${NAME}`);
-      if (!isRecord(d)) badSchema(`${where} must be an object`);
+      if (!isObject(d)) badSchema(`${where} must be an object`);
       const on = (Array.isArray(d["on"]) ? d["on"] : [d["on"]]).map((p) => checkPath(p, where));
       if (on.length === 0 || on.length > MAX_PATHS) badSchema(`${where}: on takes 1 to ${MAX_PATHS} paths`);
       if (new Set(on).size !== on.length) badSchema(`${where}: on repeats a path`);
@@ -122,9 +121,9 @@ export function normalizeSchema(decl: AnySchema): DeclaredSchema {
   return { version: decl.version, collections, drop };
 }
 
-export function describeIndexes(specs: ReadonlyMap<string, IndexSpec> | undefined): ReadonlyMap<string, IndexInfo> {
+export function describeIndexes(specs: ReadonlyMap<string, IndexSpec>): ReadonlyMap<string, IndexInfo> {
   const out = new Map<string, IndexInfo>();
-  for (const [name, s] of specs ?? []) {
+  for (const [name, s] of specs) {
     out.set(
       name,
       s.kind === "text"
@@ -156,7 +155,7 @@ export function parseCatalog(bytes: Uint8Array): StoredCatalog {
   } catch {
     throw new CorruptDatabaseError("the docstore catalog is not JSON");
   }
-  if (isRecord(c) && c["format"] !== FORMAT) {
+  if (isObject(c) && c["format"] !== FORMAT) {
     badSchema(`the stored catalog has format ${String(c["format"])}; this library reads format ${FORMAT}`);
   }
   if (!isCatalog(c)) throw new CorruptDatabaseError("the docstore catalog has an unknown shape");
@@ -167,38 +166,38 @@ const isId = (v: unknown, max: number) => Number.isInteger(v) && (v as number) >
 
 function isCatalog(c: unknown): c is StoredCatalog {
   return (
-    isRecord(c) &&
+    isObject(c) &&
     Number.isInteger(c["version"]) &&
     Number.isInteger(c["nextCollectionId"]) &&
-    isRecord(c["collections"]) &&
+    isObject(c["collections"]) &&
     Object.values(c["collections"]).every(isCollection) &&
     Array.isArray(c["dropped"]) &&
     c["dropped"].every(
-      (p) => isRecord(p) && isId(p["collection"], MAX_COLLECTION_ID) && (!("index" in p) || isId(p["index"], MAX_INDEX_ID)),
+      (p) => isObject(p) && isId(p["collection"], MAX_COLLECTION_ID) && (!("index" in p) || isId(p["index"], MAX_INDEX_ID)),
     )
   );
 }
 
 function isCollection(c: unknown): boolean {
   return (
-    isRecord(c) &&
+    isObject(c) &&
     isId(c["id"], MAX_COLLECTION_ID) &&
     Number.isInteger(c["nextIndexId"]) &&
-    isRecord(c["indexes"]) &&
+    isObject(c["indexes"]) &&
     Object.values(c["indexes"]).every(
-      (i) => isRecord(i) && isId(i["id"], MAX_INDEX_ID) && isSpec(i["spec"]) && isState(i["state"]),
+      (i) => isObject(i) && isId(i["id"], MAX_INDEX_ID) && isSpec(i["spec"]) && isState(i["state"]),
     )
   );
 }
 
 function isSpec(s: unknown): boolean {
-  if (!isRecord(s) || !Array.isArray(s["on"]) || !s["on"].every((p) => typeof p === "string")) return false;
+  if (!isObject(s) || !Array.isArray(s["on"]) || !s["on"].every((p) => typeof p === "string")) return false;
   if (s["kind"] === "sorted") return typeof s["unique"] === "boolean" && typeof s["multi"] === "boolean";
   return s["kind"] === "text" && typeof s["text"] === "string";
 }
 
 function isState(s: unknown): boolean {
-  if (!isRecord(s)) return false;
+  if (!isObject(s)) return false;
   if (s["kind"] === "building" || s["kind"] === "ready") return true;
   return (
     s["kind"] === "failed" &&
@@ -212,37 +211,29 @@ export function encodeCatalog(catalog: StoredCatalog): Uint8Array {
   return utf8.encode(JSON.stringify(catalog));
 }
 
-export type Reconciled =
-  | { readonly kind: "write"; readonly catalog: StoredCatalog }
-  | { readonly kind: "keep" }
-  | { readonly kind: "error"; readonly error: DocStoreError };
-
-/** What open does to the catalog. Runs inside `update([CATALOG_KEY])`, so two handles opening at once see each other's result. */
-export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredSchema): Reconciled {
-  try {
-    if (!stored) return { kind: "write", catalog: fresh(declared) };
-    if (declared.version < stored.version) return { kind: "keep" };
-    if (declared.version === stored.version) {
-      for (const [name, specs] of declared.collections) {
-        const indexes = stored.collections[name]?.indexes;
-        const same =
-          indexes !== undefined &&
-          Object.keys(indexes).length === specs.size &&
-          [...specs].every(([index, spec]) => indexes[index] !== undefined && sameSpec(indexes[index].spec, spec));
-        if (!same) {
-          badSchema(`version ${declared.version} is stored with a different "${name}"; bump the version to change it`);
-        }
-      }
-      for (const name of declared.drop) {
-        if (stored.collections[name]) badSchema(`version ${declared.version} is stored with "${name}"; bump the version to drop it`);
-      }
-      return { kind: "keep" };
+/**
+ * What open does to the catalog: the catalog to write, or undefined to keep
+ * the stored one. Runs inside `update([CATALOG_KEY])`, so two handles opening
+ * at once see each other's result.
+ */
+export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredSchema): StoredCatalog | undefined {
+  if (!stored) return fresh(declared);
+  if (declared.version < stored.version) return undefined;
+  if (declared.version > stored.version) return upgrade(stored, declared);
+  for (const [name, specs] of declared.collections) {
+    const indexes = stored.collections[name]?.indexes;
+    const same =
+      indexes !== undefined &&
+      Object.keys(indexes).length === specs.size &&
+      [...specs].every(([index, spec]) => indexes[index] !== undefined && sameSpec(indexes[index].spec, spec));
+    if (!same) {
+      badSchema(`version ${declared.version} is stored with a different "${name}"; bump the version to change it`);
     }
-    return { kind: "write", catalog: upgrade(stored, declared) };
-  } catch (error) {
-    if (error instanceof DocStoreError) return { kind: "error", error };
-    throw error;
   }
+  for (const name of declared.drop) {
+    if (stored.collections[name]) badSchema(`version ${declared.version} is stored with "${name}"; bump the version to drop it`);
+  }
+  return undefined;
 }
 
 function fresh(declared: DeclaredSchema): StoredCatalog {
@@ -365,11 +356,7 @@ export type IndexPlan = {
   readonly target: Extract<ScanTarget, { readonly rowPrefix: Uint8Array }>;
 };
 
-export type Unreadable =
-  | { readonly kind: "missing" }
-  | { readonly kind: "spec-changed" }
-  | { readonly kind: "building" }
-  | { readonly kind: "failed"; readonly reason: "unique" | "value"; readonly ids: readonly string[] };
+export type Unreadable = { readonly kind: "missing" } | { readonly kind: "spec-changed" } | Exclude<IndexState, { kind: "ready" }>;
 
 export type BoundCollection = {
   readonly name: string;
@@ -420,18 +407,9 @@ export function bind(bytes: Uint8Array, catalog: StoredCatalog, declared: Declar
     const readable = new Map<string, IndexPlan | Unreadable>();
     for (const [index, spec] of specs) {
       const i = stored.indexes[index];
-      readable.set(
-        index,
-        !i
-          ? { kind: "missing" }
-          : !sameSpec(i.spec, spec)
-            ? { kind: "spec-changed" }
-            : i.state.kind === "failed"
-              ? { kind: "failed", reason: i.state.reason, ids: i.state.ids }
-              : i.state.kind === "building"
-                ? { kind: "building" }
-                : maintained.get(index)!,
-      );
+      if (!i) readable.set(index, { kind: "missing" });
+      else if (!sameSpec(i.spec, spec)) readable.set(index, { kind: "spec-changed" });
+      else readable.set(index, i.state.kind === "ready" ? maintained.get(index)! : i.state);
     }
     collections.set(name, { name, id, rows: { kind: "rows", prefix: rows }, maintained: [...maintained.values()], readable });
   }

@@ -1,7 +1,7 @@
 import { CorruptDatabaseError, type Entry } from "@opfs-lsm/kv";
 import type { BoundCollection, IndexPlan, Path } from "./catalog.js";
 import { DocStoreError } from "./errors.js";
-import { MAX_KEY_BYTES, bytesEqual, encodeKey, keyString, parseId, textValue, wellFormed, type DocId } from "./keys.js";
+import { MAX_KEY_BYTES, bytesEqual, encodeKey, keyString, parseId, textValue, type DocId } from "./keys.js";
 import type { JsonDoc, Scalar } from "./schema.js";
 
 declare const storedBrand: unique symbol;
@@ -37,14 +37,14 @@ export function decodeDoc(bytes: Uint8Array): StoredDoc {
   return parsed as StoredDoc;
 }
 
-function isObject(v: unknown): v is Record<string, unknown> {
+export function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 /** Why `v` cannot be one value of a key, or undefined if it can. Numbers from `JSON.parse` are finite. */
 function unindexable(v: unknown): Unindexable["why"] | undefined {
   if (v === null || typeof v === "boolean" || typeof v === "number") return undefined;
-  if (typeof v === "string") return wellFormed(v) ? undefined : "lone-surrogate";
+  if (typeof v === "string") return v.isWellFormed() ? undefined : "lone-surrogate";
   return "not-scalar";
 }
 

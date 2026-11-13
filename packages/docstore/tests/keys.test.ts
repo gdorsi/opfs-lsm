@@ -75,7 +75,7 @@ function dedupe<T>(items: readonly T[], keyOf: (t: T) => Uint8Array): T[] {
 
 /** What kv's `range` returns for `plan`'s range over `entries`. */
 function kvScan(entries: readonly { key: Uint8Array; value: Uint8Array }[], q: QueryInput, target: ScanTarget) {
-  const { range } = scanPlan(target, q);
+  const range = scanPlan(target, q);
   const hits = [...entries]
     .sort((a, b) => compareBytes(a.key, b.key))
     .filter((e) => compareBytes(e.key, range.start!) >= 0 && compareBytes(e.key, range.endExclusive!) < 0);
