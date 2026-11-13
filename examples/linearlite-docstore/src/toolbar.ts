@@ -1,55 +1,5 @@
-import { CHECK, priorityIcon, statusIcon } from "./icons.ts";
-import { CODES, DEFAULT_FILTER, PRIORITY_LABELS, SORTS, SORT_LABELS, STATUS_LABELS, type Code, type Filter } from "./model.ts";
-
-type Item = { readonly html: string; readonly on: boolean; pick(): void } | { readonly head: string } | "separator";
-
-let closeMenu = () => {};
-
-/** A menu under `anchor`. `items` is called again after every pick, so a menu of toggles stays open and current. */
-function openMenu(anchor: HTMLElement, items: () => Item[], keepOpen: boolean) {
-  closeMenu();
-  const menu = document.createElement("div");
-  menu.className = "menu";
-  menu.setAttribute("role", "menu");
-  const draw = () => {
-    menu.replaceChildren(
-      ...items().map((item) => {
-        if (item === "separator" || "head" in item) {
-          const el = document.createElement("div");
-          el.className = item === "separator" ? "menu-sep" : "menu-head";
-          if (item !== "separator") el.textContent = item.head;
-          return el;
-        }
-        const el = document.createElement("button");
-        el.className = "menu-item";
-        el.setAttribute("role", "menuitem");
-        el.innerHTML = `${item.html}<span class="tick">${item.on ? CHECK : ""}</span>`;
-        el.onclick = () => {
-          item.pick();
-          if (keepOpen) draw();
-          else closeMenu();
-        };
-        return el;
-      }),
-    );
-  };
-  draw();
-  document.body.append(menu);
-  const box = anchor.getBoundingClientRect();
-  menu.style.top = `${box.bottom + 4}px`;
-  menu.style.left = `${Math.max(8, Math.min(box.left, innerWidth - menu.offsetWidth - 8))}px`;
-  const outside = (e: Event) => {
-    if (e instanceof KeyboardEvent ? e.key === "Escape" : !menu.contains(e.target as Node) && !anchor.contains(e.target as Node)) closeMenu();
-  };
-  addEventListener("pointerdown", outside, true);
-  addEventListener("keydown", outside, true);
-  closeMenu = () => {
-    menu.remove();
-    removeEventListener("pointerdown", outside, true);
-    removeEventListener("keydown", outside, true);
-    closeMenu = () => {};
-  };
-}
+import { codeItems, openMenu, type Item } from "./menu.ts";
+import { DEFAULT_FILTER, PRIORITY_LABELS, SORTS, SORT_LABELS, STATUS_LABELS, type Code, type Filter } from "./model.ts";
 
 const toggled = (codes: readonly Code[], code: Code) => (codes.includes(code) ? codes.filter((c) => c !== code) : [...codes, code].sort((a, b) => a - b));
 
@@ -63,12 +13,13 @@ export function describe(filter: Filter, before: Filter): string {
   return parts.join(" · ");
 }
 
-/** The filter chips, the sort menu and the title search. `change` gets every new filter. */
-export function createToolbar(bar: HTMLElement, change: (filter: Filter) => void) {
+/** The filter chips, the sort menu, the title search and the button for a new issue. `change` gets every new filter. */
+export function createToolbar(bar: HTMLElement, change: (filter: Filter) => void, create: () => void) {
   bar.innerHTML =
     `<span class="title">All issues</span><span id="count" class="count mono"></span><div class="chips">` +
     `<button class="chip" title="Filter by status"></button><button class="chip" title="Filter by priority"></button>` +
     `<button class="chip plain" data-clear>Clear</button><button class="chip plain" title="Sort"></button></div>` +
+    `<button class="btn primary" id="new">New issue</button>` +
     `<label class="search"><input id="search" type="search" placeholder="Search titles" autocomplete="off" /></label>`;
   const [status, priority, clear, sort] = bar.querySelectorAll<HTMLButtonElement>(".chip");
   const search = bar.querySelector<HTMLInputElement>("#search")!;
@@ -91,10 +42,10 @@ export function createToolbar(bar: HTMLElement, change: (filter: Filter) => void
     change(filter);
   };
 
-  const codes = (field: "status" | "priority", labels: readonly string[], icon: (c: Code) => string) => () =>
-    CODES.map((c): Item => ({ html: `${icon(c)}<span>${labels[c]}</span>`, on: filter[field].includes(c), pick: () => set({ [field]: toggled(filter[field], c) }) }));
-  status!.onclick = () => openMenu(status!, codes("status", STATUS_LABELS, statusIcon), true);
-  priority!.onclick = () => openMenu(priority!, codes("priority", PRIORITY_LABELS, priorityIcon), true);
+  const codes = (field: "status" | "priority") => () => codeItems(field, (c) => filter[field].includes(c), (c) => set({ [field]: toggled(filter[field], c) }));
+  status!.onclick = () => openMenu(status!, codes("status"), true);
+  priority!.onclick = () => openMenu(priority!, codes("priority"), true);
+  bar.querySelector<HTMLButtonElement>("#new")!.onclick = create;
   sort!.onclick = () =>
     openMenu(
       sort!,

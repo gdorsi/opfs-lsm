@@ -48,7 +48,7 @@
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); overflow: hidden; }
-button, input { font: inherit; color: inherit; }
+button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 0; padding: 0; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 [hidden] { display: none !important; }
@@ -66,7 +66,7 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
 .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s linear; }
 
-.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
 .topbar { display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 48px; border-bottom: 1px solid var(--line); flex: none; }
 .title { font-size: 14px; font-weight: 600; white-space: nowrap; }
 .count { color: var(--muted); min-width: 52px; }
@@ -75,13 +75,14 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .chip:hover { background: var(--hover); color: var(--text); }
 .chip.on { border-style: solid; border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 .chip.plain { border-style: solid; }
-.search { margin-left: auto; }
+#new { margin-left: auto; }
 .search input { width: 220px; height: 28px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; outline: none; }
 .search input:focus { border-color: var(--accent); }
 
 .scroller { flex: 1; overflow-y: auto; position: relative; }
 .rows { position: relative; width: 100%; }
 .row, .skel { position: absolute; top: 0; left: 0; right: 0; height: var(--row); display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); cursor: default; }
+.row { cursor: pointer; }
 .row:hover { background: var(--hover); }
 .row .id { width: 64px; flex: none; color: var(--faint); font-variant-numeric: tabular-nums; }
 .row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -100,7 +101,7 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { filter: brightness(1.1); }
 
-.menu { position: fixed; z-index: 50; min-width: 190px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 4px; }
+.menu { position: fixed; z-index: 60; min-width: 190px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 4px; }
 .menu-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 5px; text-align: left; }
 .menu-item:hover, .menu-item:focus-visible { background: var(--hover); outline: none; }
 .menu-item .tick { margin-left: auto; color: var(--accent); width: 14px; display: inline-flex; }
@@ -114,11 +115,44 @@ svg.ico { display: block; }
 .pr-1, .pr-2, .pr-3 { color: var(--muted); }
 .pr-4 { color: var(--faint); }
 
+/* The issue page lies over the list, which stays laid out and scrolled under it. */
+.detail { position: absolute; inset: 0; z-index: 5; overflow-y: auto; background: var(--bg); }
+.detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 32px; max-width: 1040px; margin: 0 auto; padding: 20px 24px 80px; }
+.crumbs { display: flex; align-items: center; gap: 10px; color: var(--muted); margin-bottom: 14px; }
+.crumbs .btn { height: 26px; }
+.field-title { width: calc(100% + 16px); background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: 22px; font-weight: 600; padding: 4px 8px; margin: 0 -8px 8px; outline: none; }
+.field-title:hover { border-color: var(--line); }
+.field-title:focus { border-color: var(--accent); background: var(--panel); }
+.field-desc { margin: 0; line-height: 1.55; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; min-height: 44px; }
+.props { display: flex; flex-direction: column; gap: 4px; padding-top: 40px; }
+.prop { display: flex; align-items: center; justify-content: space-between; min-height: 30px; color: var(--muted); }
+.prop > .menu-btn, .prop > span:last-child { color: var(--text); }
+.menu-btn { display: inline-flex; align-items: center; gap: 8px; padding: 4px 8px; margin-right: -8px; border-radius: 6px; }
+.menu-btn:hover { background: var(--hover); }
+.section-h { margin: 28px 0 10px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); }
+.comment { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.comment-body { flex: 1; min-width: 0; }
+.comment-meta { color: var(--muted); display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.comment-meta b { color: var(--text); font-weight: 500; }
+.comment-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); z-index: 40; display: grid; place-items: start center; padding-top: 12vh; }
+.modal { width: 600px; max-width: calc(100vw - 32px); background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.modal h2 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); font-weight: 600; }
+.modal input[type="text"] { width: calc(100% + 16px); background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: 18px; font-weight: 600; padding: 6px 8px; margin: 0 -8px; outline: none; }
+.modal textarea { width: 100%; min-height: 110px; resize: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none; font-size: 14px; }
+.modal textarea:focus, .modal input:focus { border-color: var(--accent); }
+.modal-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--line); }
+.pill:hover { background: var(--hover); }
+
 /* The docs site frames the app as narrow as a phone. */
 @media (max-width: 720px) {
   .sidebar { display: none; }
   .topbar { height: auto; flex-wrap: wrap; row-gap: 8px; padding: 8px 12px; }
-  .search { margin-left: 0; flex: 1 1 100%; }
+  .search { flex: 1 1 100%; }
+  .detail-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px 12px 48px; }
+  .props { padding-top: 16px; border-top: 1px solid var(--line); margin-top: 16px; }
   .search input { width: 100%; }
   .row, .skel { padding: 0 12px; gap: 8px; }
   .row .id, .row .date { display: none; }

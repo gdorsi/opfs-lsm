@@ -1,28 +1,55 @@
 import { openDocStore, type Cursor, type DocStore } from "@opfs-lsm/docstore";
 import { openDb, type Db } from "@opfs-lsm/kv";
 import { readStats } from "@opfs-lsm/kv/testing";
-import { CODES, schema, type Code, type Filter, type Issue } from "./model.ts";
+import { CODES, schema, type Code, type Detail, type Filter, type Issue } from "./model.ts";
 import type { Host } from "./protocol.ts";
 import type { SeedMessage } from "./seed-worker.ts";
+import { generateDetail } from "./seed.ts";
 
-const issuesOf = (docs: DocStore<typeof schema>) => docs.collection("issues");
+type Docs = DocStore<typeof schema>;
+const issuesOf = (docs: Docs) => docs.collection("issues");
+const detailsOf = (docs: Docs) => docs.collection("details");
 type Issues = ReturnType<typeof issuesOf>;
 type IssueQuery = Parameters<Issues["query"]>[0];
 
-export type Store = { readonly db: Db; readonly issues: Issues };
+export type Store = { readonly db: Db; readonly issues: Issues; readonly details: ReturnType<typeof detailsOf> };
 
 export async function openStore(name: string): Promise<Store> {
   const db = await openDb({ name });
-  return { db, issues: issuesOf(await openDocStore(db, schema)) };
+  const docs = await openDocStore(db, schema);
+  return { db, issues: issuesOf(docs), details: detailsOf(docs) };
 }
 
-/** The list under one filter. Nothing is cached across filters. */
+/** The list under one filter, as stored when it is asked. It reads nothing until then. */
 export type View = {
   /** How many issues the list holds. */
-  readonly total: Promise<number>;
+  total(): Promise<number>;
   /** Rows `offset` to `offset + n` of the list, fewer at its end. */
   read(offset: number, n: number): Promise<Issue[]>;
 };
+
+/** Whether the list under `filter` holds `issue`. */
+export function keeps(filter: Filter): (issue: Issue) => boolean {
+  const needle = filter.q.toLowerCase();
+  return (i) =>
+    (filter.status.length === 0 || filter.status.includes(i.status)) &&
+    (filter.priority.length === 0 || filter.priority.includes(i.priority)) &&
+    (needle === "" || i.title.toLowerCase().includes(needle));
+}
+
+const SORT_KEY: Record<Filter["sort"], (i: Issue) => number> = {
+  modified: (i) => i.modified,
+  created: (i) => i.created,
+  status: (i) => i.status * 1e15 + i.priority * 1e14 + i.modified,
+  priority: (i) => i.priority * 1e15 + i.status * 1e14 + i.modified,
+};
+
+/** The list's order, the one its index gives: the sort's values, then the id. Negative when `a` comes first. */
+export function orderOf(filter: Filter): (a: Issue, b: Issue) => number {
+  const key = SORT_KEY[filter.sort];
+  const sign = filter.dir === "desc" ? -1 : 1;
+  return (a, b) => sign * (key(a) - key(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
 
 /** A run of entries of one index: the whole index, or the entries under a status, a priority, or both. */
 type Range = { readonly index: "byModified" | "byCreated" | "byStatus" | "byPriority"; readonly eq?: readonly Code[] };
@@ -46,7 +73,8 @@ const sum = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0);
 function rangeView(issues: Issues, list: readonly Range[], reverse: boolean): View {
   const order = reverse ? list.toReversed() : list;
   const query = (r: Range) => ({ index: r.index, ...(r.eq && { eq: r.eq }), ...(reverse && { reverse: true }) }) as IssueQuery;
-  const counts = Promise.all(order.map((r) => issues.count(query(r))));
+  let counted: Promise<number[]> | undefined;
+  const counts = () => (counted ??= Promise.all(order.map((r) => issues.count(query(r)))));
   const cursors = order.map(() => new Map<number, Cursor>());
 
   /** The cursor after `skip` entries of range `i`: undefined at its start, null past its end. */
@@ -63,12 +91,12 @@ function rangeView(issues: Issues, list: readonly Range[], reverse: boolean): Vi
   }
 
   return {
-    total: counts.then(sum),
+    total: () => counts().then(sum),
     async read(offset, n) {
       let i = 0;
       let skip = offset;
       if (offset > 0) {
-        const sizes = await counts;
+        const sizes = await counts();
         while (i < order.length && skip >= sizes[i]!) skip -= sizes[i++]!;
       }
       const out: Issue[] = [];
@@ -91,12 +119,12 @@ function rangeView(issues: Issues, list: readonly Range[], reverse: boolean): Vi
  */
 function scanView(issues: Issues, filter: Filter): View {
   const index = filter.sort === "created" ? "byCreated" : "byModified";
+  const keep = keeps(filter);
   const matches: Issue[] = [];
   let after: Cursor | undefined;
   let done = false;
   let step = 256;
   let scanning: Promise<void> = Promise.resolve();
-  const keep = (i: Issue) => (filter.status.length === 0 || filter.status.includes(i.status)) && (filter.priority.length === 0 || filter.priority.includes(i.priority));
 
   const scanTo = (rows: number) =>
     (scanning = scanning.then(async () => {
@@ -111,7 +139,7 @@ function scanView(issues: Issues, filter: Filter): View {
 
   const counted = ranges(filter, filter.status.length > 0 ? "status" : "priority");
   return {
-    total: Promise.all(counted.map((r) => issues.count({ index: r.index, eq: r.eq } as IssueQuery))).then(sum),
+    total: () => Promise.all(counted.map((r) => issues.count({ index: r.index, eq: r.eq } as IssueQuery))).then(sum),
     async read(offset, n) {
       await scanTo(offset + n);
       return matches.slice(offset, offset + n);
@@ -129,33 +157,18 @@ const wordsOf = (text: string) =>
     .split(NON_WORD)
     .filter((w) => w !== "");
 
-const SORT_KEY: Record<Filter["sort"], (i: Issue) => number> = {
-  modified: (i) => i.modified,
-  created: (i) => i.created,
-  status: (i) => i.status * 1e15 + i.priority * 1e14 + i.modified,
-  priority: (i) => i.priority * 1e15 + i.status * 1e14 + i.modified,
-};
-
 /**
  * A title search. The text index narrows the issues to the titles holding every word of the query, a substring test
  * makes it exact, and the result is filtered and sorted in memory.
  */
 function searchView(issues: Issues, filter: Filter): View {
   const words = wordsOf(filter.q);
-  const needle = filter.q.toLowerCase();
-  const key = SORT_KEY[filter.sort];
-  const sign = filter.dir === "desc" ? -1 : 1;
-  const rows = issues.query({ index: "byModified", ...(words.length > 0 && { match: words.join(" ") }) }).then(({ docs }) =>
-    docs
-      .filter(
-        (i) =>
-          (filter.status.length === 0 || filter.status.includes(i.status)) &&
-          (filter.priority.length === 0 || filter.priority.includes(i.priority)) &&
-          i.title.toLowerCase().includes(needle),
-      )
-      .sort((a, b) => sign * (key(a) - key(b))),
-  );
-  return { total: rows.then((r) => r.length), read: async (offset, n) => (await rows).slice(offset, offset + n) };
+  let found: Promise<Issue[]> | undefined;
+  const rows = () =>
+    (found ??= issues
+      .query({ index: "byModified", ...(words.length > 0 && { match: words.join(" ") }) })
+      .then(({ docs }) => docs.filter(keeps(filter)).sort(orderOf(filter))));
+  return { total: () => rows().then((r) => r.length), read: async (offset, n) => (await rows()).slice(offset, offset + n) };
 }
 
 /** How the list under `filter` is read. Each case reads through an index: see the README, "Reads". */
@@ -167,7 +180,20 @@ export function viewOf({ issues }: Store, filter: Filter): View {
   return rangeView(issues, [{ index: filter.sort === "created" ? "byCreated" : "byModified" }], reverse);
 }
 
-function seed(count: number, onChunk: (issues: number) => void): Promise<{ issues: Issue[]; generateMs: number }> {
+/** One write: the issue with `patch` over it and a new `modified`. Resolves with the stored issue. */
+export const editIssue = ({ issues }: Store, id: string, patch: Partial<Pick<Issue, "title" | "status" | "priority">>) =>
+  issues.modify(id, (issue) => ({ ...issue, ...patch, modified: Date.now() }));
+
+/** The issue's description and comments: read, or made from its id and stored when it is opened for the first time. */
+export async function detailOf({ details }: Store, issue: Issue): Promise<Detail> {
+  const stored = await details.get(issue.id);
+  if (stored) return stored;
+  const made = generateDetail(issue);
+  await details.put(made);
+  return made;
+}
+
+function seed(count: number, from: number, onChunk: (issues: number) => void): Promise<{ issues: Issue[]; generateMs: number }> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./seed-worker.ts", import.meta.url), { type: "module" });
     const issues: Issue[] = [];
@@ -181,7 +207,7 @@ function seed(count: number, onChunk: (issues: number) => void): Promise<{ issue
       worker.terminate();
       resolve({ issues, generateMs: e.data.generateMs });
     };
-    worker.postMessage({ count });
+    worker.postMessage({ count, seed: from });
   });
 }
 
@@ -190,15 +216,17 @@ const BATCH = 2000;
 
 /**
  * Generates `count` issues in a dedicated WebWorker and writes them. Each issue is its document plus an entry in
- * every index. `writeMs` ends when the last write is acknowledged.
+ * every index. `writeMs` ends when the last write is acknowledged. The ids follow from `from`, the generator's seed,
+ * so two calls with different seeds write different issues.
  */
 export async function writeIssues(
   { issues }: Store,
   count: number,
+  from: number,
   progress: (phase: "generating" | "writing", written: number) => void,
 ): Promise<{ generateMs: number; writeMs: number }> {
   progress("generating", 0);
-  const { issues: rows, generateMs } = await seed(count, (n) => progress("generating", n));
+  const { issues: rows, generateMs } = await seed(count, from, (n) => progress("generating", n));
   progress("writing", 0);
   const t0 = performance.now();
   for (let at = 0; at < rows.length; at += BATCH) {
@@ -228,4 +256,13 @@ export async function hostOf({ db }: Store): Promise<Host> {
   } catch {
     return "unknown";
   }
+}
+
+export type Draft = Pick<Issue, "title" | "status" | "priority"> & { readonly description: string };
+
+/** A new issue under `id`, with its description: two writes, the description first. */
+export async function createIssue({ issues, details }: Store, id: string, { description, ...fields }: Draft): Promise<void> {
+  const now = Date.now();
+  await details.put({ id, description, comments: [] });
+  await issues.put({ id, ...fields, username: "you", created: now, modified: now });
 }
