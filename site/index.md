@@ -70,7 +70,7 @@ demo:
 
 ## Try it with 100,000 issues
 
-[LinearLite](../examples/linearlite) on kv, with no server · [What the timings measure](../examples/linearlite/DESIGN.md#the-build-with-no-server)
+[LinearLite on docstore](../examples/linearlite-docstore), with no server · [What the timings measure](../examples/linearlite-docstore/README.md#timings)
 
 <HomeDemo />
 
