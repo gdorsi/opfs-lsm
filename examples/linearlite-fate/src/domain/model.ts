@@ -1,0 +1,58 @@
+import type { SortField } from "../client/filter.ts";
+
+export const STATUSES = ["backlog", "todo", "in_progress", "done", "canceled"] as const;
+export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
+export const STATUS_LABELS = ["Backlog", "Todo", "In Progress", "Done", "Canceled"] as const;
+export const PRIORITY_LABELS = ["Urgent", "High", "Medium", "Low", "No priority"] as const;
+
+/** fate's persistence key on the client and the scope of its mutation receipts on the server: they must match. */
+export const PERSISTENCE_KEY = "linearlite";
+
+export type StatusCode = 0 | 1 | 2 | 3 | 4;
+export type PriorityCode = 0 | 1 | 2 | 3 | 4;
+
+/** An issue's row: what the server's `issue` table holds besides the description, and what lists show. */
+export type IssueFields = {
+  readonly id: string;
+  readonly title: string;
+  readonly status: StatusCode;
+  readonly priority: PriorityCode;
+  readonly kanbanorder: string;
+  readonly username: string;
+  readonly created: number;
+  readonly modified: number;
+};
+
+/** fate's cache entities, shared by the server's data views and the client's views. */
+export type IssueEntity = IssueFields & {
+  readonly __typename: "Issue";
+  readonly description: string;
+  readonly comments: CommentEntity[];
+};
+export type CommentEntity = {
+  readonly __typename: "Comment";
+  readonly id: string;
+  readonly body: string;
+  readonly username: string;
+  readonly created: number;
+};
+
+/** Mutation inputs. Ids are made on the client, so a create and later edits of it can queue offline together. */
+export type IssuePatch = Partial<Pick<IssueFields, "title" | "status" | "priority" | "kanbanorder"> & { readonly description: string }>;
+/** Without `kanbanorder` the server puts the issue at the top of its column. */
+export type NewIssue = Pick<IssueFields, "id" | "title" | "status" | "priority"> & { readonly description: string; readonly kanbanorder?: string };
+export type NewComment = { readonly id: string; readonly issueId: string; readonly body: string };
+
+/**
+ * Request args, as the server receives them. Each distinct args object is its own entry in fate's cache, and fate
+ * reads `first`, `last`, `after` and `before` as its own paging, so a window says `offset` and `limit`.
+ */
+export type FilterArgs = { readonly status: readonly StatusCode[]; readonly priority: readonly PriorityCode[]; readonly q: string };
+export type WindowArgs = FilterArgs & { readonly sort: SortField; readonly dir: "asc" | "desc"; readonly offset: number; readonly limit: number };
+/** One board column, by `kanbanorder`, paged forward by fate with `first` and `after`. */
+export type ColumnArgs = { readonly column: StatusCode; readonly priority: readonly PriorityCode[]; readonly q: string; readonly first: number };
+export type StatusCounts = readonly [number, number, number, number, number];
+
+/** What the UI renders. `dirty` is on while a mutation naming it waits for the server. */
+export type Issue = IssueFields & { readonly dirty: boolean };
+export type Comment = Omit<CommentEntity, "__typename"> & { readonly dirty: boolean };

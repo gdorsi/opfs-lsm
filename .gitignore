@@ -16,3 +16,6 @@ examples/rich-text/dist
 examples/linearlite/dist
 examples/linearlite/.tanstack
 examples/linearlite/data
+examples/linearlite-fate/dist
+examples/linearlite-fate/.tanstack
+examples/linearlite-fate/data
