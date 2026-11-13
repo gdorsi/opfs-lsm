@@ -363,7 +363,7 @@ class HostedDb {
     if (typeof BroadcastChannel !== "undefined") {
       watch.bus = new BroadcastChannel(layersChannel(this.name));
       watch.bus.onmessage = (ev: MessageEvent<BusMessage>) => {
-        if (ev.data.kind !== "row") return;
+        if (ev.data.kind !== "rows") return;
         watch.pendingBytes += ev.data.bytes;
         this.maybeIngest(watch);
       };

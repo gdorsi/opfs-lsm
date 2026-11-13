@@ -20,7 +20,7 @@ import {
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type IngestClient } from "./host/protocol.js";
+import { holdingFiles, type BusMessage, type BusRow, type IngestClient } from "./host/protocol.js";
 import { layersChannel } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
@@ -111,6 +111,8 @@ export type OpenKnobs = {
   readonly maxWalBytes?: number;
   /** When set, open records phase durations here. Wasm init can append after the open promise resolves. */
   readonly trace?: OpenTrace;
+  /** Replaces `ROW_POST_MS`. At 0 every row is posted when it lands, so a simulation owns all the timing. */
+  readonly rowPostMs?: number;
 };
 
 /** What `openDbWith` takes. `openHarnessDb` in `@opfs-lsm/kv/testing` builds it. */
@@ -384,6 +386,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
     ownsIngestClient,
     caps,
     trace,
+    options.rowPostMs,
   );
   internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
   await timed(trace, "sync", () => db.sync());
@@ -450,6 +453,19 @@ type Layers = {
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
 
+/**
+ * A row that lands within this long of the tab's last post waits, and one
+ * message carries the rows of the wait (design.md, "Seeing other tabs'
+ * writes"). The cost of a post is per message, and a tab that awaits each
+ * put lands many rows in this time.
+ */
+const ROW_POST_MS = 4;
+
+/** A page nobody looks at. The browser slows its timers, and can stop them. */
+function pageHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
 /** Why a catch-up or write attempt must run again: "behind" when another load installed a newer generation, "gone" when a file of the tail's generation is missing. */
@@ -489,6 +505,15 @@ class DbImpl implements Db {
   private repaired = false;
   private readonly bus: BroadcastChannel | undefined;
   private readonly onBusMessage: ((ev: MessageEvent<BusMessage>) => void) | undefined;
+  /** Landed and not yet posted, in seq order, with the bytes of their ops. */
+  private unposted: BusRow[] = [];
+  private unpostedBytes = 0;
+  /** `performance.now()` of the last post. */
+  private postedAt = Number.NEGATIVE_INFINITY;
+  /** Posts the rows that no later landing posted. */
+  private postTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Posts the rows that wait when the page is hidden, before the browser slows the timer. */
+  private readonly onVisibility = () => this.postRows();
   private readonly pressure: Backpressure;
 
   constructor(
@@ -501,6 +526,7 @@ class DbImpl implements Db {
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
     private readonly trace?: OpenTrace,
+    private readonly rowPostMs = ROW_POST_MS,
   ) {
     this.pressure = new Backpressure(
       caps,
@@ -511,19 +537,26 @@ class DbImpl implements Db {
       this.bus = new BroadcastChannel(layersChannel(name));
       this.onBusMessage = (ev: MessageEvent<BusMessage>) => this.onMessage(ev.data);
       this.bus.addEventListener("message", this.onBusMessage);
+      if (typeof document !== "undefined") {
+        document.addEventListener("visibilitychange", this.onVisibility);
+      }
     }
   }
 
   private onMessage(data: BusMessage): void {
     if (this.closed) return;
     // An `ingest`, or a message this build does not know: catch up from the WAL.
-    if (data?.kind !== "row" || !(data.record instanceof ArrayBuffer)) {
+    if (data?.kind !== "rows" || !Array.isArray(data.rows)) {
       void this.sync().catch(() => undefined);
       return;
     }
     if (data.writerId === this.writerId) return;
-    if (this.applyRecord({ seq: data.seq, ops: decodeOps(data.record) }) === "gap") {
-      void this.sync().catch(() => undefined);
+    for (const row of data.rows) {
+      // The catch-up reads the rest of the message's rows too.
+      if (this.applyRecord({ seq: row.seq, ops: decodeOps(row.record) }) === "gap") {
+        void this.sync().catch(() => undefined);
+        break;
+      }
     }
     this.announce();
   }
@@ -532,8 +565,33 @@ class DbImpl implements Db {
     if (this.closed) throw new ClosedError("database is closed");
   }
 
-  private broadcast(message: Extract<BusMessage, { kind: "row" }>): void {
-    if (this.closed) return;
+  /**
+   * Tell the other tabs and the host about a row this tab appended. Posted
+   * at once unless the tab posted within the last `rowPostMs`: then it
+   * waits for the first landing past that time, or for the timer when no
+   * landing follows. A hidden page posts every row at once.
+   */
+  private broadcast(row: BusRow, bytes: number): void {
+    if (this.closed || !this.bus) return;
+    this.unposted.push(row);
+    this.unpostedBytes += bytes;
+    if (pageHidden() || performance.now() - this.postedAt >= this.rowPostMs) this.postRows();
+    else this.postTimer ??= setTimeout(() => this.postRows(), this.rowPostMs);
+  }
+
+  private postRows(): void {
+    clearTimeout(this.postTimer);
+    this.postTimer = undefined;
+    if (this.unposted.length === 0) return;
+    const message: BusMessage = {
+      kind: "rows",
+      writerId: this.writerId,
+      rows: this.unposted,
+      bytes: this.unpostedBytes,
+    };
+    this.unposted = [];
+    this.unpostedBytes = 0;
+    this.postedAt = performance.now();
     this.bus?.postMessage(message);
   }
 
@@ -796,7 +854,7 @@ class DbImpl implements Db {
     if (this.applyRecord({ seq, ops }) === "gap" && !this.closed) await this.sync();
     this.pressure.landed();
     this.announce();
-    this.broadcast({ kind: "row", writerId: this.writerId, seq, record, bytes: opsBytes(ops) });
+    this.broadcast({ seq, record }, opsBytes(ops));
   }
 
   /**
@@ -1032,6 +1090,10 @@ class DbImpl implements Db {
     this.emit({ kind: "closed" });
     this.changeBus.clear();
     if (this.bus && this.onBusMessage) {
+      this.postRows();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", this.onVisibility);
+      }
       this.bus.removeEventListener("message", this.onBusMessage);
       this.bus.close();
     }

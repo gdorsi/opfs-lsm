@@ -119,8 +119,38 @@ runs, against that faster baseline (41 runs per side):
 
 Posting each row in a later task instead (a `MessageChannel` hop after the ack) did not help
 at `--size large`: kv p50 114 µs, against 110 µs with the post inline. So the cost follows the
-number of messages, not where the post sits (inferred). Not tried: one message for the rows of
-several puts.
+number of messages, not where the post sits (inferred).
+
+### One message for several rows
+
+A tab now posts a row at once only when it has not posted for a window. Otherwise the row waits,
+and one message carries the rows of the wait. `kv/fillsync` at `--size large`, 21 runs per
+build, every build and the IndexedDB baseline alternating in one run. The machine was busy with
+other work, so compare the builds within a table, not with the tables above.
+
+| window | kv p50 | IndexedDB p50 | kv ÷ IndexedDB per run |
+|---|---:|---:|---:|
+| 0 ms (one message per row) | 140 µs | 98 µs | 0.78 |
+| 1 ms | 114 µs | 98 µs | 0.83 |
+| 4 ms | 110 µs | 98 µs | 0.89 |
+| 16 ms | 110 µs | 98 µs | 0.90 |
+
+4 ms is where the gain stops. A second run compared it with a tab that never posts, which is
+the most any batching can reach:
+
+| build | kv p50 | IndexedDB p50 | kv ÷ IndexedDB per run |
+|---|---:|---:|---:|
+| one message per row | 132 µs | 94 µs | 0.69 |
+| 4 ms window | 106 µs | 94 µs | 0.94 |
+| the tab never posts | 98 µs | 94 µs | 0.98 |
+
+Two more runs: the 4 ms build alone against the baseline gave 0.84 (21 runs, 0.56 to 1.29),
+and a last one gave 0.82 for it and 0.73 for one message per row (15 runs). So this build is
+between 0.82 and 0.94 on that machine, against 0.69 to 0.78 with one message per row.
+
+Two tabs that put to one database at the same time also gain. Mean per put over both tabs, 7
+runs per build at `--size small`: 546 µs with one message per row, 436 µs with the 4 ms window.
+At `--size large`, 5 runs: 564 µs and 497 µs.
 
 ## Not measured
 

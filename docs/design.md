@@ -330,14 +330,18 @@ key per entry under one such pin.
 
 ## Seeing other tabs' writes
 
-After its append commits, a tab posts `{ kind: "row", writerId, seq, record, bytes }` on the
-BroadcastChannel `opfs-lsm-layers/<name>`: the WAL row it appended, and the key and value bytes of
-its ops. Every other tab applies the record to its memtable. If the record does not follow the
-`appliedThrough` of that tab, the tab reads the WAL tail instead.
+After an append commits, a tab posts `{ kind: "rows", writerId, rows, bytes }` on the
+BroadcastChannel `opfs-lsm-layers/<name>`: the WAL rows it appended, each `{ seq, record }`, and
+the key and value bytes of their ops. A row is posted when it commits, unless the tab posted in
+the last 4 ms. Then it waits for the first commit past that time, a timer, or `close`, and one
+message carries every row that waited: a post costs per message, not per row. A hidden page
+posts every row when it commits, and what waits when it becomes hidden, because browsers slow
+and stop its timers. Every other tab applies the records in the order given. If one does not
+follow the `appliedThrough` of that tab, the tab reads the WAL tail instead.
 
-A tab therefore sees the write of another tab a moment after its ack. `db.sync()` closes the
-gap: it reads the WAL tail and applies everything acked before the call. The broadcast is an
-optimization. The WAL tail is the source of truth.
+A tab therefore sees the write of another tab a moment after its ack, and a few milliseconds
+later during a burst. `db.sync()` closes the gap: it reads the WAL tail and applies everything
+acked before the call. The broadcast is an optimization. The WAL tail is the source of truth.
 
 ## Installing a generation
 
@@ -379,7 +383,7 @@ Ingest moves WAL records into L0 runs. It runs in the host.
 ## Trigger
 
 Per database, the host keeps `pendingBytes`, the key and value bytes of the ops that are not yet
-folded. Each append broadcast adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
+folded. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
 host flushes. The limit is the smallest any open tab asked for, and each tab asks for at most
 7/8 of its `memtableBytes`.
 
