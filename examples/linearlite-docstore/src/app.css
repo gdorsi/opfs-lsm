@@ -175,3 +175,10 @@ svg.ico { display: block; }
   .row, .skel { padding: 0 12px; gap: 8px; }
   .row .id, .row .date { display: none; }
 }
+/* The "Create more" switch of the new issue dialog. */
+.more { display: inline-flex; align-items: center; gap: 8px; margin-right: 4px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
+.more input { appearance: none; position: relative; width: 26px; height: 16px; margin: 0; border-radius: 8px; background: var(--line); cursor: pointer; transition: background 0.15s; }
+.more input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: transform 0.15s; }
+.more input:checked { background: var(--accent); }
+.more input:checked::after { transform: translateX(10px); }
+.more:has(input:checked) { color: var(--text); }
