@@ -390,16 +390,16 @@ export async function walStore<T>(
   }
 }
 
-/** `head` is the last WAL key, or the floor in `meta` when that is higher (`src/idb/wal.ts`). */
+/** `head` is the last WAL key, or `ingestedThrough` when no record is past it (`src/idb/wal.ts`). */
 export function walMeta(name: string): Promise<Meta> {
   return walStore(name, "readonly", async (wal, meta) => {
-    const [floor, ingested, generation, last] = await Promise.all([
-      ...["head", "ingestedThrough", "generation"].map((k) => result(meta.get(k))),
+    const [ingested, generation, last] = await Promise.all([
+      ...["ingestedThrough", "generation"].map((k) => result(meta.get(k))),
       result(wal.openKeyCursor(null, "prev")).then((cursor) => cursor?.key),
     ]);
     const num = (v: unknown) => (typeof v === "number" ? v : undefined);
     return {
-      head: Math.max(num(floor) ?? 0, num(last) ?? 0),
+      head: Math.max(num(ingested) ?? 0, num(last) ?? 0),
       ingestedThrough: num(ingested) ?? 0,
       generation: num(generation),
     };

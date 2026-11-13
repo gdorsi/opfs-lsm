@@ -2,8 +2,11 @@
  * Abstract model of the two stores and the write order of ingest,
  * compaction install, reclaim and recovery (design.md, "Recovery").
  *
- * IndexedDB: `head`, `ingestedThrough`, `generation`, and WAL rows seq ->
- * write id. OPFS: run files (sets of writes) and manifests. A write id
+ * IndexedDB: the key generator of `wal`, `ingestedThrough`, `generation`,
+ * and WAL rows seq -> write id. Nothing stores the head: it is the last row,
+ * or `ingestedThrough` when no row is past it (`headOf`). The key generator
+ * is part of the store, so a crash state that loses commits gets the
+ * generator those commits left behind. OPFS: run files (sets of writes) and manifests. A write id
  * stands for one acked batch's content, so a run's content is the set of
  * writes folded into it, and a merge is their union. Each engine action
  * runs against live stores and records its durable ops in order, one
@@ -23,7 +26,8 @@ export type Manifest = {
 };
 
 export type Idb = {
-  head: number;
+  /** The key generator of `wal`: the seq the next append takes. */
+  next: number;
   ingested: number;
   generation: number | undefined;
   /** `topGeneration`: the highest manifest number recovery has seen. */
@@ -44,7 +48,8 @@ export type Op =
       readonly put?: readonly [number, number][];
       /** Delete rows with seq <= this. */
       readonly deleteTo?: number;
-      readonly head?: number;
+      /** Move the key generator up to this (an `add` at `next - 1`, then its delete). */
+      readonly next?: number;
       readonly ingested?: number;
       readonly generation?: number;
       readonly top?: number;
@@ -60,6 +65,10 @@ export type Variant = {
   readonly buildOnNewest?: boolean;
   /** Adopting a manifest leaves `head` where it was. */
   readonly noHeadRaise?: boolean;
+  /** Adopt moves the head past the rows and leaves the key generator behind. */
+  readonly adoptKeepsGenerator?: boolean;
+  /** Destroy moves the head past the rows and leaves the key generator behind. */
+  readonly destroyKeepsGenerator?: boolean;
   /** No fallback when the recorded manifest is gone: the open fails. */
   readonly noFallback?: boolean;
   /** Never adopt a newer manifest that holds seqs past the head. */
@@ -96,7 +105,7 @@ export class Stuck extends Error {}
 export class Refused extends Error {}
 
 export function emptyIdb(): Idb {
-  return { head: 0, ingested: 0, generation: undefined, top: 0, destroyedTop: 0, rows: new Map() };
+  return { next: 1, ingested: 0, generation: undefined, top: 0, destroyedTop: 0, rows: new Map() };
 }
 export function emptyOpfs(): Opfs {
   return { runs: new Map(), manifests: new Map() };
@@ -108,11 +117,22 @@ export function cloneOpfs(s: Opfs): Opfs {
   return { runs: new Map(s.runs), manifests: new Map(s.manifests) };
 }
 
+/** `headOf` in src/idb/wal.ts: the last WAL row, or `ingestedThrough` when no row is past it. */
+function headOf(idb: Idb): number {
+  let head = idb.ingested;
+  for (const seq of idb.rows.keys()) head = Math.max(head, seq);
+  return head;
+}
+
 function applyOp(idb: Idb, opfs: Opfs, op: Op): void {
   if (op.store === "idb") {
     if (op.deleteTo !== undefined) for (const seq of [...idb.rows.keys()]) if (seq <= op.deleteTo) idb.rows.delete(seq);
-    for (const [seq, id] of op.put ?? []) idb.rows.set(seq, id);
-    if (op.head !== undefined) idb.head = op.head;
+    for (const [seq, id] of op.put ?? []) {
+      idb.rows.set(seq, id);
+      idb.next = Math.max(idb.next, seq + 1);
+    }
+    // A delete never moves the key generator back.
+    if (op.next !== undefined) idb.next = Math.max(idb.next, op.next);
     if (op.ingested !== undefined) idb.ingested = op.ingested;
     if (op.generation !== undefined) idb.generation = op.generation;
     if (op.top !== undefined) idb.top = op.top;
@@ -190,7 +210,8 @@ export class Sys {
 
   /** `reconcile` in src/recover.ts, with `IdBWal.adopt`. */
   reconcile(): { gen: number; top: number } {
-    const { head, ingested, generation } = this.idb;
+    const { ingested, generation } = this.idb;
+    const head = headOf(this.idb);
     const numbers = this.numbers();
     const top = this.v.reuseNumbers ? (numbers[0] ?? 0) : Math.max(numbers[0] ?? 0, this.idb.top, generation ?? 0);
     let pick: Manifest | undefined;
@@ -222,9 +243,11 @@ export class Sys {
     const nextTop = Math.max(this.idb.top, top, pick.gen);
     const above = [...this.idb.rows.keys()].filter((s) => s > pick.through && s <= head).length;
     if (nextHead === head && (pick.through >= ingested || above === head - pick.through)) {
-      this.write({ store: "idb", label: `adopt ${pick.gen}`, deleteTo: Math.min(ingested, pick.through), ingested: pick.through, generation: pick.gen, head: nextHead, top: nextTop });
+      this.write({ store: "idb", label: `adopt ${pick.gen}`, deleteTo: Math.min(ingested, pick.through), ingested: pick.through, generation: pick.gen, top: nextTop });
     } else {
-      this.write({ store: "idb", label: `adopt ${pick.gen} alone`, deleteTo: head, ingested: nextHead, generation: pick.gen, head: nextHead, top: nextTop });
+      // `passKeyGenerator`: the head moved past the rows, so the generator moves with it.
+      const next = nextHead > head && !this.v.adoptKeepsGenerator ? nextHead + 1 : undefined;
+      this.write({ store: "idb", label: `adopt ${pick.gen} alone`, deleteTo: head, ingested: nextHead, generation: pick.gen, next, top: nextTop });
     }
     return { gen: pick.gen, top };
   }
@@ -240,10 +263,19 @@ export class Sys {
     return { meta, top };
   }
 
-  append(): void {
-    const seq = this.idb.head + 1;
+  /** `TabWal.appendAfter`, the write of `update`: the record goes in at the explicit key `head + 1`. */
+  appendAfter(): void {
+    const seq = headOf(this.idb) + 1;
     const id = this.nextId++;
-    this.write({ store: "idb", label: `append ${seq}`, put: [[seq, id]], head: seq });
+    this.write({ store: "idb", label: `append ${seq} after the head`, put: [[seq, id]] });
+    this.acked.push(id);
+  }
+
+  /** `TabWal.append`: the record takes the seq the key generator hands out. */
+  append(): void {
+    const seq = this.idb.next;
+    const id = this.nextId++;
+    this.write({ store: "idb", label: `append ${seq}`, put: [[seq, id]] });
     this.acked.push(id);
   }
 
@@ -291,7 +323,8 @@ export class Sys {
   destroy(): void {
     const numbers = this.numbers();
     const top = Math.max(numbers[0] ?? 0, this.idb.top, this.idb.generation ?? 0);
-    let floor = this.idb.head;
+    const head = headOf(this.idb);
+    let floor = head;
     for (const n of numbers) floor = Math.max(floor, this.manifest(n)!.through);
     const removeAll = () => {
       if (this.v.held) return;
@@ -299,7 +332,8 @@ export class Sys {
       this.sweep();
     };
     if (this.v.destroyFilesFirst) removeAll();
-    this.write({ store: "idb", label: "destroy", deleteTo: this.idb.head, head: floor + 1, ingested: floor + 1, generation: 0, top, destroyedTop: top, strict: !this.v.destroyRelaxed });
+    const next = this.v.destroyKeepsGenerator ? undefined : floor + 2;
+    this.write({ store: "idb", label: "destroy", deleteTo: head, ingested: floor + 1, generation: 0, next, top, destroyedTop: top, strict: !this.v.destroyRelaxed });
     this.acked.push(DESTROYED);
     if (!this.v.destroyFilesFirst) removeAll();
   }
@@ -327,15 +361,19 @@ export class Sys {
   /**
    * `checkDatabase` on a quiet database: the recorded manifest loads with
    * no fallback, holds no seq past ingestedThrough, and the WAL holds
-   * every seq in (ingestedThrough, head]. Undefined when healthy.
+   * every seq in (ingestedThrough, head]. The key generator is one past the
+   * head, so `append` and `appendAfter` take the same seq. Undefined when
+   * healthy.
    */
   problem(): string | undefined {
-    const { generation, ingested, head } = this.idb;
+    const { generation, ingested } = this.idb;
+    const head = headOf(this.idb);
     if (generation === undefined) return "no recorded generation";
     const meta = this.manifest(generation);
     if (!this.intact(meta)) return `recorded manifest ${generation} does not load`;
     if (meta.through > ingested) return `manifest through ${meta.through} past ingestedThrough ${ingested}`;
     for (let s = ingested + 1; s <= head; s++) if (!this.idb.rows.has(s)) return `wal gap at ${s}`;
+    if (this.idb.next !== head + 1) return `key generator at ${this.idb.next} with the head at ${head}`;
     return undefined;
   }
 

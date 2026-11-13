@@ -28,8 +28,7 @@ A database named `<name>` lives in two stores:
 ```
 IndexedDB  "opfs-lsm-wal/<name>"
   ├── wal    seq -> bytes              one record per acked batch
-  └── meta   "head"            -> seq  a floor for the head, written by recovery and destroy
-             "ingestedThrough" -> seq  every seq <= this is in an SST
+  └── meta   "ingestedThrough" -> seq  every seq <= this is in an SST
              "generation"      -> n    the manifest tabs read
              "topGeneration"   -> n    highest manifest number recovery has seen
              "destroyedTop"    -> n    manifests numbered up to this predate a destroy
@@ -79,18 +78,14 @@ transaction over `wal`:
 2. Commit in a microtask, without waiting for the results of the adds.
 
 The records are the only writes. A group commits or aborts as a whole, and a failed group fails
-every write in it. The head, the seq of the last committed batch, is the last key in
-`wal`, or the `head` floor when that is higher. Only recovery and destroy write the floor. When
-they move the head past the last key, the same transaction adds and deletes a record at the new
-head, which moves the key generator to `head + 1`. An append therefore never reads the floor.
+every write in it.
 
-A tab still running an older build reads that stored floor as the head. It does not see records
-this build appends, and reloading it does not change that, because the floor stays where
-recovery left it. A later `put`, `delete` or `batch` on the older build stores its new key as
-the floor, and the next read then sees those records. Until then they stay in the WAL. The
-older adopt and truncation delete only up to the floor, and every record appended here is past
-the floor, so the older build cannot drop them. Its `update` rejects while the floor is behind,
-because `appendAfter` would write `floor + 1` onto a key this build already took.
+Nothing stores the head, the seq of the last committed batch. It is the last key in `wal`, or
+`ingestedThrough` when no record is past it. Only recovery and destroy move the head past the
+last key. The same transaction then drops every record, sets `ingestedThrough` to the new head,
+and adds and deletes a record at that seq, which moves the key generator to `head + 1`. A power
+loss that loses commits also loses what they did to the key generator, and this is what keeps
+the next append from taking a seq that a manifest already holds.
 
 IndexedDB serializes `readwrite` transactions that share a store, so two tabs cannot take the
 same seq. An aborted transaction reverts the key generator, so committed seqs stay gapless.
@@ -533,7 +528,7 @@ that `openDb` refuses as corrupt. The host:
    No flush or merge publishes while it holds them, and a merge already running stops after its
    current step.
 2. Commits in one IndexedDB transaction at durability `"strict"`, which completes only once it
-   is on disk. It drops every WAL record and records generation 0, with `head` and
+   is on disk. It drops every WAL record and records generation 0, with
    `ingestedThrough` one past every seq the WAL or a manifest on disk names, and
    `topGeneration` and `destroyedTop` at the highest manifest number in use.
 3. Removes every manifest, then sweeps: against generation 0, every run goes. Both skip

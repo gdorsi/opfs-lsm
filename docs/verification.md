@@ -172,7 +172,7 @@ Exit 0. The log ends with `All 5 formal checks passed`. Each check prints a `PAS
 - `PASS WalOverSst` (on real `pointGet`)
 - `PASS ViewPin` (copy-on-write memtable pin present)
 - `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source)
-- `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, nine `broken variant caught` lines show the model fails each known wrong design.
+- `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, eleven `broken variant caught` lines show the model fails each known wrong design. The model holds the key generator of `wal`, so a crash state that loses commits also loses what they did to it.
 - `PASS CorruptRefuse` (a run of the recorded manifest removed after every workload: open refuses and nothing writes, unless a manifest that holds every ingested seq stands in)
 
 The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:power-loss`. `formal:power-loss` runs every workload twice: with reclaim, and with a tab holding the reclaim lock throughout, so the host removes no manifest or run. Its workloads mix appends, ingests, compactions and destroys. `FORMAL_POWER_CMDS` (default 6) and `FORMAL_POWER_CRASHES` (default 2) widen the power-loss bound; the default bound takes about a minute. Each exits 0 on a pass. A failure prints a shortest path or a counterexample and exits non-zero.

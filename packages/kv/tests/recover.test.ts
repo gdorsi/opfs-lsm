@@ -63,8 +63,9 @@ function metaRaw(dbName: string, key: string): Promise<unknown> {
 }
 
 /**
- * The state the "drops the WAL" case leaves: every row deleted, `ingestedThrough`
- * at the last committed seq, and the head held by the `meta.head` floor.
+ * The state the "drops the WAL" case leaves: every row deleted, and
+ * `ingestedThrough` at the last committed seq, which is what holds the head.
+ * Nothing stores the head.
  */
 async function droppedWal(): Promise<{ fs: MemoryFs; dbName: string }> {
   const wal = await walWith(4);
@@ -76,15 +77,15 @@ async function droppedWal(): Promise<{ fs: MemoryFs; dbName: string }> {
   expect((await reconcile(wal, fs, undefined)).generation).toBe(0);
   expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
   expect(await walRows(dbName)).toEqual([]);
-  expect(await metaRaw(dbName, "head")).toBe(4);
+  expect(await metaRaw(dbName, "head")).toBeUndefined();
   wal.close();
   return { fs, dbName };
 }
 
 describe("advanceIngested", () => {
   it("keeps the head on the last wal key after older rows are deleted", async () => {
-    // Appends write no `meta.head` floor. The head is the last key, including
-    // once ingest has deleted every row of the previous batch.
+    // Nothing stores the head. It is the last key, including once ingest
+    // has deleted every row of the previous batch.
     const wal = await walWith(4);
     expect(await metaRaw(name, "head")).toBeUndefined();
     expect(await metaRaw(name, "pendingBytes")).toBeUndefined();
@@ -272,8 +273,8 @@ describe("reconcile", () => {
         const rows = await walRows(dbName);
         if (rows.length === 0) {
           emptied += 1;
-          // The floor, not a leftover key, is what keeps the head from falling.
-          expect(await metaRaw(dbName, "head")).toBe(after.head);
+          // `ingestedThrough`, not a leftover key, is what keeps the head from falling.
+          expect(after.ingestedThrough).toBe(after.head);
         }
         const seq = (await wal.appendAfter(0, () => ({ ops: put(9), result: 0 })))?.seq;
         expect(seq).toBe(after.head + 1);
@@ -444,10 +445,10 @@ describe("a database written before manifests held run sizes", () => {
 
 /**
  * An older build reads `meta.head` as the head and never the last WAL key.
- * Its adopt and `advanceIngested` are the copies those builds still run
- * (`IdBWal` at the parent of the record-only append). Both delete with
- * `IDBKeyRange.upperBound` of a seq they read from `meta`, which is at most
- * the stored floor.
+ * This build does not write that key. The older adopt and `advanceIngested`
+ * are the copies those builds still run (`IdBWal` at the parent of the
+ * record-only append). Both delete with `IDBKeyRange.upperBound` of a seq
+ * they read from `meta`, which is at most the stored `meta.head`.
  */
 function idbDone<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -552,22 +553,21 @@ describe("an older build sharing the database", () => {
   it("misses records past the floor, and adopt and truncation do not drop them", async () => {
     const wal = await walWith(0);
     const fs = new MemoryFs();
-    // Open records the floor. Appends after that leave it there; an open
-    // that finds records already waiting snaps the floor up to them.
+    // This build never writes `meta.head`, so the older build reads 0.
     expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 0 });
     for (let i = 1; i <= 4; i++) await wal.append(encodeOps(put(i)));
     await advanceIngested(wal, 2, 1);
     expect((await legacyMeta(name)).head).toBe(0);
     expect((await wal.meta()).head).toBe(4);
-    // A reload of the older build reads the same floor.
+    // A reload of the older build reads the same value.
     expect(await legacyUningested(name)).toEqual([]);
     expect(await seqs(wal)).toEqual([3, 4]);
 
     const older = await legacyMeta(name);
-    // Manifest through is past the floor, so the older adopt takes the else branch.
+    // Manifest through is past `meta.head`, so the older adopt takes the else branch.
     expect(await legacyAdopt(name, older, 1, 2, 2, 1)).toBe(true);
     expect((await walRows(name)).map((r) => r.seq)).toEqual([1, 2, 3, 4]);
-    // The floor is now the manifest through. Records past it are still
+    // `meta.head` is now the manifest through. Records past it are still
     // invisible, so the older ingest has nothing to advance over.
     expect(await legacyUningested(name)).toEqual([]);
     expect(await seqs(wal)).toEqual([3, 4]);
@@ -587,9 +587,9 @@ describe("an older build sharing the database", () => {
 
   it("drops only up to a stale head when the record count above it does not match", async () => {
     const wal = await walWith(4);
-    // Floor 2, seq 1 already ingested and removed. The count of records in
+    // `meta.head` 2, seq 1 already ingested and removed. The count of records in
     // (0, 2] is short, and `through` is below `ingestedThrough`, so adopt
-    // takes the else branch. Its delete bound is the floor, not seq 4.
+    // takes the else branch. Its delete bound is `meta.head`, not seq 4.
     await walStore(name, "readwrite", (store, meta) => {
       store.delete(1);
       meta.put(2, "head");

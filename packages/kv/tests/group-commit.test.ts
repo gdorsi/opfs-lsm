@@ -25,7 +25,7 @@ function wipe(): Promise<void> {
 }
 
 /** Move the head `by` seqs past the records, as a recovery that found those seqs in a manifest does. */
-async function raiseFloor(by: number): Promise<number> {
+async function raiseHead(by: number): Promise<number> {
   const wal = await TabWal.open(checkDbName(NAME));
   const meta = await wal.meta();
   expect(await wal.adopt(meta, meta.generation ?? 0, meta.ingestedThrough, meta.head + by, meta.generation ?? 0)).toBe(true);
@@ -97,12 +97,12 @@ describe("WAL group commit", () => {
   });
 
   it("gives the appends after a raised head the seqs past it", async () => {
-    const floor = await raiseFloor(10);
+    const head = await raiseHead(10);
     const wal = await TabWal.open(checkDbName(NAME));
     const seqs = await Promise.all([1, 2, 3].map((i) => wal.append(encodeOps(put(i)))));
-    expect(seqs).toEqual([floor + 1, floor + 2, floor + 3]);
+    expect(seqs).toEqual([head + 1, head + 2, head + 3]);
     const tail = await wal.tail(0);
-    expect(tail.head).toBe(floor + 3);
+    expect(tail.head).toBe(head + 3);
     expect(tail.records.map((r) => r.seq)).toEqual(seqs);
     wal.close();
   });
@@ -112,9 +112,9 @@ describe("WAL group commit", () => {
     const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, maxWalBytes });
     await db.put(utf("k0"), utf("v0"));
     await ingest(db);
-    const floor = await raiseFloor(10);
+    const head = await raiseHead(10);
     const seqs = await Promise.all([1, 2, 3].map((i) => db.put(utf(`k${i}`), utf(`v${i}`))));
-    expect(seqs).toEqual([floor + 1, floor + 2, floor + 3]);
+    expect(seqs).toEqual([head + 1, head + 2, head + 3]);
     for (const i of [0, 1, 2, 3]) expect(text(await db.get(utf(`k${i}`)))).toBe(`v${i}`);
     await db.close();
   });

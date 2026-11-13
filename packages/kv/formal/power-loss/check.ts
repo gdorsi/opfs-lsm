@@ -21,10 +21,11 @@
  * - DestroyHolds: a crash that keeps an OPFS op after a destroy's commit
  *   reads the state after that destroy or later. The commit is strict, so
  *   no power loss keeps such an op without it (`possibleCut`).
- * Broken variants (build on the newest manifest, no head raise, no
- * fallback, no newer-manifest adoption, destroy files before its commit, or
- * a destroy commit at the default durability) must each fail, so the model is
- * strong enough to see the bugs the crash suite found.
+ * Broken variants (build on the newest manifest, no head raise, an adopt or
+ * a destroy that moves the head and not the key generator, no fallback, no
+ * newer-manifest adoption, destroy files before its commit, or a destroy
+ * commit at the default durability) must each fail, so the model is strong
+ * enough to see the bugs the crash suite found.
  *
  * CorruptRefuse: after every workload, a run of the recorded manifest is
  * removed (corruption, which no power loss produces). Unless an intact
@@ -41,10 +42,10 @@ import { cloneIdb, cloneOpfs, DESTROYED, emptyIdb, emptyOpfs, possibleCut, Refus
 const MAX_CMDS = Number(process.env.FORMAL_POWER_CMDS ?? 6);
 /** Power losses in a row: the first, then one during or after each recovery. */
 const CRASHES = Number(process.env.FORMAL_POWER_CRASHES ?? 2);
-type Cmd = "append" | "ingest" | "ingestOne" | "compact" | "destroy";
+type Cmd = "append" | "update" | "ingest" | "ingestOne" | "compact" | "destroy";
 const CMDS: Cmd[] = ["append", "ingest", "ingestOne", "compact", "destroy"];
 /** Writes after the first recovery, before the second crash. */
-const AFTER: Cmd[] = ["append", "ingest", "append", "compact"];
+const AFTER: Cmd[] = ["append", "ingest", "update", "compact"];
 
 class Violation extends Error {}
 
@@ -59,6 +60,7 @@ function* workloads(max: number): Generator<Cmd[]> {
 
 function run(sys: Sys, cmd: Cmd): void {
   if (cmd === "append") sys.append();
+  else if (cmd === "update") sys.appendAfter();
   else if (cmd === "ingest") sys.ingest();
   else if (cmd === "ingestOne") sys.ingest(true);
   else if (cmd === "destroy") sys.destroy();
@@ -296,8 +298,12 @@ function sourceSync(): string[] {
   need("host/compact.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*through: meta\.through[\s\S]*raiseGeneration/, "install builds on the recorded generation");
   need("idb/wal.ts", /async function advanceIngested[\s\S]*delete\(IDBKeyRange\.upperBound\(existing\)\)/, "advanceIngested keeps the records it folds until the next ingest");
   need("idb/wal.ts", /Math\.max\(head, through, floor\)/, "adopt raises head past every seq a manifest names");
+  need("idb/wal.ts", /function headOf\(last: number, ingestedThrough: number\): number \{\s*return Math\.max\(last, ingestedThrough\);/, "the head is the last WAL key, or ingestedThrough when no record is past it");
+  need("idb/wal.ts", /nextIngested = nextHead;\s*wal\.delete\(IDBKeyRange\.upperBound\(head\)\);/, "an adopt that drops the records sets ingestedThrough to the new head, which is what holds it");
   need("idb/wal.ts", /if \(nextHead > head\) passKeyGenerator\(wal, nextHead\);/, "adopt moves the key generator with the head, so no append takes a seq at or below it");
-  need("idb/wal.ts", /if \(head > now\.head\) passKeyGenerator\(records, head\);/, "destroy moves the key generator with the head");
+  need("idb/wal.ts", /group\.tx\.objectStore\(WAL_STORE\)\.add\(entry\.record\)/, "an append takes the seq the key generator hands out");
+  need("idb/wal.ts", /const seq = tail\.head \+ 1;\s*const record = encodeOps\(decision\.ops\);\s*tx\.objectStore\(WAL_STORE\)\.add\(record, seq\);/, "update appends at the explicit key head + 1");
+  need("idb/wal.ts", /if \(head > now\.head\) passKeyGenerator\(records, head\);\s*meta\.put\(head, META_INGESTED\);/, "destroy moves the key generator with the head, and ingestedThrough holds the head");
   need("idb/wal.ts", /meta\.put\(Math\.max\(knownTop, top, generation\), META_TOP\)/, "adopt keeps the highest manifest number seen");
   need("recover.ts", /Math\.max\(numbers\[0\] \?\? 0, meta\.top, meta\.generation \?\? 0\)/, "new manifests number past every number in use");
   need("recover.ts", /m\.through > meta\.head && \(await isIntact\(fs, m\)\)/, "reconcile adopts an intact manifest past the head first");
@@ -331,6 +337,8 @@ function main(): void {
   const broken: [string, Variant][] = [
     ["ingest builds on the newest manifest file", { buildOnNewest: true }],
     ["adopting a manifest leaves head where it was", { noHeadRaise: true }],
+    ["adopt moves the head and leaves the key generator behind", { adoptKeepsGenerator: true }],
+    ["destroy moves the head and leaves the key generator behind", { destroyKeepsGenerator: true }],
     ["no fallback when the recorded manifest is gone", { noFallback: true }],
     ["a newer manifest past the head is never adopted", { noNewerAdopt: true }],
     ["a manifest number is reused after recovery records an older one", { reuseNumbers: true }],

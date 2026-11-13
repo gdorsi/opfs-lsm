@@ -121,8 +121,8 @@ function labelOf(muts: readonly IdbMutation[]): string {
   const meta = new Map<string, unknown>();
   for (const m of muts) if (m.store === "meta" && m.kind === "put") meta.set(String(m.key), m.value);
   // Before the append: an adopt that moves the head also adds a row, to move the key generator.
-  if (meta.has("head") && meta.has("ingestedThrough")) {
-    return `adopt generation ${String(meta.get("generation"))} ingestedThrough ${String(meta.get("ingestedThrough"))} head ${String(meta.get("head"))}`;
+  if (meta.has("topGeneration") && meta.has("ingestedThrough")) {
+    return `adopt generation ${String(meta.get("generation"))} ingestedThrough ${String(meta.get("ingestedThrough"))}`;
   }
   const appended = muts.find((m) => m.store === "wal" && m.kind === "put");
   if (appended) return `append seq ${String(appended.key)}`;

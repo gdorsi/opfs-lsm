@@ -10,14 +10,9 @@ import type { WalRecord } from "../store/memtable.js";
 const WAL_STORE = "wal";
 const META_STORE = "meta";
 /**
- * A floor for the head. The head, the seq of the last committed batch, is
- * the larger of this and the last key in `wal`. An append writes only its
- * record: a write to `meta` in the same transaction costs about as much
- * again as the record. Recovery raises the floor when it moves the head
- * past the records, and moves the key generator of `wal` with it
- * (`passKeyGenerator`), so an append never reads the floor.
+ * Every seq at or below it is in the runs of the recorded generation. It is
+ * also the head when `wal` holds no record past it (`headOf`).
  */
-const META_HEAD = "head";
 const META_INGESTED = "ingestedThrough";
 /** The OPFS generation whose runs hold every seq <= ingestedThrough. */
 const META_GENERATION = "generation";
@@ -184,27 +179,34 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
-/** The seq of the last committed batch: the last key in `wal`, or the floor in `meta` when that is higher. */
-async function readHead(tx: IDBTransaction): Promise<number> {
-  const [floor, last] = await Promise.all([
-    metaNum(tx.objectStore(META_STORE), META_HEAD),
-    reqToPromise(tx.objectStore(WAL_STORE).openKeyCursor(null, "prev")).then((cursor) =>
-      num(cursor?.key),
-    ),
-  ]);
-  return Math.max(floor, last);
+/** The last key in `wal`, 0 when it holds no record. */
+function lastKey(tx: IDBTransaction): Promise<number> {
+  return reqToPromise(tx.objectStore(WAL_STORE).openKeyCursor(null, "prev")).then((cursor) =>
+    num(cursor?.key),
+  );
+}
+
+/**
+ * The head, the seq of the last committed batch: the last key in `wal`, or
+ * `ingestedThrough` when no record is past it. Nothing stores the head. An
+ * append writes only its record, and recovery and destroy, which move the
+ * head past the records, drop them all and set `ingestedThrough` to the new
+ * head (`adopt`, `emptyWal`).
+ */
+function headOf(last: number, ingestedThrough: number): number {
+  return Math.max(last, ingestedThrough);
 }
 
 async function readMeta(tx: IDBTransaction): Promise<WalMeta> {
   const meta = tx.objectStore(META_STORE);
-  const [head, ingestedThrough, generation, top, destroyedTop] = await Promise.all([
-    readHead(tx),
+  const [last, ingestedThrough, generation, top, destroyedTop] = await Promise.all([
+    lastKey(tx),
     metaNum(meta, META_INGESTED),
     metaOpt(meta, META_GENERATION),
     metaNum(meta, META_TOP),
     metaNum(meta, META_DESTROYED_TOP),
   ]);
-  return { head, ingestedThrough, generation, top, destroyedTop };
+  return { head: headOf(last, ingestedThrough), ingestedThrough, generation, top, destroyedTop };
 }
 
 function sameMeta(a: WalMeta, b: WalMeta): boolean {
@@ -287,11 +289,12 @@ async function readRecordsUpTo(
 
 async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
   const meta = tx.objectStore(META_STORE);
-  const [head, generation, ingestedThrough] = await Promise.all([
-    readHead(tx),
+  const [last, generation, ingestedThrough] = await Promise.all([
+    lastKey(tx),
     metaNum(meta, META_GENERATION),
     metaNum(meta, META_INGESTED),
   ]);
+  const head = headOf(last, ingestedThrough);
   const records = await readRecords(
     tx.objectStore(WAL_STORE),
     Math.max(since, ingestedThrough),
@@ -400,7 +403,6 @@ export class IdBWal {
       wal.delete(IDBKeyRange.upperBound(head));
     }
     if (nextHead > head) passKeyGenerator(wal, nextHead);
-    meta.put(nextHead, META_HEAD);
     meta.put(nextIngested, META_INGESTED);
     meta.put(generation, META_GENERATION);
     meta.put(Math.max(knownTop, top, generation), META_TOP);
@@ -591,7 +593,6 @@ export async function emptyWal(wal: IdBWal, expect: WalMeta, head: number, top: 
   const records = tx.objectStore(WAL_STORE);
   records.delete(IDBKeyRange.upperBound(now.head));
   if (head > now.head) passKeyGenerator(records, head);
-  meta.put(head, META_HEAD);
   meta.put(head, META_INGESTED);
   meta.put(0, META_GENERATION);
   meta.put(top, META_TOP);
@@ -628,10 +629,11 @@ export async function getIngestedThrough(wal: IdBWal): Promise<number> {
 export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number> {
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
   const done = txDone(tx);
-  const [through, head] = await Promise.all([
+  const [through, lastSeq] = await Promise.all([
     metaNum(tx.objectStore(META_STORE), META_INGESTED),
-    readHead(tx),
+    lastKey(tx),
   ]);
+  const head = headOf(lastSeq, through);
   const store = tx.objectStore(WAL_STORE);
   const records = await readRecordsUpTo(store, through, head, cap);
   await done;
@@ -650,10 +652,11 @@ export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: nu
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
   const done = txDone(tx);
   const meta = tx.objectStore(META_STORE);
-  const [through, head] = await Promise.all([
+  const [through, last] = await Promise.all([
     metaNum(meta, META_INGESTED),
-    readHead(tx),
+    lastKey(tx),
   ]);
+  const head = headOf(last, through);
   const store = tx.objectStore(WAL_STORE);
   const records = await readRecordsUpTo(store, through, head, limit.maxBytes);
   await done;
