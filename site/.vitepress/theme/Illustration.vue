@@ -7,7 +7,8 @@ import { SIZES, type SceneName } from "../../stageshow/sizes.ts";
  * One illustration from `site/stageshow`. They are React components, so this mounts a React root in the browser
  * and renders nothing on the server but a box of the stage's size, which keeps the page from moving when it loads.
  */
-const props = defineProps<{ name: SceneName; label: string; data?: Record<string, unknown> }>();
+/** `full`: the illustration is as wide as the page, not one column of a claim. */
+const props = defineProps<{ name: SceneName; label: string; data?: Record<string, unknown>; full?: boolean }>();
 
 const { isDark } = useData();
 const host = ref<HTMLElement>();
@@ -28,7 +29,7 @@ onBeforeUnmount(() => scene?.unmount());
 </script>
 
 <template>
-  <figure class="illustration">
+  <figure class="illustration" :class="{ full }">
     <div
       ref="host"
       class="illustration-stage"

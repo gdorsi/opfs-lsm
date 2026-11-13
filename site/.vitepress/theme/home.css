@@ -81,6 +81,19 @@
   }
 }
 
+/* An illustration as wide as the page changes to its phone design by its own width, at the stage's threshold. */
+.illustration.full {
+  container-type: inline-size;
+  margin-block: 24px 72px;
+}
+
+@container (max-width: 719.98px) {
+  .illustration.full .illustration-stage {
+    max-width: var(--compact-width);
+    aspect-ratio: var(--compact);
+  }
+}
+
 .illustration-replay {
   justify-self: end;
   font-size: 13px;

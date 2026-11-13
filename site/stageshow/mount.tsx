@@ -1,11 +1,11 @@
 import type { ComponentType } from "react";
 import { createRoot } from "react-dom/client";
-import Bench from "./bench/index.tsx";
+import Adapters from "./adapters/index.tsx";
 import Bundle from "./bundle/index.tsx";
 import type { SceneName } from "./sizes.ts";
 import Stack from "./stack/index.tsx";
 
-const SCENES: Record<SceneName, ComponentType<never>> = { bench: Bench as ComponentType<never>, bundle: Bundle as ComponentType<never>, stack: Stack as ComponentType<never> };
+const SCENES: Record<SceneName, ComponentType<never>> = { adapters: Adapters as ComponentType<never>, bundle: Bundle as ComponentType<never>, stack: Stack as ComponentType<never> };
 
 /** Renders one illustration into `el`. A new `run` remounts it, which plays it again from the start. */
 export function mount(el: HTMLElement, name: SceneName) {
