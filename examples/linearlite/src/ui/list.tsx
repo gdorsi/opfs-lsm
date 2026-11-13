@@ -3,7 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as commands from "../client/commands.ts";
 import type { IssueFilter } from "../client/filter.ts";
-import { LIST_WINDOW, useIssueWindow } from "../client/hooks.ts";
+import { LIST_WINDOW, usePreloadDetails, useIssueWindow } from "../client/hooks.ts";
 import type { Issue } from "../domain/model.ts";
 import { formatDate, initial, shortId } from "./format.ts";
 import { isTyping, keepSearch, useCreateModal, useIssueFilter, useKeys, useSetFilter } from "./nav.ts";
@@ -87,6 +87,7 @@ function VirtualList({ filterKey: key, rows, offset, total, setRange }: ListProp
   const items = virtual.getVirtualItems();
   const first = items[0]?.index ?? 0;
   const last = items.at(-1)?.index ?? 0;
+  usePreloadDetails(items.flatMap((v) => rows[v.index - offset]?.id ?? []));
 
   useLayoutEffect(() => {
     if (scroller.current) scroller.current.scrollTop = scrolled.get(key) ?? 0;

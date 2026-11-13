@@ -5,6 +5,8 @@ export type LayerEntry = {
   readonly kind: "put" | "del";
   /** Present iff kind === "put". */
   readonly value?: Uint8Array;
+  /** The WAL seq that wrote the entry. */
+  readonly seq: number;
 };
 
 export type ScanBounds = {

@@ -1,4 +1,4 @@
-import { Oracle, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
+import { copyOp, Oracle, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 
 /**
  * A recorded multi-handle history and its seq-exact consistency check
@@ -262,12 +262,6 @@ function check(h: History): Oracle {
   return oracle;
 }
 
-function copyOp(op: OracleOp): OracleOp {
-  return op.type === "put"
-    ? { type: "put", key: new Uint8Array(op.key), value: new Uint8Array(op.value) }
-    : { type: "del", key: new Uint8Array(op.key) };
-}
-
 function sameValue(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
   if (a === undefined || b === undefined) return a === b;
   return a.length === b.length && a.every((x, i) => x === b[i]);
@@ -290,7 +284,18 @@ function showEntries(entries: readonly OracleEntry[]): string {
 }
 
 function showOps(ops: readonly OracleOp[]): string {
-  return ops.map((o) => (o.type === "put" ? `put ${show(o.key)}=${show(o.value)}` : `del ${show(o.key)}`)).join("; ");
+  return ops
+    .map((o) => {
+      switch (o.type) {
+        case "put":
+          return `put ${show(o.key)}=${show(o.value)}`;
+        case "del":
+          return `del ${show(o.key)}`;
+        case "deleteRange":
+          return `deleteRange ${show(o.start)}..${o.endExclusive ? show(o.endExclusive) : ""}${o.through === undefined ? "" : ` through ${o.through}`}`;
+      }
+    })
+    .join("; ");
 }
 
 function showRange(r: OracleRange): string {

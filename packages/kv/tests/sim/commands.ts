@@ -9,8 +9,10 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../../src/testing.js";
-import { checkDatabase, deleteWal } from "./check-database.js";
-import { Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
+import { checkDatabase, deleteWal, walMeta } from "./check-database.js";
+import { loadGeneration } from "../../src/store/generation.js";
+import { compareBytes } from "../../src/bytes.js";
+import { applyOps, Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
 
 /**
  * fast-check commands for one `Db` handle over MemoryFs and fake-indexeddb,
@@ -158,10 +160,20 @@ const valueArb: fc.Arbitrary<ValueSpec> = fc.record({
   fill: fc.constantFrom("a", "b", "c"),
 });
 
-type OpSpec = { readonly type: "put"; readonly key: number; readonly value: ValueSpec } | { readonly type: "del"; readonly key: number };
+/** A range delete from `start` to `end` (to the end of the keys when absent or not above it), `back` seqs below the head. */
+type DeleteRangeSpec = { readonly type: "deleteRange"; readonly start: number; readonly end?: number; readonly back?: number };
+type OpSpec =
+  | { readonly type: "put"; readonly key: number; readonly value: ValueSpec }
+  | { readonly type: "del"; readonly key: number }
+  | DeleteRangeSpec;
+const deleteRangeArb: fc.Arbitrary<DeleteRangeSpec> = fc.record(
+  { type: fc.constant("deleteRange" as const), start: keyArb, end: keyArb, back: fc.integer({ min: -2, max: 6 }) },
+  { requiredKeys: ["type", "start"] },
+);
 const opArb: fc.Arbitrary<OpSpec> = fc.oneof(
-  { weight: 3, arbitrary: fc.record({ type: fc.constant("put" as const), key: keyArb, value: valueArb }) },
-  { weight: 2, arbitrary: fc.record({ type: fc.constant("del" as const), key: keyArb }) },
+  { weight: 6, arbitrary: fc.record({ type: fc.constant("put" as const), key: keyArb, value: valueArb }) },
+  { weight: 4, arbitrary: fc.record({ type: fc.constant("del" as const), key: keyArb }) },
+  { weight: 1, arbitrary: deleteRangeArb },
 );
 
 type RangeSpec = { start?: number; end?: number; limit?: number; contains?: string; reverse?: boolean };
@@ -193,18 +205,47 @@ const readArb: fc.Arbitrary<ReadSpec> = fc.oneof(
 );
 
 const keyName = (i: number) => show(KEYS[i]!);
-const opName = (op: OpSpec) =>
-  op.type === "put" ? `put ${keyName(op.key)} ${op.value.size}${op.value.fill}` : `del ${keyName(op.key)}`;
+function opName(op: OpSpec): string {
+  switch (op.type) {
+    case "put":
+      return `put ${keyName(op.key)} ${op.value.size}${op.value.fill}`;
+    case "del":
+      return `del ${keyName(op.key)}`;
+    case "deleteRange":
+      return `deleteRange ${keyName(op.start)}..${op.end === undefined ? "" : keyName(op.end)}${op.back === undefined ? "" : ` through head-${op.back}`}`;
+  }
+}
 const rangeName = (r: RangeSpec) => JSON.stringify(r);
 
 // --- Writes.
 
 function opsOf(m: Model, specs: readonly OpSpec[]): OracleOp[] {
-  return specs.map((op) =>
-    op.type === "put"
-      ? { type: "put", key: KEYS[op.key]!, value: m.value(op.value) }
-      : { type: "del", key: KEYS[op.key]! },
-  );
+  return specs.map((op): OracleOp => {
+    switch (op.type) {
+      case "put":
+        return { type: "put", key: KEYS[op.key]!, value: m.value(op.value) };
+      case "del":
+        return { type: "del", key: KEYS[op.key]! };
+      case "deleteRange": {
+        const start = KEYS[op.start]!;
+        const end = op.end === undefined ? undefined : KEYS[op.end]!;
+        return {
+          type: "deleteRange",
+          start,
+          ...(end && compareBytes(start, end) < 0 ? { endExclusive: end } : {}),
+          ...(op.back === undefined ? {} : { through: Math.max(0, m.oracle.head - op.back) }),
+        };
+      }
+    }
+  });
+}
+
+/** One op through its shortcut, several in one batch. */
+function writeOps(db: Db, ops: readonly OracleOp[]): Promise<number> {
+  const op = ops.length === 1 ? ops[0]! : undefined;
+  if (op?.type === "put") return db.put(op.key, op.value);
+  if (op?.type === "del") return db.delete(op.key);
+  return db.batch((tx) => applyOps(tx, ops));
 }
 
 /** Run a write and check it appended exactly one record at the next seq, or none for no ops. */
@@ -225,18 +266,7 @@ class BatchCmd implements Cmd {
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
     const ops = opsOf(m, this.ops);
-    await write(m, r, ops, () => {
-      if (ops.length === 1) {
-        const op = ops[0]!;
-        return op.type === "put" ? r.db.put(op.key, op.value) : r.db.delete(op.key);
-      }
-      return r.db.batch((tx) => {
-        for (const op of ops) {
-          if (op.type === "put") tx.put(op.key, op.value);
-          else tx.delete(op.key);
-        }
-      });
-    });
+    await write(m, r, ops, () => writeOps(r.db, ops));
   }
   toString = () => (this.ops.length === 1 ? opName(this.ops[0]!) : `batch[${this.ops.map(opName).join("; ")}]`);
 }
@@ -255,14 +285,7 @@ class BulkCmd implements Cmd {
       const key = utf(`n/${String(i * this.step).padStart(5, "0")}`);
       ops.push(this.del ? { type: "del", key } : { type: "put", key, value: m.value({ size: 8, fill: "b" }) });
     }
-    await write(m, r, ops, () =>
-      r.db.batch((tx) => {
-        for (const op of ops) {
-          if (op.type === "put") tx.put(op.key, op.value);
-          else tx.delete(op.key);
-        }
-      }),
-    );
+    await write(m, r, ops, () => r.db.batch((tx) => applyOps(tx, ops)));
   }
   toString = () => `bulk ${this.del ? "del" : "put"} ${this.count} keys step ${this.step}`;
 }
@@ -289,10 +312,7 @@ class UpdateCmd implements Cmd {
     await write(m, r, ops, () =>
       r.db.update(keys, (got, tx) => {
         seen = got.map((v) => (v ? new Uint8Array(v) : undefined));
-        for (const op of ops) {
-          if (op.type === "put") tx.put(op.key, op.value);
-          else tx.delete(op.key);
-        }
+        applyOps(tx, ops);
       }),
     );
     const at = ops.length > 0 ? m.oracle.head - 1 : undefined;
@@ -350,8 +370,7 @@ class ViewCmd implements Cmd {
       for (let i = 0; i <= this.reads.length; i++) {
         if (i === this.writeAt) {
           const ops = opsOf(m, [this.op]);
-          const op = ops[0]!;
-          await write(m, r, ops, () => (op.type === "put" ? r.db.put(op.key, op.value) : r.db.delete(op.key)));
+          await write(m, r, ops, () => writeOps(r.db, ops));
         }
         const read = this.reads[i];
         if (!read) continue;
@@ -433,14 +452,23 @@ class ReopenCmd implements Cmd {
 /**
  * Quiesce, then run the integrity check and compare the on-disk state with
  * the oracle. With background ingest on, only closing the handle stops the
- * host from starting another one, so the check closes and reopens.
+ * host from starting another one, so the check closes and reopens. Once
+ * compaction has nothing left to do, every range delete has retired.
  */
 class CheckCmd implements Cmd {
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
     if (r.background) await r.db.close();
-    await r.settle();
+    let generation: number | undefined;
+    for (let pass = 0; ; pass++) {
+      await r.settle();
+      const now = (await walMeta(r.name)).generation;
+      if (now === generation) break;
+      expect(pass, "compaction settles").toBeLessThan(50);
+      generation = now;
+    }
     await expectHealthy(m, r, r.background);
+    if (generation) expect((await loadGeneration(r.fs, generation))!.marks, "marks left once compaction settles").toEqual([]);
     if (r.background) {
       await r.open();
       m.reader.synced(m.oracle.head);

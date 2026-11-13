@@ -6,6 +6,7 @@ import {
   checkKey,
   newWriterId,
   opsBytes,
+  type BatchOp,
   type CheckedKey,
   type CheckedOp,
   type DbName,
@@ -20,9 +21,9 @@ import {
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type BusRow, type IngestClient } from "./host/protocol.js";
-import { layersChannel } from "./locks.js";
-import { TabWal, decodeOps, encodeOps, type WalTail } from "./idb/wal.js";
+import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type Pressure } from "./host/protocol.js";
+import { layersChannel, pressureLock, webLocks } from "./locks.js";
+import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, ReadSet, untilHit, type Maybe } from "./store/cursor.js";
@@ -34,6 +35,7 @@ import {
   loadGeneration,
   type RunMeta,
 } from "./store/generation.js";
+import { NO_MARKS, type Marks } from "./store/marks.js";
 import { pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
@@ -51,6 +53,7 @@ import {
 } from "./changes.js";
 
 export type { ViewSnapshot } from "./view.js";
+export type { Pressure } from "./host/protocol.js";
 export type { ChangeEvent, ChangeListener, ChangeKind, ChangeOp } from "./changes.js";
 
 /** Public open options. Apps pass a database name; the library owns the rest. */
@@ -82,7 +85,18 @@ export type OpenOptions = {
    * collected yet.
    */
   readonly compactionMemoryBytes?: number;
+  /**
+   * Bytes of run files to stay under, or `"quota"` for 90% of the browser's
+   * storage quota for the origin. kv never removes a row for it: it asks
+   * an `onPressure` handler to, and a write never waits for it. When tabs
+   * differ, the host uses the smallest figure and honors `"quota"` too
+   * (design.md, "Size cap").
+   */
+  readonly maxBytes?: number | "quota";
 };
+
+/** Frees about `pressure.need` bytes with ordinary writes. See `Db.onPressure`. */
+export type PressureHandler = (pressure: Pressure) => Promise<void>;
 
 /** Below this, one page per merge source may not fit. */
 const MIN_MEMORY_BUDGET = 1024 * 1024;
@@ -172,9 +186,32 @@ export type Range = {
 
 export type Entry = { readonly key: Uint8Array; readonly value: Uint8Array };
 
+/** `start` inclusive, `endExclusive` exclusive, either open. `prefixBound` returns one. */
+export type KeyBounds = {
+  readonly start?: Uint8Array;
+  readonly endExclusive?: Uint8Array;
+};
+
+export type DeleteRangeOptions = {
+  /**
+   * Remove only rows last written at or before this seq: a write's ack, a
+   * `view`'s `snap.seq`, a change event's seq. Default: every row written
+   * before this batch. Either way it stops below this batch's own seq, so a
+   * range delete never removes its batch's writes.
+   */
+  readonly through?: number;
+};
+
 export interface BatchTx {
   put(key: Uint8Array, value: Uint8Array): void;
   delete(key: Uint8Array): void;
+  /**
+   * Every row in `bounds` last written at or before `through` reads as
+   * absent from this batch on, in every tab, and older versions of those
+   * keys with it. One op whatever the range holds: it leaves no tombstone
+   * per key. `ConstraintError` when `start` is not below `endExclusive`.
+   */
+  deleteRange(bounds: KeyBounds, options?: DeleteRangeOptions): void;
 }
 
 export interface Db {
@@ -226,6 +263,12 @@ export interface Db {
    * unsubscribe function.
    */
   changes(listener: ChangeListener): () => void;
+  /**
+   * Answer offers to bring the database under `maxBytes`. Only the handle
+   * holding the Web Lock `opfs-lsm-pressure/<name>` is called, once per
+   * offer. Returns unsubscribe.
+   */
+  onPressure(handler: PressureHandler): () => void;
   /**
    * Catch up to every write acked before the call, from any tab. Other tabs'
    * writes otherwise arrive over BroadcastChannel, a moment after their ack.
@@ -358,6 +401,7 @@ export function openDbWith(options: OpenWithOptions): Promise<Db> {
 async function openTraced(options: OpenWithOptions): Promise<Db> {
   const trace = options.trace;
   const name = checkDbName(options.name);
+  if (options.maxBytes !== undefined && options.maxBytes !== "quota" && !(options.maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
   // Started first, so the module loads while the rest of open runs.
   const engine = timed(trace, "wasm", ensureEngine);
   // Awaited last: a throw before that must not leave its rejection unhandled.
@@ -373,6 +417,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   // recorded manifest's runs are checked by the first sync, which loads them.
   await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
+  const maxBytes = options.maxBytes;
   const cache = new PageCache(
     Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
   );
@@ -385,6 +430,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
     ingest,
     ownsIngestClient,
     caps,
+    maxBytes,
     trace,
     options.rowPostMs,
   );
@@ -394,6 +440,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   ingest.watch(name, {
     maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
     compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
+    maxBytes,
   });
   // The host cannot flush without the module, so a page that cannot load it does not open.
   try {
@@ -408,14 +455,16 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
 function collectBatch(
   build: (tx: BatchTx) => unknown,
 ): readonly CheckedOp[] {
-  const ops: { type: "put" | "del"; key: Uint8Array; value?: Uint8Array }[] =
-    [];
+  const ops: BatchOp[] = [];
   const ret = build({
     put: (key, value) => {
       ops.push({ type: "put", key, value });
     },
     delete: (key) => {
       ops.push({ type: "del", key });
+    },
+    deleteRange: (bounds, options) => {
+      ops.push({ type: "deleteRange", start: bounds.start, endExclusive: bounds.endExclusive, through: options?.through });
     },
   });
   if (
@@ -447,6 +496,8 @@ type Layers = {
   /** The readers as scan sources, newest first. */
   readonly levels: readonly RunLevel[];
   readonly tombstoneSeq: number;
+  /** The manifest's marks: the range deletes its runs may still hold covered versions for. */
+  readonly marks: Marks;
   refs: number;
 };
 
@@ -491,6 +542,7 @@ class DbImpl implements Db {
     runs: [],
     levels: [],
     tombstoneSeq: 0,
+    marks: NO_MARKS,
     refs: 1,
   };
   /** The newest generation loaded and not yet installed. */
@@ -515,6 +567,13 @@ class DbImpl implements Db {
   /** Posts the rows that wait when the page is hidden, before the browser slows the timer. */
   private readonly onVisibility = () => this.postRows();
   private readonly pressure: Backpressure;
+  /** The last read point and the two tables it joined. */
+  private lastPoint: { readonly installed: Marks; readonly mem: Marks; readonly at: Marks } | undefined;
+  private readonly handlers = new Set<PressureHandler>();
+  /** Lets go of the pressure lock, or of the wait for it. Set while this handle has a handler. */
+  private unlock: (() => void) | undefined;
+  private holding = false;
+  private answering = false;
 
   constructor(
     readonly name: DbName,
@@ -525,6 +584,7 @@ class DbImpl implements Db {
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
+    private readonly maxBytes: number | "quota" | undefined,
     private readonly trace?: OpenTrace,
     private readonly rowPostMs = ROW_POST_MS,
   ) {
@@ -545,20 +605,21 @@ class DbImpl implements Db {
 
   private onMessage(data: BusMessage): void {
     if (this.closed) return;
-    // An `ingest`, or a message this build does not know: catch up from the WAL.
-    if (data?.kind !== "rows" || !Array.isArray(data.rows)) {
-      void this.sync().catch(() => undefined);
-      return;
-    }
-    if (data.writerId === this.writerId) return;
-    for (const row of data.rows) {
-      // The catch-up reads the rest of the message's rows too.
-      if (this.applyRecord({ seq: row.seq, ops: decodeOps(row.record) }) === "gap") {
-        void this.sync().catch(() => undefined);
-        break;
+    if (data?.kind === "rows" && Array.isArray(data.rows)) {
+      if (data.writerId === this.writerId) return;
+      for (const row of data.rows) {
+        // The catch-up reads the rest of the message's rows too.
+        if (this.applyRecord({ seq: row.seq, ops: decodeOps(row.record, row.seq) }) === "gap") {
+          void this.sync().catch(() => undefined);
+          break;
+        }
       }
+      return this.announce();
     }
-    this.announce();
+    if (data?.kind === "pressure") return void this.answer(data.pressure).catch(() => undefined);
+    if (data?.kind === "pressure-pull" || data?.kind === "pressure-done") return;
+    // An `ingest`, or a message this build does not know: catch up from the WAL.
+    void this.sync().catch(() => undefined);
   }
 
   private ensureOpen(): void {
@@ -677,6 +738,7 @@ class DbImpl implements Db {
       runs: held,
       levels: runLevels(paths, held.map((r) => r.reader)),
       tombstoneSeq: meta.tombstoneSeq,
+      marks: meta.marks,
       refs: 1,
     };
     return true;
@@ -851,7 +913,7 @@ class DbImpl implements Db {
    * which reads the record too.
    */
   private async landed(seq: number, ops: readonly CheckedOp[], record: ArrayBuffer): Promise<void> {
-    if (this.applyRecord({ seq, ops }) === "gap" && !this.closed) await this.sync();
+    if (this.applyRecord({ seq, ops: resolveOps(ops, seq) }) === "gap" && !this.closed) await this.sync();
     this.pressure.landed();
     this.announce();
     this.broadcast({ seq, record }, opsBytes(ops));
@@ -936,15 +998,31 @@ class DbImpl implements Db {
     }
   }
 
+  /**
+   * What an operation judges rows against: the installed marks joined with
+   * the memtable's. Take it in the turn that captures the installed levels,
+   * and keep it for the whole operation.
+   */
+  private point(): Marks {
+    const installed = this.installed.marks;
+    const mem = this.mem.marks;
+    const last = this.lastPoint;
+    if (last?.installed === installed && last.mem === mem) return last.at;
+    const at = mem.length > 0 ? [...installed, ...mem] : installed;
+    this.lastPoint = { installed, mem, at };
+    return at;
+  }
+
   /** Every key read, or one Miss for all the bytes they lack. */
   private readKeys(
     ks: readonly CheckedKey[],
     levels: readonly RunLevel[],
+    at: Marks,
   ): Maybe<(Uint8Array | undefined)[]> {
     const values: (Uint8Array | undefined)[] = [];
     let misses: Miss[] | undefined;
     for (const k of ks) {
-      const v = pointGet(this.mem.get(k), levels, k);
+      const v = pointGet(this.mem.get(k), levels, k, at);
       if (v instanceof Miss) (misses ??= []).push(v);
       else values.push(v);
     }
@@ -955,7 +1033,8 @@ class DbImpl implements Db {
     this.ensureOpen();
     const k = checkKey(key);
     const row = this.mem.get(k);
-    return this.settleInstalled((levels) => pointGet(row, levels, k));
+    const at = this.point();
+    return this.settleInstalled((levels) => pointGet(row, levels, k, at));
   }
 
   put(key: Uint8Array, value: Uint8Array): Promise<number> {
@@ -986,7 +1065,7 @@ class DbImpl implements Db {
     // One set for the warm reads and the read inside the transaction, which cannot wait for a load.
     const held = new ReadSet();
     const out = await this.write(() => {
-      const values = held.attempt(() => this.readKeys(ks, this.installed.levels));
+      const values = held.attempt(() => this.readKeys(ks, this.installed.levels, this.point()));
       if (values instanceof Miss) return held.keep(values);
       let result!: T;
       const ops = collectBatch((tx) => {
@@ -994,7 +1073,10 @@ class DbImpl implements Db {
         return result;
       });
       return { ops, result };
-    }, () => this.settleInstalled((levels) => this.readKeys(ks, levels), held));
+    }, () => {
+      const at = this.point();
+      return this.settleInstalled((levels) => this.readKeys(ks, levels, at), held);
+    });
     return out.result;
   }
 
@@ -1006,17 +1088,18 @@ class DbImpl implements Db {
     const bounds = boundsOf(range);
     const rows = this.mem.pin();
     const layers = this.installed;
+    const at = this.point();
     this.retain(layers);
     try {
       const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
-      for await (const entry of scanLayers(rows.range(bounds), layers.levels, bounds, range)) {
+      for await (const entry of scanLayers(rows.range(bounds), layers.levels, at, bounds, range)) {
         const key = keyOf(entry);
         let joined: Uint8Array | undefined;
         if (key !== undefined) {
           const k = checkKey(key);
           const row = rows.get(k);
-          const got = pointGet(row, layers.levels, k);
-          joined = got instanceof Miss ? await untilHit(() => pointGet(row, layers.levels, k), got) : got;
+          const got = pointGet(row, layers.levels, k, at);
+          joined = got instanceof Miss ? await untilHit(() => pointGet(row, layers.levels, k, at), got) : got;
         }
         out.push({ entry, joined });
       }
@@ -1030,9 +1113,10 @@ class DbImpl implements Db {
     this.ensureOpen();
     const bounds = boundsOf(range);
     const layers = this.installed;
+    const at = this.point();
     this.retain(layers);
     try {
-      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, bounds, range)) {
+      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, at, bounds, range)) {
         this.ensureOpen();
         yield entry;
       }
@@ -1049,6 +1133,7 @@ class DbImpl implements Db {
       this.mem.appliedThrough,
       this.mem.pin(),
       layers.levels,
+      this.point(),
       () => {
         this.retain(layers);
         return () => this.release(layers);
@@ -1065,6 +1150,63 @@ class DbImpl implements Db {
   changes(listener: ChangeListener): () => void {
     this.ensureOpen();
     return this.changeBus.subscribe(listener);
+  }
+
+  onPressure(handler: PressureHandler): () => void {
+    this.ensureOpen();
+    this.handlers.add(handler);
+    if (!this.unlock) this.askLock();
+    return () => {
+      if (this.handlers.delete(handler) && this.handlers.size === 0) this.unlock?.();
+    };
+  }
+
+  private askLock(): void {
+    const abort = new AbortController();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const unlock = (this.unlock = () => {
+      this.unlock = undefined;
+      this.holding = false;
+      abort.abort();
+      release();
+    });
+    webLocks()
+      ?.request(pressureLock(this.name), { signal: abort.signal }, () => {
+        // Granted before `unlock` could abort the request: `held` is settled, so the lock goes back.
+        if (this.unlock !== unlock) return held;
+        this.holding = true;
+        this.bus?.postMessage({ kind: "pressure-pull" } satisfies BusMessage);
+        return held;
+      })
+      .catch(() => undefined);
+  }
+
+  private async answer(pressure: Pressure): Promise<void> {
+    if (this.holding && !this.answering) {
+      this.answering = true;
+      for (const handler of [...this.handlers]) {
+        try {
+          await handler(pressure);
+        } catch (err) {
+          console.error(`opfs-lsm: an onPressure handler of ${this.name} failed`, err);
+        }
+      }
+      this.answering = false;
+      // A handle that let go of the lock meanwhile stays silent, so the next holder pulls the offer.
+      if (this.holding) this.bus?.postMessage({ kind: "pressure-done" } satisfies BusMessage);
+    } else if (this.handlers.size === 0 && this.maxBytes !== undefined) {
+      const free = await webLocks()?.request(
+        pressureLock(this.name),
+        { mode: "shared", ifAvailable: true },
+        (lock) => lock !== null,
+      );
+      if (free) {
+        console.warn(
+          `opfs-lsm: ${this.name} must free ${pressure.need} bytes to stay under maxBytes ${pressure.maxBytes}, and no tab answers onPressure`,
+        );
+      }
+    }
   }
 
   /** Have the host flush the WAL, and load what it published. */
@@ -1089,6 +1231,7 @@ class DbImpl implements Db {
     this.closed = true;
     this.emit({ kind: "closed" });
     this.changeBus.clear();
+    this.unlock?.();
     if (this.bus && this.onBusMessage) {
       this.postRows();
       if (typeof document !== "undefined") {

@@ -5,10 +5,11 @@ The byte layout of a manifest, `m/<generation>.mft`. What a manifest means is in
 
 ```
 | u32 magic       "OLGN" (0x4f4c474e)                                        |
-| u32 version     3                                                          |
+| u32 version     4                                                          |
 | u64 generation                                                             |
 | u64 tombstoneSeq                                                           |
 | u64 through                                                                |
+| marks block                                                                |
 | u32 run count                                                              |
 | run 0                                                                      |
 | ...                                                                        |
@@ -20,6 +21,20 @@ per run:
 | u32 bytes       size of the run file                                       |
 | u8 has range                                                               |
 | u32 length, smallest key, u32 length, largest key   (if has range)         |
+| u64 marksThrough                                                           |
+
+marks block:
+| u32 count       (0 is valid: no marks)                                     |
+| mark 0                                                                     |
+| ...                                                                        |
+
+per mark:
+| u32 start length                                                           |
+| start           the first key of the range                                 |
+| u8 has end                                                                 |
+| u32 length, end key, exclusive   (if has end)                              |
+| u64 through                                                                |
+| u64 at                                                                     |
 ```
 
 `tombstoneSeq` is the highest seq of any delete that a bottom-level compaction dropped.
@@ -30,4 +45,10 @@ file. The level of a run is in its path.
 Runs are listed L0 first, newest first. Each deeper level follows, with its runs sorted by
 smallest key. Reads use that order directly.
 
-A reader rejects any other version as corrupt.
+The marks block holds the marks, in no particular order, and `marksThrough` is a run's claim
+against them. [design.md](design.md#range-deletes) gives the meaning of both.
+
+A reader rejects any other version as corrupt, and a marks block that breaks its rules, a
+mark with `through` 0, an end not above its start, `at` at or below its `through` or past the
+manifest's `through`, or a run
+whose `marksThrough` is past it.

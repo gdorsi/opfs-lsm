@@ -10,6 +10,7 @@ import {
   loadGeneration,
   reclaimManifests,
   reclaimRuns,
+  type GenerationMeta,
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
@@ -51,6 +52,10 @@ type IngestWatch = {
   maxWalBytes: number;
   /** The smallest `compactionMemoryBytes` any watching tab asked for. */
   compactionMemoryBytes: number;
+  /** The smallest numeric `maxBytes` any watching tab asked for; infinite while none did. */
+  maxBytes: number;
+  /** Some watching tab asked for `maxBytes: "quota"`. */
+  quota: boolean;
   /** Op bytes heard or measured and not yet folded into a run. */
   pendingBytes: number;
   /**
@@ -155,6 +160,11 @@ class HostedDb {
   private trusted: number | undefined;
   /** Set while `destroy` waits for the locks, so a compaction pass stops at its next step. */
   private destroying = false;
+  /**
+   * The open pressure offer, or the seq the manifest must reach before the
+   * cap is measured again: an answer's writes count once a flush holds them.
+   */
+  private offer: Extract<BusMessage, { kind: "pressure" }> | { readonly after: number } = { after: 0 };
   /** Run compaction passes until no request arrives during one. */
   private readonly compact = coalesced(() =>
     withLock(compactLock(this.name), () => this.compactPass()),
@@ -330,6 +340,12 @@ class HostedDb {
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
+    if (policy.maxBytes !== undefined) {
+      if (policy.maxBytes === "quota") watch.quota = true;
+      else watch.maxBytes = Math.min(watch.maxBytes, policy.maxBytes);
+      // A pass measures the cap, so a database already over it gets an offer without waiting for a write.
+      this.compact().catch(() => undefined);
+    }
     watch.triggerAt = watch.maxWalBytes;
     void this.withWal((wal) => uningestedBytes(wal, watch.maxWalBytes)).then(
       (waiting) => {
@@ -348,12 +364,15 @@ class HostedDb {
     if (!watch || --watch.watchers > 0) return;
     watch.bus?.close();
     this.watching = undefined;
+    this.offer = { after: 0 };
   }
 
   private startWatch(policy: WatchPolicy): IngestWatch {
     const watch: IngestWatch = {
       maxWalBytes: policy.maxWalBytes,
       compactionMemoryBytes: policy.compactionMemoryBytes,
+      maxBytes: Infinity,
+      quota: false,
       pendingBytes: 0,
       triggerAt: policy.maxWalBytes,
       state: "idle",
@@ -363,9 +382,19 @@ class HostedDb {
     if (typeof BroadcastChannel !== "undefined") {
       watch.bus = new BroadcastChannel(layersChannel(this.name));
       watch.bus.onmessage = (ev: MessageEvent<BusMessage>) => {
-        if (ev.data.kind !== "rows") return;
-        watch.pendingBytes += ev.data.bytes;
-        this.maybeIngest(watch);
+        const msg = ev.data;
+        if (msg.kind === "rows") {
+          watch.pendingBytes += msg.bytes;
+          this.maybeIngest(watch);
+        } else if (msg.kind === "pressure-pull" && "pressure" in this.offer) {
+          watch.bus?.postMessage(this.offer);
+        } else if (msg.kind === "pressure-done" && "pressure" in this.offer) {
+          this.offer = { after: Infinity };
+          this.withWal((wal) => wal.meta()).then(
+            ({ head }) => (this.offer = { after: head }),
+            () => (this.offer = { after: 0 }),
+          );
+        }
       };
     }
     this.watching = watch;
@@ -444,6 +473,7 @@ class HostedDb {
   private async compactPass(): Promise<void> {
     const fs = await this.fs();
     let installed = false;
+    let steps = 0;
     try {
       for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
         const meta = await this.withWal((wal) => wal.meta());
@@ -453,7 +483,7 @@ class HostedDb {
         const budget = this.budget();
         const step = await mergeNextStep(fs, budget, base, meta.top);
         recycleEngine(budget.wasmRecycleBytes);
-        if (!step) return;
+        if (!step) return this.measure(base, fs);
         await this.exclusive(() =>
           this.withWal(async (wal) => {
             this.trusted = await installStep(fs, wal, step, this.trusted);
@@ -461,11 +491,15 @@ class HostedDb {
           }),
         );
         installed = true;
+        steps += 1;
         this.counts.compactionSteps += 1;
         this.installLanded();
         announceGeneration(this.name);
       }
     } finally {
+      // A pass cut off at the step limit asks for another, which queues behind
+      // the lock's waiters; a step that threw never reached the limit.
+      if (steps === MAX_COMPACTION_STEPS && !this.destroying) this.compact().catch(() => undefined);
       // A pass that installed nothing sweeps once, for the files an earlier
       // pass had to leave. Last, so it never delays a merge that a full L0
       // waits for, and best-effort: the next pass sweeps again.
@@ -473,6 +507,36 @@ class HostedDb {
         await this.exclusive(() => this.withWal((wal) => this.sweepIdle(fs, wal))).catch(() => undefined);
       }
     }
+  }
+
+  /**
+   * Offer pressure when `base`, which a pass found in shape, is over the
+   * cap, or when the origin's usage is over 90% of its quota. Writes nothing:
+   * the host never removes a row for the cap. The estimate is read after the
+   * pass, with no lock held, and a missing or rejected one makes no offer.
+   */
+  private measure(base: GenerationMeta, fs: AsyncFs): void {
+    const watch = this.watching;
+    if (!watch) return;
+    const bytes = base.runs.reduce((n, run) => n + run.bytes, 0);
+    this.offerOver(base, bytes, bytes, watch.maxBytes);
+    if (!watch.quota || "pressure" in this.offer) return;
+    listRuns(fs)
+      .then(async (onDisk) => {
+        // A run a tab still holds counts in the estimate: an answer's bytes would look unfreed.
+        if (onDisk.length > base.runs.length) return;
+        const { usage = 0, quota = Infinity } = (await globalThis.navigator?.storage?.estimate?.()) ?? {};
+        this.offerOver(base, bytes, usage, Math.floor(quota * 0.9));
+      })
+      .catch(() => undefined);
+  }
+
+  /** `used` is what counts against `maxBytes`: `bytes`, or the origin's usage. */
+  private offerOver(base: GenerationMeta, bytes: number, used: number, maxBytes: number): void {
+    const bus = this.watching?.bus;
+    if (!bus || used <= maxBytes || "pressure" in this.offer || base.through < this.offer.after) return;
+    this.offer = { kind: "pressure", pressure: { bytes, maxBytes, need: used - Math.floor((maxBytes * 4) / 5) } };
+    bus.postMessage(this.offer);
   }
 
   /**
@@ -563,6 +627,7 @@ export function attachEngineHostPort(
           host.watch(msg.name, {
             maxWalBytes: msg.maxWalBytes,
             compactionMemoryBytes: compactionMemoryOf(msg.compactionMemoryBytes),
+            maxBytes: msg.maxBytes,
           });
           return;
         case "unwatch":

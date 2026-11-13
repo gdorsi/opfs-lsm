@@ -26,6 +26,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | `packages/fate/src/index.ts`, or a kv change claimed to speed up fate's persistence | `pnpm --filter @opfs-lsm/fate test` and `drive bench fate/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
 | In-page `EngineHost` | `drive two-tab-local`. |
+| `maxBytes`, `onPressure`, the pressure offer or its Web Lock | `drive pressure`, and `drive quota` for `maxBytes: "quota"`. |
 | `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench table/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `packages/tanstack-db/src` | `pnpm --filter @opfs-lsm/tanstack-db test`, with `TSDB_DIFF_RUNS=2000` after a change to the planner or the on-demand run. For a performance claim, `drive bench tanstack/` with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `examples/linearlite` | `pnpm --filter @opfs-lsm/example-linearlite test`, `check` and `build`. For a change to its reads, counts or sync, `node examples/linearlite/bench/client.ts <origin> warm ui first-sync` against a production build (`vite build`, `vite preview`) seeded with 100k issues, and `tabs users offline visible` against a copy of that server database. For a performance claim, 5 interleaved runs before and after (`examples/linearlite/DESIGN.md`, Measured). |
@@ -47,7 +48,7 @@ From the repo root, in this order:
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]` and `bench-smoke`. A selector is a family (`kv/`, `table/`, `automerge/`, `yjs/`, `fate/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
+`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `pressure`, `quota`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]` and `bench-smoke`. A selector is a family (`kv/`, `table/`, `automerge/`, `yjs/`, `fate/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
 
 `launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
 
@@ -60,6 +61,8 @@ The helper runs:
 | `two-tab` | `pnpm --filter @opfs-lsm/kv two-tab` |
 | `two-tab-nobc` | `TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
+| `pressure` | `TWO_TAB_PRESSURE=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
+| `quota` | `TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `bench <selector…>` | `pnpm bench <selector…>`, with the flags after it |
 | `bench-smoke` | `pnpm bench:smoke` |
 
@@ -70,6 +73,8 @@ A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is 
 | `two-tab` | `tabs=2`, `mode=SharedWorker`, `two-tab ok` |
 | `two-tab-nobc` | `mode=SharedWorker nobc`, `two-tab ok`, and `bc_posts=` with a positive count |
 | `two-tab-local` | `tabs=1`, `mode=local EngineHost`, `two-tab ok` |
+| `pressure` | `tabs=2`, `mode=SharedWorker`, `pressure answered by tab`, `both tabs read`, `no handler: one warning in each tab`, `pressure ok` |
+| `quota` | `tabs=2`, `mode=SharedWorker`, `handler 1 starts`, `handler calls: `, `quota ok`. Read the timeline: more than one call means a repeated offer. |
 | `bench`, `bench-smoke` | One `## <family>/<workload>: <title>` section per workload, a row per contender, and no `## Failed runs` section. Every read is checked against a model, so exit 0 means every value was right. |
 
 Evidence stays after cleanup:
@@ -190,7 +195,7 @@ Exit 0. The log ends with `All 5 formal checks passed`. Each check prints a `PAS
 - `PASS NoLostAcks`
 - `PASS WalOverSst` (on real `pointGet`)
 - `PASS ViewPin` (copy-on-write memtable pin present)
-- `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source)
+- `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source and drop a covered winner, outputs claim the base manifest's marks only), after two `broken variant caught` lines
 - `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, eleven `broken variant caught` lines show the model fails each known wrong design. The model holds the key generator of `wal`, so a crash state that loses commits also loses what they did to it.
 - `PASS CorruptRefuse` (a run of the recorded manifest removed after every workload: open refuses and nothing writes, unless a manifest that holds every ingested seq stands in)
 

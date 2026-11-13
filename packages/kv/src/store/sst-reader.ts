@@ -124,7 +124,7 @@ export class SstReader {
       return () => {
         for (let h = walk.next(); !h.done; h = walk.next()) {
           if (seek && outside(h.value.key, seek)) continue;
-          return { key: h.value.key, kind: "put", value: h.value.value };
+          return h.value;
         }
         return undefined;
       };

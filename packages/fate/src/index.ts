@@ -1,5 +1,5 @@
 import type { PersistenceStorage } from "@nkzw/fate/persistence";
-import { prefixBound, type Db } from "@opfs-lsm/kv";
+import { prefixBound, type ChangeOp, type Db } from "@opfs-lsm/kv";
 
 const NAMESPACE = 0x66;
 const MAX_LOCK_NAME = 1024;
@@ -64,9 +64,11 @@ export function kvStorage(db: Db): PersistenceStorage {
     subscribe(key, listener) {
       const target = encodeKey(key);
       return db.changes((event) => {
-        if (event.kind === "gap" || (event.kind === "append" && event.ops.some((op) => compare(op.key, target) === 0))) {
-          listener();
-        }
+        const touches = (op: ChangeOp) =>
+          op.type === "deleteRange"
+            ? compare(op.start, target) <= 0 && (!op.endExclusive || compare(target, op.endExclusive) < 0)
+            : compare(op.key, target) === 0;
+        if (event.kind === "gap" || (event.kind === "append" && event.ops.some(touches))) listener();
       });
     },
   };

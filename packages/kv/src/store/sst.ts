@@ -46,15 +46,15 @@ function offsetTableBytes(count: number): number {
   return count > 1 ? 2 * Math.floor((count - 1) / OFFSET_STRIDE) : 0;
 }
 
-/** `seq` is the WAL seq that wrote the entry. Encode treats a missing seq as 0. */
+/** `seq` is the WAL seq that wrote the entry. Seqs start at 1. */
 export type SstEntry =
   | {
       readonly kind: "put";
       readonly key: Uint8Array;
       readonly value: Uint8Array;
-      readonly seq?: number;
+      readonly seq: number;
     }
-  | { readonly kind: "del"; readonly key: Uint8Array; readonly seq?: number };
+  | { readonly kind: "del"; readonly key: Uint8Array; readonly seq: number };
 
 /** The smallest and largest key of a run. */
 export type KeyRange = {
@@ -200,7 +200,7 @@ function encodeBlock(block: readonly SstEntry[]): Uint8Array {
 /** u8 tag | u64 seq | varint suffixLen | suffix | (put) varint valLen | value */
 function writeRecord(out: Uint8Array, view: DataView, o: number, e: SstEntry, prefixLen: number): number {
   out[o++] = e.kind === "put" ? TAG_PUT : TAG_DEL;
-  view.setBigUint64(o, BigInt(e.seq ?? 0), true);
+  view.setBigUint64(o, BigInt(e.seq), true);
   o = writeVarint(out, o + 8, e.key.byteLength - prefixLen);
   out.set(e.key.subarray(prefixLen), o);
   o += e.key.byteLength - prefixLen;
@@ -714,7 +714,8 @@ export class BlockEntries {
     const w = this.w;
     w.next();
     const key = w.key();
-    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value() } : { key, kind: "del" };
+    const seq = w.seq();
+    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value(), seq } : { key, kind: "del", seq };
   }
 }
 
@@ -741,7 +742,8 @@ export class ReverseBlockEntries {
     w.o = at;
     w.next();
     const key = w.key();
-    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value() } : { key, kind: "del" };
+    const seq = w.seq();
+    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value(), seq } : { key, kind: "del", seq };
   }
 }
 

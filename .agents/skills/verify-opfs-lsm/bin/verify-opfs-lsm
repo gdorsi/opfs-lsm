@@ -140,7 +140,7 @@ run_capture() {
 
 cmd_drive() {
   local feature="${1:-}"
-  [[ -n "$feature" ]] || die "usage: verify-opfs-lsm drive <two-tab|two-tab-nobc|two-tab-local|bench <selector…> [flags]|bench-smoke>"
+  [[ -n "$feature" ]] || die "usage: verify-opfs-lsm drive <two-tab|two-tab-nobc|two-tab-local|pressure|quota|bench <selector…> [flags]|bench-smoke>"
   shift
   cmd_doctor >/dev/null
 
@@ -153,6 +153,12 @@ cmd_drive() {
       ;;
     two-tab-local)
       run_capture two-tab-local env TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+      ;;
+    pressure)
+      run_capture pressure env TWO_TAB_PRESSURE=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+      ;;
+    quota)
+      run_capture quota env TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
       ;;
     bench)
       (( $# > 0 )) || die "usage: verify-opfs-lsm drive bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]"
@@ -181,7 +187,7 @@ verify-opfs-lsm — real-Chrome proofs for @opfs-lsm
 
   verify-opfs-lsm doctor
   verify-opfs-lsm launch
-  verify-opfs-lsm drive <two-tab|two-tab-nobc|two-tab-local>
+  verify-opfs-lsm drive <two-tab|two-tab-nobc|two-tab-local|pressure|quota>
   verify-opfs-lsm drive bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]
   verify-opfs-lsm drive bench-smoke
   verify-opfs-lsm cleanup

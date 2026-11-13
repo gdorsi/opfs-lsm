@@ -19,8 +19,12 @@ import {
   TARGET_RUN_BYTES,
   type CompactionPlan,
 } from "../store/levels.js";
+import { retireMarks } from "../store/marks.js";
 import type { HostBudget } from "./budget.js";
 import { inMergeSlot } from "./merge-slot.js";
+
+/** A run the merge wrote, before it is given a `marksThrough`. */
+type MergedRun = Omit<RunMeta, "marksThrough">;
 
 /** Merged runs written to OPFS and not yet in any generation. */
 type CompactionOutput = {
@@ -29,7 +33,7 @@ type CompactionOutput = {
   readonly droppedSeq: number;
 };
 
-type Merged = Pick<CompactionOutput, "outputs" | "droppedSeq">;
+type Merged = { readonly outputs: readonly MergedRun[]; readonly droppedSeq: number };
 
 /**
  * Plan one step on `base`, the recorded generation, merge its inputs, and
@@ -48,11 +52,17 @@ export async function mergeNextStep(
   knownTop: number,
 ): Promise<CompactionOutput | undefined> {
   const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
-  const plan = planCompaction(base.runs, { maxSources: budget.maxSources });
+  const plan = planCompaction(base, { maxSources: budget.maxSources });
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
-  const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget));
-  return { inputs: plan.inputs.map((r) => r.path), ...merged };
+  const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget, base));
+  return {
+    inputs: plan.inputs.map((r) => r.path),
+    // The merge applied every mark of `base`. One the manifest gains before
+    // the install is past `base.through`, so the output claims none of it.
+    outputs: merged.outputs.map((run) => ({ ...run, marksThrough: base.through })),
+    droppedSeq: merged.droppedSeq,
+  };
 }
 
 async function writeStep(
@@ -60,6 +70,7 @@ async function writeStep(
   plan: CompactionPlan,
   name: (i: number) => string,
   budget: HostBudget,
+  base: GenerationMeta,
 ): Promise<Merged> {
   const inputs: OpenFile[][] = [];
   let merge: MergeCore | undefined;
@@ -76,6 +87,7 @@ async function writeStep(
     merge = await openMerge({
       sources: inputs.map((files) => files.map((f) => f.size)),
       dropTombstones: plan.bottom,
+      marks: base.marks,
       targetBytes: TARGET_RUN_BYTES,
       codec: codecForLevel(plan.outputLevel),
       chunkBytes: budget.chunkBytes,
@@ -102,7 +114,7 @@ export async function pumpMerge(
   inputs: readonly (readonly OpenFile[])[],
   name: (i: number) => string,
 ): Promise<Merged> {
-  const outputs: RunMeta[] = [];
+  const outputs: MergedRun[] = [];
   const created: string[] = [];
   let open: { readonly path: string; readonly writer: FileWriter } | undefined;
   try {
@@ -168,6 +180,7 @@ export async function installStep(
     runs,
     tombstoneSeq: Math.max(meta.tombstoneSeq, step.droppedSeq),
     through: meta.through,
+    marks: retireMarks(meta.marks, runs),
   });
   await raiseGeneration(wal, generation);
   return generation;

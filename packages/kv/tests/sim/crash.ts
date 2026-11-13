@@ -12,7 +12,7 @@ import type { Db } from "../../src/index.js";
 import { checkDatabase, decodeWalRow, deleteWal, type DatabaseReport } from "./check-database.js";
 import { describeOp, FaultFs, Faults, fsFiles, materializeFs, type DurableOp } from "./fault-fs.js";
 import { dumpWal, materializeWal, traceWal } from "./fault-wal.js";
-import { Oracle, show, type OracleEntry, type OracleOp } from "./oracle.js";
+import { applyOps, Oracle, show, type OracleEntry, type OracleOp } from "./oracle.js";
 
 /**
  * Crash states and the recovery check (docs/research/corruption-hardening-test-suite.md,
@@ -122,6 +122,8 @@ export type Step =
   | { readonly put: string; readonly value: string }
   | { readonly del: string }
   | { readonly batch: readonly ({ readonly put: string; readonly value: string } | { readonly del: string })[] }
+  /** A range delete of every row in [deleteRange, end) written before it. */
+  | { readonly deleteRange: string; readonly end?: string }
   | { readonly ingest: true }
   | { readonly destroy: true }
   | { readonly reopen: true };
@@ -150,6 +152,10 @@ export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): 
           }
         });
         log.append(ops);
+      } else if ("deleteRange" in step) {
+        const op = { type: "deleteRange" as const, start: utf(step.deleteRange), ...(step.end ? { endExclusive: utf(step.end) } : {}) };
+        await db.batch((tx) => applyOps(tx, [op]));
+        log.append([op]);
       } else if ("ingest" in step) {
         await ingest(db);
       } else if ("destroy" in step) {
@@ -240,9 +246,10 @@ export function committedLog(ops: readonly DurableOp[]): Oracle {
         if (typeof m.key === "number") rows.delete(m.key);
         continue;
       }
-      rows.set(m.key as number, decodeWalRow(m.value).map((o) =>
-        o.value === undefined ? { type: "del", key: o.key } : { type: "put", key: o.key, value: o.value },
-      ));
+      rows.set(m.key as number, decodeWalRow(m.value).map((o): OracleOp => {
+        if ("start" in o) return { type: "deleteRange", ...o };
+        return o.value === undefined ? { type: "del", key: o.key } : { type: "put", key: o.key, value: o.value };
+      }));
     }
   }
   const log = new Oracle();

@@ -107,7 +107,7 @@ not already lose: a merge is idempotent and the cursor advances only after the w
 GET  /api/pull?stream=issues&after=V&limit=N  -> { rows, next, head, more, epoch }   rows ordered by version
 POST /api/push { ops: PushOp[] }              -> { results: { stream, id, clocks, row }[], head, epoch }
 GET  /api/events                              -> SSE, `data: {"head":N}` after every commit, ping every 25 s
-GET  /api/detail?id=X                         -> { body, comments }   (a detail view opened before backfill)
+GET  /api/detail?id=X&id=Y…                   -> { bodies, comments } the threads of up to 100 issues; an issue with no body adds none
 GET  /api/row?stream=S&id=X                   -> { row, epoch }       one row, or null; comments by comment id
 PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?: true }
 ```
@@ -129,11 +129,29 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
   op still refused is dropped: the leader fetches that row from `/api/row` and replaces the local row with it,
   or deletes the local row when the server has none (a refused create). A field edited again while the push was
   in flight keeps its local value and stays dirty, so the next push sends it. It warns in the console.
-- **First sync.** `issues` first, so list and board fill page by page; then `bodies` and `comments` in the
-  background. An epoch change clears each collection with docstore's `clear`, one catalog write, and so does a
+- **First sync.** `issues` only, so list and board fill page by page. Once the head is known, the cursors of `bodies`
+  and `comments` start at it and both count as caught up: a replica never pulls their backlog. An epoch change clears each collection with docstore's `clear`, one catalog write, and so does a
   `format` in the sync row other than the store's `FORMAT`, which changes when stored rows change shape; the leader
-  pushes unsent edits before that clear. A detail view opened before its body arrives calls `/api/detail` from its
-  own tab and writes the result with the same `mergeIncoming`.
+  pushes unsent edits before that clear.
+- **Bodies and comments are lazy.** A body held means the issue's whole thread is held, which is what the detail view
+  tests. So an incremental pull of `bodies` or `comments` stores a row only for an issue whose body the replica holds,
+  or that it already has the row of; other rows are dropped, and a pushed ack merges as ever into the row it
+  belongs to. A thread enters the replica whole, from `/api/detail`, in two ways. The list (its rendered rows) and the
+  board (its cards) report the issues on screen; once those hold still for 200 ms, the ones without a body that are
+  not already asked for go in one request per 100. An id the server had no body for is not asked again until the page
+  reloads, and a failed request is asked again the next time the ids are seen. A detail view opened on an issue
+  without a body does the same for its one id, with backoff. Rare hole: a comment pulled in the instant between the
+  server reading a thread for `/api/detail` and the body being written is dropped, and shows once it changes.
+- **Eviction.** The database opens with `maxBytes: "quota"`, so kv asks for space when the origin passes 90% of
+  its storage quota (`?maxBytes=<bytes>` sets a byte cap instead, to see it happen). Only the leader answers, and it
+  answers at once by setting `pressure` in the shared sync row; nothing is cleared yet. Every tab then shows an
+  alert that says cached descriptions and comments will be removed from this device, with one confirm button. A
+  confirm in any tab goes to the leader over a `BroadcastChannel`. Between two pages, right after a push, the leader
+  then clears `bodies` and `comments` and unsets `pressure`: later changes still arrive for the threads that load
+  again, and the screen preloads the ones in view. Issues stay. While a body or comment has an unsent edit nothing is
+  cleared, and the confirmation waits for the next push. An edit to a body or comment made in the instant between
+  that check and the clear is lost. kv offers again at each flush while still over the cap; the alert is raised only when more than 100 threads
+  are cached, so it does not come back for the few rows the screen reloads.
 - **Pull order on a first sync.** Pages come in version order. The seed stamps versions newest `modified` first,
   so the first page is the default view's top rows: the list's window fills from the first slice and then holds
   its 100 rows, and every later row sorts past it and stays out of memory. A real server's history arrives in
@@ -264,7 +282,8 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   as a column scrolls, counts from `countByStatus`. A drop writes `status` and a fractional key between its
   neighbours in one `transact`.
 - **Detail.** The summary is a live query by id: from the list's rows when they hold it, else one document
-  read. Description and comments load from kv on demand (a few ms) and, before backfill, from `/api/detail`.
+  read. Description and comments load from kv on demand (a few ms), preloaded when the issue was on screen, else from
+  `/api/detail`.
 - **Feedback.** A dot on rows with `dirty`; a status bar with `Syncing 42,000 / 100,000`, `Offline · 12 unsynced`
   or nothing when idle. Shortcuts: `c` new issue, `/` search, `j`/`k` move in the list, `Enter` opens, `Esc` back.
 
@@ -288,11 +307,11 @@ latter. Interaction times end at the next painted frame, so they move in ~16.7 m
 | warm start, first rows | 886 (876–898) | 106 (105–107) | 1,091 | 2,056 | main thread busy 89 of 116 ms in one trace (`bench/trace-warm.ts`, unminified build): opening kv and docstore and reading the first page 38, script 28, React 11 |
 | warm start, rows and total | 888 (878–899) | 150 (150–152) | 1,093 | 2,056 | the total counts 100,000 `byStatus` entries, 32 ms |
 | heap after warm start, MB | 139 | 25 | 119 | 134 | |
-| storage, MB | 233 | 156 | 183 | 208 | |
+| storage, MB | 233 | 156 | 183 | 208 | B: re-run, bodies and comments are no longer stored up front |
 | first sync, first rows | 139 (133–151) | 141 (125–162) | 212 | 212 | the first pull page |
 | first sync, issues caught up | 2,417 (2,389–2,497) | 3,826 (3,689–4,141) | 9,940 | 11,121 | the index entries: kv's write path and docstore's index planning (`bench/first-sync-100k.txt`) |
-| first sync, comments caught up | 5,713 (5,685–5,841) | 7,687 (7,493–8,503) | 13,345 | 14,474 | the same, for three streams |
-| heap after first sync, MB | 322 (157–326) | 13 (10–23) | 181 | 190 | |
+| first sync, comments caught up | 5,713 (5,685–5,841) | 7,687 (7,493–8,503) | 13,345 | 14,474 | the same, for three streams; B has since stopped pulling bodies and comments, so its figure, like its heap and storage, needs a re-run |
+| heap after first sync, MB | 322 (157–326) | 13 (10–23) | 181 | 190 | B: re-run, see above |
 | status chip on | 28.3 (27.7–29.3) | 29.3 (19.9–30.3) | 42.6 | 1,088 | reads take ~8 ms of it: 431 documents to fill the window, 20k entries counted |
 | status chip off | 96.1 (95.4–99) | 48.8 (47.2–59.5) | 190 | 146 | counting 100,000 entries, 32 ms |
 | priority filter on | 27.1 (27–28.1) | 33 (29.5–45.5) | 39.9 | 1,109 | 585 documents read to fill the window (3 ms), 20k entries counted (7 ms) |
@@ -313,7 +332,7 @@ after an edit is 20 ms, against 19 ms on an idle page (`frames`, `bench/ui-laten
 
 Where B is slower than A, and whose cost it is:
 
-- **First sync**, 1.4 s later for issues and 2.0 s for comments. Each issue writes six keys instead of one (the
+- **First sync**, 1.4 s later for issues and 2.0 s for comments (B no longer pulls bodies and comments; the comments figure needs a re-run). Each issue writes six keys instead of one (the
   document and an entry in five indexes; `pending` has none for a synced row), and each key is appended to kv's
   WAL, applied to its memtable and posted to other tabs, and the next merge reads the stored row back to plan the
   index changes. The two sort keys add about 100 bytes per issue to those writes and 610 ms to the sync. kv's

@@ -1,6 +1,7 @@
 import { compareBytes } from "../bytes.js";
 import { ROW_OVERHEAD, type CheckedOp } from "../check.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
+import { NO_MARKS, type Marks } from "./marks.js";
 
 /** The latest op for one user key, and the WAL seq that wrote it. */
 export type MemRow = {
@@ -79,8 +80,13 @@ class Chunks implements MemRows {
 /**
  * One tab's in-memory view of the WAL: the records above the installed
  * SST generation's ingestedThrough, up to appliedThrough, folded to one row
- * per key, in key order. Records must be applied in seq order with no gaps,
- * so every read sees the state after one WAL prefix.
+ * per key, in key order, under their own range deletes. Records must be
+ * applied in seq order with no gaps, so every read sees the state after one
+ * WAL prefix.
+ *
+ * A row a range delete covers is removed when that record applies, so no
+ * row held is covered by `marks`, and a manifest's marks, whose `through`
+ * is below its own `through`, cover none either.
  *
  * A pin shares chunks with the live table. The live table copies a shared
  * chunk before it writes to it, so a pin costs one array of chunk
@@ -92,6 +98,8 @@ export class Memtable extends Chunks {
   private applied = 0;
   private ingested = 0;
   private live = 0;
+  /** The range deletes of the records held, oldest first. Replaced, never mutated. */
+  private held: Marks = NO_MARKS;
 
   constructor() {
     super([[]], [new Uint8Array(0)]);
@@ -106,6 +114,11 @@ export class Memtable extends Chunks {
     return this.live;
   }
 
+  /** The range deletes of the records held. */
+  get marks(): Marks {
+    return this.held;
+  }
+
   /** The rows as they are now. Later writes don't change what it reads. */
   pin(): MemRows {
     this.owned.fill(false);
@@ -117,11 +130,25 @@ export class Memtable extends Chunks {
     if (record.seq <= this.applied) return "already";
     if (record.seq !== this.applied + 1) return "gap";
     for (const op of record.ops) {
-      this.put(
-        op.type === "put"
-          ? { key: op.key, seq: record.seq, kind: "put", value: op.value }
-          : { key: op.key, seq: record.seq, kind: "del" },
-      );
+      switch (op.type) {
+        case "put":
+          this.put({ key: op.key, seq: record.seq, kind: "put", value: op.value });
+          break;
+        case "del":
+          this.put({ key: op.key, seq: record.seq, kind: "del" });
+          break;
+        case "deleteRange": {
+          const { start, endExclusive: end, through } = op;
+          // The rows' own seqs are below this record, so op order does not matter.
+          this.rebuild(
+            this.range().filter(
+              (row) => row.seq > through || compareBytes(row.key, start) < 0 || (end !== undefined && compareBytes(row.key, end) >= 0),
+            ),
+          );
+          if (through > 0) this.held = [...this.held, { ...op, at: record.seq }];
+          break;
+        }
+      }
     }
     this.applied = record.seq;
     return "applied";
@@ -153,15 +180,21 @@ export class Memtable extends Chunks {
 
   /**
    * The installed SST generation now holds every seq <= `through`. Drop the
-   * rows it covers, and jump past seqs this table never read. True when it
-   * jumped.
+   * rows and range deletes it covers, and jump past seqs this table never
+   * read. True when it jumped.
    */
   advanceTo(through: number): boolean {
     if (through <= this.ingested) return false;
     this.ingested = through;
     const jumped = through > this.applied;
-    const keep = jumped ? [] : this.range().filter((row) => row.seq > through);
+    if (this.held[0] && this.held[0].at <= through) this.held = this.held.filter((m) => m.at > through);
     this.applied = Math.max(this.applied, through);
+    this.rebuild(jumped ? [] : this.range().filter((row) => row.seq > through));
+    return jumped;
+  }
+
+  /** Replaces every chunk with `keep`, in fresh arrays, so a pin keeps what it read. */
+  private rebuild(keep: readonly MemRow[]): void {
     this.chunks = [];
     this.firsts = [];
     this.live = 0;
@@ -174,6 +207,5 @@ export class Memtable extends Chunks {
     if (this.chunks.length === 0) this.chunks.push([]);
     this.firsts[0] = new Uint8Array(0);
     this.owned = this.chunks.map(() => true);
-    return jumped;
   }
 }

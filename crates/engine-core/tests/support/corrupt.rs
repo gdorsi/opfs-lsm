@@ -118,7 +118,7 @@ pub fn check_decode(buf: &[u8]) {
     assert_eq!(hits, puts, "an unfiltered scan returns every put of a decoded run, in file order");
 }
 
-/// Parse `u32 key_len, u32 value_len, key, value` hits. Panics when the
+/// Parse `u32 key_len, u32 value_len, u64 seq, key, value` hits, without the seq. Panics when the
 /// engine returned hits that do not parse.
 pub fn unpack_hits(packed: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out = Vec::new();
@@ -126,7 +126,7 @@ pub fn unpack_hits(packed: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     while o < packed.len() {
         let k = u32_at(packed, o).expect("hit header") as usize;
         let v = u32_at(packed, o + 4).expect("hit header") as usize;
-        o += 8;
+        o += 16;
         let key = packed.get(o..o + k).expect("hit key in bounds").to_vec();
         let value = packed.get(o + k..o + k + v).expect("hit value in bounds").to_vec();
         out.push((key, value));
@@ -219,7 +219,7 @@ pub fn blocks_tile(buf: &[u8]) -> bool {
 /// first) to its end, feeding each `Need` in an order picked by `seed`.
 pub fn drive_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) -> Result<(Vec<EncodedRun>, u64), MergeError> {
     let sizes: Vec<Vec<u32>> = sources.iter().map(|runs| runs.iter().map(|r| r.len() as u32).collect()).collect();
-    let mut session = MergeSession::open(config, &sizes)?;
+    let mut session = MergeSession::open(config, &sizes, &[])?;
     let mut state = seed | 1;
     let (mut runs, mut bytes) = (Vec::new(), Vec::new());
     loop {

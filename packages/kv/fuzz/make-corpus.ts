@@ -49,7 +49,12 @@ const cat = (...parts: (Uint8Array | number[])[]) => {
   return out;
 };
 
-/** A database through four flushes (one L0 -> L1 compaction) and a reopen, as the engine writes it. */
+/**
+ * A database through four flushes (one L0 -> L1 compaction) and a reopen, as
+ * the engine writes it. The range deletes cover no key their own flush
+ * writes, so the runs, and the Rust seeds made from them, do not change with
+ * them: one reaches the manifests' marks, one stays in the WAL.
+ */
 async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Array[]; walRows: Uint8Array[] }> {
   const fs = new MemoryFs();
   const host = new EngineHost(() => fs);
@@ -59,12 +64,14 @@ async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Arr
     await db.batch((tx) => {
       for (let i = 0; i < 60; i++) tx.put(utf(`todo/${String(i * 5 + round).padStart(4, "0")}`), utf(`{"title":"buy milk ${i}","done":${i % 2 === 0}}`));
       tx.delete(utf(`todo/${String(round * 7).padStart(4, "0")}`));
+      if (round === 4) tx.deleteRange({ start: utf("todo/0000"), endExclusive: utf("todo/0001") });
     });
     await db.put(utf(`i/byDone/${round}`), new Uint8Array(0));
     await ingest(db);
   }
   await db.put(utf("todo/9999"), utf('{"title":"left in the WAL"}'));
   await db.delete(utf("todo/0001"));
+  await db.batch((tx) => tx.deleteRange({ start: utf("todo/0100") }, { through: 3 }));
   await db.close();
   db = await open();
   await db.close();

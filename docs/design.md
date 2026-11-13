@@ -57,14 +57,21 @@ Each acked `put`, `delete`, `batch` or `update` is one record in the `wal` store
 seq. The value is one `ArrayBuffer` that holds the ops of the batch back to back:
 
 ```
-| u8 type         0 = put, 1 = delete                                        |
+| u8 type         0 = put, 1 = delete, 3 = range delete                      |
 | u32 key length                                                             |
-| key                                                                        |
+| key             the start key, for a range delete                          |
 | u32 value length                                    (puts only)            |
 | value                                               (puts only)            |
+| u8 has end                                          (range deletes only)   |
+| u32 end length, end                                 (if has end)           |
+| u64 through     as the writer asked                 (range deletes only)   |
 ```
 
-A row that is not an `ArrayBuffer`, or that ends inside an op, is rejected as corrupt.
+A writer that gives no `through` stores 2^53 − 1. The record's seq bounds it (see
+[Range deletes](#range-deletes)), so the stored value never needs the seq the record will get.
+
+A row that is not an `ArrayBuffer`, that ends inside an op, or that holds a range delete whose
+start is not below its end, is rejected as corrupt.
 
 ## Append
 
@@ -130,11 +137,15 @@ Rows are kept in key order, in chunks of 512 to 1024 rows. Records apply in seq 
 gaps. A record that skips a seq is refused, and the tab reads the WAL tail instead. The memtable
 is therefore always one exact prefix of the log. Every read depends on this.
 
+The memtable also holds the marks of the range deletes in its records. Applying a range delete
+removes the rows it covers at once, so a row the memtable holds is never covered.
+
 A `view` pins the memtable without copying it. The pin copies the array of chunk references and
-marks every chunk as shared. The live table copies a shared chunk before its next write to it.
+marks every chunk as shared. The live table copies a shared chunk before its next write to it,
+and a range delete rebuilds the table from the rows it keeps.
 
 When the installed generation moves forward, the memtable drops the rows that the newly ingested
-seqs wrote.
+seqs wrote, and the marks of the newly ingested records.
 
 ## Backpressure
 
@@ -153,129 +164,8 @@ A host that cannot help does not stop writes. The thresholds are checked only on
 
 # SST file format
 
-A run is data blocks, a bloom filter, a block index and a fixed-size footer, back to back. A
-writer produces the sections in that order without knowing the key count up front. A reader
-finds the footer as the last 44 bytes of the file.
-
-```
-================================== SST file ==================================
-| data block 0                                                               |
-| ...                                                                        |
-| data block N-1                                                             |
-------------------------------------------------------------------------------
-| bloom bits                                                                 |
-------------------------------------------------------------------------------
-| index entry 0                                                              |
-| ...                                                                        |
-| index entry N-1                                                            |
-------------------------------------------------------------------------------
-| footer (44 bytes)                                                          |
-==============================================================================
-```
-
-Entries are sorted by key, with one entry per key. A reader rejects a file whose sections are
-not contiguous.
-
-## Data block
-
-```
-| u32 record count                                                           |
-| varint prefix length                                                       |
-| prefix                                                                     |
-| record 0                                                                   |
-| ...                                                                        |
-| record count - 1                                                           |
-| u16 offset of record 4                              from the block start   |
-| u16 offset of record 8                                                     |
-| ...                                                                        |
-```
-
-`prefix` is the longest prefix that every key in the block shares. A key is the prefix followed
-by the suffix of its record. A block with one key stores the whole key as its prefix.
-
-`offset` entries, one per 4th record after record 0, let a reader binary-search the block. Every
-record holds a whole suffix, so a reader compares any record from its offset alone.
-
-A block ends before the record that would take its encoded size past 4 KiB. A block of one
-record can be larger, and it has no offset table.
-
-Varints are unsigned LEB128, at most 5 bytes.
-
-With codec 1 (LZ4), each block is stored packed. Index offsets, the bloom offset and the CRC
-refer to the stored bytes.
-
-```
-| u32 unpacked length                                                        |
-| LZ4 block-format bytes of the block above                                  |
-```
-
-## Record
-
-```
-| u8 tag          1 = put, 2 = delete                                        |
-| u64 seq         the WAL seq that wrote the key                             |
-| varint suffix length                                                       |
-| suffix          the key after the block prefix                             |
-| varint value length                                 (puts only)            |
-| value                                               (puts only)            |
-```
-
-## Index entry
-
-One entry per data block, in block order.
-
-```
-| u32 first key length                                                       |
-| first key       the smallest key of the block                              |
-| u32 last key length                                                        |
-| last key        the largest key of the block                               |
-| u32 block offset                                    from the start of file |
-| u32 block length                                                           |
-```
-
-## Footer (44 bytes)
-
-```
-<----------------------------------- 4 bytes ----------------------------------->
-| entry count                                                                   |
-| block count                                                                   |
-| bloom offset                                                                  |
-| bloom length                                                                  |
-| bloom hash count                                                              |
-| index offset                                                                  |
-| index length                                                                  |
-| codec                                                                         |
-| crc32                                                                         |
-| version                                                                       |
-| magic                                                                         |
-```
-
-`bloom offset` is also the length of the data section.
-
-`codec` is 0 for raw blocks and 1 for LZ4.
-
-`crc32` is the IEEE CRC-32 of every byte before the field.
-
-`version` must be 1. Any other version is rejected.
-
-`magic` must be `OLST` (0x4f4c5354).
-
-A reader also rejects a footer that names more than 32 bloom hashes, or more blocks than the
-index has room for, before either sets a loop count or an allocation.
-
-## Bloom filter
-
-The filter uses 10 bits per key and 7 hashes, about a 1% false-positive rate. The hashes are
-FNV-1a and a 32-bit mix of it, combined by double hashing.
-
-## Compression
-
-Runs in L2 and deeper use LZ4. L0 and L1 runs stay raw. L0 and L1 hold the recent writes, and
-an LZ4 block costs a decompress on every read of it. The deeper levels hold nearly all of the
-bytes.
-
-A decoder rejects a block whose unpacked length claims more than LZ4 can produce from the
-stored bytes, before it allocates.
+A run is one SST file: sorted data blocks, a bloom filter, a block index and a footer. Its
+byte layout is in [sst-format.md](sst-format.md).
 
 ## Reading a run
 
@@ -302,6 +192,9 @@ A manifest, `m/<generation>.mft`, lists the runs of one generation. Its byte lay
 `through` is the seq the runs reach. The runs hold the fold of every seq up to it and no seq
 past it. An ingest sets it to the last seq it folded. A compaction keeps the value of its base.
 
+A manifest also holds the marks of the range deletes up to `through` that its runs may still hold
+versions for, and for each run its `marksThrough` (see [Range deletes](#range-deletes)).
+
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
 
@@ -322,9 +215,89 @@ order. Bloom filters play no part in a scan.
 source filters on its own, one block at a time, and only the hits are copied out. A newer source
 that holds the key with a non-matching value or a tombstone drops the older hit.
 
-A `view` pins `appliedThrough`, the installed generation and the memtable chunks. Writes that
-commit during the callback are invisible to it. `rangeJoin` scans a range and point-reads one
-key per entry under one such pin.
+Every read judges the versions it finds in runs against one read point: the marks of the
+installed generation joined with those of the memtable, taken in the same turn as the layers it
+reads. A version from a run is skipped when a mark covers it (see
+[Range deletes](#range-deletes)), and then an older source does not win in its place.
+
+A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the read
+point. Writes that commit during the callback are invisible to it. `rangeJoin` scans a range
+and point-reads one key per entry under one such pin.
+
+# Range deletes
+
+A range delete removes every row in `[start, end)` in one op. It covers a version of a key in the
+range when the version's seq is at or below its `through`. A writer may ask for a `through`; the
+record at seq `s` takes effect as `min(asked, s − 1)`, so a range delete never covers its own batch and a
+later write into the range is read as usual.
+
+The range deletes in effect form the marks, an unordered list of `(start, end, through, at)`,
+where `at` is the seq of the record that holds it. The highest `through` among the marks that
+hold a key judges it, so joining is concatenation. A read checks every live mark, so its cost
+grows with their number until compaction retires them.
+
+A version is judged in the layer that holds it:
+
+* The memtable removes covered rows when it applies the record, so its rows need no check.
+* A flush drops the ops its own records' range deletes cover, then joins those marks into the
+  manifest's.
+* A merge drops a winning version that a mark of its base manifest covers, tombstones included,
+  at any level: every older version of the key has a smaller seq, so the mark covers it too.
+* A run records `marksThrough`: it holds no version a range delete from a record at or below it
+  covers. A flushed run takes the last seq it folded, a compaction output its base's `through`.
+
+A mark retires when every run that overlaps it has `marksThrough` at or past its `at`: no run
+left can hold a version it covers. Each flush and each compaction install retires the manifest's
+marks against its new runs, and a mark step (see [Planning](#planning)) rewrites the runs that
+hold a mark back, so its rows leave the disk.
+
+# Size cap
+
+`openDb({ maxBytes })` asks the database to stay under a size. kv measures and asks: it never
+removes a row or writes to the WAL for the cap, and a write never waits for it or fails because of
+it. The host holds the smallest numeric `maxBytes` any open tab passed, and whether any tab passed
+`"quota"`, until the last tab closes the database. Both apply at once. Nothing about the cap is
+stored.
+
+**Measure.** A compaction pass that finds nothing left to plan measures its manifest: `bytes` is
+the sum of its runs' file bytes. A pass runs after each flush and when a tab opens the database
+with `maxBytes`. Covered and overwritten versions count until a merge drops them; the WAL and the
+retired runs a `view` holds do not count.
+
+**Quota.** With `"quota"`, a measure that finds the numeric cap met or absent, and no run file on
+disk outside its manifest, reads `navigator.storage.estimate()` after the pass, holding no lock. A
+retired run that a tab still holds counts in the estimate, so the read waits for a pass after it
+is gone. The cap is then 90% of `quota`,
+rounded down, and `need` is `usage` less 4/5 of it. `bytes` stays the sum of the runs' file bytes.
+The estimate covers the whole origin (the WAL in IndexedDB, other databases, caches) and is
+approximate, so `need` can pass `bytes`: a handler that frees `need` regardless empties the
+database. Each database opened with `"quota"` is offered the whole `need`. A missing or rejected estimate, or one
+without `usage` or `quota`, makes no offer.
+
+**Offer.** Over a cap, the host posts `{ kind: "pressure", pressure: { bytes, maxBytes, need } }`
+on the layers channel, with `need` the bytes over 4/5 of the cap. It holds one of two states:
+
+| State | Event | Next |
+|---|---|---|
+| after `s` | a measure over the cap, of a manifest whose `through` is at least `s` | open, posted |
+| open | `pressure-pull` | open, posted again |
+| open | `pressure-done` | after the WAL head |
+| any | the last tab closes the database | after 0 |
+
+An answer counts only once a flush holds what the handlers wrote. Handlers that wrote nothing
+leave the manifest at the WAL head, so the host asks again at most once per compaction pass. A
+pass that stops at its step limit measures nothing: under heavy writes the offer waits for a pass
+that finishes. An open offer keeps the numbers it was posted with, and no other offer follows
+until a holder posts `pressure-done`. The three messages are posted once each: if the channel
+loses one, offers stop until the holder's handle closes. A new host starts at "after 0".
+
+**Answer.** A handle with an `onPressure` handler asks for the Web Lock
+`opfs-lsm-pressure/<name>` and keeps it while it has one. On the grant it posts `pressure-pull`,
+for an offer posted while another handle held the lock. Only the holder answers: it calls its
+handlers in turn, then posts `pressure-done`, whether they resolved or threw. A holder that closes
+mid-answer, or whose tab goes away, posts nothing, and the next holder pulls the offer. A handle
+opened with `maxBytes` and no handler asks for the lock shared with `ifAvailable` on each offer;
+granted, no handle answers, and it warns.
 
 # Multi-tab coordination
 
@@ -407,10 +380,12 @@ For each run, under the exclusive section for the database, the host:
    manifest number in use is `top`.
 2. Reads the WAL records above `ingestedThrough`, oldest first, up to `flushRunBytes`. A run
    takes at least one record.
-3. Folds them to the last op per key, in key order, keeping the seq of each op.
-4. Writes `l0/<first>-<last>.sst`.
+3. Folds them to the last op per key, in key order, keeping the seq of each op, and drops each
+   op that a range delete of the same records covers.
+4. Writes `l0/<first>-<last>.sst`, unless no op is left.
 5. Writes manifest `top + 1` with `through = <last>`, listing the new run in front of the runs
-   of manifest `G`.
+   of manifest `G`, and the marks of `G` joined with those of the records (see
+   [Range deletes](#range-deletes)).
 6. In one IndexedDB transaction, sets `ingestedThrough = <last>`, raises `generation` to
    `top + 1` and truncates the WAL.
 7. Deletes the manifests older than the recorded generation, unless a tab holds the reclaim
@@ -452,6 +427,8 @@ the shallower level wins.
 * A deeper level scores its bytes over its budget, and reports past 1. Its step picks the run
   whose overlapping bytes in the next level are the smallest fraction of its own size, and merges
   it with those runs into the next level.
+* When no level reports, a mark step takes the first run that keeps a range delete from retiring: the
+  L0 step for an L0 run, otherwise that run alone, rewritten into its own level.
 
 Scoring lets L0 pass 4 runs while a deeper level is further over budget. If L0 always went
 first, L1 would never be pushed down.
@@ -476,7 +453,7 @@ between two keys and asks the host for one thing:
 | YIELD | gives the event loop a turn |
 | DONE | installs the outputs |
 
-For a key, the newest source wins. The session checks the CRC of every input run before it uses
+For a key, the newest source wins, and is dropped when a mark covers it. The session checks the CRC of every input run before it uses
 the last entries of that run. It cuts the output into runs of about 4 MiB of records, named
 `c<top + 1>.<i>`.
 
@@ -514,12 +491,14 @@ under the exclusive section, the host:
 
 1. Reconciles, and checks that every input is still in the recorded manifest `G`.
 2. Writes manifest `top + 1`, with the inputs replaced by the outputs, `tombstoneSeq` raised to
-   the highest dropped tombstone, and the `through` of `G`.
+   the highest dropped tombstone, and the `through` and marks of `G`, retired against the new
+   runs.
 3. Raises `meta.generation` to `top + 1`.
 4. Sweeps: deletes the older manifests, and every run outside `top + 1` that no tab holds open.
    While a tab holds the reclaim lock, it deletes nothing and tries again on the next pass.
 
-A pass runs up to 8 steps, and sweeps if it installs none. A request during a pass starts another.
+A pass runs up to 8 steps, and sweeps if it installs none. A request during a pass starts another,
+and so does a pass that used all 8.
 
 # Destroy
 

@@ -121,13 +121,23 @@ describe("push", () => {
     assert.equal(issue.deleted, false);
     assert.equal(issue.version, before + 1);
 
-    const d = detail(db, "i-new");
-    assert.equal(d.body?.description, "details");
+    const d = detail(db, ["i-new"]);
+    assert.equal(d.bodies[0]?.description, "details");
     assert.deepEqual(d.comments.map((c) => [c.key, c.body, c.username]), [["i-new/c-new", "first!", "linus"]]);
     assert.equal(pull(db, "issues", before, 10).rows[0]?.id, "i-new");
 
     push(db, [{ stream: "comments", id: "c-new", fields: { body: "edited" }, clocks: { body: 4 } }], "linus");
-    assert.equal(detail(db, "i-new").comments[0]?.body, "edited");
+    assert.equal(detail(db, ["i-new"]).comments[0]?.body, "edited");
+  });
+
+  it("answers a detail request for several issues, with no body for an issue that has none", () => {
+    const [a, b] = pull(db, "bodies", 0, 2).rows.map((r) => r.id);
+    const one = detail(db, [a!]);
+    const many = detail(db, [a!, "no-such-issue", b!]);
+    assert.deepEqual(many.bodies.map((r) => r.id), [a, b]);
+    assert.deepEqual(many.comments.filter((c) => c.issue_id === a), one.comments);
+    assert.ok(many.comments.every((c) => c.issue_id === a || c.issue_id === b));
+    assert.deepEqual(detail(db, ["no-such-issue"]), { bodies: [], comments: [] });
   });
 
   it("leaves the server unchanged when it refuses a single op", () => {

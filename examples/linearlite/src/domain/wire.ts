@@ -47,8 +47,9 @@ export interface PushResponse {
   head: number;
   epoch: string;
 }
+/** The bodies the server holds for the asked issues (an issue without one adds none) and all their comments. */
 export interface DetailResponse {
-  body: ServerRow<"bodies"> | null;
+  bodies: ServerRow<"bodies">[];
   comments: ServerRow<"comments">[];
 }
 
@@ -58,6 +59,7 @@ export interface RowResponse<S extends Stream = Stream> {
 }
 
 export const MAX_OPS = 1000;
+export const MAX_DETAIL_IDS = 100;
 const MAX_PULL_LIMIT = 10_000;
 const DEFAULT_PULL_LIMIT = 1000;
 const MAX_TITLE = 500;
@@ -164,8 +166,11 @@ export function parsePushRequest(json: unknown): PushRequest {
   return { ops: json.ops.map(parseOp) };
 }
 
-export function parseDetailRequest(params: URLSearchParams): { id: string } {
-  return { id: id(params.get("id"), "id") };
+/** `id` repeats, once per issue. */
+export function parseDetailRequest(params: URLSearchParams): { ids: string[] } {
+  const ids = [...new Set(params.getAll("id"))];
+  if (ids.length === 0 || ids.length > MAX_DETAIL_IDS) return fail(`id must be given 1-${MAX_DETAIL_IDS} times`);
+  return { ids: ids.map((v) => id(v, "id")) };
 }
 
 /** `id` is the comment's own id for the comments stream, not its `key`. */

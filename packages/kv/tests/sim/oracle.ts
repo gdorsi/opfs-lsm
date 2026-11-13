@@ -9,9 +9,30 @@ import { compareBytes, containsAll, keyToString } from "../../src/bytes.js";
 
 export type OracleOp =
   | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array }
-  | { readonly type: "del"; readonly key: Uint8Array };
+  | { readonly type: "del"; readonly key: Uint8Array }
+  /** `through` as the writer asked: undefined for every row before its batch. */
+  | { readonly type: "deleteRange"; readonly start: Uint8Array; readonly endExclusive?: Uint8Array; readonly through?: number };
 
 type LogEntry = { readonly seq: number; readonly ops: readonly OracleOp[] };
+
+/** A range delete of the log, its `through` resolved against its seq. */
+type RangeDelete = { readonly seq: number; readonly start: Uint8Array; readonly endExclusive?: Uint8Array; readonly through: number };
+
+/** Writes `ops` into a batch, as a caller would. */
+export function applyOps(
+  tx: {
+    put(k: Uint8Array, v: Uint8Array): void;
+    delete(k: Uint8Array): void;
+    deleteRange(b: { start?: Uint8Array; endExclusive?: Uint8Array }, o?: { through?: number }): void;
+  },
+  ops: readonly OracleOp[],
+): void {
+  for (const op of ops) {
+    if (op.type === "put") tx.put(op.key, op.value);
+    else if (op.type === "del") tx.delete(op.key);
+    else tx.deleteRange(op.endExclusive ? { start: op.start, endExclusive: op.endExclusive } : { start: op.start }, op.through === undefined ? {} : { through: op.through });
+  }
+}
 
 export type OracleEntry = { readonly key: Uint8Array; readonly value: Uint8Array };
 
@@ -29,6 +50,7 @@ type Version = { readonly seq: number; readonly value: Uint8Array | undefined };
 export class Oracle {
   private readonly entries: LogEntry[] = [];
   private readonly versions = new Map<string, { key: Uint8Array; history: Version[] }>();
+  private readonly rangeDeletes: RangeDelete[] = [];
 
   /** Seq of the last acked batch. 0 for an empty log. */
   get head(): number {
@@ -41,6 +63,12 @@ export class Oracle {
     const seq = this.entries.length + 1;
     this.entries.push({ seq, ops: ops.map(copyOp) });
     for (const op of ops) {
+      if (op.type === "deleteRange") {
+        const through = Math.min(op.through ?? Number.MAX_SAFE_INTEGER, seq - 1);
+        const end = op.endExclusive && new Uint8Array(op.endExclusive);
+        this.rangeDeletes.push({ seq, through, start: new Uint8Array(op.start), ...(end ? { endExclusive: end } : {}) });
+        continue;
+      }
       const id = keyToString(op.key);
       let v = this.versions.get(id);
       if (!v) {
@@ -61,16 +89,28 @@ export class Oracle {
     return [...this.versions.values()].map((v) => v.key);
   }
 
-  /** The value of `key` after `log[1..p]`. */
+  /**
+   * The value of `key` after `log[1..p]`: its newest version, unless a range
+   * delete in `log[1..p]` covers that version's seq.
+   */
   valueAt(key: Uint8Array, p = this.head): Uint8Array | undefined {
     const history = this.versions.get(keyToString(key))?.history;
     if (!history) return undefined;
-    let out: Uint8Array | undefined;
+    let out: Version | undefined;
     for (const v of history) {
       if (v.seq > p) break;
-      out = v.value;
+      out = v;
     }
-    return out;
+    if (!out) return undefined;
+    const newest = out;
+    const gone = this.rangeDeletes.some(
+      (r) =>
+        r.seq <= p &&
+        newest.seq <= r.through &&
+        compareBytes(key, r.start) >= 0 &&
+        (!r.endExclusive || compareBytes(key, r.endExclusive) < 0),
+    );
+    return gone ? undefined : newest.value;
   }
 
   /** `fold(log[1..p])` as live entries in key order. */
@@ -191,10 +231,20 @@ export type ViewCheck = {
   finish(): void;
 };
 
-function copyOp(op: OracleOp): OracleOp {
-  return op.type === "put"
-    ? { type: "put", key: new Uint8Array(op.key), value: new Uint8Array(op.value) }
-    : { type: "del", key: new Uint8Array(op.key) };
+export function copyOp(op: OracleOp): OracleOp {
+  switch (op.type) {
+    case "put":
+      return { type: "put", key: new Uint8Array(op.key), value: new Uint8Array(op.value) };
+    case "del":
+      return { type: "del", key: new Uint8Array(op.key) };
+    case "deleteRange":
+      return {
+        type: "deleteRange",
+        start: new Uint8Array(op.start),
+        ...(op.endExclusive ? { endExclusive: new Uint8Array(op.endExclusive) } : {}),
+        ...(op.through === undefined ? {} : { through: op.through }),
+      };
+  }
 }
 
 function sameValue(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {

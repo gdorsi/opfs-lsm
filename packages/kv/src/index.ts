@@ -5,6 +5,8 @@ export {
   type OpenOptions,
   type Db,
   type BatchTx,
+  type KeyBounds,
+  type DeleteRangeOptions,
   type Entry,
   type Range,
   type ViewSnapshot,
@@ -12,6 +14,8 @@ export {
   type ChangeListener,
   type ChangeKind,
   type ChangeOp,
+  type Pressure,
+  type PressureHandler,
 } from "./db.js";
 export {
   OpfsLsmError,

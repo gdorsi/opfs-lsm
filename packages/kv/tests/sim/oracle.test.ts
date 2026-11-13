@@ -37,6 +37,25 @@ describe("oracle", () => {
     expect(keys({ limit: 2 })).toEqual(["a", "b"]);
   });
 
+  it("folds a range delete over the rows written at or before its through, never its own batch's", () => {
+    const o = new Oracle();
+    o.append([
+      { type: "put", key: utf("a"), value: utf("1") },
+      { type: "put", key: utf("b"), value: utf("1") },
+    ]);
+    o.append([{ type: "put", key: utf("c"), value: utf("2") }]);
+    o.append([
+      { type: "deleteRange", start: utf("a"), endExclusive: utf("c"), through: 1 },
+      { type: "deleteRange", start: utf("c"), through: 99 },
+      { type: "put", key: utf("d"), value: utf("3") },
+    ]);
+    o.append([{ type: "put", key: utf("b"), value: utf("4") }]);
+    const state = (p: number) => o.stateAt(p).map((e) => `${new TextDecoder().decode(e.key)}=${new TextDecoder().decode(e.value)}`);
+    expect(state(2)).toEqual(["a=1", "b=1", "c=2"]);
+    expect(state(3)).toEqual(["d=3"]);
+    expect(state(4)).toEqual(["b=4", "d=3"]);
+  });
+
   it("keeps the last op when a batch writes a key twice", () => {
     const o = new Oracle();
     o.append([
