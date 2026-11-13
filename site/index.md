@@ -61,9 +61,6 @@ adapters:
           ratio: 1.3×
 size:
   main: 18.8 kB
-  worker: 12.8 kB
-  wasm: 16.6 kB
-  lazy: 29.4 kB
 demo:
   count: 100,000
 ---
@@ -169,17 +166,6 @@ const db = await openDb({ name: "app" });
 [The adapter benchmarks](../README.md#benchmarks) · [How they are measured](../bench/README.md)
 
 <Illustration name="adapters" full :data="$frontmatter.adapters" label="The adapter benchmarks, each opfs-lsm adapter against the IndexedDB option of its framework. TanStack DB: cold load of 91,000 rows 176k rows/s against 112k, 1.6× faster; bulk insert 115k rows/s against 17.2k, 6.7× faster. Yjs against y-indexeddb: cold load of 500 notes 9.5k notes/s against 2.0k, 4.8× faster; editing trace 33.2k edits/s against 1.4k, 23× faster. Automerge against automerge-repo's IndexedDB storage: cold load of 500 notes 2.2k notes/s against 1.1k, 2.0× faster; writing 500 notes 821 notes/s against 743, 1.1× faster. fate against its IndexedDB persistence: cold load of 100 lists 3.4k records/s against 1.0k, 3.3× faster; queueing 300 mutations 263 ops/s against 201, 1.3× faster." />
-
-<div class="home-claim flip">
-<div class="home-copy">
-
-## Lightweight
-
-18.8 kB are part of the critical path to load, and the rest is loaded lazily · [File by file](../README.md#bundle-size)
-
-</div>
-<Illustration name="bundle" :data="$frontmatter.size" label="A page imports kv and downloads 18.8 kB. When a click handler calls openDb, the SharedWorker chunk (12.8 kB) and the wasm engine (16.6 kB) load, 29.4 kB more." />
-</div>
 
 ## Packages
 
