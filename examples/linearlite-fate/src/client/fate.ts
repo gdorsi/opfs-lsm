@@ -87,8 +87,6 @@ export function openFate(): Promise<Opened> {
     await fate.persistence!.ready;
     performance.mark("fate:ready");
     opened = { fate, storage: kind, user: params.get("user") ?? "anonymous" };
-    // `?bench` hands the client to bench/reload.ts, which flushes its cache and counts the records.
-    if (params.has("bench")) (globalThis as { linearliteFate?: Fate }).linearliteFate = fate;
     return opened;
   })());
 }
