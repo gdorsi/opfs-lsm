@@ -148,7 +148,7 @@ class Session implements MergeCore {
   }
 
   private emit(e: SstEntry): void {
-    if (!this.marks.empty && e.seq <= throughAt(this.marks, e.key)) return;
+    if (this.marks.length > 0 && e.seq <= throughAt(this.marks, e.key)) return;
     if (e.kind === "del" && this.dropTombstones) {
       this.dropped = Math.max(this.dropped, e.seq ?? 0);
       return;

@@ -9,7 +9,7 @@ import type { RunEnd, SstEntry } from "./sst.js";
 const GEN_PREFIX = "m/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-/** Version 4 records the mark table and each run's `marksThrough`. */
+/** Version 4 records the marks and each run's `marksThrough`. */
 const GEN_VERSION = 4;
 
 /**
@@ -41,7 +41,7 @@ export type GenerationMeta = {
    */
   readonly through: number;
   /**
-   * The range deletes of seqs `1..through`, joined, less the pieces no run
+   * The range deletes of seqs `1..through`, joined, less the marks no run
    * listed can still hold a covered version for (`retireMarks`).
    */
   readonly marks: Marks;
@@ -104,7 +104,7 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
 }
 
 export function decodeGeneration(buf: Uint8Array): GenerationMeta {
-  if (buf.byteLength < 64) {
+  if (buf.byteLength < 44) {
     throw new CorruptDatabaseError("generation too short");
   }
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);

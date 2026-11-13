@@ -244,7 +244,7 @@ describe("deleteRange", () => {
     await settle(db);
 
     const after = await disk();
-    expect(after.meta.marks.empty, "the mark retired").toBe(true);
+    expect(after.meta.marks, "the mark retired").toEqual([]);
     expect(after.entries).toBe(oracle.size);
     expect(after.bytes).toBeLessThan(before.bytes / 20);
     const want = [...oracle].sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, v]) => `${k}=${v}`);
@@ -269,4 +269,28 @@ describe("deleteRange", () => {
     });
     expect(await keys(db)).toEqual(["n=new"]);
   });
+  it("keeps rewriting past one pass's step limit: ten runs under one range delete, no further writes", async () => {
+    const db = await open();
+    // Forty disjoint groups, four per flush merge: ten L1 runs, more than the eight steps of a pass.
+    for (let g = 0; g < 40; g++) {
+      await db.put(b(`g/${String(g).padStart(2, "0")}`), b("x".repeat(100)));
+      await ingest(db);
+    }
+    await settle(db);
+    const disk = async () => {
+      const meta = (await loadLatestGeneration(fs))!;
+      return { meta, bytes: meta.runs.reduce((n, r) => n + r.bytes, 0) };
+    };
+    const before = await disk();
+    expect(before.meta.runs.length, "more runs than one pass rewrites").toBeGreaterThan(8);
+
+    await db.batch((tx) => tx.deleteRange(prefixBound(b("g/"))));
+    // One flush and no `settle`, which would start the passes the host must start itself.
+    await ingest(db);
+
+    const after = await disk();
+    expect(after.meta.marks, "the mark retired").toEqual([]);
+    expect(after.bytes).toBeLessThan(before.bytes / 20);
+  });
+
 });

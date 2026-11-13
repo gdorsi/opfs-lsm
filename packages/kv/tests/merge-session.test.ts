@@ -12,7 +12,7 @@ import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
 import { publish } from "./runs.js";
 import { MemoryFs } from "../src/testing.js";
-import { joinMarks, markTable, NO_MARKS, throughAt, type Marks } from "../src/store/marks.js";
+import { NO_MARKS, throughAt, type Mark, type Marks } from "../src/store/marks.js";
 
 /**
  * The TypeScript merge session against the wasm one, both pumped by the
@@ -86,16 +86,16 @@ function source(r: Rng, seq: { next: number }): Source {
 }
 
 /**
- * Up to three range deletes over the `key/` keys, joined, each through a seq
+ * Up to three range deletes over the `key/` keys, each through a seq
  * of the case, so some winners are covered and some are just past it.
  */
 function randomMarks(r: Rng, seqs: number): Marks {
-  let marks = NO_MARKS;
+  const marks: Mark[] = [];
   for (let i = r.below(4); i > 0; i--) {
     const from = r.below(60);
     const through = 1 + r.below(seqs);
     const end = r.chance(0.2) ? undefined : utf(`key/${String(from + 1 + r.below(40)).padStart(5, "0")}${r.chance(0.3) ? "!" : ""}`);
-    marks = joinMarks(marks, markTable({ start: utf(`key/${String(from).padStart(5, "0")}`), endExclusive: end, through, at: through + 1 }));
+    marks.push({ start: utf(`key/${String(from).padStart(5, "0")}`), endExclusive: end, through, at: through + 1 });
   }
   return marks;
 }
@@ -110,7 +110,7 @@ function fold(sources: readonly Source[], drop: boolean, marks: Marks): { entrie
   let droppedSeq = 0;
   const entries: SstEntry[] = [];
   for (const e of [...byKey.values()].sort((a, b) => compareBytes(a.key, b.key))) {
-    if (!marks.empty && e.seq <= throughAt(marks, e.key)) continue;
+    if (marks.length > 0 && e.seq <= throughAt(marks, e.key)) continue;
     if (drop && e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
     else entries.push(e);
   }

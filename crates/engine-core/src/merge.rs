@@ -126,12 +126,8 @@ pub struct MergeSession {
     ended: RunEnd,
     drop_tombstones: bool,
     /// The base manifest's marks block (crates/engine-abi.md, "Wire
-    /// formats"). Winners come in key order, so `mark_at`, the offset of the
-    /// next piece not yet entered, only moves forward from past the piece
-    /// count; `through` is the mark of the piece entered last.
+    /// formats"), trusted: the host encoded it.
     marks: Vec<u8>,
-    mark_at: usize,
-    through: u64,
     target_bytes: usize,
     chunk_bytes: usize,
     yield_bytes: usize,
@@ -211,8 +207,6 @@ impl MergeSession {
             ended: RunEnd { entries: 0, size: 0, first_key: Vec::new(), last_key: Vec::new() },
             drop_tombstones: config.drop_tombstones,
             marks: owned,
-            mark_at: 4,
-            through: 0,
             target_bytes: config.target_bytes,
             chunk_bytes: config.chunk_bytes.max(1),
             yield_bytes: config.yield_bytes.max(1),
@@ -358,16 +352,23 @@ impl MergeSession {
             self.retire(t);
         }
         let winner = &self.sources[w as usize].cur;
-        while self.mark_at < self.marks.len() {
-            let start = self.mark_at + 4;
-            let end = start + read_u32(&self.marks, self.mark_at) as usize;
-            if self.marks[start..end] > winner.key[..] {
-                break;
+        let (mut through, mut o) = (0u64, 4);
+        while o < self.marks.len() {
+            let start = o + 4;
+            let end = start + read_u32(&self.marks, o) as usize;
+            let (has_end, mut next) = (self.marks[end] == 1, end + 1);
+            let stop = if has_end {
+                next += 4 + read_u32(&self.marks, next) as usize;
+                &self.marks[end + 5..next]
+            } else {
+                &[]
+            };
+            if self.marks[start..end] <= winner.key[..] && (!has_end || winner.key[..] < *stop) {
+                through = through.max(u64::from_le_bytes(self.marks[next..next + 8].try_into().unwrap()));
             }
-            self.through = u64::from_le_bytes(self.marks[end..end + 8].try_into().unwrap());
-            self.mark_at = end + 16;
+            o = next + 16;
         }
-        if self.through > 0 && winner.seq <= self.through {
+        if through > 0 && winner.seq <= through {
             self.retire(w);
             return Ok(());
         }

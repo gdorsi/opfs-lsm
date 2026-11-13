@@ -10,7 +10,7 @@ import {
   publishL0,
 } from "../src/store/generation.js";
 import { encodeRun, sstKeyRange } from "../src/store/sst.js";
-import { markTable, NO_MARKS } from "../src/store/marks.js";
+import { NO_MARKS } from "../src/store/marks.js";
 
 const NAME = "generation-coherence";
 const enc = new TextEncoder();
@@ -49,14 +49,14 @@ describe("manifest", () => {
       ],
       tombstoneSeq: 4,
       through: 9,
-      marks: markTable({ start: utf("c"), endExclusive: utf("d"), through: 6, at: 7 }),
+      marks: [{ start: utf("c"), endExclusive: utf("d"), through: 6, at: 7 }],
     };
     expect(decodeGeneration(encodeGeneration(meta))).toEqual(meta);
   });
 
   it("refuses marks or a run that reach past the manifest's through", () => {
     const valid = { generation: 2, runs: [], tombstoneSeq: 0, through: 7, marks: NO_MARKS };
-    const late = markTable({ start: utf("c"), through: 6, at: 8 });
+    const late = [{ start: utf("c"), through: 6, at: 8 }];
     const run = { path: "l0/1-1.sst", bytes: 90, marksThrough: 8 };
     for (const meta of [{ ...valid, marks: late }, { ...valid, runs: [run] }]) {
       expect(() => decodeGeneration(encodeGeneration(meta))).toThrow(CorruptDatabaseError);

@@ -2,18 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import {
-  decodeMarks,
-  encodeMarks,
-  joinMarks,
-  markCursor,
-  markTable,
-  NO_MARKS,
-  retireMarks,
-  throughAt,
-  type Mark,
-  type Marks,
-} from "../src/store/marks.js";
+import { decodeMarks, encodeMarks, retireMarks, throughAt, type Mark } from "../src/store/marks.js";
 
 type RunMarkInfo = Parameters<typeof retireMarks>[1][number];
 
@@ -22,7 +11,7 @@ const markArb: fc.Arbitrary<Mark> = fc
   .record({
     a: keyArb,
     b: fc.option(keyArb, { nil: undefined }),
-    through: fc.integer({ min: 0, max: 20 }),
+    through: fc.integer({ min: 1, max: 20 }),
     gap: fc.integer({ min: 1, max: 20 }),
   })
   .map(({ a, b, through, gap }) => {
@@ -32,51 +21,19 @@ const markArb: fc.Arbitrary<Mark> = fc
   .filter((m) => !m.endExclusive || compareBytes(m.start, m.endExclusive) < 0);
 const marksArb = fc.array(markArb, { maxLength: 8 });
 
-function fold(list: readonly Mark[]): Marks {
-  return list.reduce((acc, m) => joinMarks(acc, markTable(m)), NO_MARKS);
-}
-
 function inRange(m: Mark, key: Uint8Array): boolean {
   return compareBytes(key, m.start) >= 0 && (!m.endExclusive || compareBytes(key, m.endExclusive) < 0);
 }
 
-/** The naive verdict: some mark of the list covers the version. */
-function naive(list: readonly Mark[], key: Uint8Array, seq: number): boolean {
-  return list.some((m) => inRange(m, key) && seq <= m.through);
-}
-
-/** Two tables are the same when they encode the same. */
-const bytesOf = (m: Marks) => [...encodeMarks(m)];
+const k = (s: string) => new TextEncoder().encode(s);
+const bytesOf = (list: readonly Mark[]) => [...encodeMarks(list)];
 
 describe("marks", () => {
-  it("answers as the naive list of marks does", () => {
+  it("looks up the max through of the marks that hold the key", () => {
     fc.assert(
-      fc.property(marksArb, keyArb, fc.integer({ min: 1, max: 25 }), (list, key, seq) => {
-        expect(seq <= throughAt(fold(list), key)).toBe(naive(list, key, seq));
-      }),
-    );
-  });
-
-  it("join is commutative, associative and idempotent", () => {
-    fc.assert(
-      fc.property(marksArb, marksArb, marksArb, (x, y, z) => {
-        const [a, b, c] = [fold(x), fold(y), fold(z)];
-        expect(bytesOf(joinMarks(a, b))).toEqual(bytesOf(joinMarks(b, a)));
-        expect(bytesOf(joinMarks(joinMarks(a, b), c))).toEqual(bytesOf(joinMarks(a, joinMarks(b, c))));
-        expect(bytesOf(joinMarks(a, a))).toEqual(bytesOf(a));
-      }),
-    );
-  });
-
-  it("a cursor answers as the lookup does, both ways", () => {
-    fc.assert(
-      fc.property(marksArb, fc.array(keyArb, { maxLength: 12 }), (list, keys) => {
-        const marks = fold(list);
-        const sorted = [...keys].sort(compareBytes);
-        const forward = markCursor(marks);
-        for (const k of sorted) expect(forward.at(k)).toBe(throughAt(marks, k));
-        const backward = markCursor(marks, true);
-        for (const k of sorted.reverse()) expect(backward.at(k)).toBe(throughAt(marks, k));
+      fc.property(marksArb, keyArb, (list, key) => {
+        const covering = list.filter((m) => inRange(m, key)).map((m) => m.through);
+        expect(throughAt(list, key)).toBe(Math.max(0, ...covering));
       }),
     );
   });
@@ -102,38 +59,52 @@ describe("marks", () => {
         fc.array(runArb, { maxLength: 5 }),
         fc.array(fc.tuple(keyArb, fc.integer({ min: 1, max: 45 })), { maxLength: 30 }),
         (list, runs, versions) => {
-          const marks = fold(list);
-          const retired = retireMarks(marks, runs);
+          const retired = retireMarks(list, runs);
           for (const [key, seq] of versions) {
             if (!runs.some((run) => holdable(list, run, key, seq))) continue;
-            expect(seq <= throughAt(retired, key)).toBe(seq <= throughAt(marks, key));
+            expect(seq <= throughAt(retired, key)).toBe(seq <= throughAt(list, key));
           }
         },
       ),
     );
   });
 
-  it("retires a piece once no run that can hold it is listed", () => {
-    const k = (s: string) => new TextEncoder().encode(s);
-    const marks = markTable({ start: k("b"), endExclusive: k("d"), through: 5, at: 6 });
+  it("retires a mark once no run that can hold it is listed", () => {
+    const marks = [{ start: k("b"), endExclusive: k("d"), through: 5, at: 6 }];
     const before = { range: { smallest: k("a"), largest: k("c") }, marksThrough: 3 };
     const after = { range: { smallest: k("a"), largest: k("c") }, marksThrough: 9 };
     const elsewhere = { range: { smallest: k("x"), largest: k("y") }, marksThrough: 0 };
-    expect(retireMarks(marks, [before, elsewhere]).empty).toBe(false);
-    expect(retireMarks(marks, [after, elsewhere]).empty).toBe(true);
+    expect(retireMarks(marks, [before, elsewhere])).toBe(marks);
+    expect(retireMarks(marks, [after, elsewhere])).toEqual([]);
   });
 
-  it("round-trips through its encoding and rejects a broken block", () => {
+  it("round-trips through its encoding and rejects truncation", () => {
     fc.assert(
       fc.property(marksArb, (list) => {
-        const marks = fold(list);
-        const bytes = encodeMarks(marks);
-        const { marks: back, end } = decodeMarks(bytes, 0, bytes.byteLength, 1000);
+        const bytes = encodeMarks(list);
+        const { marks, end } = decodeMarks(bytes, 0, bytes.byteLength, 1000);
         expect(end).toBe(bytes.byteLength);
-        expect(bytesOf(back)).toEqual(bytesOf(marks));
+        expect(bytesOf(marks)).toEqual(bytesOf(list));
         expect(() => decodeMarks(bytes, 0, bytes.byteLength - 1, 1000)).toThrow(CorruptDatabaseError);
-        if (!marks.empty) expect(() => decodeMarks(bytes, 0, bytes.byteLength, 0)).toThrow(CorruptDatabaseError);
       }),
     );
+  });
+
+  it("rejects a mark that breaks a rule", () => {
+    const ok: Mark = { start: k("a"), endExclusive: k("b"), through: 2, at: 3 };
+    const decode = (m: Mark, maxAt = 9) => {
+      const bytes = encodeMarks([m]);
+      return decodeMarks(bytes, 0, bytes.byteLength, maxAt);
+    };
+    expect(decode(ok).marks).toHaveLength(1);
+    expect(() => decode({ ...ok, endExclusive: k("a") })).toThrow(CorruptDatabaseError);
+    expect(() => decode({ ...ok, endExclusive: k("") })).toThrow(CorruptDatabaseError);
+    expect(() => decode({ ...ok, through: 0 })).toThrow(CorruptDatabaseError);
+    expect(() => decode({ ...ok, at: 2 })).toThrow(CorruptDatabaseError);
+    expect(() => decode(ok, 2)).toThrow(CorruptDatabaseError);
+    expect(() => decode({ ...ok, at: Number.MAX_SAFE_INTEGER + 2 }, Infinity)).toThrow(CorruptDatabaseError);
+    const flag = encodeMarks([{ start: k("a"), through: 2, at: 3 }]);
+    flag[4 + 4 + 1] = 2;
+    expect(() => decodeMarks(flag, 0, flag.byteLength, 9)).toThrow(CorruptDatabaseError);
   });
 });

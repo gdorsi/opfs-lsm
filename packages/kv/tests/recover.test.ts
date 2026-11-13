@@ -445,7 +445,7 @@ describe("range deletes across a fallback to an older manifest", () => {
     db = await open();
     const recorded = (await walStore(name, "readonly", (_wal, meta) => meta.get("generation"))) as number;
     expect(`${String(recorded).padStart(16, "0")}.mft`).toBe(older);
-    expect(decodeGeneration((await fs.read(`m/${older}`, 0, Number.POSITIVE_INFINITY))!).marks.empty).toBe(true);
+    expect(decodeGeneration((await fs.read(`m/${older}`, 0, Number.POSITIVE_INFINITY))!).marks.length).toBe(0);
     expect(text(await db.get(enc.encode("m/1")))).toBeUndefined();
     expect(text(await db.get(enc.encode("n")))).toBe("kept");
     await db.close();

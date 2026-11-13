@@ -236,10 +236,10 @@ range when the version's seq is at or below its `through`. A writer may ask for 
 record at seq `s` holds `min(asked, s − 1)`, so a range delete never covers its own batch and a
 later write into the range is read as usual.
 
-The range deletes in effect form the mark table, a step function over the key space. Each piece
-holds the highest `through` that covers its keys and `at`, the seq of the record that set it.
-Folding a range delete is a pointwise max, so folding records twice or in another order gives the
-same table.
+The range deletes in effect form the marks, an unordered list of `(start, end, through, at)`,
+where `at` is the seq of the record that holds it. The highest `through` among the marks that
+hold a key judges it, so joining is concatenation. A read checks every live mark, so its cost
+grows with their number until compaction retires them.
 
 A version is judged in the layer that holds it:
 
@@ -251,10 +251,10 @@ A version is judged in the layer that holds it:
 * A run records `marksThrough`: it holds no version a range delete from a record at or below it
   covers. A flushed run takes the last seq it folded, a compaction output its base's `through`.
 
-A piece retires, falling back to `through` 0, when every run that overlaps it has
-`marksThrough` at or past its `at`: no run left can hold a version it covers. Each flush and each
-compaction install retires the manifest's marks against its new runs, and a mark step (see
-[Planning](#planning)) rewrites the runs that hold a piece back, so its rows leave the disk.
+A mark retires when every run that overlaps it has `marksThrough` at or past its `at`: no run
+left can hold a version it covers. Each flush and each compaction install retires the manifest's
+marks against its new runs, and a mark step (see [Planning](#planning)) rewrites the runs that
+hold a mark back, so its rows leave the disk.
 
 # Size cap
 
@@ -486,7 +486,8 @@ under the exclusive section, the host:
 4. Sweeps: deletes the older manifests, and every run outside `top + 1` that no tab holds open.
    While a tab holds the reclaim lock, it deletes nothing and tries again on the next pass.
 
-A pass runs up to 8 steps, and sweeps if it installs none. A request during a pass starts another.
+A pass runs up to 8 steps, and sweeps if it installs none. A request during a pass starts another,
+and so does a pass that used all 8.
 
 # Destroy
 

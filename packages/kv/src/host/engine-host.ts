@@ -469,6 +469,7 @@ class HostedDb {
   private async compactPass(): Promise<void> {
     const fs = await this.fs();
     let installed = false;
+    let steps = 0;
     try {
       for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
         const meta = await this.withWal((wal) => wal.meta());
@@ -486,11 +487,15 @@ class HostedDb {
           }),
         );
         installed = true;
+        steps += 1;
         this.counts.compactionSteps += 1;
         this.installLanded();
         announceGeneration(this.name);
       }
     } finally {
+      // A pass cut off at the step limit asks for another, which queues behind
+      // the lock's waiters; a step that threw never reached the limit.
+      if (steps === MAX_COMPACTION_STEPS && !this.destroying) this.compact().catch(() => undefined);
       // A pass that installed nothing sweeps once, for the files an earlier
       // pass had to leave. Last, so it never delays a merge that a full L0
       // waits for, and best-effort: the next pass sweeps again.

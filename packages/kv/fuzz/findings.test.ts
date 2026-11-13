@@ -128,8 +128,8 @@ describe("decoder bugs the fuzzers found", () => {
       runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") }, marksThrough: 0 }],
     });
     // Run count and the first path length, inflated (found by "manifests ... reject every change").
-    // The run count follows the 32-byte header and the 24-byte empty marks block.
-    new DataView(m.buffer).setUint32(58, 0xffffffff, true);
+    // The run count follows the 32-byte header and the 4-byte empty marks block.
+    new DataView(m.buffer).setUint32(38, 0xffffffff, true);
     fixManifestCrc(m);
     await expect(corruptWithinBounds("decodeGeneration", () => decodeGeneration(m))).resolves.toBeUndefined();
   });

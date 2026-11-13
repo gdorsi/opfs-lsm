@@ -466,7 +466,7 @@ class CheckCmd implements Cmd {
       generation = now;
     }
     await expectHealthy(m, r, r.background);
-    if (generation) expect((await loadGeneration(r.fs, generation))!.marks.empty, "marks left once compaction settles").toBe(true);
+    if (generation) expect((await loadGeneration(r.fs, generation))!.marks, "marks left once compaction settles").toEqual([]);
     if (r.background) {
       await r.open();
       m.reader.synced(m.oracle.head);

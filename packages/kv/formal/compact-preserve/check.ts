@@ -134,9 +134,9 @@ for (const runs of allRuns(2)) {
 // and its mark covers seqs up to `base`. A flush between the merge and its
 // install adds a later mark (at 4) covering seqs up to `late`. The merge
 // drops a winner its base mark covers; its output claims `marksThrough`; the
-// install joins both marks and retires the piece once every run holding the
+// install joins both marks and retires the mark once every run holding the
 // key claims its `at`. Every read at or past the install must agree with a
-// read of the inputs under both marks. Per-key pieces retire at least as
+// read of the inputs under both marks. Per-key marks retire at least as
 // eagerly as key ranges, which overlap more runs.
 
 type Held = { readonly v: Entry; readonly seq: number; readonly marksThrough: number };
@@ -174,7 +174,7 @@ function marksCounterexample(rule: MergeRule, claim: number): string | undefined
               const below: Held = { v: vb, seq: 1, marksThrough: belowThrough };
               const winner = inputs.find((r) => r.v !== undefined);
               const out = winner && { v: rule(winner, base, vb === undefined), seq: winner.seq, marksThrough: claim };
-              // join: the larger through wins, with its at.
+              // the larger through judges the key, with its at.
               const piece = late > base ? { through: late, at: LATE_AT } : { through: base, at: base > 0 ? BASE_THROUGH : 0 };
               const after = [...(out?.v ? [out] : []), below];
               const blocked = after.some((r) => r.v !== undefined && r.marksThrough < piece.at);
@@ -218,8 +218,8 @@ function appliesMarksInSource(): boolean {
   const session = read("../../tests/oracle/merge-ts.ts");
   const compact = read("../../src/host/compact.ts");
   return (
-    /if\s+self\.through\s*>\s*0\s*&&\s*winner\.seq\s*<=\s*self\.through\s*\{\s*self\.retire\(w\);\s*return\s+Ok\(\(\)\);\s*\}\s*match\s+winner\.kind/.test(engine) &&
-    /private\s+emit\(e:\s*SstEntry\):\s*void\s*\{\s*if\s*\(\s*!this\.marks\.empty\s*&&\s*e\.seq\s*<=\s*throughAt\(\s*this\.marks\s*,\s*e\.key\s*\)\s*\)\s*return;/.test(session) &&
+    /if\s+through\s*>\s*0\s*&&\s*winner\.seq\s*<=\s*through\s*\{\s*self\.retire\(w\);\s*return\s+Ok\(\(\)\);\s*\}\s*match\s+winner\.kind/.test(engine) &&
+    /private\s+emit\(e:\s*SstEntry\):\s*void\s*\{\s*if\s*\(\s*this\.marks\.length\s*>\s*0\s*&&\s*e\.seq\s*<=\s*throughAt\(\s*this\.marks\s*,\s*e\.key\s*\)\s*\)\s*return;/.test(session) &&
     /marksThrough:\s*base\.through\s*\}/.test(compact)
   );
 }

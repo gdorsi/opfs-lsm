@@ -11,7 +11,7 @@ import {
 } from "../store/generation.js";
 import { foldRecords } from "../store/fold.js";
 import { levelOf } from "../store/levels.js";
-import { joinMarks, retireMarks } from "../store/marks.js";
+import { retireMarks } from "../store/marks.js";
 
 export type IngestResult = {
   readonly generation: number;
@@ -84,7 +84,7 @@ export async function ingestChunk(
     runs,
     tombstoneSeq: prev.tombstoneSeq,
     through: last,
-    marks: retireMarks(joinMarks(prev.marks, folded.marks), runs),
+    marks: retireMarks([...prev.marks, ...folded.marks], runs),
   });
   let foldedBytes = 0;
   for (const r of records) foldedBytes += opsBytes(r.ops);

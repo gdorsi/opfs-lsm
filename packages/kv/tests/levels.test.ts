@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { loadLatestGeneration, type RunMeta } from "../src/store/generation.js";
 import { planCompaction, replaceRuns, type CompactionPlan } from "../src/store/levels.js";
-import { markTable, NO_MARKS } from "../src/store/marks.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import { decodeSst } from "../src/store/sst.js";
 
 const enc = new TextEncoder();
@@ -87,7 +87,7 @@ describe("planCompaction", () => {
 
   describe("once the levels are in shape, rewrites a run that holds back a mark", () => {
     // A range delete over [m, n) in the record at seq 7.
-    const marks = markTable({ start: enc.encode("m"), endExclusive: enc.encode("n"), through: 6, at: 7 });
+    const marks = [{ start: enc.encode("m"), endExclusive: enc.encode("n"), through: 6, at: 7 }];
     const at = (r: RunMeta, marksThrough: number): RunMeta => ({ ...r, marksThrough });
     const plan = (runs: RunMeta[], l1Target?: number) => planCompaction(manifest(runs, marks), { ...limits, ...(l1Target ? { l1Target } : {}) });
 

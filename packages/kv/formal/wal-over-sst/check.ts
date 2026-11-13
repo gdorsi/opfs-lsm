@@ -9,7 +9,7 @@ import { untilHit } from "../../src/store/cursor.js";
 import { PageCache } from "../../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../../src/store/sst-reader.js";
 import type { MemRow } from "../../src/store/memtable.js";
-import { markTable, NO_MARKS, type Marks } from "../../src/store/marks.js";
+import { NO_MARKS, type Marks } from "../../src/store/marks.js";
 
 type Kind = "miss" | "tomb" | "valueA" | "valueB";
 /** No range delete, one that covers the SST version, one that stops just below it. */
@@ -51,7 +51,7 @@ function readers(kind: Kind): RunLevel[] {
 function marks(mark: Mark): Marks {
   if (mark === "none") return NO_MARKS;
   const through = mark === "covers" ? SST_SEQ : SST_SEQ - 1;
-  return markTable({ start: new Uint8Array(0), endExclusive: new Uint8Array([2]), through, at: SST_SEQ + 1 });
+  return [{ start: new Uint8Array(0), endExclusive: new Uint8Array([2]), through, at: SST_SEQ + 1 }];
 }
 
 function expected(mem: Kind, sst: Kind, mark: Mark): Uint8Array | undefined {
