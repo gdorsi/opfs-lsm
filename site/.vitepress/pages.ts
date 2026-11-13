@@ -44,13 +44,6 @@ const sections: Section[] = [
       { label: "Manifest format", source: "docs/manifest-format.md", route: "internals/manifest-format" },
     ],
   },
-  {
-    title: "Contributing",
-    pages: [
-      { label: "Set up and release", source: "CONTRIBUTING.md", route: "contributing" },
-      { label: "Verify a change", source: "docs/verification.md", route: "contributing/verification" },
-    ],
-  },
 ];
 
 export const pages = sections.flatMap((s) => s.pages);
