@@ -1,6 +1,8 @@
 import { escape, priorityIcon, statusIcon } from "./icons.ts";
+import { codeItems, openMenu } from "./menu.ts";
 import { DEFAULT_FILTER, type Filter, type Issue } from "./model.ts";
-import { keeps, orderOf, viewOf, type Store, type View } from "./store.ts";
+import { failed } from "./protocol.ts";
+import { editIssue, keeps, orderOf, viewOf, type Store, type View } from "./store.ts";
 
 const ROW = 40;
 const PAGE = 50;
@@ -16,8 +18,10 @@ export const shortDate = (ms: number) => {
 export const shortId = (id: string) => `LL-${id.slice(0, 5).toUpperCase()}`;
 
 const rowOf = (i: Issue, at: number) =>
-  `<div class="row" data-at="${at}" style="transform:translateY(${at * ROW}px)"><span class="icon-btn">${priorityIcon(i.priority)}</span>` +
-  `<span class="id">${shortId(i.id)}</span>${statusIcon(i.status)}<span class="name">${escape(i.title)}</span>` +
+  `<div class="row" data-at="${at}" style="transform:translateY(${at * ROW}px)">` +
+  `<button class="icon-btn" data-pick="priority" title="Priority">${priorityIcon(i.priority)}</button>` +
+  `<span class="id">${shortId(i.id)}</span><button class="icon-btn" data-pick="status" title="Status">${statusIcon(i.status)}</button>` +
+  `<span class="name">${escape(i.title)}</span>` +
   `<span class="avatar" title="${escape(i.username)}">${escape(i.username.slice(0, 1))}</span><span class="date">${shortDate(i.modified)}</span></div>`;
 
 const skeleton = (at: number) =>
@@ -126,7 +130,12 @@ export function createList(scroller: HTMLElement, store: Store, open: (issue: Is
   rowsEl.addEventListener("click", (e) => {
     const at = (e.target as Element).closest<HTMLElement>(".row")?.dataset.at;
     const issue = at === undefined ? undefined : rows.get(Number(at));
-    if (issue) open(issue);
+    if (!issue) return;
+    // The priority and status icons change the issue in place, as in LinearLite; the rest of the row opens it.
+    const picker = (e.target as Element).closest<HTMLButtonElement>("[data-pick]");
+    if (!picker) return open(issue);
+    const field = picker.dataset.pick as "status" | "priority";
+    openMenu(picker, () => codeItems(field, (c) => issue[field] === c, (c) => void editIssue(store, issue.id, { [field]: c }).catch(failed)), false);
   });
 
   return {
