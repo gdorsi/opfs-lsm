@@ -7,6 +7,7 @@
  *   ?auto=1&role=b     peer tab
  *   ?local=1           one page, two handles, one EngineHost
  *   ?nobc=1            drop BroadcastChannel messages before openDb
+ *   ?scenario=pressure databases over maxBytes, with a handler in each tab and with none
  */
 const params = new URLSearchParams(location.search);
 const ROLE = params.get("role");
@@ -14,6 +15,7 @@ const LOCAL = params.has("local");
 const NOBC = params.has("nobc");
 const AUTO = params.has("auto");
 const DB_NAME = params.get("name") ?? "two-tab";
+const PRESSURE = params.get("scenario") === "pressure";
 
 const statusEl = document.getElementById("status")!;
 const out = document.getElementById("out")!;
@@ -65,12 +67,107 @@ type OtherTab = {
   put(key: string, value: string): Promise<void>;
   get(key: string): Promise<string | null>;
   ingest(): Promise<number>;
+  cap(name: string, mode: CapMode): Promise<CapReport>;
 };
 
 type PeerCmd =
   | { id: number; op: "put"; key: string; value: string }
   | { id: number; op: "get"; key: string }
-  | { id: number; op: "ingest" };
+  | { id: number; op: "ingest" }
+  | { id: number; op: "cap"; key: string; value: CapMode };
+
+/** A handle opened with maxBytes, with a handler that range-deletes the oldest rows or with none. */
+type CapMode = "oldest" | "none";
+type CapReport = { calls: number; deleted: number; warns: number; rows: number; bytes: number };
+
+const CAP = 1024 * 1024;
+const CAP_ROWS = 160;
+const capped = new Map<string, { db: import("../dist/index.js").Db; report: CapReport }>();
+
+const warn = console.warn.bind(console);
+console.warn = (...args: unknown[]) => {
+  for (const [name, { report }] of capped) if (String(args[0]).includes(`${name} holds`)) report.warns += 1;
+  warn(...args);
+};
+
+/** Opens `name` in this tab on the first call, then reports what this tab sees. */
+async function cap(name: string, mode: CapMode): Promise<CapReport> {
+  const testing = await import("../dist/testing.js");
+  let entry = capped.get(name);
+  if (!entry) {
+    const db = await testing.openHarnessDb({ name, maxBytes: CAP, maxWalBytes });
+    const report = { calls: 0, deleted: 0, warns: 0, rows: 0, bytes: 0 };
+    entry = { db, report };
+    capped.set(name, entry);
+    if (mode === "oldest") {
+      db.onPressure(async ({ need }) => {
+        report.calls += 1;
+        for await (const { key, value } of db.range()) {
+          if (need <= 0) return void (await db.batch((tx) => tx.deleteRange({ endExclusive: key })));
+          need -= key.byteLength + value.byteLength;
+          report.deleted += 1;
+        }
+      });
+    }
+  }
+  await entry.db.sync();
+  entry.report.rows = 0;
+  for await (const _ of entry.db.range()) entry.report.rows += 1;
+  entry.report.bytes = (await testing.readStats(entry.db)).host.layout.reduce((n, l) => n + l.bytes, 0);
+  return { ...entry.report };
+}
+
+async function fillPastCap(name: string): Promise<void> {
+  const testing = await import("../dist/testing.js");
+  const { db } = capped.get(name)!;
+  for (let i = 0; i < CAP_ROWS; i += 16) {
+    await db.batch((tx) => {
+      for (let j = i; j < i + 16; j++) {
+        tx.put(enc.encode(`r${String(j).padStart(5, "0")}`), crypto.getRandomValues(new Uint8Array(16 * 1024)));
+      }
+    });
+  }
+  await testing.ingest(db);
+}
+
+/** Waits for `cond`, then a while more so a second offer would have come. */
+async function poll(cond: () => Promise<boolean>, what: string): Promise<void> {
+  for (let i = 0; i < 100 && !(await cond()); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  must(await cond(), `timed out waiting for ${what}`);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+}
+
+/**
+ * Over maxBytes with a handler in each tab: one tab answers once, and both
+ * read what it left, under the cap. With no handler: each tab warns once.
+ */
+async function pressureScenario(other: OtherTab): Promise<void> {
+  log(`mode=${modeLabel()}`);
+  const name = `${DB_NAME}-cap`;
+  await cap(name, "oldest");
+  await other.cap(name, "oldest");
+  await fillPastCap(name);
+  await poll(async () => (await cap(name, "oldest")).calls + (await other.cap(name, "oldest")).calls > 0, "an answer");
+  await (await import("../dist/testing.js")).settle(capped.get(name)!.db);
+  const [a, b] = [await cap(name, "oldest"), await other.cap(name, "oldest")];
+  must(a.calls + b.calls === 1, `handlers ran ${a.calls} times in tab A and ${b.calls} in tab B`);
+  const left = CAP_ROWS - a.deleted - b.deleted;
+  must(a.rows === left && b.rows === left, `tabs read ${a.rows} and ${b.rows} rows, expected ${left}`);
+  must(a.bytes <= CAP && a.warns + b.warns === 0, `${a.bytes} bytes left, ${a.warns + b.warns} warnings`);
+  log(`pressure answered by tab ${a.calls === 1 ? "A" : "B"}, ${a.bytes} bytes left`);
+  log(`both tabs read ${left} of ${CAP_ROWS} rows`);
+
+  const bare = `${DB_NAME}-nohandler`;
+  await cap(bare, "none");
+  await other.cap(bare, "none");
+  await fillPastCap(bare);
+  await poll(async () => (await cap(bare, "none")).warns > 0 && (await other.cap(bare, "none")).warns > 0, "warnings");
+  const [c, d] = [await cap(bare, "none"), await other.cap(bare, "none")];
+  must(c.warns === 1 && d.warns === 1, `warnings: tab A ${c.warns}, tab B ${d.warns}`);
+  must(c.rows === CAP_ROWS && d.rows === CAP_ROWS, "a row went missing with no handler");
+  log("no handler: one warning in each tab");
+  log("pressure ok");
+}
 
 type PeerResult = {
   id: number;
@@ -212,6 +309,9 @@ function parseCmd(value: unknown): PeerCmd | null {
   const rec = value as { id?: unknown; op?: unknown; key?: unknown; value?: unknown };
   if (typeof rec.id !== "number") return null;
   if (rec.op === "ingest") return { id: rec.id, op: "ingest" };
+  if (rec.op === "cap" && typeof rec.key === "string" && (rec.value === "oldest" || rec.value === "none")) {
+    return { id: rec.id, op: "cap", key: rec.key, value: rec.value };
+  }
   if (rec.op === "get" && typeof rec.key === "string") {
     return { id: rec.id, op: "get", key: rec.key };
   }
@@ -277,6 +377,11 @@ async function servePeer(db: Handle): Promise<void> {
           });
           break;
         }
+        case "cap": {
+          const value = JSON.stringify(await cap(cmd.key, cmd.value));
+          await postResult({ id: cmd.id, ok: true, value, generation: null, error: null });
+          break;
+        }
         default: {
           const _exhaustive: never = cmd;
           void _exhaustive;
@@ -310,11 +415,14 @@ async function remoteOther(): Promise<OtherTab> {
       must(typeof result.generation === "number", "ingest missing generation");
       return result.generation;
     },
+    async cap(name, mode) {
+      return JSON.parse((await callPeer({ op: "cap", key: name, value: mode })).value!) as CapReport;
+    },
   };
 }
 
 async function callPeer(cmd: {
-  op: "put" | "get" | "ingest";
+  op: PeerCmd["op"];
   key?: string;
   value?: string;
 }): Promise<PeerResult> {
@@ -354,6 +462,7 @@ async function run(): Promise<void> {
         const { generation } = await otherDb.ingest();
         return generation;
       },
+      cap: () => Promise.reject(new Error("the pressure scenario needs two tabs")),
     };
     await scenario(self, other);
     await self.close();
@@ -372,7 +481,8 @@ async function run(): Promise<void> {
   }
 
   const db = await openHandle(mod, testing, "tab-a");
-  await scenario(db, await remoteOther());
+  if (PRESSURE) await pressureScenario(await remoteOther());
+  else await scenario(db, await remoteOther());
   await db.close();
 }
 

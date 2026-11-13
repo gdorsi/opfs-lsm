@@ -21,8 +21,8 @@ import {
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type BusRow, type IngestClient } from "./host/protocol.js";
-import { layersChannel } from "./locks.js";
+import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type Pressure } from "./host/protocol.js";
+import { layersChannel, pressureLock, webLocks } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
@@ -53,6 +53,7 @@ import {
 } from "./changes.js";
 
 export type { ViewSnapshot } from "./view.js";
+export type { Pressure } from "./host/protocol.js";
 export type { ChangeEvent, ChangeListener, ChangeKind, ChangeOp } from "./changes.js";
 
 /** Public open options. Apps pass a database name; the library owns the rest. */
@@ -84,7 +85,16 @@ export type OpenOptions = {
    * collected yet.
    */
   readonly compactionMemoryBytes?: number;
+  /**
+   * Bytes of run files to stay under. kv never removes a row for it: it asks
+   * an `onPressure` handler to, and a write never waits for it. When tabs
+   * differ, the host uses the smallest (design.md, "Size cap").
+   */
+  readonly maxBytes?: number;
 };
+
+/** Frees about `pressure.need` bytes with ordinary writes. See `Db.onPressure`. */
+export type PressureHandler = (pressure: Pressure) => Promise<void>;
 
 /** Below this, one page per merge source may not fit. */
 const MIN_MEMORY_BUDGET = 1024 * 1024;
@@ -252,6 +262,12 @@ export interface Db {
    */
   changes(listener: ChangeListener): () => void;
   /**
+   * Answer offers to bring the database under `maxBytes`. Only the handle
+   * holding the Web Lock `opfs-lsm-pressure/<name>` is called, once per
+   * offer. Returns unsubscribe.
+   */
+  onPressure(handler: PressureHandler): () => void;
+  /**
    * Catch up to every write acked before the call, from any tab. Other tabs'
    * writes otherwise arrive over BroadcastChannel, a moment after their ack.
    */
@@ -383,6 +399,7 @@ export function openDbWith(options: OpenWithOptions): Promise<Db> {
 async function openTraced(options: OpenWithOptions): Promise<Db> {
   const trace = options.trace;
   const name = checkDbName(options.name);
+  if (options.maxBytes !== undefined && !(options.maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
   // Started first, so the module loads while the rest of open runs.
   const engine = timed(trace, "wasm", ensureEngine);
   // Awaited last: a throw before that must not leave its rejection unhandled.
@@ -398,6 +415,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   // recorded manifest's runs are checked by the first sync, which loads them.
   await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
   const writerId = (options.writerId ?? newWriterId()) as WriterId;
+  const maxBytes = options.maxBytes;
   const cache = new PageCache(
     Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
   );
@@ -410,6 +428,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
     ingest,
     ownsIngestClient,
     caps,
+    maxBytes,
     trace,
     options.rowPostMs,
   );
@@ -419,6 +438,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   ingest.watch(name, {
     maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
     compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
+    maxBytes,
   });
   // The host cannot flush without the module, so a page that cannot load it does not open.
   try {
@@ -547,6 +567,11 @@ class DbImpl implements Db {
   private readonly pressure: Backpressure;
   /** The last read point and the two tables it joined. */
   private lastPoint: { readonly installed: Marks; readonly mem: Marks; readonly at: Marks } | undefined;
+  private readonly handlers = new Set<PressureHandler>();
+  /** Lets go of the pressure lock, or of the wait for it. Set while this handle has a handler. */
+  private unlock: (() => void) | undefined;
+  private holding = false;
+  private answering = false;
 
   constructor(
     readonly name: DbName,
@@ -557,6 +582,7 @@ class DbImpl implements Db {
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
+    private readonly maxBytes: number | undefined,
     private readonly trace?: OpenTrace,
     private readonly rowPostMs = ROW_POST_MS,
   ) {
@@ -577,20 +603,21 @@ class DbImpl implements Db {
 
   private onMessage(data: BusMessage): void {
     if (this.closed) return;
-    // An `ingest`, or a message this build does not know: catch up from the WAL.
-    if (data?.kind !== "rows" || !Array.isArray(data.rows)) {
-      void this.sync().catch(() => undefined);
-      return;
-    }
-    if (data.writerId === this.writerId) return;
-    for (const row of data.rows) {
-      // The catch-up reads the rest of the message's rows too.
-      if (this.applyRecord({ seq: row.seq, ops: decodeOps(row.record, row.seq) }) === "gap") {
-        void this.sync().catch(() => undefined);
-        break;
+    if (data?.kind === "rows" && Array.isArray(data.rows)) {
+      if (data.writerId === this.writerId) return;
+      for (const row of data.rows) {
+        // The catch-up reads the rest of the message's rows too.
+        if (this.applyRecord({ seq: row.seq, ops: decodeOps(row.record, row.seq) }) === "gap") {
+          void this.sync().catch(() => undefined);
+          break;
+        }
       }
+      return this.announce();
     }
-    this.announce();
+    if (data?.kind === "pressure") return void this.answer(data.pressure).catch(() => undefined);
+    if (data?.kind === "pressure-pull" || data?.kind === "pressure-done") return;
+    // An `ingest`, or a message this build does not know: catch up from the WAL.
+    void this.sync().catch(() => undefined);
   }
 
   private ensureOpen(): void {
@@ -1123,6 +1150,63 @@ class DbImpl implements Db {
     return this.changeBus.subscribe(listener);
   }
 
+  onPressure(handler: PressureHandler): () => void {
+    this.ensureOpen();
+    this.handlers.add(handler);
+    if (!this.unlock) this.askLock();
+    return () => {
+      if (this.handlers.delete(handler) && this.handlers.size === 0) this.unlock?.();
+    };
+  }
+
+  private askLock(): void {
+    const abort = new AbortController();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const unlock = (this.unlock = () => {
+      this.unlock = undefined;
+      this.holding = false;
+      abort.abort();
+      release();
+    });
+    webLocks()
+      ?.request(pressureLock(this.name), { signal: abort.signal }, () => {
+        // Granted before `unlock` could abort the request: `held` is settled, so the lock goes back.
+        if (this.unlock !== unlock) return held;
+        this.holding = true;
+        this.bus?.postMessage({ kind: "pressure-pull" } satisfies BusMessage);
+        return held;
+      })
+      .catch(() => undefined);
+  }
+
+  private async answer(pressure: Pressure): Promise<void> {
+    if (this.holding && !this.answering) {
+      this.answering = true;
+      for (const handler of [...this.handlers]) {
+        try {
+          await handler(pressure);
+        } catch (err) {
+          console.error(`opfs-lsm: an onPressure handler of ${this.name} failed`, err);
+        }
+      }
+      this.answering = false;
+      // A handle that let go of the lock meanwhile stays silent, so the next holder pulls the offer.
+      if (this.holding) this.bus?.postMessage({ kind: "pressure-done" } satisfies BusMessage);
+    } else if (this.handlers.size === 0 && this.maxBytes !== undefined) {
+      const free = await webLocks()?.request(
+        pressureLock(this.name),
+        { mode: "shared", ifAvailable: true },
+        (lock) => lock !== null,
+      );
+      if (free) {
+        console.warn(
+          `opfs-lsm: ${this.name} holds ${pressure.bytes} bytes of run files, over maxBytes ${pressure.maxBytes}, and no tab answers onPressure`,
+        );
+      }
+    }
+  }
+
   /** Have the host flush the WAL, and load what it published. */
   async flush(waitForCompaction: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
@@ -1145,6 +1229,7 @@ class DbImpl implements Db {
     this.closed = true;
     this.emit({ kind: "closed" });
     this.changeBus.clear();
+    this.unlock?.();
     if (this.bus && this.onBusMessage) {
       this.postRows();
       if (typeof document !== "undefined") {

@@ -14,6 +14,8 @@ export {
   type ChangeListener,
   type ChangeKind,
   type ChangeOp,
+  type Pressure,
+  type PressureHandler,
 } from "./db.js";
 export {
   OpfsLsmError,
