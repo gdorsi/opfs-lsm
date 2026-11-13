@@ -92,7 +92,6 @@ export interface StoreCore {
 const BACKFILL_ROWS = 500;
 const BACKFILL_OPS = 8_000;
 const BACKFILL_BYTES = 4 * 1024 * 1024;
-const SWEEP_KEYS = 1_000;
 const fromUtf8 = new TextDecoder();
 
 type Violation = { readonly reason: "unique" | "value"; readonly ids: readonly string[] };
@@ -340,19 +339,9 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   private async sweep(p: DroppedPrefix): Promise<void> {
     const collection = p.collection as CollectionId;
     const prefix = "index" in p ? indexPrefix(collection, p.index as IndexId) : collectionPrefix(collection);
+    // One op: nothing reaches the prefix any more, so no later write can land in it.
     // Not `upperOf`: index id 255 is `64 CC CC FF`, which `upperOf(64 CC CC)` would exclude.
-    const bounds = prefixBound(prefix);
-    for (let start = prefix; ; ) {
-      const keys: Uint8Array[] = [];
-      for await (const e of this.kv.range({ ...bounds, start, limit: SWEEP_KEYS })) keys.push(e.key);
-      if (keys.length === 0) {
-        await this.editCatalog((c) => removeDropped(c, p));
-        return;
-      }
-      await this.kv.batch((tx) => {
-        for (const k of keys) tx.delete(k);
-      });
-      start = after(keys.at(-1)!);
-    }
+    await this.kv.batch((tx) => tx.deleteRange(prefixBound(prefix)));
+    await this.editCatalog((c) => removeDropped(c, p));
   }
 }
