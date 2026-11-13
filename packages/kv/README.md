@@ -31,7 +31,7 @@ const found = await db.get(key);
 | `cacheBytes` | Bytes of SST pages, Bloom filters, and block indexes this tab keeps. Default 256 MiB. A smaller request is raised to 1 MiB. It does not cover the memtable, the wasm heap, or values returned to the caller. |
 | `memtableBytes` | Bytes of rows this tab holds that are not yet flushed to OPFS, counted as key bytes, value bytes, and an estimate per row. Default 16 MiB. A smaller request is raised to 1 MiB. At 7/8 of it the tab asks the host to flush and keeps writing. At the limit a write waits until the host returns that flush, so a writing tab's memtable stays near the limit. A host that cannot flush does not hold writes for good. When tabs differ, the host flushes once the WAL passes the smallest ask: 1 MiB, or 7/8 of `memtableBytes` when that is lower. |
 | `compactionMemoryBytes` | Bytes the SharedWorker may spend on flushing and compacting this database: its wasm heap and the run data in flight. Default 32 MiB. A smaller request is raised to 8 MiB. A smaller figure gives smaller flush runs and a smaller read window, and under about 17.5 MiB fewer runs in one compaction step. The host's figures stop growing at 64 MiB. When tabs differ, the host uses the smallest, until the last tab closes the database. It counts memory that is alive, not garbage the browser has not collected yet. |
-| `maxBytes` | Bytes of SST files the database should stay under, or `"quota"` for 90% of the browser's storage quota for the origin. kv never removes a row for it: it asks an `onPressure` handler to. A write never waits for the cap and is never refused because of it. When tabs differ, the host uses the smallest number and honors `"quota"` too, until the last tab closes the database. See [Size cap](#size-cap). |
+| `maxBytes` | Bytes of SST files the database should stay under, or `"quota"` for 90% of the browser's storage quota for the origin. kv never removes a row for it: it asks an `onPressure` handler to. A write never waits for the cap and is never refused because of it. When tabs differ, the host uses the smallest number and honors `"quota"` too, until the last tab closes the database. See [Size cap](#size-cap) and [Storage quota](#storage-quota). |
 
 Harness knobs used by tests (`forceMemory`, `fs`, `ingest`, `maxWalBytes`, `writerId`, `trace`) live on `openHarnessDb` from `@opfs-lsm/kv/testing`. `maxWalBytes` overrides the 1 MiB flush. `ingest(db)` from the same entry flushes the memtable now and waits for the compaction it starts.
 
@@ -101,9 +101,36 @@ db.onPressure(async ({ need }) => {
 
 Answer with `deleteRange`. Its bytes come back once a flush holds it and compaction rewrites the files it covers. A point `delete` frees file bytes only when a merge drops its tombstone at the deepest level, which may be late. The SharedWorker measures again after the next flush, so the offer comes back while the answer freed too little, at most once per compaction pass: a handler must be safe to run again. The next offer waits for the handlers to settle, so a handler that never settles stops the offers. Under writes heavy enough that compaction does not catch up, the offer comes late.
 
-With `maxBytes: "quota"`, the SharedWorker offers when `navigator.storage.estimate()` reports `usage` over 90% of `quota`: `maxBytes` is that 90%, and `need` is how far `usage` is over 4/5 of it. `bytes` is still this database's SST files. The estimate covers the whole origin (the WAL in IndexedDB, other databases, caches) and is approximate, so `need` can be larger than `bytes`, and the handler above would then delete every row. With `"quota"`, cap what a handler frees, for example at `Math.min(need, bytes / 2)`. Two databases opened with `"quota"` are each offered the whole `need`. Without a usable estimate there is no offer. The SharedWorker reads the estimate only while no superseded SST file is left on disk, so a long `view` that keeps old files open holds the quota offer back.
-
 `bytes` counts SST files only. It includes rows that a delete or an overwrite hides and no merge has dropped yet, and leaves out the WAL and the SST files a long `view` keeps open. A handle opened with `maxBytes` and no handler warns once per offer when no handle answers, and the database keeps growing. Call `onPressure` in the same turn that `openDb` resolves: an offer that arrives before the handler logs that warning, and the handler still gets the offer once it registers.
+
+## Storage quota
+
+The browser gives each origin a storage quota. The WAL in IndexedDB and the SST files in OPFS count against it, along with everything else the origin stores. Open the database with `maxBytes: "quota"`, and kv asks an `onPressure` handler to free space before the origin runs out. The offer works as in [Size cap](#size-cap), with these differences:
+
+- The SharedWorker offers when `navigator.storage.estimate()` reports `usage` over 90% of `quota`. `maxBytes` is that 90%, and `need` is how far `usage` is over 4/5 of it.
+- `bytes` is still this database's SST files. The estimate covers the whole origin (the WAL, other databases, caches) and is approximate, so `need` can be larger than `bytes`.
+- Two databases opened with `"quota"` are each offered the whole `need`.
+- Without a usable estimate there is no offer.
+- The SharedWorker reads the estimate only while no superseded SST file is left on disk, so a long `view` that keeps old files open holds the offer back.
+
+Because `need` can be larger than the whole database, cap what the handler frees. Here keys start with a timestamp, so the handler drops the oldest rows, at most half of `bytes` per offer:
+
+```ts
+const db = await openDb({ name: "log", maxBytes: "quota" });
+db.onPressure(async ({ bytes, need }) => {
+  const goal = Math.min(need, bytes / 2);
+  let freed = 0;
+  for await (const { key, value } of db.range()) {
+    if (freed >= goal) {
+      await db.batch((tx) => tx.deleteRange({ endExclusive: key }));
+      return;
+    }
+    freed += key.byteLength + value.byteLength;
+  }
+});
+```
+
+If the origin runs out anyway, the SharedWorker cannot write SST files. See `StorageFullError` in [Errors](#errors).
 
 ## Errors
 
@@ -112,7 +139,7 @@ Every error the engine throws on purpose is an `OpfsLsmError` with a `code`. A h
 | Class | `code` | Meaning | What to do |
 | --- | --- | --- | --- |
 | `StorageUnavailableError` | `unavailable` | The context has no SharedWorker or OPFS, the wasm engine did not load, or the browser's IndexedDB store failed to open. `cause` holds the browser's error when there is one. | For a failed IndexedDB open, retry `openDb`, or reload the page. Chrome can damage its own IndexedDB store when it crashes, and then deletes it or keeps failing the open. If it deletes it, the writes not yet flushed to OPFS are lost and the flushed data is kept. |
-| `StorageFullError` | `quota` | The browser refused a flush or compaction write because the origin is out of storage quota. | The host rejects the flush, and no `Db` method surfaces that. The acked writes stay in the WAL, and the host flushes again after another 1 MiB of writes or the next `openDb`. `ingest(db)` from `@opfs-lsm/kv/testing` flushes now and rejects with this error. |
+| `StorageFullError` | `quota` | The browser refused a flush or compaction write because the origin is out of storage quota. | The host rejects the flush, and no `Db` method surfaces that. The acked writes stay in the WAL, and the host flushes again after another 1 MiB of writes or the next `openDb`. `ingest(db)` from `@opfs-lsm/kv/testing` flushes now and rejects with this error. To free space before the origin runs out, see [Storage quota](#storage-quota). |
 | `CorruptDatabaseError` | `corrupt` | A file of the database does not decode, or a file it needs is gone. | Do not retry. The engine changes nothing. `destroyDb(name)` empties the database. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
 | `ConstraintError` | `constraint` | A key, value or batch is not valid or is over a limit. | Fix the call. |

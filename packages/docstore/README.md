@@ -203,6 +203,23 @@ await load();
 
 Index values order as `null`, `false`, `true`, numbers ascending, then strings. `-0` equals `0`. Strings order by their UTF-8 bytes, so `"a"` sorts before `"a\u0000b"`, which sorts before `"aa"`. `eq: ["a"]` and `lte: "a"` do not return `"a\u0000b"`, and `gt: "a"` does.
 
+## Storage quota
+
+Documents and index entries are kv rows, so they count against the origin's storage quota. To free space before the origin runs out, open kv with `maxBytes: "quota"` and answer its offers with `kv.onPressure`. kv's [Storage quota](../kv/README.md#storage-quota) explains the offer.
+
+Free space with `clear()`. After it, a background sweep removes the collection's old keys with one kv range delete, and their space comes back once compaction rewrites the files that hold them. `delete` and `deleteMany` remove one key at a time, and kv frees those bytes late, as its [Size cap](../kv/README.md#size-cap) explains. Clear a collection your app can fetch again, such as a cache of server data:
+
+```ts
+const kv = await openDb({ name: "app", maxBytes: "quota" });
+const comments = (await openDocStore(kv, schema)).collection("comments");
+
+kv.onPressure(async () => {
+	if ((await comments.queryIds({ limit: 1 })).ids.length > 0) await comments.clear();
+});
+```
+
+The handler skips an empty collection, because an offer can come back before the space is free. A `clear()` of an empty collection still sends every `changes` listener a gap.
+
 ## Errors
 
 Every error this package throws on purpose is a `DocStoreError` with a `code`. kv's errors (`ConstraintError`, `ClosedError`, `CommitError`, `CorruptDatabaseError`) pass through unchanged.
