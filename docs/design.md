@@ -273,14 +273,14 @@ retired runs a `view` holds do not count.
 disk outside its manifest, reads `navigator.storage.estimate()` after the pass, holding no lock. A
 retired run that a tab still holds counts in the estimate, so the read waits for a pass after it
 is gone. The cap is then 90% of `quota`,
-rounded down, and `need` is `usage` less 7/8 of it. `bytes` stays the sum of the runs' file bytes.
+rounded down, and `need` is `usage` less 4/5 of it. `bytes` stays the sum of the runs' file bytes.
 The estimate covers the whole origin (the WAL in IndexedDB, other databases, caches) and is
 approximate, so `need` can pass `bytes`: a handler that frees `need` regardless empties the
 database. Each database opened with `"quota"` is offered the whole `need`. A missing or rejected estimate, or one
 without `usage` or `quota`, makes no offer.
 
 **Offer.** Over a cap, the host posts `{ kind: "pressure", pressure: { bytes, maxBytes, need } }`
-on the layers channel, with `need` the bytes over 7/8 of the cap. It holds one of two states:
+on the layers channel, with `need` the bytes over 4/5 of the cap. It holds one of two states:
 
 | State | Event | Next |
 |---|---|---|

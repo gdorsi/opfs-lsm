@@ -535,7 +535,7 @@ class HostedDb {
   private offerOver(base: GenerationMeta, bytes: number, used: number, maxBytes: number): void {
     const bus = this.watching?.bus;
     if (!bus || used <= maxBytes || "pressure" in this.offer || base.through < this.offer.after) return;
-    this.offer = { kind: "pressure", pressure: { bytes, maxBytes, need: used - Math.floor((maxBytes * 7) / 8) } };
+    this.offer = { kind: "pressure", pressure: { bytes, maxBytes, need: used - Math.floor((maxBytes * 4) / 5) } };
     bus.postMessage(this.offer);
   }
 
