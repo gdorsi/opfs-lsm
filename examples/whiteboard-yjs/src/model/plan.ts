@@ -1,5 +1,5 @@
 import { rekey, zInFront } from "./zorder.ts";
-import type { BoardView, Box, Command, Direction, Patch, PatchEntry, Shape, ShapeEdit, ShapeId } from "./types.ts";
+import type { Applied, BoardView, Box, Command, Direction, Patch, PatchEntry, Shape, ShapeEdit, ShapeId } from "./types.ts";
 
 export type Scene = Pick<BoardView, "shapes" | "order">;
 
@@ -56,6 +56,13 @@ export function plan(scene: Scene, command: Command, newId: () => ShapeId): Patc
       break;
   }
   return patch;
+}
+
+/** A patch with the ids it made, in patch order. */
+export function toApplied(patch: Patch): Applied {
+  const created: ShapeId[] = [];
+  for (const [id, entry] of patch) if (entry.op === "put") created.push(id);
+  return { patch, created };
 }
 
 function topZ(scene: Scene) {

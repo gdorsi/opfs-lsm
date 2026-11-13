@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./model": "./src/model/index.ts"
+    "./model": "./src/model/index.ts",
+    "./persistence": "./src/persistence/index.ts"
   },
   "scripts": {
     "check": "tsc -p tsconfig.json",

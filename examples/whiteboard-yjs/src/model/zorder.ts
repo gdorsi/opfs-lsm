@@ -1,6 +1,13 @@
 import { generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
 import type { ShapeId, Z } from "./types.ts";
 
+/** Back to front: by key, then by id. */
+export function byZ(a: { readonly z: Z; readonly id: ShapeId }, b: { readonly z: Z; readonly id: ShapeId }): number {
+  if (a.z !== b.z) return a.z < b.z ? -1 : 1;
+  if (a.id !== b.id) return a.id < b.id ? -1 : 1;
+  return 0;
+}
+
 export function isZ(value: unknown): value is Z {
   if (typeof value !== "string") return false;
   try {

@@ -23,6 +23,7 @@ export type {
   Viewport,
   Z,
 } from "./types.ts";
+export { BoardLoadError, openBoard } from "./board.ts";
 export { plan } from "./plan.ts";
 export { applyPatchPlain, digestShapes } from "./digest.ts";
 export { boardId, penShape, shapeId } from "./shapes.ts";
