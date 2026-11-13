@@ -11,6 +11,7 @@
     "examples/*/scripts/**/*.ts",
     "examples/*/bench/*.ts",
     "examples/*/bench/*.js",
+    "examples/*/src/service-worker.js",
     "bench/cli.ts",
     "bench/page/main.ts",
     "bench/probes/*.ts",
