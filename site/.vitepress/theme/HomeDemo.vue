@@ -105,10 +105,8 @@ const HOSTS: Record<Host, string> = {
 <template>
   <div class="demo" :data-state="state">
     <div class="demo-bar">
+      <span class="demo-tag">iframe</span>
       <button class="demo-btn" type="button" :disabled="state !== 'ready'" @click="reload()">Reload the app</button>
-      <button class="demo-btn" type="button" :disabled="state !== 'ready'" @click="post({ type: 'generate', count })">
-        Generate {{ countLabel }} more issues
-      </button>
     </div>
 
     <iframe ref="frame" class="demo-frame" :src="src" title="LinearLite, an issue list, running on docstore and kv with no server" />
