@@ -45,8 +45,10 @@ export default ({ command }: { command: string }) => {
     vite: {
       plugins: [serveDemo],
       // The illustrations are React components (site/stageshow), mounted by a Vue wrapper.
-      esbuild: { jsx: "automatic", jsxImportSource: "react" },
-      optimizeDeps: { entries: [] },
+      esbuild: { jsx: "automatic", jsxImportSource: "react", jsxDev: false },
+      // Scan the illustrations at startup so React is pre-bundled. Found later, the dev server re-bundles it and
+      // serves the old copy as 504. The root is the repo, so the scan names the site's files.
+      optimizeDeps: { entries: ["site/.vitepress/theme/**/*.vue", "site/stageshow/**/*.tsx"] },
       server: { watch: { ignored: [ignoredByWatcher] } },
       resolve: {
         alias: [
