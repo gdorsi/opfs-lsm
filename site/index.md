@@ -16,8 +16,8 @@ hero:
       text: GitHub
       link: https://github.com/gdorsi/opfs-lsm
 features:
-  - title: Up to 7× faster writes than IndexedDB
-    details: Random writes in batches of 1,000 run at 302k ops/s, against 43.4k on IndexedDB. Point reads run 30× faster, and reads of missing keys 127×. Single awaited puts and opening a database are slower.
+  - title: 30× faster reads than IndexedDB
+    details: Random point reads run at 429k ops/s, against 14.5k on IndexedDB. Reads of missing keys run 127× faster, and short range scans 2.8× faster. Each tab reads the data files directly, so a read sends no message to a worker. A full ordered scan runs at the same speed, and opening a database is slower.
     link: /guide/#benchmarks
     linkText: All benchmarks
   - title: One database for every tab
