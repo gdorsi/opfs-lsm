@@ -147,7 +147,7 @@ removes the rows it covers at once, so a row the memtable holds is never covered
 
 A `view` pins the memtable without copying it. The pin copies the array of chunk references and
 marks every chunk as shared. The live table copies a shared chunk before its next write to it,
-and a range delete puts a filtered copy in place of each chunk it changes.
+and a range delete rebuilds the table from the rows it keeps.
 
 When the installed generation moves forward, the memtable drops the rows that the newly ingested
 seqs wrote, and the marks of the newly ingested records.

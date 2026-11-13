@@ -43,14 +43,10 @@ file. The level of a run is in its path.
 Runs are listed L0 first, newest first. Each deeper level follows, with its runs sorted by
 smallest key. Reads use that order directly.
 
-The marks block is a step function over the key space. Piece *i* covers the keys from its
-`start` up to the next piece's `start`: every version of those keys written at a seq at or
-below `through` is gone. `through` 0 means no range delete covers the piece. `at` is the seq
-of the record whose range delete set `through`. The first piece starts at the empty key,
-starts strictly increase, and two adjacent pieces never hold the same `through` and `at`.
-
-`marksThrough` is the seq through which the run applied range deletes: the run holds no
-version that a range delete from a record at or below it covers.
+The marks block holds the pieces of the mark table, and `marksThrough` is a run's claim
+against it. [design.md](design.md#range-deletes) gives the meaning of both. The first piece
+starts at the empty key, starts strictly increase, and two adjacent pieces never hold the same
+`through` and `at`.
 
 A reader rejects any other version as corrupt, and a marks block that breaks its rules, a
 piece with `at` at or below its nonzero `through` or past the manifest's `through`, or a run
