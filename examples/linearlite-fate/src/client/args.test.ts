@@ -1,29 +1,29 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { columnArgs, filterArgs, LIST_WINDOW, matches, windowArgs } from "./args.ts";
+import { columnArgs, filterArgs, matches, windowArgs, WINDOW } from "./args.ts";
 import { parseIssueFilter } from "./filter.ts";
 
 const all = parseIssueFilter({});
 
 describe("windowArgs", () => {
-  it("aligns the offset down to a step of 50 and covers the requested rows", () => {
-    for (const start of [0, 1, 49, 50, 99, 4999, 5000, 5049]) {
-      const { offset, limit } = windowArgs(all, start);
-      assert.equal(offset % 50, 0);
-      assert.ok(offset <= start && start + LIST_WINDOW <= offset + limit, `start ${start}`);
+  it("aligns the offset down to a multiple of the window and holds the row", () => {
+    for (const row of [0, 1, 49, 50, 99, 4999, 5000, 5049]) {
+      const { offset, limit } = windowArgs(all, row);
+      assert.equal(offset % WINDOW, 0);
+      assert.ok(offset <= row && row < offset + limit, `row ${row}`);
     }
     assert.equal(windowArgs(all, 4999).offset, 4950);
     assert.equal(windowArgs(all, -3).offset, 0);
   });
 
-  it("gives nearby starts the same args, so they share one cache entry", () => {
+  it("gives rows of one window the same args, so they share one cache entry", () => {
     assert.deepEqual(windowArgs(all, 5000), windowArgs(all, 5049));
     assert.notDeepEqual(windowArgs(all, 5000), windowArgs(all, 5050));
   });
 
   it("carries the filter and the sort", () => {
     const filter = parseIssueFilter({ status: "1", priority: "0,2", q: "sync", sort: "title", dir: "asc" });
-    assert.deepEqual(windowArgs(filter, 0), { status: [1], priority: [0, 2], q: "sync", sort: "title", dir: "asc", offset: 0, limit: LIST_WINDOW + 50 });
+    assert.deepEqual(windowArgs(filter, 0), { status: [1], priority: [0, 2], q: "sync", sort: "title", dir: "asc", offset: 0, limit: WINDOW });
   });
 });
 

@@ -17,6 +17,13 @@ mutation id that the server records, so a retry after a lost answer is applied o
 The client holds only what was fetched. There is no replica, no sync stream and no live view: other tabs and other
 users' changes show up when a screen revalidates.
 
+The client follows fate's guides. Each component declares the fields it reads as a view and receives refs: a list
+row, a board card, a comment, and the detail screen's title, properties, description and thread each call
+`useView` on their own view, and a parent spreads its children's views into its own. A screen's root makes the
+request with `useRequest`, loading suspends to the nearest Suspense boundary, and a read error goes to the nearest
+error boundary. Components take the client from `<FateClient>` with `useFateClient()`; nothing reaches it through a
+module or a global.
+
 ## Data
 
 `src/domain/model.ts` names the shapes: `IssueFields` (an issue's row), `IssueEntity` and `CommentEntity` (fate's
@@ -34,16 +41,17 @@ Server tables (`data/linearlite-fate.db`, or `LINEARLITE_FATE_DB`):
 ## Lists are positional windows
 
 A list request names the filter, the sort and a window: `{offset, limit}`. The offset is a multiple of 50 and the
-limit is 150, so a scroll of a few rows keeps the same request and every window is a reusable cache entry. fate
+limit is 50, so every window is a reusable cache entry. The list renders each visible window as its own component
+with its own request. fate
 reads `first`, `last`, `after` and `before` as its own paging and leaves `first` out of the cache key, so a window
 uses its own names.
 
-The list reads only the cache (`cache-only` in `useRequest`), which also restores a window from the device, and
-fetches the window on its own (`stale-while-revalidate`). A window the user has visited therefore paints with the
-server unreachable. A window that is not cached keeps the rows of the last cached window on screen and draws skeletons
-at the rows it lacks, also when its fetch fails. The list never falls back to a loading screen while it scrolls, sorts
-or filters, and shows "Loading…" only on its first load. The error and Try again appear only when there is nothing
-to show: no cached window, or only windows under another filter or sort.
+A window reads only the cache (`cache-only` in `useRequest`), which also restores it from the device, and refreshes
+it with `useRefetch` when it mounts. fate's `stale-while-revalidate` does not count a positional window as cached
+and waits for the server, so a window the user has visited paints with the server unreachable only this way. A
+window that is not cached draws skeletons, also when its fetch fails. The list's total comes from the counts, which
+suspend: "Loading…" shows on the first load, and a new filter or sort keeps the current list on screen until its
+counts arrive (`useDeferredValue`). The error and Try again appear only when the counts cannot be read.
 
 A window never reports `hasPrevious`. fate reads it as rows missing before the list and then does not count the list
 as cached, so a list that reads only the cache would never paint that window.
@@ -67,7 +75,7 @@ offline.
 
 ## Writes
 
-`src/client/commands.ts` keeps the original's command names. Each command is one durable mutation and resolves when
+Each command is one durable mutation, called with the component's client, and resolves when
 fate has persisted it on the device (`locallyPersisted`). The server's answer comes later, maybe after a reload; a
 refusal rolls the optimistic change back and shows in the footer.
 
@@ -76,13 +84,15 @@ refusal rolls the optimistic change back and shows in the footer.
 - `createIssue` and `moveIssue` compute `kanbanorder` with fractional indexing between the neighbours on screen.
   A create sends it only when its whole column is on screen. Otherwise the server puts the issue at the top of its
   column. The server refuses a `kanbanorder` that is not a fractional index.
-- fate inserts a new item only into lists a mutation names. Screens register the lists they show with their filter
-  (the list's first window under a newest-first sort, each board column, an issue's comments), and a create names
-  the ones whose filter lists the new issue.
+- fate inserts a new item only into lists a mutation names, and the list must be the value the client returned.
+  A comment names the thread its screen read; a move names the board columns it leaves and joins. The create dialog
+  reads the list's first window and the board's columns with `cache-only` requests, which return the cached lists
+  without fetching, and names those whose filter lists the new issue (the window only under a newest-first sort).
 - The author is the `x-linearlite-user` header (`?user=` in the URL), else `anonymous`.
 
-Positions in a window are the server's. An optimistic edit changes the row in place, and the screen refetches once
-the server has answered a queued mutation, so a sort or count that depends on the edit catches up then.
+Positions in a window are the server's. An optimistic edit changes the row in place, and each mounted request
+refetches with `useRefetch` once the server has answered a queued mutation, so a sort or count that depends on the
+edit catches up then.
 
 ## The server endpoint
 
@@ -91,12 +101,13 @@ issues that reads comments only when the view selects them, and four mutations. 
 connection serves every request, so requests run one at a time, and a request with several operations runs them
 one by one. fate runs a batch's operations together, which would interleave two mutations' transactions.
 
-Receipts are scoped by the persistence key `linearlite`, which the client also uses. fate requires the two to
-match.
+Receipts are scoped by the user's persistence key, `linearlite:user:<user>`, which the client also uses. fate
+requires the two to match.
 
 ## Persistence and sync status
 
-`createPersistence({ key: "linearlite", storage })`. The default storage is `kvStorage(await openDb({ name }))`,
+`createPersistence({ key: "linearlite:user:<user>", storage })`: one key per user, as fate's guide asks, so two
+users in one browser keep separate caches and queues. The default storage is `kvStorage(await openDb({ name }))`,
 with the kv database name from `?db=` (default `linearlite`). `?storage=idb` uses `createIndexedDBStorage()`,
 which opens an IndexedDB database named `fate`. The footer names the storage in use. The client is created in the
 browser only, in the `_app` route's loader, behind a pending screen that the server renders into the page. The route

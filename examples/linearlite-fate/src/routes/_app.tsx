@@ -1,7 +1,6 @@
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router";
 import { FateClient } from "react-fate";
-import * as commands from "../client/commands.ts";
-import { openedFate, openFate } from "../client/fate.ts";
+import { openFate, SessionContext } from "../client/fate.ts";
 import { parseIssueFilter } from "../client/filter.ts";
 import { keepAppOnDevice } from "../client/offline.ts";
 import { Shell } from "../ui/shell.tsx";
@@ -16,10 +15,9 @@ export const Route = createFileRoute("/_app")({
   }),
   search: { middlewares: [stripSearchParams(DEFAULTS)] },
   loader: async () => {
-    const { fate, storage } = await openFate();
-    // A measurement script drives edits and reads the client through this, on production builds too.
-    Object.assign(globalThis, { __linearlite: { fate, storage, commands } });
+    const opened = await openFate();
     keepAppOnDevice();
+    return opened;
   },
   pendingMs: 200,
   pendingMinMs: 0,
@@ -28,9 +26,12 @@ export const Route = createFileRoute("/_app")({
 });
 
 function AppShell() {
+  const { fate, user, storage } = Route.useLoaderData();
   return (
-    <FateClient client={openedFate().fate}>
-      <Shell creating={Route.useSearch().new === 1} />
+    <FateClient client={fate}>
+      <SessionContext value={{ user, storage }}>
+        <Shell creating={Route.useSearch().new === 1} />
+      </SessionContext>
     </FateClient>
   );
 }

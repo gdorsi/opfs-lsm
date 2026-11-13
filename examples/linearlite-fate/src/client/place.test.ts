@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { FilterArgs } from "../domain/model.ts";
-import { placeNewIssue, type OnScreen } from "./screen.ts";
+import { placeNewIssue, type Shown } from "./place.ts";
 
 const everything: FilterArgs = { status: [], priority: [], q: "" };
 const column = { name: "column" } as never;
 const list = { name: "list" } as never;
 
-function screen(columnFilter: FilterArgs | undefined, listFilter: FilterArgs | undefined, top: string | null = "a0"): OnScreen {
+function screen(columnFilter: FilterArgs | undefined, listFilter: FilterArgs | undefined, top: string | null = "a0"): Shown {
   return {
-    columns: new Map(columnFilter ? [[1, { filter: columnFilter, target: column, top }]] : []),
-    top: new Map(listFilter ? [["list", { filter: listFilter, target: list }]] : []),
-    comments: new Map(),
+    ...(columnFilter && { column: { filter: columnFilter, target: column, top } }),
+    ...(listFilter && { list: { filter: listFilter, target: list } }),
   };
 }
 
@@ -44,7 +43,7 @@ describe("placeNewIssue", () => {
     assert.equal(place.sentOrder, undefined);
   });
 
-  it("names nothing when the issue's column is not on screen", () => {
-    assert.deepEqual(placeNewIssue(screen(everything, undefined), { ...low, status: 3 }), { into: [] });
+  it("names nothing when the issue's column is not cached", () => {
+    assert.deepEqual(placeNewIssue(screen(undefined, undefined), low), { into: [] });
   });
 });

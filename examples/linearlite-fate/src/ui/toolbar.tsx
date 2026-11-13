@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { SORT_FIELDS, type IssueFilter, type SortField } from "../client/filter.ts";
-import { PRIORITY_LABELS, STATUS_LABELS, type PriorityCode, type StatusCode } from "../domain/model.ts";
+import { CODES, PRIORITY_LABELS, STATUS_LABELS, type PriorityCode, type StatusCode } from "../domain/model.ts";
 import { PriorityIcon, StatusIcon } from "./icons.tsx";
 import { item, MenuButton, type MenuEntry } from "./menu.tsx";
 import { useSetFilter } from "./nav.ts";
 
 const SORT_LABELS: Record<SortField, string> = { modified: "Modified", created: "Created", priority: "Priority", status: "Status", title: "Title" };
-const CODES = [0, 1, 2, 3, 4] as const;
 
 const toggle = <T extends number>(list: readonly T[], code: T): T[] => (list.includes(code) ? list.filter((c) => c !== code) : [...list, code].sort());
 

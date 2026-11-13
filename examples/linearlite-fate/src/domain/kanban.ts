@@ -19,3 +19,9 @@ export function isKanbanOrder(order: string): boolean {
     return false;
   }
 }
+
+/** Orders cards as the server lists a column: by `kanbanorder`, then by id. */
+export function byKanbanOrder(a: { readonly kanbanorder: string; readonly id: string }, b: { readonly kanbanorder: string; readonly id: string }): number {
+  if (a.kanbanorder !== b.kanbanorder) return a.kanbanorder < b.kanbanorder ? -1 : 1;
+  return a.id < b.id ? -1 : 1;
+}

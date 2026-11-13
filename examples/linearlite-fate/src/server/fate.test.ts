@@ -6,7 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { after, before, describe, it } from "node:test";
 import { generate, type SeedIssue } from "../../scripts/generate.ts";
 import { SORT_FIELDS, type SortField } from "../client/filter.ts";
-import { PERSISTENCE_KEY, PRIORITIES, STATUSES, type FilterArgs, type WindowArgs } from "../domain/model.ts";
+import { persistenceKey, PRIORITIES, STATUSES, type FilterArgs, type WindowArgs } from "../domain/model.ts";
 import { openServerDb } from "./db.ts";
 import { createServer } from "./fate.ts";
 import { windowSql } from "./issues.ts";
@@ -79,10 +79,11 @@ const listIds = async (args: WindowArgs) => {
 };
 
 let identities = 0;
-const identity = () => {
+/** A mutation identity scoped to `user`, the user `call` sends as by default. */
+const identity = (user = "tester") => {
   const now = Date.now();
   const uuid = `00000000-0000-4000-8000-${String(++identities).padStart(12, "0")}`;
-  return { id: `fate:1:${now}:${now + 86_400_000}:${uuid}`, scope: PERSISTENCE_KEY };
+  return { id: `fate:1:${now}:${now + 86_400_000}:${uuid}`, scope: persistenceKey(user) };
 };
 const mutate = (name: string, input: unknown, select: string[] = ["id"], mutation = identity(), user?: string) =>
   one({ kind: "mutation", name, input, select, mutation }, user);
@@ -160,12 +161,12 @@ describe("fate server", () => {
     assert.equal(update.data.modified, row.modified);
 
     const id = crypto.randomUUID();
-    const created = await mutate("createIssue", { id, title: "Fresh", description: "Body", status: 1, priority: 0, kanbanorder: "a0" }, ["id", "username"], identity(), "ada");
+    const created = await mutate("createIssue", { id, title: "Fresh", description: "Body", status: 1, priority: 0, kanbanorder: "a0" }, ["id", "username"], identity("ada"), "ada");
     assert.ok(created.ok, JSON.stringify(created.error));
     assert.equal(created.data.username, "ada");
     assert.equal(db.prepare("SELECT username FROM issue WHERE id = ?").get(id)!.username, "ada");
 
-    const comment = await mutate("addComment", { id: crypto.randomUUID(), issueId: id, body: "First" }, ["id", "body", "username"], identity(), "grace");
+    const comment = await mutate("addComment", { id: crypto.randomUUID(), issueId: id, body: "First" }, ["id", "body", "username"], identity("grace"), "grace");
     assert.ok(comment.ok, JSON.stringify(comment.error));
     assert.deepEqual({ body: comment.data.body, username: comment.data.username }, { body: "First", username: "grace" });
 
