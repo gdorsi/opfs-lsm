@@ -1,0 +1,301 @@
+/* The app's window pinned top and right of center, off the right and bottom. The race card in front of it, its right
+   edge on the window's sidebar line, one gutter from the stage's left, raised off the bottom so no tall band of
+   ground is left above it. One 28px gutter. */
+.ro {
+  & .ss-stage {
+    --ro-gutter: 28px;
+    --ro-bleed: 80px;
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--ss-well);
+    font: 12px/1.4 var(--ss-font);
+    color: var(--ss-text-strong);
+  }
+
+  /* The window's layer, the size of the stage: narrow, it fades the window out above its foot. */
+  .ro-frame {
+    position: absolute;
+    inset: 0;
+  }
+
+  .ro-window {
+    position: absolute;
+    top: var(--ro-gutter);
+    left: 124px;
+    width: 556px;
+    height: 400px;
+    box-shadow: var(--ss-shadow-hero);
+  }
+
+  .ro-app {
+    display: flex;
+    height: 100%;
+    background: var(--ss-surface);
+  }
+
+  .ro-side {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    flex: none;
+    width: 170px;
+    padding: 14px 10px;
+    border-right: 1px solid var(--ss-line);
+    background: var(--ss-canvas);
+  }
+
+  .ro-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 26px;
+    padding: 0 8px;
+    border-radius: 6px;
+  }
+
+  .ro-nav[data-on] {
+    background: var(--ss-ink-2);
+  }
+
+  /* The window runs past the stage's right edge: the content stops a gutter short of what is visible. */
+  .ro-main {
+    flex: 1;
+    min-width: 0;
+    padding: 14px calc(20px + var(--ro-bleed)) 0 20px;
+  }
+
+  .ro-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    height: 28px;
+    margin-bottom: 8px;
+  }
+
+  .ro-title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .ro-badge-icon {
+    width: 12px;
+    height: 12px;
+  }
+
+  /* A status's two phrases share one cell, left-aligned. The cell eases to the width of the phrase showing and never
+     clips: the phrase that would be cut has already faded. */
+  .ro-phrases {
+    display: grid;
+    justify-items: start;
+    transition: width 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .ro-phrases[data-shrink] {
+    transition-delay: 0.1s;
+  }
+
+  .ro-phrase {
+    grid-area: 1 / 1;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.14s ease;
+  }
+
+  .ro-phrase[data-on] {
+    opacity: 1;
+    transition: opacity 0.2s ease 0.12s;
+  }
+
+  .ro-issue {
+    height: 36px;
+    padding-block: 0;
+    border-radius: 0;
+    border-bottom: 1px solid var(--ss-line-faint);
+    font-size: 12.5px;
+  }
+
+  .ro-status {
+    color: var(--ss-text);
+  }
+
+  /* A skeleton bar and what replaces it share one cell. The bars fade and the content fades in, row by row from the
+     top, 70ms apart, each row whole. */
+  .ro-slot {
+    display: grid;
+    align-items: center;
+    justify-items: start;
+  }
+
+  .ro-slot > * {
+    grid-area: 1 / 1;
+  }
+
+  .ro-sk {
+    position: relative;
+    overflow: hidden;
+    transition: opacity 0.3s ease calc(var(--i) * 70ms);
+  }
+
+  /* A faint, slow shimmer while the load runs. */
+  .ro-sk::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ss-surface) 65%, transparent), transparent);
+    translate: -100% 0;
+    animation: ro-shimmer 1.6s ease-in-out infinite;
+  }
+
+  .ro-real {
+    display: flex;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .ro-list[data-loaded] .ro-sk {
+    opacity: 0;
+  }
+
+  .ro-list[data-loaded] .ro-real {
+    opacity: 1;
+    transition: opacity 0.4s ease calc(var(--i) * 70ms + 80ms);
+  }
+
+  /* The race card. */
+  .ro-card {
+    position: absolute;
+    left: var(--ro-gutter);
+    bottom: 64px;
+    width: 266px;
+    padding: 14px 16px 16px;
+    border-radius: 12px;
+    background: var(--ss-surface);
+    box-shadow: var(--ss-shadow-satellite);
+  }
+
+  .ro-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 12px;
+    margin-bottom: 2px;
+    border-bottom: 1px solid var(--ss-line);
+  }
+
+  /* The title over its size reads as one item: a 1.3 line height and a 2px gap. */
+  .ro-work {
+    display: grid;
+    gap: 2px;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+
+  .ro-work-name {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .ro-work-size {
+    color: var(--ss-text);
+    font-size: 11.5px;
+  }
+
+  .ro-line {
+    display: grid;
+    gap: 7px;
+    padding-top: 12px;
+  }
+
+  .ro-label {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    height: 16px;
+  }
+
+  .ro-who {
+    color: var(--ss-text);
+  }
+
+  .ro-line:first-of-type .ro-who {
+    color: var(--ss-text-strong);
+    font-weight: 500;
+  }
+
+  .ro-value {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    white-space: nowrap;
+    color: var(--ss-text);
+    font-variant-numeric: tabular-nums;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+  }
+
+  .ro-line[data-done] .ro-value {
+    opacity: 1;
+  }
+
+  /* "176k" reads as one figure: no hair between the digits and the k. */
+  .ro-value .ss-count {
+    --ss-count-unit-gap: 0px;
+    color: var(--ss-text-strong);
+    font-weight: 500;
+  }
+
+  /* IndexedDB's bar is gray, so the color is opfs-lsm's alone. */
+  .ro-line .ss-meter[data-tone="ink"] {
+    --ss-meter-tone: var(--ss-text-faint);
+  }
+
+  /* A race: each bar fills at a constant speed, its store's rate, so the time it takes is the time the load took. */
+  .ro-line .ss-meter__fill {
+    transition-duration: var(--ro-ms);
+    transition-timing-function: linear;
+  }
+
+  /* Narrow: the window on top without its sidebar, off the right edge, and the card in front of its lower half and
+     past its left edge. What shows of the window stays landscape, so it can't run off the bottom: it fades out
+     behind the card instead, above its foot, and its content stops on the card's right edge. */
+  & .ss-stage[data-layout="compact"] {
+    --ro-gutter: 20px;
+    --ro-bleed: 42px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ro-frame {
+    mask-image: linear-gradient(#000 230px, transparent 300px);
+  }
+
+  & .ss-stage[data-layout="compact"] .ro-window {
+    top: var(--ro-gutter);
+    left: 40px;
+    width: 360px;
+    height: 290px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ro-side {
+    display: none;
+  }
+
+  & .ss-stage[data-layout="compact"] .ro-main {
+    padding-left: var(--ro-gutter);
+    padding-right: calc(var(--ro-gutter) + var(--ro-bleed));
+  }
+
+  & .ss-stage[data-layout="compact"] .ro-card {
+    right: var(--ro-gutter);
+    bottom: var(--ro-gutter);
+    width: auto;
+  }
+}
+
+@keyframes ro-shimmer {
+  to {
+    translate: 100% 0;
+  }
+}

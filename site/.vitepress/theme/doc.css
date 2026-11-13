@@ -1,0 +1,303 @@
+/* Doc pages: tables, byte layouts, the storage tree and figures, as the site's Markdown rules mark them up. */
+
+/* A table sits in a rounded frame that scrolls sideways when the table is wider than the column. */
+.vp-doc .table-scroll {
+  margin: 20px 0;
+  overflow-x: auto;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+}
+
+.vp-doc .table-scroll table {
+  display: table;
+  width: 100%;
+  margin: 0;
+}
+
+.vp-doc .table-scroll tr {
+  border: 0;
+}
+
+.vp-doc .table-scroll tr,
+.vp-doc .table-scroll tr:nth-child(2n) {
+  background: none;
+}
+
+.vp-doc .table-scroll tbody tr {
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc .table-scroll th,
+.vp-doc .table-scroll td {
+  border: 0;
+  padding: 9px 12px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.vp-doc .table-scroll :is(th, td):first-child {
+  padding-left: 16px;
+}
+
+.vp-doc .table-scroll :is(th, td):last-child {
+  padding-right: 16px;
+}
+
+.vp-doc .table-scroll th {
+  vertical-align: bottom;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.vp-doc .table-scroll .num {
+  text-align: right;
+}
+
+.vp-doc .table-scroll td:is(.num, .figure) {
+  font-variant-numeric: tabular-nums;
+}
+
+.vp-doc .table-scroll td:is(.num, .figure, .nowrap) {
+  white-space: nowrap;
+}
+
+/* On a phone a prose cell keeps a readable width and the frame scrolls, instead of one word per line. */
+.vp-doc .table-scroll td:not(.num, .figure, .nowrap) {
+  min-width: 160px;
+}
+
+.vp-doc .table-scroll table.dense :is(th, td) {
+  padding-inline: 8px;
+  font-size: 13px;
+}
+
+.vp-doc .table-scroll table.dense :is(th, td):first-child {
+  padding-left: 12px;
+}
+
+.vp-doc .table-scroll table.dense :is(th, td):last-child {
+  padding-right: 12px;
+}
+
+.vp-doc .table-scroll table.dense code {
+  font-size: 12px;
+}
+
+.vp-doc .ratio {
+  display: inline-block;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.vp-doc .ratio[data-tone="success"] {
+  color: var(--vp-c-success-1);
+  background: var(--vp-c-success-soft);
+}
+
+.vp-doc .ratio[data-tone="neutral"] {
+  color: var(--vp-c-text-2);
+  background: var(--vp-c-default-soft);
+}
+
+.vp-doc .ratio[data-tone="warning"] {
+  color: var(--vp-c-warning-1);
+  background: var(--vp-c-warning-soft);
+}
+
+/* A byte layout: type, field, meaning, with the condition as a tag and each group under its label. */
+.vp-doc .byte-layout {
+  margin: 20px 0;
+  overflow-x: auto;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+}
+
+.vp-doc .byte-layout table {
+  display: table;
+  width: 100%;
+  margin: 0;
+}
+
+.vp-doc .byte-layout tr {
+  border: 0;
+}
+
+.vp-doc .byte-layout tr,
+.vp-doc .byte-layout tr:nth-child(2n) {
+  background: none;
+}
+
+.vp-doc .byte-layout tr + tr,
+.vp-doc .byte-layout tbody + tbody {
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc .byte-layout th,
+.vp-doc .byte-layout td {
+  border: 0;
+  padding: 7px 12px;
+  vertical-align: top;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.vp-doc .byte-layout :is(th, td):first-child {
+  padding-left: 16px;
+}
+
+.vp-doc .byte-layout .bl-type {
+  width: 1%;
+  padding-right: 0;
+  color: var(--vp-c-text-3);
+  font-family: var(--vp-font-family-mono);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.vp-doc .byte-layout .bl-field {
+  width: 1%;
+  white-space: nowrap;
+  color: var(--vp-c-text-1);
+  font-family: var(--vp-font-family-mono);
+  font-size: 13px;
+}
+
+.vp-doc .byte-layout .bl-meaning {
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .bl-when {
+  display: inline-block;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--vp-c-default-soft);
+  color: var(--vp-c-text-2);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.vp-doc .byte-layout .bl-group th {
+  padding-block: 6px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.vp-doc .byte-layout .bl-repeat td {
+  padding-block: 0;
+  color: var(--vp-c-text-3);
+  line-height: 20px;
+}
+
+/* The storage tree: a card per store, each entry its name, then what it maps and a note. */
+.vp-doc .fs-tree {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.vp-doc .fs-root {
+  min-width: 0;
+  padding: 14px 16px 10px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+}
+
+.vp-doc .fs-root header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  margin-bottom: 8px;
+}
+
+.vp-doc .fs-kind {
+  color: var(--vp-c-text-1);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.vp-doc .fs-root code {
+  padding: 0;
+  background: none;
+  color: var(--vp-c-text-1);
+  font-size: 13px;
+}
+
+.vp-doc .fs-root header code {
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .fs-root ul {
+  margin: 0 0 0 6px;
+  padding: 0 0 0 14px;
+  border-left: 1px solid var(--vp-c-divider);
+  list-style: none;
+}
+
+.vp-doc .fs-root li {
+  position: relative;
+  margin: 0;
+  padding: 6px 0;
+}
+
+.vp-doc .fs-root li::before {
+  content: "";
+  position: absolute;
+  top: 17px;
+  left: -14px;
+  width: 9px;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc .fs-root li.fs-mapped > .fs-line {
+  margin-top: 4px;
+  padding-left: 12px;
+}
+
+.vp-doc .fs-name {
+  display: block;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.vp-doc .fs-line {
+  display: grid;
+  line-height: 22px;
+}
+
+.vp-doc .fs-map span {
+  color: var(--vp-c-text-3);
+}
+
+.vp-doc .fs-note {
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.VPDoc .vp-doc .illustration {
+  margin: 28px 0;
+}
+
+.VPDoc .vp-doc .custom-block.github-alert .custom-block-title {
+  margin-bottom: 4px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.VPDoc .vp-doc .custom-block.github-alert ul {
+  margin: 8px 0;
+}
+
+.VPDoc .vp-doc .custom-block.github-alert li + li {
+  margin-top: 4px;
+}

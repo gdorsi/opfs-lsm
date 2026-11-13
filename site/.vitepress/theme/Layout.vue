@@ -7,11 +7,13 @@ import "./layout.css";
 
 /**
  * The default layout with two additions: an "alpha" tag after the site title on every page, and the home page's
- * hero illustration. The illustration's size comes from the home page's frontmatter, which the build checks
- * against README.md.
+ * hero illustration. The hero shows the best read of the TanStack DB benchmarks, `read` in the home page's
+ * frontmatter, which the build checks against README.md.
  */
+type Read = { framework: string; workload: string; baseline: string; other: string; kv: string; ratio: string };
+
 const { frontmatter } = useData();
-const size = computed(() => frontmatter.value.size as { main: string } | undefined);
+const read = computed(() => frontmatter.value.read as Read | undefined);
 </script>
 
 <template>
@@ -21,11 +23,11 @@ const size = computed(() => frontmatter.value.size as { main: string } | undefin
     </template>
     <template #home-hero-image>
       <Illustration
-        v-if="size"
-        name="sync"
+        v-if="read"
+        name="reopen"
         class="hero-illustration"
-        :data="size"
-        :label="`An app's issue list syncs two new issues. Each is written to @opfs-lsm/kv under its key and acked, then the SharedWorker flushes them to OPFS. kv adds ${size.main} to the main bundle.`"
+        :data="read"
+        :label="`An issue tracker reopens and loads its issues from disk through opfs-lsm, with no network request. In the ${read.framework} benchmark, ${read.workload.toLowerCase()}, opfs-lsm reads ${read.kv} and ${read.baseline} ${read.other}: ${read.ratio} faster.`"
       />
     </template>
   </DefaultTheme.Layout>

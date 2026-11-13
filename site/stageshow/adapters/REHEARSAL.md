@@ -2,7 +2,9 @@
 
 Gold: `payout-flow`. Kept: one card pinned top and off the bottom, slow arrivals in turn, no cursor, a payoff that holds. Changed: the card spans the page and has a column per framework; each column holds two workloads, with two meters, two rolling figures and a status badge that becomes the result.
 
-Beats: 1 TanStack DB runs: bars grow, figures roll, the badges become "1.6× faster" on the cold load and "6.7× faster" on the bulk insert … 2 Yjs … 3 Automerge … 4 fate. The first row of every column is a cold load. Plays once, about 9 s, then rests on the poster (all eight results).
+Beats: 1 TanStack DB in eager mode runs: bars grow, figures roll, the badges become "1.6× faster" on the cold load and "6.7× faster" on the bulk insert … 2 TanStack DB in on-demand mode, against its SQLite adapter: "2.1× faster" on 10 rows by id, "1.5× faster" on a warm query … 3 Yjs … 4 Automerge … 5 fate. Plays once, about 11 s, then rests on the poster (all ten results).
+
+Layout: five frameworks don't fit five columns at 1152 (values ran into the next column), so the two TanStack DB columns share the top row and the other three the row under it. The rule above each workload is a line of its own, not the group's border: as a bordered box, a workload in the wide top row read as a panel with uneven gutters (`uneven gutters`, fixed). On the phone the columns stack as before, and a framework's name stays on one line.
 
 Captured: full width (1152, in a 1280 viewport) and 390, `--states` at both, the reduced-motion poster at both, dark stills at both, and the real home page on the dev server at 1440 and 390.
 
