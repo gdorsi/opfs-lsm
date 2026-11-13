@@ -1,4 +1,5 @@
-import { MUTABLE_FIELDS, type Rows, type Stream } from "../domain/model.ts";
+import type { Rows } from "../domain/model.ts";
+import { MUTABLE_FIELDS, type Stream } from "../domain/stores.ts";
 import type { PushOp } from "../domain/wire.ts";
 
 export function pushOp<S extends Stream>(stream: S, row: Rows[S]): PushOp | undefined {

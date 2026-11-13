@@ -2,7 +2,6 @@ import { and, eq, queryOnce } from "@tanstack/db";
 import { applyLocal, kanbanBetween, withDirty } from "../domain/merge.ts";
 import {
   commentKey,
-  MUTABLE_FIELDS,
   type Body,
   type Comment,
   type Issue,
@@ -10,6 +9,7 @@ import {
   type PriorityCode,
   type StatusCode,
 } from "../domain/model.ts";
+import { MUTABLE_FIELDS } from "../domain/stores.ts";
 import { openStore, transact } from "./store.ts";
 
 let last = 0;

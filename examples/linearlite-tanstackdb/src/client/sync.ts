@@ -1,11 +1,13 @@
 import { mergeIncoming, mergePulled, restore } from "../domain/merge.ts";
-import type { Clocks, Rows, ServerRow, Stream, SyncState } from "../domain/model.ts";
+import type { Clocks, Rows, ServerRow, SyncState } from "../domain/model.ts";
+import { STORES, STREAMS, type Stream } from "../domain/stores.ts";
 import { MAX_DETAIL_IDS, MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse, type RowResponse } from "../domain/wire.ts";
 import { backoffMs, Pager, pushOp } from "./ops.ts";
 import { FORMAT, openStore, transact, type Store } from "./store.ts";
 
 const PULL_LIMIT = 2000;
-const BACKGROUND = ["bodies", "comments"] as const;
+const FULL = STREAMS.filter((s) => STORES[s].pull === "full");
+const BACKGROUND = STREAMS.filter((s) => STORES[s].pull === "threads");
 const CONFIRM = "linearlite:evict";
 /** Cached threads below which storage pressure raises no alert: the visible rows reload right after an eviction. */
 const MIN_EVICTION = 100;
@@ -17,14 +19,16 @@ export function confirmEviction(): void {
   channel.close();
 }
 
+const perStream = <T>(value: T) => Object.fromEntries(STREAMS.map((s) => [s, value])) as Record<Stream, T>;
+
 const EMPTY: SyncState = {
   id: "sync",
   format: FORMAT,
   epoch: null,
-  cursors: { issues: 0, bodies: 0, comments: 0 },
+  cursors: perStream(0),
   head: 0,
   online: false,
-  caughtUp: { issues: false, bodies: false, comments: false },
+  caughtUp: perStream(false),
 };
 
 class HttpError extends Error {
@@ -208,7 +212,7 @@ class Leader {
   private async cycle(loop: { wake: boolean }): Promise<void> {
     await this.push();
     if (this.state.format !== FORMAT) await this.wipe(this.state.epoch);
-    await this.catchUpIssues(loop);
+    await this.catchUpFull(loop);
     await this.startAtHead();
     for (const stream of BACKGROUND) {
       while (this.stale(stream)) {
@@ -216,18 +220,20 @@ class Leader {
         if (loop.wake) {
           loop.wake = false;
           await this.push();
-          await this.catchUpIssues(loop);
+          await this.catchUpFull(loop);
         }
       }
     }
   }
 
-  private async catchUpIssues(loop: { wake: boolean }): Promise<void> {
-    while (this.stale("issues")) {
-      await this.page("issues");
-      if (loop.wake) {
-        loop.wake = false;
-        await this.push();
+  private async catchUpFull(loop: { wake: boolean }): Promise<void> {
+    for (const stream of FULL) {
+      while (this.stale(stream)) {
+        await this.page(stream);
+        if (loop.wake) {
+          loop.wake = false;
+          await this.push();
+        }
       }
     }
   }
@@ -238,8 +244,11 @@ class Leader {
    */
   private async startAtHead(): Promise<void> {
     const { caughtUp, cursors } = this.state;
-    if (!caughtUp.bodies || !caughtUp.comments) {
-      await this.save({ cursors: { ...cursors, bodies: this.head!, comments: this.head! }, caughtUp: { ...caughtUp, bodies: true, comments: true } });
+    if (BACKGROUND.some((s) => !caughtUp[s])) {
+      await this.save({
+        cursors: { ...cursors, ...Object.fromEntries(BACKGROUND.map((s) => [s, this.head!])) },
+        caughtUp: { ...caughtUp, ...Object.fromEntries(BACKGROUND.map((s) => [s, true])) },
+      });
     }
     for (const stream of BACKGROUND) this.mark(stream);
   }
@@ -333,7 +342,7 @@ class Leader {
     }
     this.checkEpoch(res.epoch);
     this.head = Math.max(this.head ?? 0, res.head);
-    for (const stream of ["issues", ...BACKGROUND] as const) {
+    for (const stream of STREAMS) {
       const acks = res.results.filter((r) => r.stream === stream);
       if (acks.length === 0) continue;
       await mergeServerRows(this.store, stream, acks.map((r) => r.row as ServerRow<typeof stream>), acks.map((r) => r.clocks));
@@ -356,7 +365,7 @@ class Leader {
 
   private async wipe(epoch: string | null): Promise<void> {
     const { docs } = this.store;
-    for (const name of ["issues", ...BACKGROUND] as const) await docs.collection(name).clear();
+    for (const name of STREAMS) await docs.collection(name).clear();
     this.pager.forget();
     this.head = undefined;
     this.marked.clear();

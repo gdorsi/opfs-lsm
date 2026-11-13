@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { applyLocal } from "../domain/merge.ts";
-import type { Comment, Issue, Stream } from "../domain/model.ts";
+import type { Comment, Issue } from "../domain/model.ts";
+import type { Stream } from "../domain/stores.ts";
 import { parsePushRequest } from "../domain/wire.ts";
 import { backoffMs, Pager, pushOp } from "./ops.ts";
 
