@@ -170,9 +170,21 @@ kbd { font: inherit; font-size: 11px; color: var(--faint); border: 1px solid var
 
 .backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); z-index: 40; display: grid; place-items: start center; padding-top: 12vh; }
 .modal { width: 600px; max-width: calc(100vw - 32px); background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.modal p { margin: 0; }
 .modal h2 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); font-weight: 600; }
 .modal input[type="text"] { width: 100%; background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: 18px; font-weight: 600; padding: 6px 8px; margin: 0 -8px; outline: none; }
 .modal textarea { min-height: 110px; font-size: 14px; }
+.storage { width: 400px; padding: 20px; gap: 16px; margin-top: 8vh; }
+.storage header { display: flex; gap: 12px; align-items: center; }
+.storage-badge { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.storage h2 { font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--text); }
+.storage header p { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.storage ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; }
+.storage li { display: flex; align-items: center; gap: 8px; }
+.storage li svg { flex: none; color: var(--ok); }
+.storage-note { font-size: 13px; color: var(--muted); padding: 10px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.storage-note strong { color: var(--text); font-weight: 600; }
+.storage .btn { height: 34px; width: 100%; }
 .modal-foot { display: flex; align-items: center; gap: 8px; }
 .modal-foot .spacer { flex: 1; }
 .pill { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--line); }

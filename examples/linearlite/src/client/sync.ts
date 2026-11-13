@@ -6,6 +6,16 @@ import { FORMAT, openStore, transact, type Store } from "./store.ts";
 
 const PULL_LIMIT = 2000;
 const BACKGROUND = ["bodies", "comments"] as const;
+const CONFIRM = "linearlite:evict";
+/** Cached threads below which storage pressure raises no alert: the visible rows reload right after an eviction. */
+const MIN_EVICTION = 100;
+
+/** Tells the sync leader, in this tab or another, that the user agreed to clear the cached bodies and comments. */
+export function confirmEviction(): void {
+  const channel = new BroadcastChannel(CONFIRM);
+  channel.postMessage(null);
+  channel.close();
+}
 
 const EMPTY: SyncState = {
   id: "sync",
@@ -114,8 +124,8 @@ class Leader {
   private loop: Loop = { kind: "idle" };
   private state: SyncState = EMPTY;
   private head: number | undefined;
-  /** Settles the pressure offer being answered. Set while kv waits for this replica to free space. */
-  private evicting: (() => void) | undefined;
+  /** The user confirmed clearing the cached bodies and comments, and the loop has not done it yet. */
+  private confirmed = false;
   private readonly marked = new Set<Stream>();
   private readonly pullLimit = Number(new URLSearchParams(location.search).get("pull")) || PULL_LIMIT;
   private readonly pager = new Pager((stream, after) =>
@@ -141,8 +151,17 @@ class Leader {
       this.head = Math.max(this.head ?? 0, head);
       this.kick("hint");
     };
-    // The loop evicts between two pages, so no page lands rows after the clear.
-    this.store.db.onPressure(() => new Promise<void>((done) => ((this.evicting = done), this.kick("pressure"))));
+    // Every tab shows the alert while `pressure` is set. A confirmation from any tab reaches the loop, which
+    // evicts after a push, so no page lands rows after the clear.
+    this.store.db.onPressure(async () => {
+      // kv asks again at each flush while over the cap. With few threads cached there is little to free, so no alert.
+      const cached = await this.store.docs.collection("bodies").queryIds({ limit: MIN_EVICTION + 1 });
+      if (!this.state.pressure && cached.ids.length > MIN_EVICTION) await this.save({ pressure: true });
+    });
+    new BroadcastChannel(CONFIRM).onmessage = () => {
+      this.confirmed = true;
+      this.kick("pressure");
+    };
     this.kick("start");
   }
 
@@ -181,8 +200,6 @@ class Leader {
     } catch (err) {
       const next = failures + 1;
       console.warn(`linearlite sync failed (${next}), retrying in ${backoffMs(next)} ms`, err);
-      this.evicting?.();
-      this.evicting = undefined;
       if (this.state.online) await this.save({ online: false }).catch(() => undefined);
       this.loop = { kind: "waiting", timer: setTimeout(() => void this.run(next), backoffMs(next)) };
     }
@@ -277,26 +294,23 @@ class Leader {
     }
     if (outgoing.length > 0) this.pager.forget();
     for (let i = 0; i < outgoing.length; i += MAX_OPS) await this.send(outgoing.slice(i, i + MAX_OPS));
-    if (this.evicting) await this.evict(this.evicting);
+    if (this.confirmed) await this.evict();
   }
 
   /**
-   * Frees space for kv's size cap: drops every body and comment, which are loaded again when their issue is visible
-   * or opened. Issues stay. Runs right after a push, and skips while a body or comment still has an unsent edit;
-   * the next offer tries again.
+   * Frees space for kv's size cap once the user confirmed: drops every body and comment, which are loaded again when
+   * their issue is visible or opened. Issues stay. Runs right after a push, and waits while a body or comment still
+   * has an unsent edit; the next push tries again.
    */
-  private async evict(done: () => void): Promise<void> {
-    this.evicting = undefined;
-    try {
-      const { docs, dirtyBodies, dirtyComments } = this.store;
-      if (dirtyBodies.size > 0 || dirtyComments.size > 0) return;
-      for (const name of BACKGROUND) {
-        // An offer comes back while the issues alone are over the cap; a clear of nothing would still spend a collection id.
-        if ((await docs.collection(name).queryIds({ limit: 1 })).ids.length > 0) await docs.collection(name).clear();
-      }
-    } finally {
-      done();
+  private async evict(): Promise<void> {
+    const { docs, dirtyBodies, dirtyComments } = this.store;
+    if (dirtyBodies.size > 0 || dirtyComments.size > 0) return;
+    for (const name of BACKGROUND) {
+      // The issues alone can be over the cap; a clear of nothing would still spend a collection id.
+      if ((await docs.collection(name).queryIds({ limit: 1 })).ids.length > 0) await docs.collection(name).clear();
     }
+    this.confirmed = false;
+    await this.save({ pressure: false });
   }
 
   /**
