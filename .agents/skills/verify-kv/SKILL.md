@@ -70,7 +70,7 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | CompactPreserve | `latestSstEntry`, the pick of the merge session and its oracle (`before` in `merge.rs`, `Session.run` in `tests/oracle/merge-ts.ts`), the covered-winner drop (`next_key`, `Session.emit`), the claim in `mergeNextStep` |
 | PowerPrefix | `reconcile`, `IdBWal.adopt`, `advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `HostedDb.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, destroy committing generation 0 past every seq at strict durability before it removes a file, recovery skipping manifests up to `destroyedTop`, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`), the head derived from the last WAL key and `ingestedThrough` (`headOf`), appends taking the seq of the key generator, and adopt and destroy moving that generator with the head (`passKeyGenerator`) |
 
-**Sync commit:** `6ebe554cfad5a5af681249b4c7d1b70e47c2a976` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
+**Sync commit:** `1889313da0c4070000ff04626a10d175bc3421da` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
 ## Intentional product change
 
