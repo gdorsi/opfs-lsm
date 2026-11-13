@@ -1,6 +1,7 @@
-import { OWNERS, type CollectionStore, type Todo } from "../../core/families.ts";
+import type { CollectionStore, Todo } from "../../core/families.ts";
 import { defineWorkload, type Phase, type PhaseContext } from "../../core/types.ts";
 import { permutation } from "../../page/model.ts";
+import { rowBytes, todoRow as row } from "../../page/tanstack.ts";
 
 /**
  * The todo rows of the table family written through a TanStack DB collection:
@@ -11,14 +12,6 @@ import { permutation } from "../../page/model.ts";
  */
 type Ctx = PhaseContext<"tanstack">;
 
-const row = (i: number, version: number): Todo => ({
-  id: `todo-${String(i).padStart(8, "0")}`,
-  title: `todo ${i} version ${version}: buy milk, eggs and bread`,
-  done: version % 2 === 0,
-  owner: `owner-${i % OWNERS}`,
-  createdAt: i,
-});
-const rowBytes = (r: Todo) => JSON.stringify(r).length;
 const write = (ctx: Ctx, i: number) => row(i, ctx.model.bump(i));
 
 function verify(ctx: Ctx, i: number, got: Todo | undefined): void {

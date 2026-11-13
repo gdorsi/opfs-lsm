@@ -19,9 +19,10 @@ export const SIZES: readonly SizeName[] = ["tiny", "small", "large"];
 /**
  * Durability as the contender ships it, printed next to every number. kv's
  * WAL commits IndexedDB transactions with the browser default, which Chrome
- * has made relaxed since version 121.
+ * has made relaxed since version 121. "sqlite-full" is SQLite's default
+ * `synchronous=FULL` with a rollback journal, on OPFS; "sqlite-off" is `synchronous=OFF`.
  */
-export type Durability = "idb-default" | "idb-strict" | "none";
+export type Durability = "idb-default" | "idb-strict" | "sqlite-full" | "sqlite-off" | "none";
 
 /** Sizing in the LevelDB setup-line vocabulary. */
 export type Params = {
