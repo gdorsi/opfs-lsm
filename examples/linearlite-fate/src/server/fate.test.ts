@@ -174,6 +174,20 @@ describe("fate server", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM comment WHERE issue_id = ?").get(id)!.n, 0, "the issue's comments go with it");
   });
 
+  it("refuses a kanbanorder that is not a fractional index, so later creates in the column still get one", async () => {
+    const [target] = await listIds(window({}));
+    for (const kanbanorder of ["!", "a!", "a00"]) {
+      const created = await mutate("createIssue", { id: crypto.randomUUID(), title: "Bad order", description: "", status: 3, priority: 0, kanbanorder });
+      assert.equal(created.error?.code, "VALIDATION_ERROR", kanbanorder);
+      assert.equal((await mutate("updateIssue", { id: target, kanbanorder })).error?.code, "VALIDATION_ERROR", kanbanorder);
+    }
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM issue WHERE title = 'Bad order'").get()!.n, 0);
+    const next = await mutate("createIssue", { id: crypto.randomUUID(), title: "Server picks", description: "", status: 3, priority: 0 }, ["id", "kanbanorder"]);
+    assert.ok(next.ok, JSON.stringify(next.error));
+    const top = db.prepare("SELECT MIN(kanbanorder) AS top FROM issue WHERE status = 3").get()!.top;
+    assert.equal(next.data.kanbanorder, top);
+  });
+
   it("refuses an edit of a missing issue and a malformed list request", async () => {
     assert.equal((await mutate("updateIssue", { id: "nope", title: "x" })).error?.code, "NOT_FOUND");
     assert.equal((await one({ kind: "list", name: "issues", args: { ...window({}), sort: "version" } })).error?.code, "BAD_REQUEST");

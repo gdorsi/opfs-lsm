@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { kanbanBetween } from "./kanban.ts";
+import { isKanbanOrder, kanbanBetween } from "./kanban.ts";
 
 describe("kanbanBetween", () => {
   it("places a key between its neighbours", () => {
@@ -30,6 +30,20 @@ describe("kanbanBetween", () => {
       const next = kanbanBetween(low, high);
       assert.ok(low < next && next < high);
       low = next;
+    }
+  });
+});
+
+describe("isKanbanOrder", () => {
+  it("accepts the keys kanbanBetween makes", () => {
+    const first = kanbanBetween(null, null);
+    const second = kanbanBetween(first, null);
+    for (const key of [first, second, kanbanBetween(first, second), kanbanBetween(null, first)]) assert.ok(isKanbanOrder(key), key);
+  });
+
+  it("refuses a key that is not a fractional index", () => {
+    for (const key of ["", "!", "a", "a!", "a00", "a0 ", "é0"]) {
+      assert.equal(isKanbanOrder(key), false, JSON.stringify(key));
     }
   });
 });

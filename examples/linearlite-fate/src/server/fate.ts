@@ -11,7 +11,7 @@ import {
 } from "@nkzw/fate/server";
 import { z } from "zod";
 import { SORT_FIELDS } from "../client/filter.ts";
-import { kanbanBetween } from "../domain/kanban.ts";
+import { isKanbanOrder, kanbanBetween } from "../domain/kanban.ts";
 import { PERSISTENCE_KEY, type CommentEntity, type IssueEntity, type IssuePatch, type NewComment, type NewIssue } from "../domain/model.ts";
 import { columnTop, countByStatus, deleteIssue, insertComment, insertIssue, readColumn, readComments, readIssues, readWindow, updateIssue, type Page } from "./issues.ts";
 
@@ -67,7 +67,8 @@ const cursor = z.tuple([z.string(), z.string()]);
 
 const title = z.string().trim().min(1).max(500);
 const description = z.string().max(100_000);
-const kanbanorder = z.string().min(1).max(200);
+/** Checked because a stored order becomes a neighbour: one bad value would make every later create in its column throw. */
+const kanbanorder = z.string().max(200).refine(isKanbanOrder);
 const updateInput: z.ZodType<IssuePatch & { id: string }> = z.object({ id: z.string(), title, status: code, priority: code, kanbanorder, description }).partial().required({ id: true });
 const createInput: z.ZodType<NewIssue> = z.object({ id: z.uuid(), title, description, status: code, priority: code, kanbanorder: kanbanorder.optional() });
 const deleteInput = z.object({ id: z.string() });
