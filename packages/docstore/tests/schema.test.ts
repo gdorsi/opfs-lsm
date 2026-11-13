@@ -438,7 +438,7 @@ describe("clear", () => {
     }
   });
 
-  it("writes one catalog op and starts no scan before it resolves, whatever the size", async () => {
+  it("writes one catalog op and scans nothing, in the clear or in its sweep, whatever the size", async () => {
     for (const n of [10, 20_000]) {
       const kv = await kvOn(freshName());
       let scans = 0;
@@ -451,7 +451,7 @@ describe("clear", () => {
       await todos.clear();
       expect({ updates, scans }).toEqual({ updates: [{ reads: 1, puts: 1, deletes: 0 }], scans: 0 });
       await store.whenIdle();
-      expect(scans).toBeGreaterThan(0);
+      expect(scans).toBe(0);
     }
   });
 
