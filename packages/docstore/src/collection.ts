@@ -21,11 +21,12 @@ export interface Collection<T extends JsonDoc, Ix> {
   /** Upsert. See `putMany`. */
   put(doc: T): Promise<void>;
   /**
-   * Upsert every document in one kv transaction: all land or none do. A
-   * document whose stored bytes would not change writes nothing. Throws
-   * DocStoreError "document" on a bad or repeated id or a value an index
-   * cannot hold, "unique" if two documents would share a unique value, and
-   * kv's ConstraintError over kv's batch limits.
+   * Upsert every document in one kv transaction: all land or none do. In a
+   * collection with an index, a document whose stored bytes would not change
+   * writes nothing. A collection with no index reads no row and writes every
+   * document. Throws DocStoreError "document" on a bad or repeated id or a
+   * value an index cannot hold, "unique" if two documents would share a
+   * unique value, and kv's ConstraintError over kv's batch limits.
    */
   putMany(docs: readonly T[]): Promise<void>;
   /**
@@ -205,6 +206,16 @@ function planChanges(
   };
 }
 
+/** With no index to diff, a put needs no old row: the catalog read in `write` is the only guard. */
+function blindPut(coll: BoundCollection, docs: readonly EncodedDoc[]): WritePlan<void> {
+  return {
+    keys: [],
+    apply: (_values, tx) => {
+      for (const d of docs) tx.put(concat(coll.rows.prefix, idBytes(d.id)), d.bytes);
+    },
+  };
+}
+
 function uniqueError(incoming: string, owner: string): DocStoreError {
   return new DocStoreError("unique", `"${incoming}" and "${owner}" would share a unique value`, [incoming, owner]);
 }
@@ -277,8 +288,10 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     const encoded = docs.map(encodeDoc);
     const ids = encoded.map((e) => e.id);
     if (new Set(ids).size !== ids.length) throw new DocStoreError("document", "putMany got one id twice");
-    await this.store.write(this.name, async (coll) =>
-      planChanges(coll, ids, encoded, buildingUnique(coll) ? await this.priors(coll, ids) : undefined),
+    await this.store.write<unknown>(this.name, async (coll) =>
+      coll.maintained.length === 0
+        ? blindPut(coll, encoded)
+        : planChanges(coll, ids, encoded, buildingUnique(coll) ? await this.priors(coll, ids) : undefined),
     );
   }
 

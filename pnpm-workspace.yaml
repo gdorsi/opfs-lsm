@@ -6,3 +6,4 @@ packages:
   - "examples/rich-text"
   - "examples/linearlite"
   - "examples/linearlite-fate"
+  - "site"

@@ -232,14 +232,20 @@ export function describeCut(ops: readonly DurableOp[], cut: Cut): string {
 
 /**
  * The log the trace committed: every WAL row an IndexedDB commit added, by
- * seq. Throws unless the seqs are 1..n with no gap.
+ * seq. Throws unless the seqs are 1..n with no gap. A row deleted by its
+ * own key is not a record: recovery and destroy add and delete one to move
+ * the key generator.
  */
 export function committedLog(ops: readonly DurableOp[]): Oracle {
   const rows = new Map<number, OracleOp[]>();
   for (const op of ops) {
     if (op.store !== "idb") continue;
     for (const m of op.muts) {
-      if (m.store !== "wal" || m.kind !== "put") continue;
+      if (m.store !== "wal") continue;
+      if (m.kind === "delete") {
+        if (typeof m.key === "number") rows.delete(m.key);
+        continue;
+      }
       rows.set(m.key as number, decodeWalRow(m.value).map((o): OracleOp => {
         if ("start" in o) return { type: "deleteRange", ...o };
         return o.value === undefined ? { type: "del", key: o.key } : { type: "put", key: o.key, value: o.value };
@@ -269,9 +275,9 @@ function metaAt(ops: readonly DurableOp[], count: number): Map<string, number> {
   return meta;
 }
 
-/** The head after the first `count` IndexedDB commits: the highest seq appended, or the floor in `meta` when that is higher. */
+/** The head after the first `count` IndexedDB commits: the highest seq appended, or `ingestedThrough` when that is higher. */
 function headAt(ops: readonly DurableOp[], count: number): number {
-  let head = metaAt(ops, count).get("head") ?? 0;
+  let head = metaAt(ops, count).get("ingestedThrough") ?? 0;
   for (const op of idbCommits(ops, count)) {
     for (const m of op.muts) if (m.store === "wal" && m.kind === "put") head = Math.max(head, m.key as number);
   }

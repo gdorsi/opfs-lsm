@@ -1,0 +1,204 @@
+/* One card across the stage, pinned a gutter from the top and both sides, off the bottom. A column per framework. */
+.ad {
+  & .ss-stage {
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--ss-well);
+    font: 12px/1.4 var(--ss-font);
+    color: var(--ss-text-strong);
+  }
+
+  .ad-card {
+    position: absolute;
+    top: 32px;
+    left: 32px;
+    width: 1088px;
+    height: 460px;
+    padding: 18px 24px 0;
+    border-radius: 12px;
+    background: var(--ss-surface);
+    box-shadow: var(--ss-shadow-hero);
+  }
+
+  .ad-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--ss-line);
+  }
+
+  .ad-title {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .ad-command {
+    font: 11px/1.4 var(--ss-mono);
+    color: var(--ss-text-faint);
+  }
+
+  .ad-cols {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    column-gap: 40px;
+  }
+
+  /* A rule in the middle of the gap between two columns. */
+  .ad-col {
+    position: relative;
+    padding-top: 14px;
+  }
+
+  .ad-col + .ad-col::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: -200px;
+    left: -20px;
+    border-left: 1px solid var(--ss-line-faint);
+  }
+
+  .ad-head {
+    display: grid;
+    gap: 1px;
+    padding-bottom: 6px;
+  }
+
+  .ad-framework {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .ad-versus {
+    color: var(--ss-text);
+    font-size: 11.5px;
+  }
+
+  .ad-group {
+    display: grid;
+    gap: 7px;
+    padding: 12px 0 13px;
+    border-top: 1px solid var(--ss-line-faint);
+  }
+
+  .ad-work {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: 20px;
+    margin-bottom: 2px;
+  }
+
+  .ad-name {
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  /* One grid for both lines of every workload in a column, so the bars share a left edge and a length. */
+  .ad-line {
+    display: grid;
+    grid-template-columns: 58px minmax(0, 1fr) 84px;
+    align-items: center;
+    gap: 8px;
+    height: 16px;
+  }
+
+  .ad-who {
+    color: var(--ss-text);
+  }
+
+  .ad-value {
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 5px;
+    white-space: nowrap;
+    color: var(--ss-text);
+    font-variant-numeric: tabular-nums;
+    opacity: 0;
+    transition: opacity 0.8s ease;
+  }
+
+  .ad-col[data-ran] .ad-value {
+    opacity: 1;
+  }
+
+  /* "9.3k" reads as one figure: no hair between the digits and the k. */
+  .ad-value .ss-count {
+    --ss-count-unit-gap: 0px;
+    color: var(--ss-text-strong);
+    font-weight: 500;
+  }
+
+  /* The IndexedDB option's bar is gray, so the color is the adapter's alone. */
+  .ad-line .ss-meter[data-tone="ink"] {
+    --ss-meter-tone: var(--ss-text-faint);
+  }
+
+  /* Both bars of a workload grow for the same time, and land with the count beside them. */
+  .ad-line .ss-meter__fill {
+    transition-duration: 0.9s;
+  }
+
+  /* Narrow: the columns stack in one card, a rule between frameworks, each framework's name and its rival on one
+     line. Only the last one's filler shows, cut by the crop. */
+  & .ss-stage[data-layout="compact"] .ad-card {
+    top: 24px;
+    left: 16px;
+    width: 326px;
+    height: 990px;
+    padding: 16px 16px 0;
+  }
+
+  & .ss-stage[data-layout="compact"] .ad-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  & .ss-stage[data-layout="compact"] .ad-col {
+    padding-top: 12px;
+  }
+
+  /* The rules between frameworks and between workloads are lines of their own, so no block is a box in the card. */
+  & .ss-stage[data-layout="compact"] .ad-col + .ad-col::before {
+    bottom: auto;
+    left: 0;
+    right: 0;
+    border-left: 0;
+    border-top: 1px solid var(--ss-line);
+  }
+
+  & .ss-stage[data-layout="compact"] .ad-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 10px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ad-group {
+    position: relative;
+    gap: 6px;
+    padding: 10px 0 11px;
+    border-top: 0;
+  }
+
+  & .ss-stage[data-layout="compact"] .ad-group::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    border-top: 1px solid var(--ss-line-faint);
+  }
+
+  & .ss-stage[data-layout="compact"] .ad-col:not(:last-child) .ad-filler {
+    display: none;
+  }
+
+  & .ss-stage[data-layout="compact"] .ad-line {
+    grid-template-columns: 64px minmax(0, 1fr) 88px;
+  }
+}
