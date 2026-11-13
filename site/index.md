@@ -4,14 +4,11 @@ title: opfs-lsm
 hero:
   name: opfs-lsm
   text: A faster database for the browser
-  tagline: Reads up to 82× faster than IndexedDB. 17.1 kB to import.
+  tagline: A k/v store you can use to speed up your sync engine, without having to bloat your app
   actions:
     - theme: brand
       text: Quickstart
       link: /guide/#quickstart
-    - theme: alt
-      text: Try it with 100,000 issues
-      link: /#try-it-with-100000-issues
     - theme: alt
       text: GitHub
       link: https://github.com/gdorsi/opfs-lsm
@@ -38,6 +35,12 @@ demo:
   count: 100,000
 ---
 
+## Try it with 100,000 issues
+
+[LinearLite](../examples/linearlite) on kv, with no server · [What the timings measure](../examples/linearlite/DESIGN.md#the-build-with-no-server)
+
+<HomeDemo />
+
 <div class="home-claim">
 <div class="home-copy">
 
@@ -49,18 +52,12 @@ demo:
 <Illustration name="bench" :data="$frontmatter.bench" label="The kv benchmarks run, one workload after the other. Random point reads: IndexedDB 14.3k ops/s, kv 341k ops/s, 24× faster. TanStack DB, bulk insert: its IndexedDB adapter 11k rows/s, kv 88k rows/s. Single put, awaited one at a time: IndexedDB 4.0k ops/s, kv 3.3k ops/s, 0.8× as fast." />
 </div>
 
-## Try it with 100,000 issues
-
-[LinearLite](../examples/linearlite) on kv, with no server · [What the timings measure](../examples/linearlite/DESIGN.md#the-build-with-no-server)
-
-<HomeDemo />
-
 <div class="home-claim flip">
 <div class="home-copy">
 
-## 17.1 kB to import
+## Lightweight
 
-The other 27.8 kB load on the first `openDb` · [File by file](../README.md#bundle-size)
+17.1 kB are part of the critical path to load, and the rest is loaded lazily · [File by file](../README.md#bundle-size)
 
 </div>
 <Illustration name="bundle" :data="$frontmatter.size" label="A page imports kv and downloads 17.1 kB. When a click handler calls openDb, the SharedWorker chunk (11.5 kB) and the wasm engine (16.3 kB) load, 27.8 kB more." />
