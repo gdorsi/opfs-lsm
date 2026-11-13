@@ -22,9 +22,8 @@ const schema = defineSchema<{ todos: Todo }>()({
 	collections: { todos: { open: { on: ["done", "createdAt"] } } },
 });
 const kv = await openDb({ name: "app" });
-const todos = (await openDocStore(kv, schema)).collection(
-	"todos"
-);
+const store = await openDocStore(kv, schema);
+const todos = store.collection("todos");
 await todos.put({
 	id: "t1",
 	title: "Buy milk",
@@ -535,16 +534,14 @@ Documents and index entries count against the origin's storage quota. Open kv wi
 
 ```ts
 const kv = await openDb({ name: "app", maxBytes: "quota" });
-const users = (await openDocStore(kv, schema)).collection(
-	"users"
-);
+const store = await openDocStore(kv, schema);
 // a cache your app can fetch again
+const users = store.collection("users");
 
 kv.onPressure(async () => {
 	// an offer can come back before the space is free, so skip an
-	// empty collection
-	// clearing an empty collection still sends every changes
-	// listener a gap
+	// empty collection. Clearing one still sends every changes
+	// listener a gap.
 	if ((await users.queryIds({ limit: 1 })).ids.length > 0)
 		await users.clear();
 });
