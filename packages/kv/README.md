@@ -27,21 +27,27 @@ Benchmarks against IndexedDB and browser support are in the [repository README](
 Keys and values are `Uint8Array`, so the examples use the `enc` and `dec` helpers above.
 
 ```ts
-// Every tab that opens "notes" shares it. A write lands in a write-ahead log (WAL) in IndexedDB.
-// One SharedWorker per name, `opfs-lsm:notes`, flushes the WAL into sorted SST files
-// in the Origin Private File System (OPFS) once 1 MiB is waiting, and compacts them.
+// Every tab that opens "notes" shares it. A write lands in a
+// write-ahead log (WAL) in IndexedDB. One SharedWorker per name,
+// `opfs-lsm:notes`, flushes the WAL into sorted SST files in the
+// Origin Private File System (OPFS) once 1 MiB is waiting, and
+// compacts them.
 const db = await openDb({ name: "notes" });
 
-await openDb({ name: "my notes" }); // throws ConstraintError. Names match /^[A-Za-z0-9_-]{1,64}$/.
+await openDb({ name: "my notes" });
+// throws ConstraintError. Names match /^[A-Za-z0-9_-]{1,64}$/.
 
-// In Node or a dedicated WebWorker, which have no SharedWorker or OPFS:
-await openDb({ name: "notes" }); // throws StorageUnavailableError, never falls back to memory
+// In Node or a dedicated WebWorker, which have no SharedWorker or
+// OPFS:
+await openDb({ name: "notes" });
+// throws StorageUnavailableError, never falls back to memory
 ```
 
 ```ts
 await db.close(); // this tab's handle only
 await db.get(key); // throws ClosedError
-const again = await openDb({ name: "notes" }); // open a new handle instead
+const again = await openDb({ name: "notes" });
+// open a new handle instead
 ```
 
 **Note.** Bundlers that need an explicit worker URL can import `@opfs-lsm/kv/shared-worker`.
@@ -49,28 +55,34 @@ const again = await openDb({ name: "notes" }); // open a new handle instead
 ## Reads and writes
 
 ```ts
-const seq = await db.put(key, value); // resolves on the WAL ack, with the record's seq
+const seq = await db.put(key, value);
+// resolves on the WAL ack, with the record's seq
 dec(await db.get(key));               // => "world"
 await db.delete(key);                 // resolves with its seq too
 await db.get(key);                    // => undefined
 
 // get reads memory and SST files. It never touches IndexedDB.
-await db.put(new Uint8Array(9 * 1024), value); // throws ConstraintError. Keys are at most 8 KiB.
-await db.put(key, new Uint8Array(9 << 20));    // throws ConstraintError. A batch, value included, is at most 8 MiB.
+await db.put(new Uint8Array(9 * 1024), value);
+// throws ConstraintError. Keys are at most 8 KiB.
+await db.put(key, new Uint8Array(9 << 20));
+// throws ConstraintError. A batch, value included, is at most 8
+// MiB.
 ```
 
 ## Batches
 
 ```ts
-// `build` runs synchronously. Every op lands in one WAL record, with one ack.
-// The 8 MiB limit counts key bytes, value bytes, and 256 bytes per op.
+// `build` runs synchronously. Every op lands in one WAL record,
+// with one ack. The 8 MiB limit counts key bytes, value bytes,
+// and 256 bytes per op.
 const seq = await db.batch((tx) => {
   tx.put(enc("a"), enc("1"));
   tx.put(enc("b"), enc("2"));
   tx.delete(key);
 });
 
-await db.batch(() => {}); // writes nothing, resolves with the last seq this handle applied
+await db.batch(() => {});
+// writes nothing, resolves with the last seq this handle applied
 ```
 
 ## Read-modify-write
@@ -79,7 +91,8 @@ await db.batch(() => {}); // writes nothing, resolves with the last seq this han
 
 ```ts
 const count = await db.update([enc("count")], ([current], tx) => {
-  // Runs synchronously with the current values, in the order of `keys`. No await in here.
+  // Runs synchronously with the current values, in the order of
+  // `keys`. No await in here.
   const next = Number(dec(current) ?? 0) + 1;
   tx.put(enc("count"), enc(String(next)));
   return next;
@@ -98,7 +111,8 @@ await db.batch((tx) => {
   tx.put(enc("user/3"), enc("Linus"));
   tx.put(enc("post/1"), enc("user/2"));
 });
-const users: KeyBounds = prefixBound(enc("user/")); // { start: "user/", endExclusive: "user0" }
+const users: KeyBounds = prefixBound(enc("user/"));
+// { start: "user/", endExclusive: "user0" }
 ```
 
 ```ts
@@ -106,26 +120,37 @@ for await (const { key, value } of db.range(users)) {
   dec(key); // => "user/1", then "user/2", then "user/3"
 }
 
-db.range({ start: enc("user/2"), endExclusive: enc("user/3") }); // yields "user/2"
+db.range({ start: enc("user/2"), endExclusive: enc("user/3") });
+// yields "user/2"
 db.range(); // yields every key, in byte order
 ```
 
 ### `reverse` and `limit`
 
 ```ts
-// Same keys, largest first. Bounds stay in key order. `limit` keeps the largest.
-db.range({ ...users, reverse: true, limit: 2 }); // yields "user/3", "user/2"
+// Same keys, largest first. Bounds stay in key order. `limit`
+// keeps the largest.
+db.range({ ...users, reverse: true, limit: 2 });
+// yields "user/3", "user/2"
 
 // To page backward, pass the last key you saw as `endExclusive`.
-db.range({ ...users, endExclusive: enc("user/2"), reverse: true, limit: 2 }); // yields "user/1"
+db.range({
+  ...users,
+  endExclusive: enc("user/2"),
+  reverse: true,
+  limit: 2
+});
+// yields "user/1"
 ```
 
 ### `valueContains`
 
 ```ts
 // Keeps live puts whose current value holds every pattern.
-db.range({ ...users, valueContains: [enc("a"), enc("e")] }); // yields "user/2" (Grace)
-db.range({ ...users, valueContains: [enc("e")], limit: 1 }); // yields "user/2", since limit counts matches
+db.range({ ...users, valueContains: [enc("a"), enc("e")] });
+// yields "user/2" (Grace)
+db.range({ ...users, valueContains: [enc("e")], limit: 1 });
+// yields "user/2", since limit counts matches
 ```
 
 ## Joins
@@ -134,12 +159,16 @@ db.range({ ...users, valueContains: [enc("e")], limit: 1 }); // yields "user/2",
 
 ```ts
 // post/1 holds its author's key.
-const posts = await db.rangeJoin(prefixBound(enc("post/")), (entry) => entry.value);
+const posts = await db.rangeJoin(
+  prefixBound(enc("post/")),
+  (entry) => entry.value
+);
 dec(posts[0]?.entry.key); // => "post/1"
 dec(posts[0]?.joined);    // => "Grace"
 
-// `joined` is undefined when keyOf returns undefined or the key has no value.
-// The scan and the joined reads see one state. Writes that land meanwhile are not seen.
+// `joined` is undefined when keyOf returns undefined or the key
+// has no value. The scan and the joined reads see one state.
+// Writes that land meanwhile are not seen.
 ```
 
 ## Snapshots
@@ -147,7 +176,8 @@ dec(posts[0]?.joined);    // => "Grace"
 ```ts
 const seen = await db.view(async (snap) => {
   await db.put(enc("user/4"), enc("Barbara"));
-  return snap.get(enc("user/4")); // the state when the view opened
+  // snap reads the state when the view opened
+  return snap.get(enc("user/4"));
 });
 seen; // => undefined
 
@@ -160,10 +190,13 @@ seen; // => undefined
 ```ts
 const stop = db.changes((event) => {
   switch (event.kind) {
-    case "append": // one per WAL record, from any tab, once each, in seq order
-      for (const op of event.ops) console.log(op.type); // "put", "del" or "deleteRange"
+    case "append":
+      // one per WAL record, from any tab, once each, in seq order
+      // op.type is "put", "del" or "deleteRange"
+      for (const op of event.ops) console.log(op.type);
       break;
-    case "gap": // this handle skipped records a flush folded. Read again.
+    case "gap":
+      // this handle skipped records a flush folded. Read again.
       break;
     case "closed": // the last event
   }
@@ -183,17 +216,23 @@ stop();
 // Tab A
 await db.put(enc("theme"), enc("dark"));
 
-// Tab B, right after. Without sync, it sees the write a moment later, when A's BroadcastChannel message arrives.
-await db.sync(); // catches up to every write acked before the call, from any tab
+// Tab B, right after. Without sync, it sees the write a moment
+// later, when A's BroadcastChannel message arrives.
+await db.sync();
+// catches up to every write acked before the call, from any tab
 dec(await db.get(enc("theme"))); // => "dark"
 ```
 
 ## Range deletes
 
 ```ts
-// Every row in [start, endExclusive), in one op however many rows that is.
+// Every row in [start, endExclusive), in one op however many rows
+// that is.
 await db.batch((tx) => tx.deleteRange(users));
-await db.batch((tx) => tx.deleteRange({ endExclusive: enc("m") })); // a missing bound is open
+await db.batch((tx) =>
+  tx.deleteRange({ endExclusive: enc("m") })
+);
+// a missing bound is open
 await db.batch((tx) => tx.deleteRange({})); // every row
 ```
 
@@ -206,24 +245,32 @@ dec(await db.get(enc("user/9"))); // => "Ken"
 ```
 
 ```ts
-// Remove only rows last written at or before `through`, such as a write's seq, snap.seq, or a change's seq.
+// Remove only rows last written at or before `through`, such as a
+// write's seq, snap.seq, or a change's seq.
 // A row another tab wrote after you read the range stays.
 const seq = await db.put(enc("user/1"), enc("Ada"));
 await db.batch((tx) => tx.deleteRange(users, { through: seq }));
 
-await db.batch((tx) => tx.deleteRange({ start: enc("b"), endExclusive: enc("b") })); // throws ConstraintError
-await db.batch((tx) => tx.deleteRange({}, { through: -1 })); // throws ConstraintError
+await db.batch((tx) =>
+  tx.deleteRange({ start: enc("b"), endExclusive: enc("b") })
+);
+// throws ConstraintError
+await db.batch((tx) => tx.deleteRange({}, { through: -1 }));
+// throws ConstraintError
 ```
 
 ```ts
 await db.put(enc("user/1"), enc("Ada"));
 await db.view(async (snap) => {
   await db.batch((tx) => tx.deleteRange(users));
-  await db.get(enc("user/1"));        // => undefined
-  dec(await snap.get(enc("user/1"))); // => "Ada", since a view opened before keeps reading it
+  await db.get(enc("user/1")); // => undefined
+  dec(await snap.get(enc("user/1")));
+  // => "Ada", since a view opened before keeps reading it
 });
-// Other tabs skip the rows once they apply the record, at the latest after their next sync().
-// Change listeners get { type: "deleteRange", start, endExclusive, through }, with `through` resolved.
+// Other tabs skip the rows once they apply the record, at the
+// latest after their next sync(). Change listeners get { type:
+// "deleteRange", start, endExclusive, through }, with `through`
+// resolved.
 ```
 
 **Note.** A removed row that was not flushed yet never reaches OPFS. One already in an SST file is skipped until compaction rewrites that file and frees its space.
@@ -235,12 +282,17 @@ With `maxBytes`, the SharedWorker asks an `onPressure` handler to free space onc
 ```ts
 import type { Pressure } from "@opfs-lsm/kv";
 
-const db = await openDb({ name: "log", maxBytes: 64 * 1024 * 1024 });
-// Register in the turn openDb resolves. An offer before that logs a warning, then waits for you.
-// With no handler in any tab, each offer logs a warning and the database keeps growing.
+const db = await openDb({
+  name: "log",
+  maxBytes: 64 * 1024 * 1024
+});
+// Register in the turn openDb resolves. An offer before that logs
+// a warning, then waits for you. With no handler in any tab, each
+// offer logs a warning and the database keeps growing.
 const stop = db.onPressure(dropOldest);
 
-await openDb({ name: "log", maxBytes: 0 }); // throws ConstraintError
+await openDb({ name: "log", maxBytes: 0 });
+// throws ConstraintError
 ```
 
 Here keys start with a timestamp, so the handler deletes the oldest rows with ordinary writes. `bytes` is the size of the SST files, and `need` is what to free to get back to 4/5 of `maxBytes`.
@@ -250,19 +302,24 @@ async function dropOldest({ need }: Pressure) {
   let freed = 0;
   for await (const { key, value } of db.range()) {
     if (freed >= need) {
-      // Frees space once compaction rewrites the covered files. Point deletes can take much longer.
-      await db.batch((tx) => tx.deleteRange({ endExclusive: key }));
+      // Frees space once compaction rewrites the covered files.
+      // Point deletes can take much longer.
+      await db.batch((tx) =>
+        tx.deleteRange({ endExclusive: key })
+      );
       return;
     }
     freed += key.byteLength + value.byteLength;
   }
-  await db.batch((tx) => tx.deleteRange({})); // all rows together hold less than need
+  await db.batch((tx) => tx.deleteRange({}));
+  // all rows together hold less than need
 }
 ```
 
 ```ts
-// The offer comes back after a flush while too little was freed, so make the handler safe to run again.
-// One handle answers at a time, and the next offer waits until its handler settles.
+// The offer comes back after a flush while too little was freed,
+// so make the handler safe to run again. One handle answers at a
+// time, and the next offer waits until its handler settles.
 stop(); // unsubscribe
 ```
 
@@ -275,12 +332,15 @@ The WAL and the SST files count against the origin's storage quota. With `maxByt
 ```ts
 const db = await openDb({ name: "log", maxBytes: "quota" });
 db.onPressure(async ({ bytes, need }) => {
-  // need counts the whole origin, and every database opened with "quota" is offered all of it
+  // need counts the whole origin, and every database opened with
+  // "quota" is offered all of it
   const goal = Math.min(need, bytes / 2);
   let freed = 0;
   for await (const { key, value } of db.range()) {
     if (freed >= goal) {
-      await db.batch((tx) => tx.deleteRange({ endExclusive: key }));
+      await db.batch((tx) =>
+        tx.deleteRange({ endExclusive: key })
+      );
       return;
     }
     freed += key.byteLength + value.byteLength;
@@ -295,18 +355,23 @@ db.onPressure(async ({ bytes, need }) => {
 ```ts
 await db.dangerousDestroy(); // deletes every record, in every tab
 await db.get(key);           // => undefined
-await db.put(key, value);    // writes after it land in the empty database
+await db.put(key, value);
+// writes after it land in the empty database
 
-// Handles stay open. Other tabs read empty at their next sync() or write, each with a `gap` event.
-// It waits for a running flush or compaction step. Once it resolves, the records never come back,
-// even after a power loss. A crash before that leaves the database as if it had not run.
+// Handles stay open. Other tabs read empty at their next sync()
+// or write, each with a `gap` event. It waits for a running flush
+// or compaction step. Once it resolves, the records never come
+// back, even after a power loss. A crash before that leaves the
+// database as if it had not run.
 ```
 
 ```ts
 import { destroyDb } from "@opfs-lsm/kv";
 
-// Does not open the database, so it also empties one that openDb refuses with CorruptDatabaseError.
-await destroyDb("notes"); // open handles behave as after dangerousDestroy()
+// Does not open the database, so it also empties one that openDb
+// refuses with CorruptDatabaseError.
+await destroyDb("notes");
+// open handles behave as after dangerousDestroy()
 ```
 
 ## Testing
@@ -315,12 +380,20 @@ await destroyDb("notes"); // open handles behave as after dangerousDestroy()
 import "fake-indexeddb/auto"; // Node has no IndexedDB
 import { openHarnessDb, ingest } from "@opfs-lsm/kv/testing";
 
-// In memory. Two opens of one name in one process act as two tabs.
-const tabA = await openHarnessDb({ name: "notes", forceMemory: true });
-const tabB = await openHarnessDb({ name: "notes", forceMemory: true });
+// In memory. Two opens of one name in one process act as two
+// tabs.
+const tabA = await openHarnessDb({
+  name: "notes",
+  forceMemory: true
+});
+const tabB = await openHarnessDb({
+  name: "notes",
+  forceMemory: true
+});
 
 await tabA.put(key, value);
-await ingest(tabA); // flushes now and waits for the compaction it starts
+await ingest(tabA);
+// flushes now and waits for the compaction it starts
 await tabB.sync();
 dec(await tabB.get(key)); // => "world"
 ```
