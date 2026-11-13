@@ -149,16 +149,6 @@
   border-color: var(--vp-c-brand-1);
 }
 
-.demo-btn.primary:not(:disabled) {
-  border-color: var(--vp-button-brand-bg);
-  background: var(--vp-button-brand-bg);
-  color: var(--vp-button-brand-text);
-}
-
-.demo-btn.primary:hover:not(:disabled) {
-  background: var(--vp-button-brand-hover-bg);
-}
-
 .demo-btn:disabled {
   color: var(--vp-c-text-3);
   cursor: default;
