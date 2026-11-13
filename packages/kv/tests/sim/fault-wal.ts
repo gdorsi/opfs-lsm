@@ -13,8 +13,8 @@ import { walStore } from "./check-database.js";
  *   write. A fault aborts it before it commits (a microtask later, so the
  *   engine's synchronous writes in the same task still run), the way a
  *   failed commit or `QuotaExceededError` does. A faulted transaction that
- *   calls `commit()` in that task aborts there instead, since `abort()`
- *   throws once a commit has started;
+ *   calls `commit()` aborts there instead, when it has not aborted yet,
+ *   since `abort()` throws once a commit has started;
  * - every committed one is one durable op, recorded at `complete` with its
  *   writes, so a crash state can replay a prefix of them (`materializeWal`).
  *   A "strict" one is marked, since no power loss drops it once a later op
@@ -89,8 +89,12 @@ export function installFaultWal(): () => void {
   const { commit } = txProto;
   txProto.commit = function (this: IDBTransaction) {
     const state = txs.get(this);
-    if (state && state.verdict !== "ok") this.abort();
-    else commit.call(this);
+    if (!state || state.verdict === "ok") return commit.call(this);
+    try {
+      this.abort();
+    } catch {
+      // The fault's own abort ran first.
+    }
   };
   return () => {
     proto.put = put;
@@ -116,11 +120,12 @@ function track(state: TxState, store: string, value: unknown, key: IDBValidKey |
 function labelOf(muts: readonly IdbMutation[]): string {
   const meta = new Map<string, unknown>();
   for (const m of muts) if (m.store === "meta" && m.kind === "put") meta.set(String(m.key), m.value);
-  const appended = muts.find((m) => m.store === "wal" && m.kind === "put");
-  if (appended) return `append seq ${String(appended.key)}`;
+  // Before the append: an adopt that moves the head also adds a row, to move the key generator.
   if (meta.has("head") && meta.has("ingestedThrough")) {
     return `adopt generation ${String(meta.get("generation"))} ingestedThrough ${String(meta.get("ingestedThrough"))} head ${String(meta.get("head"))}`;
   }
+  const appended = muts.find((m) => m.store === "wal" && m.kind === "put");
+  if (appended) return `append seq ${String(appended.key)}`;
   if (meta.has("ingestedThrough")) return `advanceIngested through ${String(meta.get("ingestedThrough"))} gen ${String(meta.get("generation"))}`;
   if (meta.has("generation")) return `raiseGeneration ${String(meta.get("generation"))}`;
   return `meta ${[...meta.keys()].join(",")}`;

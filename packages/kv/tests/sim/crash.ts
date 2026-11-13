@@ -226,14 +226,20 @@ export function describeCut(ops: readonly DurableOp[], cut: Cut): string {
 
 /**
  * The log the trace committed: every WAL row an IndexedDB commit added, by
- * seq. Throws unless the seqs are 1..n with no gap.
+ * seq. Throws unless the seqs are 1..n with no gap. A row deleted by its
+ * own key is not a record: recovery and destroy add and delete one to move
+ * the key generator.
  */
 export function committedLog(ops: readonly DurableOp[]): Oracle {
   const rows = new Map<number, OracleOp[]>();
   for (const op of ops) {
     if (op.store !== "idb") continue;
     for (const m of op.muts) {
-      if (m.store !== "wal" || m.kind !== "put") continue;
+      if (m.store !== "wal") continue;
+      if (m.kind === "delete") {
+        if (typeof m.key === "number") rows.delete(m.key);
+        continue;
+      }
       rows.set(m.key as number, decodeWalRow(m.value).map((o) =>
         o.value === undefined ? { type: "del", key: o.key } : { type: "put", key: o.key, value: o.value },
       ));

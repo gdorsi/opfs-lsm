@@ -915,7 +915,6 @@ class DbImpl implements Db {
     if (this.pressure.full) await this.admit();
     const record = encodeOps(ops);
     const seq = await this.wal.append(record);
-    if (seq === undefined) return (await this.write(() => ({ ops, result: undefined }))).seq!;
     await this.landed(seq, ops, record);
     return seq;
   }

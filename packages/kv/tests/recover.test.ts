@@ -152,10 +152,7 @@ describe("reconcile", () => {
     await manifest(fs, 1, 2, ["l0/1-2.sst"]);
     expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 1, top: 1 });
     expect(await wal.meta()).toMatchObject({ head: 2, ingestedThrough: 2, generation: 1 });
-    // The key generator is behind the head, so the blind append gives way
-    // and the explicit one takes seq 3.
-    expect(await wal.append(encodeOps(put(3)))).toBeUndefined();
-    expect((await wal.appendAfter(2, () => ({ ops: put(3), result: 0 })))?.seq).toBe(3);
+    expect(await wal.append(encodeOps(put(3)))).toBe(3);
     wal.close();
   });
 

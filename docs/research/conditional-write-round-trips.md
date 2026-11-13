@@ -4,7 +4,8 @@ Date: 2026-11-11. Chrome 157 headless, macOS arm64, Apple M5 Max. Commit `5b26f1
 probes. The machine ran other work during every measurement, so absolute times are high. Each
 comparison below alternates its variants call by call inside one run, which cancels that noise.
 
-Status: the explicit commit is implemented. The one-round-trip write is not.
+Status: the explicit commit is implemented, for `update` and for `put`, `delete` and `batch`
+(see [Plain put and batch](#plain-put-and-batch)). The one-round-trip `update` is not.
 
 ## Question
 
@@ -75,10 +76,48 @@ ingested).
 `kv/ycsb-f` failed its read checks under the prototype for that reason: its body advances the
 bench model. Shipping this means documenting that a body must be free of side effects.
 
+## Plain put and batch
+
+Date: 2026-11-13. Chrome 157 headless, Apple M5 Max, `kv/fillsync` at `--size large` (10,000
+awaited single puts per run), 21 runs per side, kv and the IndexedDB baseline alternating.
+
+The append read the `head` floor and checked each assigned key against it in the add's success
+handler, so it could not call `commit()` before that handler ran: two trips per put. Recovery
+and destroy now move the key generator whenever they move the head past the records, so the
+check is gone and the append commits at the end of the turn that issued it: one trip.
+
+| build | kv ops/s | kv p50 | IndexedDB ops/s | IndexedDB p50 | kv ÷ IndexedDB per run |
+|---|---:|---:|---:|---:|---:|
+| before | 5,747 | 148 µs | 6,822 | 126 µs | 0.86 (0.64 to 0.99) |
+| after | 7,388 | 114 µs | 6,374 | 132 µs | 1.16 (0.97 to 1.56) |
+
+A probe on plain IndexedDB in the same Chrome confirmed what the change relies on: an `add` at
+key 50 followed by a delete of it makes the next generated key 51, a reopen keeps that, an
+aborted transaction gives its key back, and with `commit()` called in a microtask the adds'
+results are readable at `complete`.
+
+### The baseline does not call `commit()` either
+
+The bench's IndexedDB store waits for its `put`'s success event like kv did. With
+`transaction.commit()` after the put, it runs at 9,877 ops/s (p50 90 µs), and kv, at 7,422
+ops/s (p50 110 µs) in that run, is at 0.76 of it (21 runs, 0.62 to 1.22).
+
+What is left is the `BroadcastChannel` post of each row. At `--size small`, where no ingest
+runs, against that faster baseline (41 runs per side):
+
+| kv build | kv p50 | IndexedDB p50 | kv ÷ IndexedDB per run |
+|---|---:|---:|---:|
+| after | 140 µs | 118 µs | 0.87 |
+| the SharedWorker does not listen for rows | 132 µs | 122 µs | 0.91 |
+| the tab posts no row | 114 µs | 118 µs | 1.03 |
+
+Posting each row in a later task instead (a `MessageChannel` hop after the ack) did not help
+at `--size large`: kv p50 114 µs, against 110 µs with the post inline. So the cost follows the
+number of messages, not where the post sits (inferred). Not tried: one message for the rows of
+several puts.
+
 ## Not measured
 
-- Plain `put` and `batch`. Their append checks the assigned key in the add's success handler,
-  so it cannot call `commit()` before that handler runs.
 - Firefox and Safari.
 - A quiet machine. The docstore `serial-insert` loss against Dexie (0.40× in the clean run of
   issue 139) is about 170 µs per write, so this change narrows it and does not close it.

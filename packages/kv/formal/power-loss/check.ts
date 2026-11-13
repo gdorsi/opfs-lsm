@@ -296,6 +296,8 @@ function sourceSync(): string[] {
   need("host/compact.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*through: meta\.through[\s\S]*raiseGeneration/, "install builds on the recorded generation");
   need("idb/wal.ts", /async function advanceIngested[\s\S]*delete\(IDBKeyRange\.upperBound\(existing\)\)/, "advanceIngested keeps the records it folds until the next ingest");
   need("idb/wal.ts", /Math\.max\(head, through, floor\)/, "adopt raises head past every seq a manifest names");
+  need("idb/wal.ts", /if \(nextHead > head\) passKeyGenerator\(wal, nextHead\);/, "adopt moves the key generator with the head, so no append takes a seq at or below it");
+  need("idb/wal.ts", /if \(head > now\.head\) passKeyGenerator\(records, head\);/, "destroy moves the key generator with the head");
   need("idb/wal.ts", /meta\.put\(Math\.max\(knownTop, top, generation\), META_TOP\)/, "adopt keeps the highest manifest number seen");
   need("recover.ts", /Math\.max\(numbers\[0\] \?\? 0, meta\.top, meta\.generation \?\? 0\)/, "new manifests number past every number in use");
   need("recover.ts", /m\.through > meta\.head && \(await isIntact\(fs, m\)\)/, "reconcile adopts an intact manifest past the head first");

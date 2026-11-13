@@ -14,7 +14,8 @@ const META_STORE = "meta";
  * the larger of this and the last key in `wal`. An append writes only its
  * record: a write to `meta` in the same transaction costs about as much
  * again as the record. Recovery raises the floor when it moves the head
- * past the records.
+ * past the records, and moves the key generator of `wal` with it
+ * (`passKeyGenerator`), so an append never reads the floor.
  */
 const META_HEAD = "head";
 const META_INGESTED = "ingestedThrough";
@@ -299,19 +300,30 @@ async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
   return { head, generation, ingestedThrough, records };
 }
 
+/**
+ * Move the key generator of `wal` to `head + 1`, so the next append takes
+ * that seq. Every writer that moves the head past the last key in `wal`
+ * calls this in the same transaction. `head` is a key the store does not
+ * hold. An explicit key moves the generator, and the delete does not move
+ * it back.
+ */
+function passKeyGenerator(wal: IDBObjectStore, head: number): void {
+  wal.add(EMPTY_RECORD, head);
+  wal.delete(head);
+}
+
 type GroupEntry = {
   readonly record: ArrayBuffer;
-  seq: number | undefined;
-  readonly resolve: (seq: number | undefined) => void;
+  readonly resolve: (seq: number) => void;
   readonly reject: (err: unknown) => void;
 };
 
 type Group = {
   readonly tx: IDBTransaction;
-  readonly entries: GroupEntry[];
-  /** False once an `add` found the transaction inactive. */
-  active: boolean;
-  readonly landed: (entry: GroupEntry, key: number) => void;
+  /** Each entry with the `add` whose result is its seq. */
+  readonly adds: { readonly entry: GroupEntry; readonly add: IDBRequest<IDBValidKey> }[];
+  /** True until the commit starts, in a microtask of the turn that opened the transaction. */
+  joinable: boolean;
 };
 
 /**
@@ -387,6 +399,7 @@ export class IdBWal {
       nextIngested = nextHead;
       wal.delete(IDBKeyRange.upperBound(head));
     }
+    if (nextHead > head) passKeyGenerator(wal, nextHead);
     meta.put(nextHead, META_HEAD);
     meta.put(nextIngested, META_INGESTED);
     meta.put(generation, META_GENERATION);
@@ -483,94 +496,63 @@ export class TabWal extends IdBWal {
   }
 
   /**
-   * Append `record` (`encodeOps`) under the key IndexedDB assigns, by group commit: appends
-   * that arrive while a group's transaction is active join it, and appends
-   * that arrive while it commits form the next group. A group is one
-   * readwrite transaction with one `add` per record, so each record keeps
-   * its own seq, and the records commit or abort together. Each caller
-   * resolves when its group commits, in seq order; a failed group rejects
-   * every caller in it. The key generator is past every key in `wal`, so a
-   * key can only fail to pass the head when recovery raised the floor: the
-   * group aborts and every caller gets undefined, and appends with
-   * `appendAfter`, which writes an explicit key and moves the generator
-   * forward. An aborted transaction gives its keys back, so committed seqs
-   * stay gapless.
+   * Append `record` (`encodeOps`) under the key IndexedDB assigns, by group
+   * commit: the append that opens a group's transaction and the ones issued
+   * synchronously after it join it, and appends that arrive while it
+   * commits form the next group.
+   * A group is one readwrite transaction with one `add` per record, so each
+   * record keeps its own seq, and the records commit or abort together.
+   * Each caller resolves when its group commits, in seq order; a failed
+   * group rejects every caller in it. The key generator is one past the
+   * head (`passKeyGenerator`), and an aborted transaction gives its keys
+   * back, so committed seqs stay gapless.
    */
-  append(record: ArrayBuffer): Promise<number | undefined> {
+  append(record: ArrayBuffer): Promise<number> {
     return new Promise((resolve, reject) => {
-      const entry: GroupEntry = { record, seq: undefined, resolve, reject };
-      if (this.open && this.join(this.open, entry)) return;
-      if (this.open) this.queued.push(entry);
-      else this.commitGroup([entry]);
+      const entry: GroupEntry = { record, resolve, reject };
+      if (!this.open) this.commitGroup([entry]);
+      else if (this.open.joinable) this.join(this.open, entry);
+      else this.queued.push(entry);
     });
   }
 
-  /** Add `entry` to `group` while its transaction is still active. */
-  private join(group: Group, entry: GroupEntry): boolean {
-    if (!group.active) return false;
-    try {
-      const add = group.tx.objectStore(WAL_STORE).add(entry.record);
-      add.onsuccess = () => group.landed(entry, add.result as number);
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "TransactionInactiveError") {
-        group.active = false;
-        return false;
-      }
-      throw err;
-    }
-    group.entries.push(entry);
-    return true;
+  private join(group: Group, entry: GroupEntry): void {
+    group.adds.push({ entry, add: group.tx.objectStore(WAL_STORE).add(entry.record) });
   }
 
   private commitGroup(entries: GroupEntry[]): void {
     let tx: IDBTransaction;
     try {
-      tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+      tx = this.db.transaction(WAL_STORE, "readwrite");
     } catch (err) {
       for (const entry of entries) entry.reject(err);
       this.next();
       return;
     }
-    const floor = tx.objectStore(META_STORE).get(META_HEAD);
-    let stale = false;
-    const group: Group = {
-      tx,
-      entries: [],
-      active: true,
-      landed: (entry, key) => {
-        if (stale) return;
-        if (key <= num(floor.result)) {
-          stale = true;
-          tx.abort();
-          return;
-        }
-        entry.seq = key;
-      },
-    };
+    const group: Group = { tx, adds: [], joinable: true };
     this.open = group;
-    for (const entry of entries) {
-      if (!this.join(group, entry)) {
-        // Unreachable: the transaction was created in this turn.
-        throw new CommitError("wal group transaction inactive at open");
-      }
-    }
+    // A microtask, so the appends issued synchronously after this one join.
+    // Without the commit, Chrome waits for the adds' success events to
+    // reach the tab before it commits: one more round trip per group.
+    queueMicrotask(() => {
+      group.joinable = false;
+      tx.commit();
+    });
+    for (const entry of entries) this.join(group, entry);
     txDone(tx).then(
       () => {
-        const bucket = 31 - Math.clz32(group.entries.length);
+        const bucket = 31 - Math.clz32(group.adds.length);
         this.groupSizes[bucket] = (this.groupSizes[bucket] ?? 0) + 1;
-        for (const entry of group.entries) {
+        for (const { entry } of group.adds) {
           this.appendedRecords += 1;
           this.appendedBytes += entry.record.byteLength;
         }
         this.finish(group);
-        for (const entry of group.entries) entry.resolve(entry.seq);
+        for (const { entry, add } of group.adds) entry.resolve(add.result as number);
       },
       (err: unknown) => {
         this.finish(group);
-        for (const entry of group.entries) {
-          if (stale) entry.resolve(undefined);
-          else entry.reject(err);
-        }
+        for (const { entry } of group.adds) entry.reject(err);
       },
     );
   }
@@ -606,7 +588,9 @@ export async function emptyWal(wal: IdBWal, expect: WalMeta, head: number, top: 
     return false;
   }
   const meta = tx.objectStore(META_STORE);
-  tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(now.head));
+  const records = tx.objectStore(WAL_STORE);
+  records.delete(IDBKeyRange.upperBound(now.head));
+  if (head > now.head) passKeyGenerator(records, head);
   meta.put(head, META_HEAD);
   meta.put(head, META_INGESTED);
   meta.put(0, META_GENERATION);
