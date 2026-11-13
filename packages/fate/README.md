@@ -21,10 +21,6 @@ const client = createClient({
 });
 ```
 
-## Sharing a database
-
-You own `db` and close it. Every key this adapter writes starts with the byte `f`, so other apps and adapters can share the db.
-
 ## Limits
 
 - A key is at most 8 KiB, and a batch at most 8 MiB. A larger write throws `ConstraintError`, which fate reports as a storage error.
