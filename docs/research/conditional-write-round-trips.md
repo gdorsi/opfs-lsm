@@ -4,7 +4,8 @@ Date: 2026-11-11. Chrome 157 headless, macOS arm64, Apple M5 Max. Commit `5b26f1
 probes. The machine ran other work during every measurement, so absolute times are high. Each
 comparison below alternates its variants call by call inside one run, which cancels that noise.
 
-Status: the explicit commit is implemented. The one-round-trip write is not.
+Status: the explicit commit is implemented, for `update` and for `put`, `delete` and `batch`
+(see [Plain put and batch](#plain-put-and-batch)). The one-round-trip `update` is not.
 
 ## Question
 
@@ -75,10 +76,99 @@ ingested).
 `kv/ycsb-f` failed its read checks under the prototype for that reason: its body advances the
 bench model. Shipping this means documenting that a body must be free of side effects.
 
+## Plain put and batch
+
+Date: 2026-11-13. Chrome 157 headless, Apple M5 Max, `kv/fillsync` at `--size large` (10,000
+awaited single puts per run), 21 runs per side, kv and the IndexedDB baseline alternating.
+
+The append read the `head` floor and checked each assigned key against it in the add's success
+handler, so it could not call `commit()` before that handler ran: two trips per put. Recovery
+and destroy now move the key generator whenever they move the head past the records, so the
+check is gone and the append commits at the end of the turn that issued it: one trip.
+
+| build | kv ops/s | kv p50 | IndexedDB ops/s | IndexedDB p50 | kv ÷ IndexedDB per run |
+|---|---:|---:|---:|---:|---:|
+| before | 5,747 | 148 µs | 6,822 | 126 µs | 0.86 (0.64 to 0.99) |
+| after | 7,388 | 114 µs | 6,374 | 132 µs | 1.16 (0.97 to 1.56) |
+
+A probe on plain IndexedDB in the same Chrome confirmed what the change relies on: an `add` at
+key 50 followed by a delete of it makes the next generated key 51, a reopen keeps that, an
+aborted transaction gives its key back, and with `commit()` called in a microtask the adds'
+results are readable at `complete`.
+
+### Against a baseline that calls `commit()`
+
+The table above is against the bench's IndexedDB store as it was: it waited for its `put`'s
+success event before the commit, like kv did. A kv put is one IndexedDB transaction plus the
+post of the row, so it can match a tuned IndexedDB write and cannot beat it. The baseline now
+calls `transaction.commit()` after its requests. With that, it runs at 9,877 ops/s (p50 90 µs),
+and kv, at 7,422 ops/s (p50 110 µs) in that run, is at 0.76 of it (21 runs, 0.62 to 1.22).
+
+At `--size small`, the README's row (1,000 puts a run), 21 runs a side gave the baseline 6,393
+ops/s (p50 118 µs) and kv 6,179 ops/s (p50 132 µs): 0.93 per run (0.74 to 1.59). Five runs of
+that size do not agree with each other. The five of one full suite run gave 0.65.
+
+What is left is the `BroadcastChannel` post of each row. At `--size small`, where no ingest
+runs, against that faster baseline (41 runs per side):
+
+| kv build | kv p50 | IndexedDB p50 | kv ÷ IndexedDB per run |
+|---|---:|---:|---:|
+| after | 140 µs | 118 µs | 0.87 |
+| the SharedWorker does not listen for rows | 132 µs | 122 µs | 0.91 |
+| the tab posts no row | 114 µs | 118 µs | 1.03 |
+
+Posting each row in a later task instead (a `MessageChannel` hop after the ack) did not help
+at `--size large`: kv p50 114 µs, against 110 µs with the post inline. So the cost follows the
+number of messages, not where the post sits (inferred).
+
+### One message for several rows
+
+A tab now posts a row at once only when it has not posted for a window. Otherwise the row waits,
+and one message carries the rows of the wait. `kv/fillsync` at `--size large`, 21 runs per
+build, every build and the IndexedDB baseline alternating in one run. The machine was busy with
+other work, so compare the builds within a table, not with the tables above.
+
+| window | kv p50 | IndexedDB p50 | kv ÷ IndexedDB per run |
+|---|---:|---:|---:|
+| 0 ms (one message per row) | 140 µs | 98 µs | 0.78 |
+| 1 ms | 114 µs | 98 µs | 0.83 |
+| 4 ms | 110 µs | 98 µs | 0.89 |
+| 16 ms | 110 µs | 98 µs | 0.90 |
+
+4 ms is where the gain stops. A second run compared it with a tab that never posts, which is
+the most any batching can reach:
+
+| build | kv p50 | IndexedDB p50 | kv ÷ IndexedDB per run |
+|---|---:|---:|---:|
+| one message per row | 132 µs | 94 µs | 0.69 |
+| 4 ms window | 106 µs | 94 µs | 0.94 |
+| the tab never posts | 98 µs | 94 µs | 0.98 |
+
+Two more runs: the 4 ms build alone against the baseline gave 0.84 (21 runs, 0.56 to 1.29),
+and a last one gave 0.82 for it and 0.73 for one message per row (15 runs). So this build is
+between 0.82 and 0.94 on that machine, against 0.69 to 0.78 with one message per row.
+
+Two tabs that put to one database at the same time also gain. Mean per put over both tabs, 7
+runs per build at `--size small`: 546 µs with one message per row, 436 µs with the 4 ms window.
+At `--size large`, 5 runs: 564 µs and 497 µs.
+
+### The slow puts of a long run
+
+A timeline of every put of the `--size large` run, 7 runs per side, with the 4 ms window:
+
+- Puts 1,000 to 8,000 average 102 µs on kv and 96 µs on the baseline.
+- Each kv run has one put of 15 to 19 ms, near put 9,050, where the WAL passes its 1 MiB limit.
+  Timestamps taken in the SharedWorker show that it starts and ends with the flush's read of
+  the WAL: one readonly transaction that reads every waiting record, and the tab's append waits
+  behind it (4 runs of 4). It adds about 1.6 µs per put to the mean. The flush's later
+  transaction, which records the new generation, takes under 1 ms and holds no put back.
+- Both sides have stretches of 300 to 500 slower puts between put 8,000 and put 9,500, at a
+  different place in each run. They are IndexedDB's own.
+
+Not tried: reading the WAL for a flush in several short transactions.
+
 ## Not measured
 
-- Plain `put` and `batch`. Their append checks the assigned key in the add's success handler,
-  so it cannot call `commit()` before that handler runs.
 - Firefox and Safari.
 - A quiet machine. The docstore `serial-insert` loss against Dexie (0.40× in the clean run of
   issue 139) is about 170 µs per write, so this change narrows it and does not close it.

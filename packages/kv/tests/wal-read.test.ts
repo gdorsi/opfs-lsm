@@ -26,9 +26,8 @@ function rawRow(seq: number, value: unknown): Promise<void> {
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
       const db = open.result;
-      const tx = db.transaction(["wal", "meta"], "readwrite");
+      const tx = db.transaction("wal", "readwrite");
       tx.objectStore("wal").put(value, seq);
-      tx.objectStore("meta").put(seq, "head");
       tx.oncomplete = () => {
         db.close();
         resolve();
