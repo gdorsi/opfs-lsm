@@ -1,6 +1,6 @@
 import { CODES, type Detail, type Issue } from "./model.ts";
 
-// LinearLite's seed (examples/linearlite-tanstackdb/scripts/generate.ts) without descriptions, comments and board order.
+// LinearLite's seed (examples/linearlite-tanstackdb/src/server/generate.ts) without descriptions, comments and board order.
 
 const WORDS =
   "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea commodo consequat duis aute irure in reprehenderit voluptate velit esse cillum fugiat nulla pariatur excepteur sint occaecat cupidatat non proident sunt culpa qui officia deserunt mollit anim id est laborum sync cache index query render latency offline tab worker cursor snapshot".split(

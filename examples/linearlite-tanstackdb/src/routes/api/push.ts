@@ -1,8 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { parsePushRequest, parseUsername } from "../../domain/wire.ts";
-import { serverDb } from "../../server/db.ts";
 import { respond } from "../../server/http.ts";
-import { push } from "../../server/sync.ts";
+import { appServer } from "../../server/sqlite.ts";
 
 export const Route = createFileRoute("/api/push")({
   server: {
@@ -11,7 +10,7 @@ export const Route = createFileRoute("/api/push")({
         respond(async () => {
           const username = parseUsername(request.headers.get("x-linearlite-user"));
           const { ops } = parsePushRequest(await request.json().catch(() => null));
-          return push(serverDb(), ops, username);
+          return appServer().push(ops, username);
         }),
     },
   },

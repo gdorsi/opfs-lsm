@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { readHead, serverDb } from "../../server/db.ts";
-import { onHead } from "../../server/sync.ts";
+import { appServer } from "../../server/sqlite.ts";
 
 const PING_MS = 25_000;
 
@@ -14,7 +13,7 @@ export const Route = createFileRoute("/api/events")({
           start(controller) {
             const send = (chunk: string) => controller.enqueue(encoder.encode(chunk));
             const head = (n: number) => send(`data: {"head":${n}}\n\n`);
-            const off = onHead(head);
+            const off = appServer().onHead(head);
             const ping = setInterval(() => send(": ping\n\n"), PING_MS);
             stop = () => {
               off();
@@ -24,7 +23,7 @@ export const Route = createFileRoute("/api/events")({
               } catch {}
             };
             request.signal.addEventListener("abort", stop, { once: true });
-            head(readHead(serverDb()));
+            head(appServer().head());
           },
           cancel: () => stop(),
         });

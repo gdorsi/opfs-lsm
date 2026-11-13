@@ -1,7 +1,6 @@
 import type { FieldsWith, Stream } from "./stores.ts";
 
 export const STATUSES = ["backlog", "todo", "in_progress", "done", "canceled"] as const;
-export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
 export const STATUS_LABELS = ["Backlog", "Todo", "In Progress", "Done", "Canceled"] as const;
 export const PRIORITY_LABELS = ["Urgent", "High", "Medium", "Low", "No priority"] as const;
 
