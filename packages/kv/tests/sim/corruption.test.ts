@@ -497,9 +497,9 @@ describe("a corrupt WAL row: no checksum", () => {
     expect(crashes(r)).toEqual([]);
   });
 
-  // `num()` reads a `meta` value that is not a number as 0. `meta.head` is
-  // only a floor under the last WAL key, so the tail is still read.
-  it("meta.head is not a number: reads still see the WAL tail", async () => {
+  // An older build stored the head in `meta.head`. This build does not read
+  // it, so a bad value there changes nothing.
+  it("a leftover meta.head is not a number: reads still see the WAL tail", async () => {
     const r = await run("WAL meta: head not a number", standard, async (f) => {
       await walStore(f.name, "readwrite", (_wal, meta) => meta.put("x", "head"));
     });

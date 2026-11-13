@@ -28,8 +28,7 @@ A database named `<name>` lives in two stores:
 ```
 IndexedDB  "opfs-lsm-wal/<name>"
   ├── wal    seq -> bytes              one record per acked batch
-  └── meta   "head"            -> seq  a floor for the head, written by recovery and destroy
-             "ingestedThrough" -> seq  every seq <= this is in an SST
+  └── meta   "ingestedThrough" -> seq  every seq <= this is in an SST
              "generation"      -> n    the manifest tabs read
              "topGeneration"   -> n    highest manifest number recovery has seen
              "destroyedTop"    -> n    manifests numbered up to this predate a destroy
@@ -77,29 +76,25 @@ start is not below its end, is rejected as corrupt.
 ## Append
 
 `put`, `delete` and `batch` append by group commit. A tab has at most one append transaction
-open. Appends that arrive while it is active join it, and appends that arrive while it commits
-form the next group. A group is one `readwrite` transaction over `wal` and `meta`:
+open. The append that opens it and the appends issued synchronously after it join it, and
+appends that arrive while it commits form the next group. A group is one `readwrite`
+transaction over `wal`:
 
-1. Read the `head` floor from `meta`.
-2. `add` each record of the group, in call order, with no key. The key generator of the store
+1. `add` each record of the group, in call order, with no key. The key generator of the store
    assigns each its seq.
-3. If a seq is not past the floor, abort, and each write of the group appends again on its own
-   at an explicit key, `head + 1`.
+2. Commit in a microtask, without waiting for the results of the adds.
 
 The records are the only writes. A group commits or aborts as a whole, and a failed group fails
-every write in it. The head, the seq of the last committed batch, is the last key in
-`wal`, or the `head` floor when that is higher. Only recovery and destroy write the floor, so
-step 3 aborts only after a recovery or a destroy.
+every write in it.
 
-A tab still running an older build reads that stored floor as the head. It does not see records
-this build appends, and reloading it does not change that, because the floor stays where
-recovery left it. A later `put`, `delete` or `batch` on the older build stores its new key as
-the floor, and the next read then sees those records. Until then they stay in the WAL. The
-older adopt and truncation delete only up to the floor, and every record appended here is past
-the floor, so the older build cannot drop them. Its `update` rejects while the floor is behind,
-because `appendAfter` would write `floor + 1` onto a key this build already took.
+Nothing stores the head, the seq of the last committed batch. It is the last key in `wal`, or
+`ingestedThrough` when no record is past it. Only recovery and destroy move the head past the
+last key. The same transaction then drops every record, sets `ingestedThrough` to the new head,
+and adds and deletes a record at that seq, which moves the key generator to `head + 1`. A power
+loss that loses commits also loses what they did to the key generator, and this is what keeps
+the next append from taking a seq that a manifest already holds.
 
-IndexedDB serializes `readwrite` transactions on the same stores, so two tabs cannot take the
+IndexedDB serializes `readwrite` transactions that share a store, so two tabs cannot take the
 same seq. An aborted transaction reverts the key generator, so committed seqs stay gapless.
 
 `update(keys, body)` reads the tail, applies it to the memtable, runs the synchronous `body` and
@@ -308,14 +303,18 @@ granted, no handle answers, and it warns.
 
 ## Seeing other tabs' writes
 
-After its append commits, a tab posts `{ kind: "row", writerId, seq, record, bytes }` on the
-BroadcastChannel `opfs-lsm-layers/<name>`: the WAL row it appended, and the key and value bytes of
-its ops. Every other tab applies the record to its memtable. If the record does not follow the
-`appliedThrough` of that tab, the tab reads the WAL tail instead.
+After an append commits, a tab posts `{ kind: "rows", writerId, rows, bytes }` on the
+BroadcastChannel `opfs-lsm-layers/<name>`: the WAL rows it appended, each `{ seq, record }`, and
+the key and value bytes of their ops. A row is posted when it commits, unless the tab posted in
+the last 4 ms. Then it waits for the first commit past that time, a timer, or `close`, and one
+message carries every row that waited: a post costs per message, not per row. A hidden page
+posts every row when it commits, and what waits when it becomes hidden, because browsers slow
+and stop its timers. Every other tab applies the records in the order given. If one does not
+follow the `appliedThrough` of that tab, the tab reads the WAL tail instead.
 
-A tab therefore sees the write of another tab a moment after its ack. `db.sync()` closes the
-gap: it reads the WAL tail and applies everything acked before the call. The broadcast is an
-optimization. The WAL tail is the source of truth.
+A tab therefore sees the write of another tab a moment after its ack, and a few milliseconds
+later during a burst. `db.sync()` closes the gap: it reads the WAL tail and applies everything
+acked before the call. The broadcast is an optimization. The WAL tail is the source of truth.
 
 ## Installing a generation
 
@@ -357,7 +356,7 @@ Ingest moves WAL records into L0 runs. It runs in the host.
 ## Trigger
 
 Per database, the host keeps `pendingBytes`, the key and value bytes of the ops that are not yet
-folded. Each append broadcast adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
+folded. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
 host flushes. The limit is the smallest any open tab asked for, and each tab asks for at most
 7/8 of its `memtableBytes`.
 
@@ -512,7 +511,7 @@ that `openDb` refuses as corrupt. The host:
    No flush or merge publishes while it holds them, and a merge already running stops after its
    current step.
 2. Commits in one IndexedDB transaction at durability `"strict"`, which completes only once it
-   is on disk. It drops every WAL record and records generation 0, with `head` and
+   is on disk. It drops every WAL record and records generation 0, with
    `ingestedThrough` one past every seq the WAL or a manifest on disk names, and
    `topGeneration` and `destroyedTop` at the highest manifest number in use.
 3. Removes every manifest, then sweeps: against generation 0, every run goes. Both skip
@@ -665,7 +664,8 @@ A tab reads in TypeScript so that a `get` never posts a message. The wasm module
 # Assumptions about the platform
 
 1. IndexedDB serializes `readwrite` transactions that share a store, across tabs and workers.
-   An aborted transaction reverts the key generator of the store.
+   An aborted transaction reverts the key generator of the store. An `add` at an explicit key
+   moves the generator past that key, and deleting the record does not move it back.
 2. An OPFS `createWritable().close()` publishes the whole file atomically.
 3. Each store keeps the order of its own completed writes across a power loss, so a prefix of
    them survives. Nothing orders IndexedDB against OPFS, except that an IndexedDB transaction

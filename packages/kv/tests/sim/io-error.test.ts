@@ -242,7 +242,7 @@ function committedHead(t: Traced): number {
     for (const m of op.muts) {
       if (m.kind !== "put") continue;
       if (m.store === "wal") head = Math.max(head, m.key as number);
-      if (m.store === "meta" && m.key === "head") head = Math.max(head, m.value as number);
+      if (m.store === "meta" && m.key === "ingestedThrough") head = Math.max(head, m.value as number);
     }
   }
   return head;

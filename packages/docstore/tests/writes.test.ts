@@ -130,6 +130,30 @@ describe("putMany", () => {
     ]);
   });
 
+  it("puts into a collection with no index reading only the catalog, unchanged documents included", async () => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const { db, updates } = recording(kv);
+    const bare = defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: {} } });
+    const c = (await openDocStore(db, bare)).collection("notes");
+    await c.putMany([
+      { id: "1", title: "a" },
+      { id: "2", title: "b" },
+    ]);
+    await c.putMany([
+      { id: "1", title: "a" },
+      { id: "2", title: "c" },
+    ]);
+    expect(updates.slice(-2)).toEqual([
+      { reads: 1, puts: 2, deletes: 0 },
+      { reads: 1, puts: 2, deletes: 0 },
+    ]);
+    expect(await c.getMany(["1", "2"])).toEqual([
+      { id: "1", title: "a" },
+      { id: "2", title: "c" },
+    ]);
+  });
+
   it("leaves every index unchanged when no indexed field changes", async () => {
     const { notes: c } = await notes();
     await c.putMany([
