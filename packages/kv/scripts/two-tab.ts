@@ -6,6 +6,7 @@
  *   TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_REPEAT=3 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_PRESSURE=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+ *   TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -49,6 +50,8 @@ type RunOptions = {
   nobc: boolean;
   /** Run the maxBytes scenario instead of the visibility one. */
   pressure: boolean;
+  /** Run the maxBytes: "quota" scenario, which asks this script to override the origin's quota. */
+  quota: boolean;
 };
 
 function chromePath(): string {
@@ -279,46 +282,32 @@ async function waitForDebugger(port: number): Promise<string> {
   throw new Error(`devtools not ready: ${last}`);
 }
 
-function openTarget(wsUrl: string, url: string): Promise<void> {
+/** One DevTools command; resolves with its result. */
+function cdp(wsUrl: string, method: string, params: object): Promise<{ targetId?: string }> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     const timer = setTimeout(() => {
       ws.close();
-      reject(new Error("devtools target timeout"));
+      reject(new Error(`devtools ${method} timeout`));
     }, 10_000);
-    ws.addEventListener("open", () => {
-      ws.send(
-        JSON.stringify({
-          id: 1,
-          method: "Target.createTarget",
-          params: { url },
-        }),
-      );
-    });
+    ws.addEventListener("open", () => ws.send(JSON.stringify({ id: 1, method, params })));
     ws.addEventListener("message", (ev) => {
-      const msg = JSON.parse(String(ev.data)) as {
-        id?: number;
-        error?: { message?: string };
-        result?: { targetId?: string };
-      };
+      const msg = JSON.parse(String(ev.data)) as { id?: number; error?: { message?: string }; result?: { targetId?: string } };
       if (msg.id !== 1) return;
       clearTimeout(timer);
       ws.close();
-      if (msg.error) {
-        reject(new Error(msg.error.message ?? "devtools target failed"));
-        return;
-      }
-      if (!msg.result?.targetId) {
-        reject(new Error("devtools did not return a target id"));
-        return;
-      }
-      resolve();
+      if (msg.error) reject(new Error(msg.error.message ?? `devtools ${method} failed`));
+      else resolve(msg.result ?? {});
     });
     ws.addEventListener("error", () => {
       clearTimeout(timer);
       reject(new Error("devtools socket error"));
     });
   });
+}
+
+async function openTarget(wsUrl: string, url: string): Promise<void> {
+  if (!(await cdp(wsUrl, "Target.createTarget", { url })).targetId) throw new Error("devtools did not return a target id");
 }
 
 async function countProofTabs(debugPort: number): Promise<number> {
@@ -395,6 +384,17 @@ async function runOnce(options: RunOptions): Promise<number> {
     try {
       if (req.method === "POST" && urlPath === "/two-tab-results") {
         resolveResults(await readBody(req));
+        json(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === "POST" && urlPath === "/quota") {
+        // Storage.overrideQuotaForOrigin leaves estimate() alone in Chrome 157, so the
+        // SharedWorker's estimate gets the quota here; its usage stays Chrome's own.
+        const quota = Number(new URL(req.url!, "http://x").searchParams.get("size"));
+        const targets = (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()) as { type: string; webSocketDebuggerUrl: string }[];
+        const expression = `{ const real = StorageManager.prototype.estimate; StorageManager.prototype.estimate = async function () { return { ...(await real.call(this)), quota: ${quota} }; }; }`;
+        // Chrome lists the one SharedWorker twice; the page's connection may be either.
+        for (const t of targets) if (t.type === "shared_worker") await cdp(t.webSocketDebuggerUrl, "Runtime.evaluate", { expression });
         json(res, 200, { ok: true });
         return;
       }
@@ -479,6 +479,7 @@ async function runOnce(options: RunOptions): Promise<number> {
   const query = new URLSearchParams({ auto: "1", name: "two-tab" });
   if (options.nobc) query.set("nobc", "1");
   if (options.pressure) query.set("scenario", "pressure");
+  if (options.quota) query.set("scenario", "quota");
   if (options.local) query.set("local", "1");
   else query.set("role", "a");
   const tabA = `http://127.0.0.1:${port}/proof/two-tab.html?${query}`;
@@ -531,7 +532,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     if (parsed.error) {
       console.error(parsed.error);
       exitCode = 1;
-    } else if (!parsed.log?.includes(options.pressure ? "pressure ok" : "two-tab ok")) {
+    } else if (!parsed.log?.includes(options.quota ? "quota ok" : options.pressure ? "pressure ok" : "two-tab ok")) {
       console.error("missing the ok line");
       exitCode = 1;
     } else if (!options.local && !parsed.log.includes("mode=SharedWorker")) {
@@ -551,7 +552,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     chrome.unref();
     hub.close();
     server.close();
-    fs.rmSync(profile, { recursive: true, force: true });
+    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
   }
   return exitCode;
 }
@@ -566,7 +567,7 @@ async function main(): Promise<number> {
     console.error("TWO_TAB_REPEAT must be a positive integer");
     return 1;
   }
-  const options = { local: flag("TWO_TAB_LOCAL"), nobc: flag("TWO_TAB_NOBC"), pressure: flag("TWO_TAB_PRESSURE") };
+  const options = { local: flag("TWO_TAB_LOCAL"), nobc: flag("TWO_TAB_NOBC"), pressure: flag("TWO_TAB_PRESSURE"), quota: flag("TWO_TAB_QUOTA") };
   for (let i = 0; i < repeat; i += 1) {
     if (repeat > 1) console.log(`run ${i + 1}/${repeat}`);
     const code = await runOnce(options);

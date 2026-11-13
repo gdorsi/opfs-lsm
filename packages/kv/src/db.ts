@@ -86,11 +86,13 @@ export type OpenOptions = {
    */
   readonly compactionMemoryBytes?: number;
   /**
-   * Bytes of run files to stay under. kv never removes a row for it: it asks
+   * Bytes of run files to stay under, or `"quota"` for 90% of the browser's
+   * storage quota for the origin. kv never removes a row for it: it asks
    * an `onPressure` handler to, and a write never waits for it. When tabs
-   * differ, the host uses the smallest (design.md, "Size cap").
+   * differ, the host uses the smallest figure and honors `"quota"` too
+   * (design.md, "Size cap").
    */
-  readonly maxBytes?: number;
+  readonly maxBytes?: number | "quota";
 };
 
 /** Frees about `pressure.need` bytes with ordinary writes. See `Db.onPressure`. */
@@ -399,7 +401,7 @@ export function openDbWith(options: OpenWithOptions): Promise<Db> {
 async function openTraced(options: OpenWithOptions): Promise<Db> {
   const trace = options.trace;
   const name = checkDbName(options.name);
-  if (options.maxBytes !== undefined && !(options.maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
+  if (options.maxBytes !== undefined && options.maxBytes !== "quota" && !(options.maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
   // Started first, so the module loads while the rest of open runs.
   const engine = timed(trace, "wasm", ensureEngine);
   // Awaited last: a throw before that must not leave its rejection unhandled.
@@ -582,7 +584,7 @@ class DbImpl implements Db {
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
-    private readonly maxBytes: number | undefined,
+    private readonly maxBytes: number | "quota" | undefined,
     private readonly trace?: OpenTrace,
     private readonly rowPostMs = ROW_POST_MS,
   ) {
@@ -1201,7 +1203,7 @@ class DbImpl implements Db {
       );
       if (free) {
         console.warn(
-          `opfs-lsm: ${this.name} holds ${pressure.bytes} bytes of run files, over maxBytes ${pressure.maxBytes}, and no tab answers onPressure`,
+          `opfs-lsm: ${this.name} must free ${pressure.need} bytes to stay under maxBytes ${pressure.maxBytes}, and no tab answers onPressure`,
         );
       }
     }

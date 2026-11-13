@@ -52,8 +52,10 @@ type IngestWatch = {
   maxWalBytes: number;
   /** The smallest `compactionMemoryBytes` any watching tab asked for. */
   compactionMemoryBytes: number;
-  /** The smallest `maxBytes` any watching tab asked for; infinite while none did. */
+  /** The smallest numeric `maxBytes` any watching tab asked for; infinite while none did. */
   maxBytes: number;
+  /** Some watching tab asked for `maxBytes: "quota"`. */
+  quota: boolean;
   /** Op bytes heard or measured and not yet folded into a run. */
   pendingBytes: number;
   /**
@@ -338,8 +340,9 @@ class HostedDb {
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
-    if (policy.maxBytes !== undefined && policy.maxBytes < watch.maxBytes) {
-      watch.maxBytes = policy.maxBytes;
+    if (policy.maxBytes !== undefined) {
+      if (policy.maxBytes === "quota") watch.quota = true;
+      else watch.maxBytes = Math.min(watch.maxBytes, policy.maxBytes);
       // A pass measures the cap, so a database already over it gets an offer without waiting for a write.
       this.compact().catch(() => undefined);
     }
@@ -369,6 +372,7 @@ class HostedDb {
       maxWalBytes: policy.maxWalBytes,
       compactionMemoryBytes: policy.compactionMemoryBytes,
       maxBytes: Infinity,
+      quota: false,
       pendingBytes: 0,
       triggerAt: policy.maxWalBytes,
       state: "idle",
@@ -479,7 +483,7 @@ class HostedDb {
         const budget = this.budget();
         const step = await mergeNextStep(fs, budget, base, meta.top);
         recycleEngine(budget.wasmRecycleBytes);
-        if (!step) return this.measure(base);
+        if (!step) return this.measure(base, fs);
         await this.exclusive(() =>
           this.withWal(async (wal) => {
             this.trusted = await installStep(fs, wal, step, this.trusted);
@@ -507,16 +511,32 @@ class HostedDb {
 
   /**
    * Offer pressure when `base`, which a pass found in shape, is over the
-   * cap. Writes nothing: the host never removes a row for the cap.
+   * cap, or when the origin's usage is over 90% of its quota. Writes nothing:
+   * the host never removes a row for the cap. The estimate is read after the
+   * pass, with no lock held, and a missing or rejected one makes no offer.
    */
-  private measure(base: GenerationMeta): void {
+  private measure(base: GenerationMeta, fs: AsyncFs): void {
     const watch = this.watching;
-    if (!watch?.bus || watch.maxBytes === Infinity || "pressure" in this.offer || base.through < this.offer.after) return;
+    if (!watch) return;
     const bytes = base.runs.reduce((n, run) => n + run.bytes, 0);
-    if (bytes <= watch.maxBytes) return;
-    const need = bytes - Math.floor((watch.maxBytes * 4) / 5);
-    this.offer = { kind: "pressure", pressure: { bytes, maxBytes: watch.maxBytes, need } };
-    watch.bus.postMessage(this.offer);
+    this.offerOver(base, bytes, bytes, watch.maxBytes);
+    if (!watch.quota || "pressure" in this.offer) return;
+    listRuns(fs)
+      .then(async (onDisk) => {
+        // A run a tab still holds counts in the estimate: an answer's bytes would look unfreed.
+        if (onDisk.length > base.runs.length) return;
+        const { usage = 0, quota = Infinity } = (await globalThis.navigator?.storage?.estimate?.()) ?? {};
+        this.offerOver(base, bytes, usage, Math.floor(quota * 0.9));
+      })
+      .catch(() => undefined);
+  }
+
+  /** `used` is what counts against `maxBytes`: `bytes`, or the origin's usage. */
+  private offerOver(base: GenerationMeta, bytes: number, used: number, maxBytes: number): void {
+    const bus = this.watching?.bus;
+    if (!bus || used <= maxBytes || "pressure" in this.offer || base.through < this.offer.after) return;
+    this.offer = { kind: "pressure", pressure: { bytes, maxBytes, need: used - Math.floor((maxBytes * 4) / 5) } };
+    bus.postMessage(this.offer);
   }
 
   /**
