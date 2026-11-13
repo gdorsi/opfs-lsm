@@ -71,14 +71,14 @@ The framework adapters show the same shape. TanStack DB bulk inserts run at 125k
 
 ### Bundle size
 
-Importing `@opfs-lsm/kv` adds **17.0 kB** of JavaScript to your main bundle (gzip, 49.2 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
+Importing `@opfs-lsm/kv` adds **17.2 kB** of JavaScript to your main bundle (gzip, 49.8 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
 
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
-| Main-thread JS | 17.0 kB | 49.2 kB | at import |
+| Main-thread JS | 17.2 kB | 49.8 kB | at import |
 | SharedWorker chunk | 11.5 kB | 33.5 kB | on the first `openDb` |
 | wasm engine | 16.3 kB | 35.8 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **44.9 kB** | **118.6 kB** | |
+| **Total after open** | **45.1 kB** | **119.1 kB** | |
 
 For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.2 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 27.9 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](bench/README.md#bundle-size).
 
