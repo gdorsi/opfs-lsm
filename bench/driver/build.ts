@@ -26,7 +26,7 @@ export type BuildOutput = {
 
 const ROW_PREFIX = "\0size-row:";
 
-export async function buildBench(opts: { quiet?: boolean } = {}): Promise<BuildOutput> {
+export async function buildBench(opts: { quiet?: boolean; minify?: boolean } = {}): Promise<BuildOutput> {
   rmSync(OUT_DIR, { recursive: true, force: true });
   const staticImports = new Map<string, string[]>();
   const rowEntries = new Map<string, string>();
@@ -62,7 +62,7 @@ export async function buildBench(opts: { quiet?: boolean } = {}): Promise<BuildO
       outDir: OUT_DIR,
       emptyOutDir: true,
       target: "es2022",
-      minify: true,
+      minify: opts.minify ?? true,
       sourcemap: false,
       modulePreload: false,
       reportCompressedSize: false,

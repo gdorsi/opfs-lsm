@@ -1106,14 +1106,16 @@ class DbImpl implements Db {
     const abort = new AbortController();
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
-    this.unlock = () => {
+    const unlock = (this.unlock = () => {
       this.unlock = undefined;
       this.holding = false;
       abort.abort();
       release();
-    };
+    });
     webLocks()
       ?.request(pressureLock(this.name), { signal: abort.signal }, () => {
+        // Granted before `unlock` could abort the request: `held` is settled, so the lock goes back.
+        if (this.unlock !== unlock) return held;
         this.holding = true;
         this.bus?.postMessage({ kind: "pressure-pull" } satisfies BusMessage);
         return held;

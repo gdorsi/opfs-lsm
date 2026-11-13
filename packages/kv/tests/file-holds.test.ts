@@ -56,6 +56,7 @@ async function threeRuns(db: Awaited<ReturnType<typeof openWithHost>>["db"]) {
 
 const l0 = (fs: MemoryFs) => fs.publishedPaths().filter((p) => p.startsWith("l0/"));
 const l1 = (fs: MemoryFs) => fs.publishedPaths().filter((p) => p.startsWith("l1/"));
+const runFiles = (fs: MemoryFs) => fs.publishedPaths().filter((p) => /^l\d+\//.test(p)).sort();
 
 describe("run files outlive compaction while a tab reads them", () => {
   it("a view opened before a compaction reads every key, and its inputs go after it closes", async () => {
@@ -132,8 +133,24 @@ describe("host boot sweep", () => {
 
     const { db } = await openWithHost(fs);
     await ingest(db);
-    expect(fs.publishedPaths().filter((p) => /^l\d+\//.test(p)).sort()).toEqual([...live].sort());
+    expect(runFiles(fs)).toEqual([...live].sort());
     for (let i = 0; i < 3; i++) expect(dec.decode((await db.get(utf(`k${i}`)))!)).toBe(`v${i}`);
+    await db.close();
+  });
+
+  it("a host that already swept removes a run file that turns up later", async () => {
+    const fs = new MemoryFs();
+    const { db, host } = await openWithHost(fs);
+    await threeRuns(db);
+    await host.compact(NAME);
+    const live = runFiles(fs);
+    // What a failed install or another host's compaction leaves behind.
+    const w = await fs.create("l1/c9.0-100.sst");
+    await w.write(utf("orphan"));
+    await w.finish();
+
+    await host.compact(NAME);
+    expect(runFiles(fs)).toEqual(live);
     await db.close();
   });
 });

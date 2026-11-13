@@ -53,4 +53,20 @@ export const SIZE_ROWS: readonly SizeRow[] = [
     source: `export { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";`,
     note: "automerge-repo IndexedDBStorageAdapter",
   },
+  {
+    id: "fate",
+    source: `export { createClient } from "@nkzw/fate"; export { createPersistence } from "@nkzw/fate/persistence";`,
+    note: "fate client and createPersistence alone, to subtract from the two rows below",
+  },
+  {
+    id: "fate+kv",
+    kv: true,
+    source: `export { kvStorage } from "@opfs-lsm/fate"; export { openDb } from "@opfs-lsm/kv"; export { createClient } from "@nkzw/fate"; export { createPersistence } from "@nkzw/fate/persistence";`,
+    note: "fate client + persistence + kvStorage + kv",
+  },
+  {
+    id: "fate+indexeddb",
+    source: `export { createIndexedDBStorage } from "@nkzw/fate-indexeddb"; export { createClient } from "@nkzw/fate"; export { createPersistence } from "@nkzw/fate/persistence";`,
+    note: "fate client + persistence + fate-indexeddb",
+  },
 ];

@@ -190,7 +190,7 @@ verify-opfs-lsm — real-Chrome proofs for @opfs-lsm
   verify-opfs-lsm cleanup
 
   bench runs `pnpm bench <args>`; a selector is kv/, table/, automerge/,
-  yjs/ (a family) or kv/fillrandom (one workload). bench-smoke runs
+  yjs/, fate/ (a family) or kv/fillrandom (one workload). bench-smoke runs
   `pnpm bench:smoke`.
 
 Env:

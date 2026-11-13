@@ -127,6 +127,29 @@ describe("maxBytes", () => {
     expect(warn).toHaveBeenCalledTimes(2);
   });
 
+  it("does not answer on a lock grant that lands after its handler unsubscribed", async () => {
+    const a = await open(CAP);
+    const b = await open(CAP);
+    const model = new Set<number>();
+    const calls: Pressure[] = [];
+    let strays = 0;
+    a.onPressure(oldestFirst(a, model, calls, []));
+    // A grant already on its way when the request aborts: the callback still runs.
+    let granted: Promise<unknown> | undefined;
+    vi.spyOn(navigator.locks, "request").mockImplementationOnce((...args: unknown[]) => {
+      const run = args.at(-1) as (lock: Lock | null) => unknown;
+      return (granted = Promise.resolve().then(() => run(null)));
+    });
+    b.onPressure(() => void strays++)();
+    await granted;
+    b.onPressure(() => void strays++);
+
+    await fill(a, model, 0, 300);
+    await until(() => calls.length === 1, "one offer");
+    await turns();
+    expect(strays).toBe(0);
+  });
+
   it("gives the open offer to another handle when the answering one closes mid-handler, and never holds a write", async () => {
     const a = await open(CAP);
     const b = await open(CAP);

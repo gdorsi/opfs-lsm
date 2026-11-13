@@ -86,19 +86,22 @@ Here keys start with a timestamp, so the layer drops the oldest rows that hold `
 const db = await openDb({ name: "log", maxBytes: 64 * 1024 * 1024 });
 db.onPressure(async ({ need }) => {
   let freed = 0;
+  let end: Uint8Array | undefined;
   for await (const { key, value } of db.range()) {
     if (freed >= need) {
-      await db.batch((tx) => tx.deleteRange({ endExclusive: key }));
-      return;
+      end = key;
+      break;
     }
     freed += key.byteLength + value.byteLength;
   }
+  // No `end`: every row together holds less than `need`, so all of them go.
+  await db.batch((tx) => tx.deleteRange(end ? { endExclusive: end } : {}));
 });
 ```
 
-Answer with `deleteRange`. Its bytes come back once a flush holds it and compaction rewrites the files it covers. A point `delete` frees file bytes only when a merge drops its tombstone at the deepest level, which may be late. The SharedWorker measures again after the next flush, so the offer comes back while the answer freed too little, at most once per flush: a handler must be safe to run again.
+Answer with `deleteRange`. Its bytes come back once a flush holds it and compaction rewrites the files it covers. A point `delete` frees file bytes only when a merge drops its tombstone at the deepest level, which may be late. The SharedWorker measures again after the next flush, so the offer comes back while the answer freed too little, at most once per compaction pass: a handler must be safe to run again. The next offer waits for the handlers to settle, so a handler that never settles stops the offers. Under writes heavy enough that compaction does not catch up, the offer comes late.
 
-`bytes` counts SST files only. It includes rows that a delete or an overwrite hides and no merge has dropped yet, and leaves out the WAL and the SST files a long `view` keeps open. A handle opened with `maxBytes` and no handler warns once per offer when no handle answers, and the database keeps growing.
+`bytes` counts SST files only. It includes rows that a delete or an overwrite hides and no merge has dropped yet, and leaves out the WAL and the SST files a long `view` keeps open. A handle opened with `maxBytes` and no handler warns once per offer when no handle answers, and the database keeps growing. Call `onPressure` in the same turn that `openDb` resolves: an offer that arrives before the handler logs that warning, and the handler still gets the offer once it registers.
 
 ## Errors
 

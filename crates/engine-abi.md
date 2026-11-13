@@ -59,7 +59,8 @@ one session.
 merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32,
            chunk_bytes, tail_bytes, yield_bytes) -> i32
     Input: source list (below), newest source first, then the base
-    manifest's marks block, which the session copies. Reserves the working
+    manifest's marks block, which the session copies without checking it:
+    the host encoded it, and a malformed block traps. Reserves the working
     set: about `chunk_bytes` per source plus the output buffer. Returns 0,
     -13 while a session is open, -5 for a malformed list, -1 for a run
     shorter than a footer, or -11 when the working set cannot be reserved.
