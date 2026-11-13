@@ -152,6 +152,21 @@ Two tabs that put to one database at the same time also gain. Mean per put over 
 runs per build at `--size small`: 546 µs with one message per row, 436 µs with the 4 ms window.
 At `--size large`, 5 runs: 564 µs and 497 µs.
 
+### The slow puts of a long run
+
+A timeline of every put of the `--size large` run, 7 runs per side, with the 4 ms window:
+
+- Puts 1,000 to 8,000 average 102 µs on kv and 96 µs on the baseline.
+- Each kv run has one put of 15 to 19 ms, near put 9,050, where the WAL passes its 1 MiB limit.
+  Timestamps taken in the SharedWorker show that it starts and ends with the flush's read of
+  the WAL: one readonly transaction that reads every waiting record, and the tab's append waits
+  behind it (4 runs of 4). It adds about 1.6 µs per put to the mean. The flush's later
+  transaction, which records the new generation, takes under 1 ms and holds no put back.
+- Both sides have stretches of 300 to 500 slower puts between put 8,000 and put 9,500, at a
+  different place in each run. They are IndexedDB's own.
+
+Not tried: reading the WAL for a flush in several short transactions.
+
 ## Not measured
 
 - Firefox and Safari.
