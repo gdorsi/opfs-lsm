@@ -267,15 +267,18 @@ export type SyncStatus =
   | { readonly kind: "syncing"; readonly stream: Stream; readonly cursor: number; readonly head: number; readonly unsynced: number }
   | { readonly kind: "idle"; readonly unsynced: number };
 
-export function usePressure(): boolean {
-  const { sync } = openedStore();
+/** Whether storage pressure waits for the user's confirmation, and the unsent body and comment edits a removal waits for. */
+export function usePressure(): { readonly pending: boolean; readonly unsent: number } {
+  const { sync, dirtyBodies, dirtyComments } = openedStore();
   const { data } = useLiveQuery((q) =>
     q
       .from({ s: sync })
       .where(({ s }) => eq(s.id, "sync"))
       .findOne(),
   );
-  return data?.pressure === true;
+  const { data: bodies } = useLiveQuery(dirtyBodies);
+  const { data: comments } = useLiveQuery(dirtyComments);
+  return { pending: data?.pressure === true, unsent: bodies.length + comments.length };
 }
 
 export function useSyncStatus(): SyncStatus {
