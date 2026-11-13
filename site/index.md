@@ -3,46 +3,89 @@ layout: home
 title: opfs-lsm
 hero:
   name: opfs-lsm
-  text: A key-value store for the browser
-  tagline: Built to be the storage layer under local-first apps and sync engines. Every tab of your app shares one database and sees the other tabs' writes live.
+  text: A faster database for the browser
+  tagline: Reads up to 82× faster than IndexedDB. 17.1 kB to import.
   actions:
     - theme: brand
       text: Quickstart
       link: /guide/#quickstart
     - theme: alt
-      text: Why not IndexedDB?
-      link: /guide/#why-not-just-use-indexeddb
+      text: Try it with 100,000 issues
+      link: /#try-it-with-100000-issues
     - theme: alt
       text: GitHub
       link: https://github.com/gdorsi/opfs-lsm
-features:
-  - title: 24× faster reads than IndexedDB
-    details: Random point reads run at 341k ops/s, against 14.3k on IndexedDB. Reads of missing keys run 82× faster, and short range scans 2.6× faster. Each tab reads the data files directly, so a read sends no message to a worker. A single put awaited one at a time is slower, and so is opening a database.
-    link: /guide/#benchmarks
-    linkText: All benchmarks
-  - title: One database for every tab
-    details: A SharedWorker, a background script that every tab of a site can reach, writes the data to OPFS, the Origin Private File System that the browser keeps private to your site. Each tab reads those files directly, and a change feed tells it about the other tabs' writes.
-    link: /guide/#how-it-works
-    linkText: How it works
-  - title: A number for every write
-    details: put, delete and batch resolve with the sequence number of their record, and the change feed reports the same numbers. Use them as a cursor for an outbox or a sync checkpoint.
-    link: /kv/#db
-    linkText: Db methods
-  - title: 17.1 kB to import
-    details: Importing kv adds 17.1 kB gzip to your main bundle. The SharedWorker and the WebAssembly engine, compiled code that the browser runs next to your JavaScript, load only when a page opens a database.
-    link: /guide/#bundle-size
-    linkText: Bundle size
-  - title: Documents and indexes
-    details: docstore keeps JSON documents in collections, with indexes declared in a versioned schema, paged queries, snapshot reads and a change feed.
-    link: /docstore/
-    linkText: docstore
-  - title: TanStack DB, Yjs and Automerge
-    details: Adapters keep TanStack DB collections, Yjs documents or an automerge-repo in one kv database.
-    link: /tanstack-db/
-    linkText: Adapters
+bench:
+  command: pnpm bench
+  rows:
+    - workload: Random point reads
+      indexeddb: 14.3k ops/s
+      kv: 341k ops/s
+      ratio: 24×
+    - workload: TanStack DB, bulk insert
+      indexeddb: 11k rows/s
+      kv: 88k rows/s
+    - workload: Single put, awaited one at a time
+      indexeddb: 4.0k ops/s
+      kv: 3.3k ops/s
+      ratio: 0.8×
+size:
+  main: 17.1 kB
+  worker: 11.5 kB
+  wasm: 16.3 kB
+  lazy: 27.8 kB
+demo:
+  count: 100,000
 ---
 
-> [!WARNING]
-> opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next.
+<div class="home-claim">
+<div class="home-copy">
 
-On desktop, kv needs Chrome or Edge 92, Firefox 114 or Safari 26. Firefox, Safari and mobile browsers are not tested yet. The [Overview](../README.md#browser-support) lists the minimum per browser.
+## Faster than IndexedDB
+
+[All eight workloads](../README.md#benchmarks) · [How they are measured](../bench/README.md)
+
+</div>
+<Illustration name="bench" :data="$frontmatter.bench" label="The kv benchmarks run, one workload after the other. Random point reads: IndexedDB 14.3k ops/s, kv 341k ops/s, 24× faster. TanStack DB, bulk insert: its IndexedDB adapter 11k rows/s, kv 88k rows/s. Single put, awaited one at a time: IndexedDB 4.0k ops/s, kv 3.3k ops/s, 0.8× as fast." />
+</div>
+
+## Try it with 100,000 issues
+
+[LinearLite](../examples/linearlite) on kv, with no server · [What the timings measure](../examples/linearlite/DESIGN.md#the-build-with-no-server)
+
+<HomeDemo />
+
+<div class="home-claim flip">
+<div class="home-copy">
+
+## 17.1 kB to import
+
+The other 27.8 kB load on the first `openDb` · [File by file](../README.md#bundle-size)
+
+</div>
+<Illustration name="bundle" :data="$frontmatter.size" label="A page imports kv and downloads 17.1 kB. When a click handler calls openDb, the SharedWorker chunk (11.5 kB) and the wasm engine (16.3 kB) load, 27.8 kB more." />
+</div>
+
+## One store under your stack
+
+<div class="home-adapters">
+
+- [TanStack DB](../packages/tanstack-db/README.md) Collections
+- [Yjs](../packages/yjs/README.md) Documents
+- [Automerge](../packages/automerge/README.md) Repo storage
+- [fate](../packages/fate/README.md) Client persistence
+- [docstore](../packages/docstore/README.md) JSON documents, in beta
+- [kv API](../packages/kv/README.md) Your own layer
+
+</div>
+
+<div class="home-claim">
+<div class="home-copy">
+
+## Under the hood
+
+[Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../README.md#browser-support)
+
+</div>
+<Illustration name="stack" label="A tab puts a record, which becomes a row of the write-ahead log in IndexedDB: that row is the ack. The SharedWorker flushes the rows of the log into one SST file in OPFS and truncates the log. The tab reads the SST files itself." />
+</div>

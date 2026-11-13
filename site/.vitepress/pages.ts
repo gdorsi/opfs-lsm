@@ -33,6 +33,7 @@ const sections: Section[] = [
       { label: "TanStack DB", source: "packages/tanstack-db/README.md", route: "tanstack-db" },
       { label: "Yjs", source: "packages/yjs/README.md", route: "yjs" },
       { label: "Automerge", source: "packages/automerge/README.md", route: "automerge" },
+      { label: "fate", source: "packages/fate/README.md", route: "fate" },
     ],
   },
   {

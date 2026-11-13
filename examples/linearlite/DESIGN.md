@@ -345,3 +345,15 @@ The page that frames the demo drives it with messages (`demo/protocol.ts`): gene
 times itself and posts the results: the write, each filter change from its navigation to the frame painted with the
 new rows, and each page load from the start of navigation to the first rows. For a page load it also says whether
 the database's SharedWorker was already running, which it reads from the SharedWorker's flush counter.
+
+What each timing on the framing page covers:
+
+- **Write.** From the first call of `mergeServerRows` to the return of the last, for every issue. An issue is one
+  document and its index entries. Generating the issues in the dedicated WebWorker is timed apart and not counted.
+- **Filter.** From the navigation that changes the filter, the sort or the search to the frame painted with the new
+  rows. The count of all matches arrives after it and is not in the figure. The first changes after a write are
+  slower, while the SharedWorker is still compacting what was written.
+- **Reload.** From the start of the frame's navigation to its first rows painted. "Cold" means the page and the
+  database's SharedWorker both restarted, which happens when no other page holds the database open. The operating
+  system still has the files in its cache, so it is not a cold disk. "Page only" means another page kept the
+  SharedWorker running.
