@@ -142,7 +142,7 @@ await db.batch((tx) => {
 
 const value = await db.get(text.encode("todo:2"));
 
-for await (const { key, value } of db.range({ ...prefixBound(text.encode("todo:")), limit: 50 })) {
+for (const { key, value } of await db.range({ ...prefixBound(text.encode("todo:")), limit: 50 })) {
   console.log(read.decode(key), read.decode(value));
 }
 

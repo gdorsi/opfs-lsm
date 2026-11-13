@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChangeEvent, Db, Entry } from "../src/index.js";
+import type { ChangeEvent, Db } from "../src/index.js";
 import { layersChannel } from "../src/locks.js";
 import { openHarnessDb, __resetMemoryFsForTests, ingest } from "../src/testing.js";
 
@@ -68,12 +68,6 @@ function until(db: Db, done: (e: ChangeEvent) => boolean): Promise<void> {
 
 const appends = (events: readonly ChangeEvent[]) => events.filter((e) => e.kind === "append");
 const seqs = (events: readonly ChangeEvent[]) => appends(events).map((e) => e.seq);
-
-async function collect(it: AsyncIterable<Entry>): Promise<Entry[]> {
-  const out: Entry[] = [];
-  for await (const e of it) out.push(e);
-  return out;
-}
 
 const opened: Db[] = [];
 
@@ -368,6 +362,6 @@ describe("changes()", () => {
       { kind: "gap", through: after - 1 },
       { kind: "append", seq: after, ops: [{ type: "put", key: b("z"), value: b("2") }] },
     ]);
-    expect(await collect(behind.range())).toEqual(await collect(writer.range()));
+    expect(await behind.range()).toEqual(await writer.range());
   });
 });

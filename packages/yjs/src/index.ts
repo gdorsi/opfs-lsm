@@ -56,28 +56,23 @@ export class KvPersistence {
   };
 
   private async load(): Promise<this> {
-    const keys: Uint8Array[] = [];
-    const updates: Uint8Array[] = [];
-    for await (const entry of this.db.range(prefixBound(this.prefix))) {
-      keys.push(entry.key);
-      updates.push(entry.value);
-    }
-    this.loadedUpdates = updates.length;
+    const entries = await this.db.range(prefixBound(this.prefix));
+    this.loadedUpdates = entries.length;
     if (!this.destroyed) {
       Y.transact(
         this.doc,
         () => {
-          for (const update of updates) Y.applyUpdate(this.doc, update);
+          for (const { value } of entries) Y.applyUpdate(this.doc, value);
         },
         this,
         false,
       );
-      if (keys.length >= this.trimSize) {
+      if (entries.length >= this.trimSize) {
         const state = Y.encodeStateAsUpdate(this.doc);
         const key = this.nextKey();
         this.track(
           this.db.batch((tx) => {
-            for (const old of keys) tx.delete(old);
+            for (const { key: old } of entries) tx.delete(old);
             tx.put(key, state);
           }),
         );

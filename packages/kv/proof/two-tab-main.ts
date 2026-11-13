@@ -55,7 +55,7 @@ type Handle = {
   ): Promise<unknown>;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   ingest(): Promise<{ generation: number }>;
-  range(): AsyncIterable<{ key: Uint8Array; value: Uint8Array }>;
+  range(): Promise<{ key: Uint8Array; value: Uint8Array }[]>;
   view<T>(
     body: (snap: {
       get(key: Uint8Array): Promise<Uint8Array | undefined>;
@@ -104,7 +104,7 @@ async function cap(name: string, mode: CapMode): Promise<CapReport> {
     if (mode === "oldest") {
       db.onPressure(async ({ need }) => {
         report.calls += 1;
-        for await (const { key, value } of db.range()) {
+        for (const { key, value } of await db.range()) {
           if (need <= 0) return void (await db.batch((tx) => tx.deleteRange({ endExclusive: key })));
           need -= key.byteLength + value.byteLength;
           report.deleted += 1;
@@ -114,7 +114,7 @@ async function cap(name: string, mode: CapMode): Promise<CapReport> {
   }
   await entry.db.sync();
   entry.report.rows = 0;
-  for await (const _ of entry.db.range()) entry.report.rows += 1;
+  for (const _ of await entry.db.range()) entry.report.rows += 1;
   entry.report.bytes = await sstBytes(entry.db);
   return { ...entry.report };
 }
@@ -215,7 +215,7 @@ async function quotaScenario(): Promise<void> {
     await snap(`handler ${calls} starts, offer ${JSON.stringify(p)}`);
     let need = p.need;
     let end: Uint8Array | undefined;
-    for await (const { key, value } of db.range()) {
+    for (const { key, value } of await db.range()) {
       if (need <= 0) {
         end = key;
         break;
@@ -343,7 +343,7 @@ async function scenario(self: Handle, other: OtherTab): Promise<void> {
   log("fresh k=v");
 
   let ranged = false;
-  for await (const entry of self.range()) {
+  for (const entry of await self.range()) {
     if (text(entry.key) === "k" && text(entry.value) === "v") ranged = true;
   }
   must(ranged, "range missed k after ingest");

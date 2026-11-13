@@ -179,10 +179,10 @@ describe("opening a schema", () => {
     const released = new Promise<void>((r) => (release = r));
     const reader = await openOn(
       wrapViews(readerKv, (snap) => ({
-        async *range(r) {
+        async range(r) {
           scanning();
           await released;
-          yield* snap.range(r);
+          return snap.range(r);
         },
       })),
       v1,

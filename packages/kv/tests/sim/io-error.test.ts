@@ -167,9 +167,7 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
           break;
         case "range":
           await call("range", async () => {
-            const entries: OracleEntry[] = [];
-            for await (const e of h.range()) entries.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
-            return { reads: [{ kind: "range", entries }] };
+            return { reads: [{ kind: "range", entries: await h.range() }] };
           });
           break;
         case "view":
@@ -216,8 +214,7 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
     const log = committedLog(t.faults.ops);
     checkEvents(events, log);
     const again = await guard(t.open(), "open after heal");
-    const all: OracleEntry[] = [];
-    for await (const e of again.range()) all.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
+    const all = await again.range();
     await again.close();
     expectState(all, log.stateAt(), "range after heal (the whole committed log)");
     const report = await checkDatabase(t.fs, t.name);

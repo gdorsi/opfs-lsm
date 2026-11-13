@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import fc from "fast-check";
 import { expect } from "vitest";
-import type { Db, Entry } from "../../src/index.js";
+import type { Db } from "../../src/index.js";
 import { compareBytes } from "../../src/bytes.js";
 import { TabWal, decodeOps } from "../../src/idb/wal.js";
 import {
@@ -15,7 +15,7 @@ import {
 import { checkDatabase, deleteWal } from "./check-database.js";
 import { expectEntries, SIM_HOST_LIMITS } from "./commands.js";
 import { checkHistory, History, type NewOp, type OpOf, type ViewRead } from "./history.js";
-import { applyOps, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
+import { applyOps, show, type OracleOp, type OracleRange } from "./oracle.js";
 
 /**
  * Several `Db` handles (stand-ins for tabs) over one `EngineHost`, one
@@ -626,15 +626,6 @@ function counterOf(v: Uint8Array | undefined): number {
   return m ? Number(m[1]) : 0;
 }
 
-async function collect(w: World, it: AsyncIterable<Entry>, label: string): Promise<OracleEntry[]> {
-  const out: OracleEntry[] = [];
-  for await (const e of it) {
-    out.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
-    if (out.length === 1) await w.yield(`${label} mid-range`);
-  }
-  return out;
-}
-
 class GetCmd extends SlotCmd {
   constructor(slot: number, wait: boolean, private readonly key: number) {
     super(slot, wait);
@@ -656,7 +647,7 @@ class RangeCmd extends SlotCmd {
   async run(_m: Model, w: World): Promise<void> {
     const range = rangeOf(this.range);
     await w.start(this.slot, "range", { range }, async (db, op) => {
-      op.entries = await collect(w, db.range(range), `${this.slot}`);
+      op.entries = await db.range(range);
     }, this.wait);
   }
   name = () => `range ${JSON.stringify(this.range)}`;
@@ -678,7 +669,7 @@ class ViewCmd extends SlotCmd {
             op.reads.push({ kind: "get", key, value: v && new Uint8Array(v) });
           } else {
             const range = rangeOf(read.range);
-            op.reads.push({ kind: "range", range, entries: await collect(w, snap.range(range), `${this.slot} view`) });
+            op.reads.push({ kind: "range", range, entries: await snap.range(range) });
           }
         }
       }), this.wait);
@@ -843,9 +834,7 @@ export async function runWorld(
 
     // Reopen and read everything back.
     await w.open(0);
-    const all: OracleEntry[] = [];
-    for await (const e of w.slots[0]!.db.range()) all.push({ key: e.key, value: e.value });
-    expectEntries(all, oracle.stateAt(), "range after reopen");
+    expectEntries(await w.slots[0]!.db.range(), oracle.stateAt(), "range after reopen");
   } finally {
     await w.dispose();
   }

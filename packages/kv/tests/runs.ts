@@ -26,12 +26,6 @@ export async function drain(cursor: LayerCursor): Promise<LayerEntry[]> {
   }
 }
 
-export async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
-  const out: T[] = [];
-  for await (const x of it) out.push(x);
-  return out;
-}
-
 /** Write `body` to `path` as one published file. */
 export async function publish(fs: AsyncFs, path: string, body: Uint8Array): Promise<void> {
   const w = await fs.create(path);

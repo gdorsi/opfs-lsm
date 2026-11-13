@@ -3,7 +3,6 @@ import { EngineHost, MemoryFs, createLocalIngestClient, openHarnessDb, __resetMe
 import type { OpenFile } from "../src/opfs/async-fs.js";
 import type { PageCache } from "../src/store/page-cache.js";
 import type { Db } from "../src/index.js";
-import { collect } from "./runs.js";
 
 const NAME = "memory-budget";
 const enc = new TextEncoder();
@@ -132,17 +131,17 @@ describe("cacheBytes smaller than one run", () => {
     const all = sorted(model);
     for (const from of [0, 1234, 4000]) {
       const want = all.filter(([k]) => k >= dec.decode(key(from))).slice(0, 20).map(([k, v]) => `${k}=${v}`);
-      expect(show(await collect(db.range({ start: key(from), limit: 20 })))).toEqual(want);
+      expect(show(await db.range({ start: key(from), limit: 20 }))).toEqual(want);
       expectWithinBudget(db);
     }
 
-    const full = await collect(db.range());
+    const full = await db.range();
     expect(show(full)).toEqual(all.map(([k, v]) => `${k}=${v}`));
     expectWithinBudget(db);
 
-    const t3 = await collect(db.range({ valueContains: [enc.encode(" t3 ")] }));
+    const t3 = await db.range({ valueContains: [enc.encode(" t3 ")] });
     expect(show(t3)).toEqual(all.filter(([, v]) => v.includes(" t3 ")).map(([k, v]) => `${k}=${v}`));
-    expect(show(await collect(db.range({ valueContains: [enc.encode(" r1 "), enc.encode(" t2 ")], limit: 5 })))).toEqual(
+    expect(show(await db.range({ valueContains: [enc.encode(" r1 "), enc.encode(" t2 ")], limit: 5 }))).toEqual(
       all.filter(([, v]) => v.includes(" r1 ") && v.includes(" t2 ")).slice(0, 5).map(([k, v]) => `${k}=${v}`),
     );
     expectWithinBudget(db);
@@ -168,8 +167,8 @@ describe("scan resistance", () => {
     const hot = [key(1000), key(2001), key(3002)];
     for (let i = 0; i < 2; i++) for (const k of hot) await db.get(k);
 
-    await collect(db.range());
-    await collect(db.range({ valueContains: [enc.encode(" t1 ")] }));
+    await db.range();
+    await db.range({ valueContains: [enc.encode(" t1 ")] });
     fs.events = [];
     for (const k of hot) await db.get(k);
     expect(fs.events).toEqual([]);
@@ -188,7 +187,7 @@ describe("cold reads", () => {
     const cold = await open(fs, host, MiB);
     expect(fs.events).toEqual([]);
 
-    const rows = await collect(cold.range({ limit: 20 }));
+    const rows = await cold.range({ limit: 20 });
     expect(rows).toHaveLength(20);
     const firstRound = fs.events.indexOf("end");
     expect(firstRound).toBe(RUNS);

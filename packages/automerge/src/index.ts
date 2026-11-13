@@ -19,17 +19,11 @@ export function kvStorage(db: Db): StorageAdapterInterface {
       await db.delete(encodeKey(key));
     },
     async loadRange(prefix) {
-      const chunks: Chunk[] = [];
-      for await (const entry of db.range(prefixBound(encodeKey(prefix)))) {
-        chunks.push({ key: decodeKey(entry.key), data: entry.value });
-      }
-      return chunks;
+      const entries = await db.range(prefixBound(encodeKey(prefix)));
+      return entries.map((entry): Chunk => ({ key: decodeKey(entry.key), data: entry.value }));
     },
     async removeRange(prefix) {
-      const keys: Uint8Array[] = [];
-      for await (const entry of db.range(prefixBound(encodeKey(prefix)))) {
-        keys.push(entry.key);
-      }
+      const keys = (await db.range(prefixBound(encodeKey(prefix)))).map((entry) => entry.key);
       for (let i = 0; i < keys.length; i += REMOVE_BATCH) {
         const slice = keys.slice(i, i + REMOVE_BATCH);
         await db.batch((tx) => {

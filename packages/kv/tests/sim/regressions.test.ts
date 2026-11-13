@@ -32,8 +32,7 @@ describe("model suite regressions", () => {
   it("range with limit 0 returns nothing", async () => {
     const db = await open();
     await db.put(utf("a"), utf("1"));
-    const out = [];
-    for await (const e of db.range({ limit: 0 })) out.push(e);
+    const out = await db.range({ limit: 0 });
     await db.close();
     expect(out).toEqual([]);
   });

@@ -251,7 +251,7 @@ export interface Db {
     range: Range,
     keyOf: (entry: Entry) => Uint8Array | undefined,
   ): Promise<{ readonly entry: Entry; readonly joined: Uint8Array | undefined }[]>;
-  range(range?: Range): AsyncIterable<Entry>;
+  range(range?: Range): Promise<Entry[]>;
   /**
    * Read-only snapshot of every record through `snap.seq`.
    * Writes that commit during the callback are invisible to `snap`.
@@ -1092,7 +1092,7 @@ class DbImpl implements Db {
     this.retain(layers);
     try {
       const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
-      for await (const entry of scanLayers(rows.range(bounds), layers.levels, at, bounds, range)) {
+      for (const entry of await scanLayers(rows.range(bounds), layers.levels, at, bounds, range)) {
         const key = keyOf(entry);
         let joined: Uint8Array | undefined;
         if (key !== undefined) {
@@ -1109,17 +1109,14 @@ class DbImpl implements Db {
     }
   }
 
-  async *range(range?: Range): AsyncIterable<Entry> {
+  async range(range?: Range): Promise<Entry[]> {
     this.ensureOpen();
     const bounds = boundsOf(range);
     const layers = this.installed;
     const at = this.point();
     this.retain(layers);
     try {
-      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, at, bounds, range)) {
-        this.ensureOpen();
-        yield entry;
-      }
+      return await scanLayers(this.mem.range(bounds), layers.levels, at, bounds, range);
     } finally {
       this.release(layers);
     }

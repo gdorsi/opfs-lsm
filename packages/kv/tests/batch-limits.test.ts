@@ -32,11 +32,7 @@ describe("batch limits", () => {
     await db.batch((tx) => {
       for (let i = 0; i < count; i++) tx.put(key(i), enc.encode(String(i)));
     });
-    const scan = async () => {
-      let n = 0;
-      for await (const _ of db.range()) n++;
-      return n;
-    };
+    const scan = async () => (await db.range()).length;
     expect(await scan()).toBe(count);
     await ingest(db);
     expect(await scan()).toBe(count);

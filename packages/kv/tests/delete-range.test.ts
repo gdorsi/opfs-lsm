@@ -44,7 +44,7 @@ const FILLER = "z-filler-";
 /** `key=value` of each entry `range` yields, without the rows `compact` writes. */
 async function keys(db: Db, range: Parameters<Db["range"]>[0] = {}): Promise<string[]> {
   const out: string[] = [];
-  for await (const e of db.range(range)) {
+  for (const e of await db.range(range)) {
     if (!dec.decode(e.key).startsWith(FILLER)) out.push(`${dec.decode(e.key)}=${dec.decode(e.value)}`);
   }
   return out;
@@ -146,7 +146,7 @@ describe.each(Object.entries(STAGES))("deleteRange, %s", (_stage, { before, afte
     const read = db.view(async (snap) => {
       await held;
       const out: string[] = [];
-      for await (const e of snap.range(M)) out.push(dec.decode(e.key));
+      for (const e of await snap.range(M)) out.push(dec.decode(e.key));
       return { got: s(await snap.get(b("m/2"))), keys: out };
     });
     await db.batch((tx) => tx.deleteRange(M));

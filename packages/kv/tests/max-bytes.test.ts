@@ -51,7 +51,7 @@ async function runBytes(): Promise<number> {
 async function readAll(db: Db): Promise<number[]> {
   await db.sync();
   const out: number[] = [];
-  for await (const e of db.range()) out.push(Number(new TextDecoder().decode(e.key).slice(1)));
+  for (const e of await db.range()) out.push(Number(new TextDecoder().decode(e.key).slice(1)));
   return out;
 }
 

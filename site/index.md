@@ -148,7 +148,7 @@ A key-value storage you can use to build your own DB
 ```ts
 await db.put(key, bytes);
 const saved = await db.get(key);
-const rows = db.range({ limit: 50 });
+const rows = await db.range({ limit: 50 });
 ```
 
 </div>
@@ -190,7 +190,7 @@ Reads that later writes cannot change
 ```ts
 await db.view(async (snap) => {
   const issue = await snap.get(issueKey);
-  const comments = snap.range(ofIssue);
+  const comments = await snap.range(ofIssue);
 });
 ```
 

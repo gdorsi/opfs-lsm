@@ -75,7 +75,7 @@ describe("run files outlive compaction while a tab reads them", () => {
       const got: string[] = [];
       for (let i = 0; i < 3; i++) got.push(dec.decode((await snap.get(utf(`k${i}`)))!));
       const keys: string[] = [];
-      for await (const e of snap.range()) keys.push(dec.decode(e.key));
+      for (const e of await snap.range()) keys.push(dec.decode(e.key));
       return { got, keys, k3: await snap.get(utf("k3")) };
     });
     expect(seen).toEqual({ got: ["v0", "v1", "v2"], keys: ["k0", "k1", "k2"], k3: undefined });
@@ -83,27 +83,6 @@ describe("run files outlive compaction while a tab reads them", () => {
     await ingest(db);
     expect(l0(fs)).toEqual([]);
     for (let i = 0; i < 4; i++) expect(dec.decode((await db.get(utf(`k${i}`)))!)).toBe(`v${i}`);
-    await db.close();
-  });
-
-  it("a range iterator holds its generation until return()", async () => {
-    const fs = new MemoryFs();
-    const { db } = await openWithHost(fs);
-    await threeRuns(db);
-    const inputs = l0(fs);
-
-    const it = db.range()[Symbol.asyncIterator]();
-    expect(dec.decode((await it.next()).value!.key)).toBe("k0");
-    await db.put(utf("k3"), utf("v3"));
-    await ingest(db);
-    await ingest(db);
-    expect(l1(fs).length).toBeGreaterThan(0);
-    expect(l0(fs)).toEqual(expect.arrayContaining(inputs));
-    expect(dec.decode((await it.next()).value!.key)).toBe("k1");
-
-    await it.return!();
-    await ingest(db);
-    expect(l0(fs)).toEqual([]);
     await db.close();
   });
 

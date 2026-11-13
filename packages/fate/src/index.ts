@@ -42,11 +42,8 @@ export function kvStorage(db: Db): PersistenceStorage {
         if (compare(next, start) > 0) start = next;
       }
       if (bound.endExclusive && compare(start, bound.endExclusive) >= 0) return [];
-      const out = [];
-      for await (const entry of db.range({ ...bound, start, limit: count })) {
-        out.push({ key: decoder.decode(entry.key.subarray(1)), value: JSON.parse(decoder.decode(entry.value)) });
-      }
-      return out;
+      const entries = await db.range({ ...bound, start, limit: count });
+      return entries.map((entry) => ({ key: decoder.decode(entry.key.subarray(1)), value: JSON.parse(decoder.decode(entry.value)) }));
     },
 
     async exclusive(name, run) {

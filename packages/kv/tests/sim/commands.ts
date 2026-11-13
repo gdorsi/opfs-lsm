@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { expect } from "vitest";
-import type { Db, Entry } from "../../src/index.js";
+import type { Db } from "../../src/index.js";
 import {
   openHarnessDb,
   ingest,
@@ -331,12 +331,6 @@ class UpdateCmd implements Cmd {
 
 // --- Reads.
 
-async function collect(it: AsyncIterable<Entry>): Promise<OracleEntry[]> {
-  const out: OracleEntry[] = [];
-  for await (const e of it) out.push({ key: e.key, value: e.value });
-  return out;
-}
-
 class GetCmd implements Cmd {
   constructor(private readonly key: number) {}
   check = () => true;
@@ -351,7 +345,7 @@ class RangeCmd implements Cmd {
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
     const range = rangeOf(this.range);
-    m.reader.range(range, await collect(r.db.range(range)));
+    m.reader.range(range, await r.db.range(range));
   }
   toString = () => `range ${rangeName(this.range)}`;
 }
@@ -378,7 +372,7 @@ class ViewCmd implements Cmd {
           check.get(KEYS[read.key]!, await snap.get(KEYS[read.key]!));
         } else {
           const range = rangeOf(read.range);
-          check.range(range, await collect(snap.range(range)));
+          check.range(range, await snap.range(range));
         }
       }
     });

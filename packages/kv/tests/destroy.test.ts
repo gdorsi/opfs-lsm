@@ -33,7 +33,7 @@ function storage(hostFs?: (fs: MemoryFs) => AsyncFs) {
 
 async function keys(db: Db): Promise<string[]> {
   const out: string[] = [];
-  for await (const { key } of db.range()) out.push(dec.decode(key));
+  for (const { key } of await db.range()) out.push(dec.decode(key));
   return out;
 }
 

@@ -277,7 +277,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
       let ops = 0;
       let bytes = 0;
       const range = { start: from ? after(from) : rowPrefix, endExclusive: upperOf(rowPrefix), limit: BACKFILL_ROWS };
-      for await (const row of this.kv.range(range)) {
+      for (const row of await this.kv.range(range)) {
         const entries = indexEntries(plan, row.key.subarray(rowPrefix.length), decodeDoc(row.value));
         rows.push(row);
         derived.push(entries);

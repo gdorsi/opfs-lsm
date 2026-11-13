@@ -208,7 +208,7 @@ async function check(cfg: CheckConfig): Promise<CheckResult> {
   try {
     out.before = await withTimeout(snapshot(cfg.name), 30_000, "checkDatabase");
     const range: [string, string][] = [];
-    for await (const e of db.range()) range.push([dec.decode(e.key), dec.decode(e.value)]);
+    for (const e of await db.range()) range.push([dec.decode(e.key), dec.decode(e.value)]);
     out.range = range;
     const gets: Record<string, string | null> = {};
     for (const k of cfg.keys) {

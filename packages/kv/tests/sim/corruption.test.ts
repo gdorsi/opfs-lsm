@@ -178,12 +178,12 @@ async function exercise(f: Fixture): Promise<Report> {
   });
   await step(r, "range", async () => {
     const got: string[] = [];
-    for await (const e of db!.range()) got.push(`${str(e.key)}=${str(e.value)}`);
+    for (const e of await db!.range()) got.push(`${str(e.key)}=${str(e.value)}`);
     return got.join() === keys.map((k) => `${k}=${want(k)}`).join() ? "ok" : "wrong";
   });
   await step(r, "contains", async () => {
     const got: string[] = [];
-    for await (const e of db!.range({ valueContains: [utf("hot")] })) got.push(str(e.key)!);
+    for (const e of await db!.range({ valueContains: [utf("hot")] })) got.push(str(e.key)!);
     return got.join() === keys.filter((k) => want(k)!.includes("hot")).join() ? "ok" : "wrong";
   });
   await step(r, "write", async () => {

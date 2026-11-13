@@ -120,7 +120,7 @@ describe("batch + prefixBound", () => {
       tx.put(utf("note/2"), utf("y"));
     });
     const keys: string[] = [];
-    for await (const e of db.range(prefixBound(utf("note/")))) {
+    for (const e of await db.range(prefixBound(utf("note/")))) {
       keys.push(new TextDecoder().decode(e.key));
     }
     expect(keys).toEqual(["note/1", "note/2"]);
@@ -136,7 +136,7 @@ describe("batch + prefixBound", () => {
     await ingest(db);
     await db.put(utf("note/2"), utf("y"));
     const seen: string[] = [];
-    for await (const e of db.range(prefixBound(utf("note/")))) {
+    for (const e of await db.range(prefixBound(utf("note/")))) {
       seen.push(`${new TextDecoder().decode(e.key)}=${new TextDecoder().decode(e.value)}`);
       if (seen.length === 1) {
         await db.put(utf("note/1b"), utf("new"));

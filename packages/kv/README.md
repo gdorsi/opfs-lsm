@@ -102,6 +102,8 @@ count; // => 1
 
 ## Range scans
 
+`range` resolves with the matching entries as an array, in key order. Use `limit` to bound it.
+
 ```ts
 import { prefixBound, type KeyBounds } from "@opfs-lsm/kv";
 
@@ -116,13 +118,13 @@ const users: KeyBounds = prefixBound(enc("user/"));
 ```
 
 ```ts
-for await (const { key, value } of db.range(users)) {
+for (const { key, value } of await db.range(users)) {
   dec(key); // => "user/1", then "user/2", then "user/3"
 }
 
-db.range({ start: enc("user/2"), endExclusive: enc("user/3") });
-// yields "user/2"
-db.range(); // yields every key, in byte order
+await db.range({ start: enc("user/2"), endExclusive: enc("user/3") });
+// returns "user/2"
+await db.range(); // returns every key, in byte order
 ```
 
 ### `reverse` and `limit`
@@ -130,27 +132,27 @@ db.range(); // yields every key, in byte order
 ```ts
 // Same keys, largest first. Bounds stay in key order. `limit`
 // keeps the largest.
-db.range({ ...users, reverse: true, limit: 2 });
-// yields "user/3", "user/2"
+await db.range({ ...users, reverse: true, limit: 2 });
+// returns "user/3", "user/2"
 
 // To page backward, pass the last key you saw as `endExclusive`.
-db.range({
+await db.range({
   ...users,
   endExclusive: enc("user/2"),
   reverse: true,
   limit: 2
 });
-// yields "user/1"
+// returns "user/1"
 ```
 
 ### `valueContains`
 
 ```ts
 // Keeps live puts whose current value holds every pattern.
-db.range({ ...users, valueContains: [enc("a"), enc("e")] });
-// yields "user/2" (Grace)
-db.range({ ...users, valueContains: [enc("e")], limit: 1 });
-// yields "user/2", since limit counts matches
+await db.range({ ...users, valueContains: [enc("a"), enc("e")] });
+// returns "user/2" (Grace)
+await db.range({ ...users, valueContains: [enc("e")], limit: 1 });
+// returns "user/2", since limit counts matches
 ```
 
 ## Joins
@@ -297,7 +299,7 @@ const db = await openDb({ name: "log", maxBytes: "quota" });
 db.onPressure(async ({ bytes, need }) => {
   const goal = Math.min(need, bytes / 2);
   let freed = 0;
-  for await (const { key, value } of db.range()) {
+  for (const { key, value } of await db.range()) {
     if (freed >= goal) {
       // a range delete frees space sooner than point deletes
       await db.batch((tx) =>

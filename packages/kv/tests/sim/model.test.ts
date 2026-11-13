@@ -31,9 +31,7 @@ async function runHistory(maxWalBytes: number, cmds: Iterable<fc.AsyncCommand<Mo
     await sut.settle();
     await expectHealthy(model, sut, true);
     await sut.open();
-    const all: { key: Uint8Array; value: Uint8Array }[] = [];
-    for await (const e of sut.db.range()) all.push(e);
-    expectEntries(all, model.oracle.stateAt(), "range after reopen");
+    expectEntries(await sut.db.range(), model.oracle.stateAt(), "range after reopen");
   } finally {
     await sut.dispose();
   }

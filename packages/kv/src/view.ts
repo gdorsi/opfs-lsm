@@ -15,7 +15,7 @@ export interface ViewSnapshot {
   /** The seq of the last record the snapshot includes, as write acks and `changes` count it. */
   readonly seq: number;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
-  range(range?: Range): AsyncIterable<Entry>;
+  range(range?: Range): Promise<Entry[]>;
 }
 
 export function boundsOf(range?: Range): ScanBounds | undefined {
@@ -39,7 +39,7 @@ export function scanLayers(
   at: Marks,
   bounds: ScanBounds | undefined,
   range: Range | undefined,
-): AsyncGenerator<Entry> {
+): Promise<Entry[]> {
   const patterns = range?.valueContains;
   const reverse = range?.reverse ?? false;
   return patterns && patterns.length > 0
@@ -56,7 +56,7 @@ export function scanLayers(
  * Pinned memtable rows plus the SST readers opened for that generation, and
  * the read point taken with them.
  * `hold` keeps those readers open and returns its release, so a `range`
- * iterator that outlives the view callback still reads open files.
+ * still waiting on a page load when the view callback settles reads open files.
  */
 export class ViewSnapshotImpl implements ViewSnapshot {
   private closed = false;
@@ -85,15 +85,12 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     return untilHit(() => pointGet(row, this.levels, k, this.at));
   }
 
-  async *range(range?: Range): AsyncIterable<Entry> {
+  async range(range?: Range): Promise<Entry[]> {
     this.ensureOpen();
     const bounds = boundsOf(range);
     const release = this.hold();
     try {
-      for await (const entry of scanLayers(this.rows.range(bounds), this.levels, this.at, bounds, range)) {
-        this.ensureOpen();
-        yield entry;
-      }
+      return await scanLayers(this.rows.range(bounds), this.levels, this.at, bounds, range);
     } finally {
       release();
     }

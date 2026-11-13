@@ -82,7 +82,7 @@ describe("open trace", () => {
       expect(dec.decode(await reader.get(enc.encode(`k${i}`)))).toBe(`v${i}`);
     }
     const seen: string[] = [];
-    for await (const entry of reader.range()) {
+    for (const entry of await reader.range()) {
       seen.push(dec.decode(entry.key));
     }
     expect(seen).toHaveLength(n);

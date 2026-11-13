@@ -4,6 +4,7 @@ import {
   __resetMemoryFsForTests,
   ingest,
 } from "../src/testing.js";
+import type { Entry } from "../src/index.js";
 
 const NAME = "view-test";
 const enc = new TextEncoder();
@@ -87,7 +88,7 @@ describe("view snapshot", () => {
         for (let i = 0; i < 3000; i++) tx.put(key(i), enc.encode("new"));
       });
       const rows: string[] = [];
-      for await (const e of snap.range({ start: key(1000), endExclusive: key(1010) })) {
+      for (const e of await snap.range({ start: key(1000), endExclusive: key(1010) })) {
         rows.push(`${dec.decode(e.key)}=${dec.decode(e.value)}`);
       }
       return { rows, odd: await snap.get(key(1001)), even: await snap.get(key(2998)) };
@@ -104,11 +105,7 @@ describe("view snapshot", () => {
 
 describe("reverse range", () => {
   const key = (i: number) => enc.encode(`k${String(i).padStart(5, "0")}`);
-  const keysOf = async (rows: AsyncIterable<{ key: Uint8Array; value: Uint8Array }>) => {
-    const out: string[] = [];
-    for await (const r of rows) out.push(`${dec.decode(r.key)}=${dec.decode(r.value)}`);
-    return out;
-  };
+  const keysOf = async (rows: Promise<Entry[]>) => (await rows).map((r) => `${dec.decode(r.key)}=${dec.decode(r.value)}`);
 
   async function seeded() {
     const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", maxWalBytes: 1 << 30 });
@@ -194,11 +191,7 @@ describe("range with valueContains", () => {
     return db;
   }
   const red = [enc.encode(" red")];
-  const pairs = async (rows: AsyncIterable<{ key: Uint8Array; value: Uint8Array }>) => {
-    const out: string[] = [];
-    for await (const r of rows) out.push(`${dec.decode(r.key)}=${dec.decode(r.value)}`);
-    return out;
-  };
+  const pairs = async (rows: Promise<Entry[]>) => (await rows).map((r) => `${dec.decode(r.key)}=${dec.decode(r.value)}`);
 
   it("yields each matching key once with its current value, in key order", async () => {
     const db = await seeded();
@@ -265,7 +258,7 @@ describe("range with valueContains", () => {
     await db.put(enc.encode("c"), enc.encode(" red plum"));
     const owned = await db.view(async (snap) => {
       const flags: boolean[] = [];
-      for await (const e of snap.range({ valueContains: [enc.encode(" red")] })) {
+      for (const e of await snap.range({ valueContains: [enc.encode(" red")] })) {
         for (const b of [e.key, e.value]) {
           flags.push(b.byteOffset === 0 && b.buffer.byteLength === b.byteLength);
         }

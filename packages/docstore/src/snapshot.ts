@@ -41,12 +41,6 @@ function nextOf(hits: readonly Entry[], limit: number | undefined): { next?: Cur
   return limit !== undefined && hits.length > limit ? { next: encodeCursor(hits[limit - 1]!.key) } : {};
 }
 
-async function collect(entries: AsyncIterable<Entry>): Promise<Entry[]> {
-  const out: Entry[] = [];
-  for await (const e of entries) out.push(e);
-  return out;
-}
-
 /** What a reader needs of kv: a `Db` and a view snapshot both fit. */
 type Source = Pick<ViewSnapshot, "get" | "range">;
 
@@ -76,7 +70,7 @@ export class CollectionReader<T extends JsonDoc, Ix> {
 
   async query(q: Query<T, Ix>): Promise<Page<T>> {
     const { target, range, limit } = this.plan(q, 1);
-    const hits = await collect(this.snap.range(range));
+    const hits = await this.snap.range(range);
     const page = hits.slice(0, limit);
     const next = nextOf(hits, limit);
     if (target.kind === "rows") return { docs: page.map((h) => decodeDoc(h.value) as unknown as T), ...next };
@@ -92,16 +86,14 @@ export class CollectionReader<T extends JsonDoc, Ix> {
 
   async queryIds(q: Query<T, Ix>): Promise<IdPage> {
     const { target, range, limit } = this.plan(q, 1);
-    const hits = await collect(this.snap.range(range));
+    const hits = await this.snap.range(range);
     const ids = hits.slice(0, limit).map((h) => fromUtf8.decode(entryId(target, h.key, h.value)));
     return { ids, ...nextOf(hits, limit) };
   }
 
   async count(q: Query<T, Ix>): Promise<number> {
     const { range } = this.plan(q, 0);
-    let n = 0;
-    for await (const _ of this.snap.range(range)) n++;
-    return n;
+    return (await this.snap.range(range)).length;
   }
 
   /** `peek` extra entries tell whether another page follows. */

@@ -356,8 +356,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
 
 /** The prefixes `p` in `[lo, hi]` that every read of the whole key space agrees with. */
 async function readPrefixes(db: Db, oracle: Oracle, lo: number, hi: number): Promise<number[]> {
-  const all: OracleEntry[] = [];
-  for await (const e of db.range()) all.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
+  const all = await db.range();
   let set = oracle.rangeCandidates({}, all, lo).filter((p) => p <= hi);
   if (set.length === 0) {
     throw new Error(

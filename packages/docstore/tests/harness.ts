@@ -27,15 +27,11 @@ export async function openKvWithoutBus(name: string): Promise<Db> {
 }
 
 export async function docstoreKeys(kv: Db): Promise<Entry[]> {
-  const out: Entry[] = [];
-  for await (const e of kv.range({ start: Uint8Array.of(ROOT), endExclusive: Uint8Array.of(ROOT + 1) })) out.push(e);
-  return out;
+  return kv.range({ start: Uint8Array.of(ROOT), endExclusive: Uint8Array.of(ROOT + 1) });
 }
 
 export async function keysUnder(kv: Db, prefix: Uint8Array): Promise<number> {
-  let n = 0;
-  for await (const _ of kv.range(prefixBound(prefix))) n++;
-  return n;
+  return (await kv.range(prefixBound(prefix))).length;
 }
 
 export async function storedCatalog(kv: Db): Promise<StoredCatalog> {
@@ -65,9 +61,9 @@ export function gate(kv: Db, method: "range" | "batch", free: number) {
   const over: Partial<Db> =
     method === "range"
       ? {
-          range: async function* (range) {
+          range: async (range) => {
             await pass();
-            yield* kv.range(range);
+            return kv.range(range);
           },
         }
       : { batch: async (build) => (await pass(), kv.batch(build)) };

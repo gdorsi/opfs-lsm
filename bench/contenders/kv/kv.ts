@@ -22,9 +22,8 @@ export default defineContender({
       },
       get: (key) => db.get(key),
       async range(start, endExclusive, limit) {
-        const values: Uint8Array[] = [];
-        for await (const e of db.range({ start, ...(endExclusive ? { endExclusive } : {}), limit })) values.push(e.value);
-        return values;
+        const entries = await db.range({ start, ...(endExclusive ? { endExclusive } : {}), limit });
+        return entries.map((e) => e.value);
       },
       update: (key, f) =>
         db.update([key], ([old], tx) => {

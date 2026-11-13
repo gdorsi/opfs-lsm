@@ -288,30 +288,26 @@ class Merge {
 }
 
 /**
- * `cursors[0]` is newest. Yields live puts only, up to `limit`. With `reverse`
+ * `cursors[0]` is newest. Returns live puts only, up to `limit`. With `reverse`
  * every cursor runs backward and so does the merge. Tombstones and covered
- * versions are not counted and not yielded. Awaits only on a miss.
+ * versions are not counted and not returned. Awaits only on a miss.
  */
-export async function* mergeCursors(
+export async function mergeCursors(
   cursors: readonly LayerCursor[],
   marks: Marks,
-  limit?: number,
+  limit = Infinity,
   reverse = false,
-): AsyncGenerator<Entry> {
+): Promise<Entry[]> {
   const merge = new Merge(cursors, reverse);
-  let yielded = 0;
-  for (;;) {
-    if (limit !== undefined && yielded >= limit) return;
+  const out: Entry[] = [];
+  while (out.length < limit) {
     let w = merge.next();
     if (w instanceof Miss) w = await untilHit(() => merge.next(), w);
-    if (!w) return;
+    if (!w) break;
     if (gone(w.entry, throughAt(marks, w.entry.key))) continue;
-    yield {
-      key: new Uint8Array(w.entry.key),
-      value: new Uint8Array(w.entry.value!),
-    };
-    yielded += 1;
+    out.push({ key: new Uint8Array(w.entry.key), value: new Uint8Array(w.entry.value!) });
   }
+  return out;
 }
 
 /**
@@ -327,25 +323,24 @@ export async function* mergeCursors(
  * sources, mostly their Bloom filters, and leaves the page the match came
  * from untouched, so a scan does not count as reuse in the cache.
  */
-export async function* scanMatching(
+export async function scanMatching(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
   patterns: readonly Uint8Array[],
   marks: Marks,
   bounds?: ScanBounds,
-  limit?: number,
+  limit = Infinity,
   reverse = false,
-): AsyncGenerator<Entry> {
+): Promise<Entry[]> {
   const merge = new Merge(
     [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
     reverse,
   );
-  let yielded = 0;
-  for (;;) {
-    if (limit !== undefined && yielded >= limit) return;
+  const out: Entry[] = [];
+  while (out.length < limit) {
     let w = merge.next();
     if (w instanceof Miss) w = await untilHit(() => merge.next(), w);
-    if (!w) return;
+    if (!w) break;
     const { entry, source } = w;
     if (source > 0) {
       const i = lowerBoundKeys(rows, entry.key);
@@ -355,9 +350,9 @@ export async function* scanMatching(
       if (newer) continue;
     }
     if (gone(entry, throughAt(marks, entry.key))) continue;
-    yield { key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) };
-    yielded += 1;
+    out.push({ key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) });
   }
+  return out;
 }
 
 /** Whether a level before `level` holds `key`. */
