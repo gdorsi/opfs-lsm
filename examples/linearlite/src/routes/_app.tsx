@@ -18,8 +18,10 @@ export const Route = createFileRoute("/_app")({
   loader: async () => {
     const store = await openStore();
     startSync(store);
-    // bench/client.ts drives edits through this, on production builds too.
-    Object.assign(globalThis, { __linearlite: { store, commands, fetchDetail, createLiveQueryCollection, eq } });
+    // bench/client.ts drives edits through this; production builds expose it only with VITE_BENCH=1.
+    if (import.meta.env.DEV || import.meta.env.VITE_BENCH === "1") {
+      Object.assign(globalThis, { __linearlite: { store, commands, fetchDetail, createLiveQueryCollection, eq } });
+    }
   },
   pendingMs: 200,
   pendingComponent: () => <div className="splash">Opening local database…</div>,
