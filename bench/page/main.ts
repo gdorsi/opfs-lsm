@@ -15,11 +15,13 @@ import type {
   Contender,
   Family,
   Footprint,
+  MainThread,
   PhaseContext,
   PhaseReply,
   PhaseRequest,
   Workload,
 } from "../core/types.ts";
+import { measureMainThread } from "./main-thread.ts";
 import { CorrectnessError, createModel, rng, seedOf } from "./model.ts";
 
 type AnyWorkload = Workload<Family>;
@@ -134,7 +136,9 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
   };
 
   const t0 = performance.now();
-  await phase.run(ctx);
+  let mainThread: MainThread | undefined;
+  if (phase.mainThread) mainThread = (await measureMainThread(() => phase.run(ctx))).mainThread;
+  else await phase.run(ctx);
   const wallMs = performance.now() - t0;
 
   let footprint: Footprint | undefined;
@@ -159,6 +163,7 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
       userBytes,
       latency: Object.fromEntries([...latency].map(([op, h]) => [op, h.snapshot()])),
       ...(footprint ? { footprint } : {}),
+      ...(mainThread ? { mainThread } : {}),
     },
     carry: JSON.stringify({ model: model.carry(), extra: ctx.carry }),
     durability: contender.durability,
@@ -205,4 +210,4 @@ function progress(line: string): void {
   (globalThis as { __benchProgress?: (s: string) => void }).__benchProgress?.(line);
 }
 
-(globalThis as unknown as { __bench: unknown }).__bench = { catalog, runPhase, closeStore };
+(globalThis as unknown as { __bench: unknown }).__bench = { catalog, runPhase, closeStore, measureMainThread };
