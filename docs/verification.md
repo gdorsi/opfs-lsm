@@ -184,6 +184,20 @@ The scenarios lose the newest records, every record, or the commit of a second f
 
 What it does not show: a real power cut. The copy is a whole, consistent directory, and OPFS loses nothing. Every pair of prefixes of the two stores is covered by `crash-enum.test.ts` and `formal:power-loss`, on models of the stores.
 
+## Run on an Android device
+
+Run this for a claim about Android, or after a change to the SharedWorker, `BrowserFs` or a Web Lock that a phone could treat differently from desktop Chrome. The device needs USB debugging. Unlock it when you will read the timings: a locked phone passes and fails the same, but runs the browser on its background CPU set.
+
+```sh
+node docs/research/android-device-run/run.mjs --install-chromium
+```
+
+The script installs the Chromium snapshot when the device has no `org.chromium.chrome`, then runs the probe, the three two-tab proofs, `bench smoke`, `bench run kv/` at 100,000 entries, and `kill-chrome`, each through a stand-in for the Chrome binary that drives the device over adb. A pass prints `all 8 steps passed` and exits 0. Logs land in `docs/research/android-device-run/results/<time>/`.
+
+- The `kill` step leaves out `page-crash` and `kill-renderer`, which the harness cannot observe on Android.
+- On a locked phone the `kill` step can fail on its `quota` kind with `ingest timed out after 20000ms`. [android-device-run.md](research/android-device-run.md) records that finding. It is not a new regression.
+- To run one harness, or to use another browser, see [the tools' README](research/android-device-run/README.md).
+
 ## Run the formal suite
 
 ```sh
