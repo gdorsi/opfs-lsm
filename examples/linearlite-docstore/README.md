@@ -1,6 +1,6 @@
 # LinearLite on docstore
 
-An issue tracker that lives in the browser only: a list, an issue page with edits, and new issues, built on [`@opfs-lsm/docstore`](../../packages/docstore) with kv underneath. There is no server, no sync and no framework: plain TypeScript and the DOM. The docs site frames it on its home page. For the full app, with sync and a board, see [LinearLite](../linearlite).
+An issue tracker that lives in the browser only: a list, an issue page with edits, and new issues, built on [`@opfs-lsm/docstore`](../../packages/docstore) with kv underneath. There is no server and no sync. The views are React components, and the build runs them on [TanStack Redact](https://tanstack.com/redact), a smaller runtime with React's API, in its `nano` preset with portals on. The docs site frames it on its home page. For the full app, with sync and a board, see [LinearLite](../linearlite).
 
 ```sh
 pnpm --filter "@opfs-lsm/example-linearlite-docstore^..." build
