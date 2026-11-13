@@ -4,7 +4,7 @@ packages:
   - "examples/automerge-todo"
   - "examples/todo"
   - "examples/rich-text"
-  - "examples/linearlite"
+  - "examples/linearlite-tanstackdb"
   - "examples/linearlite-docstore"
   - "examples/linearlite-fate"
   - "site"
