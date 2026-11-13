@@ -60,10 +60,10 @@ adapters:
           kv: 274 ops/s
           ratio: 1.2×
 size:
-  main: 17.1 kB
+  main: 17.2 kB
   worker: 11.5 kB
   wasm: 16.3 kB
-  lazy: 27.8 kB
+  lazy: 27.9 kB
 demo:
   count: 100,000
 ---
@@ -85,10 +85,10 @@ demo:
 
 ## Lightweight
 
-17.1 kB are part of the critical path to load, and the rest is loaded lazily · [File by file](../README.md#bundle-size)
+17.2 kB are part of the critical path to load, and the rest is loaded lazily · [File by file](../README.md#bundle-size)
 
 </div>
-<Illustration name="bundle" :data="$frontmatter.size" label="A page imports kv and downloads 17.1 kB. When a click handler calls openDb, the SharedWorker chunk (11.5 kB) and the wasm engine (16.3 kB) load, 27.8 kB more." />
+<Illustration name="bundle" :data="$frontmatter.size" label="A page imports kv and downloads 17.2 kB. When a click handler calls openDb, the SharedWorker chunk (11.5 kB) and the wasm engine (16.3 kB) load, 27.9 kB more." />
 </div>
 
 ## One store under your stack
