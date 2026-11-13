@@ -1,8 +1,7 @@
 import { kanbanBetween } from "../domain/kanban.ts";
 import type { IssueFields, IssuePatch, PriorityCode, StatusCode } from "../domain/model.ts";
-import { matches } from "./args.ts";
 import { IssueRowView, openedFate } from "./fate.ts";
-import { onScreen } from "./screen.ts";
+import { onScreen, placeNewIssue } from "./screen.ts";
 
 type Pending = Promise<{ error?: Error }> & { readonly locallyPersisted: Promise<void> };
 
@@ -49,26 +48,21 @@ export function moveIssue(id: string, status: StatusCode, before: string | null,
 }
 
 /**
- * Creates the issue at the top of its column and of the list when they are on screen and it belongs there. With
- * its column on screen the client picks `kanbanorder` from the column's first card; otherwise the server does.
+ * Creates the issue at the top of its column and of the list when they are on screen and their filter lists it.
+ * With its whole column on screen the client picks `kanbanorder` from the column's first card; otherwise the server
+ * does, and under a filter the card sits above the first one on screen until the server answers.
  */
 export async function createIssue(input: { title: string; description: string; status: StatusCode; priority: PriorityCode }): Promise<string> {
   const { fate, user } = openedFate();
   const id = crypto.randomUUID();
   const now = Date.now();
-  const column = onScreen.columns.get(input.status);
-  const kanbanorder = column ? kanbanBetween(null, column.top) : undefined;
-  const list = onScreen.top.get("list");
-  const into = [
-    ...(column ? [{ into: column.target, position: "before" as const }] : []),
-    ...(list && matches(list.filter, input) ? [{ into: list.target, position: "before" as const }] : []),
-  ];
+  const { into, shownOrder, sentOrder } = placeNewIssue(onScreen, input);
   await saved(
     "a new issue",
     fate.mutations.createIssue({
-      input: { id, ...input, ...(kanbanorder && { kanbanorder }) },
-      optimistic: { id, ...input, ...(kanbanorder && { kanbanorder }), username: user, created: now, modified: now },
-      insert: into,
+      input: { id, ...input, ...(sentOrder && { kanbanorder: sentOrder }) },
+      optimistic: { id, ...input, ...(shownOrder && { kanbanorder: shownOrder }), username: user, created: now, modified: now },
+      insert: into.map((target) => ({ into: target, position: "before" as const })),
     }),
   );
   return id;

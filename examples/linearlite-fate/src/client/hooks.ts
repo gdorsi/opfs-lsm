@@ -145,7 +145,7 @@ function useBoard(filter: IssueFilter) {
   const shown = useDeferredValue(request);
   const result = useRequest(shown, REQUEST) as { counts: StatusCounts } & Record<string, Parameters<typeof useListView>[1]>;
   useRefetchOnDelivery(useRefetch(shown));
-  return result;
+  return { result, shownFilter: shown.counts.args };
 }
 
 /**
@@ -153,12 +153,13 @@ function useBoard(filter: IssueFilter) {
  * or into the column takes its place at once; the server orders them the same way.
  */
 export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWindow {
-  const connection = useBoard(filter)[`c${status}`];
+  const { result, shownFilter } = useBoard(filter);
+  const connection = result[`c${status}`];
   const [items = [], loadNext] = useListView(ColumnView, connection);
   const rows = useIssueRows(items.map((item) => item.node));
   const sorted = useMemo(() => rows.toSorted((a, b) => (a.kanbanorder < b.kanbanorder ? -1 : a.kanbanorder > b.kanbanorder ? 1 : a.id < b.id ? -1 : 1)), [rows]);
   const top = sorted[0]?.kanbanorder ?? null;
-  useOnScreen(onScreen.columns, status, useMemo(() => (connection ? { target: connection as never, top } : undefined), [connection, top]));
+  useOnScreen(onScreen.columns, status, useMemo(() => (connection ? { filter: shownFilter, target: connection as never, top } : undefined), [connection, shownFilter, top]));
   const loading = useRef(false);
   const setRange = useCallback(
     (_start: number, end: number) => {
@@ -174,7 +175,7 @@ export function useBoardColumn(status: StatusCode, filter: IssueFilter): IssueWi
 }
 
 export function useStatusCounts(filter: IssueFilter): StatusCounts {
-  return useBoard(filter).counts;
+  return useBoard(filter).result.counts;
 }
 
 /**

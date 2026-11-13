@@ -74,9 +74,11 @@ refusal rolls the optimistic change back and shows in the footer.
 - Edits send only the changed fields; the server stamps `modified`.
 - `createIssue` makes the id on the client, so a create and later edits of it can queue offline together.
 - `createIssue` and `moveIssue` compute `kanbanorder` with fractional indexing between the neighbours on screen.
-  A create whose column is not on screen leaves it out, and the server puts the issue at the top of its column.
-- fate inserts a new item only into lists a mutation names. Screens register the lists they show (the list's first
-  window under a newest-first sort, each board column, an issue's comments), and commands name those.
+  A create sends it only when its whole column is on screen. Otherwise the server puts the issue at the top of its
+  column. The server refuses a `kanbanorder` that is not a fractional index.
+- fate inserts a new item only into lists a mutation names. Screens register the lists they show with their filter
+  (the list's first window under a newest-first sort, each board column, an issue's comments), and a create names
+  the ones whose filter lists the new issue.
 - The author is the `x-linearlite-user` header (`?user=` in the URL), else `anonymous`.
 
 Positions in a window are the server's. An optimistic edit changes the row in place, and the screen refetches once
