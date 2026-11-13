@@ -6,11 +6,11 @@ import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, localOnlyCollectionOptions } from "@tanstack/db";
-import type { Issue, PriorityCode, StatusCode } from "../domain/model.ts";
+import type { Issue, PriorityCode, StatusCode, StoredIssue } from "../domain/model.ts";
 import { anchors, countBefore, locate } from "./counts.ts";
 import { parseIssueFilter, SORT_FIELDS, type IssueFilter } from "./filter.ts";
 import { windowQuery } from "./query.ts";
-import { schema, stored, type IssueDocs, type Store, type StoredIssue } from "./store.ts";
+import { schema, stored, type IssueDocs, type Store } from "./store.ts";
 
 const N = 400;
 const SIZE = 30;

@@ -1,8 +1,8 @@
 import type { Scalar } from "@opfs-lsm/docstore";
 import { and, createLiveQueryCollection, eq, gte, ilike, inArray, lte, type InitialQueryBuilder, type Ref } from "@tanstack/db";
-import type { StatusCode } from "../domain/model.ts";
+import type { StatusCode, StoredIssue } from "../domain/model.ts";
 import type { IssueFilter, SortField } from "./filter.ts";
-import type { Store, StoredIssue } from "./store.ts";
+import type { Store } from "./store.ts";
 
 /**
  * `ilike` has no escape character, so `%` and `_` in a query would act as wildcards. Those queries are matched by a

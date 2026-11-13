@@ -1,29 +1,8 @@
-import {
-  type BodyPatch,
-  type Clocks,
-  type CommentPatch,
-  type IssuePatch,
-  type PriorityCode,
-  type ServerRow,
-  type StatusCode,
-  STREAMS,
-  type Stream,
-} from "./model.ts";
+import type { Clocks, Rows, ServerRow } from "./model.ts";
+import { fail, id } from "./parse.ts";
+import { type FieldsWith, STREAMS, type Stream, streamOf } from "./stores.ts";
 
-export class WireError extends Error {
-  readonly status: number;
-  constructor(message: string, status = 400) {
-    super(message);
-    this.name = "WireError";
-    this.status = status;
-  }
-}
-
-export type OpFields = {
-  issues: IssuePatch;
-  bodies: BodyPatch;
-  comments: CommentPatch & { issue_id?: string };
-};
+export type OpFields = { [S in Stream]: Partial<Pick<Rows[S], Extract<FieldsWith<S, "parse">, keyof Rows[S]>>> };
 export type PushOp = { [S in Stream]: { stream: S; id: string; fields: OpFields[S]; clocks: Clocks; create?: true } }[Stream];
 export type PushResult = { [S in Stream]: { stream: S; id: string; clocks: Clocks; row: ServerRow<S> } }[Stream];
 
@@ -62,55 +41,20 @@ export const MAX_OPS = 1000;
 export const MAX_DETAIL_IDS = 100;
 const MAX_PULL_LIMIT = 10_000;
 const DEFAULT_PULL_LIMIT = 1000;
-const MAX_TITLE = 500;
-const MAX_DESCRIPTION = 200_000;
-const MAX_COMMENT = 50_000;
-
-const fail = (message: string): never => {
-  throw new WireError(message);
-};
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-function id(v: unknown, what: string): string {
-  if (typeof v !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(v)) return fail(`${what} must be 1-64 characters of [A-Za-z0-9_-]`);
-  return v;
-}
-function text(max: number, min = 0) {
-  return (v: unknown, what: string): string => {
-    if (typeof v !== "string" || v.length < min || v.length > max) return fail(`${what} must be a string of ${min}-${max} characters`);
-    return v;
-  };
-}
-function code(v: unknown, what: string): StatusCode & PriorityCode {
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 4) return fail(`${what} must be an integer 0-4`);
-  return v as StatusCode & PriorityCode;
-}
-function bool(v: unknown, what: string): boolean {
-  return typeof v === "boolean" ? v : fail(`${what} must be a boolean`);
-}
-function kanbanorder(v: unknown, what: string): string {
-  if (typeof v !== "string" || !/^[0-9A-Za-z]{1,64}$/.test(v)) return fail(`${what} must be 1-64 alphanumeric characters`);
-  return v;
-}
 function integer(v: unknown, what: string, min: number, max: number): number {
   if (typeof v !== "number" || !Number.isInteger(v) || v < min || v > max) return fail(`${what} must be an integer ${min}-${max}`);
   return v;
 }
 
-type FieldParser = (v: unknown, what: string) => unknown;
-const FIELD_PARSERS: Record<Stream, Record<string, FieldParser>> = {
-  issues: { title: text(MAX_TITLE, 1), status: code, priority: code, kanbanorder, deleted: bool },
-  bodies: { description: text(MAX_DESCRIPTION) },
-  comments: { body: text(MAX_COMMENT, 1), deleted: bool, issue_id: id },
-};
-
 function parseFields<S extends Stream>(stream: S, raw: unknown): OpFields[S] {
   if (!isRecord(raw)) return fail("fields must be an object");
-  const parsers = FIELD_PARSERS[stream];
+  const parsers = streamOf(stream).fields;
   const out: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(raw)) {
-    const parse = Object.hasOwn(parsers, name) ? parsers[name] : undefined;
+    const parse = Object.hasOwn(parsers, name) ? parsers[name]?.parse : undefined;
     if (!parse) return fail(`${stream}: unknown field "${name}"`);
     out[name] = parse(value, name);
   }

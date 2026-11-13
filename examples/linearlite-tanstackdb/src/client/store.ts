@@ -2,10 +2,8 @@ import { defineSchema, openDocStore, type DocStore } from "@opfs-lsm/docstore";
 import { openDb, type Db } from "@opfs-lsm/kv";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, createLiveQueryCollection, eq } from "@tanstack/db";
-import type { Body, Comment, Issue, Rows, Stream, SyncState } from "../domain/model.ts";
-
-/** An issue as stored: its fields, and the keys the priority and status sorts order by. */
-export type StoredIssue = Issue & { readonly priorityOrder: number; readonly statusOrder: string };
+import type { Body, Comment, Issue, Rows, StoredIssue, SyncState } from "../domain/model.ts";
+import { STORES, type Stream } from "../domain/stores.ts";
 
 /** Priority, then status, then `modified` (ms, below 1e13): one value per issue, so a sort on it has few ties. */
 export const priorityOrder = (priority: number, status: number, modified: number) => priority * 1e14 + status * 1e13 + modified;
@@ -16,22 +14,14 @@ export const stored = (issue: Issue): StoredIssue => ({
   statusOrder: `${issue.status}${issue.kanbanorder}`,
 });
 
-/** The reads each issue index serves are in DESIGN.md, "Indexes". */
+const indexes = Object.fromEntries(Object.entries(STORES).map(([name, store]) => [name, store.indexes])) as {
+  [N in keyof typeof STORES]: (typeof STORES)[N]["indexes"];
+};
+
+/** The indexes are in `STORES`; the reads each issue index serves are in DESIGN.md, "Indexes". */
 export const schema = defineSchema<{ issues: StoredIssue; bodies: Body; comments: Comment; sync: SyncState }>()({
   version: 4,
-  collections: {
-    issues: {
-      byCreated: { on: ["deleted", "created"] },
-      byTitle: { on: ["deleted", "title"] },
-      byPriority: { on: ["deleted", "priority", "priorityOrder"] },
-      byStatus: { on: ["deleted", "status", "statusOrder"] },
-      search: { on: ["deleted", "modified"], text: "title" },
-      pending: { on: "pending" },
-    },
-    bodies: { pending: { on: "pending" } },
-    comments: { byIssue: { on: "issue_id" }, pending: { on: "pending" } },
-    sync: {},
-  },
+  collections: indexes,
   drop: ["outbox"],
 });
 
@@ -43,13 +33,13 @@ export function collections(docs: Docs) {
   const issues = createCollection(
     docstoreCollectionOptions({
       collection: issueDocs(docs),
-      syncMode: "on-demand",
+      syncMode: STORES.issues.load,
       defaultStringCollation: { stringSort: "lexical" },
     }),
   );
-  const bodies = createCollection(docstoreCollectionOptions({ collection: docs.collection("bodies"), syncMode: "on-demand" }));
-  const comments = createCollection(docstoreCollectionOptions({ collection: docs.collection("comments"), syncMode: "on-demand" }));
-  const sync = createCollection(docstoreCollectionOptions({ collection: docs.collection("sync") }));
+  const bodies = createCollection(docstoreCollectionOptions({ collection: docs.collection("bodies"), syncMode: STORES.bodies.load }));
+  const comments = createCollection(docstoreCollectionOptions({ collection: docs.collection("comments"), syncMode: STORES.comments.load }));
+  const sync = createCollection(docstoreCollectionOptions({ collection: docs.collection("sync"), syncMode: STORES.sync.load }));
   const dirtyIssues = createLiveQueryCollection((q) => q.from({ i: issues }).where(({ i }) => eq(i.pending, true)));
   const dirtyBodies = createLiveQueryCollection((q) => q.from({ b: bodies }).where(({ b }) => eq(b.pending, true)));
   const dirtyComments = createLiveQueryCollection((q) => q.from({ c: comments }).where(({ c }) => eq(c.pending, true)));

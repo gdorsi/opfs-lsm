@@ -1,6 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
-import { commentKey, MUTABLE_FIELDS, type ServerRow, type Stream } from "../domain/model.ts";
-import { type DetailResponse, type PullResponse, type PushOp, type PushResponse, type PushResult, type RowResponse, WireError } from "../domain/wire.ts";
+import { commentKey, type ServerRow } from "../domain/model.ts";
+import { WireError } from "../domain/parse.ts";
+import { MUTABLE_FIELDS, STREAMS, type Stream } from "../domain/stores.ts";
+import type { DetailResponse, PullResponse, PushOp, PushResponse, PushResult, RowResponse } from "../domain/wire.ts";
 import { CODECS, readEpoch, readHead, statements, writeHead } from "./db.ts";
 
 type Listener = (head: number) => void;
@@ -56,10 +58,8 @@ interface Ctx {
   now: number;
 }
 
-const ORDER: Record<Stream, number> = { issues: 0, bodies: 1, comments: 2 };
-
 export function push(db: DatabaseSync, ops: readonly PushOp[], username: string): PushResponse {
-  const ordered = [...ops].sort((a, b) => ORDER[a.stream] - ORDER[b.stream]);
+  const ordered = [...ops].sort((a, b) => STREAMS.indexOf(a.stream) - STREAMS.indexOf(b.stream));
   const results: PushResult[] = [];
   let head = 0;
   let changed = false;
