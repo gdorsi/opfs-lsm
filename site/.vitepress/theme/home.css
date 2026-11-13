@@ -286,6 +286,13 @@
   font-weight: 400;
 }
 
+.demo-note {
+  margin: 0;
+  padding: 0 16px 12px;
+  color: var(--vp-c-text-3);
+  font-size: 13px;
+}
+
 .demo-failed {
   margin: 0;
   padding: 0 16px 16px;

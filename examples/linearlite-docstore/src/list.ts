@@ -141,9 +141,9 @@ export function createList(scroller: HTMLElement, store: Store, open: (issue: Is
   return {
     /**
      * Reads the list under `next`, from its first row or, with `stay`, from the rows in view now. `rows` resolves with
-     * how many rows of the first page read exist, once they are in the document; `total` with the list's size.
+     * how many rows the first page read has and when the store returned them; `total` with the list's size.
      */
-    show(next: Filter, stay = false): { rows: Promise<number>; total: Promise<number> } {
+    show(next: Filter, stay = false): { rows: Promise<{ rows: number; at: number }>; total: Promise<number> } {
       filter = next;
       keep = keeps(next);
       order = orderOf(next);
@@ -155,8 +155,9 @@ export function createList(scroller: HTMLElement, store: Store, open: (issue: Is
       const counted = from.total();
       loading++;
       const read = Promise.all(pages.map((page) => from.read(page * PAGE, PAGE))).then((docs) => {
+        const at = performance.now();
         loading--;
-        if (view !== from) return docs[0]!.length;
+        if (view !== from) return { rows: docs[0]!.length, at };
         rows = new Map(docs.flatMap((page, k) => page.map((doc, i): [number, Issue] => [(first + k) * PAGE + i, doc])));
         for (const page of pages) tried.add(page);
         if (!stay) {
@@ -169,7 +170,7 @@ export function createList(scroller: HTMLElement, store: Store, open: (issue: Is
           total = n;
           render();
         });
-        return docs[0]!.length;
+        return { rows: docs[0]!.length, at };
       });
       return { rows: read, total: counted };
     },

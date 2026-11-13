@@ -43,6 +43,6 @@ Generated issues arrive through the same feed. While this tab writes them the li
 
 The app times itself and posts each figure to the page that frames it (`src/protocol.ts`).
 
-- **Open to first rows** starts at the app's call that opens the database and ends when the first page of issues is painted. It leaves out fetching and compiling the app's files, so a first visit and a reload measure the same work: open kv, open the document store, read 50 issues, paint them.
-- **Filter to rows on screen** starts when a filter, the sort or the search changes and ends when the rows of the new list are painted.
+- **Open and read first rows** starts once the kv wasm module is loaded, at the call that opens the database. It ends when the store returns the first 50 issues, before they are drawn. A first visit and a reload measure the same work: open kv, open the document store, read the page.
+- **Read a filtered page** starts when a filter, the sort or the search changes and ends when the store returns the first page of the new list, before it is drawn.
 - **Write** starts after the issues are generated and ends when the last transaction is acknowledged.

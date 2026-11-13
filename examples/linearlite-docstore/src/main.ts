@@ -1,10 +1,11 @@
 import { destroyDb } from "@opfs-lsm/kv";
+import { ensureEngine } from "@opfs-lsm/kv/testing";
 import "./app.css";
 import { openCompose } from "./compose.ts";
 import { createDetail } from "./detail.ts";
 import { createList, type Change } from "./list.ts";
 import { DEFAULT_FILTER, type Filter } from "./model.ts";
-import { SOURCE, failed, painted, post, type ToDemo } from "./protocol.ts";
+import { SOURCE, failed, post, type ToDemo } from "./protocol.ts";
 import { createIssue, forgetHost, hostOf, openStore, writeIssues } from "./store.ts";
 import { createToolbar, describe } from "./toolbar.ts";
 
@@ -55,7 +56,8 @@ function showList(shown: boolean) {
 }
 
 async function main() {
-  // Every time this app reports counts from here: the call that opens the database.
+  // The wasm module is fetched and compiled before the clock starts, so network time stays out of the open time.
+  await ensureEngine();
   const t0 = performance.now();
   const store = await openStore(NAME);
   const openedMs = performance.now() - t0;
@@ -67,22 +69,22 @@ async function main() {
 
   /**
    * Reads the list under the filter and its total, from the first row or, with `stay`, from the rows in view.
-   * Resolves with the first page's rows and when they were painted.
+   * Resolves with the first page's row count and when the store returned them, before they are drawn.
    */
   function show(label?: string, stay = false) {
     const mine = ++run;
     const from = performance.now();
     if (!stay) toolbar.count(undefined);
     const shown = list.show(filter, stay);
-    const counted = shown.total.then(async (total) => {
+    const counted = shown.total.then((total) => {
+      const at = performance.now();
       if (mine === run) toolbar.count(total);
-      return { total, at: await painted() };
+      return { total, at };
     });
-    const rows = shown.rows.then(async (rows) => ({ rows, rowsAt: await painted() }));
-    void Promise.all([rows, counted]).then(([r, c]) => {
-      if (label && mine === run) post({ type: "filter", label, rowsMs: r.rowsAt - from, total: c.total, totalMs: c.at - from });
+    void Promise.all([shown.rows, counted]).then(([r, c]) => {
+      if (label && mine === run) post({ type: "filter", label, rowsMs: r.at - from, total: c.total, totalMs: c.at - from });
     }, failed);
-    return rows;
+    return shown.rows;
   }
 
   /** Issues this tab is writing for the first time: the change feed says what an issue is now, not that it is new. */
@@ -199,10 +201,10 @@ async function main() {
     else if (e.data.type === "delete") void destroy();
   });
 
-  const { rows, rowsAt } = await show();
+  const { rows, at } = await show();
   post({ type: "opened", ms: openedMs, issues: rows });
   if (rows === 0) showList(false);
-  else post({ type: "first-rows", ms: rowsAt - t0, host: await hostOf(store) });
+  else post({ type: "first-rows", ms: at - t0, host: await hostOf(store) });
   void dropRetired();
 }
 
