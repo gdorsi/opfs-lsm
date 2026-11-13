@@ -10,9 +10,8 @@ const EMPTY = new Uint8Array(0);
 
 function coll(indexes: Record<string, object>): BoundCollection {
   const declared = normalizeSchema({ version: 1, collections: { c: indexes } });
-  const r = reconcile(undefined, declared);
-  if (r.kind !== "write") throw new Error("a fresh catalog is written");
-  return bind(encodeCatalog(r.catalog), r.catalog, declared).collections.get("c")!;
+  const catalog = reconcile(undefined, declared)!;
+  return bind(encodeCatalog(catalog), catalog, declared).collections.get("c")!;
 }
 
 const prefixOf = (c: BoundCollection, index: string) => c.maintained.find((p) => p.name === index)!.target.prefix;

@@ -38,18 +38,14 @@ export type IndexId = number & { readonly __brand: "IndexId" };
 export type DocId = string & { readonly __brand: "DocId" };
 
 const utf8 = new TextEncoder();
-const LONE_SURROGATE = /\p{Cs}/u;
+const fromUtf8 = new TextDecoder();
 
-/** TextEncoder writes every lone surrogate as U+FFFD, so two strings that hold one could share a key. */
-export function wellFormed(s: string): boolean {
-  return !LONE_SURROGATE.test(s);
-}
-
+/** Every string in a key must be well formed: TextEncoder writes each lone surrogate as U+FFFD, so two strings holding one could share a key. */
 export function parseId(id: unknown): DocId {
   if (typeof id !== "string" || id === "") {
     throw new DocStoreError("document", "a document id must be a non-empty string");
   }
-  if (!wellFormed(id)) {
+  if (!id.isWellFormed()) {
     throw new DocStoreError("document", "a document id must not hold a lone surrogate");
   }
   if (id.length * 3 > MAX_ID_BYTES && utf8.encode(id).length > MAX_ID_BYTES) {
@@ -74,6 +70,11 @@ export function idBytes(id: DocId): Uint8Array {
   return utf8.encode(id);
 }
 
+/** The id whose UTF-8 is `bytes`. */
+export function idOf(bytes: Uint8Array): string {
+  return fromUtf8.decode(bytes);
+}
+
 export function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   const out = new Uint8Array(a.length + b.length);
   out.set(a);
@@ -83,11 +84,9 @@ export function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
 
 /** `prefix ++ FF`: above every key that continues `prefix` at a field boundary, below a string that continues it with U+0000. */
 export function upperOf(prefix: Uint8Array): Uint8Array {
-  const out = new Uint8Array(prefix.length + 1);
-  out.set(prefix);
-  out[prefix.length] = 0xff;
-  return out;
+  return concat(prefix, FF);
 }
+const FF = Uint8Array.of(0xff);
 
 /** The smallest key after `key`. */
 export function after(key: Uint8Array): Uint8Array {
@@ -141,14 +140,22 @@ function write(bytes: Uint8Array): void {
   len += bytes.length;
 }
 
+/** Encodes straight into `buf` (a UTF-16 unit is at most 3 UTF-8 bytes), then makes room for the escapes, which are rare. */
 function writeEscaped(s: string): void {
-  const raw = utf8.encode(s);
-  if (raw.indexOf(0) < 0) return write(raw);
-  room(raw.length * 2);
-  for (const b of raw) {
-    buf[len++] = b;
-    if (b === 0) buf[len++] = 0xff;
+  room(s.length * 3);
+  const start = len;
+  len += utf8.encodeInto(s, buf.subarray(len)).written;
+  let zeros = 0;
+  for (let i = start; i < len; i++) if (buf[i] === 0) zeros++;
+  if (zeros === 0) return;
+  room(zeros);
+  let w = len + zeros;
+  for (let r = len - 1; r >= start; r--) {
+    const b = buf[r]!;
+    if (b === 0) buf[--w] = 0xff;
+    buf[--w] = b;
   }
+  len += zeros;
 }
 
 function writeScalar(v: Scalar): void {
@@ -221,7 +228,7 @@ function badQuery(message: string): never {
 
 function checkQueryValue(value: unknown): Scalar {
   if (value === null || typeof value === "boolean") return value;
-  if (typeof value === "string" && wellFormed(value)) return value;
+  if (typeof value === "string" && value.isWellFormed()) return value;
   if (typeof value === "number" && Number.isFinite(value)) return value === 0 ? 0 : value;
   return badQuery(`${String(value)} is not an index value: use null, a boolean, a finite number or a well-formed string`);
 }
@@ -257,18 +264,16 @@ export type ScanTarget =
       readonly arity: number;
     };
 
-export type ScanPlan = { readonly range: Range; readonly target: ScanTarget };
-
 /**
  * The one bound builder. `eq` fixes the first k components and one bound
  * applies to component k + 1. `limit` is not set here.
  */
-export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
+export function scanPlan(target: ScanTarget, q: QueryInput): Range {
   const { gt, gte, lt, lte, startsWith } = q;
   if (gt !== undefined && gte !== undefined) badQuery("gt and gte together");
   if (lt !== undefined && lte !== undefined) badQuery("lt and lte together");
   const bounded = gt !== undefined || gte !== undefined || lt !== undefined || lte !== undefined;
-  if (startsWith !== undefined && (bounded || typeof startsWith !== "string" || !wellFormed(startsWith))) {
+  if (startsWith !== undefined && (bounded || typeof startsWith !== "string" || !startsWith.isWellFormed())) {
     badQuery("startsWith takes a well-formed string and no other bound");
   }
   const eq = q.eq ?? [];
@@ -289,13 +294,12 @@ export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
     if (reverse) upper = k;
     else lower = after(k);
   }
-  const range: Range = {
+  return {
     start: lower,
     endExclusive: upper,
     ...(reverse ? { reverse } : {}),
     ...(q.match !== undefined ? { valueContains: matchPatterns(q.match) } : {}),
   };
-  return { range, target };
 }
 
 function indexBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [Uint8Array, Uint8Array] {
@@ -313,7 +317,7 @@ function indexBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]):
 /** The id is raw UTF-8 with no terminator, so the keys equal to `x` end at `x ++ 00`. */
 function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [Uint8Array, Uint8Array] {
   const at = (v: unknown) =>
-    typeof v === "string" && wellFormed(v) ? concat(prefix, utf8.encode(v)) : badQuery("an id bound must be a well-formed string");
+    typeof v === "string" && v.isWellFormed() ? concat(prefix, utf8.encode(v)) : badQuery("an id bound must be a well-formed string");
   if (eq.length === 1) {
     const k = at(eq[0]);
     return [k, after(k)];
@@ -344,9 +348,7 @@ export function entryId(target: ScanTarget, key: Uint8Array, value: Uint8Array):
 
 /** base64url of the key after the root byte, so it names the collection id and index id it came from. */
 export function encodeCursor(key: Uint8Array): Cursor {
-  let s = "";
-  for (let i = 1; i < key.length; i++) s += String.fromCharCode(key[i]!);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") as Cursor;
+  return btoa(keyString(key.subarray(1))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") as Cursor;
 }
 
 function decodeCursor(cursor: Cursor): Uint8Array {

@@ -2,7 +2,7 @@ import { ClosedError, CorruptDatabaseError, type ChangeEvent, type ChangeOp, typ
 import { parseCatalog } from "./catalog.js";
 import { decodeDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { CATALOG_KEY, bytesEqual, compareBytes, hasPrefix, rowPrefix, type CollectionId } from "./keys.js";
+import { CATALOG_KEY, bytesEqual, compareBytes, hasPrefix, idOf, rowPrefix, type CollectionId } from "./keys.js";
 import type { JsonDoc } from "./schema.js";
 
 /** `doc` is parsed on first access, so a listener that only needs `id` pays no JSON.parse. `deleted` tells a delete from a put without parsing. */
@@ -18,8 +18,6 @@ export type CollectionChange<T extends JsonDoc> =
   /** What the listener holds may be stale: read again. Sent for kv's `gap`, and when the collection was cleared or dropped (its catalog id changed). */
   | { readonly kind: "gap" }
   | { readonly kind: "closed" };
-
-const fromUtf8 = new TextDecoder();
 
 function docChange<T extends JsonDoc>(id: string, bytes: Uint8Array | undefined): DocChange<T> {
   let parsed: T | undefined;
@@ -94,7 +92,7 @@ export function followCollection<T extends JsonDoc>(
         case "put":
         case "del":
           if (prefix && hasPrefix(op.key, prefix)) {
-            changes.push(docChange<T>(fromUtf8.decode(op.key.subarray(prefix.length)), op.type === "put" ? op.value : undefined));
+            changes.push(docChange<T>(idOf(op.key.subarray(prefix.length)), op.type === "put" ? op.value : undefined));
           } else if (bytesEqual(op.key, CATALOG_KEY)) {
             const next = op.type === "put" ? collectionIdIn(op.value, name) : undefined;
             if (next === id) continue;

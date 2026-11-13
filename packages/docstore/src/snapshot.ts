@@ -2,7 +2,7 @@ import { CorruptDatabaseError, type Entry, type Range, type ViewSnapshot } from 
 import { readableTarget, type BoundCollection } from "./catalog.js";
 import { decodeDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { concat, encodeCursor, entryId, idBytes, parseId, scanPlan } from "./keys.js";
+import { concat, encodeCursor, entryId, idBytes, idOf, parseId, scanPlan } from "./keys.js";
 import type { Cursor, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
 
 /** Reads of one collection from one kv snapshot. */
@@ -24,8 +24,6 @@ export interface CollectionSnapshot<T extends JsonDoc, Ix> {
   count(q: Query<T, Ix>): Promise<number>;
 }
 
-const fromUtf8 = new TextDecoder();
-
 function limitOf(limit: unknown): number | undefined {
   if (limit === undefined) return undefined;
   if (typeof limit === "number" && Number.isInteger(limit) && limit >= 1) return limit;
@@ -36,9 +34,11 @@ function withLimit(range: Range, limit: number | undefined): Range {
   return limit === undefined ? range : { ...range, limit };
 }
 
-/** `hits` holds one entry past the page iff another page follows. */
-function nextOf(hits: readonly Entry[], limit: number | undefined): { next?: Cursor } {
-  return limit !== undefined && hits.length > limit ? { next: encodeCursor(hits[limit - 1]!.key) } : {};
+/** `hits` holds one entry past the page iff another page follows: drop it and name the cursor. */
+function trimPage(hits: Entry[], limit: number | undefined): { next?: Cursor } {
+  if (limit === undefined || hits.length <= limit) return {};
+  hits.length = limit;
+  return { next: encodeCursor(hits[limit - 1]!.key) };
 }
 
 async function collect(entries: AsyncIterable<Entry>): Promise<Entry[]> {
@@ -76,9 +76,8 @@ export class CollectionReader<T extends JsonDoc, Ix> {
 
   async query(q: Query<T, Ix>): Promise<Page<T>> {
     const { target, range, limit } = this.plan(q, 1);
-    const hits = await collect(this.snap.range(range));
-    const page = hits.slice(0, limit);
-    const next = nextOf(hits, limit);
+    const page = await collect(this.snap.range(range));
+    const next = trimPage(page, limit);
     if (target.kind === "rows") return { docs: page.map((h) => decodeDoc(h.value) as unknown as T), ...next };
     const rows = await Promise.all(
       page.map((h) => this.snap.get(concat(target.rowPrefix, entryId(target, h.key, h.value)))),
@@ -92,9 +91,9 @@ export class CollectionReader<T extends JsonDoc, Ix> {
 
   async queryIds(q: Query<T, Ix>): Promise<IdPage> {
     const { target, range, limit } = this.plan(q, 1);
-    const hits = await collect(this.snap.range(range));
-    const ids = hits.slice(0, limit).map((h) => fromUtf8.decode(entryId(target, h.key, h.value)));
-    return { ids, ...nextOf(hits, limit) };
+    const page = await collect(this.snap.range(range));
+    const next = trimPage(page, limit);
+    return { ids: page.map((h) => idOf(entryId(target, h.key, h.value))), ...next };
   }
 
   async count(q: Query<T, Ix>): Promise<number> {
@@ -109,7 +108,7 @@ export class CollectionReader<T extends JsonDoc, Ix> {
     const input = q as QueryInput;
     const limit = limitOf(input.limit);
     const target = input.index === undefined ? this.coll.rows : readableTarget(this.coll, input.index);
-    return { target, limit, range: withLimit(scanPlan(target, input).range, limit && limit + peek) };
+    return { target, limit, range: withLimit(scanPlan(target, input), limit && limit + peek) };
   }
 }
 

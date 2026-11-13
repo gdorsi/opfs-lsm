@@ -23,44 +23,25 @@ type DocsMap = { readonly [collection: string]: JsonDoc };
 type Budget = [never, 0, 1, 2];
 type Defined<V> = Exclude<V, undefined>;
 
-/** Dot paths of `T` whose value, minus `undefined`, is a scalar. */
-type ScalarPath<T, D extends number = 3> = [D] extends [never]
+/** Dot paths of `T` whose value, minus `undefined`, extends `Leaf`. Arrays are leaves or nothing: no path enters one. */
+type PathTo<T, Leaf, D extends number = 3> = [D] extends [never]
   ? never
   : {
-      [K in keyof T & string]-?: Defined<T[K]> extends Scalar
+      [K in keyof T & string]-?: Defined<T[K]> extends Leaf
         ? K
         : Defined<T[K]> extends readonly unknown[]
           ? never
           : Defined<T[K]> extends object
-            ? `${K}.${ScalarPath<Defined<T[K]>, Budget[D]>}`
+            ? `${K}.${PathTo<Defined<T[K]>, Leaf, Budget[D]>}`
             : never;
     }[keyof T & string];
 
-/** Dot paths of `T` whose value is an array of scalars: the first path of a `multi` index. */
-type ArrayPath<T, D extends number = 3> = [D] extends [never]
-  ? never
-  : {
-      [K in keyof T & string]-?: Defined<T[K]> extends readonly Scalar[]
-        ? K
-        : Defined<T[K]> extends readonly unknown[]
-          ? never
-          : Defined<T[K]> extends object
-            ? `${K}.${ArrayPath<Defined<T[K]>, Budget[D]>}`
-            : never;
-    }[keyof T & string];
-
-/** Dot paths of `T` whose value is a string: the `text` of a text index. */
-type StringPath<T, D extends number = 3> = [D] extends [never]
-  ? never
-  : {
-      [K in keyof T & string]-?: Defined<T[K]> extends string
-        ? K
-        : Defined<T[K]> extends readonly unknown[]
-          ? never
-          : Defined<T[K]> extends object
-            ? `${K}.${StringPath<Defined<T[K]>, Budget[D]>}`
-            : never;
-    }[keyof T & string];
+/** Paths to a scalar. */
+type ScalarPath<T> = PathTo<T, Scalar>;
+/** Paths to an array of scalars: the first path of a `multi` index. */
+type ArrayPath<T> = PathTo<T, readonly Scalar[]>;
+/** Paths to a string: the `text` of a text index. */
+type StringPath<T> = PathTo<T, string>;
 
 type At<T, P extends string> = P extends `${infer H}.${infer R}`
   ? At<Defined<T[H & keyof T]>, R>
