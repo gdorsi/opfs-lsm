@@ -24,10 +24,10 @@ export type Comment = { id: string; body: string; username: string; created: num
 export type Detail = { id: string; description: string; comments: Comment[] };
 
 /** The description the user wrote for an issue created in the app. Its id is the issue's. Never removed for space. */
-export type Authored = { id: string; description: string };
+type Authored = { id: string; description: string };
 
 /** The one row `storage`: kv asked for space and the user has not agreed to free it yet. Every tab reads it. */
-export type Meta = { id: string; pressure: boolean };
+type Meta = { id: string; pressure: boolean };
 
 /**
  * One index per read of the list. `byModified` is also the text index of the titles: read without a `match`, it
