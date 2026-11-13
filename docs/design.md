@@ -380,7 +380,7 @@ the shallower level wins.
 * A deeper level scores its bytes over its budget, and reports past 1. Its step picks the run
   whose overlapping bytes in the next level are the smallest fraction of its own size, and merges
   it with those runs into the next level.
-* When no level reports, a mark step takes the first run that keeps a piece from retiring: the
+* When no level reports, a mark step takes the first run that keeps a range delete from retiring: the
   L0 step for an L0 run, otherwise that run alone, rewritten into its own level.
 
 Scoring lets L0 pass 4 runs while a deeper level is further over budget. If L0 always went
