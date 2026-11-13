@@ -1,7 +1,8 @@
 import { and, eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Body, Comment, Issue, StatusCode, Stream } from "../domain/model.ts";
+import type { Body, Comment, Issue, StatusCode } from "../domain/model.ts";
+import { STREAMS, type Stream } from "../domain/stores.ts";
 import { anchors, countBefore, countByStatus, countTotal, locate, type Anchor, type Pause } from "./counts.ts";
 import type { IssueFilter } from "./filter.ts";
 import { backoffMs } from "./ops.ts";
@@ -295,7 +296,7 @@ export function useSyncStatus(): SyncStatus {
   const unsynced = issues.length + bodies.length + comments.length;
   if (!state) return { kind: "starting", unsynced };
   if (!state.online) return { kind: "offline", unsynced };
-  const behind = (["issues", "bodies", "comments"] as const).find((s) => !state.caughtUp[s]);
+  const behind = STREAMS.find((s) => !state.caughtUp[s]);
   if (behind) return { kind: "syncing", stream: behind, cursor: state.cursors[behind], head: state.head, unsynced };
   return { kind: "idle", unsynced };
 }

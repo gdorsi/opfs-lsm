@@ -1,4 +1,4 @@
-import { WireError } from "../domain/wire.ts";
+import { WireError } from "../domain/parse.ts";
 
 export async function respond(run: () => unknown): Promise<Response> {
   try {
