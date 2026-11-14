@@ -1,5 +1,6 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
+import type { ScanBounds } from "./cursor.js";
 
 /**
  * The marks: which rows range deletes removed, as a flat unordered list. A
@@ -53,9 +54,33 @@ export function throughAt(marks: Marks, key: Uint8Array): Seq {
 /** What retirement needs to know about a run. */
 type RunMarkInfo = {
   readonly range?: { readonly smallest: Uint8Array; readonly largest: Uint8Array };
-  /** Every mark with `at <= marksThrough` was applied when this run was written. */
+  /**
+   * Every mark with `at <= marksThrough` was applied when this run was
+   * written, and the run holds no version past it.
+   */
   readonly marksThrough: Seq;
 };
+
+/**
+ * Whether one of `marks` covers every version `run` holds within `bounds`:
+ * the mark's range holds every key the run can have there, and the run's
+ * versions, none past `marksThrough`, are all at or below the mark's
+ * `through`. Every older version of those keys has a smaller seq, so the
+ * mark covers it too, and a scan may pass over the run unread.
+ */
+export function coversRun(marks: Marks, run: Required<RunMarkInfo>, bounds: ScanBounds | undefined): boolean {
+  const { smallest, largest } = run.range;
+  const start = bounds?.start;
+  const end = bounds?.endExclusive;
+  return marks.some(
+    (m) =>
+      m.through >= run.marksThrough &&
+      (compareBytes(m.start, smallest) <= 0 || (start !== undefined && compareBytes(m.start, start) <= 0)) &&
+      (!m.endExclusive ||
+        compareBytes(largest, m.endExclusive) < 0 ||
+        (end !== undefined && compareBytes(end, m.endExclusive) <= 0)),
+  );
+}
 
 /**
  * Drops every mark that no run of `runs` can still hold a covered version
