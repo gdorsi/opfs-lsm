@@ -8,11 +8,11 @@ import { recount, type Pause } from "./recount.ts";
 const PATH: BackendPath = {
   name: "indexeddb",
   loads: "indexedDBCollectionOptions on createIndexedDB, eager (its only mode): every row of every store is read at open; one in-memory BTree index per field the stores index",
-  writes: "rows read from memory and merged, then written with the collection's acceptMutations: one IndexedDB readwrite transaction per call, serialized within the tab",
+  writes: "under a Web Lock per store: rows read in one IndexedDB readonly transaction and merged, then written with the collection's acceptMutations in one readwrite transaction",
   counts: "one pass over the issues in memory with the filter, counted again after changes",
   deep: "no anchor: a deep window is one query from the top, over rows already in memory",
   pressure: "none: no pressure API, nothing is evicted",
-  tabs: "BroadcastChannel between tabs; transact reads memory, so it is atomic within a tab only",
+  tabs: "every tab; transact atomic across tabs by its lock; other tabs' memory catches up by BroadcastChannel",
 };
 
 /** A row as stored: TanStack adds `$`-prefixed virtual properties to the rows it hands out. */
@@ -53,12 +53,19 @@ export async function openIndexedDbBackend(name: string, { hidden = () => false,
   ) as unknown as { [S in StoreName]: Collection<CollectionRows[S], string> };
   await Promise.all(Object.values(collections).map((c) => c.preload()));
 
-  let queue: Promise<unknown> = Promise.resolve();
-  const serialized = <T>(run: () => Promise<T>): Promise<T> => {
-    const result = queue.then(run);
-    queue = result.catch(() => {});
-    return result;
-  };
+  /** Rows as stored now. This tab's memory hears of another tab's writes only when that tab's broadcast arrives. */
+  const readStored = (store: StoreName, ids: readonly string[]) =>
+    new Promise<Array<{ id: string } | undefined>>((resolve, reject) => {
+      const tx = idb.db.transaction(store, "readonly");
+      const objects = tx.objectStore(store);
+      const rows: Array<{ id: string } | undefined> = [];
+      ids.forEach((id, i) => {
+        const request = objects.get(id);
+        request.onsuccess = () => (rows[i] = request.result);
+      });
+      tx.oncomplete = () => resolve(rows);
+      tx.onerror = tx.onabort = () => reject(tx.error);
+    });
 
   const countIssues = async (filter: IssueFilter, pause?: Pause): Promise<StatusCounts> => {
     const counts = STATUSES.map(() => 0);
@@ -92,23 +99,26 @@ export async function openIndexedDbBackend(name: string, { hidden = () => false,
     path: PATH,
     collection: <S extends StoreName>(store: S) => collections[store] as Collection<CollectionRows[S], string>,
     read: async (store, ids) => ids.map((id) => plain(collections[store].get(id)) as StoreRows[typeof store] | undefined),
-    transact: <S extends StoreName, T extends { readonly id: string }>(
+    transact: async <S extends StoreName, T extends { readonly id: string }>(
       store: S,
       items: readonly T[],
       merge: (local: StoreRows[S] | undefined, item: T) => StoreRows[S] | null | undefined,
-    ) =>
-      serialized(async () => {
+    ) => {
+      // Every tab writes a store under its lock, so the rows read inside it stay current until the write lands.
+      await navigator.locks.request(`linearlite-indexeddb:${name}:${store}`, async () => {
         const collection = collections[store] as unknown as Collection<{ id: string }, string>;
+        const locals = await readStored(store, items.map((item) => item.id));
         const mutations: PendingMutation[] = [];
-        for (const item of items) {
-          const local = plain(collection.get(item.id));
+        for (const [i, item] of items.entries()) {
+          const local = locals[i];
           const merged = merge(local as StoreRows[S] | undefined, item);
           if (merged === undefined || (merged === null && !local)) continue;
           const row = merged === null ? local : store === "issues" ? stored(merged as Issue) : merged;
           mutations.push({ collection, type: merged === null ? "delete" : local ? "update" : "insert", modified: row } as unknown as PendingMutation);
         }
         if (mutations.length > 0) await collection.utils.acceptMutations({ mutations });
-      }),
+      });
+    },
     clear: (stream: Stream) => collections[stream].utils.clearObjectStore(),
     watchCounts: (filter, emit) => watchIssues((pause) => countIssues(filter, pause), emit),
     watchTotal: (filter, emit) =>
