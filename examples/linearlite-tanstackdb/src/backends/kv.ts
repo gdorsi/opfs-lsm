@@ -31,7 +31,7 @@ const KV_BATCH_OPS = 10_000;
 /** Cached threads below which storage pressure asks nothing: the visible rows reload right after an eviction. */
 const MIN_EVICTION = 100;
 
-const PATH: BackendPath = {
+export const KV_PATH: BackendPath = {
   name: "kv",
   loads: "docstoreCollectionOptions over openDocStore; issues, bodies and comments on demand through docstore indexes, sync eager",
   writes: "utils.transact: read and write in one kv transaction, sliced to kv's 10,000-op batch cap by the store's index count",
@@ -83,7 +83,7 @@ export async function openKvBackend(db: Db, { hidden = () => false }: KvOptions 
     );
 
   return {
-    path: PATH,
+    path: KV_PATH,
     docs,
     collection: <S extends StoreName>(store: S) => collections[store] as unknown as Collection<CollectionRows[S], string>,
     read: (store, ids) => docs.collection(store).getMany(ids),
