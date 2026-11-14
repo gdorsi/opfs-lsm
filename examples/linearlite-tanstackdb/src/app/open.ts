@@ -28,8 +28,10 @@ export function openApp(): Promise<Linearlite> {
       performance.mark("linearlite:leader");
       return model.sync.lead(new AbortController().signal);
     });
-    // bench/client.ts drives edits through this, on production builds too.
-    Object.assign(globalThis, { __linearlite: { store, commands: model.commands, createLiveQueryCollection, eq } });
+    // bench/client.ts drives edits through this; production builds expose it only with VITE_BENCH=1.
+    if (import.meta.env.DEV || import.meta.env.VITE_BENCH === "1") {
+      Object.assign(globalThis, { __linearlite: { store, commands: model.commands, createLiveQueryCollection, eq } });
+    }
     opened = model;
     return model;
   })());

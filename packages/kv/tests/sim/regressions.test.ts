@@ -7,6 +7,7 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../../src/testing.js";
+import type { Db } from "../../src/index.js";
 import { deleteWal } from "./check-database.js";
 
 /**
@@ -72,9 +73,13 @@ describe("model suite regressions", () => {
       create: (path) => fs.create(path),
     };
     const ingest = createLocalIngestClient(host);
-    const a = await openHarnessDb({ name: NAME, fs, ingest });
-    const b = await openHarnessDb({ name: NAME, fs: slowFs, ingest });
-    g.BroadcastChannel = channel;
+    let handles: Db[];
+    try {
+      handles = [await openHarnessDb({ name: NAME, fs, ingest }), await openHarnessDb({ name: NAME, fs: slowFs, ingest })];
+    } finally {
+      g.BroadcastChannel = channel;
+    }
+    const [a, b] = handles as [Db, Db];
     try {
       await a.put(utf("k"), utf("v1"));
       await ingestDb(a); // generation 1: seq 1

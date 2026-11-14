@@ -3,7 +3,7 @@ import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
 import { decodeDoc, diffEntries, encodeDoc, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { CATALOG_KEY, bytesEqual, concat, idBytes, keyString, parseId, type DocId } from "./keys.js";
+import { CATALOG_KEY, bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
 import type { IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
 import { CollectionReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
@@ -93,7 +93,6 @@ export interface Collection<T extends JsonDoc, Ix> {
 
 export const RETRY: unique symbol = Symbol("retry");
 
-const fromUtf8 = new TextDecoder();
 const NONE: readonly Entry[] = [];
 
 /**
@@ -168,7 +167,7 @@ function planChanges(
       ownedKeys.push(u.key);
     }
   }
-  const batch = new Set<string>(ids);
+  let batch: Set<string> | undefined;
 
   return {
     keys: [...rowKeys, ...claimed.map((c) => c.key), ...ownedKeys],
@@ -178,8 +177,8 @@ function planChanges(
         const { at } = claimed[j]!;
         const owner = values[n + j];
         if (owner === undefined || bytesEqual(owner, idbs[at]) || bytesEqual(values[at], docs[at]!.bytes)) continue;
-        const ownerId = fromUtf8.decode(owner);
-        if (!batch.has(ownerId)) throw uniqueError(ids[at]!, ownerId);
+        const ownerId = idOf(owner);
+        if (!(batch ??= new Set(ids)).has(ownerId)) throw uniqueError(ids[at]!, ownerId);
       }
       const removes: Uint8Array[] = [];
       const writes: Entry[] = [];
@@ -288,10 +287,8 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     const encoded = docs.map(encodeDoc);
     const ids = encoded.map((e) => e.id);
     if (new Set(ids).size !== ids.length) throw new DocStoreError("document", "putMany got one id twice");
-    await this.store.write<unknown>(this.name, async (coll) =>
-      coll.maintained.length === 0
-        ? blindPut(coll, encoded)
-        : planChanges(coll, ids, encoded, buildingUnique(coll) ? await this.priors(coll, ids) : undefined),
+    await this.store.write<unknown>(this.name, (coll) =>
+      coll.maintained.length === 0 ? blindPut(coll, encoded) : this.planRows(coll, ids, encoded),
     );
   }
 
@@ -353,14 +350,16 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
 
   async deleteMany(ids: readonly string[]): Promise<number> {
     const distinct = [...new Set(ids.map(parseId))];
-    return this.store.write(this.name, async (coll) =>
-      planChanges(
-        coll,
-        distinct,
-        distinct.map(() => undefined),
-        buildingUnique(coll) ? await this.priors(coll, distinct) : undefined,
-      ),
-    );
+    return this.store.write(this.name, (coll) => this.planRows(coll, distinct, distinct.map(() => undefined)));
+  }
+
+  /** `planChanges`, reading the rows first only while a unique index builds. */
+  private async planRows(
+    coll: BoundCollection,
+    ids: readonly DocId[],
+    docs: readonly (EncodedDoc | undefined)[],
+  ): Promise<WritePlan<number>> {
+    return planChanges(coll, ids, docs, buildingUnique(coll) ? await this.priors(coll, ids) : undefined);
   }
 
   private priors(coll: BoundCollection, ids: readonly DocId[]): Promise<Prior[]> {
