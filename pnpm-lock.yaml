@@ -363,9 +363,18 @@ importers:
 
   examples/whiteboard-yjs:
     dependencies:
+      '@opfs-lsm/kv':
+        specifier: workspace:*
+        version: link:../../packages/kv
+      '@opfs-lsm/yjs':
+        specifier: workspace:*
+        version: link:../../packages/yjs
       fractional-indexing:
         specifier: ^3.2.0
         version: 3.4.0
+      y-indexeddb:
+        specifier: ^9.0.12
+        version: 9.0.12(yjs@13.6.33)
       yjs:
         specifier: ^13.6.33
         version: 13.6.33
@@ -373,6 +382,9 @@ importers:
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
+      fake-indexeddb:
+        specifier: ^6.2.7
+        version: 6.2.7
       tsx:
         specifier: ^4.20.0
         version: 4.23.15
