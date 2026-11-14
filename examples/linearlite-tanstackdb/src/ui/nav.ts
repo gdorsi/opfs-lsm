@@ -1,6 +1,6 @@
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import type { IssueFilter } from "../client/filter.ts";
+import type { IssueFilter } from "../model/filter.ts";
 
 export function useIssueFilter(): IssueFilter {
   const { status, priority, q, sort, dir } = useSearch({ from: "/_app" });

@@ -43,6 +43,71 @@
           }
         ]
       }
+    },
+    {
+      "files": [
+        "examples/linearlite-tanstackdb/src/model/**"
+      ],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          {
+            "name": "window",
+            "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+          },
+          {
+            "name": "document",
+            "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+          },
+          {
+            "name": "navigator",
+            "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+          },
+          {
+            "name": "location",
+            "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+          },
+          {
+            "name": "BroadcastChannel",
+            "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+          },
+          {
+            "name": "EventSource",
+            "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+          },
+          {
+            "name": "localStorage",
+            "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+          }
+        ],
+        "no-restricted-properties": [
+          "error",
+          {
+            "object": "performance",
+            "property": "mark",
+            "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+          }
+        ],
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "react",
+                  "react-dom",
+                  "react-dom/*",
+                  "@tanstack/react-*",
+                  "../app/*",
+                  "../ui/*",
+                  "../routes/*"
+                ],
+                "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

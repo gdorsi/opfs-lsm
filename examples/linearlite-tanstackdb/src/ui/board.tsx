@@ -1,8 +1,8 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type DragEvent } from "react";
-import * as commands from "../client/commands.ts";
-import type { IssueFilter } from "../client/filter.ts";
-import { useBoardColumn, usePreloadDetails, useStatusCounts } from "../client/hooks.ts";
+import type { IssueFilter } from "../model/filter.ts";
+import { useBoardColumn, usePreloadDetails, useStatusCounts } from "../app/hooks.ts";
+import { model } from "../app/open.ts";
 import { STATUS_LABELS, type Issue, type StatusCode } from "../domain/model.ts";
 import { shortId } from "./format.ts";
 import { PriorityIcon, StatusIcon } from "./icons.tsx";
@@ -61,7 +61,7 @@ function Column({ status, count, filter, dragging, setDragging }: ColumnProps) {
     const index = indexAt(e);
     setAt(null);
     setDragging(null);
-    if (id) void commands.moveIssue(id, status, others[index - 1]?.kanbanorder ?? null, others[index]?.kanbanorder ?? null);
+    if (id) void model().commands.moveIssue(id, status, others[index - 1]?.kanbanorder ?? null, others[index]?.kanbanorder ?? null);
   };
 
   let seen = 0;

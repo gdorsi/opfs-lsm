@@ -222,9 +222,6 @@ importers:
       '@tanstack/db':
         specifier: 1.0.0-rc.1.5
         version: 1.0.0-rc.1.5(typescript@5.9.3)
-      '@tanstack/react-db':
-        specifier: 1.0.0-rc.1.5
-        version: 1.0.0-rc.1.5(react@19.3.1)(typescript@5.9.3)
       '@tanstack/react-router':
         specifier: ^1.170.46
         version: 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -1719,11 +1716,6 @@ packages:
   '@tanstack/pacer-lite@0.3.0':
     resolution: {integrity: sha512-+YeHKWX5Zd1Irga2smwAolGtzOcf8VVYhM2QI5XEA5TN58iKKufTjhvrbTCEgLLglR1ynHMGVT/l4m5PkwOdaw==}
     engines: {node: '>=20'}
-
-  '@tanstack/react-db@1.0.0-rc.1.5':
-    resolution: {integrity: sha512-6IDdNA8iNYtEAfbFkI/32gKC2INlV6b17CweaDpyfLdkQ+LyX/qWxDFBL6rKsS29crkAitepPkG3zXDHZpFBEw==}
-    peerDependencies:
-      react: '>=18.0.0'
 
   '@tanstack/react-router@1.170.46':
     resolution: {integrity: sha512-ez1iNIhsPjGlaDHg3BXWs67EWVIYzB2tbopEHYDESdkO7owgkGb5de52+5Kv2v1fxdkggcNzo35bdk4arTVGQw==}
@@ -4898,13 +4890,6 @@ snapshots:
   '@tanstack/history@1.162.5': {}
 
   '@tanstack/pacer-lite@0.3.0': {}
-
-  '@tanstack/react-db@1.0.0-rc.1.5(react@19.3.1)(typescript@5.9.3)':
-    dependencies:
-      '@tanstack/db': 1.0.0-rc.1.5(typescript@5.9.3)
-      react: 19.3.1
-    transitivePeerDependencies:
-      - typescript
 
   '@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:

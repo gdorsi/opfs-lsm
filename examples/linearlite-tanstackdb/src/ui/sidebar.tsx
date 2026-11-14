@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { keepSearch } from "./nav.ts";
-import { useSyncStatus, type SyncStatus } from "../client/hooks.ts";
+import { useSyncStatus } from "../app/hooks.ts";
+import type { SyncStatus } from "../model/sync.ts";
 
 export function Sidebar({ onNew }: { onNew(): void }) {
   return (
