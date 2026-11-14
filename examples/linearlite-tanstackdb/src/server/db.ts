@@ -2,26 +2,22 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementSync } from "node:sqlite";
-import { commentKey, type PriorityCode, type ServerRow, type StatusCode, STREAMS, type Stream } from "../domain/model.ts";
+import type { ServerRow } from "../domain/model.ts";
+import { STREAMS, type Stream, streamOf } from "../domain/stores.ts";
 
 const SCHEMA_VERSION = 1;
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS issue (
-  id TEXT PRIMARY KEY, title TEXT NOT NULL, status INTEGER NOT NULL, priority INTEGER NOT NULL,
-  kanbanorder TEXT NOT NULL, username TEXT NOT NULL, created INTEGER NOT NULL, modified INTEGER NOT NULL,
-  deleted INTEGER NOT NULL, version INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS issue_version ON issue (version);
-CREATE TABLE IF NOT EXISTS body (
-  id TEXT PRIMARY KEY, description TEXT NOT NULL, version INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS body_version ON body (version);
-CREATE TABLE IF NOT EXISTS comment (
-  id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, body TEXT NOT NULL, username TEXT NOT NULL,
-  created INTEGER NOT NULL, deleted INTEGER NOT NULL, version INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS comment_version ON comment (version);
-CREATE INDEX IF NOT EXISTS comment_issue ON comment (issue_id);
-`;
+const SQL_TYPE = { text: "TEXT", int: "INTEGER", bool: "INTEGER" } as const;
+
+function tableDdl(stream: Stream): string[] {
+  const { table, fields } = streamOf(stream);
+  const columns = Object.entries(fields).map(([name, f]) => `${name} ${SQL_TYPE[f.sql]}${name === "id" ? " PRIMARY KEY" : " NOT NULL"}`);
+  const indexes = [`${table}_version ON ${table} (version)`];
+  for (const [name, f] of Object.entries(fields)) if (f.indexed) indexes.push(`${f.indexed} ON ${table} (${name})`);
+  return [`CREATE TABLE IF NOT EXISTS ${table} (${columns.join(", ")});`, ...indexes.map((i) => `CREATE INDEX IF NOT EXISTS ${i};`)];
+}
+
+const SCHEMA = ["CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v) WITHOUT ROWID;", ...STREAMS.flatMap(tableDdl)].join("\n");
 
 type Dbrow = Record<string, SQLOutputValue>;
 
@@ -34,46 +30,26 @@ interface Codec<R> {
 
 type Codecs = { [S in Stream]: Codec<ServerRow<S>> };
 
-export const CODECS: Codecs = {
-  issues: {
-    table: "issue",
-    columns: ["id", "title", "status", "priority", "kanbanorder", "username", "created", "modified", "deleted", "version"],
-    fromDb: (r) => ({
-      id: r.id as string,
-      title: r.title as string,
-      status: r.status as StatusCode,
-      priority: r.priority as PriorityCode,
-      kanbanorder: r.kanbanorder as string,
-      username: r.username as string,
-      created: r.created as number,
-      modified: r.modified as number,
-      deleted: r.deleted === 1,
-      version: r.version as number,
-    }),
-    params: (r) => [r.id, r.title, r.status, r.priority, r.kanbanorder, r.username, r.created, r.modified, r.deleted ? 1 : 0, r.version],
-  },
-  bodies: {
-    table: "body",
-    columns: ["id", "description", "version"],
-    fromDb: (r) => ({ id: r.id as string, description: r.description as string, version: r.version as number }),
-    params: (r) => [r.id, r.description, r.version],
-  },
-  comments: {
-    table: "comment",
-    columns: ["id", "issue_id", "body", "username", "created", "deleted", "version"],
-    fromDb: (r) => ({
-      key: commentKey(r.issue_id as string, r.id as string),
-      id: r.id as string,
-      issue_id: r.issue_id as string,
-      body: r.body as string,
-      username: r.username as string,
-      created: r.created as number,
-      deleted: r.deleted === 1,
-      version: r.version as number,
-    }),
-    params: (r) => [r.id, r.issue_id, r.body, r.username, r.created, r.deleted ? 1 : 0, r.version],
-  },
-};
+function codec<S extends Stream>(stream: S): Codec<ServerRow<S>> {
+  const { table, fields, derive } = streamOf(stream);
+  const columns = Object.keys(fields);
+  const bools = columns.map((c) => fields[c]!.sql === "bool");
+  return {
+    table,
+    columns,
+    fromDb(r) {
+      const row: Record<string, unknown> = {};
+      columns.forEach((c, i) => (row[c] = bools[i] ? r[c] === 1 : r[c]));
+      return { ...derive?.(row as never), ...row } as ServerRow<S>;
+    },
+    params(r) {
+      const row = r as Record<string, unknown>;
+      return columns.map((c, i) => (bools[i] ? (row[c] ? 1 : 0) : row[c])) as SQLInputValue[];
+    },
+  };
+}
+
+export const CODECS = Object.fromEntries(STREAMS.map((s) => [s, codec(s)])) as Codecs;
 
 export interface StreamStatements {
   get: StatementSync;
@@ -111,10 +87,10 @@ export function statements(db: DatabaseSync): Statements {
   }
   s = {
     streams,
-    commentsOf: db.prepare(`SELECT ${CODECS.comments.columns.join(", ")} FROM comment WHERE issue_id = ?`),
+    commentsOf: db.prepare(`SELECT ${CODECS.comments.columns.join(", ")} FROM ${CODECS.comments.table} WHERE issue_id = ?`),
     getMeta: db.prepare("SELECT v FROM meta WHERE k = ?"),
     setMeta: db.prepare("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v"),
-    issueExists: db.prepare("SELECT 1 AS found FROM issue WHERE id = ?"),
+    issueExists: db.prepare(`SELECT 1 AS found FROM ${CODECS.issues.table} WHERE id = ?`),
   };
   cache.set(db, s);
   return s;

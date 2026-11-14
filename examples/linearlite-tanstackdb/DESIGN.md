@@ -53,7 +53,7 @@ export type Issue = Synced & {               // on demand, ~220 B
   readonly id: string; title: string; status: StatusCode; priority: PriorityCode; kanbanorder: string;
   readonly username: string; readonly created: number; modified: number; deleted: boolean;
 };
-// src/client/store.ts. What kv holds: the fields plus the two sort keys, derived on every write (see Indexes).
+// src/domain/model.ts. What kv holds: the fields plus the two sort keys, derived on every write (see Indexes).
 export type StoredIssue = Issue & { readonly priorityOrder: number; readonly statusOrder: string };
 export type Body = Synced & { readonly id: string; description: string };   // on demand, by id
 export type Comment = Synced & {                                            // on demand, by issue
@@ -61,7 +61,7 @@ export type Comment = Synced & {                                            // o
   readonly id: string; readonly issue_id: string; body: string; readonly username: string;
   readonly created: number; deleted: boolean;
 };
-export type Stream = "issues" | "bodies" | "comments";
+export type Stream = "issues" | "bodies" | "comments";   // the streams of STORES
 /** One eager row per browser (`id: "sync"`), written by the leader, read by every tab's status bar. */
 export type SyncState = {
   readonly id: "sync"; format: number; epoch: string | null; cursors: Record<Stream, number>; head: number;
@@ -73,6 +73,11 @@ Server (`node:sqlite`, `data/linearlite.db`): tables `issue`, `body`, `comment` 
 `version INTEGER NOT NULL` (indexed); table `meta(k, v)` holds `head` (the global version counter) and `epoch` (a
 random id, so a client notices a reseeded server and starts over). Issues and comments carry `deleted`, and deletes
 are tombstones. Bodies are 1:1 with issues and are never tombstoned: an issue's tombstone hides its body.
+
+`STORES` (`src/domain/stores.ts`) lists every store once. Per stream it holds the load mode, the pull mode, the docstore
+indexes, the server table and, per column, its SQL type, its push parser, whether a local edit may change it and its
+server index. The stream list, the mutable fields, the push validation, the docstore schema and the server DDL derive
+from it, and so does the push order: streams apply in table order, so a child follows its parent.
 
 ## One write path
 
@@ -195,7 +200,7 @@ reloads every loaded query.
 ### Indexes
 
 ```ts
-// src/client/store.ts
+// src/domain/stores.ts, STORES[stream].indexes
 issues: {
   byCreated:  { on: ["deleted", "created"] },
   byTitle:    { on: ["deleted", "title"] },

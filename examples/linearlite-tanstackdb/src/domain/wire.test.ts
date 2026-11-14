@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { MAX_DETAIL_IDS, MAX_OPS, parseDetailRequest, parsePullRequest, parsePushRequest, parseUsername, WireError } from "./wire.ts";
+import { WireError } from "./parse.ts";
+import { MAX_DETAIL_IDS, MAX_OPS, parseDetailRequest, parsePullRequest, parsePushRequest, parseUsername } from "./wire.ts";
 
 const rejects = (fn: () => unknown) => assert.throws(fn, (e) => e instanceof WireError && e.status === 400);
 
