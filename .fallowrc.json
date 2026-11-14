@@ -30,7 +30,6 @@
     "agent-browser"
   ],
   "ignoreDependencies": [
-    "@automerge/automerge-repo-storage-indexeddb",
     "lucide-react",
     "vue"
   ],
