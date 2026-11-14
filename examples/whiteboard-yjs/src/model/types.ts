@@ -168,11 +168,16 @@ export type Env = {
   schedule(fn: () => void, ms: number): () => void;
 };
 
+/** Relays a doc's updates to the other tabs. Returns the detach. It knows nothing of storage. */
+export type Sync = (docName: string, doc: Y.Doc) => () => void;
+
 /** Called with every Yjs update a doc emits, local or remote, for bytes-in accounting. */
 export type Meter = (docName: string, update: Uint8Array) => void;
 
 /** The knobs of a board and of a workspace. */
 export type SessionOptions = {
+  /** Default: no relay. */
+  sync?: Sync;
   /** Default 32. 0 writes every pointer event and Infinity writes at the end of the gesture only. */
   gestureIntervalMs?: number;
   /** Default 400. A flush runs this long after the first unflushed update, and again while updates keep coming. `null` never flushes by itself. */

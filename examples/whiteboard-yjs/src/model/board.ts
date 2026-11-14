@@ -66,6 +66,7 @@ class LiveBoard implements Board {
   private readonly env: Env;
   private readonly history: Y.UndoManager;
   private readonly unwatch: () => void;
+  private readonly unsync: (() => void) | undefined;
   private readonly saver: Saver;
   private readonly settings: Settings;
   private readonly listeners = new Set<() => void>();
@@ -99,6 +100,7 @@ class LiveBoard implements Board {
     this.history = new Y.UndoManager(shapesOf(doc), { trackedOrigins: new Set([LOCAL]), captureTimeout: Infinity });
     this.unwatch = watch(doc, (ids) => this.onChanged(ids));
     doc.on("update", this.onUpdate);
+    this.unsync = settings.sync?.(boardDocName(id), doc);
     this.current = this.snapshot();
   }
 
@@ -241,6 +243,7 @@ class LiveBoard implements Board {
         this.revert(live);
       }
       this.saver.close();
+      this.unsync?.();
       await this.binding.detach();
     } finally {
       this.doc.off("update", this.onUpdate);
