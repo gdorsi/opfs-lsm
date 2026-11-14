@@ -1,5 +1,6 @@
 import { OWNERS, type OnDemandStore, type Todo, type TodoQuery } from "../../core/families.ts";
 import { defineWorkload, type Phase, type PhaseContext } from "../../core/types.ts";
+import { yieldTask } from "../../page/main-thread.ts";
 import { permutation } from "../../page/model.ts";
 import { ownerOf, rowBytes, todoId, todoRow } from "../../page/tanstack.ts";
 
@@ -7,7 +8,8 @@ import { ownerOf, rowBytes, todoId, todoRow } from "../../page/tanstack.ts";
  * The todo rows of tanstack/todos in an on-demand collection: bulk inserts,
  * then a cold open and live queries that each load their own rows. A query is
  * timed from creating the live query to its first result, plus releasing it.
- * Every result is compared with the model.
+ * Every result is compared with the model. The query phases report main-thread
+ * blocking and yield a macrotask between queries, as an app does between clicks.
  */
 type Ctx = PhaseContext<"tanstack-ondemand">;
 
@@ -48,6 +50,7 @@ async function run(ctx: Ctx, store: OnDemandStore, op: string, q: TodoQuery, cou
     },
     count,
   );
+  await yieldTask();
   return rows;
 }
 
@@ -98,13 +101,13 @@ export default defineWorkload({
     phase("first-query", async (ctx, store) => {
       const want = ownerRows(ctx, 0);
       checkRows(ctx, await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(0) }, want.length), want, "first query");
-    }),
+    }, { mainThread: true }),
     phase("query-owner", async (ctx, store) => {
       for (let o = 0; o < OWNERS; o++) {
         const want = ownerRows(ctx, o);
         checkRows(ctx, await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(o) }, want.length), want, `owner ${o}`);
       }
-    }),
+    }, { mainThread: true }),
     phase("query-page", async (ctx, store) => {
       for (let k = 0; k < ctx.params.ops; k++) {
         const o = Math.floor(ctx.rng() * OWNERS);
@@ -115,14 +118,14 @@ export default defineWorkload({
         checkRows(ctx, got, want, `page of owner ${o} from ${from}`);
         ctx.check(got.every((r, j) => j === 0 || got[j - 1]!.createdAt < r.createdAt), `page of owner ${o} from ${from} is not ascending`);
       }
-    }, { page: "fresh" }),
+    }, { page: "fresh", mainThread: true }),
     phase("query-ids", async (ctx, store) => {
       for (let k = 0; k < ctx.params.ops; k++) {
         const want = Array.from({ length: IDS }, () => Math.floor(ctx.rng() * ctx.model.end));
         const unique = [...new Set(want)];
         checkRows(ctx, await run(ctx, store, "ids", { kind: "ids", ids: unique.map(todoId) }, 1), unique, `ids ${unique[0]}…`);
       }
-    }, { page: "fresh" }),
+    }, { page: "fresh", mainThread: true }),
     phase("update", async (ctx, store) => {
       const perOwner = Math.ceil(ctx.params.entries / 10 / OWNERS);
       for (let o = 0; o < OWNERS; o++) {

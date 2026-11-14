@@ -83,6 +83,19 @@ Every run record carries peaks sampled every 100 ms over CDP: `Runtime.getHeapUs
 
 `node bench/probes/cpu-profile.ts <workload> <phase> [--contender kv/kv]` records a V8 CPU profile of one phase, in the tab and in the SharedWorker, and prints self time per function. The build is not minified, so the names are the source's. It writes each `.cpuprofile` to `bench/results/` for DevTools. Profiling slows the run, so compare the shares between functions, not the wall time.
 
+## Main thread
+
+kv answers reads on the tab's main thread, while IndexedDB works in the browser process, so latency alone hides what kv costs a frame. A phase with `mainThread: true` records the tab's main thread while it runs:
+
+- **Long tasks**, from the `longtask` observer: their count, the longest, and blocked ms. Blocked ms sums each task's time past 50 ms, the Total Blocking Time rule.
+- **Frames**, from `requestAnimationFrame`: their count, frame ms, the longest frame, and dropped frames. Frame ms is the display's interval, the median step of the vsync timestamps Chrome passes to the callbacks. Dropped frames sums `round(gap / frame ms) - 1` over the gaps.
+
+The long task observer cannot see a block of 17 to 50 ms, which still drops frames. So 0 long tasks means nothing without 0 dropped frames next to it. A gap is the time between two callbacks running (`performance.now()`), not between their timestamps, which stay at 16.7 ms steps through a block under about 40 ms.
+
+Only phases that model a user interaction opt in, and they yield a macrotask between interactions. A loop of thousands of awaited calls with no yield is one giant task, which says nothing about a user.
+
+`node bench/probes/main-thread.ts` checks the collector in headless Chrome. It passes when 300 ms of idle drops no frame at a 8 to 34 ms frame interval, when a planted 30 ms block drops one or two frames with a longest frame of 30 to 70 ms and no long task, and when a planted 200 ms busy loop gives exactly one long task of 200 to 260 ms and 150 to 210 ms blocked.
+
 ## Bundle size
 
 `pnpm bench:size` measures what Vite emits for each row in `size/rows.ts`: the import an app writes. "At import" is the entry chunk and its static imports. "After open" adds every file those load later: the SharedWorker chunk, its imports and the `.wasm`. Each file is compressed on its own (gzip -9, brotli 11). `--check` fails when a row is over its brotli budget, and CI runs it. The build also fails if any module is inlined as a `data:` URL, which is how Vite broke kv's SharedWorker before its URL was written inline in the constructor.
