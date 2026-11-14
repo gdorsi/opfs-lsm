@@ -7,8 +7,8 @@ import type { DocBinding, DocStorage } from "../model/index.ts";
  *
  * y-indexeddb has no flush and reports no failed write, so this adds both. A flush waits on a write
  * transaction of its own, which completes after every update written before it. A write that failed
- * shows up as an error or abort event on the connection. The flush that sees one rejects, and the
- * next flush writes the whole doc state again, the way `KvPersistence.flush` repairs.
+ * shows up as an error or abort event on the connection. The next flush then writes the whole doc
+ * state again, and rejects if that write fails too, the way `KvPersistence.flush` repairs.
  */
 export function idbStorage(prefix = "whiteboard"): DocStorage {
   return {
@@ -43,9 +43,12 @@ export function idbStorage(prefix = "whiteboard"): DocStorage {
       return {
         flush,
         async detach() {
-          await flush();
-          ended = true;
-          await persistence.destroy();
+          try {
+            await flush();
+          } finally {
+            ended = true;
+            await persistence.destroy();
+          }
         },
         async clear() {
           ended = true;

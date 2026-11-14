@@ -234,5 +234,29 @@ for (const backend of BACKENDS) {
       assert.deepEqual(json(again), { kept: 1, lost: 2, after: 3 });
       if (backend === "kv") assert.deepEqual(unhandled, []);
     });
+
+    test("a detach whose flush fails still stops storing", failing, async (t) => {
+      const d = fresh();
+      collectUnhandled(t);
+
+      const doc = new Y.Doc();
+      const binding = await d.storage.attach("d", doc);
+      put(doc, "kept", 1);
+      await binding.flush();
+
+      d.failWrites!(true);
+      put(doc, "lost", 2);
+      await assert.rejects(binding.detach());
+      d.failWrites!(false);
+      // From another client, so a reader could apply it without the lost update.
+      const other = new Y.Doc();
+      put(other, "after", 3);
+      Y.applyUpdate(doc, Y.encodeStateAsUpdate(other));
+
+      const again = new Y.Doc();
+      const reader = await d.storage.attach("d", again);
+      assert.deepEqual(json(again), { kept: 1 });
+      await reader.detach();
+    });
   });
 }
