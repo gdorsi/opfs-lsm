@@ -32,7 +32,7 @@ const KV_BATCH_OPS = 10_000;
 const MIN_EVICTION = 100;
 
 export const KV_PATH: BackendPath = {
-  name: "kv",
+  name: "docstore",
   loads: "docstoreCollectionOptions over openDocStore; issues, bodies and comments on demand through docstore indexes, sync eager",
   writes: "utils.transact: read and write in one kv transaction, sliced to kv's 10,000-op batch cap by the store's index count",
   counts: "docstore index entries per status (byStatus, byPriority), no document read; a search reads the documents its text index matches, and a one-word search total counts index entries",

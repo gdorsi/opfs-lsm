@@ -35,7 +35,7 @@ export interface Anchoring {
 
 /** How a backend serves each concern, one line each, for the bench report to print next to its numbers. */
 export type BackendPath = {
-  readonly name: "kv" | "indexeddb" | "sqlite";
+  readonly name: "docstore" | "indexeddb" | "sqlite";
   readonly loads: string;
   readonly writes: string;
   readonly counts: string;

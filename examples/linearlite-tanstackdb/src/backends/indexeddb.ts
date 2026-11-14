@@ -5,7 +5,7 @@ import type { Backend, BackendPath, CollectionRows, StatusCounts, StoreName, Sto
 import type { IssueFilter } from "../model/filter.ts";
 import { recount, type Pause } from "./recount.ts";
 
-export const INDEXEDDB_PATH: BackendPath = {
+const INDEXEDDB_PATH: BackendPath = {
   name: "indexeddb",
   loads: "indexedDBCollectionOptions on createIndexedDB, eager (its only mode): every row of every store is read at open; one in-memory BTree index per field the stores index",
   writes: "under a Web Lock per store: rows read in one IndexedDB readonly transaction and merged, then written with the collection's acceptMutations in one readwrite transaction",
