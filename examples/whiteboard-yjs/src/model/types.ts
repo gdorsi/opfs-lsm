@@ -189,4 +189,32 @@ export type SessionOptions = {
 export type BoardOptions = SessionOptions & {
   id: BoardId;
   storage: DocStorage;
+  /** Called once, after the board has shut down. */
+  onClose?: () => void;
 };
+
+export type BoardMeta = {
+  readonly id: BoardId;
+  readonly title: string;
+  readonly createdAt: number;
+};
+
+export type WorkspaceOptions = SessionOptions & { storage: DocStorage };
+
+export interface Workspace {
+  /** Oldest first, ties by id. The same array until the list changes, here or in another tab. */
+  boards(): readonly BoardMeta[];
+  /** Called when the board list or the save state changes. */
+  subscribe(listener: () => void): () => void;
+  /** Whether storage has acked the board list. */
+  save(): SaveState;
+  createBoard(title: string): BoardId;
+  renameBoard(id: BoardId, title: string): void;
+  /** Hides the board at once. Resolves when its stored data and its entry are gone. A crash on the way is finished by the next `openWorkspace`. */
+  deleteBoard(id: BoardId): Promise<void>;
+  /** Rejects with BoardLoadError. A board that is already open comes back as the same Board. */
+  openBoard(id: BoardId): Promise<Board>;
+  flush(): Promise<void>;
+  /** Closes every open board. */
+  close(): Promise<void>;
+}

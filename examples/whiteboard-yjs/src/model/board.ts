@@ -29,7 +29,7 @@ const GESTURE_INTERVAL_MS = 32;
 const LOCAL = Symbol("whiteboard-yjs.local");
 const HOME: Viewport = { x: 0, y: 0, zoom: 1 };
 
-const boardDocName = (id: BoardId): string => `board/${id}`;
+export const boardDocName = (id: BoardId): string => `board/${id}`;
 
 type Kind = GestureStart["kind"];
 type Settings = Omit<BoardOptions, "id" | "storage" | "env">;
@@ -251,6 +251,7 @@ class LiveBoard implements Board {
       this.history.destroy();
       this.doc.destroy();
       this.listeners.clear();
+      this.settings.onClose?.();
     }
   }
 

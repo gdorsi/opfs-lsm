@@ -2,6 +2,7 @@ export type {
   Applied,
   Board,
   BoardId,
+  BoardMeta,
   BoardOptions,
   BoardView,
   Box,
@@ -28,6 +29,8 @@ export type {
   Style,
   Sync,
   Viewport,
+  Workspace,
+  WorkspaceOptions,
   Z,
 } from "./types.ts";
 export { BoardLoadError, openBoard } from "./board.ts";
@@ -36,3 +39,4 @@ export { plan } from "./plan.ts";
 export { applyPatchPlain, digestShapes } from "./digest.ts";
 export { boardId, penShape, shapeId } from "./shapes.ts";
 export { broadcastSync, type Channel, type ChannelConstructor } from "./sync.ts";
+export { openWorkspace } from "./workspace.ts";

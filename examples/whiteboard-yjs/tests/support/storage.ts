@@ -68,3 +68,69 @@ export function flakyStorage() {
   };
   return { storage, control };
 }
+
+/**
+ * A disk that keeps an update only once it is flushed, and a process that can die. After `dieAfter(n)` completes n
+ * storage operations (an update handed to storage, a flush, a clear, an attach), the process is dead: later calls
+ * reject and later updates vanish. What was not flushed by then is lost. `restart()` is a new process on the same disk.
+ */
+export function crashDisk() {
+  const disk = new Map<string, Uint8Array[]>();
+  let budget = Infinity;
+  let done = 0;
+  let dead = false;
+  const allowed = (): boolean => {
+    if (!dead && done >= budget) dead = true;
+    if (dead) return false;
+    done++;
+    return true;
+  };
+  const died = () => new Error("the process died");
+
+  const storage: DocStorage = {
+    async attach(docName, doc) {
+      if (!allowed()) throw died();
+      const queued: Uint8Array[] = [];
+      const store = (update: Uint8Array) => void (allowed() && queued.push(update));
+      const flush = async () => {
+        if (!allowed()) throw died();
+        disk.set(docName, [...(disk.get(docName) ?? []), ...queued.splice(0)]);
+      };
+      const binding: DocBinding = {
+        flush,
+        detach: async () => {
+          await flush();
+          doc.off("update", store);
+        },
+        clear: async () => {
+          if (!allowed()) throw died();
+          doc.off("update", store);
+          queued.length = 0;
+          disk.delete(docName);
+        },
+      };
+      Y.transact(doc, () => (disk.get(docName) ?? []).forEach((update) => Y.applyUpdate(doc, update)), binding, false);
+      doc.on("update", store);
+      return binding;
+    },
+  };
+  return {
+    storage,
+    /** The updates on disk for a doc, or undefined when it has none. */
+    stored: (docName: string) => (disk.get(docName)?.length ? disk.get(docName) : undefined),
+    dieAfter(operations: number) {
+      budget = operations;
+      done = 0;
+      dead = false;
+    },
+    /** The operations completed since `dieAfter`, or since the start. */
+    get operations() {
+      return done;
+    },
+    restart() {
+      budget = Infinity;
+      done = 0;
+      dead = false;
+    },
+  };
+}
