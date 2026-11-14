@@ -63,9 +63,16 @@ export type Applied = { readonly patch: Patch; readonly created: readonly ShapeI
 
 export type Viewport = { readonly x: number; readonly y: number; readonly zoom: number };
 
+/** Whether storage has acked every update so far. `error` lasts until a later flush resolves. */
+export type SaveState =
+  | { readonly kind: "saved" }
+  | { readonly kind: "saving" }
+  | { readonly kind: "error"; readonly error: Error };
+
 /**
  * A new object whenever anything changes, so it works with useSyncExternalStore. `shapes` is the board's live map,
- * updated in place: read it again after the view changes, and never keep it across a dispatch.
+ * updated in place: read it again after the view changes, and never keep it across a dispatch. While a gesture is
+ * live, `shapes` and `order` show its preview.
  */
 export type BoardView = {
   readonly id: BoardId;
@@ -77,9 +84,41 @@ export type BoardView = {
   readonly viewport: Viewport;
   readonly canUndo: boolean;
   readonly canRedo: boolean;
+  readonly save: SaveState;
   /** Stored shape records that failed parsing and were left out. */
   readonly skipped: number;
 };
+
+export type GestureStart =
+  | { readonly kind: "translate"; readonly ids: readonly ShapeId[] }
+  | { readonly kind: "resize"; readonly ids: readonly ShapeId[]; readonly from: Box }
+  | { readonly kind: "draw"; readonly style: Style };
+
+export type GestureInput = {
+  /** The total offset from pointer down, not from the last event. */
+  translate: { readonly dx: number; readonly dy: number };
+  /** The box the `from` box has become. */
+  resize: { readonly to: Box };
+  /** The next point of the stroke, in board coordinates. */
+  draw: Point;
+};
+
+/**
+ * One pointer interaction, and one undo step. `t` is the event's own timeStamp in ms: the model has no clock of its own.
+ *
+ * `update` always changes the view. It writes to the doc only when `t` is `gestureIntervalMs` or more after the last
+ * write, and the first update writes. 0 writes every event. Infinity never writes before `end`. Every write carries
+ * absolute targets, so the final state is the same at any interval. "draw" writes once, at `end`.
+ *
+ * While a gesture is live, `dispatch`, `undo`, `redo` and `beginGesture` throw. A gesture that is over throws too.
+ */
+export interface Gesture<K extends GestureStart["kind"]> {
+  update(input: GestureInput[K], t: number): void;
+  /** Stores what is still unstored. Returns the whole gesture as one patch. Empty when it changed nothing. */
+  end(): Applied;
+  /** Puts the board back as it was before the gesture and leaves no undo step. It also ends the redo history. */
+  cancel(): void;
+}
 
 export interface Board {
   readonly id: BoardId;
@@ -88,6 +127,7 @@ export interface Board {
 
   /** One Y transaction, one Yjs update, one undo step. Unknown ids are skipped. */
   dispatch(command: Command): Applied;
+  beginGesture<K extends GestureStart["kind"]>(start: Extract<GestureStart, { kind: K }>): Gesture<K>;
   select(ids: Iterable<ShapeId>): void;
   setViewport(viewport: Viewport): void;
   /** Reverts this board's own last command. Never another tab's. */
@@ -96,6 +136,7 @@ export interface Board {
 
   /** Resolves when every update so far is acked by storage. Rejects with the storage error. */
   flush(): Promise<void>;
+  /** Cancels a live gesture, flushes and detaches. Calling it again returns the same promise. */
   close(): Promise<void>;
 }
 
@@ -121,10 +162,26 @@ export interface DocBinding {
 export type Env = {
   /** A fresh id. 12 base36 characters by default. */
   id(): string;
+  /** Wall-clock milliseconds. It stamps `createdAt` and nothing else: gestures run on the event's own timestamp. */
+  now(): number;
+  /** Runs `fn` once, `ms` from now. Returns the cancel. Only the autosave schedules. */
+  schedule(fn: () => void, ms: number): () => void;
 };
 
-export type BoardOptions = {
+/** Called with every Yjs update a doc emits, local or remote, for bytes-in accounting. */
+export type Meter = (docName: string, update: Uint8Array) => void;
+
+/** The knobs of a board and of a workspace. */
+export type SessionOptions = {
+  /** Default 32. 0 writes every pointer event and Infinity writes at the end of the gesture only. */
+  gestureIntervalMs?: number;
+  /** Default 400. A flush runs this long after the first unflushed update, and again while updates keep coming. `null` never flushes by itself. */
+  autosaveMs?: number | null;
+  meter?: Meter;
+  env?: Env;
+};
+
+export type BoardOptions = SessionOptions & {
   id: BoardId;
   storage: DocStorage;
-  env?: Env;
 };

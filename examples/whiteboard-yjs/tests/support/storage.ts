@@ -46,3 +46,25 @@ export function link(a: Y.Doc, b: Y.Doc): void {
   a.on("update", (update: Uint8Array, origin: unknown) => origin === "link" || Y.applyUpdate(b, update, "link"));
   b.on("update", (update: Uint8Array, origin: unknown) => origin === "link" || Y.applyUpdate(a, update, "link"));
 }
+
+/** memoryStorage whose flush rejects while `control.failing` is set, and counts every flush it is asked for. */
+export function flakyStorage() {
+  const inner = memoryStorage();
+  const control = { failing: false, flushes: 0, hold: undefined as Promise<void> | undefined };
+  const storage: DocStorage & typeof inner = {
+    updates: inner.updates,
+    async attach(docName, doc) {
+      const binding = await inner.attach(docName, doc);
+      return {
+        ...binding,
+        async flush() {
+          control.flushes++;
+          if (control.hold) await control.hold;
+          if (control.failing) throw new Error("disk full");
+          return binding.flush();
+        },
+      };
+    },
+  };
+  return { storage, control };
+}
