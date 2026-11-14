@@ -41,6 +41,9 @@ importers:
       '@opfs-lsm/docstore':
         specifier: workspace:*
         version: link:../packages/docstore
+      '@opfs-lsm/example-whiteboard-yjs':
+        specifier: workspace:*
+        version: link:../examples/whiteboard-yjs
       '@opfs-lsm/fate':
         specifier: workspace:*
         version: link:../packages/fate
