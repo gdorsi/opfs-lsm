@@ -8,14 +8,20 @@
   },
   "scripts": {
     "check": "tsc -p tsconfig.json",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts tests/contract/*.test.ts && pnpm test:kv && pnpm test:idb",
+    "test:kv": "WB_STORAGE=kv tsx --test tests/*.test.ts",
+    "test:idb": "WB_STORAGE=idb tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "@opfs-lsm/kv": "workspace:*",
+    "@opfs-lsm/yjs": "workspace:*",
     "fractional-indexing": "^3.2.0",
+    "y-indexeddb": "^9.0.12",
     "yjs": "^13.6.33"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "fake-indexeddb": "^6.2.7",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }

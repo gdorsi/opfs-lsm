@@ -42,12 +42,22 @@ await persistence.flush();
 // throws ConstraintError, an update is at most 8 MiB
 ```
 
+## Deleting a document
+
+```ts
+await persistence.clearData(); // destroys it, then removes every stored update of this doc
+```
+
+Other documents in the db are untouched. Updates the doc receives after `clearData` are not stored.
+
 ## Flush and destroy
 
 ```ts
 await persistence.flush(); // every update written so far is acked
 await persistence.destroy(); // detaches from doc, then flushes
 ```
+
+If a write failed, the next `flush()` writes the whole doc state again. It rejects if that write fails too, and the next call retries.
 
 ## Sharing a database
 

@@ -50,3 +50,95 @@ test("a load at the trim size merges updates into one", async () => {
   assert.equal(third.doc.getText("t").toString(), "x".repeat(12));
   await db.close();
 });
+
+test("clearData empties one document and leaves the others on the same db", async () => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  const a = await reopen(db, "a");
+  const ab = await reopen(db, "a/b");
+  a.doc.getText("t").insert(0, "gone");
+  ab.doc.getText("t").insert(0, "kept");
+  await a.p.flush();
+  await ab.p.flush();
+  a.doc.getText("t").insert(4, " unflushed");
+
+  await a.p.clearData();
+  a.doc.getText("t").insert(0, "after ");
+  await a.p.flush();
+  await ab.p.destroy();
+
+  const clearedAgain = await reopen(db, "a");
+  assert.equal(clearedAgain.doc.getText("t").toString(), "");
+  assert.equal(clearedAgain.p.loadedUpdates, 0);
+  const keptAgain = await reopen(db, "a/b");
+  assert.equal(keptAgain.doc.getText("t").toString(), "kept");
+  assert.equal(keptAgain.p.loadedUpdates, 1);
+  await db.close();
+});
+
+/** `db` whose `put` rejects while `failing()` is true. */
+function flaky(db: Db, failing: () => boolean): Db {
+  return new Proxy(db, {
+    get(target, key) {
+      if (key === "put" && failing()) return () => Promise.reject(new Error("disk full"));
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+test("a flush after a failed write stores the whole doc again", async () => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  let fail = false;
+  const doc = new Y.Doc();
+  const p = new KvPersistence(flaky(db, () => fail), "a", doc);
+  await p.whenSynced;
+  doc.getText("t").insert(0, "one ");
+  fail = true;
+  doc.getText("t").insert(4, "two ");
+  fail = false;
+  doc.getText("t").insert(8, "three");
+  await p.flush();
+  await p.destroy();
+
+  const again = await reopen(db, "a");
+  assert.equal(again.doc.getText("t").toString(), "one two three");
+  await db.close();
+});
+
+test("flush rejects while the repair write fails, and resolves once it lands", async () => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  let fail = true;
+  const doc = new Y.Doc();
+  const p = new KvPersistence(flaky(db, () => fail), "a", doc);
+  await p.whenSynced;
+  doc.getText("t").insert(0, "lost");
+  await assert.rejects(p.flush(), /disk full/);
+  await assert.rejects(p.flush(), /disk full/);
+  fail = false;
+  await p.flush();
+  await p.flush();
+  await p.destroy();
+
+  const again = await reopen(db, "a");
+  assert.equal(again.doc.getText("t").toString(), "lost");
+  await db.close();
+});
+
+test("a failed write with no flush waiting is not an unhandled rejection", async () => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  const unhandled: unknown[] = [];
+  const record = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", record);
+  try {
+    const doc = new Y.Doc();
+    const p = new KvPersistence(flaky(db, () => true), "a", doc);
+    await p.whenSynced;
+    doc.getText("t").insert(0, "x");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+    await assert.rejects(p.destroy(), /disk full/);
+  } finally {
+    process.off("unhandledRejection", record);
+    await db.close();
+  }
+});
