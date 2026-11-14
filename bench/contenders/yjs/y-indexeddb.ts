@@ -1,6 +1,6 @@
 import { IndexeddbPersistence } from "y-indexeddb";
 import { defineContender } from "../../core/types.ts";
-import { done } from "../../page/idb.ts";
+import { done, request } from "../../page/idb.ts";
 
 export default defineContender({
   family: "yjs",
@@ -24,6 +24,12 @@ export default defineContender({
           async detach() {
             live.delete(p);
             await p.destroy();
+          },
+          async clear() {
+            live.delete(p);
+            await p.clearData();
+            // clearData does not wait for its deleteDatabase; a second request for the same name completes after it.
+            await request(indexedDB.deleteDatabase(`${name}/${docName}`));
           },
         };
       },

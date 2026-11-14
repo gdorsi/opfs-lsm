@@ -1,10 +1,13 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useFateClient, useListView, useRefetch, useRequest, useView, view, type ViewRef } from "react-fate";
+import { filterArgs, windowArgs } from "../client/args.ts";
 import * as commands from "../client/commands.ts";
+import { CACHE_ONLY, REQUEST } from "../client/fate.ts";
 import type { IssueFilter } from "../client/filter.ts";
-import { LIST_WINDOW, useIssueWindow } from "../client/hooks.ts";
-import type { Issue } from "../domain/model.ts";
+import { usePending, useRefetchOnDelivery } from "../client/hooks.ts";
+import { totalOf, type IssueEntity } from "../domain/model.ts";
 import { formatDate, initial, shortId } from "./format.ts";
 import { isTyping, keepSearch, useCreateModal, useIssueFilter, useKeys, useSetFilter } from "./nav.ts";
 import { PriorityPicker, StatusPicker } from "./pickers.tsx";
@@ -12,7 +15,14 @@ import { Toolbar } from "./toolbar.tsx";
 
 const ROW = 40;
 const OVERSCAN = 12;
-const LEAD = 30;
+
+const RowView = view<IssueEntity>()({ id: true, title: true, status: true, priority: true, username: true, modified: true });
+/** A list window is complete as fetched: it never pages. */
+const WindowView = { items: { node: RowView } } as const;
+
+/** One window of the filtered, sorted list; also what a new issue is inserted into when the list is newest first. */
+export const windowRequest = (filter: IssueFilter, row: number) => ({ issues: { args: windowArgs(filter, row), list: WindowView } });
+const countsRequest = (filter: IssueFilter) => ({ counts: { args: filterArgs(filter), value: true as const } });
 
 /**
  * Scroll offset per filter, so Back from an issue lands where the user left. The router's own scroll restoration is
@@ -21,22 +31,18 @@ const LEAD = 30;
 const scrolled = new Map<string, number>();
 
 export function ListScreen() {
-  const filter = useIssueFilter();
-  const view = useIssueWindow(filter);
+  const live = useIssueFilter();
+  // A new filter or sort keeps the current list on screen until its counts arrive.
+  const filter = useDeferredValue(live);
+  const request = useMemo(() => countsRequest(filter), [filter]);
+  const { counts } = useRequest(request, REQUEST);
+  useRefetchOnDelivery(request);
+  const total = totalOf(counts);
   const filterKey = JSON.stringify(filter);
-  useEffect(() => {
-    if (view.rows.length > 0 && performance.getEntriesByName("linearlite:first-rows").length === 0) performance.mark("linearlite:first-rows");
-  }, [view.rows.length]);
   return (
     <>
-      <Toolbar title="All issues" count={view.total} filter={filter} />
-      {view.total === undefined ? (
-        <div className="loading">Loading…</div>
-      ) : view.total === 0 ? (
-        <ListEmpty filter={filter} />
-      ) : (
-        <VirtualList key={filterKey} filterKey={filterKey} {...view} total={view.total} />
-      )}
+      <Toolbar title="All issues" count={total} filter={live} />
+      {total === 0 ? <ListEmpty filter={filter} /> : <VirtualList key={filterKey} filterKey={filterKey} filter={filter} total={total} />}
     </>
   );
 }
@@ -70,15 +76,7 @@ function ListEmpty({ filter }: { filter: IssueFilter }) {
   );
 }
 
-interface ListProps {
-  readonly filterKey: string;
-  readonly rows: readonly Issue[];
-  readonly offset: number;
-  readonly total: number;
-  setRange(start: number, end: number): void;
-}
-
-function VirtualList({ filterKey: key, rows, offset, total, setRange }: ListProps) {
+function VirtualList({ filterKey: key, filter, total }: { filterKey: string; filter: IssueFilter; total: number }) {
   const navigate = useNavigate();
   const scroller = useRef<HTMLDivElement>(null);
   const [focus, setFocus] = useState<number | null>(null);
@@ -91,19 +89,12 @@ function VirtualList({ filterKey: key, rows, offset, total, setRange }: ListProp
   });
   const items = virtual.getVirtualItems();
   const first = items[0]?.index ?? 0;
-  const last = items.at(-1)?.index ?? 0;
 
   useLayoutEffect(() => {
     if (scroller.current) scroller.current.scrollTop = scrolled.get(key) ?? 0;
   }, [key]);
 
-  useEffect(() => {
-    if (items.length === 0) return;
-    const loaded = first >= offset && last < offset + rows.length;
-    if (!loaded) setRange(Math.max(0, first - LEAD), Math.max(0, first - LEAD) + LIST_WINDOW);
-  }, [first, last, offset, rows.length, items.length, setRange]);
-
-  const open = (issue: Issue) => void navigate({ to: "/issue/$id", params: { id: issue.id }, search: keepSearch });
+  const open = (id: string) => void navigate({ to: "/issue/$id", params: { id }, search: keepSearch });
 
   useKeys((e) => {
     if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
@@ -114,28 +105,60 @@ function VirtualList({ filterKey: key, rows, offset, total, setRange }: ListProp
       setFocus(next);
       virtual.scrollToIndex(next, { align: "auto" });
     } else if (e.key === "Enter" && focus !== null && !(e.target as HTMLElement).closest("button, a, [role=menu]")) {
-      const issue = rows[focus - offset];
-      if (issue) open(issue);
+      const id = scroller.current?.querySelector<HTMLElement>(`.row[data-index="${focus}"]`)?.dataset.id;
+      if (id) open(id);
     }
   });
+
+  // The visible rows, by the window that holds them.
+  const windows = new Map<number, VirtualItem[]>();
+  for (const v of items) {
+    const offset = windowArgs(filter, v.index).offset;
+    windows.set(offset, [...(windows.get(offset) ?? []), v]);
+  }
 
   return (
     <div ref={scroller} className="scroller" id="scroller" onScroll={(e) => scrolled.set(key, e.currentTarget.scrollTop)}>
       <div className="rows" style={{ height: virtual.getTotalSize() }}>
-        {items.map((v) => {
-          const issue = v.index >= offset ? rows[v.index - offset] : undefined;
-          return issue ? (
-            <Row key={issue.id} issue={issue} index={v.index} focused={v.index === focus} top={v.start} onOpen={open} />
-          ) : (
-            <SkeletonRow key={`s${v.index}`} index={v.index} top={v.start} />
-          );
-        })}
+        {[...windows].map(([offset, rows]) => (
+          <Window key={offset} filter={filter} offset={offset} rows={rows} focus={focus} onOpen={open} />
+        ))}
       </div>
     </div>
   );
 }
 
-function Row({ issue, index, focused, top, onOpen }: { issue: Issue; index: number; focused: boolean; top: number; onOpen(i: Issue): void }) {
+/**
+ * One window's rows: what the device holds, refreshed from the server on mount. Rows the window lacks are skeletons,
+ * also when the fetch fails, so a window the user visited paints with the server unreachable. It reads `cache-only`
+ * because fate's `stale-while-revalidate` does not count a positional window as cached and waits for the server.
+ */
+function Window({ filter, offset, rows, focus, onOpen }: { filter: IssueFilter; offset: number; rows: readonly VirtualItem[]; focus: number | null; onOpen(id: string): void }) {
+  const request = useMemo(() => windowRequest(filter, offset), [filter, offset]);
+  const cached = useRequest(request, CACHE_ONLY);
+  const refetch = useRefetch(request, { persist: REQUEST.persist });
+  useEffect(() => {
+    refetch().catch((err: unknown) => console.warn("linearlite could not load a list window", err));
+  }, [refetch]);
+  useRefetchOnDelivery(request);
+  const [items = []] = useListView(WindowView, cached?.issues);
+  useEffect(() => {
+    if (items.length > 0 && performance.getEntriesByName("linearlite:first-rows").length === 0) performance.mark("linearlite:first-rows");
+  }, [items.length]);
+  return rows.map((v) => {
+    const node = items[v.index - offset]?.node;
+    return node ? (
+      <Row key={node.id} issue={node} index={v.index} focused={v.index === focus} top={v.start} onOpen={onOpen} />
+    ) : (
+      <SkeletonRow key={`s${v.index}`} index={v.index} top={v.start} />
+    );
+  });
+}
+
+function Row({ issue: ref, index, focused, top, onOpen }: { issue: ViewRef<"Issue">; index: number; focused: boolean; top: number; onOpen(id: string): void }) {
+  const fate = useFateClient();
+  const issue = useView(RowView, ref);
+  const pending = usePending(issue.id);
   return (
     <div
       className={`row${focused ? " focus" : ""}`}
@@ -145,13 +168,13 @@ function Row({ issue, index, focused, top, onOpen }: { issue: Issue; index: numb
       data-status={issue.status}
       data-priority={issue.priority}
       id={`issue-${issue.id}`}
-      onClick={() => onOpen(issue)}
+      onClick={() => onOpen(issue.id)}
     >
-      <PriorityPicker variant="icon" value={issue.priority} onPick={(p) => void commands.setPriority(issue.id, p)} />
+      <PriorityPicker variant="icon" value={issue.priority} onPick={(p) => void commands.setPriority(fate, issue.id, p)} />
       <span className="id">{shortId(issue.id)}</span>
-      <StatusPicker variant="icon" value={issue.status} onPick={(s) => void commands.setStatus(issue.id, s)} />
+      <StatusPicker variant="icon" value={issue.status} onPick={(s) => void commands.setStatus(fate, issue.id, s)} />
       <span className="name">{issue.title}</span>
-      {issue.dirty ? <span className="dot" title="Not synced yet" data-dirty /> : <span className="dot-slot" />}
+      {pending ? <span className="dot" title="Not synced yet" data-dirty /> : <span className="dot-slot" />}
       <span className="avatar" title={issue.username}>
         {initial(issue.username)}
       </span>
@@ -171,3 +194,4 @@ function SkeletonRow({ index, top }: { index: number; top: number }) {
     </div>
   );
 }
+

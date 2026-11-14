@@ -19,7 +19,8 @@
     "bench/workloads/*/*.ts",
     "bench/contenders/*/*.ts",
     "docs/research/opfs-worker-probes/*.js",
-    "docs/research/opfs-worker-probes/*.mjs"
+    "docs/research/opfs-worker-probes/*.mjs",
+    "docs/research/android-device-run/*.mjs"
   ],
   "ignorePatterns": [
     "site/stageshow/kit/**"

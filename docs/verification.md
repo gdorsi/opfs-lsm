@@ -29,7 +29,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | `maxBytes`, `onPressure`, the pressure offer or its Web Lock | `drive pressure`, and `drive quota` for `maxBytes: "quota"`. |
 | `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench table/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `packages/tanstack-db/src` | `pnpm --filter @opfs-lsm/tanstack-db test`, with `TSDB_DIFF_RUNS=2000` after a change to the planner or the on-demand run. For a performance claim, `drive bench tanstack/` with `--reps 5` before and after, then `node bench/cli.ts compare`. |
-| `examples/linearlite-tanstackdb` | `pnpm --filter @opfs-lsm/example-linearlite-tanstackdb test`, `check` and `build`. For a change to its reads, counts or sync, `node examples/linearlite-tanstackdb/bench/client.ts <origin> warm ui first-sync` against a production build (`vite build`, `vite preview`) seeded with 100k issues, and `tabs users offline visible` against a copy of that server database. For a performance claim, 5 interleaved runs before and after (`examples/linearlite-tanstackdb/DESIGN.md`, Measured). |
+| `examples/linearlite-tanstackdb` | `pnpm --filter @opfs-lsm/example-linearlite-tanstackdb test`, `check` and `build`. For a change to its reads, counts or sync, `node examples/linearlite-tanstackdb/bench/client.ts <origin> warm ui first-sync` against a production build (`VITE_BENCH=1 vite build`, `vite preview`) seeded with 100k issues, and `tabs users offline visible` against a copy of that server database. For a performance claim, 5 interleaved runs before and after (`examples/linearlite-tanstackdb/DESIGN.md`, Measured). |
 | `examples/linearlite-fate` | `pnpm --filter @opfs-lsm/example-linearlite-fate test`, `check` and `build`. For a change to its requests, commands or server, drive the app in a browser against a seeded database, once with the default storage and once with `?storage=idb` (`examples/linearlite-fate/DESIGN.md`). |
 | A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, `lz4.ts`, `sst.rs`, and the merge session that reads runs, `merge.rs`), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test` and `cargo test -p engine-core`, then each cargo fuzz and Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
 | Any TypeScript behavior | `pnpm test` |
@@ -183,6 +183,20 @@ Exit 0 and a last line `power-loss-chrome ok (5 scenarios)`. Each scenario check
 The scenarios lose the newest records, every record, or the commit of a second flush, and two of them lose the recovery itself a second time. The key generator of `wal` is in the copied directory, so it goes back with the records. That is the fact fake-indexeddb can only model: an adopt that does not move the key generator fails all five, because the put takes a seq already in use (`the put took seq 8, at or below 20` in the first).
 
 What it does not show: a real power cut. The copy is a whole, consistent directory, and OPFS loses nothing. Every pair of prefixes of the two stores is covered by `crash-enum.test.ts` and `formal:power-loss`, on models of the stores.
+
+## Run on an Android device
+
+Run this for a claim about Android, or after a change to the SharedWorker, `BrowserFs` or a Web Lock that a phone could treat differently from desktop Chrome. The device needs USB debugging. Unlock it when you will read the timings: a locked phone passes and fails the same, but runs the browser on its background CPU set.
+
+```sh
+node docs/research/android-device-run/run.mjs --install-chromium
+```
+
+The script installs the Chromium snapshot when the device has no `org.chromium.chrome`, then runs the probe, the three two-tab proofs, `bench smoke`, `bench run kv/` at 100,000 entries, and `kill-chrome`, each through a stand-in for the Chrome binary that drives the device over adb. A pass prints `all 8 steps passed` and exits 0. Logs land in `docs/research/android-device-run/results/<time>/`.
+
+- The `kill` step leaves out `page-crash` and `kill-renderer`, which the harness cannot observe on Android.
+- On a locked phone the `kill` step can fail on its `quota` kind with `ingest timed out after 20000ms`. [android-device-run.md](research/android-device-run.md) records that finding. It is not a new regression.
+- To run one harness, or to use another browser, see [the tools' README](research/android-device-run/README.md).
 
 ## Run the formal suite
 
