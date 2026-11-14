@@ -1,41 +1,30 @@
-import { escape, priorityIcon, statusIcon } from "./icons.ts";
-import { codeItems, openMenu } from "./menu.ts";
 import { DEFAULT_FILTER, type Filter, type Issue } from "./model.ts";
-import { failed } from "./protocol.ts";
-import { editIssue, keeps, orderOf, viewOf, type Store, type View } from "./store.ts";
+import { keeps, orderOf, viewOf, type Store, type View } from "./store.ts";
 
-const ROW = 40;
+export const ROW = 40;
 const PAGE = 50;
 const OVERSCAN = 8;
-
-const sameYear = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" });
-const otherYear = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" });
-const thisYear = new Date().getFullYear();
-export const shortDate = (ms: number) => {
-  const d = new Date(ms);
-  return (d.getFullYear() === thisYear ? sameYear : otherYear).format(d);
-};
-export const shortId = (id: string) => `LL-${id.slice(0, 5).toUpperCase()}`;
-
-const rowOf = (i: Issue, at: number) =>
-  `<div class="row" data-at="${at}" style="transform:translateY(${at * ROW}px)">` +
-  `<button class="icon-btn" data-pick="priority" title="Priority">${priorityIcon(i.priority)}</button>` +
-  `<span class="id">${shortId(i.id)}</span><button class="icon-btn" data-pick="status" title="Status">${statusIcon(i.status)}</button>` +
-  `<span class="name">${escape(i.title)}</span>` +
-  `<span class="avatar" title="${escape(i.username)}">${escape(i.username.slice(0, 1))}</span><span class="date">${shortDate(i.modified)}</span></div>`;
-
-const skeleton = (at: number) =>
-  `<div class="skel" style="transform:translateY(${at * ROW}px)"><i style="width:14px"></i><i style="width:48px"></i><i style="width:${30 + ((at * 37) % 40)}%"></i></div>`;
 
 /** One issue of a write: as the list held it before, and as it is stored now. Absent on a side where it does not exist. */
 export type Change = { readonly before: Issue | undefined; readonly after: Issue | undefined };
 
 /**
- * The issue list: only the rows in view are in the document, and only the pages scrolled to are read. A row not read
- * yet shows as a placeholder. A change to an issue moves the rows it has, without reading the list again.
+ * What the list draws: its height in rows, and the places in view with their issue, or none while its page is unread.
+ * `none` is set when a list read to its end holds no issue.
  */
-export function createList(scroller: HTMLElement, store: Store, open: (issue: Issue) => void) {
-  const rowsEl = scroller.querySelector<HTMLElement>(".rows")!;
+type ListWindow = {
+  readonly count: number;
+  readonly rows: readonly { readonly at: number; readonly issue: Issue | undefined }[];
+  readonly none: boolean;
+  /** Moves when the list starts over from its first row, so the scroller goes back to the top. */
+  readonly top: number;
+};
+
+/**
+ * The issue list: only the rows in view are drawn, and only the pages scrolled to are read. A row not read yet shows
+ * as a placeholder. A change to an issue moves the rows it has, without reading the list again.
+ */
+export function createList(store: Store) {
   let filter: Filter = DEFAULT_FILTER;
   let keep = keeps(filter);
   let order = orderOf(filter);
@@ -47,27 +36,27 @@ export function createList(scroller: HTMLElement, store: Store, open: (issue: Is
   let tried = new Set<number>();
   let wanted: number[] = [];
   let reading = false;
-  let frame = 0;
-  /** `show` calls whose first rows are not in the document yet. */
+  /** `show` calls whose first rows are not drawn yet. */
   let loading = 0;
+  let scrollTop = 0;
+  let height = 0;
+  let resets = 0;
+  let snapshot: ListWindow = { count: 0, rows: [], none: false, top: 0 };
+  const listeners = new Set<() => void>();
 
   function render() {
     const count = total ?? Math.max(-1, ...rows.keys()) + 1;
-    rowsEl.style.height = `${count * ROW}px`;
-    if (count === 0) {
-      rowsEl.innerHTML = tried.has(0) ? `<div class="none">No issues match</div>` : "";
-      return;
-    }
-    const first = Math.max(0, Math.floor(scroller.scrollTop / ROW) - OVERSCAN);
-    const last = Math.min(count, Math.ceil((scroller.scrollTop + scroller.clientHeight) / ROW) + OVERSCAN);
+    const first = Math.max(0, Math.floor(scrollTop / ROW) - OVERSCAN);
+    const last = Math.min(count, Math.ceil((scrollTop + height) / ROW) + OVERSCAN);
     const missing = new Set<number>();
-    let html = "";
+    const shown: { at: number; issue: Issue | undefined }[] = [];
     for (let at = first; at < last; at++) {
       const issue = rows.get(at);
       if (!issue) missing.add(Math.floor(at / PAGE));
-      html += issue ? rowOf(issue, at) : skeleton(at);
+      shown.push({ at, issue });
     }
-    rowsEl.innerHTML = html;
+    snapshot = { count, rows: shown, none: count === 0 && tried.has(0), top: resets };
+    for (const listener of listeners) listener();
     wanted = [...missing].filter((page) => !tried.has(page));
     void pump();
   }
@@ -118,27 +107,20 @@ export function createList(scroller: HTMLElement, store: Store, open: (issue: Is
     total!++;
   }
 
-  scroller.addEventListener(
-    "scroll",
-    () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(render);
-    },
-    { passive: true },
-  );
-  new ResizeObserver(render).observe(scroller);
-  rowsEl.addEventListener("click", (e) => {
-    const at = (e.target as Element).closest<HTMLElement>(".row")?.dataset.at;
-    const issue = at === undefined ? undefined : rows.get(Number(at));
-    if (!issue) return;
-    // The priority and status icons change the issue in place, as in LinearLite; the rest of the row opens it.
-    const picker = (e.target as Element).closest<HTMLButtonElement>("[data-pick]");
-    if (!picker) return open(issue);
-    const field = picker.dataset.pick as "status" | "priority";
-    openMenu(picker, () => codeItems(field, (c) => issue[field] === c, (c) => void editIssue(store, issue.id, { [field]: c }).catch(failed)), false);
-  });
-
   return {
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    snapshot: () => snapshot,
+
+    /** The scroller moved or changed size. */
+    scroll(top: number, size: number) {
+      scrollTop = top;
+      height = size;
+      render();
+    },
+
     /**
      * Reads the list under `next`, from its first row or, with `stay`, from the rows in view now. `rows` resolves with
      * how many rows the first page read has and when the store returned them; `total` with the list's size.
@@ -149,8 +131,8 @@ export function createList(scroller: HTMLElement, store: Store, open: (issue: Is
       order = orderOf(next);
       const from = (view = viewOf(store, next));
       tried = new Set();
-      const first = stay ? Math.floor(scroller.scrollTop / ROW / PAGE) : 0;
-      const last = stay ? Math.floor((scroller.scrollTop + scroller.clientHeight) / ROW / PAGE) : 0;
+      const first = stay ? Math.floor(scrollTop / ROW / PAGE) : 0;
+      const last = stay ? Math.floor((scrollTop + height) / ROW / PAGE) : 0;
       const pages = Array.from({ length: last - first + 1 }, (_, i) => first + i);
       const counted = from.total();
       loading++;
@@ -162,7 +144,8 @@ export function createList(scroller: HTMLElement, store: Store, open: (issue: Is
         for (const page of pages) tried.add(page);
         if (!stay) {
           total = undefined;
-          scroller.scrollTop = 0;
+          scrollTop = 0;
+          resets++;
         }
         render();
         void counted.then((n) => {
@@ -195,7 +178,8 @@ export function createList(scroller: HTMLElement, store: Store, open: (issue: Is
     /** Adds issues the list has no row for and is not asked to place, as a bulk write does. Returns the new total. */
     grow(by: number): number | undefined {
       if (total !== undefined) total += by;
-      rowsEl.style.height = `${(total ?? 0) * ROW}px`;
+      snapshot = { ...snapshot, count: total ?? 0 };
+      for (const listener of listeners) listener();
       return total;
     },
 

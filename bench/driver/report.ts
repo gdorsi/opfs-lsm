@@ -120,6 +120,7 @@ function groups(records: readonly RunRecord[]): Map<string, Row[]> {
 
 const fmtN = (x: number) =>
   !Number.isFinite(x) ? "–" : x >= 100_000 ? `${(x / 1000).toFixed(0)}k` : x >= 10_000 ? `${(x / 1000).toFixed(1)}k` : x >= 100 ? x.toFixed(0) : x.toFixed(1);
+const fmtCount = (x: number) => (Number.isInteger(x) ? String(x) : x.toFixed(1));
 const fmtRange = (s: Stat) => (s.n === 0 ? "–" : s.n === 1 ? fmtN(s.median) : `${fmtN(s.median)} (${fmtN(s.min)}–${fmtN(s.max)})`);
 const fmtUs = (us: number) => (!Number.isFinite(us) ? "–" : us < 10 ? "<10 µs" : us < 1000 ? `${us.toFixed(0)} µs` : `${(us / 1000).toFixed(us < 10_000 ? 2 : 1)} ms`);
 const fmtX = (x: number) => (Number.isFinite(x) ? x.toFixed(2) : "–");
@@ -174,6 +175,24 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
         );
       }
       out.push("", "`~`: from navigator.storage.estimate(), approximate. kv disk bytes are exact OPFS file sizes.");
+    }
+    const blockRows = rows.filter((row) => row.runs[0]!.phases[row.phase]!.mainThread);
+    if (blockRows.length > 0) {
+      out.push(
+        "",
+        "| main thread | contender | runs | long tasks | longest task ms | blocked ms | frames | frame ms | longest frame ms | dropped frames |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+      );
+      for (const row of blockRows) {
+        const mts = row.runs.map((r) => r.phases[row.phase]!.mainThread).filter((m) => m !== undefined);
+        out.push(
+          `| ${row.name} | ${row.contender} | ${mts.length} | ${fmtCount(stat(mts.map((m) => m.longTasks)).median)} | ${fmtRange(stat(mts.map((m) => m.longestMs)))} | ${fmtRange(stat(mts.map((m) => m.blockedMs)))} | ${fmtCount(stat(mts.map((m) => m.frames)).median)} | ${fmtN(stat(mts.map((m) => m.frameIntervalMs)).median)} | ${fmtRange(stat(mts.map((m) => m.longestFrameMs)))} | ${fmtCount(stat(mts.map((m) => m.droppedFrames)).median)} |`,
+        );
+      }
+      out.push(
+        "",
+        "Long tasks are main-thread tasks over 50 ms, from the `longtask` observer. Blocked ms sums each one's time past 50 ms, as Total Blocking Time does. Frames are `requestAnimationFrame` callbacks, frame ms is the display's interval, and a dropped frame is one missing from a gap between two callbacks: `round(gap / frame ms) - 1`. A block of 17 to 50 ms drops frames without being a long task.",
+      );
     }
     const memRows = rows.filter((row, i) => i === rows.findIndex((r) => r.contender === row.contender) && row.runs[0]!.memory);
     if (memRows.length > 0) {
