@@ -43,6 +43,81 @@
           }
         ]
       }
+    },
+    {
+      "files": [
+        "examples/whiteboard-yjs/src/model/**"
+      ],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          "window",
+          "document",
+          "navigator",
+          "location",
+          "localStorage",
+          "sessionStorage",
+          "indexedDB",
+          "requestAnimationFrame",
+          "cancelAnimationFrame",
+          "HTMLElement",
+          "PointerEvent",
+          "KeyboardEvent"
+        ],
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "react",
+                  "react/*",
+                  "react-dom",
+                  "react-dom/*"
+                ],
+                "message": "The whiteboard model is headless. React belongs in src/app."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "examples/whiteboard-yjs/src/model/digest.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "yjs",
+                "message": "The oracle replays patches on a plain Map. It must not depend on Yjs."
+              }
+            ],
+            "patterns": [
+              {
+                "group": [
+                  "react",
+                  "react/*",
+                  "react-dom",
+                  "react-dom/*"
+                ],
+                "message": "The whiteboard model is headless. React belongs in src/app."
+              },
+              {
+                "group": [
+                  "./doc.ts",
+                  "./board.ts",
+                  "../persistence/*"
+                ],
+                "message": "The oracle must not depend on the Y.Doc layer or on storage."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
