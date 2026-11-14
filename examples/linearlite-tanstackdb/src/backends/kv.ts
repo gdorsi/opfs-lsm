@@ -6,8 +6,8 @@ import { priorityOrder, STATUSES, stored, type Body, type Comment, type Issue, t
 import { STORES, type Stream } from "../domain/stores.ts";
 import type { Anchor, Backend, BackendPath, CollectionRows, StoreName, StoreRows } from "../model/backend.ts";
 import type { IssueFilter, SortField } from "../model/filter.ts";
-import type { Unsubscribe } from "../model/live.ts";
 import { ORDER } from "../model/query.ts";
+import { recount, type Pause } from "./recount.ts";
 
 const indexes = Object.fromEntries(Object.entries(STORES).map(([name, store]) => [name, store.indexes])) as {
   [N in keyof typeof STORES]: (typeof STORES)[N]["indexes"];
@@ -71,7 +71,16 @@ export async function openKvBackend(db: Db, { hidden = () => false }: KvOptions 
    * at most a delete of its old entry and a put of its new one; every index here holds at most one entry per row.
    */
   const rowsPerBatch = (store: StoreName) => Math.floor(KV_BATCH_OPS / (1 + 2 * docs.collection(store).indexes.size));
-  const recountIssues = <T>(count: (pause?: Pause) => Promise<T>, emit: (value: T) => void) => recount(issues, count, emit, hidden);
+  const recountIssues = <T>(count: (pause?: Pause) => Promise<T>, emit: (value: T) => void) =>
+    recount(
+      (onChange) =>
+        issues.changes((event) => {
+          if (event.kind !== "closed") onChange();
+        }),
+      count,
+      emit,
+      hidden,
+    );
 
   return {
     path: PATH,
@@ -116,51 +125,6 @@ export async function openKvBackend(db: Db, { hidden = () => false }: KvOptions 
     async close() {
       await Promise.all(Object.values(collections).map((c) => c.cleanup()));
     },
-  };
-}
-
-/** Awaited between the counts of two statuses. A recount no one waits on passes one that lets a frame paint. */
-type Pause = () => Promise<void>;
-
-const yieldTask: Pause = () => new Promise((resolve) => setTimeout(resolve));
-
-/**
- * Runs `count` of the stored issues now, and again after every change to them. One count runs at a time. Changes
- * during a count start one more, four times that count's duration after it and at least 250 ms, so a first sync, which
- * changes the issues every few milliseconds, spends at most a fifth of the main thread counting them. A count after a
- * change pauses between steps, so it does not hold up a frame, unless the page is `hidden`: a hidden page paints
- * nothing and wakes its timers about once a second. The first count does not pause, since the screen waits on it.
- */
-function recount<T>(issues: IssueDocs, count: (pause?: Pause) => Promise<T>, emit: (value: T) => void, hidden: () => boolean): Unsubscribe {
-  let live = true;
-  let running = false;
-  let again = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const pauseUnlessHidden = () => (hidden() ? undefined : yieldTask);
-  const run = async (pause?: Pause) => {
-    timer = undefined;
-    running = true;
-    again = false;
-    const t0 = performance.now();
-    try {
-      const value = await count(pause);
-      if (live) emit(value);
-    } catch (err) {
-      console.warn("linearlite could not count issues", err);
-    }
-    running = false;
-    if (live && again) timer = setTimeout(() => void run(pauseUnlessHidden()), Math.max(250, 4 * (performance.now() - t0)));
-  };
-  const off = issues.changes((event) => {
-    if (event.kind === "closed") return;
-    if (running || timer !== undefined) again = true;
-    else void run(pauseUnlessHidden());
-  });
-  void run();
-  return () => {
-    live = false;
-    clearTimeout(timer);
-    off();
   };
 }
 
