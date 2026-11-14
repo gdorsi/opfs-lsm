@@ -141,7 +141,7 @@ const WAIT = `const until = async (what, ok, ms = 30000) => {
     if (performance.now() - t0 > ms) throw new Error("timed out waiting for " + what);
 };`;
 
-async function prepare(kind: Kind, profile: string): Promise<{ total: string; records: number }> {
+async function prepare(kind: Kind, profile: string): Promise<{ total: string }> {
   const chrome = await launch(profile);
   try {
     const page = await chrome.open(`${origin}/?storage=${kind}`);
@@ -157,10 +157,12 @@ async function prepare(kind: Kind, profile: string): Promise<{ total: string; re
       scroller().scrollTop = 0;
       await until("the top", () => loaded(0));
       await until("the total", () => document.querySelector("#count").textContent);
-      await globalThis.__linearlite.fate.persistence.flush();
-      const part = (tagged, key) => tagged[1].find(([k]) => k === key)?.[1];
-      const records = part(part(globalThis.__linearlite.fate.dehydrate().data, "store"), "records")[1].length;
-      return { total: document.querySelector("#count").textContent, records };
+      // fate batches its cache writes: wait until the origin's storage stops growing before Chrome closes.
+      for (let last = -1, usage = 0; usage !== last; await new Promise((r) => setTimeout(r, 1000))) {
+        last = usage;
+        usage = (await navigator.storage.estimate()).usage;
+      }
+      return { total: document.querySelector("#count").textContent };
     })()`);
   } finally {
     await chrome.close();
@@ -214,9 +216,9 @@ const errors: Record<Kind, number> = { kv: 0, idb: 0 };
 const totals = {} as Record<Kind, string>;
 try {
   for (const kind of KINDS) {
-    const { total, records } = await prepare(kind, profiles[kind]);
+    const { total } = await prepare(kind, profiles[kind]);
     totals[kind] = total;
-    console.log(`prepared ${kind}: list total ${total}, ${records} records in fate's memory store at flush`);
+    console.log(`prepared ${kind}: list total ${total}`);
   }
   for (let rep = 1; rep <= reps; rep++) {
     for (const kind of KINDS) {

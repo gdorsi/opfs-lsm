@@ -20,9 +20,7 @@ const declare = (version: number, collections: Collections, drop?: string[]) =>
   normalizeSchema(drop ? { version, collections, drop } : { version, collections });
 
 function open(stored: StoredCatalog | undefined, version: number, collections: Collections, drop?: string[]): StoredCatalog {
-  const r = reconcile(stored, declare(version, collections, drop));
-  if (r.kind === "error") throw r.error;
-  return r.kind === "write" ? r.catalog : stored!;
+  return reconcile(stored, declare(version, collections, drop)) ?? stored!;
 }
 
 function codeOf(f: () => unknown): string {
@@ -53,17 +51,16 @@ describe("reconcile", () => {
 
   it("writes nothing when the same schema opens again, at its version or a lower one", () => {
     const c = open(undefined, 2, v1);
-    expect(reconcile(c, declare(2, v1))).toEqual({ kind: "keep" });
-    expect(reconcile(c, declare(1, { other: {} }))).toEqual({ kind: "keep" });
+    expect(reconcile(c, declare(2, v1))).toBeUndefined();
+    expect(reconcile(c, declare(1, { other: {} }))).toBeUndefined();
   });
 
   it("refuses another schema at the stored version", () => {
     const c = open(undefined, 1, v1);
     const changed = { ...v1, todos: { byA: { on: "a" }, byB: { on: "x" } } };
-    const r = reconcile(c, declare(1, changed));
-    expect(r.kind === "error" && r.error.code).toBe("schema");
-    expect(reconcile(c, declare(1, { ...v1, more: {} })).kind).toBe("error");
-    expect(reconcile(c, declare(1, { ...v1, todos: { byA: { on: "a" } } })).kind).toBe("error");
+    expect(codeOf(() => reconcile(c, declare(1, changed)))).toBe("schema");
+    expect(codeOf(() => reconcile(c, declare(1, { ...v1, more: {} })))).toBe("schema");
+    expect(codeOf(() => reconcile(c, declare(1, { ...v1, todos: { byA: { on: "a" } } })))).toBe("schema");
   });
 
   it("at a higher version keeps unchanged indexes, builds new and redefined ones under new ids, and drops the old ones", () => {
@@ -82,9 +79,7 @@ describe("reconcile", () => {
       { collection: todos.id, index: todos.indexes["byB"]!.id },
       { collection: c1.collections["notes"]!.id, index: idOf(c1, "notes", "byC") },
     ]);
-    expect(reconcile(c2, declare(2, { todos: { byA: { on: "a" }, byB: { on: "x" }, byD: { on: "d" } }, notes: {} }))).toEqual({
-      kind: "keep",
-    });
+    expect(reconcile(c2, declare(2, { todos: { byA: { on: "a" }, byB: { on: "x" }, byD: { on: "d" } }, notes: {} }))).toBeUndefined();
   });
 
   it("at a higher version keeps a collection it leaves out, untouched", () => {
@@ -105,7 +100,7 @@ describe("reconcile", () => {
     expect(c3.collections["notes"]).toBeUndefined();
     expect(c3.collections["todos"]).toEqual(c1.collections["todos"]);
     expect(c3.dropped).toEqual([{ collection: notes }]);
-    expect(reconcile(c3, declare(3, { todos: v1["todos"]! }, ["notes"]))).toEqual({ kind: "keep" });
+    expect(reconcile(c3, declare(3, { todos: v1["todos"]! }, ["notes"]))).toBeUndefined();
     const c4 = open(c3, 4, v1);
     expect(c4.collections["notes"]!.id).not.toBe(notes);
     expect(c4.collections["notes"]!.indexes["byC"]!.state).toEqual({ kind: "ready" });
@@ -113,8 +108,7 @@ describe("reconcile", () => {
 
   it("refuses a drop at the stored version while the collection is stored", () => {
     const c = open(undefined, 1, v1);
-    const r = reconcile(c, declare(1, { todos: v1["todos"]! }, ["notes"]));
-    expect(r.kind === "error" && r.error.code).toBe("schema");
+    expect(codeOf(() => reconcile(c, declare(1, { todos: v1["todos"]! }, ["notes"])))).toBe("schema");
   });
 
   it("makes a collection new at a higher version ready at once", () => {
@@ -135,8 +129,7 @@ describe("reconcile", () => {
   it("refuses a schema that needs an index id above 255", () => {
     const many = (path: string) => Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`i${i}`, { on: `${path}${i}` }]));
     const c1 = open(undefined, 1, { big: many("a") });
-    const r = reconcile(c1, declare(2, { big: many("b") }));
-    expect(r.kind === "error" && r.error.code).toBe("schema");
+    expect(codeOf(() => reconcile(c1, declare(2, { big: many("b") })))).toBe("schema");
   });
 });
 

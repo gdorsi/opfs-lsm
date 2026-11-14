@@ -1,5 +1,6 @@
 import { Repo, splice, type AutomergeUrl, type StorageAdapterInterface } from "@automerge/react";
 import { defineWorkload } from "../../core/types.ts";
+import { yieldTask } from "../../page/main-thread.ts";
 import { fetchTracePhase, hashText, trace } from "../trace.ts";
 
 type TextDoc = { text: string };
@@ -71,14 +72,6 @@ export default defineWorkload({
     },
   ],
 });
-
-function yieldTask(): Promise<void> {
-  return new Promise((resolve) => {
-    const ch = new MessageChannel();
-    ch.port1.onmessage = () => resolve();
-    ch.port2.postMessage(null);
-  });
-}
 
 /** Counts the bytes automerge-repo asks storage to save: the W-Amp denominator. */
 export function countingAdapter(inner: StorageAdapterInterface, count: (bytes: number) => void): StorageAdapterInterface {

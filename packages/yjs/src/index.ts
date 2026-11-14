@@ -50,6 +50,16 @@ export class KvPersistence {
     await this.flush();
   };
 
+  /**
+   * Destroys this persistence, then removes every stored update of this doc
+   * in one range delete. Other docs in the db are untouched. Later updates of
+   * the doc are not stored.
+   */
+  async clearData(): Promise<void> {
+    await this.destroy();
+    await this.db.batch((tx) => tx.deleteRange(prefixBound(this.prefix)));
+  }
+
   private readonly storeUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === this || this.destroyed) return;
     this.track(this.db.put(this.nextKey(), update));

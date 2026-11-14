@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { keepSearch } from "./nav.ts";
-import { useStorageKind, useSyncStatus, type SyncStatus } from "../client/hooks.ts";
+import { useSession } from "../client/fate.ts";
+import { useSyncStatus, type SyncStatus } from "../client/hooks.ts";
 
 export function Sidebar({ onNew }: { onNew(): void }) {
   return (
@@ -38,7 +39,7 @@ const n = (x: number) => x.toLocaleString("en-US");
 
 function SyncFooter() {
   const status = useSyncStatus();
-  const storage = useStorageKind();
+  const { storage } = useSession();
   const text = describe(status);
   return (
     <div className={`sync ${status.kind === "offline" || status.kind === "retrying" ? "sync-offline" : status.kind === "syncing" ? "sync-live" : ""}`} id="sync" role="status">
