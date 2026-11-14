@@ -5,16 +5,14 @@ import { BoardLoadError, openBoard } from "../src/model/board.ts";
 import { boardId } from "../src/model/shapes.ts";
 import type { Board, DocStorage, NewShape, ShapeId } from "../src/model/types.ts";
 import { memoryStorage } from "../src/persistence/index.ts";
+import { idCounter, testEnv } from "./support/env.ts";
 import { sortedIds } from "./support/scenes.ts";
 import { link, spyStorage } from "./support/storage.ts";
 
 const id = boardId("b");
 const DOC = "board/b";
 const rect = (x = 0, y = 0): NewShape => ({ kind: "rect", x, y, w: 10, h: 10, stroke: "#000", fill: null, strokeWidth: 2 });
-const envOf = (prefix: string) => {
-  let n = 0;
-  return { id: () => `${prefix}${++n}` };
-};
+const envOf = (prefix: string) => testEnv(idCounter(prefix));
 const open = (storage: DocStorage = memoryStorage(), prefix = "s") => openBoard({ id, storage, env: envOf(prefix) });
 const create = (board: Board, ...shapes: NewShape[]) => board.dispatch({ type: "create", shapes }).created;
 const at = (board: Board, shape: ShapeId) => board.view().shapes.get(shape)!;
