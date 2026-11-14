@@ -37,7 +37,7 @@ type Issue = { id: string; status: number; modified: number };
 const tracker = defineSchema<{ issues: Issue }>()({
 	version: 1,
 	collections: {
-		issues: { byStatus: { on: ["status", "modified"] } },
+		issues: { byStatus: { by: ["status", "modified"] } },
 	},
 });
 const trackerKv = await openDb({ name: "tracker" });
