@@ -119,18 +119,24 @@ type Piece = { at: number; length: number; marks: Marks };
 class Inserted {
   readonly pieces: Piece[] = [];
 
-  /** Splits the piece that straddles `at`, and returns the index of the first piece at or after it. */
+  /**
+   * Splits the piece that straddles `at`, and returns the index of the first piece at or after it.
+   * Pieces are sorted and never overlap, so a binary search finds it: a paste is thousands of edits.
+   */
   cut(at: number): number {
-    for (let i = 0; i < this.pieces.length; i++) {
-      const piece = this.pieces[i]!;
-      if (piece.at >= at) return i;
-      if (piece.at + piece.length > at) {
-        const head = at - piece.at;
-        this.pieces.splice(i, 1, { ...piece, length: head }, { at, length: piece.length - head, marks: piece.marks });
-        return i + 1;
-      }
+    let lo = 0;
+    let hi = this.pieces.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const piece = this.pieces[mid]!;
+      if (piece.at >= at || piece.at + piece.length > at) hi = mid;
+      else lo = mid + 1;
     }
-    return this.pieces.length;
+    const piece = this.pieces[lo];
+    if (!piece || piece.at >= at) return lo;
+    const head = at - piece.at;
+    this.pieces.splice(lo, 1, { ...piece, length: head }, { at, length: piece.length - head, marks: piece.marks });
+    return lo + 1;
   }
 
   /** `marks: null` is a block marker: it moves the text after it but is not tracked. */
