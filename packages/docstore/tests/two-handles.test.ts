@@ -8,10 +8,10 @@ import { denseScalarArb } from "./order.js";
 
 type Row = { id: string; a?: Scalar | undefined; b?: Scalar | undefined; tags?: Scalar[] | undefined };
 
-const v1 = defineSchema<{ rows: Row }>()({ version: 1, collections: { rows: { byA: { on: "a" } } } });
+const v1 = defineSchema<{ rows: Row }>()({ version: 1, collections: { rows: { byA: { by: "a" } } } });
 const v2 = defineSchema<{ rows: Row }>()({
   version: 2,
-  collections: { rows: { byA: { on: "a" }, byB: { on: ["b", "a"] }, byTag: { on: "tags", multi: true } } },
+  collections: { rows: { byA: { by: "a" }, byB: { by: ["b", "a"] }, byTag: { by: "tags[]" } } },
 });
 
 const ROWS = 1_200;

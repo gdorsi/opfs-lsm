@@ -8,7 +8,7 @@ import { onDemandOps } from "../../page/tanstack.ts";
 
 const schema = defineSchema<{ todos: Todo }>()({
   version: 1,
-  collections: { todos: { byOwner: { on: ["owner", "createdAt"] } } },
+  collections: { todos: { byOwner: { by: ["owner", "createdAt"] } } },
 });
 
 export default defineContender({

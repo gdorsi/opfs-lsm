@@ -17,10 +17,10 @@ const schema = defineSchema<{ notes: Note }>()({
   version: 1,
   collections: {
     notes: {
-      byCreated: { on: "createdAt" },
-      bySlug: { on: "slug", unique: true },
-      byTag: { on: "tags", multi: true },
-      byTitle: { on: "title" },
+      byCreated: { by: "createdAt" },
+      bySlug: { by: "slug", unique: true },
+      byTag: { by: "tags[]" },
+      byTitle: { by: "title" },
     },
   },
 });
@@ -558,7 +558,7 @@ describe("two handles on one database", () => {
 describe("modifyMany on a collection without a unique index", () => {
   const plain = defineSchema<{ notes: Note }>()({
     version: 1,
-    collections: { notes: { byCreated: { on: "createdAt" }, byTag: { on: "tags", multi: true } } },
+    collections: { notes: { byCreated: { by: "createdAt" }, byTag: { by: "tags[]" } } },
   });
 
   async function plainNotes(name = freshName()) {

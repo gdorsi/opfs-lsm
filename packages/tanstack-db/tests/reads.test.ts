@@ -17,9 +17,9 @@ const schema = defineSchema<{ issues: Issue }>()({
   version: 1,
   collections: {
     issues: {
-      byModified: { on: ["deleted", "modified"] },
-      byStatus: { on: ["deleted", "status", "modified"] },
-      search: { on: ["deleted", "modified"], text: "title" },
+      byModified: { by: ["deleted", "modified"] },
+      byStatus: { by: ["deleted", "status", "modified"] },
+      search: { by: ["deleted", "modified"], text: "title" },
     },
   },
 });
