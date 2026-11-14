@@ -9,6 +9,7 @@
  */
 import type { StorageAdapterInterface } from "@automerge/react";
 import type { PersistenceStorage } from "@nkzw/fate/persistence";
+import type { PagesStorage } from "../../examples/pages-fate-automerge/src/model/types.ts";
 import type { KvStats } from "@opfs-lsm/kv/testing";
 import type * as Y from "yjs";
 
@@ -121,6 +122,13 @@ export type FateStore = Common & {
   readonly storage: PersistenceStorage;
 };
 
+/** The pages app's two storage layers, fate's cache and journal and the page bodies, as the app opens them. A workload builds the headless model over `storage`, so every contender runs the same model code. */
+export type PagesStore = Common & {
+  readonly storage: PagesStorage;
+  /** True when nothing survives a reload, so a workload skips the phases that read back from a new page. */
+  readonly volatile?: true;
+};
+
 /** Family name → store interface. The directory names under workloads/ and contenders/ are these keys. */
 export type FamilyStores = {
   kv: KvStore;
@@ -130,6 +138,7 @@ export type FamilyStores = {
   automerge: AutomergeStore;
   yjs: YjsStore;
   fate: FateStore;
+  pages: PagesStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "pages"];
