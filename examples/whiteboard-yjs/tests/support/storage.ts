@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import type { DocBinding, DocStorage } from "../../src/model/index.ts";
 import { memoryStorage } from "../../src/persistence/index.ts";
+import { disk } from "./disk.ts";
 
 /** Stores like memoryStorage but silently drops every `every`th update. */
 export function lossyStorage(every = 7): DocStorage {
@@ -25,12 +26,10 @@ export function lossyStorage(every = 7): DocStorage {
   };
 }
 
-/** memoryStorage that also hands the tests the Y.Doc each attach received, to play another tab. */
-export function spyStorage() {
-  const inner = memoryStorage();
+/** A storage on the adapter under test that also hands the tests the Y.Doc each attach received, to play another tab. */
+export function spyStorage(inner: DocStorage = disk().storage) {
   const docs = new Map<string, Y.Doc>();
-  const storage: DocStorage & typeof inner = {
-    updates: inner.updates,
+  const storage: DocStorage = {
     attach(docName, doc) {
       docs.set(docName, doc);
       return inner.attach(docName, doc);
@@ -47,12 +46,15 @@ export function link(a: Y.Doc, b: Y.Doc): void {
   b.on("update", (update: Uint8Array, origin: unknown) => origin === "link" || Y.applyUpdate(a, update, "link"));
 }
 
-/** memoryStorage whose flush rejects while `control.failing` is set, and counts every flush it is asked for. */
+/**
+ * A memory storage whose flush rejects while `control.failing` is set, and counts every flush it is asked for.
+ * The suites that use it run on a virtual clock and a real adapter acks on real time, so they stay on memory.
+ * contract/save-state.test.ts runs the same save states on each adapter, with a real failing disk.
+ */
 export function flakyStorage() {
   const inner = memoryStorage();
   const control = { failing: false, flushes: 0, hold: undefined as Promise<void> | undefined };
-  const storage: DocStorage & typeof inner = {
-    updates: inner.updates,
+  const storage: DocStorage = {
     async attach(docName, doc) {
       const binding = await inner.attach(docName, doc);
       return {

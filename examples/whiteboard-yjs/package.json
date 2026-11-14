@@ -8,7 +8,9 @@
   },
   "scripts": {
     "check": "tsc -p tsconfig.json",
-    "test": "tsx --test tests/*.test.ts tests/contract/*.test.ts"
+    "test": "tsx --test tests/*.test.ts tests/contract/*.test.ts && pnpm test:kv && pnpm test:idb",
+    "test:kv": "WB_STORAGE=kv tsx --test tests/*.test.ts",
+    "test:idb": "WB_STORAGE=idb tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*",

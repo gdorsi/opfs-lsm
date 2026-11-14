@@ -4,6 +4,7 @@ import { openBoard } from "../src/model/board.ts";
 import { boardId } from "../src/model/shapes.ts";
 import type { Board, BoardOptions, NewShape, SaveState } from "../src/model/types.ts";
 import { memoryStorage } from "../src/persistence/index.ts";
+import { disk } from "./support/disk.ts";
 import { idCounter, testEnv } from "./support/env.ts";
 import { flakyStorage, spyStorage } from "./support/storage.ts";
 
@@ -114,7 +115,7 @@ describe("the save state", () => {
   });
 
   test("an update from another tab is unsaved too", async () => {
-    const { storage, docs } = spyStorage();
+    const { storage, docs } = spyStorage(memoryStorage());
     const env = testEnv(idCounter("s"));
     const board = await openBoard({ id, storage, env });
     const doc = docs.get("board/s")!;
@@ -145,7 +146,7 @@ describe("the save state", () => {
   });
 
   test("loading stored data is not an unsaved change", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const first = await openBoard({ id, storage, env: testEnv(idCounter("s")), autosaveMs: null });
     first.dispatch({ type: "create", shapes: [rect] });
     await first.close();
