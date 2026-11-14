@@ -112,7 +112,7 @@ function orderOf(clause: IR.OrderByClause | undefined): Order | undefined {
 
 /**
  * Sorted and text indexes may be read. A text index holds only documents with a string at `text`, so reading one
- * assumes every document has one, as reading any index assumes every document has its `on` paths.
+ * assumes every document has one, as reading any index assumes every document has its `by` fields.
  */
 const usable = (info: IndexInfo) => info.kind !== "multi";
 
@@ -121,12 +121,12 @@ function matchOf(info: IndexInfo, facts: Facts): string | undefined {
   return words && words.length > 0 ? words.join(" ") : undefined;
 }
 
-/** How many leading components of `on` are pinned, keeping the product of their values within MAX_RANGES. */
-function pinnedPrefix(on: readonly string[], facts: Facts, upTo: number): number {
+/** How many leading components of `by` are pinned, keeping the product of their values within MAX_RANGES. */
+function pinnedPrefix(by: readonly string[], facts: Facts, upTo: number): number {
   let k = 0;
   let product = 1;
   while (k < upTo) {
-    const values = facts.pins.get(on[k]!);
+    const values = facts.pins.get(by[k]!);
     if (!values || product * values.length > MAX_RANGES) break;
     product *= values.length;
     k++;
@@ -134,10 +134,10 @@ function pinnedPrefix(on: readonly string[], facts: Facts, upTo: number): number
   return k;
 }
 
-function combos(on: readonly string[], k: number, facts: Facts): Scalar[][] {
+function combos(by: readonly string[], k: number, facts: Facts): Scalar[][] {
   let out: Scalar[][] = [[]];
   for (let i = 0; i < k; i++) {
-    const values = facts.pins.get(on[i]!)!;
+    const values = facts.pins.get(by[i]!)!;
     out = out.flatMap((prefix) => values.map((v) => [...prefix, v]));
   }
   return out;
@@ -168,7 +168,7 @@ function boundsOn(path: string, facts: Facts): Pick<DocstoreQuery, "gt" | "gte" 
 }
 
 /**
- * An index whose `on` is [pinned paths..., order path, ...], with the
+ * An index whose `by` is [pinned fields..., order field, ...], with the
  * longest pinned prefix. One range per combination of pinned values (the
  * order path's own pins included), read in order and merged.
  *
@@ -181,12 +181,12 @@ function orderedRanges(facts: Facts, order: Order, indexes: ReadonlyMap<string, 
   const choices: Choice[] = [];
   for (const [name, info] of indexes) {
     if (!usable(info)) continue;
-    const at = info.on.indexOf(order.path);
-    if (at < 0 || pinnedPrefix(info.on, facts, at) < at) continue;
+    const at = info.by.indexOf(order.path);
+    if (at < 0 || pinnedPrefix(info.by, facts, at) < at) continue;
     const own = facts.pins.get(order.path)?.length ?? 1;
-    if (combos(info.on, at, facts).length * own > MAX_RANGES) continue;
+    if (combos(info.by, at, facts).length * own > MAX_RANGES) continue;
     const match = matchOf(info, facts) === undefined ? 0 : 1;
-    choices.push({ name, info, k: at, score: [at, match, info.kind === "sorted" ? 1 : 0, -info.on.length] });
+    choices.push({ name, info, k: at, score: [at, match, info.kind === "sorted" ? 1 : 0, -info.by.length] });
   }
   const choice = best(choices);
   if (!choice) return undefined;
@@ -202,7 +202,7 @@ function orderedRanges(facts: Facts, order: Order, indexes: ReadonlyMap<string, 
   const bounds = boundsOn(order.path, facts);
   const bounded = Object.keys(bounds).length > 0;
   const nullsInIndexOrder = (order.nulls === "first") !== order.reverse;
-  return combos(info.on, k, facts).flatMap((eq): DocstoreQuery[] => {
+  return combos(info.by, k, facts).flatMap((eq): DocstoreQuery[] => {
     if (pinned) return pinned.map((v) => base([...eq, v]));
     if (bounded) return [{ ...base(eq), ...bounds }];
     if (nullsInIndexOrder) return [base(eq)];
@@ -218,20 +218,20 @@ function unorderedRanges(facts: Facts, indexes: ReadonlyMap<string, IndexInfo>):
   const choices: Choice[] = [];
   for (const [name, info] of indexes) {
     if (!usable(info)) continue;
-    const k = pinnedPrefix(info.on, facts, info.on.length);
-    const next = info.on[k];
+    const k = pinnedPrefix(info.by, facts, info.by.length);
+    const next = info.by[k];
     const bounded = next !== undefined && (facts.lower.has(next) || facts.upper.has(next)) ? 1 : 0;
     const match = matchOf(info, facts) === undefined ? 0 : 1;
     if (k === 0 && !bounded && !match) continue;
-    choices.push({ name, info, k, score: [k, bounded, match, -info.on.length, info.kind === "sorted" ? 1 : 0] });
+    choices.push({ name, info, k, score: [k, bounded, match, -info.by.length, info.kind === "sorted" ? 1 : 0] });
   }
   const choice = best(choices);
   if (!choice) return undefined;
   const { name, info, k } = choice;
   const match = matchOf(info, facts);
-  const next = info.on[k];
+  const next = info.by[k];
   const bounds = next === undefined ? {} : boundsOn(next, facts);
-  const ranges = combos(info.on, k, facts).map(
+  const ranges = combos(info.by, k, facts).map(
     (eq): DocstoreQuery => ({ index: name, eq, ...bounds, ...(match !== undefined && { match }) }),
   );
   return { kind: "ranges", ranges };

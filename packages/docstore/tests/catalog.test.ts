@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   bind,
   clearCollection,
+  describeIndexes,
   encodeCatalog,
   markFailed,
   markReady,
@@ -35,7 +36,7 @@ function codeOf(f: () => unknown): string {
 
 const idOf = (c: StoredCatalog, coll: string, index: string) => c.collections[coll]!.indexes[index]!.id as IndexId;
 
-const v1: Collections = { todos: { byA: { on: "a" }, byB: { on: "b" } }, notes: { byC: { on: "c" } } };
+const v1: Collections = { todos: { byA: { by: "a" }, byB: { by: "b" } }, notes: { byC: { by: "c" } } };
 
 describe("reconcile", () => {
   it("gives a fresh catalog's collections distinct ids and its indexes distinct ids, all ready", () => {
@@ -57,15 +58,15 @@ describe("reconcile", () => {
 
   it("refuses another schema at the stored version", () => {
     const c = open(undefined, 1, v1);
-    const changed = { ...v1, todos: { byA: { on: "a" }, byB: { on: "x" } } };
+    const changed = { ...v1, todos: { byA: { by: "a" }, byB: { by: "x" } } };
     expect(codeOf(() => reconcile(c, declare(1, changed)))).toBe("schema");
     expect(codeOf(() => reconcile(c, declare(1, { ...v1, more: {} })))).toBe("schema");
-    expect(codeOf(() => reconcile(c, declare(1, { ...v1, todos: { byA: { on: "a" } } })))).toBe("schema");
+    expect(codeOf(() => reconcile(c, declare(1, { ...v1, todos: { byA: { by: "a" } } })))).toBe("schema");
   });
 
   it("at a higher version keeps unchanged indexes, builds new and redefined ones under new ids, and drops the old ones", () => {
     const c1 = open(undefined, 1, v1);
-    const c2 = open(c1, 2, { todos: { byA: { on: "a" }, byB: { on: "x" }, byD: { on: "d" } }, notes: {} });
+    const c2 = open(c1, 2, { todos: { byA: { by: "a" }, byB: { by: "x" }, byD: { by: "d" } }, notes: {} });
     const todos = c1.collections["todos"]!;
     expect(c2.collections["todos"]!.id).toBe(todos.id);
     expect(c2.collections["todos"]!.indexes["byA"]).toEqual(todos.indexes["byA"]);
@@ -79,7 +80,7 @@ describe("reconcile", () => {
       { collection: todos.id, index: todos.indexes["byB"]!.id },
       { collection: c1.collections["notes"]!.id, index: idOf(c1, "notes", "byC") },
     ]);
-    expect(reconcile(c2, declare(2, { todos: { byA: { on: "a" }, byB: { on: "x" }, byD: { on: "d" } }, notes: {} }))).toBeUndefined();
+    expect(reconcile(c2, declare(2, { todos: { byA: { by: "a" }, byB: { by: "x" }, byD: { by: "d" } }, notes: {} }))).toBeUndefined();
   });
 
   it("at a higher version keeps a collection it leaves out, untouched", () => {
@@ -112,22 +113,22 @@ describe("reconcile", () => {
   });
 
   it("makes a collection new at a higher version ready at once", () => {
-    const c = open(open(undefined, 1, v1), 2, { ...v1, tags: { byName: { on: "name" } } });
+    const c = open(open(undefined, 1, v1), 2, { ...v1, tags: { byName: { by: "name" } } });
     expect(c.collections["tags"]!.indexes["byName"]!.state).toEqual({ kind: "ready" });
     expect(new Set(Object.values(c.collections).map((x) => x.id)).size).toBe(3);
   });
 
   it("rebuilds a failed index under a new id at the next version, without dropping its prefix twice", () => {
-    const c1 = open(open(undefined, 1, v1), 2, { ...v1, todos: { ...v1["todos"], u: { on: "u", unique: true } } });
+    const c1 = open(open(undefined, 1, v1), 2, { ...v1, todos: { ...v1["todos"], u: { by: "u", unique: true } } });
     const failed = markFailed(c1, "todos", idOf(c1, "todos", "u"), "unique", ["1", "2"])!;
-    const c3 = open(failed, 3, { ...v1, todos: { ...v1["todos"], u: { on: "u", unique: true } } });
+    const c3 = open(failed, 3, { ...v1, todos: { ...v1["todos"], u: { by: "u", unique: true } } });
     expect(c3.collections["todos"]!.indexes["u"]!.state).toEqual({ kind: "building" });
     expect(idOf(c3, "todos", "u")).not.toBe(idOf(c1, "todos", "u"));
     expect(c3.dropped).toEqual(failed.dropped);
   });
 
   it("refuses a schema that needs an index id above 255", () => {
-    const many = (path: string) => Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`i${i}`, { on: `${path}${i}` }]));
+    const many = (path: string) => Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`i${i}`, { by: `${path}${i}` }]));
     const c1 = open(undefined, 1, { big: many("a") });
     expect(codeOf(() => reconcile(c1, declare(2, { big: many("b") })))).toBe("schema");
   });
@@ -149,7 +150,7 @@ describe("stored bytes", () => {
 
 describe("transitions", () => {
   const c1 = open(undefined, 1, v1);
-  const c2 = open(c1, 2, { ...v1, todos: { ...v1["todos"], byD: { on: "d" } } });
+  const c2 = open(c1, 2, { ...v1, todos: { ...v1["todos"], byD: { by: "d" } } });
   const byD = idOf(c2, "todos", "byD");
 
   it("marks a building index ready once", () => {
@@ -169,7 +170,7 @@ describe("transitions", () => {
   });
 
   it("clears a collection under a new id with its indexes ready, failed ones kept, and drops the old prefix", () => {
-    const c3 = open(c2, 3, { ...v1, todos: { ...v1["todos"], byD: { on: "d" }, u: { on: "u", unique: true } } });
+    const c3 = open(c2, 3, { ...v1, todos: { ...v1["todos"], byD: { by: "d" }, u: { by: "u", unique: true } } });
     const withFailed = markFailed(c3, "todos", idOf(c3, "todos", "u"), "unique", ["1", "2"])!;
     const old = withFailed.collections["todos"]!;
     const cleared = clearCollection(withFailed, "todos");
@@ -195,9 +196,9 @@ describe("transitions", () => {
 describe("bind", () => {
   it("lets a handle read only the ready indexes whose stored definition equals its own, and write every live one", () => {
     const c1 = open(undefined, 1, v1);
-    const c2 = open(c1, 2, { todos: { byA: { on: "a" }, byB: { on: "x" }, byD: { on: "d" } } });
+    const c2 = open(c1, 2, { todos: { byA: { by: "a" }, byB: { by: "x" }, byD: { by: "d" } } });
     const failed = markFailed(c2, "todos", idOf(c2, "todos", "byD"), "value", ["9"])!;
-    const old = bind(encodeCatalog(failed), failed, declare(1, { ...v1, todos: { ...v1["todos"], byD: { on: "d" }, byE: { on: "e" } } }));
+    const old = bind(encodeCatalog(failed), failed, declare(1, { ...v1, todos: { ...v1["todos"], byD: { by: "d" }, byE: { by: "e" } } }));
     const todos = old.collections.get("todos")!;
     expect(todos.readable.get("byA")).toMatchObject({ name: "byA", state: { kind: "ready" } });
     expect(todos.readable.get("byB")).toEqual({ kind: "spec-changed" });
@@ -205,7 +206,7 @@ describe("bind", () => {
     expect(todos.readable.get("byE")).toEqual({ kind: "missing" });
     expect(todos.maintained.map((p) => p.name).sort()).toEqual(["byA", "byB"]);
 
-    const building = bind(encodeCatalog(c2), c2, declare(2, { todos: { byD: { on: "d" } } }));
+    const building = bind(encodeCatalog(c2), c2, declare(2, { todos: { byD: { by: "d" } } }));
     expect(building.collections.get("todos")!.readable.get("byD")).toEqual({ kind: "building" });
     expect(building.collections.get("todos")!.maintained.map((p) => p.name).sort()).toEqual(["byA", "byB", "byD"]);
     expect(bind(encodeCatalog(c2), c2, declare(1, { gone: {} })).collections.has("gone")).toBe(false);
@@ -217,17 +218,67 @@ describe("normalizeSchema", () => {
     ["a version below 1", { version: 0, collections: {} }],
     ["a fractional version", { version: 1.5, collections: {} }],
     ["a collection name with a dash", { version: 1, collections: { "a-b": {} } }],
-    ["an index name with a dot", { version: 1, collections: { a: { "x.y": { on: "x" } } } }],
-    ["an empty path", { version: 1, collections: { a: { x: { on: "" } } } }],
-    ["an empty path segment", { version: 1, collections: { a: { x: { on: "b..c" } } } }],
-    ["no paths", { version: 1, collections: { a: { x: { on: [] } } } }],
-    ["nine paths", { version: 1, collections: { a: { x: { on: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] } } } }],
-    ["a repeated path", { version: 1, collections: { a: { x: { on: ["b", "b"] } } } }],
-    ["a unique text index", { version: 1, collections: { a: { x: { on: "b", text: "c", unique: true } } } }],
+    ["an index name with a dot", { version: 1, collections: { a: { "x.y": { by: "x" } } } }],
+    ["an empty field", { version: 1, collections: { a: { x: { by: "" } } } }],
+    ["an empty field segment", { version: 1, collections: { a: { x: { by: "b..c" } } } }],
+    ["no fields", { version: 1, collections: { a: { x: { on: [] } } } }],
+    ["nine fields", { version: 1, collections: { a: { x: { by: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] } } } }],
+    ["a repeated field", { version: 1, collections: { a: { x: { by: ["b", "b"] } } } }],
+    ["a unique text index", { version: 1, collections: { a: { x: { by: "b", text: "c", unique: true } } } }],
+    ["a text index that starts with an array field", { version: 1, collections: { a: { x: { by: "b[]", text: "c" } } } }],
+    ["an array field after the first", { version: 1, collections: { a: { x: { by: ["b", "c[]"] } } } }],
+    ["an array mark with no field", { version: 1, collections: { a: { x: { by: "[]" } } } }],
+    ["a repeated field once the mark is gone", { version: 1, collections: { a: { x: { by: ["b[]", "b"] } } } }],
+    ["no by", { version: 1, collections: { a: { x: {} } } }],
+    ["a unique that is not a boolean", { version: 1, collections: { a: { x: { by: "b", unique: 1 } } } }],
+    ["the old on option", { version: 1, collections: { a: { x: { on: "b" } } } }],
+    ["the old multi option", { version: 1, collections: { a: { x: { by: "b", multi: true } } } }],
+    ["a misspelled option", { version: 1, collections: { a: { x: { by: "b", uniqe: true } } } }],
     ["a drop that is not an array", { version: 1, collections: {}, drop: "a" }],
     ["a dropped name with a dash", { version: 1, collections: {}, drop: ["a-b"] }],
     ["a collection both declared and dropped", { version: 1, collections: { a: {} }, drop: ["a"] }],
   ])("refuses %s with code schema", (_, decl) => {
     expect(codeOf(() => normalizeSchema(decl as never))).toBe("schema");
+  });
+
+  it("names the option it does not know and the ones it does", () => {
+    const decl = { version: 1, collections: { a: { x: { by: "b", uniqe: true } } } };
+    expect(() => normalizeSchema(decl as never)).toThrow(/"uniqe".*by, unique, text/);
+  });
+
+  it("stores an array field without its mark, as the first field of a multi index", () => {
+    const declared = declare(1, { c: { tags: { by: ["tags[]", "at"] }, one: { by: "tags" } } });
+    expect(declared.collections.get("c")!.get("tags")).toEqual({ kind: "sorted", on: ["tags", "at"], unique: false, multi: true });
+    expect(declared.collections.get("c")!.get("one")).toEqual({ kind: "sorted", on: ["tags"], unique: false, multi: false });
+  });
+
+  it("describes a multi index by its declared fields, the mark on the first", () => {
+    const specs = declare(1, { c: { tags: { by: ["tags[]", "at"] }, one: { by: ["a", "b"], unique: true }, s: { by: "a", text: "t" } } }).collections.get("c")!;
+    expect([...describeIndexes(specs)]).toEqual([
+      ["tags", { kind: "multi", by: ["tags[]", "at"], unique: false }],
+      ["one", { kind: "sorted", by: ["a", "b"], unique: true }],
+      ["s", { kind: "text", by: ["a"], unique: false, text: "t" }],
+    ]);
+  });
+
+  it("opens a catalog stored before by existed without writing it again", () => {
+    const stored = encodeCatalog({
+      format: 1,
+      version: 1,
+      nextCollectionId: 2,
+      collections: {
+        c: {
+          id: 1,
+          nextIndexId: 3,
+          indexes: {
+            tags: { id: 1, spec: { kind: "sorted", on: ["tags", "at"], unique: false, multi: true }, state: { kind: "ready" } },
+            one: { id: 2, spec: { kind: "sorted", on: ["a"], unique: true, multi: false }, state: { kind: "ready" } },
+          },
+        },
+      },
+      dropped: [],
+    });
+    const catalog = parseCatalog(stored);
+    expect(reconcile(catalog, declare(1, { c: { tags: { by: ["tags[]", "at"] }, one: { by: "a", unique: true } } }))).toBeUndefined();
   });
 });

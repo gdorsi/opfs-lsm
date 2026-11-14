@@ -29,10 +29,10 @@ export const schema = defineSchema<{ issues: Issue; details: Detail }>()({
   version: 2,
   collections: {
     issues: {
-      byModified: { on: "modified", text: "title" },
-      byCreated: { on: "created" },
-      byStatus: { on: ["status", "priority", "modified"] },
-      byPriority: { on: ["priority", "status", "modified"] },
+      byModified: { by: "modified", text: "title" },
+      byCreated: { by: "created" },
+      byStatus: { by: ["status", "priority", "modified"] },
+      byPriority: { by: ["priority", "status", "modified"] },
     },
     details: {},
   },

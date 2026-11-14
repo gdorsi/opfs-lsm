@@ -17,12 +17,12 @@ const rows: Row[] = Array.from({ length: ROWS }, (_, i) => ({
 }));
 
 const define = defineSchema<{ rows: Row }>();
-const v1 = define({ version: 1, collections: { rows: { byA: { on: "a" } } } });
+const v1 = define({ version: 1, collections: { rows: { byA: { by: "a" } } } });
 const v2 = {
-  sorted: define({ version: 2, collections: { rows: { byA: { on: "a" }, added: { on: ["b", "a"] } } } }),
-  multi: define({ version: 2, collections: { rows: { byA: { on: "a" }, added: { on: "tags", multi: true } } } }),
-  unique: define({ version: 2, collections: { rows: { byA: { on: "a" }, added: { on: "u", unique: true } } } }),
-  text: define({ version: 2, collections: { rows: { byA: { on: "a" }, added: { on: "a", text: "t" } } } }),
+  sorted: define({ version: 2, collections: { rows: { byA: { by: "a" }, added: { by: ["b", "a"] } } } }),
+  multi: define({ version: 2, collections: { rows: { byA: { by: "a" }, added: { by: "tags[]" } } } }),
+  unique: define({ version: 2, collections: { rows: { byA: { by: "a" }, added: { by: "u", unique: true } } } }),
+  text: define({ version: 2, collections: { rows: { byA: { by: "a" }, added: { by: "a", text: "t" } } } }),
 };
 const withoutA = define({ version: 2, collections: { rows: {} } });
 

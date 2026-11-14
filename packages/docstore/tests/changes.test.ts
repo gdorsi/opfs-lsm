@@ -98,7 +98,7 @@ describe("changes", () => {
     type Other = { id: string; x?: number };
     const two = defineSchema<{ docs: Doc; other: Other }>()({
       version: 1,
-      collections: { docs: { one: { on: "a" }, tags: { on: "tags", multi: true } }, other: { byX: { on: "x" } } },
+      collections: { docs: { one: { by: "a" }, tags: { by: "tags[]" } }, other: { byX: { by: "x" } } },
     });
     const kv = await openKv(freshName());
     open.push(kv);
@@ -162,10 +162,10 @@ describe("changes", () => {
 
   it("sends no gap for catalog writes that leave the collection's id alone", async () => {
     type Row = { id: string; a?: number; b?: number };
-    const v1 = defineSchema<{ rows: Row }>()({ version: 1, collections: { rows: { byA: { on: "a" } } } });
+    const v1 = defineSchema<{ rows: Row }>()({ version: 1, collections: { rows: { byA: { by: "a" } } } });
     const v2 = defineSchema<{ rows: Row }>()({
       version: 2,
-      collections: { rows: { byA: { on: "a" }, byB: { on: "b" } } },
+      collections: { rows: { byA: { by: "a" }, byB: { by: "b" } } },
     });
     const name = freshName();
     const kvA = await openKv(name);
@@ -187,7 +187,7 @@ describe("changes", () => {
   it("sends a gap for a dropped collection, nothing while it is gone, and follows it when a later schema declares it again", async () => {
     type Note = { id: string; body?: string };
     const withNotes = (version: number) =>
-      defineSchema<{ docs: Doc; notes: Note }>()({ version, collections: { docs: {}, notes: { byBody: { on: "body" } } } });
+      defineSchema<{ docs: Doc; notes: Note }>()({ version, collections: { docs: {}, notes: { byBody: { by: "body" } } } });
     const withoutNotes = defineSchema<{ docs: Doc }>()({ version: 2, collections: { docs: {} }, drop: ["notes"] });
     const name = freshName();
     const kvA = await openKv(name);

@@ -19,7 +19,7 @@ type Todo = {
 };
 const schema = defineSchema<{ todos: Todo }>()({
 	version: 1,
-	collections: { todos: { open: { on: ["done", "createdAt"] } } },
+	collections: { todos: { open: { by: ["done", "createdAt"] } } },
 });
 const kv = await openDb({ name: "app" });
 const store = await openDocStore(kv, schema);
@@ -47,11 +47,11 @@ const schema = defineSchema<{ todos: Todo; users: User }>()({
 	// collections
 	collections: {
 		todos: {
-			open: { on: ["done", "createdAt"] },        // sorted
-			byTag: { on: "tags", multi: true },         // multi
-			search: { on: "createdAt", text: "title" }, // text
+			open: { by: ["done", "createdAt"] },        // sorted
+			byTag: { by: "tags[]" },                    // multi
+			search: { by: "createdAt", text: "title" }, // text
 		},
-		users: { byEmail: { on: "email", unique: true } }, // unique
+		users: { byEmail: { by: "email", unique: true } }, // unique
 	},
 });
 ```
@@ -169,7 +169,7 @@ await todos.clear();      // one catalog write, at any size
 
 ## Indexes
 
-`on` takes a dot path such as `"meta.due"`, up to four segments, or a tuple of paths. The examples start from these todos.
+`by` takes a field, a dot path such as `"meta.due"` up to four segments, or a list of fields. The examples start from these todos.
 
 ```ts
 await todos.putMany([
@@ -200,14 +200,17 @@ await todos.putMany([
 ### Sorted
 
 ```ts
-// one entry per document, ordered by the values at on, then by id
+// one entry per document, ordered by its fields' values, then
+// by id
 await todos.queryIds({ index: "open" });
 // => { ids: ["c", "a", "b"] }
 todos.indexes.get("open");
-// => { kind: "sorted", on: ["done", "createdAt"], unique: false }
+// => { kind: "sorted", by: ["done", "createdAt"], unique: false }
 ```
 
 ### Multi
+
+`"tags[]"` reads each element of the array at `tags`. Only the first field of `by` can end in `[]`.
 
 ```ts
 // one entry per distinct element, so a document can match more
@@ -217,7 +220,7 @@ await todos.queryIds({ index: "byTag" });
 await todos.queryIds({ index: "byTag", eq: ["home"] });
 // => { ids: ["a", "c"] }
 // an empty array gives no entry, and a scalar gives one
-// with on: ["tags", "createdAt"], each entry is one tag, then
+// with by: ["tags[]", "createdAt"], each entry is one tag, then
 // createdAt
 ```
 
@@ -247,7 +250,7 @@ await users.put({ id: "u1", email: "ada@example.com" });
 await users.put({ id: "u2", email: "ada@example.com" });
 // throws DocStoreError "unique"
 await users.putMany([{ id: "u3" }, { id: "u4" }]);
-// no value at on, so no entry and no conflict
+// no email, so no entry and no conflict
 await users.put({ id: "u5", email: "\uD800" });
 // throws DocStoreError "document"
 // an indexed value is null, a boolean, a number, or a string with
@@ -261,7 +264,7 @@ A query names an index and a range in it. Without `index`, it reads the document
 
 ### Bounds
 
-`eq` fixes the first components of `on`. `gt`, `gte`, `lt`, and `lte` bound the next one.
+`eq` fixes the first fields of `by`. `gt`, `gte`, `lt`, and `lte` bound the next one.
 
 ```ts
 await todos.queryIds({ index: "open", eq: [false], gt: 2 });
@@ -465,7 +468,7 @@ const v2 = defineSchema<{ todos: Todo; users: User }>()({
 	collections: {
 		todos: {
 			...schema.collections.todos,
-			byCreated: { on: "createdAt" }
+			byCreated: { by: "createdAt" }
 		},
 		users: schema.collections.users,
 	},
@@ -515,7 +518,7 @@ const v4 = defineSchema<{ todos: Todo }>()({
 	collections: {
 		todos: {
 			...v3.collections.todos,
-			byTitle: { on: "title", unique: true }
+			byTitle: { by: "title", unique: true }
 		}
 	},
 });
@@ -584,8 +587,8 @@ await users.put({ id: "u6", email: "x".repeat(9000) });
 // throws DocStoreError "document", over 8 KiB of index key
 const tags = Array.from({ length: 1001 }, (_, i) => `t${i}`);
 await todos.put({ ...todo, tags });
-// throws DocStoreError "document", over 1,000 elements per multi
-// index
+// throws DocStoreError "document", over 1,000 distinct elements
+// in an array field
 // a write call is one kv batch of at most 8 MiB, counting keys,
 // values, and 256 bytes per op
 // kv has no separate cap on the number of ops

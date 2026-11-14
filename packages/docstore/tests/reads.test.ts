@@ -175,7 +175,7 @@ describe("text search", () => {
         kv,
         defineSchema<{ notes: Note }>()({
           version: 1,
-          collections: { notes: { search: { on: ["owner", "updatedAt"], text: "body" } } },
+          collections: { notes: { search: { by: ["owner", "updatedAt"], text: "body" } } },
         }),
       )
     ).collection("notes");

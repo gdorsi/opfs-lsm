@@ -16,8 +16,11 @@ import type { AnySchema, IndexInfo } from "./schema.js";
 const FORMAT = 1;
 const MAX_COLLECTION_ID = 0xffff;
 const MAX_INDEX_ID = 0xff;
-const MAX_PATHS = 8;
+const MAX_FIELDS = 8;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Ends the first field of `by` when it holds an array. */
+const ARRAY_MARK = "[]";
+const OPTIONS = ["by", "unique", "text"];
 
 export type StoredCatalog = {
   readonly format: typeof FORMAT;
@@ -78,12 +81,14 @@ function badSchema(message: string): never {
   throw new DocStoreError("schema", message);
 }
 
-function checkPath(path: unknown, where: string): string {
-  if (typeof path !== "string" || path.split(".").some((s) => s === "")) {
-    badSchema(`${where}: ${JSON.stringify(path)} is not a dot path`);
+function checkField(field: unknown, where: string): string {
+  if (typeof field !== "string" || field.split(".").some((s) => s === "")) {
+    badSchema(`${where}: ${JSON.stringify(field)} is not a field such as "a.b"`);
   }
-  return path;
+  return field;
 }
+
+const isArrayField = (field: unknown): field is string => typeof field === "string" && field.endsWith(ARRAY_MARK);
 
 export function normalizeSchema(decl: AnySchema): DeclaredSchema {
   if (!Number.isInteger(decl.version) || decl.version < 1) badSchema("version must be an integer >= 1");
@@ -97,16 +102,24 @@ export function normalizeSchema(decl: AnySchema): DeclaredSchema {
       const where = `index "${index}" of "${name}"`;
       if (!NAME.test(index)) badSchema(`${where}: the name must match ${NAME}`);
       if (!isObject(d)) badSchema(`${where} must be an object`);
-      const on = (Array.isArray(d["on"]) ? d["on"] : [d["on"]]).map((p) => checkPath(p, where));
-      if (on.length === 0 || on.length > MAX_PATHS) badSchema(`${where}: on takes 1 to ${MAX_PATHS} paths`);
-      if (new Set(on).size !== on.length) badSchema(`${where}: on repeats a path`);
-      const { unique = false, multi = false, text } = d;
-      if (typeof unique !== "boolean" || typeof multi !== "boolean") badSchema(`${where}: unique and multi are booleans`);
+      for (const key of Object.keys(d)) {
+        if (!OPTIONS.includes(key)) badSchema(`${where}: unknown option "${key}", expected ${OPTIONS.join(", ")}`);
+      }
+      const by: unknown[] = Array.isArray(d["by"]) ? d["by"] : [d["by"]];
+      if (by.length === 0 || by.length > MAX_FIELDS) badSchema(`${where}: by takes 1 to ${MAX_FIELDS} fields`);
+      if (by.slice(1).some(isArrayField)) badSchema(`${where}: only the first field of by can end in ${ARRAY_MARK}`);
+      const first = by[0];
+      const multi = isArrayField(first);
+      const on = by.map((f, i) => checkField(multi && i === 0 ? first.slice(0, -ARRAY_MARK.length) : f, where));
+      if (new Set(on).size !== on.length) badSchema(`${where}: by repeats a field`);
+      const { unique = false, text } = d;
+      if (typeof unique !== "boolean") badSchema(`${where}: unique is a boolean`);
       if (text === undefined) {
         specs.set(index, { kind: "sorted", on, unique, multi });
       } else {
-        if (unique || multi) badSchema(`${where}: a text index cannot be unique or multi`);
-        specs.set(index, { kind: "text", on, text: checkPath(text, where) });
+        if (unique) badSchema(`${where}: a text index cannot be unique`);
+        if (multi) badSchema(`${where}: a text index cannot start with an array field`);
+        specs.set(index, { kind: "text", on, text: checkField(text, where) });
       }
     }
     collections.set(name, specs);
@@ -127,8 +140,10 @@ export function describeIndexes(specs: ReadonlyMap<string, IndexSpec>): Readonly
     out.set(
       name,
       s.kind === "text"
-        ? { kind: "text", on: s.on, unique: false, text: s.text }
-        : { kind: s.multi ? "multi" : "sorted", on: s.on, unique: s.unique },
+        ? { kind: "text", by: s.on, unique: false, text: s.text }
+        : s.multi
+          ? { kind: "multi", by: [s.on[0] + ARRAY_MARK, ...s.on.slice(1)], unique: s.unique }
+          : { kind: "sorted", by: s.on, unique: s.unique },
     );
   }
   return out;

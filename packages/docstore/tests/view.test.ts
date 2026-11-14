@@ -16,15 +16,15 @@ async function docs(name = freshName()): Promise<{ kv: Db; c: Docs }> {
 }
 
 describe("indexes", () => {
-  it("lists what the schema declares: the kind, the paths, and whether it is unique", async () => {
+  it("lists what the schema declares: the kind, the fields, and whether it is unique", async () => {
     const { c } = await docs();
     expect(new Map(c.indexes)).toEqual(
       new Map([
-        ["one", { kind: "sorted", on: ["a"], unique: false }],
-        ["two", { kind: "sorted", on: ["a", "b"], unique: false }],
-        ["tags", { kind: "multi", on: ["tags", "b"], unique: false }],
-        ["uniq", { kind: "sorted", on: ["u"], unique: true }],
-        ["search", { kind: "text", on: ["a"], unique: false, text: "t" }],
+        ["one", { kind: "sorted", by: ["a"], unique: false }],
+        ["two", { kind: "sorted", by: ["a", "b"], unique: false }],
+        ["tags", { kind: "multi", by: ["tags[]", "b"], unique: false }],
+        ["uniq", { kind: "sorted", by: ["u"], unique: true }],
+        ["search", { kind: "text", by: ["a"], unique: false, text: "t" }],
       ]),
     );
   });
@@ -32,10 +32,10 @@ describe("indexes", () => {
   it("lists only the indexes of this handle's schema when the stored catalog holds more", async () => {
     const name = freshName();
     type Row = { id: string; a?: number; b?: number };
-    const v1 = defineSchema<{ rows: Row }>()({ version: 1, collections: { rows: { byA: { on: "a" } } } });
+    const v1 = defineSchema<{ rows: Row }>()({ version: 1, collections: { rows: { byA: { by: "a" } } } });
     const v2 = defineSchema<{ rows: Row }>()({
       version: 2,
-      collections: { rows: { byA: { on: "a" }, byB: { on: "b", unique: true } } },
+      collections: { rows: { byA: { by: "a" }, byB: { by: "b", unique: true } } },
     });
     const kvNew = await openKv(name);
     const kvOld = await openKv(name);

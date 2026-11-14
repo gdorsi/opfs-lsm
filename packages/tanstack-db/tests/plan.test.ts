@@ -18,13 +18,13 @@ import {
 import { MAX_RANGES, planLoad } from "../src/plan.ts";
 
 const ref = (path: string) => new IR.PropRef(path.split("."));
-const sorted = (...on: string[]): IndexInfo => ({ kind: "sorted", on, unique: false });
+const sorted = (...by: string[]): IndexInfo => ({ kind: "sorted", by, unique: false });
 
 const INDEXES = new Map<string, IndexInfo>([
   ["byStatus", sorted("deleted", "status", "modified")],
   ["byModified", sorted("deleted", "modified")],
-  ["tags", { kind: "multi", on: ["tags"], unique: false }],
-  ["search", { kind: "text", on: ["deleted", "modified"], unique: false, text: "title" }],
+  ["tags", { kind: "multi", by: ["tags[]"], unique: false }],
+  ["search", { kind: "text", by: ["deleted", "modified"], unique: false, text: "title" }],
 ]);
 
 const desc = (path: string, nulls: "first" | "last" = "last"): IR.OrderBy => [
@@ -136,7 +136,7 @@ test("without a like, a text index serves its order and its tie load when no sor
 test("between indexes that pin as many fields, a load reads the one they pin whole", () => {
   const indexes = new Map<string, IndexInfo>([
     ["byStatus", sorted("deleted", "status", "rank")],
-    ["search", { kind: "text", on: ["deleted", "modified"], unique: false, text: "title" }],
+    ["search", { kind: "text", by: ["deleted", "modified"], unique: false, text: "title" }],
   ]);
   const where = and(eq(ref("deleted"), false), inArray(ref("status"), [1]), eq(ref("modified"), 7));
   assert.deepEqual(

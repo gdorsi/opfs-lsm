@@ -12,9 +12,9 @@ export const todoSchema = defineSchema<{ todos: Todo }>()({
   version: 1,
   collections: {
     todos: {
-      byCreated: { on: "createdAt" },
-      byTitle: { on: "titleSort" },
-      search: { on: "createdAt", text: "title" },
+      byCreated: { by: "createdAt" },
+      byTitle: { by: "titleSort" },
+      search: { by: "createdAt", text: "title" },
     },
   },
 });
@@ -40,12 +40,22 @@ export const todoQueries: TodoQuery[] = [
   { index: "byCreated", eq: [1], gte: 2 },
 ];
 
-// @ts-expect-error not a path of Todo
-defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { x: { on: "tite" } } } });
-// @ts-expect-error text must be a string path
-defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { s: { on: "createdAt", text: "done" } } } });
+// @ts-expect-error not a field of Todo
+defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { x: { by: "tite" } } } });
+// @ts-expect-error text must be a string field
+defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { s: { by: "createdAt", text: "done" } } } });
 // @ts-expect-error every collection of the type map must be declared
 defineSchema<{ todos: Todo }>()({ version: 1, collections: {} });
+// @ts-expect-error only collections of the type map can be declared, empty or not
+defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: {}, drafts: {} } });
+
+const withEmpty = defineSchema<{ drafts: Todo; todos: Todo }>()({
+  version: 1,
+  collections: { drafts: {}, todos: { byCreated: { by: "createdAt" } } },
+});
+export const emptyKeepsOthers: Query<Todo, (typeof withEmpty)["collections"]["todos"]> = { index: "byCreated", gte: 0 };
+// @ts-expect-error a collection declared with no indexes has none to query
+export const emptyHasNone: Query<Todo, (typeof withEmpty)["collections"]["drafts"]> = { index: "byCreated" };
 
 type HasDate = { id: string; at: Date };
 // @ts-expect-error a Date does not survive JSON
@@ -92,10 +102,10 @@ const notesSchema = defineSchema<{ notes: Note }>()({
   version: 3,
   collections: {
     notes: {
-      bySlug: { on: "slug", unique: true },
-      byOwnerUpdated: { on: ["owner", "updatedAt"] },
-      byTag: { on: ["tags", "updatedAt"], multi: true },
-      search: { on: ["owner", "updatedAt"], text: "body" },
+      bySlug: { by: "slug", unique: true },
+      byOwnerUpdated: { by: ["owner", "updatedAt"] },
+      byTag: { by: ["tags[]", "updatedAt"] },
+      search: { by: ["owner", "updatedAt"], text: "body" },
     },
   },
 });
@@ -111,13 +121,31 @@ export const noteQueries: NoteQuery[] = [
   { index: "bySlug", eq: ["hello-world"] },
   // @ts-expect-error updatedAt is the second component: after eq ["ann"] the bound is a number
   { index: "byOwnerUpdated", eq: ["ann"], gte: "x" },
+  { index: "byTag", eq: ["work", since] },
+  { index: "byTag", eq: ["work"], gte: since },
   // @ts-expect-error the element type of tags is string
   { index: "byTag", eq: [1] },
+  // @ts-expect-error updatedAt is the second component of byTag, a number
+  { index: "byTag", eq: ["work", "x"] },
   // @ts-expect-error a bound on the second component needs eq on the first
   { index: "byOwnerUpdated", gte: since },
 ];
 
-// @ts-expect-error multi needs an array path first
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { m: { on: "owner", multi: true } } } });
+// @ts-expect-error [] marks an array field, and owner is a string
+defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { m: { by: "owner[]" } } } });
+// @ts-expect-error an array field needs the [] mark
+defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { m: { by: "tags" } } } });
+// @ts-expect-error only the first field may be an array
+defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { m: { by: ["updatedAt", "tags[]"] } } } });
+// @ts-expect-error a text index cannot start with an array field
+defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { t: { by: "tags[]", text: "body" } } } });
 // @ts-expect-error a text index cannot be unique
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { t: { on: "updatedAt", text: "body", unique: true } } } });
+defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { t: { by: "updatedAt", text: "body", unique: true } } } });
+// @ts-expect-error uniqe is not an option
+defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { by: "slug", uniqe: true } } } });
+// @ts-expect-error on is the old name of by
+defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { on: "slug" } } } });
+// @ts-expect-error a misspelled field inside a list
+defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { by: ["owner", "updatedAtt"] } } } });
+// @ts-expect-error an empty list of fields
+defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { by: [] } } } });
