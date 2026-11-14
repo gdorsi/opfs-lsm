@@ -31,6 +31,15 @@ export type Issue = Synced & {
 };
 /** An issue as stored: its fields, and the keys the priority and status sorts order by. */
 export type StoredIssue = Issue & { readonly priorityOrder: number; readonly statusOrder: string };
+
+/** Priority, then status, then `modified` (ms, below 1e13): one value per issue, so a sort on it has few ties. */
+export const priorityOrder = (priority: number, status: number, modified: number) => priority * 1e14 + status * 1e13 + modified;
+
+export const stored = (issue: Issue): StoredIssue => ({
+  ...issue,
+  priorityOrder: priorityOrder(issue.priority, issue.status, issue.modified),
+  statusOrder: `${issue.status}${issue.kanbanorder}`,
+});
 export type Body = Synced & {
   readonly id: string;
   description: string;

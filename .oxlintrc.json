@@ -87,7 +87,17 @@
             "property": "mark",
             "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
           }
-        ],
+        ]
+      }
+    },
+    {
+      "files": [
+        "examples/linearlite-tanstackdb/src/model/**"
+      ],
+      "excludeFiles": [
+        "**/*.test.ts"
+      ],
+      "rules": {
         "no-restricted-imports": [
           "error",
           {
@@ -103,6 +113,13 @@
                   "../routes/*"
                 ],
                 "message": "linearlite's model runs headless: the app passes in what it needs from the browser."
+              },
+              {
+                "group": [
+                  "../backends/*",
+                  "@opfs-lsm/*"
+                ],
+                "message": "linearlite's model reaches storage only through the Backend it is opened with."
               }
             ]
           }
