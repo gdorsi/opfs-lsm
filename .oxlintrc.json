@@ -62,7 +62,14 @@
           "cancelAnimationFrame",
           "HTMLElement",
           "PointerEvent",
-          "KeyboardEvent"
+          "KeyboardEvent",
+          "Date",
+          "performance",
+          "setTimeout",
+          "clearTimeout",
+          "setInterval",
+          "clearInterval",
+          "BroadcastChannel"
         ],
         "no-restricted-imports": [
           "error",
@@ -79,6 +86,32 @@
               }
             ]
           }
+        ]
+      }
+    },
+    {
+      "files": [
+        "examples/whiteboard-yjs/src/model/env.ts"
+      ],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          "window",
+          "document",
+          "navigator",
+          "location",
+          "localStorage",
+          "sessionStorage",
+          "indexedDB",
+          "requestAnimationFrame",
+          "cancelAnimationFrame",
+          "HTMLElement",
+          "PointerEvent",
+          "KeyboardEvent",
+          "performance",
+          "setInterval",
+          "clearInterval",
+          "BroadcastChannel"
         ]
       }
     },

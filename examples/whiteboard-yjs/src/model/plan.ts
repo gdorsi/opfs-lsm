@@ -65,7 +65,7 @@ export function toApplied(patch: Patch): Applied {
   return { patch, created };
 }
 
-function topZ(scene: Scene) {
+export function topZ(scene: Scene) {
   const top = scene.order[scene.order.length - 1];
   return top === undefined ? undefined : scene.shapes.get(top)!.z;
 }

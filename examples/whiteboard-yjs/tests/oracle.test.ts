@@ -6,6 +6,7 @@ import { boardId } from "../src/model/shapes.ts";
 import type { Command, DocStorage, Shape, ShapeId } from "../src/model/types.ts";
 import { memoryStorage } from "../src/persistence/index.ts";
 import { randomCommand } from "./support/commands.ts";
+import { testEnv } from "./support/env.ts";
 import { seeded } from "./support/rng.ts";
 import { sortedIds } from "./support/scenes.ts";
 import { lossyStorage } from "./support/storage.ts";
@@ -16,7 +17,7 @@ const id = boardId("fuzz");
 
 function envOf() {
   let n = 0;
-  return { id: () => `s${(++n).toString(36)}` };
+  return testEnv(() => `s${(++n).toString(36)}`);
 }
 
 /**
