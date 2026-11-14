@@ -21,7 +21,8 @@ export type RunMeta = RunEnd & {
   readonly path: string;
   /**
    * Every range delete whose record is at or below this seq was applied
-   * when the run was written: it holds no version one of them covers.
+   * when the run was written: it holds no version one of them covers. It
+   * holds no version past this seq either.
    */
   readonly marksThrough: number;
 };
