@@ -1,6 +1,6 @@
 import type { Stream } from "../domain/stores.ts";
+import type { Backend } from "./backend.ts";
 import { commands, type Commands } from "./commands.ts";
-import type { Store } from "./store.ts";
 import { openSync, threadFetcher, type Sync } from "./sync.ts";
 import type { Transport } from "./transport.ts";
 import { issueViews, type Issues } from "./views.ts";
@@ -13,21 +13,19 @@ export interface Linearlite {
 }
 
 export type OpenOptions = {
-  readonly store: Store;
+  readonly backend: Backend;
   readonly transport: Transport;
   /** Rows per pull page. Default 2,000. */
   readonly pullLimit?: number;
   /** Called the first time a leader in this model finds a stream caught up with the server. */
   readonly onCaughtUp?: (stream: Stream) => void;
-  /** Whether the page is hidden, so a recount runs without pausing. Default: never. */
-  readonly hidden?: () => boolean;
 };
 
-export function openLinearlite({ store, transport, pullLimit, onCaughtUp, hidden = () => false }: OpenOptions): Linearlite {
-  const threads = threadFetcher(store, transport);
+export function openLinearlite({ backend, transport, pullLimit, onCaughtUp }: OpenOptions): Linearlite {
+  const threads = threadFetcher(backend, transport);
   return {
-    issues: issueViews(store, { fetchThread: (id) => threads.fetch([id]), online: (back) => transport.online(back), hidden }),
-    commands: commands(store, transport.user),
-    sync: openSync(store, transport, threads, { pullLimit, onCaughtUp }),
+    issues: issueViews(backend, { fetchThread: (id) => threads.fetch([id]), online: (back) => transport.online(back) }),
+    commands: commands(backend, transport.user),
+    sync: openSync(backend, transport, threads, { pullLimit, onCaughtUp }),
   };
 }

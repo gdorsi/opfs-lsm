@@ -2,16 +2,17 @@ import { mergeIncoming, mergePulled, restore } from "../domain/merge.ts";
 import type { Clocks, Rows, ServerRow, SyncState } from "../domain/model.ts";
 import { STORES, STREAMS, type Stream } from "../domain/stores.ts";
 import { MAX_DETAIL_IDS, MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse } from "../domain/wire.ts";
+import type { Backend, StoreRows } from "./backend.ts";
 import { fromSnapshots, observe, type Live, type Snapshot, type Unsubscribe } from "./live.ts";
 import { backoffMs, Pager, pushOp } from "./ops.ts";
-import { FORMAT, transact, type Store } from "./store.ts";
+import { unsent } from "./query.ts";
 import { TransportError, type Transport } from "./transport.ts";
 
+/** The shape of stored rows. The sync leader clears a replica written under another format and pulls it again. */
+const FORMAT = 4;
 const PULL_LIMIT = 2000;
 const FULL = STREAMS.filter((s) => STORES[s].pull === "full");
 const BACKGROUND = STREAMS.filter((s) => STORES[s].pull === "threads");
-/** Cached threads below which storage pressure raises no alert: the visible rows reload right after an eviction. */
-const MIN_EVICTION = 100;
 /** Preload delay: a scroll that passes rows by does not ask for them. */
 const PRELOAD_DELAY_MS = 200;
 
@@ -68,64 +69,37 @@ class EpochChanged extends Error {
   }
 }
 
-type Transact<T, K extends string = string> = (
-  keys: readonly K[],
-  merge: (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<T | null | undefined>,
-) => Promise<void>;
-
-async function read<T, K extends string>(transact: Transact<T, K>, keys: readonly K[]): Promise<ReadonlyArray<T | undefined>> {
-  let rows: ReadonlyArray<T | undefined> = [];
-  await transact(keys, (stored) => {
-    rows = stored;
-    return stored.map(() => undefined);
-  });
-  return rows;
-}
-
-/** kv's cap on the operations of one write batch (docstore README, "Limits"). */
-const KV_BATCH_OPS = 10_000;
-
-/**
- * The most rows of `stream` one `transact` can write within kv's batch cap. A row write is the row plus, per index,
- * at most a delete of its old entry and a put of its new one; every index here holds at most one entry per row.
- */
-const rowsPerBatch = (store: Store, stream: Stream) => Math.floor(KV_BATCH_OPS / (1 + 2 * store.docs.collection(stream).indexes.size));
-
 /** Of the issues the rows belong to, those whose body the replica holds, which means it holds their whole thread. */
-async function heldThreads(store: Store, rows: readonly ServerRow[]): Promise<ReadonlySet<string>> {
+async function heldThreads(backend: Backend, rows: readonly ServerRow[]): Promise<ReadonlySet<string>> {
   const ids = [...new Set(rows.map((r) => ("issue_id" in r ? r.issue_id : r.id)))];
-  const bodies = await store.docs.collection("bodies").getMany(ids);
+  const bodies = await backend.read("bodies", ids);
   return new Set(ids.filter((_, i) => bodies[i]));
 }
 
+type Incoming<S extends Stream> = Omit<StoreRows[S], "dirty" | "pending">;
+
 /**
- * Each slice is its own transaction; a crash between two costs a re-pull, since merging a row again changes nothing.
- * With `held` (pulled bodies and comments), a row for an issue outside it is dropped unless the replica has the row.
+ * A crash partway costs a re-pull, since merging a row again changes nothing. With `held` (pulled bodies and comments),
+ * a row for an issue outside it is dropped unless the replica has the row.
  */
-async function mergeServerRows<S extends Stream>(
-  store: Store,
-  stream: S,
-  rows: readonly ServerRow<S>[],
-  acked?: readonly Clocks[],
-  held?: ReadonlySet<string>,
-) {
-  const incoming = rows as unknown as readonly Omit<Rows[S], "dirty" | "pending">[];
-  const step = rowsPerBatch(store, stream);
-  for (let at = 0; at < incoming.length; at += step) {
-    const slice = incoming.slice(at, at + step);
-    await transact(
-      store,
-      stream,
-      slice.map((row) => row.id),
-      (locals) =>
-        slice.map((row, i) =>
-          held
-            ? mergePulled<Rows[S]>(locals[i], row, held.has("issue_id" in row ? (row.issue_id as string) : row.id))
-            : mergeIncoming<Rows[S]>(locals[i], row, acked?.[at + i]),
-        ),
-    );
-  }
+function mergeServerRows<S extends Stream>(backend: Backend, stream: S, rows: readonly ServerRow<S>[], held?: ReadonlySet<string>) {
+  return backend.transact(stream, rows as unknown as readonly Incoming<S>[], (local, row) =>
+    held ? mergePulled<StoreRows[S]>(local, row, held.has("issue_id" in row ? (row.issue_id as string) : row.id)) : mergeIncoming<StoreRows[S]>(local, row),
+  );
 }
+
+/** Rows of the server's answer to a push, each merged with the clocks it confirms. */
+function mergeAcks<S extends Stream>(backend: Backend, stream: S, acks: readonly { readonly id: string; readonly row: ServerRow<S>; readonly clocks: Clocks }[]) {
+  return backend.transact(stream, acks, (local, ack) => mergeIncoming<StoreRows[S]>(local, ack.row as unknown as Incoming<S>, ack.clocks));
+}
+
+/** The rows with unsent edits, per stream: what the leader pushes. */
+const outboxOf = (backend: Backend) => ({
+  issues: unsent(backend.collection("issues")),
+  bodies: unsent(backend.collection("bodies")),
+  comments: unsent(backend.collection("comments")),
+});
+type Outbox = ReturnType<typeof outboxOf>;
 
 type Loop =
   | { readonly kind: "idle" }
@@ -145,31 +119,33 @@ class Leader {
   private readonly marked = new Set<Stream>();
   private readonly offs: Unsubscribe[] = [];
   private readonly waiters: { resolve(): void; reject(err: Error): void }[] = [];
-  private readonly store: Store;
+  private readonly backend: Backend;
+  private readonly outbox: Outbox;
   private readonly transport: Transport;
   private readonly onCaughtUp: ((stream: Stream) => void) | undefined;
   private readonly pager: Pager<PullResponse>;
 
-  constructor(store: Store, transport: Transport, { pullLimit = PULL_LIMIT, onCaughtUp }: SyncOptions) {
-    this.store = store;
+  constructor(backend: Backend, outbox: Outbox, transport: Transport, { pullLimit = PULL_LIMIT, onCaughtUp }: SyncOptions) {
+    this.backend = backend;
+    this.outbox = outbox;
     this.transport = transport;
     this.onCaughtUp = onCaughtUp;
     this.pager = new Pager((stream, after) => transport.pull(stream, after, pullLimit));
   }
 
   async start(): Promise<void> {
-    const [saved] = await read(this.store.sync.utils.transact, ["sync"]);
+    const [saved] = await this.backend.read("sync", ["sync"]);
     // A row written before `evict` existed reads as idle.
     this.state = { ...EMPTY, ...saved };
     const onWrite = (changes: ReadonlyArray<{ type: string }>) => {
       if (changes.some((c) => c.type !== "delete")) this.kick("dirty");
     };
-    const { dirtyIssues, dirtyBodies, dirtyComments, sync } = this.store;
+    const { issues, bodies, comments } = this.outbox;
     const subscriptions = [
-      dirtyIssues.subscribeChanges(onWrite),
-      dirtyBodies.subscribeChanges(onWrite),
-      dirtyComments.subscribeChanges(onWrite),
-      sync.subscribeChanges((changes) => {
+      issues.subscribeChanges(onWrite),
+      bodies.subscribeChanges(onWrite),
+      comments.subscribeChanges(onWrite),
+      this.backend.collection("sync").subscribeChanges((changes) => {
         if (changes.some((c) => c.value.evict === "confirmed" && c.previousValue?.evict !== "confirmed")) this.kick("pressure");
       }),
     ];
@@ -183,14 +159,13 @@ class Leader {
         this.kick("hint");
       }),
       this.transport.online(() => this.kick("online")),
-      // Every tab shows the alert while `evict` is asked. A confirmation from any tab lands in the row, and the loop
-      // evicts after a push, so no page lands rows after the clear.
-      this.store.db.onPressure(async () => {
-        // kv asks again at each flush while over the cap. With few threads cached there is little to free, so no alert.
-        const cached = await this.store.docs.collection("bodies").queryIds({ limit: MIN_EVICTION + 1 });
-        if (this.state.evict === "idle" && cached.ids.length > MIN_EVICTION) await this.save({ evict: "asked" });
-      }),
     );
+    // Every tab shows the alert while `evict` is asked. A confirmation from any tab lands in the row, and the loop
+    // evicts after a push, so no page lands rows after the clear.
+    const unpressure = this.backend.onPressure?.(async () => {
+      if (this.state.evict === "idle") await this.save({ evict: "asked" });
+    });
+    if (unpressure) this.offs.push(unpressure);
     this.kick("start");
   }
 
@@ -206,17 +181,13 @@ class Leader {
   settled(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.waiters.push({ resolve, reject });
-      void this.checkSettled();
+      this.checkSettled();
     });
   }
 
-  private async checkSettled(): Promise<void> {
-    if (this.waiters.length === 0 || this.loop.kind !== "idle" || STREAMS.some((s) => this.stale(s))) return;
-    for (const stream of STREAMS) {
-      const { ids } = await this.store.docs.collection(stream).queryIds({ index: "pending", limit: 1 });
-      if (ids.length > 0) return;
-    }
-    if (this.loop.kind !== "idle") return;
+  /** Each cycle's push has loaded the outbox, so an idle loop reads it as the backend holds it. */
+  private checkSettled(): void {
+    if (this.waiters.length === 0 || this.loop.kind !== "idle" || STREAMS.some((s) => this.stale(s) || this.outbox[s].size > 0)) return;
     for (const waiter of this.waiters.splice(0)) waiter.resolve();
   }
 
@@ -253,7 +224,7 @@ class Leader {
         }
       }
       this.loop = { kind: "idle" };
-      void this.checkSettled();
+      this.checkSettled();
     } catch (err) {
       if (this.stopped) {
         this.loop = { kind: "idle" };
@@ -323,7 +294,7 @@ class Leader {
   private async page(stream: Stream): Promise<void> {
     const res = await this.pager.page(stream, this.state.cursors[stream]);
     this.checkEpoch(res.epoch);
-    if (res.rows.length > 0) await mergeServerRows(this.store, stream, res.rows, undefined, stream === "issues" ? undefined : await heldThreads(this.store, res.rows));
+    if (res.rows.length > 0) await mergeServerRows(this.backend, stream, res.rows, stream === "issues" ? undefined : await heldThreads(this.backend, res.rows));
     this.head = Math.max(this.head ?? 0, res.head);
     await this.save({
       epoch: res.epoch,
@@ -339,19 +310,11 @@ class Leader {
     if (this.state.epoch !== null && this.state.epoch !== epoch) throw new EpochChanged(epoch);
   }
 
-  private dirty() {
-    const { dirtyIssues, dirtyBodies, dirtyComments } = this.store;
-    return [
-      { stream: "issues", rows: dirtyIssues },
-      { stream: "bodies", rows: dirtyBodies },
-      { stream: "comments", rows: dirtyComments },
-    ] as const;
-  }
-
   /** Sends every row with unsent edits. An ack clears only the fields it confirms, so an edit made meanwhile stays to send. */
   private async push(): Promise<void> {
     const outgoing: Outgoing[] = [];
-    for (const { stream, rows } of this.dirty()) {
+    for (const stream of STREAMS) {
+      const rows = this.outbox[stream];
       await rows.preload();
       for (const row of rows.toArray) {
         const op = pushOp(stream, row);
@@ -360,7 +323,7 @@ class Leader {
     }
     if (outgoing.length > 0) this.pager.forget();
     for (let i = 0; i < outgoing.length; i += MAX_OPS) await this.send(outgoing.slice(i, i + MAX_OPS));
-    if (this.store.sync.get("sync")?.evict === "confirmed") await this.evict();
+    if (this.backend.collection("sync").get("sync")?.evict === "confirmed") await this.evict();
   }
 
   /**
@@ -369,12 +332,8 @@ class Leader {
    * has an unsent edit; the next push tries again.
    */
   private async evict(): Promise<void> {
-    const { docs, dirtyBodies, dirtyComments } = this.store;
-    if (dirtyBodies.size > 0 || dirtyComments.size > 0) return;
-    for (const name of BACKGROUND) {
-      // The issues alone can be over the cap; a clear of nothing would still spend a collection id.
-      if ((await docs.collection(name).queryIds({ limit: 1 })).ids.length > 0) await docs.collection(name).clear();
-    }
+    if (BACKGROUND.some((s) => this.outbox[s].size > 0)) return;
+    for (const name of BACKGROUND) await this.backend.clear(name);
     await this.save({ evict: "idle" });
   }
 
@@ -401,7 +360,7 @@ class Leader {
     for (const stream of STREAMS) {
       const acks = res.results.filter((r) => r.stream === stream);
       if (acks.length === 0) continue;
-      await mergeServerRows(this.store, stream, acks.map((r) => r.row as ServerRow<typeof stream>), acks.map((r) => r.clocks));
+      await mergeAcks(this.backend, stream, acks as unknown as readonly { id: string; row: ServerRow<typeof stream>; clocks: Clocks }[]);
     }
   }
 
@@ -409,20 +368,18 @@ class Leader {
   private async drop({ op, key }: Outgoing): Promise<void> {
     const res = await this.transport.row(op.stream, op.id);
     this.checkEpoch(res.epoch);
-    const server = res.row as unknown as Omit<Rows[typeof op.stream], "dirty" | "pending"> | null;
-    await transact(this.store, op.stream, [key], ([local]) => [restore<Rows[typeof op.stream]>(local, server, op.clocks)]);
+    const server = res.row as unknown as Incoming<typeof op.stream> | null;
+    await this.backend.transact(op.stream, [{ id: key }], (local) => restore<Rows[typeof op.stream]>(local, server, op.clocks));
   }
 
   /** The leader owns the row, except `evict`, which another tab may confirm: a save keeps the stored one unless it sets it. */
   private async save(patch: Partial<SyncState>): Promise<void> {
     this.state = { ...this.state, ...patch };
-    const state = this.state;
-    await this.store.sync.utils.transact(["sync"], ([row]) => [{ ...state, evict: patch.evict ?? row?.evict ?? state.evict }]);
+    await this.backend.transact("sync", [this.state], (row, state) => ({ ...state, evict: patch.evict ?? row?.evict ?? state.evict }));
   }
 
   private async wipe(epoch: string | null): Promise<void> {
-    const { docs } = this.store;
-    for (const name of STREAMS) await docs.collection(name).clear();
+    for (const name of STREAMS) await this.backend.clear(name);
     this.pager.forget();
     this.head = undefined;
     this.marked.clear();
@@ -431,14 +388,14 @@ class Leader {
 }
 
 /** Threads fetched whole from the server. Rows join the replica here, unlike a pull's. */
-export function threadFetcher(store: Store, transport: Transport) {
+export function threadFetcher(backend: Backend, transport: Transport) {
   /** Ids asked for and not answered with a body: in flight, or the server has none. Not asked again by `preload`. */
   const asked = new Set<string>();
 
   async function fetch(ids: readonly string[]): Promise<DetailResponse> {
     const res = await transport.detail(ids);
-    if (res.bodies.length > 0) await mergeServerRows(store, "bodies", res.bodies);
-    if (res.comments.length > 0) await mergeServerRows(store, "comments", res.comments);
+    if (res.bodies.length > 0) await mergeServerRows(backend, "bodies", res.bodies);
+    if (res.comments.length > 0) await mergeServerRows(backend, "comments", res.comments);
     return res;
   }
 
@@ -448,7 +405,7 @@ export function threadFetcher(store: Store, transport: Transport) {
    * the ids are asked for again the next time they are seen.
    */
   async function preload(ids: readonly string[]): Promise<void> {
-    const held = await store.docs.collection("bodies").getMany(ids);
+    const held = await backend.read("bodies", ids);
     const wanted = ids.filter((id, i) => !held[i] && !asked.has(id));
     for (let at = 0; at < wanted.length; at += MAX_DETAIL_IDS) {
       const batch = wanted.slice(at, at + MAX_DETAIL_IDS);
@@ -483,16 +440,17 @@ const stillAfter = (ms: number, signal: AbortSignal | undefined) =>
 const rowsOf = (s: Snapshot) => s.data as readonly unknown[];
 const syncRow = (s: Snapshot) => s.state?.get("sync") as SyncState | undefined;
 
-export function openSync(store: Store, transport: Transport, threads: ReturnType<typeof threadFetcher>, options: SyncOptions): Sync {
+export function openSync(backend: Backend, transport: Transport, threads: ReturnType<typeof threadFetcher>, options: SyncOptions): Sync {
   let leader: Leader | undefined;
-  const row = observe(store.sync);
-  const issues = observe(store.dirtyIssues);
-  const bodies = observe(store.dirtyBodies);
-  const comments = observe(store.dirtyComments);
+  const outbox = outboxOf(backend);
+  const row = observe(backend.collection("sync"));
+  const issues = observe(outbox.issues);
+  const bodies = observe(outbox.bodies);
+  const comments = observe(outbox.comments);
   return {
     async lead(signal) {
       if (leader) throw new Error("this model already leads sync");
-      const current = new Leader(store, transport, options);
+      const current = new Leader(backend, outbox, transport, options);
       leader = current;
       try {
         await current.start().catch((err: unknown) => console.error("linearlite sync did not start", err));
@@ -519,6 +477,6 @@ export function openSync(store: Store, transport: Transport, threads: ReturnType
       const evict = syncRow(sync)?.evict;
       return { pending: evict === "asked" || evict === "confirmed", unsent: rowsOf(bodies).length + rowsOf(comments).length };
     }),
-    confirmEviction: () => store.sync.utils.transact(["sync"], ([row]) => [row?.evict === "asked" ? { ...row, evict: "confirmed" } : undefined]),
+    confirmEviction: () => backend.transact("sync", [{ id: "sync" }], (row) => (row?.evict === "asked" ? { ...row, evict: "confirmed" } : undefined)),
   };
 }

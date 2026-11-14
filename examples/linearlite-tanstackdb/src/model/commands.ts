@@ -10,9 +10,9 @@ import {
   type StatusCode,
 } from "../domain/model.ts";
 import { MUTABLE_FIELDS } from "../domain/stores.ts";
-import { transact, type Store } from "./store.ts";
+import type { Backend } from "./backend.ts";
 
-/** Local edits. Each is one write to kv, which the leader pushes. */
+/** Local edits. Each is one write to the backend, which the leader pushes. */
 export interface Commands {
   createIssue(input: { title: string; description: string; status: StatusCode; priority: PriorityCode }): Promise<string>;
   setTitle(id: string, title: string): Promise<void>;
@@ -28,7 +28,7 @@ export interface Commands {
 const allDirty = (fields: readonly string[], clock: number) => Object.fromEntries(fields.map((f) => [f, clock]));
 
 /** `user` authors the issues and comments created here. */
-export function commands(store: Store, user: string): Commands {
+export function commands(backend: Backend, user: string): Commands {
   let last = 0;
   const tick = () => {
     last = Math.max(Date.now(), last + 1);
@@ -37,10 +37,10 @@ export function commands(store: Store, user: string): Commands {
 
   async function editIssue(id: string, patch: IssuePatch): Promise<void> {
     const clock = tick();
-    await transact(store, "issues", [id], ([row]) => {
-      if (row === undefined) return [undefined];
+    await backend.transact("issues", [{ id }], (row) => {
+      if (row === undefined) return undefined;
       const next = applyLocal(row, patch, clock);
-      return [next === row ? undefined : { ...next, modified: clock }];
+      return next === row ? undefined : { ...next, modified: clock };
     });
   }
 
@@ -53,10 +53,10 @@ export function commands(store: Store, user: string): Commands {
 
     async setDescription(id, description) {
       const clock = tick();
-      await store.bodies.utils.transact([id], ([row]) => {
+      await backend.transact("bodies", [{ id }], (row) => {
         const base: Body = row ?? { id, description: "", version: 0 };
         const next = applyLocal(base, { description }, clock);
-        return [next === base ? undefined : next];
+        return next === base ? undefined : next;
       });
     },
 
@@ -65,7 +65,7 @@ export function commands(store: Store, user: string): Commands {
       const clock = tick();
       const [top] = await queryOnce((q) =>
         q
-          .from({ i: store.issues })
+          .from({ i: backend.collection("issues") })
           .where(({ i }) => and(eq(i.deleted, false), eq(i.status, input.status)))
           .orderBy(({ i }) => i.statusOrder, "asc")
           .limit(1),
@@ -86,8 +86,8 @@ export function commands(store: Store, user: string): Commands {
         allDirty(MUTABLE_FIELDS.issues, clock),
       );
       const body = withDirty<Body>({ id, description: input.description, version: 0 }, { description: clock });
-      await transact(store, "issues", [id], () => [issue]);
-      await store.bodies.utils.transact([id], () => [body]);
+      await backend.transact("issues", [issue], (_, row) => row);
+      await backend.transact("bodies", [body], (_, row) => row);
       return id;
     },
 
@@ -99,7 +99,7 @@ export function commands(store: Store, user: string): Commands {
         { key, id, issue_id: issueId, body: text, username: user, created: clock, deleted: false, version: 0 },
         allDirty(MUTABLE_FIELDS.comments, clock),
       );
-      await store.comments.utils.transact([id], () => [comment]);
+      await backend.transact("comments", [comment], (_, row) => row);
       return id;
     },
   };
