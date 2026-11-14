@@ -12,7 +12,7 @@ import {
 import { z } from "zod";
 import { SORT_FIELDS } from "../client/filter.ts";
 import { isKanbanOrder, kanbanBetween } from "../domain/kanban.ts";
-import { PERSISTENCE_KEY, type CommentEntity, type IssueEntity, type IssuePatch, type NewComment, type NewIssue } from "../domain/model.ts";
+import { persistenceKey, userName, type CommentEntity, type IssueEntity, type IssuePatch, type NewComment, type NewIssue } from "../domain/model.ts";
 import { columnTop, countByStatus, deleteIssue, insertComment, insertIssue, readColumn, readComments, readIssues, readWindow, updateIssue, type Page } from "./issues.ts";
 
 type Context = { readonly db: DatabaseSync; readonly user: string };
@@ -116,15 +116,12 @@ const receipts: IdempotencyStore<Context> = {
   },
 };
 
-const USER = /^[A-Za-z0-9._-]{1,32}$/;
-
 export function createServer(db: DatabaseSync) {
   const server = createFateServer({
     context: ({ request }): Context => {
-      const user = request.headers.get("x-linearlite-user");
-      return { db, user: user !== null && USER.test(user) ? user : "anonymous" };
+      return { db, user: userName(request.headers.get("x-linearlite-user")) };
     },
-    idempotency: createMutationIdempotency({ scope: () => PERSISTENCE_KEY, store: receipts }),
+    idempotency: createMutationIdempotency({ scope: (ctx: Context) => persistenceKey(ctx.user), store: receipts }),
     roots: { issues: list(issueData) },
     sources: { getSource: (target) => ("view" in target ? target : SOURCES.get(target.typeName)!), registry },
     lists: {

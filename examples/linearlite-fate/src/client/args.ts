@@ -1,15 +1,13 @@
 import type { ColumnArgs, FilterArgs, IssueFields, StatusCode, WindowArgs } from "../domain/model.ts";
 import type { IssueFilter } from "./filter.ts";
 
-/** Rows the list asks to have loaded around the first visible one. */
-export const LIST_WINDOW = 100;
-/** Window offsets are multiples of this, so a small scroll keeps the same window and every window is a reusable cache entry. */
-const STEP = 50;
+/** Rows per list window. Windows start at multiples of it, so every window is a reusable cache entry. */
+export const WINDOW = 50;
 
-/** The window that holds rows `start` to `start + LIST_WINDOW` of the filtered list. */
-export function windowArgs(filter: IssueFilter, start: number): WindowArgs {
+/** The window that holds row `row` of the filtered list. */
+export function windowArgs(filter: IssueFilter, row: number): WindowArgs {
   const { status, priority, q, sort, dir } = filter;
-  return { status, priority, q, sort, dir, offset: Math.floor(Math.max(0, start) / STEP) * STEP, limit: LIST_WINDOW + STEP };
+  return { status, priority, q, sort, dir, offset: Math.floor(Math.max(0, row) / WINDOW) * WINDOW, limit: WINDOW };
 }
 
 /** The fields a count depends on: a sort change keeps the counts. */
