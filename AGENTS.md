@@ -2,17 +2,18 @@
 
 The project is a prototype. Backward compatibility doesn't matter yet, and constraints can change when that buys performance.
 
-Design principles:
+Design principles for our packages:
 
-- Read and write performance come first.
+- Read and write performance come first. Bundle size also matters.
+- We are building a Db for web apps, benchmarks are a good help but above all we must favor things that help building a better UX
 - Keep it simple.
 - Consistency is guaranteed. Persistence is not.
 - Before adding a cache, check whether an architectural change gets the same performance.
-- Decide on purpose what lives in Rust and what lives in TypeScript. Don't keep a split only because it is already there.
+- If you can't, evaulate if the gain is worth the cost of having a cache
 
 ## Worktrees
 
-Create worktrees inside `.claude/worktrees/` in the repository, never in the parent directory or elsewhere (for example `.claude/worktrees/my-branch`).
+Create worktrees inside `.claude/worktrees/` in the repository, never in the parent directory or elsewhere
 
 ## docs/design.md
 
@@ -24,8 +25,6 @@ Create worktrees inside `.claude/worktrees/` in the repository, never in the par
 - **Say each fact once**, in the section that owns it. Other sections link to it.
 - **A mechanism gets what a reimplementer needs**: the format, the steps, the invariant. Proofs, liveness arguments and test descriptions go in `docs/verification.md` or `docs/research/`.
 - **Edit in place.** A change that adds lines should cut lines elsewhere, or move a topic to its own file and link it.
-
-Code and docs cite headings as `design.md, "Recovery"`. `pnpm check:docs` fails when a citation names a missing heading, when the doc passes 700 lines, or when it names a source file.
 
 ## Verification
 
