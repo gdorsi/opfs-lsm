@@ -69,6 +69,15 @@ describe("the kv backend", () => {
     }
   });
 
+  it("lets go of a window's issues within a second of its last subscriber leaving", async () => {
+    const issues = backend.collection("issues");
+    const query = windowQuery(issues, parseIssueFilter({ sort: "created", dir: "asc" }), WINDOW);
+    await query.preload();
+    assert.ok(issues.has("i0"), "the window holds the first issue created");
+    for (let waited = 0; issues.has("i0") && waited < 1000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(issues.has("i0"), false);
+  });
+
   it("anchors the unfiltered list under every sort but title, whose index orders an emoji after U+FF21 and whose list orders it before", () => {
     const [emoji, fullwidth] = ["\u{1F600}", "\uFF21"];
     assert.ok(emoji < fullwidth, "the list's order");
