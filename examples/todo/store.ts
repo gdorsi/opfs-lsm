@@ -35,9 +35,9 @@ const schema = defineSchema<{ todos: Todo }>()({
   version: 1,
   collections: {
     todos: {
-      byCreated: { on: "createdAt" },
-      byTitle: { on: "titleSort" },
-      search: { on: "createdAt", text: "title" },
+      byCreated: { by: "createdAt" },
+      byTitle: { by: "titleSort" },
+      search: { by: "createdAt", text: "title" },
     },
   },
 });

@@ -84,9 +84,9 @@ export async function openSqliteBackend(database: BrowserWASQLiteDatabase, { nam
   const tables = Object.fromEntries(registry.map((r) => [r.collection_id, `"${r.table_name}"`])) as Record<StoreName, string>;
   for (const store of NAMES) {
     // TanStack reads `id` from the JSON, not from the key column, so a lookup by id needs its own index.
-    const indexes: Record<string, { on: string | readonly string[] }> = { id: { on: "id" }, ...STORES[store].indexes };
-    for (const [index, { on }] of Object.entries(indexes)) {
-      await database.execute(`CREATE INDEX IF NOT EXISTS "${store}_${index}" ON ${tables[store]} (${[on].flat().map(field).join(", ")})`);
+    const indexes: Record<string, { by: string | readonly string[] }> = { id: { by: "id" },...STORES[store].indexes };
+    for (const [index, { by }] of Object.entries(indexes)) {
+      await database.execute(`CREATE INDEX IF NOT EXISTS "${store}_${index}" ON ${tables[store]} (${[by].flat().map(field).join(", ")})`);
     }
   }
   await collections.sync.preload();
