@@ -4,6 +4,7 @@ import { after, before, describe, it } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
+import { openIndexedDbBackend } from "../backends/indexeddb.ts";
 import { openKvBackend } from "../backends/kv.ts";
 import type { PriorityCode, ServerRow } from "../domain/model.ts";
 import { memoryServer, memoryTransport } from "../server/memory.ts";
@@ -22,6 +23,7 @@ async function withoutOptions(db: Db): Promise<Backend> {
 for (const [label, openBackend] of [
   ["kv", openKvBackend],
   ["kv without anchor or onPressure", withoutOptions],
+  ["indexeddb", () => openIndexedDbBackend(`linearlite-views-${process.pid}`)],
 ] as const) {
   describe(`the views on ${label}`, () => views(label, openBackend));
 }
@@ -46,6 +48,7 @@ function views(label: string, openBackend: (db: Db) => Promise<Backend>) {
     for (const view of shown) view.release();
     stopLeading.abort();
     await leading;
+    await backend.close();
     await db.close();
   });
 
