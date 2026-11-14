@@ -9,19 +9,26 @@ import * as Y from "yjs";
  * Every local update is one `put`. Yjs updates commute, so the keys only have
  * to be unique, not ordered: `<doc prefix><session u32><seq u32>`, where the
  * session is random per persistence instance. Loading reads the doc's prefix
- * in one range scan and applies every update in one transaction. When a load
- * finds `trimSize` updates or more, it replaces them with one merged state in
- * one batch, the way y-indexeddb trims at 500.
+ * in one range scan and applies every update in one transaction. Once the doc
+ * has `trimSize` stored updates or more and no update for `trimDelayMs`, they
+ * are replaced with one merged state in one batch, the way y-indexeddb trims
+ * at 500. A load replays every stored update, so a long session left unmerged
+ * makes the next load slow.
  */
 export class KvPersistence {
   readonly whenSynced: Promise<this>;
   synced = false;
   /** Updates found by the last load (before any trim). */
   loadedUpdates = 0;
+  /** How long the doc must go without an update, once it has `trimSize` stored updates, before they are merged while it is open. */
+  trimDelayMs = 1000;
 
   private readonly prefix: Uint8Array;
   private readonly session = (Math.random() * 0x1_0000_0000) >>> 0;
   private seq = 0;
+  /** Stored updates of this doc as this instance counts them: its own writes since the last merge, plus what it loaded. */
+  private stored = 0;
+  private trimTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly pending = new Set<Promise<void>>();
   private failure: { readonly error: unknown } | undefined;
   private destroyed = false;
@@ -55,6 +62,7 @@ export class KvPersistence {
   readonly destroy = async (): Promise<void> => {
     if (this.destroyed) return;
     this.destroyed = true;
+    clearTimeout(this.trimTimer);
     this.doc.off("update", this.storeUpdate);
     this.doc.off("destroy", this.destroy);
     await this.flush();
@@ -73,38 +81,72 @@ export class KvPersistence {
   private readonly storeUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === this || this.destroyed) return;
     this.track(this.db.put(this.nextKey(), update));
+    if (++this.stored >= this.trimSize) {
+      clearTimeout(this.trimTimer);
+      this.trimTimer = setTimeout(() => this.track(this.trim()), this.trimDelayMs);
+    }
   };
 
   private async load(): Promise<this> {
-    const keys: Uint8Array[] = [];
-    const updates: Uint8Array[] = [];
-    for await (const entry of this.db.range(prefixBound(this.prefix))) {
-      keys.push(entry.key);
-      updates.push(entry.value);
-    }
+    const { updates, through } = await this.readStored();
     this.loadedUpdates = updates.length;
+    this.stored = updates.length;
     if (!this.destroyed) {
-      Y.transact(
-        this.doc,
-        () => {
-          for (const update of updates) Y.applyUpdate(this.doc, update);
-        },
-        this,
-        false,
-      );
-      if (keys.length >= this.trimSize) {
-        const state = Y.encodeStateAsUpdate(this.doc);
-        const key = this.nextKey();
-        this.track(
-          this.db.batch((tx) => {
-            for (const old of keys) tx.delete(old);
-            tx.put(key, state);
-          }),
-        );
-      }
+      this.apply(updates);
+      // The doc already holds every loaded update, so this merge needs no second read.
+      const count = updates.length;
+      if (count >= this.trimSize) this.trimTimer = setTimeout(() => this.track(this.replace(count, through)), this.trimDelayMs);
       this.synced = true;
     }
     return this;
+  }
+
+  /**
+   * Merges the doc's stored updates into one while it is open. Every stored
+   * update is applied first, other tabs' included, so the one state holds
+   * everything in the keys it replaces.
+   */
+  private async trim(): Promise<void> {
+    this.trimTimer = undefined;
+    const { updates, through } = await this.readStored();
+    if (this.destroyed) return;
+    this.apply(updates);
+    await this.replace(updates.length, through);
+  }
+
+  /** The doc's stored updates, and the seq of the log they were read at. */
+  private readStored(): Promise<{ updates: Uint8Array[]; through: number }> {
+    return this.db.view(async (snap) => {
+      const updates: Uint8Array[] = [];
+      for await (const entry of snap.range(prefixBound(this.prefix))) updates.push(entry.value);
+      return { updates, through: snap.seq };
+    });
+  }
+
+  private apply(updates: readonly Uint8Array[]): void {
+    Y.transact(
+      this.doc,
+      () => {
+        for (const update of updates) Y.applyUpdate(this.doc, update);
+      },
+      this,
+      false,
+    );
+  }
+
+  /**
+   * Replaces the `count` updates read at seq `through` with one update holding
+   * the whole doc, in one batch. The range delete stops at `through`, so an
+   * update stored after the read, by this tab or another, stays.
+   */
+  private async replace(count: number, through: number): Promise<void> {
+    const state = Y.encodeStateAsUpdate(this.doc);
+    const key = this.nextKey();
+    this.stored = Math.max(1, this.stored - count + 1);
+    await this.db.batch((tx) => {
+      tx.deleteRange(prefixBound(this.prefix), { through });
+      tx.put(key, state);
+    });
   }
 
   private track(write: Promise<unknown>): void {
