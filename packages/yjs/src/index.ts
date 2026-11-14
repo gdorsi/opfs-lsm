@@ -22,7 +22,8 @@ export class KvPersistence {
   private readonly prefix: Uint8Array;
   private readonly session = (Math.random() * 0x1_0000_0000) >>> 0;
   private seq = 0;
-  private readonly pending = new Set<Promise<unknown>>();
+  private readonly pending = new Set<Promise<void>>();
+  private failure: { readonly error: unknown } | undefined;
   private destroyed = false;
 
   constructor(
@@ -37,9 +38,18 @@ export class KvPersistence {
     this.whenSynced = this.load();
   }
 
-  /** Resolves once every update written so far has been acked by the WAL. */
+  /**
+   * Resolves once every update written so far has been acked by the WAL. When
+   * a write failed, the stored doc misses that update, so flush writes the
+   * whole doc state once more and rejects if that write fails too.
+   */
   async flush(): Promise<void> {
-    while (this.pending.size > 0) await Promise.all(this.pending);
+    await this.settle();
+    if (!this.failure) return;
+    this.failure = undefined;
+    this.track(this.db.put(this.nextKey(), Y.encodeStateAsUpdate(this.doc)));
+    await this.settle();
+    this.throwIfFailed();
   }
 
   readonly destroy = async (): Promise<void> => {
@@ -49,6 +59,16 @@ export class KvPersistence {
     this.doc.off("destroy", this.destroy);
     await this.flush();
   };
+
+  /**
+   * Destroys this persistence, then removes every stored update of this doc
+   * in one range delete. Other docs in the db are untouched. Later updates of
+   * the doc are not stored.
+   */
+  async clearData(): Promise<void> {
+    await this.destroy();
+    await this.db.batch((tx) => tx.deleteRange(prefixBound(this.prefix)));
+  }
 
   private readonly storeUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === this || this.destroyed) return;
@@ -88,8 +108,21 @@ export class KvPersistence {
   }
 
   private track(write: Promise<unknown>): void {
-    const done = write.finally(() => this.pending.delete(done));
+    const done = write.then(
+      () => {},
+      (error: unknown) => {
+        this.failure ??= { error };
+      },
+    ).finally(() => this.pending.delete(done));
     this.pending.add(done);
+  }
+
+  private async settle(): Promise<void> {
+    while (this.pending.size > 0) await Promise.all(this.pending);
+  }
+
+  private throwIfFailed(): void {
+    if (this.failure) throw this.failure.error;
   }
 
   private nextKey(): Uint8Array {
