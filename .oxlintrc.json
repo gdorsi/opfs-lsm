@@ -43,6 +43,98 @@
           }
         ]
       }
+    },
+    {
+      "files": [
+        "examples/pages-fate-automerge/src/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "@opfs-lsm/*",
+                  "@nkzw/fate-indexeddb",
+                  "@automerge/automerge-repo-storage-*"
+                ],
+                "message": "Only src/storage/ imports storage packages."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "examples/pages-fate-automerge/src/model/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!./*",
+                  "!@nkzw/fate",
+                  "!@nkzw/fate/persistence",
+                  "!@automerge/automerge",
+                  "!@automerge/automerge-repo"
+                ],
+                "message": "The model runs unchanged in the app, the bench and Node: it imports only fate, Automerge and automerge-repo."
+              }
+            ]
+          }
+        ],
+        "no-restricted-globals": [
+          "error",
+          "window",
+          "document",
+          "navigator",
+          "location",
+          "localStorage",
+          "sessionStorage",
+          "indexedDB",
+          "BroadcastChannel",
+          "MessageChannel",
+          "Worker",
+          "SharedWorker",
+          "fetch",
+          "WebSocket"
+        ]
+      }
+    },
+    {
+      "files": [
+        "examples/pages-fate-automerge/src/storage/**"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    },
+    {
+      "files": [
+        "examples/pages-fate-automerge/src/testing/reference.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!../model/types.ts"
+                ],
+                "message": "The oracle imports only types from model/types.ts, so no model bug can leak into it."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
