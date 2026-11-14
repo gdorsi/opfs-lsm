@@ -50,3 +50,27 @@ test("a load at the trim size merges updates into one", async () => {
   assert.equal(third.doc.getText("t").toString(), "x".repeat(12));
   await db.close();
 });
+
+test("clearData empties one document and leaves the others on the same db", async () => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  const a = await reopen(db, "a");
+  const ab = await reopen(db, "a/b");
+  a.doc.getText("t").insert(0, "gone");
+  ab.doc.getText("t").insert(0, "kept");
+  await a.p.flush();
+  await ab.p.flush();
+  a.doc.getText("t").insert(4, " unflushed");
+
+  await a.p.clearData();
+  a.doc.getText("t").insert(0, "after ");
+  await a.p.flush();
+  await ab.p.destroy();
+
+  const clearedAgain = await reopen(db, "a");
+  assert.equal(clearedAgain.doc.getText("t").toString(), "");
+  assert.equal(clearedAgain.p.loadedUpdates, 0);
+  const keptAgain = await reopen(db, "a/b");
+  assert.equal(keptAgain.doc.getText("t").toString(), "kept");
+  assert.equal(keptAgain.p.loadedUpdates, 1);
+  await db.close();
+});

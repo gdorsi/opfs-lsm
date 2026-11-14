@@ -112,6 +112,8 @@ export type YjsBinding = {
   /** Resolves once every update so far is acknowledged by storage. */
   flush(): Promise<void>;
   detach(): Promise<void>;
+  /** Detach, then delete this doc's stored data. The binding is unusable after. */
+  clear(): Promise<void>;
 };
 
 /** fate's persistence: both contenders are `PersistenceStorage` implementations; workloads build the fate client over `storage`, so both run the same client code. */
