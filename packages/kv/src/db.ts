@@ -29,7 +29,6 @@ import { Memtable, type WalRecord } from "./store/memtable.js";
 import { allMissed, Miss, ReadSet, untilHit, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
-import { CountingFs } from "./opfs/counting-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
 import {
   loadGeneration,
@@ -128,6 +127,8 @@ export type OpenKnobs = {
   readonly trace?: OpenTrace;
   /** Replaces `ROW_POST_MS`. At 0 every row is posted when it lands, so a simulation owns all the timing. */
   readonly rowPostMs?: number;
+  /** Wraps the fs this tab reads runs through. `openHarnessDb` passes a `CountingFs`, so `readStats` can count the tab's IO. */
+  readonly wrapFs?: (fs: AsyncFs) => AsyncFs;
 };
 
 /** What `openDbWith` takes. `openHarnessDb` in `@opfs-lsm/kv/testing` builds it. */
@@ -314,7 +315,7 @@ export function prefixBound(prefix: Uint8Array): {
 type DbInternals = {
   readonly name: DbName;
   readonly wal: TabWal;
-  readonly fs: CountingFs;
+  readonly fs: AsyncFs;
   readonly ingest: IngestClient;
   /** Flush the memtable now and wait for the compaction it starts. */
   readonly flush: () => Promise<{ generation: number }>;
@@ -412,8 +413,7 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   const caps = memtableCaps(options.memtableBytes);
 
   const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, trace);
-  // The host has the bare fs, so the tab's IO counts only here.
-  const tabFs = new CountingFs(fs);
+  const tabFs = options.wrapFs?.(fs) ?? fs;
 
   const wal = await timed(trace, "idb-open", () => walOpen ?? TabWal.open(name));
   // Pair the WAL with a manifest before the first read or write. The

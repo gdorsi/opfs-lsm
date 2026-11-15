@@ -123,7 +123,7 @@ describe("readStats", () => {
     expect(memory.mergeReservedBytes).toBeGreaterThanOrEqual(5 * hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES).chunkBytes);
     expect(stats.host.l0Stops).toBe(0);
     // The host writes, the tab does not.
-    expect(stats.tab.fs.written).toEqual({});
+    expect(stats.tab.fs!.written).toEqual({});
 
     const latest = (await loadLatestGeneration(fs))!;
     expect(stats.host.generation).toBe(latest.generation);
