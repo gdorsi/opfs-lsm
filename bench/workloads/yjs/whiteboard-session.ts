@@ -2,6 +2,7 @@ import {
   applyPatchPlain,
   digestShapes,
   openWorkspace,
+  scatterShape,
   type Board,
   type BoardId,
   type DocStorage,
@@ -21,7 +22,6 @@ import {
   paceTo,
   pick,
   pointerPath,
-  scatterShape,
   seededEnv,
 } from "../whiteboard-lib.ts";
 

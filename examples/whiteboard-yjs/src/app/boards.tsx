@@ -4,9 +4,8 @@
  */
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
-import type { BoardMeta, Workspace } from "../model/index.ts";
+import { scatterShape, type BoardMeta, type Workspace } from "../model/index.ts";
 import { WorkspaceSaveBadge } from "./board-screen.tsx";
-import { sampleShapes, SAMPLE_SIZES } from "./core/sample.ts";
 import { useSession, useWorkspace } from "./hooks.ts";
 import { showBoard } from "./session.ts";
 
@@ -126,6 +125,8 @@ function Rename({ ws, meta }: { ws: Workspace; meta: BoardMeta }): ReactNode {
   );
 }
 
+const SAMPLE_SIZES = [5_000, 20_000];
+
 const yieldTask = () => new Promise<void>((resolve) => setTimeout(resolve));
 
 /**
@@ -137,7 +138,7 @@ const yieldTask = () => new Promise<void>((resolve) => setTimeout(resolve));
 async function fillSample(ws: Workspace, count: number): Promise<string> {
   const id = ws.createBoard(`Sample ${count.toLocaleString()}`);
   const board = await showBoard(id);
-  const shapes = sampleShapes(count, count);
+  const shapes = Array.from({ length: count }, () => scatterShape(Math.random));
   for (let i = 0; i < shapes.length; i += 1000) {
     board.dispatch({ type: "create", shapes: shapes.slice(i, i + 1000) });
     await yieldTask();
