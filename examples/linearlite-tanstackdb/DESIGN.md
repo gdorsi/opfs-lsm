@@ -87,7 +87,7 @@ from it, and so does the push order: streams apply in table order, so a child fo
 ## One write path
 
 `backend.transact(store, items, merge)` (`src/backends/kv.ts`, over the adapter's `utils.transact`) writes
-`merge(localRow, item)` for each item in one kv transaction per slice of kv's batch cap, so nothing can land between
+`merge(localRow, item)` for each item in one kv transaction per slice of up to 10,000 kv ops, so nothing can land between
 the read and the write of a row, in this tab or another. For issues it stamps the sort keys from the fields `merge`
 returns, so no write leaves them stale. Callers never use `collection.insert/update`.
 
@@ -104,11 +104,11 @@ advancing its cursor costs one re-pull, and no cross-collection transaction is n
 A `transact` from a click shows in the same tab's list with no optimistic overlay: edit to live query 3.1 ms
 p50, to DOM 3.5 ms (`visible`, production build, 60 edits).
 
-**Write chunking.** kv caps one write batch at 10,000 ops. A docstore write of a row is one op for the row plus,
+**Write chunking.** A `transact` slice writes at most 10,000 kv ops, this backend's own size. kv itself caps a batch by bytes: 8 MiB, counting 256 bytes per op. A docstore write of a row is one op for the row plus,
 per index, at most a delete of its old entry and a put of its new one, so a row costs at most `1 + 2 × indexes`
 ops. A pulled page of 2,000 rows is merged in slices of `floor(10000 / (1 + 2 × indexes))` rows, each its own
 `transact`: 769 issues (six indexes), 3,333 bodies (one), 2,000 comments (two). The slice size is read from the
-collection's `indexes`, so adding an index cannot push a page over the cap. Slicing loses nothing a crash could
+collection's `indexes`, so adding an index cannot make a slice larger than that. Slicing loses nothing a crash could
 not already lose: a merge is idempotent and the cursor advances only after the whole page.
 
 ## Sync

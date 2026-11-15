@@ -105,6 +105,12 @@ function until(collection: Watchable, done: () => boolean, what: string): Promis
   });
 }
 
+/** Polls `done` on an on-demand collection's own rows: a subscription to the collection would load every row. */
+async function polled(done: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 250 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(done(), `timed out waiting for ${what}`);
+}
+
 const plain = <T extends object>(rows: readonly T[]) =>
   rows
     .map((row) => Object.fromEntries(Object.entries(row).filter(([k]) => !k.startsWith("$"))))
@@ -577,7 +583,7 @@ test("another handle's writes reach a loaded subset, and writes outside it stay 
   }).when("settled");
   await until(ofX, () => ofX.get("X-1")?.body === "edited", "the edit");
   await writer.delete("X-1").when("settled");
-  await until(c, () => !c.has("X-1"), "the delete");
+  await polled(() => !c.has("X-1"), "the delete");
 
   assert.equal(c.has("Y-1"), false);
   assert.equal(c.size, 0);
@@ -596,11 +602,11 @@ test("cleaning up a live query unloads its rows, and a row two queries share sta
   assert.deepEqual([...c.keys()].sort(), ["A", "B"]);
 
   await other.cleanup();
-  await until(c, () => !c.has("B"), "B to unload");
+  await polled(() => !c.has("B"), "B to unload");
   await first.cleanup();
   assert.equal(c.has("A"), true, "the second query still holds A");
   await second.cleanup();
-  await until(c, () => c.size === 0, "A to unload");
+  await polled(() => c.size === 0, "A to unload");
 
   await c.utils.transact(["A"], () => [{ id: "A", description: "later" }]);
   assert.equal(c.size, 0, "an unloaded row no longer follows writes");
@@ -653,7 +659,7 @@ test("a gap reloads every loaded subset, its puts and its deletes", async () => 
   assert.deepEqual([...c.keys()], ["X-1"]);
 
   tap.emit({ kind: "gap" });
-  await until(c, () => c.has("X-2") && !c.has("X-1"), "the reload after the gap");
+  await polled(() => c.has("X-2") && !c.has("X-1"), "the reload after the gap");
 });
 
 test("an ordered window holds its page, takes a write that sorts into it and leaves out one that sorts past it", async () => {
@@ -719,7 +725,7 @@ test("a window that loaded short keeps only its page once writes fill it, and th
   assert.equal(top.size, 0);
 
   for (let i = 49; i >= 0; i -= 10) await other.putMany(Array.from({ length: 10 }, (_, j) => ({ id: `i${i - j}`, modified: i - j })));
-  await until(top, () => c.size === 5, "the rows past the window to leave memory");
+  await polled(() => c.size === 5, "the rows past the window to leave memory");
   assert.deepEqual(top.toArray.map((i) => i.id), ["i49", "i48", "i47", "i46", "i45"]);
 
   await other.put({ id: "past", modified: 10 });
@@ -745,6 +751,57 @@ test("a window shortened by writes that land while its load is in flight refills
 
   await until(top, () => top.size === 3, "the window to refill");
   assert.deepEqual(top.toArray.map((i) => i.id), ["i3", "i2", "i1"]);
+});
+
+test("a window released while another window loads its first page leaves the rest of the source unread", async () => {
+  const name = dbName();
+  await (await open(name)).store.collection("issues").putMany(Array.from({ length: 50 }, (_, i) => ({ id: `i${i}`, modified: i })));
+  const r = await open(name);
+  let gate: PromiseWithResolvers<void> | undefined;
+  const reached = Promise.withResolvers<void>();
+  const docs = new Proxy(r.store.collection("issues"), {
+    get(target, prop) {
+      if (prop === "view") {
+        return <R>(body: (snap: CollectionSnapshot<Issue, any>) => Promise<R>) =>
+          target.view(async (snap) => {
+            const held = gate;
+            if (held) {
+              reached.resolve();
+              await held.promise;
+            }
+            return body(snap);
+          });
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const c = onDemand(docs);
+  const newestFive = newest(c, 5);
+  await newestFive.preload();
+  await until(newestFive, () => newestFive.size === 5, "the newest five");
+
+  gate = Promise.withResolvers();
+  const oldestFive = tracked(
+    createLiveQueryCollection((q) =>
+      q
+        .from({ i: c })
+        .orderBy(({ i }) => i.modified, "asc")
+        .limit(5),
+    ),
+  );
+  const loaded = oldestFive.preload();
+  await reached.promise;
+  await newestFive.cleanup();
+  const held = gate;
+  gate = undefined;
+  held.resolve();
+  await loaded;
+
+  await until(oldestFive, () => oldestFive.size === 5, "the oldest five");
+  await polled(() => c.size === 5, "only the oldest five in memory");
+  assert.deepEqual(oldestFive.toArray.map((i) => i.id), ["i0", "i1", "i2", "i3", "i4"]);
+  assert.deepEqual([...c.keys()].sort(), ["i0", "i1", "i2", "i3", "i4"], "the collection holds only the window's rows");
 });
 
 test("loading the same options twice supersedes the first fetch, which then never commits", async () => {

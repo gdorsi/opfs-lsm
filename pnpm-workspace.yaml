@@ -7,4 +7,5 @@ packages:
   - "examples/linearlite-tanstackdb"
   - "examples/linearlite-docstore"
   - "examples/linearlite-fate"
+  - "examples/whiteboard-yjs"
   - "site"

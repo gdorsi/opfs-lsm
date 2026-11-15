@@ -749,7 +749,7 @@ class DbImpl implements Db {
    * the file is gone, which the generation retries handle. Reads no run
    * bytes: the reader loads its layout and pages on first use.
    */
-  private async openRun({ path, range }: RunMeta): Promise<Run | undefined> {
+  private async openRun({ path, range, marksThrough }: RunMeta): Promise<Run | undefined> {
     let run = this.runs.get(path);
     if (!run) {
       const file = await this.fs.open(path);
@@ -758,7 +758,7 @@ class DbImpl implements Db {
       if (run) {
         file.close();
       } else {
-        run = { path, file, reader: new SstReader(file, this.cache, range), layers: 0 };
+        run = { path, file, reader: new SstReader(file, this.cache, range, marksThrough), layers: 0 };
         this.runs.set(path, run);
       }
     }
