@@ -9,11 +9,20 @@ import { httpTransport } from "./transport.ts";
 let opening: Promise<Linearlite> | undefined;
 let opened: Linearlite | undefined;
 
-/** The replica `?backend=` names: kv, the default, or `indexeddb`. */
+/** The replica `?backend=` names: docstore, the default, `indexeddb` or `sqlite`. */
 async function openBackend(params: URLSearchParams): Promise<Backend & { readonly docs?: unknown }> {
   const name = params.get("db") ?? "linearlite";
   if (params.get("backend") === "indexeddb") {
     return openIndexedDbBackend(`${name}-indexeddb`, { hidden: () => document.hidden });
+  }
+  if (params.get("backend") === "sqlite") {
+    // Imported only here, so wa-sqlite and TanStack's SQLite persistence stay out of the default bundle.
+    const [{ openBrowserWASQLiteOPFSDatabase }, { openSqliteBackend }] = await Promise.all([
+      import("@tanstack/browser-db-sqlite-persistence"),
+      import("../backends/sqlite.ts"),
+    ]);
+    const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `${name}.sqlite` });
+    return openSqliteBackend(database, { name: `${name}-sqlite`, hidden: () => document.hidden });
   }
   // `?maxBytes=` sets a byte cap, to see an eviction without filling the disk.
   const db = await openDb({ name, maxBytes: Number(params.get("maxBytes")) || "quota" });

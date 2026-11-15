@@ -228,6 +228,9 @@ importers:
 
   examples/linearlite-tanstackdb:
     dependencies:
+      '@journeyapps/wa-sqlite':
+        specifier: ^1.7.2
+        version: 1.7.2
       '@opfs-lsm/docstore':
         specifier: workspace:*
         version: link:../../packages/docstore
@@ -237,6 +240,9 @@ importers:
       '@opfs-lsm/tanstack-db':
         specifier: workspace:*
         version: link:../../packages/tanstack-db
+      '@tanstack/browser-db-sqlite-persistence':
+        specifier: 1.0.0-rc.1.5
+        version: 1.0.0-rc.1.5(@journeyapps/wa-sqlite@1.7.2)(typescript@5.9.3)
       '@tanstack/db':
         specifier: 1.0.0-rc.1.5
         version: 1.0.0-rc.1.5(typescript@5.9.3)
