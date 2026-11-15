@@ -1,5 +1,5 @@
 {
-  "name": "@opfs-lsm/example-linearlite",
+  "name": "@opfs-lsm/example-linearlite-tanstackdb",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,8 +14,8 @@
     "@opfs-lsm/docstore": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
     "@opfs-lsm/tanstack-db": "workspace:*",
-    "@tanstack/db": "1.0.0-rc.1.4",
-    "@tanstack/react-db": "1.0.0-rc.1.4",
+    "@tanstack/db": "1.0.0-rc.1.5",
+    "@tanstack/react-db": "1.0.0-rc.1.5",
     "@tanstack/react-router": "^1.170.46",
     "@tanstack/react-start": "^1.169.5",
     "@tanstack/react-virtual": "^3.14.26",

@@ -1,8 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConstraintError, prefixBound, type ChangeEvent, type Db } from "../src/index.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ConstraintError, prefixBound, type ChangeEvent, type Db, type Range } from "../src/index.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 import { decodeSst } from "../src/store/sst.js";
-import { __resetMemoryFsForTests, ingest, MemoryFs, openHarnessDb, settle } from "../src/testing.js";
+import {
+  __resetMemoryFsForTests,
+  createLocalIngestClient,
+  EngineHost,
+  ingest,
+  MemoryFs,
+  openHarnessDb,
+  readStats,
+  settle,
+  type AsyncFs,
+} from "../src/testing.js";
 
 const NAME = "delete-range-test";
 const enc = new TextEncoder();
@@ -171,6 +181,107 @@ describe.each(Object.entries(STAGES))("deleteRange, %s", (_stage, { before, afte
     const again = await open("w3");
     expect(await keys(again, M)).toEqual([]);
     expect(await keys(again)).toEqual(["a=v:a", "z=v:z"]);
+  });
+});
+
+/** `inner` with every compaction output stopped at its creation while `hold` is set. */
+function compactionGate(inner: MemoryFs) {
+  const gate = { hold: undefined as Promise<void> | undefined, stopped: false };
+  const fs: AsyncFs = {
+    read: (path, offset, length) => inner.read(path, offset, length),
+    open: (path) => inner.open(path),
+    list: (dir) => inner.list(dir),
+    remove: (path) => inner.remove(path),
+    removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
+    create: async (path) => {
+      if (gate.hold && !path.startsWith("l0/") && !path.startsWith("m/")) {
+        gate.stopped = true;
+        await gate.hold;
+      }
+      return inner.create(path);
+    },
+  };
+  return { fs, gate };
+}
+
+/** Run file reads and bytes this tab made so far. */
+async function runReads(db: Db): Promise<{ reads: number; bytes: number }> {
+  const out = { reads: 0, bytes: 0 };
+  for (const [kind, io] of Object.entries((await readStats(db)).tab.fs.read)) {
+    if (!/^l\d+$/.test(kind)) continue;
+    out.reads += io.calls;
+    out.bytes += io.bytes;
+  }
+  return out;
+}
+
+describe("a scan over a range delete", () => {
+  const value = (k: string) => b(`v:${k}:`.padEnd(300, "."));
+
+  it("reads no page of a run the delete covers within the scan, and reads a run it covers in part", async () => {
+    const { fs: gated, gate } = compactionGate(fs);
+    const host = new EngineHost(() => gated);
+    const tab = async (writerId: string) => {
+      const db = await openHarnessDb({ name: NAME, fs: gated, ingest: createLocalIngestClient(host), writerId, maxWalBytes: 1 << 30 });
+      opened.push(db);
+      return db;
+    };
+    /** `range` on a new handle, whose page cache is empty, and the run reads it made. */
+    const cold = async (range: Range) => {
+      const db = await tab(`cold-${opened.length}`);
+      const before = await runReads(db);
+      const rows = await keys(db, range);
+      const after = await runReads(db);
+      return { rows, reads: after.reads - before.reads, bytes: after.bytes - before.bytes };
+    };
+    const db = await tab("w1");
+    await db.batch((tx) => {
+      for (const k of ["a", "z"]) tx.put(b(k), b(`v:${k}`));
+      for (let i = 0; i < 300; i++) tx.put(b(`m/${String(i).padStart(3, "0")}`), value(String(i)));
+    });
+    await host.ingest(NAME, true);
+    await db.batch((tx) => {
+      tx.deleteRange(M);
+      tx.put(b("m/150"), b("new"));
+    });
+
+    for (const range of [M, { ...M, reverse: true }, { ...M, valueContains: [b("new")] }, { ...M, valueContains: [b("v:")] }]) {
+      const rows = range.valueContains?.[0]?.[0] === 0x76 ? [] : ["m/150=new"];
+      expect(await cold(range), "the delete in the memtable").toEqual({ rows, reads: 0, bytes: 0 });
+    }
+    const whole = await cold({});
+    expect(whole.rows).toEqual(["a=v:a", "m/150=new", "z=v:z"]);
+    expect(whole.reads, "a scan past the delete's range reads the run").toBeGreaterThan(0);
+
+    let release!: () => void;
+    gate.hold = new Promise((resolve) => (release = resolve));
+    await host.ingest(NAME);
+    await vi.waitFor(() => expect(gate.stopped).toBe(true));
+    const meta = (await loadLatestGeneration(fs))!;
+    expect(meta.runs.map((r) => r.path.slice(0, 3))).toEqual(["l0/", "l0/"]);
+    expect(meta.marks).toHaveLength(1);
+    const flushed = await cold(M);
+    expect(flushed.rows).toEqual(["m/150=new"]);
+    expect(flushed.bytes, "the delete flushed: only the run that holds m/150 is read").toBeGreaterThan(0);
+    expect(flushed.bytes).toBeLessThanOrEqual(2 * meta.runs[0]!.bytes);
+    expect(await cold({ ...M, reverse: true })).toMatchObject({ rows: ["m/150=new"], bytes: flushed.bytes });
+    gate.hold = undefined;
+    release();
+    await host.ingest(NAME, true);
+  });
+
+  it("reads a run that holds a version newer than the delete's `through`", async () => {
+    const db = await open();
+    const through = await db.batch((tx) => {
+      for (let i = 0; i < 300; i++) tx.put(b(`m/${String(i).padStart(3, "0")}`), value(String(i)));
+    });
+    await db.put(b("m/200"), b("after"));
+    await ingest(db);
+    await db.batch((tx) => tx.deleteRange(M, { through }));
+
+    expect(await keys(db, M)).toEqual(["m/200=after"]);
+    expect(await keys(db, { ...M, reverse: true })).toEqual(["m/200=after"]);
+    expect(await keys(db, { ...M, valueContains: [b("after")] })).toEqual(["m/200=after"]);
   });
 });
 

@@ -13,9 +13,9 @@ packages/kv/.arena-readpath
 examples/todo/dist
 examples/rich-text/dist
 .claude/worktrees
-examples/linearlite/dist
-examples/linearlite/.tanstack
-examples/linearlite/data
+examples/linearlite-tanstackdb/dist
+examples/linearlite-tanstackdb/.tanstack
+examples/linearlite-tanstackdb/data
 examples/linearlite-fate/dist
 examples/linearlite-fate/.tanstack
 examples/linearlite-fate/data

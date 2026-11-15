@@ -1,12 +1,12 @@
+import type { FieldsWith, Stream } from "./stores.ts";
+
 export const STATUSES = ["backlog", "todo", "in_progress", "done", "canceled"] as const;
 export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
 export const STATUS_LABELS = ["Backlog", "Todo", "In Progress", "Done", "Canceled"] as const;
 export const PRIORITY_LABELS = ["Urgent", "High", "Medium", "Low", "No priority"] as const;
-export const STREAMS = ["issues", "bodies", "comments"] as const;
 
 export type StatusCode = 0 | 1 | 2 | 3 | 4;
 export type PriorityCode = 0 | 1 | 2 | 3 | 4;
-export type Stream = (typeof STREAMS)[number];
 
 export type Clocks = Readonly<Record<string, number>>;
 /**
@@ -30,6 +30,8 @@ export type Issue = Synced & {
   modified: number;
   deleted: boolean;
 };
+/** An issue as stored: its fields, and the keys the priority and status sorts order by. */
+export type StoredIssue = Issue & { readonly priorityOrder: number; readonly statusOrder: string };
 export type Body = Synced & {
   readonly id: string;
   description: string;
@@ -62,17 +64,13 @@ export interface Rows {
   bodies: Body;
   comments: Comment;
 }
-export type ServerRow<S extends Stream = Stream> = S extends Stream ? Omit<Rows[S], "dirty" | "pending"> : never;
+export type Clean<R> = Omit<R, "dirty" | "pending">;
+export type ServerRow<S extends Stream = Stream> = S extends Stream ? Clean<Rows[S]> : never;
 
 export const commentKey = (issueId: string, id: string) => `${issueId}/${id}`;
 
-export const MUTABLE_FIELDS = {
-  issues: ["title", "status", "priority", "kanbanorder", "deleted"],
-  bodies: ["description"],
-  comments: ["body", "deleted"],
-} as const satisfies Record<Stream, readonly string[]>;
-
-export type IssuePatch = Partial<Pick<Issue, "title" | "status" | "priority" | "kanbanorder" | "deleted">>;
-export type BodyPatch = Partial<Pick<Body, "description">>;
-export type CommentPatch = Partial<Pick<Comment, "body" | "deleted">>;
+type PatchOf<S extends Stream> = Partial<Pick<Rows[S], Extract<FieldsWith<S, "mutable">, keyof Rows[S]>>>;
+export type IssuePatch = PatchOf<"issues">;
+export type BodyPatch = PatchOf<"bodies">;
+export type CommentPatch = PatchOf<"comments">;
 export type Patch<T extends Synced> = T extends Issue ? IssuePatch : T extends Body ? BodyPatch : T extends Comment ? CommentPatch : never;
