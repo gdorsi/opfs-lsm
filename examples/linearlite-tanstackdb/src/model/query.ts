@@ -1,8 +1,9 @@
-import type { Scalar } from "@opfs-lsm/docstore";
-import { and, createLiveQueryCollection, eq, gte, ilike, inArray, lte, type InitialQueryBuilder, type Ref } from "@tanstack/db";
-import type { StatusCode, StoredIssue } from "../domain/model.ts";
+import { and, createLiveQueryCollection, eq, gte, ilike, inArray, lte, type Collection, type InitialQueryBuilder, type Ref } from "@tanstack/db";
+import type { Body, Comment, StatusCode, StoredIssue, Synced } from "../domain/model.ts";
+import type { SortValue } from "./backend.ts";
 import type { IssueFilter, SortField } from "./filter.ts";
-import type { Store } from "./store.ts";
+
+type Issues = Collection<StoredIssue, string>;
 
 /**
  * `ilike` has no escape character, so `%` and `_` in a query would act as wildcards. Those queries are matched by a
@@ -42,7 +43,7 @@ function matches(i: Ref<StoredIssue>, filter: IssueFilter, status?: StatusCode) 
 }
 
 /** Issues under the filter, as a query ready for `orderBy`, `select` or `groupBy`. */
-export function filtered(q: InitialQueryBuilder, issues: Store["issues"], filter: IssueFilter, status?: StatusCode) {
+export function filtered(q: InitialQueryBuilder, issues: Issues, filter: IssueFilter, status?: StatusCode) {
   const base = q.from({ i: issues }).where(({ i }) => matches(i, filter, status));
   if (filter.q === "" || isLiteralOnly(filter.q)) return base;
   const needle = filter.q.toLowerCase();
@@ -50,10 +51,10 @@ export function filtered(q: InitialQueryBuilder, issues: Store["issues"], filter
 }
 
 /** Where the list's window starts: `offset` rows past the first issue whose sort value is `from` or sorts after it. */
-export type ListStart = { readonly from?: Scalar; readonly offset: number };
+export type ListStart = { readonly from?: SortValue; readonly offset: number };
 
 /** An ordered window of `size` issues under the filter: a board column with `status`, else the list from `start`. */
-export const windowQuery = (issues: Store["issues"], filter: IssueFilter, size: number, status?: StatusCode, start?: ListStart) =>
+export const windowQuery = (issues: Issues, filter: IssueFilter, size: number, status?: StatusCode, start?: ListStart) =>
   createLiveQueryCollection((q) => {
     const rows = filtered(q, issues, filter, status);
     const from = start?.from;
@@ -62,3 +63,27 @@ export const windowQuery = (issues: Store["issues"], filter: IssueFilter, size: 
     return (start ? ordered.offset(start.offset) : ordered).limit(size);
   });
 
+/** The issue `id`, unless it is a tombstone. */
+export const issueById = (issues: Issues, id: string) => (q: InitialQueryBuilder) =>
+  q
+    .from({ i: issues })
+    .where(({ i }) => and(eq(i.id, id), eq(i.deleted, false)))
+    .findOne();
+
+/** The description of issue `id`. */
+export const bodyOf = (bodies: Collection<Body, string>, id: string) => (q: InitialQueryBuilder) =>
+  q
+    .from({ b: bodies })
+    .where(({ b }) => eq(b.id, id))
+    .findOne();
+
+/** The live comments of issue `id`, oldest first. */
+export const commentsOf = (comments: Collection<Comment, string>, id: string) => (q: InitialQueryBuilder) =>
+  q
+    .from({ c: comments })
+    .where(({ c }) => and(eq(c.issue_id, id), eq(c.deleted, false)))
+    .orderBy(({ c }) => c.created, "asc");
+
+/** The rows with unsent edits: the outbox. */
+export const unsent = <T extends Synced & { readonly id: string }>(rows: Collection<T, string>) =>
+  createLiveQueryCollection((q) => q.from({ r: rows }).where(({ r }) => eq(r.pending, true)));

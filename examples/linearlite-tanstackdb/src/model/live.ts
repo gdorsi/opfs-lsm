@@ -1,6 +1,4 @@
 import { createLiveQueryObserver, type Collection } from "@tanstack/db";
-import type { Pause } from "./counts.ts";
-import type { IssueDocs } from "./store.ts";
 
 export type Unsubscribe = () => void;
 
@@ -117,74 +115,25 @@ export function listeners(start: (notify: () => void) => Unsubscribe) {
   };
 }
 
-export type Read<T> = (issues: IssueDocs, pause?: Pause) => Promise<T>;
-
-const yieldTask: Pause = () => new Promise((resolve) => setTimeout(resolve));
-
 /**
- * Runs `read` of the stored issues now, and again after every change to them. One read runs at a time. Changes during
- * a read start one more, four times that read's duration after it and at least 250 ms, so a first sync, which changes
- * the issues every few milliseconds, spends at most a fifth of the main thread counting them. A read after a change
- * pauses between steps, so it does not hold up a frame, unless the page is `hidden`: a hidden page paints nothing and
- * wakes its timers about once a second. The first read does not pause, since the screen waits on it.
- */
-export function recount<T>(issues: IssueDocs, read: Read<T>, emit: (value: T) => void, hidden: () => boolean): Unsubscribe {
-  let live = true;
-  let running = false;
-  let again = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const pauseUnlessHidden = () => (hidden() ? undefined : yieldTask);
-  const run = async (pause?: Pause) => {
-    timer = undefined;
-    running = true;
-    again = false;
-    const t0 = performance.now();
-    try {
-      const value = await read(issues, pause);
-      if (live) emit(value);
-    } catch (err) {
-      console.warn("linearlite could not count issues", err);
-    }
-    running = false;
-    if (live && again) timer = setTimeout(() => void run(pauseUnlessHidden()), Math.max(250, 4 * (performance.now() - t0)));
-  };
-  const off = issues.changes((event) => {
-    if (event.kind === "closed") return;
-    if (running || timer !== undefined) again = true;
-    else void run(pauseUnlessHidden());
-  });
-  void run();
-  return () => {
-    live = false;
-    clearTimeout(timer);
-    off();
-  };
-}
-
-/**
- * Reads of the stored issues kept current while subscribed, one per key however many subscribe. The last unsubscribe
- * stops a read a microtask later, so a view that replaces another under the same key, as a list made again for
+ * Values a backend keeps current while subscribed, one watch per key however many subscribe. The last unsubscribe
+ * stops a watch a microtask later, so a view that replaces another under the same key, as a list made again for
  * another sort does with its total, keeps the value instead of counting again.
  */
-export function issueReads(issues: IssueDocs, hidden: () => boolean) {
+export function watches() {
   type Entry = { value: unknown; readonly listeners: Set<() => void>; stop: Unsubscribe };
   const entries = new Map<string, Entry>();
-  return <T>(key: string, read: Read<T>): Live<T | undefined> => ({
+  return <T>(key: string, watch: (emit: (value: T) => void) => Unsubscribe): Live<T | undefined> => ({
     get: () => entries.get(key)?.value as T | undefined,
     subscribe(onChange) {
       let entry = entries.get(key);
       if (!entry) {
         const created: Entry = { value: undefined, listeners: new Set(), stop: () => {} };
         entries.set(key, created);
-        created.stop = recount(
-          issues,
-          read,
-          (value) => {
-            created.value = value;
-            for (const l of created.listeners) l();
-          },
-          hidden,
-        );
+        created.stop = watch((value) => {
+          created.value = value;
+          for (const l of created.listeners) l();
+        });
         entry = created;
       }
       const mine = entry;

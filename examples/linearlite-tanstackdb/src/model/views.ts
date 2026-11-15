@@ -1,12 +1,10 @@
-import type { Scalar } from "@opfs-lsm/docstore";
-import { and, createLiveQueryCollection, eq, type InitialQueryBuilder, type QueryBuilder } from "@tanstack/db";
+import { createLiveQueryCollection, type InitialQueryBuilder, type QueryBuilder } from "@tanstack/db";
 import type { Body, Comment, Issue, StatusCode } from "../domain/model.ts";
-import { anchors, countBefore, countByStatus, countTotal, locate, type Anchor } from "./counts.ts";
+import type { Anchor, Backend, SortValue, StatusCounts } from "./backend.ts";
 import type { IssueFilter } from "./filter.ts";
-import { issueReads, listeners, memo, observe, recount, type Live, type Observed, type Snapshot, type Unsubscribe } from "./live.ts";
+import { listeners, memo, observe, watches, type Live, type Observed, type Snapshot, type Unsubscribe } from "./live.ts";
 import { backoffMs } from "./ops.ts";
-import { windowQuery } from "./query.ts";
-import type { Store } from "./store.ts";
+import { bodyOf, commentsOf, issueById, windowQuery } from "./query.ts";
 
 export const LIST_WINDOW = 100;
 const COLUMN_WINDOW = 50;
@@ -39,7 +37,7 @@ export interface Issues {
   /** A board column: the issues with `status` under `filter`, in board order. */
   column(filter: IssueFilter, status: StatusCode): Window;
   /** Live issues under `filter` per status code; undefined until counted. */
-  counts(filter: IssueFilter): Live<readonly number[] | undefined>;
+  counts(filter: IssueFilter): Live<StatusCounts | undefined>;
   /** The issue as a live query reads it, or as the collection holds it, tombstone included, until that query is ready. */
   get(id: string): Live<Issue | undefined>;
   /**
@@ -58,7 +56,7 @@ const transient = (query: (q: InitialQueryBuilder) => QueryBuilder<any>) => obse
 type WindowQuery = ReturnType<typeof windowQuery>;
 
 /** The rows before an anchor's sort value, counted again on every change. */
-type Counting = { readonly value: Scalar; count?: number; stop: Unsubscribe };
+type Counting = { readonly value: SortValue; count?: number; stop: Unsubscribe };
 
 /**
  * The list's live query and the window in it. Without an anchor the query starts at the top of the order; with one it
@@ -75,21 +73,22 @@ type Placement = {
 const LOADING: Thread = { kind: "loading" };
 
 export function issueViews(
-  store: Store,
-  { fetchThread, online, hidden }: { fetchThread(id: string): Promise<unknown>; online(back: () => void): Unsubscribe; hidden(): boolean },
+  backend: Backend,
+  { fetchThread, online }: { fetchThread(id: string): Promise<unknown>; online(back: () => void): Unsubscribe },
 ): Issues {
-  const docs = store.docs.collection("issues");
-  const reads = issueReads(docs, hidden);
+  const issues = backend.collection("issues");
+  const watched = watches();
 
   /**
-   * TanStack loads a window at offset N as the first N rows plus the window, so a window deep in the unfiltered list
-   * gets its own live query that starts at the sort value of its first row (`locate`). Its rows sit `base` rows down
-   * the list, where `base` counts the rows before that value and is counted again on every change. A filtered list,
-   * and the list by title, keep one query from the top (`anchors`).
+   * TanStack loads a window at offset N as the first N rows plus the window, so a window deep in a list the backend
+   * can anchor gets its own live query that starts at the sort value of its first row (`locate`). Its rows sit `base`
+   * rows down the list, where `base` counts the rows before that value and is counted again on every change. Other
+   * lists keep one query from the top.
    */
   function list(filter: IssueFilter): IssueList {
-    const total = reads(`total ${counted(filter)}`, (d, pause) => countTotal(d, filter, pause));
-    const top = windowQuery(store.issues, filter, LIST_WINDOW);
+    const total = watched(`total ${counted(filter)}`, (emit: (total: number) => void) => backend.watchTotal(filter, emit));
+    const anchoring = backend.anchor?.(filter);
+    const top = windowQuery(issues, filter, LIST_WINDOW);
     let placement: Placement = { anchor: undefined, query: top, observed: observe(top), offset: 0, reach: REACH };
     let unwatch: Unsubscribe | undefined;
     let before: Counting | undefined;
@@ -106,17 +105,12 @@ export function issueViews(
       if (before?.value === value) return;
       before?.stop();
       before = undefined;
-      if (value === undefined) return;
+      if (value === undefined || !anchoring) return;
       const counting: Counting = { value, stop: () => {} };
-      counting.stop = recount(
-        docs,
-        (d) => countBefore(d, filter, value),
-        (n) => {
-          counting.count = n;
-          notify();
-        },
-        hidden,
-      );
+      counting.stop = anchoring.watchBase(value, (n) => {
+        counting.count = n;
+        notify();
+      });
       before = counting;
     };
     const { notify, subscribe } = listeners((notify) => {
@@ -150,7 +144,7 @@ export function issueViews(
         const limit = Math.max(LIST_WINDOW, to - from);
         const ask = ++asked;
         const anchorAt = (anchor: Anchor | undefined, offset: number) => {
-          const query = windowQuery(store.issues, filter, limit, undefined, { from: anchor?.value, offset });
+          const query = windowQuery(issues, filter, limit, undefined, { from: anchor?.value, offset });
           place({ anchor, query, observed: observe(query), offset, reach: offset + REACH });
         };
         const move = (offset: number) => {
@@ -158,10 +152,10 @@ export function issueViews(
           if (current?.offset !== offset || current.limit !== limit) void placement.query.utils.setWindow({ offset, limit });
           if (placement.offset !== offset) place({ ...placement, offset, reach: Math.max(placement.reach, offset + REACH) });
         };
-        if (!anchors(filter) || start < REACH) return placement.anchor ? anchorAt(undefined, start) : move(start);
+        if (!anchoring || start < REACH) return placement.anchor ? anchorAt(undefined, start) : move(start);
         const b = base();
         if (placement.anchor && start >= b && start - b <= placement.reach) return move(start - b);
-        void locate(docs, filter, start - ABOVE).then(
+        void anchoring.locate(start - ABOVE).then(
           (found) => {
             if (ask !== asked) return;
             if (!found) return anchorAt(undefined, start);
@@ -178,7 +172,7 @@ export function issueViews(
   }
 
   function column(filter: IssueFilter, status: StatusCode): Window {
-    const query = windowQuery(store.issues, filter, COLUMN_WINDOW, status);
+    const query = windowQuery(issues, filter, COLUMN_WINDOW, status);
     const observed = observe(query);
     let offset = 0;
     const { notify, subscribe } = listeners((notify) => observed.subscribe(notify));
@@ -198,31 +192,16 @@ export function issueViews(
   }
 
   function get(id: string): Live<Issue | undefined> {
-    const observed = transient((q) =>
-      q
-        .from({ i: store.issues })
-        .where(({ i }) => and(eq(i.id, id), eq(i.deleted, false)))
-        .findOne(),
-    );
+    const observed = transient(issueById(issues, id));
     return {
-      get: () => (observed.snapshot().data as Issue | undefined) ?? store.issues.get(id),
+      get: () => (observed.snapshot().data as Issue | undefined) ?? issues.get(id),
       subscribe: (onChange) => observed.subscribe(onChange),
     };
   }
 
   function thread(id: string): Live<Thread> {
-    const body = transient((q) =>
-      q
-        .from({ b: store.bodies })
-        .where(({ b }) => eq(b.id, id))
-        .findOne(),
-    );
-    const comments = transient((q) =>
-      q
-        .from({ c: store.comments })
-        .where(({ c }) => and(eq(c.issue_id, id), eq(c.deleted, false)))
-        .orderBy(({ c }) => c.created, "asc"),
-    );
+    const body = transient(bodyOf(backend.collection("bodies"), id));
+    const comments = transient(commentsOf(backend.collection("comments"), id));
     let fetched = false;
     let fetching: Unsubscribe | undefined;
     const fetchUntilAnswered = () => {
@@ -293,7 +272,7 @@ export function issueViews(
   return {
     list,
     column,
-    counts: (filter) => reads(`status ${counted(filter)}`, (d, pause) => countByStatus(d, filter, pause)),
+    counts: (filter) => watched(`status ${counted(filter)}`, (emit: (counts: StatusCounts) => void) => backend.watchCounts(filter, emit)),
     get,
     thread,
   };

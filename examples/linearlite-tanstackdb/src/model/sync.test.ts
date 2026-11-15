@@ -3,18 +3,18 @@ import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import type { Db } from "@opfs-lsm/kv";
 import { ingest, openHarnessDb } from "@opfs-lsm/kv/testing";
+import { openKvBackend, type KvBackend } from "../backends/kv.ts";
 import type { StatusCode } from "../domain/model.ts";
 import { memoryServer, memoryTransport, type MemoryServer } from "../server/memory.ts";
 import { openLinearlite, type Linearlite } from "./index.ts";
 import { hold } from "./live.ts";
-import { openStore, type Store } from "./store.ts";
 
-type Replica = { readonly db: Db; readonly store: Store; readonly model: Linearlite };
+type Replica = { readonly db: Db; readonly backend: KvBackend; readonly model: Linearlite };
 
 async function replica(server: MemoryServer, name: string, options: { maxBytes?: number } = {}): Promise<Replica> {
   const db = await openHarnessDb({ name, forceMemory: true, ...options });
-  const store = await openStore(db);
-  return { db, store, model: openLinearlite({ store, transport: memoryTransport(server, "ada") }) };
+  const backend = await openKvBackend(db);
+  return { db, backend, model: openLinearlite({ backend, transport: memoryTransport(server, "ada") }) };
 }
 
 /** Leads until the returned function is called, which resolves once the leader has stopped. */
@@ -42,7 +42,7 @@ describe("sync through memoryTransport", () => {
 
   /** The replica's copy of every issue the server holds, without the sort keys only the replica stores. */
   async function replicaIssues() {
-    const rows = await r.store.docs.collection("issues").getMany([...server.rows().issues.keys()]);
+    const rows = await r.backend.docs.collection("issues").getMany([...server.rows().issues.keys()]);
     return rows.map((row) => {
       if (!row) return row;
       const { priorityOrder: _p, statusOrder: _s, ...issue } = row;
@@ -85,7 +85,7 @@ describe("sync through memoryTransport", () => {
     const issue = serverIssues()[2]!;
     server.push([{ stream: "issues", id: issue.id, fields: { title: "Renamed by grace" }, clocks: {} }], "grace");
     await r.model.sync.settled();
-    assert.equal((await r.store.docs.collection("issues").get(issue.id))?.title, "Renamed by grace");
+    assert.equal((await r.backend.docs.collection("issues").get(issue.id))?.title, "Renamed by grace");
     assert.deepEqual(await replicaIssues(), serverIssues());
   });
 });
@@ -109,8 +109,8 @@ describe("eviction under storage pressure", () => {
     await a.db.close();
   });
 
-  const syncRow = async (r: Replica) => (await r.store.docs.collection("sync").get("sync"))?.evict;
-  const cachedBodies = async () => (await a.store.docs.collection("bodies").queryIds({})).ids.length;
+  const syncRow = async (r: Replica) => (await r.backend.docs.collection("sync").get("sync"))?.evict;
+  const cachedBodies = async () => (await a.backend.docs.collection("bodies").queryIds({})).ids.length;
 
   it("asks every tab through the sync row once more than 100 threads are cached, and clears them when another tab confirms", async () => {
     const ids = [...server.rows().issues.keys()].slice(0, 150);
@@ -127,7 +127,7 @@ describe("eviction under storage pressure", () => {
     pressure.release();
     assert.equal(await syncRow(a), "idle");
     assert.equal(await cachedBodies(), 0);
-    assert.equal((await a.store.docs.collection("issues").queryIds({})).ids.length, 300, "issues stay");
+    assert.equal((await a.backend.docs.collection("issues").queryIds({})).ids.length, 300, "issues stay");
   });
 
   it("does not let a tab that does not lead wait for sync to settle", async () => {

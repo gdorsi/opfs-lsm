@@ -3,8 +3,9 @@ import { describe, it } from "node:test";
 import { count, createCollection, createLiveQueryCollection, localOnlyCollectionOptions } from "@tanstack/db";
 import type { Issue } from "../domain/model.ts";
 import { parseIssueFilter } from "./filter.ts";
-import type { Store } from "./store.ts";
 import { filtered, windowQuery } from "./query.ts";
+
+type Issues = Parameters<typeof windowQuery>[0];
 
 const TITLES = ["Fix 100% CPU", "Fix 1000 CPU", "snake_case names", "snakeXcase names", "Windows C:\\temp path", "Windows C:Xtemp path", "Sync Cache"];
 
@@ -19,7 +20,7 @@ async function seeded() {
 
 async function search(q: string, status?: 0): Promise<string[]> {
   const issues = await seeded();
-  const query = windowQuery(issues as unknown as Store["issues"], parseIssueFilter({ q, sort: "created", dir: "asc" }), 50, status);
+  const query = windowQuery(issues as unknown as Issues, parseIssueFilter({ q, sort: "created", dir: "asc" }), 50, status);
   await query.preload();
   const titles = query.toArray.map((i) => i.title);
   await query.cleanup();
@@ -50,7 +51,7 @@ describe("title search", () => {
   it("counts the same rows the list shows", async () => {
     const issues = await seeded();
     const total = createLiveQueryCollection((q) =>
-      filtered(q, issues as unknown as Store["issues"], parseIssueFilter({ q: "_" })).select(({ i }) => ({ n: count(i.id) })).findOne(),
+      filtered(q, issues as unknown as Issues, parseIssueFilter({ q: "_" })).select(({ i }) => ({ n: count(i.id) })).findOne(),
     );
     await total.preload();
     assert.equal(total.toArray[0]?.n, 1);
