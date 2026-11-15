@@ -5,6 +5,7 @@
 import {
   Repo,
   generateAutomergeUrl,
+  isValidDocumentId,
   parseAutomergeUrl,
   type DocHandle,
   type DocHandleChangePayload,
@@ -45,6 +46,11 @@ export interface Bodies {
 
 export function newPageId(): PageId {
   return parseAutomergeUrl(generateAutomergeUrl()).documentId;
+}
+
+/** A page id from untrusted input (a route param, a request, a journal entry), or null. */
+export function parsePageId(raw: unknown): PageId | null {
+  return isValidDocumentId(raw) ? raw : null;
 }
 
 export function openBodies(options: BodiesOptions): Bodies {

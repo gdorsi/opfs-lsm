@@ -29,7 +29,8 @@
     "prosemirror-state": "1.4.4",
     "prosemirror-transform": "1.12.5",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@automerge/automerge-repo-network-messagechannel": "2.6.0-alpha.5",
