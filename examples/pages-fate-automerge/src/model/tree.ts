@@ -6,7 +6,7 @@
  */
 import { clientRoot, createClient, mutation, view, type RequestOptions, type Transport } from "@nkzw/fate";
 import { createPersistence, type PersistenceStorage } from "@nkzw/fate/persistence";
-import { newPageId } from "./bodies.ts";
+import { newPageId, parsePageId, type Bodies } from "./bodies.ts";
 import type { PageId } from "./types.ts";
 
 /** fate's persistence key and the server's receipt scope, which fate requires to be equal. One workspace per server. */
@@ -138,4 +138,64 @@ export function renamePage(fate: Fate, id: PageId, title: string): Promise<void>
 /** Takes the page out of every cached list at once. Its body, and its children's, go when the server confirms. */
 export function deletePage(fate: Fate, id: PageId): Promise<void> {
   return stored("a delete", fate.mutations.deletePage({ input: { id }, delete: true }));
+}
+
+type Watched = { readonly name: "createPage" | "deletePage"; readonly id: PageId; readonly failed: boolean };
+
+/**
+ * Removes the device's bodies of pages that no longer exist, read off fate's
+ * journal. The journal survives reloads and every tab sees it, so a delete
+ * confirmed after a reload or in another tab still frees its bodies. When an
+ * entry leaves the journal:
+ *
+ * | Entry      | Last status | Meaning                    | Removes                                 |
+ * | ---------- | ----------- | -------------------------- | --------------------------------------- |
+ * | deletePage | not failed  | the server confirmed it    | the page and its cached descendants     |
+ * | createPage | failed      | the refusal was discarded  | the page, seeded if it was opened       |
+ *
+ * Every tab runs one; removing an id twice is harmless.
+ */
+export function reclaimBodies(fate: Fate, bodies: Pick<Bodies, "remove">): () => void {
+  const persistence = fate.persistence!;
+  const watched = new Map<string, Watched>();
+  let removing = Promise.resolve();
+  const remove = (ids: () => Promise<readonly PageId[]>) => {
+    removing = removing
+      .then(async () => {
+        for (const id of await ids()) await bodies.remove(id);
+      })
+      .catch((error: unknown) => console.warn("pages: could not remove a deleted page's body", error));
+  };
+  const onJournal = () => {
+    const now = new Set<string>();
+    for (const entry of persistence.getSnapshot().mutations) {
+      if (entry.name !== "createPage" && entry.name !== "deletePage") continue;
+      const id = parsePageId((entry.input as { id?: unknown } | undefined)?.id);
+      if (!id) continue;
+      now.add(entry.id);
+      watched.set(entry.id, { name: entry.name, id, failed: entry.status === "failed" });
+    }
+    for (const [key, entry] of watched) {
+      if (now.has(key)) continue;
+      watched.delete(key);
+      if (entry.name === "deletePage" && !entry.failed) remove(async () => [entry.id, ...(await cachedSubtree(fate, entry.id))]);
+      if (entry.name === "createPage" && entry.failed) remove(async () => [entry.id]);
+    }
+  };
+  onJournal();
+  return persistence.subscribe(onJournal);
+}
+
+/** The descendants whose levels this device has cached, breadth first, without a request. An uncached level ends its branch. */
+async function cachedSubtree(fate: Fate, root: PageId): Promise<PageId[]> {
+  const found: PageId[] = [];
+  for (const queue: PageId[] = [root]; queue.length > 0; ) {
+    const children = await cachedChildren(fate, queue.shift()!);
+    for (const item of children?.items ?? []) {
+      const id = item.node.id as PageId;
+      found.push(id);
+      queue.push(id);
+    }
+  }
+  return found;
 }

@@ -57,10 +57,12 @@ export interface View<T> {
   subscribe(listener: () => void): () => void;
 }
 
+/** `removed` is final: `Bodies.remove` deleted the body from this device, and `edit` throws from then on. */
 export type SaveState =
   | { readonly state: "saved" }
   | { readonly state: "saving" }
-  | { readonly state: "error"; readonly error: PagesError };
+  | { readonly state: "error"; readonly error: PagesError }
+  | { readonly state: "removed" };
 
 export interface PageBody {
   readonly id: PageId;
