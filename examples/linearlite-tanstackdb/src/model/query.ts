@@ -53,14 +53,21 @@ export function filtered(q: InitialQueryBuilder, issues: Issues, filter: IssueFi
 /** Where the list's window starts: `offset` rows past the first issue whose sort value is `from` or sorts after it. */
 export type ListStart = { readonly from?: SortValue; readonly offset: number };
 
-/** An ordered window of `size` issues under the filter: a board column with `status`, else the list from `start`. */
+/**
+ * An ordered window of `size` issues under the filter: a board column with `status`, else the list from `start`.
+ * Every view builds its own and none is shared, so one with no subscriber is dropped at once: TanStack's default
+ * keeps it 5 s, loading rows and filtering every change for no one.
+ */
 export const windowQuery = (issues: Issues, filter: IssueFilter, size: number, status?: StatusCode, start?: ListStart) =>
-  createLiveQueryCollection((q) => {
-    const rows = filtered(q, issues, filter, status);
-    const from = start?.from;
-    const bounded = from === undefined ? rows : rows.where(({ i }) => (filter.dir === "desc" ? lte : gte)(i[ORDER[filter.sort]], from));
-    const ordered = bounded.orderBy(({ i }) => (status === undefined ? i[ORDER[filter.sort]] : i.statusOrder), status === undefined ? filter.dir : "asc");
-    return (start ? ordered.offset(start.offset) : ordered).limit(size);
+  createLiveQueryCollection({
+    gcTime: 1,
+    query: (q) => {
+      const rows = filtered(q, issues, filter, status);
+      const from = start?.from;
+      const bounded = from === undefined ? rows : rows.where(({ i }) => (filter.dir === "desc" ? lte : gte)(i[ORDER[filter.sort]], from));
+      const ordered = bounded.orderBy(({ i }) => (status === undefined ? i[ORDER[filter.sort]] : i.statusOrder), status === undefined ? filter.dir : "asc");
+      return (start ? ordered.offset(start.offset) : ordered).limit(size);
+    },
   });
 
 /** The issue `id`, unless it is a tombstone. */

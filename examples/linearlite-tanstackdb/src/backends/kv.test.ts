@@ -15,7 +15,7 @@ const INDEXES = {
     byCreated: sorted("deleted", "created"),
     byTitle: sorted("deleted", "title"),
     byPriority: sorted("deleted", "priority", "priorityOrder"),
-    byStatus: sorted("deleted", "status", "statusOrder"),
+    byStatus: { kind: "text", on: ["deleted", "status", "statusOrder"], unique: false, text: "title" },
     search: { kind: "text", on: ["deleted", "modified"], unique: false, text: "title" },
     pending: sorted("pending"),
   },
@@ -53,7 +53,7 @@ after(async () => {
 
 describe("the kv backend", () => {
   it("declares the indexes DESIGN.md, 'Indexes' lists, at the stored format", () => {
-    assert.equal(schema.version, 4);
+    assert.equal(schema.version, 5);
     for (const [name, indexes] of Object.entries(INDEXES)) {
       assert.deepEqual(Object.fromEntries(backend.docs.collection(name as keyof typeof INDEXES).indexes), indexes, name);
     }
@@ -67,6 +67,23 @@ describe("the kv backend", () => {
       await query.cleanup();
       assert.ok(held < 2 * WINDOW, `${sort}: holds ${held} issues`);
     }
+  });
+
+  it("lets go of a window's issues within a second of its last subscriber leaving", async () => {
+    const issues = backend.collection("issues");
+    const query = windowQuery(issues, parseIssueFilter({ sort: "created", dir: "asc" }), WINDOW);
+    await query.preload();
+    assert.ok(issues.has("i0"), "the window holds the first issue created");
+    for (let waited = 0; issues.has("i0") && waited < 1000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(issues.has("i0"), false);
+  });
+
+  it("counts a search that reads documents across several pages of them", async () => {
+    const filter = parseIssueFilter({ q: "issue " });
+    const total = await new Promise<number>((resolve) => {
+      const off = backend.watchTotal(filter, (n) => (resolve(n), queueMicrotask(off)));
+    });
+    assert.equal(total, N, "every title holds \"issue \"");
   });
 
   it("anchors the unfiltered list under every sort but title, whose index orders an emoji after U+FF21 and whose list orders it before", () => {

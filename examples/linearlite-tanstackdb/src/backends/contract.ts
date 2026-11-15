@@ -107,6 +107,7 @@ export function contract(label: string, open: OpenBackend): void {
 
       it("derives an issue's sort keys from the row a merge returns, which may carry stale ones", async () => {
         const list = windowQuery(backend().collection("issues"), parseIssueFilter({ sort: "priority", dir: "desc" }), 5);
+        list.subscribeChanges(() => {});
         await shown(list);
         await backend().transact("issues", [{ id: "i5" }], (local) => ({ ...local!, priority: 4, status: 4, modified: 10_000 }));
         await eventually(() => list.toArray[0]?.id, "i5", "the edited issue sorts first by priority");
@@ -395,6 +396,8 @@ export function contract(label: string, open: OpenBackend): void {
         const anchor = (await anchoring.locate(n))!;
         const offset = n - anchor.base;
         const q = windowQuery(backend().collection("issues"), filter, SIZE, undefined, { from: anchor.value, offset });
+        // Subscribed as a list on screen is: a window query no one subscribes to is dropped at once.
+        q.subscribeChanges(() => {});
         await shown(q);
         const base = watched((emit: (b: number) => void) => anchoring.watchBase(anchor.value, emit));
         const byModified = () => every.toArray.filter((i) => !i.deleted).sort((a, b) => b.modified - a.modified || (a.id < b.id ? -1 : 1));
