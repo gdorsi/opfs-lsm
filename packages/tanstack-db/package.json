@@ -1,6 +1,6 @@
 {
   "name": "@opfs-lsm/tanstack-db",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "TanStack DB collections persisted in @opfs-lsm/docstore, synced between tabs and loaded on demand through its indexes",
   "keywords": [
     "tanstack-db",

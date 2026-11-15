@@ -1,6 +1,6 @@
 {
   "name": "@opfs-lsm/automerge",
-  "version": "0.1.1",
+  "version": "0.2.1",
   "description": "automerge-repo storage adapter on @opfs-lsm/kv",
   "keywords": [
     "automerge",

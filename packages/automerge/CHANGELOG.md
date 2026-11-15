@@ -1,5 +1,13 @@
 # @opfs-lsm/automerge
 
+## 0.2.1
+
+### Patch Changes
+
+- 0a3e09c: First public release of the @opfs-lsm packages: a browser key-value store on OPFS with a live change feed, a document store with indexes on top of it, and Yjs, Automerge, TanStack DB and fate sync adapters.
+- Updated dependencies [0a3e09c]
+  - @opfs-lsm/kv@0.2.1
+
 ## 0.1.1
 
 ### Patch Changes
