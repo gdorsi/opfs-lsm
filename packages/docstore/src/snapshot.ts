@@ -48,7 +48,7 @@ async function collect(entries: AsyncIterable<Entry>): Promise<Entry[]> {
 }
 
 /** What a reader needs of kv: a `Db` and a view snapshot both fit. */
-type Source = Pick<ViewSnapshot, "get" | "range">;
+type Source = Pick<ViewSnapshot, "get" | "range" | "count">;
 
 /**
  * The one implementation of every read. `coll` must come from the catalog
@@ -96,11 +96,8 @@ export class CollectionReader<T extends JsonDoc, Ix> {
     return { ids: page.map((h) => idOf(entryId(target, h.key, h.value))), ...next };
   }
 
-  async count(q: Query<T, Ix>): Promise<number> {
-    const { range } = this.plan(q, 0);
-    let n = 0;
-    for await (const _ of this.snap.range(range)) n++;
-    return n;
+  count(q: Query<T, Ix>): Promise<number> {
+    return this.snap.count(this.plan(q, 0).range);
   }
 
   /** `peek` extra entries tell whether another page follows. */

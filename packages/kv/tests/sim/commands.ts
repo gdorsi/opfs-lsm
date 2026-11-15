@@ -198,10 +198,12 @@ function rangeOf(spec: RangeSpec): OracleRange {
   };
 }
 
-type ReadSpec = { readonly kind: "get"; readonly key: number } | { readonly kind: "range"; readonly range: RangeSpec };
+type ReadSpec =
+  | { readonly kind: "get"; readonly key: number }
+  | { readonly kind: "range" | "count"; readonly range: RangeSpec };
 const readArb: fc.Arbitrary<ReadSpec> = fc.oneof(
   fc.record({ kind: fc.constant("get" as const), key: keyArb }),
-  fc.record({ kind: fc.constant("range" as const), range: rangeArb }),
+  fc.record({ kind: fc.constantFrom("range" as const, "count" as const), range: rangeArb }),
 );
 
 const keyName = (i: number) => show(KEYS[i]!);
@@ -356,6 +358,16 @@ class RangeCmd implements Cmd {
   toString = () => `range ${rangeName(this.range)}`;
 }
 
+class CountCmd implements Cmd {
+  constructor(private readonly range: RangeSpec) {}
+  check = () => true;
+  async run(m: Model, r: Sut): Promise<void> {
+    const range = rangeOf(this.range);
+    m.reader.count(range, await r.db.count(range));
+  }
+  toString = () => `count ${rangeName(this.range)}`;
+}
+
 /** Reads in one view, with an optional write acked mid-view that the view must not see. */
 class ViewCmd implements Cmd {
   constructor(
@@ -376,6 +388,9 @@ class ViewCmd implements Cmd {
         if (!read) continue;
         if (read.kind === "get") {
           check.get(KEYS[read.key]!, await snap.get(KEYS[read.key]!));
+        } else if (read.kind === "count") {
+          const range = rangeOf(read.range);
+          check.count(range, await snap.count(range));
         } else {
           const range = rangeOf(read.range);
           check.range(range, await collect(snap.range(range)));
@@ -385,7 +400,7 @@ class ViewCmd implements Cmd {
     check.finish();
   }
   toString = () =>
-    `view[${this.reads.map((x) => (x.kind === "get" ? `get ${keyName(x.key)}` : `range ${rangeName(x.range)}`)).join("; ")}]` +
+    `view[${this.reads.map((x) => (x.kind === "get" ? `get ${keyName(x.key)}` : `${x.kind} ${rangeName(x.range)}`)).join("; ")}]` +
     (this.writeAt !== undefined ? ` with ${opName(this.op)} before read ${this.writeAt}` : "");
 }
 
@@ -518,6 +533,7 @@ export const commandsArb = (replayPath?: string, maxCommands = 80) => fc.command
     keyArb.map((k) => new GetCmd(k)),
     keyArb.map((k) => new GetCmd(k)),
     rangeArb.map((range) => new RangeCmd(range)),
+    rangeArb.map((range) => new CountCmd(range)),
     fc
       .tuple(fc.array(readArb, { minLength: 1, maxLength: 4 }), fc.option(fc.nat({ max: 4 }), { nil: undefined }), opArb)
       .map(([reads, at, op]) => new ViewCmd(reads, at, op)),

@@ -153,6 +153,15 @@ db.range({ ...users, valueContains: [enc("e")], limit: 1 });
 // yields "user/2", since limit counts matches
 ```
 
+### `count`
+
+```ts
+// How many entries db.range would yield, with the same options.
+// It copies no key or value.
+await db.count(users); // => 3
+await db.count({ ...users, valueContains: [enc("e")] }); // => 1
+```
+
 ## Joins
 
 `rangeJoin` scans a range and reads the key `keyOf` returns for each entry, the way an index entry points at its row.
@@ -181,7 +190,7 @@ const seen = await db.view(async (snap) => {
 });
 seen; // => undefined
 
-// snap.range(...) takes the same options as db.range.
+// snap.range(...) and snap.count(...) take the same options as db.range.
 // snap.seq is the seq of the last write the snapshot includes.
 ```
 

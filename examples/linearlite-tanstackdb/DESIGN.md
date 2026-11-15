@@ -270,7 +270,7 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   up to a fifth of the main thread instead of half. A read after a change pauses between the statuses it counts,
   so a recount holds up no frame, in the tab that edited or any other visible one. A hidden tab paints nothing
   and wakes its timers about once a second, so it counts them all at once, as the first read for a filter does,
-  since the screen waits on it. Counters kept from changes would save the 32 ms count itself, but
+  since the screen waits on it. Counters kept from changes would save the 19 ms count itself, but
   every issue write would update one document, which a clear, an epoch change or a gap would have to recompute.
   The counts depend on the filter and the query, not the sort, so a sort change keeps them.
 - **Deep scroll.** TanStack serves a window at offset N from the first N rows plus the window, and keeps them
