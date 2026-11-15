@@ -17,7 +17,12 @@ const sections: Section[] = [
   {
     title: "Start here",
     nav: "Guide",
-    pages: [{ label: "Overview", source: "README.md", route: "guide", sidebarSections: true }],
+    pages: [
+      { label: "Overview", source: "README.md", route: "guide", sidebarSections: true },
+      { label: "How it works", source: "docs/how-it-works.md", route: "how-it-works" },
+      { label: "Benchmarks", source: "docs/benchmarks.md", route: "benchmarks", sidebarSections: true },
+      { label: "Browser support", source: "docs/browser-support.md", route: "browser-support" },
+    ],
   },
   {
     title: "Packages",

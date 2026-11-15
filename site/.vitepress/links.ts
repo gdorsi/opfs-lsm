@@ -6,7 +6,7 @@ import { everyPage, github, home, pageAt, pageOf, pages, repoRoot, url } from ".
 
 const external = /^[a-z][a-z\d+.-]*:|^\/\//i;
 const pagesFile = "site/.vitepress/pages.ts";
-const numbersFrom = "README.md";
+const numbersFrom = "docs/benchmarks.md";
 
 type Heading = { level: number; text: string; slug: string };
 type Link = { href: string; line: number };

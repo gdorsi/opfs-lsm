@@ -20,7 +20,7 @@ await db.put(key, value);
 dec(await db.get(key)); // => "world"
 ```
 
-Benchmarks against IndexedDB and browser support are in the [repository README](../../README.md). How the engine works is in [docs/design.md](../../docs/design.md).
+The [Overview](../../README.md) helps you pick between kv and the packages built on it. [Benchmarks](../../docs/benchmarks.md) compares kv with IndexedDB, and [Browser support](../../docs/browser-support.md) lists the minimum browser versions. How the engine works is in [docs/design.md](../../docs/design.md).
 
 ## Open a database
 

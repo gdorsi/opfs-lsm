@@ -7,8 +7,8 @@ hero:
   tagline: without bloating it
   actions:
     - theme: brand
-      text: Quickstart
-      link: /guide/#quickstart
+      text: Get started
+      link: /guide/
     - theme: alt
       text: GitHub
       link: https://github.com/gdorsi/opfs-lsm
@@ -208,7 +208,7 @@ opfs-lsm is a replacement for IndexedDB and SQLite in the browser. It is faster,
 
 ## Measured on real apps
 
-[The app benchmarks](../README.md#app-benchmarks) · [How they are measured](../bench/README.md)
+[The app benchmarks](../docs/benchmarks.md#app-benchmarks) · [How they are measured](../bench/README.md)
 
 <Illustration name="apps" full :data="$frontmatter.apps" label="The app benchmarks, each example app on opfs-lsm against the same app on the storage it would otherwise use. LinearLite with 100,000 issues, docstore against TanStack DB's SQLite adapter as it ships: once the database is open, the first rows of a cold open in 35.8 ms against 803 ms, 22× faster; a change of sort in 4.5 ms against 705 ms, 157× faster; the board in 17.9 ms against 4.0 s, 223× faster. A Yjs whiteboard with 1,000 shapes, against y-indexeddb: 1,000 edits saved in 38.7 ms against 97.7 ms, 2.5× faster; 100 undos and redos saved in 6.5 ms against 17.6 ms, 2.7× faster; reopening the board takes 106 ms against 79.3 ms, 0.75× as fast. A pages app on fate and Automerge with a 50 KB page, against IndexedDB: opening a new page takes 18.9 ms against 21.0 ms, 1.1× faster; reopening it after a reload 137 ms against 129 ms, 0.94× as fast." />
 
@@ -217,7 +217,7 @@ opfs-lsm is a replacement for IndexedDB and SQLite in the browser. It is faster,
 
 ## Under the hood
 
-[Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../README.md#browser-support)
+[Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../docs/browser-support.md)
 
 </div>
 <Illustration name="stack" />
