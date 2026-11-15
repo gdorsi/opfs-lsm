@@ -441,40 +441,49 @@ async function readWasmBytes(wasmUrl: URL): Promise<Uint8Array | undefined> {
  * Load the module once per context. Rejects with `StorageUnavailableError`
  * when it does not load, and the next call tries again.
  */
-export function ensureEngine(): Promise<void> {
-  initOnce ??= (async () => {
-    try {
-      setEngine(await loadWasm());
-    } catch (cause) {
-      initOnce = undefined;
-      const detail = cause instanceof Error ? ` (${cause.message})` : "";
-      throw new StorageUnavailableError(`the wasm engine failed to load${detail}`, { cause });
-    }
-    // They read `engine` at each call: it is replaced when the instance is.
-    useLz4Decoder((src, size) => {
-      try {
-        return engine!.lz4Decompress(src, size);
-      } catch (err) {
-        if (!afterTrap(err)) throw corrupt(err, "sst lz4 block corrupt");
-        // The JS decoder says whether the block is corrupt or the module is wrong.
-        return lz4DecompressJs(src, size);
-      }
-    });
-    useBlockScanner((framed, lz4, patterns) => {
-      try {
-        return engine!.scanBlockContains(framed, lz4, patterns);
-      } catch (err) {
-        afterTrap(err);
-        throw corrupt(err, "sst block corrupt");
-      }
-    });
-  })();
+function loadEngine(): Promise<void> {
+  initOnce ??= loadWasm().then(setEngine, (cause: unknown) => {
+    initOnce = undefined;
+    const detail = cause instanceof Error ? ` (${cause.message})` : "";
+    throw new StorageUnavailableError(`the wasm engine failed to load${detail}`, { cause });
+  });
   return initOnce;
+}
+
+let readHooks = false;
+
+/**
+ * Load the module, then route block decoding and scanning through it. Only
+ * the tab reads blocks, so the host loads through `loadEngine` and its bundle
+ * leaves out both hooks and the JS decoder.
+ */
+export async function ensureEngine(): Promise<void> {
+  await loadEngine();
+  if (readHooks) return;
+  readHooks = true;
+  // They read `engine` at each call: it is replaced when the instance is.
+  useLz4Decoder((src, size) => {
+    try {
+      return engine!.lz4Decompress(src, size);
+    } catch (err) {
+      if (!afterTrap(err)) throw corrupt(err, "sst lz4 block corrupt");
+      // The JS decoder says whether the block is corrupt or the module is wrong.
+      return lz4DecompressJs(src, size);
+    }
+  });
+  useBlockScanner((framed, lz4, patterns) => {
+    try {
+      return engine!.scanBlockContains(framed, lz4, patterns);
+    } catch (err) {
+      afterTrap(err);
+      throw corrupt(err, "sst block corrupt");
+    }
+  });
 }
 
 /** The loaded engine. */
 async function loaded(): Promise<FlatEngine> {
-  await ensureEngine();
+  await loadEngine();
   return engine!;
 }
 
