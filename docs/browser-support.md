@@ -11,6 +11,8 @@ Three APIs set the minimum version in every browser. Everything else kv uses shi
 | `crypto.randomUUID()` | 92 | 95 | 15.4 | 92 | 95 | 15.4 |
 | **Minimum for kv** | **92** | **114** | **26** | **148** | **114** | **26** |
 
+kv is Baseline 2026. [Baseline](https://web.dev/baseline) names the year a feature works in every core browser: Chrome, Edge, Firefox, and Safari, on desktop and on mobile. The last minimum in the table, Chrome 148 on Android, shipped on May 5, 2026.
+
 - Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26.
 - Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so kv does not run there.
 - Android WebView is not supported. MDN lists SharedWorker there from 148, but WebView 154, the version tested, has none, so `openDb` rejects with `StorageUnavailableError` in apps and browsers built on it.

@@ -15,7 +15,7 @@ opfs-lsm helps most when your app keeps its data in the browser and reads it on 
 
 Use another store in these cases:
 
-- **Your users run older browsers.** kv needs Chrome or Edge 92, Firefox 114, or Safari 26, and Chrome 148 on Android. It does not run in Samsung Internet or in Android WebView. [Browser support](docs/browser-support.md) has every version.
+- **Your users run older browsers.** kv is [Baseline 2026](docs/browser-support.md): every major browser has run it since May 2026, when Chrome on Android added SharedWorker. Samsung Internet and Android WebView do not run it.
 - **Your app stores little and writes one record at a time.** IndexedDB opens in 1.8 ms against 13.3 ms for kv, and writes a single awaited record at the same speed.
 - **You need SQL.** opfs-lsm has no query language. docstore reads only through the indexes you declare in its schema.
 
