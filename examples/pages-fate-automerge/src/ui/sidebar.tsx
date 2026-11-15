@@ -190,18 +190,11 @@ function SyncFooter() {
   );
 }
 
+const HEADLINE = { offline: "Offline", retrying: "Server unreachable", syncing: "Syncing" } as const;
+
 function describe(status: SyncStatus): string | undefined {
-  const unsynced = status.unsynced > 0 ? `${status.unsynced} unsynced` : "";
-  switch (status.kind) {
-    case "offline":
-      return ["Offline", unsynced].filter(Boolean).join(" · ");
-    case "retrying":
-      return ["Server unreachable", unsynced].filter(Boolean).join(" · ");
-    case "syncing":
-      return ["Syncing", unsynced].filter(Boolean).join(" · ");
-    case "idle":
-      return undefined;
-  }
+  if (status.kind === "idle") return undefined;
+  return status.unsynced > 0 ? `${HEADLINE[status.kind]} · ${status.unsynced} unsynced` : HEADLINE[status.kind];
 }
 
 function Plus() {
