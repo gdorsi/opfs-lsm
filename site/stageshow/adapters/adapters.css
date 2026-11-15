@@ -34,6 +34,13 @@
     font-weight: 600;
   }
 
+  .ad-hint {
+    margin-left: 10px;
+    color: var(--ss-text);
+    font-size: 11.5px;
+    font-weight: 400;
+  }
+
   .ad-command {
     font: 11px/1.4 var(--ss-mono);
     color: var(--ss-text-faint);
@@ -43,6 +50,10 @@
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     column-gap: 40px;
+  }
+
+  .ad-cols[data-three] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   /* A rule in the middle of the gap between two columns. */
@@ -194,6 +205,18 @@
 
   & .ss-stage[data-layout="compact"] .ad-cols {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* A header with a hint has too much for one line: the title and its hint, then the command under them. */
+  & .ss-stage[data-layout="compact"] .ad-top:has(.ad-hint) {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ad-hint {
+    display: block;
+    margin: 2px 0 0;
   }
 
   & .ss-stage[data-layout="compact"] .ad-col {

@@ -5,28 +5,32 @@ import { FULL_COMPACT_BELOW, SIZES } from "../sizes.ts";
 import { ratioTone } from "./tone.ts";
 import "./adapters.css";
 
-// The adapter benchmarks as one run, no cursor. Each framework is a column: its opfs-lsm adapter against the
-// IndexedDB option the framework ships or documents, or, for TanStack DB in on-demand mode, its SQLite adapter. The frameworks run one after the other. In a workload the two
-// bars grow for the same time, so their lengths are how far each store got; where the adapter is the slower one,
-// its bar is the shorter and the badge says so. Plays once; the still is the finished run.
+// A benchmark card as one run, no cursor. Each column is a framework or an app: opfs-lsm against the storage it
+// would otherwise use. The columns run one after the other. A rate's bars grow for the same time, so their lengths
+// are how far each store got. A time's bars are how long each store took, so there the faster store's bar is the
+// shorter. The badge says which one won. Plays once; the still is the finished run.
 //
-// Every figure comes from the page's frontmatter, which the build checks against README.md.
+// Every figure comes from the page's frontmatter, which repeats README.md's tables.
 
 type Row = { readonly workload: string; readonly indexeddb: string; readonly kv: string; readonly ratio: string };
 /** `versus`: the baseline's name on its bar, IndexedDB unless the framework is compared with another store. */
 type Framework = { readonly name: string; readonly baseline: string; readonly versus?: string; readonly rows: readonly Row[] };
 type Props = { readonly theme: SceneTheme; readonly command: string; readonly frameworks: readonly Framework[] };
+type Size = { readonly wide: readonly [number, number]; readonly compact: readonly [number, number] };
 
 /** `ran`: frameworks whose bars have started. `done`: frameworks whose results show. */
 type S = { ran: number; done: number };
 
 const SCALE: Record<string, number> = { "": 1, k: 1e3, M: 1e6 };
+/** Times in one row may differ in unit, "242 ms" against "3.1 s", so a bar compares them in milliseconds. */
+const MS: Record<string, number> = { "µs": 1e-3, ms: 1, s: 1e3 };
 
 /** "9.3k notes/s" as a number to compare, a number to count up to, and how to write it. */
 function figure(text: string) {
   const [, digits = "0", suffix = "", unit = ""] = /^([\d.]+)([kM]?)\s*(.*)$/.exec(text) ?? [];
   const decimals = (digits.split(".")[1] ?? "").length;
-  return { shown: Number(digits), amount: Number(digits) * SCALE[suffix]!, unit, write: (n: number) => `${n.toFixed(decimals)}${suffix}` };
+  const amount = Number(digits) * SCALE[suffix]! * (MS[unit] ?? 1);
+  return { shown: Number(digits), amount, unit, write: (n: number) => `${n.toFixed(decimals)}${suffix}` };
 }
 
 /** The README's ratio in words. When the two are level, the badge says that, not a number. */
@@ -36,7 +40,19 @@ function verdict(ratio: string) {
   return { tone, text };
 }
 
-export default function Adapters({ theme, command, frameworks }: Props) {
+/** The adapter benchmarks: each opfs-lsm adapter against its framework's own storage. */
+export default function Adapters(props: Props) {
+  return <Card {...props} title="Adapter benchmarks" size={SIZES.adapters} />;
+}
+
+/** The app benchmarks: an example app on opfs-lsm against the same app on the storage it would otherwise use. */
+export function Apps(props: Props) {
+  return <Card {...props} title="App benchmarks" hint="time per step, shorter is better" size={SIZES.apps} />;
+}
+
+type CardProps = Props & { readonly title: string; readonly hint?: string; readonly size: Size };
+
+function Card({ theme, title, hint, size, command, frameworks }: CardProps) {
   const script = useMemo(
     () => async (a: Act<S>) => {
       await a.wait(700);
@@ -51,7 +67,7 @@ export default function Adapters({ theme, command, frameworks }: Props) {
     },
     [frameworks.length],
   );
-  const { wide, compact } = SIZES.adapters;
+  const { wide, compact } = size;
   return (
     <Stage<S>
       width={wide[0]}
@@ -69,10 +85,13 @@ export default function Adapters({ theme, command, frameworks }: Props) {
       {(s) => (
         <section className="ad-card">
           <header className="ad-top">
-            <div className="ad-title">Adapter benchmarks</div>
+            <div className="ad-title">
+              {title}
+              {hint && <span className="ad-hint">{hint}</span>}
+            </div>
             <span className="ad-command">{command}</span>
           </header>
-          <div className="ad-cols" data-paired={frameworks.length > 4 || undefined}>
+          <div className="ad-cols" data-paired={frameworks.length > 4 || undefined} data-three={frameworks.length === 3 || undefined}>
             {frameworks.map((framework, i) => {
               const ran = s.ran > i;
               return (

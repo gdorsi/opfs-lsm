@@ -71,8 +71,53 @@ adapters:
           indexeddb: 201 ops/s
           kv: 263 ops/s
           ratio: 1.3×
+apps:
+  command: pnpm bench linearlite/ yjs/whiteboard-session pages/
+  frameworks:
+    - name: LinearLite
+      baseline: TanStack DB's SQLite adapter, 100,000 issues
+      versus: SQLite
+      rows:
+        - workload: Cold open, first rows
+          indexeddb: 803 ms
+          kv: 35.8 ms
+          ratio: 22×
+        - workload: Change the sort
+          indexeddb: 705 ms
+          kv: 4.5 ms
+          ratio: 157×
+        - workload: Open the board
+          indexeddb: 4.0 s
+          kv: 17.9 ms
+          ratio: 223×
+    - name: Whiteboard
+      baseline: y-indexeddb, 1,000 shapes
+      rows:
+        - workload: 1,000 edits, until saved
+          indexeddb: 97.7 ms
+          kv: 38.7 ms
+          ratio: 2.5×
+        - workload: 100 undos and redos, until saved
+          indexeddb: 17.6 ms
+          kv: 6.5 ms
+          ratio: 2.7×
+        - workload: Reopen the board
+          indexeddb: 79.3 ms
+          kv: 106 ms
+          ratio: 0.75×
+    - name: Pages
+      baseline: fate and Automerge on IndexedDB, a 50 KB page
+      rows:
+        - workload: Open a page
+          indexeddb: 21.0 ms
+          kv: 18.9 ms
+          ratio: 1.1×
+        - workload: Reopen after a reload
+          indexeddb: 129 ms
+          kv: 137 ms
+          ratio: 0.94×
 size:
-  main: 18.8 kB
+  main: 18.9 kB
 read:
   framework: TanStack DB
   workload: On-demand, 10 rows by id
@@ -114,10 +159,10 @@ demo:
 
 ### Lightweight, with super-fast loads
 
-18.8 kB at import, and cold loads up to 4.8× faster than IndexedDB
+18.9 kB at import, and cold loads up to 4.8× faster than IndexedDB
 
 ```ts
-// 18.8 kB gzip in your main bundle
+// 18.9 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
 // the SharedWorker and wasm load here
 const db = await openDb({ name: "app" });
@@ -210,6 +255,12 @@ opfs-lsm is a replacement for IndexedDB and SQLite in the browser. It is faster,
 [LinearLite on docstore](../examples/linearlite-docstore), with no server
 
 <HomeDemo />
+
+## Measured on real apps
+
+[The app benchmarks](../README.md#app-benchmarks) · [How they are measured](../bench/README.md)
+
+<Illustration name="apps" full :data="$frontmatter.apps" label="The app benchmarks, each example app on opfs-lsm against the same app on the storage it would otherwise use. LinearLite with 100,000 issues, docstore against TanStack DB's SQLite adapter: the first rows of a cold open in 35.8 ms against 803 ms, 22× faster; a change of sort in 4.5 ms against 705 ms, 157× faster; the board in 17.9 ms against 4.0 s, 223× faster. A Yjs whiteboard with 1,000 shapes, against y-indexeddb: 1,000 edits saved in 38.7 ms against 97.7 ms, 2.5× faster; 100 undos and redos saved in 6.5 ms against 17.6 ms, 2.7× faster; reopening the board takes 106 ms against 79.3 ms, 0.75× as fast. A pages app on fate and Automerge with a 50 KB page, against IndexedDB: opening a page takes 18.9 ms against 21.0 ms, 1.1× faster; reopening it after a reload 137 ms against 129 ms, 0.94× as fast." />
 
 ## Optimized for fast loads, great at batched writes
 
