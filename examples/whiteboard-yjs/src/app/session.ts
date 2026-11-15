@@ -15,7 +15,6 @@ import {
   openWorkspace,
   type Board,
   type BoardId,
-  type ChannelConstructor,
   type Workspace,
 } from "../model/index.ts";
 import { openStorage } from "../persistence/open.ts";
@@ -45,25 +44,12 @@ async function open(): Promise<Session> {
   const fault = params.get("fault") === "1" ? faultable(backend.storage) : null;
   const ws = await openWorkspace({
     storage: fault ? fault.storage : backend.storage,
-    sync: broadcastSync(scopedChannel(`${storage}:${name}`)),
+    sync: broadcastSync(BroadcastChannel, `whiteboard-yjs/${storage}:${name}`),
   });
   if (fault) Object.assign(globalThis, { whiteboardFault: fault.switch });
   Object.assign(globalThis, { whiteboard: proof(storage, ws) });
   onPageHide(ws, backend.close);
   return { ws, storage, name, fault: fault?.switch ?? null };
-}
-
-/**
- * The BroadcastChannel constructor with every channel name prefixed by the storage it serves. A kv tab and an
- * idb tab (or two `?db=` names) otherwise share `whiteboard-yjs/<docName>` and copy each other's boards into their
- * own storage. The model injects the constructor, so this needs no model change.
- */
-function scopedChannel(scope: string): ChannelConstructor {
-  return class extends BroadcastChannel {
-    constructor(name: string) {
-      super(`${scope}/${name}`);
-    }
-  };
 }
 
 /**
