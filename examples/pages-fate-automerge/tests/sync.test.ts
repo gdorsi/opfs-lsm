@@ -53,6 +53,29 @@ test("two Repos that each seed the same id merge, keeping both sides' text", asy
   assert.equal(merged.length, "¶from Afrom B".length);
 });
 
+test("a block type set on the first block stays first while the other peer types at the start", async (t) => {
+  const peers = twoPeers();
+  t.after(() => peers.close());
+  const id = newPageId();
+  const [a, b] = await Promise.all([peers.a.open(id), peers.b.open(id)]);
+  a.edit([
+    { type: "insert", at: 1, text: "q", marks: {} },
+    { type: "mark", start: 1, end: 2, name: "link", value: null },
+  ]);
+  a.edit([
+    { type: "delete", at: 1, count: 1 },
+    { type: "insert", at: 1, text: "xy", marks: {} },
+  ]);
+  a.edit([{ type: "setBlock", at: 0, block: { type: "heading", level: 1 } }]);
+  // B's later op counter makes its "b" sort ahead of A's text after the old marker, whatever the actor ids.
+  b.edit([{ type: "insert", at: 1, text: "typed first", marks: {} }]);
+  b.edit([{ type: "insert", at: 1, text: "b", marks: {} }]);
+
+  await until(() => same(a, b), "the two copies to converge");
+  assert.deepEqual(a.spans()[0], { type: "block", block: { type: "heading", level: 1 } }, text(a.spans()));
+  assert.equal(text(a.spans()).length, "¶btyped firstxy".length);
+});
+
 test("subscribe delivers remote edits as TextEdits that rebuild the spans, while both peers type", async (t) => {
   const peers = twoPeers();
   t.after(() => peers.close());
@@ -72,7 +95,10 @@ test("subscribe delivers remote edits as TextEdits that rebuild the spans, while
       for (let i = 0; i < 1 + Math.floor(side.rand() * 15); i++) side.body.edit(randomBatch(side.rand, side.mirror));
     }
     await new Promise((resolve) => setTimeout(resolve, 1 + (round % 4) * 3));
-    for (const side of sides) assert.deepEqual(side.mirror.spans(), side.body.spans(), `round ${round}: local edits plus deliveries rebuild the spans`);
+    for (const side of sides) {
+      assert.deepEqual(side.mirror.spans(), side.body.spans(), `round ${round}: local edits plus deliveries rebuild the spans`);
+      assert.equal(side.body.spans()[0]?.type, "block", `round ${round}: the body starts with a block`);
+    }
   }
   const [a, b] = sides as [(typeof sides)[0], (typeof sides)[0]];
   await until(() => same(a.body, b.body), "the peers to converge");

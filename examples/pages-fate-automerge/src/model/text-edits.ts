@@ -97,9 +97,12 @@ function applyEdit(d: A.Doc<BodyDoc>, edit: TextEdit): void {
       A.splitBlock(d, PATH, edit.at, toMarker(edit.block));
       return;
     case "setBlock":
-      // updateBlock on a text index silently turns that character into a marker.
       if (A.block(d, PATH, edit.at) === null) throw invalid(edit, "no block at index");
-      A.updateBlock(d, PATH, edit.at, toMarker(edit.block));
+      // Not updateBlock: it deletes the marker and can anchor the new one after deleted text or mark ops behind the
+      // old one, where text a peer typed at the block's start sorts ahead of it. At index 0 that puts text before the
+      // first block. A marker inserted before the old one stays ahead of everything anchored to it.
+      A.splitBlock(d, PATH, edit.at, toMarker(edit.block));
+      A.splice(d, PATH, edit.at + 1, 1);
       return;
     case "mark":
       if (edit.start < 0 || edit.end <= edit.start) throw invalid(edit, "empty mark range");
