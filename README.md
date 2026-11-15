@@ -2,10 +2,11 @@
 
 A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 8.1× faster than IndexedDB, reads up to 189× faster, and every tab of an origin shares one database with a live change feed.
 
+> [!WARNING]
 > opfs-lsm is still under heavy development.
-
+>
 > We want it to be the building block for the best UX in web apps, and still ironing the fundamental details.
-
+>
 > Still, storage is fault-tolerant and heavily tested, so if you want to play around, feedback is very welcome!
 
 ## Why not just use IndexedDB?
