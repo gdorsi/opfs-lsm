@@ -15,7 +15,7 @@ const INDEXES = {
     byCreated: sorted("deleted", "created"),
     byTitle: sorted("deleted", "title"),
     byPriority: sorted("deleted", "priority", "priorityOrder"),
-    byStatus: sorted("deleted", "status", "statusOrder"),
+    byStatus: { kind: "text", on: ["deleted", "status", "statusOrder"], unique: false, text: "title" },
     search: { kind: "text", on: ["deleted", "modified"], unique: false, text: "title" },
     pending: sorted("pending"),
   },
@@ -53,7 +53,7 @@ after(async () => {
 
 describe("the kv backend", () => {
   it("declares the indexes DESIGN.md, 'Indexes' lists, at the stored format", () => {
-    assert.equal(schema.version, 4);
+    assert.equal(schema.version, 5);
     for (const [name, indexes] of Object.entries(INDEXES)) {
       assert.deepEqual(Object.fromEntries(backend.docs.collection(name as keyof typeof INDEXES).indexes), indexes, name);
     }

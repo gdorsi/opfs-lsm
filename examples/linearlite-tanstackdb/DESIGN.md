@@ -211,7 +211,7 @@ issues: {
   byCreated:  { on: ["deleted", "created"] },
   byTitle:    { on: ["deleted", "title"] },
   byPriority: { on: ["deleted", "priority", "priorityOrder"] },
-  byStatus:   { on: ["deleted", "status", "statusOrder"] },
+  byStatus:   { on: ["deleted", "status", "statusOrder"], text: "title" },
   search:     { on: ["deleted", "modified"], text: "title" },
   pending:    { on: "pending" },
 },
@@ -239,7 +239,7 @@ filter, the list pins every code, and the adapter reads one range per code and m
 | title search under another sort | that sort's index, pages filtered by `ilike` |
 | `useIssue(id)`, a detail fetch | the documents by id, no index |
 | unsynced rows | `pending`, sparse: only rows with `pending: true` have an entry |
-| list total, board column counts | `byStatus` per status; `byPriority` per priority, bounded by `priorityOrder` per status; `search` for a query |
+| list total, board column counts | `byStatus` per status, with a `match` for a query of one plain word; `byPriority` per priority, bounded by `priorityOrder` per status; for any other query, or one under a priority filter, the documents `search` matches |
 | the sort value of row N of the unfiltered list, and the rows before it (deep scroll) | the sort's index, entries only, plus 65 documents |
 
 Each index costs first-sync time and storage, about 240 ms of first sync per index at 100k issues: measured when
@@ -262,10 +262,12 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   few hundred rows. Title search is `ilike`; a query holding `%` or `_` uses a filter function instead, since
   `ilike` has no escape.
 - **Counts.** The scroll height and the toolbar total come from `countTotal` and the board's column counts from
-  `countByStatus` (`src/backends/kv.ts`), which count docstore index entries and read no document. A search
-  counts the documents the `search` index matches whose title contains the query, so the total agrees with the
-  list's `ilike`; a query of one plain word is counted from the index entries alone, which is exact for titles
-  stored in NFC, as typed text is (the index normalizes, `ilike` does not). Each count reads again after
+  `countByStatus` (`src/backends/kv.ts`), which count docstore index entries and read no document. The total is
+  the sum of the column counts. A query of one plain word, the words a user types one key at a time, is counted
+  from `byStatus` with a `match`, a text index on the title, which is exact for titles stored in NFC, as typed
+  text is (the index normalizes, `ilike` does not). Any other query, or one under a priority filter, counts the
+  documents the `search` index matches whose title contains the query, so the total agrees with the list's
+  `ilike`. Each count reads again after
   every change to issues, one read at a time, and waits four times the last read's duration, at least 250 ms,
   before the next. A first sync changes issues every few milliseconds, and counting 100,000 entries then takes
   up to a fifth of the main thread instead of half. A read after a change pauses between the statuses it counts,

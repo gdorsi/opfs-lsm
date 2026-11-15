@@ -15,7 +15,7 @@ const indexes = Object.fromEntries(Object.entries(STORES).map(([name, store]) =>
 
 /** The indexes are in `STORES`; the reads each issue index serves are in DESIGN.md, "Indexes". */
 export const schema = defineSchema<{ issues: StoredIssue; bodies: Body; comments: Comment; sync: SyncState }>()({
-  version: 4,
+  version: 5,
   collections: indexes,
   drop: ["outbox"],
 });
@@ -35,7 +35,7 @@ export const KV_PATH: BackendPath = {
   name: "docstore",
   loads: "docstoreCollectionOptions over openDocStore; issues, bodies and comments on demand through docstore indexes, sync eager",
   writes: "utils.transact: read and write in one kv transaction, sliced to kv's 10,000-op batch cap by the store's index count",
-  counts: "docstore index entries per status (byStatus, byPriority), no document read; a search reads the documents its text index matches, and a one-word search total counts index entries",
+  counts: "docstore index entries per status (byStatus, byPriority), no document read; a one-word search counts the entries of byStatus, a text index on the title; a longer search, or one under a priority filter, reads the documents the search index matches",
   deep: "anchor: walks the sort index to row n, and counts the rows before it again after changes",
   pressure: "db.onPressure while more than 100 bodies are stored; bodies and comments are cleared once a user confirms",
   tabs: "every tab; transact atomic across tabs",
@@ -140,6 +140,16 @@ const wordsOf = (text: string) =>
     .filter((w) => w !== "");
 
 /**
+ * The word of a query that is one plain word, else undefined. Such a query is decided by a text index's entries
+ * alone: the index normalizes titles to NFC and `ilike` does not, so this agrees with the list for titles stored in
+ * NFC, as typed text is.
+ */
+function plainWord(q: string): string | undefined {
+  const words = wordsOf(q);
+  return words.length === 1 && words[0] === q.toLowerCase() ? words[0] : undefined;
+}
+
+/**
  * The live issues under `filter` whose titles contain the query, as the list's `ilike` decides. The text index
  * narrows them to the titles holding every word of the query; the substring test makes it exact.
  */
@@ -156,21 +166,23 @@ async function searched(snap: Snap, filter: IssueFilter): Promise<Issue[]> {
 }
 
 /**
- * Live issues under `filter` per status, indexed by status code; a status the filter leaves out counts 0. Without a
- * query it counts index entries and reads no document. Without `pause` the statuses are counted at once.
+ * Live issues under `filter` per status, indexed by status code; a status the filter leaves out counts 0. It counts
+ * index entries and reads no document, unless the query is more than one plain word or comes with a priority
+ * filter: then it reads the documents the text index matches. Without `pause` the statuses are counted at once.
  */
 function countByStatus(issues: IssueDocs, filter: IssueFilter, pause?: Pause): Promise<number[]> {
   return issues.view(async (snap) => {
     const counts = ALL.map(() => 0);
     const statuses = filter.status.length > 0 ? filter.status : ALL;
-    if (filter.q !== "") {
+    const word = plainWord(filter.q);
+    if (filter.q !== "" && (word === undefined || filter.priority.length > 0)) {
       for (const i of await searched(snap, filter)) counts[i.status]!++;
       return counts;
     }
     const count = async (s: StatusCode) => {
       const parts =
         filter.priority.length === 0
-          ? [snap.count({ index: "byStatus", eq: [false, s] })]
+          ? [snap.count({ index: "byStatus", eq: [false, s], ...(word !== undefined && { match: word }) })]
           : filter.priority.map((p) =>
               snap.count({ index: "byPriority", eq: [false, p], gte: priorityOrder(p, s, 0), lt: priorityOrder(p, s + 1, 0) }),
             );
@@ -187,16 +199,8 @@ function countByStatus(issues: IssueDocs, filter: IssueFilter, pause?: Pause): P
   });
 }
 
-/**
- * Live issues under `filter`. A query of one plain word is counted from the text index's entries alone: the index
- * normalizes titles to NFC and `ilike` does not, so this agrees with the list for titles stored in NFC.
- */
+/** Live issues under `filter`. */
 async function countTotal(issues: IssueDocs, filter: IssueFilter, pause?: Pause): Promise<number> {
-  const words = wordsOf(filter.q);
-  const plain = words.length === 1 && words[0] === filter.q.toLowerCase();
-  if (plain && filter.status.length === 0 && filter.priority.length === 0) {
-    return issues.count({ index: "search", eq: [false], match: words[0]! });
-  }
   return (await countByStatus(issues, filter, pause)).reduce((a, b) => a + b, 0);
 }
 

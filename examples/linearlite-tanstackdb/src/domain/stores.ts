@@ -52,7 +52,7 @@ export const STORES = {
       byCreated: { on: ["deleted", "created"] },
       byTitle: { on: ["deleted", "title"] },
       byPriority: { on: ["deleted", "priority", "priorityOrder"] },
-      byStatus: { on: ["deleted", "status", "statusOrder"] },
+      byStatus: { on: ["deleted", "status", "statusOrder"], text: "title" },
       search: { on: ["deleted", "modified"], text: "title" },
       pending: { on: "pending" },
     },
