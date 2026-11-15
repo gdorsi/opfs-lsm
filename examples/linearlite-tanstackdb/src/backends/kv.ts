@@ -1,4 +1,4 @@
-import { defineSchema, openDocStore, type DocStore, type Scalar } from "@opfs-lsm/docstore";
+import { defineSchema, openDocStore, type Cursor, type DocStore, type Scalar } from "@opfs-lsm/docstore";
 import type { Db } from "@opfs-lsm/kv";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, type Collection } from "@tanstack/db";
@@ -149,20 +149,38 @@ function plainWord(q: string): string | undefined {
   return words.length === 1 && words[0] === q.toLowerCase() ? words[0] : undefined;
 }
 
+/** Documents a search reads between two pauses. */
+const SEARCH_PAGE = 256;
+
 /**
  * The live issues under `filter` whose titles contain the query, as the list's `ilike` decides. The text index
- * narrows them to the titles holding every word of the query; the substring test makes it exact.
+ * narrows them to the titles holding every word of the query; the substring test makes it exact. It reads the
+ * documents a page at a time and pauses between pages.
  */
-async function searched(snap: Snap, filter: IssueFilter): Promise<Issue[]> {
+async function searched(snap: Snap, filter: IssueFilter, pause?: Pause): Promise<Issue[]> {
   const words = wordsOf(filter.q);
-  const { docs } = await snap.query({ index: "search", eq: [false], ...(words.length > 0 && { match: words.join(" ") }) });
   const needle = filter.q.toLowerCase();
-  return docs.filter(
-    (i) =>
-      (filter.status.length === 0 || filter.status.includes(i.status)) &&
-      (filter.priority.length === 0 || filter.priority.includes(i.priority)) &&
-      i.title.toLowerCase().includes(needle),
-  );
+  const out: Issue[] = [];
+  for (let after: Cursor | undefined; ; ) {
+    const { docs, next } = await snap.query({
+      index: "search",
+      eq: [false],
+      limit: SEARCH_PAGE,
+      ...(words.length > 0 && { match: words.join(" ") }),
+      ...(after !== undefined && { after }),
+    });
+    out.push(
+      ...docs.filter(
+        (i) =>
+          (filter.status.length === 0 || filter.status.includes(i.status)) &&
+          (filter.priority.length === 0 || filter.priority.includes(i.priority)) &&
+          i.title.toLowerCase().includes(needle),
+      ),
+    );
+    if (next === undefined) return out;
+    after = next;
+    await pause?.();
+  }
 }
 
 /**
@@ -176,7 +194,7 @@ function countByStatus(issues: IssueDocs, filter: IssueFilter, pause?: Pause): P
     const statuses = filter.status.length > 0 ? filter.status : ALL;
     const word = plainWord(filter.q);
     if (filter.q !== "" && (word === undefined || filter.priority.length > 0)) {
-      for (const i of await searched(snap, filter)) counts[i.status]!++;
+      for (const i of await searched(snap, filter, pause)) counts[i.status]!++;
       return counts;
     }
     const count = async (s: StatusCode) => {

@@ -78,6 +78,14 @@ describe("the kv backend", () => {
     assert.equal(issues.has("i0"), false);
   });
 
+  it("counts a search that reads documents across several pages of them", async () => {
+    const filter = parseIssueFilter({ q: "issue " });
+    const total = await new Promise<number>((resolve) => {
+      const off = backend.watchTotal(filter, (n) => (resolve(n), queueMicrotask(off)));
+    });
+    assert.equal(total, N, "every title holds \"issue \"");
+  });
+
   it("anchors the unfiltered list under every sort but title, whose index orders an emoji after U+FF21 and whose list orders it before", () => {
     const [emoji, fullwidth] = ["\u{1F600}", "\uFF21"];
     assert.ok(emoji < fullwidth, "the list's order");

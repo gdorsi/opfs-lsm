@@ -18,6 +18,17 @@ function stepped() {
 }
 
 describe("recount", () => {
+  it("pauses between the steps of the first count unless the page is hidden, and stops it once no one is subscribed", async () => {
+    const visible = stepped();
+    recount(() => () => {}, visible.count, () => {}, () => false)();
+    await settle();
+    assert.deepEqual(visible.steps, [1]);
+    const hidden = stepped();
+    recount(() => () => {}, hidden.count, () => {}, () => true)();
+    await settle();
+    assert.deepEqual(hidden.steps, [1, 2, 3]);
+  });
+
   it("stops a recount at its next pause once no one is subscribed", async () => {
     let changed = () => {};
     const { steps, count } = stepped();
