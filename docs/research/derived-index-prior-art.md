@@ -1,6 +1,14 @@
 # Derived keys in LSM and key-value stores: prior art, and what it means for indexes in @opfs-lsm
 
-Question: is there prior art for a "derive key" API (an engine or layer calls a user-supplied function that derives secondary or index entries from a row), and what does it mean for the secondary indexes in `@opfs-lsm/kv` and `@opfs-lsm/collections`? The goal is one simple approach to the whole indexes surface (sorted, compound, multi-entry, full-text, maybe unique), not a better term index only. Follows `docs/research/multi-entry-index-alternatives.md` (MEIA) and `docs/research/landing-projections-and-fast-misses.md` (LPFM).
+Question: is there prior art for a "derive key" API (an engine or layer calls a user-supplied function that derives secondary or index entries from a row), and what does it mean for the secondary indexes in `@opfs-lsm/kv` and `@opfs-lsm/collections`? The goal is one simple approach to the whole indexes surface (sorted, compound, multi-entry, full-text, maybe unique), not a better term index only.
+
+Two earlier notes it follows were deleted on the 2026-11 sweep of
+docs/research, after collections was replaced by the docstore and their
+program was superseded: `multi-entry-index-alternatives.md` (cited below as
+MEIA) and `landing-projections-and-fast-misses.md` (LPFM). The numbers this
+note quotes from them were measured there on 2026-11-06 (Node, in-memory
+runs, not Chrome). Tags like "MEIA 1.3" point at that deleted source; re-quote
+the number, not the citation.
 
 ## Answer in ten lines
 
