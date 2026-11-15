@@ -4,7 +4,7 @@ import { history } from "prosemirror-history";
 import { undoInputRule } from "prosemirror-inputrules";
 import { TextSelection, type Command } from "prosemirror-state";
 import { applyLocal, bodyState } from "../src/editor/binding.ts";
-import { backspaceToParagraph, enter, indent, toggleLink, toggleTodo } from "../src/editor/commands.ts";
+import { backspaceToParagraph, enter, indent, setLink, toggleLink, toggleTodo } from "../src/editor/commands.ts";
 import { pageInputRules } from "../src/editor/rules.ts";
 import { docToSpans } from "../src/editor/schema.ts";
 import { newPageId, openBodies } from "../src/model/bodies.ts";
@@ -180,16 +180,23 @@ test("Mod-Enter and the checkbox toggle a todo", async () => {
   assert.equal(p.run(toggleTodo()), false, "Mod-Enter outside a todo does nothing");
 });
 
-test("Mod-k links the selection, and on a link removes it", async () => {
+test("Mod-k asks for a URL on unlinked text, the answer links the selection, and Mod-k on a link removes it", async () => {
   const p = await page([P, text("hello")]);
+  let asked = 0;
+  const ask = () => void asked++;
   p.at(1);
-  assert.equal(p.run(toggleLink(() => "https://x.example")), false, "nothing to link without a selection");
+  assert.equal(p.run(toggleLink(ask)), false, "nothing to link without a selection");
   p.at(1, 6);
-  assert.ok(p.run(toggleLink(() => null)), "a cancelled prompt is handled");
-  assert.deepEqual(p.spans, [P, text("hello")], "and changes nothing");
-  p.run(toggleLink(() => " https://x.example "));
-  assert.deepEqual(p.spans, [P, { type: "text", text: "hello", marks: { link: "https://x.example" } }]);
+  assert.ok(p.run(toggleLink(ask)), "Mod-k is handled");
+  assert.equal(asked, 1, "the page is asked for a URL");
+  assert.deepEqual(p.spans, [P, text("hello")], "asking changes nothing");
+  assert.equal(p.run(setLink("  ")), false, "a blank answer changes nothing");
+  p.run(setLink(" x.example "));
+  assert.deepEqual(p.spans, [P, { type: "text", text: "hello", marks: { link: "https://x.example" } }], "a bare host reads as https");
+  p.run(setLink("mailto:a@x.example"));
+  assert.deepEqual(p.spans, [P, { type: "text", text: "hello", marks: { link: "mailto:a@x.example" } }], "a scheme is kept");
+  p.run(setLink("https://x.example"));
   p.at(2, 3);
-  p.run(toggleLink(() => assert.fail("no prompt when removing")));
+  p.run(toggleLink(() => assert.fail("no question when removing")));
   assert.deepEqual(p.spans, [P, { type: "text", text: "h", marks: { link: "https://x.example" } }, text("e"), { type: "text", text: "llo", marks: { link: "https://x.example" } }]);
 });

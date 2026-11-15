@@ -32,9 +32,9 @@ export type Rename = { readonly id: PageId; readonly title: string };
 // Every fate view of the app is declared here, at module top level, and nowhere else. A production build numbers
 // views in declaration order and persisted request keys contain that number, so a view declared in a code-split
 // route would change id with the order routes load in, and an offline reload would miss the cached sidebar.
-const PageRowView = view<PageEntity>()({ id: true, title: true });
-const PageHeaderView = view<PageEntity>()({ id: true, parentId: true, title: true });
-const ChildListView = { items: { node: PageRowView }, pagination: { hasNext: true, nextCursor: true } } as const;
+export const PageRowView = view<PageEntity>()({ id: true, title: true });
+export const PageHeaderView = view<PageEntity>()({ id: true, parentId: true, title: true });
+export const ChildListView = { items: { node: PageRowView }, pagination: { hasNext: true, nextCursor: true } } as const;
 
 const roots = {
   /** One list per parent; `parent: null` is the top level. */
@@ -187,7 +187,7 @@ export function reclaimBodies(fate: Fate, bodies: Pick<Bodies, "remove">): () =>
 }
 
 /** The descendants whose levels this device has cached, breadth first, without a request. An uncached level ends its branch. */
-async function cachedSubtree(fate: Fate, root: PageId): Promise<PageId[]> {
+export async function cachedSubtree(fate: Fate, root: PageId): Promise<PageId[]> {
   const found: PageId[] = [];
   for (const queue: PageId[] = [root]; queue.length > 0; ) {
     const children = await cachedChildren(fate, queue.shift()!);

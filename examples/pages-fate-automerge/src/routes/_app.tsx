@@ -1,15 +1,22 @@
-import { Outlet, createFileRoute, retainSearchParams } from "@tanstack/react-router";
+import { createFileRoute, retainSearchParams } from "@tanstack/react-router";
+import { FateClient } from "react-fate";
 import { AppContext, openApp } from "../client/app.ts";
+import { keepAppOnDevice } from "../client/offline.ts";
+import { Shell } from "../ui/shell.tsx";
 
 export const Route = createFileRoute("/_app")({
   ssr: false,
-  validateSearch: (search: Record<string, unknown>) => ({
-    storage: search.storage === "idb" ? ("idb" as const) : undefined,
-    db: typeof search.db === "string" && search.db ? search.db : undefined,
+  validateSearch: (search: Record<string, unknown>): { storage?: "idb"; db?: string } => ({
+    ...(search.storage === "idb" && { storage: "idb" }),
+    ...(typeof search.db === "string" && search.db && { db: search.db }),
   }),
   // Every link keeps ?storage= and ?db=, so navigating never switches a tab's storage.
   search: { middlewares: [retainSearchParams(["storage", "db"])] },
-  loader: () => openApp(),
+  loader: async () => {
+    const app = await openApp();
+    keepAppOnDevice();
+    return app;
+  },
   pendingMs: 200,
   pendingMinMs: 0,
   pendingComponent: () => <div className="splash">Opening local database…</div>,
@@ -17,9 +24,12 @@ export const Route = createFileRoute("/_app")({
 });
 
 function AppShell() {
+  const app = Route.useLoaderData();
   return (
-    <AppContext value={Route.useLoaderData()}>
-      <Outlet />
-    </AppContext>
+    <FateClient client={app.fate}>
+      <AppContext value={app}>
+        <Shell />
+      </AppContext>
+    </FateClient>
   );
 }
