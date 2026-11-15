@@ -1,24 +1,15 @@
-/**
- * The page tree on fate: the entity, its views, roots and mutations, and the
- * commands the app, the bench and the tests call. fate owns the tree and the
- * titles; the bodies live in Automerge (bodies.ts). A create writes fate
- * only: a page's body seeds the first time it opens.
- */
 import { clientRoot, createClient, mutation, view, type RequestOptions, type Transport } from "@nkzw/fate";
 import { createPersistence, type PersistenceStorage } from "@nkzw/fate/persistence";
 import { newPageId, parsePageId, type Bodies } from "./bodies.ts";
 import type { PageId } from "./types.ts";
 
-/** fate's persistence key and the server's receipt scope, which fate requires to be equal. One workspace per server. */
+/** fate's persistence key and the server's receipt scope, which fate requires to be equal. */
 export const PERSISTENCE_KEY = "pages:workspace";
 export const MAX_TITLE = 500;
-/** A sidebar level asks for this many children at a time. */
 export const CHILDREN_PAGE = 200;
 
-/** Levels and page headers paint from the device and refresh in the background, and stay a month for offline reloads. */
 export const TREE_REQUEST = { mode: "stale-while-revalidate", persist: { maxAge: 30 * 24 * 3600 * 1000 } } as const satisfies RequestOptions;
 
-/** No rank and no timestamps: siblings are in creation order until pages can move. */
 export type PageEntity = {
   readonly __typename: "Page";
   readonly id: PageId;
@@ -37,23 +28,19 @@ export const PageHeaderView = view<PageEntity>()({ id: true, parentId: true, tit
 export const ChildListView = { items: { node: PageRowView }, pagination: { hasNext: true, nextCursor: true } } as const;
 
 const roots = {
-  /** One list per parent; `parent: null` is the top level. */
   children: clientRoot<PageEntity[], "Page", { readonly parent: PageId | null; readonly first?: number; readonly after?: string }>("Page"),
   page: clientRoot<PageEntity, "Page">("Page"),
 };
 const mutations = {
   createPage: mutation<PageEntity, NewPage, PageEntity>("Page"),
   renamePage: mutation<PageEntity, Rename, PageEntity>("Page"),
-  /** Removes the page and its subtree on the server, and succeeds for a missing id. */
   deletePage: mutation<PageEntity, { readonly id: PageId }, null>("Page"),
 };
 
-/** `first` is fixed, so each parent has exactly one cached list. */
 export const childrenRequest = (parent: PageId | null) => ({ children: { list: ChildListView, args: { parent, first: CHILDREN_PAGE } } }) as const;
 export const pageRequest = (id: PageId) => ({ page: { id, view: PageHeaderView } }) as const;
 
 export type TreeClientOptions = {
-  /** `createHTTPTransport({ url: "/api/fate", live: false })` in the app; the same over an in-process fetch in tests. */
   readonly transport: Transport;
   readonly storage: PersistenceStorage;
   /** Replaces `navigator.onLine`, which Node does not have. */
@@ -79,11 +66,6 @@ declare module "@nkzw/fate" {
 
 type Pending = Promise<{ error?: Error }> & { readonly locallyPersisted: Promise<void> };
 
-/**
- * Resolves once fate stored the mutation on the device. The server answers
- * later, maybe after a reload; a refusal rolls the change back and stays in
- * the journal as `failed` until it is discarded.
- */
 function stored(what: string, pending: Pending): Promise<void> {
   pending.then(
     ({ error }) => error && console.warn(`pages: the server refused ${what}`, error),
@@ -92,7 +74,6 @@ function stored(what: string, pending: Pending): Promise<void> {
   return pending.locallyPersisted;
 }
 
-/** The parent's cached child list, without a request. */
 async function cachedChildren(fate: Fate, parent: PageId | null) {
   const observer = fate.observeRequest(childrenRequest(parent), { mode: "cache-only" });
   if (observer.getSnapshot().status === "pending") {
@@ -109,9 +90,9 @@ async function cachedChildren(fate: Fate, parent: PageId | null) {
 }
 
 /**
- * Creates an untitled page at the end of `parent`'s children. fate inserts
- * only into a list it holds, so an uncached parent's list is asked for once;
- * when the server cannot answer, the page shows once the server confirms it.
+ * fate inserts only into a list it holds, so an uncached parent's list is
+ * asked for once; when the server cannot answer, the page shows once the
+ * server confirms it.
  */
 export async function createPage(fate: Fate, at: { readonly parent: PageId | null }): Promise<PageId> {
   const id = newPageId();
@@ -122,7 +103,6 @@ export async function createPage(fate: Fate, at: { readonly parent: PageId | nul
       () => undefined,
     ));
   const page = { id, parentId: at.parent, title: "" };
-  // The server appends by seq, so the end of the list is where the page lands there too.
   await stored("a new page", fate.mutations.createPage({ input: page, optimistic: page, ...(into && { insert: { into, position: "after" } }) }));
   return id;
 }
@@ -130,7 +110,6 @@ export async function createPage(fate: Fate, at: { readonly parent: PageId | nul
 /** Renames not yet stored on the device: fate shows a rename's title only once it stored the mutation. */
 const storing = new WeakMap<Fate, Map<PageId, string>>();
 
-/** Trims and caps the title, and sends nothing when it did not change, counting renames still being stored. */
 export function renamePage(fate: Fate, id: PageId, title: string): Promise<void> {
   const next = title.trim().slice(0, MAX_TITLE);
   let titles = storing.get(fate);
@@ -143,7 +122,6 @@ export function renamePage(fate: Fate, id: PageId, title: string): Promise<void>
   });
 }
 
-/** Takes the page out of every cached list at once. Its body, and its children's, go when the server confirms. */
 export function deletePage(fate: Fate, id: PageId): Promise<void> {
   return stored("a delete", fate.mutations.deletePage({ input: { id }, delete: true }));
 }
@@ -151,8 +129,7 @@ export function deletePage(fate: Fate, id: PageId): Promise<void> {
 type Watched = { readonly name: "createPage" | "deletePage"; readonly id: PageId; readonly failed: boolean };
 
 /**
- * Removes the device's bodies of pages that no longer exist, read off fate's
- * journal. The journal survives reloads and every tab sees it, so a delete
+ * fate's journal survives reloads and every tab sees it, so a delete
  * confirmed after a reload or in another tab still frees its bodies. When an
  * entry leaves the journal:
  *
@@ -160,8 +137,6 @@ type Watched = { readonly name: "createPage" | "deletePage"; readonly id: PageId
  * | ---------- | ----------- | -------------------------- | --------------------------------------- |
  * | deletePage | not failed  | the server confirmed it    | the page and its cached descendants     |
  * | createPage | failed      | the refusal was discarded  | the page, seeded if it was opened       |
- *
- * Every tab runs one; removing an id twice is harmless.
  */
 export function reclaimBodies(fate: Fate, bodies: Pick<Bodies, "remove">): () => void {
   const persistence = fate.persistence!;
@@ -194,7 +169,6 @@ export function reclaimBodies(fate: Fate, bodies: Pick<Bodies, "remove">): () =>
   return persistence.subscribe(onJournal);
 }
 
-/** The descendants whose levels this device has cached, breadth first, without a request. An uncached level ends its branch. */
 export async function cachedSubtree(fate: Fate, root: PageId): Promise<PageId[]> {
   const found: PageId[] = [];
   for (const queue: PageId[] = [root]; queue.length > 0; ) {

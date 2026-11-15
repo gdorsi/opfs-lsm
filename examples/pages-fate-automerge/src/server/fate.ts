@@ -35,7 +35,6 @@ async function selectedPage(ctx: Context, id: PageId, select: string[]): Promise
   return page as PageEntity;
 }
 
-/** Receipts and the mutation's writes commit in one SQLite transaction. Requests run one at a time (`handleRequest`). */
 const receipts: IdempotencyStore<Context> = {
   async transaction(context, scope, id, run) {
     const { db } = context;
@@ -106,7 +105,6 @@ export function createServer(db: DatabaseSync) {
       deletePage: {
         input: deleteInput,
         type: "Page",
-        // Succeeds for a missing id, so a redelivery, or a delete another tab already made, never rolls back.
         resolve: ({ ctx, input }: { ctx: Context; input: z.infer<typeof deleteInput> }) => {
           deleteSubtree(ctx.db, input.id);
           return null;

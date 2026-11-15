@@ -7,7 +7,6 @@ import { mountEditor, type MountedEditor } from "../editor/view.ts";
 import { MAX_TITLE, PageHeaderView, pageRequest, renamePage, TREE_REQUEST } from "../model/tree.ts";
 import type { PageBody, PageId, SaveState } from "../model/types.ts";
 
-/** A rename goes out on blur, on Enter, or after this long without a keystroke; never per keystroke. */
 const TITLE_IDLE_MS = 1000;
 
 export function EmptyState() {
@@ -50,7 +49,6 @@ export function PageScreen({ id }: { id: PageId }) {
   );
 }
 
-/** Adopts a title from elsewhere (another tab, a refresh) only while the field is not being edited. */
 function TitleField({ page, onEnter }: { page: ViewRef<"Page">; onEnter(): void }) {
   const { fate } = useApp();
   const header = useView(PageHeaderView, page);
@@ -63,8 +61,7 @@ function TitleField({ page, onEnter }: { page: ViewRef<"Page">; onEnter(): void 
   const input = useRef<HTMLInputElement>(null);
   const named = useRef(header.title !== "");
 
-  // A new page opens on its title, ready to name. A layout effect, because `autoFocus` is lost when the screen
-  // mounts behind a suspended boundary and shows later.
+  // A layout effect, because `autoFocus` is lost when the screen mounts behind a suspended boundary and shows later.
   useLayoutEffect(() => {
     if (named.current) return;
     named.current = true;
@@ -80,7 +77,6 @@ function TitleField({ page, onEnter }: { page: ViewRef<"Page">; onEnter(): void 
     idle.current = undefined;
     void renamePage(fate, id, value);
   };
-  // Leaving the page within the idle wait still sends the rename. The screen is keyed by page, so `id` never changes here.
   useEffect(
     () => () => {
       if (idle.current !== undefined) commit(latest.current);
@@ -187,7 +183,6 @@ function Editor({ body, editor }: { body: PageBody; editor: RefObject<MountedEdi
   );
 }
 
-/** The URL field Mod-k opens under the selection. Enter links, Escape or a click elsewhere cancels. */
 function LinkField({ at, onDone }: { at: LinkAt; onDone(href: string | null): void }) {
   const [href, setHref] = useState("");
   return (

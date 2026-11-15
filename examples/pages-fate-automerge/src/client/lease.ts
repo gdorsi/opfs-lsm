@@ -1,19 +1,15 @@
 import type { Bodies } from "../model/bodies.ts";
 import type { PageBody, PageId } from "../model/types.ts";
 
-/** How long a body stays open after its last screen let go: switching back is instant, and StrictMode's remount reuses it. */
 const CLOSE_AFTER_MS = 5000;
 
 export type Lease = { readonly body: Promise<PageBody>; release(): void };
 
 export type Leases = {
-  /** Opens the body, or shares the one already open. Each lease is released once. */
   lease(id: PageId): Lease;
-  /** Stores what the open bodies hold, for a tab that is going away. */
   flush(): Promise<void>;
 };
 
-/** Reference-counted opens over `bodies`, closed a few seconds after the last release unless a new lease comes first. */
 export function bodyLeases(bodies: Pick<Bodies, "open">): Leases {
   type Entry = { holders: number; readonly body: Promise<PageBody>; timer?: ReturnType<typeof setTimeout> };
   const entries = new Map<PageId, Entry>();

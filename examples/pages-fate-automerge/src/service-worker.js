@@ -1,14 +1,3 @@
-/**
- * Keeps the built app on the device, so it opens with the server unreachable. The build (vite.config.ts) writes
- * this file out as /sw.js with two constants in front: CACHE, a cache name for this build, and FILES, the paths
- * of the build's files.
- *
- * Install stores the page and every file of the build, so the stored set is always one whole build. A build's
- * files have their content hash in the name, so they are answered from the cache. The page is asked from the
- * server first and the stored one answers only when the server cannot be reached: a new build shows on the next
- * load, and the dev server works on an origin where a build registered this worker. Every app route gets the same
- * page, because the server renders none of them. Requests to /api/fate are not touched: fate queues them itself.
- */
 const PAGE = "/";
 const files = new Set(FILES);
 

@@ -1,9 +1,3 @@
-/**
- * The editor's ProseMirror schema: one flat textblock per Automerge block
- * marker, so every PM step maps to TextEdits one to one (binding.ts). The
- * model has no list containers; a list is consecutive `item`s, and nesting is
- * the `depth` attr.
- */
 import { Schema, type Attrs, type DOMOutputSpec, type Fragment, type Mark, type Node as PMNode } from "prosemirror-model";
 import type { Block, Depth, MarkName, Marks, Span } from "../model/types.ts";
 
@@ -12,7 +6,6 @@ const MAX_DEPTH = 5;
 const clampDepth = (n: number): Depth => Math.max(0, Math.min(MAX_DEPTH, Number.isFinite(n) ? Math.trunc(n) : 0)) as Depth;
 const depthOf = (dom: HTMLElement): Depth => clampDepth(Number(dom.getAttribute("data-depth") ?? 0));
 
-/** The list depth of a pasted `<li>`: how many lists it sits in, minus one. */
 function liDepth(dom: HTMLElement): Depth {
   let lists = 0;
   for (let el = dom.parentElement; el; el = el.parentElement) if (el.tagName === "UL" || el.tagName === "OL") lists++;
@@ -89,7 +82,6 @@ export const schema = new Schema({
     text: {},
   },
   marks: {
-    // bold, italic and code extend to text typed at their end, as Automerge's `expand: "after"` does.
     bold: {
       parseDOM: [{ tag: "strong" }, { tag: "b", getAttrs: (dom) => dom.style.fontWeight !== "normal" && null }],
       toDOM: (): DOMOutputSpec => ["strong", 0],
@@ -102,7 +94,6 @@ export const schema = new Schema({
       parseDOM: [{ tag: "code" }],
       toDOM: (): DOMOutputSpec => ["code", 0],
     },
-    // A link does not extend, as Automerge's `expand: "none"` does not.
     link: {
       attrs: { href: {} },
       inclusive: false,
@@ -154,7 +145,6 @@ export function pmMarks(marks: Marks): Mark[] {
   return (Object.entries(marks) as [MarkName, string | true | undefined][]).flatMap(([name, value]) => (value === undefined ? [] : [markOf(name, value)]));
 }
 
-/** O(doc). The editor calls it once per open, on `body.spans()`. */
 export function spansToDoc(spans: readonly Span[]): PMNode {
   const blocks: PMNode[] = [];
   let block: Block | null = null;
@@ -178,7 +168,6 @@ export function spansToDoc(spans: readonly Span[]): PMNode {
 const MARK_NAMES: readonly MarkName[] = ["bold", "italic", "code", "link"];
 const sameMarks = (a: Marks, b: Marks) => MARK_NAMES.every((name) => a[name] === b[name]);
 
-/** O(doc). The inverse of `spansToDoc`, in the model's normal form: tests compare it with `body.spans()`. */
 export function docToSpans(doc: PMNode): Span[] {
   const out: Span[] = [];
   doc.forEach((block) => {

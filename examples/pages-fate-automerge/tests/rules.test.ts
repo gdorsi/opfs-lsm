@@ -14,11 +14,6 @@ import { memoryBodies } from "../src/storage/memory.ts";
 const bodies = openBodies({ storage: memoryBodies() });
 test.after(() => bodies.close());
 
-/**
- * An editor over a fresh model body that holds `spans`, driven the way the
- * view drives it: typed text goes through the input rules first, and every
- * dispatch goes through the binding.
- */
 async function page(spans: readonly Span[]) {
   const body: PageBody = await bodies.open(newPageId());
   const edits: TextEdit[] = [];
@@ -56,7 +51,6 @@ async function page(spans: readonly Span[]) {
     at(pos: number, to = pos) {
       view.dispatch(state.tr.setSelection(TextSelection.create(state.doc, pos, to)));
     },
-    /** One keystroke of text: an input rule, or plain insertion. */
     type(text: string) {
       for (const char of text) {
         const { from, to } = state.selection;

@@ -55,7 +55,6 @@ export function newPageId(): PageId {
   return parseAutomergeUrl(generateAutomergeUrl()).documentId;
 }
 
-/** A page id from untrusted input (a route param, a request, a journal entry), or null. */
 export function parsePageId(raw: unknown): PageId | null {
   return isValidDocumentId(raw) ? raw : null;
 }
@@ -93,7 +92,7 @@ export function openBodies(options: BodiesOptions): Bodies {
     async remove(id) {
       storage.block(id);
       const body = open.get(id);
-      if (body) await (await body.catch(() => null))?.remove();
+      if (body) await (await body.catch(() => null))?.discard();
       await closing.get(id)?.catch(() => {});
       await storage.idle(id);
       await storage.removeRange([id]);
@@ -235,8 +234,7 @@ class Body implements PageBody {
     });
   }
 
-  /** For `Bodies.remove`: no flush, since the id's saves are already blocked. */
-  remove(): Promise<void> {
+  discard(): Promise<void> {
     if (!this.#closing) {
       this.#saveState = REMOVED;
       for (const listener of this.#saveListeners) listener();
@@ -244,7 +242,6 @@ class Body implements PageBody {
     return this.#end(() => this.#drop());
   }
 
-  /** The id leaves the open map at once, so an `open` during the close waits for it instead of getting this body. */
   #end(run: () => Promise<void>): Promise<void> {
     if (!this.#closing) {
       this.#closing = run();

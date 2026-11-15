@@ -80,8 +80,6 @@ a {
   overflow: auto;
 }
 
-/* Sidebar */
-
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -319,8 +317,6 @@ a {
   text-decoration: underline;
 }
 
-/* Page */
-
 .empty {
   display: grid;
   place-content: center;
@@ -384,7 +380,7 @@ a {
   margin-left: 8px;
 }
 
-/* Editor. The first rules are prosemirror-view/style/prosemirror.css, which the view expects. */
+/* The first rules are prosemirror-view/style/prosemirror.css, which the view expects. */
 
 .ProseMirror {
   position: relative;
@@ -466,7 +462,6 @@ a {
   text-decoration-color: var(--faint);
 }
 
-/* Items and todos are flat blocks; depth indents them, and a marker sits in the indent. */
 .editor .item,
 .editor .todo {
   position: relative;
@@ -505,10 +500,6 @@ a {
   content: "▪";
 }
 
-/*
- * Numbered items count with one counter per depth over consecutive blocks. A paragraph or heading ends every list;
- * a bullet or todo ends the numbering at its depth and deeper; a numbered item restarts the levels below it.
- */
 .editor .ProseMirror > p,
 .editor .ProseMirror > h1,
 .editor .ProseMirror > h2,

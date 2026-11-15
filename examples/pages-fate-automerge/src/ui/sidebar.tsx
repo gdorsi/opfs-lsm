@@ -29,7 +29,6 @@ export function Sidebar() {
   );
 }
 
-/** One level of the tree: one request per open row, painted from the device first and refreshed in the background. */
 function Level({ parent, depth }: { parent: PageId | null; depth: number }) {
   const request = useMemo(() => childrenRequest(parent), [parent]);
   const { children } = useRequest(request, TREE_REQUEST);
@@ -56,7 +55,6 @@ function Level({ parent, depth }: { parent: PageId | null; depth: number }) {
   );
 }
 
-/** Every row has a chevron, as in Notion: the tree keeps no child count to hold in step. */
 function Row({ page, depth }: { page: ViewRef<"Page">; depth: number }) {
   const { fate } = useApp();
   const row = useView(PageRowView, page);

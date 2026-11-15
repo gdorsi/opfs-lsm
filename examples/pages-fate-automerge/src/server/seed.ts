@@ -19,14 +19,9 @@ const DEMO_TREE: SeedTree = [
   { title: "Reading list" },
 ];
 
-/**
- * A page's id is derived from its title path, so a reseed gives the same ids
- * and the bodies a browser holds for them stay attached.
- */
 const seedId = (path: readonly string[]): PageId =>
   interpretAsDocumentId(createHash("sha256").update(`pages-seed:${path.join("/")}`).digest().subarray(0, 16) as never);
 
-/** Replaces every page with the demo tree. Bodies are not seeded: they live on each device. */
 export function seedDb(db: DatabaseSync, tree: SeedTree = DEMO_TREE): { readonly pages: number } {
   let pages = 0;
   const insert = (nodes: SeedTree, parent: { id: PageId; path: readonly string[] } | null) => {

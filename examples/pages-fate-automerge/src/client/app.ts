@@ -12,20 +12,17 @@ export type App = {
   readonly fate: Fate;
   readonly bodies: Bodies;
   readonly leases: Leases;
-  /** Shown in the footer, and part of the tab channel's name, so kv tabs and idb tabs never mix bodies. */
   readonly kind: StorageKind;
   readonly db: string;
   readonly storage: PagesStorage;
 };
 
 declare global {
-  /** Dev builds only: the browser proofs read and drive the app through it. */
   var __pages: (App & { editor?: MountedEditor }) | undefined;
 }
 
 let opening: Promise<App> | undefined;
 
-/** Opens once per tab, in the `_app` loader (browser only), from `?storage=` and `?db=`. Resolves once fate restored its cache. */
 export function openApp(): Promise<App> {
   return (opening ??= (async () => {
     const params = new URLSearchParams(location.search);

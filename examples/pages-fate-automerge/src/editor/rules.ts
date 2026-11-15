@@ -1,11 +1,9 @@
-/** Markdown shortcuts typed at the start of a block. */
 import { InputRule, inputRules } from "prosemirror-inputrules";
 import type { Plugin } from "prosemirror-state";
 import type { Block, Depth } from "../model/types.ts";
 import { blockOf, nodeTypeOf } from "./schema.ts";
 
 type BlockRule = {
-  /** Matched against the block's text before the cursor plus the typed character. */
   readonly match: RegExp;
   readonly block: (current: Block) => Block;
 };
@@ -23,7 +21,6 @@ const BLOCK_RULES: readonly BlockRule[] = [
   { match: /^\[ ?\]\s$/, block: (current) => ({ type: "todo", depth: depthOf(current), checked: false }) },
 ];
 
-/** Backspace right after a rule undoes it (`undoInputRule` in the keymap). */
 export function pageInputRules(): Plugin {
   return inputRules({
     rules: BLOCK_RULES.map(

@@ -8,7 +8,6 @@ import type { PageId } from "../src/model/types.ts";
 import { memoryBodies, memoryPagesStorage } from "../src/storage/memory.ts";
 import { delivered, until, workspace } from "./workspace.ts";
 
-/** One device: fate and body storage, and the bodies open over it. */
 function device(t: TestContext) {
   const storage = { fate: memoryPagesStorage().fate, bodies: memoryBodies() };
   const bodies = openBodies({ storage: storage.bodies });
@@ -16,7 +15,6 @@ function device(t: TestContext) {
   return { storage, bodies };
 }
 
-/** Opens, types into and closes each page's body, so each one has keys on the device. */
 async function write(bodies: Bodies, ids: readonly PageId[]): Promise<void> {
   for (const id of ids) {
     const body = await bodies.open(id);
@@ -113,7 +111,6 @@ test("a refused create keeps its body until the refusal is discarded", async (t)
   await until(allGone(storage.bodies, [orphan]), "the body to go once the create is discarded");
 });
 
-/** One fate store two clients share, telling each of them about the other's writes, as kv and IndexedDB do across tabs. */
 function sharedFate(): PersistenceStorage {
   const inner = memoryPagesStorage().fate;
   const listeners = new Set<() => void>();

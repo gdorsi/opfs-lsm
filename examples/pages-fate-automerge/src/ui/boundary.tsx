@@ -1,6 +1,5 @@
 import { Component, Suspense, type ReactNode } from "react";
 
-/** fate's hooks suspend while data loads and throw what a read could not fetch; a screen shows either here. */
 export function Loading({ fallback, children }: { fallback: ReactNode; children: ReactNode }) {
   return (
     <ReadErrors>

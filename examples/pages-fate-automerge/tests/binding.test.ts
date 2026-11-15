@@ -19,7 +19,6 @@ import { referenceBody } from "../src/testing/reference.ts";
 
 type Command = (state: EditorState, dispatch: (tr: Transaction) => void) => unknown;
 
-/** An editor over a model body, checked against the oracle after every dispatch. */
 function editor(body: PageBody) {
   const oracle = referenceBody();
   const steps = new Map<string, number>();

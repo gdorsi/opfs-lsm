@@ -7,7 +7,6 @@ import { useApp } from "./app.ts";
 
 type Mutations = PersistenceSnapshot["mutations"];
 
-/** The mutations still waiting for the server; a failed one waits for the user instead. */
 const waiting = (mutations: Mutations) => mutations.filter((m) => m.status !== "failed");
 
 const pendingByQueue = new WeakMap<Mutations, ReadonlySet<string>>();
@@ -20,16 +19,12 @@ const pendingIds = (mutations: Mutations): ReadonlySet<string> => {
   return ids;
 };
 
-/** Whether a change to page `id` still waits for the server: the "not synced yet" dot. */
 export function usePending(id: PageId): boolean {
   const session = useFateClient().persistence!;
   return useSyncExternalStore(session.subscribe, () => pendingIds(session.getSnapshot().mutations).has(id));
 }
 
-/**
- * Refetches `request` when the server answers a queued mutation, from this tab or another, so the levels a create
- * or delete changed catch up. fate does not push server changes without live views, which this app leaves out.
- */
+/** fate does not push server changes without live views, which this app leaves out. */
 export function useRefetchOnDelivery(request: Parameters<typeof useRefetch>[0]): void {
   const refetch = useRefetch(request, { persist: TREE_REQUEST.persist });
   const session = useFateClient().persistence!;
@@ -60,7 +55,6 @@ export function useHeld(id: PageId): boolean {
 }
 
 export type SyncStatus = {
-  /** `retrying`: the server did not answer the last delivery, and fate tries again. */
   readonly kind: "offline" | "retrying" | "syncing" | "idle";
   readonly unsynced: number;
   readonly failed: Mutations;
@@ -85,7 +79,6 @@ export function useSyncStatus(): SyncStatus {
   return { kind, unsynced: unsynced.length, failed };
 }
 
-/** Which sidebar rows are open: a viewer preference, per storage and db, kept in localStorage when it is there. */
 function expandedStore(key: string) {
   let open: ReadonlySet<string> = new Set();
   try {
@@ -122,7 +115,6 @@ export function useExpanded(): { readonly isOpen: (id: PageId) => boolean; reado
   return { isOpen: (id) => open.has(id), set: store.set };
 }
 
-/** The open body of page `id`, held through a lease while the screen shows it. */
 export function useBody(id: PageId): { readonly body: PageBody | null; readonly error: Error | null } {
   const { leases } = useApp();
   const [state, setState] = useState<{ id: PageId; body: PageBody | null; error: Error | null }>({ id, body: null, error: null });
@@ -145,7 +137,6 @@ export function useSaveState(body: PageBody): SaveState {
   return useSyncExternalStore(body.save.subscribe, body.save.read);
 }
 
-/** Creates an untitled page at the end of `parent`'s children and opens it. */
 export function useCreatePage(): (parent: PageId | null) => Promise<void> {
   const { fate } = useApp();
   const navigate = useNavigate();

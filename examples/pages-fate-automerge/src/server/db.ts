@@ -4,7 +4,6 @@ import { DatabaseSync } from "node:sqlite";
 
 const SCHEMA_VERSION = 1;
 
-/** Siblings are in creation order (`seq`). The foreign key's cascade makes a subtree delete one DELETE. */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS page (
   seq       INTEGER PRIMARY KEY,

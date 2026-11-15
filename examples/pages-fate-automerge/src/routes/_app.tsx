@@ -10,7 +10,6 @@ export const Route = createFileRoute("/_app")({
     ...(search.storage === "idb" && { storage: "idb" }),
     ...(typeof search.db === "string" && search.db && { db: search.db }),
   }),
-  // Every link keeps ?storage= and ?db=, so navigating never switches a tab's storage.
   search: { middlewares: [retainSearchParams(["storage", "db"])] },
   loader: async () => {
     const app = await openApp();

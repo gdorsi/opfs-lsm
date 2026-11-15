@@ -1,4 +1,3 @@
-/** The editor's only DOM file: a ProseMirror view kept in step with one open body. */
 import { baseKeymap } from "prosemirror-commands";
 import { history } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
@@ -11,21 +10,17 @@ import { pageInputRules } from "./rules.ts";
 
 export type MountedEditor = {
   readonly view: EditorView;
-  /** Answers `askHref`: links the selection, or with null only gives the editor its focus back. */
   link(href: string | null): void;
   destroy(): void;
 };
 
 export type EditorOptions = {
-  /** A dispatch the body refused. The editor stays on the state that matches the body. */
   readonly onRefused: (error: unknown) => void;
-  /** Mod-k on unlinked text, with where the selection ends on screen. The page answers through `link`. */
   readonly askHref: (at: { readonly left: number; readonly bottom: number }) => void;
 };
 
 const HINT = "Type # for a heading, - for a list, [] for a to-do";
 
-/** A click on a todo's checkbox toggles it, and leaves the selection where it was. */
 const todoCheckbox = new Plugin({
   props: {
     handleDOMEvents: {
@@ -40,7 +35,6 @@ const todoCheckbox = new Plugin({
   },
 });
 
-/** An empty page shows a hint in its only block. */
 const emptyHint = new Plugin({
   props: {
     decorations({ doc }) {
@@ -74,7 +68,6 @@ export function mountEditor(place: HTMLElement, body: PageBody, options: EditorO
   return {
     view,
     link(href) {
-      // The selection has been mapped through every edit since Mod-k, so it still covers the same text.
       if (href !== null) setLink(href)(view.state, view.dispatch);
       view.focus();
     },

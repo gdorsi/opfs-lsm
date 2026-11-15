@@ -5,10 +5,6 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
-/**
- * Writes /sw.js into the client build: src/service-worker.js with the build's file list in front. The cache name
- * is a hash of that list, so each build gets its own cache.
- */
 function serviceWorker(): Plugin {
   return {
     name: "pages:service-worker",

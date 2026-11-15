@@ -4,7 +4,6 @@ import type { PageId } from "../model/types.ts";
 
 export type PageRow = { readonly id: PageId; readonly parentId: PageId | null; readonly title: string };
 
-/** The parent of a new page is not in the table: it never was, or it was deleted. */
 export class NoParent extends Error {}
 
 const SQLITE_CONSTRAINT_FOREIGNKEY = 787;
@@ -19,17 +18,14 @@ export function insertPage(db: DatabaseSync, page: NewPage): void {
   }
 }
 
-/** False when the page is gone. */
 export function setTitle(db: DatabaseSync, id: PageId, title: string): boolean {
   return db.prepare("UPDATE page SET title = ? WHERE id = ?").run(title, id).changes > 0;
 }
 
-/** Removes the page and every page under it. A missing id removes nothing. */
 export function deleteSubtree(db: DatabaseSync, id: PageId): void {
   db.prepare("DELETE FROM page WHERE id = ?").run(id);
 }
 
-/** One page of `parent`'s children after the cursor `after` (a seq). An unknown parent has no children. */
 export function readChildren(
   db: DatabaseSync,
   args: { readonly parent: PageId | null; readonly first: number; readonly after?: number },
