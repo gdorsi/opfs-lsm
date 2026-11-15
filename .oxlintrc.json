@@ -101,6 +101,81 @@
     },
     {
       "files": [
+        "examples/whiteboard-yjs/src/app/**",
+        "examples/whiteboard-yjs/src/routes/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "@opfs-lsm/*",
+                  "y-indexeddb",
+                  "fake-indexeddb",
+                  "fake-indexeddb/*"
+                ],
+                "message": "Only src/persistence imports a storage package. The app reaches storage through openStorage."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "examples/whiteboard-yjs/src/app/core/**"
+      ],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          "window",
+          "document",
+          "navigator",
+          "location",
+          "localStorage",
+          "sessionStorage",
+          "indexedDB",
+          "requestAnimationFrame",
+          "cancelAnimationFrame",
+          "HTMLElement",
+          "PointerEvent",
+          "KeyboardEvent",
+          "Date",
+          "performance",
+          "setTimeout",
+          "clearTimeout",
+          "setInterval",
+          "clearInterval",
+          "BroadcastChannel"
+        ],
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "react",
+                  "react/*",
+                  "react-dom",
+                  "react-dom/*",
+                  "@tanstack/*",
+                  "@opfs-lsm/*",
+                  "y-indexeddb",
+                  "fake-indexeddb",
+                  "fake-indexeddb/*",
+                  "../../persistence/*"
+                ],
+                "message": "src/app/core runs in Node tests. The DOM boundary is src/app/stage.tsx; storage is src/persistence."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "examples/whiteboard-yjs/src/model/env.ts"
       ],
       "rules": {
