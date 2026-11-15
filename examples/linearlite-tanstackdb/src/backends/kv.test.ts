@@ -8,15 +8,15 @@ import { parseIssueFilter, SORT_FIELDS } from "../model/filter.ts";
 import { windowQuery } from "../model/query.ts";
 import { openKvBackend, schema, type KvBackend } from "./kv.ts";
 
-const sorted = (...on: string[]) => ({ kind: "sorted", on, unique: false });
+const sorted = (...by: string[]) => ({ kind: "sorted", by, unique: false });
 
 const INDEXES = {
   issues: {
     byCreated: sorted("deleted", "created"),
     byTitle: sorted("deleted", "title"),
     byPriority: sorted("deleted", "priority", "priorityOrder"),
-    byStatus: { kind: "text", on: ["deleted", "status", "statusOrder"], unique: false, text: "title" },
-    search: { kind: "text", on: ["deleted", "modified"], unique: false, text: "title" },
+    byStatus: { kind: "text", by: ["deleted", "status", "statusOrder"], unique: false, text: "title" },
+    search: { kind: "text", by: ["deleted", "modified"], unique: false, text: "title" },
     pending: sorted("pending"),
   },
   bodies: { pending: sorted("pending") },

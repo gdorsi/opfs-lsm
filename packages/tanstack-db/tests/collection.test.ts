@@ -36,8 +36,8 @@ const schema = defineSchema<{ todo: Todo; todos: Todo; bodies: Body; comments: C
     todo: {},
     todos: {},
     bodies: {},
-    comments: { byIssue: { on: "issue_id" } },
-    issues: { byModified: { on: "modified" } },
+    comments: { byIssue: { by: "issue_id" } },
+    issues: { byModified: { by: "modified" } },
   },
 });
 

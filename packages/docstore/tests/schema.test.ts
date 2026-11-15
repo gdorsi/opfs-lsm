@@ -28,23 +28,23 @@ type Todo = {
 type Labelled = { id: string; createdAt?: number | undefined; label?: string | undefined };
 type Tagged = { id: string; tags?: string[] | undefined };
 
-const byCreated = { on: "createdAt" } as const;
-const byTitle = { on: "title" } as const;
+const byCreated = { by: "createdAt" } as const;
+const byTitle = { by: "title" } as const;
 const v1 = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byCreated, byTitle } } });
 const v2 = defineSchema<{ todos: Todo }>()({
   version: 2,
-  collections: { todos: { byCreated, byTitle, byDone: { on: ["done", "createdAt"] } } },
+  collections: { todos: { byCreated, byTitle, byDone: { by: ["done", "createdAt"] } } },
 });
 const unique = (version: number) =>
   defineSchema<{ todos: Todo }>()({
     version,
-    collections: { todos: { byCreated, byTitle, bySlug: { on: "slug", unique: true } } },
+    collections: { todos: { byCreated, byTitle, bySlug: { by: "slug", unique: true } } },
   });
 const labelled = defineSchema<{ todos: Labelled }>()({
   version: 2,
-  collections: { todos: { byCreated, byLabel: { on: "label" } } },
+  collections: { todos: { byCreated, byLabel: { by: "label" } } },
 });
-const tagged = defineSchema<{ tagged: Tagged }>()({ version: 1, collections: { tagged: { byTag: { on: "tags", multi: true } } } });
+const tagged = defineSchema<{ tagged: Tagged }>()({ version: 1, collections: { tagged: { byTag: { by: "tags[]" } } } });
 
 const kvs: Db[] = [];
 const stores: DocStore<AnySchema>[] = [];
@@ -86,7 +86,7 @@ describe("opening a schema", () => {
     const { kv, store } = await at(freshName(), v1);
     await store.collection("todos").putMany(rows(10));
     const before = await docstoreKeys(kv);
-    const other = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byCreated, byTitle: { on: "slug" } } } });
+    const other = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byCreated, byTitle: { by: "slug" } } } });
     expect(await codeOf(openDocStore(kv, other))).toBe("schema");
     expect(await docstoreKeys(kv)).toEqual(before);
   });
@@ -156,7 +156,7 @@ describe("opening a schema", () => {
     const oldTitles = await storedPrefix(old.kv, "todos", "byTitle");
     const redefined = defineSchema<{ todos: Todo }>()({
       version: 2,
-      collections: { todos: { byCreated, byTitle: { on: "slug" } } },
+      collections: { todos: { byCreated, byTitle: { by: "slug" } } },
     });
     const next = await at(name, redefined);
     expect((await next.store.collection("todos").query({ index: "byTitle" })).docs.map((d) => d.id)).toEqual(["2"]);
@@ -189,7 +189,7 @@ describe("opening a schema", () => {
     );
     const query = reader.collection("todos").queryIds({ index: "byTitle" });
     await scanStarted;
-    await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated, byTitle: { on: "slug" } } } }));
+    await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated, byTitle: { by: "slug" } } } }));
     await readerKv.sync();
     release();
     const byTitle = [...docs].sort((a, b) => a.title!.localeCompare(b.title!) || a.id.localeCompare(b.id));
@@ -213,7 +213,7 @@ describe("opening a schema", () => {
     type Note = { id: string; body: string };
     const name = freshName();
     const both = (version: number) =>
-      defineSchema<{ todos: Todo; notes: Note }>()({ version, collections: { todos: { byCreated }, notes: { byBody: { on: "body" } } } });
+      defineSchema<{ todos: Todo; notes: Note }>()({ version, collections: { todos: { byCreated }, notes: { byBody: { by: "body" } } } });
     const first = await at(name, both(1));
     await first.store.collection("notes").putMany([{ id: "n1", body: "x" }, { id: "n2", body: "y" }]);
     const second = await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated } } }));
@@ -230,7 +230,7 @@ describe("opening a schema", () => {
     const name = freshName();
     const both = defineSchema<{ todos: Todo; notes: Note }>()({
       version: 1,
-      collections: { todos: { byCreated }, notes: { byBody: { on: "body" } } },
+      collections: { todos: { byCreated }, notes: { byBody: { by: "body" } } },
     });
     const old = await at(name, both);
     await old.store.collection("todos").putMany(rows(5));

@@ -117,7 +117,7 @@ apps:
           kv: 137 ms
           ratio: 0.94×
 size:
-  main: 18.9 kB
+  main: 19.0 kB
 read:
   framework: TanStack DB
   workload: On-demand, 10 rows by id
@@ -159,10 +159,10 @@ demo:
 
 ### Lightweight, with super-fast loads
 
-18.9 kB at import, and cold loads up to 4.8× faster than IndexedDB
+19.0 kB at import, and up to 4.8× faster cold loads with the Yjs adapter
 
 ```ts
-// 18.9 kB gzip in your main bundle
+// 19.0 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
 // the SharedWorker and wasm load here
 const db = await openDb({ name: "app" });
@@ -193,7 +193,9 @@ A key-value storage you can use to build your own DB
 ```ts
 await db.put(key, bytes);
 const saved = await db.get(key);
-const rows = db.range({ limit: 50 });
+for await (const { value } of db.range({ limit: 50 })) {
+  // ...
+}
 ```
 
 </div>
@@ -235,7 +237,9 @@ Reads that later writes cannot change
 ```ts
 await db.view(async (snap) => {
   const issue = await snap.get(issueKey);
-  const comments = snap.range(ofIssue);
+  for await (const { key, value } of snap.range(ofIssue)) {
+    render(key, value);
+  }
 });
 ```
 
@@ -266,7 +270,7 @@ opfs-lsm is a replacement for IndexedDB and SQLite in the browser. It is faster,
 
 [The adapter benchmarks](../README.md#benchmarks) · [How they are measured](../bench/README.md)
 
-<Illustration name="adapters" full :data="$frontmatter.adapters" label="The adapter benchmarks, each opfs-lsm adapter against the IndexedDB option of its framework. TanStack DB, both collections in eager mode: cold load of 91,000 rows 176k rows/s against 112k, 1.6× faster; bulk insert 115k rows/s against 17.2k, 6.7× faster. TanStack DB against its SQLite adapter, both in on-demand mode: 10 rows by id 4.1k queries/s against 1.9k, 2.1× faster; a warm query of 6,250 rows 169k rows/s against 116k, 1.5× faster. Yjs against y-indexeddb: cold load of 500 notes 9.5k notes/s against 2.0k, 4.8× faster; editing trace 33.2k edits/s against 1.4k, 23× faster. Automerge against automerge-repo's IndexedDB storage: cold load of 500 notes 2.2k notes/s against 1.1k, 2.0× faster; writing 500 notes 821 notes/s against 743, 1.1× faster. fate against its IndexedDB persistence: cold load of 100 lists 3.4k records/s against 1.0k, 3.3× faster; queueing 300 mutations 263 ops/s against 201, 1.3× faster." />
+<Illustration name="adapters" full :data="$frontmatter.adapters" label="The adapter benchmarks, each opfs-lsm adapter against the persistence option its framework ships, IndexedDB or SQLite. TanStack DB, both collections in eager mode: cold load of 91,000 rows 176k rows/s against 112k, 1.6× faster; bulk insert 115k rows/s against 17.2k, 6.7× faster. TanStack DB against its SQLite adapter, both in on-demand mode: 10 rows by id 4.1k queries/s against 1.9k, 2.1× faster; a warm query of 6,250 rows 169k rows/s against 116k, 1.5× faster. Yjs against y-indexeddb: cold load of 500 notes 9.5k notes/s against 2.0k, 4.8× faster; editing trace 33.2k edits/s against 1.4k, 23× faster. Automerge against automerge-repo's IndexedDB storage: cold load of 500 notes 2.2k notes/s against 1.1k, 2.0× faster; writing 500 notes 821 notes/s against 743, 1.1× faster. fate against its IndexedDB persistence: cold load of 100 lists 3.4k records/s against 1.0k, 3.3× faster; queueing 300 mutations 263 ops/s against 201, 1.3× faster." />
 
 <div class="home-claim">
 <div class="home-copy">

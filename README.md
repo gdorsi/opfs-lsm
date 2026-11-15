@@ -1,6 +1,6 @@
 # opfs-lsm
 
-A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 8× faster than IndexedDB, reads up to 189× faster, and every tab of an origin shares one database with a live change feed.
+A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 8.1× faster than IndexedDB, reads up to 189× faster, and every tab of an origin shares one database with a live change feed.
 
 > [!WARNING]
 > opfs-lsm is not stable yet. Expect breaking changes, including to the on-disk format, so data written by one version may not open in the next. Two things are missing before a stable release:
@@ -50,6 +50,9 @@ It offers:
 - **A sequence number for every write.** `put`, `delete` and `batch` resolve with the seq of their record, and `changes` and `view` report the same numbers. Use them as a cursor for an outbox or a sync checkpoint.
 - **Consistent reads.** `view` reads a snapshot that later writes do not change. `update` reads keys and writes in one transaction, with no window for another tab to write in between.
 - **Ordered scans.** `range` scans a key range or a prefix, forward or in reverse, with a limit. `rangeJoin` scans index entries and reads the row of each one, all from one state.
+- **Range deletes.** `deleteRange` removes a key range in one op, and can spare rows written after a seq.
+- **Counting.** `count` counts a range with the same options as `range`, without copying entries.
+- **Quota management.** Open with `maxBytes`, and an `onPressure` handler decides what to drop before the browser refuses writes.
 - **Bytes in, bytes out.** Keys and values are `Uint8Array`, so the encoding is yours.
 
 ### Benchmarks
@@ -91,6 +94,8 @@ In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack
 | First query after a cold open, 6,250 rows | 65.2 ms | 81.6 ms | 0.80× |
 | Warm query of one owner, 6,250 rows | 116k rows/s | 169k rows/s | 1.5× |
 | 10 rows by id | 1.9k queries/s | 4.1k queries/s | 2.1× |
+
+The bench also runs `docstore` against Dexie. [bench/README.md](bench/README.md) lists every family and workload.
 
 ### App benchmarks
 
@@ -139,11 +144,11 @@ The session never pauses for a second, so neither store merges the board's updat
 
 ### Bundle size
 
-Importing `@opfs-lsm/kv` adds **18.9 kB** of JavaScript to your main bundle (gzip, 55.6 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
+Importing `@opfs-lsm/kv` adds **19.0 kB** of JavaScript to your main bundle (gzip, 55.6 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
 
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
-| Main-thread JS | 18.9 kB | 55.6 kB | at import |
+| Main-thread JS | 19.0 kB | 55.6 kB | at import |
 | SharedWorker chunk | 12.7 kB | 37.3 kB | on the first `openDb` |
 | wasm engine | 16.6 kB | 36.4 kB | on the first `openDb`, one file for the tab and the SharedWorker |
 | **Total after open** | **48.3 kB** | **129.3 kB** | |
@@ -167,7 +172,7 @@ If read and write performance of the DB is not a concern in your app.
 
 Each adapter keeps many documents or collections in one kv database. `@opfs-lsm/docstore` is the query layer on top of kv: JSON documents in collections, with indexes declared in a versioned schema.
 
-The packages are published on npm. To build them from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
+The packages are published on npm, except `@opfs-lsm/fate`, which is not published yet. To build them from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quickstart
 
@@ -207,7 +212,7 @@ Three APIs set the minimum version in every browser. Everything else kv uses shi
 
 | API | Chrome, Edge | Firefox | Safari | Chrome Android | Firefox Android | Safari iOS |
 | --- | --- | --- | --- | --- | --- | --- |
-| `SharedWorker` with `type: "module"` | 80 | 114 | 16 | 148 | 114 | 16 |
+| `SharedWorker` with `type: "module"` | 80 | 114 | 15 | 148 | 114 | 15 |
 | OPFS `FileSystemFileHandle.createWritable()` | 86 | 111 | 26 | 109 | 111 | 26 |
 | `crypto.randomUUID()` | 92 | 95 | 15.4 | 92 | 95 | 15.4 |
 | **Minimum for kv** | **92** | **114** | **26** | **148** | **114** | **26** |
@@ -215,7 +220,8 @@ Three APIs set the minimum version in every browser. Everything else kv uses shi
 - Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26.
 - Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so kv does not run there.
 - Android WebView is not supported. MDN lists SharedWorker there from 148, but the WebView we measured (154) has none, so `openDb` rejects with `StorageUnavailableError` in apps and browsers built on it.
-- `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119 and Firefox 121.
+- `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119, Firefox and Firefox Android 121.
+- `@opfs-lsm/docstore` also calls `Object.hasOwn()`, which raises its minimum to Chrome and Edge 93.
 
 Versions are from [MDN browser-compat-data](https://github.com/mdn/browser-compat-data) 8.1.8. The engine is tested in desktop Chrome and on Android. In Chromium 160 on a Pixel 4a, the two-tab proofs and every benchmark workload pass, and no kill in the kill-and-recover loop lost an acked write. The Android run has limits:
 
