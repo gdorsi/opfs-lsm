@@ -57,6 +57,8 @@ await persistence.flush(); // every update written so far is acked
 await persistence.destroy(); // detaches from doc, then flushes
 ```
 
+If a write failed, the next `flush()` writes the whole doc state again. It rejects if that write fails too, and the next call retries.
+
 ## Sharing a database
 
 Many documents can share one db, and every key starts with the byte `y`. No persistence closes the db. Close it after you destroy every persistence on it.
