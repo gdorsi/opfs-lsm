@@ -1,7 +1,7 @@
 // Local release. Replaces the release workflow that used to live in
 // .github/workflows/release.yml: versions the packages from the pending
-// changesets, tests, publishes to npm, pushes, and opens GitHub releases.
-// Run with `pnpm release`. See CONTRIBUTING.md.
+// changesets, tests, publishes to npm, pushes, and opens one GitHub release
+// for the run. Run with `pnpm release`. See CONTRIBUTING.md.
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -102,26 +102,24 @@ if (toPublish.length > 0) {
 
 run("git", ["push", "origin", "main", "--follow-tags"]);
 
-// 6. One GitHub release per published package, with its changelog entry.
+// 6. One GitHub release per run, tagged with the shared version.
 if (toPublish.length > 0 && !noGithub) {
   if (tryCapture("gh", ["--version"]) === null) {
     fail("gh is not installed, install it or rerun with --no-github");
   }
-  for (const pkg of toPublish) {
-    const tag = `${pkg.name}@${pkg.version}`;
-    const notes = changelogSection(pkg.dir, pkg.version);
-    if (dryRun) {
-      console.log(`$ gh release create ${tag} --title ${tag} --notes-file <changelog for ${pkg.name}>`);
-      continue;
-    }
-    const exists = tryCapture("gh", ["release", "view", tag]) !== null;
-    if (exists) {
-      console.log(`${tag}: GitHub release already exists`);
-      continue;
-    }
-    const file = join(tmpdir(), `release-notes-${pkg.name.replace("/", "-")}-${pkg.version}.md`);
-    writeFileSync(file, notes);
-    run("gh", ["release", "create", tag, "--title", tag, "--notes-file", file]);
+  const versions = new Set(toPublish.map((pkg: Package) => pkg.version));
+  if (versions.size > 1) fail("the fixed packages diverged, expected one shared version");
+  const tag = `v${toPublish[0].version}`;
+  const body = toPublish
+    .map((pkg: Package) => `## ${pkg.name}@${pkg.version}\n\n${changelogSection(pkg.dir, pkg.version)}`)
+    .join("\n\n") + "\n";
+  if (dryRun) {
+    console.log(`$ gh release create ${tag} --title ${tag} --notes-file <changelog of ${toPublish.length} package(s)>`);
+  } else {
+    const file = join(tmpdir(), `release-notes-${tag}.md`);
+    writeFileSync(file, body);
+    const sha = capture("git", ["rev-parse", "HEAD"]).trim();
+    run("gh", ["release", "create", tag, "--title", tag, "--notes-file", file, "--target", sha]);
   }
 }
 
@@ -132,5 +130,5 @@ function changelogSection(dir: string, version: string): string {
   const start = text.indexOf(`## ${version}\n`);
   if (start === -1) return "";
   const next = text.indexOf("\n## ", start + 1);
-  return text.slice(start, next === -1 ? text.length : next).trim() + "\n";
+  return text.slice(start, next === -1 ? text.length : next).trim();
 }

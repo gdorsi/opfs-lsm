@@ -42,7 +42,7 @@ Pick the bump type by what a user of the package sees:
 
 Changes to tests, benchmarks, examples, or docs need no changeset. The examples and `bench` are private and never publish.
 
-When `@opfs-lsm/kv` gets a new version, Changesets also gives a patch bump to the packages that depend on it, so their published dependency range stays correct.
+All six packages are fixed to one version, the `fixed` setting in `.changeset/config.json`: a bump to any one of them bumps all of them, so the packages always publish together at the same version and their published dependency ranges always match.
 
 ## Release
 
@@ -58,7 +58,7 @@ The script in [scripts/release.ts](scripts/release.ts) (Node runs TypeScript dir
 2. If `.changeset/` has pending files, runs `changeset version`, which deletes them, bumps the versions, and updates each package's `CHANGELOG.md`, then commits the result as `chore(release): version packages`.
 3. Runs `pnpm test` and `pnpm static`.
 4. Publishes every package whose version is not on npm yet with `changeset publish`, which also tags each published package.
-5. Pushes `main` with the tags and opens a GitHub release per published package with its changelog entry.
+5. Pushes `main` with the tags and opens one GitHub release for the whole run, tagged `v<version>` with the shared version, listing each published package with its changelog entry.
 
 Pass `--dry-run` to print the plan without changing anything, or `--no-github` to skip step 5. npm provenance needs a supported CI environment, so a local publish runs without it.
 
