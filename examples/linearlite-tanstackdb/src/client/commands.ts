@@ -66,7 +66,7 @@ export async function createIssue(input: { title: string; description: string; s
       status: input.status,
       priority: input.priority,
       kanbanorder: kanbanBetween(null, top?.kanbanorder ?? null),
-      username: store.user,
+      username: store.transport.user,
       created: clock,
       modified: clock,
       deleted: false,
@@ -86,7 +86,7 @@ export async function addComment(issueId: string, text: string): Promise<string>
   const clock = tick();
   const key = commentKey(issueId, id);
   const comment = withDirty<Comment>(
-    { key, id, issue_id: issueId, body: text, username: store.user, created: clock, deleted: false, version: 0 },
+    { key, id, issue_id: issueId, body: text, username: store.transport.user, created: clock, deleted: false, version: 0 },
     allDirty(MUTABLE_FIELDS.comments, clock),
   );
   await store.comments.utils.transact([id], () => [comment]);

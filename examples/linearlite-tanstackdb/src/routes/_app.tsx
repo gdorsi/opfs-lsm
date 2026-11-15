@@ -17,7 +17,7 @@ export const Route = createFileRoute("/_app")({
   search: { middlewares: [stripSearchParams(DEFAULTS)] },
   loader: async () => {
     const store = await openStore();
-    startSync(store);
+    startSync(store, Number(new URLSearchParams(location.search).get("pull")) || undefined);
     // bench/client.ts drives edits through this; production builds expose it only with VITE_BENCH=1.
     if (import.meta.env.DEV || import.meta.env.VITE_BENCH === "1") {
       Object.assign(globalThis, { __linearlite: { store, commands, fetchDetail, createLiveQueryCollection, eq } });
