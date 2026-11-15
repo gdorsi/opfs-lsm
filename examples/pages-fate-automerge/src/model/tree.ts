@@ -127,12 +127,20 @@ export async function createPage(fate: Fate, at: { readonly parent: PageId | nul
   return id;
 }
 
-/** Trims and caps the title, and sends nothing when it did not change. */
+/** Renames not yet stored on the device: fate shows a rename's title only once it stored the mutation. */
+const storing = new WeakMap<Fate, Map<PageId, string>>();
+
+/** Trims and caps the title, and sends nothing when it did not change, counting renames still being stored. */
 export function renamePage(fate: Fate, id: PageId, title: string): Promise<void> {
   const next = title.trim().slice(0, MAX_TITLE);
-  const current = fate.store.read(`Page:${id}`) as Partial<PageEntity> | undefined;
-  if (current?.title === next) return Promise.resolve();
-  return stored("a rename", fate.mutations.renamePage({ input: { id, title: next }, optimistic: { title: next } }));
+  let titles = storing.get(fate);
+  if (!titles) storing.set(fate, (titles = new Map()));
+  const current = titles.get(id) ?? (fate.store.read(`Page:${id}`) as Partial<PageEntity> | undefined)?.title;
+  if (current === next) return Promise.resolve();
+  titles.set(id, next);
+  return stored("a rename", fate.mutations.renamePage({ input: { id, title: next }, optimistic: { title: next } })).finally(() => {
+    if (titles.get(id) === next) titles.delete(id);
+  });
 }
 
 /** Takes the page out of every cached list at once. Its body, and its children's, go when the server confirms. */

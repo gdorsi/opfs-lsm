@@ -40,6 +40,22 @@ test("a rename trims, shows at once, and an unchanged title sends nothing", asyn
   assert.deepEqual(serverIds(null), [id]);
 });
 
+test("a second rename to the same title before the first is stored sends nothing", async (t) => {
+  const { net, open } = workspace();
+  const fate = await open(memoryPagesStorage().fate);
+  t.after(() => fate.persistence!.dispose());
+  const id = await createPage(fate, { parent: null });
+  await delivered(fate);
+  net.up = false;
+  const renames = () => fate.persistence!.getSnapshot().mutations.filter((m) => m.name === "renamePage").map((m) => (m.input as { title: string }).title);
+  await Promise.all([renamePage(fate, id, "Notes"), renamePage(fate, id, " Notes")]);
+  assert.deepEqual(renames(), ["Notes"], "Enter then blur queue one rename");
+  await Promise.all([renamePage(fate, id, "Other"), renamePage(fate, id, "Notes")]);
+  assert.deepEqual(renames(), ["Notes", "Other", "Notes"], "a rename back to a title still being stored is sent");
+  net.up = true;
+  await delivered(fate);
+});
+
 test("a delete leaves every cached list at once, and the server drops the subtree", async (t) => {
   const { open, serverIds } = workspace();
   const fate = await open(memoryPagesStorage().fate);
