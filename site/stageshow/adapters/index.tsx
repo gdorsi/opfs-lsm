@@ -10,7 +10,7 @@ import "./adapters.css";
 // are how far each store got. A time's bars are how long each store took, so there the faster store's bar is the
 // shorter. The badge says which one won. Plays once; the still is the finished run.
 //
-// Every figure comes from the page's frontmatter, which repeats README.md's tables.
+// Every figure comes from the page's frontmatter, which the build checks against README.md.
 
 type Row = { readonly workload: string; readonly indexeddb: string; readonly kv: string; readonly ratio: string };
 /** `versus`: the baseline's name on its bar, IndexedDB unless the framework is compared with another store. */
