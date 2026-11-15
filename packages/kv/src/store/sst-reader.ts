@@ -73,11 +73,16 @@ type Page = { readonly buf: Uint8Array; readonly view: DataView };
 export class SstReader {
   private readonly runId: number;
 
-  /** `range` is undefined for a run with no keys. */
+  /**
+   * `range` is undefined for a run with no keys. `marksThrough` is the one its
+   * manifest entry records: the run holds no version past it. By default it
+   * claims nothing, so no mark lets a scan pass the run unread.
+   */
   constructor(
     private readonly file: RunFile,
     private readonly cache: PageCache,
     readonly range: KeyRange | undefined,
+    readonly marksThrough = Number.POSITIVE_INFINITY,
   ) {
     this.runId = cache.nextRunId();
   }

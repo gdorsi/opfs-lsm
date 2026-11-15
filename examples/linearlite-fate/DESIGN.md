@@ -1,6 +1,6 @@
 # LinearLite on fate: design
 
-The same Linear clone as `examples/linearlite` (list, board, issue detail, comments, filters, sorts, title search,
+The same Linear clone as `examples/linearlite-tanstackdb` (list, board, issue detail, comments, filters, sorts, title search,
 create, delete, a "not synced yet" dot), with fate as the client data layer instead of TanStack DB. fate keeps a
 normalized cache of what the screens fetched and a queue of offline mutations. Both persist through
 `@opfs-lsm/fate`'s `kvStorage` on kv, or through fate's own IndexedDB storage with `?storage=idb`, so the two can

@@ -45,7 +45,7 @@ export function scanLayers(
   return patterns && patterns.length > 0
     ? scanMatching(rows, levels, patterns, at, bounds, range.limit, reverse)
     : mergeCursors(
-        [entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse))],
+        [entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))],
         at,
         range?.limit,
         reverse,

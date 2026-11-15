@@ -383,14 +383,20 @@ function setEngine(next: FlatEngine | undefined): void {
   engine = next;
 }
 
+let engineUrlOverride: string | undefined;
+
 /**
- * A test swaps the engine by setting `globalThis.__OPFS_LSM_ENGINE_URL`
- * (a URL or path of a conformant `.wasm`) before the first engine call in
- * that context; it is read only here.
+ * Test seam: the next engine load in this context fetches this `.wasm` (a URL
+ * or a path relative to this module) instead of the bundled one. `undefined`
+ * restores the bundled engine.
  */
+export function setEngineUrlForTests(url: string | undefined): void {
+  engineUrlOverride = url;
+}
+
 function engineUrl(): URL {
-  const override = (globalThis as { __OPFS_LSM_ENGINE_URL?: unknown }).__OPFS_LSM_ENGINE_URL;
-  if (typeof override === "string") return new URL(override, import.meta.url);
+  if (engineUrlOverride !== undefined) return new URL(engineUrlOverride, import.meta.url);
+  // Keep this a literal `new URL(..., import.meta.url)`: bundlers emit the .wasm only for that form.
   return new URL("../../wasm/engine.wasm", import.meta.url);
 }
 
