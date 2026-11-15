@@ -1,0 +1,22 @@
+{
+  "name": "@opfs-lsm/example-whiteboard-yjs",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./model": "./src/model/index.ts",
+    "./persistence": "./src/persistence/index.ts"
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "fractional-indexing": "^3.2.0",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

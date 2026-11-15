@@ -53,8 +53,7 @@ export function kvStorage(db: Db): PersistenceStorage {
       if (typeof navigator === "undefined" || !navigator.locks) {
         throw new Error("fate kv storage needs Web Locks");
       }
-      const lock = await lockName(db.name, name);
-      return navigator.locks.request(lock, async () => {
+      return navigator.locks.request(lockName(db.name, name), async () => {
         // fate reads inside the lock and expects to see what another tab committed before it released this lock.
         await db.sync();
         return run();
@@ -94,9 +93,11 @@ function compare(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length;
 }
 
-async function lockName(dbName: string, name: string): Promise<string> {
+// Synchronous, so lock requests reach Web Locks in call order: fate queues journal writes through them.
+function lockName(dbName: string, name: string): string {
   const full = `fate-kv:${JSON.stringify([dbName, name])}`;
   if (full.length <= MAX_LOCK_NAME) return full;
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(full));
-  return `fate-kv:sha256:${Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of encoder.encode(full)) hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);
+  return `fate-kv:fnv1a64:${hash.toString(16)}`;
 }
