@@ -21,6 +21,7 @@
   "author": "Guido D'Orsi",
   "license": "MIT",
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
