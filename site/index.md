@@ -117,7 +117,7 @@ apps:
           kv: 137 ms
           ratio: 0.94×
 size:
-  main: 19.0 kB
+  main: 18.5 kB
 read:
   framework: TanStack DB
   workload: On-demand, 10 rows by id
@@ -159,10 +159,10 @@ demo:
 
 ### Lightweight, with super-fast loads
 
-19.0 kB at import, and up to 4.8× faster cold loads with the Yjs adapter
+18.5 kB at import, and up to 4.8× faster cold loads with the Yjs adapter
 
 ```ts
-// 19.0 kB gzip in your main bundle
+// 18.5 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
 // the SharedWorker and wasm load here
 const db = await openDb({ name: "app" });
