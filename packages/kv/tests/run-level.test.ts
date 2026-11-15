@@ -1,11 +1,13 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { compareBytes } from "../src/bytes.js";
-import { untilHit } from "../src/store/cursor.js";
-import { latestSstEntry, mergeCursors, runLevels } from "../src/store/read.js";
-import { encodeSst, type SstEntry } from "../src/store/sst.js";
-import type { SstReader } from "../src/store/sst-reader.js";
+import { compareBytes, containsAll } from "../src/bytes.js";
+import { untilHit, type ScanBounds } from "../src/store/cursor.js";
+import { latestSstEntry, mergeCursors, runLevels, scanMatching } from "../src/store/read.js";
+import { encodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
+import { bytesFile, SstReader } from "../src/store/sst-reader.js";
+import { PageCache } from "../src/store/page-cache.js";
 import { collect, readerOfBytes } from "./runs.js";
-import { NO_MARKS } from "../src/store/marks.js";
+import { coversRun, NO_MARKS, type Mark } from "../src/store/marks.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -93,5 +95,77 @@ describe("runLevels", () => {
     const rows = await scan(runLevels(paths, readers).map((l) => l.cursor()));
     const keys = rows.map((r) => enc.encode(r.split("=")[0]!));
     for (let i = 1; i < keys.length; i++) expect(compareBytes(keys[i - 1]!, keys[i]!)).toBeLessThan(0);
+  });
+});
+
+describe("a scan under range deletes", () => {
+  const KEYS = 16;
+  const cellArb = fc.option(fc.constantFrom("put", "del"), { nil: undefined, freq: 2 });
+  /** Newest first: up to three L0 runs, then one level of two disjoint runs. Every version is older than every mark. */
+  const layoutArb = fc.record({
+    l0: fc.array(fc.array(cellArb, { minLength: KEYS, maxLength: KEYS }), { minLength: 1, maxLength: 3 }),
+    l1: fc.array(cellArb, { minLength: KEYS, maxLength: KEYS }),
+    split: fc.integer({ min: 1, max: KEYS - 1 }),
+  });
+  const markArb = fc
+    .record({ a: fc.integer({ min: 0, max: KEYS }), span: fc.option(fc.integer({ min: 1, max: KEYS }), { nil: undefined }), through: fc.nat() })
+    .map(({ a, span, through }) => ({ start: key(a), ...(span === undefined ? {} : { endExclusive: key(a + span) }), through }));
+  const boundsArb = fc.record({
+    start: fc.option(fc.integer({ min: 0, max: KEYS }), { nil: undefined }),
+    end: fc.option(fc.integer({ min: 0, max: KEYS + 1 }), { nil: undefined }),
+  });
+
+  /** Readers and paths for `layout`, seqs assigned oldest first, each run claiming the last seq it holds. */
+  function build(layout: { l0: (string | undefined)[][]; l1: (string | undefined)[]; split: number }) {
+    let seq = 0;
+    const runOf = (cells: (string | undefined)[], from: number, to: number, tag: string, claim?: number) => {
+      const entries: SstEntry[] = [];
+      for (let i = from; i < to; i++) {
+        const kind = cells[i];
+        if (kind === "del") entries.push({ kind, key: key(i), seq: ++seq });
+        else if (kind === "put") entries.push({ kind, key: key(i), value: enc.encode(`${tag}${i % 3}`), seq: ++seq });
+      }
+      if (entries.length === 0) return undefined;
+      const body = encodeSst(entries, 64);
+      return { body, marksThrough: claim ?? seq };
+    };
+    const l1 = [runOf(layout.l1, 0, layout.split, "l1:"), runOf(layout.l1, layout.split, KEYS, "l1:")];
+    const l1Through = seq;
+    const l0 = layout.l0.map((cells, i) => runOf(cells, 0, KEYS, `l0${i}:`)).reverse();
+    const runs = [
+      ...l0.flatMap((r, i) => (r ? [{ ...r, path: `l0/${i}.sst` }] : [])),
+      ...l1.flatMap((r, i) => (r ? [{ ...r, marksThrough: l1Through, path: `l1/c1.${i}.sst` }] : [])),
+    ];
+    return { runs, maxSeq: seq };
+  }
+
+  const show = (e: { key: Uint8Array; value: Uint8Array }) => `${dec.decode(e.key)}=${dec.decode(e.value)}`;
+
+  it("yields what reading every run yields, forward, backward and with valueContains", async () => {
+    let passedOver = 0;
+    await fc.assert(
+      fc.asyncProperty(layoutArb, fc.array(markArb, { maxLength: 3 }), boundsArb, fc.constantFrom("0", "1", "l0"), async (layout, raw, b, pattern) => {
+        const { runs, maxSeq } = build(layout);
+        const marks: Mark[] = raw.map((m) => ({ ...m, through: 1 + (m.through % (maxSeq + 1)), at: maxSeq + 2 }));
+        const bounds: ScanBounds = {
+          ...(b.start === undefined ? {} : { start: key(b.start) }),
+          ...(b.end === undefined ? {} : { endExclusive: key(b.end) }),
+        };
+        const cache = new PageCache();
+        const readers = runs.map((r) => new SstReader(bytesFile(r.body), cache, sstKeyRange(r.body), r.marksThrough));
+        const levels = runLevels(runs.map((r) => r.path), readers);
+        passedOver += readers.filter((r) => r.range && coversRun(marks, { range: r.range, marksThrough: r.marksThrough }, bounds)).length;
+        const patterns = [enc.encode(pattern)];
+        for (const reverse of [false, true]) {
+          const want = (await collect(mergeCursors(levels.map((l) => l.cursor(bounds, reverse)), marks, undefined, reverse))).map(show);
+          const got = (await collect(mergeCursors(levels.map((l) => l.cursor(bounds, reverse, marks)), marks, undefined, reverse))).map(show);
+          expect(got).toEqual(want);
+          const matching = (await collect(scanMatching([], levels, patterns, marks, bounds, undefined, reverse))).map(show);
+          expect(matching).toEqual(want.filter((row) => containsAll(enc.encode(row.split("=")[1]!), patterns)));
+        }
+      }),
+      { numRuns: 300 },
+    );
+    expect(passedOver).toBeGreaterThan(30);
   });
 });

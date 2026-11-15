@@ -2,7 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { decodeMarks, encodeMarks, retireMarks, throughAt, type Mark } from "../src/store/marks.js";
+import { coversRun, decodeMarks, encodeMarks, retireMarks, throughAt, type Mark } from "../src/store/marks.js";
 
 type RunMarkInfo = Parameters<typeof retireMarks>[1][number];
 
@@ -67,6 +67,41 @@ describe("marks", () => {
         },
       ),
     );
+  });
+
+  it("says a mark covers a run only when it covers every version the run can hold within the bounds", () => {
+    const boundsArb = fc.record({ start: fc.option(keyArb, { nil: undefined }), endExclusive: fc.option(keyArb, { nil: undefined }) });
+    const held = fc.array(fc.tuple(keyArb, fc.integer({ min: 1, max: 45 })), { maxLength: 30 });
+    fc.assert(
+      fc.property(marksArb, runArb, boundsArb, held, (list, run, bounds, versions) => {
+        const { range } = run;
+        const covered = range !== undefined && coversRun(list, { range, marksThrough: run.marksThrough }, bounds);
+        for (const [key, seq] of versions) {
+          const holdable =
+            covered &&
+            compareBytes(key, range.smallest) >= 0 &&
+            compareBytes(key, range.largest) <= 0 &&
+            (!bounds.start || compareBytes(key, bounds.start) >= 0) &&
+            (!bounds.endExclusive || compareBytes(key, bounds.endExclusive) < 0) &&
+            seq <= run.marksThrough;
+          expect(!holdable || seq <= throughAt(list, key)).toBe(true);
+        }
+      }),
+    );
+  });
+
+  it("covers a run whose span within the bounds lies in one mark, up to that mark's through", () => {
+    const run = { range: { smallest: k("a"), largest: k("z") }, marksThrough: 7 };
+    const m = [{ start: k("m/"), endExclusive: k("m0"), through: 7, at: 9 }];
+    expect(coversRun(m, run, { start: k("m/"), endExclusive: k("m0") })).toBe(true);
+    expect(coversRun(m, run, { start: k("m/1"), endExclusive: k("m/2") })).toBe(true);
+    expect(coversRun(m, run, undefined)).toBe(false);
+    expect(coversRun(m, run, { start: k("m/"), endExclusive: k("n") })).toBe(false);
+    expect(coversRun(m, run, { start: k("l"), endExclusive: k("m0") })).toBe(false);
+    expect(coversRun(m, { ...run, marksThrough: 8 }, { start: k("m/"), endExclusive: k("m0") })).toBe(false);
+    const inside = { range: { smallest: k("m/1"), largest: k("m/9") }, marksThrough: 7 };
+    expect(coversRun(m, inside, undefined)).toBe(true);
+    expect(coversRun([], inside, undefined)).toBe(false);
   });
 
   it("retires a mark once no run that can hold it is listed", () => {
