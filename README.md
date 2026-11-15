@@ -111,20 +111,20 @@ The tables above time storage calls. These time what the user of an app waits fo
 | First rows, once the database is open | 803 ms | 35.8 ms | 22× |
 | Cold open, the status counts once the total shows | 3.4 ms | 22.0 ms | 0.15× |
 | Change the sort | 705 ms | 4.5 ms | 157× |
-| Filter by status or priority | 999 ms | 12.5 ms | 80× |
-| Search, per keystroke | 999 ms | 11.0 ms | 91× |
+| Filter by status or priority, the list | 999 ms | 12.5 ms | 80× |
+| Search, per keystroke, the list | 999 ms | 11.0 ms | 91× |
 | Jump deep into the list | 1.0 s | 100 ms | 10× |
 | Open the board | 4.0 s | 17.9 ms | 223× |
 | Open a thread, fetched from the server | 5.8 ms | 2.0 ms | 3.0× |
 | Main thread blocked while typing a search | 3.4 s | 0 ms | |
 
-After a cold open, docstore shows the list's total 72 ms after its first rows. SQLite reads every matching row before it shows any, so its total comes with them.
+After a cold open, docstore shows the list's total 72 ms after its first rows. SQLite reads every matching row before it shows any, so its total comes with them. The status counts follow the list: after a filter they take 2.62 ms on docstore against 84.0 ms on SQLite, and per keystroke 7.81 ms against 250 ms.
 
 **Whiteboard, 1,000 shapes.** [`examples/whiteboard-yjs`](examples/whiteboard-yjs) through `@opfs-lsm/yjs`, against y-indexeddb.
 
 | Step | y-indexeddb | opfs-lsm | |
 | --- | ---: | ---: | ---: |
-| Open a new board, then draw 1,000 shapes | 43.6 ms | 46.2 ms | 0.94× |
+| Open the database and a new board, then draw 1,000 shapes | 43.6 ms | 46.2 ms | 0.94× |
 | 1,000 edits, until saved | 97.7 ms | 38.7 ms | 2.5× |
 | The save after the last edit | 58.4 ms | 0.34 ms | 170× |
 | 100 undos and redos, until saved | 17.6 ms | 6.5 ms | 2.7× |
@@ -134,7 +134,7 @@ After a cold open, docstore shows the list's total 72 ms after its first rows. S
 
 The session never pauses for a second, so neither store merges the board's updates while it is open, and the reopen replays every one of them.
 
-**Pages, a 50 KB page and 1,000 keystrokes.** [`examples/pages-fate-automerge`](examples/pages-fate-automerge) with fate's cache and the Automerge page bodies on one kv database, against `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`. Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps everything in memory, either store adds at most 8 ms to opening a page, pasting or a keystroke.
+**Pages, a 50 KB page and 1,000 keystrokes.** [`examples/pages-fate-automerge`](examples/pages-fate-automerge) with fate's cache and the Automerge page bodies on one kv database, against `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps everything in memory, either store adds at most 8 ms to opening a page, pasting or a keystroke.
 
 | Step | IndexedDB | opfs-lsm | |
 | --- | ---: | ---: | ---: |
