@@ -71,7 +71,7 @@ function invalid(edit: TextEdit, why: string): PagesError {
  * when the rule disagrees with `insert.marks`, so typing inside or after a
  * run usually needs no mark ops at all.
  */
-const EXPAND = { bold: "after", italic: "after", code: "after", link: "none" } as const satisfies Record<MarkName, string>;
+export const EXPAND = { bold: "after", italic: "after", code: "after", link: "none" } as const satisfies Record<MarkName, string>;
 
 function setMark(d: A.Doc<BodyDoc>, start: number, end: number, name: MarkName, value: string | true | null): void {
   const range = { start, end, expand: EXPAND[name] };

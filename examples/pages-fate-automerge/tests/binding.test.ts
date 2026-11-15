@@ -11,6 +11,7 @@ import { ReplaceAroundStep } from "prosemirror-transform";
 import { applyLocal, bodyState, localEdits, remoteTransaction, UnsupportedStep } from "../src/editor/binding.ts";
 import { docToSpans, schema } from "../src/editor/schema.ts";
 import { newPageId, openBodies } from "../src/model/bodies.ts";
+import { EXPAND } from "../src/model/text-edits.ts";
 import type { PageBody, TextEdit } from "../src/model/types.ts";
 import { memoryBodies } from "../src/storage/memory.ts";
 import { random } from "../src/testing/random-edits.ts";
@@ -51,6 +52,10 @@ const type = (text: string): Command => (s, d) => d(s.tr.insertText(text));
 const tr = (build: (s: EditorState) => Transaction): Command => (s, d) => d(build(s));
 const blockStart = (s: EditorState) => s.selection.$from.start(1);
 const blockEnd = (s: EditorState) => s.selection.$from.end(1);
+
+test("a mark extends to typed text in PM exactly when Automerge expands it", () => {
+  for (const [name, expand] of Object.entries(EXPAND)) assert.equal(schema.marks[name]!.spec.inclusive ?? true, expand === "after", name);
+});
 
 test("every editing command keeps the oracle, the model and PM equal", async (t) => {
   const bodies = openBodies({ storage: memoryBodies() });
