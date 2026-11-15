@@ -7,8 +7,8 @@ const schema = defineSchema<{ [TODO_TABLE]: Todo }>()({
   version: 1,
   collections: {
     [TODO_TABLE]: {
-      [OWNER_INDEX]: { on: "owner" },
-      [CREATED_INDEX]: { on: "createdAt" },
+      [OWNER_INDEX]: { by: "owner" },
+      [CREATED_INDEX]: { by: "createdAt" },
     },
   },
 });

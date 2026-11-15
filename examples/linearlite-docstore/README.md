@@ -14,10 +14,10 @@ On first load it holds no issue. **Generate** makes 100,000 issues in a dedicate
 An issue is one document. Four indexes serve the list, and every total is a count of index entries, which reads no document.
 
 ```ts
-byModified: { on: "modified", text: "title" },
-byCreated:  { on: "created" },
-byStatus:   { on: ["status", "priority", "modified"] },
-byPriority: { on: ["priority", "status", "modified"] },
+byModified: { by: "modified", text: "title" },
+byCreated:  { by: "created" },
+byStatus:   { by: ["status", "priority", "modified"] },
+byPriority: { by: ["priority", "status", "modified"] },
 ```
 
 | List | Rows | Total |

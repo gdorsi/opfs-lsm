@@ -44,7 +44,7 @@ export async function openIndexedDbBackend(name: string, { hidden = () => false,
           ...(store === "issues" && { defaultStringCollation: { stringSort: "lexical" } }),
         }),
       );
-      const fields = new Set(Object.values<{ on: string | readonly string[] }>(STORES[store].indexes).flatMap((index) => [index.on].flat()));
+      const fields = new Set(Object.values<{ by: string | readonly string[] }>(STORES[store].indexes).flatMap((index) => [index.by].flat()));
       // An index serves a query only when its collation is the query's, which the issues' collection sets.
       const options = store === "issues" ? { compareOptions: { direction: "asc" as const, nulls: "first" as const, stringSort: "lexical" as const } } : undefined;
       for (const field of fields) collection.createIndex((row) => (row as unknown as Record<string, never>)[field], { indexType: BTreeIndex, options });

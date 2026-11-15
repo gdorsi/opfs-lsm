@@ -49,12 +49,12 @@ export const STORES = {
     load: "on-demand",
     pull: "full",
     indexes: {
-      byCreated: { on: ["deleted", "created"] },
-      byTitle: { on: ["deleted", "title"] },
-      byPriority: { on: ["deleted", "priority", "priorityOrder"] },
-      byStatus: { on: ["deleted", "status", "statusOrder"], text: "title" },
-      search: { on: ["deleted", "modified"], text: "title" },
-      pending: { on: "pending" },
+      byCreated: { by: ["deleted", "created"] },
+      byTitle: { by: ["deleted", "title"] },
+      byPriority: { by: ["deleted", "priority", "priorityOrder"] },
+      byStatus: { by: ["deleted", "status", "statusOrder"], text: "title" },
+      search: { by: ["deleted", "modified"], text: "title" },
+      pending: { by: "pending" },
     },
     table: "issue",
     fields: {
@@ -73,7 +73,7 @@ export const STORES = {
   bodies: stream<Body, Body>()({
     load: "on-demand",
     pull: "threads",
-    indexes: { pending: { on: "pending" } },
+    indexes: { pending: { by: "pending" } },
     table: "body",
     fields: {
       id: { sql: "text", ref: "issues" },
@@ -84,7 +84,7 @@ export const STORES = {
   comments: stream<Comment, Comment, "key">()({
     load: "on-demand",
     pull: "threads",
-    indexes: { byIssue: { on: "issue_id" }, pending: { on: "pending" } },
+    indexes: { byIssue: { by: "issue_id" }, pending: { by: "pending" } },
     table: "comment",
     fields: {
       id: { sql: "text" },

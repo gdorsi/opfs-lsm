@@ -40,11 +40,11 @@ const schema = defineSchema<{ docs: Doc }>()({
   version: 1,
   collections: {
     docs: {
-      byN: { on: "n" },
-      byGN: { on: ["g", "n"] },
-      byKS: { on: ["k", "s"] },
-      byGS: { on: ["g", "s"] },
-      search: { on: ["k", "n"], text: "t" },
+      byN: { by: "n" },
+      byGN: { by: ["g", "n"] },
+      byKS: { by: ["k", "s"] },
+      byGS: { by: ["g", "s"] },
+      search: { by: ["k", "n"], text: "t" },
     },
   },
 });

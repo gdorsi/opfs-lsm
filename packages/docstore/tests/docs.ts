@@ -18,11 +18,11 @@ export const schema = defineSchema<{ docs: Doc }>()({
   version: 1,
   collections: {
     docs: {
-      one: { on: "a" },
-      two: { on: ["a", "b"] },
-      tags: { on: ["tags", "b"], multi: true },
-      uniq: { on: "u", unique: true },
-      search: { on: "a", text: "t" },
+      one: { by: "a" },
+      two: { by: ["a", "b"] },
+      tags: { by: ["tags[]", "b"] },
+      uniq: { by: "u", unique: true },
+      search: { by: "a", text: "t" },
     },
   },
 });

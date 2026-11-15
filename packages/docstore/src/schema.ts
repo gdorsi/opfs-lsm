@@ -38,7 +38,7 @@ type PathTo<T, Leaf, D extends number = 3> = [D] extends [never]
 
 /** Paths to a scalar. */
 type ScalarPath<T> = PathTo<T, Scalar>;
-/** Paths to an array of scalars: the first path of a `multi` index. */
+/** Paths to an array of scalars: the first field of a multi index, written with a `[]` suffix. */
 type ArrayPath<T> = PathTo<T, readonly Scalar[]>;
 /** Paths to a string: the `text` of a text index. */
 type StringPath<T> = PathTo<T, string>;
@@ -47,71 +47,89 @@ type At<T, P extends string> = P extends `${infer H}.${infer R}`
   ? At<Defined<T[H & keyof T]>, R>
   : Defined<T[P & keyof T]>;
 
-type Paths<P> = P | readonly [P, ...P[]];
+/** A scalar field, or an array field marked with `[]`. Only the first field may be an array field. */
+type Fields<T> = readonly [ScalarPath<T> | `${ArrayPath<T>}[]`, ...ScalarPath<T>[]];
 
 /**
- * One index of a collection. Three kinds, told apart by their fields:
+ * One index of a collection, ordered by the values at `by`, then the id.
  *
- * - sorted, `{ on, unique? }`: one entry per document, ordered by the values
- *   at `on`, then the id.
- * - multi, `{ on, multi: true, unique? }`: the first path of `on` holds an
- *   array; one entry per distinct element, each followed by the rest of `on`.
- * - text, `{ on, text }`: a sorted index on `on` whose entries also carry the
- *   words of the string at `text`, for `query({ match })`.
+ * - `by`: a field or a list of fields. An array field is written with a `[]`
+ *   suffix and only the first may be one: the index then has one entry per
+ *   distinct element, each followed by the rest of `by`.
+ * - `unique`: no two documents share the values at `by`.
+ * - `text`: a string field whose words the entries also carry, for
+ *   `query({ match })`. Not with `unique`, nor with a `[]` first field.
  */
-export type IndexDecl<T> =
-  | {
-      readonly on: Paths<ScalarPath<T>>;
-      readonly unique?: boolean;
-      readonly multi?: false;
-      readonly text?: undefined;
-    }
-  | {
-      readonly on: ArrayPath<T> | readonly [ArrayPath<T>, ...ScalarPath<T>[]];
-      readonly multi: true;
-      readonly unique?: boolean;
-      readonly text?: undefined;
-    }
-  | {
-      readonly on: Paths<ScalarPath<T>>;
-      readonly text: StringPath<T>;
-      readonly unique?: false;
-      readonly multi?: false;
-    };
+export type IndexDecl<T> = {
+  readonly by: Fields<T> | Fields<T>[0];
+  readonly unique?: boolean;
+  readonly text?: StringPath<T>;
+};
+
+type Options = { readonly by?: unknown; readonly unique?: unknown; readonly text?: unknown };
+
+/**
+ * What a declaration must not be, as a type that fails with the reason: it
+ * replaces the offending option by one that holds the message. The patterns
+ * name every option, because an object literal type with a property the
+ * pattern lacks does not extend it.
+ */
+type Rule<D> = D extends Options & { readonly text: string; readonly unique: true }
+  ? Omit<D, "unique"> & { readonly unique: { readonly error: "a text index cannot be unique" } }
+  : D extends Options & { readonly text: string; readonly by: `${string}[]` | readonly [`${string}[]`, ...unknown[]] }
+    ? Omit<D, "by"> & { readonly by: "a text index cannot start with an array field" }
+    : D;
 
 type IndexDecls<T> = { readonly [index: string]: IndexDecl<T> };
 
-type SchemaDecl<Docs extends DocsMap> = {
-  /** An integer >= 1, bumped on every change to `collections`. */
-  readonly version: number;
-  readonly collections: { readonly [C in keyof Docs]: IndexDecls<Docs[C]> };
-  /**
-   * Collections to delete, with every document and index, when this version
-   * is stored. A collection only left out of `collections` is kept.
-   */
-  readonly drop?: readonly string[];
+type Collections<Docs extends DocsMap> = { readonly [C in keyof Docs]: IndexDecls<Docs[C]> };
+
+/**
+ * What the inferred collections must satisfy. A collection with no indexes
+ * infers as `unknown`, which it also allows. An index with an option
+ * `IndexDecl` lacks (`uniqe`) fails this, and TypeScript then checks the
+ * declaration against `IndexDecl` itself, which names the option.
+ */
+type Declarable<Docs extends DocsMap, Cs> = {
+  readonly [C in keyof Docs]: unknown extends (C extends keyof Cs ? Cs[C] : never) ? unknown : IndexDecls<Docs[C]>;
 };
 
 declare const docsType: unique symbol;
 
 /** A declared schema that remembers its document types. Made by `defineSchema`. */
-export type Schema<Docs extends DocsMap = DocsMap, Decl extends SchemaDecl<Docs> = SchemaDecl<Docs>> = Decl & {
+export type Schema<Docs extends DocsMap = DocsMap, Cs = Collections<Docs>> = {
+  /** An integer >= 1, bumped on every change to `collections`. */
+  readonly version: number;
+  readonly collections: Cs;
+  /**
+   * Collections to delete, with every document and index, when this version
+   * is stored. A collection only left out of `collections` is kept.
+   */
+  readonly drop?: readonly string[];
   readonly [docsType]?: Docs;
 };
 
+/** The collections as `defineSchema` takes them: each index is inferred, then checked against `Rule` and the `Docs` of its collection. */
+type Checked<Docs extends DocsMap, Cs> = {
+  readonly [C in keyof Cs]: { readonly [I in keyof Cs[C]]: Rule<Cs[C][I]> & IndexDecl<Docs[C & keyof Docs]> };
+} & { readonly [C in Exclude<keyof Cs, keyof Docs>]: "not a collection of the document types" };
+
+/** Inference through `Checked` leaves each index a fresh object literal, which an `extends` check rejects for a property it does not name. A copy is a plain object type. */
+type Plain<Cs> = { readonly [C in keyof Cs]: { readonly [I in keyof Cs[C]]: { readonly [O in keyof Cs[C][I]]: Cs[C][I][O] } } };
+
 /**
  * Curried so the document types are given and the declaration is inferred
- * with literal paths, which the query types read.
+ * with literal fields, which the query types read.
  *
- *     defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byCreated: { on: "createdAt" } } } })
+ *     defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byCreated: { by: "createdAt" } } } })
  */
-export function defineSchema<Docs extends DocsMap>(): <const Decl extends SchemaDecl<Docs>>(
-  schema: Decl,
-) => Schema<Docs, Decl> {
-  return (schema) => schema;
+export function defineSchema<Docs extends DocsMap>(): <const Cs extends Declarable<Docs, Cs>>(
+  schema: Schema<Docs, Checked<Docs, Cs>>,
+) => Schema<Docs, Plain<Cs>> {
+  return (schema) => schema as never;
 }
 
-/** What `openDocStore` accepts. Looser than `Schema`: `defineSchema` already checked the paths. */
+/** What `openDocStore` accepts. Looser than `Schema`: `defineSchema` already checked the fields. */
 export type AnySchema = {
   readonly version: number;
   readonly collections: { readonly [collection: string]: { readonly [index: string]: object } };
@@ -131,10 +149,10 @@ export type IndexesOf<S, C extends string> = S extends { readonly collections: i
 /** What a declared index is, for layers that plan queries. */
 export type IndexInfo = {
   readonly kind: "sorted" | "multi" | "text";
-  /** The dot paths the index orders by. */
-  readonly on: readonly string[];
+  /** The fields the index orders by, as declared. The first field of a multi index ends in `[]`. */
+  readonly by: readonly string[];
   readonly unique: boolean;
-  /** The dot path of a text index's words. */
+  /** The field whose words a text index carries. */
   readonly text?: string;
 };
 
@@ -146,17 +164,17 @@ declare const cursorBrand: unique symbol;
  */
 export type Cursor = string & { readonly [cursorBrand]: true };
 
-type OnTuple<D> = D extends { readonly on: infer On } ? (On extends string ? readonly [On] : On) : never;
+type ByTuple<D> = D extends { readonly by: infer B } ? (B extends string ? readonly [B] : B) : never;
 
 type ValuesAt<T, Ps> = { -readonly [K in keyof Ps]: At<T, Ps[K] & string> };
 type ElementOf<A> = A extends readonly (infer E)[] ? E : never;
 
-/** The value tuple an index orders by. A multi index's first component is the element type. */
-type ValuesOf<T, D> = D extends { readonly multi: true }
-  ? OnTuple<D> extends readonly [infer F extends string, ...infer R]
-    ? [ElementOf<At<T, F>>, ...ValuesAt<T, R>]
-    : never
-  : ValuesAt<T, OnTuple<D>>;
+/** The value tuple an index orders by. A `[]` first field contributes the element type of its array. */
+type ValuesOf<T, D> = ByTuple<D> extends readonly [infer F extends string, ...infer R]
+  ? F extends `${infer A}[]`
+    ? [ElementOf<At<T, A>>, ...ValuesAt<T, R>]
+    : ValuesAt<T, ByTuple<D>>
+  : never;
 
 /** A bound on one component. `startsWith` only for string components. `Bound<never>` forbids every bound. */
 type Bound<H> = {

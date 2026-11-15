@@ -208,15 +208,15 @@ reloads every loaded query.
 ```ts
 // src/domain/stores.ts, STORES[stream].indexes
 issues: {
-  byCreated:  { on: ["deleted", "created"] },
-  byTitle:    { on: ["deleted", "title"] },
-  byPriority: { on: ["deleted", "priority", "priorityOrder"] },
-  byStatus:   { on: ["deleted", "status", "statusOrder"], text: "title" },
-  search:     { on: ["deleted", "modified"], text: "title" },
-  pending:    { on: "pending" },
+  byCreated:  { by: ["deleted", "created"] },
+  byTitle:    { by: ["deleted", "title"] },
+  byPriority: { by: ["deleted", "priority", "priorityOrder"] },
+  byStatus:   { by: ["deleted", "status", "statusOrder"], text: "title" },
+  search:     { by: ["deleted", "modified"], text: "title" },
+  pending:    { by: "pending" },
 },
-bodies:   { pending: { on: "pending" } },
-comments: { byIssue: { on: "issue_id" }, pending: { on: "pending" } },
+bodies:   { pending: { by: "pending" } },
+comments: { byIssue: { by: "issue_id" }, pending: { by: "pending" } },
 ```
 
 Every list read pins `deleted = false`, so every ordered index leads with `deleted`: the adapter reads an ordered
