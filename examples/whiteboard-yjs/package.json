@@ -11,7 +11,7 @@
     "build": "vite build",
     "start": "vite preview",
     "check": "tsc -p tsconfig.json",
-    "test": "tsx --test tests/*.test.ts tests/contract/*.test.ts && pnpm test:kv && pnpm test:idb",
+    "test": "tsx --test tests/*.test.ts tests/contract/*.test.ts tests/app/*.test.ts && pnpm test:kv && pnpm test:idb",
     "test:kv": "WB_STORAGE=kv tsx --test tests/*.test.ts",
     "test:idb": "WB_STORAGE=idb tsx --test tests/*.test.ts"
   },
