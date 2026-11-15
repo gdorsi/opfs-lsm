@@ -2,12 +2,13 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { compareBytes, containsAll } from "../src/bytes.js";
 import { untilHit, type ScanBounds } from "../src/store/cursor.js";
-import { latestSstEntry, mergeCursors, runLevels, scanMatching } from "../src/store/read.js";
+import { countOf, entriesOf, latestSstEntry, matchingStep, mergeCursors, runLevels, type RunLevel } from "../src/store/read.js";
+import { countLayers, scanLayers } from "../src/view.js";
 import { encodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { collect, readerOfBytes } from "./runs.js";
-import { coversRun, NO_MARKS, type Mark } from "../src/store/marks.js";
+import { coversRun, NO_MARKS, type Mark, type Marks } from "../src/store/marks.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -160,12 +161,37 @@ describe("a scan under range deletes", () => {
           const want = (await collect(mergeCursors(levels.map((l) => l.cursor(bounds, reverse)), marks, undefined, reverse))).map(show);
           const got = (await collect(mergeCursors(levels.map((l) => l.cursor(bounds, reverse, marks)), marks, undefined, reverse))).map(show);
           expect(got).toEqual(want);
-          const matching = (await collect(scanMatching([], levels, patterns, marks, bounds, undefined, reverse))).map(show);
+          const matching = (await collect(entriesOf(matchingStep([], levels, patterns, marks, bounds, reverse)))).map(show);
           expect(matching).toEqual(want.filter((row) => containsAll(enc.encode(row.split("=")[1]!), patterns)));
+          expect(await countOf(matchingStep([], levels, patterns, marks, bounds, reverse))).toBe(matching.length);
         }
       }),
       { numRuns: 300 },
     );
     expect(passedOver).toBeGreaterThan(30);
+  });
+});
+
+describe("the layers a view reads", () => {
+  it("hands its marks to every level, so a scan and a count both pass over a run a range delete covers", async () => {
+    const { paths, readers } = layout();
+    const levels = runLevels(paths, readers);
+    const marks: Marks = [{ start: key(0), endExclusive: key(60), through: 1, at: 2 }];
+    const bounds: ScanBounds = { start: key(10), endExclusive: key(50) };
+    for (const read of [scanLayers, countLayers]) {
+      for (const range of [undefined, { valueContains: [enc.encode("l1")] }]) {
+        const seen: (Marks | undefined)[] = [];
+        const spied = levels.map((level) =>
+          Object.assign(Object.create(level) as RunLevel, {
+            cursor: (b: ScanBounds | undefined, r: boolean, m?: Marks) => (seen.push(m), level.cursor(b, r, m)),
+            scanContains: (p: readonly Uint8Array[], b: ScanBounds | undefined, r: boolean, m?: Marks) => (seen.push(m), level.scanContains(p, b, r, m)),
+          }),
+        );
+        const out = read([], spied, marks, bounds, range);
+        await (Symbol.asyncIterator in out ? collect(out) : out);
+        expect(seen.length).toBeGreaterThan(0);
+        expect(seen.every((m) => m === marks)).toBe(true);
+      }
+    }
   });
 });

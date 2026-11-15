@@ -295,36 +295,32 @@ class Merge {
 }
 
 /**
- * `cursors[0]` is newest. Yields live puts only, up to `limit`. With `reverse`
- * every cursor runs backward and so does the merge. Tombstones and covered
- * versions are not counted and not yielded. Awaits only on a miss.
+ * A scan's next live put, or undefined at its end. Sync until a cursor
+ * misses; after a Miss, call it again once the Miss is ready and it goes on
+ * from the same place.
  */
-export async function* mergeCursors(
-  cursors: readonly LayerCursor[],
-  marks: Marks,
-  limit?: number,
-  reverse = false,
-): AsyncGenerator<Entry> {
+export type ScanStep = () => Maybe<LayerEntry | undefined>;
+
+/**
+ * The live puts of `cursors`, `cursors[0]` newest. With `reverse` every
+ * cursor runs backward and so does the merge. Tombstones and covered
+ * versions are skipped.
+ */
+export function liveStep(cursors: readonly LayerCursor[], marks: Marks, reverse = false): ScanStep {
   const merge = new Merge(cursors, reverse);
-  let yielded = 0;
-  for (;;) {
-    if (limit !== undefined && yielded >= limit) return;
-    let w = merge.next();
-    if (w instanceof Miss) w = await untilHit(() => merge.next(), w);
-    if (!w) return;
-    if (gone(w.entry, throughAt(marks, w.entry.key))) continue;
-    yield {
-      key: new Uint8Array(w.entry.key),
-      value: new Uint8Array(w.entry.value!),
-    };
-    yielded += 1;
-  }
+  return () => {
+    for (;;) {
+      const w = merge.next();
+      if (w instanceof Miss || !w) return w;
+      if (!gone(w.entry, throughAt(marks, w.entry.key))) return w.entry;
+    }
+  };
 }
 
 /**
  * The live puts in `bounds` whose current value holds every pattern, in key
- * order (descending with `reverse`), each key once, up to `limit`. `rows` is
- * the memtable slice for `bounds`, ascending and newer than every level.
+ * order (descending with `reverse`), each key once. `rows` is the memtable
+ * slice for `bounds`, ascending and newer than every level.
  *
  * Each source filters on its own: memtable rows in JS, each level's runs in
  * wasm per block, so a block with no hit costs no JS per row. The newest
@@ -334,37 +330,71 @@ export async function* mergeCursors(
  * sources, mostly their Bloom filters, and leaves the page the match came
  * from untouched, so a scan does not count as reuse in the cache.
  */
-export async function* scanMatching(
+export function matchingStep(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
   patterns: readonly Uint8Array[],
   marks: Marks,
   bounds?: ScanBounds,
-  limit?: number,
   reverse = false,
-): AsyncGenerator<Entry> {
+): ScanStep {
   const merge = new Merge(
     [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse, marks))],
     reverse,
   );
-  let yielded = 0;
-  for (;;) {
-    if (limit !== undefined && yielded >= limit) return;
-    let w = merge.next();
-    if (w instanceof Miss) w = await untilHit(() => merge.next(), w);
-    if (!w) return;
-    const { entry, source } = w;
-    if (source > 0) {
-      const i = lowerBoundKeys(rows, entry.key);
-      if (i < rows.length && compareBytes(rows[i]!.key, entry.key) === 0) continue;
-      let newer = shadowed(levels, source - 1, entry.key);
-      if (newer instanceof Miss) newer = await untilHit(() => shadowed(levels, source - 1, entry.key), newer);
-      if (newer) continue;
+  /** A match whose check against the newer sources missed, checked again on the next call. */
+  let held: Winner | undefined;
+  return () => {
+    for (;;) {
+      const w = held ?? merge.next();
+      if (w instanceof Miss || !w) return w;
+      held = undefined;
+      const { entry, source } = w;
+      if (source > 0) {
+        const i = lowerBoundKeys(rows, entry.key);
+        if (i < rows.length && compareBytes(rows[i]!.key, entry.key) === 0) continue;
+        const newer = shadowed(levels, source - 1, entry.key);
+        if (newer instanceof Miss) {
+          held = w;
+          return newer;
+        }
+        if (newer) continue;
+      }
+      if (!gone(entry, throughAt(marks, entry.key))) return entry;
     }
-    if (gone(entry, throughAt(marks, entry.key))) continue;
-    yield { key: new Uint8Array(entry.key), value: new Uint8Array(entry.value!) };
-    yielded += 1;
+  };
+}
+
+/** Copies of the entries of `step`, up to `limit`. Awaits only on a miss. */
+export async function* entriesOf(step: ScanStep, limit?: number): AsyncGenerator<Entry> {
+  for (let n = 0; limit === undefined || n < limit; n++) {
+    let e = step();
+    if (e instanceof Miss) e = await untilHit(step, e);
+    if (!e) return;
+    yield { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) };
   }
+}
+
+/** How many entries `step` has, up to `limit`, read without copying one. Awaits only on a miss. */
+export async function countOf(step: ScanStep, limit?: number): Promise<number> {
+  let n = 0;
+  while (limit === undefined || n < limit) {
+    let e = step();
+    if (e instanceof Miss) e = await untilHit(step, e);
+    if (!e) break;
+    n++;
+  }
+  return n;
+}
+
+/** `entriesOf` the live puts of `cursors`, `cursors[0]` newest. */
+export function mergeCursors(
+  cursors: readonly LayerCursor[],
+  marks: Marks,
+  limit?: number,
+  reverse = false,
+): AsyncGenerator<Entry> {
+  return entriesOf(liveStep(cursors, marks, reverse), limit);
 }
 
 /** Whether a level before `level` holds `key`. */

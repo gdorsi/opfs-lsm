@@ -144,6 +144,15 @@ export class Oracle {
     return out;
   }
 
+  /** Every `p` in `[lo, head]` where `range` returns `n` entries. */
+  countCandidates(range: OracleRange, n: number, lo: number): number[] {
+    const out: number[] = [];
+    for (let p = lo; p <= this.head; p++) {
+      if (this.rangeAt(range, p).length === n) out.push(p);
+    }
+    return out;
+  }
+
   /** Every `p` in `[lo, head]` where `range` returns `observed`. */
   rangeCandidates(range: OracleRange, observed: readonly OracleEntry[], lo: number): number[] {
     const out: number[] = [];
@@ -186,6 +195,12 @@ export class Reader {
     );
   }
 
+  count(range: OracleRange, n: number): void {
+    this.settle(this.oracle.countCandidates(range, n, this.floor), () =>
+      `count(${showRange(range)}) = ${n}; expected ${this.oracle.rangeAt(range).length} at head ${this.oracle.head}`,
+    );
+  }
+
   /**
    * A view's reads, all at one `p`. Each read narrows the candidates;
    * `finish` checks they still meet and moves the floor.
@@ -211,6 +226,8 @@ export class Reader {
         narrow(this.oracle.rangeCandidates(range, observed, floor), () =>
           `range(${showRange(range)}) = ${showEntries(observed)}`,
         ),
+      count: (range, n) =>
+        narrow(this.oracle.countCandidates(range, n, floor), () => `count(${showRange(range)}) = ${n}`),
       finish: () => {
         if (candidates) this.floor = Math.max(this.floor, Math.min(...candidates));
       },
@@ -228,6 +245,7 @@ export class Reader {
 export type ViewCheck = {
   get(key: Uint8Array, observed: Uint8Array | undefined): void;
   range(range: OracleRange, observed: readonly OracleEntry[]): void;
+  count(range: OracleRange, n: number): void;
   finish(): void;
 };
 

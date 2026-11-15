@@ -113,7 +113,9 @@ export function recording(kv: Db): { readonly db: Db; readonly updates: UpdateRe
 export function wrapViews(kv: Db, over: (snap: ViewSnapshot) => Partial<ViewSnapshot>): Db {
   return wrap(kv, {
     view: <T>(body: (snap: ViewSnapshot) => Promise<T> | T) =>
-      kv.view((snap) => body({ seq: snap.seq, get: (k) => snap.get(k), range: (r) => snap.range(r), ...over(snap) })),
+      kv.view((snap) =>
+        body({ seq: snap.seq, get: (k) => snap.get(k), range: (r) => snap.range(r), count: (r) => snap.count(r), ...over(snap) }),
+      ),
   });
 }
 
