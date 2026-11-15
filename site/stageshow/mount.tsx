@@ -1,16 +1,15 @@
 import type { ComponentType } from "react";
 import { createRoot } from "react-dom/client";
-import Adapters, { Apps } from "./adapters/index.tsx";
+import { Apps } from "./adapters/index.tsx";
+import Features from "./features/index.tsx";
 import Fits from "./fits/index.tsx";
 import type { SceneName } from "./sizes.ts";
 import Stack from "./stack/index.tsx";
-import Reopen from "./reopen/index.tsx";
 
 const SCENES: Record<SceneName, ComponentType<never>> = {
-  adapters: Adapters as ComponentType<never>,
   apps: Apps as ComponentType<never>,
+  features: Features as ComponentType<never>,
   fits: Fits as ComponentType<never>,
-  reopen: Reopen as ComponentType<never>,
   stack: Stack as ComponentType<never>,
 };
 

@@ -1,0 +1,294 @@
+/* A ruled grid on the stage's own soft gray: no gaps, the rules are the grid's color showing through 1px between
+   the tiles. Wide, the lead tile takes two columns and two rows, two tiles stack beside it and three run under.
+   Each tile has its picture on top and its title at the bottom, both at the tile's inset. */
+.ft {
+  & .ss-stage {
+    --ft-pad: 16px;
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--ss-well);
+    font: 12px/1.4 var(--ss-font);
+    color: var(--ss-text-strong);
+  }
+
+  .ft-grid {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: 120px 120px minmax(0, 1fr);
+    gap: 1px;
+    background: var(--ss-ink-3);
+  }
+
+  .ft-tile {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: var(--ft-pad);
+    background: var(--ss-well);
+  }
+
+  .ft-tile[data-kind="lead"] {
+    grid-column: span 2;
+    grid-row: span 2;
+  }
+
+  .ft-picture {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* Page type, in the page's face: the titles are the hero's copy, not the product's. */
+  .ft-title {
+    margin-top: 12px;
+    font: 600 16px/20px var(--vp-font-family-base, var(--ss-font));
+    letter-spacing: -0.01em;
+    color: var(--ss-text-strong);
+    text-wrap: pretty;
+  }
+
+  .ft-tile[data-kind="statement"] .ft-title {
+    font-size: 24px;
+    line-height: 28px;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  /* Live subscriptions: two tabs side by side, an arrow between them on each row a write carries. The tabs run
+     on past the picture and fade out over their filler rows, above the title. */
+  .ft-tile[data-kind="lead"] .ft-picture {
+    overflow: hidden;
+    mask-image: linear-gradient(#000 calc(100% - 56px), transparent);
+  }
+
+  .ft-live {
+    position: absolute;
+    inset: 0 0 auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 36px;
+  }
+
+  .ft-tab > .ft-tab-head {
+    padding: 10px 12px;
+    color: var(--ss-text);
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 16px;
+  }
+
+  .ft-tab > .ft-tab-list {
+    padding: 4px;
+  }
+
+  .ft-tab .ss-row {
+    --ss-row-title: 12.5px;
+  }
+
+  .ft-live .ss-connector__line,
+  .ft-live .ss-connector__arrow {
+    transition-duration: 0.6s;
+  }
+
+  /* Lightweight & fast: the bolt strikes once. */
+  .ft-bolt {
+    display: inline-grid;
+    color: var(--ss-accent);
+    transform-origin: 50% 60%;
+  }
+
+  .ft-bolt[data-on] {
+    animation: ft-strike 0.6s cubic-bezier(0.25, 0.8, 0.25, 1);
+  }
+
+  /* Quota management. */
+  .ft-quota {
+    display: grid;
+    grid-template-areas: "label status" "meter meter";
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    row-gap: 12px;
+  }
+
+  .ft-quota-label {
+    grid-area: label;
+    color: var(--ss-text);
+    line-height: 20px;
+  }
+
+  .ft-quota-status {
+    grid-area: status;
+  }
+
+  .ft-meter {
+    grid-area: meter;
+    height: 10px;
+    border-radius: 5px;
+    background: var(--ss-ink-2);
+  }
+
+  .ft-meter .ss-meter__fill {
+    transition-duration: 0.9s;
+  }
+
+  /* Use it with your framework: the names arrive one after another, on two lines. */
+  .ft-adapters {
+    display: grid;
+    gap: 8px;
+  }
+
+  .ft-adapter-line {
+    display: flex;
+    gap: 8px;
+  }
+
+  .ft-chip .ss-chip {
+    height: 28px;
+    padding: 0 11px;
+    background: var(--ss-surface);
+    box-shadow: inset 0 0 0 1px var(--ss-line), var(--ss-shadow-card);
+    font-size: 13px;
+  }
+
+  .ft-chip[data-show] {
+    transition-delay: calc(var(--i) * 70ms), calc(var(--i) * 70ms), calc(var(--i) * 70ms + 0.16s);
+  }
+
+  /* A low-level API: the card runs off the tile's right edge, its lines whole. */
+  .ft-code {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 230px;
+    padding: 10px 12px;
+  }
+
+  .ft-code .ss-code {
+    line-height: 17px;
+  }
+
+  .ft-code .ss-code__mark {
+    display: none;
+  }
+
+  .ft-code .ss-code__line:nth-child(3) { transition-delay: 0.12s; }
+  .ft-code .ss-code__line:nth-child(4) { transition-delay: 0.24s; }
+
+  /* Fault tolerant and consistent: the log as the tab wrote it, then as it reopened. */
+  .ft-crash {
+    display: grid;
+    gap: 12px;
+  }
+
+  .ft-lane {
+    display: grid;
+    gap: 6px;
+    justify-items: start;
+  }
+
+  .ft-lane:nth-child(2) {
+    opacity: 0;
+    transform: translateY(4px);
+    will-change: transform;
+    transition: opacity 0.4s ease, transform 0.6s cubic-bezier(0.25, 0.8, 0.25, 1);
+  }
+
+  .ft-lane[data-on] {
+    opacity: 1;
+    transform: none;
+  }
+
+  .ft-lane-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--ss-text);
+    font-weight: 500;
+    line-height: 16px;
+    white-space: nowrap;
+  }
+
+  .ft-lane-label[data-tone="danger"] {
+    color: var(--ss-danger-text);
+  }
+
+  .ft-lane-label[data-tone="success"] {
+    color: var(--ss-success-text);
+  }
+
+  .ft-records {
+    display: flex;
+    gap: 4px;
+  }
+
+  .ft-record {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    background: var(--ss-text-faint);
+  }
+
+  .ft-record[data-in-flight] {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--ss-text-faint);
+  }
+
+  .ft-lane:nth-child(2) .ft-record:last-child {
+    visibility: hidden;
+  }
+
+  /* Narrow: two columns. The lead runs across, then two pairs, then the crash diagram as a band, its two lanes
+     side by side. */
+  & .ss-stage[data-layout="compact"] {
+    --ft-pad: 14px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ft-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: 220px 120px 168px minmax(0, 1fr);
+  }
+
+  & .ss-stage[data-layout="compact"] .ft-tile[data-kind="lead"],
+  & .ss-stage[data-layout="compact"] .ft-tile[data-kind="diagram"] {
+    grid-column: span 2;
+    grid-row: span 1;
+  }
+
+  & .ss-stage[data-layout="compact"] .ft-crash {
+    grid-template-columns: auto auto;
+    justify-content: start;
+    column-gap: 32px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ft-title {
+    font-size: 15px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ft-tile[data-kind="statement"] .ft-title {
+    font-size: 24px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ft-live {
+    column-gap: 28px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ft-chip .ss-chip {
+    padding: 0 9px;
+    font-size: 12.5px;
+  }
+
+  & .ss-stage[data-layout="compact"] .ft-code .ss-code {
+    font-size: 11px;
+  }
+}
+
+@keyframes ft-strike {
+  40% {
+    transform: scale(1.18) rotate(-6deg);
+  }
+}
