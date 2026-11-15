@@ -35,8 +35,7 @@ export function openApp(): Promise<App> {
     const fate = createTreeClient({ transport: createHTTPTransport({ url: "/api/fate", live: false }), storage: storage.fate });
     const bodies = openBodies({
       storage: storage.bodies,
-      // At the default wait, opening a page no tab holds yet would stall about a second for a peer that never answers.
-      network: [new BroadcastChannelNetworkAdapter({ channelName: `pages:${kind}:${db}`, peerWaitMs: 50 })],
+      network: [new BroadcastChannelNetworkAdapter({ channelName: `pages:${kind}:${db}` })],
     });
     const leases = bodyLeases(bodies);
     reclaimBodies(fate, bodies);

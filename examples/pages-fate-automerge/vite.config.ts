@@ -30,13 +30,10 @@ function serviceWorker(): Plugin {
 export default defineConfig({
   server: { host: "127.0.0.1", port: Number(process.env.PORT ?? 4184), strictPort: false },
   preview: { host: "127.0.0.1", port: Number(process.env.PORT ?? 4184), strictPort: false },
-  // kv's SharedWorker loads its wasm glue with dynamic import(), which classic workers can't resolve.
-  worker: { format: "es" },
   optimizeDeps: {
-    // kv: keep the worker and engine.wasm next to their module so `new URL("…", import.meta.url)` finds them.
     // @automerge/automerge: the dep optimizer copies its wasm-bindgen glue while the .wasm import still binds the
     // original module, and the page dies with "Uncaught #<Exception>".
-    exclude: ["@opfs-lsm/kv", "@opfs-lsm/fate", "@opfs-lsm/automerge", "@automerge/automerge"],
+    exclude: ["@automerge/automerge"],
   },
   plugins: [tanstackStart(), react(), serviceWorker()],
 });
