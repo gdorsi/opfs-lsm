@@ -7,19 +7,20 @@ import type { Board, DocStorage, NewShape, ShapeId } from "../src/model/types.ts
 import { memoryStorage } from "../src/persistence/index.ts";
 import { idCounter, testEnv } from "./support/env.ts";
 import { sortedIds } from "./support/scenes.ts";
+import { disk } from "./support/disk.ts";
 import { link, spyStorage } from "./support/storage.ts";
 
 const id = boardId("b");
 const DOC = "board/b";
 const rect = (x = 0, y = 0): NewShape => ({ kind: "rect", x, y, w: 10, h: 10, stroke: "#000", fill: null, strokeWidth: 2 });
 const envOf = (prefix: string) => testEnv(idCounter(prefix));
-const open = (storage: DocStorage = memoryStorage(), prefix = "s") => openBoard({ id, storage, env: envOf(prefix) });
+const open = (storage: DocStorage = disk().storage, prefix = "s") => openBoard({ id, storage, env: envOf(prefix) });
 const create = (board: Board, ...shapes: NewShape[]) => board.dispatch({ type: "create", shapes }).created;
 const at = (board: Board, shape: ShapeId) => board.view().shapes.get(shape)!;
 
 describe("dispatch", () => {
   test("shows the result in the view and stores it for the next open", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const board = await open(storage);
     const [a, b] = create(board, rect(1, 2), rect(3, 4));
     board.dispatch({ type: "move", ids: [a!], dx: 10, dy: 10 });
@@ -221,7 +222,7 @@ describe("undo", () => {
   });
 
   test("is stored: a reopened board shows the undone state", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const board = await open(storage);
     const [a] = create(board, rect());
     board.dispatch({ type: "move", ids: [a!], dx: 9, dy: 0 });
@@ -294,7 +295,7 @@ describe("two tabs", () => {
 
 describe("stored records the model cannot read", () => {
   async function storageWithJunk() {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const raw = new Y.Doc();
     const binding = await storage.attach(DOC, raw);
     raw.getMap<Y.Map<unknown>>("shapes").set("junk", new Y.Map([["kind", "blob"]]));

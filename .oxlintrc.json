@@ -83,6 +83,16 @@
                   "react-dom/*"
                 ],
                 "message": "The whiteboard model is headless. React belongs in src/app."
+              },
+              {
+                "group": [
+                  "@opfs-lsm/*",
+                  "y-indexeddb",
+                  "fake-indexeddb",
+                  "fake-indexeddb/*",
+                  "../persistence/*"
+                ],
+                "message": "Only src/persistence imports a storage package. The model reaches storage through DocStorage."
               }
             ]
           }
@@ -146,6 +156,15 @@
                   "../persistence/*"
                 ],
                 "message": "The oracle must not depend on the Y.Doc layer or on storage."
+              },
+              {
+                "group": [
+                  "@opfs-lsm/*",
+                  "y-indexeddb",
+                  "fake-indexeddb",
+                  "fake-indexeddb/*"
+                ],
+                "message": "Only src/persistence imports a storage package. The model reaches storage through DocStorage."
               }
             ]
           }

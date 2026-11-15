@@ -8,6 +8,7 @@ import type { Board, BoardOptions, Box, DocStorage, NewShape, Point, Shape, Shap
 import { memoryStorage } from "../src/persistence/index.ts";
 import { idCounter, testEnv } from "./support/env.ts";
 import { seeded } from "./support/rng.ts";
+import { disk } from "./support/disk.ts";
 import { link, spyStorage } from "./support/storage.ts";
 
 const id = boardId("g");
@@ -15,7 +16,7 @@ const DOC = "board/g";
 const STYLE: Style = { stroke: "#123", fill: null, strokeWidth: 3 };
 const rect = (x = 0, y = 0, w = 10, h = 10): NewShape => ({ kind: "rect", x, y, w, h, stroke: "#000", fill: null, strokeWidth: 2 });
 
-const open = (storage: DocStorage = memoryStorage(), over: Partial<BoardOptions> = {}) =>
+const open = (storage: DocStorage = disk().storage, over: Partial<BoardOptions> = {}) =>
   openBoard({ id, storage, env: testEnv(idCounter("s")), autosaveMs: null, ...over });
 const create = (board: Board, ...shapes: NewShape[]) => board.dispatch({ type: "create", shapes }).created;
 const at = (board: Board, shape: ShapeId) => board.view().shapes.get(shape)!;
@@ -98,7 +99,7 @@ describe("how often a drag writes", () => {
       }
       const digests = new Set<string>();
       for (const interval of [0, 1, 32, 100, Infinity]) {
-        const storage = memoryStorage();
+        const storage = disk().storage;
         const board = await open(storage, { gestureIntervalMs: interval });
         const ids = create(board, rect(0.1, 0.2), rect(7.3, 9.9), rect(-40.7, 3.3));
         const gesture = board.beginGesture({ kind: "translate", ids });
@@ -116,7 +117,7 @@ describe("resize", () => {
   const from: Box = { x: 0, y: 0, w: 100, h: 100 };
 
   test("maps the box onto the pointer's box at every write and ends exactly on it", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const board = await open(storage, { gestureIntervalMs: 0 });
     const [a, b] = create(board, rect(0, 0, 50, 50), rect(50, 50, 50, 50));
     const gesture = board.beginGesture({ kind: "resize", ids: [a!, b!], from });
@@ -132,7 +133,7 @@ describe("resize", () => {
   });
 
   test("the pointer coming back to the start box restores the shapes", async () => {
-    const board = await open(memoryStorage(), { gestureIntervalMs: 0 });
+    const board = await open(disk().storage, { gestureIntervalMs: 0 });
     const [a] = create(board, rect(10, 10, 40, 40));
     const before = digestOf(board);
     const gesture = board.beginGesture({ kind: "resize", ids: [a!], from });
@@ -193,7 +194,7 @@ describe("draw", () => {
 
 describe("cancel", () => {
   test("puts a drag back, in the view and in storage, and leaves no undo step", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const board = await open(storage, { gestureIntervalMs: 0 });
     const ids = create(board, rect(1, 1), rect(2, 2), rect(3, 3));
     board.dispatch({ type: "style", ids, edit: { stroke: "#f00" } });
@@ -239,7 +240,7 @@ describe("cancel", () => {
   });
 
   test("ends the redo history, like any edit", async () => {
-    const board = await open(memoryStorage(), { gestureIntervalMs: 0 });
+    const board = await open(disk().storage, { gestureIntervalMs: 0 });
     const [a] = create(board, rect());
     board.dispatch({ type: "move", ids: [a!], dx: 5, dy: 0 });
     board.undo();
@@ -274,7 +275,7 @@ describe("undo", () => {
   });
 
   test("a stroke is one undo step", async () => {
-    const board = await open(memoryStorage());
+    const board = await open(disk().storage);
     const gesture = board.beginGesture({ kind: "draw", style: STYLE });
     for (let i = 0; i < 20; i++) gesture.update({ x: i, y: i * 2 }, i * STEP);
     gesture.end();
@@ -285,7 +286,7 @@ describe("undo", () => {
   });
 
   test("a gesture that came back to its start leaves no step and no change in storage", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const board = await open(storage, { gestureIntervalMs: 0 });
     const [a] = create(board, rect(4, 4));
     const before = digestOf(board);
@@ -343,7 +344,7 @@ describe("one gesture at a time", () => {
   });
 
   test("closing the board in the middle of a drag stores the state from before it", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const board = await open(storage, { gestureIntervalMs: 0 });
     const [a] = create(board, rect(2, 2));
     const before = digestOf(board);
@@ -406,7 +407,7 @@ describe("another tab changes the board under a gesture", () => {
 
 describe("plan stays the one place that knows what a command means", () => {
   test("a translate gesture's patch is the move command's patch", async () => {
-    const board = await open(memoryStorage());
+    const board = await open(disk().storage);
     const ids = create(board, rect(1.5, 2.5), rect(9, 9));
     const view = board.view();
     const expected = plan(view, { type: "move", ids, dx: 12.25, dy: -3 }, () => "unused" as ShapeId);

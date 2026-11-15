@@ -5,7 +5,7 @@ import { applyPatchPlain, digestShapes } from "../src/model/digest.ts";
 import { boardId } from "../src/model/shapes.ts";
 import { broadcastSync, type ChannelConstructor } from "../src/model/sync.ts";
 import type { Applied, Board, NewShape, Shape, ShapeId } from "../src/model/types.ts";
-import { memoryStorage } from "../src/persistence/index.ts";
+import { disk } from "./support/disk.ts";
 import { idCounter, testEnv } from "./support/env.ts";
 
 const id = boardId("r");
@@ -46,7 +46,7 @@ async function until(done: () => boolean, what: string): Promise<void> {
 
 /** A tab: its own storage, so only the relay can bring it another tab's edits. */
 async function tab(name: string, Channel: ChannelConstructor = BroadcastChannel) {
-  const storage = memoryStorage();
+  const storage = disk().storage;
   const board = await openBoard({ id, storage, env: testEnv(idCounter(name)), autosaveMs: null, gestureIntervalMs: 0, sync: broadcastSync(Channel) });
   return { storage, board };
 }
@@ -109,6 +109,7 @@ describe("two tabs over BroadcastChannel", () => {
     assert.equal(late.board.view().shapes.size, 0, "it opened with nothing");
     await until(() => digestOf(late.board) === oracle.digest, "the late tab reaches the oracle");
 
+    await late.board.flush();
     const alone = await openBoard({ id, storage: late.storage, env: testEnv(idCounter("x")), autosaveMs: null });
     assert.equal(digestOf(alone), oracle.digest, "what the relay brought was stored, so a reload without the relay has it");
   });
@@ -153,7 +154,7 @@ describe("two tabs over BroadcastChannel", () => {
 
   test("a board with no relay opens no channel", async () => {
     const { log } = spyChannel();
-    const board = await openBoard({ id, storage: memoryStorage(), env: testEnv(idCounter("a")), autosaveMs: null });
+    const board = await openBoard({ id, storage: disk().storage, env: testEnv(idCounter("a")), autosaveMs: null });
     board.dispatch({ type: "create", shapes: [rect()] });
     assert.deepEqual([log.open, log.posted.length], [0, 0]);
     await board.close();

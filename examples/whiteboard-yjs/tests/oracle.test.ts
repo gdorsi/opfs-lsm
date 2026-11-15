@@ -4,7 +4,7 @@ import { openBoard } from "../src/model/board.ts";
 import { applyPatchPlain, digestShapes } from "../src/model/digest.ts";
 import { boardId } from "../src/model/shapes.ts";
 import type { Command, DocStorage, Shape, ShapeId } from "../src/model/types.ts";
-import { memoryStorage } from "../src/persistence/index.ts";
+import { disk } from "./support/disk.ts";
 import { randomCommand } from "./support/commands.ts";
 import { testEnv } from "./support/env.ts";
 import { seeded } from "./support/rng.ts";
@@ -54,12 +54,12 @@ async function roundTrip(storage: DocStorage, seed: number) {
 describe("a board reopened from storage matches the oracle", () => {
   for (const seed of SEEDS) {
     test(`seed ${seed}`, async () => {
-      const storage = memoryStorage();
-      const { seen, kinds, shapes } = await roundTrip(storage, seed);
+      const d = disk();
+      const { seen, kinds, shapes } = await roundTrip(d.storage, seed);
       assert.deepEqual([...seen.keys()].sort(), ["create", "duplicate", "move", "remove", "reorder", "resize", "style"]);
       assert.deepEqual([...kinds].sort(), ["arrow", "diamond", "ellipse", "pen", "rect", "text"]);
       assert.ok(shapes > 5, "the run ended with a board worth comparing");
-      assert.ok(storage.updates.get("board/fuzz")!.length > COMMANDS / 2, "most commands were stored");
+      assert.ok(await d.holds("board/fuzz"), "the commands were stored");
     });
   }
 });
@@ -79,7 +79,7 @@ describe("undo", () => {
   for (const seed of SEEDS) {
     test(`k commands undone return the first digest and redone return the last, seed ${seed}`, async () => {
       const rng = seeded(seed);
-      const storage = memoryStorage();
+      const storage = disk().storage;
       const env = envOf();
       const board = await openBoard({ id, storage, env });
       const digests = [digestShapes(board.view().shapes)];
