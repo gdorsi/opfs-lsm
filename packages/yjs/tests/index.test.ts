@@ -124,6 +124,17 @@ test("flush rejects while the repair write fails, and resolves once it lands", a
   await db.close();
 });
 
+test("every flush running when the repair write fails rejects", async () => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  const doc = new Y.Doc();
+  const p = new KvPersistence(flaky(db, () => true), "a", doc);
+  await p.whenSynced;
+  doc.getText("t").insert(0, "lost");
+  const results = await Promise.allSettled([p.flush(), p.flush()]);
+  await db.close();
+  assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected"]);
+});
+
 test("a failed write with no flush waiting is not an unhandled rejection", async () => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const unhandled: unknown[] = [];

@@ -45,9 +45,11 @@ export class KvPersistence {
    */
   async flush(): Promise<void> {
     await this.settle();
-    if (!this.failure) return;
-    this.failure = undefined;
-    this.track(this.db.put(this.nextKey(), Y.encodeStateAsUpdate(this.doc)));
+    if (this.failure) {
+      this.failure = undefined;
+      this.track(this.db.put(this.nextKey(), Y.encodeStateAsUpdate(this.doc)));
+    }
+    // Settle again even with no failure: a concurrent flush may have just started the repair.
     await this.settle();
     this.throwIfFailed();
   }
