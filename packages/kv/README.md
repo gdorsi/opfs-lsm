@@ -37,8 +37,8 @@ const db = await openDb({ name: "notes" });
 await openDb({ name: "my notes" });
 // throws ConstraintError. Names match /^[A-Za-z0-9_-]{1,64}$/.
 
-// In Node or a dedicated WebWorker, which have no SharedWorker or
-// OPFS:
+// In Node, or a dedicated WebWorker, which has OPFS but no
+// SharedWorker:
 await openDb({ name: "notes" });
 // throws StorageUnavailableError, never falls back to memory
 ```
