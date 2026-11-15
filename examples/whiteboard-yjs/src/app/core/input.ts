@@ -85,7 +85,7 @@ import {
 import { isArrowKey, keyAction, type Action, type KeySample, type Tool } from "./keys.ts";
 import { naturalSize, newText, retextSize, scaleOf, TYPE_PX, type Measure } from "./text.ts";
 
-export type BoxTool = Extract<Tool, "rect" | "ellipse" | "diamond" | "arrow">;
+type BoxTool = Extract<Tool, "rect" | "ellipse" | "diamond" | "arrow">;
 
 /** One pointer event, as the DOM boundary (stage.tsx) reads it. Stage-relative CSS px. */
 export type PointerSample = {
@@ -956,7 +956,7 @@ function clickFrame(tool: BoxTool, at: Point, size: number): Box {
 }
 
 /** The shape a box tool creates over `frame`, in `style`. Boxes are normalized; an arrow keeps its direction in the signs. */
-export function boxShape(tool: BoxTool, frame: Box, style: Style): NewShape {
+function boxShape(tool: BoxTool, frame: Box, style: Style): NewShape {
   if (tool === "arrow") return { kind: "arrow", ...frame, ...style, fill: null };
   return { kind: tool, ...boxOf(rectOf(frame)), ...style };
 }

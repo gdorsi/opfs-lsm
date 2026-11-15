@@ -20,8 +20,6 @@ export const box = (kind: "rect" | "ellipse" | "diamond", x: number, y: number, 
   strokeWidth: 2,
 });
 
-export type Rig = Awaited<ReturnType<typeof rig>>;
-
 /** A real Board on memoryStorage with a controller over it, a stage of 800 x 600 and a pointer clock. The viewport is reset to the origin at zoom 1 unless `fit`. */
 export async function rig(seed: readonly NewShape[] = [], wrap: (board: Board) => Board = (board) => board, fit = false) {
   const storage = memoryStorage();

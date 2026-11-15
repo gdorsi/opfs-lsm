@@ -8,8 +8,8 @@
 import type { Point, Viewport } from "../../model/index.ts";
 import type { Rect } from "./geometry.ts";
 
-export const MIN_ZOOM = 0.02;
-export const MAX_ZOOM = 8;
+const MIN_ZOOM = 0.02;
+const MAX_ZOOM = 8;
 
 /** The stage size in CSS px. */
 export type Size = { readonly w: number; readonly h: number };

@@ -52,11 +52,7 @@ export function boxOf(r: Rect): Box {
   return { x: r.minX, y: r.minY, w: r.maxX - r.minX, h: r.maxY - r.minY };
 }
 
-export function intersects(a: Rect, b: Rect): boolean {
-  return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
-}
-
-export function contains(outer: Rect, inner: Rect): boolean {
+function contains(outer: Rect, inner: Rect): boolean {
   return outer.minX <= inner.minX && outer.maxX >= inner.maxX && outer.minY <= inner.minY && outer.maxY >= inner.maxY;
 }
 
@@ -65,14 +61,7 @@ export const arrowHead = (strokeWidth: number): number => Math.max(10, 3 * strok
 
 const inkPad = (s: Framed): number => s.strokeWidth / 2 + (s.kind === "arrow" ? arrowHead(s.strokeWidth) : 0);
 
-/** The frame grown by half the stroke and an arrow's head: what the painter may touch. */
-export function inkRect(s: Framed): Rect {
-  const r = rectOf(s);
-  const pad = inkPad(s);
-  return { minX: r.minX - pad, minY: r.minY - pad, maxX: r.maxX + pad, maxY: r.maxY + pad };
-}
-
-/** `inkRect(s)` meets `r`, without allocating. The painter's cull. */
+/** The frame grown by half the stroke and an arrow's head (what the painter may touch) meets `r`. Allocates nothing. */
 export function reaches(s: Framed, r: Rect): boolean {
   const pad = inkPad(s);
   return (
@@ -83,7 +72,7 @@ export function reaches(s: Framed, r: Rect): boolean {
   );
 }
 
-export function distanceToSegment(p: Point, a: Point, b: Point): number {
+function distanceToSegment(p: Point, a: Point, b: Point): number {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const len2 = dx * dx + dy * dy;
