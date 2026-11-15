@@ -183,6 +183,7 @@ describe("wasm traps", () => {
     const engine = await import("../src/store/engine.js");
     const lz4 = await import("../src/store/lz4.js");
     const errors = await import("../src/errors.js");
+    await import("../src/testing.js");
     await engine.ensureEngine();
     expect(engine.engineUsingWasm()).toBe(true);
     const src = new Uint8Array(17_000_000);

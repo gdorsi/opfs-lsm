@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import "../src/testing.js";
 import { expect } from "vitest";
 
 // `toEqual` walks a Uint8Array as a generic object, and the sims compare
