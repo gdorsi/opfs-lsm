@@ -23,6 +23,9 @@
   "author": "Guido D'Orsi",
   "license": "MIT",
   "type": "module",
+  "sideEffects": [
+    "./dist/host/shared-worker.js"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
