@@ -1,6 +1,6 @@
 import { dbInternals, type Db } from "./db.js";
 import type { HostStats } from "./host/protocol.js";
-import type { IoCounters } from "./opfs/counting-fs.js";
+import { CountingFs, type IoCounters } from "./opfs/counting-fs.js";
 
 export type { IoCount, IoCounters } from "./opfs/counting-fs.js";
 
@@ -16,8 +16,8 @@ export type KvStats = {
     walGroupSizes: number[];
     /** Encoded record bytes handed to IndexedDB, excluding meta puts. */
     walBytes: number;
-    /** This tab's OPFS IO (open load, installs). */
-    fs: IoCounters;
+    /** This tab's OPFS IO (open load, installs). Counted only for a Db that `openHarnessDb` opened. */
+    fs?: IoCounters;
   };
   host: HostStats;
 };
@@ -36,7 +36,7 @@ export async function readStats(db: Db): Promise<KvStats> {
       walAppends: wal.appendedRecords,
       walGroupSizes: [...wal.groupSizes],
       walBytes: wal.appendedBytes,
-      fs: structuredClone(fs.counters),
+      ...(fs instanceof CountingFs ? { fs: structuredClone(fs.counters) } : {}),
     },
     host,
   };

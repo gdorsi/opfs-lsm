@@ -8,6 +8,7 @@ import { destroyDbWith, openDbWith, type Backing, type Db, type OpenKnobs, type 
 import { EngineHost, createLocalIngestClient } from "./host/engine-host.js";
 import type { IngestClient } from "./host/protocol.js";
 import type { AsyncFs } from "./opfs/async-fs.js";
+import { CountingFs } from "./opfs/counting-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
 
 export type HarnessOpenOptions = OpenOptions &
@@ -61,7 +62,7 @@ function backingOf(options: HarnessOpenOptions): Backing {
 
 export async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
   const { fs: _fs, ingest: _ingest, forceMemory: _forceMemory, ...rest } = options;
-  return openDbWith({ ...rest, ...backingOf(options) });
+  return openDbWith({ wrapFs: (fs) => new CountingFs(fs), ...rest, ...backingOf(options) });
 }
 
 export async function destroyHarnessDb(options: HarnessOpenOptions): Promise<void> {
