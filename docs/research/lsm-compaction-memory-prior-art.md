@@ -1,6 +1,6 @@
 # Bounding compaction and flush memory: prior art in LSM engines
 
-Question: what do production LSM engines do to bound the memory of compaction, flush and the memtable, and does that support the design in `docs/research/bounded-compaction-memory.md` (BCM, issue #101)? Each claim below is traced to the code or the project's own design doc at a pinned tag. The candidates are `bounded-compaction-memory/candidate-a.md` (A, the base) and `candidate-b.md` (B).
+Question: what do production LSM engines do to bound the memory of compaction, flush and the memtable, and does that support the design in `docs/research/bounded-compaction-memory.md` (BCM, issue #101)? Each claim below is traced to the code or the project's own design doc at a pinned tag. The design it checked was merged from two candidate sketches that were later deleted from the repo; this file and `bounded-compaction-memory.md` are the record.
 
 ## Answer in one table
 
@@ -258,7 +258,7 @@ No change is suggested for: the concatenated source; the oldest-first L0 pick ru
 
 ## 12. Sources
 
-Repo: `docs/research/bounded-compaction-memory.md` and `bounded-compaction-memory/candidate-a.md` / `candidate-b.md`; `packages/kv/src/store/levels.ts`; `crates/engine-core/src/crc32.rs`. Checkout at `5eea20c`.
+Repo: `docs/research/bounded-compaction-memory.md`, `lsm-compaction-memory-prior-art.md`; `packages/kv/src/store/levels.ts`; `crates/engine-core/src/crc32.rs`. Checkout at `5eea20c`.
 
 External. Each was cloned or downloaded on 2026-11-09 at the pin shown, and every link above points into one of these:
 

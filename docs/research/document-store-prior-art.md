@@ -1,6 +1,6 @@
 # A document store on an ordered key-value store: prior art for the collections rebuild
 
-Question: `packages/collections` will be deleted and rebuilt as a small document store on `@opfs-lsm/kv`. How do existing systems build a document store on an ordered key-value store, which of their choices fit a small browser library, and what does kv lack for this kind of layer? Follows `docs/research/derived-index-prior-art.md` (DIPA), which settled index maintenance: read the old row, diff, write in one transaction. Text search is out of scope (MEIA, LPFM) except for where it plugs in.
+Question: `packages/collections` will be deleted and rebuilt as a small document store on `@opfs-lsm/kv`. How do existing systems build a document store on an ordered key-value store, which of their choices fit a small browser library, and what does kv lack for this kind of layer? Follows `docs/research/derived-index-prior-art.md` (DIPA), which settled index maintenance: read the old row, diff, write in one transaction. Text search is out of scope except for where it plugs in; the notes that covered it (MEIA, LPFM, deleted on the 2026-11 sweep) are summarized in DIPA's header.
 
 kv is not treated as fixed. Section 6 lists what the precedents rely on in their storage engine and whether kv has it. Section 8 gives two designs: one on kv as it is today, one after the must-have additions.
 
@@ -239,7 +239,7 @@ Covered by 2.2 for layout. In the write:
 
 ## 4. Where text search plugs in
 
-[I] As one more index kind in the catalog. Its entries come out of the same derive step and the same diff (DIPA option i), its state machine is the same `building` then `ready`, and its query method is separate from `query` because it is not a key range. Adding a kind is a library format bump (2.5 c), since an older library cannot maintain it. LPFM's one-key-per-row design fits unchanged.
+[I] As one more index kind in the catalog. Its entries come out of the same derive step and the same diff (DIPA option i), its state machine is the same `building` then `ready`, and its query method is separate from `query` because it is not a key range. Adding a kind is a library format bump (2.5 c), since an older library cannot maintain it. LPFM's one-key-per-row design fits unchanged (source note deleted; see DIPA's header).
 
 ---
 
