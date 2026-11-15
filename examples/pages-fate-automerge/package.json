@@ -9,7 +9,9 @@
   "dependencies": {
     "@automerge/automerge": "3.5.0",
     "@automerge/automerge-repo": "2.6.0-alpha.5",
+    "@automerge/automerge-repo-storage-indexeddb": "2.6.0-alpha.5",
     "@nkzw/fate": "2.0.1",
+    "@nkzw/fate-indexeddb": "2.0.1",
     "@opfs-lsm/automerge": "workspace:*",
     "@opfs-lsm/fate": "workspace:*",
     "@opfs-lsm/kv": "workspace:*"

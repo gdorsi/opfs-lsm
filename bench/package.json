@@ -11,6 +11,7 @@
     "check": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@automerge/automerge-repo-network-broadcastchannel": "2.6.0-alpha.5",
     "@automerge/automerge-repo-storage-indexeddb": "2.6.0-alpha.5",
     "@automerge/react": "2.6.0-alpha.5",
     "@journeyapps/wa-sqlite": "^1.7.2",

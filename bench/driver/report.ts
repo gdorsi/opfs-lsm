@@ -118,8 +118,15 @@ function groups(records: readonly RunRecord[]): Map<string, Row[]> {
   );
 }
 
+const COUNTER_ORDER = ["keys", "storage ops", "storage ops per key"];
+const rankCounter = (name: string) => {
+  const i = COUNTER_ORDER.indexOf(name);
+  return i < 0 ? COUNTER_ORDER.length : i;
+};
+
 const fmtN = (x: number) =>
   !Number.isFinite(x) ? "–" : x >= 100_000 ? `${(x / 1000).toFixed(0)}k` : x >= 10_000 ? `${(x / 1000).toFixed(1)}k` : x >= 100 ? x.toFixed(0) : x.toFixed(1);
+const ms2 = (x: number) => (Number.isFinite(x) ? x.toFixed(2) : "–");
 const fmtCount = (x: number) => (Number.isInteger(x) ? String(x) : x.toFixed(1));
 const fmtRange = (s: Stat) => (s.n === 0 ? "–" : s.n === 1 ? fmtN(s.median) : `${fmtN(s.median)} (${fmtN(s.min)}–${fmtN(s.max)})`);
 const fmtUs = (us: number) => (!Number.isFinite(us) ? "–" : us < 10 ? "<10 µs" : us < 1000 ? `${us.toFixed(0)} µs` : `${(us / 1000).toFixed(us < 10_000 ? 2 : 1)} ms`);
@@ -193,6 +200,48 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
         "",
         "Long tasks are main-thread tasks over 50 ms, from the `longtask` observer. Blocked ms sums each one's time past 50 ms, as Total Blocking Time does. Frames are `requestAnimationFrame` callbacks, frame ms is the display's interval, and a dropped frame is one missing from a gap between two callbacks: `round(gap / frame ms) - 1`. A block of 17 to 50 ms drops frames without being a long task.",
       );
+    }
+    const counterRows = rows.filter((row) => row.runs[0]!.phases[row.phase]!.counters);
+    if (counterRows.length > 0) {
+      const names = [...new Set(counterRows.flatMap((row) => Object.keys(row.runs[0]!.phases[row.phase]!.counters ?? {})))].sort(
+        (a, b) => rankCounter(a) - rankCounter(b) || a.localeCompare(b),
+      );
+      out.push("", `| counters (median) | contender | ${names.join(" | ")} |`, `|---|---|${names.map(() => "---:").join("|")}|`);
+      for (const row of counterRows) {
+        const cells = names.map((n) => {
+          const st = stat(row.runs.map((r) => r.phases[row.phase]!.counters?.[n] ?? NaN));
+          return st.n === 0 ? "–" : fmtN(st.median);
+        });
+        out.push(`| ${row.name} | ${row.contender} | ${cells.join(" | ")} |`);
+      }
+    }
+    const floor = rows.find((row) => row.contender.endsWith("/memory"));
+    if (floor) {
+      const lines: string[] = [];
+      for (const row of rows) {
+        if (row.contender === floor.contender) continue;
+        const base = rows.find((r) => r.phase === row.phase && r.contender === floor.contender);
+        if (!base || !row.runs[0]!.phases[row.phase]!.timed) continue;
+        const mean = (r: Row, op: string) => {
+          const h = merge(r.runs.map((x) => x.phases[r.phase]!.latency[op]).filter((x) => x !== undefined));
+          return h.n === 0 ? NaN : h.sumUs / h.n / 1000;
+        };
+        for (const op of Object.keys(row.runs[0]!.phases[row.phase]!.latency)) {
+          if (op === "open") continue;
+          const [a, b] = [mean(row, op), mean(base, op)];
+          lines.push(`| ${row.name} | ${op} | ${row.contender} | ${ms2(a)} | ${ms2(b)} | ${ms2(a - b)} |`);
+        }
+      }
+      if (lines.length > 0) {
+        out.push(
+          "",
+          `| storage cost (mean ms per call) | op | contender | contender ms | ${floor.contender} ms | difference ms |`,
+          "|---|---|---|---:|---:|---:|",
+          ...lines,
+          "",
+          `${floor.contender} keeps both layers in Maps, so the difference is what the contender's storage adds to the same model, Automerge and fate work.`,
+        );
+      }
     }
     const memRows = rows.filter((row, i) => i === rows.findIndex((r) => r.contender === row.contender) && row.runs[0]!.memory);
     if (memRows.length > 0) {

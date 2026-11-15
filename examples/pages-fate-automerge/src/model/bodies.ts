@@ -8,6 +8,7 @@ import {
   parseAutomergeUrl,
   type DocHandle,
   type DocHandleChangePayload,
+  type DocMetrics,
   type DocumentProgress,
   type NetworkAdapterInterface,
   type QueryState,
@@ -24,6 +25,10 @@ export type BodiesOptions = {
   readonly storage: StorageAdapterInterface;
   /** Network adapters, such as the server link and the tab link. `open` never waits on them. */
   readonly network?: readonly NetworkAdapterInterface[];
+  /** How long the Repo waits after a change before it saves. Defaults to automerge-repo's 100 ms. */
+  readonly saveDebounceMs?: number;
+  /** Automerge's own work, as automerge-repo reports it: `doc-loaded`, `doc-saved` and `doc-compacted` carry `durationMillis`. */
+  readonly onDocMetrics?: (metrics: DocMetrics) => void;
 };
 
 export interface Bodies {
@@ -44,7 +49,12 @@ export function newPageId(): PageId {
 
 export function openBodies(options: BodiesOptions): Bodies {
   const storage = saveFilter(options.storage);
-  const repo = new Repo({ storage, network: [...(options.network ?? [])] });
+  const repo = new Repo({
+    storage,
+    network: [...(options.network ?? [])],
+    ...(options.saveDebounceMs !== undefined && { saveDebounceRate: options.saveDebounceMs }),
+  });
+  if (options.onDocMetrics) repo.on("doc-metrics", options.onDocMetrics);
   const open = new Map<PageId, Promise<PageBody>>();
   return {
     open(id) {

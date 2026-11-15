@@ -95,6 +95,7 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
   const latency = new Map<string, Histogram>();
   let ops = 0;
   let userBytes = 0;
+  const counters = new Map<string, number>();
   const storeKey = `${req.contender}:${req.dbName}`;
 
   const time = async <T>(op: string, bytes: number, fn: () => Promise<T>, count = 1): Promise<T> => {
@@ -127,6 +128,9 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
     time,
     bytes(n) {
       userBytes += n;
+    },
+    count(name, n) {
+      counters.set(name, (counters.get(name) ?? 0) + n);
     },
     check(ok, what) {
       if (!ok) throw new CorrectnessError(what);
@@ -164,6 +168,7 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
       latency: Object.fromEntries([...latency].map(([op, h]) => [op, h.snapshot()])),
       ...(footprint ? { footprint } : {}),
       ...(mainThread ? { mainThread } : {}),
+      ...(counters.size > 0 ? { counters: Object.fromEntries(counters) } : {}),
     },
     carry: JSON.stringify({ model: model.carry(), extra: ctx.carry }),
     durability: contender.durability,
