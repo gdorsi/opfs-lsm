@@ -154,6 +154,22 @@ demo:
   count: 100,000
 ---
 
+<div class="home-warnings">
+
+::: warning
+opfs-lsm is still under heavy development.
+:::
+
+::: warning
+We want it to be the building block for the best UX in web apps, and still ironing the fundamental details.
+:::
+
+::: warning
+Still, storage is fault-tolerant and heavily tested, so if you want to play around, feedback is very welcome!
+:::
+
+</div>
+
 <div class="home-features">
 <div>
 

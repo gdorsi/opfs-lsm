@@ -28,6 +28,23 @@
 }
 
 /* What kv offers, below the hero: a card per feature, each a name, one line and a few lines of code. */
+/* The warning notes under the hero: boxes without a title, tight together. */
+.vp-doc .home-warnings {
+  margin: 8px 0 24px;
+}
+
+.vp-doc .home-warnings .custom-block-title {
+  display: none;
+}
+
+.vp-doc .home-warnings .warning + .warning {
+  margin-top: 8px;
+}
+
+.vp-doc .home-warnings .warning p {
+  margin: 0;
+}
+
 .vp-doc .home-features {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
