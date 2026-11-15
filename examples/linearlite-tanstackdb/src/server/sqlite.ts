@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementSync } from "node:sqlite";
 import type { ServerRow } from "../domain/model.ts";
 import { STREAMS, type Stream, streamOf } from "../domain/stores.ts";
+import { generate } from "./generate.ts";
+import { syncServer, type SyncServer, type Tables } from "./protocol.ts";
 
 const SCHEMA_VERSION = 1;
 
@@ -49,51 +50,53 @@ function codec<S extends Stream>(stream: S): Codec<ServerRow<S>> {
   };
 }
 
-export const CODECS = Object.fromEntries(STREAMS.map((s) => [s, codec(s)])) as Codecs;
+const CODECS = Object.fromEntries(STREAMS.map((s) => [s, codec(s)])) as Codecs;
 
-export interface StreamStatements {
-  get: StatementSync;
-  insert: StatementSync;
-  update: StatementSync;
-  page: StatementSync;
-  group: StatementSync;
-  newer: StatementSync;
-}
-export interface Statements {
-  streams: Record<Stream, StreamStatements>;
-  commentsOf: StatementSync;
-  getMeta: StatementSync;
-  setMeta: StatementSync;
-  issueExists: StatementSync;
-}
+type StreamStatements = Record<"get" | "put" | "page" | "group" | "newer", StatementSync>;
 
-const cache = new WeakMap<DatabaseSync, Statements>();
-
-export function statements(db: DatabaseSync): Statements {
-  let s = cache.get(db);
-  if (s) return s;
+export function sqliteTables(db: DatabaseSync): Tables {
   const streams = {} as Record<Stream, StreamStatements>;
   for (const stream of STREAMS) {
     const { table, columns } = CODECS[stream];
     const cols = columns.join(", ");
     streams[stream] = {
       get: db.prepare(`SELECT ${cols} FROM ${table} WHERE id = ?`),
-      insert: db.prepare(`INSERT INTO ${table} (${cols}) VALUES (${columns.map(() => "?").join(", ")})`),
-      update: db.prepare(`UPDATE ${table} SET ${columns.slice(1).map((c) => `${c} = ?`).join(", ")} WHERE id = ?`),
+      put: db.prepare(
+        `INSERT INTO ${table} (${cols}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (id) DO UPDATE SET ${columns.slice(1).map((c) => `${c} = excluded.${c}`).join(", ")}`,
+      ),
       page: db.prepare(`SELECT ${cols} FROM ${table} WHERE version > ? ORDER BY version LIMIT ?`),
       group: db.prepare(`SELECT ${cols} FROM ${table} WHERE version = ?`),
       newer: db.prepare(`SELECT 1 AS found FROM ${table} WHERE version > ? LIMIT 1`),
     };
   }
-  s = {
-    streams,
-    commentsOf: db.prepare(`SELECT ${CODECS.comments.columns.join(", ")} FROM ${CODECS.comments.table} WHERE issue_id = ?`),
-    getMeta: db.prepare("SELECT v FROM meta WHERE k = ?"),
-    setMeta: db.prepare("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v"),
-    issueExists: db.prepare(`SELECT 1 AS found FROM ${CODECS.issues.table} WHERE id = ?`),
+  const commentsOf = db.prepare(`SELECT ${CODECS.comments.columns.join(", ")} FROM ${CODECS.comments.table} WHERE issue_id = ?`);
+  const getMeta = db.prepare("SELECT v FROM meta WHERE k = ?");
+  const setHead = db.prepare("UPDATE meta SET v = ? WHERE k = 'head'");
+  return {
+    head: () => (getMeta.get("head") as { v: number }).v,
+    setHead: (head) => void setHead.run(head),
+    epoch: () => (getMeta.get("epoch") as { v: string }).v,
+    transaction(fn) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const out = fn();
+        db.exec("COMMIT");
+        return out;
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    },
+    page: (stream, after, limit) => streams[stream].page.all(after, limit).map((r) => CODECS[stream].fromDb(r)),
+    group: (stream, version) => streams[stream].group.all(version).map((r) => CODECS[stream].fromDb(r)),
+    newer: (stream, version) => streams[stream].newer.get(version) !== undefined,
+    get(stream, id) {
+      const found = streams[stream].get.get(id);
+      return found && CODECS[stream].fromDb(found);
+    },
+    put: (stream, row) => void streams[stream].put.run(...CODECS[stream].params(row)),
+    commentsOf: (issue) => commentsOf.all(issue).map((r) => CODECS.comments.fromDb(r)),
   };
-  cache.set(db, s);
-  return s;
 }
 
 export function openServerDb(path: string): DatabaseSync {
@@ -104,39 +107,30 @@ export function openServerDb(path: string): DatabaseSync {
   if (current !== 0 && current !== SCHEMA_VERSION) throw new Error(`${path}: schema version ${current}, expected ${SCHEMA_VERSION}`);
   db.exec(SCHEMA);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-  const { setMeta, getMeta } = statements(db);
-  if (getMeta.get("epoch") === undefined) {
-    setMeta.run("epoch", randomUUID());
-    setMeta.run("head", 0);
-  }
+  db.prepare("INSERT OR IGNORE INTO meta (k, v) VALUES ('epoch', ?), ('head', 0)").run(crypto.randomUUID());
   return db;
 }
 
-export function readHead(db: DatabaseSync): number {
-  return (statements(db).getMeta.get("head") as { v: number }).v;
-}
-export function writeHead(db: DatabaseSync, head: number): void {
-  statements(db).setMeta.run("head", head);
-}
-export function readEpoch(db: DatabaseSync): string {
-  return (statements(db).getMeta.get("epoch") as { v: string }).v;
-}
-
-export function resetStore(db: DatabaseSync): string {
-  const epoch = randomUUID();
-  for (const stream of STREAMS) db.exec(`DELETE FROM ${CODECS[stream].table}`);
-  const { setMeta } = statements(db);
-  setMeta.run("epoch", epoch);
-  setMeta.run("head", 0);
-  return epoch;
+/** Replaces every row with `generate(issues, seed)`'s, under a new epoch. */
+export function seedDb(db: DatabaseSync, issues: number, seed = 1): { rows: number; head: number } {
+  const { rows, head } = generate(issues, seed);
+  const tables = sqliteTables(db);
+  tables.transaction(() => {
+    for (const stream of STREAMS) db.exec(`DELETE FROM ${CODECS[stream].table}`);
+    db.prepare("UPDATE meta SET v = ? WHERE k = 'epoch'").run(crypto.randomUUID());
+    for (const stream of STREAMS) for (const row of rows[stream]) tables.put(stream, row);
+    tables.setHead(head);
+  });
+  return { rows: head, head };
 }
 
 export function defaultDbPath(): string {
   return resolve(process.env.LINEARLITE_DB ?? "data/linearlite.db");
 }
 
-const SHARED = Symbol.for("linearlite.serverDb");
-export function serverDb(): DatabaseSync {
-  const g = globalThis as { [SHARED]?: DatabaseSync };
-  return (g[SHARED] ??= openServerDb(defaultDbPath()));
+const SHARED = Symbol.for("linearlite.server");
+/** The app's server, over the database at `defaultDbPath()`. */
+export function appServer(): SyncServer {
+  const g = globalThis as { [SHARED]?: SyncServer };
+  return (g[SHARED] ??= syncServer(sqliteTables(openServerDb(defaultDbPath()))));
 }

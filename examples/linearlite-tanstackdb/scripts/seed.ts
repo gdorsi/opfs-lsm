@@ -1,6 +1,5 @@
 import { parseArgs } from "node:util";
-import { defaultDbPath, openServerDb } from "../src/server/db.ts";
-import { seedDb } from "../src/server/seed.ts";
+import { defaultDbPath, openServerDb, seedDb } from "../src/server/sqlite.ts";
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { db: { type: "string" } } });
 const count = Number(positionals[0]);

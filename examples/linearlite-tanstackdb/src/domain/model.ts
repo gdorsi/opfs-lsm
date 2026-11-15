@@ -1,7 +1,6 @@
 import type { FieldsWith, Stream } from "./stores.ts";
 
 export const STATUSES = ["backlog", "todo", "in_progress", "done", "canceled"] as const;
-export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
 export const STATUS_LABELS = ["Backlog", "Todo", "In Progress", "Done", "Canceled"] as const;
 export const PRIORITY_LABELS = ["Urgent", "High", "Medium", "Low", "No priority"] as const;
 
@@ -55,8 +54,12 @@ export type SyncState = {
   head: number;
   online: boolean;
   caughtUp: Record<Stream, boolean>;
-  /** Set while kv wants space and the user has not yet confirmed clearing the cached bodies and comments. */
-  pressure?: boolean;
+  /**
+   * Clearing the cached bodies and comments when kv wants space: `asked` until a user agrees in any tab, then
+   * `confirmed` until the leader has cleared them. Any tab may move it from `asked` to `confirmed`; only the leader
+   * writes the rest of the row.
+   */
+  evict: "idle" | "asked" | "confirmed";
 };
 
 export interface Rows {

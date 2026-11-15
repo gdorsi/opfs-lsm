@@ -36,7 +36,7 @@ let store: Store;
 before(async () => {
   kv = await openHarnessDb({ name: `linearlite-sort-${process.pid}`, forceMemory: true });
   const docs = await openDocStore(kv, schema);
-  store = { ...collections(docs), db: kv, docs, user: "ada" };
+  store = { ...collections(docs), db: kv, docs };
   await transact(
     store,
     "issues",
