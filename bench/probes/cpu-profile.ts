@@ -66,7 +66,13 @@ async function connect(url: string) {
     await send("Profiler.setSamplingInterval", { interval: 100 }, sessionId);
     await send("Profiler.start", {}, sessionId);
   };
-  const stop = async (sessionId: string) => (await send<{ profile: Profile }>("Profiler.stop", {}, sessionId)).profile;
+  /** Detaches too: a SharedWorker with a DevTools session never exits, so a later fresh page would find the old host alive. */
+  const stop = async (sessionId: string) => {
+    const { profile } = await send<{ profile: Profile }>("Profiler.stop", {}, sessionId);
+    await send("Profiler.disable", {}, sessionId);
+    await send("Target.detachFromTarget", { sessionId });
+    return profile;
+  };
   return { attach, start, stop, close: () => ws.close() };
 }
 

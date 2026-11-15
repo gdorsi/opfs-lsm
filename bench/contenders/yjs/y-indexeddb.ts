@@ -1,42 +1,35 @@
-import { IndexeddbPersistence } from "y-indexeddb";
+import { idbStorage } from "@opfs-lsm/example-whiteboard-yjs/persistence";
 import { defineContender } from "../../core/types.ts";
-import { done, request } from "../../page/idb.ts";
+import type { YjsBinding } from "../../core/families.ts";
 
 export default defineContender({
   family: "yjs",
   durability: "idb-default",
-  fastPath: "y-indexeddb IndexeddbPersistence: one IndexedDB database per doc, one tx per update, trim at 500",
+  fastPath: "examples/whiteboard-yjs idbStorage over y-indexeddb: one IndexedDB database per doc, one tx per update, trim at 500",
   engine: false,
   async open(name) {
-    const live = new Set<IndexeddbPersistence>();
+    const storage = idbStorage(name);
+    const live = new Set<YjsBinding>();
     return {
       async attach(docName, doc) {
-        const p = new IndexeddbPersistence(`${name}/${docName}`, doc);
-        live.add(p);
-        await p.whenSynced;
+        const binding = await storage.attach(docName, doc);
+        live.add(binding);
         return {
-          // y-indexeddb has no flush. Transactions on one store complete in order,
-          // so a readwrite transaction opened now completes after every earlier write.
-          async flush() {
-            const db = await (p as unknown as { _db: Promise<IDBDatabase> })._db;
-            await done(db.transaction("updates", "readwrite"));
+          flush: binding.flush,
+          detach: async () => {
+            live.delete(binding);
+            await binding.detach();
           },
-          async detach() {
-            live.delete(p);
-            await p.destroy();
-          },
-          async clear() {
-            live.delete(p);
-            await p.clearData();
-            // clearData does not wait for its deleteDatabase; a second request for the same name completes after it.
-            await request(indexedDB.deleteDatabase(`${name}/${docName}`));
+          clear: async () => {
+            live.delete(binding);
+            await binding.clear();
           },
         };
       },
       settle: async () => {},
       stats: async () => undefined,
       close: async () => {
-        for (const p of live) await p.destroy();
+        for (const binding of live) await binding.detach();
         live.clear();
       },
     };
