@@ -29,11 +29,7 @@
     "test:docstore": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/docstore run build && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
     "bench": "pnpm --filter './packages/*' build && node bench/cli.ts run",
     "bench:smoke": "pnpm --filter './packages/*' build && node bench/cli.ts smoke",
-    "bench:size": "pnpm --filter './packages/*' build && node bench/cli.ts size",
-    "todo:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/docstore build && pnpm --filter @opfs-lsm/example-todo dev",
-    "todo:example:build": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/docstore build && pnpm --filter @opfs-lsm/example-todo build && pnpm --filter @opfs-lsm/example-todo preview",
-    "automerge:example": "pnpm --filter @opfs-lsm/automerge... build && pnpm --filter @opfs-lsm/example-automerge dev",
-    "rich-text:example": "pnpm --filter @opfs-lsm/kv build && pnpm --filter @opfs-lsm/example-rich-text dev"
+    "bench:size": "pnpm --filter './packages/*' build && node bench/cli.ts size"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

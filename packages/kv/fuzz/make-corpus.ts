@@ -12,6 +12,7 @@
  *   crates/engine-core/fuzz/corpus/<target>/seed-*   cargo fuzz targets
  */
 import "fake-indexeddb/auto";
+import "../src/testing.js";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

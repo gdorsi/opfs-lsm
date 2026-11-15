@@ -118,7 +118,7 @@ describe("ingest policy", () => {
   it("a tab that asked for no flush loads the generation another tab's flush published", async () => {
     const { a, b } = await twoTabs(1e12);
     await a.put(utf("k"), utf("v"));
-    const manifestReads = async () => (await readStats(b)).tab.fs.read.m?.calls ?? 0;
+    const manifestReads = async () => (await readStats(b)).tab.fs!.read.m?.calls ?? 0;
     const before = await manifestReads();
     await ingest(a);
     await vi.waitFor(async () => expect(await manifestReads()).toBeGreaterThan(before), WAIT);

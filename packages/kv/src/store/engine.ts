@@ -395,46 +395,34 @@ export function setEngineUrlForTests(url: string | undefined): void {
 }
 
 function engineUrl(): URL {
-  if (engineUrlOverride !== undefined) return new URL(engineUrlOverride, import.meta.url);
+  // A variable base: webpack turns `new URL(expr, import.meta.url)` into a module context and warns.
+  const base = import.meta.url;
+  if (engineUrlOverride !== undefined) return new URL(engineUrlOverride, base);
   // Keep this a literal `new URL(..., import.meta.url)`: bundlers emit the .wasm only for that form.
   return new URL("../../wasm/engine.wasm", import.meta.url);
 }
 
 async function loadWasm(): Promise<FlatEngine> {
-  const url = engineUrl();
-  // Node/vitest: file:// fetch is broken, so pass bytes. Browser: stream from the URL.
-  const bytes = await readWasmBytes(url);
-  const module = await WebAssembly.compile((bytes ?? (await fetchWasm(url))) as BufferSource);
+  const module = await WebAssembly.compile(await readEngine(engineUrl()));
   const loaded = flatEngine(await WebAssembly.instantiate(module, {}));
   wasmModule = module;
   return loaded;
 }
 
-async function fetchWasm(url: URL): Promise<ArrayBuffer> {
+async function fetchWasm(url: URL): Promise<BufferSource> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`engine wasm ${url.href}: HTTP ${response.status}`);
   return response.arrayBuffer();
 }
 
-async function readWasmBytes(wasmUrl: URL): Promise<Uint8Array | undefined> {
-  try {
-    const g = globalThis as {
-      process?: { versions?: { node?: string } };
-    };
-    if (!g.process?.versions?.node || wasmUrl.protocol !== "file:") return undefined;
-    // Avoid hard dependency on @types/node in a browser package.
-    const fsMod = "node:fs/promises";
-    const urlMod = "node:url";
-    const fs = (await import(/* @vite-ignore */ fsMod)) as {
-      readFile: (path: string) => Promise<Uint8Array>;
-    };
-    const url = (await import(/* @vite-ignore */ urlMod)) as {
-      fileURLToPath: (u: URL) => string;
-    };
-    return await fs.readFile(url.fileURLToPath(wasmUrl));
-  } catch {
-    return undefined;
-  }
+let readEngine: (url: URL) => Promise<BufferSource> = fetchWasm;
+
+/**
+ * Test seam: how this context reads the `.wasm` file. Node's fetch cannot
+ * read a `file:` URL, so `@opfs-lsm/kv/testing` passes a file reader there.
+ */
+export function readEngineWith(read: (url: URL) => Promise<BufferSource>): void {
+  readEngine = read;
 }
 
 /**

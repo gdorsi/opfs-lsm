@@ -207,7 +207,7 @@ function compactionGate(inner: MemoryFs) {
 /** Run file reads and bytes this tab made so far. */
 async function runReads(db: Db): Promise<{ reads: number; bytes: number }> {
   const out = { reads: 0, bytes: 0 };
-  for (const [kind, io] of Object.entries((await readStats(db)).tab.fs.read)) {
+  for (const [kind, io] of Object.entries((await readStats(db)).tab.fs!.read)) {
     if (!/^l\d+$/.test(kind)) continue;
     out.reads += io.calls;
     out.bytes += io.bytes;
