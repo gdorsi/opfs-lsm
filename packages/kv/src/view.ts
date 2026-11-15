@@ -5,10 +5,13 @@ import type { MemRow, MemRows } from "./store/memtable.js";
 import { entryCursor, untilHit, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
-  mergeCursors,
+  countOf,
+  entriesOf,
+  liveStep,
+  matchingStep,
   pointGet,
-  scanMatching,
   type RunLevel,
+  type ScanStep,
 } from "./store/read.js";
 
 export interface ViewSnapshot {
@@ -16,6 +19,8 @@ export interface ViewSnapshot {
   readonly seq: number;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   range(range?: Range): AsyncIterable<Entry>;
+  /** How many entries `range` would yield, `limit` included, without copying them. */
+  count(range?: Range): Promise<number>;
 }
 
 export function boundsOf(range?: Range): ScanBounds | undefined {
@@ -31,8 +36,24 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 
 /**
  * `range` over memtable `rows` already cut to `bounds` and the levels under
- * them: every live put, or with `valueContains` only the matching ones.
+ * them, one entry at a time: every live put, or with `valueContains` only
+ * the matching ones. `limit` is left to the caller.
  */
+function scanStep(
+  rows: readonly MemRow[],
+  levels: readonly RunLevel[],
+  at: Marks,
+  bounds: ScanBounds | undefined,
+  range: Range | undefined,
+): ScanStep {
+  const patterns = range?.valueContains;
+  const reverse = range?.reverse ?? false;
+  return patterns && patterns.length > 0
+    ? matchingStep(rows, levels, patterns, at, bounds, reverse)
+    : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse);
+}
+
+/** The entries `range` yields over memtable `rows` already cut to `bounds` and the levels under them. */
 export function scanLayers(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
@@ -40,16 +61,18 @@ export function scanLayers(
   bounds: ScanBounds | undefined,
   range: Range | undefined,
 ): AsyncGenerator<Entry> {
-  const patterns = range?.valueContains;
-  const reverse = range?.reverse ?? false;
-  return patterns && patterns.length > 0
-    ? scanMatching(rows, levels, patterns, at, bounds, range.limit, reverse)
-    : mergeCursors(
-        [entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))],
-        at,
-        range?.limit,
-        reverse,
-      );
+  return entriesOf(scanStep(rows, levels, at, bounds, range), range?.limit);
+}
+
+/** How many entries `scanLayers` would yield, without copying them. */
+export function countLayers(
+  rows: readonly MemRow[],
+  levels: readonly RunLevel[],
+  at: Marks,
+  bounds: ScanBounds | undefined,
+  range: Range | undefined,
+): Promise<number> {
+  return countOf(scanStep(rows, levels, at, bounds, range), range?.limit);
 }
 
 /**
@@ -83,6 +106,17 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     const k = checkKey(key);
     const row = this.rows.get(k);
     return untilHit(() => pointGet(row, this.levels, k, this.at));
+  }
+
+  async count(range?: Range): Promise<number> {
+    this.ensureOpen();
+    const bounds = boundsOf(range);
+    const release = this.hold();
+    try {
+      return await countLayers(this.rows.range(bounds), this.levels, this.at, bounds, range);
+    } finally {
+      release();
+    }
   }
 
   async *range(range?: Range): AsyncIterable<Entry> {

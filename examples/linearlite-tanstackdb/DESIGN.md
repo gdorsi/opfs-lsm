@@ -276,7 +276,7 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   frame or keystroke, in the tab that edited or any other visible one, and stops there once no one shows its
   counts: a search counts at each key, and the count of a key already replaced stops. A hidden tab paints nothing
   and wakes its timers about once a second, so it counts them all at once. Counters kept from changes would save
-  the 32 ms count itself, but every issue write would update one document, which a clear, an epoch change or a gap
+  the 19 ms count itself, but every issue write would update one document, which a clear, an epoch change or a gap
   would have to recompute.
   The counts depend on the filter and the query, not the sort, so a sort change keeps them.
 - **Deep scroll.** TanStack serves a window at offset N from the first N rows plus the window, and keeps them

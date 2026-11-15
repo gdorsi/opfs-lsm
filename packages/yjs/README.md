@@ -19,15 +19,18 @@ await persistence.whenSynced;
 
 ## Merging
 
-Each update is one kv entry. A load that finds 500 entries or more merges them into one. The fourth argument sets that threshold.
+Each update is one kv entry, and a load replays every entry of its doc. Once a doc has 500 entries or more and has had no update for a second, they are merged into one, whether it reached 500 at load or while open. Loading never waits on a merge. The fourth argument sets the threshold, and `trimDelayMs` the wait.
 
 ```ts
-new KvPersistence(db, "draft", new Y.Doc(), 100);
+const p = new KvPersistence(db, "draft", new Y.Doc(), 100);
+p.trimDelayMs = 5000;
 ```
+
+A merge reads every entry of the doc first, other tabs' included, and applies them to the doc, as y-indexeddb does.
 
 ## Other tabs
 
-A persistence loads once, when you construct it. It does not see updates other tabs write later, so add a Yjs provider that syncs open tabs.
+A persistence loads once, when you construct it. Other tabs' later updates reach the doc only when a merge reads them, so add a Yjs provider that syncs open tabs.
 
 ## Limits
 
@@ -56,6 +59,8 @@ Other documents in the db are untouched. Updates the doc receives after `clearDa
 await persistence.flush(); // every update written so far is acked
 await persistence.destroy(); // detaches from doc, then flushes
 ```
+
+If a write failed, the next `flush()` writes the whole doc state again. It rejects if that write fails too, and the next call retries.
 
 ## Sharing a database
 
