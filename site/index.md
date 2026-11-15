@@ -59,13 +59,6 @@ apps:
           ratio: 0.94×
 size:
   main: 18.5 kB
-read:
-  framework: TanStack DB
-  workload: On-demand, 10 rows by id
-  baseline: SQLite
-  other: 1.9k queries/s
-  kv: 4.1k queries/s
-  ratio: 2.1×
 fits:
   - name: TanStack DB
     package: "@opfs-lsm/tanstack-db"
