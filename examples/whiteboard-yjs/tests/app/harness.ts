@@ -20,7 +20,6 @@ export const box = (kind: "rect" | "ellipse" | "diamond", x: number, y: number, 
   strokeWidth: 2,
 });
 
-/** A real Board on memoryStorage with a controller over it, a stage of 800 x 600 and a pointer clock. The viewport is reset to the origin at zoom 1 unless `fit`. */
 export async function rig(seed: readonly NewShape[] = [], wrap: (board: Board) => Board = (board) => board, fit = false) {
   const storage = memoryStorage();
   const open = () => openBoard({ id: boardId("t"), storage, env: testEnv(idCounter("s")), autosaveMs: null });
@@ -57,7 +56,6 @@ export async function rig(seed: readonly NewShape[] = [], wrap: (board: Board) =
     down: (x: number, y: number, over?: Partial<PointerSample>) => input.send({ type: "down", p: sample(x, y, over) }),
     move: (x: number, y: number, over?: Partial<PointerSample>) => input.send({ type: "move", p: sample(x, y, over) }),
     up: (x: number, y: number, over?: Partial<PointerSample>) => input.send({ type: "up", p: sample(x, y, over) }),
-    /** down, a move halfway and one at the end, each applied by a frame, then up. */
     drag(from: readonly [number, number], to: readonly [number, number], over?: Partial<PointerSample>) {
       this.down(from[0], from[1], over);
       this.move((from[0] + to[0]) / 2, (from[1] + to[1]) / 2, over);
@@ -74,8 +72,7 @@ export async function rig(seed: readonly NewShape[] = [], wrap: (board: Board) =
     keyUp: (k: string, over?: Partial<KeySample>) => input.send({ type: "key", down: false, key: key(k, over), t: (t += 16) }),
     tool: (tool: "select" | "rect" | "ellipse" | "diamond" | "arrow" | "text" | "pen") =>
       input.send({ type: "do", action: { type: "tool", tool } }),
-    /** How many undo steps the board has. Destructive: it undoes them all. */
-    undoSteps(): number {
+    undoAll(): number {
       let n = 0;
       while (board.undo()) n++;
       return n;

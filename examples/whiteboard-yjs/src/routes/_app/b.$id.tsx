@@ -4,10 +4,8 @@ import { BoardScreen } from "../../app/board-screen.tsx";
 import { showBoard } from "../../app/session.ts";
 
 /**
- * One board. The loader opens it through the slot (session.ts); the list's loader closes it. `gcTime: 0`: a board
- * that left the screen is closed, so its loader data must never be shown again; re-entering runs the loader.
- * Lifecycle is not in onLeave (TanStack calls onStay for /b/1 -> /b/2, same route id) and not in an effect
- * (StrictMode runs effect cleanups twice in dev).
+ * `gcTime: 0`: a board that left the screen is closed, so its loader data must never be shown again; re-entering
+ * runs the loader.
  */
 export const Route = createFileRoute("/_app/b/$id")({
   ssr: false,

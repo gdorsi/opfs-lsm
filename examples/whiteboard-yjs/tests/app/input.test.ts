@@ -19,7 +19,7 @@ describe("box tools", () => {
     assert.deepEqual([made!.kind, made!.x, made!.y, made!.w, made!.h], ["rect", 100, 100, 100, 80]);
     assert.deepEqual(r.selected(), [made!.id], "the new shape is selected");
     assert.equal(r.input.ui().tool, "select", "the tool is back to select");
-    assert.equal(r.undoSteps(), 1);
+    assert.equal(r.undoAll(), 1);
     assert.equal(r.shapes().length, 0, "undo removes it");
   });
 
@@ -93,7 +93,7 @@ describe("select and move", () => {
     r.move(122, 121);
     r.input.frame();
     r.up(122, 121);
-    assert.equal(r.undoSteps(), 1, "only the seed create");
+    assert.equal(r.undoAll(), 1, "only the seed create");
   });
 
   test("shift-click toggles, a click inside a selection narrows it, a click on empty space clears", async () => {
@@ -194,7 +194,7 @@ describe("throw rules", () => {
     }
     assert.equal(r.input.send({ type: "do", action: { type: "zoom", to: "in" } }), true, "zoom never writes the doc");
     assert.throws(() => r.board.undo(), /gesture in progress/, "the guard is the controller's: the model refuses too");
-    r.input.send({ type: "blur" });
+    r.input.send({ type: "abandon" });
     assert.doesNotThrow(() => r.board.dispatch({ type: "remove", ids: [] }));
   });
 });
@@ -202,7 +202,7 @@ describe("throw rules", () => {
 describe("cancel", () => {
   for (const [name, cancel] of [
     ["Escape", (r: Awaited<ReturnType<typeof rig>>) => r.keyDown("Escape")],
-    ["blur", (r: Awaited<ReturnType<typeof rig>>) => r.input.send({ type: "blur" })],
+    ["blur", (r: Awaited<ReturnType<typeof rig>>) => r.input.send({ type: "abandon" })],
     ["pointercancel", (r: Awaited<ReturnType<typeof rig>>) => r.input.send({ type: "cancel", pointerId: 1 })],
   ] as const) {
     test(`${name} mid-drag reverts the shape, leaves no undo step and stores the original`, async () => {
@@ -237,7 +237,7 @@ describe("pen", () => {
     assert.equal(pen!.kind, "pen");
     const points = pen!.kind === "pen" ? pen!.points.length / 2 : 0;
     assert.ok(points >= 24 && points <= 27, `${points} points reach the model from 101 samples`);
-    assert.equal(r.undoSteps(), 1);
+    assert.equal(r.undoAll(), 1);
   });
 
   test("Escape writes nothing", async () => {
@@ -287,7 +287,7 @@ describe("text", () => {
     assert.deepEqual(r.selected(), [made!.id]);
     assert.equal(r.input.ui().editing, null);
     assert.equal(r.input.ui().tool, "select");
-    assert.equal(r.undoSteps(), 1);
+    assert.equal(r.undoAll(), 1);
   });
 
   test("a blank commit creates nothing", async () => {
@@ -406,7 +406,7 @@ describe("actions", () => {
     const [a] = r.ids;
     r.click(120, 120);
     r.keyDown("ArrowLeft");
-    r.input.send({ type: "blur" });
+    r.input.send({ type: "abandon" });
     assert.equal(r.at(a!).x, 100);
     assert.doesNotThrow(() => r.board.undo());
   });

@@ -7,7 +7,6 @@ import type { InputEvent, PointerSample } from "../../src/app/core/input.ts";
 import { pick, seeded, type Rng } from "../support/rng.ts";
 import { box, rig } from "./harness.ts";
 
-/** A Board that records every patch the controller causes: dispatches, and the end of each gesture. */
 function recording(board: Board, patches: Patch[]): Board {
   return {
     id: board.id,
@@ -90,7 +89,7 @@ function event(rng: Rng, t: number, history: boolean): InputEvent | "frame" {
   }
   if (roll < 0.93) return { type: "text-input", draft: pick(rng, ["", "a", "two\nlines", "  "]) };
   if (roll < 0.96) return { type: "text-commit" };
-  return { type: "blur" };
+  return { type: "abandon" };
 }
 
 describe("seeded event fuzz", () => {
@@ -110,7 +109,7 @@ describe("seeded event fuzz", () => {
           if (e === "frame") r.input.frame();
           else assert.doesNotThrow(() => r.input.send(e), `event ${i}: ${JSON.stringify(e)}`);
         }
-        r.input.send({ type: "blur" });
+        r.input.send({ type: "abandon" });
         r.input.send({ type: "text-commit" });
         assert.doesNotThrow(() => r.board.dispatch({ type: "remove", ids: [] }), "no gesture is left live");
         assert.ok(patches.length >= 20, `the run wrote ${patches.length} times: enough to mean something`);

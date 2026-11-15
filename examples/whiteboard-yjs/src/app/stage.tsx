@@ -1,8 +1,3 @@
-/**
- * The canvas and its DOM boundary. Converts PointerEvent, WheelEvent, KeyboardEvent and Safari's GestureEvent into
- * the controller's InputEvents, and runs the frame loop: one requestAnimationFrame applies the coalesced input
- * (controller.frame) and paints what changed (renderer.paint). Nothing else in the app touches these events.
- */
 import { useEffect, useRef, type ReactNode } from "react";
 import type { Board } from "../model/index.ts";
 import { toScreen, wheelPixels } from "./core/camera.ts";
@@ -86,7 +81,7 @@ export function Stage({ board, controller }: { board: Board; controller: Control
     };
     const onKeyDown = onKey(true);
     const onKeyUp = onKey(false);
-    const onBlur = () => void send({ type: "blur" });
+    const onBlur = () => void send({ type: "abandon" });
     const onHidden = () => {
       if (document.visibilityState === "hidden") onBlur();
     };
@@ -109,7 +104,6 @@ export function Stage({ board, controller }: { board: Board; controller: Control
     const off = [board.subscribe(loop.request), controller.subscribe(loop.request)];
     loop.request();
 
-    // The cleanup only abandons a live phase: the controller stays usable, so StrictMode's remount is safe.
     return () => {
       topEl.removeEventListener("pointerdown", onDown);
       topEl.removeEventListener("pointermove", onMove);
@@ -128,7 +122,7 @@ export function Stage({ board, controller }: { board: Board; controller: Control
       observer.disconnect();
       for (const f of off) f();
       loop.stop();
-      controller.send({ type: "blur" });
+      controller.send({ type: "abandon" });
     };
   }, [board, controller]);
 
@@ -141,12 +135,7 @@ export function Stage({ board, controller }: { board: Board; controller: Control
   );
 }
 
-/**
- * The open text editor: a textarea laid over the text's frame, in screen px from the viewport. The draft lives in
- * the controller (text-input on every input), so a pointer down on the canvas can commit it before the textarea
- * blurs. Escape and mod+Enter commit; Enter is a new line. A blur commits only while the window has focus, so
- * switching apps keeps the editor open.
- */
+/** A blur commits only while the window has focus, so switching apps keeps the editor open. */
 function TextEditor({ board, controller, editing }: { board: Board; controller: Controller; editing: TextEditing }): ReactNode {
   const viewport = useBoardSlice(board, (v) => v.viewport);
   const at = toScreen(viewport, editing.at);
@@ -185,10 +174,6 @@ function TextEditor({ board, controller, editing }: { board: Board; controller: 
   );
 }
 
-/**
- * One requestAnimationFrame at a time. Requests made while the frame runs (the model publishing during
- * controller.frame) are absorbed: the paint that follows in the same frame reads the latest view.
- */
 function frameLoop(run: () => void): { request(): void; stop(): void } {
   let id = 0;
   let running = false;
@@ -212,7 +197,6 @@ function frameLoop(run: () => void): { request(): void; stop(): void } {
   };
 }
 
-/** The boundary: a PointerEvent (or a dblclick's MouseEvent) as the controller reads it. Stage-relative px from the cached host rect. */
 function sample(e: PointerEvent | MouseEvent, origin: { left: number; top: number }): PointerSample {
   const type = (e as PointerEvent).pointerType;
   return {
@@ -231,7 +215,6 @@ function keySample(e: KeyboardEvent): KeySample {
   return { key: e.key, mod: MAC ? e.metaKey : e.ctrlKey, shift: e.shiftKey, alt: e.altKey, repeat: e.repeat };
 }
 
-/** Keys typed into a field belong to the field. */
 function editable(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
 }

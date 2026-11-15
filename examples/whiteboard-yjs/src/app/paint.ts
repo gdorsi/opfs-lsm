@@ -1,19 +1,3 @@
-/**
- * Canvas 2D painting. Two canvases stacked in the stage:
- *  - scene:   every visible shape, back to front, straight from `view.order` and `view.shapes`.
- *  - overlay: the selection outlines and handles, the marquee, a box tool's preview. Painted on top.
- *
- * The scene repaints in full when it is dirty; there is no per-shape cache, tile cache or lifted layer. Culling is a
- * bounding-box test inside the loop; tiny shapes and text draw as plain fills (level of detail), which is what keeps
- * a zoomed-out board cheap.
- *
- * Dirty is derived from the model's identity rules, not from a version number: the scene is dirty when `order`,
- * `viewport`, the canvas size or the skipped id changed, or when any `shapes.get(order[i])` is not the object
- * painted at i last time. That scan is cheap enough at 20,000 shapes, and it lets a marquee, a selection change or a
- * save-state change repaint the overlay alone.
- *
- * The renderer never reads pixels back: a readback moves a canvas to CPU raster in Chrome.
- */
 import type { BoardView, NewShape, Shape, ShapeId } from "../model/index.ts";
 import { toScreen, visibleRect } from "./core/camera.ts";
 import {
@@ -21,21 +5,17 @@ import {
   HANDLE_PX,
   handlePoints,
   handlesFor,
-  reaches,
+  inkOverlaps,
   rectOf,
   selectionRect,
 } from "./core/geometry.ts";
 import type { Overlay } from "./core/input.ts";
 import { fontPxOf, FONT, LINE_HEIGHT, linesOf, type Measure } from "./core/text.ts";
 
-/** The canvas size in CSS px, and the device pixel ratio its backing store uses. */
-export type Frame = { readonly w: number; readonly h: number; readonly dpr: number };
+export type CanvasSize = { readonly w: number; readonly h: number; readonly dpr: number };
 
-/** Below this many screen px a shape is one fillRect. */
 const LOD_PX = 3;
-/** Below this many screen px of font, a text line is a bar. */
 const TEXT_LOD_PX = 4;
-/** More selected shapes than this draw only the union box, not one outline each. */
 const OUTLINE_LIMIT = 1000;
 const SURFACE = "#fbfbfa";
 const ACCENT = "#4c6ef5";
@@ -43,10 +23,6 @@ const ACCENT = "#4c6ef5";
 /** The font last set on the scene context: parsing a font string is the costly part of drawing text. */
 let currentFont = "";
 
-/**
- * Draws one shape in board space; the caller has set the transform. `zoom` sets the hairline (strokes never drop
- * below one screen px) and the levels of detail.
- */
 function drawShape(ctx: CanvasRenderingContext2D, s: Shape | NewShape, zoom: number): void {
   const r = rectOf(s);
   const bw = r.maxX - r.minX;
@@ -140,27 +116,23 @@ function fillAndStroke(ctx: CanvasRenderingContext2D, s: Shape | NewShape): void
   ctx.stroke();
 }
 
-/**
- * The scene: clears, sets the transform (dpr * zoom, translate -viewport), then walks `view.order`. Returns the
- * shapes it saw, by index of `order`, so the renderer can compare identities next frame.
- */
-function paintScene(ctx: CanvasRenderingContext2D, view: BoardView, frame: Frame, skip: ShapeId | null): Shape[] {
+function paintScene(ctx: CanvasRenderingContext2D, view: BoardView, size: CanvasSize, skip: ShapeId | null): Shape[] {
   const { viewport, order, shapes } = view;
   const { zoom } = viewport;
-  ctx.setTransform(frame.dpr, 0, 0, frame.dpr, 0, 0);
+  ctx.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
   ctx.fillStyle = SURFACE;
-  ctx.fillRect(0, 0, frame.w, frame.h);
-  const scale = frame.dpr * zoom;
+  ctx.fillRect(0, 0, size.w, size.h);
+  const scale = size.dpr * zoom;
   ctx.setTransform(scale, 0, 0, scale, -viewport.x * scale, -viewport.y * scale);
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
   currentFont = "";
-  const visible = visibleRect(viewport, frame);
+  const visible = visibleRect(viewport, size);
   const seen: Shape[] = new Array(order.length);
   for (let i = 0; i < order.length; i++) {
     const s = shapes.get(order[i]!)!;
     seen[i] = s;
-    if (s.id === skip || !reaches(s, visible)) continue;
+    if (s.id === skip || !inkOverlaps(s, visible)) continue;
     if (Math.max(Math.abs(s.w), Math.abs(s.h)) * zoom < LOD_PX) {
       ctx.fillStyle = s.fill ?? s.stroke;
       ctx.fillRect(Math.min(s.x, s.x + s.w), Math.min(s.y, s.y + s.h), Math.max(Math.abs(s.w), 1 / zoom), Math.max(Math.abs(s.h), 1 / zoom));
@@ -171,23 +143,19 @@ function paintScene(ctx: CanvasRenderingContext2D, view: BoardView, frame: Frame
   return seen;
 }
 
-/**
- * The overlay: clears, then in board space the preview (drawShape at 60% alpha); then in screen space (crisp 1 px
- * lines whatever the zoom) the selection outline of each selected shape, the union box, the handles and the marquee.
- */
-function paintOverlay(ctx: CanvasRenderingContext2D, view: BoardView, overlay: Overlay, frame: Frame): void {
+function paintOverlay(ctx: CanvasRenderingContext2D, view: BoardView, overlay: Overlay, size: CanvasSize): void {
   const { viewport } = view;
-  ctx.setTransform(frame.dpr, 0, 0, frame.dpr, 0, 0);
-  ctx.clearRect(0, 0, frame.w, frame.h);
+  ctx.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
+  ctx.clearRect(0, 0, size.w, size.h);
   if (overlay.preview) {
-    const scale = frame.dpr * viewport.zoom;
+    const scale = size.dpr * viewport.zoom;
     ctx.setTransform(scale, 0, 0, scale, -viewport.x * scale, -viewport.y * scale);
     ctx.globalAlpha = 0.6;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     drawShape(ctx, overlay.preview, viewport.zoom);
     ctx.globalAlpha = 1;
-    ctx.setTransform(frame.dpr, 0, 0, frame.dpr, 0, 0);
+    ctx.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
   }
   ctx.strokeStyle = ACCENT;
   ctx.lineWidth = 1;
@@ -231,9 +199,7 @@ function paintOverlay(ctx: CanvasRenderingContext2D, view: BoardView, overlay: O
 }
 
 export interface Renderer {
-  /** The stage resized or moved to a screen with another DPR. Resizes both backing stores; next paint is full. */
-  resize(frame: Frame): void;
-  /** Paints what changed since the last call. Called once per animation frame by the stage's loop. */
+  resize(size: CanvasSize): void;
   paint(view: BoardView, overlay: Overlay): void;
 }
 
@@ -247,7 +213,7 @@ type Painted = {
 export function createRenderer(scene: HTMLCanvasElement, top: HTMLCanvasElement): Renderer {
   const sctx = scene.getContext("2d", { alpha: false })!;
   const octx = top.getContext("2d")!;
-  let frame: Frame = { w: 0, h: 0, dpr: 1 };
+  let size: CanvasSize = { w: 0, h: 0, dpr: 1 };
   let painted: Painted | null = null;
   let lastView: BoardView | null = null;
   let lastOverlay: Overlay | null = null;
@@ -259,7 +225,7 @@ export function createRenderer(scene: HTMLCanvasElement, top: HTMLCanvasElement)
 
   return {
     resize(next) {
-      frame = next;
+      size = next;
       for (const canvas of [scene, top]) {
         canvas.width = Math.max(1, Math.round(next.w * next.dpr));
         canvas.height = Math.max(1, Math.round(next.h * next.dpr));
@@ -268,7 +234,7 @@ export function createRenderer(scene: HTMLCanvasElement, top: HTMLCanvasElement)
       lastView = null;
     },
     paint(view, overlay) {
-      if (frame.w === 0) return;
+      if (size.w === 0) return;
       const dirty =
         !painted ||
         view.order !== painted.order ||
@@ -280,20 +246,17 @@ export function createRenderer(scene: HTMLCanvasElement, top: HTMLCanvasElement)
           order: view.order,
           viewport: view.viewport,
           skip: overlay.editing,
-          shapes: paintScene(sctx, view, frame, overlay.editing),
+          shapes: paintScene(sctx, view, size, overlay.editing),
         };
       }
-      if (dirty || view !== lastView || overlay !== lastOverlay) paintOverlay(octx, view, overlay, frame);
+      if (dirty || view !== lastView || overlay !== lastOverlay) paintOverlay(octx, view, overlay, size);
       lastView = view;
       lastOverlay = overlay;
     },
   };
 }
 
-/**
- * The browser's Measure for text.ts: one 2D context with FONT at 100 px; widths scale linearly with the size.
- * Hinting makes small sizes a little off; the painter's maxWidth absorbs it.
- */
+/** Hinting makes small sizes a little off; the painter's maxWidth absorbs it. */
 export function canvasMeasure(): Measure {
   const ctx = document.createElement("canvas").getContext("2d")!;
   ctx.font = `100px ${FONT}`;

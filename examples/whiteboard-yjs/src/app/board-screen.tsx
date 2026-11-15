@@ -1,8 +1,3 @@
-/**
- * The canvas page: header (back, title, save state), toolbar, style panel and stage. Every control sends an Action
- * to the controller; none calls the board. React re-renders here only when a slice changes: the tool, the selection,
- * canUndo/canRedo, the save state, the board list.
- */
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import type { Board, BoardView, SaveState, Style, Workspace } from "../model/index.ts";
@@ -14,16 +9,13 @@ import { Stage } from "./stage.tsx";
 
 export function BoardScreen({ board }: { board: Board }) {
   const { ws } = useSession();
-  // useState, not an effect: creating a controller subscribes to nothing, so StrictMode's double call is harmless.
   const [controller] = useState(() => createController(board, { measure: canvasMeasure() }));
   const meta = useWorkspace(ws).boards.find((b) => b.id === board.id);
   const navigate = useNavigate();
 
-  // Deleted in another tab: the list drops it before the workspace closes the board (a microtask later), so leave
-  // first. hideBoard() in the list's loader then joins that close.
   useEffect(() => {
     if (meta) return;
-    controller.send({ type: "blur" });
+    controller.send({ type: "abandon" });
     void navigate({ to: "/", state: { notice: "This board was deleted in another tab." } });
   }, [meta, controller, navigate]);
 
@@ -116,10 +108,8 @@ function Toolbar({ board, controller }: { board: Board; controller: Controller }
   );
 }
 
-/** One value per field when every selected shape agrees, "mixed" when they differ. */
 type StyleSummary = { readonly [K in keyof Style]: Style[K] | "mixed" } | null;
 
-/** O(selection) per published view; equal summaries keep the old object, so a drag does not re-render the panel. */
 function summarize(view: BoardView): StyleSummary {
   let summary: { -readonly [K in keyof Style]: Style[K] | "mixed" } | null = null;
   for (const id of view.selection) {
@@ -179,7 +169,6 @@ function StylePanel({ board, controller }: { board: Board; controller: Controlle
   );
 }
 
-/** Board and workspace save state together: error if either failed, saving if either is saving, else saved. */
 const worst = (a: SaveState, b: SaveState): SaveState => {
   if (a.kind === "error") return a;
   if (b.kind === "error") return b;
@@ -198,7 +187,6 @@ export function WorkspaceSaveBadge({ ws }: { ws: Workspace }): ReactNode {
   return <SaveStatus state={save} skipped={0} retry={() => ws.flush()} />;
 }
 
-/** An error shows its message and a Retry; the model also retries by itself every autosave period. */
 function SaveStatus({ state, skipped, retry }: { state: SaveState; skipped: number; retry: () => Promise<unknown> }): ReactNode {
   return (
     <span className="save" role="status" data-state={state.kind}>

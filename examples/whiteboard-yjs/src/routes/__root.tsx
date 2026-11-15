@@ -14,7 +14,6 @@ export const Route = createRootRoute({
   ),
 });
 
-/** The only part rendered on the server. Every app route below sets ssr: false. */
 function Shell({ children }: { children: ReactNode }) {
   return (
     <html lang="en">

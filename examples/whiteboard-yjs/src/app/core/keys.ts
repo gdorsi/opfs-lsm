@@ -1,13 +1,7 @@
-/**
- * The keymap: one table from a key to an Action. Pure. The DOM boundary resolves `mod` (meta on macOS, ctrl
- * elsewhere) and drops keys typed into an input, a textarea or a contenteditable before they get here.
- * Space, Escape, Shift and Alt are not actions: the controller reads them as state (see input.ts).
- */
 import type { Direction, Style } from "../../model/index.ts";
 
 export type Tool = "select" | "rect" | "ellipse" | "diamond" | "arrow" | "text" | "pen";
 
-/** What a key or a toolbar button asks for. The one vocabulary of board commands in the app. */
 export type Action =
   | { readonly type: "tool"; readonly tool: Tool }
   | { readonly type: "undo" }
@@ -15,16 +9,13 @@ export type Action =
   | { readonly type: "delete" }
   | { readonly type: "duplicate" }
   | { readonly type: "reorder"; readonly to: Direction }
-  /** Moves the selection. A held key is one gesture, so one undo step: see the nudge phase in input.ts. */
   | { readonly type: "nudge"; readonly dx: number; readonly dy: number }
-  /** Applies to the selection, and becomes the style of the next shape drawn. */
   | { readonly type: "style"; readonly edit: Partial<Style> }
   | { readonly type: "selectAll" }
   | { readonly type: "editText" }
   | { readonly type: "zoom"; readonly to: "in" | "out" | "reset" | "fit" };
 
 export type KeySample = {
-  /** KeyboardEvent.key, e.g. "z", "Z", "ArrowLeft", "Delete", " ". */
   readonly key: string;
   readonly mod: boolean;
   readonly shift: boolean;
@@ -32,10 +23,6 @@ export type KeySample = {
   readonly repeat: boolean;
 };
 
-/**
- * Every tool and its key, in toolbar order. The keymap inverts it and the toolbar renders from it, so there is one
- * list; typed by Tool, so a new tool fails the build until it has a key.
- */
 export const TOOL_KEYS: Readonly<Record<Tool, string>> = { select: "v", rect: "r", ellipse: "o", diamond: "d", arrow: "a", text: "t", pen: "p" };
 const NUDGE = 1;
 const NUDGE_SHIFT = 10;
@@ -47,10 +34,8 @@ const ARROWS: Readonly<Record<string, readonly [number, number]>> = {
   ArrowDown: [0, 1],
 };
 
-/** The arrow keys a nudge reads. The controller ends a nudge when the last one is released. */
 export const isArrowKey = (key: string): boolean => key in ARROWS;
 
-/** The action of a key press, or undefined when the browser keeps the key. First match wins. */
 export function keyAction(k: KeySample): Action | undefined {
   const key = k.key.length === 1 ? k.key.toLowerCase() : k.key;
   if (k.mod) {

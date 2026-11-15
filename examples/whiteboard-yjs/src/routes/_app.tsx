@@ -3,10 +3,6 @@ import { openSession } from "../app/session.ts";
 
 type AppSearch = { storage?: "idb"; db?: string; fault?: 1 };
 
-/**
- * The pathless layout every page sits in. Its loader opens storage and the workspace once per page.
- * `storage`, `db` and `fault` ride along on every link, so a reload of /b/$id opens the same storage.
- */
 export const Route = createFileRoute("/_app")({
   ssr: false,
   validateSearch: (search: Record<string, unknown>): AppSearch => ({

@@ -48,8 +48,7 @@ export type Command =
   | { readonly type: "move"; readonly ids: readonly ShapeId[]; readonly dx: number; readonly dy: number }
   /** Maps the box `from` onto `to`. Shapes keep their place in the box. Either box may be flipped. */
   | { readonly type: "resize"; readonly ids: readonly ShapeId[]; readonly from: Box; readonly to: Box }
-  /** text, fontSize, w and h apply to text shapes only. The model never measures text, so the app sends a text's
-   * frame with its text, and the edit is one step. */
+  /** text, fontSize, w and h apply to text shapes only. */
   | {
       readonly type: "style";
       readonly ids: readonly ShapeId[];

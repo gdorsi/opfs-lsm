@@ -1,7 +1,3 @@
-/**
- * The board list: create, rename, delete, open, and the two sample boards for the size checks.
- * Reads `ws.boards()` and `ws.save()`; writes through the workspace's own methods.
- */
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import { scatterShape, type BoardMeta, type Workspace } from "../model/index.ts";
@@ -94,7 +90,6 @@ export function BoardsScreen(): ReactNode {
   );
 }
 
-/** Inline rename: commits on Enter or blur, never per keystroke (each rename is a Yjs transaction). Blank reverts. */
 function Rename({ ws, meta }: { ws: Workspace; meta: BoardMeta }): ReactNode {
   const [draft, setDraft] = useState<string | null>(null);
   if (draft === null) {
@@ -129,12 +124,6 @@ const SAMPLE_SIZES = [5_000, 20_000];
 
 const yieldTask = () => new Promise<void>((resolve) => setTimeout(resolve));
 
-/**
- * Creates a board and fills it with `count` sample shapes, 1,000 per `create` command, yielding a task between
- * commands so the page keeps painting. Opens it through the slot, so the board route finds it open.
- * The one board writer outside the controller (core/input.ts): dev seeding, before any controller exists. User
- * actions never dispatch from here.
- */
 async function fillSample(ws: Workspace, count: number): Promise<string> {
   const id = ws.createBoard(`Sample ${count.toLocaleString()}`);
   const board = await showBoard(id);

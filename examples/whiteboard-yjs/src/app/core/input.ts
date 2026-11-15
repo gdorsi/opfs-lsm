@@ -1,49 +1,3 @@
-/**
- * The interaction controller: every pointer, wheel and key event of the canvas, and every toolbar action, goes through
- * `send`. It is the only module that calls Board.dispatch, beginGesture, select, setViewport, undo and redo.
- * Pure TypeScript over the model: no DOM, no React, no clock. Node tests drive it against a real Board on
- * memoryStorage.
- *
- * State is one value, `Mode`. A pointer interaction is one `Phase`. A live model Gesture exists only inside the
- * translate, resize, draw and nudge phases, so code that runs while idle cannot reach a stale handle, and a gesture
- * ends exactly when its phase does.
- *
- * Transitions (tool "select" unless named; `b` is the pointer in board space):
- *
- *   phase     event                         guard                           effect                                   next
- *   idle      down                          middle button, or space held    -                                        pan
- *   idle      down                          on a handle of the selection    -                                        press(handle)
- *   idle      down                          on a shape (hitTop)             select it (shift: add) unless selected   press(shape)
- *   idle      down                          in a multi-selection's box      -                                        press(selection)
- *   idle      down                          on nothing                      -                                        press(empty)
- *   idle      down                          tool rect/ellipse/diamond/arrow -                                        sizing
- *   idle      down                          tool text                       -                                        press(text-point)
- *   idle      down                          tool pen                        beginGesture(draw); update(b)            draw
- *   press     move past 4 px (8 for touch)  target shape or selection       beginGesture(translate, selection)       translate
- *   press     move past threshold           target handle                   beginGesture(resize, from: handle box)   resize
- *   press     move past threshold           target empty                    -                                        marquee
- *   press     up                            -                               click rules (see click)                  idle
- *   translate|resize  frame                 a sample is due                 gesture.update(absolute target, e.t)     same
- *   draw      move                          >= 2 px from the last point     queue the point                          same
- *   draw      frame                         points queued                   gesture.update(point, e.t) for each      same
- *   marquee   frame                         -                               overlay.marquee = rect                   same
- *   sizing    frame                         -                               overlay.preview = dragFrame(...)         same
- *   pan|pinch frame                         -                               setViewport(...)                         same
- *   any live  up (its pointer)              -                               frame() first, then end / select / create idle
- *   any live  cancel | blur | Escape        -                               gesture.cancel() / drop the preview      idle
- *   any       second touch down             both pointers are touches       cancel the phase                         pinch
- *   any       wheel                         -                               setViewport; a live phase re-aims        same
- *   idle      arrow key, selection          -                               beginGesture(translate); update          nudge
- *   nudge     arrow key (auto-repeat)       -                               update with the offset so far            same
- *   nudge     keyup of the last arrow       -                               end()                                    idle
- *   idle      key or toolbar action         -                               perform(action)                          idle
- *   not idle  key or toolbar action         not a zoom                      refused: send returns false              same
- *
- * The model throws when dispatch, undo, redo or beginGesture runs during a gesture. Two rules make that unreachable:
- * `perform` runs only in the idle phase (zoom excepted: it never writes the doc), and beginGesture is called only
- * from idle (pen, nudge) or press (translate, resize), which hold no gesture. Ending sets the phase to idle before
- * calling end() or cancel(), so a throw there leaves the controller idle, not wedged.
- */
 import type {
   Board,
   BoardView,
@@ -87,87 +41,64 @@ import { naturalSize, newText, retextSize, scaleOf, TYPE_PX, type Measure } from
 
 type BoxTool = Extract<Tool, "rect" | "ellipse" | "diamond" | "arrow">;
 
-/** One pointer event, as the DOM boundary (stage.tsx) reads it. Stage-relative CSS px. */
 export type PointerSample = {
   readonly pointerId: number;
   readonly kind: "mouse" | "pen" | "touch";
-  /** 0 primary, 1 middle. Other buttons never reach the controller. */
+  /** 0 primary, 1 middle. */
   readonly button: number;
   readonly screen: Point;
   readonly shift: boolean;
   readonly alt: boolean;
   readonly mod: boolean;
-  /** The event's own timeStamp in ms. Passed to Gesture.update: the model's write throttle runs on event time. */
   readonly t: number;
 };
 
 export type InputEvent =
   | { readonly type: "stage"; readonly size: Size }
   | { readonly type: "down"; readonly p: PointerSample }
-  /** One per coalesced sample, oldest first. The controller keeps what the phase needs: the latest, or every pen point. */
   | { readonly type: "move"; readonly p: PointerSample }
   | { readonly type: "up"; readonly p: PointerSample }
-  /** pointercancel, or lostpointercapture without an up. */
   | { readonly type: "cancel"; readonly pointerId: number }
   | { readonly type: "dblclick"; readonly p: PointerSample }
-  /** Deltas already in px. `zoom`: ctrl or meta held, which is also how Chrome and Firefox deliver a trackpad pinch. */
+  /** `zoom`: ctrl or meta held, which is also how Chrome and Firefox deliver a trackpad pinch. */
   | { readonly type: "wheel"; readonly screen: Point; readonly dx: number; readonly dy: number; readonly zoom: boolean }
   /** Safari's trackpad pinch (gesturechange): the scale since the previous event. */
   | { readonly type: "pinch"; readonly screen: Point; readonly factor: number }
-  /** `t` is the event's own timeStamp, for the nudge gesture's write throttle. */
   | { readonly type: "key"; readonly down: boolean; readonly key: KeySample; readonly t: number }
-  /** The window lost focus or the page was hidden: end everything that needs a button or a key held. */
-  | { readonly type: "blur" }
+  | { readonly type: "abandon" }
   | { readonly type: "do"; readonly action: Action }
   | { readonly type: "text-input"; readonly draft: string }
   | { readonly type: "text-commit" };
 
-/** The open text editor. Board units; the TextEditor converts with the viewport. */
 export type TextEditing = {
-  /** null: a new text, created on commit if the draft is not blank. */
   readonly target: ShapeId | null;
-  /** Top-left of the box. */
   readonly at: Point;
   readonly draft: string;
   readonly fontSize: number;
-  /** See text.ts scaleOf. 1 for new text. */
   readonly scale: number;
-  /** naturalSize(draft) * scale: the textarea grows with what is typed. */
   readonly size: { readonly w: number; readonly h: number };
   readonly color: string;
 };
 
-/** What React renders from. A new object only when one of these changes, never per pointer move. */
 export type UiState = {
   readonly tool: Tool;
-  /** The style of the next shape. The style panel edits it and the selection together. */
   readonly style: Style;
   readonly editing: TextEditing | null;
 };
 
-/** What the overlay canvas paints besides the selection (which it derives from the view). New object on change. */
 export type Overlay = {
   readonly marquee: Rect | null;
   readonly preview: NewShape | null;
-  /** The text under the editor: the scene skips it, the overlay draws no outline for it. */
   readonly editing: ShapeId | null;
   readonly hover: HandleId | null;
 };
 
 export interface Controller {
-  /** Returns whether the event was used, so the DOM boundary can preventDefault. False for a refused action. */
   send(event: InputEvent): boolean;
-  /**
-   * Applies what pointer moves made due, once per animation frame: at most one Gesture.update per frame (every
-   * queued point for a pen) and one setViewport for a pan. The model republishes its view per update; the frame loop
-   * paints once after this.
-   */
   frame(): void;
   ui(): UiState;
-  /** UiState changes. Not called per frame. */
   subscribe(listener: () => void): () => void;
   overlay(): Overlay;
-  /** A CSS cursor for the stage. */
   cursor(): string;
 }
 
@@ -177,16 +108,11 @@ export function createController(board: Board, options: ControllerOptions): Cont
   return new LiveController(board, options.measure);
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-
 type PressTarget =
   | { readonly kind: "shape"; readonly id: ShapeId; readonly wasSelected: boolean }
-  /** Down inside a multi-selection's box but on no shape: a drag moves the selection, a click clears it. */
   | { readonly kind: "selection" }
   | { readonly kind: "handle"; readonly handle: HandleId; readonly handles: Exclude<Handles, { kind: "none" }> }
-  /** `base`: the selection a shift-marquee adds to. */
   | { readonly kind: "empty"; readonly base: ReadonlySet<ShapeId> }
-  /** Text tool: a click opens the editor here. A drag does nothing more. */
   | { readonly kind: "text-point" };
 
 type Phase =
@@ -202,7 +128,6 @@ type Phase =
       readonly keepAspect: boolean;
       readonly gesture: Gesture<"resize">;
     }
-  /** `last`: the last point accepted after thinning. Mutable: it moves with every accepted point. */
   | { readonly kind: "draw"; readonly pointerId: number; readonly gesture: Gesture<"draw">; last: Point }
   | { readonly kind: "marquee"; readonly pointerId: number; readonly downBoard: Point; readonly base: ReadonlySet<ShapeId> }
   | { readonly kind: "sizing"; readonly pointerId: number; readonly tool: BoxTool; readonly down: PointerSample; readonly downBoard: Point }
@@ -214,19 +139,15 @@ type Phase =
       readonly b0: Point;
       readonly start: Viewport;
     }
-  /** A held arrow key: one translate gesture, so one undo step. `dx`, `dy` and `held` move with every key press. */
   | { readonly kind: "nudge"; readonly gesture: Gesture<"translate">; readonly held: Set<string>; dx: number; dy: number };
 
-/** Text editing is a mode, not a phase: while the editor is open no pointer phase runs. */
 type Mode = { readonly kind: "canvas"; readonly phase: Phase } | { readonly kind: "text"; readonly editing: TextEditing };
 
 const IDLE_PHASE: Phase = { kind: "idle" };
 const IDLE: Mode = { kind: "canvas", phase: IDLE_PHASE };
 const DEFAULT_STYLE: Style = { stroke: "#111111", fill: null, strokeWidth: 2 };
 const NO_OVERLAY: Overlay = { marquee: null, preview: null, editing: null, hover: null };
-/** Pen points closer than this many screen px to the last one are dropped before they reach the model. */
 const PEN_MIN_PX = 2;
-/** A click with a box tool makes a shape this many screen px wide. */
 const CLICK_SIZE_PX = 100;
 const DUPLICATE_OFFSET_PX = 16;
 const DRAG_PX = 4;
@@ -252,11 +173,8 @@ const sameValue = (a: object | null, b: object | null): boolean => {
 
 class LiveController implements Controller {
   private mode: Mode = IDLE;
-  /** The latest sample of every pointer that is down. A pinch reads two. */
   private readonly pointers = new Map<number, PointerSample>();
-  /** Thinned pen points not yet given to the draw gesture. */
   private strokeQueue: Array<{ readonly p: Point; readonly t: number }> = [];
-  /** A continuous effect is due at the next frame: a move, a modifier change, or a viewport change mid-phase. */
   private due = false;
   private space = false;
   private stage: Size = { w: 0, h: 0 };
@@ -267,7 +185,6 @@ class LiveController implements Controller {
   private readonly board: Board;
   private readonly measure: Measure;
 
-  // No parameter properties: the package keeps erasableSyntaxOnly, because tsx and node --test run these files.
   constructor(board: Board, measure: Measure) {
     this.board = board;
     this.measure = measure;
@@ -300,7 +217,7 @@ class LiveController implements Controller {
         return true;
       case "key":
         return event.down ? this.keyDown(event.key, event.t) : this.keyUp(event.key);
-      case "blur":
+      case "abandon":
         this.space = false;
         this.abandon();
         return false;
@@ -385,8 +302,6 @@ class LiveController implements Controller {
     if (this.state.tool === "text") return "text";
     return this.state.tool === "select" ? "default" : "crosshair";
   }
-
-  // ---- pointer -------------------------------------------------------------------------------------------------
 
   private setStage(size: Size): void {
     this.stage = size;
@@ -477,7 +392,6 @@ class LiveController implements Controller {
     return true;
   }
 
-  /** What a sample of the pointer that owns the phase makes due. */
   private track(p: PointerSample): void {
     const phase = this.phase();
     const v = this.view().viewport;
@@ -501,7 +415,6 @@ class LiveController implements Controller {
     this.setOverlay({ hover: handle ?? null });
   }
 
-  /** press -> the phase a drag of its target starts. The gesture's input at the next frame is the total since down. */
   private lift(press: Extract<Phase, { kind: "press" }>): void {
     const view = this.view();
     const { target } = press;
@@ -594,7 +507,6 @@ class LiveController implements Controller {
     return true;
   }
 
-  /** press then up without a drag. */
   private click(press: Extract<Phase, { kind: "press" }>, p: PointerSample): void {
     const { target } = press;
     const view = this.view();
@@ -637,7 +549,6 @@ class LiveController implements Controller {
     return true;
   }
 
-  /** pointercancel or lostpointercapture: the phase that owns the pointer ends as if Escape had been pressed. */
   private cancelPointer(pointerId: number): boolean {
     if (!ownsPointer(this.phase(), pointerId)) {
       this.pointers.delete(pointerId);
@@ -647,10 +558,6 @@ class LiveController implements Controller {
     return true;
   }
 
-  /**
-   * Ends whatever the pointer was doing without keeping it. Idempotent: from idle it does nothing. Text mode is left
-   * alone: the editor keeps its draft.
-   */
   private abandon(): void {
     const phase = this.phase();
     if (this.mode.kind === "canvas") this.mode = IDLE;
@@ -663,15 +570,13 @@ class LiveController implements Controller {
     }
   }
 
-  // ---- keys and actions ----------------------------------------------------------------------------------------
-
   private keyDown(k: KeySample, t: number): boolean {
     if (k.key === " ") {
       if (!k.repeat) this.space = true;
       return true;
     }
     if (k.key === "Escape") return this.escape();
-    if (k.key === "Shift" || k.key === "Alt") return this.reaim(k);
+    if (k.key === "Shift" || k.key === "Alt") return this.trackModifiers(k);
     const action = keyAction(k);
     if (!action) return false;
     if (action.type === "nudge" && isArrowKey(k.key)) return this.nudge(k.key, action.dx, action.dy, t);
@@ -683,7 +588,7 @@ class LiveController implements Controller {
       this.space = false;
       return true;
     }
-    if (k.key === "Shift" || k.key === "Alt") return this.reaim(k);
+    if (k.key === "Shift" || k.key === "Alt") return this.trackModifiers(k);
     const phase = this.phase();
     if (phase.kind === "nudge" && isArrowKey(k.key)) {
       phase.held.delete(k.key);
@@ -709,8 +614,7 @@ class LiveController implements Controller {
     return true;
   }
 
-  /** Shift and Alt change what a live drag means without a pointer move: the pointer's sample takes the new flags. */
-  private reaim(k: KeySample): boolean {
+  private trackModifiers(k: KeySample): boolean {
     const phase = this.phase();
     if (phase.kind === "idle" || phase.kind === "nudge" || phase.kind === "pinch") return false;
     const p = this.pointers.get(phase.pointerId);
@@ -719,7 +623,6 @@ class LiveController implements Controller {
     return false;
   }
 
-  /** A held arrow key: the first press begins one translate gesture, every repeat moves it further. */
   private nudge(key: string, dx: number, dy: number, t: number): boolean {
     const phase = this.phase();
     if (phase.kind === "nudge") {
@@ -750,10 +653,6 @@ class LiveController implements Controller {
     if (this.phase().kind !== "idle") this.due = true;
   }
 
-  /**
-   * The only door to board commands. Refuses (returns false) unless the phase is idle; zoom is always allowed.
-   * A selection-less delete, duplicate or reorder returns false too: nothing happened.
-   */
   private perform(action: Action): boolean {
     if (action.type === "zoom") return this.zoom(action.to);
     if (this.mode.kind === "text") this.commitText();
@@ -819,9 +718,6 @@ class LiveController implements Controller {
     return true;
   }
 
-  // ---- text ----------------------------------------------------------------------------------------------------
-
-  /** Opens the editor over an existing text, or at a point for a new one. */
   private openEditor(target: { readonly target: ShapeId } | { readonly target: null; readonly at: Point }): void {
     const view = this.view();
     let editing: Omit<TextEditing, "size">;
@@ -862,7 +758,6 @@ class LiveController implements Controller {
     this.emit();
   }
 
-  /** Closes the editor and writes what it holds, as one command. */
   private commitText(): void {
     if (this.mode.kind !== "text") return;
     const e = this.mode.editing;
@@ -889,8 +784,6 @@ class LiveController implements Controller {
     }
   }
 
-  // ---- helpers -------------------------------------------------------------------------------------------------
-
   private view(): BoardView {
     return this.board.view();
   }
@@ -905,7 +798,6 @@ class LiveController implements Controller {
     this.emit();
   }
 
-  /** Keeps the same object when nothing changed, so the renderer can skip a repaint. */
   private setOverlay(change: Partial<Overlay>): void {
     const next = { ...this.drawn, ...change };
     const same =
@@ -943,19 +835,16 @@ function handleCursor(handle: HandleId): string {
 
 const snapPoint = (p: Point, zoom: number): Point => ({ x: snap(p.x, zoom), y: snap(p.y, zoom) });
 
-/** Snaps the corners, not the sizes, so the box edges land on the grid. */
 function snapBox(b: Box, zoom: number): Box {
   const x = snap(b.x, zoom);
   const y = snap(b.y, zoom);
   return { x, y, w: snap(b.x + b.w, zoom) - x, h: snap(b.y + b.h, zoom) - y };
 }
 
-/** A click with a box tool: a shape of `size` centered on the pointer. An arrow runs right from its center. */
 function clickFrame(tool: BoxTool, at: Point, size: number): Box {
   return { x: at.x - size / 2, y: tool === "arrow" ? at.y : at.y - size / 2, w: size, h: tool === "arrow" ? 0 : size };
 }
 
-/** The shape a box tool creates over `frame`, in `style`. Boxes are normalized; an arrow keeps its direction in the signs. */
 function boxShape(tool: BoxTool, frame: Box, style: Style): NewShape {
   if (tool === "arrow") return { kind: "arrow", ...frame, ...style, fill: null };
   return { kind: tool, ...boxOf(rectOf(frame)), ...style };
