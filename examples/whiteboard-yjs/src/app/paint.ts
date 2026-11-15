@@ -17,8 +17,8 @@ export type CanvasSize = { readonly w: number; readonly h: number; readonly dpr:
 const LOD_PX = 3;
 const TEXT_LOD_PX = 4;
 const OUTLINE_LIMIT = 1000;
-const SURFACE = "#fbfbfa";
-const ACCENT = "#4c6ef5";
+
+type Theme = { readonly canvas: string; readonly accent: string };
 
 /** The font last set on the scene context: parsing a font string is the costly part of drawing text. */
 let currentFont = "";
@@ -116,11 +116,11 @@ function fillAndStroke(ctx: CanvasRenderingContext2D, s: Shape | NewShape): void
   ctx.stroke();
 }
 
-function paintScene(ctx: CanvasRenderingContext2D, view: BoardView, size: CanvasSize, skip: ShapeId | null): Shape[] {
+function paintScene(ctx: CanvasRenderingContext2D, view: BoardView, size: CanvasSize, skip: ShapeId | null, theme: Theme): Shape[] {
   const { viewport, order, shapes } = view;
   const { zoom } = viewport;
   ctx.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
-  ctx.fillStyle = SURFACE;
+  ctx.fillStyle = theme.canvas;
   ctx.fillRect(0, 0, size.w, size.h);
   const scale = size.dpr * zoom;
   ctx.setTransform(scale, 0, 0, scale, -viewport.x * scale, -viewport.y * scale);
@@ -143,7 +143,7 @@ function paintScene(ctx: CanvasRenderingContext2D, view: BoardView, size: Canvas
   return seen;
 }
 
-function paintOverlay(ctx: CanvasRenderingContext2D, view: BoardView, overlay: Overlay, size: CanvasSize): void {
+function paintOverlay(ctx: CanvasRenderingContext2D, view: BoardView, overlay: Overlay, size: CanvasSize, theme: Theme): void {
   const { viewport } = view;
   ctx.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
   ctx.clearRect(0, 0, size.w, size.h);
@@ -157,7 +157,7 @@ function paintOverlay(ctx: CanvasRenderingContext2D, view: BoardView, overlay: O
     ctx.globalAlpha = 1;
     ctx.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
   }
-  ctx.strokeStyle = ACCENT;
+  ctx.strokeStyle = theme.accent;
   ctx.lineWidth = 1;
   const outline = (minX: number, minY: number, maxX: number, maxY: number) => {
     const a = toScreen(viewport, { x: minX, y: minY });
@@ -181,7 +181,7 @@ function paintOverlay(ctx: CanvasRenderingContext2D, view: BoardView, overlay: O
   const handles = overlay.editing ? { kind: "none" as const } : handlesFor(view);
   for (const [id, at] of handlePoints(handles)) {
     const p = toScreen(viewport, at);
-    ctx.fillStyle = id === overlay.hover ? ACCENT : "#ffffff";
+    ctx.fillStyle = id === overlay.hover ? theme.accent : "#ffffff";
     ctx.beginPath();
     if (id === "start" || id === "end") ctx.arc(p.x, p.y, HANDLE_PX / 2, 0, Math.PI * 2);
     else ctx.rect(p.x - HANDLE_PX / 2, p.y - HANDLE_PX / 2, HANDLE_PX, HANDLE_PX);
@@ -192,8 +192,10 @@ function paintOverlay(ctx: CanvasRenderingContext2D, view: BoardView, overlay: O
     const m = overlay.marquee;
     const a = toScreen(viewport, { x: m.minX, y: m.minY });
     const b = toScreen(viewport, { x: m.maxX, y: m.maxY });
-    ctx.fillStyle = "rgba(76, 110, 245, 0.1)";
+    ctx.fillStyle = theme.accent;
+    ctx.globalAlpha = 0.08;
     ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    ctx.globalAlpha = 1;
     ctx.strokeRect(a.x + 0.5, a.y + 0.5, b.x - a.x, b.y - a.y);
   }
 }
@@ -213,6 +215,8 @@ type Painted = {
 export function createRenderer(scene: HTMLCanvasElement, top: HTMLCanvasElement): Renderer {
   const sctx = scene.getContext("2d", { alpha: false })!;
   const octx = top.getContext("2d")!;
+  const css = getComputedStyle(scene);
+  const theme: Theme = { canvas: css.getPropertyValue("--canvas").trim(), accent: css.getPropertyValue("--accent").trim() };
   let size: CanvasSize = { w: 0, h: 0, dpr: 1 };
   let painted: Painted | null = null;
   let lastView: BoardView | null = null;
@@ -246,10 +250,10 @@ export function createRenderer(scene: HTMLCanvasElement, top: HTMLCanvasElement)
           order: view.order,
           viewport: view.viewport,
           skip: overlay.editing,
-          shapes: paintScene(sctx, view, size, overlay.editing),
+          shapes: paintScene(sctx, view, size, overlay.editing, theme),
         };
       }
-      if (dirty || view !== lastView || overlay !== lastOverlay) paintOverlay(octx, view, overlay, size);
+      if (dirty || view !== lastView || overlay !== lastOverlay) paintOverlay(octx, view, overlay, size, theme);
       lastView = view;
       lastOverlay = overlay;
     },

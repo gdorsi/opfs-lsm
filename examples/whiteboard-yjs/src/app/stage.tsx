@@ -6,8 +6,7 @@ import type { KeySample } from "./core/keys.ts";
 import { FONT, LINE_HEIGHT } from "./core/text.ts";
 import { useBoardSlice, useUi } from "./hooks.ts";
 import { createRenderer } from "./paint.ts";
-
-const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+import { editable, MAC } from "./ui.tsx";
 
 export function Stage({ board, controller }: { board: Board; controller: Controller }) {
   const host = useRef<HTMLDivElement>(null);
@@ -213,8 +212,4 @@ function sample(e: PointerEvent | MouseEvent, origin: { left: number; top: numbe
 
 function keySample(e: KeyboardEvent): KeySample {
   return { key: e.key, mod: MAC ? e.metaKey : e.ctrlKey, shift: e.shiftKey, alt: e.altKey, repeat: e.repeat };
-}
-
-function editable(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
 }

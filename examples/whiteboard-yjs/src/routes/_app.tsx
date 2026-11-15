@@ -1,5 +1,6 @@
 import { Outlet, createFileRoute, retainSearchParams } from "@tanstack/react-router";
 import { openSession } from "../app/session.ts";
+import { MessagePage, Splash } from "../app/ui.tsx";
 
 type AppSearch = { storage?: "idb"; db?: string; fault?: 1 };
 
@@ -14,11 +15,20 @@ export const Route = createFileRoute("/_app")({
   loader: () => openSession(),
   pendingMs: 200,
   pendingMinMs: 0,
-  pendingComponent: () => <div className="splash">Opening local database…</div>,
+  pendingComponent: () => <Splash>Opening local database…</Splash>,
   errorComponent: ({ error }) => (
-    <div className="splash" role="alert">
-      Could not open local storage: {String(error)}
-    </div>
+    <MessagePage
+      title="Can’t open local storage"
+      alert
+      action={
+        <button type="button" className="btn primary" onClick={() => location.reload()}>
+          Try again
+        </button>
+      }
+    >
+      <p>The browser refused the database this app keeps its boards in.</p>
+      <p className="message-detail">{String(error)}</p>
+    </MessagePage>
   ),
   component: Outlet,
 });

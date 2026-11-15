@@ -1,19 +1,25 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { BoardsScreen } from "../../app/boards.tsx";
 import { hideBoard } from "../../app/session.ts";
+import { MessagePage, Splash } from "../../app/ui.tsx";
 
 export const Route = createFileRoute("/_app/")({
   ssr: false,
   loader: () => hideBoard(),
   pendingMs: 200,
-  pendingComponent: () => <div className="splash">Saving…</div>,
+  pendingComponent: () => <Splash>Saving…</Splash>,
   errorComponent: ({ error, reset }) => (
-    <div className="splash" role="alert">
-      <p>The last changes to the board may not be saved: {String(error)}</p>
-      <button className="btn" onClick={reset}>
-        Back to boards
-      </button>
-    </div>
+    <MessagePage
+      title="The last changes may not be saved"
+      alert
+      action={
+        <button type="button" className="btn primary" onClick={reset}>
+          Back to boards
+        </button>
+      }
+    >
+      <p className="message-detail">{String(error)}</p>
+    </MessagePage>
   ),
   component: BoardsScreen,
 });

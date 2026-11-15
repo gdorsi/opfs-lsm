@@ -1,14 +1,16 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState, type ReactNode } from "react";
-import type { Board, BoardView, SaveState, Style, Workspace } from "../model/index.ts";
+import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import type { Board, BoardMeta, BoardView, SaveState, Style, Workspace } from "../model/index.ts";
 import { createController, type Controller } from "./core/input.ts";
 import { TOOL_KEYS, type Action, type Tool } from "./core/keys.ts";
 import { useBoardSlice, useSession, useUi, useWorkspace } from "./hooks.ts";
+import { Icon, ICON } from "./icons.tsx";
 import { canvasMeasure } from "./paint.ts";
 import { Stage } from "./stage.tsx";
+import { editable, IconButton, keys, MAC, SaveStatus, StorageChip, TitleInput } from "./ui.tsx";
 
 export function BoardScreen({ board }: { board: Board }) {
-  const { ws } = useSession();
+  const { ws, storage } = useSession();
   const [controller] = useState(() => createController(board, { measure: canvasMeasure() }));
   const meta = useWorkspace(ws).boards.find((b) => b.id === board.id);
   const navigate = useNavigate();
@@ -21,17 +23,27 @@ export function BoardScreen({ board }: { board: Board }) {
 
   return (
     <div className="board">
-      <header className="board-header">
-        <Link to="/" className="back">
-          Boards
-        </Link>
-        <h1>{meta?.title}</h1>
-        <BoardSaveBadge board={board} ws={ws} />
+      <Stage board={board} controller={controller} />
+      <EmptyHint board={board} controller={controller} />
+      <header className="hud-top">
+        <div className="island title-island">
+          <Link to="/" className="icon-btn" aria-label="All boards" data-tip="All boards">
+            <Icon>{ICON.back}</Icon>
+          </Link>
+          <span className="island-sep" />
+          {meta && <BoardTitle ws={ws} meta={meta} />}
+        </div>
+        <div className="island status-island">
+          <BoardSaveBadge board={board} ws={ws} />
+          <StorageChip storage={storage} />
+        </div>
       </header>
-      <div className="board-body">
-        <Toolbar board={board} controller={controller} />
-        <StylePanel board={board} controller={controller} />
-        <Stage board={board} controller={controller} />
+      <Toolbar controller={controller} />
+      <StylePanel board={board} controller={controller} />
+      <div className="hud-bottom">
+        <ViewControls board={board} controller={controller} />
+        <History board={board} controller={controller} />
+        <Shortcuts />
       </div>
     </div>
   );
@@ -39,133 +51,347 @@ export function BoardScreen({ board }: { board: Board }) {
 
 const act = (controller: Controller, action: Action) => controller.send({ type: "do", action });
 
-const ICONS: Record<Tool, ReactNode> = {
-  select: <path d="M5 3l12 7-5.5 1.5L9 17z" />,
-  rect: <rect x="3.5" y="5" width="13" height="10" rx="1" />,
-  ellipse: <ellipse cx="10" cy="10" rx="7" ry="5.5" />,
-  diamond: <path d="M10 3l7 7-7 7-7-7z" />,
-  arrow: <path d="M3.5 16.5L16 4m0 0H9.5M16 4v6.5" />,
-  text: <path d="M4 5V3.5h12V5M10 3.5v13M7.5 16.5h5" />,
-  pen: <path d="M3 17c3-1 4-5 6-7s3-1 4-3 2-3 3.500-3" />,
+const K = {
+  undo: keys("Mod", "Z"),
+  redo: keys("Mod", "Shift", "Z"),
+  selectAll: keys("Mod", "A"),
+  duplicate: keys("Mod", "D"),
+  remove: keys("Delete"),
+  toFront: keys("Mod", "Shift", "]"),
+  forward: keys("Mod", "]"),
+  backward: keys("Mod", "["),
+  toBack: keys("Mod", "Shift", "["),
+  zoomIn: keys("Mod", "="),
+  zoomOut: keys("Mod", "-"),
+  zoomReset: keys("Mod", "0"),
+  fit: keys("Shift", "1"),
 };
 
-function Icon({ children }: { children: ReactNode }) {
+function BoardTitle({ ws, meta }: { ws: Workspace; meta: BoardMeta }): ReactNode {
+  const [renaming, setRenaming] = useState(false);
   return (
-    <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {children}
-    </svg>
+    <h1 className="board-title">
+      {renaming ? (
+        <TitleInput ws={ws} meta={meta} className="title-input" onDone={() => setRenaming(false)} />
+      ) : (
+        <button type="button" className="title-btn" data-tip="Rename board" aria-label={`${meta.title}, rename`} onClick={() => setRenaming(true)}>
+          {meta.title}
+        </button>
+      )}
+    </h1>
   );
 }
 
-const TOOLS = Object.keys(TOOL_KEYS) as Tool[];
+const TOOL_LABEL: Readonly<Record<Tool, string>> = {
+  select: "Select",
+  rect: "Rectangle",
+  ellipse: "Ellipse",
+  diamond: "Diamond",
+  arrow: "Arrow",
+  text: "Text",
+  pen: "Pen",
+};
+const TOOL_GROUPS: readonly (readonly Tool[])[] = [["select"], ["rect", "ellipse", "diamond"], ["arrow", "pen", "text"]];
 
-function Toolbar({ board, controller }: { board: Board; controller: Controller }): ReactNode {
+const keepFocus = (e: PointerEvent) => e.preventDefault();
+
+function Toolbar({ controller }: { controller: Controller }): ReactNode {
   const { tool } = useUi(controller);
-  const canUndo = useBoardSlice(board, (v) => v.canUndo);
-  const canRedo = useBoardSlice(board, (v) => v.canRedo);
-  const selected = useBoardSlice(board, (v) => v.selection.size);
-  const zoom = useBoardSlice(board, (v) => Math.round(v.viewport.zoom * 100));
-  const none = selected === 0;
   return (
-    <div className="toolbar" role="toolbar" aria-label="Tools" onPointerDown={(e) => e.preventDefault()}>
-      {TOOLS.map((t) => (
-        <button
-          key={t}
-          className="tool"
-          aria-pressed={tool === t}
-          aria-label={t}
-          title={`${t} (${TOOL_KEYS[t].toUpperCase()})`}
-          onClick={() => act(controller, { type: "tool", tool: t })}
-        >
-          <Icon>{ICONS[t]}</Icon>
-        </button>
+    <div className="island toolbar" role="toolbar" aria-label="Tools" onPointerDown={keepFocus}>
+      {TOOL_GROUPS.map((group, i) => (
+        <div key={i} className="tool-group">
+          {group.map((t) => (
+            <IconButton
+              key={t}
+              label={TOOL_LABEL[t]}
+              icon={ICON[t]}
+              shortcut={keys(TOOL_KEYS[t].toUpperCase())}
+              aria-pressed={tool === t}
+              onClick={() => act(controller, { type: "tool", tool: t })}
+            />
+          ))}
+        </div>
       ))}
-      <span className="sep" />
-      <button className="tool txt" disabled={!canUndo} title="Undo (Mod+Z)" onClick={() => act(controller, { type: "undo" })}>
-        Undo
-      </button>
-      <button className="tool txt" disabled={!canRedo} title="Redo (Mod+Shift+Z)" onClick={() => act(controller, { type: "redo" })}>
-        Redo
-      </button>
-      <span className="sep" />
-      <button className="tool txt" disabled={none} title="Duplicate (Mod+D)" onClick={() => act(controller, { type: "duplicate" })}>
-        Duplicate
-      </button>
-      <button className="tool txt" disabled={none} title="Bring to front (Mod+Shift+])" onClick={() => act(controller, { type: "reorder", to: "front" })}>
-        Front
-      </button>
-      <button className="tool txt" disabled={none} title="Send to back (Mod+Shift+[)" onClick={() => act(controller, { type: "reorder", to: "back" })}>
-        Back
-      </button>
-      <button className="tool txt" disabled={none} title="Delete (Delete)" onClick={() => act(controller, { type: "delete" })}>
-        Delete
-      </button>
-      <span className="sep" />
-      <button className="tool txt zoom" title="Fit to content (Shift+1)" onClick={() => act(controller, { type: "zoom", to: "fit" })}>
-        {zoom}%
-      </button>
     </div>
   );
 }
 
-type StyleSummary = { readonly [K in keyof Style]: Style[K] | "mixed" } | null;
+function History({ board, controller }: { board: Board; controller: Controller }): ReactNode {
+  const canUndo = useBoardSlice(board, (v) => v.canUndo);
+  const canRedo = useBoardSlice(board, (v) => v.canRedo);
+  return (
+    <div className="island" role="group" aria-label="History" onPointerDown={keepFocus}>
+      <IconButton label="Undo" icon={ICON.undo} shortcut={K.undo} disabled={!canUndo} onClick={() => act(controller, { type: "undo" })} />
+      <IconButton label="Redo" icon={ICON.redo} shortcut={K.redo} disabled={!canRedo} onClick={() => act(controller, { type: "redo" })} />
+    </div>
+  );
+}
+
+function ViewControls({ board, controller }: { board: Board; controller: Controller }): ReactNode {
+  const zoom = useBoardSlice(board, (v) => Math.round(v.viewport.zoom * 100));
+  const empty = useBoardSlice(board, (v) => v.order.length === 0);
+  const zoomTo = (to: "in" | "out" | "reset" | "fit") => act(controller, { type: "zoom", to });
+  return (
+    <div className="island" role="group" aria-label="Zoom" onPointerDown={keepFocus}>
+      <IconButton label="Zoom out" icon={ICON.minus} shortcut={K.zoomOut} onClick={() => zoomTo("out")} />
+      <button
+        type="button"
+        className="zoom-btn"
+        aria-label={`${zoom}%, reset zoom`}
+        aria-keyshortcuts={K.zoomReset.aria}
+        data-tip="Reset zoom"
+        data-keys={K.zoomReset.label}
+        onClick={() => zoomTo("reset")}
+      >
+        {zoom}%
+      </button>
+      <IconButton label="Zoom in" icon={ICON.plus} shortcut={K.zoomIn} onClick={() => zoomTo("in")} />
+      <span className="island-sep" />
+      <IconButton label="Zoom to fit" icon={ICON.fit} shortcut={K.fit} disabled={empty} onClick={() => zoomTo("fit")} />
+    </div>
+  );
+}
+
+type StyleSummary = {
+  readonly style: { readonly [K in keyof Style]: Style[K] | "mixed" };
+  readonly fillable: boolean;
+  readonly stroked: boolean;
+} | null;
 
 function summarize(view: BoardView): StyleSummary {
-  let summary: { -readonly [K in keyof Style]: Style[K] | "mixed" } | null = null;
+  let style: { -readonly [K in keyof Style]: Style[K] | "mixed" } | null = null;
+  let fillable = false;
+  let stroked = false;
   for (const id of view.selection) {
     const s = view.shapes.get(id);
     if (!s) continue;
-    if (!summary) summary = { stroke: s.stroke, fill: s.fill, strokeWidth: s.strokeWidth };
+    fillable ||= s.kind !== "arrow" && s.kind !== "pen";
+    stroked ||= s.kind !== "text";
+    if (!style) style = { stroke: s.stroke, fill: s.fill, strokeWidth: s.strokeWidth };
     else {
-      if (summary.stroke !== s.stroke) summary.stroke = "mixed";
-      if (summary.fill !== s.fill) summary.fill = "mixed";
-      if (summary.strokeWidth !== s.strokeWidth) summary.strokeWidth = "mixed";
+      if (style.stroke !== s.stroke) style.stroke = "mixed";
+      if (style.fill !== s.fill) style.fill = "mixed";
+      if (style.strokeWidth !== s.strokeWidth) style.strokeWidth = "mixed";
     }
   }
-  return summary;
+  return style && { style, fillable, stroked };
 }
 
 function sameSummary(a: StyleSummary, b: StyleSummary): boolean {
   if (a === b) return true;
-  return a !== null && b !== null && a.stroke === b.stroke && a.fill === b.fill && a.strokeWidth === b.strokeWidth;
+  if (a === null || b === null) return false;
+  return (
+    a.fillable === b.fillable &&
+    a.stroked === b.stroked &&
+    a.style.stroke === b.style.stroke &&
+    a.style.fill === b.style.fill &&
+    a.style.strokeWidth === b.style.strokeWidth
+  );
 }
 
-const STROKES = ["#111111", "#e03131", "#2f9e44", "#1971c2", "#f08c00", "#9c36b5"];
-const FILLS = [null, "#ffc9c9", "#b2f2bb", "#a5d8ff", "#ffec99", "#eebefa"];
-const WIDTHS = [1, 2, 4, 8];
+const STROKES = [
+  ["#111111", "Black"],
+  ["#e03131", "Red"],
+  ["#2f9e44", "Green"],
+  ["#1971c2", "Blue"],
+  ["#f08c00", "Orange"],
+  ["#9c36b5", "Violet"],
+] as const;
+const FILLS = [
+  [null, "No fill"],
+  ["#ffc9c9", "Red"],
+  ["#b2f2bb", "Green"],
+  ["#a5d8ff", "Blue"],
+  ["#ffec99", "Yellow"],
+  ["#eebefa", "Violet"],
+] as const;
+const WIDTHS = [
+  [1, "Thin"],
+  [2, "Regular"],
+  [4, "Bold"],
+  [8, "Heavy"],
+] as const;
 
 function StylePanel({ board, controller }: { board: Board; controller: Controller }): ReactNode {
   const summary = useBoardSlice(board, summarize, sameSummary);
-  const { style } = useUi(controller);
-  const shown = summary ?? style;
+  const { tool, style } = useUi(controller);
+  if (!summary && tool === "select") return null;
+  const shown = summary?.style ?? style;
+  const fillable = summary ? summary.fillable : tool === "rect" || tool === "ellipse" || tool === "diamond";
+  const stroked = summary ? summary.stroked : tool !== "text";
   const set = (edit: Partial<Style>) => act(controller, { type: "style", edit });
   return (
-    <div className="panel" aria-label="Style" onPointerDown={(e) => e.preventDefault()}>
-      <div className="panel-row" role="group" aria-label="Stroke">
-        {STROKES.map((c) => (
-          <button key={c} className="swatch" style={{ background: c }} aria-label={`stroke ${c}`} aria-pressed={shown.stroke === c} onClick={() => set({ stroke: c })} />
+    <aside className="island panel" aria-label="Style" onPointerDown={keepFocus}>
+      <PanelRow label={tool === "text" || (summary && !summary.stroked) ? "Color" : "Stroke"}>
+        {STROKES.map(([c, name]) => (
+          <button key={c} type="button" className="swatch" style={{ background: c }} aria-label={name} aria-pressed={shown.stroke === c} onClick={() => set({ stroke: c })} />
         ))}
-      </div>
-      <div className="panel-row" role="group" aria-label="Fill">
-        {FILLS.map((c) => (
-          <button
-            key={c ?? "none"}
-            className={c ? "swatch" : "swatch none"}
-            style={c ? { background: c } : undefined}
-            aria-label={c ? `fill ${c}` : "no fill"}
-            aria-pressed={shown.fill === c}
-            onClick={() => set({ fill: c })}
-          />
-        ))}
-      </div>
-      <div className="panel-row" role="group" aria-label="Width">
-        {WIDTHS.map((w) => (
-          <button key={w} className="width" aria-label={`width ${w}`} aria-pressed={shown.strokeWidth === w} onClick={() => set({ strokeWidth: w })}>
-            <i style={{ height: w }} />
-          </button>
-        ))}
-      </div>
+      </PanelRow>
+      {fillable && (
+        <PanelRow label="Fill">
+          {FILLS.map(([c, name]) => (
+            <button
+              key={c ?? "none"}
+              type="button"
+              className={c ? "swatch" : "swatch none"}
+              style={c ? { background: c } : undefined}
+              aria-label={name}
+              aria-pressed={shown.fill === c}
+              onClick={() => set({ fill: c })}
+            />
+          ))}
+        </PanelRow>
+      )}
+      {stroked && (
+        <PanelRow label="Width">
+          {WIDTHS.map(([w, name]) => (
+            <button key={w} type="button" className="width" aria-label={name} aria-pressed={shown.strokeWidth === w} onClick={() => set({ strokeWidth: w })}>
+              <i style={{ height: w }} />
+            </button>
+          ))}
+        </PanelRow>
+      )}
+      {summary && (
+        <PanelRow label="Actions">
+          <IconButton label="Send to back" icon={ICON.toBack} shortcut={K.toBack} onClick={() => act(controller, { type: "reorder", to: "back" })} />
+          <IconButton label="Send backward" icon={ICON.backward} shortcut={K.backward} onClick={() => act(controller, { type: "reorder", to: "backward" })} />
+          <IconButton label="Bring forward" icon={ICON.forward} shortcut={K.forward} onClick={() => act(controller, { type: "reorder", to: "forward" })} />
+          <IconButton label="Bring to front" icon={ICON.toFront} shortcut={K.toFront} onClick={() => act(controller, { type: "reorder", to: "front" })} />
+          <span className="island-sep" />
+          <IconButton label="Duplicate" icon={ICON.duplicate} shortcut={K.duplicate} onClick={() => act(controller, { type: "duplicate" })} />
+          <IconButton label="Delete" icon={ICON.trash} shortcut={K.remove} className="danger" onClick={() => act(controller, { type: "delete" })} />
+        </PanelRow>
+      )}
+    </aside>
+  );
+}
+
+function PanelRow({ label, children }: { label: string; children: ReactNode }): ReactNode {
+  return (
+    <div className="panel-section" role="group" aria-label={label}>
+      <span className="panel-label">{label}</span>
+      <div className="panel-row">{children}</div>
     </div>
+  );
+}
+
+const HINTS: Readonly<Record<Tool, { readonly title: string; readonly body?: ReactNode; readonly keyboard?: ReactNode }>> = {
+  select: {
+    title: "Start drawing",
+    body: (
+      <>
+        Pick a tool to begin
+        <span className="hint-keys">
+          , or press <kbd>R</kbd> <kbd>O</kbd> <kbd>D</kbd> <kbd>A</kbd> <kbd>P</kbd>. Double-click anywhere to write
+        </span>
+        .
+      </>
+    ),
+  },
+  rect: { title: "Drag to draw a rectangle", keyboard: "Hold Shift for a square, or click for a default size." },
+  ellipse: { title: "Drag to draw an ellipse", keyboard: "Hold Shift for a circle, or click for a default size." },
+  diamond: { title: "Drag to draw a diamond", keyboard: "Hold Shift to keep it even, or click for a default size." },
+  arrow: { title: "Drag to draw an arrow", keyboard: "Hold Shift to snap the angle to 15° steps." },
+  text: { title: "Click anywhere to write", keyboard: <>Press <kbd>Esc</kbd> when you are done.</> },
+  pen: { title: "Drag to draw freehand", keyboard: <>Press <kbd>Esc</kbd> to go back to Select.</> },
+};
+
+function EmptyHint({ board, controller }: { board: Board; controller: Controller }): ReactNode {
+  const empty = useBoardSlice(board, (v) => v.order.length === 0);
+  const { tool, editing } = useUi(controller);
+  if (!empty || editing) return null;
+  const hint = HINTS[tool];
+  return (
+    <div className="empty-hint" aria-live="polite">
+      <p className="empty-title">{hint.title}</p>
+      {hint.body && <p className="empty-body">{hint.body}</p>}
+      {hint.keyboard && <p className="empty-body hint-keys">{hint.keyboard}</p>}
+    </div>
+  );
+}
+
+const SHORTCUT_GROUPS: readonly { readonly title: string; readonly rows: readonly (readonly [string, string])[] }[] = [
+  {
+    title: "Tools",
+    rows: TOOL_GROUPS.flat().map((t) => [TOOL_LABEL[t], TOOL_KEYS[t].toUpperCase()] as const),
+  },
+  {
+    title: "Edit",
+    rows: [
+      ["Undo", K.undo.label],
+      ["Redo", K.redo.label],
+      ["Select all", K.selectAll.label],
+      ["Duplicate", K.duplicate.label],
+      ["Delete", K.remove.label],
+      ["Edit text", "Enter"],
+      ["Nudge", "Arrows"],
+      ["Nudge by 10", MAC ? "⇧ Arrows" : "Shift+Arrows"],
+      ["Cancel, deselect", "Esc"],
+    ],
+  },
+  {
+    title: "Arrange",
+    rows: [
+      ["Bring forward", K.forward.label],
+      ["Send backward", K.backward.label],
+      ["Bring to front", K.toFront.label],
+      ["Send to back", K.toBack.label],
+    ],
+  },
+  {
+    title: "View",
+    rows: [
+      ["Zoom in", K.zoomIn.label],
+      ["Zoom out", K.zoomOut.label],
+      ["Reset zoom", K.zoomReset.label],
+      ["Zoom to fit", K.fit.label],
+      ["Zoom with wheel", MAC ? "⌘ Scroll" : "Ctrl+Scroll"],
+      ["Pan", "Space + drag"],
+    ],
+  },
+];
+
+function Shortcuts(): ReactNode {
+  const sheet = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = sheet.current!;
+      if (e.key === "Escape" && el.matches(":popover-open")) {
+        e.stopPropagation();
+        el.hidePopover();
+      } else if (e.key === "?" && !e.metaKey && !e.ctrlKey && !editable(e.target)) {
+        e.preventDefault();
+        el.togglePopover();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+  return (
+    <>
+      <IconButton label="Keyboard shortcuts" icon={ICON.help} shortcut={keys("?")} className="island help-btn" popoverTarget="shortcuts" />
+      <div ref={sheet} id="shortcuts" popover="auto" className="shortcuts" role="dialog" aria-label="Keyboard shortcuts">
+        <h2>Keyboard shortcuts</h2>
+        <div className="shortcut-groups">
+          {SHORTCUT_GROUPS.map((group) => (
+            <section key={group.title}>
+              <h3>{group.title}</h3>
+              <dl>
+                {group.rows.map(([action, key]) => (
+                  <div key={action}>
+                    <dt>{action}</dt>
+                    <dd>
+                      <kbd>{key}</kbd>
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ))}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -180,25 +406,4 @@ function BoardSaveBadge({ board, ws }: { board: Board; ws: Workspace }): ReactNo
   const shapes = useBoardSlice(board, (v) => v.save);
   const skipped = useBoardSlice(board, (v) => v.skipped);
   return <SaveStatus state={worst(shapes, index)} skipped={skipped} retry={() => Promise.all([ws.flush(), board.flush()])} />;
-}
-
-export function WorkspaceSaveBadge({ ws }: { ws: Workspace }): ReactNode {
-  const { save } = useWorkspace(ws);
-  return <SaveStatus state={save} skipped={0} retry={() => ws.flush()} />;
-}
-
-function SaveStatus({ state, skipped, retry }: { state: SaveState; skipped: number; retry: () => Promise<unknown> }): ReactNode {
-  return (
-    <span className="save" role="status" data-state={state.kind}>
-      {state.kind === "saved" && "Saved"}
-      {state.kind === "saving" && "Saving…"}
-      {state.kind === "error" && `Not saved: ${state.error.message}`}
-      {state.kind === "error" && (
-        <button className="btn small" onClick={() => void retry().catch(() => {})}>
-          Retry
-        </button>
-      )}
-      {skipped > 0 && ` · ${skipped} unreadable`}
-    </span>
-  );
 }
