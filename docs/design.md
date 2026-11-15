@@ -28,7 +28,7 @@ A database named `<name>` lives in two stores:
 ```tree
 IndexedDB  "opfs-lsm-wal/<name>"
   ├── wal    seq -> bytes              one record per acked batch
-  └── meta   "ingestedThrough" -> seq  every seq <= this is in an SST
+  └── meta   "ingestedThrough" -> seq  no record at or below it is read
              "generation"      -> n    the manifest tabs read
              "topGeneration"   -> n    highest manifest number recovery has seen
              "destroyedTop"    -> n    manifests numbered up to this predate a destroy
@@ -53,8 +53,10 @@ OPFS  opfs-lsm/<name>/
 
 ### WAL records
 
-Each acked `put`, `delete`, `batch` or `update` is one record in the `wal` store. The key is the
-seq. The value is one `ArrayBuffer` that holds the ops of the batch back to back:
+Each acked `put`, `delete` or `batch` with ops, and each `update` that writes, is one record in
+the `wal` store. A batch with no ops writes nothing and resolves with the `appliedThrough` of
+its tab. The key is the seq. The value is one `ArrayBuffer` that holds the ops of the batch back
+to back:
 
 ```layout
 | u8 type         0 = put, 1 = delete, 3 = range delete                      |
@@ -71,7 +73,7 @@ A writer that gives no `through` stores 2^53 − 1. The record's seq bounds it (
 [Range deletes](#range-deletes)), so the stored value never needs the seq the record will get.
 
 A row that is not an `ArrayBuffer`, that ends inside an op, or that holds a range delete whose
-start is not below its end, is rejected as corrupt.
+start is not below its end, fails with `CommitError`.
 
 ### Append
 
@@ -100,19 +102,19 @@ same seq. An aborted transaction reverts the key generator, so committed seqs st
 `update(keys, body)` reads the tail, applies it to the memtable, runs the synchronous `body` and
 adds the batch at `head + 1`, all in one transaction. It cannot conflict with another writer.
 
-The ack is the `complete` event of the transaction, at the default IndexedDB durability. The
-writes of a group are acked in seq order. A
-commit survives a tab crash. It may not survive a power loss. The record joins the memtable of
-the tab before the ack resolves. If its seq is not the next one, another tab appended first, and
-the tab reads the tail before it resolves. At the ack, the writer sees its own write and every
-earlier one.
+The commit point is the `complete` event of the transaction, at the default IndexedDB
+durability. The writes of a group commit in seq order. A commit survives a tab crash. It may not
+survive a power loss. The caller's promise resolves after the record joins the memtable and is
+announced. If its seq is not the next one, another tab appended first, and the tab reads the tail
+before that. At the promise, the writer sees its own write and every earlier one.
 
 ### Reading the tail
 
 `openDb`, `sync`, a catch-up after an append, and ingest read the same way. One transaction
 reads the head and `ingestedThrough`, then every record in `(max(since, ingestedThrough), head]`,
 where `since` is the `appliedThrough` of the caller. An open starts at 0, so it replays the
-whole uningested WAL. `maxWalBytes` bounds that replay.
+whole uningested WAL. The host flushes at `maxWalBytes`, so that replay is normally near the
+limit, but nothing in the read path truncates it.
 
 Seqs are gapless above `ingestedThrough`, so the position of a record in its range gives its
 seq. A range that returns fewer records than it spans throws `wal gap`.
@@ -133,9 +135,9 @@ where `ingestedThrough` is that of the installed generation, folded to one row p
 MemRow = { key, seq, kind: "put" | "del", value? }
 ```
 
-Rows are kept in key order, in chunks of 512 to 1024 rows. Records apply in seq order with no
-gaps. A record that skips a seq is refused, and the tab reads the WAL tail instead. The memtable
-is therefore always one exact prefix of the log. Every read depends on this.
+Rows are kept in key order, in chunks of up to 1024 rows, split at 512. Records apply in seq
+order with no gaps. A record that skips a seq is refused, and the tab reads the WAL tail instead.
+The memtable is therefore always one exact prefix of the log. Every read depends on this.
 
 The memtable also holds the marks of the range deletes in its records. Applying a range delete
 removes the rows it covers at once, so a row the memtable holds is never covered.
@@ -193,7 +195,8 @@ A manifest, `m/<generation>.mft`, lists the runs of one generation. Its byte lay
 past it. An ingest sets it to the last seq it folded. A compaction keeps the value of its base.
 
 A manifest also holds the marks of the range deletes up to `through` that its runs may still hold
-versions for, and for each run its `marksThrough` (see [Range deletes](#range-deletes)).
+versions for, and for each run its `marksThrough` (see [Range deletes](#range-deletes)). Its
+`tombstoneSeq` is the highest seq of a tombstone a bottom merge dropped; no read consults it.
 
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
@@ -215,6 +218,9 @@ order. Bloom filters play no part in a scan.
 source filters on its own, one block at a time, and only the hits are copied out. A newer source
 that holds the key with a non-matching value or a tombstone drops the older hit.
 
+`count(range)` runs the same merge and filters, `limit` included, and returns how many entries
+the scan would yield without copying a key or a value.
+
 Every read judges the versions it finds in runs against one read point: the marks of the
 installed generation joined with those of the memtable, taken in the same turn as the layers it
 reads. A version from a run is skipped when a mark covers it (see
@@ -228,10 +234,11 @@ and point-reads one key per entry under one such pin.
 
 ## Range deletes
 
-A range delete removes every row in `[start, end)` in one op. It covers a version of a key in the
-range when the version's seq is at or below its `through`. A writer may ask for a `through`; the
-record at seq `s` takes effect as `min(asked, s − 1)`, so a range delete never covers its own batch and a
-later write into the range is read as usual.
+A range delete removes every row in `[start, end)`, where `start` may be empty and `end` absent,
+in one op. A delete whose resolved `through` is 0 keeps no mark and removes nothing. It covers a
+version of a key in the range when the version's seq is at or below its `through`. A writer may
+ask for a `through`; the record at seq `s` takes effect as `min(asked, s − 1)`, so a range delete
+never covers its own batch and a later write into the range is read as usual.
 
 The range deletes in effect form the marks, an unordered list of `(start, end, through, at)`,
 where `at` is the seq of the record that holds it. The highest `through` among the marks that
@@ -330,13 +337,15 @@ tabs call `sync`.
 
 ### Loading a generation under churn
 
-The host removes the runs of a replaced generation once no tab holds them open, and a tab holds
-a run only once its open returns. A slow tab could therefore lose every load to a newer
-generation. The tab and the host share the Web Lock `opfs-lsm-reclaim/<name>` to prevent this:
+The host removes the runs of a replaced generation once no tab holds them open. A tab holds a
+run open by taking a shared Web Lock `opfs-lsm:<name>:run:<path>` before it checks that the file
+exists, and releases it on close; the host removes a run only under that lock, taken exclusively
+with `ifAvailable`. A slow tab could therefore lose every load to a newer generation. The tab and
+the host share the Web Lock `opfs-lsm-reclaim/<name>` to prevent this:
 
-* The first try of a tab takes no lock. After a try finds a file missing, every later try holds
-  the lock **shared**, from the tail read to the last run open.
-* The host removes files only while it holds the lock **exclusively**, and it asks with
+* The first try of a tab takes no reclaim lock. After a try finds a file missing, every later try
+  holds it **shared**, from the tail read to the last run open.
+* The host removes files only while it holds the reclaim lock **exclusively**, and it asks with
   `ifAvailable`. When a tab holds the lock, the host skips the removal and tries on a later pass.
 
 Under the lock, no removal can run, so the manifest and every run of the recorded generation are
@@ -527,11 +536,10 @@ that `openDb` refuses as corrupt. The host:
 `dangerousDestroy` then syncs its own tab, which lets go of its runs, and asks the host for a
 flush, whose compaction pass sweeps them. The runs other tabs held go at a later pass.
 
-The transaction is the commit point. After it, recovery adopts no manifest on disk, now or
-after later flushes: rule 1 needs a `through` past `head`, rule 2 keeps the recorded generation,
-and rule 3 skips every manifest numbered up to `destroyedTop`. So the files are garbage whether
-or not step 3 finishes. Since the commit is on disk before step 3 starts, no power loss keeps a
-remove and loses the commit.
+The transaction is the commit point. After it, recovery adopts no manifest on disk: rule 1
+needs a `through` past `head`, rule 2 keeps the recorded generation, and rule 3 skips every
+manifest numbered up to `destroyedTop`. Since the commit is on disk before step 3 starts, no
+power loss keeps a remove and loses the commit.
 
 ## Change events
 
@@ -648,7 +656,7 @@ of OPFS, independently.
 | Limit | Value |
 |---|---|
 | Key | 8 KiB |
-| Batch | 8 MiB, counted as the key bytes, the value bytes and 256 bytes for each op. A `put` is a batch of one op, so this is also the limit of a value. |
+| Batch | 8 MiB, counted as the key bytes, the value bytes, a range delete's bounds, and 256 bytes for each op. A `put` is a batch of one op, so this is also the limit of a value. |
 | Database name | `[A-Za-z0-9_-]{1,64}` |
 
 ## Where code runs
