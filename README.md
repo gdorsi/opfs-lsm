@@ -19,28 +19,27 @@ Use another store in these cases:
 - **Your app stores little and writes one record at a time.** IndexedDB opens in 1.8 ms against 13.3 ms for kv, and writes a single awaited record at the same speed.
 - **You need SQL.** opfs-lsm has no query language. docstore reads only through the indexes you declare in its schema.
 
-## Pick a package
+## Packages
 
-Start from the library that holds your app's data. Each adapter takes the place of a storage option that library ships with.
+### Framework adapters
 
-| Your data lives in | Install | In place of | Example app |
-| --- | --- | --- | --- |
-| TanStack DB collections | [`@opfs-lsm/tanstack-db`](packages/tanstack-db) | `indexedDBCollectionOptions` or TanStack's SQLite persistence | [LinearLite](examples/linearlite-tanstackdb) |
-| Yjs documents | [`@opfs-lsm/yjs`](packages/yjs) | y-indexeddb | [Whiteboard](examples/whiteboard-yjs) |
-| automerge-repo | [`@opfs-lsm/automerge`](packages/automerge) | `IndexedDBStorageAdapter` | [Pages](examples/pages-fate-automerge) |
-| The fate client | [`@opfs-lsm/fate`](packages/fate), not on npm yet | `@nkzw/fate-indexeddb` | [LinearLite on fate](examples/linearlite-fate) |
-| JSON documents of your own | [`@opfs-lsm/docstore`](packages/docstore) | Dexie | [LinearLite on docstore](examples/linearlite-docstore) |
-| Your own sync engine | [`@opfs-lsm/kv`](packages/kv) | IndexedDB | |
+Each adapter stores the data of one framework in opfs-lsm. Your app keeps calling the framework's own API.
 
-The packages build on each other. `@opfs-lsm/kv` stores bytes under byte keys, in key order. `@opfs-lsm/docstore` stores JSON documents on kv and queries them through the indexes you declare. The TanStack DB adapter runs on docstore, and the other adapters run on kv.
+- **[`@opfs-lsm/tanstack-db`](packages/tanstack-db)** keeps TanStack DB collections in docstore. Writes from every tab reach every collection live. In on-demand mode, a collection loads only the rows its live queries ask for, through docstore indexes. Example: [LinearLite](examples/linearlite-tanstackdb).
+- **[`@opfs-lsm/yjs`](packages/yjs)** keeps Yjs documents. `KvPersistence` has the `whenSynced`, `clearData`, and `destroy` of y-indexeddb, and merges the stored updates of a document into one when they reach 500. Example: [Whiteboard](examples/whiteboard-yjs).
+- **[`@opfs-lsm/automerge`](packages/automerge)** is a storage adapter for automerge-repo. Pass `kvStorage(db)` to `new Repo({ storage })`. Example: [Pages](examples/pages-fate-automerge).
+- **[`@opfs-lsm/fate`](packages/fate)** keeps the records the fate client caches, and the mutations it queues while offline. It takes the place of `@nkzw/fate-indexeddb`, and is not on npm yet. Example: [LinearLite on fate](examples/linearlite-fate).
 
-Pick the highest layer that fits. Use kv directly only when you want to lay out the keys yourself, as a sync engine does.
+### Building blocks
+
+- **[`@opfs-lsm/docstore`](packages/docstore)** stores JSON documents in typed collections. You declare indexes in a versioned schema: sorted, array, text, and unique. Queries read through them in pages, and each collection has counts, snapshot reads, and a change feed. Example: [LinearLite on docstore](examples/linearlite-docstore).
+- **[`@opfs-lsm/kv`](packages/kv)** is the key-value store under every other package. Keys and values are bytes, kept in key order. It has batches, range scans, range deletes, counts, snapshot reads, read-modify-write, a change feed with a sequence number for every write, and a storage cap.
 
 ## Set it up
 
 Every package runs on a kv database, so setup starts the same way.
 
-1. Install `@opfs-lsm/kv` and the package you picked. Each package page lists the other packages it needs.
+1. Install `@opfs-lsm/kv` and the package you use. Each package page lists the other packages it needs.
 2. Open the database when your app starts. Every tab that passes the same `name` shares it.
 3. Decide what your app does when `openDb` rejects with `StorageUnavailableError`. kv never falls back to memory.
 4. Pass `db` to your package, as its page shows.
