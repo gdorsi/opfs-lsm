@@ -108,7 +108,7 @@ The tables above time storage calls. These time what the user of an app waits fo
 | First sync, until caught up with the server | 15.5 s | 2.7 s | 5.8× |
 | First sync, then the list's total | 21.0 ms | 418 ms | 0.05× |
 | Cold open, open the database | 39.9 ms | 11.5 ms | 3.5× |
-| Cold open, then the first rows | 803 ms | 35.8 ms | 22× |
+| First rows, once the database is open | 803 ms | 35.8 ms | 22× |
 | Cold open, the status counts once the total shows | 3.4 ms | 22.0 ms | 0.15× |
 | Change the sort | 705 ms | 4.5 ms | 157× |
 | Filter by status or priority | 999 ms | 12.5 ms | 80× |
@@ -117,8 +117,6 @@ The tables above time storage calls. These time what the user of an app waits fo
 | Open the board | 4.0 s | 17.9 ms | 223× |
 | Open a thread, fetched from the server | 5.8 ms | 2.0 ms | 3.0× |
 | Main thread blocked while typing a search | 3.4 s | 0 ms | |
-| Peak JS heap of the tab, browsing | 734 MB | 319 MB | 2.3× less |
-| Peak JS heap of the tab, first sync | 230 MB | 333 MB | 1.4× more |
 
 After a cold open, docstore shows the list's total 72 ms after its first rows. SQLite reads every matching row before it shows any, so its total comes with them.
 
@@ -126,7 +124,7 @@ After a cold open, docstore shows the list's total 72 ms after its first rows. S
 
 | Step | y-indexeddb | opfs-lsm | |
 | --- | ---: | ---: | ---: |
-| Draw 1,000 shapes | 43.6 ms | 46.2 ms | 0.94× |
+| Open a new board, then draw 1,000 shapes | 43.6 ms | 46.2 ms | 0.94× |
 | 1,000 edits, until saved | 97.7 ms | 38.7 ms | 2.5× |
 | The save after the last edit | 58.4 ms | 0.34 ms | 170× |
 | 100 undos and redos, until saved | 17.6 ms | 6.5 ms | 2.7× |
@@ -140,6 +138,7 @@ The session never pauses for a second, so neither store merges the board's updat
 
 | Step | IndexedDB | opfs-lsm | |
 | --- | ---: | ---: | ---: |
+| Open the database | 2.88 ms | 7.04 ms | 0.41× |
 | Open a new page | 21.0 ms | 18.9 ms | 1.1× |
 | Paste 50 KB | 184 ms | 193 ms | 0.96× |
 | Keystroke, p50 | 360 µs | 360 µs | 1.0× |

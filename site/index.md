@@ -78,7 +78,7 @@ apps:
       baseline: TanStack's SQLite adapter as it ships, 100,000 issues
       versus: SQLite
       rows:
-        - workload: Cold open, then the first rows
+        - workload: First rows, once the database is open
           indexeddb: 803 ms
           kv: 35.8 ms
           ratio: 22×
