@@ -12,65 +12,6 @@ hero:
     - theme: alt
       text: GitHub
       link: https://github.com/gdorsi/opfs-lsm
-adapters:
-  command: pnpm bench
-  frameworks:
-    - name: TanStack DB
-      baseline: its IndexedDB adapter, both in eager mode
-      rows:
-        - workload: Cold load, 91,000 rows
-          indexeddb: 112k rows/s
-          kv: 176k rows/s
-          ratio: 1.6×
-        - workload: Bulk insert
-          indexeddb: 17.2k rows/s
-          kv: 115k rows/s
-          ratio: 6.7×
-    - name: TanStack DB on-demand
-      baseline: its SQLite adapter, both in on-demand mode
-      versus: SQLite
-      rows:
-        - workload: 10 rows by id
-          indexeddb: 1.9k queries/s
-          kv: 4.1k queries/s
-          ratio: 2.1×
-        - workload: Warm query, 6,250 rows
-          indexeddb: 116k rows/s
-          kv: 169k rows/s
-          ratio: 1.5×
-    - name: Yjs
-      baseline: y-indexeddb
-      rows:
-        - workload: Cold load, 500 notes
-          indexeddb: 2.0k notes/s
-          kv: 9.5k notes/s
-          ratio: 4.8×
-        - workload: Editing trace
-          indexeddb: 1.4k edits/s
-          kv: 33.2k edits/s
-          ratio: 23×
-    - name: Automerge
-      baseline: automerge-repo IndexedDB
-      rows:
-        - workload: Cold load, 500 notes
-          indexeddb: 1.1k notes/s
-          kv: 2.2k notes/s
-          ratio: 2.0×
-        - workload: Write 500 notes
-          indexeddb: 743 notes/s
-          kv: 821 notes/s
-          ratio: 1.1×
-    - name: fate
-      baseline: its IndexedDB persistence
-      rows:
-        - workload: Cold load, 100 lists
-          indexeddb: 1.0k records/s
-          kv: 3.4k records/s
-          ratio: 3.3×
-        - workload: Queue 300 mutations
-          indexeddb: 201 ops/s
-          kv: 263 ops/s
-          ratio: 1.3×
 apps:
   command: pnpm bench linearlite/ yjs/whiteboard-session pages/
   frameworks:
@@ -277,12 +218,6 @@ opfs-lsm is a replacement for IndexedDB and SQLite in the browser. It is faster,
 [The app benchmarks](../README.md#app-benchmarks) · [How they are measured](../bench/README.md)
 
 <Illustration name="apps" full :data="$frontmatter.apps" label="The app benchmarks, each example app on opfs-lsm against the same app on the storage it would otherwise use. LinearLite with 100,000 issues, docstore against TanStack DB's SQLite adapter as it ships: once the database is open, the first rows of a cold open in 35.8 ms against 803 ms, 22× faster; a change of sort in 4.5 ms against 705 ms, 157× faster; the board in 17.9 ms against 4.0 s, 223× faster. A Yjs whiteboard with 1,000 shapes, against y-indexeddb: 1,000 edits saved in 38.7 ms against 97.7 ms, 2.5× faster; 100 undos and redos saved in 6.5 ms against 17.6 ms, 2.7× faster; reopening the board takes 106 ms against 79.3 ms, 0.75× as fast. A pages app on fate and Automerge with a 50 KB page, against IndexedDB: opening a new page takes 18.9 ms against 21.0 ms, 1.1× faster; reopening it after a reload 137 ms against 129 ms, 0.94× as fast." />
-
-## Optimized for fast loads, great at batched writes
-
-[The adapter benchmarks](../README.md#benchmarks) · [How they are measured](../bench/README.md)
-
-<Illustration name="adapters" full :data="$frontmatter.adapters" label="The adapter benchmarks, each opfs-lsm adapter against the persistence option its framework ships, IndexedDB or SQLite. TanStack DB, both collections in eager mode: cold load of 91,000 rows 176k rows/s against 112k, 1.6× faster; bulk insert 115k rows/s against 17.2k, 6.7× faster. TanStack DB against its SQLite adapter, both in on-demand mode: 10 rows by id 4.1k queries/s against 1.9k, 2.1× faster; a warm query of 6,250 rows 169k rows/s against 116k, 1.5× faster. Yjs against y-indexeddb: cold load of 500 notes 9.5k notes/s against 2.0k, 4.8× faster; editing trace 33.2k edits/s against 1.4k, 23× faster. Automerge against automerge-repo's IndexedDB storage: cold load of 500 notes 2.2k notes/s against 1.1k, 2.0× faster; writing 500 notes 821 notes/s against 743, 1.1× faster. fate against its IndexedDB persistence: cold load of 100 lists 3.4k records/s against 1.0k, 3.3× faster; queueing 300 mutations 263 ops/s against 201, 1.3× faster." />
 
 <div class="home-claim">
 <div class="home-copy">

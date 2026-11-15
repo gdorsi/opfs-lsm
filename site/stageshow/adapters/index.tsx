@@ -40,11 +40,6 @@ function verdict(ratio: string) {
   return { tone, text };
 }
 
-/** The adapter benchmarks: each opfs-lsm adapter against its framework's own storage. */
-export default function Adapters(props: Props) {
-  return <Card {...props} title="Adapter benchmarks" size={SIZES.adapters} />;
-}
-
 /** The app benchmarks: an example app on opfs-lsm against the same app on the storage it would otherwise use. */
 export function Apps(props: Props) {
   return <Card {...props} title="App benchmarks" hint="time per step, shorter is better" size={SIZES.apps} />;
@@ -91,7 +86,7 @@ function Card({ theme, title, hint, size, command, frameworks }: CardProps) {
             </div>
             <span className="ad-command">{command}</span>
           </header>
-          <div className="ad-cols" data-paired={frameworks.length > 4 || undefined} data-three={frameworks.length === 3 || undefined}>
+          <div className="ad-cols" data-three={frameworks.length === 3 || undefined}>
             {frameworks.map((framework, i) => {
               const ran = s.ran > i;
               return (

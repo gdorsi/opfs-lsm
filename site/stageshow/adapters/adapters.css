@@ -71,35 +71,6 @@
     border-left: 1px solid var(--ss-line-faint);
   }
 
-  /* Five frameworks, wide: the two TanStack DB columns share the top row, the rest the row under it. */
-  & .ss-stage[data-layout="wide"] .ad-cols[data-paired] {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-
-    & .ad-col {
-      grid-column: span 2;
-    }
-
-    & .ad-col:nth-child(-n + 2) {
-      grid-column: span 3;
-    }
-
-    & .ad-col:nth-child(2)::before {
-      bottom: 0;
-    }
-
-    & .ad-col:nth-child(-n + 2) .ad-filler {
-      display: none;
-    }
-
-    & .ad-col:nth-child(3)::before {
-      bottom: auto;
-      left: 0;
-      width: calc(300% + 80px);
-      border-left: 0;
-      border-top: 1px solid var(--ss-line);
-    }
-  }
-
   .ad-head {
     display: grid;
     gap: 1px;
