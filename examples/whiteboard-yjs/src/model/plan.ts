@@ -30,10 +30,10 @@ export function plan(scene: Scene, command: Command, newId: () => ShapeId): Patc
       }
       break;
     case "style": {
-      const { text, fontSize, ...style } = command.edit;
+      const { text, fontSize, w, h, ...style } = command.edit;
       for (const id of present(command.ids)) {
         const s = scene.shapes.get(id)!;
-        setChanged(patch, s, s.kind === "text" ? { ...style, text, fontSize } : style);
+        setChanged(patch, s, s.kind === "text" ? { ...style, text, fontSize, w, h } : style);
       }
       break;
     }
