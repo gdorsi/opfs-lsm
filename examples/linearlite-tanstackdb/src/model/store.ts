@@ -1,10 +1,9 @@
 import { defineSchema, openDocStore, type DocStore } from "@opfs-lsm/docstore";
-import { openDb, type Db } from "@opfs-lsm/kv";
+import type { Db } from "@opfs-lsm/kv";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, createLiveQueryCollection, eq } from "@tanstack/db";
 import type { Body, Comment, Issue, Rows, StoredIssue, SyncState } from "../domain/model.ts";
 import { STORES, type Stream } from "../domain/stores.ts";
-import { httpTransport, type Transport } from "./transport.ts";
 
 /** Priority, then status, then `modified` (ms, below 1e13): one value per issue, so a sort on it has few ties. */
 export const priorityOrder = (priority: number, status: number, modified: number) => priority * 1e14 + status * 1e13 + modified;
@@ -50,7 +49,6 @@ export function collections(docs: Docs) {
 export type Store = ReturnType<typeof collections> & {
   readonly db: Db;
   readonly docs: Docs;
-  readonly transport: Transport;
 };
 
 /** The shape of stored rows. The sync leader clears a replica written under another format and pulls it again. */
@@ -66,23 +64,10 @@ export function transact<S extends Stream>(store: Store, stream: S, ids: readonl
   return store.issues.utils.transact(ids, (rows) => issues(rows).map((row) => row && stored(row)));
 }
 
-let opening: Promise<Store> | undefined;
-let opened: Store | undefined;
-
-export function openStore(): Promise<Store> {
-  return (opening ??= (async () => {
-    const params = new URLSearchParams(location.search);
-    // `?maxBytes=` sets a byte cap, to see an eviction without filling the disk.
-    const db = await openDb({ name: params.get("db") ?? "linearlite", maxBytes: Number(params.get("maxBytes")) || "quota" });
-    const docs = await openDocStore(db, schema);
-    const store: Store = { db, docs, transport: httpTransport(params.get("user") ?? "anonymous"), ...collections(docs) };
-    await store.sync.preload();
-    opened = store;
-    return store;
-  })());
-}
-
-export function openedStore(): Store {
-  if (!opened) throw new Error("openStore() has not resolved yet");
-  return opened;
+/** The replica in `db`, with the sync row loaded. The caller opened `db` and closes it. */
+export async function openStore(db: Db): Promise<Store> {
+  const docs = await openDocStore(db, schema);
+  const store: Store = { db, docs, ...collections(docs) };
+  await store.sync.preload();
+  return store;
 }

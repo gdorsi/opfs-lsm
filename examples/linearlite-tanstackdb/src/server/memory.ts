@@ -2,7 +2,7 @@ import type { ServerRow } from "../domain/model.ts";
 import { WireError } from "../domain/parse.ts";
 import { STREAMS, type Stream } from "../domain/stores.ts";
 import { parsePushRequest } from "../domain/wire.ts";
-import { type Transport, TransportError } from "../client/transport.ts";
+import { type Transport, TransportError } from "../model/transport.ts";
 import { generate, type Generated } from "./generate.ts";
 import { syncServer, type SyncServer, type Tables } from "./protocol.ts";
 
@@ -99,9 +99,11 @@ export interface MemoryServer extends SyncServer {
   rows(): ServerRows;
   /**
    * While false, every transport call fails as a fetch does with the network down, and `onHead` is silent. Setting
-   * it back to true sends the current head to `onHead` listeners, as the app's event stream does when it reconnects.
+   * it back to true calls the `onReconnect` listeners, then sends the current head to `onHead` listeners, as the app's
+   * event stream does when it reconnects.
    */
   online: boolean;
+  onReconnect(listener: () => void): () => void;
 }
 
 /** Seeded with `generate(issues, seed)`, the rows `pnpm seed` writes. */
@@ -109,6 +111,7 @@ export function memoryServer({ issues, seed = 1 }: { readonly issues: number; re
   const tables = mapTables(generate(issues, seed));
   const server = syncServer(tables);
   const listeners = new Set<(head: number) => void>();
+  const reconnects = new Set<() => void>();
   let online = true;
   server.onHead((head) => {
     if (online) for (const l of listeners) l(head);
@@ -120,13 +123,19 @@ export function memoryServer({ issues, seed = 1 }: { readonly issues: number; re
       listeners.add(listener);
       return () => void listeners.delete(listener);
     },
+    onReconnect(listener) {
+      reconnects.add(listener);
+      return () => void reconnects.delete(listener);
+    },
     get online() {
       return online;
     },
     set online(next) {
       const reconnected = next && !online;
       online = next;
-      if (reconnected) for (const l of listeners) l(server.head());
+      if (!reconnected) return;
+      for (const l of reconnects) l();
+      for (const l of listeners) l(server.head());
     },
   };
 }
@@ -154,5 +163,6 @@ export function memoryTransport(server: MemoryServer, user: string): Transport {
       if (server.online) queueMicrotask(() => hint(server.head()));
       return server.onHead(hint);
     },
+    online: (back) => server.onReconnect(back),
   };
 }
