@@ -26,7 +26,10 @@ type IssueDocs = ReturnType<typeof issueDocs>;
 type Snap = Parameters<Parameters<IssueDocs["view"]>[0]>[0];
 type IssueQuery = Parameters<IssueDocs["count"]>[0];
 
-/** kv's cap on the operations of one write batch (docstore README, "Limits"). */
+/**
+ * The most kv ops one slice of `transact` writes. kv caps a batch by bytes, not ops: 8 MiB, counting 256 bytes per op
+ * (docstore README, "Limits").
+ */
 const KV_BATCH_OPS = 10_000;
 /** Cached threads below which storage pressure asks nothing: the visible rows reload right after an eviction. */
 const MIN_EVICTION = 100;
@@ -34,7 +37,7 @@ const MIN_EVICTION = 100;
 export const KV_PATH: BackendPath = {
   name: "docstore",
   loads: "docstoreCollectionOptions over openDocStore; issues, bodies and comments on demand through docstore indexes, sync eager",
-  writes: "utils.transact: read and write in one kv transaction, sliced to kv's 10,000-op batch cap by the store's index count",
+  writes: "utils.transact: read and write in one kv transaction per slice of at most 10,000 kv ops, sized by the store's index count",
   counts: "docstore index entries per status (byStatus, byPriority), no document read; a one-word search counts the entries of byStatus, a text index on the title; a longer search, or one under a priority filter, reads the documents the search index matches",
   deep: "anchor: walks the sort index to row n, and counts the rows before it again after changes",
   pressure: "db.onPressure while more than 100 bodies are stored; bodies and comments are cleared once a user confirms",
@@ -67,7 +70,7 @@ export async function openKvBackend(db: Db, { hidden = () => false }: KvOptions 
   await collections.sync.preload();
   const issues = issueDocs(docs);
   /**
-   * The most rows of `store` one kv transaction can write within the batch cap. A row write is the row plus, per index,
+   * The most rows of `store` one slice writes within `KV_BATCH_OPS`. A row write is the row plus, per index,
    * at most a delete of its old entry and a put of its new one; every index here holds at most one entry per row.
    */
   const rowsPerBatch = (store: StoreName) => Math.floor(KV_BATCH_OPS / (1 + 2 * docs.collection(store).indexes.size));

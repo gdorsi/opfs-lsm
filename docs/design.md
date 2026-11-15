@@ -218,7 +218,9 @@ that holds the key with a non-matching value or a tombstone drops the older hit.
 Every read judges the versions it finds in runs against one read point: the marks of the
 installed generation joined with those of the memtable, taken in the same turn as the layers it
 reads. A version from a run is skipped when a mark covers it (see
-[Range deletes](#range-deletes)), and then an older source does not win in its place.
+[Range deletes](#range-deletes)), and then an older source does not win in its place. A scan
+skips a run unread when one mark holds all its keys within the scan's bounds, with `through` at
+or past the run's `marksThrough`.
 
 A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the read
 point. Writes that commit during the callback are invisible to it. `rangeJoin` scans a range
@@ -243,8 +245,8 @@ A version is judged in the layer that holds it:
   manifest's.
 * A merge drops a winning version that a mark of its base manifest covers, tombstones included,
   at any level: every older version of the key has a smaller seq, so the mark covers it too.
-* A run records `marksThrough`: it holds no version a range delete from a record at or below it
-  covers. A flushed run takes the last seq it folded, a compaction output its base's `through`.
+* A run records `marksThrough`: it holds no version past it, nor one that a range delete from a
+  record at or below it covers. A flushed run takes its last seq, a compaction its base's `through`.
 
 A mark retires when every run that overlaps it has `marksThrough` at or past its `at`: no run
 left can hold a version it covers. Each flush and each compaction install retires the manifest's

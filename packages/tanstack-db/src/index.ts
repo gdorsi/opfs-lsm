@@ -283,6 +283,8 @@ class DemandRun {
   private unsettled = 0;
   /** Whether a change was committed while some fetch was unsettled. */
   private changedMidLoad = false;
+  /** Whether rows no live demand keeps may be held, for `evict` to drop. */
+  private evictOwed = false;
 
   constructor(
     private readonly docs: Docs,
@@ -335,14 +337,12 @@ class DemandRun {
 
   unload(options: LoadSubsetOptions): void {
     if (this.phase.kind === "stopped") return;
-    const { demands, synced } = this.phase;
+    const { demands } = this.phase;
     const demand = demands.get(options);
     if (!demand) return;
     demands.delete(options);
     demand.state = { kind: "released" };
-    const batch = new Batch(synced);
-    for (const [id, row] of synced) if (!this.wants(row.doc)) batch.remove(id);
-    this.apply(batch);
+    this.evict();
   }
 
   private onChange(event: CollectionChange<JsonDoc>): void {
@@ -353,8 +353,9 @@ class DemandRun {
         const { synced } = this.phase;
         const batch = new Batch(synced);
         for (const change of event.changes) this.decide(batch, change, event.seq);
-        if (this.bound()) for (const [id, row] of synced) if (!this.wants(row.doc)) batch.remove(id);
+        const bounded = this.bound();
         this.apply(batch);
+        if (bounded) this.evict();
         return;
       }
       case "gap":
@@ -421,9 +422,10 @@ class DemandRun {
 
   /**
    * Read `demands` from one snapshot and commit their rows. With `resync`,
-   * also read every row TanStack holds, which drops the rows deleted or
-   * moved out of every demand meanwhile. A demand that a later fetch took
-   * over is left to it, and this fetch resolves once that one does.
+   * also read every row TanStack holds, which drops the rows deleted
+   * meanwhile. The rows no demand keeps any more are left to `evict`. A
+   * demand that a later fetch took over is left to it, and this fetch
+   * resolves once that one does.
    */
   private fetch(demands: readonly Demand[], resync: boolean): Promise<void> {
     if (this.phase.kind === "stopped") return Promise.resolve();
@@ -453,13 +455,13 @@ class DemandRun {
         held.forEach((id, i) => {
           if ((synced.get(id)?.seq ?? Infinity) >= at) return;
           const doc = current[i];
-          if (doc && this.wants(doc)) batch.put(doc, at);
+          if (doc) batch.put(doc, at);
           else batch.remove(id);
         });
         const loaded = batch.messages.length;
         for (const event of load.buffer) for (const change of event.changes) this.decide(batch, change, event.seq);
         this.bound();
-        for (const [id, row] of synced) if (!this.wants(row.doc)) batch.remove(id);
+        this.evictOwed = true;
         if (batch.messages.length > loaded) this.changedMidLoad = true;
         const receipt = this.commit(batch);
         load.done.resolve(Promise.all([receipt, ...later]).then(() => undefined));
@@ -486,10 +488,31 @@ class DemandRun {
    * ordered query repair its window.
    */
   private readonly settle = (): void => {
-    if (--this.unsettled > 0 || !this.changedMidLoad) return;
+    if (--this.unsettled > 0) return;
+    // TanStack takes each load's result in callbacks that run after this one, so the eviction waits a macrotask.
+    if (this.evictOwed) setTimeout(() => this.evict());
+    if (!this.changedMidLoad) return;
     this.changedMidLoad = false;
     if (this.phase.kind === "live") this.p.invalidateLoadedSubsets();
   };
+
+  /**
+   * Drops the rows no live demand keeps, or, while a fetch is unsettled, waits
+   * until every fetch settles. TanStack hands a new query the rows it already
+   * holds before that query's load lands; deleting one of them before the load
+   * settles makes TanStack read the whole source for that query.
+   */
+  private evict(): void {
+    if (this.phase.kind === "stopped") return;
+    if (this.unsettled > 0) {
+      this.evictOwed = true;
+      return;
+    }
+    this.evictOwed = false;
+    const batch = new Batch(this.phase.synced);
+    for (const [id, row] of this.phase.synced) if (!this.wants(row.doc)) batch.remove(id);
+    this.apply(batch);
+  }
 
   private apply(batch: Batch): void {
     if (batch.messages.length > 0 && this.unsettled > 0) this.changedMidLoad = true;
