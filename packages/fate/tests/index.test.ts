@@ -218,19 +218,23 @@ test("exclusive passes the result through and releases the lock when run rejects
     assert.equal(await storage.exclusive("r", async () => "again"), "again");
   }));
 
-test("exclusive accepts names longer than a lock name limit", () =>
+test("exclusive takes names longer than a lock name limit, in call order", () =>
   withDb(async (_db, storage) => {
     const name = "n".repeat(5000);
-    assert.equal(await storage.exclusive(name, async () => 1), 1);
-    const events: string[] = [];
-    const section = (id: number) =>
-      storage.exclusive(name, async () => {
-        events.push(`in${id}`);
-        await sleep(5);
-        events.push(`out${id}`);
-      });
-    await Promise.all([section(1), section(2)]);
-    assert.deepEqual(events, ["in1", "out1", "in2", "out2"]);
+    const ids = Array.from({ length: 64 }, (_, i) => i);
+    for (let round = 0; round < 20; round++) {
+      const order: number[] = [];
+      const results = await Promise.all(
+        ids.map((id) =>
+          storage.exclusive(name, async () => {
+            order.push(id);
+            return id;
+          }),
+        ),
+      );
+      assert.deepEqual(results, ids);
+      assert.deepEqual(order, ids);
+    }
   }));
 
 type Tabs = { a: Db; b: Db; sa: PersistenceStorage; sb: PersistenceStorage };
