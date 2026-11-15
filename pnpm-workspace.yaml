@@ -8,4 +8,5 @@ packages:
   - "examples/linearlite-docstore"
   - "examples/linearlite-fate"
   - "examples/whiteboard-yjs"
+  - "examples/pages-fate-automerge"
   - "site"
