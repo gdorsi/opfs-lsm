@@ -1,6 +1,6 @@
 import type { DocStorage } from "../model/index.ts";
 
-export type FaultSwitch = { on(): void; off(): void };
+type FaultSwitch = { on(): void; off(): void };
 
 export function faultable(inner: DocStorage): { readonly storage: DocStorage; readonly switch: FaultSwitch } {
   let failing = false;
@@ -10,8 +10,6 @@ export function faultable(inner: DocStorage): { readonly storage: DocStorage; re
       return {
         ...binding,
         flush: () => (failing ? Promise.reject(new Error("injected storage fault")) : binding.flush()),
-        detach: () => binding.detach(),
-        clear: () => binding.clear(),
       };
     },
   };

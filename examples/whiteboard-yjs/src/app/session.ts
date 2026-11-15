@@ -7,15 +7,13 @@ import {
   type Workspace,
 } from "../model/index.ts";
 import { openStorage } from "../persistence/open.ts";
-import { faultable, type FaultSwitch } from "./fault.ts";
+import { faultable } from "./fault.ts";
 
 export type StorageKind = "kv" | "idb";
 
 export type Session = {
   readonly ws: Workspace;
   readonly storage: StorageKind;
-  readonly name: string;
-  readonly fault: FaultSwitch | null;
 };
 
 let opening: Promise<Session> | undefined;
@@ -37,7 +35,7 @@ async function open(): Promise<Session> {
   if (fault) Object.assign(globalThis, { whiteboardFault: fault.switch });
   Object.assign(globalThis, { whiteboard: proof(storage, ws) });
   onPageHide(ws, backend.close);
-  return { ws, storage, name, fault: fault?.switch ?? null };
+  return { ws, storage };
 }
 
 /** A page restored from the back-forward cache has a closed workspace, so pageshow with `persisted` reloads it. */
