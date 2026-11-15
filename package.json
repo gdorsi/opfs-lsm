@@ -3,6 +3,7 @@
   "private": true,
   "description": "Monorepo for opfs-lsm, a browser key-value store on OPFS and IndexedDB",
   "license": "MIT",
+  "type": "module",
   "author": "Guido D'Orsi",
   "repository": {
     "type": "git",
@@ -22,6 +23,7 @@
     "lint": "oxlint",
     "deadcode": "fallow dead-code",
     "static": "pnpm lint && pnpm check:docs && pnpm deadcode",
+    "release": "node scripts/release.ts",
     "test": "node scripts/check-readme.mjs && pnpm --filter './packages/*' run build && pnpm run '/^test:(suites|examples)$/'",
     "test:suites": "pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test && pnpm --filter @opfs-lsm/tanstack-db test && pnpm --filter @opfs-lsm/fate test && pnpm --filter @opfs-lsm/example-whiteboard-yjs test && pnpm --filter @opfs-lsm/example-pages-fate-automerge test",
     "test:examples": "pnpm --filter './examples/*' run build",

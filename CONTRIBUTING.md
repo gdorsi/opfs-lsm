@@ -46,13 +46,21 @@ When `@opfs-lsm/kv` gets a new version, Changesets also gives a patch bump to th
 
 ## Release
 
-`.github/workflows/release.yml` runs on every push to `main`. It runs `pnpm test` and `pnpm static`, then hands off to `changesets/action`:
+Releases run locally. On `main` with a clean tree, run:
 
-1. If `main` has changeset files, the action opens or updates a pull request named `chore(release): version packages`. That pull request runs `changeset version`, which deletes the changeset files, bumps the versions, and updates each package's `CHANGELOG.md`.
-2. To release, merge that pull request.
-3. On the push from the merge, `main` has no changeset files left, so the action runs `pnpm changeset publish`. That command publishes every package whose version is not on npm yet, with provenance, and pushes a git tag for each one.
+```sh
+pnpm release
+```
 
-The workflow needs the `NPM_TOKEN` repository secret.
+The script in [scripts/release.ts](scripts/release.ts) (Node runs TypeScript directly; use Node 24 from `.nvmrc`, Node 22 can't run `.ts` without a flag):
+
+1. Checks you are on `main`, the tree is clean, and you are up to date with `origin`.
+2. If `.changeset/` has pending files, runs `changeset version`, which deletes them, bumps the versions, and updates each package's `CHANGELOG.md`, then commits the result as `chore(release): version packages`.
+3. Runs `pnpm test` and `pnpm static`.
+4. Publishes every package whose version is not on npm yet with `changeset publish`, which also tags each published package.
+5. Pushes `main` with the tags and opens a GitHub release per published package with its changelog entry.
+
+Pass `--dry-run` to print the plan without changing anything, or `--no-github` to skip step 5. npm provenance needs a supported CI environment, so a local publish runs without it.
 
 To see what the next release contains, run:
 
