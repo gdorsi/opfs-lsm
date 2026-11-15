@@ -44,6 +44,9 @@ importers:
       '@opfs-lsm/docstore':
         specifier: workspace:*
         version: link:../packages/docstore
+      '@opfs-lsm/example-whiteboard-yjs':
+        specifier: workspace:*
+        version: link:../examples/whiteboard-yjs
       '@opfs-lsm/fate':
         specifier: workspace:*
         version: link:../packages/fate
@@ -231,6 +234,9 @@ importers:
 
   examples/linearlite-tanstackdb:
     dependencies:
+      '@journeyapps/wa-sqlite':
+        specifier: ^1.7.2
+        version: 1.7.2
       '@opfs-lsm/docstore':
         specifier: workspace:*
         version: link:../../packages/docstore
@@ -240,6 +246,9 @@ importers:
       '@opfs-lsm/tanstack-db':
         specifier: workspace:*
         version: link:../../packages/tanstack-db
+      '@tanstack/browser-db-sqlite-persistence':
+        specifier: 1.0.0-rc.1.5
+        version: 1.0.0-rc.1.5(@journeyapps/wa-sqlite@1.7.2)(typescript@5.9.3)
       '@tanstack/db':
         specifier: 1.0.0-rc.1.5
         version: 1.0.0-rc.1.5(typescript@5.9.3)
@@ -406,9 +415,18 @@ importers:
 
   examples/whiteboard-yjs:
     dependencies:
+      '@opfs-lsm/kv':
+        specifier: workspace:*
+        version: link:../../packages/kv
+      '@opfs-lsm/yjs':
+        specifier: workspace:*
+        version: link:../../packages/yjs
       fractional-indexing:
         specifier: ^3.2.0
         version: 3.4.0
+      y-indexeddb:
+        specifier: ^9.0.12
+        version: 9.0.12(yjs@13.6.33)
       yjs:
         specifier: ^13.6.33
         version: 13.6.33
@@ -416,6 +434,9 @@ importers:
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
+      fake-indexeddb:
+        specifier: ^6.2.7
+        version: 6.2.7
       tsx:
         specifier: ^4.20.0
         version: 4.23.15

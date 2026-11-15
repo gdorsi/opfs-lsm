@@ -8,6 +8,7 @@
  * `bulkPut`.
  */
 import type { StorageAdapterInterface } from "@automerge/react";
+import type { Backend } from "../../examples/linearlite-tanstackdb/src/model/backend.ts";
 import type { PersistenceStorage } from "@nkzw/fate/persistence";
 import type { PagesStorage } from "../../examples/pages-fate-automerge/src/model/types.ts";
 import type { KvStats } from "@opfs-lsm/kv/testing";
@@ -129,6 +130,11 @@ export type PagesStore = Common & {
   readonly volatile?: true;
 };
 
+/** linearlite-tanstackdb's replica as its app opens it. A workload builds the headless model over `backend` with an in-memory server, so every contender runs the same model code and only the storage under it differs. */
+export type LinearliteStore = Common & {
+  readonly backend: Backend;
+};
+
 /** Family name → store interface. The directory names under workloads/ and contenders/ are these keys. */
 export type FamilyStores = {
   kv: KvStore;
@@ -139,6 +145,7 @@ export type FamilyStores = {
   yjs: YjsStore;
   fate: FateStore;
   pages: PagesStore;
+  linearlite: LinearliteStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "pages"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "pages", "linearlite"];

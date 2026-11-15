@@ -16,8 +16,12 @@ path and one merge rule. Each row carries its own unsent edits (`dirty`), which 
 conflict guard, and a `pending: true` that a sparse index lists, so the outbox is a range read. One tab per
 browser, elected with Web Locks, talks to the server. The server is SQLite where every row carries the global
 version that last changed it, so "what changed since V" is an index scan, not a log. The model (`src/model/`) is
-headless: `openLinearlite({ store, transport })` returns live views, commands and sync, and runs in Node over the
-in-memory server; the app (`src/app/`) brings the browser, the HTTP transport and the sync lock.
+headless: `openLinearlite({ backend, transport })` returns live views, commands and sync, and runs in Node over the
+in-memory server; the app (`src/app/`) brings the browser, the HTTP transport, the sync lock and the backend
+`?backend=` names: docstore (`src/backends/kv.ts`, the default), `indexeddb` (`src/backends/indexeddb.ts`, TanStack's
+IndexedDB persistence, every row loaded at open, no anchor and no pressure) or `sqlite` (`src/backends/sqlite.ts`,
+TanStack's SQLite persistence on wa-sqlite, one tab, imported only when named). The model reaches storage only through its
+`Backend` (`src/model/backend.ts`), and `src/backends/contract.ts` is the suite every backend passes.
 
 ## Why nothing is eager (measured)
 
@@ -83,10 +87,10 @@ from it, and so does the push order: streams apply in table order, so a child fo
 
 ## One write path
 
-`transact(store, stream, ids, merge)` (`src/model/store.ts`, over the adapter's `utils.transact`) writes
-`merge(currentRows)` in one kv transaction, so nothing can land between the read and the write, in this tab or
-another. For issues it stamps the sort keys from the fields `merge` returns, so no write leaves them stale. Callers
-never use `collection.insert/update`.
+`backend.transact(store, items, merge)` (`src/backends/kv.ts`, over the adapter's `utils.transact`) writes
+`merge(localRow, item)` for each item in one kv transaction per slice of up to 10,000 kv ops, so nothing can land between
+the read and the write of a row, in this tab or another. For issues it stamps the sort keys from the fields `merge`
+returns, so no write leaves them stale. Callers never use `collection.insert/update`.
 
 | write | merge function (pure, `src/domain/merge.ts`) |
 |---|---|
@@ -101,11 +105,11 @@ advancing its cursor costs one re-pull, and no cross-collection transaction is n
 A `transact` from a click shows in the same tab's list with no optimistic overlay: edit to live query 3.1 ms
 p50, to DOM 3.5 ms (`visible`, production build, 60 edits).
 
-**Write chunking.** kv caps one write batch at 10,000 ops. A docstore write of a row is one op for the row plus,
+**Write chunking.** A `transact` slice writes at most 10,000 kv ops, this backend's own size. kv itself caps a batch by bytes: 8 MiB, counting 256 bytes per op. A docstore write of a row is one op for the row plus,
 per index, at most a delete of its old entry and a put of its new one, so a row costs at most `1 + 2 × indexes`
 ops. A pulled page of 2,000 rows is merged in slices of `floor(10000 / (1 + 2 × indexes))` rows, each its own
 `transact`: 769 issues (six indexes), 3,333 bodies (one), 2,000 comments (two). The slice size is read from the
-collection's `indexes`, so adding an index cannot push a page over the cap. Slicing loses nothing a crash could
+collection's `indexes`, so adding an index cannot make a slice larger than that. Slicing loses nothing a crash could
 not already lose: a merge is idempotent and the cursor advances only after the whole page.
 
 ## Sync
@@ -258,7 +262,7 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   few hundred rows. Title search is `ilike`; a query holding `%` or `_` uses a filter function instead, since
   `ilike` has no escape.
 - **Counts.** The scroll height and the toolbar total come from `countTotal` and the board's column counts from
-  `countByStatus` (`src/model/counts.ts`), which count docstore index entries and read no document. A search
+  `countByStatus` (`src/backends/kv.ts`), which count docstore index entries and read no document. A search
   counts the documents the `search` index matches whose title contains the query, so the total agrees with the
   list's `ilike`; a query of one plain word is counted from the index entries alone, which is exact for titles
   stored in NFC, as typed text is (the index normalizes, `ilike` does not). Each count reads again after
@@ -267,12 +271,12 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   up to a fifth of the main thread instead of half. A read after a change pauses between the statuses it counts,
   so a recount holds up no frame, in the tab that edited or any other visible one. A hidden tab paints nothing
   and wakes its timers about once a second, so it counts them all at once, as the first read for a filter does,
-  since the screen waits on it. Counters kept from changes would save the 32 ms count itself, but
+  since the screen waits on it. Counters kept from changes would save the 19 ms count itself, but
   every issue write would update one document, which a clear, an epoch change or a gap would have to recompute.
   The counts depend on the filter and the query, not the sort, so a sort change keeps them.
 - **Deep scroll.** TanStack serves a window at offset N from the first N rows plus the window, and keeps them
   once the list scrolls back. So a window deep in the unfiltered list is its own live query, anchored at a sort
-  value. `locate` (`src/model/counts.ts`) walks the sort's index to row N without reading documents, reads the
+  value. `locate` (`src/backends/kv.ts`) walks the sort's index to row N without reading documents, reads the
   64 rows before it, and returns row N's sort value and `base`, the rows that sort strictly before that value. The
   window's query keeps the filter's `where` plus `sort <= value` (`>=` ascending), so the adapter reads it from the
   sort's own index, and its rows sit `base` rows down the list. `base` is counted from the index again

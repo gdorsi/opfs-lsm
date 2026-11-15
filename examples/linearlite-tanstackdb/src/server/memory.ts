@@ -24,7 +24,7 @@ function above(log: readonly ServerRow[], version: number): number {
   return lo;
 }
 
-function mapTables({ rows, head: seeded }: Generated): Tables {
+function mapTables({ rows, head: seeded }: Generated, epoch: string): Tables {
   const tables = Object.fromEntries(STREAMS.map((s) => [s, { byId: new Map(rows[s].map((r) => [r.id, r])), log: [...rows[s]] }])) as {
     [S in Stream]: Table<ServerRow<S>>;
   };
@@ -35,7 +35,6 @@ function mapTables({ rows, head: seeded }: Generated): Tables {
     else commentIds.set(c.issue_id, [c.id]);
   };
   rows.comments.forEach(indexComment);
-  const epoch = crypto.randomUUID();
   let head = seeded;
   let undo: (() => void)[] | undefined;
   const current = <S extends Stream>(t: Table<ServerRow<S>>, r: ServerRow<S>) => t.byId.get(r.id) === r;
@@ -106,9 +105,13 @@ export interface MemoryServer extends SyncServer {
   onReconnect(listener: () => void): () => void;
 }
 
-/** Seeded with `generate(issues, seed)`, the rows `pnpm seed` writes. */
-export function memoryServer({ issues, seed = 1 }: { readonly issues: number; readonly seed?: number }): MemoryServer {
-  const tables = mapTables(generate(issues, seed));
+/**
+ * Seeded with `generate(issues, seed)`, the rows `pnpm seed` writes. Each server has its own epoch unless `epoch` names
+ * it: a replica keeps its rows only for a server with the epoch it synced from, so a bench page that rebuilds a server
+ * for a replica on disk names it.
+ */
+export function memoryServer({ issues, seed = 1, epoch = crypto.randomUUID() }: { readonly issues: number; readonly seed?: number; readonly epoch?: string }): MemoryServer {
+  const tables = mapTables(generate(issues, seed), epoch);
   const server = syncServer(tables);
   const listeners = new Set<(head: number) => void>();
   const reconnects = new Set<() => void>();

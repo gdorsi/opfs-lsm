@@ -19,6 +19,7 @@
     "@nkzw/fate-indexeddb": "2.0.1",
     "@opfs-lsm/automerge": "workspace:*",
     "@opfs-lsm/docstore": "workspace:*",
+    "@opfs-lsm/example-whiteboard-yjs": "workspace:*",
     "@opfs-lsm/fate": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
     "@opfs-lsm/tanstack-db": "workspace:*",

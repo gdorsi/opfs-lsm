@@ -43,6 +43,7 @@ import { SstReader } from "./store/sst-reader.js";
 import {
   ViewSnapshotImpl,
   boundsOf,
+  countLayers,
   scanLayers,
   type ViewSnapshot,
 } from "./view.js";
@@ -252,6 +253,8 @@ export interface Db {
     keyOf: (entry: Entry) => Uint8Array | undefined,
   ): Promise<{ readonly entry: Entry; readonly joined: Uint8Array | undefined }[]>;
   range(range?: Range): AsyncIterable<Entry>;
+  /** How many entries `range` would yield, `limit` included, without copying them. */
+  count(range?: Range): Promise<number>;
   /**
    * Read-only snapshot of every record through `snap.seq`.
    * Writes that commit during the callback are invisible to `snap`.
@@ -1104,6 +1107,19 @@ class DbImpl implements Db {
         out.push({ entry, joined });
       }
       return out;
+    } finally {
+      this.release(layers);
+    }
+  }
+
+  async count(range?: Range): Promise<number> {
+    this.ensureOpen();
+    const bounds = boundsOf(range);
+    const layers = this.installed;
+    const at = this.point();
+    this.retain(layers);
+    try {
+      return await countLayers(this.mem.range(bounds), layers.levels, at, bounds, range);
     } finally {
       this.release(layers);
     }

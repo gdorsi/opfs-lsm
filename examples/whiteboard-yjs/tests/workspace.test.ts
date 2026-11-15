@@ -7,6 +7,7 @@ import { broadcastSync } from "../src/model/sync.ts";
 import type { Applied, Board, BoardId, DocStorage, NewShape, Shape, ShapeId, Workspace, WorkspaceOptions } from "../src/model/types.ts";
 import { openWorkspace } from "../src/model/workspace.ts";
 import { memoryStorage } from "../src/persistence/index.ts";
+import { disk } from "./support/disk.ts";
 import { idCounter, testEnv } from "./support/env.ts";
 import { crashDisk, flakyStorage } from "./support/storage.ts";
 
@@ -20,7 +21,7 @@ afterEach(async () => {
 });
 async function start(over: Partial<WorkspaceOptions> = {}, prefix = "w") {
   const env = testEnv(idCounter(prefix));
-  const ws = await openWorkspace({ storage: memoryStorage(), env, autosaveMs: null, ...over });
+  const ws = await openWorkspace({ storage: disk().storage, env, autosaveMs: null, ...over });
   live.push(ws);
   return { ws, env };
 }
@@ -55,7 +56,7 @@ describe("the board list", () => {
   });
 
   test("is what a reopened workspace lists", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const first = await start({ storage });
     const a = first.ws.createBoard("A");
     await first.env.advance(1);
@@ -67,7 +68,7 @@ describe("the board list", () => {
   });
 
   test("skips index entries the workspace could not have written", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const raw = new Y.Doc();
     const binding = await storage.attach("workspace", raw);
     const boards = raw.getMap<unknown>("boards");
@@ -155,8 +156,7 @@ describe("opening a board", () => {
 });
 
 describe("deleting a board", () => {
-  async function withBoards() {
-    const storage = memoryStorage();
+  async function withBoards(storage: DocStorage) {
     const { ws, env } = await start({ storage });
     const ids: BoardId[] = [];
     for (const title of ["keep", "doomed", "other"]) {
@@ -172,26 +172,28 @@ describe("deleting a board", () => {
   }
 
   test("hides the board at once and, when it resolves, its data and its entry are gone", async () => {
-    const { storage, ws, keep, doomed, other } = await withBoards();
+    const d = disk();
+    const { storage, ws, keep, doomed, other } = await withBoards(d.storage);
     const open = await ws.openBoard(doomed);
     const deleting = ws.deleteBoard(doomed);
     assert.deepEqual(titles(ws), ["keep", "other"], "hidden before anything is cleared");
     await deleting;
 
-    assert.equal(storage.updates.has(`board/${doomed}`), false);
+    assert.equal(await d.holds(`board/${doomed}`), false);
     assert.throws(() => open.dispatch({ type: "create", shapes: [rect()] }), /closed/);
     await assert.rejects(ws.openBoard(doomed), BoardLoadError);
-    assert.equal(storage.updates.has(`board/${keep}`) && storage.updates.has(`board/${other}`), true);
+    assert.equal((await d.holds(`board/${keep}`)) && (await d.holds(`board/${other}`)), true);
     assert.equal((await ws.openBoard(keep)).view().shapes.size, 2);
 
     await ws.close();
     const raw = new Y.Doc();
-    (storage.updates.get("workspace") ?? []).forEach((update) => Y.applyUpdate(raw, update));
+    await (await storage.attach("workspace", raw)).detach();
     assert.deepEqual([...raw.getMap("boards").keys()].sort(), [keep, other].sort(), "no entry is left behind");
   });
 
   test("deleting an unknown board, or one twice, changes nothing", async () => {
-    const { storage, ws, doomed } = await withBoards();
+    const storage = memoryStorage();
+    const { ws, doomed } = await withBoards(storage);
     const writes = storage.updates.get("workspace")!.length;
     await ws.deleteBoard("ghost" as BoardId);
     assert.equal(storage.updates.get("workspace")!.length, writes);
@@ -201,7 +203,8 @@ describe("deleting a board", () => {
   });
 
   test("a delete that cannot finish keeps the board hidden, does not stop the workspace opening, and finishes later", async () => {
-    const inner = memoryStorage();
+    const d = disk();
+    const inner = d.storage;
     let failing = true;
     const storage: DocStorage = {
       async attach(name, doc) {
@@ -218,13 +221,13 @@ describe("deleting a board", () => {
 
     const second = await start({ storage }, "x");
     assert.deepEqual(titles(second.ws), [], "it opened, and the board is still hidden");
-    assert.equal(inner.updates.has(`board/${id}`), true);
+    assert.equal(await d.holds(`board/${id}`), true);
     await second.ws.close();
 
     failing = false;
     const third = await start({ storage }, "y");
     assert.deepEqual(titles(third.ws), []);
-    assert.equal(inner.updates.has(`board/${id}`), false, "the next open finished it");
+    assert.equal(await d.holds(`board/${id}`), false, "the next open finished it");
   });
 });
 
@@ -332,15 +335,15 @@ describe("the save state of the board list", () => {
 describe("two workspaces over BroadcastChannel", () => {
   const relay = broadcastSync(BroadcastChannel);
 
-  async function until(done: () => boolean, what: string): Promise<void> {
+  async function until(done: () => boolean | Promise<boolean>, what: string): Promise<void> {
     for (let turns = 0; turns < 5000; turns++) {
-      if (done()) return;
+      if (await done()) return;
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     assert.fail(`never happened: ${what}`);
   }
 
-  const tab = (name: string, storage: DocStorage = memoryStorage()) => start({ storage, sync: relay, gestureIntervalMs: 0 }, name);
+  const tab = (name: string, storage: DocStorage = disk().storage) => start({ storage, sync: relay, gestureIntervalMs: 0 }, name);
 
   class Oracle {
     readonly shapes = new Map<ShapeId, Shape>();
@@ -384,27 +387,28 @@ describe("two workspaces over BroadcastChannel", () => {
   });
 
   test("a delete reaches the other tab: it closes its copy, clears its own storage and stops listing the board", async () => {
-    const [aStorage, bStorage] = [memoryStorage(), memoryStorage()];
-    const a = await tab("a", aStorage);
-    const b = await tab("b", bStorage);
+    const [aDisk, bDisk] = [disk(), disk()];
+    const a = await tab("a", aDisk.storage);
+    const b = await tab("b", bDisk.storage);
     const id = a.ws.createBoard("Doomed");
     await until(() => titles(b.ws).length === 1, "b lists it");
     const mine = await a.ws.openBoard(id);
     const theirs = await b.ws.openBoard(id);
     mine.dispatch({ type: "create", shapes: [rect(), rect(9, 9)] });
     await until(() => theirs.view().shapes.size === 2, "b has the shapes");
-    assert.equal(bStorage.updates.get(`board/${id}`)!.length > 0, true);
+    await theirs.flush();
+    assert.equal(await bDisk.holds(`board/${id}`), true);
 
     await a.ws.deleteBoard(id);
     await until(() => titles(b.ws).length === 0, "b stops listing it");
-    await until(() => !bStorage.updates.has(`board/${id}`), "b clears what it had stored");
-    assert.equal(aStorage.updates.has(`board/${id}`), false);
+    await until(async () => !(await bDisk.holds(`board/${id}`)), "b clears what it had stored");
+    assert.equal(await aDisk.holds(`board/${id}`), false);
     assert.throws(() => theirs.dispatch({ type: "create", shapes: [rect()] }), /closed/);
     await assert.rejects(b.ws.openBoard(id), BoardLoadError);
   });
 
   test("two workspaces on one storage, as two tabs of one origin are, also converge", async () => {
-    const storage = memoryStorage();
+    const storage = disk().storage;
     const a = await tab("a", storage);
     const b = await tab("b", storage);
     const id = a.ws.createBoard("Shared");

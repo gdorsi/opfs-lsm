@@ -1,11 +1,33 @@
 import { openDb } from "@opfs-lsm/kv";
 import { createLiveQueryCollection, eq } from "@tanstack/db";
+import { openIndexedDbBackend } from "../backends/indexeddb.ts";
+import { openKvBackend } from "../backends/kv.ts";
+import type { Backend } from "../model/backend.ts";
 import { openLinearlite, type Linearlite } from "../model/index.ts";
-import { openStore } from "../model/store.ts";
 import { httpTransport } from "./transport.ts";
 
 let opening: Promise<Linearlite> | undefined;
 let opened: Linearlite | undefined;
+
+/** The replica `?backend=` names: docstore, the default, `indexeddb` or `sqlite`. */
+async function openBackend(params: URLSearchParams): Promise<Backend & { readonly docs?: unknown }> {
+  const name = params.get("db") ?? "linearlite";
+  if (params.get("backend") === "indexeddb") {
+    return openIndexedDbBackend(`${name}-indexeddb`, { hidden: () => document.hidden });
+  }
+  if (params.get("backend") === "sqlite") {
+    // Imported only here, so wa-sqlite and TanStack's SQLite persistence stay out of the default bundle.
+    const [{ openBrowserWASQLiteOPFSDatabase }, { openSqliteBackend }] = await Promise.all([
+      import("@tanstack/browser-db-sqlite-persistence"),
+      import("../backends/sqlite.ts"),
+    ]);
+    const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `${name}.sqlite` });
+    return openSqliteBackend(database, { name: `${name}-sqlite`, hidden: () => document.hidden });
+  }
+  // `?maxBytes=` sets a byte cap, to see an eviction without filling the disk.
+  const db = await openDb({ name, maxBytes: Number(params.get("maxBytes")) || "quota" });
+  return openKvBackend(db, { hidden: () => document.hidden });
+}
 
 /**
  * This tab's model, over the database `?db=` names. Every tab asks for the `linearlite:sync` Web Lock and holds it
@@ -14,15 +36,12 @@ let opened: Linearlite | undefined;
 export function openApp(): Promise<Linearlite> {
   return (opening ??= (async () => {
     const params = new URLSearchParams(location.search);
-    // `?maxBytes=` sets a byte cap, to see an eviction without filling the disk.
-    const db = await openDb({ name: params.get("db") ?? "linearlite", maxBytes: Number(params.get("maxBytes")) || "quota" });
-    const store = await openStore(db);
+    const backend = await openBackend(params);
     const model = openLinearlite({
-      store,
+      backend,
       transport: httpTransport(params.get("user") ?? "anonymous"),
       pullLimit: Number(params.get("pull")) || undefined,
       onCaughtUp: (stream) => performance.mark(`linearlite:caught-up:${stream}`),
-      hidden: () => document.hidden,
     });
     void navigator.locks.request("linearlite:sync", () => {
       performance.mark("linearlite:leader");
@@ -30,6 +49,7 @@ export function openApp(): Promise<Linearlite> {
     });
     // bench/client.ts drives edits through this; production builds expose it only with VITE_BENCH=1.
     if (import.meta.env.DEV || import.meta.env.VITE_BENCH === "1") {
+      const store = { issues: backend.collection("issues"), docs: backend.docs };
       Object.assign(globalThis, { __linearlite: { store, commands: model.commands, createLiveQueryCollection, eq } });
     }
     opened = model;
