@@ -11,6 +11,15 @@ Design principles for our packages:
 - Before adding a cache, check whether an architectural change gets the same performance.
 - If you can't, evaulate if the gain is worth the cost of having a cache
 
+## Examples
+
+The apps under `examples/` show how to build a web app on our packages.
+
+- Use each dependency the way its docs recommend. No custom workarounds.
+- Build a complete, working web app with a polished UX.
+- Make it look good, like a product someone would ship, not a test page.
+- Where possible, make the app's core run headless, without the UI, so benchmarks can drive it. Otherwise, benchmark the real app.
+
 ## Worktrees
 
 Create worktrees inside `.claude/worktrees/` in the repository, never in the parent directory or elsewhere
