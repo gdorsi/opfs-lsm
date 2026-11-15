@@ -12,9 +12,6 @@ cd opfs-lsm
 pnpm install
 pnpm test
 pnpm bench kv/
-pnpm todo:example
-pnpm automerge:example
-pnpm rich-text:example
 ```
 
 `pnpm test` typechecks and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, docstore against Dexie, the TanStack DB adapter against TanStack DB's IndexedDB adapter, and the Yjs, Automerge and fate adapters against their IndexedDB counterparts. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
