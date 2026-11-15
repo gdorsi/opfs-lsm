@@ -11,28 +11,28 @@ A key-value store for the browser, built to be the storage layer under local-fir
 
 ## Why not just use IndexedDB?
 
-Everyone who has worked with IndexedDB ends up realizing that it has many shortcomings. Nolan Lawson [put it this way](https://nolanlawson.com/2021/08/22/speeding-up-indexeddb-reads-and-writes/): "IndexedDB has a lot of detractors, and I think most of the criticism is justified."
+IndexedDB has many shortcomings.
 
-- **IndexedDB [is slow](https://rxdb.info/slow-indexeddb.html). Not slow like a database on a cheap server, even slower!**
+- **IndexedDB [is slow](#benchmarks). Not slow like a database on a cheap server, even slower!**
 - **No live subscription.** So you have to build your own if you want multiple tabs to be in sync.
-- **A few other quirks.** Like auto-committed transactions and others, described [here](https://gist.github.com/pesterhazy/4de96193af89a6dd5ce682ce2adff49a).
+- **A few other quirks.** Like transactions that [commit on their own](https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction) when no request is pending.
 
-Now we have raw file access through the Origin Private File System (OPFS), but building something good on top of it is REALLY HARD!
+Browsers now give raw file access through the Origin Private File System (OPFS), but building something good on top of it is REALLY HARD!
 
 The synchronous API is in practice unusable for a production-ready DB:
 
 - It exists only in a dedicated WebWorker.
-- Only one tab can open a file at a time. The modes that lift this limit, `read-only` and `readwrite-unsafe`, are supported only by Chrome and Edge. Notion [built on this API](https://www.notion.com/blog/how-we-sped-up-notion-in-the-browser-with-wasm-sqlite) and found that "any attempt to open the SQLite database in a subsequent tab will simply throw an error". It ended up with a SharedWorker that picks one "active tab" to run every query.
+- [Only one tab can open a file at a time](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createSyncAccessHandle). The modes that lift this limit, `read-only` and `readwrite-unsafe`, are supported only by Chrome and Edge.
 - With the current state of browsers, it is impossible to build something that survives all the freezing and throttling that browsers apply to background tabs.
 
-That leaves us with the OPFS async API, which is also quite challenging to use when building a DB, because writes are applied as full file snapshots: a write shows up only when the file is closed, and it replaces the whole file.
+That leaves the OPFS async API, which is also quite challenging to use when building a DB, because writes are applied as full file snapshots: a write shows up only when the file is closed, and it replaces the whole file.
 
-With `@opfs-lsm/kv` I'm using the following design to work around the limits of the async API:
+`@opfs-lsm/kv` works around the limits of the async API with this design:
 
-- The architecture is a [log-structured merge tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree) (LSM), as in LevelDB and RocksDB. Its data files, called SST files, are written once and never changed, which fits an API that publishes whole files.
+- The architecture is a log-structured merge tree (LSM), as in LevelDB and RocksDB. Its data files, called SST files, are written once and never changed, which fits an API that publishes whole files.
 - Only a SharedWorker writes to OPFS, and only when it flushes the write-ahead log (WAL) into a new SST file or compacts existing ones.
 - Every tab reads the SST files directly, so a read sends no message to a worker.
-- The WAL is persisted in IndexedDB, whose transactions already put the writes of every tab in one order, so inserts don't require any kind of coordination on our side.
+- The WAL is persisted in IndexedDB, whose transactions already put the writes of every tab in one order, so inserts need no extra coordination from kv.
 
 More detail is in [How it works](#how-it-works).
 
@@ -223,7 +223,7 @@ Three APIs set the minimum version in every browser. Everything else kv uses shi
 
 - Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26.
 - Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so kv does not run there.
-- Android WebView is not supported. MDN lists SharedWorker there from 148, but the WebView we measured (154) has none, so `openDb` rejects with `StorageUnavailableError` in apps and browsers built on it.
+- Android WebView is not supported. MDN lists SharedWorker there from 148, but WebView 154, the version tested, has none, so `openDb` rejects with `StorageUnavailableError` in apps and browsers built on it.
 - `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119, Firefox and Firefox Android 121.
 - `@opfs-lsm/docstore` also calls `Object.hasOwn()`, which raises its minimum to Chrome and Edge 93.
 
