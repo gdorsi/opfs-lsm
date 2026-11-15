@@ -12,7 +12,7 @@ import {
   type Maybe,
   type ScanBounds,
 } from "./cursor.js";
-import { throughAt, type Marks, type Seq } from "./marks.js";
+import { coversRun, NO_MARKS, throughAt, type Marks, type Seq } from "./marks.js";
 import type { SstEntry } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
 import type { Entry } from "../db.js";
@@ -133,6 +133,9 @@ export function latestSstEntry(
 
 type Ranged = SstReader & { readonly range: NonNullable<SstReader["range"]> };
 
+/** The cursor of a run a scan passes over. */
+const NOTHING: LayerCursor = { peek: () => undefined, next() {} };
+
 /**
  * Runs whose key ranges never overlap, in key order: one level from L1
  * down, or a single L0 run. Routes by the key range each run's manifest
@@ -166,23 +169,26 @@ export class RunLevel {
     return this.runs[r]!.get(key);
   }
 
-  cursor(bounds?: ScanBounds, reverse = false): LayerCursor {
-    return this.concat(bounds, reverse, (run) => run.cursor(bounds, reverse));
+  /** `marks` is the read point the scan judges by. */
+  cursor(bounds?: ScanBounds, reverse = false, marks: Marks = NO_MARKS): LayerCursor {
+    return this.concat(bounds, reverse, marks, (run) => run.cursor(bounds, reverse));
   }
 
   /** The puts in `bounds` whose value holds every pattern, in key order or backward. */
-  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor {
-    return this.concat(bounds, reverse, (run) => run.scanContains(patterns, bounds, reverse));
+  scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false, marks: Marks = NO_MARKS): LayerCursor {
+    return this.concat(bounds, reverse, marks, (run) => run.scanContains(patterns, bounds, reverse));
   }
 
   /**
    * One cursor per run that `bounds` reaches, opened as the previous one ends.
    * Backward it starts at the last run below `endExclusive` and steps to the
-   * run before.
+   * run before. A run that one of `marks` covers within `bounds` is passed
+   * over unread (`coversRun`).
    */
   private concat(
     bounds: ScanBounds | undefined,
     reverse: boolean,
+    marks: Marks,
     cursorOf: (run: SstReader) => LayerCursor,
   ): LayerCursor {
     const { runs } = this;
@@ -190,9 +196,10 @@ export class RunLevel {
     const end = bounds?.endExclusive;
     const step = reverse ? -1 : 1;
     let r = reverse ? (end ? this.seek("smallest", end) : runs.length) - 1 : start ? this.seek("largest", start) : 0;
+    const cursorAt = (run: Ranged) => (coversRun(marks, run, bounds) ? NOTHING : cursorOf(run));
     const open = reverse
-      ? () => (r >= 0 && !(start && compareBytes(runs[r]!.range.largest, start) < 0) ? cursorOf(runs[r]!) : undefined)
-      : () => (r < runs.length && !(end && compareBytes(runs[r]!.range.smallest, end) >= 0) ? cursorOf(runs[r]!) : undefined);
+      ? () => (r >= 0 && !(start && compareBytes(runs[r]!.range.largest, start) < 0) ? cursorAt(runs[r]!) : undefined)
+      : () => (r < runs.length && !(end && compareBytes(runs[r]!.range.smallest, end) >= 0) ? cursorAt(runs[r]!) : undefined);
     let cur = open();
     return {
       peek() {
@@ -337,7 +344,7 @@ export async function* scanMatching(
   reverse = false,
 ): AsyncGenerator<Entry> {
   const merge = new Merge(
-    [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse))],
+    [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse, marks))],
     reverse,
   );
   let yielded = 0;
