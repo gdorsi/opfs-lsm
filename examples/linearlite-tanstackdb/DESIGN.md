@@ -268,13 +268,16 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   text is (the index normalizes, `ilike` does not). Any other query, or one under a priority filter, counts the
   documents the `search` index matches whose title contains the query, so the total agrees with the list's
   `ilike`. Each count reads again after every change to issues, one read at a time, and waits four times the last
-  read's duration, at least 250 ms, before the next. A first sync changes issues every few milliseconds, and
-  counting 100,000 entries then takes up to a fifth of the main thread instead of half. Every read pauses between
-  the statuses it counts, or between pages of 256 documents, so a count holds up no frame or keystroke, in the tab
-  that edited or any other visible one, and stops there once no one shows its counts: a search counts at each key,
-  and the count of a key already replaced stops. A hidden tab paints nothing and wakes its timers about once a
-  second, so it counts them all at once. Counters kept from changes would save the 32 ms count itself, but every
-  issue write would update one document, which a clear, an epoch change or a gap would have to recompute.
+  read's duration, at least 250 ms, before the next, or until the changes stop for 250 ms. A first sync changes
+  issues every few milliseconds, and counting 100,000 entries then takes up to a fifth of the main thread instead
+  of half. Once it ends, the last read runs 250 ms later: a read waiting on OPFS while the SharedWorker writes and
+  compacts lasts seconds without using the main thread, and four times that would leave the total stale as long.
+  Every read pauses between the statuses it counts, or between pages of 256 documents, so a count holds up no
+  frame or keystroke, in the tab that edited or any other visible one, and stops there once no one shows its
+  counts: a search counts at each key, and the count of a key already replaced stops. A hidden tab paints nothing
+  and wakes its timers about once a second, so it counts them all at once. Counters kept from changes would save
+  the 32 ms count itself, but every issue write would update one document, which a clear, an epoch change or a gap
+  would have to recompute.
   The counts depend on the filter and the query, not the sort, so a sort change keeps them.
 - **Deep scroll.** TanStack serves a window at offset N from the first N rows plus the window, and keeps them
   once the list scrolls back. So a window deep in the unfiltered list is its own live query, anchored at a sort
