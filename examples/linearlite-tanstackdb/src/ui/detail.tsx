@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import * as commands from "../client/commands.ts";
-import { useIssue, useIssueDetail } from "../client/hooks.ts";
-import { openedStore } from "../client/store.ts";
+import { useIssue, useIssueDetail } from "../app/hooks.ts";
+import { model } from "../app/open.ts";
 import type { Comment, Issue } from "../domain/model.ts";
 import { useAutosize } from "./autosize.ts";
 import { formatDateTime, initial, shortId } from "./format.ts";
@@ -11,10 +10,9 @@ import { useGoBack } from "./nav.ts";
 const DESCRIPTION_DEBOUNCE_MS = 500;
 
 export function DetailScreen({ id }: { id: string }) {
-  const issue = useIssue(id);
+  const row = useIssue(id);
   const goBack = useGoBack();
   const [gone, setGone] = useState(false);
-  const row = issue ?? openedStore().issues.get(id);
   if (gone) return null;
   if (!row || row.deleted) return <NotFound id={id} onBack={goBack} />;
   return <Detail issue={row} onBack={goBack} onDeleted={() => { setGone(true); goBack(); }} />;
@@ -57,7 +55,7 @@ function Detail({ issue, onBack, onDeleted }: { issue: Issue; onBack(): void; on
             <button
               className="btn danger"
               id="confirm-delete"
-              onClick={() => void commands.deleteIssue(issue.id).then(onDeleted)}
+              onClick={() => void model().commands.deleteIssue(issue.id).then(onDeleted)}
             >
               Delete
             </button>
@@ -91,7 +89,7 @@ function TitleField({ issue }: { issue: Issue }) {
   const commit = () => {
     const title = draft.trim();
     if (title === "") setDraft(issue.title);
-    else if (title !== issue.title) void commands.setTitle(issue.id, title);
+    else if (title !== issue.title) void model().commands.setTitle(issue.id, title);
   };
   return (
     <input
@@ -136,7 +134,7 @@ function DescriptionField({ id, saved }: { id: string; saved: string }) {
     clearTimeout(timer.current);
     if (!unsaved.current) return;
     unsaved.current = false;
-    void commands.setDescription(id, latest.current);
+    void model().commands.setDescription(id, latest.current);
   };
 
   useEffect(() => {
@@ -207,7 +205,7 @@ function Compose({ issueId }: { issueId: string }) {
     const body = text.trim();
     if (body === "") return;
     setText("");
-    void commands.addComment(issueId, body);
+    void model().commands.addComment(issueId, body);
   };
   return (
     <div className="compose">
@@ -234,10 +232,10 @@ function Properties({ issue }: { issue: Issue }) {
   return (
     <aside className="props">
       <div className="prop">
-        Status <StatusPicker variant="field" value={issue.status} onPick={(s) => void commands.setStatus(issue.id, s)} />
+        Status <StatusPicker variant="field" value={issue.status} onPick={(s) => void model().commands.setStatus(issue.id, s)} />
       </div>
       <div className="prop">
-        Priority <PriorityPicker variant="field" value={issue.priority} onPick={(p) => void commands.setPriority(issue.id, p)} />
+        Priority <PriorityPicker variant="field" value={issue.priority} onPick={(p) => void model().commands.setPriority(issue.id, p)} />
       </div>
       <div className="prop">
         Created by{" "}

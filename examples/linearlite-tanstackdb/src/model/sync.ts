@@ -1,0 +1,524 @@
+import { mergeIncoming, mergePulled, restore } from "../domain/merge.ts";
+import type { Clocks, Rows, ServerRow, SyncState } from "../domain/model.ts";
+import { STORES, STREAMS, type Stream } from "../domain/stores.ts";
+import { MAX_DETAIL_IDS, MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse } from "../domain/wire.ts";
+import { fromSnapshots, observe, type Live, type Snapshot, type Unsubscribe } from "./live.ts";
+import { backoffMs, Pager, pushOp } from "./ops.ts";
+import { FORMAT, transact, type Store } from "./store.ts";
+import { TransportError, type Transport } from "./transport.ts";
+
+const PULL_LIMIT = 2000;
+const FULL = STREAMS.filter((s) => STORES[s].pull === "full");
+const BACKGROUND = STREAMS.filter((s) => STORES[s].pull === "threads");
+/** Cached threads below which storage pressure raises no alert: the visible rows reload right after an eviction. */
+const MIN_EVICTION = 100;
+/** Preload delay: a scroll that passes rows by does not ask for them. */
+const PRELOAD_DELAY_MS = 200;
+
+export type SyncStatus =
+  | { readonly kind: "starting"; readonly unsynced: number }
+  | { readonly kind: "offline"; readonly unsynced: number }
+  | { readonly kind: "syncing"; readonly stream: Stream; readonly cursor: number; readonly head: number; readonly unsynced: number }
+  | { readonly kind: "idle"; readonly unsynced: number };
+
+/** Whether storage pressure waits for the user's confirmation, and the unsent body and comment edits a removal waits for. */
+export type Pressure = { readonly pending: boolean; readonly unsent: number };
+
+export interface Sync {
+  /**
+   * Leads sync for every tab on this replica until `signal` aborts: pushes the outbox and pulls, on every head the
+   * server announces, every local edit and every reconnect, with backoff. One tab leads at a time, so the app calls
+   * it inside a Web Lock.
+   */
+  lead(signal: AbortSignal): Promise<void>;
+  /** Resolves once the outbox is empty and every stream has reached the head the leader knows. Rejects unless this model leads. */
+  settled(): Promise<void>;
+  /** Loads the threads of `ids` this replica lacks, once `ids` held still for 200 ms; an abort of `signal` before that cancels it. */
+  preload(ids: readonly string[], signal?: AbortSignal): Promise<void>;
+  readonly status: Live<SyncStatus>;
+  readonly pressure: Live<Pressure>;
+  /** Agrees, from any tab, to clear the cached bodies and comments that storage pressure asked for. */
+  confirmEviction(): Promise<void>;
+}
+
+export type SyncOptions = {
+  readonly pullLimit?: number;
+  /** Called the first time this leader finds a stream caught up with the server. */
+  readonly onCaughtUp?: (stream: Stream) => void;
+};
+
+const perStream = <T>(value: T) => Object.fromEntries(STREAMS.map((s) => [s, value])) as Record<Stream, T>;
+
+const EMPTY: SyncState = {
+  id: "sync",
+  format: FORMAT,
+  epoch: null,
+  cursors: perStream(0),
+  head: 0,
+  online: false,
+  caughtUp: perStream(false),
+  evict: "idle",
+};
+
+class EpochChanged extends Error {
+  readonly epoch: string;
+  constructor(epoch: string) {
+    super(`the server was reseeded (epoch ${epoch})`);
+    this.epoch = epoch;
+  }
+}
+
+type Transact<T, K extends string = string> = (
+  keys: readonly K[],
+  merge: (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<T | null | undefined>,
+) => Promise<void>;
+
+async function read<T, K extends string>(transact: Transact<T, K>, keys: readonly K[]): Promise<ReadonlyArray<T | undefined>> {
+  let rows: ReadonlyArray<T | undefined> = [];
+  await transact(keys, (stored) => {
+    rows = stored;
+    return stored.map(() => undefined);
+  });
+  return rows;
+}
+
+/** kv's cap on the operations of one write batch (docstore README, "Limits"). */
+const KV_BATCH_OPS = 10_000;
+
+/**
+ * The most rows of `stream` one `transact` can write within kv's batch cap. A row write is the row plus, per index,
+ * at most a delete of its old entry and a put of its new one; every index here holds at most one entry per row.
+ */
+const rowsPerBatch = (store: Store, stream: Stream) => Math.floor(KV_BATCH_OPS / (1 + 2 * store.docs.collection(stream).indexes.size));
+
+/** Of the issues the rows belong to, those whose body the replica holds, which means it holds their whole thread. */
+async function heldThreads(store: Store, rows: readonly ServerRow[]): Promise<ReadonlySet<string>> {
+  const ids = [...new Set(rows.map((r) => ("issue_id" in r ? r.issue_id : r.id)))];
+  const bodies = await store.docs.collection("bodies").getMany(ids);
+  return new Set(ids.filter((_, i) => bodies[i]));
+}
+
+/**
+ * Each slice is its own transaction; a crash between two costs a re-pull, since merging a row again changes nothing.
+ * With `held` (pulled bodies and comments), a row for an issue outside it is dropped unless the replica has the row.
+ */
+async function mergeServerRows<S extends Stream>(
+  store: Store,
+  stream: S,
+  rows: readonly ServerRow<S>[],
+  acked?: readonly Clocks[],
+  held?: ReadonlySet<string>,
+) {
+  const incoming = rows as unknown as readonly Omit<Rows[S], "dirty" | "pending">[];
+  const step = rowsPerBatch(store, stream);
+  for (let at = 0; at < incoming.length; at += step) {
+    const slice = incoming.slice(at, at + step);
+    await transact(
+      store,
+      stream,
+      slice.map((row) => row.id),
+      (locals) =>
+        slice.map((row, i) =>
+          held
+            ? mergePulled<Rows[S]>(locals[i], row, held.has("issue_id" in row ? (row.issue_id as string) : row.id))
+            : mergeIncoming<Rows[S]>(locals[i], row, acked?.[at + i]),
+        ),
+    );
+  }
+}
+
+type Loop =
+  | { readonly kind: "idle" }
+  | { readonly kind: "running"; wake: boolean }
+  | { readonly kind: "waiting"; readonly timer: ReturnType<typeof setTimeout> };
+
+type Reason = "start" | "hint" | "dirty" | "online" | "pressure";
+
+type Outgoing = { readonly op: PushOp; readonly key: string };
+
+class Leader {
+  private loop: Loop = { kind: "idle" };
+  private running: Promise<void> | undefined;
+  private stopped = false;
+  private state: SyncState = EMPTY;
+  private head: number | undefined;
+  private readonly marked = new Set<Stream>();
+  private readonly offs: Unsubscribe[] = [];
+  private readonly waiters: { resolve(): void; reject(err: Error): void }[] = [];
+  private readonly store: Store;
+  private readonly transport: Transport;
+  private readonly onCaughtUp: ((stream: Stream) => void) | undefined;
+  private readonly pager: Pager<PullResponse>;
+
+  constructor(store: Store, transport: Transport, { pullLimit = PULL_LIMIT, onCaughtUp }: SyncOptions) {
+    this.store = store;
+    this.transport = transport;
+    this.onCaughtUp = onCaughtUp;
+    this.pager = new Pager((stream, after) => transport.pull(stream, after, pullLimit));
+  }
+
+  async start(): Promise<void> {
+    const [saved] = await read(this.store.sync.utils.transact, ["sync"]);
+    // A row written before `evict` existed reads as idle.
+    this.state = { ...EMPTY, ...saved };
+    const onWrite = (changes: ReadonlyArray<{ type: string }>) => {
+      if (changes.some((c) => c.type !== "delete")) this.kick("dirty");
+    };
+    const { dirtyIssues, dirtyBodies, dirtyComments, sync } = this.store;
+    const subscriptions = [
+      dirtyIssues.subscribeChanges(onWrite),
+      dirtyBodies.subscribeChanges(onWrite),
+      dirtyComments.subscribeChanges(onWrite),
+      sync.subscribeChanges((changes) => {
+        if (changes.some((c) => c.value.evict === "confirmed" && c.previousValue?.evict !== "confirmed")) this.kick("pressure");
+      }),
+    ];
+    this.offs.push(() => {
+      for (const s of subscriptions) s.unsubscribe();
+    });
+    this.offs.push(
+      this.transport.watch((head) => {
+        if (!this.state.online) void this.save({ online: true }).catch(() => undefined);
+        this.head = Math.max(this.head ?? 0, head);
+        this.kick("hint");
+      }),
+      this.transport.online(() => this.kick("online")),
+      // Every tab shows the alert while `evict` is asked. A confirmation from any tab lands in the row, and the loop
+      // evicts after a push, so no page lands rows after the clear.
+      this.store.db.onPressure(async () => {
+        // kv asks again at each flush while over the cap. With few threads cached there is little to free, so no alert.
+        const cached = await this.store.docs.collection("bodies").queryIds({ limit: MIN_EVICTION + 1 });
+        if (this.state.evict === "idle" && cached.ids.length > MIN_EVICTION) await this.save({ evict: "asked" });
+      }),
+    );
+    this.kick("start");
+  }
+
+  /** Stops the loop and resolves once a cycle in flight has ended. */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    for (const off of this.offs.splice(0)) off();
+    if (this.loop.kind === "waiting") clearTimeout(this.loop.timer);
+    for (const waiter of this.waiters.splice(0)) waiter.reject(new Error("linearlite stopped leading sync"));
+    await this.running;
+  }
+
+  settled(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.waiters.push({ resolve, reject });
+      void this.checkSettled();
+    });
+  }
+
+  private async checkSettled(): Promise<void> {
+    if (this.waiters.length === 0 || this.loop.kind !== "idle" || STREAMS.some((s) => this.stale(s))) return;
+    for (const stream of STREAMS) {
+      const { ids } = await this.store.docs.collection(stream).queryIds({ index: "pending", limit: 1 });
+      if (ids.length > 0) return;
+    }
+    if (this.loop.kind !== "idle") return;
+    for (const waiter of this.waiters.splice(0)) waiter.resolve();
+  }
+
+  private kick(reason: Reason): void {
+    if (this.stopped) return;
+    const loop = this.loop;
+    switch (loop.kind) {
+      case "idle":
+        this.running = this.run(0);
+        return;
+      case "running":
+        loop.wake = true;
+        return;
+      case "waiting":
+        if (reason === "dirty") return;
+        clearTimeout(loop.timer);
+        this.running = this.run(0);
+        return;
+    }
+  }
+
+  private async run(failures: number): Promise<void> {
+    const loop = { kind: "running" as const, wake: true };
+    this.loop = loop;
+    try {
+      while (loop.wake && !this.stopped) {
+        loop.wake = false;
+        try {
+          await this.cycle(loop);
+        } catch (err) {
+          if (!(err instanceof EpochChanged)) throw err;
+          await this.wipe(err.epoch);
+          loop.wake = true;
+        }
+      }
+      this.loop = { kind: "idle" };
+      void this.checkSettled();
+    } catch (err) {
+      if (this.stopped) {
+        this.loop = { kind: "idle" };
+        return;
+      }
+      const next = failures + 1;
+      console.warn(`linearlite sync failed (${next}), retrying in ${backoffMs(next)} ms`, err);
+      if (this.state.online) await this.save({ online: false }).catch(() => undefined);
+      this.loop = { kind: "waiting", timer: setTimeout(() => (this.running = this.run(next)), backoffMs(next)) };
+    }
+  }
+
+  private async cycle(loop: { wake: boolean }): Promise<void> {
+    await this.push();
+    if (this.state.format !== FORMAT) await this.wipe(this.state.epoch);
+    await this.catchUpFull(loop);
+    await this.startAtHead();
+    for (const stream of BACKGROUND) {
+      while (this.stale(stream)) {
+        await this.page(stream);
+        if (loop.wake) {
+          loop.wake = false;
+          await this.push();
+          await this.catchUpFull(loop);
+        }
+      }
+    }
+  }
+
+  private async catchUpFull(loop: { wake: boolean }): Promise<void> {
+    for (const stream of FULL) {
+      while (this.stale(stream)) {
+        await this.page(stream);
+        if (loop.wake) {
+          loop.wake = false;
+          await this.push();
+        }
+      }
+    }
+  }
+
+  /**
+   * Bodies and comments are not pulled from the start: a replica loads an issue's when it becomes visible
+   * (`preload`), and from here pulls only what changes, for the issues it holds.
+   */
+  private async startAtHead(): Promise<void> {
+    const { caughtUp, cursors } = this.state;
+    if (BACKGROUND.some((s) => !caughtUp[s])) {
+      await this.save({
+        cursors: { ...cursors, ...Object.fromEntries(BACKGROUND.map((s) => [s, this.head!])) },
+        caughtUp: { ...caughtUp, ...Object.fromEntries(BACKGROUND.map((s) => [s, true])) },
+      });
+    }
+    for (const stream of BACKGROUND) this.mark(stream);
+  }
+
+  private mark(stream: Stream): void {
+    if (this.marked.has(stream)) return;
+    this.marked.add(stream);
+    this.onCaughtUp?.(stream);
+  }
+
+  private stale(stream: Stream): boolean {
+    return !this.state.caughtUp[stream] || this.head === undefined || this.state.cursors[stream] < this.head;
+  }
+
+  private async page(stream: Stream): Promise<void> {
+    const res = await this.pager.page(stream, this.state.cursors[stream]);
+    this.checkEpoch(res.epoch);
+    if (res.rows.length > 0) await mergeServerRows(this.store, stream, res.rows, undefined, stream === "issues" ? undefined : await heldThreads(this.store, res.rows));
+    this.head = Math.max(this.head ?? 0, res.head);
+    await this.save({
+      epoch: res.epoch,
+      head: this.head,
+      online: true,
+      cursors: { ...this.state.cursors, [stream]: res.next },
+      caughtUp: { ...this.state.caughtUp, [stream]: !res.more },
+    });
+    if (!res.more) this.mark(stream);
+  }
+
+  private checkEpoch(epoch: string): void {
+    if (this.state.epoch !== null && this.state.epoch !== epoch) throw new EpochChanged(epoch);
+  }
+
+  private dirty() {
+    const { dirtyIssues, dirtyBodies, dirtyComments } = this.store;
+    return [
+      { stream: "issues", rows: dirtyIssues },
+      { stream: "bodies", rows: dirtyBodies },
+      { stream: "comments", rows: dirtyComments },
+    ] as const;
+  }
+
+  /** Sends every row with unsent edits. An ack clears only the fields it confirms, so an edit made meanwhile stays to send. */
+  private async push(): Promise<void> {
+    const outgoing: Outgoing[] = [];
+    for (const { stream, rows } of this.dirty()) {
+      await rows.preload();
+      for (const row of rows.toArray) {
+        const op = pushOp(stream, row);
+        if (op) outgoing.push({ op, key: row.id });
+      }
+    }
+    if (outgoing.length > 0) this.pager.forget();
+    for (let i = 0; i < outgoing.length; i += MAX_OPS) await this.send(outgoing.slice(i, i + MAX_OPS));
+    if (this.store.sync.get("sync")?.evict === "confirmed") await this.evict();
+  }
+
+  /**
+   * Frees space for kv's size cap once a user confirmed: drops every body and comment, which are loaded again when
+   * their issue is visible or opened. Issues stay. Runs right after a push, and waits while a body or comment still
+   * has an unsent edit; the next push tries again.
+   */
+  private async evict(): Promise<void> {
+    const { docs, dirtyBodies, dirtyComments } = this.store;
+    if (dirtyBodies.size > 0 || dirtyComments.size > 0) return;
+    for (const name of BACKGROUND) {
+      // The issues alone can be over the cap; a clear of nothing would still spend a collection id.
+      if ((await docs.collection(name).queryIds({ limit: 1 })).ids.length > 0) await docs.collection(name).clear();
+    }
+    await this.save({ evict: "idle" });
+  }
+
+  /**
+   * A refused batch is retried one op at a time, so one bad op cannot wedge sync. An op the server refuses on its
+   * own is dropped: the row is reset to what the server holds, or deleted when the server has none.
+   */
+  private async send(batch: readonly Outgoing[]): Promise<void> {
+    let res: PushResponse;
+    try {
+      res = await this.transport.push(batch.map((o) => o.op));
+    } catch (err) {
+      if (!(err instanceof TransportError) || err.status >= 500) throw err;
+      if (batch.length > 1) {
+        for (const one of batch) await this.send([one]);
+        return;
+      }
+      console.warn("linearlite push refused, dropping the edit", batch[0]!.op, err);
+      await this.drop(batch[0]!);
+      return;
+    }
+    this.checkEpoch(res.epoch);
+    this.head = Math.max(this.head ?? 0, res.head);
+    for (const stream of STREAMS) {
+      const acks = res.results.filter((r) => r.stream === stream);
+      if (acks.length === 0) continue;
+      await mergeServerRows(this.store, stream, acks.map((r) => r.row as ServerRow<typeof stream>), acks.map((r) => r.clocks));
+    }
+  }
+
+  /** A pull would not do: it skips a row whose version it already has, and a refused create has no server row to pull. */
+  private async drop({ op, key }: Outgoing): Promise<void> {
+    const res = await this.transport.row(op.stream, op.id);
+    this.checkEpoch(res.epoch);
+    const server = res.row as unknown as Omit<Rows[typeof op.stream], "dirty" | "pending"> | null;
+    await transact(this.store, op.stream, [key], ([local]) => [restore<Rows[typeof op.stream]>(local, server, op.clocks)]);
+  }
+
+  /** The leader owns the row, except `evict`, which another tab may confirm: a save keeps the stored one unless it sets it. */
+  private async save(patch: Partial<SyncState>): Promise<void> {
+    this.state = { ...this.state, ...patch };
+    const state = this.state;
+    await this.store.sync.utils.transact(["sync"], ([row]) => [{ ...state, evict: patch.evict ?? row?.evict ?? state.evict }]);
+  }
+
+  private async wipe(epoch: string | null): Promise<void> {
+    const { docs } = this.store;
+    for (const name of STREAMS) await docs.collection(name).clear();
+    this.pager.forget();
+    this.head = undefined;
+    this.marked.clear();
+    await this.save({ ...EMPTY, epoch });
+  }
+}
+
+/** Threads fetched whole from the server. Rows join the replica here, unlike a pull's. */
+export function threadFetcher(store: Store, transport: Transport) {
+  /** Ids asked for and not answered with a body: in flight, or the server has none. Not asked again by `preload`. */
+  const asked = new Set<string>();
+
+  async function fetch(ids: readonly string[]): Promise<DetailResponse> {
+    const res = await transport.detail(ids);
+    if (res.bodies.length > 0) await mergeServerRows(store, "bodies", res.bodies);
+    if (res.comments.length > 0) await mergeServerRows(store, "comments", res.comments);
+    return res;
+  }
+
+  /**
+   * Loads the threads of issues that came into view, in requests of up to `MAX_DETAIL_IDS`. It skips those whose body
+   * the replica holds, those being asked for and those the server has no body for. A failed request is forgotten, so
+   * the ids are asked for again the next time they are seen.
+   */
+  async function preload(ids: readonly string[]): Promise<void> {
+    const held = await store.docs.collection("bodies").getMany(ids);
+    const wanted = ids.filter((id, i) => !held[i] && !asked.has(id));
+    for (let at = 0; at < wanted.length; at += MAX_DETAIL_IDS) {
+      const batch = wanted.slice(at, at + MAX_DETAIL_IDS);
+      for (const id of batch) asked.add(id);
+      try {
+        for (const { id } of (await fetch(batch)).bodies) asked.delete(id);
+      } catch (err) {
+        for (const id of batch) asked.delete(id);
+        console.warn("linearlite could not preload details", err);
+      }
+    }
+  }
+
+  return { fetch, preload };
+}
+
+/** Resolves true after `ms`, or false as soon as `signal` aborts. */
+const stillAfter = (ms: number, signal: AbortSignal | undefined) =>
+  new Promise<boolean>((resolve) => {
+    if (signal?.aborted) return resolve(false);
+    const aborted = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", aborted);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener("abort", aborted, { once: true });
+  });
+
+const rowsOf = (s: Snapshot) => s.data as readonly unknown[];
+const syncRow = (s: Snapshot) => s.state?.get("sync") as SyncState | undefined;
+
+export function openSync(store: Store, transport: Transport, threads: ReturnType<typeof threadFetcher>, options: SyncOptions): Sync {
+  let leader: Leader | undefined;
+  const row = observe(store.sync);
+  const issues = observe(store.dirtyIssues);
+  const bodies = observe(store.dirtyBodies);
+  const comments = observe(store.dirtyComments);
+  return {
+    async lead(signal) {
+      if (leader) throw new Error("this model already leads sync");
+      const current = new Leader(store, transport, options);
+      leader = current;
+      try {
+        await current.start().catch((err: unknown) => console.error("linearlite sync did not start", err));
+        if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      } finally {
+        leader = undefined;
+        await current.stop();
+      }
+    },
+    settled: () => leader?.settled() ?? Promise.reject(new Error("settled() waits on the sync leader, and this model does not lead")),
+    async preload(ids, signal) {
+      if (ids.length > 0 && (await stillAfter(PRELOAD_DELAY_MS, signal))) await threads.preload(ids);
+    },
+    status: fromSnapshots([row, issues, bodies, comments], (sync, issues, bodies, comments): SyncStatus => {
+      const state = syncRow(sync);
+      const unsynced = rowsOf(issues).length + rowsOf(bodies).length + rowsOf(comments).length;
+      if (!state) return { kind: "starting", unsynced };
+      if (!state.online) return { kind: "offline", unsynced };
+      const behind = STREAMS.find((s) => !state.caughtUp[s]);
+      if (behind) return { kind: "syncing", stream: behind, cursor: state.cursors[behind], head: state.head, unsynced };
+      return { kind: "idle", unsynced };
+    }),
+    pressure: fromSnapshots([row, bodies, comments], (sync, bodies, comments) => {
+      const evict = syncRow(sync)?.evict;
+      return { pending: evict === "asked" || evict === "confirmed", unsent: rowsOf(bodies).length + rowsOf(comments).length };
+    }),
+    confirmEviction: () => store.sync.utils.transact(["sync"], ([row]) => [row?.evict === "asked" ? { ...row, evict: "confirmed" } : undefined]),
+  };
+}

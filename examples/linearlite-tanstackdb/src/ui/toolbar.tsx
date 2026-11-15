@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { SORT_FIELDS, type IssueFilter, type SortField } from "../client/filter.ts";
+import { SORT_FIELDS, type IssueFilter, type SortField } from "../model/filter.ts";
 import { PRIORITY_LABELS, STATUS_LABELS, type PriorityCode, type StatusCode } from "../domain/model.ts";
 import { PriorityIcon, StatusIcon } from "./icons.tsx";
 import { item, MenuButton, type MenuEntry } from "./menu.tsx";
