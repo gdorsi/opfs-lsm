@@ -5,6 +5,7 @@
 import {
   Repo,
   generateAutomergeUrl,
+  isValidDocumentId,
   parseAutomergeUrl,
   type DocHandle,
   type DocHandleChangePayload,
@@ -36,15 +37,26 @@ export interface Bodies {
    * Find-or-seed. A body that storage does not hold starts from the seed at
    * once, without waiting on the network; any copy a peer holds merges in
    * later. Rejects with `storage` when the stored body cannot be read.
-   * Opening an id that is already open returns the same body.
+   * Opening an id that is already open returns the same body; opening one
+   * that is closing waits for the close, then loads it again.
    */
   open(id: PageId): Promise<PageBody>;
+  /**
+   * Deletes the body from this device and resolves once its keys are gone.
+   * An open copy turns `removed`. Saves of the id are dropped for the rest of
+   * this Repo's life, so a peer's copy cannot write it back. Idempotent.
+   */
+  remove(id: PageId): Promise<void>;
   /** Closes every open body, then the Repo. The caller's storage stays open. */
   close(): Promise<void>;
 }
 
 export function newPageId(): PageId {
   return parseAutomergeUrl(generateAutomergeUrl()).documentId;
+}
+
+export function parsePageId(raw: unknown): PageId | null {
+  return isValidDocumentId(raw) ? raw : null;
 }
 
 export function openBodies(options: BodiesOptions): Bodies {
@@ -55,21 +67,38 @@ export function openBodies(options: BodiesOptions): Bodies {
     ...(options.saveDebounceMs !== undefined && { saveDebounceRate: options.saveDebounceMs }),
   });
   if (options.onDocMetrics) repo.on("doc-metrics", options.onDocMetrics);
-  const open = new Map<PageId, Promise<PageBody>>();
+  const open = new Map<PageId, Promise<Body>>();
+  const closing = new Map<PageId, Promise<void>>();
+  const onClosing = (id: PageId, done: Promise<void>) => {
+    open.delete(id);
+    closing.set(id, done);
+    const forget = () => closing.get(id) === done && closing.delete(id);
+    done.then(forget, forget);
+  };
   return {
     open(id) {
       let body = open.get(id);
       if (!body) {
-        body = findOrSeed(repo, storage, id).then(
-          ({ handle, seeded }) => new Body(id, handle, repo, storage, seeded, () => open.delete(id)),
-        );
-        open.set(id, body);
-        body.catch(() => open.delete(id));
+        const opened: Promise<Body> = (closing.get(id) ?? Promise.resolve())
+          .catch(() => {})
+          .then(() => findOrSeed(repo, storage, id))
+          .then(({ handle, seeded }) => new Body(id, handle, repo, storage, seeded, (done) => onClosing(id, done)));
+        body = opened;
+        open.set(id, opened);
+        opened.catch(() => open.get(id) === opened && open.delete(id));
       }
       return body;
     },
+    async remove(id) {
+      storage.block(id);
+      const body = open.get(id);
+      if (body) await (await body.catch(() => null))?.discard();
+      await closing.get(id)?.catch(() => {});
+      await storage.idle(id);
+      await storage.removeRange([id]);
+    },
     async close() {
-      await Promise.allSettled([...open.values()].map(async (body) => (await body).close()));
+      await Promise.allSettled([...[...open.values()].map(async (body) => (await body).close()), ...closing.values()]);
       await repo.shutdown();
     },
   };
@@ -107,6 +136,7 @@ function storageAnswered(progress: DocumentProgress<BodyDoc>): Promise<QueryStat
 
 const SAVED: SaveState = { state: "saved" };
 const SAVING: SaveState = { state: "saving" };
+const REMOVED: SaveState = { state: "removed" };
 
 class Body implements PageBody {
   readonly id: PageId;
@@ -114,7 +144,7 @@ class Body implements PageBody {
   readonly #handle: DocHandle<BodyDoc>;
   readonly #repo: Repo;
   readonly #storage: SaveFilter;
-  readonly #onClose: () => void;
+  readonly #onClosing: (done: Promise<void>) => void;
   readonly #listeners = new Set<(edits: readonly TextEdit[]) => void>();
   readonly #stops: (() => void)[];
   #applyingLocal = false;
@@ -128,12 +158,12 @@ class Body implements PageBody {
   #saveState: SaveState;
   readonly #saveListeners = new Set<() => void>();
 
-  constructor(id: PageId, handle: DocHandle<BodyDoc>, repo: Repo, storage: SaveFilter, seeded: boolean, onClose: () => void) {
+  constructor(id: PageId, handle: DocHandle<BodyDoc>, repo: Repo, storage: SaveFilter, seeded: boolean, onClosing: (done: Promise<void>) => void) {
     this.id = id;
     this.#handle = handle;
     this.#repo = repo;
     this.#storage = storage;
-    this.#onClose = onClose;
+    this.#onClosing = onClosing;
     this.#dirty = seeded;
     this.#saveState = seeded ? SAVING : SAVED;
     this.save = {
@@ -195,17 +225,35 @@ class Body implements PageBody {
   }
 
   close(): Promise<void> {
-    this.#closing ??= (async () => {
+    return this.#end(async () => {
       try {
         await this.flush();
       } finally {
-        for (const stop of this.#stops) stop();
-        this.#listeners.clear();
-        await this.#repo.removeFromCache(this.id);
-        this.#onClose();
+        await this.#drop();
       }
-    })();
+    });
+  }
+
+  discard(): Promise<void> {
+    if (!this.#closing) {
+      this.#saveState = REMOVED;
+      for (const listener of this.#saveListeners) listener();
+    }
+    return this.#end(() => this.#drop());
+  }
+
+  #end(run: () => Promise<void>): Promise<void> {
+    if (!this.#closing) {
+      this.#closing = run();
+      this.#onClosing(this.#closing);
+    }
     return this.#closing;
+  }
+
+  async #drop(): Promise<void> {
+    for (const stop of this.#stops) stop();
+    this.#listeners.clear();
+    await this.#repo.removeFromCache(this.id);
   }
 
   #onSave(event: SaveEvent, error: unknown): void {
@@ -221,6 +269,7 @@ class Body implements PageBody {
   }
 
   #updateSaveState(): void {
+    if (this.#saveState === REMOVED) return;
     const next = this.#failure ?? (this.#dirty || this.#saving > 0 ? SAVING : SAVED);
     if (next === this.#saveState) return;
     this.#saveState = next;

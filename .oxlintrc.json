@@ -277,6 +277,95 @@
     },
     {
       "files": [
+        "examples/pages-fate-automerge/src/editor/**"
+      ],
+      "excludeFiles": [
+        "**/view.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!./*",
+                  "!../model/types.ts",
+                  "!prosemirror-*",
+                  "prosemirror-view"
+                ],
+                "message": "The editor's schema, binding and commands run in Node tests: they import only ProseMirror (not prosemirror-view) and the model's types."
+              }
+            ]
+          }
+        ],
+        "no-restricted-globals": [
+          "error",
+          "window",
+          "document",
+          "navigator",
+          "location",
+          "localStorage",
+          "sessionStorage",
+          "indexedDB",
+          "BroadcastChannel",
+          "MessageChannel",
+          "Worker",
+          "SharedWorker",
+          "fetch",
+          "WebSocket"
+        ]
+      }
+    },
+    {
+      "files": [
+        "examples/pages-fate-automerge/src/ui/**",
+        "examples/pages-fate-automerge/src/routes/**",
+        "examples/pages-fate-automerge/src/client/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "react-fate",
+                "importNames": [
+                  "view",
+                  "clientRoot",
+                  "clientValueRoot",
+                  "mutation"
+                ],
+                "message": "fate declarations live in src/model/tree.ts, so view ids do not depend on which route chunk loads first."
+              },
+              {
+                "name": "@nkzw/fate",
+                "importNames": [
+                  "view",
+                  "clientRoot",
+                  "clientValueRoot",
+                  "mutation"
+                ],
+                "message": "fate declarations live in src/model/tree.ts, so view ids do not depend on which route chunk loads first."
+              }
+            ],
+            "patterns": [
+              {
+                "group": [
+                  "@opfs-lsm/*",
+                  "@nkzw/fate-indexeddb",
+                  "@automerge/automerge-repo-storage-*"
+                ],
+                "message": "Only src/storage/ imports storage packages."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "examples/pages-fate-automerge/src/model/**"
       ],
       "rules": {
