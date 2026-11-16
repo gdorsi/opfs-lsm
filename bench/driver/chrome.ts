@@ -227,7 +227,8 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
             );
             if (reply.exceptionDetails) {
               const ex = reply.exceptionDetails;
-              throw new Error(ex.exception?.description ?? ex.exception?.value ?? ex.text);
+              const text = ex.exception?.description ?? ex.exception?.value ?? ex.text;
+              throw new Error([text, ...(await wrappedErrors(cdp, sessionId, ex.exception?.objectId))].join("\n"));
             }
             return reply.result.value as T;
           },
@@ -255,8 +256,27 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
 
 type EvalReply = {
   result: { value?: unknown };
-  exceptionDetails?: { text: string; exception?: { description?: string; value?: string } };
+  exceptionDetails?: { text: string; exception?: { description?: string; value?: string; objectId?: string } };
 };
+
+/** A page error's description leaves out the errors an AggregateError wraps; read their stacks from the object. */
+async function wrappedErrors(cdp: Cdp, sessionId: string, objectId: string | undefined): Promise<string[]> {
+  if (!objectId) return [];
+  const reply = await cdp
+    .send<{ result: { value?: string[] } }>(
+      "Runtime.callFunctionOn",
+      {
+        objectId,
+        functionDeclaration: `function () {
+          return Array.isArray(this.errors) ? this.errors.map((e) => "caused by " + (e instanceof Error ? e.stack : String(e))) : [];
+        }`,
+        returnByValue: true,
+      },
+      sessionId,
+    )
+    .catch(() => undefined);
+  return reply?.result.value ?? [];
+}
 
 async function readPort(profile: string, child: ChildProcess, tail: () => string): Promise<number> {
   const file = path.join(profile, "DevToolsActivePort");
