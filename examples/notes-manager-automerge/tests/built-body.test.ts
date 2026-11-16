@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { newPageId, openBodies } from "../src/model/bodies.ts";
-import { memoryBodies } from "../src/storage/memory.ts";
+import { newPageId } from "../src/model/bodies.ts";
+import { openNotes } from "../src/model/notes.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
 import { builtBody } from "../src/testing/built-body.ts";
 import { referenceBody } from "../src/testing/reference.ts";
 
 test("a built body, pasted in one edit, equals its own spans and the oracle's", async (t) => {
   const doc = builtBody(5_000);
-  const bodies = openBodies({ storage: memoryBodies() });
-  t.after(() => bodies.close());
-  const body = await bodies.open(newPageId());
+  const notes = await openNotes({ storage: memoryStorage() });
+  t.after(() => notes.close());
+  const body = await notes.bodies.open(newPageId());
   body.edit(doc.edits);
   assert.deepEqual(body.spans(), doc.spans);
 

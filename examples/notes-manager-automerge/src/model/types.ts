@@ -51,6 +51,21 @@ export type MarkEdit = {
   };
 }[MarkName];
 
+export type Page = { readonly id: PageId; readonly parent: PageId | null; readonly title: string };
+
+/**
+ * The pages a user can reach: a page whose parent chain ends at the top level.
+ * An entry whose parent is gone is not in it.
+ */
+export interface Tree {
+  /** Reachable children of `parent` (null = top level), oldest first. The same array until that level changes. */
+  children(parent: PageId | null): readonly PageId[];
+  /** A reachable page, or undefined. The same object until its title or parent changes. */
+  page(id: PageId): Page | undefined;
+  /** The page and its reachable descendants; empty when the page is not reachable. */
+  subtree(id: PageId): readonly PageId[];
+}
+
 /** Fits React's useSyncExternalStore: `read` returns the same object until a listener fires. */
 export interface View<T> {
   read(): T;

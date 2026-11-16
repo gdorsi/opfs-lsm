@@ -5,19 +5,20 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
-import { newPageId, openBodies, type Bodies } from "../src/model/bodies.ts";
+import { newPageId, type Bodies } from "../src/model/bodies.ts";
+import { openNotes } from "../src/model/notes.ts";
 import type { PageBody, Span, TextEdit } from "../src/model/types.ts";
-import { memoryBodies } from "../src/storage/memory.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
 import { random, randomBatch } from "../src/testing/random-edits.ts";
 import { referenceBody } from "../src/testing/reference.ts";
 
-function twoPeers(): { a: Bodies; b: Bodies; close(): Promise<void> } {
+async function twoPeers(): Promise<{ a: Bodies; b: Bodies; close(): Promise<void> }> {
   const { port1, port2 } = new MessageChannel();
-  const a = openBodies({ storage: memoryBodies(), network: [new MessageChannelNetworkAdapter(port1)] });
-  const b = openBodies({ storage: memoryBodies(), network: [new MessageChannelNetworkAdapter(port2)] });
+  const a = await openNotes({ storage: memoryStorage(), network: [new MessageChannelNetworkAdapter(port1)] });
+  const b = await openNotes({ storage: memoryStorage(), network: [new MessageChannelNetworkAdapter(port2)] });
   return {
-    a,
-    b,
+    a: a.bodies,
+    b: b.bodies,
     async close() {
       await Promise.all([a.close(), b.close()]);
       port1.close();
@@ -38,7 +39,7 @@ const text = (spans: readonly Span[]) => spans.map((span) => (span.type === "tex
 const same = (a: PageBody, b: PageBody) => isDeepStrictEqual(a.spans(), b.spans());
 
 test("two Repos that each seed the same id merge, keeping both sides' text", async (t) => {
-  const peers = twoPeers();
+  const peers = await twoPeers();
   t.after(() => peers.close());
   const id = newPageId();
   const [a, b] = await Promise.all([peers.a.open(id), peers.b.open(id)]);
@@ -54,7 +55,7 @@ test("two Repos that each seed the same id merge, keeping both sides' text", asy
 });
 
 test("a block type set on the first block stays first while the other peer types at the start", async (t) => {
-  const peers = twoPeers();
+  const peers = await twoPeers();
   t.after(() => peers.close());
   const id = newPageId();
   const [a, b] = await Promise.all([peers.a.open(id), peers.b.open(id)]);
@@ -77,7 +78,7 @@ test("a block type set on the first block stays first while the other peer types
 });
 
 test("subscribe delivers remote edits as TextEdits that rebuild the spans, while both peers type", async (t) => {
-  const peers = twoPeers();
+  const peers = await twoPeers();
   t.after(() => peers.close());
   const id = newPageId();
   const sides = (await Promise.all([peers.a.open(id), peers.b.open(id)])).map((body, i) => {
@@ -116,28 +117,31 @@ test("subscribe delivers remote edits as TextEdits that rebuild the spans, while
   assert.equal(a.deliveries.length, before, "A's own edit is not echoed to A");
 });
 
-test("open of an unknown id does not wait on an attached network adapter", async (t) => {
-  const channelName = `pages-${randomUUID()}`;
-  const bodies = openBodies({
-    storage: memoryBodies(),
+test("opening the model and an unknown page do not wait on an attached network adapter", async (t) => {
+  const channelName = `notes-${randomUUID()}`;
+  let started = performance.now();
+  const notes = await openNotes({
+    storage: memoryStorage(),
     network: [new BroadcastChannelNetworkAdapter({ channelName })],
   });
+  const modelMs = performance.now() - started;
   const openMs: number[] = [];
   for (let i = 0; i < 5; i++) {
-    const started = performance.now();
-    const body = await bodies.open(newPageId());
+    started = performance.now();
+    const body = await notes.bodies.open(newPageId());
     openMs.push(performance.now() - started);
     assert.equal(text(body.spans()), "¶", "an unknown id opens as the seed");
   }
-  await bodies.close();
+  await notes.close();
 
-  const repo = new Repo({ storage: memoryBodies(), network: [new BroadcastChannelNetworkAdapter({ channelName })] });
-  const started = performance.now();
+  const repo = new Repo({ storage: memoryStorage(), network: [new BroadcastChannelNetworkAdapter({ channelName })] });
+  started = performance.now();
   await repo.find(newPageId()).catch(() => {});
   const findMs = performance.now() - started;
   await repo.shutdown();
 
-  t.diagnostic(`open ms: ${openMs.map((ms) => ms.toFixed(1)).join(", ")}; repo.find on the same adapter: ${findMs.toFixed(0)} ms`);
+  t.diagnostic(`model ms: ${modelMs.toFixed(1)}; open ms: ${openMs.map((ms) => ms.toFixed(1)).join(", ")}; repo.find on the same adapter: ${findMs.toFixed(0)} ms`);
+  assert.ok(modelMs < 100, `the model took ${modelMs.toFixed(1)} ms to open`);
   assert.ok(Math.max(...openMs) < 100, `open took ${Math.max(...openMs).toFixed(1)} ms`);
   assert.ok(findMs >= 500, "the adapter does hold back a plain find, so the open measured above skipped a real wait");
 });

@@ -10,10 +10,11 @@ import { AllSelection, TextSelection, type EditorState, type Transaction } from 
 import { ReplaceAroundStep } from "prosemirror-transform";
 import { applyLocal, bodyState, localEdits, remoteTransaction, UnsupportedStep } from "../src/editor/binding.ts";
 import { docToSpans, schema } from "../src/editor/schema.ts";
-import { newPageId, openBodies } from "../src/model/bodies.ts";
+import { newPageId } from "../src/model/bodies.ts";
+import { openNotes } from "../src/model/notes.ts";
 import { EXPAND } from "../src/model/text-edits.ts";
 import type { PageBody, TextEdit } from "../src/model/types.ts";
-import { memoryBodies } from "../src/storage/memory.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
 import { random } from "../src/testing/random-edits.ts";
 import { referenceBody } from "../src/testing/reference.ts";
 
@@ -57,9 +58,9 @@ test("a mark extends to typed text in PM exactly when Automerge expands it", () 
 });
 
 test("every editing command keeps the oracle, the model and PM equal", async (t) => {
-  const bodies = openBodies({ storage: memoryBodies() });
-  t.after(() => bodies.close());
-  const e = editor(await bodies.open(newPageId()));
+  const notes = await openNotes({ storage: memoryStorage() });
+  t.after(() => notes.close());
+  const e = editor(await notes.bodies.open(newPageId()));
   const run = (command: Command, label: string) => e.run(command, label);
   const size = () => e.state.doc.content.size;
 
@@ -254,9 +255,9 @@ function randomCommand(r: () => number, state: EditorState): Command {
 test("a fuzz of 5 seeds x 600 random commands keeps the oracle, the model and PM equal", async (t) => {
   for (let seed = 1; seed <= 5; seed++) {
     const r = random(seed);
-    const bodies = openBodies({ storage: memoryBodies() });
-    t.after(() => bodies.close());
-    const e = editor(await bodies.open(newPageId()));
+    const notes = await openNotes({ storage: memoryStorage() });
+    t.after(() => notes.close());
+    const e = editor(await notes.bodies.open(newPageId()));
     for (let i = 0; i < 600; i++) e.run(randomCommand(r, e.state), `seed ${seed} command ${i}`);
   }
 });
@@ -282,15 +283,15 @@ test("two editors on two Repos converge, each equal to its model", async (t) => 
   for (let seed = 21; seed <= 23; seed++) {
     const r = random(seed);
     const { port1, port2 } = new MessageChannel();
-    const A = openBodies({ storage: memoryBodies(), network: [new MessageChannelNetworkAdapter(port1)] });
-    const B = openBodies({ storage: memoryBodies(), network: [new MessageChannelNetworkAdapter(port2)] });
+    const A = await openNotes({ storage: memoryStorage(), network: [new MessageChannelNetworkAdapter(port1)] });
+    const B = await openNotes({ storage: memoryStorage(), network: [new MessageChannelNetworkAdapter(port2)] });
     t.after(async () => {
       await Promise.all([A.close(), B.close()]);
       port1.close();
       port2.close();
     });
     const id = newPageId();
-    const sides = (await Promise.all([A.open(id), B.open(id)])).map((body) => {
+    const sides = (await Promise.all([A.bodies.open(id), B.bodies.open(id)])).map((body) => {
       const side = { body, state: bodyState(body, [history()]) };
       body.subscribe((edits) => {
         side.state = applyLocal(body, side.state, remoteTransaction(side.state, edits));
@@ -321,15 +322,15 @@ test("two editors on two Repos converge, each equal to its model", async (t) => 
 
 test("an editor reads spans() once, however many local and remote edits follow", async (t) => {
   const { port1, port2 } = new MessageChannel();
-  const A = openBodies({ storage: memoryBodies(), network: [new MessageChannelNetworkAdapter(port1)] });
-  const B = openBodies({ storage: memoryBodies(), network: [new MessageChannelNetworkAdapter(port2)] });
+  const A = await openNotes({ storage: memoryStorage(), network: [new MessageChannelNetworkAdapter(port1)] });
+  const B = await openNotes({ storage: memoryStorage(), network: [new MessageChannelNetworkAdapter(port2)] });
   t.after(async () => {
     await Promise.all([A.close(), B.close()]);
     port1.close();
     port2.close();
   });
   const id = newPageId();
-  const [mine, peer] = await Promise.all([A.open(id), B.open(id)]);
+  const [mine, peer] = await Promise.all([A.bodies.open(id), B.bodies.open(id)]);
   let reads = 0;
   const counted = { spans: () => (reads++, mine.spans()), edit: (edits: readonly TextEdit[]) => mine.edit(edits) };
   let state = bodyState(counted, [history()]);
@@ -354,9 +355,9 @@ test("an editor reads spans() once, however many local and remote edits follow",
 });
 
 test("a dispatch the body refuses leaves the body and PM where they were", async (t) => {
-  const bodies = openBodies({ storage: memoryBodies() });
-  t.after(() => bodies.close());
-  const body = await bodies.open(newPageId());
+  const notes = await openNotes({ storage: memoryStorage() });
+  t.after(() => notes.close());
+  const body = await notes.bodies.open(newPageId());
   body.edit([{ type: "insert", at: 1, text: "keep", marks: {} }]);
   const state = bodyState(body);
   const before = body.spans();

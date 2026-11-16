@@ -4,19 +4,20 @@ import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { newPageId, openBodies } from "../src/model/bodies.ts";
+import { kvStorage } from "@opfs-lsm/automerge";
+import { newPageId } from "../src/model/bodies.ts";
 import { PagesError } from "../src/model/errors.ts";
+import { openNotes } from "../src/model/notes.ts";
 import type { SaveState, TextEdit } from "../src/model/types.ts";
-import { kvPagesStorage } from "../src/storage/kv.ts";
-import { memoryBodies } from "../src/storage/memory.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
 
 const isInvalid = (error: unknown) => error instanceof PagesError && error.kind === "invalid";
 const isStorage = (error: unknown) => error instanceof PagesError && error.kind === "storage";
 
 test("edits that would break the body are refused, and a refused batch changes nothing", async (t) => {
-  const bodies = openBodies({ storage: memoryBodies() });
-  t.after(() => bodies.close());
-  const body = await bodies.open(newPageId());
+  const notes = await openNotes({ storage: memoryStorage() });
+  t.after(() => notes.close());
+  const body = await notes.bodies.open(newPageId());
   body.edit([{ type: "insert", at: 1, text: "ab", marks: {} }]);
   const before = body.spans();
 
@@ -44,7 +45,7 @@ test("edits that would break the body are refused, and a refused batch changes n
 });
 
 test("the save view goes saving, saved, error, and back to saved", async (t) => {
-  const inner = memoryBodies();
+  const inner = memoryStorage();
   let failing = false;
   const storage: StorageAdapterInterface = {
     ...inner,
@@ -53,9 +54,9 @@ test("the save view goes saving, saved, error, and back to saved", async (t) => 
       await inner.save(key, data);
     },
   };
-  const bodies = openBodies({ storage });
-  t.after(() => bodies.close());
-  const body = await bodies.open(newPageId());
+  const notes = await openNotes({ storage });
+  t.after(() => notes.close());
+  const body = await notes.bodies.open(newPageId());
   const seen: SaveState["state"][] = [];
   body.save.subscribe(() => seen.push(body.save.read().state));
 
@@ -80,10 +81,10 @@ test("the save view goes saving, saved, error, and back to saved", async (t) => 
 });
 
 test("open rejects with storage when the stored body cannot be read, and seeds nothing", async (t) => {
-  const inner = memoryBodies();
+  const inner = memoryStorage();
   const id = newPageId();
-  const first = openBodies({ storage: inner });
-  (await first.open(id)).edit([{ type: "insert", at: 1, text: "keep me", marks: {} }]);
+  const first = await openNotes({ storage: inner });
+  (await first.bodies.open(id)).edit([{ type: "insert", at: 1, text: "keep me", marks: {} }]);
   await first.close();
 
   let broken = true;
@@ -91,37 +92,38 @@ test("open rejects with storage when the stored body cannot be read, and seeds n
   const flaky: StorageAdapterInterface = {
     ...inner,
     async loadRange(prefix) {
-      if (broken) throw new Error("read failed");
+      if (broken && prefix[0] === id) throw new Error("read failed");
       return inner.loadRange(prefix);
     },
     async save(key, data) {
-      saves.push(key.join("/"));
+      if (key[0] === id) saves.push(key.join("/"));
       await inner.save(key, data);
     },
   };
-  const bodies = openBodies({ storage: flaky });
-  t.after(() => bodies.close());
-  await assert.rejects(bodies.open(id), isStorage);
+  const notes = await openNotes({ storage: flaky });
+  t.after(() => notes.close());
+  await assert.rejects(notes.bodies.open(id), isStorage);
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.deepEqual(saves, [], "no seed was written over the unreadable body");
 
   broken = false;
-  const body = await bodies.open(id);
+  const body = await notes.bodies.open(id);
   assert.deepEqual(body.spans()[1], { type: "text", text: "keep me", marks: {} });
 });
 
 test("closing the model leaves the caller's kv db open", async () => {
-  const db = await openHarnessDb({ name: `pages${randomUUID().replaceAll("-", "").slice(0, 20)}`, forceMemory: true });
-  const id = newPageId();
-  const bodies = openBodies({ storage: kvPagesStorage(db).bodies });
-  (await bodies.open(id)).edit([{ type: "insert", at: 1, text: "on kv", marks: { code: true } }]);
-  await bodies.close();
+  const db = await openHarnessDb({ name: `notes${randomUUID().replaceAll("-", "").slice(0, 20)}`, forceMemory: true });
+  const notes = await openNotes({ storage: kvStorage(db) });
+  const page = notes.createPage(null);
+  (await notes.bodies.open(page)).edit([{ type: "insert", at: 1, text: "on kv", marks: { code: true } }]);
+  await notes.close();
 
   const key = new Uint8Array([0x01]);
   await db.put(key, new Uint8Array([1]));
   assert.deepEqual(await db.get(key), new Uint8Array([1]), "the db still reads and writes");
-  const again = openBodies({ storage: kvPagesStorage(db).bodies });
-  assert.deepEqual((await again.open(id)).spans()[1], { type: "text", text: "on kv", marks: { code: true } });
+  const again = await openNotes({ storage: kvStorage(db) });
+  assert.deepEqual(again.tree.read().children(null), [page], "the list reopens");
+  assert.deepEqual((await again.bodies.open(page)).spans()[1], { type: "text", text: "on kv", marks: { code: true } });
   await again.close();
   await db.close();
 });

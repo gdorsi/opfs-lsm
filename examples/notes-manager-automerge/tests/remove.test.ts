@@ -2,16 +2,15 @@ import type { StorageAdapterInterface } from "@automerge/automerge-repo";
 import { MessageChannelNetworkAdapter } from "@automerge/automerge-repo-network-messagechannel";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { newPageId, openBodies } from "../src/model/bodies.ts";
-import { memoryBodies } from "../src/storage/memory.ts";
-import { until } from "./workspace.ts";
-
-const typed = (text: string) => [{ type: "insert" as const, at: 1, text, marks: {} }];
+import { newPageId } from "../src/model/bodies.ts";
+import { openNotes } from "../src/model/notes.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
+import { typed, until } from "./workspace.ts";
 
 test("remove of an open, edited body deletes its keys, turns it removed, and is idempotent", async (t) => {
-  const storage = memoryBodies();
-  const bodies = openBodies({ storage, saveDebounceMs: 1 });
-  t.after(() => bodies.close());
+  const storage = memoryStorage();
+  const { bodies, close } = await openNotes({ storage, saveDebounceMs: 1 });
+  t.after(close);
   const id = newPageId();
   const body = await bodies.open(id);
   body.edit(typed("hello"));
@@ -27,9 +26,9 @@ test("remove of an open, edited body deletes its keys, turns it removed, and is 
 });
 
 test("remove of a closed or never-opened id resolves and leaves nothing", async (t) => {
-  const storage = memoryBodies();
-  const bodies = openBodies({ storage });
-  t.after(() => bodies.close());
+  const storage = memoryStorage();
+  const { bodies, close } = await openNotes({ storage });
+  t.after(close);
   await bodies.remove(newPageId());
   const id = newPageId();
   const body = await bodies.open(id);
@@ -41,7 +40,7 @@ test("remove of a closed or never-opened id resolves and leaves nothing", async 
 });
 
 test("a save in flight when remove starts lands before the keys are deleted", async (t) => {
-  const inner = memoryBodies();
+  const inner = memoryStorage();
   const id = newPageId();
   const held: (() => void)[] = [];
   const slow: StorageAdapterInterface = {
@@ -51,8 +50,8 @@ test("a save in flight when remove starts lands before the keys are deleted", as
       await inner.save(key, data);
     },
   };
-  const bodies = openBodies({ storage: slow, saveDebounceMs: 1 });
-  t.after(() => bodies.close());
+  const { bodies, close } = await openNotes({ storage: slow, saveDebounceMs: 1 });
+  t.after(close);
   const body = await bodies.open(id);
   body.edit(typed("in flight"));
   await until(() => held.length > 0, "a save of the body to start");
@@ -66,19 +65,19 @@ test("a save in flight when remove starts lands before the keys are deleted", as
 
 test("a peer's later edits do not write a removed body back", async (t) => {
   const { port1, port2 } = new MessageChannel();
-  const mine = memoryBodies();
-  const A = openBodies({ storage: mine, saveDebounceMs: 1, network: [new MessageChannelNetworkAdapter(port1)] });
-  const B = openBodies({ storage: memoryBodies(), saveDebounceMs: 1, network: [new MessageChannelNetworkAdapter(port2)] });
+  const mine = memoryStorage();
+  const A = await openNotes({ storage: mine, saveDebounceMs: 1, network: [new MessageChannelNetworkAdapter(port1)] });
+  const B = await openNotes({ storage: memoryStorage(), saveDebounceMs: 1, network: [new MessageChannelNetworkAdapter(port2)] });
   t.after(async () => {
     await Promise.all([A.close(), B.close()]);
     port1.close();
     port2.close();
   });
   const id = newPageId();
-  const [a, b] = await Promise.all([A.open(id), B.open(id)]);
+  const [a, b] = await Promise.all([A.bodies.open(id), B.bodies.open(id)]);
   a.edit(typed("mine"));
   await until(() => b.spans().length > 1, "the peer to receive the edit");
-  await A.remove(id);
+  await A.bodies.remove(id);
   assert.deepEqual(await mine.loadRange([id]), [], "snapshot, incremental and sync-state keys are gone");
   b.edit(typed("peer"));
   await b.flush();
@@ -87,8 +86,8 @@ test("a peer's later edits do not write a removed body back", async (t) => {
 });
 
 test("close then an immediate open gives a live body with the closed body's text", async (t) => {
-  const bodies = openBodies({ storage: memoryBodies() });
-  t.after(() => bodies.close());
+  const { bodies, close } = await openNotes({ storage: memoryStorage() });
+  t.after(close);
   const id = newPageId();
   const first = await bodies.open(id);
   first.edit(typed("kept"));

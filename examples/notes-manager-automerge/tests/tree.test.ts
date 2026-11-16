@@ -1,120 +1,178 @@
+import type { StorageAdapterInterface } from "@automerge/automerge-repo";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { newPageId } from "../src/model/bodies.ts";
-import { childrenRequest, createPage, deletePage, pageRequest, renamePage, TREE_REQUEST, type Fate } from "../src/model/tree.ts";
-import type { PageId } from "../src/model/types.ts";
-import { memoryPagesStorage } from "../src/storage/memory.ts";
-import { cachedIds, delivered, until, workspace } from "./workspace.ts";
+import { PagesError } from "../src/model/errors.ts";
+import { MAX_TITLE } from "../src/model/list.ts";
+import { openNotes } from "../src/model/notes.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
+import { stored, tab, twoTabs, typed, until } from "./workspace.ts";
 
-const titleOf = (fate: Fate, id: PageId) => (fate.store.read(`Page:${id}`) as { title?: string } | undefined)?.title;
-
-test("new pages show at the end of their parent's level at once, and the server keeps that order", async (t) => {
-  const { open, serverIds } = workspace();
-  const fate = await open(memoryPagesStorage().fate);
-  t.after(() => fate.persistence!.dispose());
-  const a = await createPage(fate, { parent: null });
-  const b = await createPage(fate, { parent: null });
-  const a1 = await createPage(fate, { parent: a });
-  const a2 = await createPage(fate, { parent: a });
-  assert.deepEqual(await cachedIds(fate, null), [a, b], "top level before the server answers");
-  assert.deepEqual(await cachedIds(fate, a), [a1, a2], "A's level before the server answers");
-  await delivered(fate);
-  assert.deepEqual(serverIds(null), [a, b]);
-  assert.deepEqual(serverIds(a), [a1, a2]);
+test("a new page shows at the end of its level at once", async (t) => {
+  const notes = await tab(t);
+  const tree = () => notes.tree.read();
+  const a = notes.createPage(null);
+  assert.deepEqual(tree().children(null), [a], "before any await");
+  const b = notes.createPage(null);
+  const a1 = notes.createPage(a);
+  const a2 = notes.createPage(a);
+  const c = notes.createPage(null);
+  assert.deepEqual(tree().children(null), [a, b, c]);
+  assert.deepEqual(tree().children(a), [a1, a2]);
+  assert.deepEqual(tree().children(b), []);
+  assert.deepEqual(tree().page(a1), { id: a1, parent: a, title: "" });
 });
 
-test("a rename trims, shows at once, and an unchanged title sends nothing", async (t) => {
-  const { open, serverIds } = workspace();
-  const fate = await open(memoryPagesStorage().fate);
-  t.after(() => fate.persistence!.dispose());
-  const id = await createPage(fate, { parent: null });
-  await delivered(fate);
-  await renamePage(fate, id, "  Meeting notes  ");
-  assert.equal(titleOf(fate, id), "Meeting notes", "the cache holds the new title before the server answers");
-  await delivered(fate);
-  await renamePage(fate, id, "Meeting notes ");
-  assert.equal(fate.persistence!.getSnapshot().mutations.length, 0, "the same title queues nothing");
-  const fresh = await fate.request(pageRequest(id), { mode: "network-only" });
-  assert.ok(fresh.page, "the header reads from the server");
-  assert.equal(titleOf(fate, id), "Meeting notes", "the server holds it");
-  assert.deepEqual(serverIds(null), [id]);
+test("renames show at once, keep spaces, cap at MAX_TITLE, and merge per character across two tabs", async (t) => {
+  const [A, B] = await twoTabs(t);
+  const id = A.createPage(null);
+  A.renamePage(id, "  Meeting ");
+  assert.equal(A.tree.read().page(id)?.title, "  Meeting ", "the raw value, at once");
+  A.renamePage(id, "Meeting");
+  await until(() => B.tree.read().page(id)?.title === "Meeting", "B to see the rename");
+
+  A.renamePage(id, "Meeting notes");
+  B.renamePage(id, "Team Meeting");
+  await until(() => A.tree.read().page(id)?.title === B.tree.read().page(id)?.title, "the titles to converge");
+  assert.equal(A.tree.read().page(id)?.title, "Team Meeting notes", "both renames survive");
+
+  A.renamePage(id, "x".repeat(MAX_TITLE + 20));
+  assert.equal(A.tree.read().page(id)?.title, "x".repeat(MAX_TITLE));
 });
 
-test("a second rename to the same title before the first is stored sends nothing", async (t) => {
-  const { net, open } = workspace();
-  const fate = await open(memoryPagesStorage().fate);
-  t.after(() => fate.persistence!.dispose());
-  const id = await createPage(fate, { parent: null });
-  await delivered(fate);
-  net.up = false;
-  const renames = () => fate.persistence!.getSnapshot().mutations.filter((m) => m.name === "renamePage").map((m) => (m.input as { title: string }).title);
-  await Promise.all([renamePage(fate, id, "Notes"), renamePage(fate, id, " Notes")]);
-  assert.deepEqual(renames(), ["Notes"], "Enter then blur queue one rename");
-  await Promise.all([renamePage(fate, id, "Other"), renamePage(fate, id, "Notes")]);
-  assert.deepEqual(renames(), ["Notes", "Other", "Notes"], "a rename back to a title still being stored is sent");
-  net.up = true;
-  await delivered(fate);
+test("a rename to the stored title, or of a page that is not there, changes nothing", async (t) => {
+  const inner = memoryStorage();
+  const saves: string[] = [];
+  const counted: StorageAdapterInterface = { ...inner, save: (key, data) => (saves.push(key.join("/")), inner.save(key, data)) };
+  const notes = await tab(t, counted);
+  const id = notes.createPage(null);
+  notes.renamePage(id, "Notes");
+  await notes.flush();
+  const before = notes.tree.read();
+  let fired = 0;
+  notes.tree.subscribe(() => fired++);
+  saves.length = 0;
+
+  notes.renamePage(id, "Notes");
+  notes.renamePage(newPageId(), "Other");
+  await notes.flush();
+  assert.equal(notes.tree.read(), before, "the same tree");
+  assert.equal(fired, 0, "no listener fired");
+  assert.deepEqual(saves, [], "nothing was stored");
 });
 
-test("a delete leaves every cached list at once, and the server drops the subtree", async (t) => {
-  const { open, serverIds } = workspace();
-  const fate = await open(memoryPagesStorage().fate);
-  t.after(() => fate.persistence!.dispose());
-  const a = await createPage(fate, { parent: null });
-  const b = await createPage(fate, { parent: null });
-  const a1 = await createPage(fate, { parent: a });
-  await createPage(fate, { parent: a1 });
-  await delivered(fate);
-  await deletePage(fate, a);
-  assert.deepEqual(await cachedIds(fate, null), [b], "A left the top level before the server answered");
-  await delivered(fate);
-  assert.deepEqual(serverIds(null), [b]);
-  assert.deepEqual([serverIds(a), serverIds(a1)], [[], []], "A's children are gone on the server");
-});
+test("a delete takes the page and its subtree out of the tree, and a reopen shows the same tree", async () => {
+  const storage = memoryStorage();
+  const first = await openNotes({ storage });
+  const a = first.createPage(null);
+  const b = first.createPage(null);
+  const a1 = first.createPage(a);
+  const a11 = first.createPage(a1);
+  first.renamePage(b, "Kept");
+  assert.deepEqual(first.tree.read().subtree(a), [a, a1, a11]);
 
-test("a create the server refuses rolls back and stays failed until it is discarded", async (t) => {
-  const { open } = workspace();
-  const fate = await open(memoryPagesStorage().fate);
-  t.after(() => fate.persistence!.dispose());
-  const gone = newPageId();
-  await createPage(fate, { parent: gone });
-  await delivered(fate);
-  const [entry] = fate.persistence!.getSnapshot().mutations;
-  assert.equal(entry?.status, "failed", "the refusal is kept");
-  assert.deepEqual(await cachedIds(fate, gone), [], "the optimistic page left the level");
-  await fate.persistence!.discard(entry!.id);
-  assert.equal(fate.persistence!.getSnapshot().mutations.length, 0, "discard empties the journal");
-});
+  first.deletePage(a);
+  const tree = first.tree.read();
+  assert.deepEqual(tree.children(null), [b]);
+  assert.deepEqual([a, a1, a11].map((id) => tree.page(id)), [undefined, undefined, undefined]);
+  assert.deepEqual(tree.subtree(a), []);
+  await first.close();
 
-test("a reload with the server down paints the cached levels and header; an uncached level fails", async () => {
-  const { net, open } = workspace();
-  const storage = memoryPagesStorage().fate;
-  const first = await open(storage);
-  const a = await createPage(first, { parent: null });
-  const b = await createPage(first, { parent: null });
-  const a1 = await createPage(first, { parent: a });
-  await delivered(first);
-  await first.request(childrenRequest(null), TREE_REQUEST);
-  await first.request(childrenRequest(a), TREE_REQUEST);
-  // A page created on this device is already cached, so this read answers at once; it is kept once its refresh lands.
-  const answered = net.answered;
-  await first.request(pageRequest(a1), TREE_REQUEST);
-  await until(() => net.answered > answered, "the header's background refresh");
-  await new Promise((resolve) => setImmediate(resolve));
-  await first.persistence!.flush();
-  first.persistence!.dispose();
-
-  net.up = false;
-  const second = await open(storage);
+  const again = await openNotes({ storage });
   try {
-    const top = await second.request(childrenRequest(null), TREE_REQUEST);
-    assert.deepEqual(top.children.items.map((item) => item.node.id), [a, b], "top level from the device");
-    const level = await second.request(childrenRequest(a), TREE_REQUEST);
-    assert.deepEqual(level.children.items.map((item) => item.node.id), [a1], "A's level from the device");
-    assert.ok((await second.request(pageRequest(a1), TREE_REQUEST)).page, "the page header resolves");
-    assert.equal((second.store.read(`Page:${a1}`) as { parentId?: PageId } | undefined)?.parentId, a, "the page header from the device");
-    await assert.rejects(second.request(childrenRequest(b), TREE_REQUEST), /Failed to fetch/, "B's level was never fetched");
+    assert.deepEqual(again.tree.read().children(null), [b]);
+    assert.deepEqual(again.tree.read().page(b), { id: b, parent: null, title: "Kept" });
+    assert.equal(again.tree.read().page(a1), undefined);
   } finally {
-    second.persistence!.dispose();
+    await again.close();
   }
+});
+
+test("open rejects with storage when the stored list cannot be read, and seeds nothing over it", async () => {
+  const inner = memoryStorage();
+  const first = await openNotes({ storage: inner });
+  const id = first.createPage(null);
+  await first.close();
+
+  const saves: string[] = [];
+  const unreadable: StorageAdapterInterface = {
+    ...inner,
+    loadRange: async () => {
+      throw new Error("read failed");
+    },
+    save: (key, data) => (saves.push(key.join("/")), inner.save(key, data)),
+  };
+  await assert.rejects(openNotes({ storage: unreadable }), (error) => error instanceof PagesError && error.kind === "storage");
+  assert.deepEqual(saves, [], "no seed was written over the stored list");
+  const again = await openNotes({ storage: inner });
+  assert.deepEqual(again.tree.read().children(null), [id]);
+  await again.close();
+});
+
+/** Copies every key, as a second tab would find the storage after the first closed. */
+async function copy(from: StorageAdapterInterface): Promise<StorageAdapterInterface> {
+  const to = memoryStorage();
+  for (const chunk of await from.loadRange([])) await to.save(chunk.key, chunk.data!);
+  return to;
+}
+
+test("a page created under a parent another tab deleted at the same time ends hidden in both, and its body is removed", async (t) => {
+  const storageA = memoryStorage();
+  const first = await openNotes({ storage: storageA });
+  const parent = first.createPage(null);
+  await first.close();
+  const storageB = await copy(storageA);
+
+  const A = await openNotes({ storage: storageA });
+  const B = await openNotes({ storage: storageB });
+  A.deletePage(parent);
+  const child = B.createPage(parent);
+  assert.ok(B.tree.read().page(child), "B shows the child while it does not know of the delete");
+  const body = await B.bodies.open(child);
+  body.edit(typed("written before the delete arrived"));
+  await Promise.all([A.close(), B.close()]);
+  assert.ok(await stored(storageB, child), "B stored the child's body");
+
+  const [tabA, tabB] = await twoTabs(t, [storageA, storageB]);
+  const later = tabB.createPage(null);
+  await until(() => tabA.tree.read().page(later) !== undefined, "A to receive B's list");
+  await until(() => tabB.tree.read().page(parent) === undefined, "B to receive A's delete");
+  for (const notes of [tabA, tabB]) {
+    assert.equal(notes.tree.read().page(child), undefined, "the child is hidden");
+    assert.deepEqual(notes.tree.read().children(null), [later]);
+  }
+  await until(async () => !(await stored(storageB, child)), "B to remove the child's body");
+});
+
+test("two tabs that both seed the list at once merge every page", async (t) => {
+  const [A, B] = await twoTabs(t);
+  const fromA = [A.createPage(null), A.createPage(null)];
+  const fromB = [B.createPage(null)];
+  fromB.push(B.createPage(fromB[0]!));
+  await until(() => A.tree.read().subtree(fromB[0]!).length === 2 && B.tree.read().page(fromA[1]!) !== undefined, "both lists to merge");
+  assert.deepEqual(A.tree.read().children(null), B.tree.read().children(null));
+  assert.deepEqual(new Set(A.tree.read().children(null)), new Set([...fromA, fromB[0]]));
+  assert.deepEqual(A.tree.read().children(fromB[0]!), [fromB[1]]);
+});
+
+test("a title change keeps every other level and page the same object", async (t) => {
+  const notes = await tab(t);
+  const a = notes.createPage(null);
+  const b = notes.createPage(null);
+  const a1 = notes.createPage(a);
+  const before = notes.tree.read();
+
+  notes.renamePage(b, "B");
+  const after = notes.tree.read();
+  assert.notEqual(after, before, "a new tree");
+  assert.equal(after.children(null), before.children(null), "the top level");
+  assert.equal(after.children(a), before.children(a), "A's level");
+  assert.equal(after.page(a), before.page(a));
+  assert.equal(after.page(a1), before.page(a1));
+  assert.notEqual(after.page(b), before.page(b));
+  assert.equal(after.page(b)?.title, "B");
+
+  const a2 = notes.createPage(a);
+  assert.equal(notes.tree.read().children(null), after.children(null), "a create elsewhere keeps the top level");
+  assert.deepEqual(notes.tree.read().children(a), [a1, a2]);
 });

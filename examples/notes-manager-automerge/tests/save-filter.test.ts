@@ -2,14 +2,14 @@ import type { StorageAdapterInterface, StorageKey } from "@automerge/automerge-r
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { saveFilter } from "../src/model/save-filter.ts";
-import { memoryBodies } from "../src/storage/memory.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
 
 const bytes = new Uint8Array([1]);
 const chunk = (id: string, n: number): StorageKey => [id, "incremental", `h${n}`];
 
 /** Memory storage whose saves wait until the test releases them. */
 function gatedStorage(): StorageAdapterInterface & { release(): void } {
-  const inner = memoryBodies();
+  const inner = memoryStorage();
   let open: () => void = () => {};
   let gate = new Promise<void>((resolve) => (open = resolve));
   return {
@@ -26,7 +26,7 @@ function gatedStorage(): StorageAdapterInterface & { release(): void } {
 }
 
 test("a blocked id gets no save after the block; other ids still save", async () => {
-  const inner = memoryBodies();
+  const inner = memoryStorage();
   const filter = saveFilter(inner);
   await filter.save(chunk("a", 1), bytes);
   filter.block("a");
@@ -67,7 +67,7 @@ test("watch reports chunk saves as they start and settle, and skips sync state",
 
 test("a failed read is remembered until the next read of that id", async () => {
   let fail = true;
-  const inner = memoryBodies();
+  const inner = memoryStorage();
   const filter = saveFilter({
     ...inner,
     async loadRange(prefix) {

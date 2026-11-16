@@ -4,10 +4,11 @@ import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { newPageId, openBodies } from "../src/model/bodies.ts";
+import { kvStorage } from "@opfs-lsm/automerge";
+import { newPageId } from "../src/model/bodies.ts";
+import { openNotes } from "../src/model/notes.ts";
 import type { Span, TextEdit } from "../src/model/types.ts";
-import { kvPagesStorage } from "../src/storage/kv.ts";
-import { memoryBodies } from "../src/storage/memory.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
 import { random, randomBatch } from "../src/testing/random-edits.ts";
 import { referenceBody } from "../src/testing/reference.ts";
 
@@ -16,21 +17,21 @@ const EDITS = 3_000;
 const CHECK_EVERY = 40;
 const TAIL: TextEdit = { type: "insert", at: 1, text: "tail", marks: { italic: true } };
 
-/** Body storage that can be opened again after the model closed, as a reload would. */
+/** Storage that can be opened again after the model closed, as a reload would. */
 type Store = { open(): Promise<StorageAdapterInterface>; close(): Promise<void> };
 
-function memoryStore(storage = memoryBodies()): Store {
+function memoryStore(storage = memoryStorage()): Store {
   return { open: async () => storage, close: async () => {} };
 }
 
 function kvStore(): Store {
-  const name = `pages${randomUUID().replaceAll("-", "").slice(0, 20)}`;
+  const name = `notes${randomUUID().replaceAll("-", "").slice(0, 20)}`;
   let close = async () => {};
   return {
     async open() {
       const db = await openHarnessDb({ name, forceMemory: true });
       close = () => db.close();
-      return kvPagesStorage(db).bodies;
+      return kvStorage(db);
     },
     close: () => close(),
   };
@@ -43,8 +44,8 @@ async function fuzz(store: Store, seed: number, beforeTail = () => {}): Promise<
   const rand = random(seed);
   const oracle = referenceBody();
   const id = newPageId();
-  const bodies = openBodies({ storage: await store.open() });
-  const body = await bodies.open(id);
+  const notes = await openNotes({ storage: await store.open() });
+  const body = await notes.bodies.open(id);
   let edits = 0;
   for (let batches = 1; edits < EDITS; batches++) {
     const batch = randomBatch(rand, oracle);
@@ -58,11 +59,11 @@ async function fuzz(store: Store, seed: number, beforeTail = () => {}): Promise<
   beforeTail();
   body.edit([TAIL]);
   oracle.edit([TAIL]);
-  await bodies.close();
+  await notes.close();
   await store.close();
 
-  const again = openBodies({ storage: await store.open() });
-  const reopened = (await again.open(id)).spans();
+  const again = await openNotes({ storage: await store.open() });
+  const reopened = (await again.bodies.open(id)).spans();
   await again.close();
   await store.close();
   return { edits: edits + 1, reopened, expected: oracle.spans() };
@@ -83,7 +84,7 @@ for (const [name, store] of [
 }
 
 test("a storage that drops one save fails the fuzz", async (t) => {
-  const inner = memoryBodies();
+  const inner = memoryStorage();
   let armed = false;
   let dropped = 0;
   const lossy: StorageAdapterInterface = {

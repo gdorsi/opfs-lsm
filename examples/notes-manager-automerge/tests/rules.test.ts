@@ -7,15 +7,16 @@ import { applyLocal, bodyState } from "../src/editor/binding.ts";
 import { backspaceToParagraph, enter, indent, setLink, toggleLink, toggleTodo } from "../src/editor/commands.ts";
 import { pageInputRules } from "../src/editor/rules.ts";
 import { docToSpans } from "../src/editor/schema.ts";
-import { newPageId, openBodies } from "../src/model/bodies.ts";
+import { newPageId } from "../src/model/bodies.ts";
+import { openNotes } from "../src/model/notes.ts";
 import type { Block, PageBody, Span, TextEdit } from "../src/model/types.ts";
-import { memoryBodies } from "../src/storage/memory.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
 
-const bodies = openBodies({ storage: memoryBodies() });
-test.after(() => bodies.close());
+const notes = await openNotes({ storage: memoryStorage() });
+test.after(() => notes.close());
 
 async function page(spans: readonly Span[]) {
-  const body: PageBody = await bodies.open(newPageId());
+  const body: PageBody = await notes.bodies.open(newPageId());
   const edits: TextEdit[] = [];
   let at = 0;
   for (const span of spans) {

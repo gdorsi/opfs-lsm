@@ -1,33 +1,34 @@
-import { createHTTPTransport } from "@nkzw/fate";
-import type { PersistenceStorage } from "@nkzw/fate/persistence";
+import type { StorageAdapterInterface } from "@automerge/automerge-repo";
+import { MessageChannelNetworkAdapter } from "@automerge/automerge-repo-network-messagechannel";
 import assert from "node:assert/strict";
-import { childrenRequest, createTreeClient, type Fate } from "../src/model/tree.ts";
-import type { PageId } from "../src/model/types.ts";
-import { openServerDb } from "../src/server/db.ts";
-import { createServer } from "../src/server/fate.ts";
-import { readChildren } from "../src/server/pages.ts";
+import type { TestContext } from "node:test";
+import { openNotes, type Notes } from "../src/model/notes.ts";
+import type { PageId, TextEdit } from "../src/model/types.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
 
-export function workspace() {
-  const db = openServerDb(":memory:");
-  const server = createServer(db);
-  const net = { up: true, answered: 0 };
-  const transport = createHTTPTransport({
-    url: "http://pages/api/fate",
-    live: false,
-    fetch: async (input, init) => {
-      if (!net.up) throw new TypeError("Failed to fetch");
-      const response = await server.handleRequest(new Request(input, init));
-      net.answered++;
-      return response;
-    },
+/** One tab over `storage`, with no peer. */
+export async function tab(t: TestContext, storage: StorageAdapterInterface = memoryStorage()): Promise<Notes> {
+  const notes = await openNotes({ storage, saveDebounceMs: 1 });
+  t.after(() => notes.close());
+  return notes;
+}
+
+/** Two tabs linked by a MessageChannel. Pass one storage twice for two tabs of one browser. */
+export async function twoTabs(
+  t: TestContext,
+  storage: readonly [StorageAdapterInterface, StorageAdapterInterface] = [memoryStorage(), memoryStorage()],
+): Promise<[Notes, Notes]> {
+  const { port1, port2 } = new MessageChannel();
+  const tabs = await Promise.all([
+    openNotes({ storage: storage[0], saveDebounceMs: 1, network: [new MessageChannelNetworkAdapter(port1)] }),
+    openNotes({ storage: storage[1], saveDebounceMs: 1, network: [new MessageChannelNetworkAdapter(port2)] }),
+  ]);
+  t.after(async () => {
+    await Promise.all(tabs.map((notes) => notes.close()));
+    port1.close();
+    port2.close();
   });
-  const open = async (storage: PersistenceStorage) => {
-    const fate = createTreeClient({ transport, storage, online: () => true });
-    await fate.persistence!.ready;
-    return fate;
-  };
-  const serverIds = (parent: PageId | null) => readChildren(db, { parent, first: 200 }).rows.map((row) => row.id);
-  return { net, open, serverIds };
+  return tabs;
 }
 
 export async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
@@ -38,11 +39,15 @@ export async function until(check: () => boolean | Promise<boolean>, what: strin
   }
 }
 
-export const delivered = (fate: Fate) => until(() => fate.persistence!.getSnapshot().mutations.every((m) => m.status === "failed"), "the server to answer the queue");
+export const typed = (text: string): TextEdit[] => [{ type: "insert", at: 1, text, marks: {} }];
 
-export async function cachedIds(fate: Fate, parent: PageId | null): Promise<PageId[] | null> {
-  const observer = fate.observeRequest(childrenRequest(parent), { mode: "cache-only" });
-  await until(() => observer.getSnapshot().status !== "pending", "the cache to answer");
-  const snapshot = observer.getSnapshot();
-  return snapshot.status === "ready" ? snapshot.data!.children.items.map((item) => item.node.id as PageId) : null;
+/** Opens each page's body, types into it and closes it, so storage holds it. */
+export async function write(notes: Notes, ids: readonly PageId[]): Promise<void> {
+  for (const id of ids) {
+    const body = await notes.bodies.open(id);
+    body.edit(typed(`body of ${id}`));
+    await body.close();
+  }
 }
+
+export const stored = async (storage: StorageAdapterInterface, id: PageId) => (await storage.loadRange([id])).length > 0;

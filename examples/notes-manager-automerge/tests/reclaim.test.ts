@@ -1,151 +1,64 @@
 import type { StorageAdapterInterface } from "@automerge/automerge-repo";
-import type { PersistenceStorage } from "@nkzw/fate/persistence";
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
-import { newPageId, openBodies, type Bodies } from "../src/model/bodies.ts";
-import { createPage, deletePage, reclaimBodies, type Fate } from "../src/model/tree.ts";
+import { test } from "node:test";
+import { openNotes } from "../src/model/notes.ts";
 import type { PageId } from "../src/model/types.ts";
-import { memoryBodies, memoryPagesStorage } from "../src/storage/memory.ts";
-import { delivered, until, workspace } from "./workspace.ts";
+import { memoryStorage } from "../src/storage/memory.ts";
+import { stored, tab, twoTabs, typed, until, write } from "./workspace.ts";
 
-function device(t: TestContext) {
-  const storage = { fate: memoryPagesStorage().fate, bodies: memoryBodies() };
-  const bodies = openBodies({ storage: storage.bodies });
-  t.after(() => bodies.close());
-  return { storage, bodies };
-}
-
-async function write(bodies: Bodies, ids: readonly PageId[]): Promise<void> {
-  for (const id of ids) {
-    const body = await bodies.open(id);
-    body.edit([{ type: "insert", at: 1, text: `body of ${id}`, marks: {} }]);
-    await body.close();
-  }
-}
-
-const stored = async (storage: StorageAdapterInterface, id: PageId) => (await storage.loadRange([id])).length > 0;
 const allGone = (storage: StorageAdapterInterface, ids: readonly PageId[]) => async () =>
   (await Promise.all(ids.map((id) => stored(storage, id)))).every((has) => !has);
 
-function watch(t: TestContext, fate: Fate, bodies: Bodies) {
-  const stop = reclaimBodies(fate, bodies);
-  t.after(() => {
-    stop();
-    fate.persistence!.dispose();
-  });
-}
+test("a delete removes the bodies of the page and its descendants, and no others, in both tabs", async (t) => {
+  const storage = memoryStorage();
+  const [A, B] = await twoTabs(t, [storage, storage]);
+  const a = A.createPage(null);
+  const b = A.createPage(null);
+  const a1 = A.createPage(a);
+  const a11 = A.createPage(a1);
+  await write(A, [a, b, a1, a11]);
+  await until(() => B.tree.read().page(a11) !== undefined, "B to see the tree");
+  const [inA, inB] = await Promise.all([A.bodies.open(a11), B.bodies.open(a1)]);
 
-test("a confirmed delete removes the bodies of the page and its cached descendants, and no others", async (t) => {
-  const { open } = workspace();
-  const { storage, bodies } = device(t);
-  const fate = await open(storage.fate);
-  watch(t, fate, bodies);
-  const a = await createPage(fate, { parent: null });
-  const b = await createPage(fate, { parent: null });
-  const a1 = await createPage(fate, { parent: a });
-  const a11 = await createPage(fate, { parent: a1 });
-  await delivered(fate);
-  await write(bodies, [a, b, a1, a11]);
-
-  await deletePage(fate, a);
-  await delivered(fate);
-  await until(allGone(storage.bodies, [a, a1, a11]), "A, A1 and A11's bodies to go");
-  assert.ok(await stored(storage.bodies, b), "B's body stays");
+  A.deletePage(a);
+  await until(() => inA.save.read().state === "removed" && inB.save.read().state === "removed", "both tabs to remove their open bodies");
+  await until(allGone(storage, [a, a1, a11]), "the subtree's bodies to go");
+  assert.ok(await stored(storage, b), "B's body stays");
+  assert.equal((await B.bodies.open(b)).spans().length, 2, "and still opens with its text");
 });
 
-test("a queued delete keeps the bodies until the server confirms it", async (t) => {
-  const { open, net } = workspace();
-  const { storage, bodies } = device(t);
-  const fate = await open(storage.fate);
-  watch(t, fate, bodies);
-  const a = await createPage(fate, { parent: null });
-  await delivered(fate);
-  await write(bodies, [a]);
+test("a body a peer edits after the delete is not written back", async (t) => {
+  const [storageA, storageB] = [memoryStorage(), memoryStorage()];
+  const [A, B] = await twoTabs(t, [storageA, storageB]);
+  const id = A.createPage(null);
+  await until(() => B.tree.read().page(id) !== undefined, "B to see the page");
+  const [mine, peer] = await Promise.all([A.bodies.open(id), B.bodies.open(id)]);
+  mine.edit(typed("mine"));
+  await until(() => peer.spans().length > 1, "B to receive the edit");
 
-  net.up = false;
-  await deletePage(fate, a);
+  A.deletePage(id);
+  peer.edit(typed("peer"));
+  await until(() => peer.save.read().state === "removed", "B to remove its copy once the delete arrives");
   await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(fate.persistence!.getSnapshot().mutations.length, 1, "the delete waits in the journal");
-  assert.ok(await stored(storage.bodies, a), "the body stays while the delete is queued");
-
-  net.up = true;
-  fate.persistence!.retry();
-  await until(allGone(storage.bodies, [a]), "the body to go after delivery");
+  assert.deepEqual(await storageA.loadRange([id]), [], "A stored nothing of B's edit");
+  assert.deepEqual(await storageB.loadRange([id]), [], "B kept nothing either");
 });
 
-test("a delete queued offline and delivered after a reload still frees the bodies", async (t) => {
-  const { open, net } = workspace();
-  const { storage, bodies } = device(t);
-  const first = await open(storage.fate);
-  const stopFirst = reclaimBodies(first, bodies);
-  const a = await createPage(first, { parent: null });
-  const a1 = await createPage(first, { parent: a });
-  await delivered(first);
-  await write(bodies, [a, a1]);
-  net.up = false;
-  await deletePage(first, a);
-  await first.persistence!.flush();
-  stopFirst();
-  first.persistence!.dispose();
+test("a tab that opens a list holding an entry it cannot reach removes that entry's body", async (t) => {
+  const storage = memoryStorage();
+  const first = await openNotes({ storage });
+  const parent = first.createPage(null);
+  await first.close();
 
-  net.up = true;
-  const second = await open(storage.fate);
-  watch(t, second, bodies);
-  await delivered(second);
-  await until(allGone(storage.bodies, [a, a1]), "both bodies to go after the reload's delivery");
-});
+  // Two tabs of one browser whose channel never delivered: one deletes the parent while the other adds a child.
+  const [A, B] = [await openNotes({ storage }), await openNotes({ storage })];
+  A.deletePage(parent);
+  const child = B.createPage(parent);
+  await write(B, [child]);
+  await Promise.all([A.close(), B.close()]);
+  assert.ok(await stored(storage, child));
 
-test("a refused create keeps its body until the refusal is discarded", async (t) => {
-  const { open } = workspace();
-  const { storage, bodies } = device(t);
-  const fate = await open(storage.fate);
-  watch(t, fate, bodies);
-  const orphan = await createPage(fate, { parent: newPageId() });
-  await write(bodies, [orphan]);
-  await delivered(fate);
-  const [entry] = fate.persistence!.getSnapshot().mutations;
-  assert.equal(entry?.status, "failed");
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.ok(await stored(storage.bodies, orphan), "a failed create keeps its body: the user may retry it");
-  await fate.persistence!.discard(entry!.id);
-  await until(allGone(storage.bodies, [orphan]), "the body to go once the create is discarded");
-});
-
-function sharedFate(): PersistenceStorage {
-  const inner = memoryPagesStorage().fate;
-  const listeners = new Set<() => void>();
-  return {
-    ...inner,
-    async writeBatch(writes) {
-      await inner.writeBatch(writes);
-      for (const listener of listeners) listener();
-    },
-    subscribe(_key, listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-  };
-}
-
-test("two tabs on one device both reclaim a delete one of them made", async (t) => {
-  const { open } = workspace();
-  const fateStorage = sharedFate();
-  const bodyStorage = memoryBodies();
-  const [bodiesA, bodiesB] = [openBodies({ storage: bodyStorage }), openBodies({ storage: bodyStorage })];
-  t.after(() => Promise.all([bodiesA.close(), bodiesB.close()]));
-  const tabA = await open(fateStorage);
-  const tabB = await open(fateStorage);
-  const removedByB: PageId[] = [];
-  watch(t, tabA, bodiesA);
-  watch(t, tabB, { ...bodiesB, remove: (id) => (removedByB.push(id), bodiesB.remove(id)) } as Bodies);
-
-  const a = await createPage(tabA, { parent: null });
-  await delivered(tabA);
-  await write(bodiesA, [a]);
-  const open_ = await bodiesB.open(a);
-  await deletePage(tabA, a);
-  await delivered(tabA);
-  await until(allGone(bodyStorage, [a]), "the body to go");
-  await until(() => removedByB.includes(a), "the other tab to reclaim it too");
-  assert.equal(open_.save.read().state, "removed", "the other tab's open copy turned removed");
+  const notes = await tab(t, storage);
+  assert.equal(notes.tree.read().page(child), undefined, "the child is hidden");
+  await until(allGone(storage, [child]), "the child's body to go");
 });

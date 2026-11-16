@@ -2,7 +2,8 @@ import { BroadcastChannelNetworkAdapter } from "@automerge/automerge-repo-networ
 import { createContext, useContext } from "react";
 import { createHTTPTransport } from "react-fate";
 import type { MountedEditor } from "../editor/view.ts";
-import { openBodies, type Bodies } from "../model/bodies.ts";
+import type { Bodies } from "../model/bodies.ts";
+import { openNotes } from "../model/notes.ts";
 import { createTreeClient, reclaimBodies, type Fate } from "../model/tree.ts";
 import type { PagesStorage } from "../model/types.ts";
 import { openPagesStorage, type StorageKind } from "../storage/open.ts";
@@ -30,7 +31,7 @@ export function openApp(): Promise<App> {
     const db = params.get("db") || "pages";
     const storage = await openPagesStorage(kind, db);
     const fate = createTreeClient({ transport: createHTTPTransport({ url: "/api/fate", live: false }), storage: storage.fate });
-    const bodies = openBodies({
+    const { bodies } = await openNotes({
       storage: storage.bodies,
       network: [new BroadcastChannelNetworkAdapter({ channelName: `pages:${kind}:${db}` })],
     });
