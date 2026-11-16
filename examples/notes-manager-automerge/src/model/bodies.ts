@@ -1,7 +1,3 @@
-/**
- * The page bodies: an open `PageBody` per page, each one Automerge document in
- * the Repo the list doc lives in.
- */
 import {
   type Repo,
   generateAutomergeUrl,
@@ -44,7 +40,6 @@ export function parsePageId(raw: unknown): PageId | null {
   return isValidDocumentId(raw) ? raw : null;
 }
 
-/** `close` closes every open body and leaves the Repo open. */
 export function openBodies(repo: Repo, storage: SaveFilter): Bodies & { close(): Promise<void> } {
   const open = new Map<PageId, Promise<Body>>();
   const closing = new Map<PageId, Promise<void>>();
@@ -82,7 +77,6 @@ export function openBodies(repo: Repo, storage: SaveFilter): Bodies & { close():
   };
 }
 
-/** The doc `id` as storage holds it, or `seed` when storage holds none. Never waits on the network. */
 export async function findOrSeed<T>(
   repo: Repo,
   storage: SaveFilter,
@@ -100,7 +94,6 @@ export async function findOrSeed<T>(
   return { handle: repo.import<T>(seed, { docId: id }), seeded: true };
 }
 
-/** Resolves once every change made to `id` before the call is stored. */
 export async function flushDoc(repo: Repo, storage: SaveFilter, id: DocumentId): Promise<void> {
   // A save already in flight covers what it can; waiting for it keeps the flush from writing the same chunk twice.
   await storage.idle(id);
@@ -111,7 +104,6 @@ export async function flushDoc(repo: Repo, storage: SaveFilter, id: DocumentId):
   }
 }
 
-/** Resolves once the doc has data or storage has said it holds none. */
 function storageAnswered<T>(progress: DocumentProgress<T>): Promise<QueryState<T>> {
   const answered = (state: QueryState<T>) => state.state !== "loading" || state.sources.storage === "unavailable";
   const now = progress.peek();

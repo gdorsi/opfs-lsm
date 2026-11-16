@@ -1,17 +1,9 @@
-/**
- * The list doc: every page's parent and title, keyed by page id. The tree is
- * read from it, and each read reuses the arrays and page objects of the read
- * before that did not change, so a selector over one level or one page keeps
- * its value while another page changes.
- */
 import type { DocumentId } from "@automerge/automerge-repo";
 import type { Page, PageId, Tree } from "./types.ts";
 
-/** One id for every database: each database holds its own list doc. */
 export const LIST_ID = "4SnAnQR5MgZtHgdXbqUJZ6C4ueps" as DocumentId;
 export const MAX_TITLE = 500;
 
-/** `title` is Automerge text, so concurrent renames merge per character. */
 export type PageEntry = { parent: PageId | null; title: string; created: number };
 export type ListDoc = { pages: { [id: string]: PageEntry } };
 
@@ -41,7 +33,6 @@ export class ListTree implements Tree {
     return ids;
   }
 
-  /** Every reachable id. */
   ids(): IterableIterator<PageId> {
     return this.#pages.keys();
   }

@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { Page, PageBody, PageId, SaveState, Tree } from "../model/types.ts";
 import { useApp } from "./app.ts";
 
-/** Re-renders only when `select` returns another value: the tree keeps the arrays and pages that did not change. */
 function useTree<T>(select: (tree: Tree) => T): T {
   const { tree } = useApp().notes;
   return useSyncExternalStore(tree.subscribe, () => select(tree.read()));

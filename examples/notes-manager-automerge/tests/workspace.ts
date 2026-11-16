@@ -6,14 +6,12 @@ import { openNotes, type Notes } from "../src/model/notes.ts";
 import type { PageId, TextEdit } from "../src/model/types.ts";
 import { memoryStorage } from "../src/storage/memory.ts";
 
-/** One tab over `storage`, with no peer. */
 export async function tab(t: TestContext, storage: StorageAdapterInterface = memoryStorage()): Promise<Notes> {
   const notes = await openNotes({ storage, saveDebounceMs: 1 });
   t.after(() => notes.close());
   return notes;
 }
 
-/** Two tabs linked by a MessageChannel. Pass one storage twice for two tabs of one browser. */
 export async function twoTabs(
   t: TestContext,
   storage: readonly [StorageAdapterInterface, StorageAdapterInterface] = [memoryStorage(), memoryStorage()],
@@ -41,7 +39,6 @@ export async function until(check: () => boolean | Promise<boolean>, what: strin
 
 export const typed = (text: string): TextEdit[] => [{ type: "insert", at: 1, text, marks: {} }];
 
-/** Opens each page's body, types into it and closes it, so storage holds it. */
 export async function write(notes: Notes, ids: readonly PageId[]): Promise<void> {
   for (const id of ids) {
     const body = await notes.bodies.open(id);

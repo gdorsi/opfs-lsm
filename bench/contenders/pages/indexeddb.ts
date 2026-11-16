@@ -8,7 +8,6 @@ export default defineContender({
   engine: false,
   async open(name) {
     const storage = new IndexedDBStorageAdapter(`pages-${name}`);
-    // The adapter opens lazily; pay the open inside the timed open, as kv does.
     await storage.load(["__bench_open__"]);
     return { storage, settle: async () => {}, stats: async () => undefined, close: () => storage.close() };
   },

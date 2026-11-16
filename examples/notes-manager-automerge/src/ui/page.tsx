@@ -30,7 +30,6 @@ export function NotFound() {
   );
 }
 
-/** A page that is not in the tree never opens its body, so a deleted id is not seeded again. */
 export function PageScreen({ id }: { id: PageId }) {
   const page = usePage(id);
   const editor = useRef<MountedEditor | null>(null);
@@ -43,7 +42,6 @@ export function PageScreen({ id }: { id: PageId }) {
   );
 }
 
-/** Renames on every keystroke; trims on blur and Enter. While focused it shows its own draft. */
 function TitleField({ id, title, onEnter }: { id: PageId; title: string; onEnter(): void }) {
   const { notes } = useApp();
   const [draft, setDraft] = useState(title);

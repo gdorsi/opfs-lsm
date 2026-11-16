@@ -1,7 +1,3 @@
-/**
- * The headless model: one Repo over the save filter, holding the list doc and
- * every open body. The app, the tests and the bench all open it.
- */
 import * as A from "@automerge/automerge";
 import { Repo, type DocHandle, type DocMetrics, type NetworkAdapterInterface, type StorageAdapterInterface } from "@automerge/automerge-repo";
 import { findOrSeed, flushDoc, newPageId, openBodies, type Bodies } from "./bodies.ts";
@@ -90,10 +86,9 @@ export async function openNotes(options: NotesOptions): Promise<Notes> {
     createPage(parent) {
       const id = newPageId();
       const last = tree.children(parent).at(-1);
-      // Strictly after the last sibling, so a create in the same millisecond still lands at the end.
-      const created = Math.max(Date.now(), last ? list.fullDoc().pages[last]!.created + 1 : 0);
+      const lastCreated = last ? list.fullDoc().pages[last]!.created : 0;
       list.change((d) => {
-        d.pages[id] = { parent, title: "", created };
+        d.pages[id] = { parent, title: "", created: Math.max(Date.now(), lastCreated + 1) };
       });
       return id;
     },

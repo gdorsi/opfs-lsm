@@ -122,7 +122,6 @@ export type FateStore = Common & {
   readonly storage: PersistenceStorage;
 };
 
-/** The notes app's storage, which holds the list doc and every page body, as the app opens it. A workload builds the headless model over `storage`, so every contender runs the same model code. */
 export type PagesStore = Common & {
   readonly storage: StorageAdapterInterface;
   /** True when nothing survives a reload, so a workload skips the phases that read back from a new page. */

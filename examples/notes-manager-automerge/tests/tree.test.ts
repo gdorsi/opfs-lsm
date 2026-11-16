@@ -109,7 +109,6 @@ test("open rejects with storage when the stored list cannot be read, and seeds n
   await again.close();
 });
 
-/** Copies every key, as a second tab would find the storage after the first closed. */
 async function copy(from: StorageAdapterInterface): Promise<StorageAdapterInterface> {
   const to = memoryStorage();
   for (const chunk of await from.loadRange([])) await to.save(chunk.key, chunk.data!);

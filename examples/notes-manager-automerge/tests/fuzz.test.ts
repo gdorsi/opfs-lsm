@@ -17,7 +17,6 @@ const EDITS = 3_000;
 const CHECK_EVERY = 40;
 const TAIL: TextEdit = { type: "insert", at: 1, text: "tail", marks: { italic: true } };
 
-/** Storage that can be opened again after the model closed, as a reload would. */
 type Store = { open(): Promise<StorageAdapterInterface>; close(): Promise<void> };
 
 function memoryStore(storage = memoryStorage()): Store {

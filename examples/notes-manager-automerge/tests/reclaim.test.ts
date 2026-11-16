@@ -50,7 +50,6 @@ test("a tab that opens a list holding an entry it cannot reach removes that entr
   const parent = first.createPage(null);
   await first.close();
 
-  // Two tabs of one browser whose channel never delivered: one deletes the parent while the other adds a child.
   const [A, B] = [await openNotes({ storage }), await openNotes({ storage })];
   A.deletePage(parent);
   const child = B.createPage(parent);

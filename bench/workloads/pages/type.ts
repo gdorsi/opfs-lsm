@@ -10,7 +10,6 @@ import type { PageBody, PageId, Span } from "../../../examples/notes-manager-aut
 import { builtBody } from "../../../examples/notes-manager-automerge/src/testing/built-body.ts";
 import { referenceBody } from "../../../examples/notes-manager-automerge/src/testing/reference.ts";
 
-/** The page, its model and what counts its storage calls: alive across the "same" phases of one tab. */
 type Session = { readonly notes: Notes; readonly body: PageBody; readonly rec: Recorder };
 let session: Session | undefined;
 let reopened: readonly Span[] = [];
@@ -23,12 +22,7 @@ const live = (): Session => {
   return session;
 };
 
-/**
- * The model over the contender's storage, built the way the app builds it,
- * with its list doc stored and its storage calls left out of the counters.
- * Untimed: opening a page is the caller's to time.
- */
-async function model(store: PagesStore): Promise<{ notes: Notes; rec: Recorder }> {
+async function openModel(store: PagesStore): Promise<{ notes: Notes; rec: Recorder }> {
   const rec = recorder(store.storage);
   const notes = await openNotes({
     storage: rec.storage,
@@ -37,7 +31,7 @@ async function model(store: PagesStore): Promise<{ notes: Notes; rec: Recorder }
     onDocMetrics: rec.onDocMetrics,
   });
   await notes.flush();
-  rec.skip();
+  rec.reset();
   return { notes, rec };
 }
 
@@ -74,7 +68,7 @@ export default defineWorkload({
     fetchTracePhase<"pages">(),
     phase("paste", { mainThread: true }, async (ctx) => {
       const id = newPageId();
-      const { notes, rec } = await model(await ctx.store());
+      const { notes, rec } = await openModel(await ctx.store());
       const body = await ctx.time("open-page", 0, () => notes.bodies.open(id));
       session = { notes, body, rec };
       const doc = builtBody(BODY_BYTES[ctx.size]);
@@ -135,7 +129,7 @@ export default defineWorkload({
       async run(ctx) {
         const store = await ctx.store();
         if (store.volatile) return;
-        const { notes, rec } = await model(store);
+        const { notes, rec } = await openModel(store);
         const body = await ctx.time("reopen", 0, async () => {
           const opened = await notes.bodies.open(ctx.carry.id as PageId);
           reopened = opened.spans();

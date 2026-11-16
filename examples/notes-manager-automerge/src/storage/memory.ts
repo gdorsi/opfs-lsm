@@ -1,6 +1,5 @@
 import type { Chunk, StorageAdapterInterface, StorageKey } from "@automerge/automerge-repo";
 
-/** Storage in a Map, for Node tests and the bench's `memory` contender, the floor a store's cost is measured from. */
 export function memoryStorage(): StorageAdapterInterface {
   const chunks = new Map<string, Chunk>();
   const name = (key: StorageKey) => JSON.stringify(key);

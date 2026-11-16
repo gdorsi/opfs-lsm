@@ -45,7 +45,6 @@ function Row({ id, depth }: { id: PageId; depth: number }) {
   const navigate = useNavigate();
   const current = useParams({ strict: false }).pageId;
   const [menu, setMenu] = useState<"closed" | "actions" | "confirm">("closed");
-  // Only between the page leaving the tree and its level rendering without it.
   if (!page) return null;
   const title = page.title || "Untitled";
 

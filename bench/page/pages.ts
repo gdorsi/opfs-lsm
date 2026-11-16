@@ -56,11 +56,9 @@ export type Recorder = {
   readonly onDocMetrics: (metrics: DocMetrics) => void;
   /** Adds what happened since the last call to the phase's counters, and returns the storage calls it made. */
   report(ctx: PhaseContext<"pages">): number;
-  /** Drops what happened since the last call, so the next report leaves it out. */
-  skip(): void;
+  reset(): void;
 };
 
-/** Counts the calls storage receives and the bytes the Repo saves, and sums Automerge's own CPU from its doc metrics. */
 export function recorder(inner: StorageAdapterInterface): Recorder {
   const total: Record<string, number> = {};
   const seen: Record<string, number> = {};
@@ -94,7 +92,7 @@ export function recorder(inner: StorageAdapterInterface): Recorder {
       ctx.count("storage ops", made);
       return made;
     },
-    skip() {
+    reset() {
       Object.assign(seen, total, { "storage ops": ops() });
     },
   };
