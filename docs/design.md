@@ -173,7 +173,12 @@ byte layout is in [sst-format.md](sst-format.md).
 
 A tab holds each run of its installed generation open and reads it on demand. The first read
 loads the footer, the bloom filter and the block index. Each later read loads the 32 KB page of
-whole blocks that it needs. All of it lives in one page cache per tab, capped by
+whole blocks that it needs. Reads of one run issued in the same turn are served by one read of
+the span that covers them, unless they are over 128 KiB apart or the span would pass 1 MiB. A
+scan that moves past its first page reads ahead toward its bound: when the page it enters is
+within half a window of the last page it asked for, it asks for a window more. The window starts
+at one page and doubles each time, up to 32. The scan holds the pages it read ahead, so they
+enter the cache unused. All of it lives in one page cache per tab, capped by
 `openDb({ cacheBytes })`, 256 MiB by default.
 
 A read is synchronous while its bytes are cached. Otherwise the caller awaits the load and reads

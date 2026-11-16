@@ -5,7 +5,8 @@ import { encodeSst as encodeWasm, engineUsingWasm, ensureEngine } from "../src/s
 import { PageCache } from "../src/store/page-cache.js";
 import { decodeSst, encodeSst, sstGet, sstKeyRange, type SstEntry } from "../src/store/sst.js";
 import { PAGE_TARGET, SstReader } from "../src/store/sst-reader.js";
-import { bytesFile } from "./runs.js";
+import { coalesceReads } from "../src/opfs/coalesce-reads.js";
+import { bytesFile, drain } from "./runs.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
 
 class Reads {
@@ -155,5 +156,42 @@ describe("lazy sst reader", () => {
 
     expect(got.map(show)).toEqual(all.slice(100, 104).map(show));
     expect(together.count).toBe(alone.count);
+  });
+
+  describe("a cold scan through coalesced reads", () => {
+    const entries: SstEntry[] = Array.from({ length: 15_000 }, (_, i) => ({
+      kind: "put",
+      key: utf(`k${String(i).padStart(6, "0")}`),
+      value: utf(`v${i}`.padEnd(200, ".")),
+      seq: i + 1,
+    }));
+    const body = encodeSst(entries);
+    const pages = Math.floor(body.byteLength / PAGE_TARGET);
+
+    function coldRun(reads: Reads): SstReader {
+      const read = coalesceReads(async (offset, length) => (reads.count++, body.slice(offset, offset + length).buffer));
+      return new SstReader({ size: body.byteLength, read }, new PageCache(), sstKeyRange(body));
+    }
+
+    for (const reverse of [false, true]) {
+      it(`reads ${reverse ? "back" : "forward"} through every page in a few reads`, async () => {
+        const reads = new Reads();
+        const got = await drain(coldRun(reads).cursor(undefined, reverse));
+        const want = reverse ? [...entries].reverse() : entries;
+        expect(got.map(show)).toEqual(want.map(show));
+        expect(pages).toBeGreaterThan(80);
+        expect(reads.count).toBeLessThan(pages / 5);
+      });
+    }
+
+    it("reads no page past the one a short scan ends in", async () => {
+      const bounds = { start: utf("k000010"), endExclusive: utf("k000020") };
+      const scanned = new Reads();
+      expect(await drain(coldRun(scanned).cursor(bounds))).toHaveLength(10);
+      const got = new Reads();
+      const reader = coldRun(got);
+      await untilHit(() => reader.get(utf("k000015")));
+      expect(scanned.count).toBe(got.count);
+    });
   });
 });
