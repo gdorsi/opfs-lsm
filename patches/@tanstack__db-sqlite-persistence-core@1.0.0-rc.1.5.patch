@@ -1,0 +1,118 @@
+diff --git a/dist/cjs/sqlite-core-adapter.cjs b/dist/cjs/sqlite-core-adapter.cjs
+index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..c23d84a1569d18e7e9b648cb25396348e28c26dc 100644
+--- a/dist/cjs/sqlite-core-adapter.cjs
++++ b/dist/cjs/sqlite-core-adapter.cjs
+@@ -438,7 +438,7 @@ function hasUnpairedSurrogate(value) {
+ 	return /[\uD800-\uDFFF]/u.test(value);
+ }
+ function isSafeEqualityLiteral(value) {
+-	return typeof value === `string` || typeof value === `boolean` || typeof value === `bigint` || require_sqlite_value.sqliteTemporalKind(value) !== void 0;
++	return typeof value === `number` && Number.isFinite(value) || typeof value === `string` || typeof value === `boolean` || typeof value === `bigint` || require_sqlite_value.sqliteTemporalKind(value) !== void 0;
+ }
+ function isSafeCoalesceOperand(expression) {
+ 	return expression?.type === `func` && expression.name === `coalesce` && expression.args.length === 2 && expression.args[0]?.type === `ref` && expression.args[1]?.type === `val` && isSafeEqualityLiteral(expression.args[1].value) && !(typeof expression.args[1].value === `string` && hasUnpairedSurrogate(expression.args[1].value));
+@@ -764,7 +764,7 @@ function compileSafeSqlPrefilter(expression, compiled) {
+ 	if (expression.name === `in` && expression.args.length === 2 && right?.type === `val` && Array.isArray(right.value)) {
+ 		if (right.value.length === 0) return compiled;
+ 		if (left?.type === `ref`) {
+-			if (right.value.every((value) => typeof value === `bigint`)) return compiled;
++			if (right.value.every((value) => typeof value === `bigint` || typeof value === `number` && Number.isFinite(value))) return compiled;
+ 			if (right.value.every((value) => typeof value === `string`)) return {
+ 				supported: true,
+ 				sql: `(${compileSqlExpression(left, `index-expression`).sql} IN (SELECT value FROM json_each(?)))`,
+@@ -774,6 +774,14 @@ function compileSafeSqlPrefilter(expression, compiled) {
+ 	}
+ 	if (expression.name === `like` && expression.args.length === 2 && left?.type === `ref` && right?.type === `val` && typeof right.value === `string` && /^[\x20-\x7e]*%$/.test(right.value) && !right.value.slice(0, -1).includes(`%`) && !right.value.includes(`_`)) return compiled;
+ }
++/** Whether SQL selects exactly the rows this filter selects in JavaScript, so SQL can apply the limit and offset. */
++function isExactSqlFilter(expression) {
++	if (expression.type !== `func`) return false;
++	if (expression.name === `and`) return expression.args.every(isExactSqlFilter);
++	if (expression.name !== `eq` && expression.name !== `in`) return false;
++	const compiled = compileSqlExpression(expression);
++	return compiled.supported && compileSafeSqlPrefilter(expression, compiled)?.sql === compiled.sql;
++}
+ function compileOrderByClauses(orderBy) {
+ 	if (!orderBy || orderBy.length === 0) return {
+ 		supported: true,
+@@ -1790,14 +1798,20 @@ var SQLiteCorePersistenceAdapter = class {
+ 			sql = `${sql} ORDER BY ${orderByCompiled.sql}, key ASC`;
+ 			queryParams.push(...orderByCompiled.params);
+ 		}
++		let paged = options.limit !== void 0 && options.orderBy !== void 0 && orderByCompiled.supported && (!options.where || isExactSqlFilter(options.where));
++		if (paged) {
++			sql = `${sql} LIMIT ? OFFSET ?`;
++			queryParams.push(options.limit, options.offset ?? 0);
++		}
+ 		if (queryParams.length > (driver.maxBoundParameters ?? this.driver.maxBoundParameters ?? 999)) {
+ 			sql = `SELECT key, value, metadata, row_version FROM ${collectionTableSql}`;
+ 			queryParams.length = 0;
++			paged = false;
+ 		}
+ 		const parsedRows = decodeStoredSqliteRows(await driver.query(sql, queryParams));
+ 		const filteredRows = this.applyInMemoryWhere(parsedRows, options.where);
+ 		const orderedRows = this.applyInMemoryOrderBy(filteredRows, options.orderBy);
+-		return this.applyInMemoryPagination(orderedRows, options.limit, options.offset);
++		return paged ? orderedRows : this.applyInMemoryPagination(orderedRows, options.limit, options.offset);
+ 	}
+ 	applyInMemoryWhere(rows, where) {
+ 		if (!where) return rows;
+diff --git a/dist/esm/sqlite-core-adapter.js b/dist/esm/sqlite-core-adapter.js
+index 905a24a7cfc9f594c1ce5d3e342c0e57003ea308..c9415fad6d2c47367166a97029d90d02f27e7d46 100644
+--- a/dist/esm/sqlite-core-adapter.js
++++ b/dist/esm/sqlite-core-adapter.js
+@@ -438,7 +438,7 @@ function hasUnpairedSurrogate(value) {
+ 	return /[\uD800-\uDFFF]/u.test(value);
+ }
+ function isSafeEqualityLiteral(value) {
+-	return typeof value === `string` || typeof value === `boolean` || typeof value === `bigint` || sqliteTemporalKind(value) !== void 0;
++	return typeof value === `number` && Number.isFinite(value) || typeof value === `string` || typeof value === `boolean` || typeof value === `bigint` || sqliteTemporalKind(value) !== void 0;
+ }
+ function isSafeCoalesceOperand(expression) {
+ 	return expression?.type === `func` && expression.name === `coalesce` && expression.args.length === 2 && expression.args[0]?.type === `ref` && expression.args[1]?.type === `val` && isSafeEqualityLiteral(expression.args[1].value) && !(typeof expression.args[1].value === `string` && hasUnpairedSurrogate(expression.args[1].value));
+@@ -764,7 +764,7 @@ function compileSafeSqlPrefilter(expression, compiled) {
+ 	if (expression.name === `in` && expression.args.length === 2 && right?.type === `val` && Array.isArray(right.value)) {
+ 		if (right.value.length === 0) return compiled;
+ 		if (left?.type === `ref`) {
+-			if (right.value.every((value) => typeof value === `bigint`)) return compiled;
++			if (right.value.every((value) => typeof value === `bigint` || typeof value === `number` && Number.isFinite(value))) return compiled;
+ 			if (right.value.every((value) => typeof value === `string`)) return {
+ 				supported: true,
+ 				sql: `(${compileSqlExpression(left, `index-expression`).sql} IN (SELECT value FROM json_each(?)))`,
+@@ -774,6 +774,14 @@ function compileSafeSqlPrefilter(expression, compiled) {
+ 	}
+ 	if (expression.name === `like` && expression.args.length === 2 && left?.type === `ref` && right?.type === `val` && typeof right.value === `string` && /^[\x20-\x7e]*%$/.test(right.value) && !right.value.slice(0, -1).includes(`%`) && !right.value.includes(`_`)) return compiled;
+ }
++/** Whether SQL selects exactly the rows this filter selects in JavaScript, so SQL can apply the limit and offset. */
++function isExactSqlFilter(expression) {
++	if (expression.type !== `func`) return false;
++	if (expression.name === `and`) return expression.args.every(isExactSqlFilter);
++	if (expression.name !== `eq` && expression.name !== `in`) return false;
++	const compiled = compileSqlExpression(expression);
++	return compiled.supported && compileSafeSqlPrefilter(expression, compiled)?.sql === compiled.sql;
++}
+ function compileOrderByClauses(orderBy) {
+ 	if (!orderBy || orderBy.length === 0) return {
+ 		supported: true,
+@@ -1790,14 +1798,20 @@ var SQLiteCorePersistenceAdapter = class {
+ 			sql = `${sql} ORDER BY ${orderByCompiled.sql}, key ASC`;
+ 			queryParams.push(...orderByCompiled.params);
+ 		}
++		let paged = options.limit !== void 0 && options.orderBy !== void 0 && orderByCompiled.supported && (!options.where || isExactSqlFilter(options.where));
++		if (paged) {
++			sql = `${sql} LIMIT ? OFFSET ?`;
++			queryParams.push(options.limit, options.offset ?? 0);
++		}
+ 		if (queryParams.length > (driver.maxBoundParameters ?? this.driver.maxBoundParameters ?? 999)) {
+ 			sql = `SELECT key, value, metadata, row_version FROM ${collectionTableSql}`;
+ 			queryParams.length = 0;
++			paged = false;
+ 		}
+ 		const parsedRows = decodeStoredSqliteRows(await driver.query(sql, queryParams));
+ 		const filteredRows = this.applyInMemoryWhere(parsedRows, options.where);
+ 		const orderedRows = this.applyInMemoryOrderBy(filteredRows, options.orderBy);
+-		return this.applyInMemoryPagination(orderedRows, options.limit, options.offset);
++		return paged ? orderedRows : this.applyInMemoryPagination(orderedRows, options.limit, options.offset);
+ 	}
+ 	applyInMemoryWhere(rows, where) {
+ 		if (!where) return rows;
