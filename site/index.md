@@ -253,7 +253,9 @@ const todos = createCollection(
 </template>
 <template v-slot:fate>
 
-`@opfs-lsm/fate` is not on npm yet.
+```sh
+pnpm add @opfs-lsm/fate @opfs-lsm/kv @nkzw/fate
+```
 
 ```ts
 import { kvStorage } from "@opfs-lsm/fate";

@@ -47,6 +47,7 @@ const sections: Section[] = [
     pages: [
       { label: "Engine design", source: "docs/design.md", route: "internals/design" },
       { label: "Manifest format", source: "docs/manifest-format.md", route: "internals/manifest-format" },
+      { label: "SST file format", source: "docs/sst-format.md", route: "internals/sst-format" },
     ],
   },
 ];
