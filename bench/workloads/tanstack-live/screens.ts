@@ -10,9 +10,11 @@
  *   settle     same   untimed   kv: flush and compact until stable; footprint
  *   prepare    fresh  untimed   the history and the oracle: bindings and every expected answer
  *   open       same   timed     the collections ("open"), then each screen to its first answer (op = screen)
+ *   unopen     same   untimed   every screen closed
  *   sync       same   timed     the first half of the sync batches, no screen open ("sync")
  *   screens    same   untimed   every screen opened again
  *   sync-live  same   timed     the second half with every screen open ("sync"), answers checked every 10 batches
+ *   close      same   untimed   every screen closed
  */
 import { SCREENS, type LiveScreen, type LiveStore, type Screen } from "../../core/families.ts";
 import type { Json, JsonRow } from "../../core/goals.ts";
@@ -96,6 +98,20 @@ async function replay(ctx: Ctx, from: number, to: number, checks: boolean): Prom
 
 const half = () => Math.floor(running().syncs.length / 2);
 
+/** Untimed, so a measured phase never includes taking its screens down. */
+function closeScreens(name: string): Phase<"tanstack-live"> {
+  return {
+    name,
+    page: "same",
+    timed: false,
+    async run() {
+      const r = running();
+      for (const s of r.screens) await s.close();
+      r.screens = [];
+    },
+  };
+}
+
 const phases: Phase<"tanstack-live">[] = [
   {
     name: "import",
@@ -152,11 +168,11 @@ const phases: Phase<"tanstack-live">[] = [
       const r = running();
       const store = await ctx.store();
       await yieldTask();
-      const screens = await openAll(store, r.bindings, ctx.time);
-      checkAll(ctx, screens, r.first, "first answer");
-      for (const s of screens) await s.close();
+      r.screens = await openAll(store, r.bindings, ctx.time);
+      checkAll(ctx, r.screens, r.first, "first answer");
     },
   },
+  closeScreens("unopen"),
   {
     name: "sync",
     page: "same",
@@ -178,13 +194,9 @@ const phases: Phase<"tanstack-live">[] = [
     page: "same",
     timed: true,
     mainThread: true,
-    async run(ctx) {
-      const r = running();
-      await replay(ctx, half(), r.syncs.length, true);
-      for (const s of r.screens) await s.close();
-      r.screens = [];
-    },
+    run: (ctx) => replay(ctx, half(), running().syncs.length, true),
   },
+  closeScreens("close"),
 ];
 
 export default defineWorkload({
