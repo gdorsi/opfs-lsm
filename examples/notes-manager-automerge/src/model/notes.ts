@@ -34,9 +34,8 @@ export interface Notes {
 }
 
 /**
- * Resolves once the list doc is found or seeded. Every tab removes the bodies
- * of the pages that leave its tree, and at open the bodies of entries it
- * cannot reach.
+ * Resolves once the list doc is found or seeded. Every tab removes the body of
+ * every id it sees that is not reachable, once: at open and on each change.
  */
 export async function openNotes(options: NotesOptions): Promise<Notes> {
   const storage = saveFilter(options.storage);
@@ -55,22 +54,24 @@ export async function openNotes(options: NotesOptions): Promise<Notes> {
   }
   const bodies = openBodies(repo, storage);
 
+  let tree: ListTree = readTree(list.fullDoc().pages);
+  const reclaimed = new Set<PageId>();
   let removing = Promise.resolve();
-  const reclaim = (ids: Iterable<PageId>, tree: Tree) => {
-    const gone = [...ids].filter((id) => !tree.page(id));
+  const reclaim = (ids: Iterable<PageId>) => {
+    const gone = [...new Set(ids)].filter((id) => !tree.page(id) && !reclaimed.has(id));
     if (gone.length === 0) return;
+    for (const id of gone) reclaimed.add(id);
     removing = removing.then(async () => {
       for (const id of gone) await bodies.remove(id).catch((error: unknown) => console.warn(`notes: could not remove the body of ${id}`, error));
     });
   };
 
-  let tree: ListTree = readTree(list.fullDoc().pages);
-  reclaim(Object.keys(list.fullDoc().pages) as PageId[], tree);
+  reclaim(Object.keys(list.fullDoc().pages) as PageId[]);
   const listeners = new Set<() => void>();
   const onChange = () => {
     const before = tree;
     tree = readTree(list.fullDoc().pages, before);
-    reclaim(before.ids(), tree);
+    reclaim([...before.ids(), ...(Object.keys(list.fullDoc().pages) as PageId[])]);
     for (const listener of listeners) listener();
   };
   list.on("change", onChange);

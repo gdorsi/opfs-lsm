@@ -82,12 +82,12 @@ again. A page deleted in another tab while it is open turns into the same screen
 
 ## Deleted bodies
 
-Every tab watches its own tree. When ids leave the reachable set, it removes their bodies one at a time, and a
-failure is logged without stopping the rest. When it opens, it also removes the bodies of the entries it cannot
-reach, which covers a tab that closed before a concurrent delete reached it. A removal blocks the id from saving for
-the rest of the Repo's life, so a copy in another tab cannot write it back, marks an open body `removed`, drops it
-from memory, waits for the saves in flight, then deletes every key under the id. It is idempotent, so every tab runs
-it.
+Every tab removes the body of every id it sees that is not reachable: an id that leaves its tree, and a list entry
+it cannot reach, at open and on each change. It removes each id once, one at a time, and a failure is logged without
+stopping the rest. A removal blocks the id from saving for the rest of the Repo's life, so a copy in another tab
+cannot write it back, marks an open body `removed`, drops every copy the Repo holds, opened in this tab or synced from
+a peer, so no tab that joins later receives it, waits for the saves in flight, then deletes every key under the id.
+It is idempotent, so every tab runs it.
 
 ## The editor
 
@@ -144,6 +144,8 @@ new `?db=` starts empty. In dev, `window.__notes` holds `notes`, `leases`, `stor
 - Moving pages, a trash, search and undo of a delete.
 - Sync between devices: the notes live on one device, shared by its tabs.
 - Live merging in a focused title field: it keeps its own text until it loses focus.
+- A body whose page was deleted while every tab closed before removing it: its keys stay, since the list no longer
+  names it.
 
 ## Measured
 
