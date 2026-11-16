@@ -1,7 +1,7 @@
 # Reading ahead in scans
 
 Date: 2026-11-16. Chrome 157 headless, macOS arm64, Apple M5 Max. The machine ran other work
-during every measurement, with a load average of 4 to 7. Each comparison is 5 interleaved runs per
+during every measurement, with a load average of 4 to 18. Each comparison is 5 interleaved runs per
 contender, and before and after are separate sessions of the same selection.
 
 Status: implemented.
@@ -32,7 +32,7 @@ Opening the board minus its longest task, ms, median and range of 5 runs:
 
 | size | kv before | kv after | y-indexeddb |
 |---|---:|---:|---:|
-| small | 13.7 (11 to 15) | 4.8 (4 to 5) | 5.5 (4 to 6) |
+| small | 13.7 (11 to 15) | 4.8 (4 to 5) | 5.7 (5 to 37) |
 | large | 32.6 (28 to 50) | 15.6 (15 to 18) | 16.5 (14 to 19) |
 
 The y-indexeddb column is from the before session. The ranges before and after do not overlap
@@ -85,13 +85,17 @@ A user pauses between screens, so the bench now starts each browse phase once th
 | board, p50 | 17.9 ms | 16.9 ms |
 | thread fetched from the server, p50 | 2.11 ms | 2.24 ms |
 
-The board and thread phases show no measurable difference.
+The board and thread phases show no measurable difference. The two sessions ran at different
+loads, 16 to 17.5 before and 11.8 to 12.8 after, so the cold open and jump rows lean on the
+three alternating sessions above, which ran without the wait: their cold open took 113 to 142 ms
+after against 146 to 242 ms before.
 
 ## Choices
 
 **A window that doubles from one page.** A scan that stops early, as one with a `limit` does,
-reads at most as many pages past its end as it read before. A long scan reaches 32-page reads
-(1 MiB, the largest span one read covers) within about 20 pages.
+has asked for at most about twice as many pages past where it stopped as it read, and never more
+than 32 (1 MiB, the largest span one read covers). A long cold scan reads its first page, then
+2, 2, 3, 6, 12 and 24 pages at a time, then 16 pages (512 KiB) per read.
 
 **Ask again only within half a window.** Topping the window up by one page per page entered sends
 one read per page again once the window is full. Asking for a whole window at a time gives one

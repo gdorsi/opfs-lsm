@@ -11,6 +11,7 @@ import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
 
 class Reads {
   count = 0;
+  bytes = 0;
 }
 
 function openRun(body: Uint8Array, cache: PageCache, reads = new Reads()): SstReader {
@@ -169,7 +170,7 @@ describe("lazy sst reader", () => {
     const pages = Math.floor(body.byteLength / PAGE_TARGET);
 
     function coldRun(reads: Reads): SstReader {
-      const read = coalesceReads(async (offset, length) => (reads.count++, body.slice(offset, offset + length).buffer));
+      const read = coalesceReads(async (offset, length) => (reads.count++, (reads.bytes += length), body.slice(offset, offset + length).buffer));
       return new SstReader({ size: body.byteLength, read }, new PageCache(), sstKeyRange(body));
     }
 
@@ -192,6 +193,17 @@ describe("lazy sst reader", () => {
       const reader = coldRun(got);
       await untilHit(() => reader.get(utf("k000015")));
       expect(scanned.count).toBe(got.count);
+    });
+
+    it("reads no page that starts at a scan's end bound", async () => {
+      // Pages start every 150 or so keys, so some of these bounds are the first key of a page.
+      for (let i = 400; i < 700; i++) {
+        const atKey = new Reads();
+        const beforeKey = new Reads();
+        expect(await drain(coldRun(atKey).cursor({ endExclusive: entries[i]!.key }))).toHaveLength(i);
+        expect(await drain(coldRun(beforeKey).cursor({ endExclusive: cat(entries[i - 1]!.key, Uint8Array.of(0)) }))).toHaveLength(i);
+        expect(atKey.bytes, `end bound ${i}`).toBe(beforeKey.bytes);
+      }
     });
   });
 });

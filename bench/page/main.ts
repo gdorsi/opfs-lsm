@@ -46,7 +46,8 @@ function idOf(globKey: string): { family: Family; id: string } {
 async function untilIdle(): Promise<void> {
   const until = performance.now() + 2000;
   while (performance.now() < until) {
-    const spare = await new Promise<number>((resolve) => requestIdleCallback((deadline) => resolve(deadline.timeRemaining())));
+    const timeout = Math.max(1, until - performance.now());
+    const spare = await new Promise<number>((resolve) => requestIdleCallback((deadline) => resolve(deadline.timeRemaining()), { timeout }));
     if (spare >= 40) return;
   }
 }

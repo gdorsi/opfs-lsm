@@ -251,8 +251,9 @@ export class SstReader {
 /**
  * The pages a scan asks for before it reaches them, toward `last`. When the
  * pages already asked for run within half a window of the page the scan
- * enters, it asks for a window more: one page, then twice as many each
- * time, up to `MAX_READ_AHEAD`. What one turn asks for shares one file read.
+ * enters, it asks for every page up to a window past that one. The window
+ * is one page, then twice as many each time, up to `MAX_READ_AHEAD`. What
+ * one turn asks for shares one file read.
  * The scan keeps what arrives, so entering such a page is not a cache hit
  * and one pass over the data still shows no reuse.
  */
@@ -291,7 +292,7 @@ class ReadAhead {
 /** The last page a scan of `bounds` can reach: the highest going forward, the lowest going back. */
 function lastPage(index: RunIndex, bounds: ScanBounds | undefined, reverse: boolean): number {
   const bound = reverse ? bounds?.start : bounds?.endExclusive;
-  if (bound) return pageOfBlock(index, Math.max(0, findBlock(index, bound)));
+  if (bound) return pageOfBlock(index, Math.max(0, reverse ? findBlock(index, bound) : blockBelow(index, bound)));
   return reverse ? 0 : index.pageFirst.length - 2;
 }
 

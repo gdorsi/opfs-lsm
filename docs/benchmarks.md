@@ -4,7 +4,7 @@ These tables compare opfs-lsm with the storage a web app would otherwise use: In
 
 ## Storage calls
 
-Medians of 10 runs, from two sessions of 5, in headless Chrome 157 on an Apple M5 Max with a load average of 7 to 11 from other work, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. The single-put row is the median of 21 runs: a run is 1,000 puts, too few for 5 runs to agree. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md).
+Medians of 10 runs, from two sessions of 5, in headless Chrome 157 on an Apple M5 Max with a load average of 6 to 11 from other work, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. The single-put row is the median of 21 runs: a run is 1,000 puts, too few for 5 runs to agree. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md).
 
 | Workload | IndexedDB | kv | |
 | --- | ---: | ---: | ---: |
@@ -85,7 +85,7 @@ After a cold open, docstore shows the list's total 46.1 ms after its first rows.
 
 The session never pauses for a second, so neither store merges the board's updates while it is open, and the reopen replays every one of them.
 
-**Pages, a 50 KB page and 1,000 keystrokes.** [`examples/pages-fate-automerge`](../examples/pages-fate-automerge) with fate's cache and the Automerge page bodies on one kv database, against `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps everything in memory, kv adds at most 2.1 ms to opening a page, pasting or a keystroke, and IndexedDB at most 12 ms, to opening a page.
+**Pages, a 50 KB page and 1,000 keystrokes.** [`examples/pages-fate-automerge`](../examples/pages-fate-automerge) with fate's cache and the Automerge page bodies on one kv database, against `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps everything in memory, kv adds at most 2.1 ms, to the save after a paste, and IndexedDB at most 12 ms, to opening a page.
 
 | Step | IndexedDB | opfs-lsm | |
 | --- | ---: | ---: | ---: |
