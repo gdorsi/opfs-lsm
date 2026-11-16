@@ -11,6 +11,8 @@ import type { StorageAdapterInterface } from "@automerge/react";
 import type { Backend } from "../../examples/linearlite-tanstackdb/src/model/backend.ts";
 import type { PersistenceStorage } from "@nkzw/fate/persistence";
 import type { KvStats } from "@opfs-lsm/kv/testing";
+import type { GoalStore } from "./goals.ts";
+import type { TrackerSpec, Tx as TrackerTx } from "../datasets/tracker/types.ts";
 import type * as Y from "yjs";
 
 export type Bytes = Uint8Array;
@@ -133,6 +135,9 @@ export type LinearliteStore = Common & {
   readonly backend: Backend;
 };
 
+/** The task-tracker dataset's goals: each contender replays the history through its write API and answers every goal with its own query API. */
+export type TrackerStore = Common & GoalStore<TrackerSpec, TrackerTx>;
+
 /** Family name → store interface. The directory names under workloads/ and contenders/ are these keys. */
 export type FamilyStores = {
   kv: KvStore;
@@ -144,6 +149,7 @@ export type FamilyStores = {
   fate: FateStore;
   pages: PagesStore;
   linearlite: LinearliteStore;
+  tracker: TrackerStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "pages", "linearlite"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "pages", "linearlite", "tracker"];

@@ -46,6 +46,67 @@
     },
     {
       "files": [
+        "bench/contenders/tracker/**",
+        "bench/page/tracker.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "fake-indexeddb",
+                  "fake-indexeddb/*"
+                ],
+                "message": "Benchmarks must run on the browser's real IndexedDB."
+              },
+              {
+                "group": [
+                  "**/datasets/*/history*",
+                  "**/datasets/*/oracle*",
+                  "**/datasets/*/index*"
+                ],
+                "message": "A contender sees only its dataset's types.ts: the history and the oracle stay out of contender code."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "bench/datasets/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "fake-indexeddb",
+                  "fake-indexeddb/*"
+                ],
+                "message": "Benchmarks must run on the browser's real IndexedDB."
+              },
+              {
+                "group": [
+                  "**/contenders/**",
+                  "**/page/tracker*",
+                  "@opfs-lsm/*",
+                  "dexie",
+                  "@tanstack/*"
+                ],
+                "message": "A dataset's history and oracle share no code with a contender and import no storage library."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "examples/whiteboard-yjs/src/model/**"
       ],
       "rules": {
