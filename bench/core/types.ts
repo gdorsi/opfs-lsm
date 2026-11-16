@@ -80,6 +80,12 @@ export type Phase<F extends Family> = {
    * calls with no yield is one giant task, which is not a user metric.
    */
   readonly mainThread?: boolean;
+  /**
+   * Start once the page is idle, as it is while a user moves to the next
+   * screen, so the work an app leaves for idle time after one phase does
+   * not land in the next one's timings.
+   */
+  readonly idleFirst?: boolean;
   run(ctx: PhaseContext<F>): Promise<void>;
 };
 

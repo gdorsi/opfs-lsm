@@ -39,6 +39,18 @@ function idOf(globKey: string): { family: Family; id: string } {
   return { family, id: `${m[1]}/${m[2]}` };
 }
 
+/**
+ * Resolves in an idle period with 40 ms to spare: the page has run what it left
+ * for idle time. Gives up after 2 s, so a page that never idles still runs.
+ */
+async function untilIdle(): Promise<void> {
+  const until = performance.now() + 2000;
+  while (performance.now() < until) {
+    const spare = await new Promise<number>((resolve) => requestIdleCallback((deadline) => resolve(deadline.timeRemaining())));
+    if (spare >= 40) return;
+  }
+}
+
 async function load<T extends { family: Family }>(
   modules: Record<string, () => Promise<{ default: T }>>,
   id: string,
@@ -139,6 +151,7 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
     progress,
   };
 
+  if (phase.idleFirst) await untilIdle();
   const t0 = performance.now();
   let mainThread: MainThread | undefined;
   if (phase.mainThread) mainThread = (await measureMainThread(() => phase.run(ctx))).mainThread;

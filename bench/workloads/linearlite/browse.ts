@@ -32,7 +32,7 @@ const planned = (): Plan => {
 const same = (a: readonly number[] | undefined, b: readonly number[]) => a !== undefined && a.join() === b.join();
 
 function phase(name: string, extra: Partial<Phase<"linearlite">>, run: (ctx: Ctx) => Promise<void>): Phase<"linearlite"> {
-  return { name, page: "same", timed: true, ...extra, run };
+  return { name, page: "same", timed: true, idleFirst: true, ...extra, run };
 }
 
 /** A list under `filter` that shows its first rows, and its total, as the oracle has them. Kept on screen only when `commit` is set. */
