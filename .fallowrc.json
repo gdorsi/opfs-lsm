@@ -31,7 +31,8 @@
   ],
   "ignoreDependencies": [
     "lucide-react",
-    "vue"
+    "vue",
+    "@automerge/automerge-repo-storage-indexeddb"
   ],
   "ignoreExports": [
     {

@@ -85,6 +85,8 @@ export type Dataset<S extends GoalSpecMap, Tx, O extends Oracle<S, Tx>> = {
   txBytes(tx: Tx): number;
   oracle(): O;
   readonly goals: GoalMetas<S, O>;
+  /** A read the replay makes every `every` batches, as a list on screen re-queries while a large sync lands. */
+  readonly duringLoad: { readonly every: number; readonly read: Call<S> };
   /** A write after the goals ran, and the reads that must show it. */
   reread(oracle: O): Reread<S, Tx>;
 };

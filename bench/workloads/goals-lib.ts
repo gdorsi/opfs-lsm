@@ -2,7 +2,8 @@
  * One dataset -> one workload. The phases come from the dataset's goal list,
  * so adding a goal adds its phase:
  *
- *   replay   same   timed     the history's aging part through `apply`: ops per batch kind ("import", "sync")
+ *   replay   same   timed     the history's aging part through `apply`: ops per batch kind ("import", "sync"),
+ *                             and every few batches the dataset's `duringLoad` read ("read")
  *   settle   same   untimed   kv: flush and compact until stable; footprint
  *   recent   same   timed     writes on top of the settled store ("bulk", "edit"), as a user makes them
  *   prepare  same   untimed   curate bindings, compute every expected answer, carry them; footprint
@@ -54,11 +55,16 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
     async run(ctx) {
       const store = await storeOf(ctx);
       live = { history: d.history(ctx.size, d.seed), oracle: d.oracle() };
+      const { every, read } = d.duringLoad;
       let n = 0;
       for (const tx of live.history.load) {
         live.oracle.apply(tx);
         await ctx.time(d.txOp(tx), d.txBytes(tx), () => store.apply(tx), d.txCount(tx));
-        if (++n % 500 === 0) ctx.progress(`replay: ${n} batches`);
+        if (++n % every === 0) {
+          const got = await ctx.time("read", 0, () => store.goals[read.goal]!(read.params));
+          check(ctx, `${read.goal} after batch ${n}`, got, live.oracle.goals[read.goal]!(read.params));
+        }
+        if (n % 500 === 0) ctx.progress(`replay: ${n} batches`);
       }
       ctx.carry.liveLogicalBytes = live.oracle.liveBytes();
     },
