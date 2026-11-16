@@ -24,9 +24,6 @@ export function ListScreen() {
   const filter = useIssueFilter();
   const view = useIssueWindow(filter);
   const filterKey = JSON.stringify(filter);
-  useEffect(() => {
-    if (view.rows.length > 0 && performance.getEntriesByName("linearlite:first-rows").length === 0) performance.mark("linearlite:first-rows");
-  }, [view.rows.length]);
   const total = view.total ?? (view.rows.length > 0 ? view.offset + view.rows.length : undefined);
   return (
     <>

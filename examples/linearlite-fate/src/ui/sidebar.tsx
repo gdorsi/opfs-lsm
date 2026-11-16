@@ -1,6 +1,5 @@
 import { Link } from "@tanstack/react-router";
 import { keepSearch } from "./nav.ts";
-import { useSession } from "../client/fate.ts";
 import { useSyncStatus, type SyncStatus } from "../client/hooks.ts";
 
 export function Sidebar({ onNew }: { onNew(): void }) {
@@ -34,20 +33,15 @@ export function Sidebar({ onNew }: { onNew(): void }) {
   );
 }
 
-const STORAGE = { kv: "kv on OPFS", idb: "fate IndexedDB" } as const;
 const n = (x: number) => x.toLocaleString("en-US");
 
 function SyncFooter() {
   const status = useSyncStatus();
-  const { storage } = useSession();
   const text = describe(status);
   return (
     <div className={`sync ${status.kind === "offline" || status.kind === "retrying" ? "sync-offline" : status.kind === "syncing" ? "sync-live" : ""}`} id="sync" role="status">
       {text && <b>{text}</b>}
       {status.error && <span className="mono" title={status.error}>{status.error}</span>}
-      <span className="mono" id="storage" data-storage={storage}>
-        Cache: {STORAGE[storage]}
-      </span>
     </div>
   );
 }

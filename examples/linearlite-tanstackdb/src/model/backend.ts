@@ -33,17 +33,6 @@ export interface Anchoring {
   watchBase(value: SortValue, emit: (base: number) => void): Unsubscribe;
 }
 
-/** How a backend serves each concern, one line each, for the bench report to print next to its numbers. */
-export type BackendPath = {
-  readonly name: "docstore" | "indexeddb" | "sqlite";
-  readonly loads: string;
-  readonly writes: string;
-  readonly counts: string;
-  readonly deep: string;
-  readonly pressure: string;
-  readonly tabs: string;
-};
-
 /**
  * Where the model keeps its replica. Merges, the outbox, clocks, query shapes, windows and sync are the model's and
  * run unchanged on every backend.
@@ -55,7 +44,6 @@ export type BackendPath = {
  * - Once `transact` resolves, a live query that keeps one of its rows shows the new row.
  */
 export interface Backend {
-  readonly path: BackendPath;
   /** The store's TanStack collection. The model reads it through live queries only. */
   collection<S extends StoreName>(store: S): Collection<CollectionRows[S], string>;
   /** The stored rows of `ids`, in order, undefined where absent, without loading them into the collection where the backend can avoid it. */

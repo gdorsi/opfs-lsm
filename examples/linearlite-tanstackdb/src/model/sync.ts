@@ -42,12 +42,6 @@ export interface Sync {
   confirmEviction(): Promise<void>;
 }
 
-export type SyncOptions = {
-  readonly pullLimit?: number;
-  /** Called the first time this leader finds a stream caught up with the server. */
-  readonly onCaughtUp?: (stream: Stream) => void;
-};
-
 const perStream = <T>(value: T) => Object.fromEntries(STREAMS.map((s) => [s, value])) as Record<Stream, T>;
 
 const EMPTY: SyncState = {
@@ -116,21 +110,18 @@ class Leader {
   private stopped = false;
   private state: SyncState = EMPTY;
   private head: number | undefined;
-  private readonly marked = new Set<Stream>();
   private readonly offs: Unsubscribe[] = [];
   private readonly waiters: { resolve(): void; reject(err: Error): void }[] = [];
   private readonly backend: Backend;
   private readonly outbox: Outbox;
   private readonly transport: Transport;
-  private readonly onCaughtUp: ((stream: Stream) => void) | undefined;
   private readonly pager: Pager<PullResponse>;
 
-  constructor(backend: Backend, outbox: Outbox, transport: Transport, { pullLimit = PULL_LIMIT, onCaughtUp }: SyncOptions) {
+  constructor(backend: Backend, outbox: Outbox, transport: Transport) {
     this.backend = backend;
     this.outbox = outbox;
     this.transport = transport;
-    this.onCaughtUp = onCaughtUp;
-    this.pager = new Pager((stream, after) => transport.pull(stream, after, pullLimit));
+    this.pager = new Pager((stream, after) => transport.pull(stream, after, PULL_LIMIT));
   }
 
   async start(): Promise<void> {
@@ -278,13 +269,6 @@ class Leader {
         caughtUp: { ...caughtUp, ...Object.fromEntries(BACKGROUND.map((s) => [s, true])) },
       });
     }
-    for (const stream of BACKGROUND) this.mark(stream);
-  }
-
-  private mark(stream: Stream): void {
-    if (this.marked.has(stream)) return;
-    this.marked.add(stream);
-    this.onCaughtUp?.(stream);
   }
 
   private stale(stream: Stream): boolean {
@@ -303,7 +287,6 @@ class Leader {
       cursors: { ...this.state.cursors, [stream]: res.next },
       caughtUp: { ...this.state.caughtUp, [stream]: !res.more },
     });
-    if (!res.more) this.mark(stream);
   }
 
   private checkEpoch(epoch: string): void {
@@ -382,7 +365,6 @@ class Leader {
     for (const name of STREAMS) await this.backend.clear(name);
     this.pager.forget();
     this.head = undefined;
-    this.marked.clear();
     await this.save({ ...EMPTY, epoch });
   }
 }
@@ -440,7 +422,7 @@ const stillAfter = (ms: number, signal: AbortSignal | undefined) =>
 const rowsOf = (s: Snapshot) => s.data as readonly unknown[];
 const syncRow = (s: Snapshot) => s.state?.get("sync") as SyncState | undefined;
 
-export function openSync(backend: Backend, transport: Transport, threads: ReturnType<typeof threadFetcher>, options: SyncOptions): Sync {
+export function openSync(backend: Backend, transport: Transport, threads: ReturnType<typeof threadFetcher>): Sync {
   let leader: Leader | undefined;
   const outbox = outboxOf(backend);
   const row = observe(backend.collection("sync"));
@@ -450,7 +432,7 @@ export function openSync(backend: Backend, transport: Transport, threads: Return
   return {
     async lead(signal) {
       if (leader) throw new Error("this model already leads sync");
-      const current = new Leader(backend, outbox, transport, options);
+      const current = new Leader(backend, outbox, transport);
       leader = current;
       try {
         await current.start().catch((err: unknown) => console.error("linearlite sync did not start", err));

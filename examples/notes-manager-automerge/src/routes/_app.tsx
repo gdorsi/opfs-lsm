@@ -5,11 +5,10 @@ import { Shell } from "../ui/shell.tsx";
 
 export const Route = createFileRoute("/_app")({
   ssr: false,
-  validateSearch: (search: Record<string, unknown>): { storage?: "idb"; db?: string } => ({
-    ...(search.storage === "idb" && { storage: "idb" }),
+  validateSearch: (search: Record<string, unknown>): { db?: string } => ({
     ...(typeof search.db === "string" && search.db && { db: search.db }),
   }),
-  search: { middlewares: [retainSearchParams(["storage", "db"])] },
+  search: { middlewares: [retainSearchParams(["db"])] },
   loader: async () => {
     const app = await openApp();
     keepAppOnDevice();

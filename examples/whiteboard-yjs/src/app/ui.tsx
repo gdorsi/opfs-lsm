@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode 
 import type { BoardMeta, SaveState, Workspace } from "../model/index.ts";
 import { useWorkspace } from "./hooks.ts";
 import { Icon, ICON, Mark } from "./icons.tsx";
-import type { StorageKind } from "./session.ts";
 
 export const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -146,15 +145,6 @@ export function SaveStatus({ state, skipped, retry }: { state: SaveState; skippe
 export function WorkspaceSaveBadge({ ws }: { ws: Workspace }): ReactNode {
   const { save } = useWorkspace(ws);
   return <SaveStatus state={save} skipped={0} retry={() => ws.flush()} />;
-}
-
-export function StorageChip({ storage }: { storage: StorageKind }): ReactNode {
-  return (
-    <span className="chip" data-tip={storage === "kv" ? "Stored with @opfs-lsm/kv on OPFS" : "Stored with y-indexeddb"}>
-      <Icon size={14}>{ICON.storage}</Icon>
-      {storage === "kv" ? "OPFS (kv)" : "IndexedDB"}
-    </span>
-  );
 }
 
 export function TitleInput({ ws, meta, onDone, className }: { ws: Workspace; meta: BoardMeta; onDone: () => void; className: string }): ReactNode {

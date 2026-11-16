@@ -2,18 +2,13 @@
   "name": "@opfs-lsm/example-whiteboard-yjs",
   "private": true,
   "type": "module",
-  "exports": {
-    "./model": "./src/model/index.ts",
-    "./persistence": "./src/persistence/index.ts"
-  },
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
     "start": "vite preview",
     "check": "tsc -p tsconfig.json",
-    "test": "tsx --test tests/*.test.ts tests/contract/*.test.ts tests/app/*.test.ts && pnpm test:kv && pnpm test:idb",
-    "test:kv": "WB_STORAGE=kv tsx --test tests/*.test.ts",
-    "test:idb": "WB_STORAGE=idb tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts tests/contract/*.test.ts tests/app/*.test.ts && pnpm test:kv",
+    "test:kv": "WB_STORAGE=kv tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@opfs-lsm/kv": "workspace:*",
@@ -23,7 +18,6 @@
     "fractional-indexing": "^3.2.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "y-indexeddb": "^9.0.12",
     "yjs": "^13.6.33"
   },
   "devDependencies": {

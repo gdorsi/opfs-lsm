@@ -4,19 +4,16 @@ import { after, before, describe, it } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
-import { openIndexedDbBackend } from "../backends/indexeddb.ts";
 import { openKvBackend } from "../backends/kv.ts";
-import { openSqliteBackend } from "../backends/sqlite.ts";
 import type { PriorityCode, ServerRow } from "../domain/model.ts";
 import { memoryServer, memoryTransport } from "../server/memory.ts";
-import { nodeSqlite } from "../testing/sqlite.ts";
 import type { Backend } from "./backend.ts";
 import { parseIssueFilter } from "./filter.ts";
 import { openLinearlite, type Linearlite } from "./index.ts";
 import { hold, type Held, type Live } from "./live.ts";
 import type { Thread } from "./views.ts";
 
-/** docstore as a backend that has neither `anchor` nor `onPressure`, as TanStack's IndexedDB persistence does not. */
+/** docstore without `anchor` and `onPressure`, the parts a backend may leave out, so the views run without them. */
 async function withoutOptions(db: Db): Promise<Backend> {
   const { anchor: _anchor, onPressure: _onPressure, ...backend } = await openKvBackend(db);
   return backend;
@@ -25,8 +22,6 @@ async function withoutOptions(db: Db): Promise<Backend> {
 for (const [label, openBackend] of [
   ["docstore", openKvBackend],
   ["docstore without anchor or onPressure", withoutOptions],
-  ["indexeddb", () => openIndexedDbBackend(`linearlite-views-${process.pid}`)],
-  ["sqlite", () => openSqliteBackend(nodeSqlite(), { name: `linearlite-views-${process.pid}` })],
 ] as const) {
   describe(`the views on ${label}`, () => views(label, openBackend));
 }

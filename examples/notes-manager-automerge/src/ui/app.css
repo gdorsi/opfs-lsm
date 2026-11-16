@@ -53,10 +53,6 @@ button {
 a {
   color: inherit;
 }
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-}
 
 .splash,
 .loading {

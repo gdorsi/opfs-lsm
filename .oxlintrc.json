@@ -148,7 +148,6 @@
               {
                 "group": [
                   "@opfs-lsm/*",
-                  "y-indexeddb",
                   "fake-indexeddb",
                   "fake-indexeddb/*",
                   "../persistence/*"
@@ -173,7 +172,6 @@
               {
                 "group": [
                   "@opfs-lsm/*",
-                  "y-indexeddb",
                   "fake-indexeddb",
                   "fake-indexeddb/*"
                 ],
@@ -223,7 +221,6 @@
                   "react-dom/*",
                   "@tanstack/*",
                   "@opfs-lsm/*",
-                  "y-indexeddb",
                   "fake-indexeddb",
                   "fake-indexeddb/*",
                   "../../persistence/*"
@@ -296,7 +293,6 @@
               {
                 "group": [
                   "@opfs-lsm/*",
-                  "y-indexeddb",
                   "fake-indexeddb",
                   "fake-indexeddb/*"
                 ],
@@ -469,7 +465,7 @@
                   "!@automerge/automerge",
                   "!@automerge/automerge-repo"
                 ],
-                "message": "The model runs unchanged in the app, the bench and Node: it imports only Automerge and automerge-repo."
+                "message": "The model runs unchanged in the app and in Node tests: it imports only Automerge and automerge-repo."
               }
             ]
           }

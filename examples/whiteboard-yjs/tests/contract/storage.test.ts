@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import * as Y from "yjs";
-import { BACKENDS, collectUnhandled, disk } from "../support/disk.ts";
+import { BACKENDS, disk } from "../support/disk.ts";
 
 const put = (doc: Y.Doc, key: string, value: number, origin?: unknown) =>
   doc.transact(() => doc.getMap("m").set(key, value), origin);
@@ -209,9 +209,8 @@ for (const backend of BACKENDS) {
     });
 
     const failing = backend === "memory" ? { skip: "an in-memory write cannot fail" } : {};
-    test("a failed write rejects flush until a flush can store the whole doc again", failing, async (t) => {
+    test("a failed write rejects flush until a flush can store the whole doc again", failing, async () => {
       const d = fresh();
-      const unhandled = collectUnhandled(t);
 
       const doc = new Y.Doc();
       const binding = await d.storage.attach("d", doc);
@@ -232,12 +231,10 @@ for (const backend of BACKENDS) {
       const again = new Y.Doc();
       await d.storage.attach("d", again);
       assert.deepEqual(json(again), { kept: 1, lost: 2, after: 3 });
-      if (backend === "kv") assert.deepEqual(unhandled, []);
     });
 
-    test("a detach whose flush fails still stops storing", failing, async (t) => {
+    test("a detach whose flush fails still stops storing", failing, async () => {
       const d = fresh();
-      collectUnhandled(t);
 
       const doc = new Y.Doc();
       const binding = await d.storage.attach("d", doc);

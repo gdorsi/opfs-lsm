@@ -141,17 +141,18 @@ describe("opening a board", () => {
     assert.equal((await ws.openBoard(id)).view().shapes.size, 0);
   });
 
-  test("the workspace's settings reach its boards, and the meter sees the index and every board", async () => {
-    const seen: string[] = [];
+  test("the workspace's settings reach its boards", async () => {
     const storage = memoryStorage();
-    const { ws } = await start({ storage, gestureIntervalMs: Infinity, meter: (name) => seen.push(name) });
+    const { ws } = await start({ storage, gestureIntervalMs: Infinity });
     const id = ws.createBoard("A");
     const board = await ws.openBoard(id);
     const [a] = board.dispatch({ type: "create", shapes: [rect()] }).created;
+    const stored = () => storage.updates.get(`board/${id}`)!.length;
+    const before = stored();
     const drag = board.beginGesture({ kind: "translate", ids: [a!] });
     for (let i = 1; i <= 30; i++) drag.update({ dx: i, dy: 0 }, i * 8);
     drag.end();
-    assert.deepEqual(seen, ["workspace", `board/${id}`, `board/${id}`], "the create, then one write for the whole drag");
+    assert.equal(stored() - before, 1, "one write for the whole drag");
   });
 });
 
