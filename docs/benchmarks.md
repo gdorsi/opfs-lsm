@@ -4,7 +4,7 @@ These tables compare opfs-lsm with the storage a web app would otherwise use: In
 
 ## Storage calls
 
-Medians of 10 runs, from two sessions of 5, in headless Chrome 157 on an Apple M5 Max with a load average of 6 to 11 from other work, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. The single-put row is the median of 21 runs: a run is 1,000 puts, too few for 5 runs to agree. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md).
+Medians of 10 runs, from two sessions of 5, in headless Chrome 157 on an Apple M5 Max with a load average of 6 to 11 from other work, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. The single-put row is the median of 21 runs: a run is 1,000 puts, too few for 5 runs to agree. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md). The run files behind this table were not kept; the full results of each newer table are in [results/](results/), linked under it.
 
 | Workload | IndexedDB | kv | |
 | --- | ---: | ---: | ---: |
@@ -19,7 +19,7 @@ Medians of 10 runs, from two sessions of 5, in headless Chrome 157 on an Apple M
 
 ## Framework adapters
 
-The framework adapters, each against the IndexedDB option its framework ships, at size `small`:
+The framework adapters, each against the IndexedDB option its framework ships, at size `small`. The run files behind this table were not kept:
 
 | Framework | Workload | IndexedDB option | opfs-lsm | |
 | --- | --- | ---: | ---: | ---: |
@@ -37,7 +37,7 @@ The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexedd
 
 ### Typing, then reopening
 
-The editing-trace workloads write the trace's first 25,700 keystrokes, then type the last 300 at one per 16 ms frame, one update each. Then they open the document cold in a fresh tab, once before kv settles and once after. Medians of 3 runs (6 for Yjs on kv) at size `small`, headless Chrome 157 on an Apple M2 Pro with a load average of 2 to 5:
+The editing-trace workloads write the trace's first 25,700 keystrokes, then type the last 300 at one per 16 ms frame, one update each. Then they open the document cold in a fresh tab, once before kv settles and once after. Medians of 3 runs (6 for Yjs on kv) at size `small`, headless Chrome 157 on an Apple M2 Pro with a load average of 2 to 5. Full results: Automerge in [2026-11-16T19-59-22](results/2026-11-16T19-59-22-apple-m2-pro.md), whose Yjs rows predate the pause after `persist` and are not used; Yjs in [2026-11-16T21-33-15](results/2026-11-16T21-33-15-apple-m2-pro.md) and [2026-11-16T21-36-08](results/2026-11-16T21-36-08-apple-m2-pro.md), kv only.
 
 | | y-indexeddb | Yjs on kv | automerge-repo IndexedDB | Automerge on kv |
 | --- | ---: | ---: | ---: | ---: |
@@ -50,7 +50,7 @@ Automerge's own load of the document takes most of its cold open on both stores.
 
 ### On demand, against SQLite
 
-In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack/browser-db-sqlite-persistence`, which runs wa-sqlite on OPFS in a dedicated WebWorker. Its adapter is patched to send `LIMIT` and equality on numbers to SQLite, as [bench/README.md](../bench/README.md) describes. Both collections hold 100,000 rows and load only what a query asks for. The reads, medians of 5 interleaved runs in headless Chrome 157 on an Apple M2 Pro with a load average of about 3:
+In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack/browser-db-sqlite-persistence`, which runs wa-sqlite on OPFS in a dedicated WebWorker. Its adapter is patched to send `LIMIT` and equality on numbers to SQLite, as [bench/README.md](../bench/README.md) describes. Both collections hold 100,000 rows and load only what a query asks for. The reads, medians of 5 interleaved runs in headless Chrome 157 on an Apple M2 Pro with a load average of about 3. The run files behind this table were not kept:
 
 | Workload | SQLite | opfs-lsm | |
 | --- | ---: | ---: | ---: |
@@ -65,7 +65,7 @@ The bench also runs `docstore` against Dexie. [bench/README.md](../bench/README.
 
 The tables above time storage calls. These time the questions an app's screens ask. A task tracker with 20,000 issues, 43,000 comments, 120 people, 24 projects and 30 labels is built from its history: an import, then sync batches that move issues between statuses and people, then a settle, then a sprint close and single edits on top. Each library replays the history through its own write API. It then answers each goal with its own query API and indexes, and every answer is checked against an oracle. [bench/README.md](../bench/README.md#goal-workloads) lists the goals, and [the research note](research/goal-driven-benchmarks.md) explains the method.
 
-Medians of 3 runs in headless Chrome 157 on an Apple M2 Pro with a load average of 1.1. Each cell is cold / warm in ms: cold is the first call after opening the store in a fresh tab, warm repeats it.
+Medians of 3 runs in headless Chrome 157 on an Apple M2 Pro with a load average of 1.1 to 4.9. Full results: [2026-11-16T19-30-45](results/2026-11-16T19-30-45-apple-m2-pro.md). Each cell is cold / warm in ms: cold is the first call after opening the store in a fresh tab, warm repeats it.
 
 | Goal | Dexie | SQLite on OPFS | docstore |
 | --- | ---: | ---: | ---: |
@@ -89,7 +89,7 @@ Medians of 3 runs in headless Chrome 157 on an Apple M2 Pro with a load average 
 | One edit | 0.40 ms | 1.1 ms | 0.61 ms |
 | Sprint close, 1,027 issues in one batch | 155 ms | 85 ms | 61 ms |
 
-During the sync, the 50 most recently updated issues are read again after every 10th batch, as a list on screen would be. That read took 1.5 ms on Dexie, 0.58 ms on SQLite and 0.82 ms on docstore, medians of a later run with a load average of 4 to 5.
+During the sync, the 50 most recently updated issues are read again after every 10th batch, as a list on screen would be. That read took 1.5 ms on Dexie, 0.58 ms on SQLite and 0.82 ms on docstore, medians of a later run with a load average of 4 to 5: [2026-11-16T19-59-22](results/2026-11-16T19-59-22-apple-m2-pro.md).
 
 Warm, docstore answers 7 of the 11 goals fastest, because a tab reads on its own main thread from its page cache. Cold, it is the slowest on most goals: the 50 rows of a page each sit on their own 32 KB page, which a fresh tab loads from OPFS. A group-by and a deep window cost more on docstore, because its queries return neither index values nor an offset. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart.
 

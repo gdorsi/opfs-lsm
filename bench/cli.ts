@@ -102,7 +102,9 @@ async function run(o: {
     const runs = plan(catalog, { workloads: o.workloads, contenders: o.contenders, size: o.size, reps: o.reps });
     mkdirSync(RESULTS_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const resultsFile = path.join(RESULTS_DIR, `${stamp}-${os.hostname().split(".")[0]}${o.smoke ? "-smoke" : ""}.jsonl`);
+    // Named by CPU, not hostname: published runs are committed under docs/results/.
+    const cpu = (os.cpus()[0]?.model ?? "cpu").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const resultsFile = path.join(RESULTS_DIR, `${stamp}-${cpu}${o.smoke ? "-smoke" : ""}.jsonl`);
     console.log(`${runs.length} runs → ${path.relative(process.cwd(), resultsFile)}`);
     const records = await runPlan(runs, {
       origin: server.origin,
