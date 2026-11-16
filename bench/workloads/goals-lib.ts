@@ -164,7 +164,7 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
   });
 }
 
-function picker(seed: number): Picker {
+export function picker(seed: number): Picker {
   const next = rng(seed);
   return {
     rng: next,
@@ -191,7 +191,7 @@ function canonical(v: Json | undefined): string {
 }
 
 /** Undefined when equal; otherwise both sides around the first difference. */
-function differ(got: Json, want: Json): string | undefined {
+export function differ(got: Json, want: Json): string | undefined {
   const a = canonical(got);
   const b = canonical(want);
   if (a === b) return undefined;

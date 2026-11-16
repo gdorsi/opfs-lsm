@@ -126,6 +126,24 @@ export type FateStore = Common & {
 /** The task-tracker dataset's goals: each contender replays the history through its write API and answers every goal with its own query API. */
 export type TrackerStore = Common & GoalStore<TrackerSpec, TrackerTx>;
 
+/** The tracker goals a screen shows as one ordered, limited list of cards: the ones a TanStack DB live query answers. */
+export const SCREENS = ["statusPage", "labelPage", "myIssues", "recentActivity"] as const satisfies readonly (keyof TrackerSpec)[];
+export type Screen = (typeof SCREENS)[number];
+
+/** One screen's live query. TanStack DB keeps it current; `answer` reads it as the screen would render it. */
+export type LiveScreen<S extends Screen = Screen> = {
+  answer(): TrackerSpec[S]["answer"];
+  close(): Promise<void>;
+};
+
+/** TanStack DB live queries over the tracker's users, projects, labels and issues. */
+export type LiveStore = Common & {
+  /** One transaction of the tracker history through TanStack collection writes. Resolves once it is persisted and every open screen shows it. */
+  apply(tx: TrackerTx): Promise<void>;
+  /** Starts the screen's live query; resolves at its first answer. */
+  open<S extends Screen>(screen: S, params: TrackerSpec[S]["params"]): Promise<LiveScreen<S>>;
+};
+
 /** Family name → store interface. The directory names under workloads/ and contenders/ are these keys. */
 export type FamilyStores = {
   kv: KvStore;
@@ -136,6 +154,7 @@ export type FamilyStores = {
   yjs: YjsStore;
   fate: FateStore;
   tracker: TrackerStore;
+  "tanstack-live": LiveStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "tracker"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "tracker", "tanstack-live"];
