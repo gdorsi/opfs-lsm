@@ -2,9 +2,9 @@
  * What the pages workloads share: the typing script, the pace they type at,
  * and the recorders that tell storage work from Automerge's own.
  */
-import type { PersistenceStorage } from "@nkzw/fate/persistence";
-import type { BodiesOptions } from "../../examples/pages-fate-automerge/src/model/bodies.ts";
-import type { PagesStorage, TextEdit } from "../../examples/pages-fate-automerge/src/model/types.ts";
+import type { StorageAdapterInterface } from "@automerge/react";
+import type { NotesOptions } from "../../examples/notes-manager-automerge/src/model/notes.ts";
+import type { TextEdit } from "../../examples/notes-manager-automerge/src/model/types.ts";
 import type { Edit } from "../workloads/trace.ts";
 import type { PhaseContext } from "../core/types.ts";
 
@@ -49,38 +49,33 @@ export function typingScript(trace: readonly Edit[], keys: number, base: number)
   });
 }
 
-type DocMetrics = Parameters<NonNullable<BodiesOptions["onDocMetrics"]>>[0];
+type DocMetrics = Parameters<NonNullable<NotesOptions["onDocMetrics"]>>[0];
 
 export type Recorder = {
-  readonly storage: PagesStorage;
+  readonly storage: StorageAdapterInterface;
   readonly onDocMetrics: (metrics: DocMetrics) => void;
   /** Adds what happened since the last call to the phase's counters, and returns the storage calls it made. */
   report(ctx: PhaseContext<"pages">): number;
+  reset(): void;
 };
 
-/** Counts the calls each layer receives and the bytes the Repo saves, and sums Automerge's own CPU from its doc metrics. */
-export function recorder(inner: PagesStorage): Recorder {
+export function recorder(inner: StorageAdapterInterface): Recorder {
   const total: Record<string, number> = {};
   const seen: Record<string, number> = {};
   const add = (name: string, n = 1) => {
     total[name] = (total[name] ?? 0) + n;
   };
-  const bodies: PagesStorage["bodies"] = {
-    load: (key) => (add("body loads"), inner.bodies.load(key)),
-    loadRange: (prefix) => (add("body loads"), inner.bodies.loadRange(prefix)),
-    save: (key, data) => (add("body saves"), add("saved bytes", data.byteLength), inner.bodies.save(key, data)),
-    remove: (key) => (add("body removes"), inner.bodies.remove(key)),
-    removeRange: (prefix) => (add("body removes"), inner.bodies.removeRange(prefix)),
-  };
-  const fate: PersistenceStorage = {
-    read: (key) => (add("fate calls"), inner.fate.read(key)),
-    scan: (...args) => (add("fate calls"), inner.fate.scan(...args)),
-    writeBatch: (writes) => (add("fate calls"), inner.fate.writeBatch(writes)),
-    exclusive: (key, run) => (add("fate calls"), inner.fate.exclusive(key, run)),
+  const ops = () => (total["loads"] ?? 0) + (total["saves"] ?? 0) + (total["removes"] ?? 0);
+  const storage: StorageAdapterInterface = {
+    load: (key) => (add("loads"), inner.load(key)),
+    loadRange: (prefix) => (add("loads"), inner.loadRange(prefix)),
+    save: (key, data) => (add("saves"), add("saved bytes", data.byteLength), inner.save(key, data)),
+    remove: (key) => (add("removes"), inner.remove(key)),
+    removeRange: (prefix) => (add("removes"), inner.removeRange(prefix)),
   };
   const DOC_MS = { "doc-loaded": "am load ms", "doc-saved": "am save ms", "doc-compacted": "am snapshot ms" } as const;
   return {
-    storage: { fate, bodies },
+    storage,
     onDocMetrics(metrics) {
       const name = DOC_MS[metrics.type as keyof typeof DOC_MS];
       if (name && typeof metrics.durationMillis === "number") add(name, metrics.durationMillis);
@@ -92,11 +87,13 @@ export function recorder(inner: PagesStorage): Recorder {
         if (name === "saved bytes") ctx.bytes(value - (seen[name] ?? 0));
         seen[name] = value;
       }
-      const ops = (total["body loads"] ?? 0) + (total["body saves"] ?? 0) + (total["body removes"] ?? 0) + (total["fate calls"] ?? 0);
-      const made = ops - (seen["storage ops"] ?? 0);
-      seen["storage ops"] = ops;
+      const made = ops() - (seen["storage ops"] ?? 0);
+      seen["storage ops"] = ops();
       ctx.count("storage ops", made);
       return made;
+    },
+    reset() {
+      Object.assign(seen, total, { "storage ops": ops() });
     },
   };
 }

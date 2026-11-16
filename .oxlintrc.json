@@ -330,7 +330,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/**"
+        "examples/notes-manager-automerge/src/**"
       ],
       "rules": {
         "no-restricted-imports": [
@@ -340,7 +340,6 @@
               {
                 "group": [
                   "@opfs-lsm/*",
-                  "@nkzw/fate-indexeddb",
                   "@automerge/automerge-repo-storage-*"
                 ],
                 "message": "Only src/storage/ imports storage packages."
@@ -352,7 +351,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/editor/**"
+        "examples/notes-manager-automerge/src/editor/**"
       ],
       "excludeFiles": [
         "**/view.ts"
@@ -395,53 +394,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/ui/**",
-        "examples/pages-fate-automerge/src/routes/**",
-        "examples/pages-fate-automerge/src/client/**"
-      ],
-      "rules": {
-        "no-restricted-imports": [
-          "error",
-          {
-            "paths": [
-              {
-                "name": "react-fate",
-                "importNames": [
-                  "view",
-                  "clientRoot",
-                  "clientValueRoot",
-                  "mutation"
-                ],
-                "message": "fate declarations live in src/model/tree.ts, so view ids do not depend on which route chunk loads first."
-              },
-              {
-                "name": "@nkzw/fate",
-                "importNames": [
-                  "view",
-                  "clientRoot",
-                  "clientValueRoot",
-                  "mutation"
-                ],
-                "message": "fate declarations live in src/model/tree.ts, so view ids do not depend on which route chunk loads first."
-              }
-            ],
-            "patterns": [
-              {
-                "group": [
-                  "@opfs-lsm/*",
-                  "@nkzw/fate-indexeddb",
-                  "@automerge/automerge-repo-storage-*"
-                ],
-                "message": "Only src/storage/ imports storage packages."
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "files": [
-        "examples/pages-fate-automerge/src/model/**"
+        "examples/notes-manager-automerge/src/model/**"
       ],
       "rules": {
         "no-restricted-imports": [
@@ -452,12 +405,10 @@
                 "group": [
                   "*",
                   "!./*",
-                  "!@nkzw/fate",
-                  "!@nkzw/fate/persistence",
                   "!@automerge/automerge",
                   "!@automerge/automerge-repo"
                 ],
-                "message": "The model runs unchanged in the app, the bench and Node: it imports only fate, Automerge and automerge-repo."
+                "message": "The model runs unchanged in the app, the bench and Node: it imports only Automerge and automerge-repo."
               }
             ]
           }
@@ -482,7 +433,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/storage/**"
+        "examples/notes-manager-automerge/src/storage/**"
       ],
       "rules": {
         "no-restricted-imports": "off"
@@ -490,7 +441,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/testing/reference.ts"
+        "examples/notes-manager-automerge/src/testing/reference.ts"
       ],
       "rules": {
         "no-restricted-imports": [

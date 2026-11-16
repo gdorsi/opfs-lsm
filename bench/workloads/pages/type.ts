@@ -4,13 +4,13 @@ import { defineWorkload, type Phase } from "../../core/types.ts";
 import { yieldTask } from "../../page/main-thread.ts";
 import { KEY_MS, PEER_WAIT_MS, SAVE_THROTTLE_MS, recorder, typingScript, type Recorder } from "../../page/pages.ts";
 import { fetchTracePhase, hashText, trace } from "../trace.ts";
-import { newPageId, openBodies, type Bodies } from "../../../examples/pages-fate-automerge/src/model/bodies.ts";
-import type { PageBody, PageId, Span } from "../../../examples/pages-fate-automerge/src/model/types.ts";
-import { builtBody } from "../../../examples/pages-fate-automerge/src/testing/built-body.ts";
-import { referenceBody } from "../../../examples/pages-fate-automerge/src/testing/reference.ts";
+import { newPageId } from "../../../examples/notes-manager-automerge/src/model/bodies.ts";
+import { openNotes, type Notes } from "../../../examples/notes-manager-automerge/src/model/notes.ts";
+import type { PageBody, PageId, Span } from "../../../examples/notes-manager-automerge/src/model/types.ts";
+import { builtBody } from "../../../examples/notes-manager-automerge/src/testing/built-body.ts";
+import { referenceBody } from "../../../examples/notes-manager-automerge/src/testing/reference.ts";
 
-/** The page, its Repo and what counts its storage calls: alive across the "same" phases of one tab. */
-type Session = { readonly bodies: Bodies; readonly body: PageBody; readonly rec: Recorder };
+type Session = { readonly notes: Notes; readonly body: PageBody; readonly rec: Recorder };
 let session: Session | undefined;
 let reopened: readonly Span[] = [];
 
@@ -22,16 +22,17 @@ const live = (): Session => {
   return session;
 };
 
-/** The model over the contender's storage, built the way the app builds it. Opening a page is the caller's to time. */
-function model(store: PagesStore): { bodies: Bodies; rec: Recorder } {
+async function openModel(store: PagesStore): Promise<{ notes: Notes; rec: Recorder }> {
   const rec = recorder(store.storage);
-  const bodies = openBodies({
-    storage: rec.storage.bodies,
+  const notes = await openNotes({
+    storage: rec.storage,
     network: [new BroadcastChannelNetworkAdapter({ channelName: "pages:bench", peerWaitMs: PEER_WAIT_MS })],
     saveDebounceMs: SAVE_THROTTLE_MS,
     onDocMetrics: rec.onDocMetrics,
   });
-  return { bodies, rec };
+  await notes.flush();
+  rec.reset();
+  return { notes, rec };
 }
 
 /** Key order and equal marks must not matter, so compare a canonical text. */
@@ -67,9 +68,9 @@ export default defineWorkload({
     fetchTracePhase<"pages">(),
     phase("paste", { mainThread: true }, async (ctx) => {
       const id = newPageId();
-      const { bodies, rec } = model(await ctx.store());
-      const body = await ctx.time("open-page", 0, () => bodies.open(id));
-      session = { bodies, body, rec };
+      const { notes, rec } = await openModel(await ctx.store());
+      const body = await ctx.time("open-page", 0, () => notes.bodies.open(id));
+      session = { notes, body, rec };
       const doc = builtBody(BODY_BYTES[ctx.size]);
       await ctx.time("paste", 0, async () => body.edit(doc.edits));
       await ctx.time("flush", 0, () => body.flush());
@@ -107,7 +108,7 @@ export default defineWorkload({
       "settle",
       { timed: false, footprint: true },
       async (ctx) => {
-        const { bodies, body } = live();
+        const { notes, body } = live();
         const doc = builtBody(BODY_BYTES[ctx.size]);
         const oracle = referenceBody(doc.spans);
         for (const edits of typingScript(trace(), ctx.params.entries, doc.end)) oracle.edit(edits);
@@ -115,7 +116,7 @@ export default defineWorkload({
         ctx.check(got === canonical(oracle.spans()), `the typed body (${hashText(got)}) differs from the oracle (${hashText(canonical(oracle.spans()))})`);
         ctx.carry.spans = hashText(got);
         ctx.carry.liveLogicalBytes = oracle.length();
-        await bodies.close();
+        await notes.close();
         await (await ctx.store()).settle();
         session = undefined;
       },
@@ -128,22 +129,22 @@ export default defineWorkload({
       async run(ctx) {
         const store = await ctx.store();
         if (store.volatile) return;
-        const { bodies, rec } = model(store);
+        const { notes, rec } = await openModel(store);
         const body = await ctx.time("reopen", 0, async () => {
-          const opened = await bodies.open(ctx.carry.id as PageId);
+          const opened = await notes.bodies.open(ctx.carry.id as PageId);
           reopened = opened.spans();
           return opened;
         });
-        session = { bodies, body, rec };
+        session = { notes, body, rec };
         rec.report(ctx);
       },
     },
     phase("check", { timed: false }, async (ctx) => {
       if (!session) return;
-      const { bodies } = session;
+      const { notes } = session;
       const got = canonical(reopened);
       ctx.check(hashText(got) === ctx.carry.spans, `the reopened body is ${hashText(got)}, want ${String(ctx.carry.spans)}`);
-      await bodies.close();
+      await notes.close();
       session = undefined;
     }),
   ],

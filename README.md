@@ -27,7 +27,7 @@ Each adapter stores the data of one framework in opfs-lsm. Your app keeps callin
 
 - **[`@opfs-lsm/tanstack-db`](packages/tanstack-db)** keeps TanStack DB collections in docstore. Writes from every tab reach every collection live. In on-demand mode, a collection loads only the rows its live queries ask for, through docstore indexes. Example: [LinearLite](examples/linearlite-tanstackdb).
 - **[`@opfs-lsm/yjs`](packages/yjs)** keeps Yjs documents. `KvPersistence` has the `whenSynced`, `clearData`, and `destroy` of y-indexeddb, and merges the stored updates of a document into one when they reach 500. Example: [Whiteboard](examples/whiteboard-yjs).
-- **[`@opfs-lsm/automerge`](packages/automerge)** is a storage adapter for automerge-repo. Pass `kvStorage(db)` to `new Repo({ storage })`. Example: [Pages](examples/pages-fate-automerge).
+- **[`@opfs-lsm/automerge`](packages/automerge)** is a storage adapter for automerge-repo. Pass `kvStorage(db)` to `new Repo({ storage })`. Example: [Notes](examples/notes-manager-automerge).
 - **[`@opfs-lsm/fate`](packages/fate)** keeps the records the fate client caches, and the mutations it queues while offline. It takes the place of `@nkzw/fate-indexeddb`, and is not on npm yet. Example: [LinearLite on fate](examples/linearlite-fate).
 
 ### Building blocks
@@ -63,7 +63,7 @@ kv is fastest when it reads local data and writes in batches. These rules help y
 
 ### Open one database for the whole app
 
-Each database name gets its own SharedWorker and its own files, so a second database costs a second open. The packages keep their keys apart, so they can share one database. The [Pages example](examples/pages-fate-automerge) keeps the fate cache and the Automerge documents in one. Pass the same `db` to every package.
+Each database name gets its own SharedWorker and its own files, so a second database costs a second open. The packages keep their keys apart, so they can share one database. Pass the same `db` to every package.
 
 Closing an Automerge storage also closes its database, so close that storage last.
 

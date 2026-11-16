@@ -85,16 +85,16 @@ After a cold open, docstore shows the list's total 62.5 ms after its first rows,
 
 The session never pauses for a second, so neither store merges the board's updates while it is open, and the reopen replays every one of them.
 
-**Pages, a 50 KB page and 1,000 keystrokes.** [`examples/pages-fate-automerge`](../examples/pages-fate-automerge) with fate's cache and the Automerge page bodies on one kv database, against `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps everything in memory, kv adds at most 2.1 ms, to the save after a paste, and IndexedDB at most 12 ms, to opening a page.
+**Notes, a 50 KB page and 1,000 keystrokes.** [`examples/notes-manager-automerge`](../examples/notes-manager-automerge) keeps its page list and every page body as Automerge documents on one kv database, against automerge-repo's `IndexedDBStorageAdapter` on one IndexedDB database. The model opens and stores its page list before the first timed step, so opening a page and the reopen time the body alone. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps every document in memory, each store adds at most 2.5 ms, to the save after the paste, and at most 0.6 ms to any other step. These rows come from an Apple M2 Pro, not the M5 Max above, with a load average of 2.
 
 | Step | IndexedDB | opfs-lsm | |
 | --- | ---: | ---: | ---: |
-| Open the database | 3.14 ms | 7.55 ms | 0.42× |
-| Open a new page | 23.0 ms | 16.9 ms | 1.4× |
-| Paste 50 KB | 184 ms | 184 ms | 1.0× |
-| Keystroke, p50 | 376 µs | 376 µs | 1.0× |
-| Keystroke, p99 | 2.24 ms | 2.24 ms | 1.0× |
-| Reopen after a reload | 129 ms | 139 ms | 0.93× |
+| Open the database | 1.76 ms | 7.30 ms | 0.24× |
+| Open a new page | 2.88 ms | 2.75 ms | 1.0× |
+| Paste 50 KB | 233 ms | 233 ms | 1.0× |
+| Keystroke, p50 | 440 µs | 440 µs | 1.0× |
+| Keystroke, p99 | 5.76 ms | 5.50 ms | 1.0× |
+| Reopen after a reload | 143 ms | 145 ms | 0.99× |
 
 ## Bundle size
 
