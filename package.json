@@ -36,7 +36,10 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
-    ]
+    ],
+    "patchedDependencies": {
+      "@tanstack/db-sqlite-persistence-core@1.0.0-rc.1.5": "patches/@tanstack__db-sqlite-persistence-core@1.0.0-rc.1.5.patch"
+    }
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",

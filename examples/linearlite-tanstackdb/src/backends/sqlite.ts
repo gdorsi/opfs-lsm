@@ -10,7 +10,7 @@ import { recount } from "./recount.ts";
 export const SQLITE_PATH: BackendPath = {
   name: "sqlite",
   loads:
-    "persistedCollectionOptions (local-only) on createBrowserWASQLitePersistence: wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated WebWorker; issues, bodies and comments on demand, sync eager; each STORES index is one SQLite expression index over the fields TanStack's SQL reads, with no text index. A load reads every row its where matches in a BEGIN IMMEDIATE transaction, then sorts and pages them in JS (TanStack sends no LIMIT)",
+    "persistedCollectionOptions (local-only) on createBrowserWASQLitePersistence: wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated WebWorker; issues, bodies and comments on demand, sync eager; each STORES index is one SQLite expression index over the fields TanStack's SQL reads, with no text index. TanStack's adapter, patched in patches/, sends LIMIT and OFFSET to SQLite when its SQL selects exactly the rows the where does (equality and IN on strings, numbers and booleans); any other load reads every row its where matches, then sorts and pages them in JS",
   writes:
     "under a Web Lock per store: rows read by key with SQL and merged, then written with the collection's acceptMutations in one SQLite transaction; every row this tab writes stays in memory",
   counts: "one SQL count grouped by status; with no priority filter or search it reads only the byStatus index, otherwise the rows",
