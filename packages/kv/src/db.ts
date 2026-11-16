@@ -304,8 +304,8 @@ function canUseBrowserOpfs(): boolean {
 
 /**
  * Every key that starts with the raw bytes `prefix`. For a prefix made by
- * `encodeTuple`, use `tupleBounds` from `@opfs-lsm/kv/tuple`: this one also
- * takes the keys of strings that continue the tuple with U+0000.
+ * `encodeTuple`, use `tupleBounds` from `@opfs-lsm/kv/tuple`. This one also
+ * returns the keys where the prefix's last string goes on with U+0000.
  */
 export function prefixBound(prefix: Uint8Array): {
   start: Uint8Array;
