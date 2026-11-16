@@ -15,21 +15,21 @@ apps:
   command: pnpm bench linearlite/ yjs/whiteboard-session pages/
   frameworks:
     - name: LinearLite
-      baseline: TanStack's SQLite adapter as it ships, 100,000 issues
+      baseline: TanStack's SQLite adapter, patched to send LIMIT to SQLite, 100,000 issues
       versus: SQLite
       rows:
         - workload: First rows, once the database is open
-          indexeddb: 639 ms
-          kv: 33.8 ms
-          ratio: 19×
+          indexeddb: 52.2 ms
+          kv: 44.1 ms
+          ratio: 1.2×
         - workload: Change the sort
-          indexeddb: 639 ms
-          kv: 4.99 ms
-          ratio: 128×
+          indexeddb: 11.5 ms
+          kv: 5.76 ms
+          ratio: 2.0×
         - workload: Open the board
-          indexeddb: 2.9 s
-          kv: 22.0 ms
-          ratio: 134×
+          indexeddb: 135 ms
+          kv: 24.1 ms
+          ratio: 5.6×
     - name: Whiteboard
       baseline: y-indexeddb, 1,000 shapes
       rows:
@@ -204,7 +204,7 @@ opfs-lsm is a replacement for IndexedDB and SQLite in the browser. It is faster,
 
 [The app benchmarks](../docs/benchmarks.md#app-benchmarks) · [How they are measured](../bench/README.md)
 
-<Illustration name="apps" full :data="$frontmatter.apps" label="The app benchmarks, each example app on opfs-lsm against the same app on the storage it would otherwise use. LinearLite with 100,000 issues, docstore against TanStack DB's SQLite adapter as it ships: once the database is open, the first rows of a cold open in 33.8 ms against 639 ms, 19× faster; a change of sort in 4.99 ms against 639 ms, 128× faster; the board in 22.0 ms against 2.9 s, 134× faster. A Yjs whiteboard with 1,000 shapes, against y-indexeddb: 1,000 edits saved in 41.0 ms against 109 ms, 2.7× faster; 100 undos and redos saved in 7.8 ms against 21.5 ms, 2.8× faster; reopening the board takes 87.0 ms against 75.0 ms, 0.86× as fast. A pages app on fate and Automerge with a 50 KB page, against IndexedDB: opening a new page takes 16.9 ms against 23.0 ms, 1.4× faster; reopening it after a reload 139 ms against 129 ms, 0.93× as fast." />
+<Illustration name="apps" full :data="$frontmatter.apps" label="The app benchmarks, each example app on opfs-lsm against the same app on the storage it would otherwise use. LinearLite with 100,000 issues, docstore against TanStack DB's SQLite adapter, patched to send LIMIT to SQLite: once the database is open, the first rows of a cold open in 44.1 ms against 52.2 ms, 1.2× faster; a change of sort in 5.76 ms against 11.5 ms, 2.0× faster; the board in 24.1 ms against 135 ms, 5.6× faster. A Yjs whiteboard with 1,000 shapes, against y-indexeddb: 1,000 edits saved in 41.0 ms against 109 ms, 2.7× faster; 100 undos and redos saved in 7.8 ms against 21.5 ms, 2.8× faster; reopening the board takes 87.0 ms against 75.0 ms, 0.86× as fast. A pages app on fate and Automerge with a 50 KB page, against IndexedDB: opening a new page takes 16.9 ms against 23.0 ms, 1.4× faster; reopening it after a reload 139 ms against 129 ms, 0.93× as fast." />
 
 <div class="home-claim">
 <div class="home-copy">
