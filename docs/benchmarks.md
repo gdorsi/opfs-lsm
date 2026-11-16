@@ -85,7 +85,7 @@ After a cold open, docstore shows the list's total 62.5 ms after its first rows,
 
 The session never pauses for a second, so neither store merges the board's updates while it is open, and the reopen replays every one of them.
 
-**Pages, a 50 KB page and 1,000 keystrokes.** [`examples/pages-fate-automerge`](../examples/pages-fate-automerge) with fate's cache and the Automerge page bodies on one kv database, against `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps everything in memory, kv adds at most 2.1 ms, to the save after a paste, and IndexedDB at most 12 ms, to opening a page.
+**Pages, a 50 KB page and 1,000 keystrokes.** [`examples/notes-manager-automerge`](../examples/notes-manager-automerge) with fate's cache and the Automerge page bodies on one kv database, against `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps everything in memory, kv adds at most 2.1 ms, to the save after a paste, and IndexedDB at most 12 ms, to opening a page.
 
 | Step | IndexedDB | opfs-lsm | |
 | --- | ---: | ---: | ---: |

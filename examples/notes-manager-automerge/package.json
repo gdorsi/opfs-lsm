@@ -1,5 +1,5 @@
 {
-  "name": "@opfs-lsm/example-pages-fate-automerge",
+  "name": "@opfs-lsm/example-notes-manager-automerge",
   "private": true,
   "type": "module",
   "scripts": {

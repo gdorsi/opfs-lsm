@@ -1,6 +1,6 @@
 import type { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 import { defineContender } from "../../core/types.ts";
-import { indexedDbPagesStorage } from "../../../examples/pages-fate-automerge/src/storage/indexeddb.ts";
+import { indexedDbPagesStorage } from "../../../examples/notes-manager-automerge/src/storage/indexeddb.ts";
 
 export default defineContender({
   family: "pages",

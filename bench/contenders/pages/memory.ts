@@ -1,5 +1,5 @@
 import { defineContender } from "../../core/types.ts";
-import { memoryPagesStorage } from "../../../examples/pages-fate-automerge/src/storage/memory.ts";
+import { memoryPagesStorage } from "../../../examples/notes-manager-automerge/src/storage/memory.ts";
 
 export default defineContender({
   family: "pages",

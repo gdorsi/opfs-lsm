@@ -31,7 +31,7 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 | `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | `KvPersistence` from `@opfs-lsm/yjs` (`packages/yjs`) | y-indexeddb |
 | `fate` | `kvStorage` from `@opfs-lsm/fate` (`packages/fate`) under fate's persistence | `createIndexedDBStorage` from `@nkzw/fate-indexeddb` under the same persistence |
-| `pages` | `kvPagesStorage` (`examples/pages-fate-automerge`): fate's cache and the page bodies on one kv db | two IndexedDB databases: `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`; a third contender, `memory`, keeps both layers in Maps and is the floor |
+| `pages` | `kvPagesStorage` (`examples/notes-manager-automerge`): fate's cache and the page bodies on one kv db | two IndexedDB databases: `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`; a third contender, `memory`, keeps both layers in Maps and is the floor |
 | `linearlite` | `docstore`: `openKvBackend` (`examples/linearlite-tanstackdb`), docstore on kv through `docstoreCollectionOptions`, on demand | `sqlite`: `openSqliteBackend`, TanStack DB's `persistedCollectionOptions` on `@tanstack/browser-db-sqlite-persistence` (wa-sqlite on OPFS in a dedicated WebWorker), on demand, TanStack's single-tab coordinator, and the adapter patch described below |
 
 Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv's WAL commits with IndexedDB's default durability (relaxed in Chrome since version 121), so the IndexedDB baselines use the default too.

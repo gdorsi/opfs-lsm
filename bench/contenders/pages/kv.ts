@@ -1,6 +1,6 @@
 import { defineContender } from "../../core/types.ts";
 import { kvCommon, openKv } from "../../page/kv.ts";
-import { kvPagesStorage } from "../../../examples/pages-fate-automerge/src/storage/kv.ts";
+import { kvPagesStorage } from "../../../examples/notes-manager-automerge/src/storage/kv.ts";
 
 export default defineContender({
   family: "pages",

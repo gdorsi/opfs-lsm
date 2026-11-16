@@ -10,7 +10,7 @@
 import type { StorageAdapterInterface } from "@automerge/react";
 import type { Backend } from "../../examples/linearlite-tanstackdb/src/model/backend.ts";
 import type { PersistenceStorage } from "@nkzw/fate/persistence";
-import type { PagesStorage } from "../../examples/pages-fate-automerge/src/model/types.ts";
+import type { PagesStorage } from "../../examples/notes-manager-automerge/src/model/types.ts";
 import type { KvStats } from "@opfs-lsm/kv/testing";
 import type * as Y from "yjs";
 

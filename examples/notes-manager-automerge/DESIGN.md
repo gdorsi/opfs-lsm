@@ -9,12 +9,12 @@ page's body, which stays on the device and syncs between its tabs. Both persist 
 ## Running it
 
 ```
-pnpm --filter @opfs-lsm/example-pages-fate-automerge seed     # the demo tree: titles only
-pnpm --filter @opfs-lsm/example-pages-fate-automerge dev      # http://127.0.0.1:4184
+pnpm --filter @opfs-lsm/example-notes-manager-automerge seed     # the demo tree: titles only
+pnpm --filter @opfs-lsm/example-notes-manager-automerge dev      # http://127.0.0.1:4184
 #   ?storage=idb   fate and bodies on IndexedDB instead of kv
 #   ?db=work       another database name (default "pages")
-pnpm --filter @opfs-lsm/example-pages-fate-automerge build
-pnpm --filter @opfs-lsm/example-pages-fate-automerge start    # the build, with the offline shell
+pnpm --filter @opfs-lsm/example-notes-manager-automerge build
+pnpm --filter @opfs-lsm/example-notes-manager-automerge start    # the build, with the offline shell
 ```
 
 Every link keeps `?storage=` and `?db=`, so a tab never switches storage by navigating.

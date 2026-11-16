@@ -330,7 +330,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/**"
+        "examples/notes-manager-automerge/src/**"
       ],
       "rules": {
         "no-restricted-imports": [
@@ -352,7 +352,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/editor/**"
+        "examples/notes-manager-automerge/src/editor/**"
       ],
       "excludeFiles": [
         "**/view.ts"
@@ -395,9 +395,9 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/ui/**",
-        "examples/pages-fate-automerge/src/routes/**",
-        "examples/pages-fate-automerge/src/client/**"
+        "examples/notes-manager-automerge/src/ui/**",
+        "examples/notes-manager-automerge/src/routes/**",
+        "examples/notes-manager-automerge/src/client/**"
       ],
       "rules": {
         "no-restricted-imports": [
@@ -441,7 +441,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/model/**"
+        "examples/notes-manager-automerge/src/model/**"
       ],
       "rules": {
         "no-restricted-imports": [
@@ -482,7 +482,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/storage/**"
+        "examples/notes-manager-automerge/src/storage/**"
       ],
       "rules": {
         "no-restricted-imports": "off"
@@ -490,7 +490,7 @@
     },
     {
       "files": [
-        "examples/pages-fate-automerge/src/testing/reference.ts"
+        "examples/notes-manager-automerge/src/testing/reference.ts"
       ],
       "rules": {
         "no-restricted-imports": [

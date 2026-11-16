@@ -16,7 +16,7 @@ function serviceWorker(): Plugin {
         .map((entry) => `/${relative(dir, join(entry.parentPath, entry.name)).replaceAll("\\", "/")}`)
         .filter((path) => path !== "/sw.js")
         .sort();
-      const cache = `pages-fate-automerge-${createHash("sha256").update(files.join("\n")).digest("hex").slice(0, 12)}`;
+      const cache = `notes-manager-automerge-${createHash("sha256").update(files.join("\n")).digest("hex").slice(0, 12)}`;
       const source = readFileSync(join(this.environment.config.root, "src/service-worker.js"), "utf8");
       writeFileSync(join(dir, "sw.js"), `const CACHE = ${JSON.stringify(cache)};\nconst FILES = ${JSON.stringify(files)};\n${source}`);
     },

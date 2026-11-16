@@ -3,8 +3,8 @@
  * and the recorders that tell storage work from Automerge's own.
  */
 import type { PersistenceStorage } from "@nkzw/fate/persistence";
-import type { BodiesOptions } from "../../examples/pages-fate-automerge/src/model/bodies.ts";
-import type { PagesStorage, TextEdit } from "../../examples/pages-fate-automerge/src/model/types.ts";
+import type { BodiesOptions } from "../../examples/notes-manager-automerge/src/model/bodies.ts";
+import type { PagesStorage, TextEdit } from "../../examples/notes-manager-automerge/src/model/types.ts";
 import type { Edit } from "../workloads/trace.ts";
 import type { PhaseContext } from "../core/types.ts";
 

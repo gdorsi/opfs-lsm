@@ -4,10 +4,10 @@ import { defineWorkload, type Phase } from "../../core/types.ts";
 import { yieldTask } from "../../page/main-thread.ts";
 import { KEY_MS, PEER_WAIT_MS, SAVE_THROTTLE_MS, recorder, typingScript, type Recorder } from "../../page/pages.ts";
 import { fetchTracePhase, hashText, trace } from "../trace.ts";
-import { newPageId, openBodies, type Bodies } from "../../../examples/pages-fate-automerge/src/model/bodies.ts";
-import type { PageBody, PageId, Span } from "../../../examples/pages-fate-automerge/src/model/types.ts";
-import { builtBody } from "../../../examples/pages-fate-automerge/src/testing/built-body.ts";
-import { referenceBody } from "../../../examples/pages-fate-automerge/src/testing/reference.ts";
+import { newPageId, openBodies, type Bodies } from "../../../examples/notes-manager-automerge/src/model/bodies.ts";
+import type { PageBody, PageId, Span } from "../../../examples/notes-manager-automerge/src/model/types.ts";
+import { builtBody } from "../../../examples/notes-manager-automerge/src/testing/built-body.ts";
+import { referenceBody } from "../../../examples/notes-manager-automerge/src/testing/reference.ts";
 
 /** The page, its Repo and what counts its storage calls: alive across the "same" phases of one tab. */
 type Session = { readonly bodies: Bodies; readonly body: PageBody; readonly rec: Recorder };
