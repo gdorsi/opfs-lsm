@@ -27,9 +27,9 @@ export interface Bodies {
   /**
    * Deletes the body from this device and resolves once its keys are gone.
    * An open copy turns `removed`, and any copy the Repo holds, opened here or
-   * synced from a peer, leaves memory, so no tab that joins later receives it.
-   * Saves of the id are dropped for the rest of this Repo's life, so a peer's
-   * copy cannot write it back. Idempotent.
+   * synced from a peer, leaves memory. For the rest of this Repo's life saves
+   * of the id are dropped and the Repo never offers it to a peer, so neither a
+   * peer's copy nor a tab that joins later can write it back. Idempotent.
    */
   remove(id: PageId): Promise<void>;
 }
@@ -67,6 +67,7 @@ export function openBodies(repo: Repo, storage: SaveFilter): Bodies & { close():
     },
     async remove(id) {
       storage.block(id);
+      repo.shareConfigChanged();
       const body = open.get(id);
       if (body) await (await body.catch(() => null))?.discard();
       await closing.get(id)?.catch(() => {});

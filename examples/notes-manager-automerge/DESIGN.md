@@ -83,11 +83,12 @@ again. A page deleted in another tab while it is open turns into the same screen
 ## Deleted bodies
 
 Every tab removes the body of every id it sees that is not reachable: an id that leaves its tree, and a list entry
-it cannot reach, at open and on each change. It removes each id once, one at a time, and a failure is logged without
-stopping the rest. A removal blocks the id from saving for the rest of the Repo's life, so a copy in another tab
-cannot write it back, marks an open body `removed`, drops every copy the Repo holds, opened in this tab or synced from
-a peer, so no tab that joins later receives it, waits for the saves in flight, then deletes every key under the id.
-It is idempotent, so every tab runs it.
+it cannot reach, at open and on each change. It starts each id's removal once, all in the same tick as the change, and
+a failure is logged without stopping the rest. For the rest of the Repo's life a removal blocks the id from saving
+and from sync: the Repo's share config denies it to every peer, so a copy in another tab cannot write it back and a
+copy that a late sync message re-creates never leaves the tab. The removal then marks an open body `removed`, drops
+every copy the Repo holds, opened in this tab or synced from a peer, waits for the saves in flight, and deletes every
+key under the id. It is idempotent, so every tab runs it.
 
 ## The editor
 
@@ -145,7 +146,8 @@ new `?db=` starts empty. In dev, `window.__notes` holds `notes`, `leases`, `stor
 - Sync between devices: the notes live on one device, shared by its tabs.
 - Live merging in a focused title field: it keeps its own text until it loses focus.
 - A body whose page was deleted while every tab closed before removing it: its keys stay, since the list no longer
-  names it.
+  names it. The same holds for a tab that joins in the moment before another tab that holds the body learns of the
+  delete, and receives that body from it.
 
 ## Measured
 

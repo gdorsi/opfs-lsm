@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge";
-import { Repo, type DocHandle, type DocMetrics, type NetworkAdapterInterface, type StorageAdapterInterface } from "@automerge/automerge-repo";
+import { Repo, type DocHandle, type DocMetrics, type DocumentId, type NetworkAdapterInterface, type PeerId, type StorageAdapterInterface } from "@automerge/automerge-repo";
 import { findOrSeed, flushDoc, newPageId, openBodies, type Bodies } from "./bodies.ts";
 import { LIST_ID, MAX_TITLE, readTree, type ListDoc, type ListTree } from "./list.ts";
 import { saveFilter } from "./save-filter.ts";
@@ -39,9 +39,12 @@ export interface Notes {
  */
 export async function openNotes(options: NotesOptions): Promise<Notes> {
   const storage = saveFilter(options.storage);
+  // A removed id is never offered to a peer, so a copy that a late sync message re-creates stays in this tab.
+  const shared = async (_peer: PeerId, id?: DocumentId) => id === undefined || !storage.blocked(id);
   const repo = new Repo({
     storage,
     network: [...(options.network ?? [])],
+    shareConfig: { announce: shared, access: shared },
     ...(options.saveDebounceMs !== undefined && { saveDebounceRate: options.saveDebounceMs }),
   });
   if (options.onDocMetrics) repo.on("doc-metrics", options.onDocMetrics);
@@ -60,10 +63,11 @@ export async function openNotes(options: NotesOptions): Promise<Notes> {
   const reclaim = (ids: Iterable<PageId>) => {
     const gone = [...new Set(ids)].filter((id) => !tree.page(id) && !reclaimed.has(id));
     if (gone.length === 0) return;
-    for (const id of gone) reclaimed.add(id);
-    removing = removing.then(async () => {
-      for (const id of gone) await bodies.remove(id).catch((error: unknown) => console.warn(`notes: could not remove the body of ${id}`, error));
+    const removals = gone.map((id) => {
+      reclaimed.add(id);
+      return bodies.remove(id).catch((error: unknown) => console.warn(`notes: could not remove the body of ${id}`, error));
     });
+    removing = Promise.all([removing, ...removals]).then(() => {});
   };
 
   reclaim(Object.keys(list.fullDoc().pages) as PageId[]);

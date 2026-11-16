@@ -15,6 +15,8 @@ export type SaveListener = (event: SaveEvent, error?: unknown) => void;
 export interface SaveFilter extends StorageAdapterInterface {
   /** Drops every save for `id` from now on. Saves already started still land. */
   block(id: string): void;
+  /** Whether `id` is blocked. */
+  blocked(id: string): boolean;
   /** Resolves once no save for `id` is in flight. */
   idle(id: string): Promise<void>;
   /** Reports each save of `id`'s chunks as it starts, synchronously, and as it settles. */
@@ -96,6 +98,8 @@ export function saveFilter(inner: StorageAdapterInterface): SaveFilter {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+
+    blocked: (id) => entries.get(id)?.blocked ?? false,
 
     loadFailed: (id) => entries.get(id)?.loadFailed ?? false,
   };
