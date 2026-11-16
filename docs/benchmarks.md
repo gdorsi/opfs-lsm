@@ -37,39 +37,39 @@ The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexedd
 
 ### On demand, against SQLite
 
-In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack/browser-db-sqlite-persistence`, which runs wa-sqlite on OPFS in a dedicated WebWorker. Both collections hold 100,000 rows and load only what a query asks for. The reads, medians of 5 interleaved runs:
+In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack/browser-db-sqlite-persistence`, which runs wa-sqlite on OPFS in a dedicated WebWorker. Its adapter is patched to send `LIMIT` and equality on numbers to SQLite, as [bench/README.md](../bench/README.md) describes. Both collections hold 100,000 rows and load only what a query asks for. The reads, medians of 5 interleaved runs in headless Chrome 157 on an Apple M2 Pro with a load average of about 3:
 
 | Workload | SQLite | opfs-lsm | |
 | --- | ---: | ---: | ---: |
-| Cold open | 41.6 ms | 11.7 ms | 3.6× |
-| First query after a cold open, 6,250 rows | 65.2 ms | 81.6 ms | 0.80× |
-| Warm query of one owner, 6,250 rows | 116k rows/s | 169k rows/s | 1.5× |
-| 10 rows by id | 1.9k queries/s | 4.1k queries/s | 2.1× |
+| Cold open | 48.1 ms | 12.0 ms | 4.0× |
+| First query after a cold open, 6,250 rows | 88.1 ms | 88.1 ms | 1.0× |
+| Warm query of one owner, 6,250 rows | 90.7k rows/s | 131k rows/s | 1.4× |
+| 10 rows by id | 1.6k queries/s | 3.6k queries/s | 2.3× |
 
 The bench also runs `docstore` against Dexie. [bench/README.md](../bench/README.md) lists every family and workload.
 
 ## App benchmarks
 
-The tables above time storage calls. These time what the user of an app waits for. Three example apps run one scripted session on opfs-lsm and on the storage the app would otherwise use. Each app's model runs headless, so only the storage differs, and every screen and every reopened document is compared with an oracle. Medians of 5 interleaved runs at size `small`, in headless Chrome 157 on the same M5 Max, with a load average of 4 to 11 from other work. A step that shows several views, such as a sort or a keystroke, gives the median view. [bench/README.md](../bench/README.md) describes each workload.
+The tables above time storage calls. These time what the user of an app waits for. Three example apps run one scripted session on opfs-lsm and on the storage the app would otherwise use. Each app's model runs headless, so only the storage differs, and every screen and every reopened document is compared with an oracle. Medians of 5 interleaved runs at size `small`, in headless Chrome 157. LinearLite ran on an Apple M2 Pro with a load average of about 3, and the whiteboard and pages apps on the same M5 Max with a load average of 4 to 11 from other work. A step that shows several views, such as a sort or a keystroke, gives the median view. [bench/README.md](../bench/README.md) describes each workload.
 
-**LinearLite, 100,000 issues.** [`examples/linearlite-tanstackdb`](../examples/linearlite-tanstackdb) on docstore through `@opfs-lsm/tanstack-db`, against TanStack DB's SQLite persistence, both on demand. The SQLite side is TanStack's adapter as it ships: it sends no `LIMIT`, so a query reads every row its `where` matches, then sorts and pages them in JavaScript. A SQLite backend written by hand would be faster.
+**LinearLite, 100,000 issues.** [`examples/linearlite-tanstackdb`](../examples/linearlite-tanstackdb) on docstore through `@opfs-lsm/tanstack-db`, against TanStack DB's SQLite persistence, both on demand. The SQLite side is TanStack's adapter with the patch that [bench/README.md](../bench/README.md) describes, so a list, a sort and a board column read only the rows they show. As the adapter ships, it reads every row a query's `where` matches, and on this machine the first rows took about 0.9 s and the board about 4 s.
 
 | Step | SQLite | docstore | |
 | --- | ---: | ---: | ---: |
-| First sync, until caught up with the server | 14.9 s | 2.8 s | 5.3× |
-| First sync, then the list's total | 20.0 ms | 401 ms | 0.05× |
-| Cold open, open the database | 35.8 ms | 12.0 ms | 3.0× |
-| First rows, once the database is open | 639 ms | 33.8 ms | 19× |
-| Cold open, the status counts once the total shows | 3.39 ms | 21.0 ms | 0.16× |
-| Change the sort | 639 ms | 4.99 ms | 128× |
-| Filter by status or priority, the list | 803 ms | 9.98 ms | 80× |
-| Search, per keystroke, the list | 868 ms | 11.0 ms | 79× |
-| Jump deep into the list | 770 ms | 60.4 ms | 13× |
-| Open the board | 2.9 s | 22.0 ms | 134× |
-| Open a thread, fetched from the server | 6.02 ms | 2.02 ms | 3.0× |
-| Main thread blocked while typing a search | 3.2 s | 0 ms | |
+| First sync, until caught up with the server | 17.2 s | 3.6 s | 4.8× |
+| First sync, then the list's total | 24.1 ms | 270 ms | 0.09× |
+| Cold open, open the database | 44.0 ms | 14.6 ms | 3.0× |
+| First rows, once the database is open | 52.2 ms | 44.1 ms | 1.2× |
+| Cold open, the status counts once the total shows | 3.39 ms | 22.0 ms | 0.15× |
+| Change the sort | 11.5 ms | 5.76 ms | 2.0× |
+| Filter by status or priority, the list | 303 ms | 13.1 ms | 23× |
+| Search, per keystroke, the list | 770 ms | 14.1 ms | 55× |
+| Jump deep into the list | 803 ms | 84.0 ms | 9.6× |
+| Open the board | 135 ms | 24.1 ms | 5.6× |
+| Open a thread, fetched from the server | 7.81 ms | 3.14 ms | 2.5× |
+| Main thread blocked while typing a search | 2.6 s | 0 ms | |
 
-After a cold open, docstore shows the list's total 46.1 ms after its first rows. SQLite reads every matching row before it shows any, so its total comes with them. The status counts follow the list: after a filter they take 2.62 ms on docstore against 60.4 ms on SQLite, and per keystroke 7.30 ms against 234 ms.
+After a cold open, docstore shows the list's total 62.5 ms after its first rows, and SQLite 45 µs after them. The status counts follow the list: after a filter they take 4.03 ms on docstore against 62.5 ms on SQLite, and per keystroke 9.47 ms against 287 ms.
 
 **Whiteboard, 1,000 shapes.** [`examples/whiteboard-yjs`](../examples/whiteboard-yjs) through `@opfs-lsm/yjs`, against y-indexeddb.
 
