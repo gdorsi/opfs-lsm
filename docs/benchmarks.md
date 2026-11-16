@@ -85,16 +85,16 @@ After a cold open, docstore shows the list's total 62.5 ms after its first rows,
 
 The session never pauses for a second, so neither store merges the board's updates while it is open, and the reopen replays every one of them.
 
-**Notes, a 50 KB page and 1,000 keystrokes.** [`examples/notes-manager-automerge`](../examples/notes-manager-automerge) keeps its page list and every page body as Automerge documents on one kv database, against automerge-repo's `IndexedDBStorageAdapter` on one IndexedDB database. The model opens and stores its page list before the first timed step, so opening a page and the reopen time the body alone. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps every document in memory, either store adds at most 5 ms to opening a page, pasting or a keystroke. These rows come from an Apple M2 Pro, not the M5 Max above, with a load average of 2.
+**Notes, a 50 KB page and 1,000 keystrokes.** [`examples/notes-manager-automerge`](../examples/notes-manager-automerge) keeps its page list and every page body as Automerge documents on one kv database, against automerge-repo's `IndexedDBStorageAdapter` on one IndexedDB database. The model opens and stores its page list before the first timed step, so opening a page and the reopen time the body alone. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps every document in memory, each store adds at most 2.5 ms, to the save after the paste, and at most 0.6 ms to any other step. These rows come from an Apple M2 Pro, not the M5 Max above, with a load average of 2.
 
 | Step | IndexedDB | opfs-lsm | |
 | --- | ---: | ---: | ---: |
-| Open the database | 1.76 ms | 84.0 ms | 0.02× |
-| Open a new page | 3.39 ms | 2.62 ms | 1.3× |
-| Paste 50 KB | 234 ms | 234 ms | 1.0× |
-| Keystroke, p50 | 408 µs | 392 µs | 1.0× |
-| Keystroke, p99 | 4.99 ms | 5.25 ms | 0.95× |
-| Reopen after a reload | 143 ms | 144 ms | 0.99× |
+| Open the database | 1.76 ms | 7.30 ms | 0.24× |
+| Open a new page | 2.88 ms | 2.75 ms | 1.0× |
+| Paste 50 KB | 233 ms | 233 ms | 1.0× |
+| Keystroke, p50 | 440 µs | 440 µs | 1.0× |
+| Keystroke, p99 | 5.76 ms | 5.50 ms | 1.0× |
+| Reopen after a reload | 143 ms | 145 ms | 0.99× |
 
 ## Bundle size
 
