@@ -239,7 +239,7 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
           "|---|---|---|---:|---:|---:|",
           ...lines,
           "",
-          `${floor.contender} keeps both layers in Maps, so the difference is what the contender's storage adds to the same model, Automerge and fate work.`,
+          `${floor.contender} keeps the same docs in a Map, so the difference is what the contender's storage adds to the same model and Automerge work.`,
         );
       }
     }

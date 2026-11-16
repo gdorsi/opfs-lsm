@@ -1,95 +1,93 @@
-# Pages on fate and Automerge: design
+# Notes on Automerge: design
 
-A Notion-like pages app: a sidebar tree of nested pages, each with a title and a rich-text body. fate owns the tree
-and the titles: the server holds them, and the device caches them and queues their writes. Automerge owns each
-page's body, which stays on the device and syncs between its tabs. Both persist on one kv database
-(`kvPagesStorage`), or with `?storage=idb` on IndexedDB, so the two can be compared on the same app. The bench
-(`bench/workloads/pages`) drives the same model without the UI.
+A Notion-like notes app: a sidebar tree of nested pages, each with a title and a rich-text body. Everything is an
+Automerge document on the device. One list doc holds the tree and the titles, and one doc per page holds its body.
+The tabs of one browser sync over a BroadcastChannel; there is no server. The docs persist on one kv database
+(`kvStorage` from `@opfs-lsm/automerge`), or with `?storage=idb` on automerge-repo's IndexedDB adapter, so the two
+can be compared on the same app. The bench (`bench/workloads/pages`) drives the same model without the UI.
 
 ## Running it
 
 ```
-pnpm --filter @opfs-lsm/example-notes-manager-automerge seed     # the demo tree: titles only
 pnpm --filter @opfs-lsm/example-notes-manager-automerge dev      # http://127.0.0.1:4184
-#   ?storage=idb   fate and bodies on IndexedDB instead of kv
-#   ?db=work       another database name (default "pages")
+#   ?storage=idb   IndexedDB instead of kv
+#   ?db=work       another database name (default "notes")
 pnpm --filter @opfs-lsm/example-notes-manager-automerge build
 pnpm --filter @opfs-lsm/example-notes-manager-automerge start    # the build, with the offline shell
 ```
 
-Every link keeps `?storage=` and `?db=`, so a tab never switches storage by navigating.
+Every link keeps `?storage=` and `?db=`, so a tab never switches storage by navigating. A new database starts with no
+pages.
 
 ## The shape
 
-The server is SQLite (`node:sqlite`) behind one fate endpoint, `POST /api/fate`. Tables (`data/pages.db`, or
-`PAGES_DB`):
+`openNotes` is the headless core: one Repo over the caller's storage, holding the list doc and every open body. It
+imports only Automerge and automerge-repo, and oxlint rejects anything else, so the app, the Node tests and the bench
+all run it unchanged. It resolves once the list doc is found or seeded and never waits on the network.
 
-- `page`: `seq` (creation order), `id`, `parent_id` with `ON DELETE CASCADE`, `title`. Children are read by keyset
-  on `(parent_id, seq)`.
-- `receipt`: fate's mutation receipts, so a retried delivery is applied once.
+- The list doc has one fixed DocumentId in every database. A page's id is its body's DocumentId.
+- Storage is one database named by `?db=`: a kv database, or an IndexedDB database of that name. Keys are
+  automerge-repo's, `[docId, "snapshot" | "incremental", hash]` and `[docId, "sync-state", storageId]`, so a page's
+  body is every key under its id. The model wraps storage in a filter that never closes it, tracks the saves in
+  flight per doc and drops every save of a removed id.
+- The BroadcastChannel is `notes:<storage>:<db>`, so kv tabs and idb tabs never share a doc.
 
-`pnpm seed` writes the demo tree. A seeded page's id is derived from its title path, so a reseed keeps the bodies a
-browser already holds attached to their pages.
+## The list
 
-The client is created in the browser only, in the `_app` route's loader. `src/model/` is the headless core: the
-tree's fate declarations and commands (`tree.ts`) and the bodies (`bodies.ts`). It imports only fate and Automerge,
-and the app, the tests and the bench all call it. Every fate view is declared in `tree.ts`, and oxlint rejects one
-declared in the UI, route or client code: a production build numbers views in declaration order and persisted requests name
-that number, so a view in a code-split route would change id with the order routes load in.
+```ts
+type ListDoc = { pages: { [id: PageId]: { parent: PageId | null; title: string; created: number } } };
+```
 
-## The tree
+- One flat map keyed by page id, with parent pointers. `title` is Automerge text. `created` is the time of the create
+  in ms, raised to one more than the last sibling's when the clock has not moved past it.
+- Siblings sort by `created`, then by id.
+- A page is reachable when its parent chain ends at the top level. The sidebar and the page screen show reachable
+  pages only. An entry whose parent is gone, a create that raced a delete in another tab, is unreachable for good,
+  since no command brings a deleted entry back: it is hidden and treated as deleted.
+- The list starts from fixed bytes: one change by actor `00` at time 0 that sets `pages = {}`. Two tabs that each
+  seed an empty database make the same change, so their pages merge, which is why `pages` is never created any other
+  way. When storage cannot read the list, the model refuses to open rather than seed over it.
+- Each change to the list doc rebuilds the tree, which keeps every level array and page object that did not change.
+  The sidebar subscribes per level and per row, so typing a title re-renders that row and the page header only.
 
-Each open row asks for its children: one request per level, `children(parent, first: 200)`, whose rows read the
-page's id and title. Requests are `stale-while-revalidate` and persist for 30 days, so a reload paints the sidebar
-from the device and refreshes it in the background. Siblings are in creation order. Every row has a chevron, as in
-Notion, because the tree keeps no child count to hold in step. Which rows are open is a viewer preference, kept in
-`localStorage` per storage and database.
+Each command is synchronous and one change:
 
-There are no live views. Each open level refetches when the server answers a queued mutation. The journal is
-shared by the tabs, so a create, rename or delete made in one tab shows in the others when it is delivered.
+- `createPage(parent)` adds an entry with an empty title at the end of the parent's level. The app then opens the page
+  with its title focused. The body is seeded the first time the page opens, not here.
+- `renamePage(id, title)` caps the title at 500 characters and keeps its spaces. It writes with `updateText`, so
+  concurrent renames merge per character. A rename to the stored title, or of a page that is not reachable, makes no
+  change. The title field renames on every keystroke with the raw value, and with the trimmed value on blur and
+  Enter. While focused it shows its own text, so a rename from another tab shows once it loses focus, and its next
+  keystroke writes its own text over it.
+- `deletePage(id)` removes the page, its descendants and every other unreachable entry. The row menu asks first, and
+  when the open page is in the subtree the app leaves it before the delete.
 
-## Writes
-
-Each command is one durable fate mutation with an optimistic update, and resolves once fate stored it on the
-device.
-
-- `createPage` makes the id on the client and inserts the page at the end of its parent's cached list. When that
-  list is not cached it is asked for once; with the server unreachable the page shows once the server confirms it.
-  A create writes fate only: the body is seeded the first time the page opens.
-- `renamePage` trims the title and caps it at 500 characters. The title field sends it on blur, on Enter or after
-  1 s without a keystroke, never per keystroke, and an unchanged title sends nothing, also when the same title is
-  still being stored.
-- `deletePage` takes the page out of every cached list at once. The server deletes the subtree and succeeds for a
-  missing id. The row menu asks before it deletes.
-
-A refused write rolls back and stays in the footer with a Discard button. A row shows the "not synced yet" dot
-while a queued mutation names its page, and the footer shows offline, server unreachable or syncing, with the count.
+A change in one tab reaches the others over the BroadcastChannel, so a create, a rename or a delete shows in every
+sidebar of that database. A page created in one tab under a parent another tab deletes at the same time ends hidden in
+both, and its body is removed. Which rows are open is a viewer preference, kept in `localStorage` under
+`notes:expanded:<storage>:<db>`.
 
 ## Bodies
 
-`openBodies` keeps one Automerge document per page id in a Repo over the chosen storage, with a BroadcastChannel
-adapter named `pages:<storage>:<db>`, so kv tabs and idb tabs never share a body. The adapter waits 50 ms for a
-peer instead of a second, so opening a page no other tab holds is not held up. The footer says that page text is
-stored on this device only.
+Each body is one Automerge doc in the same Repo. A body that storage does not hold starts at once from fixed bytes, one
+change by actor `00` at time 0 holding one paragraph marker, so any two copies of a page merge; a copy another tab
+holds merges in later. A stored body that cannot be read rejects the open and seeds nothing.
 
-The page screen holds its body through a lease: a reference count over `open`, and a close 5 s after the last
+The page screen holds its body through a lease: a reference count over the open, and a close 5 s after the last
 release unless a new lease comes first. React's StrictMode remount and a quick switch back to a page reuse the open
-body. On `pagehide` every open body is flushed.
+body. On `pagehide` the list doc and every open body are flushed.
+
+A page that is not in the tree shows "Page not found" and never opens its body, so a deleted id is never seeded
+again. A page deleted in another tab while it is open turns into the same screen.
 
 ## Deleted bodies
 
-Every tab watches fate's journal and removes the bodies of pages that no longer exist. When an entry leaves the
-journal:
-
-| Entry | Last status | Meaning | Removes |
-| --- | --- | --- | --- |
-| `deletePage` | not failed | the server confirmed it | the page and its descendants this device has cached |
-| `createPage` | failed | the refusal was discarded | the page, if it was opened |
-
-The journal persists, so a delete confirmed after a reload or in another tab still frees its bodies. A removal
-blocks the id from saving, marks an open body `removed`, drops it from memory, waits for saves in flight, then
-deletes every key under the id. A screen showing a removed body says the page was deleted and makes the editor
-read-only.
+Every tab watches its own tree. When ids leave the reachable set, it removes their bodies one at a time, and a
+failure is logged without stopping the rest. When it opens, it also removes the bodies of the entries it cannot
+reach, which covers a tab that closed before a concurrent delete reached it. A removal blocks the id from saving for
+the rest of the Repo's life, so a copy in another tab cannot write it back, marks an open body `removed`, drops it
+from memory, waits for the saves in flight, then deletes every key under the id. It is idempotent, so every tab runs
+it.
 
 ## The editor
 
@@ -111,46 +109,46 @@ link marks. A position maps to an Automerge index by subtracting the number of b
   undoes the rule.
 - Numbered items count with one CSS counter per depth over consecutive blocks.
 
-## Opening with the server unreachable
+## Opening offline
 
-A production build registers the ServiceWorker from `examples/linearlite-fate` (see its DESIGN.md, "Opening with
-the server unreachable"): it stores the page and every file of the build, including both wasm modules, and answers
-the page from the cache only when the server cannot be reached. The sidebar paints the levels fate cached, a page
-whose header was cached opens, and its body is editable, because bodies need no server. A level never fetched
-shows the load error with Try again. The dev server registers nothing.
+The whole app runs on the device, so it works with no network. A production build registers a service worker that
+stores the page and every file of the build, including both wasm modules, in a cache named after the build's file
+list. It answers a file of the build from the cache, and the page from the network, falling back to the cache when
+the server cannot be reached. A new build replaces the cache. The dev server registers nothing.
 
 ## Browser proof
 
-Run it on `pnpm dev` with a seeded server, and on `pnpm build && pnpm start` for step 6. Run it once on kv and once
-with `?storage=idb`. In dev, `window.__pages` holds `fate`, `bodies`, `storage` and the mounted `editor`.
+Run it on `pnpm dev`, and on `pnpm build && pnpm start` for step 6. Run it once on kv and once with `?storage=idb`. A
+new `?db=` starts empty. In dev, `window.__notes` holds `notes`, `leases`, `storage` and the mounted `editor`.
 
-1. Nested pages. Create a top-level page, a child and a grandchild. Each shows in the sidebar at once and opens.
-   Collapse and expand.
+1. Nested pages. Create a top-level page, a child and a grandchild. Each opens at once with its title focused, and
+   its sidebar row shows every keystroke of the title. Collapse and expand.
 2. Every block type. In the grandchild, type each rule, Tab and Shift-Tab an item through depths 0 to 5, check a
    to-do with Mod-Enter and with a click, and apply bold, italic, code and a link with their keys. Undo and redo
    all of it. After each step `docToSpans(editor.view.state.doc)` equals the open body's `spans()`.
-3. Rename. No request goes out while typing a title; one rename goes out per blur, Enter or 1 s pause, and the row
-   updates.
-4. Reload. Text, blocks, marks, titles and the open rows are the same.
-5. Two tabs. Open one page in two tabs and type in both, with Enter and Tab. Each edit reaches the other tab within
-   200 ms, and the spans check passes in both.
-6. Offline. On the build, open two levels and a page, stop the server and reload. The sidebar and the page paint,
-   the body is editable, and a rename shows the dot until the server is back.
-7. Delete. Delete the top-level page from step 1 with the grandchild open in a second tab. The subtree leaves both
-   sidebars, the second tab says the page was deleted and its editor is read-only, and `storage.bodies.loadRange`
-   is empty for all three ids.
-8. `?storage=idb`. Repeat 1, 4 and 7. IndexedDB holds `pages-fate` and `pages-bodies`, and a kv tab and an idb tab
-   on one page show different text.
+3. Reload. Text, blocks, marks, titles and the open rows are the same.
+4. Two tabs. Open one page in two tabs. A page created in one tab shows in the other's sidebar, and a title typed in
+   one shows in the other's sidebar while it is typed. Type in both bodies, with Enter and Tab. Each edit reaches the
+   other tab within 200 ms, and the spans check passes in both.
+5. Delete. Delete the top-level page from step 1 with the grandchild open in a second tab. The subtree leaves both
+   sidebars, the second tab shows "Page not found", and `__notes.storage.loadRange([id])` is empty for all three ids.
+   A reload keeps them gone.
+6. Offline. On the build, create a page and a child, type in the body, and reload once so the service worker
+   controls the tab. Stop the preview server and reload. The sidebar and the page paint, the body takes edits and
+   saves them, and a rename shows in the sidebar.
+7. `?storage=idb`. Repeat 1, 3 and 5. IndexedDB holds one database named by `?db=`, and a kv tab and an idb tab with
+   the same `?db=` show different pages.
 
 ## Left out
 
-- Moving pages, a trash, search and live views.
-- Body sync through a server: bodies live on each device.
-- Bodies of pages deleted from another device. This device's journal never sees that delete, so their keys stay
-  until a sweep that lists the stored bodies exists.
+- Moving pages, a trash, search and undo of a delete.
+- Sync between devices: the notes live on one device, shared by its tabs.
+- Live merging in a focused title field: it keeps its own text until it loses focus.
 
 ## Measured
 
-Step 5 of the browser proof, kv, dev server: 28 edits (one per dispatch) made in one tab reached the other in 60 ms
-median, 80 ms at most, and 23 edits the other way in 55 ms median, 94 ms at most, timed from `body.edit` to the other tab's remote
-apply. Both documents ended equal.
+Step 4 on kv, dev server, headless Chrome 157 on an Apple M2 Pro, timed from one editor's DOM change to the other
+editor's on one clock. Over three runs, 30 keystrokes typed 40 ms apart in one tab reached the other in 50 to 56 ms
+median and 97 to 102 ms at most, and 19 keystrokes the other way in 48 to 54 ms median and 101 to 105 ms at most. One
+run on IndexedDB gave 48 ms median both ways, 95 and 98 ms at most. automerge-repo sends a doc's sync messages at most
+once per 100 ms, which bounds the wait. Both editors ended equal in every run.
