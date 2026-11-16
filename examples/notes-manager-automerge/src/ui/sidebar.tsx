@@ -1,11 +1,8 @@
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useListView, useRequest, useView, type ViewRef } from "react-fate";
+import { useEffect, useRef, useState } from "react";
 import { useApp } from "../client/app.ts";
-import { useCreatePage, useExpanded, usePending, useRefetchOnDelivery, useSyncStatus, type SyncStatus } from "../client/hooks.ts";
-import { cachedSubtree, ChildListView, childrenRequest, deletePage, PageRowView, TREE_REQUEST } from "../model/tree.ts";
+import { useChildren, useCreatePage, useExpanded, usePage } from "../client/hooks.ts";
 import type { PageId } from "../model/types.ts";
-import { Loading } from "./boundary.tsx";
 
 const indent = (depth: number) => ({ "--depth": depth }) as React.CSSProperties;
 
@@ -14,59 +11,43 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
-        <span className="brand">Pages</span>
+        <span className="brand">Notes</span>
         <button className="icon-btn" id="new-page" title="New page" aria-label="New page" onClick={() => void create(null)}>
           <Plus />
         </button>
       </div>
       <nav className="tree" aria-label="Pages">
-        <Loading fallback={<Skeleton depth={0} />}>
-          <Level parent={null} depth={0} />
-        </Loading>
+        <Level parent={null} depth={0} />
       </nav>
-      <SyncFooter />
+      <Footer />
     </aside>
   );
 }
 
 function Level({ parent, depth }: { parent: PageId | null; depth: number }) {
-  const request = useMemo(() => childrenRequest(parent), [parent]);
-  const { children } = useRequest(request, TREE_REQUEST);
-  useRefetchOnDelivery(request);
-  const [items = [], loadNext] = useListView(ChildListView, children);
-  if (items.length === 0) {
+  const ids = useChildren(parent);
+  if (ids.length === 0) {
     return (
       <div className="tree-empty" style={indent(depth)}>
         {depth === 0 ? "No pages yet" : "No pages inside"}
       </div>
     );
   }
-  return (
-    <>
-      {items.map(({ node }) => (
-        <Row key={node.id} page={node} depth={depth} />
-      ))}
-      {loadNext && (
-        <button className="tree-more" style={indent(depth)} onClick={() => void loadNext()}>
-          Show more
-        </button>
-      )}
-    </>
-  );
+  return ids.map((id) => <Row key={id} id={id} depth={depth} />);
 }
 
-function Row({ page, depth }: { page: ViewRef<"Page">; depth: number }) {
-  const { fate } = useApp();
-  const row = useView(PageRowView, page);
-  const id = row.id as PageId;
-  const title = row.title || "Untitled";
+function Row({ id, depth }: { id: PageId; depth: number }) {
+  const { notes } = useApp();
+  const page = usePage(id);
   const { isOpen, set } = useExpanded();
   const open = isOpen(id);
-  const pending = usePending(id);
   const create = useCreatePage();
   const navigate = useNavigate();
   const current = useParams({ strict: false }).pageId;
   const [menu, setMenu] = useState<"closed" | "actions" | "confirm">("closed");
+  // Only between the page leaving the tree and its level rendering without it.
+  if (!page) return null;
+  const title = page.title || "Untitled";
 
   const onNewChild = () => {
     set(id, true);
@@ -74,8 +55,8 @@ function Row({ page, depth }: { page: ViewRef<"Page">; depth: number }) {
   };
   const onDelete = async () => {
     setMenu("closed");
-    if (current && (current === id || (await cachedSubtree(fate, id)).includes(current as PageId))) await navigate({ to: "/" });
-    await deletePage(fate, id);
+    if (current && notes.tree.read().subtree(id).includes(current as PageId)) await navigate({ to: "/" });
+    notes.deletePage(id);
   };
 
   return (
@@ -84,10 +65,9 @@ function Row({ page, depth }: { page: ViewRef<"Page">; depth: number }) {
         <button className={`chevron${open ? " open" : ""}`} aria-label={open ? `Collapse ${title}` : `Expand ${title}`} aria-expanded={open} onClick={() => set(id, !open)}>
           <Chevron />
         </button>
-        <Link to="/p/$pageId" params={{ pageId: id }} className={`row-title${row.title ? "" : " untitled"}`}>
+        <Link to="/p/$pageId" params={{ pageId: id }} className={`row-title${page.title ? "" : " untitled"}`}>
           {title}
         </Link>
-        {pending && <span className="unsynced" title="Not synced yet" aria-label="Not synced yet" />}
         <span className="row-actions">
           <button
             className="icon-btn"
@@ -126,11 +106,7 @@ function Row({ page, depth }: { page: ViewRef<"Page">; depth: number }) {
           </Menu>
         )}
       </div>
-      {open && (
-        <Loading fallback={<Skeleton depth={depth + 1} />}>
-          <Level parent={id} depth={depth + 1} />
-        </Loading>
-      )}
+      {open && <Level parent={id} depth={depth + 1} />}
     </>
   );
 }
@@ -154,47 +130,18 @@ function Menu({ onClose, children }: { onClose(): void; children: React.ReactNod
   );
 }
 
-function Skeleton({ depth }: { depth: number }) {
-  return (
-    <div className="tree-empty" style={indent(depth)} aria-busy>
-      Loading…
-    </div>
-  );
-}
-
 const STORAGE = { kv: "kv on OPFS", idb: "IndexedDB" } as const;
-const ACTION: Record<string, string> = { createPage: "A new page", renamePage: "A rename", deletePage: "A delete" };
 
-function SyncFooter() {
-  const { fate, kind } = useApp();
-  const status = useSyncStatus();
-  const text = describe(status);
+function Footer() {
+  const { kind } = useApp();
   return (
-    <footer className={`sync sync-${status.kind}`} id="sync" role="status">
-      {text && <b>{text}</b>}
-      {status.failed.map((entry) => (
-        <div className="refused" key={entry.id}>
-          <span>
-            {ACTION[entry.name] ?? entry.name} was refused{entry.error ? `: ${entry.error}` : ""}
-          </span>
-          <button className="link-btn" onClick={() => void fate.persistence!.discard(entry.id)}>
-            Discard
-          </button>
-        </div>
-      ))}
+    <footer className="sidebar-foot">
       <span className="mono" id="storage" data-storage={kind}>
         Storage: {STORAGE[kind]}
       </span>
-      <span className="note">Page text is stored on this device only.</span>
+      <span className="note">Notes are stored on this device only.</span>
     </footer>
   );
-}
-
-const HEADLINE = { offline: "Offline", retrying: "Server unreachable", syncing: "Syncing" } as const;
-
-function describe(status: SyncStatus): string | undefined {
-  if (status.kind === "idle") return undefined;
-  return status.unsynced > 0 ? `${HEADLINE[status.kind]} · ${status.unsynced} unsynced` : HEADLINE[status.kind];
 }
 
 function Plus() {

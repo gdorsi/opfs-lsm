@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
-import { Route as ApiFateRouteImport } from './routes/api/fate'
 import { Route as AppPPageIdRouteImport } from './routes/_app/p.$pageId'
 
 const AppRoute = AppRouteImport.update({
@@ -23,11 +22,6 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
-const ApiFateRoute = ApiFateRouteImport.update({
-  id: '/api/fate',
-  path: '/api/fate',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const AppPPageIdRoute = AppPPageIdRouteImport.update({
   id: '/p/$pageId',
   path: '/p/$pageId',
@@ -36,32 +30,28 @@ const AppPPageIdRoute = AppPPageIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
-  '/api/fate': typeof ApiFateRoute
   '/p/$pageId': typeof AppPPageIdRoute
 }
 export interface FileRoutesByTo {
-  '/api/fate': typeof ApiFateRoute
   '/': typeof AppIndexRoute
   '/p/$pageId': typeof AppPPageIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
-  '/api/fate': typeof ApiFateRoute
   '/_app/': typeof AppIndexRoute
   '/_app/p/$pageId': typeof AppPPageIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/fate' | '/p/$pageId'
+  fullPaths: '/' | '/p/$pageId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/api/fate' | '/' | '/p/$pageId'
-  id: '__root__' | '/_app' | '/api/fate' | '/_app/' | '/_app/p/$pageId'
+  to: '/' | '/p/$pageId'
+  id: '__root__' | '/_app' | '/_app/' | '/_app/p/$pageId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
-  ApiFateRoute: typeof ApiFateRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -79,13 +69,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
-    }
-    '/api/fate': {
-      id: '/api/fate'
-      path: '/api/fate'
-      fullPath: '/api/fate'
-      preLoaderRoute: typeof ApiFateRouteImport
-      parentRoute: typeof rootRouteImport
     }
     '/_app/p/$pageId': {
       id: '/_app/p/$pageId'
@@ -111,7 +94,6 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
-  ApiFateRoute: ApiFateRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

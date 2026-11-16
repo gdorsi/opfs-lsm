@@ -340,7 +340,6 @@
               {
                 "group": [
                   "@opfs-lsm/*",
-                  "@nkzw/fate-indexeddb",
                   "@automerge/automerge-repo-storage-*"
                 ],
                 "message": "Only src/storage/ imports storage packages."
@@ -395,52 +394,6 @@
     },
     {
       "files": [
-        "examples/notes-manager-automerge/src/ui/**",
-        "examples/notes-manager-automerge/src/routes/**",
-        "examples/notes-manager-automerge/src/client/**"
-      ],
-      "rules": {
-        "no-restricted-imports": [
-          "error",
-          {
-            "paths": [
-              {
-                "name": "react-fate",
-                "importNames": [
-                  "view",
-                  "clientRoot",
-                  "clientValueRoot",
-                  "mutation"
-                ],
-                "message": "fate declarations live in src/model/tree.ts, so view ids do not depend on which route chunk loads first."
-              },
-              {
-                "name": "@nkzw/fate",
-                "importNames": [
-                  "view",
-                  "clientRoot",
-                  "clientValueRoot",
-                  "mutation"
-                ],
-                "message": "fate declarations live in src/model/tree.ts, so view ids do not depend on which route chunk loads first."
-              }
-            ],
-            "patterns": [
-              {
-                "group": [
-                  "@opfs-lsm/*",
-                  "@nkzw/fate-indexeddb",
-                  "@automerge/automerge-repo-storage-*"
-                ],
-                "message": "Only src/storage/ imports storage packages."
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "files": [
         "examples/notes-manager-automerge/src/model/**"
       ],
       "rules": {
@@ -452,12 +405,10 @@
                 "group": [
                   "*",
                   "!./*",
-                  "!@nkzw/fate",
-                  "!@nkzw/fate/persistence",
                   "!@automerge/automerge",
                   "!@automerge/automerge-repo"
                 ],
-                "message": "The model runs unchanged in the app, the bench and Node: it imports only fate, Automerge and automerge-repo."
+                "message": "The model runs unchanged in the app, the bench and Node: it imports only Automerge and automerge-repo."
               }
             ]
           }

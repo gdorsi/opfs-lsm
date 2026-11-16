@@ -7,7 +7,7 @@ import { defineConfig, type Plugin } from "vite";
 
 function serviceWorker(): Plugin {
   return {
-    name: "pages:service-worker",
+    name: "notes:service-worker",
     applyToEnvironment: (environment) => environment.name === "client",
     writeBundle(options) {
       const dir = options.dir!;

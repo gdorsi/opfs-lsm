@@ -24,6 +24,5 @@ site/.vitepress/cache
 examples/linearlite-docstore/dist
 examples/notes-manager-automerge/dist
 examples/notes-manager-automerge/.tanstack
-examples/notes-manager-automerge/data
 examples/whiteboard-yjs/dist
 examples/whiteboard-yjs/.tanstack

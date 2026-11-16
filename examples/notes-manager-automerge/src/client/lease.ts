@@ -33,7 +33,7 @@ export function bodyLeases(bodies: Pick<Bodies, "open">): Leases {
           if (--held.holders > 0) return;
           held.timer = setTimeout(() => {
             entries.delete(id);
-            held.body.then((body) => body.close()).catch((error: unknown) => console.warn(`pages: could not close ${id}`, error));
+            held.body.then((body) => body.close()).catch((error: unknown) => console.warn(`notes: could not close ${id}`, error));
           }, CLOSE_AFTER_MS);
         },
       };

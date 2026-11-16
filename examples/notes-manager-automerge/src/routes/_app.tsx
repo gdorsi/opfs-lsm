@@ -1,5 +1,4 @@
 import { createFileRoute, retainSearchParams } from "@tanstack/react-router";
-import { FateClient } from "react-fate";
 import { AppContext, openApp } from "../client/app.ts";
 import { keepAppOnDevice } from "../client/offline.ts";
 import { Shell } from "../ui/shell.tsx";
@@ -25,10 +24,8 @@ export const Route = createFileRoute("/_app")({
 function AppShell() {
   const app = Route.useLoaderData();
   return (
-    <FateClient client={app.fate}>
-      <AppContext value={app}>
-        <Shell />
-      </AppContext>
-    </FateClient>
+    <AppContext value={app}>
+      <Shell />
+    </AppContext>
   );
 }

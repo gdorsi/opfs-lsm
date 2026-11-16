@@ -7,18 +7,14 @@
     "build": "vite build",
     "start": "vite preview",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test 'tests/*.test.ts'",
-    "seed": "node scripts/seed.ts"
+    "test": "node --test 'tests/*.test.ts'"
   },
   "dependencies": {
     "@automerge/automerge": "3.5.0",
     "@automerge/automerge-repo": "2.6.0-alpha.5",
     "@automerge/automerge-repo-network-broadcastchannel": "2.6.0-alpha.5",
     "@automerge/automerge-repo-storage-indexeddb": "2.6.0-alpha.5",
-    "@nkzw/fate": "2.0.1",
-    "@nkzw/fate-indexeddb": "2.0.1",
     "@opfs-lsm/automerge": "workspace:*",
-    "@opfs-lsm/fate": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
     "@tanstack/react-router": "^1.170.46",
     "@tanstack/react-start": "^1.169.5",
@@ -31,9 +27,7 @@
     "prosemirror-transform": "1.12.5",
     "prosemirror-view": "1.42.9",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "react-fate": "2.0.1",
-    "zod": "^4.6.7"
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@automerge/automerge-repo-network-messagechannel": "2.6.0-alpha.5",

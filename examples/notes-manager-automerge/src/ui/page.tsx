@@ -1,13 +1,10 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { useRequest, useView, type ViewRef } from "react-fate";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useApp } from "../client/app.ts";
-import { useBody, useCreatePage, useHeld, useSaveState } from "../client/hooks.ts";
+import { useBody, useCreatePage, usePage, useSaveState } from "../client/hooks.ts";
 import { mountEditor, type MountedEditor } from "../editor/view.ts";
-import { MAX_TITLE, PageHeaderView, pageRequest, renamePage, TREE_REQUEST } from "../model/tree.ts";
+import { MAX_TITLE } from "../model/list.ts";
 import type { PageBody, PageId, SaveState } from "../model/types.ts";
-
-const TITLE_IDLE_MS = 1000;
 
 export function EmptyState() {
   const create = useCreatePage();
@@ -25,7 +22,7 @@ export function NotFound() {
   return (
     <div className="empty" id="not-found">
       <h2>Page not found</h2>
-      <p>This page was deleted, or it is not on this device yet.</p>
+      <p>This page was deleted, or it was never on this device.</p>
       <Link to="/" className="btn">
         Back to pages
       </Link>
@@ -33,33 +30,26 @@ export function NotFound() {
   );
 }
 
+/** A page that is not in the tree never opens its body, so a deleted id is not seeded again. */
 export function PageScreen({ id }: { id: PageId }) {
-  const { page } = useRequest(
-    useMemo(() => pageRequest(id), [id]),
-    TREE_REQUEST,
-  );
-  const held = useHeld(id);
+  const page = usePage(id);
   const editor = useRef<MountedEditor | null>(null);
-  if (!held) return <NotFound />;
+  if (!page) return <NotFound />;
   return (
     <article className="page" data-page={id}>
-      <TitleField page={page} onEnter={() => editor.current?.view.focus()} />
+      <TitleField id={id} title={page.title} onEnter={() => editor.current?.view.focus()} />
       <Body id={id} editor={editor} />
     </article>
   );
 }
 
-function TitleField({ page, onEnter }: { page: ViewRef<"Page">; onEnter(): void }) {
-  const { fate } = useApp();
-  const header = useView(PageHeaderView, page);
-  const id = header.id as PageId;
-  const [draft, setDraft] = useState(header.title);
+/** Renames on every keystroke; trims on blur and Enter. While focused it shows its own draft. */
+function TitleField({ id, title, onEnter }: { id: PageId; title: string; onEnter(): void }) {
+  const { notes } = useApp();
+  const [draft, setDraft] = useState(title);
   const editing = useRef(false);
-  const idle = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const latest = useRef(draft);
-  latest.current = draft;
   const input = useRef<HTMLInputElement>(null);
-  const named = useRef(header.title !== "");
+  const named = useRef(title !== "");
 
   // A layout effect, because `autoFocus` is lost when the screen mounts behind a suspended boundary and shows later.
   useLayoutEffect(() => {
@@ -69,20 +59,13 @@ function TitleField({ page, onEnter }: { page: ViewRef<"Page">; onEnter(): void 
   }, []);
 
   useEffect(() => {
-    if (!editing.current) setDraft(header.title);
-  }, [header.title]);
+    if (!editing.current) setDraft(title);
+  }, [title]);
 
   const commit = (value: string) => {
-    clearTimeout(idle.current);
-    idle.current = undefined;
-    void renamePage(fate, id, value);
+    notes.renamePage(id, value.trim());
+    setDraft(value.trim());
   };
-  useEffect(
-    () => () => {
-      if (idle.current !== undefined) commit(latest.current);
-    },
-    [],
-  );
 
   return (
     <input
@@ -97,13 +80,10 @@ function TitleField({ page, onEnter }: { page: ViewRef<"Page">; onEnter(): void 
       onBlur={(event) => {
         editing.current = false;
         commit(event.currentTarget.value);
-        setDraft(event.currentTarget.value.trim());
       }}
       onChange={(event) => {
-        const value = event.currentTarget.value;
-        setDraft(value);
-        clearTimeout(idle.current);
-        idle.current = setTimeout(() => commit(value), TITLE_IDLE_MS);
+        setDraft(event.currentTarget.value);
+        notes.renamePage(id, event.currentTarget.value);
       }}
       onKeyDown={(event) => {
         if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
@@ -139,28 +119,23 @@ function Editor({ body, editor }: { body: PageBody; editor: RefObject<MountedEdi
   useEffect(() => {
     const mounted = mountEditor(place.current!, body, {
       onRefused: (error) => {
-        console.warn("pages: a change was refused", error);
+        console.warn("notes: a change was refused", error);
         setRefused(error instanceof Error ? error.message : String(error));
       },
       askHref: setLinkAt,
     });
     editor.current = mounted;
-    if (import.meta.env.DEV && globalThis.__pages) globalThis.__pages.editor = mounted;
+    if (import.meta.env.DEV && globalThis.__notes) globalThis.__notes.editor = mounted;
     return () => {
       mounted.destroy();
       if (editor.current === mounted) editor.current = null;
-      if (import.meta.env.DEV && globalThis.__pages?.editor === mounted) globalThis.__pages.editor = undefined;
+      if (import.meta.env.DEV && globalThis.__notes?.editor === mounted) globalThis.__notes.editor = undefined;
     };
   }, [body, editor]);
 
   return (
     <>
       <SaveLabel save={save} />
-      {save.state === "removed" && (
-        <div className="banner" id="deleted" role="status">
-          This page was deleted. Its text is no longer stored on this device.
-        </div>
-      )}
       {refused && (
         <div className="banner error" role="alert">
           A change was not applied: {refused}

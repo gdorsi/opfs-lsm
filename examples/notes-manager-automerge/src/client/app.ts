@@ -1,25 +1,21 @@
+import type { StorageAdapterInterface } from "@automerge/automerge-repo";
 import { BroadcastChannelNetworkAdapter } from "@automerge/automerge-repo-network-broadcastchannel";
 import { createContext, useContext } from "react";
-import { createHTTPTransport } from "react-fate";
 import type { MountedEditor } from "../editor/view.ts";
-import type { Bodies } from "../model/bodies.ts";
-import { openNotes } from "../model/notes.ts";
-import { createTreeClient, reclaimBodies, type Fate } from "../model/tree.ts";
-import type { PagesStorage } from "../model/types.ts";
-import { openPagesStorage, type StorageKind } from "../storage/open.ts";
+import { openNotes, type Notes } from "../model/notes.ts";
+import { openStorage, type StorageKind } from "../storage/open.ts";
 import { bodyLeases, type Leases } from "./lease.ts";
 
 export type App = {
-  readonly fate: Fate;
-  readonly bodies: Bodies;
+  readonly notes: Notes;
   readonly leases: Leases;
   readonly kind: StorageKind;
   readonly db: string;
-  readonly storage: PagesStorage;
+  readonly storage: StorageAdapterInterface;
 };
 
 declare global {
-  var __pages: (App & { editor?: MountedEditor }) | undefined;
+  var __notes: (App & { editor?: MountedEditor }) | undefined;
 }
 
 let opening: Promise<App> | undefined;
@@ -28,19 +24,16 @@ export function openApp(): Promise<App> {
   return (opening ??= (async () => {
     const params = new URLSearchParams(location.search);
     const kind: StorageKind = params.get("storage") === "idb" ? "idb" : "kv";
-    const db = params.get("db") || "pages";
-    const storage = await openPagesStorage(kind, db);
-    const fate = createTreeClient({ transport: createHTTPTransport({ url: "/api/fate", live: false }), storage: storage.fate });
-    const { bodies } = await openNotes({
-      storage: storage.bodies,
-      network: [new BroadcastChannelNetworkAdapter({ channelName: `pages:${kind}:${db}` })],
+    const db = params.get("db") || "notes";
+    const storage = await openStorage(kind, db);
+    const notes = await openNotes({ storage, network: [new BroadcastChannelNetworkAdapter({ channelName: `notes:${kind}:${db}` })] });
+    const leases = bodyLeases(notes.bodies);
+    addEventListener("pagehide", () => {
+      notes.flush().catch((error: unknown) => console.warn("notes: the page list was not saved", error));
+      void leases.flush();
     });
-    const leases = bodyLeases(bodies);
-    reclaimBodies(fate, bodies);
-    addEventListener("pagehide", () => void leases.flush());
-    await fate.persistence!.ready;
-    const app: App = { fate, bodies, leases, kind, db, storage };
-    if (import.meta.env.DEV) globalThis.__pages = app;
+    const app: App = { notes, leases, kind, db, storage };
+    if (import.meta.env.DEV) globalThis.__notes = app;
     return app;
   })());
 }

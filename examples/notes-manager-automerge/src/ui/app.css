@@ -10,7 +10,6 @@
   --faint: rgba(55, 53, 47, 0.4);
   --accent: #2383e2;
   --danger: #e03e3e;
-  --warn: #d9730d;
   --code-bg: rgba(135, 131, 120, 0.15);
   --code-text: #eb5757;
   --shadow: 0 0 0 1px rgba(15, 15, 15, 0.05), 0 3px 6px rgba(15, 15, 15, 0.1), 0 9px 24px rgba(15, 15, 15, 0.2);
@@ -31,7 +30,6 @@
     --faint: rgba(255, 255, 255, 0.3);
     --accent: #529cca;
     --danger: #ff7369;
-    --warn: #ffa344;
     --code-bg: rgba(135, 131, 120, 0.2);
     --code-text: #ff7369;
     --shadow: 0 0 0 1px rgba(15, 15, 15, 0.1), 0 3px 6px rgba(15, 15, 15, 0.2), 0 9px 24px rgba(15, 15, 15, 0.4);
@@ -162,14 +160,6 @@ a {
 .row:focus-within .row-actions {
   display: flex;
 }
-.unsynced {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  margin: 0 4px;
-  border-radius: 50%;
-  background: var(--warn);
-}
 .icon-btn {
   display: grid;
   place-items: center;
@@ -186,22 +176,11 @@ a {
   background: var(--active);
   color: var(--text);
 }
-.tree-empty,
-.tree-more {
+.tree-empty {
   display: block;
   padding: 4px 8px 4px calc(30px + var(--depth, 0) * 14px);
   color: var(--faint);
   font-size: 13px;
-}
-.tree-more {
-  border: 0;
-  background: none;
-  cursor: pointer;
-  text-align: left;
-  width: 100%;
-}
-.tree-more:hover {
-  color: var(--text);
 }
 .menu {
   position: absolute;
@@ -269,7 +248,7 @@ a {
   font-size: 13px;
 }
 
-.sync {
+.sidebar-foot {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -278,22 +257,8 @@ a {
   color: var(--muted);
   font-size: 12px;
 }
-.sync b {
-  font-weight: 500;
-  color: var(--text);
-}
-.sync-offline b,
-.sync-retrying b {
-  color: var(--warn);
-}
-.sync .note {
+.sidebar-foot .note {
   color: var(--faint);
-}
-.refused {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  color: var(--danger);
 }
 
 .btn {

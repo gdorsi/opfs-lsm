@@ -1,5 +1,4 @@
-import type { DocumentId, StorageAdapterInterface } from "@automerge/automerge-repo";
-import type { PersistenceStorage } from "@nkzw/fate/persistence";
+import type { DocumentId } from "@automerge/automerge-repo";
 import type { PagesError } from "./errors.ts";
 
 /** A page's id is the Automerge DocumentId of its body, so a page and its body share one id. */
@@ -96,9 +95,3 @@ export interface PageBody {
   /** Flushes, then drops the doc from memory. */
   close(): Promise<void>;
 }
-
-/** What a contender supplies. The caller owns both halves and closes them; the model never does. */
-export type PagesStorage = {
-  readonly fate: PersistenceStorage;
-  readonly bodies: StorageAdapterInterface;
-};
