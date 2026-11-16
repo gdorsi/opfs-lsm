@@ -13,12 +13,18 @@ Design principles for our packages:
 
 ## Examples
 
-The apps under `examples/` show how to build a web app on our packages.
+The apps under `examples/` show how to build a web app on our packages, and test those packages the way an app uses them.
 
 - Use each dependency the way its docs recommend. No custom workarounds.
 - Build a complete, working web app with a polished UX.
 - Make it look good, like a product someone would ship, not a test page.
-- Where possible, make the app's core run headless, without the UI, so benchmarks can drive it. Otherwise, benchmark the real app.
+- Write reference code: clean, small and idiomatic. People copy examples.
+- Store data with our packages only. No switch to another storage, and no hooks, marks or options that exist for a benchmark.
+- Keep the app's core testable without the UI, and test it. A test that fails because of our package is a bug in the package.
+
+## Benchmarks
+
+`bench/` measures the packages, never the example apps. A new access pattern becomes a goal on a dataset, with one workload owning each pattern (see [bench/README.md](bench/README.md), "Goal workloads").
 
 ## Worktrees
 

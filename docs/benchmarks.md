@@ -35,6 +35,19 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 
 The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and `@nkzw/fate-indexeddb`. Both TanStack DB collections run in eager mode, the default `syncMode`: a collection loads every row when it opens. `indexedDBCollectionOptions` has no on-demand mode.
 
+### Typing, then reopening
+
+The editing-trace workloads write the trace's first 25,700 keystrokes, then type the last 300 at one per 16 ms frame, one update each. Then they open the document cold in a fresh tab, once before kv settles and once after. Medians of 3 runs (6 for Yjs on kv) at size `small`, headless Chrome 157 on an Apple M2 Pro with a load average of 2 to 5:
+
+| | y-indexeddb | Yjs on kv | automerge-repo IndexedDB | Automerge on kv |
+| --- | ---: | ---: | ---: | ---: |
+| One keystroke, with its persistence | 0.28 ms | 0.36 ms | 0.58 ms | 0.58 ms |
+| Frames dropped over 300 keystrokes | 0 | 0 | 0 | 0 |
+| Cold open before the settle | 7.2 ms | 16 ms | 58 ms | 64 ms |
+| Cold open after the settle | 7.5 ms | 52 ms | 58 ms | 65 ms |
+
+Automerge's own load of the document takes most of its cold open on both stores. kv's open in a fresh tab took 5 to 8 ms in most opens before the settle and about 44 ms in most opens after it. The cause is not known yet. In one Yjs run on kv out of six, each cold open took 17 s. In that run the merge of the stored updates left almost all of them in place, which is an open bug.
+
 ### On demand, against SQLite
 
 In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack/browser-db-sqlite-persistence`, which runs wa-sqlite on OPFS in a dedicated WebWorker. Its adapter is patched to send `LIMIT` and equality on numbers to SQLite, as [bench/README.md](../bench/README.md) describes. Both collections hold 100,000 rows and load only what a query asks for. The reads, medians of 5 interleaved runs in headless Chrome 157 on an Apple M2 Pro with a load average of about 3:
@@ -48,53 +61,37 @@ In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack
 
 The bench also runs `docstore` against Dexie. [bench/README.md](../bench/README.md) lists every family and workload.
 
-## App benchmarks
+## Goal benchmarks
 
-The tables above time storage calls. These time what the user of an app waits for. Three example apps run one scripted session on opfs-lsm and on the storage the app would otherwise use. Each app's model runs headless, so only the storage differs, and every screen and every reopened document is compared with an oracle. Medians of 5 interleaved runs at size `small`, in headless Chrome 157. LinearLite ran on an Apple M2 Pro with a load average of about 3, and the whiteboard and pages apps on the same M5 Max with a load average of 4 to 11 from other work. A step that shows several views, such as a sort or a keystroke, gives the median view. [bench/README.md](../bench/README.md) describes each workload.
+The tables above time storage calls. These time the questions an app's screens ask. A task tracker with 20,000 issues, 43,000 comments, 120 people, 24 projects and 30 labels is built from its history: an import, then sync batches that move issues between statuses and people, then a settle, then a sprint close and single edits on top. Each library replays the history through its own write API. It then answers each goal with its own query API and indexes, and every answer is checked against an oracle. [bench/README.md](../bench/README.md#goal-workloads) lists the goals, and [the research note](research/goal-driven-benchmarks.md) explains the method.
 
-**LinearLite, 100,000 issues.** [`examples/linearlite-tanstackdb`](../examples/linearlite-tanstackdb) on docstore through `@opfs-lsm/tanstack-db`, against TanStack DB's SQLite persistence, both on demand. The SQLite side is TanStack's adapter with the patch that [bench/README.md](../bench/README.md) describes, so a list, a sort and a board column read only the rows they show. As the adapter ships, it reads every row a query's `where` matches, and on this machine the first rows took about 0.9 s and the board about 4 s.
+Medians of 3 runs in headless Chrome 157 on an Apple M2 Pro with a load average of 1.1. Each cell is cold / warm in ms: cold is the first call after opening the store in a fresh tab, warm repeats it.
 
-| Step | SQLite | docstore | |
+| Goal | Dexie | SQLite on OPFS | docstore |
 | --- | ---: | ---: | ---: |
-| First sync, until caught up with the server | 17.2 s | 3.6 s | 4.8× |
-| First sync, then the list's total | 24.1 ms | 270 ms | 0.09× |
-| Cold open, open the database | 44.0 ms | 14.6 ms | 3.0× |
-| First rows, once the database is open | 52.2 ms | 44.1 ms | 1.2× |
-| Cold open, the status counts once the total shows | 3.39 ms | 22.0 ms | 0.15× |
-| Change the sort | 11.5 ms | 5.76 ms | 2.0× |
-| Filter by status or priority, the list | 303 ms | 13.1 ms | 23× |
-| Search, per keystroke, the list | 770 ms | 14.1 ms | 55× |
-| Jump deep into the list | 803 ms | 84.0 ms | 9.6× |
-| Open the board | 135 ms | 24.1 ms | 5.6× |
-| Open a thread, fetched from the server | 7.81 ms | 3.14 ms | 2.5× |
-| Main thread blocked while typing a search | 2.6 s | 0 ms | |
+| Issues per status in a project | 10.6 / 8.0 | 1.6 / 0.26 | 5.6 / 0.41 |
+| First 50 todo issues, with assignee and label names | 2.5 / 1.0 | 2.9 / 0.50 | 7.1 / 0.42 |
+| The column a sprint close just emptied | 10.2 / 6.2 | 2.0 / 0.29 | 6.2 / 1.3 |
+| Rows at 90% of a project's list | 18.3 / 12.4 | 2.2 / 0.43 | 12.6 / 1.9 |
+| An issue with its comments and their authors | 1.5 / 0.43 | 1.9 / 0.36 | 5.4 / 0.14 |
+| First 50 open issues by priority, with comment counts | 4.7 / 2.9 | 6.8 / 2.3 | 13.4 / 1.3 |
+| First 50 open issues with a label | 7.0 / 4.7 | 8.3 / 2.9 | 6.4 / 0.35 |
+| First 50 open issues assigned to a person | 2.4 / 1.2 | 4.0 / 0.74 | 9.6 / 0.48 |
+| The 50 most recently updated issues | 2.1 / 1.2 | 2.5 / 0.70 | 3.6 / 0.63 |
+| Open issues per person, top 10 | 11.9 / 9.1 | 3.2 / 0.50 | 14.8 / 4.3 |
+| First 20 issues whose title contains a word | 6.2 / 5.8 | 2.4 / 0.77 | 6.3 / 0.27 |
+| Opening the store in a fresh tab | 2.1 | 29 | 17 |
 
-After a cold open, docstore shows the list's total 62.5 ms after its first rows, and SQLite 45 µs after them. The status counts follow the list: after a filter they take 4.03 ms on docstore against 62.5 ms on SQLite, and per keystroke 9.47 ms against 287 ms.
-
-**Whiteboard, 1,000 shapes.** [`examples/whiteboard-yjs`](../examples/whiteboard-yjs) through `@opfs-lsm/yjs`, against y-indexeddb.
-
-| Step | y-indexeddb | opfs-lsm | |
+| Writes | Dexie | SQLite on OPFS | docstore |
 | --- | ---: | ---: | ---: |
-| Open the database and a new board, then draw 1,000 shapes | 40.0 ms | 42.2 ms | 0.95× |
-| 1,000 edits, until saved | 109 ms | 41.0 ms | 2.7× |
-| The save after the last edit | 60.4 ms | 1.95 ms | 31× |
-| 100 undos and redos, until saved | 21.5 ms | 7.8 ms | 2.8× |
-| Drag a shape, per move, p99.9 | 408 µs | 472 µs | 0.86× |
-| Drag 200 shapes, per move, p99.9 | 2.37 ms | 2.37 ms | 1.0× |
-| Reopen the board | 75.0 ms | 87.0 ms | 0.86× |
+| Import, 44 batches of 1,000 rows | 2.9 s | 1.0 s | 0.80 s |
+| Sync, 875 batches of 50 changes | 5.8 s | 11.7 s | 3.2 s |
+| One edit | 0.40 ms | 1.1 ms | 0.61 ms |
+| Sprint close, 1,027 issues in one batch | 155 ms | 85 ms | 61 ms |
 
-The session never pauses for a second, so neither store merges the board's updates while it is open, and the reopen replays every one of them.
+During the sync, the 50 most recently updated issues are read again after every 10th batch, as a list on screen would be. That read took 1.5 ms on Dexie, 0.58 ms on SQLite and 0.82 ms on docstore, medians of a later run with a load average of 4 to 5.
 
-**Notes, a 50 KB page and 1,000 keystrokes.** [`examples/notes-manager-automerge`](../examples/notes-manager-automerge) keeps its page list and every page body as Automerge documents on one kv database, against automerge-repo's `IndexedDBStorageAdapter` on one IndexedDB database. The model opens and stores its page list before the first timed step, so opening a page and the reopen time the body alone. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps every document in memory, each store adds at most 2.5 ms, to the save after the paste, and at most 0.6 ms to any other step. These rows come from an Apple M2 Pro, not the M5 Max above, with a load average of 2.
-
-| Step | IndexedDB | opfs-lsm | |
-| --- | ---: | ---: | ---: |
-| Open the database | 1.76 ms | 7.30 ms | 0.24× |
-| Open a new page | 2.88 ms | 2.75 ms | 1.0× |
-| Paste 50 KB | 233 ms | 233 ms | 1.0× |
-| Keystroke, p50 | 440 µs | 440 µs | 1.0× |
-| Keystroke, p99 | 5.76 ms | 5.50 ms | 1.0× |
-| Reopen after a reload | 143 ms | 145 ms | 0.99× |
+Warm, docstore answers 7 of the 11 goals fastest, because a tab reads on its own main thread from its page cache. Cold, it is the slowest on most goals: the 50 rows of a page each sit on their own 32 KB page, which a fresh tab loads from OPFS. A group-by and a deep window cost more on docstore, because its queries return neither index values nor an offset. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart.
 
 ## Bundle size
 

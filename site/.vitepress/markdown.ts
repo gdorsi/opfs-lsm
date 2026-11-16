@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import type MarkdownIt from "markdown-it";
-import { ratioTone } from "../stageshow/adapters/tone.ts";
+import { ratioTone } from "./tone.ts";
 import { repoRoot } from "./pages.ts";
 import { FIGURES } from "./theme/figures.ts";
 

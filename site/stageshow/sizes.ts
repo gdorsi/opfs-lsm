@@ -8,7 +8,6 @@ export const COMPACT_BELOW = 600;
 export const FULL_COMPACT_BELOW = 720;
 
 export const SIZES = {
-  apps: { wide: [1152, 452], compact: [358, 1000] },
   features: { wide: [600, 416], compact: [358, 608] },
   fits: { wide: [1152, 516], compact: [358, 1016] },
   stack: { wide: [620, 400], compact: [358, 470] },

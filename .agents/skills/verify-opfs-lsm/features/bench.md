@@ -6,8 +6,9 @@ The suite in `bench/` runs each workload in headless Chrome against every conten
 
 - `kv/` compares `kv/kv` (`@opfs-lsm/kv` on SharedWorker + OPFS) with `kv/idb` (raw IndexedDB). Workloads: `fillseq`, `fillrandom`, `fillsync`, `overwrite`, `deleterandom`, `ycsb-a` to `ycsb-f`.
 - `table/` compares `table/docstore` with `table/dexie` on one todo table with an owner index and a createdAt index (`table/todos`).
-- `automerge/` compares the kv storage adapter (`automerge/kv`) with `IndexedDBStorageAdapter` (`automerge/idb`). Workloads: `trace`, `many-docs`.
-- `yjs/` compares `KvPersistence` (`yjs/kv`) with y-indexeddb (`yjs/y-indexeddb`). Workloads: `trace`, `many-docs`.
+- `tracker/` compares `tracker/docstore` with `tracker/dexie` and `tracker/sqlite` (wa-sqlite on OPFS) on a task-tracker workspace built from its history, then 11 goals each checked against an oracle (`tracker/goals`).
+- `automerge/` compares the kv storage adapter (`automerge/kv`) with `IndexedDBStorageAdapter` (`automerge/idb`). Workloads: `trace` (persist, typing at one key per frame, reopen before and after settle), `many-docs`.
+- `yjs/` compares `KvPersistence` (`yjs/kv`) with y-indexeddb (`yjs/y-indexeddb`). Workloads: `trace` (persist, typing at one key per frame, reopen before and after settle), `many-docs`.
 - `fate/` compares fate's persistence on kv (`fate/kv`, `kvStorage` from `@opfs-lsm/fate`) with `@nkzw/fate-indexeddb` (`fate/indexeddb`), under one fate client. Workloads: `read-cache`, `mutations`.
 - `bench-smoke` runs every workload against every contender at size `tiny`, 1 rep. It checks correctness and harness health, not speed.
 

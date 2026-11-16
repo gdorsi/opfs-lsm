@@ -12,19 +12,19 @@ Conventions as in the other research notes. **[E]** external fact, cited with th
 2. The tool for "no overlap" is LDBC's query × choke-point matrix: each query is designed against named technical challenges, and a gap is fixed by changing a query (§6). §3 applies it to this suite.
 3. Two LDBC choke points name what the example apps never isolated: CP-3.3 *scattered index access* and CP-3.2 *dimensional clustering* (§6). In docstore, an index page of 50 is one range plus 50 point gets, each on whatever 32 KB page its row landed on [R: packages/docstore/src/snapshot.ts].
 4. Realism moves from the app into the generator. Skew and correlation are built in (§7). The store is built by replaying a history, not by bulk-loading the final state, because an LSM's shape depends on write order (§7). Bindings are curated so a goal's reps do comparable work (§10).
-5. Example apps still catch what a goal cannot: adapter and live-query overhead, rendering competing for the main thread, sync running alongside reads, several tabs. Keep one workload per shipped adapter, and drop the app benchmarks whose patterns a goal now owns (§3).
+5. Example apps catch what a goal cannot: live-query overhead, rendering competing for the main thread, several tabs. That is a reason to test them, not to benchmark them. The app benchmarks are removed. Each pattern they owned alone now belongs to a goal or to a phase of an adapter workload, and each shipped adapter keeps one workload (§3).
 6. First numbers at `small` (§4): the goals separate the libraries by access pattern in a way the app benchmarks never did, and they point at specific docstore API gaps (no index values in a query, no group-by, no offset).
 
 ---
 
-## 1. What the current suite measures
+## 1. What the suite measured before goals
 
-[R: bench/README.md] The suite has two halves.
+[R: bench/README.md at #283] The suite had two halves.
 
 - **Engine workloads.** db_bench and YCSB A to F on raw keys. They isolate engine paths, but six YCSB mixes and five db_bench fills overlap heavily, and no key is an index entry pointing at a row.
-- **App workloads.** linearlite, whiteboard, pages and todos run headless. Each number mixes the app's model, TanStack DB, sync and storage. The linearlite data is denormalized (the assignee is a string on the issue, with no labels or projects) and loaded in one sync, so no join and no aged store is ever measured.
+- **App workloads.** linearlite, whiteboard, pages and todos ran headless. Each number mixed the app's model, TanStack DB, sync and storage. The linearlite data was denormalized (the assignee was a string on the issue, with no labels or projects) and loaded in one sync, so no join and no aged store was ever measured.
 
-Batched small-value ingest appears in five workloads. Blob append plus prefix load appears in every CRDT workload. Index pages appear in three.
+Batched small-value ingest appeared in five workloads. Blob append plus prefix load appeared in every CRDT workload. Index pages appeared in three.
 
 ## 2. The shape
 
@@ -48,9 +48,11 @@ The rules, and why:
 
 The cost of this shape is about 33 hand-written goal bodies (11 goals × 3 contenders). Each number measures the library's own path, plus the skill of whoever wrote the contender. Shortcuts get a note in `fastPath`, not a ban, as in js-framework-benchmark (§8).
 
-## 3. Coverage and the proposed trim
+## 3. Coverage and the trim
 
-One owner per access pattern. "Hit also by" lists the workloads that would be deleted. This is a proposal: no workload is deleted yet.
+One owner per access pattern. The "hit also by" column lists the workloads that overlap the owner.
+
+The four app workloads are removed: linearlite/first-sync, linearlite/browse, yjs/whiteboard-session and pages/type. The examples no longer carry benchmark code. The rest of the trim, the overlapping kv, table and adapter workloads, is still a proposal.
 
 | access pattern | owner | hit also by |
 |---|---|---|
@@ -60,23 +62,26 @@ One owner per access pattern. "Hit also by" lists the workloads that would be de
 | compaction memory peak | kv/compaction-memory | |
 | single awaited write | tracker `recent` (`edit`) | kv/fillsync |
 | deletes, tombstones, space after aging | tracker replay + settle footprint | kv/deleterandom |
-| document ingest with index upkeep | tracker replay (`import`, `sync`) | table/todos, linearlite/first-sync |
-| index counts, pages, joins, deep windows, search, cold screens | tracker goals | table/todos, linearlite/browse |
+| document ingest with index upkeep | tracker replay (`import`, `sync`) | table/todos |
+| reads while a large sync lands | tracker replay (`read`) | |
+| index counts, pages, joins, deep windows, search, cold screens | tracker goals | table/todos |
 | TanStack DB eager adapter | tanstack/todos | |
-| TanStack DB on-demand adapter | tanstack-ondemand/queries | linearlite/browse |
-| Yjs persistence | yjs/trace | yjs/many-docs, yjs/whiteboard-session |
-| Automerge persistence | automerge/trace | automerge/many-docs, pages/type |
+| TanStack DB on-demand adapter | tanstack-ondemand/queries | |
+| Yjs persistence; typing at one key per frame; reopen before and after settle | yjs/trace | yjs/many-docs |
+| Automerge persistence; typing at one key per frame; reopen before and after settle | automerge/trace | automerge/many-docs |
+| many small docs, each loaded cold | yjs/many-docs, automerge/many-docs | |
 | fate persistence | fate/read-cache | fate/mutations (fate's own CPU dominates) |
 
-25 workloads become 10. Three patterns lose their owner and need a decision:
+Each pattern the app workloads owned alone now has another owner:
 
-- **Reads during a large sync** (linearlite/first-sync times the first rows while the import runs). This could become a tracker phase that runs `statusPage` while `import` batches land.
-- **Paced writes under a frame budget** (yjs/whiteboard-session). This could become a tracker goal that drags issues across board columns at 60 Hz.
-- **Many small docs, each loaded cold** (the many-docs workloads).
+- **Reads during a large sync** (linearlite/first-sync timed the first rows while the import ran). The tracker's replay reads the 50 most recently updated issues every 10 batches and checks them against the oracle at that point of the history.
+- **Paced writes under a frame budget** (the whiteboard's drags, the notes typing). Both trace workloads type their last 300 keystrokes at one per 16 ms frame, with the main thread recorded.
+- **A cold load of a document whose latest updates have not settled** (the whiteboard and notes reopens). Both trace workloads reopen the document in a fresh tab before kv settles, then again after.
+- **Screens of an issue tracker** (linearlite/browse). The tracker goals own them, on normalized data with joins.
 
-The trim also touches docs/verification.md, two research notes and the app rows on the home page, which quote these workloads [R: `git grep`].
+TanStack DB's live-query overhead inside an app is the one thing no workload measures any more. tanstack-ondemand/queries times its adapter, without an app around it.
 
-To make it stick, the matrix should become code: one list of access patterns in `bench/core`, a required `owns` on every workload (a goal workload derives it from its goals), and a check in `bench:smoke --check` that fails when a pattern has two owners or none.
+To make the matrix stick, it should become code: one list of access patterns in `bench/core`, a required `owns` on every workload (a goal workload derives it from its goals), and a check in `bench:smoke --check` that fails when a pattern has two owners or none.
 
 ## 4. First results
 
