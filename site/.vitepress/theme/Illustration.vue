@@ -28,7 +28,8 @@ onMounted(async () => {
   scene = mount(host.value, props.name);
   render();
 });
-watch([isDark, run], render);
+// A page that passes new data (the use cases picking a case) redraws the scene in place.
+watch([isDark, run, () => props.data], render, { deep: true });
 onBeforeUnmount(() => scene?.unmount());
 </script>
 
