@@ -1,6 +1,6 @@
 # opfs-lsm
 
-A key-value store for the browser, built to be the storage layer under local-first apps and sync engines. It writes up to 8.1× faster than IndexedDB, reads up to 189× faster, and every tab of an origin shares one database with a live change feed.
+opfs-lsm stores your web app's data in the browser, in place of IndexedDB or SQLite. Every tab of your site shares one database and sees the writes of the other tabs as they happen. In batches of 1,000, it writes 8.1× faster than IndexedDB, and it reads a key 49× faster.
 
 > [!WARNING]
 > opfs-lsm is still under heavy development.
@@ -9,244 +9,107 @@ A key-value store for the browser, built to be the storage layer under local-fir
 >
 > Still, storage is fault-tolerant and heavily tested, so if you want to play around, feedback is very welcome!
 
-## Why not just use IndexedDB?
+## Check that opfs-lsm fits your app
 
-IndexedDB has many shortcomings.
+opfs-lsm helps most when your app keeps its data in the browser and reads it on every screen: lists that load, sort, and filter, or documents that reopen. It also helps when users keep several tabs open, and each tab must show the writes of the others.
 
-- **IndexedDB [is slow](#benchmarks). Not slow like a database on a cheap server, even slower!**
-- **No live subscription.** So you have to build your own if you want multiple tabs to be in sync.
-- **A few other quirks.** Like transactions that [commit on their own](https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction) when no request is pending.
+Use another store in these cases:
 
-Browsers now give raw file access through the Origin Private File System (OPFS), but building something good on top of it is REALLY HARD!
-
-The synchronous API is in practice unusable for a production-ready DB:
-
-- It exists only in a dedicated WebWorker.
-- [Only one tab can open a file at a time](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createSyncAccessHandle). The modes that lift this limit, `read-only` and `readwrite-unsafe`, are supported only by Chrome and Edge.
-- With the current state of browsers, it is impossible to build something that survives all the freezing and throttling that browsers apply to background tabs.
-
-That leaves the OPFS async API, which is also quite challenging to use when building a DB, because writes are applied as full file snapshots: a write shows up only when the file is closed, and it replaces the whole file.
-
-`@opfs-lsm/kv` works around the limits of the async API with this design:
-
-- The architecture is a log-structured merge tree (LSM), as in LevelDB and RocksDB. Its data files, called SST files, are written once and never changed, which fits an API that publishes whole files.
-- Only a SharedWorker writes to OPFS, and only when it flushes the write-ahead log (WAL) into a new SST file or compacts existing ones.
-- Every tab reads the SST files directly, so a read sends no message to a worker.
-- The WAL is persisted in IndexedDB, whose transactions already put the writes of every tab in one order, so inserts need no extra coordination from kv.
-
-More detail is in [How it works](#how-it-works).
-
-## What kv offers
-
-`@opfs-lsm/kv` is designed to be as fast and as small as possible, and to work as a building block that handles persistence for higher-level solutions (CRDTs, sync engines, etc.).
-
-It is a key-value store that supports all the features required to:
-
-- build an indexed database (see [`@opfs-lsm/docstore`](packages/docstore) for a reference implementation)
-- build a cache storage with TTL (TODO)
-
-It offers:
-
-- **Live subscriptions.** It is easy to subscribe to changes in the DB, including the ones coming from other tabs.
-- **A sequence number for every write.** `put`, `delete` and `batch` resolve with the seq of their record, and `changes` and `view` report the same numbers. Use them as a cursor for an outbox or a sync checkpoint.
-- **Consistent reads.** `view` reads a snapshot that later writes do not change. `update` reads keys and writes in one transaction, with no window for another tab to write in between.
-- **Ordered scans.** `range` scans a key range or a prefix, forward or in reverse, with a limit. `rangeJoin` scans index entries and reads the row of each one, all from one state.
-- **Range deletes.** `deleteRange` removes a key range in one op, and can spare rows written after a seq.
-- **Counting.** `count` counts a range with the same options as `range`, without copying entries.
-- **Quota management.** Open with `maxBytes`, and an `onPressure` handler decides what to drop before the browser refuses writes.
-- **Bytes in, bytes out.** Keys and values are `Uint8Array`, so the encoding is yours.
-
-### Benchmarks
-
-Medians of 5 runs in headless Chrome 157 on an Apple M5 Max, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. The single-put row is the median of 21 runs: a run is 1,000 puts, too few for 5 runs to agree. Numbers depend on the machine. To run them yourself, see [bench/README.md](bench/README.md).
-
-| Workload | IndexedDB | kv | |
-| --- | ---: | ---: | ---: |
-| Random writes, batches of 1,000 | 36.0k ops/s | 293k ops/s | 8.1× |
-| Random point reads | 9.9k ops/s | 484k ops/s | 49× |
-| Reads of missing keys | 8.9k ops/s | 1.69M ops/s | 189× |
-| YCSB B: 95% read, 5% update | 9.1k ops/s | 93.8k ops/s | 10× |
-| YCSB E: short range scans | 5.1k ops/s | 15.9k ops/s | 3.1× |
-| Full ordered scan | 424k ops/s | 439k ops/s | 1.0× |
-| Single put, awaited one at a time | 5.6k ops/s | 5.4k ops/s | 1.0× |
-| Cold open | 1.8 ms | 13.3 ms | 0.1× |
-
-The framework adapters, each against the IndexedDB option its framework ships, at size `small`:
-
-| Framework | Workload | IndexedDB option | opfs-lsm | |
-| --- | --- | ---: | ---: | ---: |
-| TanStack DB | Cold load of 91,000 rows | 112k rows/s | 176k rows/s | 1.6× |
-| TanStack DB | Bulk insert, 100,000 rows in transactions of 1,000 | 17.2k rows/s | 115k rows/s | 6.7× |
-| TanStack DB | Serial insert, one row per transaction | 4.7k rows/s | 2.5k rows/s | 0.5× |
-| Yjs | Cold load of 500 notes | 2.0k notes/s | 9.5k notes/s | 4.8× |
-| Yjs | Editing trace, one update per keystroke | 1.4k edits/s | 33.2k edits/s | 23× |
-| Automerge | Cold load of 500 notes | 1.1k notes/s | 2.2k notes/s | 2.0× |
-| Automerge | Write 500 notes | 743 notes/s | 821 notes/s | 1.1× |
-| fate | Cold load of 100 lists of 100 records | 1.0k records/s | 3.4k records/s | 3.3× |
-| fate | Queue 300 mutations offline | 201 ops/s | 263 ops/s | 1.3× |
-
-The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and `@nkzw/fate-indexeddb`. Both TanStack DB collections run in eager mode, the default `syncMode`: a collection loads every row when it opens. `indexedDBCollectionOptions` has no on-demand mode.
-
-In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack/browser-db-sqlite-persistence`, which runs wa-sqlite on OPFS in a dedicated WebWorker. Both collections hold 100,000 rows and load only what a query asks for. The reads, medians of 5 interleaved runs:
-
-| Workload | SQLite | opfs-lsm | |
-| --- | ---: | ---: | ---: |
-| Cold open | 41.6 ms | 11.7 ms | 3.6× |
-| First query after a cold open, 6,250 rows | 65.2 ms | 81.6 ms | 0.80× |
-| Warm query of one owner, 6,250 rows | 116k rows/s | 169k rows/s | 1.5× |
-| 10 rows by id | 1.9k queries/s | 4.1k queries/s | 2.1× |
-
-The bench also runs `docstore` against Dexie. [bench/README.md](bench/README.md) lists every family and workload.
-
-### App benchmarks
-
-The tables above time storage calls. These time what the user of an app waits for. Three example apps run one scripted session on opfs-lsm and on the storage the app would otherwise use. Each app's model runs headless, so only the storage differs, and every screen and every reopened document is compared with an oracle. Medians of 5 interleaved runs at size `small`, in headless Chrome 157 on the same M5 Max, with a load average of 3 to 7 from other work. A step that shows several views, such as a sort or a keystroke, gives the median view. [bench/README.md](bench/README.md) describes each workload.
-
-**LinearLite, 100,000 issues.** [`examples/linearlite-tanstackdb`](examples/linearlite-tanstackdb) on docstore through `@opfs-lsm/tanstack-db`, against TanStack DB's SQLite persistence, both on demand. The SQLite side is TanStack's adapter as it ships: it sends no `LIMIT`, so a query reads every row its `where` matches, then sorts and pages them in JavaScript. A SQLite backend written by hand would be faster.
-
-| Step | SQLite | docstore | |
-| --- | ---: | ---: | ---: |
-| First sync, until caught up with the server | 15.5 s | 2.7 s | 5.8× |
-| First sync, then the list's total | 21.0 ms | 418 ms | 0.05× |
-| Cold open, open the database | 39.9 ms | 11.5 ms | 3.5× |
-| First rows, once the database is open | 803 ms | 35.8 ms | 22× |
-| Cold open, the status counts once the total shows | 3.4 ms | 22.0 ms | 0.15× |
-| Change the sort | 705 ms | 4.5 ms | 157× |
-| Filter by status or priority, the list | 999 ms | 12.5 ms | 80× |
-| Search, per keystroke, the list | 999 ms | 11.0 ms | 91× |
-| Jump deep into the list | 1.0 s | 100 ms | 10× |
-| Open the board | 4.0 s | 17.9 ms | 223× |
-| Open a thread, fetched from the server | 5.8 ms | 2.0 ms | 3.0× |
-| Main thread blocked while typing a search | 3.4 s | 0 ms | |
-
-After a cold open, docstore shows the list's total 72 ms after its first rows. SQLite reads every matching row before it shows any, so its total comes with them. The status counts follow the list: after a filter they take 2.62 ms on docstore against 84.0 ms on SQLite, and per keystroke 7.81 ms against 250 ms.
-
-**Whiteboard, 1,000 shapes.** [`examples/whiteboard-yjs`](examples/whiteboard-yjs) through `@opfs-lsm/yjs`, against y-indexeddb.
-
-| Step | y-indexeddb | opfs-lsm | |
-| --- | ---: | ---: | ---: |
-| Open the database and a new board, then draw 1,000 shapes | 43.6 ms | 46.2 ms | 0.94× |
-| 1,000 edits, until saved | 97.7 ms | 38.7 ms | 2.5× |
-| The save after the last edit | 58.4 ms | 0.34 ms | 170× |
-| 100 undos and redos, until saved | 17.6 ms | 6.5 ms | 2.7× |
-| Drag a shape, per move, p99.9 | 3.1 ms | 7.0 ms | 0.45× |
-| Drag 200 shapes, per move, p99.9 | 3.4 ms | 9.5 ms | 0.36× |
-| Reopen the board | 79.3 ms | 106 ms | 0.75× |
-
-The session never pauses for a second, so neither store merges the board's updates while it is open, and the reopen replays every one of them.
-
-**Pages, a 50 KB page and 1,000 keystrokes.** [`examples/pages-fate-automerge`](examples/pages-fate-automerge) with fate's cache and the Automerge page bodies on one kv database, against `@nkzw/fate-indexeddb` and automerge-repo's `IndexedDBStorageAdapter`. Once the database is open, Automerge and the app's model take most of every step, so the two stores are level. Against a third contender that keeps everything in memory, either store adds at most 8 ms to opening a page, pasting or a keystroke.
-
-| Step | IndexedDB | opfs-lsm | |
-| --- | ---: | ---: | ---: |
-| Open the database | 2.88 ms | 7.04 ms | 0.41× |
-| Open a new page | 21.0 ms | 18.9 ms | 1.1× |
-| Paste 50 KB | 184 ms | 193 ms | 0.96× |
-| Keystroke, p50 | 360 µs | 360 µs | 1.0× |
-| Keystroke, p99 | 2.50 ms | 2.75 ms | 0.91× |
-| Reopen after a reload | 129 ms | 137 ms | 0.94× |
-
-### Bundle size
-
-Importing `@opfs-lsm/kv` adds **18.5 kB** of JavaScript to your main bundle (gzip, 54.2 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
-
-| | gzip | raw | loaded |
-| --- | ---: | ---: | --- |
-| Main-thread JS | 18.5 kB | 54.2 kB | at import |
-| SharedWorker chunk | 12.2 kB | 36.0 kB | on the first `openDb` |
-| wasm engine | 16.6 kB | 36.4 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **47.4 kB** | **126.7 kB** | |
-
-For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.2 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 28.8 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](bench/README.md#bundle-size).
-
-### When IndexedDB is still the better fit
-
-If read and write performance of the DB is not a concern in your app.
+- **Your users run older browsers.** kv is [Baseline 2026](docs/browser-support.md): every major browser has run it since May 2026, when Chrome on Android added SharedWorker. Samsung Internet and Android WebView do not run it.
+- **Your app stores little and writes one record at a time.** IndexedDB opens in 1.8 ms against 13.3 ms for kv, and writes a single awaited record at the same speed.
+- **You need SQL.** opfs-lsm has no query language. docstore reads only through the indexes you declare in its schema.
 
 ## Packages
 
-| Package | What it is | Status |
-| --- | --- | --- |
-| [`@opfs-lsm/kv`](packages/kv) | The key-value store. Start here. | Beta |
-| [`@opfs-lsm/tanstack-db`](packages/tanstack-db) | TanStack DB collections kept in docstore, with other tabs' writes arriving live and on-demand queries read through docstore's indexes. | Beta |
-| [`@opfs-lsm/yjs`](packages/yjs) | A Yjs provider shaped like y-indexeddb. | Beta |
-| [`@opfs-lsm/automerge`](packages/automerge) | A storage adapter for automerge-repo. | Beta |
-| [`@opfs-lsm/fate`](packages/fate) | Persistence storage for the fate data client, shaped like fate's IndexedDB storage. | Beta |
-| [`@opfs-lsm/docstore`](packages/docstore) | A document store with declared indexes, paged queries, snapshot reads and a change feed. | Beta |
+### Framework adapters
 
-Each adapter keeps many documents or collections in one kv database. `@opfs-lsm/docstore` is the query layer on top of kv: JSON documents in collections, with indexes declared in a versioned schema.
+Each adapter stores the data of one framework in opfs-lsm. Your app keeps calling the framework's own API.
 
-The packages are published on npm, except `@opfs-lsm/fate`, which is not published yet. To build them from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
+- **[`@opfs-lsm/tanstack-db`](packages/tanstack-db)** keeps TanStack DB collections in docstore. Writes from every tab reach every collection live. In on-demand mode, a collection loads only the rows its live queries ask for, through docstore indexes. Example: [LinearLite](examples/linearlite-tanstackdb).
+- **[`@opfs-lsm/yjs`](packages/yjs)** keeps Yjs documents. `KvPersistence` has the `whenSynced`, `clearData`, and `destroy` of y-indexeddb, and merges the stored updates of a document into one when they reach 500. Example: [Whiteboard](examples/whiteboard-yjs).
+- **[`@opfs-lsm/automerge`](packages/automerge)** is a storage adapter for automerge-repo. Pass `kvStorage(db)` to `new Repo({ storage })`. Example: [Pages](examples/pages-fate-automerge).
+- **[`@opfs-lsm/fate`](packages/fate)** keeps the records the fate client caches, and the mutations it queues while offline. It takes the place of `@nkzw/fate-indexeddb`, and is not on npm yet. Example: [LinearLite on fate](examples/linearlite-fate).
 
-## Quickstart
+### Building blocks
+
+- **[`@opfs-lsm/docstore`](packages/docstore)** stores JSON documents in typed collections. You declare indexes in a versioned schema: sorted, array, text, and unique. Queries read through them in pages, and each collection has counts, snapshot reads, and a change feed. Example: [LinearLite on docstore](examples/linearlite-docstore).
+- **[`@opfs-lsm/kv`](packages/kv)** is the key-value store under every other package. Keys and values are bytes, kept in key order. It has batches, range scans, range deletes, counts, snapshot reads, read-modify-write, a change feed with a sequence number for every write, and a storage cap.
+
+## Set it up
+
+Every package runs on a kv database, so setup starts the same way.
+
+1. Install `@opfs-lsm/kv` and the package you use. Each package page lists the other packages it needs.
+2. Open the database when your app starts. Every tab that passes the same `name` shares it.
+3. Decide what your app does when `openDb` rejects with `StorageUnavailableError`. kv never falls back to memory.
+4. Pass `db` to your package, as its page shows.
 
 ```ts
-import { openDb, prefixBound } from "@opfs-lsm/kv";
+import { openDb, StorageUnavailableError } from "@opfs-lsm/kv";
 
-const db = await openDb({ name: "app" });
-const text = new TextEncoder();
-const read = new TextDecoder();
-
-await db.put(text.encode("todo:1"), text.encode("Buy milk"));
-
-await db.batch((tx) => {
-  tx.put(text.encode("todo:2"), text.encode("Walk the dog"));
-  tx.delete(text.encode("todo:1"));
+const db = await openDb({ name: "app" }).catch((err) => {
+	// The browser lacks an API kv needs, or failed to load one.
+	if (err instanceof StorageUnavailableError) return undefined;
+	throw err;
 });
-
-const value = await db.get(text.encode("todo:2"));
-
-for await (const { key, value } of db.range({ ...prefixBound(text.encode("todo:")), limit: 50 })) {
-  console.log(read.decode(key), read.decode(value));
+if (!db) {
+	// Run without local data, or ask the user to reload.
 }
-
-const unsubscribe = db.changes((event) => {
-  if (event.kind === "append") console.log("a tab wrote record", event.seq, event.ops);
-  if (event.kind === "gap") console.log("records were folded, read again");
-});
 ```
 
-The promise from `put`, `delete` or `batch` is the ack. When it resolves, the write is committed to the WAL in IndexedDB, and this tab reads it. Other tabs see it when their handle applies the record, and `sync()` waits for that. The full API, the options and the errors are in [packages/kv/README.md](packages/kv/README.md).
+## Use it well
 
-## Browser support
+kv is fastest when it reads local data and writes in batches. These rules help your app do both, and keep one tab from losing the writes of another.
 
-`@opfs-lsm/kv` needs SharedWorker, OPFS, IndexedDB and WebAssembly in the page. Where SharedWorker or OPFS is missing, or the wasm engine or the IndexedDB store fails to load, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
+### Open one database for the whole app
 
-Three APIs set the minimum version in every browser. Everything else kv uses shipped earlier, including Web Locks, BroadcastChannel and the WebAssembly features in the engine.
+Each database name gets its own SharedWorker and its own files, so a second database costs a second open. The packages keep their keys apart, so they can share one database. The [Pages example](examples/pages-fate-automerge) keeps the fate cache and the Automerge documents in one. Pass the same `db` to every package.
 
-| API | Chrome, Edge | Firefox | Safari | Chrome Android | Firefox Android | Safari iOS |
-| --- | --- | --- | --- | --- | --- | --- |
-| `SharedWorker` with `type: "module"` | 80 | 114 | 15 | 148 | 114 | 15 |
-| OPFS `FileSystemFileHandle.createWritable()` | 86 | 111 | 26 | 109 | 111 | 26 |
-| `crypto.randomUUID()` | 92 | 95 | 15.4 | 92 | 95 | 15.4 |
-| **Minimum for kv** | **92** | **114** | **26** | **148** | **114** | **26** |
+Closing an Automerge storage also closes its database, so close that storage last.
 
-- Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26.
-- Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so kv does not run there.
-- Android WebView is not supported. MDN lists SharedWorker there from 148, but WebView 154, the version tested, has none, so `openDb` rejects with `StorageUnavailableError` in apps and browsers built on it.
-- `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119, Firefox and Firefox Android 121.
-- `@opfs-lsm/docstore` also calls `Object.hasOwn()`, which raises its minimum to Chrome and Edge 93.
+### Write in batches
 
-Versions are from [MDN browser-compat-data](https://github.com/mdn/browser-compat-data) 8.1.8. The engine is tested in desktop Chrome and on Android. In Chromium 160 on a Pixel 4a, the two-tab proofs and every benchmark workload pass, and no kill in the kill-and-recover loop lost an acked write. The Android run has limits:
+Each write waits for an IndexedDB commit before its promise resolves with the ack. A loop that awaits one `put` per row commits one transaction per row, and writes no faster than IndexedDB. Put the rows of one change in one call instead. They share one transaction, and they commit together or not at all.
 
-- It covers one phone and a Chromium snapshot build, not Chrome stable.
-- Android runs the SharedWorker in the process of the tab that created it. When another tab of the app is in front, that process is confined to two small cores, and ingest and compaction run there.
-- On a locked phone the whole browser is confined to those cores. There, an `ingest()` call after a `StorageFullError` took more than 20 s in 5 of 7 runs. Unlocked, 6 of 6 answered. No acked write was lost.
-- The kill loop cannot observe a crashed tab or kill one renderer on Android, so those two kinds are not covered.
+- In kv, call `db.batch((tx) => { ... })`.
+- In docstore, call `collection.putMany(docs)`.
+- In TanStack DB, pass an array to `collection.insert(rows)`.
 
-The findings and the scripts that drive a phone over adb are in [docs/research/android-device-run.md](docs/research/android-device-run.md). Firefox, Safari and iOS are not tested yet.
+A batch is at most 8 MiB, so split a large import into several batches.
 
-## How it works
+### Change a value in one step
 
-kv is a log-structured merge tree (LSM). An ack means the write is one row in a write-ahead log (WAL) in IndexedDB, which all tabs share. Each database has one SharedWorker that moves the WAL into sorted, immutable SST files in OPFS and merges those files in the background. Each tab keeps the writes not yet in an SST file in memory, so reads do not go back to the WAL.
+To change a value based on what is stored, read and write it in one call: `db.update` in kv, `collection.modify` in docstore, or `collection.utils.transact` in TanStack DB. Another tab can write between a `get` and a later `put`, and the `put` then overwrites that write. A TanStack DB `update` stores the whole row as this tab holds it, so the last tab to write wins.
 
-<!-- figure: stack -->
+### Follow changes instead of reading again
 
-The storage layout, the consistency rules and the recovery after a crash are in [docs/design.md](docs/design.md). How each promise is checked, with formal models and kill tests in real Chrome, is in [docs/verification.md](docs/verification.md).
+`changes` reports every write from every tab, in order. Update your UI from its events, and read again on a `gap` event. The docstore [Changes](packages/docstore/README.md#changes) section shows how to load a snapshot and follow it without missing a write.
 
-## Contributing
+A tab sees the write of another tab a moment after its ack. To wait for every write acked so far, call `db.sync()`.
 
-[CONTRIBUTING.md](CONTRIBUTING.md) covers setup, `pnpm test`, `pnpm bench`, and how releases work.
+The TanStack DB adapter applies the writes of other tabs for you. The Yjs adapter loads a document only once, so add a Yjs provider that syncs open tabs.
+
+### Read related values from one snapshot
+
+When a screen shows values that must agree, such as a page of rows and their total, read them in one `view`. Another write can commit between two separate reads, so each can see a different state. `db.view` in kv and `collection.view` in docstore read a snapshot that later writes do not change.
+
+### Query through an index
+
+docstore reads through the indexes you declare in its schema. Declare one for each query a screen runs.
+
+With TanStack DB, open a large collection with `syncMode: "on-demand"`. The default, `"eager"`, loads every row when the collection opens. On demand, a live query loads only its own rows, through the docstore index whose leading fields the query pins with `eq` or `inArray`. With no index that fits, the load reads every document.
+
+### Cap the data that can grow
+
+kv never deletes a row on its own. If your data can grow without limit, such as a cache of server data, open with `maxBytes` and free space in an `onPressure` handler. The kv [Storage quota](packages/kv/README.md#storage-quota) section shows how.
+
+## Read more
+
+- [How opfs-lsm works](docs/how-it-works.md) explains why it is built on IndexedDB and OPFS, and what that costs.
+- [Benchmarks](docs/benchmarks.md) compares it with IndexedDB, SQLite, and Dexie, and lists the bundle size.
+- [Browser support](docs/browser-support.md) lists the minimum version in each browser and what is tested.
+- [Engine design](docs/design.md) describes the files on disk, the protocols, and the invariants.
+- [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, tests, benchmarks, and releases.
 
 ## License
 
