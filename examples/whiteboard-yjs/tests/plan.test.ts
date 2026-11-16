@@ -131,6 +131,12 @@ describe("style", () => {
   test("ignores text on a shape that has none", () => {
     assert.equal(plan(scene, { type: "style", ids: ids("r"), edit: { text: "x", fontSize: 9 } }, counter()).size, 0);
   });
+
+  test("sets w and h on text shapes only", () => {
+    const edit = { text: "two\nlines", w: 40, h: 50 };
+    const patch = plan(scene, { type: "style", ids: ids("r", "t"), edit }, counter());
+    assert.deepEqual(edits(patch), { t: edit });
+  });
 });
 
 describe("reorder", () => {

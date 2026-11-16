@@ -48,11 +48,11 @@ export type Command =
   | { readonly type: "move"; readonly ids: readonly ShapeId[]; readonly dx: number; readonly dy: number }
   /** Maps the box `from` onto `to`. Shapes keep their place in the box. Either box may be flipped. */
   | { readonly type: "resize"; readonly ids: readonly ShapeId[]; readonly from: Box; readonly to: Box }
-  /** text and fontSize apply to text shapes only. */
+  /** text, fontSize, w and h apply to text shapes only. */
   | {
       readonly type: "style";
       readonly ids: readonly ShapeId[];
-      readonly edit: Readonly<Partial<Style & { text: string; fontSize: number }>>;
+      readonly edit: Readonly<Partial<Style & { text: string; fontSize: number; w: number; h: number }>>;
     }
   | { readonly type: "reorder"; readonly ids: readonly ShapeId[]; readonly to: Direction }
   | { readonly type: "duplicate"; readonly ids: readonly ShapeId[]; readonly dx: number; readonly dy: number }

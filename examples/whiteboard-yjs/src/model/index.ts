@@ -36,6 +36,7 @@ export type {
 export { BoardLoadError, openBoard } from "./board.ts";
 export { systemEnv } from "./env.ts";
 export { plan } from "./plan.ts";
+export { scatterShape } from "./scatter.ts";
 export { applyPatchPlain, digestShapes } from "./digest.ts";
 export { boardId, penShape, shapeId } from "./shapes.ts";
 export { broadcastSync, type Channel, type ChannelConstructor } from "./sync.ts";

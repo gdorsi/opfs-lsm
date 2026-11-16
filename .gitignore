@@ -25,3 +25,5 @@ examples/linearlite-docstore/dist
 examples/pages-fate-automerge/dist
 examples/pages-fate-automerge/.tanstack
 examples/pages-fate-automerge/data
+examples/whiteboard-yjs/dist
+examples/whiteboard-yjs/.tanstack

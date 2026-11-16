@@ -24,16 +24,17 @@ type Message =
 const RELAY = Symbol("whiteboard-yjs.relay");
 
 /**
- * Relays a doc between the tabs of one origin on the channel `whiteboard-yjs/<docName>`. It posts every update
+ * Relays a doc between the tabs of one origin on the channel `<scope>/<docName>`. It posts every update
  * the doc emits except those it applied itself, and says hello with its state vector when it starts, so a tab
  * that opens late gets the diff. It knows nothing of storage: every adapter gets the same mechanism, and the
  * doc's own update events carry what arrives to whatever storage listens to the doc.
  *
- * The channel constructor is injected, so the model touches no global and Node tests pass Node's.
+ * The channel constructor is injected, so the model touches no global and Node tests pass Node's. Tabs relay
+ * only within one `scope`, so an app gives each database its own.
  */
-export function broadcastSync(Channel: ChannelConstructor): Sync {
+export function broadcastSync(Channel: ChannelConstructor, scope = "whiteboard-yjs"): Sync {
   return (docName, doc) => {
-    const channel = new Channel(`whiteboard-yjs/${docName}`);
+    const channel = new Channel(`${scope}/${docName}`);
     const post = (message: Message) => channel.postMessage(message);
 
     const onUpdate = (update: Uint8Array, origin: unknown) => {

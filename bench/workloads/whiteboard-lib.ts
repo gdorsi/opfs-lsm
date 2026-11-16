@@ -2,7 +2,7 @@
  * Shared by the whiteboard workloads: a seeded Env, scripted shapes, commands and pointer paths, and the
  * pacing of a pointer at display rate. Everything draws from `ctx.rng`, so every contender replays the same ops.
  */
-import { penShape, type Command, type Env, type NewShape, type Point, type Shape, type ShapeId } from "@opfs-lsm/example-whiteboard-yjs/model";
+import { scatterShape, type Command, type Env, type Shape, type ShapeId } from "@opfs-lsm/example-whiteboard-yjs/model";
 import { yieldTask } from "../page/main-thread.ts";
 
 const POINTER_HZ = 120;
@@ -10,7 +10,6 @@ export const FRAME_MS = 1000 / POINTER_HZ;
 export const EVENTS_PER_DRAG = 120;
 export const EVENTS_PER_LASSO_DRAG = 60;
 export const LASSO = 200;
-const WORLD = 20_000;
 const COLORS = ["#111111", "#d33333", "#22aa66", "#3366cc", "#ffaa00"];
 
 type Rng = () => number;
@@ -29,28 +28,6 @@ export function seededEnv(rng: Rng): Env {
     now: () => ++clock,
     schedule: () => () => {},
   };
-}
-
-const style = (rng: Rng) => ({
-  stroke: pick(rng, COLORS),
-  fill: rng() < 0.4 ? null : pick(rng, COLORS),
-  strokeWidth: pick(rng, [1, 2, 4]),
-});
-
-/** A mix of the six kinds: mostly boxes, some text, arrows and pen strokes of 5 to 60 points. */
-export function scatterShape(rng: Rng): NewShape {
-  const frame = { x: between(rng, 0, WORLD), y: between(rng, 0, WORLD), w: between(rng, 20, 300), h: between(rng, 20, 200) };
-  const roll = rng();
-  if (roll < 0.4) return { kind: pick(rng, ["rect", "ellipse", "diamond"] as const), ...frame, ...style(rng) };
-  if (roll < 0.55) return { kind: "text", ...frame, ...style(rng), text: `note ${between(rng, 0, 9999)}`, fontSize: pick(rng, [12, 16, 24]) };
-  if (roll < 0.7) return { kind: "arrow", ...frame, ...style(rng) };
-  const points: Point[] = [];
-  let at = { x: frame.x, y: frame.y };
-  for (let i = between(rng, 5, 60); i > 0; i--) {
-    at = { x: at.x + between(rng, -12, 12), y: at.y + between(rng, -12, 12) };
-    points.push(at);
-  }
-  return penShape(points, style(rng));
 }
 
 /** The total offset from pointer down at each event: a steady pull with a wobble, as absolute targets. */
