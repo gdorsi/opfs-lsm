@@ -33,6 +33,7 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 | `fate` | `kvStorage` from `@opfs-lsm/fate` (`packages/fate`) under fate's persistence | `createIndexedDBStorage` from `@nkzw/fate-indexeddb` under the same persistence |
 | `pages` | `kvStorage` from `@opfs-lsm/automerge` under the model of `examples/notes-manager-automerge`: its list doc and page bodies on one kv db | automerge-repo's `IndexedDBStorageAdapter`, one IndexedDB database; a third contender, `memory`, keeps the docs in a Map and is the floor |
 | `linearlite` | `docstore`: `openKvBackend` (`examples/linearlite-tanstackdb`), docstore on kv through `docstoreCollectionOptions`, on demand | `sqlite`: `openSqliteBackend`, TanStack DB's `persistedCollectionOptions` on `@tanstack/browser-db-sqlite-persistence` (wa-sqlite on OPFS in a dedicated WebWorker), on demand, TanStack's single-tab coordinator, and the adapter patch described below |
+| `tracker` | `docstore`: docstore on kv, a collection per entity and the indexes its goals need | `dexie`: Dexie 4 with compound and multiEntry indexes; `sqlite`: wa-sqlite on OPFS in a dedicated worker, normalized tables, plain SQL |
 
 Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv's WAL commits with IndexedDB's default durability (relaxed in Chrome since version 121), so the IndexedDB baselines use the default too.
 
@@ -62,6 +63,7 @@ The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and value
 
 - `linearlite/first-sync`: an empty tab of linearlite-tanstackdb leads sync and pulls every issue (1,000 at `tiny`, 100,000 at `small`, 1,000,000 at `large`) in pages of 2,000 from an in-memory server while the issue list fills. It times the first 100 rows, the catch-up to the server's head, and the time after that until the list's total and the status counts are right. Afterwards every stored issue is compared with the server's row.
 - `linearlite/browse`: a synced replica, then a cold tab that opens the app and moves through it: the list under each sort, status and priority filters with their counts, a search typed key by key, jumps to 5%, 50% and 90% of the list, the board (five columns and the counts) under two filters, and 20 threads opened twice, first fetched from the server and then held. The cold open times `open` (for `sqlite`, starting wa-sqlite's dedicated WebWorker and the database) and the first rows; every later screen is warm. Each interaction phase sets `mainThread` and yields a macrotask between interactions. Each phase starts once the page is idle, as it is while a user moves to the next screen: TanStack DB drops a released query in an idle callback, and without the wait that cleanup lands in the next screen's timings. A view counts as shown when its row count, total and first row equal what the oracle computes from the server's rows; after the timed phases every window, count and thread is compared whole.
+- `tracker/goals`: a task-tracker workspace built from its history, then 11 goals, each on a fresh page; see [Goal workloads](#goal-workloads).
 
 The two linearlite workloads build the app's headless model (`openLinearlite`) over the contender's `Backend` and an in-memory server (`memoryServer`, `memoryTransport`), so only the backend differs. The report prints each backend's `BackendPath`: how it loads, writes, counts, serves deep windows and handles pressure. The oracle (`examples/linearlite-tanstackdb/src/testing/reference.ts`) shares no code with the model's queries, the backends or TanStack. A fresh page rebuilds the server from the same seed and epoch, so a replica on disk keeps its rows. The server is built in an untimed phase, never inside a timed one. A run that fails at `large` is an `error` record, not a number. Not covered yet: edits, remote edits and offline queues, and the label and project entities.
 
@@ -70,6 +72,43 @@ The fate workloads build the client; a contender supplies only fate's `Persisten
 "Cold" means a new tab opened after every SharedWorker has exited: a cold page over warm OS storage. A page cannot drop the OS cache.
 
 Every read is checked against the expected value. One wrong value fails the run, and a failed run never feeds a number.
+
+## Goal workloads
+
+A goal workload is a dataset plus questions a screen asks of it, the shape of TPC-H and LDBC SNB rather than of db_bench. A contender replays the dataset's history through its own write API and answers each goal with its own query API, the way its docs recommend. Every answer is compared whole with an oracle. The prior art and the reasons for this shape are in [docs/research/goal-driven-benchmarks.md](../docs/research/goal-driven-benchmarks.md).
+
+`tracker/goals` runs on a task-tracker workspace: users, projects, labels, issues (status, priority, assignee, 0 to 3 labels) and comments. Sizes are 1,000 issues at `tiny`, 20,000 at `small` and 200,000 at `large`, with about two comments per issue. The history is a seeded simulation of the workspace. Projects, people and labels are zipfian, and actions favor recently created issues. Ids are random, so no index order follows key order.
+
+The phases:
+
+1. `replay` (timed): once 70% of the issues exist, that state is written as `import` batches of 1,000 rows of one entity, oldest change first. The rest of the simulation is written as `sync` batches of 50 events. Each event creates, patches or deletes one row. A patch carries the change, not the row, so the replica reads the stored row and folds the change in.
+2. `settle` (untimed): kv flushes and compacts until stable.
+3. `recent` (timed): a `bulk` batch closes the sprint of the project with the most issues in progress, then single `edit`s (50 at `tiny`, 300 above), one user rename and one label rename. These writes sit above the settled store when the goals run.
+4. `prepare` (untimed): picks each goal's bindings, LDBC-style: up to 5 bindings whose cost in the oracle is nearest one quantile, the same for every rep and contender. It computes every expected answer and carries them to the later pages.
+5. One phase per goal, each on a fresh page. `cold` is the first call after the open, `first` calls each other binding once, and `warm` calls every binding 3 times.
+6. `reread`: one edit moves an issue from todo to in progress, then its status counts and both lists must show it.
+
+| goal | the screen | owns |
+|---|---|---|
+| `statusCounts` | issues per status in a project | count over an index prefix, no row read |
+| `statusPage` | first 50 todo issues of a project, newest update first, with assignee and label names | index page whose rows are scattered in key order, joined N:1 and M:N |
+| `drainedPage` | the in-progress column of the project whose sprint just closed | index range a bulk edit just emptied, above the settled levels |
+| `deepWindow` | rows at 90% of a project's list by number | a deep window with no offset in the index |
+| `issueThread` | issue `P3-1234` with its comments and their authors | two unique-key hops, then a 1:N child range joined to authors |
+| `triagePage` | first 50 open issues by priority, each with its comment count | a child count per row of a page, over an IN-list |
+| `labelPage` | first 50 open issues of a project with a label | a filter through a multi-entry index |
+| `myIssues` | first 50 open issues assigned to a person, any project | an IN-list across every project, merged top-N |
+| `recentActivity` | the 50 most recently updated issues | the newest end of a global time index under churn |
+| `assigneeLoad` | open issues per person in a project, top 10 | a group-by count on a non-leading field, joined to names |
+| `search` | first 20 issues of a project whose title contains a word | a substring match no equality or range answers |
+
+The rules for a contender:
+
+- It stores the rows as the history gives them, plus any index its library declares natively. It keeps no app-maintained derived state: no counters, no copied names, no cached answers.
+- A goal gets its library's handles and its parameters, nothing else.
+- A goal sees every write acked before it started. `reread` checks this.
+
+Contenders import only the dataset's `types.ts`. oxlint keeps the history and the oracle out of contender code, and keeps contender code and storage libraries out of the dataset.
 
 ## Amplification
 
@@ -118,14 +157,17 @@ A workload is one file in `workloads/<family>/`. A contender is one file in `con
 
 A workload is a list of phases run in order on one database (`page: "fresh"` starts a new tab). A phase body only does the ops. `ctx.time` times one call, `ctx.model` holds the expected values, `ctx.rng` is seeded the same for every contender.
 
+A goal is one entry in its dataset's spec type (`datasets/tracker/types.ts`), whose doc comment is the answer spec. After that, `tsc` fails until the oracle, the goal's curation (`datasets/tracker/index.ts`) and every contender answer it, and its phase appears by itself. A second dataset is a `datasets/<name>/` directory with the same files, a family in `core/families.ts`, its contenders and a one-line workload that calls `goalWorkload`.
+
 ## Layout
 
 ```
 cli.ts            run | smoke | size | compare | report
-core/             types, family interfaces, histogram
+core/             types, family interfaces, the goal contract, histogram
+datasets/         one directory per goal dataset: types and goal spec, history, oracle, curation
 driver/           Vite build, static server, Chrome over CDP, plan, run loop, report, size
 page/             the bench page: phase executor, data model, kv and IndexedDB helpers
 size/rows.ts      bundle-size rows and budgets
 contenders/       one file per contender, by family
-workloads/        one file per workload, by family; kv-lib.ts and trace.ts are shared helpers
+workloads/        one file per workload, by family; kv-lib.ts, trace.ts and goals-lib.ts are shared helpers
 ```
