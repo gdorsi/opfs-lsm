@@ -22,6 +22,8 @@ import {
  * page of its own.
  */
 export const PAGE_TARGET = 32 * 1024;
+/** Pages a scan asks for past the one it enters, at most: 1 MiB, the longest span one read covers. */
+const MAX_READ_AHEAD = 32;
 /** One read covers the footer, Bloom and index of a ~4 MB run. */
 const TAIL_GUESS = 128 * 1024;
 
@@ -172,6 +174,7 @@ export class SstReader {
     let at: { p: number; page: Page } | undefined;
     let take: (() => LayerEntry | undefined) | undefined;
     let cur: LayerEntry | undefined | null = null;
+    let ahead: ReadAhead | undefined;
     const peek = (): LayerEntry | undefined | Miss => {
       if (cur !== null) return cur;
       for (;;) {
@@ -199,7 +202,12 @@ export class SstReader {
         }
         const p = pageOfBlock(index, b);
         if (at?.p !== p) {
-          const page = this.page(meta, p, "probation");
+          // Not on the first page, so a scan that ends there reads no further.
+          if (at) {
+            ahead ??= new ReadAhead((q) => this.page(meta, q, "probation"), lastPage(index, bounds, reverse), step);
+            ahead.extend(p);
+          }
+          const page = ahead?.take(p) ?? this.page(meta, p, "probation");
           if (page instanceof Miss) return page;
           at = { p, page };
         }
@@ -238,6 +246,54 @@ export class SstReader {
       return { value: { buf, view: new DataView(buf.buffer, buf.byteOffset, buf.byteLength) }, bytes: to - from };
     });
   }
+}
+
+/**
+ * The pages a scan asks for before it reaches them, toward `last`. When the
+ * pages already asked for run within half a window of the page the scan
+ * enters, it asks for every page up to a window past that one. The window
+ * is one page, then twice as many each time, up to `MAX_READ_AHEAD`. What
+ * one turn asks for shares one file read.
+ * The scan keeps what arrives, so entering such a page is not a cache hit
+ * and one pass over the data still shows no reuse.
+ */
+class ReadAhead {
+  private readonly pages = new Map<number, Page>();
+  private window = 0;
+  private asked: number | undefined;
+
+  constructor(
+    private readonly load: (page: number) => Maybe<Page>,
+    private readonly last: number,
+    private readonly step: 1 | -1,
+  ) {}
+
+  extend(p: number): void {
+    const { step } = this;
+    if (this.asked !== undefined && (this.asked - p) * step > this.window / 2) return;
+    this.window = Math.min(this.window * 2 || 1, MAX_READ_AHEAD);
+    const to = step > 0 ? Math.min(this.last, p + this.window) : Math.max(this.last, p - this.window);
+    for (let q = (this.asked ?? p) + step; (to - q) * step >= 0; q += step) {
+      const page = this.load(q);
+      // A failed read is dropped here: the scan reads that page again when it reaches it.
+      if (page instanceof Miss) page.ready.then((fills) => void this.pages.set(q, fills[0]![1] as Page), () => undefined);
+      else this.pages.set(q, page);
+      this.asked = q;
+    }
+  }
+
+  take(p: number): Page | undefined {
+    const page = this.pages.get(p);
+    this.pages.delete(p);
+    return page;
+  }
+}
+
+/** The last page a scan of `bounds` can reach: the highest going forward, the lowest going back. */
+function lastPage(index: RunIndex, bounds: ScanBounds | undefined, reverse: boolean): number {
+  const bound = reverse ? bounds?.start : bounds?.endExclusive;
+  if (bound) return pageOfBlock(index, Math.max(0, reverse ? findBlock(index, bound) : blockBelow(index, bound)));
+  return reverse ? 0 : index.pageFirst.length - 2;
 }
 
 /**
