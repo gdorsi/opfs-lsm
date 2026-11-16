@@ -70,6 +70,26 @@ test("a body a tab holds only from sync is not written back after the delete whe
   assert.deepEqual(await storage.loadRange([id]), [], "no tab wrote the deleted body back");
 });
 
+test("a delete that races the body's sync leaves nothing for a tab that joins later", async (t) => {
+  const storage = memoryStorage();
+  const channelName = `reclaim-${Math.random()}`;
+  const join = async () => {
+    const notes = await openNotes({ storage, saveDebounceMs: 1, network: [new BroadcastChannelNetworkAdapter({ channelName })] });
+    t.after(() => notes.close());
+    return notes;
+  };
+  const A = await join();
+  const B = await join();
+  const id = A.createPage(null);
+  await until(() => B.tree.read().page(id) !== undefined, "B to see the page");
+  (await A.bodies.open(id)).edit(typed("deleted text"));
+  A.deletePage(id);
+  await sleep(500);
+  await join();
+  await sleep(800);
+  assert.deepEqual(await storage.loadRange([id]), [], "no tab wrote anything under the deleted id");
+});
+
 test("a tab that opens a list holding an entry it cannot reach removes that entry's body", async (t) => {
   const storage = memoryStorage();
   const first = await openNotes({ storage });
