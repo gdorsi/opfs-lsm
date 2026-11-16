@@ -9,6 +9,7 @@ const EDITS = 20;
 export default defineWorkload({
   family: "automerge",
   title: "many small notes: create and flush, then cold load every note",
+  owns: ["automerge-many-docs"],
   params: (size) => ({ entries: { tiny: 20, small: 500, large: 5_000 }[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 1, ops: 0, seed: 1 }),
   phases: [
     {

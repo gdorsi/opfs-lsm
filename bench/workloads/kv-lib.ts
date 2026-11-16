@@ -5,7 +5,7 @@
  */
 import type { KvStore } from "../core/families.ts";
 import type { Params, Phase, PhaseContext, SizeName } from "../core/types.ts";
-import { latest, permutation, zipfian } from "../page/model.ts";
+import { permutation, zipfian } from "../page/model.ts";
 
 type Ctx = PhaseContext<"kv">;
 
@@ -93,20 +93,16 @@ export function settlePhase(name = "settle"): Phase<"kv"> {
 
 // ---------------------------------------------------------------- YCSB
 
-export type YcsbLetter = "a" | "b" | "c" | "d" | "e" | "f";
+export type YcsbLetter = "a" | "f";
 
-/** Core workload mixes from YCSB's workload files (not Pebble's letters). */
-export const YCSB: Record<YcsbLetter, { title: string; read: number; update: number; insert: number; scan: number; rmw: number; dist: "zipfian" | "latest" }> = {
-  a: { title: "YCSB A: 50% read, 50% update, zipfian", read: 0.5, update: 0.5, insert: 0, scan: 0, rmw: 0, dist: "zipfian" },
-  b: { title: "YCSB B: 95% read, 5% update, zipfian", read: 0.95, update: 0.05, insert: 0, scan: 0, rmw: 0, dist: "zipfian" },
-  c: { title: "YCSB C: 100% read, zipfian", read: 1, update: 0, insert: 0, scan: 0, rmw: 0, dist: "zipfian" },
-  d: { title: "YCSB D: 95% read, 5% insert, latest", read: 0.95, update: 0, insert: 0.05, scan: 0, rmw: 0, dist: "latest" },
-  e: { title: "YCSB E: 95% scan (1-100 keys), 5% insert, zipfian", read: 0, update: 0, insert: 0.05, scan: 0.95, rmw: 0, dist: "zipfian" },
-  f: { title: "YCSB F: 50% read, 50% read-modify-write, zipfian", read: 0.5, update: 0, insert: 0, scan: 0, rmw: 0.5, dist: "zipfian" },
+/** Core workload mixes from YCSB's workload files (not Pebble's letters), zipfian over the loaded keys. */
+export const YCSB: Record<YcsbLetter, { title: string; read: number }> = {
+  a: { title: "YCSB A: 50% read, 50% update", read: 0.5 },
+  f: { title: "YCSB F: 50% read, 50% read-modify-write", read: 0.5 },
 };
 
+/** A: the writes are blind single-key updates. F: each write reads and rewrites its key in one transaction. */
 export function ycsbPhase(letter: YcsbLetter): Phase<"kv"> {
-  const mix = YCSB[letter];
   return {
     name: `ycsb-${letter}`,
     page: "same",
@@ -114,27 +110,16 @@ export function ycsbPhase(letter: YcsbLetter): Phase<"kv"> {
     async run(ctx) {
       const store = await ctx.store();
       const { entries, keyBytes, valueBytes } = ctx.params;
-      const ops = letter === "e" ? Math.ceil(ctx.params.ops / 10) : ctx.params.ops;
-      let end = ctx.model.end;
-      const pick =
-        mix.dist === "latest" ? latest(() => end, ctx.rng, entries + ops) : zipfian(entries, ctx.rng);
-      for (let i = 0; i < ops; i++) {
-        let r = ctx.rng();
-        if ((r -= mix.read) < 0) {
-          const id = pick();
+      const pick = zipfian(entries, ctx.rng);
+      for (let i = 0; i < ctx.params.ops; i++) {
+        const read = ctx.rng() < YCSB[letter].read;
+        const id = pick();
+        if (read) {
           ctx.model.verify(id, await ctx.time("read", 0, () => store.get(ctx.model.key(id))));
-        } else if ((r -= mix.update) < 0) {
-          const id = pick();
+        } else if (letter === "a") {
           const kv: [Uint8Array, Uint8Array] = [ctx.model.key(id), ctx.model.nextValue(id)];
           await ctx.time("update", keyBytes + valueBytes, () => store.putMany([kv]));
-        } else if ((r -= mix.insert) < 0) {
-          const id = end++;
-          const kv: [Uint8Array, Uint8Array] = [ctx.model.key(id), ctx.model.nextValue(id)];
-          await ctx.time("insert", keyBytes + valueBytes, () => store.putMany([kv]));
-        } else if ((r -= mix.scan) < 0) {
-          await scan(ctx, store, pick(), 1 + Math.floor(ctx.rng() * 100), "scan", 1);
         } else {
-          const id = pick();
           await ctx.time("rmw", keyBytes + valueBytes, () =>
             store.update(ctx.model.key(id), (old) => {
               ctx.model.verify(id, old);

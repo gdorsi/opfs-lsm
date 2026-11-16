@@ -7,6 +7,7 @@
  */
 import type { KvStats } from "@opfs-lsm/kv/testing";
 import type { FamilyStores } from "./families.ts";
+import type { Pattern } from "./patterns.ts";
 import type { Model } from "../page/model.ts";
 
 /** The directory name under `workloads/` and `contenders/`. */
@@ -87,6 +88,8 @@ export type Workload<F extends Family> = {
   readonly family: F;
   /** One line, plain words. Printed above the table. */
   readonly title: string;
+  /** The access patterns this workload is the one owner of. */
+  readonly owns: readonly Pattern[];
   readonly params: (size: SizeName) => Params;
   /** Run only these contenders (bare names, e.g. "kv"). Default: every contender of the family. */
   readonly contenders?: readonly string[];
@@ -242,6 +245,7 @@ export type Catalog = readonly {
   readonly workload: string;
   readonly family: Family;
   readonly title: string;
+  readonly owns: readonly Pattern[];
   readonly phases: readonly { readonly name: string; readonly page: PageMode }[];
   readonly contenders: readonly string[];
 }[];

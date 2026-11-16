@@ -190,6 +190,7 @@ const phases: Phase<"tanstack-live">[] = [
 export default defineWorkload({
   family: "tanstack-live",
   title: `TanStack DB live queries on the tracker: ${SCREENS.length} screens to their first answer in a fresh tab, then sync batches without and with the screens open`,
+  owns: ["tanstack-live-open", "tanstack-live-upkeep"],
   params: (size) => ({ entries: TRACKER.entries[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: TRACKER.seed }),
   phases,
 });

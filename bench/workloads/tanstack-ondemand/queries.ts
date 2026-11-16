@@ -81,6 +81,7 @@ function check(name: string, footprint: boolean): Phase<"tanstack-ondemand"> {
 export default defineWorkload({
   family: "tanstack-ondemand",
   title: "TanStack DB on-demand todo collection: bulk insert, cold open, live queries by owner, by page and by id, updates",
+  owns: ["tanstack-on-demand"],
   params: (size) => {
     const entries = { tiny: 1_000, small: 100_000, large: 1_000_000 }[size];
     return { entries, keyBytes: 13, valueBytes: 100, compressibility: 0.5, batch: TX_INSERT, ops: entries / 100, seed: 1 };

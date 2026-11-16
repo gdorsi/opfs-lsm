@@ -212,15 +212,6 @@ export function zipfian(n: number, next: () => number): () => number {
   return () => fnv64mod(z(), n);
 }
 
-/** YCSB "latest": zipfian skewed toward the most recently written id. */
-export function latest(end: () => number, next: () => number, maxN: number): () => number {
-  const z = zipfRaw(maxN, next);
-  return () => {
-    const e = end();
-    return Math.max(0, e - 1 - (z() % e));
-  };
-}
-
 function zipfRaw(n: number, next: () => number): () => number {
   const theta = 0.99;
   let zetan = 0;

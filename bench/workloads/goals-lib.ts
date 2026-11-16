@@ -159,6 +159,7 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
   return defineWorkload({
     family,
     title: d.title,
+    owns: [...d.owns, ...Object.values(d.goals).map((g) => g.owns)],
     params: (size) => ({ entries: d.entries[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: d.seed }),
     phases: [replay, settle, recent, prepare, ...Object.keys(d.goals).map(goal), reread],
   });

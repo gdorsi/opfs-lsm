@@ -51,6 +51,7 @@ function check(name: string, footprint: boolean): Phase<"fate"> {
 export default defineWorkload({
   family: "fate",
   title: "fate request cache: save lists of 100 records, refresh a tenth of them, cold load every list (persistence budget 1 GiB, nothing evicted)",
+  owns: ["fate-cache"],
   params: (size) => ({ entries: { tiny: 1_000, small: 10_000, large: 100_000 }[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: PAGE, ops: 0, seed: 1 }),
   phases: [
     phase("save", async (ctx, store) => {

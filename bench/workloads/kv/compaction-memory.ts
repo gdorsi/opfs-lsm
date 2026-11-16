@@ -14,6 +14,7 @@ export default defineWorkload({
   family: "kv",
   contenders: ["kv"],
   title: `${ROUNDS} rounds of N random puts into a ${POOL_FACTOR}N key pool; SharedWorker and tab memory peaks`,
+  owns: ["kv-compaction-memory"],
   params: (size) => kvParams(size),
   phases: [
     {

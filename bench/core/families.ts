@@ -4,8 +4,7 @@
  * "the same ops on each side" holds by construction.
  *
  * Each interface sits at the grain the libraries' fast paths expose: one
- * `putMany` is one kv batch, one IndexedDB readwrite transaction, one Dexie
- * `bulkPut`.
+ * `putMany` is one kv batch and one IndexedDB readwrite transaction.
  */
 import type { StorageAdapterInterface } from "@automerge/react";
 import type { PersistenceStorage } from "@nkzw/fate/persistence";
@@ -35,7 +34,7 @@ export type KvStore = Common & {
   update(key: Bytes, f: (old: Bytes | undefined) => Bytes): Promise<void>;
 };
 
-/** The one table both table contenders declare. */
+/** The todo row the TanStack DB adapter workloads write. */
 export type Todo = {
   readonly id: string;
   readonly title: string;
@@ -45,25 +44,7 @@ export type Todo = {
   /** Unique, ascending with id: the ordered index. */
   readonly createdAt: number;
 };
-export const TODO_TABLE = "todos";
-export const OWNER_INDEX = "byOwner";
-export const CREATED_INDEX = "byCreated";
 export const OWNERS = 16;
-
-/** docstore vs Dexie. */
-export type TableStore = Common & {
-  putMany(rows: readonly Todo[]): Promise<void>;
-  put(row: Todo): Promise<void>;
-  get(id: string): Promise<Todo | undefined>;
-  getMany(ids: readonly string[]): Promise<(Todo | undefined)[]>;
-  /** Every row with `owner`, via the owner index. */
-  whereOwner(owner: string): Promise<Todo[]>;
-  /** Up to `limit` rows with createdAt >= from, ascending, via the createdAt index. */
-  pageByCreated(from: number, limit: number): Promise<Todo[]>;
-  /** Read-modify-write of one row in one transaction. */
-  update(id: string, f: (row: Todo) => Todo): Promise<void>;
-  deleteMany(ids: readonly string[]): Promise<void>;
-};
 
 /** TanStack DB collections: docstoreCollectionOptions vs indexedDBCollectionOptions. Reads are TanStack's in-memory rows on both sides, so the timed work is persistence and load. */
 export type CollectionStore = Common & {
@@ -147,7 +128,6 @@ export type LiveStore = Common & {
 /** Family name → store interface. The directory names under workloads/ and contenders/ are these keys. */
 export type FamilyStores = {
   kv: KvStore;
-  table: TableStore;
   tanstack: CollectionStore;
   "tanstack-ondemand": OnDemandStore;
   automerge: AutomergeStore;
@@ -157,4 +137,4 @@ export type FamilyStores = {
   "tanstack-live": LiveStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "tracker", "tanstack-live"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "tracker", "tanstack-live"];

@@ -64,6 +64,7 @@ async function catalog(): Promise<Catalog> {
       workload: id,
       family,
       title: w.title,
+      owns: w.owns,
       phases: w.phases.map((p) => ({ name: p.name, page: p.page })),
       contenders: contenders
         .filter((c) => c.family === family && (!w.contenders || w.contenders.some((n) => c.id === `${family}/${n}`)))
