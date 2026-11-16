@@ -17,10 +17,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { MemoryPeaks } from "../core/types.ts";
-import { chromeMemory, combine, PeakTracker, WASM_HOOK, type HeapSample, type ProcessMemory } from "./memory.ts";
+import { chromeMemory, combine, OS_KEEPS_PEAK, PeakTracker, WASM_HOOK, type HeapSample, type ProcessMemory } from "./memory.ts";
 
 const SAMPLE_MS = 100;
-/** How often the OS is asked about the renderers. Rarely, because asking costs them time (see `chromeMemory`). */
+/**
+ * How often the renderers' OS memory is read where the OS keeps no peak. Where it
+ * does, they are read only before a tab closes and at the end of a run, because
+ * reading stalls them (see `chromeMemory`).
+ */
 const FOOTPRINT_MS = 1000;
 
 const FLAGS = [
@@ -176,7 +180,7 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
       };
       for (const id of workerSessions) add(id, () => sampleHeap(id, sw));
       for (const id of tabSessions) add(id, () => sampleHeap(id, tabs));
-      if (last || Date.now() - footprintAt >= FOOTPRINT_MS) {
+      if (last || (!OS_KEEPS_PEAK && Date.now() - footprintAt >= FOOTPRINT_MS)) {
         footprintAt = Date.now();
         add("footprint", sampleFootprint);
       }
@@ -229,6 +233,7 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
           },
           async close() {
             tabSessions.delete(sessionId);
+            if (OS_KEEPS_PEAK) await sampleFootprint().catch(() => {});
             await cdp.send("Target.closeTarget", { targetId });
           },
         };

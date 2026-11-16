@@ -10,6 +10,9 @@ import type { HeapPeak, MemoryPeaks } from "../core/types.ts";
 const run = promisify(execFile);
 const MiB = 1024 * 1024;
 
+/** macOS `footprint` reports each process's peak since it started, so one late read catches it. Elsewhere only the current RSS. */
+export const OS_KEEPS_PEAK = process.platform === "darwin";
+
 export type HeapSample = {
   usedSize: number;
   totalSize: number;
@@ -69,7 +72,7 @@ export class PeakTracker {
  * started. It is missing where the OS does not report one.
  */
 async function processMemory(pid: number): Promise<{ bytes: number; peakBytes?: number }> {
-  if (process.platform === "darwin") {
+  if (OS_KEEPS_PEAK) {
     const { stdout } = await run("footprint", ["--noCategories", "-f", "bytes", "-p", String(pid)]);
     const m = /phys_footprint:\s*(\d+)/.exec(stdout);
     const peak = /phys_footprint_peak:\s*(\d+)/.exec(stdout);
@@ -98,9 +101,9 @@ async function chromeProcesses(profile: string): Promise<{ pid: number; type: st
 export type ProcessMemory = { pid: number; type: string; bytes: number; peakBytes?: number };
 
 /**
- * OS memory of every Chrome process. OS-level, so it keeps sampling while a
- * worker blocks its event loop. Not free: reading the renderers every 100 ms
- * made kv's write phases take 12 to 45% longer, so the sampler asks once a second.
+ * OS memory of every Chrome process. OS-level, so it reads a worker that blocks
+ * its event loop. Not free: on macOS a process stalls while `footprint` reads it,
+ * so storage calls in flight wait.
  */
 export async function chromeMemory(profile: string): Promise<ProcessMemory[]> {
   return Promise.all(
