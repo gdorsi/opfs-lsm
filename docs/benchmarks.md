@@ -46,7 +46,7 @@ The editing-trace workloads write the trace's first 25,700 keystrokes, then type
 | Cold open before the settle | 7.2 ms | 16 ms | 58 ms | 64 ms |
 | Cold open after the settle | 7.5 ms | 52 ms | 58 ms | 65 ms |
 
-Automerge's own load of the document takes most of its cold open on both stores. kv's open in a fresh tab took 5 to 8 ms in most opens before the settle and about 44 ms in most opens after it. The cause is not known yet. In one Yjs run on kv out of six, each cold open took 17 s. In that run the adapter's merge of the stored updates started while its own writes were still in flight and left most of them in place; [#292](https://github.com/gdorsi/opfs-lsm/pull/292) fixes it.
+Automerge's own load of the document takes most of its cold open on both stores. kv's open in a fresh tab took 5 to 8 ms in most opens before the settle and about 44 ms in most opens after it: right after a flush deletes the folded WAL records, Chrome's IndexedDB steps over each deleted row in the reverse cursor that found the WAL head. [#294](https://github.com/gdorsi/opfs-lsm/pull/294) looks forward first, and brings that open to 16 to 18 ms. In one Yjs run on kv out of six, each cold open took 17 s. In that run the adapter's merge of the stored updates started while its own writes were still in flight and left most of them in place; [#292](https://github.com/gdorsi/opfs-lsm/pull/292) fixes it.
 
 ### On demand, against SQLite
 
