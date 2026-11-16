@@ -4,18 +4,18 @@ These tables compare opfs-lsm with the storage a web app would otherwise use: In
 
 ## Storage calls
 
-Medians of 10 runs, from two sessions of 5, in headless Chrome 157 on an Apple M5 Max with a load average of 6 to 11 from other work, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. The single-put row is the median of 21 runs: a run is 1,000 puts, too few for 5 runs to agree. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md). The run files behind this table were not kept; the full results of each newer table are in [results/](results/), linked under it.
+Medians of 10 runs, from two sessions of 5, in headless Chrome 157 on an Apple M5 Max with a load average of 6 to 11 from other work, 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. The single-put row is the median of 21 runs: a run is 1,000 puts, too few for 5 runs to agree. It came from the `kv/fillsync` workload, whose 1,000 puts on an empty store are now the first phase of `kv/fillrandom`, unchanged. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md). The run files behind this table were not kept; the full results of each newer table are in [results/](results/), linked under it.
 
 | Workload | IndexedDB | kv | |
 | --- | ---: | ---: | ---: |
 | Random writes, batches of 1,000 | 30.2k ops/s | 432k ops/s | 14× |
 | Random point reads | 16.4k ops/s | 488k ops/s | 30× |
 | Reads of missing keys | 17.8k ops/s | 1.64M ops/s | 92× |
-| YCSB B: 95% read, 5% update | 17.5k ops/s | 130k ops/s | 7.4× |
-| YCSB E: short range scans | 6.3k ops/s | 19.2k ops/s | 3.0× |
 | Full ordered scan | 604k ops/s | 1.03M ops/s | 1.7× |
 | Single put, awaited one at a time | 9.1k ops/s | 7.4k ops/s | 0.8× |
 | Cold open | 1.2 ms | 7.8 ms | 0.2× |
+
+The bench also measures zipfian reads mixed with updates and with read-modify-writes (`kv/ycsb-a`, YCSB A then F), seeks of 10 and 100 keys (`kv/fillseq`), and batched deletes (`kv/fillrandom`). This table has no row for them yet.
 
 ## Framework adapters
 
@@ -31,7 +31,6 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 | Automerge | Cold load of 500 notes | 1.1k notes/s | 2.2k notes/s | 2.0× |
 | Automerge | Write 500 notes | 743 notes/s | 821 notes/s | 1.1× |
 | fate | Cold load of 100 lists of 100 records | 1.0k records/s | 3.4k records/s | 3.3× |
-| fate | Queue 300 mutations offline | 201 ops/s | 263 ops/s | 1.3× |
 
 The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and `@nkzw/fate-indexeddb`. Both TanStack DB collections run in eager mode, the default `syncMode`: a collection loads every row when it opens. `indexedDBCollectionOptions` has no on-demand mode.
 
@@ -59,7 +58,7 @@ In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack
 | Warm query of one owner, 6,250 rows | 90.7k rows/s | 131k rows/s | 1.4× |
 | 10 rows by id | 1.6k queries/s | 3.6k queries/s | 2.3× |
 
-The bench also runs `docstore` against Dexie. [bench/README.md](../bench/README.md) lists every family and workload.
+[bench/README.md](../bench/README.md) lists every family and workload.
 
 ## Goal benchmarks
 
@@ -92,6 +91,23 @@ Medians of 3 runs in headless Chrome 157 on an Apple M2 Pro with a load average 
 During the sync, the 50 most recently updated issues are read again after every 10th batch, as a list on screen would be. That read took 1.5 ms on Dexie, 0.58 ms on SQLite and 0.82 ms on docstore, medians of a later run with a load average of 4 to 5: [2026-11-16T19-59-22](results/2026-11-16T19-59-22-apple-m2-pro.md).
 
 Warm, docstore answers 7 of the 11 goals fastest, because a tab reads on its own main thread from its page cache. Cold, it is the slowest on most goals: the 50 rows of a page each sit on their own 32 KB page, which a fresh tab loads from OPFS. A group-by and a deep window cost more on docstore, because its queries return neither index values nor an offset. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart.
+
+### TanStack DB live queries
+
+The same workspace, written through TanStack DB collections of users, projects, labels and issues, with four screens as live queries: a project's todo column, a project's open issues with a label, a person's open issues, and the 50 most recently updated issues. Each card has its assignee and label names. In a fresh tab each screen is timed to its first answer. Then 870 sync batches of about 34 changes land, the first half with no screen open and the second half with all four open. Each batch is timed until it is stored and every open screen shows it. [bench/README.md](../bench/README.md#live-queries) describes the workload. Medians of 3 runs in headless Chrome 157 on an Apple M2 Pro with a load average of 3.1 to 6.6 from other work. Full results: [2026-11-16T22-26-04](results/2026-11-16T22-26-04-apple-m2-pro.md).
+
+| | IndexedDB, eager | docstore, eager | docstore, on demand | SQLite, on demand |
+| --- | ---: | ---: | ---: | ---: |
+| Opening the collections in a fresh tab | 184 ms | 99 ms | 11 ms | 61 ms |
+| First answer: a project's todo column | 19.9 ms | 20.0 ms | 23.4 ms | 41.3 ms |
+| First answer: open issues with a label | 37.2 ms | 38.8 ms | 24.1 ms | 44.1 ms |
+| First answer: a person's open issues | 37.6 ms | 39.8 ms | 6.4 ms | 9.6 ms |
+| First answer: the 50 latest issues | 3.3 ms | 3.3 ms | 9.0 ms | 9.0 ms |
+| A sync batch, no screen open | 4.0 ms | 1.7 ms | 1.7 ms | 32 ms |
+| A sync batch, four screens open | 7.4 ms | 5.5 ms | 5.2 ms | 127 ms |
+| Frames dropped over 435 batches, screens open | 9 | 11 | 7 | 260 |
+
+The todo column opens first, so it also starts the label list every screen shares. Keeping four screens current adds about 3.5 ms to a batch on IndexedDB and on docstore, eager or on demand. On SQLite it adds 95 ms. A [CPU profile](results/2026-11-16T22-25-41-apple-m2-pro-cpu-profile.txt) of that phase shows the tab idle two thirds of the time, waiting for SQLite's worker, and decoding the rows the worker sends back is the largest share of the rest. With no screen open, no contender dropped a frame.
 
 ## Bundle size
 

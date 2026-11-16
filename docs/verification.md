@@ -27,8 +27,8 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
 | In-page `EngineHost` | `drive two-tab-local`. |
 | `maxBytes`, `onPressure`, the pressure offer or its Web Lock | `drive pressure`, and `drive quota` for `maxBytes: "quota"`. |
-| `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench table/` and `drive bench tracker/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
-| `packages/tanstack-db/src` | `pnpm --filter @opfs-lsm/tanstack-db test`, with `TSDB_DIFF_RUNS=2000` after a change to the planner or the on-demand run. For a performance claim, `drive bench tanstack/` with `--reps 5` before and after, then `node bench/cli.ts compare`. |
+| `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench tracker/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
+| `packages/tanstack-db/src` | `pnpm --filter @opfs-lsm/tanstack-db test`, with `TSDB_DIFF_RUNS=2000` after a change to the planner or the on-demand run. For a performance claim, `drive bench tanstack/ tanstack-ondemand/ tanstack-live/` with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `examples/linearlite-tanstackdb` | `pnpm --filter @opfs-lsm/example-linearlite-tanstackdb test`, `check` and `build`. For a change to its reads, counts or sync, drive the app in a browser against a server seeded with 100k issues, in two tabs and offline. |
 | `examples/linearlite-fate` | `pnpm --filter @opfs-lsm/example-linearlite-fate test`, `check` and `build`. For a change to its requests, commands or server, drive the app in a browser against a seeded database (`examples/linearlite-fate/DESIGN.md`). |
 | `examples/notes-manager-automerge` | `pnpm --filter @opfs-lsm/example-notes-manager-automerge test`, `check` and `build`. For a change to the editor, the tree, the bodies or the UI, run the browser proof (`examples/notes-manager-automerge/DESIGN.md`, "Browser proof") with `agent-browser`. |
@@ -50,7 +50,7 @@ From the repo root, in this order:
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `pressure`, `quota`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]` and `bench-smoke`. A selector is a family (`kv/`, `table/`, `tracker/`, `automerge/`, `yjs/`, `fate/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
+`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `pressure`, `quota`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `fate/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
 
 `launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
 
@@ -319,7 +319,7 @@ Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
 
 [`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs seven jobs on pull requests and on pushes to `main`:
 
-- `bench`: `pnpm bench:smoke --check`, which applies the bundle-size budgets of `pnpm bench:size --check` and then runs the smoke, from one build
+- `bench`: `pnpm bench:smoke --check`, which applies the bundle-size budgets of `pnpm bench:size --check`, checks that every access pattern in `bench/core/patterns.ts` has exactly one owner, and then runs the smoke, from one build
 - `two-tab`: `pnpm --filter @opfs-lsm/kv two-tab`
 - `kill-chrome`: `pnpm --filter @opfs-lsm/kv kill-chrome --seed 1 --iterations 6`, the probes and each kill kind once (about a minute), then `pnpm --filter @opfs-lsm/kv power-loss-chrome`
 - `test`: `pnpm test`
