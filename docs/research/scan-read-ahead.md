@@ -59,6 +59,34 @@ Other scans, ops/s:
 | `kv/fillseq` seeks of 10 and 100 keys | no measurable difference | | |
 | `table/todos`, `tanstack-ondemand/queries` on kv | no measurable difference | | |
 
+## LinearLite: the board and threads
+
+The first `linearlite/browse` runs on docstore after the change showed the board phase at 61 to
+109 ms against 43 to 45 ms before, and threads at 181 to 584 ms against 75 to 101 ms, in three
+sessions that alternated before and after. Neither phase reads from disk: every page it needs is
+already cached. A CPU profile from the cold open on put the time in TanStack DB's filters,
+`evaluateLike` first: the search phase's queries.
+
+TanStack DB drops a live query with no subscriber in an idle callback, with a 1 s timeout. The
+search phase releases about 40 queries. Before the change, the jump phase after it waited on 245
+small reads, the page went idle between them, and those queries were dropped during the jump.
+With read-ahead the jump makes 29 larger reads and the main thread does not idle. At the end of
+the jump the adapter still had 39 demands and 1,296 rows, against 7 demands and 700 rows before.
+The board and threads paid for them: each new query filtered three times the rows, and each
+eviction walked them against every demand.
+
+A user pauses between screens, so the bench now starts each browse phase once the page is idle
+([bench/README.md](../../bench/README.md)). With that wait, 3 runs each:
+
+| step | before | after |
+|---|---:|---:|
+| `cold-open` phase | 157 ms (156 to 173) | 113 ms (109 to 122) |
+| jump, p50 | 79.9 ms | 60.4 ms |
+| board, p50 | 17.9 ms | 16.9 ms |
+| thread fetched from the server, p50 | 2.11 ms | 2.24 ms |
+
+The board and thread phases show no measurable difference.
+
 ## Choices
 
 **A window that doubles from one page.** A scan that stops early, as one with a `limit` does,
@@ -81,5 +109,7 @@ would count as reuse, and one pass would move every page it read into the main q
 - Yjs replays every stored update, because the session never pauses for the 1 s merge.
 - A deeper level opens its runs one at a time as a scan reaches them. Reading the next run's layout
   ahead is not done. The board's data is in L0, where every run is opened at the start.
+- The TanStack DB adapter's eviction checks every held row against every demand, so its cost
+  grows with both. Queries TanStack has not yet dropped keep their demands.
 - `pages/type` reopen is Automerge's own load, 94 to 96 ms of about 130 ms at `small` and 1.2 s
   of 1.7 s at `large`. Both stores are level, and read-ahead does not move it.

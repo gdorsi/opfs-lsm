@@ -20,45 +20,45 @@ apps:
       versus: SQLite
       rows:
         - workload: First rows, once the database is open
-          indexeddb: 803 ms
-          kv: 35.8 ms
-          ratio: 22×
+          indexeddb: 639 ms
+          kv: 33.8 ms
+          ratio: 19×
         - workload: Change the sort
-          indexeddb: 705 ms
-          kv: 4.5 ms
-          ratio: 157×
+          indexeddb: 639 ms
+          kv: 4.99 ms
+          ratio: 128×
         - workload: Open the board
-          indexeddb: 4.0 s
-          kv: 17.9 ms
-          ratio: 223×
+          indexeddb: 2.9 s
+          kv: 22.0 ms
+          ratio: 134×
     - name: Whiteboard
       baseline: y-indexeddb, 1,000 shapes
       rows:
         - workload: 1,000 edits, until saved
-          indexeddb: 97.7 ms
-          kv: 38.7 ms
-          ratio: 2.5×
-        - workload: 100 undos and redos, until saved
-          indexeddb: 17.6 ms
-          kv: 6.5 ms
+          indexeddb: 109 ms
+          kv: 41.0 ms
           ratio: 2.7×
+        - workload: 100 undos and redos, until saved
+          indexeddb: 21.5 ms
+          kv: 7.8 ms
+          ratio: 2.8×
         - workload: Reopen the board
-          indexeddb: 79.3 ms
-          kv: 106 ms
-          ratio: 0.75×
+          indexeddb: 75.0 ms
+          kv: 87.0 ms
+          ratio: 0.86×
     - name: Pages
       baseline: fate and Automerge on IndexedDB, a 50 KB page
       rows:
         - workload: Open a new page
-          indexeddb: 21.0 ms
-          kv: 18.9 ms
-          ratio: 1.1×
+          indexeddb: 23.0 ms
+          kv: 16.9 ms
+          ratio: 1.4×
         - workload: Reopen after a reload
           indexeddb: 129 ms
-          kv: 137 ms
-          ratio: 0.94×
+          kv: 139 ms
+          ratio: 0.93×
 size:
-  main: 18.5 kB
+  main: 18.8 kB
 fits:
   - name: TanStack DB
     package: "@opfs-lsm/tanstack-db"
@@ -105,10 +105,10 @@ Still, storage is fault-tolerant and heavily tested, so if you want to play arou
 
 ### Lightweight, with super-fast loads
 
-18.5 kB at import, and up to 4.8× faster cold loads with the Yjs adapter
+18.8 kB at import, and up to 4.8× faster cold loads with the Yjs adapter
 
 ```ts
-// 18.5 kB gzip in your main bundle
+// 18.8 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
 // the SharedWorker and wasm load here
 const db = await openDb({ name: "app" });
@@ -210,7 +210,7 @@ opfs-lsm is a replacement for IndexedDB and SQLite in the browser. It is faster,
 
 [The app benchmarks](../docs/benchmarks.md#app-benchmarks) · [How they are measured](../bench/README.md)
 
-<Illustration name="apps" full :data="$frontmatter.apps" label="The app benchmarks, each example app on opfs-lsm against the same app on the storage it would otherwise use. LinearLite with 100,000 issues, docstore against TanStack DB's SQLite adapter as it ships: once the database is open, the first rows of a cold open in 35.8 ms against 803 ms, 22× faster; a change of sort in 4.5 ms against 705 ms, 157× faster; the board in 17.9 ms against 4.0 s, 223× faster. A Yjs whiteboard with 1,000 shapes, against y-indexeddb: 1,000 edits saved in 38.7 ms against 97.7 ms, 2.5× faster; 100 undos and redos saved in 6.5 ms against 17.6 ms, 2.7× faster; reopening the board takes 106 ms against 79.3 ms, 0.75× as fast. A pages app on fate and Automerge with a 50 KB page, against IndexedDB: opening a new page takes 18.9 ms against 21.0 ms, 1.1× faster; reopening it after a reload 137 ms against 129 ms, 0.94× as fast." />
+<Illustration name="apps" full :data="$frontmatter.apps" label="The app benchmarks, each example app on opfs-lsm against the same app on the storage it would otherwise use. LinearLite with 100,000 issues, docstore against TanStack DB's SQLite adapter as it ships: once the database is open, the first rows of a cold open in 33.8 ms against 639 ms, 19× faster; a change of sort in 4.99 ms against 639 ms, 128× faster; the board in 22.0 ms against 2.9 s, 134× faster. A Yjs whiteboard with 1,000 shapes, against y-indexeddb: 1,000 edits saved in 41.0 ms against 109 ms, 2.7× faster; 100 undos and redos saved in 7.8 ms against 21.5 ms, 2.8× faster; reopening the board takes 87.0 ms against 75.0 ms, 0.86× as fast. A pages app on fate and Automerge with a 50 KB page, against IndexedDB: opening a new page takes 16.9 ms against 23.0 ms, 1.4× faster; reopening it after a reload 139 ms against 129 ms, 0.93× as fast." />
 
 <div class="home-claim">
 <div class="home-copy">
