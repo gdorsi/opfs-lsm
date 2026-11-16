@@ -1,4 +1,4 @@
-/* The home page: claims beside their illustrations, and the live demo. */
+/* The home page: the hero with the live demo, then claims beside their illustrations. */
 .home-claim {
   display: grid;
   gap: 24px;
@@ -162,129 +162,525 @@
   background: var(--vp-c-default-soft);
 }
 
-/* The live demo. */
-.demo {
-  margin: 24px 0 8px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--vp-c-bg-soft);
+/* The hero: the pitch and its actions, then LinearLite running in a browser frame. Its box has the widths and
+   paddings of the content under it. */
+.home-hero {
+  max-width: 1152px;
+  margin: 0 auto;
+  padding: 40px 24px 48px;
+  box-sizing: content-box;
 }
 
-@media (max-width: 647px) {
+@media (min-width: 640px) {
+  .home-hero {
+    padding: 64px 48px;
+  }
+}
+
+@media (min-width: 960px) {
+  .home-hero {
+    padding: 72px 64px;
+  }
+}
+
+.home-hero-head {
+  display: grid;
+  gap: 20px;
+  align-items: end;
+}
+
+@media (min-width: 640px) {
+  .home-hero-head {
+    gap: 24px;
+  }
+}
+
+@media (min-width: 960px) {
+  .home-hero-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 40px;
+  }
+}
+
+.home-hero-name {
+  margin: 0;
+  color: var(--vp-c-brand-1);
+  font-family: var(--vp-font-family-mono);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.home-hero-title {
+  margin: 12px 0 0;
+  color: var(--vp-c-text-1);
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 42px;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.home-hero-tagline {
+  margin: 12px 0 0;
+  color: var(--vp-c-text-2);
+  font-size: 17px;
+  line-height: 26px;
+  text-wrap: pretty;
+}
+
+@media (min-width: 640px) {
+  .home-hero-title {
+    font-size: 48px;
+    line-height: 56px;
+  }
+
+  .home-hero-tagline {
+    font-size: 19px;
+    line-height: 30px;
+  }
+}
+
+.home-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* The demo: a browser frame around the app, with the timings it measured in this tab at its foot. */
+.demo {
+  margin-top: 36px;
+  overflow: hidden;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 14px;
+  background: var(--vp-c-bg-alt);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 24px 48px -24px rgba(0, 0, 0, 0.2);
+}
+
+.dark .demo {
+  box-shadow: 0 24px 48px -24px rgba(0, 0, 0, 0.7);
+}
+
+@media (max-width: 639px) {
   .demo {
-    margin-inline: -8px;
+    margin: 28px -8px 0;
   }
 }
 
 .demo-bar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: 8px;
-  padding: 12px;
+  gap: 12px;
+  height: 48px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--vp-c-divider);
 }
 
-.demo-tag {
-  padding: 2px 8px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 6px;
-  color: var(--vp-c-text-2);
-  font-family: var(--vp-font-family-mono);
-  font-size: 12px;
-  line-height: 18px;
+.demo-dots {
+  display: flex;
+  gap: 6px;
 }
 
-.demo-tag + .demo-btn {
-  margin-left: auto;
+.demo-dots i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--vp-c-default-3);
 }
 
-.demo-btn {
-  height: 32px;
+.demo-address {
   padding: 0 14px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 16px;
-  background: var(--vp-c-bg);
+  border-radius: 8px;
+  background: var(--vp-c-default-soft);
+  color: var(--vp-c-text-2);
+  font-size: 12px;
+  line-height: 28px;
+  white-space: nowrap;
+  transition: color 150ms ease-out;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .demo-address:hover {
+    color: var(--vp-c-text-1);
+  }
+}
+
+/* On a phone the bar names the app on the left; the window dots would only take its room. */
+@media (max-width: 519px) {
+  .demo-bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding-left: 12px;
+  }
+
+  .demo-dots {
+    display: none;
+  }
+
+  .demo-address {
+    justify-self: start;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.demo-reload {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
   color: var(--vp-c-text-1);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
-  transition: border-color 0.2s, background-color 0.2s, color 0.2s;
+  transition:
+    background-color 150ms ease-out,
+    color 150ms ease-out,
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.demo-btn:hover:not(:disabled) {
-  border-color: var(--vp-c-brand-1);
+@media (max-width: 519px) {
+  .demo-reload {
+    height: 36px;
+    padding: 0 10px;
+  }
+
+  .demo-reload span {
+    display: none;
+  }
 }
 
-.demo-btn:disabled {
+.demo-reload svg,
+.demo-screen-button svg,
+.demo-open-pill svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .demo-reload:hover:not(:disabled) {
+    background: var(--vp-c-default-soft);
+  }
+}
+
+.demo-reload:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.demo-reload:disabled {
   color: var(--vp-c-text-3);
   cursor: default;
 }
 
-.demo-frame {
-  display: block;
-  width: 100%;
-  height: 480px;
-  border: 0;
-  border-block: 1px solid var(--vp-c-divider);
+.demo-address:focus-visible,
+.demo-reload:focus-visible,
+.demo-screen-button:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 0;
+}
+
+/* The preview's box keeps its height while the app is full screen, so the page under it doesn't move. */
+.demo-view {
+  height: clamp(420px, 58vh, 560px);
+}
+
+.demo[data-compact] .demo-view {
+  height: min(400px, 45svh);
+}
+
+.demo-screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.demo-screen[data-expanded] {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  height: auto;
   background: var(--vp-c-bg);
 }
 
-.demo-timings {
+.demo-frame {
+  display: block;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: var(--vp-c-bg);
+}
+
+/* Full screen: Close, the latest timing, and Reload. */
+.demo-screen-bar {
   display: grid;
-  gap: 0 24px;
-  margin: 0;
-  padding: 4px 16px 12px;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 52px;
+  padding: env(safe-area-inset-top) 6px 0;
+  border-bottom: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-bg-alt);
+  box-sizing: content-box;
 }
 
-@media (min-width: 960px) {
-  .demo-timings {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+.demo-screen-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  padding: 0 12px;
+  border-radius: 10px;
+  color: var(--vp-c-text-1);
+  font-size: 15px;
+  font-weight: 500;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 150ms ease-out,
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.demo-timings > div {
-  padding: 12px 0;
+.demo-screen-button svg {
+  width: 18px;
+  height: 18px;
 }
 
-.demo-timings dt {
-  margin: 0;
+.demo-screen-button:active:not(:disabled) {
+  transform: scale(0.97);
+  background: var(--vp-c-default-soft);
+}
+
+.demo-screen-button:disabled {
+  color: var(--vp-c-text-3);
+}
+
+.demo-screen-reload {
+  justify-self: end;
+  justify-content: center;
+  width: 44px;
+  padding: 0;
+}
+
+.demo-latest {
+  overflow: hidden;
   color: var(--vp-c-text-2);
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The preview's cover: the whole box is the button, with a fade and a pill at its foot. */
+.demo-open {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 20px;
+  background: linear-gradient(to bottom, transparent 55%, color-mix(in srgb, var(--vp-c-bg) 88%, transparent));
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.demo-open:disabled {
+  cursor: default;
+}
+
+.demo-open-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 20px;
+  border-radius: 999px;
+  background: var(--vp-c-text-1);
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.35);
+  color: var(--vp-c-bg);
+  font-size: 15px;
+  font-weight: 600;
+  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.demo-open:disabled .demo-open-pill {
+  background: var(--vp-c-bg);
+  box-shadow: 0 0 0 1px var(--vp-c-divider), 0 8px 24px -8px rgba(0, 0, 0, 0.18);
+  color: var(--vp-c-text-2);
   font-weight: 500;
 }
 
-.demo-timings dd {
-  margin: 2px 0 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--vp-c-text-2);
+.demo-open:active:not(:disabled) .demo-open-pill {
+  transform: scale(0.97);
 }
 
-.demo-timings dd b {
-  display: block;
+.demo-open:focus-visible {
+  outline: none;
+}
+
+.demo-open:focus-visible .demo-open-pill {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+/* On a wide screen, while the app starts, a chip at the frame's foot says so. */
+.demo-status {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  padding: 8px 16px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg);
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.18);
+  color: var(--vp-c-text-1);
+  font-size: 13px;
+  text-align: center;
+  transform: translateX(-50%);
+}
+
+.demo-status-leave-active {
+  transition:
+    opacity 180ms ease-out,
+    transform 180ms ease-out;
+}
+
+.demo-status-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 6px);
+}
+
+/* The timings: three columns at every width, with short labels on a phone. */
+.demo-timings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.demo-timings > div {
+  min-width: 0;
+  padding: 14px 20px 16px;
+}
+
+.demo-timings > div + div {
+  border-left: 1px solid var(--vp-c-divider);
+}
+
+.demo-timings dt {
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.demo-timings dd {
+  margin: 4px 0 0;
+  min-height: 32px;
+}
+
+.demo-timings b {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 8px;
   color: var(--vp-c-text-1);
   font-size: 24px;
-  line-height: 32px;
   font-weight: 600;
+  line-height: 32px;
   font-variant-numeric: tabular-nums;
 }
 
-.demo-timings dd b.demo-none {
+.demo-timings b span {
   color: var(--vp-c-text-3);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.demo-timings b.demo-none {
+  color: var(--vp-c-text-3);
+  font-size: 15px;
   font-weight: 400;
 }
 
-.demo-note {
-  margin: 0;
-  padding: 0 16px 12px;
-  color: var(--vp-c-text-3);
-  font-size: 13px;
+.demo-short {
+  display: none;
+}
+
+@media (max-width: 719px) {
+  .demo-timings > div {
+    padding: 12px 12px 14px;
+  }
+
+  .demo-timings dt {
+    font-size: 12px;
+    line-height: 16px;
+  }
+
+  .demo-timings dd {
+    min-height: 28px;
+  }
+
+  .demo-timings b {
+    font-size: 20px;
+    line-height: 28px;
+  }
+
+  .demo-timings b.demo-none {
+    font-size: 14px;
+  }
+
+  .demo-long {
+    display: none;
+  }
+
+  .demo-short {
+    display: inline;
+  }
+}
+
+.demo-value-enter-active {
+  transition:
+    opacity 200ms ease-out,
+    transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.demo-value-leave-active {
+  transition: opacity 100ms ease-out;
+}
+
+.demo-value-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.demo-value-leave-to {
+  opacity: 0;
 }
 
 .demo-failed {
   margin: 0;
-  padding: 0 16px 16px;
+  padding: 0 20px 16px;
   color: var(--vp-c-danger-1);
   font-size: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .demo-status-leave-active,
+  .demo-value-enter-active,
+  .demo-value-leave-active,
+  .demo-open-pill {
+    transition: none;
+  }
 }

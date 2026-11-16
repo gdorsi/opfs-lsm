@@ -1,10 +1,9 @@
 ---
 layout: home
 title: opfs-lsm
-hero:
-  name: opfs-lsm
-  text: Fast local storage for your web app
-  tagline: without bloating it
+intro:
+  title: Fast local storage for your web app
+  tagline: This issue tracker keeps 100,000 issues in your browser. There is no server.
   actions:
     - theme: brand
       text: Get started
@@ -86,6 +85,7 @@ fits:
     stores: your keys and bytes
 demo:
   count: 100,000
+  source: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-docstore
 ---
 
 <div class="home-warnings">
@@ -199,12 +199,6 @@ await db.view(async (snap) => {
 opfs-lsm is a replacement for IndexedDB and SQLite in the browser. It is faster, lightweight and designed specifically for web apps.
 
 <Illustration name="fits" full :data="{ cases: $frontmatter.fits }" label="Where opfs-lsm fits, in four cases. In each, a server syncs with a library in the browser, and that library stores its data in opfs-lsm. Offline-first apps: TanStack DB collections store every row with @opfs-lsm/tanstack-db. A cache of server data: the fate client stores cached records and queued mutations with @opfs-lsm/fate. Collaborative documents: Y.Doc or automerge-repo store document updates with @opfs-lsm/yjs or @opfs-lsm/automerge. Your own sync engine: it stores keys and bytes with @opfs-lsm/kv." />
-
-## Try it with 100,000 issues
-
-[LinearLite on docstore](../examples/linearlite-docstore), with no server
-
-<HomeDemo />
 
 ## Measured on real apps
 
