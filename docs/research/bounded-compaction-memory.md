@@ -38,7 +38,7 @@ Chrome 156, machine shared, load 7-14 on 18 cores):
 Compaction wrote 565 MB for 232 MB of user bytes. The wasm memory alone is about
 twice the 160 MB estimate above. Reading the renderer processes every 100 ms
 instead of once a second slowed the engine it measured (9.1 s rounds, 335 MB
-wasm), which is why bench reads them once a second.
+wasm), which is why bench reads them at most once a second.
 
 ## Decision
 
