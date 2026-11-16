@@ -84,11 +84,11 @@ again. A page deleted in another tab while it is open turns into the same screen
 
 Every tab removes the body of every id it sees that is not reachable: an id that leaves its tree, and a list entry
 it cannot reach, at open and on each change. It starts each id's removal once, all in the same tick as the change, and
-a failure is logged without stopping the rest. For the rest of the Repo's life a removal blocks the id from saving
-and from sync: the Repo's share config denies it to every peer, so a copy in another tab cannot write it back and a
-copy that a late sync message re-creates never leaves the tab. The removal then marks an open body `removed`, drops
-every copy the Repo holds, opened in this tab or synced from a peer, waits for the saves in flight, and deletes every
-key under the id. It is idempotent, so every tab runs it.
+a failure is logged without stopping the rest. In one step a removal blocks the id from saving and from sync for the
+rest of the Repo's life and detaches the Repo's copy, opened in this tab or synced from a peer. The Repo's share config
+denies a blocked id to every peer, so a copy in another tab cannot write it back, and a copy that a late sync message
+re-creates never leaves the tab. The removal then marks an open body `removed`, drops any copy re-created meanwhile,
+waits for the saves in flight, and deletes every key under the id. It is idempotent, so every tab runs it.
 
 ## The editor
 
@@ -147,7 +147,8 @@ new `?db=` starts empty. In dev, `window.__notes` holds `notes`, `leases`, `stor
 - Live merging in a focused title field: it keeps its own text until it loses focus.
 - A body whose page was deleted while every tab closed before removing it: its keys stay, since the list no longer
   names it. The same holds for a tab that joins in the moment before another tab that holds the body learns of the
-  delete, and receives that body from it.
+  delete: it receives the body, keeps it in memory, passes it to every tab that joins after it, and its keys, or only
+  its sync state, stay on disk.
 
 ## Measured
 

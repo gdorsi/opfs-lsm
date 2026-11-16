@@ -67,7 +67,8 @@ export function openBodies(repo: Repo, storage: SaveFilter): Bodies & { close():
     },
     async remove(id) {
       storage.block(id);
-      repo.shareConfigChanged();
+      // Detached before any await, so no sync already under way can send the doc after the block.
+      void repo.removeFromCache(id);
       const body = open.get(id);
       if (body) await (await body.catch(() => null))?.discard();
       await closing.get(id)?.catch(() => {});
