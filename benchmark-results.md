@@ -13,7 +13,7 @@ Every number below comes from `docs/benchmarks.md` on `main`. Each value is writ
 
 ## 1. Storage calls: kv vs IndexedDB
 
-Apple M5 Max, Chrome 157, medians of 10 runs (21 for the `kv/fillrandom` rows), load average 2.3 to 6.4, 100,000 entries (16-byte keys, 100-byte values). Run: `docs/results/2026-11-17T19-07-52-apple-m5-max.md`.
+Apple M5 Max, Chrome 157, medians of 10 runs (21 for the `kv/fillrandom` rows), load average 2.4 to 6.4, 100,000 entries (16-byte keys, 100-byte values). Run: `docs/results/2026-11-17T19-07-52-apple-m5-max.md`.
 
 | Measure | IndexedDB | kv | kv vs IndexedDB | Headline |
 | --- | ---: | ---: | ---: | --- |
@@ -28,7 +28,7 @@ Apple M5 Max, Chrome 157, medians of 10 runs (21 for the `kv/fillrandom` rows), 
 
 ## 2. Framework adapters vs each framework's IndexedDB option
 
-Apple M5 Max, size `small`, medians of 5 runs, load average 1.8 to 4.7. Run: `docs/results/2026-11-17T19-45-25-apple-m5-max.md`. IndexedDB options: TanStack DB `indexedDBCollectionOptions`, y-indexeddb, automerge-repo `IndexedDBStorageAdapter`, `@nkzw/fate-indexeddb`.
+Apple M5 Max, size `small`, medians of 5 runs, load average 1.9 to 4.5. Run: `docs/results/2026-11-17T19-45-25-apple-m5-max.md`. IndexedDB options: TanStack DB `indexedDBCollectionOptions`, y-indexeddb, automerge-repo `IndexedDBStorageAdapter`, `@nkzw/fate-indexeddb`.
 
 | Framework | Measure | IndexedDB option | opfs-lsm | Ratio | Headline |
 | --- | --- | ---: | ---: | ---: | --- |
@@ -43,7 +43,7 @@ Apple M5 Max, size `small`, medians of 5 runs, load average 1.8 to 4.7. Run: `do
 
 ## 3. TanStack DB on demand vs SQLite
 
-TanStack DB's SQLite persistence (wa-sqlite on OPFS in a worker) against opfs-lsm, 100,000 rows each. Apple M5 Max, medians of 5 runs, load average 3.9 to 4.8. Run: `docs/results/2026-11-17T20-16-52-apple-m5-max.md`.
+TanStack DB's SQLite persistence (wa-sqlite on OPFS in a worker) against opfs-lsm, 100,000 rows each. Apple M5 Max, medians of 5 runs, load average 4.0 to 4.8. Run: `docs/results/2026-11-17T20-16-52-apple-m5-max.md`.
 
 | Measure | SQLite | opfs-lsm | Ratio | Headline |
 | --- | ---: | ---: | ---: | --- |
@@ -71,11 +71,11 @@ Takeaway, using only values from the table: with four live screens open, a sync 
 
 ## 5. Goal benchmarks: a task tracker's screens (new)
 
-20,000 issues (about 19,500 left after deletes), 42,000 comments, 120 people, 24 projects and 30 labels, built from a sync history. Each library answers each screen with its own query API, and every answer is checked against an oracle. Apple M5 Max, medians of 3 runs, load average 6.0 to 7.4. Run: `docs/results/2026-11-17T20-27-42-apple-m5-max.md`. Cells are cold / warm in ms: cold is the first call in a fresh tab, warm repeats it.
+20,000 issues (about 19,500 left after deletes), 42,000 comments, 120 people, 24 projects and 30 labels, built from a sync history. Each library answers each screen with its own query API, and every answer is checked against an oracle. Apple M5 Max, medians of 3 runs, load average 6.2 to 7.4. Run: `docs/results/2026-11-17T20-27-42-apple-m5-max.md`. Cells are cold / warm in ms: cold is the first call in a fresh tab, warm repeats it.
 
 | Goal | Dexie | SQLite on OPFS | docstore (opfs-lsm) | Headline |
 | --- | ---: | ---: | ---: | --- |
-| Issues per status in a project | 5.4 / 2.4 | 4.0 / 0.14 | 2.7 / 0.18 | caveat (fastest cold, SQLite faster warm) |
+| Issues per status in a project | 5.4 / 2.4 | 4.0 / 0.14 | 2.7 / 0.17 | caveat (fastest cold, SQLite faster warm) |
 | First 50 todo issues, with assignee and label names | 2.3 / 0.95 | 5.2 / 0.41 | 7.2 / 0.32 | warm only |
 | The column a sprint close just emptied | 8.4 / 5.1 | 4.3 / 0.24 | 4.3 / 0.91 | no (SQLite faster warm) |
 | Rows at 90% of a project's list | 12.9 / 7.6 | 4.5 / 0.31 | 9.4 / 0.96 | no (no offset in docstore) |
@@ -96,7 +96,7 @@ Same run as section 5.
 
 | Measure | Dexie | SQLite on OPFS | docstore (opfs-lsm) | Headline |
 | --- | ---: | ---: | ---: | --- |
-| Import, 47 batches of up to 1,000 rows | 2.4 s | 0.93 s | 0.62 s | yes |
+| Import, 47 batches of up to 1,000 rows | 2.4 s | 0.92 s | 0.62 s | yes |
 | Sync, 851 batches of about 50 changes | 4.8 s | 10.9 s | 2.5 s | yes |
 | One edit | 0.33 ms | 3.2 ms | 0.36 ms | no (Dexie faster) |
 | Sprint close, 1,054 issues in one batch | 114 ms | 72 ms | 50 ms | yes |
@@ -106,7 +106,7 @@ SQLite's commits wait for the disk (its default), where Dexie and docstore commi
 
 ## 7. Typing, then reopening a document (new)
 
-The editing trace: 25,700 keystrokes written, then the last 300 typed at one per 60 Hz frame, then cold opens in a fresh tab before and after kv settles. Apple M5 Max, medians of 5 runs, load average 1.8 to 3.8. Run: `docs/results/2026-11-17T19-45-25-apple-m5-max.md`.
+The editing trace: 25,700 keystrokes written, then the last 300 typed at one per 60 Hz frame, then cold opens in a fresh tab before and after kv settles. Apple M5 Max, medians of 5 runs, load average 1.9 to 3.8. Run: `docs/results/2026-11-17T19-45-25-apple-m5-max.md`.
 
 | Measure | y-indexeddb | Yjs on kv | automerge-repo IndexedDB | Automerge on kv | Headline |
 | --- | ---: | ---: | ---: | ---: | --- |

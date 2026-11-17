@@ -28,7 +28,7 @@ A change that makes stored data read differently, such as a kv or docstore forma
 
 ## Benchmarks
 
-`bench/` measures the packages, never the example apps. A new access pattern becomes a goal on a dataset, with one workload owning each pattern (see [bench/README.md](bench/README.md), "Goal workloads"). A number added to [docs/benchmarks.md](docs/benchmarks.md) links to its full run, committed under [docs/results/](docs/results/). The older tables whose runs were not kept say so; replace them with a committed run when you re-measure them.
+`bench/` measures the packages, never the example apps. A new access pattern becomes a goal on a dataset, with one workload owning each pattern (see [bench/README.md](bench/README.md), "Goal workloads"). A number added to [docs/benchmarks.md](docs/benchmarks.md) links to its full run, committed under [docs/results/](docs/results/).
 
 ## Worktrees
 

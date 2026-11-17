@@ -128,7 +128,7 @@ bench:
         note: SQLite waits for each commit to be crash-safe before returning, its default. docstore returns sooner, with Chrome's relaxed durability.
         rows:
           - { measure: "Opening the store in a fresh tab", ours: 13 ms, theirs: 22 ms, ratio: 1.6× }
-          - { measure: "Import, 47 batches of up to 1,000 rows", ours: 0.62 s, theirs: 0.93 s, ratio: 1.5× }
+          - { measure: "Import, 47 batches of up to 1,000 rows", ours: 0.62 s, theirs: 0.92 s, ratio: 1.5× }
           - { measure: "Sync, 851 batches of about 50 changes", ours: 2.5 s, theirs: 10.9 s, ratio: 4.4× }
           - { measure: "Sprint close, 1,054 issues in one batch", ours: 50 ms, theirs: 72 ms, ratio: 1.4× }
           - { measure: "One edit", ours: 0.36 ms, theirs: 3.2 ms, ratio: 9.0× }
@@ -155,7 +155,7 @@ bench:
         stores: [docstore, SQLite on OPFS]
         setup: Warm, docstore answers 7 of the 11 goals fastest.
         rows:
-          - { measure: "Issues per status in a project", ours: 0.18 ms, theirs: 0.14 ms, ratio: 0.8× }
+          - { measure: "Issues per status in a project", ours: 0.17 ms, theirs: 0.14 ms, ratio: 0.8× }
           - { measure: "First 50 todo issues, with assignee and labels", ours: 0.32 ms, theirs: 0.41 ms, ratio: 1.3× }
           - { measure: "The column a sprint close just emptied", ours: 0.91 ms, theirs: 0.24 ms, ratio: 0.3× }
           - { measure: "Rows at 90% of a project's list", ours: 0.96 ms, theirs: 0.31 ms, ratio: 0.3× }
