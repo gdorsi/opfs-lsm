@@ -1001,3 +1001,361 @@
     transition: none;
   }
 }
+
+/* The benchmarks: a raised card per baseline on the soft gray, each a log scale of how many times faster opfs-lsm
+   is. Three columns: what was measured, the bar, the two values. Faster is a blue, slower an amber, even a gray,
+   checked for color-vision deficiency against the card in both modes. */
+.bench {
+  --bench-faster: #5672cd;
+  --bench-slower: #b97509;
+  --bench-even: #8f8f96;
+  --bench-surface: #ffffff;
+  --bench-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --bench-grid: #ebebef;
+  --bench-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  container-type: inline-size;
+  display: grid;
+  gap: 6px;
+  margin: 20px 0 0;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--vp-c-bg-soft);
+}
+
+.dark .bench {
+  --bench-faster: #6b84ea;
+  --bench-slower: #c9801a;
+  --bench-even: #7d7d86;
+  --bench-surface: #2b2c33;
+  --bench-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --bench-grid: #3a3b43;
+}
+
+.bench-card {
+  padding: 6px 0 10px;
+  border-radius: 10px;
+  background: var(--bench-surface);
+  box-shadow: var(--bench-shadow);
+}
+
+.bench-axis,
+.bench-row {
+  display: grid;
+  grid-template-columns: 330px minmax(0, 1fr) 178px;
+  align-items: center;
+  column-gap: 16px;
+  padding: 0 16px;
+}
+
+.bench-axis {
+  height: 44px;
+  border-bottom: 1px solid var(--bench-grid);
+}
+
+.vp-doc h3.bench-card-title {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: var(--vp-c-text-1);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+  letter-spacing: normal;
+}
+
+.bench-axis-values {
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+  line-height: 16px;
+  text-align: right;
+}
+
+.bench-plot {
+  position: relative;
+  height: 100%;
+}
+
+/* The scale's room: on each side enough for a ratio past the scale's end, 0.1× or 92×. */
+.bench-inner {
+  position: absolute;
+  inset: 0 34px;
+}
+
+.bench-tick {
+  position: absolute;
+  bottom: 6px;
+  transform: translateX(-50%);
+  color: var(--vp-c-text-3);
+  font-size: 11.5px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bench-side {
+  position: absolute;
+  top: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--vp-c-text-2);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.bench-side-slow {
+  right: calc(100% - var(--one) + 10px);
+}
+
+.bench-side-fast {
+  left: calc(var(--one) + 10px);
+}
+
+.bench-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--bench-faster);
+}
+
+.bench-mark[data-tone="warning"] {
+  background: var(--bench-slower);
+}
+
+.bench-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 16px;
+  min-height: 28px;
+  padding: 14px 16px 6px;
+}
+
+.vp-doc h4.bench-group-title {
+  margin: 0;
+  color: var(--vp-c-text-1);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  letter-spacing: normal;
+}
+
+.bench-group-title span {
+  margin-left: 6px;
+  color: var(--vp-c-text-2);
+  font-weight: 400;
+}
+
+.vp-doc .bench-group-setup {
+  margin: 0;
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.vp-doc .bench-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vp-doc .bench-row {
+  position: relative;
+  height: 30px;
+  margin: 0;
+  transition: background-color 150ms ease-out;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .vp-doc .bench-row:hover {
+    background: var(--vp-c-default-soft);
+  }
+}
+
+/* The row's sentence for a screen reader; the columns beside it are drawn for the eye only. */
+.bench-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.bench-measure {
+  overflow: hidden;
+  color: var(--vp-c-text-1);
+  font-size: 13.5px;
+  line-height: 20px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bench-values {
+  color: var(--vp-c-text-2);
+  font-size: 12.5px;
+  line-height: 18px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.vp-doc .bench-note {
+  margin: 8px 16px 0;
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* Gridlines at each decade. The rows touch, so a row's lines join the next row's into one rule. */
+.bench-grid {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--bench-grid);
+}
+
+.bench-grid[data-one] {
+  background: var(--vp-c-text-3);
+}
+
+/* A bar spans the scale and is cut down to the stretch between 1× and its ratio. In a folded group it is cut to
+   nothing at the line, and it grows back out of it when the group unfolds, row after row. */
+.bench-bar {
+  position: absolute;
+  top: 11px;
+  right: 0;
+  left: 0;
+  height: 8px;
+  background: var(--bench-faster);
+  clip-path: inset(0 var(--cut-right) 0 var(--cut-left) round 0 4px 4px 0);
+  transition: clip-path 400ms var(--bench-ease) calc(var(--i) * 24ms);
+}
+
+.bench-bar[data-tone="warning"] {
+  background: var(--bench-slower);
+  clip-path: inset(0 var(--cut-right) 0 var(--cut-left) round 4px 0 0 4px);
+}
+
+.bench-group[data-folded] .bench-bar {
+  clip-path: inset(0 calc(100% - var(--one)) 0 var(--one) round 0 4px 4px 0);
+}
+
+.bench-group[data-folded] .bench-bar[data-tone="warning"] {
+  clip-path: inset(0 calc(100% - var(--one)) 0 var(--one) round 4px 0 0 4px);
+}
+
+.bench-dot {
+  position: absolute;
+  top: 9px;
+  left: calc(var(--one) - 6px);
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--bench-surface);
+  border-radius: 50%;
+  background: var(--bench-even);
+  transition: opacity 200ms ease-out calc(var(--i) * 24ms + 160ms);
+}
+
+.bench-tip {
+  position: absolute;
+  top: 6px;
+  color: var(--vp-c-text-1);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 200ms ease-out calc(var(--i) * 24ms + 160ms);
+}
+
+.bench-group[data-folded] .bench-dot,
+.bench-group[data-folded] .bench-tip {
+  opacity: 0;
+}
+
+/* Under the cards: the setup on the left, the links on the right. */
+.vp-doc .bench-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin: 12px 4px 72px;
+  color: var(--vp-c-text-3);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.vp-doc .bench-foot p {
+  margin: 0;
+  line-height: 20px;
+}
+
+/* Narrow: the measure and its values on one line, the bar under them. */
+@container (max-width: 759.98px) {
+  .bench-axis,
+  .bench-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "measure values" "plot plot";
+    padding: 0 12px;
+  }
+
+  .bench-axis {
+    grid-template-areas: "title title" "plot plot";
+    height: auto;
+    padding-top: 10px;
+  }
+
+  .vp-doc h3.bench-card-title {
+    grid-area: title;
+  }
+
+  .bench-axis-values {
+    display: none;
+  }
+
+  .bench-axis-plot {
+    grid-area: plot;
+    height: 44px;
+  }
+
+  .vp-doc .bench-row {
+    height: auto;
+    padding-top: 6px;
+  }
+
+  .bench-measure {
+    grid-area: measure;
+    white-space: normal;
+  }
+
+  .bench-values {
+    grid-area: values;
+    align-self: start;
+    padding-top: 1px;
+  }
+
+  .bench-row .bench-plot {
+    grid-area: plot;
+    height: 30px;
+  }
+
+  .bench-group-head {
+    padding: 14px 12px 4px;
+  }
+
+  .vp-doc .bench-note {
+    margin: 8px 12px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bench-bar,
+  .bench-dot,
+  .bench-tip {
+    transition: none;
+  }
+}
