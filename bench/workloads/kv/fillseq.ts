@@ -5,6 +5,7 @@ import { fillPhase, kvParams, scan, settlePhase } from "../kv-lib.ts";
 export default defineWorkload({
   family: "kv",
   title: "ascending fill, full scan, random seeks of 10 and 100 keys",
+  owns: ["kv-seq-fill", "kv-scan"],
   params: (size) => kvParams(size),
   phases: [
     fillPhase("fillseq", "seq"),

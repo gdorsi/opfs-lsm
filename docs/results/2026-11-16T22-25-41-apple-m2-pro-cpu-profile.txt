@@ -1,0 +1,36 @@
+node bench/probes/cpu-profile.ts tanstack-live/screens sync-live --contender tanstack-live/sqlite --size small --top 30
+Chrome 157 headless, Apple M2 Pro, git 13f1948-dirty (the close moved out of sync-live), load 3.2 to 3.5
+
+tanstack-live/screens sync-live on tanstack-live/sqlite, small: wall 55342 ms (profiled)
+
+tab: 17685 ms busy
+  37744.7 ms  (idle)
+   3153.6 ms  deserializePersistedRowValue browser-persistence-rYBsE-Uh.js:6096
+   1493.5 ms  ascComparator live-query-collection-D8ren4-2.js:613
+   1449.6 ms  onMessage opfs-database-C08jfc1O.js:230
+   1427.6 ms  decodePersistedJsonValue browser-persistence-rYBsE-Uh.js:6068
+   1233.6 ms  (garbage collector)
+    952.7 ms  eb btree-index-CQcRob6n.js:454
+    634.5 ms  (program)
+    353.5 ms  (anonymous) browser-persistence-rYBsE-Uh.js:7681
+    307.1 ms  get live-query-collection-D8ren4-2.js:4771
+    288.8 ms  (anonymous) live-query-collection-D8ren4-2.js:3209
+    219.8 ms  getLoadSubsetDemandKey live-query-collection-D8ren4-2.js:12336
+    210.8 ms  ak live-query-collection-D8ren4-2.js:4935
+    194.2 ms  aW live-query-collection-D8ren4-2.js:4952
+    193.4 ms  (anonymous) live-query-collection-D8ren4-2.js:672
+    184.7 ms  get live-query-collection-D8ren4-2.js:5028
+    156.5 ms  getCachedHash live-query-collection-D8ren4-2.js:1177
+    143.3 ms  argA live-query-collection-D8ren4-2.js:3225
+    141.7 ms  insert live-query-collection-D8ren4-2.js:2658
+    140.4 ms  update live-query-collection-D8ren4-2.js:1002
+    126.4 ms  hasUnknown live-query-collection-D8ren4-2.js:3280
+    113.0 ms  delete live-query-collection-D8ren4-2.js:2670
+    107.4 ms  deepEqualsInternal live-query-collection-D8ren4-2.js:393
+    104.4 ms  hashObject live-query-collection-D8ren4-2.js:1087
+    104.4 ms  argA live-query-collection-D8ren4-2.js:3261
+    101.7 ms  indexOf btree-index-CQcRob6n.js:114
+     93.4 ms  canonicalizeExpression live-query-collection-D8ren4-2.js:12486
+     90.5 ms  compareStableIdentityValues live-query-collection-D8ren4-2.js:12673
+     85.5 ms  postMessage
+     83.4 ms  applyInMemoryOrderBy browser-persistence-rYBsE-Uh.js:7683

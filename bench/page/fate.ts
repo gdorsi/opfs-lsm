@@ -1,10 +1,10 @@
 /**
- * Everything the two fate workloads share, so both storages run the same
+ * Everything the fate workload needs, so both storages run the same
  * client code: the record, its generator, the client declarations, an
  * in-memory transport over the model, and the function that builds a client
  * with persistence over a storage. A contender supplies only the storage.
  */
-import { clientRoot, createClient, mutation, view } from "@nkzw/fate";
+import { clientRoot, createClient, view } from "@nkzw/fate";
 import { createPersistence, type PersistenceStorage } from "@nkzw/fate/persistence";
 import type { Model } from "./model.ts";
 
@@ -17,8 +17,6 @@ export type Issue = {
   readonly priority: number;
   readonly modified: number;
 };
-
-export type Rename = { readonly id: string; readonly title: string };
 
 export const PAGE = 100;
 
@@ -46,24 +44,18 @@ export function record(i: number, version: number): Issue {
   };
 }
 
-export const renamed = (i: number): Rename => ({ id: issueId(i), title: `Renamed issue ${i} while offline` });
-
 export const jsonBytes = (value: unknown) => JSON.stringify(value).length;
 
 const IssueView = view<Issue>()({ id: true, title: true, status: true, priority: true, modified: true });
 
 const roots = { issues: clientRoot("Issue") };
-const mutations = { renameIssue: mutation<Issue, Rename, Issue>("Issue") };
 
 /** The list request for page `k`. Each page has its own args, so each is its own saved request. */
 export const pageRequest = (k: number) => ({ issues: { list: IssueView, args: { first: PAGE, page: k } } }) as const;
 
-export type Delivered = { readonly id: string; readonly input: Rename };
-
 export type Source = {
   readonly transport: Record<string, unknown>;
   lists(): number;
-  readonly delivered: Delivered[];
   /** The model that decides which version of a record the server holds. Rebound by each phase, since each phase gets its own model object. */
   model: Model;
 };
@@ -72,12 +64,10 @@ const indexOf = (id: string) => Number(id.slice("issue-".length));
 
 /**
  * Lists serve records `[k * PAGE, (k + 1) * PAGE)` at the model's current
- * version. `mutateDurably` resolves at once with the renamed record and logs
- * what it received. `serve: false` makes every call throw, so a client over it
- * can only get data from storage.
+ * version. `serve: false` makes every call throw, so a client over it can only
+ * get data from storage.
  */
 function newSource(model: Model, count: number, serve: boolean): Source {
-  const delivered: Delivered[] = [];
   let lists = 0;
   const refuse = async () => {
     throw new Error("the server was called: the data was supposed to come from storage");
@@ -85,7 +75,6 @@ function newSource(model: Model, count: number, serve: boolean): Source {
   const node = (i: number) => record(i, Math.max(1, source.model.version(i)));
   const source: Source = {
     model,
-    delivered,
     lists: () => lists,
     transport: serve
       ? {
@@ -96,23 +85,18 @@ function newSource(model: Model, count: number, serve: boolean): Source {
             for (let i = args.page * PAGE; i < Math.min(count, (args.page + 1) * PAGE); i++) items.push({ cursor: `c${i}`, node: node(i) });
             return { items, pagination: { hasNext: false, hasPrevious: false } };
           },
-          mutateDurably: async (_proc: string, input: Rename, _select: unknown, identity: { id: string }) => {
-            delivered.push({ id: identity.id, input });
-            return { ...record(indexOf(input.id), 1), title: input.title };
-          },
         }
-      : { fetchById: refuse, fetchList: refuse, mutateDurably: refuse },
+      : { fetchById: refuse, fetchList: refuse },
   };
   return source;
 }
 
 export type FateClient = ReturnType<typeof newClient>;
 
-function newClient(storage: PersistenceStorage, transport: Record<string, unknown>, online: boolean) {
-  return createClient<[typeof roots, typeof mutations]>({
-    persistence: createPersistence({ key: KEY, maxBytes: MAX_BYTES, online: () => online, storage: probing ? recorded(storage) : storage }),
+function newClient(storage: PersistenceStorage, transport: Record<string, unknown>) {
+  return createClient<[typeof roots, Record<never, never>]>({
+    persistence: createPersistence({ key: KEY, maxBytes: MAX_BYTES, online: () => true, storage: probing ? recorded(storage) : storage }),
     roots,
-    mutations,
     transport: transport as never,
     types: [{ fields: { title: "scalar", status: "scalar", priority: "scalar", modified: "scalar" }, type: "Issue" }],
   });
@@ -127,8 +111,6 @@ export type WorldOptions = {
   readonly count: number;
   /** False: any call to the server throws. Default true. */
   readonly serve?: boolean;
-  /** False: mutations are saved but never sent. Default true. */
-  readonly online?: boolean;
 };
 
 const worlds = new WeakMap<PersistenceStorage, World>();
@@ -142,7 +124,7 @@ export function worldFor(storage: PersistenceStorage, model: Model, opts: WorldO
   let world = worlds.get(storage);
   if (!world) {
     const source = newSource(model, opts.count, opts.serve ?? true);
-    world = { client: newClient(storage, source.transport, opts.online ?? true), source };
+    world = { client: newClient(storage, source.transport), source };
     worlds.set(storage, world);
   }
   world.source.model = model;
@@ -150,7 +132,7 @@ export function worldFor(storage: PersistenceStorage, model: Model, opts: WorldO
 }
 
 /** Stops the page's client: timers cleared, pending optimistic work rolled back. Storage is untouched. */
-export function disposeWorld(storage: PersistenceStorage): void {
+function disposeWorld(storage: PersistenceStorage): void {
   worlds.get(storage)?.client.persistence?.dispose();
   worlds.delete(storage);
 }
@@ -187,7 +169,7 @@ export async function verifyFromStorage(
   check: (ok: boolean, what: string) => void,
 ): Promise<void> {
   disposeWorld(storage);
-  const { client } = worldFor(storage, model, { count, serve: false, online: false });
+  const { client } = worldFor(storage, model, { count, serve: false });
   try {
     for (let k = 0; k * PAGE < count; k++) {
       await client.request(pageRequest(k) as never);
@@ -195,19 +177,6 @@ export async function verifyFromStorage(
     }
   } finally {
     disposeWorld(storage);
-  }
-}
-
-/** The mutation entries saved in storage, counted by paging through `scan` under the prefix fate gives its journal. */
-export async function journalEntries(storage: PersistenceStorage): Promise<number> {
-  const prefix = `${JSON.stringify([KEY, "journal"])}:`;
-  let n = 0;
-  let after: string | undefined;
-  for (;;) {
-    const page = await storage.scan(prefix, after, 256);
-    n += page.length;
-    if (page.length < 256) return n;
-    after = page.at(-1)!.key;
   }
 }
 

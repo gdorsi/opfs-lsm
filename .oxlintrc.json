@@ -47,7 +47,9 @@
     {
       "files": [
         "bench/contenders/tracker/**",
-        "bench/page/tracker.ts"
+        "bench/contenders/tanstack-live/**",
+        "bench/page/tracker.ts",
+        "bench/page/tanstack-live.ts"
       ],
       "rules": {
         "no-restricted-imports": [
