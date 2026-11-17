@@ -167,7 +167,7 @@ const fromUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 export function parseCatalog(bytes: Uint8Array): StoredCatalog {
   let c: unknown;
   try {
-    c = JSON.parse(fromUtf8.decode(bytes));
+    c = JSON.parse(fromUtf8.decode(bytes.subarray(REV_BYTES)));
   } catch {
     throw new CorruptDatabaseError("the docstore catalog is not JSON");
   }
@@ -223,8 +223,28 @@ function isState(s: unknown): boolean {
   );
 }
 
+/**
+ * The stored bytes are a revision, then the JSON. Each encoding draws a new
+ * random revision, so two catalogs with the same revision are the same write,
+ * and a catalog written after `dangerousDestroy` never matches one a handle
+ * still holds.
+ */
+const REV_BYTES = 8;
+
 export function encodeCatalog(catalog: StoredCatalog): Uint8Array {
-  return utf8.encode(JSON.stringify(catalog));
+  const json = utf8.encode(JSON.stringify(catalog));
+  const out = new Uint8Array(REV_BYTES + json.length);
+  crypto.getRandomValues(out.subarray(0, REV_BYTES));
+  out.set(json, REV_BYTES);
+  return out;
+}
+
+/** Whether `a` and `b` are the same catalog write. Reads the revisions only. */
+export function sameCatalog(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  for (let i = 0; i < REV_BYTES; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /**
@@ -385,7 +405,7 @@ export type BoundCollection = {
 };
 
 export type Bound = {
-  /** A write commits only if the stored catalog bytes still equal these. */
+  /** A write commits only if the stored catalog is still this write. */
   readonly bytes: Uint8Array;
   readonly catalog: StoredCatalog;
   readonly collections: ReadonlyMap<string, BoundCollection>;

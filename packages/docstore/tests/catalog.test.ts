@@ -143,8 +143,8 @@ describe("stored bytes", () => {
   it("refuses a catalog of another format with schema, and a wrong shape as corrupt", () => {
     const c = open(undefined, 1, v1);
     expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 2 } as unknown as StoredCatalog)))).toBe("schema");
-    expect(() => parseCatalog(new TextEncoder().encode('{"format":1}'))).toThrow(CorruptDatabaseError);
-    expect(() => parseCatalog(new TextEncoder().encode("not json"))).toThrow(CorruptDatabaseError);
+    expect(() => parseCatalog(encodeCatalog({ format: 1 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
+    expect(() => parseCatalog(new TextEncoder().encode("12345678not json"))).toThrow(CorruptDatabaseError);
   });
 });
 

@@ -11,6 +11,7 @@ import {
   parseCatalog,
   reconcile,
   removeDropped,
+  sameCatalog,
   type Bound,
   type BoundCollection,
   type DeclaredSchema,
@@ -51,14 +52,20 @@ export interface DocStore<S extends AnySchema> {
  */
 export async function openDocStore<S extends AnySchema>(kv: Db, schema: S): Promise<DocStore<S>> {
   const declared = normalizeSchema(schema);
-  const { bytes, catalog } = await kv.update([CATALOG_KEY], ([stored], tx) => {
-    const current = stored && parseCatalog(stored);
-    const next = reconcile(current, declared);
-    if (!next) return { bytes: stored!, catalog: current! };
-    const out = encodeCatalog(next);
-    tx.put(CATALOG_KEY, out);
-    return { bytes: out, catalog: next };
-  });
+  // A plain read first: the readwrite transaction runs only when the catalog has to change.
+  const read = await kv.get(CATALOG_KEY);
+  const readCatalog = read && parseCatalog(read);
+  const { bytes, catalog } =
+    readCatalog && !reconcile(readCatalog, declared)
+      ? { bytes: read!, catalog: readCatalog }
+      : await kv.update([CATALOG_KEY], ([stored], tx) => {
+          const current = stored && parseCatalog(stored);
+          const next = reconcile(current, declared);
+          if (!next) return { bytes: stored!, catalog: current! };
+          const out = encodeCatalog(next);
+          tx.put(CATALOG_KEY, out);
+          return { bytes: out, catalog: next };
+        });
   const store = new DocStoreImpl<S>(kv, declared, bind(bytes, catalog, declared));
   store.startJobs();
   await store.declaredBuilds();
@@ -196,7 +203,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
       const bound = this.bound;
       const plan = await planner(collectionOf(bound, name));
       const out = await this.kv.update([CATALOG_KEY, ...plan.keys], ([catalog, ...values], tx) => {
-        if (!bytesEqual(catalog, bound.bytes)) {
+        if (!sameCatalog(catalog, bound.bytes)) {
           this.adopt(catalog);
           return RETRY;
         }
@@ -227,7 +234,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   /** The catalog `bytes` bound, or `bound` itself when it is the same catalog. Leaves `bound` alone. */
   private boundIn(bytes: Uint8Array | undefined): Bound {
     if (!bytes) throw new CorruptDatabaseError("the docstore catalog is gone");
-    return bytesEqual(bytes, this.bound.bytes) ? this.bound : bind(bytes, parseCatalog(bytes), this.declared);
+    return sameCatalog(bytes, this.bound.bytes) ? this.bound : bind(bytes, parseCatalog(bytes), this.declared);
   }
 
   /** Make `bytes` the catalog of point reads. Only a read of the newest catalog may call it: a snapshot's catalog can be older. */
@@ -298,7 +305,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
       const out = await this.kv.update(
         [CATALOG_KEY, ...rows.map((r) => r.key), ...ownerKeys],
         ([catalog, ...values], tx): Violation | typeof RETRY | undefined => {
-          if (!bytesEqual(catalog, bound.bytes)) {
+          if (!sameCatalog(catalog, bound.bytes)) {
             this.adopt(catalog);
             return RETRY;
           }
