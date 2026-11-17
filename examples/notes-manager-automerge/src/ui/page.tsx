@@ -1,10 +1,12 @@
-import { Link } from "@tanstack/react-router";
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useApp } from "../client/app.ts";
-import { useBody, useCreatePage, usePage, useSaveState } from "../client/hooks.ts";
-import { mountEditor, type MountedEditor } from "../editor/view.ts";
+import { useBody, useCreatePage, useExpanded, usePage, useSaveState } from "../client/hooks.ts";
+import type { Anchor, MenuItem, MenuShown } from "../editor/menu.ts";
+import { mountEditor, type MountedEditor, type PageLinks } from "../editor/view.ts";
 import { MAX_TITLE } from "../model/list.ts";
 import type { PageBody, PageId, SaveState } from "../model/types.ts";
+import { useDismiss } from "./dismiss.ts";
 
 export function EmptyState() {
   const create = useCreatePage();
@@ -36,7 +38,7 @@ export function PageScreen({ id }: { id: PageId }) {
   if (!page) return <NotFound />;
   return (
     <article className="page" data-page={id}>
-      <TitleField id={id} title={page.title} onEnter={() => editor.current?.view.focus()} />
+      <TitleField id={id} title={page.title} onEnter={() => editor.current?.focusTop()} />
       <Body id={id} editor={editor} />
     </article>
   );
@@ -106,13 +108,40 @@ function Body({ id, editor }: { id: PageId; editor: RefObject<MountedEditor | nu
   return <Editor body={body} editor={editor} />;
 }
 
-type LinkAt = { readonly left: number; readonly bottom: number };
+type At = { readonly left: number; readonly bottom: number };
+type DeleteAsk = { readonly ids: readonly PageId[]; readonly at: Anchor };
+
+/** What the editor's page blocks and `/` menu call, read fresh on each call so the editor mounts once per body. */
+function usePageLinks(parent: PageId): PageLinks {
+  const { notes } = useApp();
+  const navigate = useNavigate();
+  const router = useRouter();
+  const { set: expand } = useExpanded();
+  const latest = useRef({ notes, navigate, router, expand });
+  latest.current = { notes, navigate, router, expand };
+  const [links] = useState<PageLinks>(() => ({
+    tree: notes.tree,
+    create() {
+      latest.current.expand(parent, true);
+      return latest.current.notes.createPage(parent);
+    },
+    open(id) {
+      void latest.current.navigate({ to: "/p/$pageId", params: { pageId: id } });
+    },
+    href: (id) => latest.current.router.buildLocation({ to: "/p/$pageId", params: { pageId: id } }).href,
+  }));
+  return links;
+}
 
 function Editor({ body, editor }: { body: PageBody; editor: RefObject<MountedEditor | null> }) {
+  const { notes } = useApp();
   const place = useRef<HTMLDivElement>(null);
   const save = useSaveState(body);
+  const links = usePageLinks(body.id);
   const [refused, setRefused] = useState<string | null>(null);
-  const [linkAt, setLinkAt] = useState<LinkAt | null>(null);
+  const [linkAt, setLinkAt] = useState<At | null>(null);
+  const [menu, setMenu] = useState<MenuShown | null>(null);
+  const [ask, setAsk] = useState<DeleteAsk | null>(null);
 
   useEffect(() => {
     const mounted = mountEditor(place.current!, body, {
@@ -121,6 +150,9 @@ function Editor({ body, editor }: { body: PageBody; editor: RefObject<MountedEdi
         setRefused(error instanceof Error ? error.message : String(error));
       },
       askHref: setLinkAt,
+      pages: links,
+      onMenu: setMenu,
+      askDelete: setAsk,
     });
     editor.current = mounted;
     if (import.meta.env.DEV && globalThis.__notes) globalThis.__notes.editor = mounted;
@@ -129,7 +161,12 @@ function Editor({ body, editor }: { body: PageBody; editor: RefObject<MountedEdi
       if (editor.current === mounted) editor.current = null;
       if (import.meta.env.DEV && globalThis.__notes?.editor === mounted) globalThis.__notes.editor = undefined;
     };
-  }, [body, editor]);
+  }, [body, editor, links]);
+
+  const closeAsk = useCallback(() => {
+    setAsk(null);
+    editor.current?.view.focus();
+  }, [editor]);
 
   return (
     <>
@@ -152,11 +189,146 @@ function Editor({ body, editor }: { body: PageBody; editor: RefObject<MountedEdi
           }}
         />
       )}
+      {menu && <MenuList menu={menu} onPick={(i) => editor.current?.pickMenu(i)} onPoint={(i) => editor.current?.pointMenu(i)} />}
+      {ask && (
+        <DeleteConfirm
+          ask={ask}
+          onCancel={closeAsk}
+          onDelete={() => {
+            for (const id of ask.ids) notes.deletePage(id);
+            closeAsk();
+          }}
+        />
+      )}
     </>
   );
 }
 
-function LinkField({ at, onDone }: { at: LinkAt; onDone(href: string | null): void }) {
+const MARGIN = 8;
+
+/** Below `at`, or above it when `height` does not fit under it, and inside the window. */
+function placeAt(at: Anchor, width: number, height: number): CSSProperties {
+  const left = Math.max(MARGIN, Math.min(at.left, innerWidth - width - MARGIN));
+  return at.bottom + 6 + height <= innerHeight ? { left, width, top: at.bottom + 6 } : { left, width, bottom: innerHeight - at.top + 6 };
+}
+
+/** The `/` menu lists two-line rows; the block menu is a compact filter list in two groups: turn into, then the rest. */
+function MenuList({ menu, onPick, onPoint }: { menu: MenuShown; onPick(index: number): void; onPoint(index: number): void }) {
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    list.current?.querySelector<HTMLElement>(`[data-index="${menu.index}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [menu.index]);
+  const block = menu.kind === "block";
+  return (
+    <div
+      ref={list}
+      className={`editor-menu${block ? " compact" : ""}`}
+      id="editor-menu"
+      role="listbox"
+      aria-label={block ? "Block actions" : "Add a block"}
+      style={placeAt(menu.at, block ? 240 : 300, 340)}
+      // Keeps the editor focused, so typing keeps filtering and the keys keep working.
+      onMouseDown={(event) => event.preventDefault()}
+    >
+      {block && <div className="menu-query">{menu.query || <span>Type to filter</span>}</div>}
+      {menu.items.map((item, i) => {
+        const turns = item.action.type === "turn";
+        const first = block && (i === 0 || (menu.items[i - 1]!.action.type === "turn") !== turns);
+        return (
+          <Fragment key={item.label}>
+            {first && (turns ? <div className="menu-heading">Turn into</div> : i > 0 && <div className="menu-divider" role="separator" />)}
+            <div
+              role="option"
+              id={`editor-menu-${i}`}
+              aria-selected={i === menu.index}
+              data-index={i}
+              className={`menu-item${i === menu.index ? " on" : ""}${item.action.type === "delete" ? " danger" : ""}`}
+              onMouseMove={() => i !== menu.index && onPoint(i)}
+              onClick={() => onPick(i)}
+            >
+              <span className="menu-icon" aria-hidden>
+                <MenuIcon item={item} />
+              </span>
+              <span className="menu-copy">
+                <span className="menu-label">{item.label}</span>
+                {!block && <span className="menu-hint">{item.hint}</span>}
+              </span>
+              {i === menu.current && (
+                <svg className="tick" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-label="Current">
+                  <path d="M3.5 8.5l3 3 6-7" />
+                </svg>
+              )}
+            </div>
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+const ICONS = {
+  page: ["M4.5 2.5h6l3 3v9.25a.75.75 0 0 1-.75.75h-8.25a.75.75 0 0 1-.75-.75V3.25a.75.75 0 0 1 .75-.75z", "M10.5 2.5v3h3M6.5 9h5M6.5 11.75h5"],
+  open: ["M7 4H4.75A.75.75 0 0 0 4 4.75v8.5c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75V11", "M10 4h4v4M14 4l-6 6"],
+  duplicate: ["M6.5 6.5h6.75c.41 0 .75.34.75.75v6c0 .41-.34.75-.75.75H7.25a.75.75 0 0 1-.75-.75z", "M4 11.5V4.75C4 4.34 4.34 4 4.75 4H11"],
+  delete: ["M3.5 5h11M7 5V3.5h4V5M5 5l.6 8.4c.03.38.35.6.75.6h5.3c.4 0 .72-.22.75-.6L13 5", "M7.5 8v3.5M10.5 8v3.5"],
+} as const;
+
+function MenuIcon({ item }: { item: MenuItem }) {
+  const { action } = item;
+  if (action.type === "turn") {
+    const block = action.block({ type: "paragraph" });
+    switch (block.type) {
+      case "heading":
+        return <span className="menu-glyph">H{block.level}</span>;
+      case "item":
+        return <span className={`menu-glyph${block.list === "bullet" ? " bullet" : ""}`}>{block.list === "bullet" ? "•" : "1."}</span>;
+      case "todo":
+        return <span className="menu-box" />;
+      default:
+        return <span className="menu-glyph">Aa</span>;
+    }
+  }
+  return (
+    <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+      {ICONS[action.type].map((d) => (
+        <path key={d} d={d} />
+      ))}
+    </svg>
+  );
+}
+
+function DeleteConfirm({ ask, onCancel, onDelete }: { ask: DeleteAsk; onCancel(): void; onDelete(): void }) {
+  const { notes } = useApp();
+  const ref = useRef<HTMLDivElement>(null);
+  useDismiss(ref, onCancel);
+  const [first] = ask.ids;
+  const title = (first && notes.tree.read().page(first)?.title) || "Untitled";
+  return (
+    <div ref={ref} role="alertdialog" aria-label="Delete page" className="menu popover" style={placeAt(ask.at, 244, 120)}>
+      <p className="menu-text">
+        {ask.ids.length === 1 ? (
+          <>
+            Delete <b>{title}</b> and the pages inside it?
+          </>
+        ) : (
+          <>
+            Delete <b>{ask.ids.length} pages</b> and the pages inside them?
+          </>
+        )}
+      </p>
+      <div className="menu-row">
+        <button className="btn" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="btn danger" id="confirm-delete-page" autoFocus onClick={onDelete}>
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LinkField({ at, onDone }: { at: At; onDone(href: string | null): void }) {
   const [href, setHref] = useState("");
   return (
     <form

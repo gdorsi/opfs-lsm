@@ -4,6 +4,9 @@ import { undoInputRule } from "prosemirror-inputrules";
 import { keymap } from "prosemirror-keymap";
 import type { Node as PMNode } from "prosemirror-model";
 import type { Command, Plugin } from "prosemirror-state";
+import type { PageId } from "../model/types.ts";
+import { toggleBlockMenu } from "./menu.ts";
+import { openSelectedPage, selectPageAfter, selectPageBefore } from "./pages.ts";
 import { schema } from "./schema.ts";
 
 const MAX_DEPTH = 5;
@@ -86,7 +89,7 @@ export function setLink(href: string): Command {
   };
 }
 
-export function pageKeymap(askHref: () => void): Plugin {
+export function pageKeymap(askHref: () => void, openPage: (id: PageId) => void): Plugin {
   return keymap({
     "Mod-b": toggleMark(schema.marks.bold!),
     "Mod-i": toggleMark(schema.marks.italic!),
@@ -94,9 +97,11 @@ export function pageKeymap(askHref: () => void): Plugin {
     "Mod-k": toggleLink(askHref),
     Tab: indent(1),
     "Shift-Tab": indent(-1),
-    Enter: enter,
-    Backspace: chainCommands(undoInputRule, backspaceToParagraph),
+    Enter: chainCommands(openSelectedPage(openPage), enter),
+    Backspace: chainCommands(undoInputRule, backspaceToParagraph, selectPageBefore),
+    Delete: selectPageAfter,
     "Mod-Enter": toggleTodo(),
+    "Mod-/": toggleBlockMenu(),
     "Mod-z": undo,
     "Shift-Mod-z": redo,
     "Mod-y": redo,

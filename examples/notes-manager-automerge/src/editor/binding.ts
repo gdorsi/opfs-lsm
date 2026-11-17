@@ -1,5 +1,5 @@
 import type { Fragment, Node as PMNode, Slice } from "prosemirror-model";
-import { EditorState, type Plugin, type Transaction } from "prosemirror-state";
+import { EditorState, NodeSelection, type Plugin, type Transaction } from "prosemirror-state";
 import { AddMarkStep, AttrStep, RemoveMarkStep, ReplaceAroundStep, ReplaceStep, type Step } from "prosemirror-transform";
 import type { Block, MarkEdit, MarkName, Marks, PageBody, TextEdit } from "../model/types.ts";
 import { blockOf, markOf, marksOf, nodeTypeOf, pmMarks, schema, spansToDoc } from "./schema.ts";
@@ -22,6 +22,9 @@ export function applyLocal(body: Pick<PageBody, "edit">, state: EditorState, tr:
   body.edit(transactions.filter((t) => t.docChanged && !t.getMeta(REMOTE)).flatMap(localEdits));
   return next;
 }
+
+/** A transaction that replays a remote change, which the body already holds. */
+export const isRemote = (tr: Transaction): boolean => tr.getMeta(REMOTE) === true;
 
 export function localEdits(tr: Transaction): TextEdit[] {
   return tr.steps.flatMap((step, i) => stepEdits(tr.docs[i]!, step));
@@ -184,6 +187,13 @@ export function remoteTransaction(state: EditorState, edits: readonly TextEdit[]
         break;
       }
     }
+  }
+  // A retype maps a block selection to a caret, as a replacement does. The block's first content position survives a
+  // retype and a merge, and only a delete drops it.
+  const { selection } = state;
+  if (selection instanceof NodeSelection && !(tr.selection instanceof NodeSelection)) {
+    const inside = tr.mapping.mapResult(selection.from + 1);
+    if (!inside.deleted) tr.setSelection(NodeSelection.create(tr.doc, tr.doc.resolve(inside.pos).before(1)));
   }
   return tr;
 }
