@@ -353,18 +353,6 @@ await db.view(async (snap) => {
 </div>
 </div>
 
-## Our benchmarks
-
-<Benchmarks :charts="$frontmatter.bench" />
-
-<div class="bench-foot">
-
-Storage calls on an Apple M5 Max; the task tracker, SQLite and typing runs on an Apple M2 Pro, in headless Chrome 157.
-
-[Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
-
-</div>
-
 ## Under the hood
 
 <div class="home-lede">
@@ -376,3 +364,15 @@ A write is one row in a write-ahead log, a list of recent writes kept in Indexed
 [How it works](../docs/how-it-works.md) · [Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../docs/browser-support.md)
 
 <Illustration name="hood" full />
+
+## Our benchmarks
+
+<Benchmarks :charts="$frontmatter.bench" />
+
+<div class="bench-foot">
+
+Storage calls on an Apple M5 Max; the task tracker, SQLite and typing runs on an Apple M2 Pro, in headless Chrome 157.
+
+[Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
+
+</div>
