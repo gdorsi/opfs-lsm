@@ -11,7 +11,7 @@ import HomeDemo from "./HomeDemo.vue";
 type Action = { theme: "brand" | "alt"; text: string; link: string };
 
 const { frontmatter, site } = useData();
-const intro = computed(() => frontmatter.value.intro as { title: string; tagline: string; actions: Action[] });
+const intro = computed(() => frontmatter.value.intro as { title: string; actions: Action[] });
 </script>
 
 <template>
@@ -20,7 +20,6 @@ const intro = computed(() => frontmatter.value.intro as { title: string; tagline
       <div>
         <p class="home-hero-name">{{ site.title }}</p>
         <h1 class="home-hero-title">{{ intro.title }}</h1>
-        <p class="home-hero-tagline">{{ intro.tagline }}</p>
       </div>
       <div class="home-hero-actions">
         <VPButton

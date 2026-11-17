@@ -3,7 +3,6 @@ layout: home
 title: opfs-lsm
 intro:
   title: Fast local storage for your web app
-  tagline: This issue tracker keeps 100,000 issues in your browser. There is no server.
   actions:
     - theme: brand
       text: Get started

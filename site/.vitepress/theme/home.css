@@ -194,23 +194,10 @@
   text-wrap: balance;
 }
 
-.home-hero-tagline {
-  margin: 12px 0 0;
-  color: var(--vp-c-text-2);
-  font-size: 17px;
-  line-height: 26px;
-  text-wrap: pretty;
-}
-
 @media (min-width: 640px) {
   .home-hero-title {
     font-size: 48px;
     line-height: 56px;
-  }
-
-  .home-hero-tagline {
-    font-size: 19px;
-    line-height: 30px;
   }
 }
 
