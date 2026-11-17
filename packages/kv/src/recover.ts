@@ -2,6 +2,7 @@ import { CorruptDatabaseError } from "./errors.js";
 import type { IdBWal, WalMeta } from "./idb/wal.js";
 import { emptyWal } from "./idb/wal.js";
 import type { AsyncFs } from "./opfs/async-fs.js";
+import { asGeneration, GENERATION_NONE, nextSeq, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import {
   GENERATION_ZERO,
   isIntact,
@@ -13,21 +14,21 @@ import {
 
 type Reconciled = {
   /** The recorded generation. Its manifest and the WAL hold one log prefix. */
-  readonly generation: number;
+  readonly generation: Generation;
   /**
    * The highest manifest number in use: in `m/`, recorded, or seen by an
    * earlier recovery (`topGeneration`). A new manifest or compaction output
    * numbers past it, so no number names two different manifests, and no
    * output overwrites a run a manifest on disk may list.
    */
-  readonly top: number;
+  readonly top: Generation;
 };
 
 /** Attempts when another tab or host changes `meta` under a reconcile. */
 const RECONCILE_TRIES = 8;
 
 /** A generation whose manifest `reconcile` need not check, "recorded" for whichever is recorded, or undefined to check. */
-export type Trusted = number | "recorded" | undefined;
+export type Trusted = Generation | "recorded" | undefined;
 
 /**
  * Make IndexedDB record a manifest that pairs with its WAL (design.md,
@@ -75,7 +76,7 @@ export async function reconcile(
     // No seq any manifest on disk names is handed out again, so a manifest
     // that is not intact now never becomes intact with other writes.
     const floor = await highestThrough(fs, numbers, pick.through);
-    const adopted = await wal.adopt(meta, pick.generation, pick.through, floor, top);
+    const adopted = await wal.adopt({ expect: meta, generation: pick.generation, through: pick.through, floor, top });
     return adopted ? { generation: pick.generation, top } : undefined;
   });
 }
@@ -95,12 +96,12 @@ export async function reconcile(
 export async function recordEmpty(wal: IdBWal, fs: AsyncFs): Promise<void> {
   await untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
     const floor = await highestThrough(fs, numbers, meta.head);
-    return (await emptyWal(wal, meta, floor + 1, top)) || undefined;
+    return (await emptyWal(wal, { expect: meta, head: nextSeq(floor), top })) || undefined;
   });
 }
 
 /** What `meta` and `m/` held when a writer read them, and the number new manifests go past. */
-type Seen = { readonly meta: WalMeta; readonly numbers: readonly number[]; readonly top: number };
+type Seen = { readonly meta: WalMeta; readonly numbers: readonly Generation[]; readonly top: Generation };
 
 /**
  * Read `meta` and `m/`, then run `record`, which adopts against them.
@@ -114,7 +115,7 @@ async function untilAdopted<T>(
 ): Promise<T> {
   for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
     const [meta, numbers] = await Promise.all([wal.meta(), manifestNumbers(fs)]);
-    const top = Math.max(numbers[0] ?? 0, meta.top, meta.generation ?? 0);
+    const top = asGeneration(Math.max(numbers[0] ?? GENERATION_NONE, meta.top, meta.generation ?? GENERATION_NONE));
     const out = await record({ meta, numbers, top });
     if (out !== undefined) return out;
   }
@@ -122,9 +123,12 @@ async function untilAdopted<T>(
 }
 
 /** The highest `through` of the manifests `numbers`, and at least `from`. */
-async function highestThrough(fs: AsyncFs, numbers: readonly number[], from: number): Promise<number> {
+async function highestThrough(fs: AsyncFs, numbers: readonly Generation[], from: Seq): Promise<Seq> {
   let floor = from;
-  for (const n of numbers) floor = Math.max(floor, (await readManifest(fs, n))?.through ?? 0);
+  for (const n of numbers) {
+    const through = (await readManifest(fs, n))?.through ?? SEQ_ZERO;
+    if (through > floor) floor = through;
+  }
   return floor;
 }
 
@@ -132,7 +136,7 @@ async function highestThrough(fs: AsyncFs, numbers: readonly number[], from: num
 async function choose(
   fs: AsyncFs,
   meta: WalMeta,
-  numbers: readonly number[],
+  numbers: readonly Generation[],
   trusted: Trusted,
 ): Promise<GenerationMeta | undefined> {
   const recorded = meta.generation;

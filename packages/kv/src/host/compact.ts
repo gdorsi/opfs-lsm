@@ -3,6 +3,7 @@ import type { IdBWal } from "../idb/wal.js";
 import { raiseGeneration } from "../idb/wal.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../opfs/async-fs.js";
 import { reconcile, type Trusted } from "../recover.js";
+import { nextGeneration, type Generation } from "../seq.js";
 import { openMerge, type MergeCore } from "../store/engine.js";
 import {
   loadGeneration,
@@ -46,7 +47,7 @@ export async function mergeNextStep(
   fs: AsyncFs,
   budget: HostBudget,
   base: GenerationMeta,
-  knownTop: number,
+  knownTop: Generation,
 ): Promise<CompactionOutput | undefined> {
   const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
   const plan = planCompaction(base, { maxSources: budget.maxSources });
@@ -161,7 +162,7 @@ export async function installStep(
   wal: IdBWal,
   step: CompactionOutput,
   trusted: Trusted,
-): Promise<number> {
+): Promise<Generation> {
   const base = await reconcile(wal, fs, trusted);
   const meta = await loadGeneration(fs, base.generation);
   if (!meta) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
@@ -170,7 +171,7 @@ export async function installStep(
     throw new Error("compaction inputs left the recorded generation");
   }
   const runs = replaceRuns(meta.runs, step.inputs, step.outputs);
-  const generation = base.top + 1;
+  const generation = nextGeneration(base.top);
   await publishGeneration(fs, {
     generation,
     runs,

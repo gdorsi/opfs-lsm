@@ -3,6 +3,7 @@ import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import { advanceIngested, getIngestedThrough, listUningested } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
+import { nextGeneration, type Generation, type Seq } from "../seq.js";
 import { reconcile, type Trusted } from "../recover.js";
 import {
   loadGeneration,
@@ -14,8 +15,8 @@ import { levelOf } from "../store/levels.js";
 import { retireMarks } from "../store/marks.js";
 
 export type IngestResult = {
-  readonly generation: number;
-  readonly ingestedThrough: number;
+  readonly generation: Generation;
+  readonly ingestedThrough: Seq;
   /** Op bytes of the WAL records this call folded into the new L0. */
   readonly foldedBytes: number;
 };
@@ -31,7 +32,7 @@ type ChunkLimits = {
 /** What `ingestChunk` did. */
 type Chunk = IngestResult & {
   /**
-   * "empty" when no record up to `through` was waiting, and "stopped" when
+   * "empty" when no record up to `head` was waiting, and "stopped" when
    * some were but L0 holds `l0Stop` runs. Neither published anything.
    */
   readonly kind: "folded" | "empty" | "stopped";
@@ -41,7 +42,7 @@ type Chunk = IngestResult & {
  * Fold the oldest uningested WAL records into one L0, publish generation, and
  * advance ingestedThrough. It takes at most `maxBytes` of op bytes, and at
  * least one record, so a backlog takes several calls and each run stays
- * small. Compaction runs separately. `through` is the WAL head the fold read
+ * small. Compaction runs separately. `head` is the WAL head the fold read
  * when it started: it folds nothing once every seq up to it is ingested, so
  * records acked during a fold wait for the next one, and nothing when L0 is
  * full, so compaction can catch up. Removes no file: the
@@ -56,13 +57,13 @@ type Chunk = IngestResult & {
 export async function ingestChunk(
   wal: IdBWal,
   fs: AsyncFs,
-  through: number,
+  head: Seq,
   trusted: Trusted,
   limits: ChunkLimits,
 ): Promise<Chunk> {
   const base = await reconcile(wal, fs, trusted);
   const ingested = await getIngestedThrough(wal);
-  const records = ingested >= through ? [] : await listUningested(wal, { maxBytes: limits.maxBytes });
+  const records = ingested >= head ? [] : await listUningested(wal, { maxBytes: limits.maxBytes });
   if (records.length === 0) {
     return { kind: "empty", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
@@ -75,7 +76,7 @@ export async function ingestChunk(
   const first = records[0]!.seq;
   const last = records[records.length - 1]!.seq;
 
-  const generation = base.top + 1;
+  const generation = nextGeneration(base.top);
   // A chunk whose range deletes left no entry publishes no run.
   const runs =
     folded.entries.length > 0 ? [await publishL0(fs, `${first}-${last}`, folded.entries, last), ...prev.runs] : prev.runs;
@@ -87,6 +88,6 @@ export async function ingestChunk(
   });
   let foldedBytes = 0;
   for (const r of records) foldedBytes += opsBytes(r.ops);
-  await advanceIngested(wal, last, generation);
+  await advanceIngested(wal, { through: last, generation });
   return { kind: "folded", generation, ingestedThrough: last, foldedBytes };
 }

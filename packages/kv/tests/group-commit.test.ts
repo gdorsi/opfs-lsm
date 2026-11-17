@@ -28,7 +28,7 @@ function wipe(): Promise<void> {
 async function raiseHead(by: number): Promise<number> {
   const wal = await TabWal.open(checkDbName(NAME));
   const meta = await wal.meta();
-  expect(await wal.adopt(meta, meta.generation ?? 0, meta.ingestedThrough, meta.head + by, meta.generation ?? 0)).toBe(true);
+  expect(await wal.adopt({ expect: meta, generation: meta.generation ?? 0, through: meta.ingestedThrough, floor: meta.head + by, top: meta.generation ?? 0 })).toBe(true);
   wal.close();
   return meta.head + by;
 }

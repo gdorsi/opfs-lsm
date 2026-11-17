@@ -24,6 +24,7 @@ import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type Pre
 import { layersChannel, pressureLock, webLocks } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
+import { GENERATION_NONE, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
@@ -494,7 +495,7 @@ type Run = {
  * last release lets go of its runs, so the host may delete their files.
  */
 type Layers = {
-  readonly generation: number;
+  readonly generation: Generation;
   readonly runs: readonly Run[];
   /** The readers as scan sources, newest first. */
   readonly levels: readonly RunLevel[];
@@ -540,7 +541,7 @@ class DbImpl implements Db {
   private closed = false;
   private readonly mem = new Memtable();
   private installed: Layers = {
-    generation: 0,
+    generation: GENERATION_NONE,
     runs: [],
     levels: [],
     marks: NO_MARKS,
@@ -667,7 +668,7 @@ class DbImpl implements Db {
   }
 
   /** The one place the memtable drops rows an installed generation covers. */
-  private advance(through: number): void {
+  private advance(through: Seq): void {
     if (this.mem.advanceTo(through) || this.repaired) {
       this.repaired = false;
       this.unannounced.push({ kind: "gap", through: this.mem.appliedThrough });
@@ -690,7 +691,7 @@ class DbImpl implements Db {
    * the installed or loaded one is stale, unless the tail that names it is
    * `ahead` of the memtable (see `catchUp`).
    */
-  private has(generation: number, ahead: boolean): boolean {
+  private has(generation: Generation, ahead: boolean): boolean {
     return [this.installed, this.loaded].some(
       (layers) =>
         layers !== undefined &&
@@ -703,7 +704,7 @@ class DbImpl implements Db {
    * says its tail holds seqs past the memtable. False when its manifest or
    * one of its runs is gone.
    */
-  private async load(generation: number, ahead: boolean): Promise<boolean> {
+  private async load(generation: Generation, ahead: boolean): Promise<boolean> {
     if (this.has(generation, ahead)) return true;
     const meta = await loadGeneration(this.fs, generation);
     if (!meta) return false;
@@ -788,7 +789,7 @@ class DbImpl implements Db {
    * IndexedDB transaction. Returns the generation to load when the tail
    * needs one this tab does not have yet.
    */
-  private catchUp(tail: WalTail): number | undefined {
+  private catchUp(tail: WalTail): Generation | undefined {
     const behind = tail.ingestedThrough > this.mem.appliedThrough;
     // A tail read before a newer generation was installed: its records are
     // still a WAL prefix, but its generation and ingestedThrough are stale.
@@ -912,7 +913,7 @@ class DbImpl implements Db {
    * the ack resolves. A gap means another tab appended first: catch up,
    * which reads the record too.
    */
-  private async landed(seq: number, ops: readonly CheckedOp[], record: ArrayBuffer): Promise<void> {
+  private async landed(seq: Seq, ops: readonly CheckedOp[], record: ArrayBuffer): Promise<void> {
     if (this.applyRecord({ seq, ops: resolveOps(ops, seq) }) === "gap" && !this.closed) await this.sync();
     this.pressure.landed();
     this.announce();
@@ -950,12 +951,12 @@ class DbImpl implements Db {
   private async write<R>(
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
     warm?: () => Promise<unknown>,
-  ): Promise<{ readonly seq: number | undefined; readonly result: R }> {
+  ): Promise<{ readonly seq: Seq | undefined; readonly result: R }> {
     if (this.pressure.full) await this.admit();
     const out = await this.retrying(async () => {
       for (;;) {
         await warm?.();
-        let missing: number | undefined;
+        let missing: Generation | undefined;
         let miss: Miss | undefined;
         const appended = await this.wal
           .appendAfter(this.mem.appliedThrough, (tail) => {

@@ -1,5 +1,6 @@
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
+import { asGeneration, asSeq, GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "../seq.js";
 import { crc32 } from "./crc32.js";
 import { encodeRun } from "./engine.js";
 import { levelOfDir, levelRunPath } from "./levels.js";
@@ -24,18 +25,18 @@ export type RunMeta = RunEnd & {
    * when the run was written: it holds no version one of them covers. It
    * holds no version past this seq either.
    */
-  readonly marksThrough: number;
+  readonly marksThrough: Seq;
 };
 
 export type GenerationMeta = {
-  readonly generation: number;
+  readonly generation: Generation;
   /** L0 newest first, then each level's runs in key order. */
   readonly runs: readonly RunMeta[];
   /**
    * The runs hold every seq of the log up to this one and none past it: the
    * manifest is the fold of one log prefix (design.md, "Recovery").
    */
-  readonly through: number;
+  readonly through: Seq;
   /**
    * The range deletes of seqs `1..through`, joined, less the marks no run
    * listed can still hold a covered version for (`retireMarks`).
@@ -44,9 +45,9 @@ export type GenerationMeta = {
 };
 
 /** The empty database: no runs, no seqs, no marks. */
-export const GENERATION_ZERO: GenerationMeta = { generation: 0, runs: [], through: 0, marks: NO_MARKS };
+export const GENERATION_ZERO: GenerationMeta = { generation: GENERATION_NONE, runs: [], through: SEQ_ZERO, marks: NO_MARKS };
 
-function genPath(generation: number): string {
+function genPath(generation: Generation): string {
   return `${GEN_PREFIX}${String(generation).padStart(16, "0")}.mft`;
 }
 
@@ -108,8 +109,8 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   if (view.getUint32(4, true) !== GEN_VERSION) {
     throw new CorruptDatabaseError("bad generation version");
   }
-  const generation = Number(view.getBigUint64(8, true));
-  const through = Number(view.getBigUint64(16, true));
+  const generation = asGeneration(Number(view.getBigUint64(8, true)));
+  const through = asSeq(Number(view.getBigUint64(16, true)));
   const crcOff = buf.byteLength - 4;
   if (crc32(buf.subarray(0, crcOff)) !== view.getUint32(crcOff, true)) {
     throw new CorruptDatabaseError("generation crc mismatch");
@@ -137,7 +138,7 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     const path = dec.decode(buf.subarray(at, at + len));
     const bytes = view.getUint32(take(4), true);
     const range = buf[take(1)] === 1 ? { smallest: key(), largest: key() } : undefined;
-    const marksThrough = Number(view.getBigUint64(take(8), true));
+    const marksThrough = asSeq(Number(view.getBigUint64(take(8), true)));
     if (marksThrough > through) throw new CorruptDatabaseError("generation run past through");
     runs.push(range ? { path, bytes, range, marksThrough } : { path, bytes, marksThrough });
   }
@@ -146,11 +147,11 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
 }
 
 /** The numbers of the manifest files in `m/`, newest first. */
-export async function manifestNumbers(fs: AsyncFs): Promise<number[]> {
-  const gens: number[] = [];
+export async function manifestNumbers(fs: AsyncFs): Promise<Generation[]> {
+  const gens: Generation[] = [];
   for (const name of await fs.list("m")) {
     const n = Number(name.replace(/\.mft$/, ""));
-    if (Number.isSafeInteger(n)) gens.push(n);
+    if (Number.isSafeInteger(n)) gens.push(asGeneration(n));
   }
   return gens.sort((a, b) => b - a);
 }
@@ -163,9 +164,9 @@ export async function manifestNumbers(fs: AsyncFs): Promise<number[]> {
  */
 export async function probeManifest(
   fs: AsyncFs,
-  generation: number,
+  generation: Generation,
 ): Promise<GenerationMeta | "missing" | "corrupt"> {
-  if (generation === 0) return GENERATION_ZERO;
+  if (generation === GENERATION_NONE) return GENERATION_ZERO;
   const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
   if (!buf || buf.byteLength === 0) return "missing";
   try {
@@ -179,7 +180,7 @@ export async function probeManifest(
 /** Manifest `generation`, or undefined when it is missing, empty or does not decode. */
 export async function readManifest(
   fs: AsyncFs,
-  generation: number,
+  generation: Generation,
 ): Promise<GenerationMeta | undefined> {
   const m = await probeManifest(fs, generation);
   return typeof m === "string" ? undefined : m;
@@ -209,7 +210,7 @@ export async function publishL0(
   fs: AsyncFs,
   name: string,
   entries: readonly SstEntry[],
-  marksThrough: number,
+  marksThrough: Seq,
 ): Promise<RunMeta> {
   const path = levelRunPath(0, name);
   const { body, end } = await encodeRun(entries);
@@ -222,9 +223,9 @@ export async function publishL0(
 /** The manifest of `generation`, or undefined when a newer publish removed it. */
 export async function loadGeneration(
   fs: AsyncFs,
-  generation: number,
+  generation: Generation,
 ): Promise<GenerationMeta | undefined> {
-  if (generation === 0) return GENERATION_ZERO;
+  if (generation === GENERATION_NONE) return GENERATION_ZERO;
   const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
   if (!buf || buf.byteLength === 0) return undefined;
   return decodeGeneration(buf);
@@ -238,7 +239,7 @@ export async function loadGeneration(
  */
 export async function reclaimManifests(
   fs: AsyncFs,
-  keepFrom: number,
+  keepFrom: Generation,
 ): Promise<void> {
   for (const name of await fs.list("m")) {
     const m = /^(\d+)\.mft(\.crswap)?$/.exec(name);
@@ -277,7 +278,7 @@ export async function reclaimRuns(
  * throws, and a manifest that is gone throws too: nothing may be swept
  * against it.
  */
-export async function liveRuns(fs: AsyncFs, recorded: number): Promise<string[]> {
+export async function liveRuns(fs: AsyncFs, recorded: Generation): Promise<string[]> {
   const meta = await loadGeneration(fs, recorded);
   if (!meta) throw new CorruptDatabaseError(`manifest ${recorded} is gone`);
   return meta.runs.map((run) => run.path);

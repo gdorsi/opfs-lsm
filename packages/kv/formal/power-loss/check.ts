@@ -294,18 +294,18 @@ function sourceSync(): string[] {
   const need = (file: string, re: RegExp, what: string) => {
     if (!re.test(read(file))) out.push(`${file}: ${what}`);
   };
-  need("host/ingest.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*publishL0[\s\S]*publishGeneration[\s\S]*through: last[\s\S]*advanceIngested/, "ingest builds on the recorded generation and numbers past the top manifest");
-  need("host/compact.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*base\.top \+ 1[\s\S]*through: meta\.through[\s\S]*raiseGeneration/, "install builds on the recorded generation");
+  need("host/ingest.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*nextGeneration\(base\.top\)[\s\S]*publishL0[\s\S]*publishGeneration[\s\S]*through: last[\s\S]*advanceIngested/, "ingest builds on the recorded generation and numbers past the top manifest");
+  need("host/compact.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*nextGeneration\(base\.top\)[\s\S]*through: meta\.through[\s\S]*raiseGeneration/, "install builds on the recorded generation");
   need("idb/wal.ts", /async function advanceIngested[\s\S]*delete\(IDBKeyRange\.upperBound\(existing\)\)/, "advanceIngested keeps the records it folds until the next ingest");
   need("idb/wal.ts", /Math\.max\(head, through, floor\)/, "adopt raises head past every seq a manifest names");
-  need("idb/wal.ts", /async function headOf\(tx: IDBTransaction, ingestedThrough: number\): Promise<number> \{\s*const wal = tx\.objectStore\(WAL_STORE\);\s*const past = IDBKeyRange\.lowerBound\(ingestedThrough, true\);\s*if \(!\(await reqToPromise\(wal\.openKeyCursor\(past\)\)\)\) return ingestedThrough;\s*const last = await reqToPromise\(wal\.openKeyCursor\(past, "prev"\)\);\s*return Math\.max\(num\(last\?\.key\), ingestedThrough\);/, "the head is the last WAL key, or ingestedThrough when no record is past it");
+  need("idb/wal.ts", /async function headOf\(tx: IDBTransaction, ingestedThrough: Seq\): Promise<Seq> \{\s*const wal = tx\.objectStore\(WAL_STORE\);\s*const past = IDBKeyRange\.lowerBound\(ingestedThrough, true\);\s*if \(!\(await reqToPromise\(wal\.openKeyCursor\(past\)\)\)\) return ingestedThrough;\s*const last = await reqToPromise\(wal\.openKeyCursor\(past, "prev"\)\);\s*return asSeq\(Math\.max\(num\(last\?\.key\), ingestedThrough\)\);/, "the head is the last WAL key, or ingestedThrough when no record is past it");
   need("idb/wal.ts", /nextIngested = nextHead;\s*wal\.delete\(IDBKeyRange\.upperBound\(head\)\);/, "an adopt that drops the records sets ingestedThrough to the new head, which is what holds it");
   need("idb/wal.ts", /if \(nextHead > head\) passKeyGenerator\(wal, nextHead\);/, "adopt moves the key generator with the head, so no append takes a seq at or below it");
   need("idb/wal.ts", /group\.tx\.objectStore\(WAL_STORE\)\.add\(entry\.record\)/, "an append takes the seq the key generator hands out");
-  need("idb/wal.ts", /const seq = tail\.head \+ 1;\s*const record = encodeOps\(decision\.ops\);\s*tx\.objectStore\(WAL_STORE\)\.add\(record, seq\);/, "update appends at the explicit key head + 1");
+  need("idb/wal.ts", /const seq = nextSeq\(tail\.head\);\s*const record = encodeOps\(decision\.ops\);\s*tx\.objectStore\(WAL_STORE\)\.add\(record, seq\);/, "update appends at the explicit key head + 1");
   need("idb/wal.ts", /if \(head > now\.head\) passKeyGenerator\(records, head\);\s*meta\.put\(head, META_INGESTED\);/, "destroy moves the key generator with the head, and ingestedThrough holds the head");
   need("idb/wal.ts", /meta\.put\(Math\.max\(knownTop, top, generation\), META_TOP\)/, "adopt keeps the highest manifest number seen");
-  need("recover.ts", /Math\.max\(numbers\[0\] \?\? 0, meta\.top, meta\.generation \?\? 0\)/, "new manifests number past every number in use");
+  need("recover.ts", /Math\.max\(numbers\[0\] \?\? GENERATION_NONE, meta\.top, meta\.generation \?\? GENERATION_NONE\)/, "new manifests number past every number in use");
   need("recover.ts", /m\.through > meta\.head && \(await isIntact\(fs, m\)\)/, "reconcile adopts an intact manifest past the head first");
   need("recover.ts", /if \(m === "corrupt"\) throw new CorruptDatabaseError\(`manifest \$\{recorded\} does not decode`\);\s*if \(m !== "missing"\) \{\s*if \(await isIntact\(fs, m\)\) return undefined;[\s\S]*?other\.through >= meta\.ingestedThrough && \(await isIntact\(fs, other\)\)\) return other;\s*\}\s*throw new CorruptDatabaseError/, "a recorded manifest that is there but broken is replaced only by one that holds every ingested seq, else recovery throws");
   need("host/engine-host.ts", /reconcile\(wal, fs, this\.trusted\)[\s\S]*liveRuns\(fs, generation\)/, "reclaim sweeps against the reconciled generation's runs");
@@ -315,10 +315,10 @@ function sourceSync(): string[] {
   need("host/engine-host.ts", /ingestChunk\([^;]*this\.trusted[^;]*;\s*[^\n]*\n\s*await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");
   need("host/engine-host.ts", /await unlessHeld\(this\.name, async \(\) => \{\s*const \{ generation \} = await reconcile\(wal, fs, this\.trusted\);[\s\S]*const live = await liveRuns\(fs, generation\);\s*await reclaimManifests\(fs, generation\);\s*await reclaimRuns\(fs, await listRuns\(fs\), live\)/, "reclaim reads the live runs, then removes manifests then runs, after reconciling, unless a tab holds the reclaim lock");
   need("host/compact.ts", /await raiseGeneration\(wal, generation\);\s*return generation;/, "install removes no file");
-  need("recover.ts", /export async function recordEmpty[\s\S]*?highestThrough\(fs, numbers, meta\.head\)[\s\S]*?emptyWal\(wal, meta, floor \+ 1, top\)/, "destroy records generation 0 past every seq the WAL or a manifest names");
+  need("recover.ts", /export async function recordEmpty[\s\S]*?highestThrough\(fs, numbers, meta\.head\)[\s\S]*?emptyWal\(wal, \{ expect: meta, head: nextSeq\(floor\), top \}\)/, "destroy records generation 0 past every seq the WAL or a manifest names");
   need("idb/wal.ts", /async function emptyWal\([\s\S]*?durability: "strict"[\s\S]*?meta\.put\(top, META_DESTROYED_TOP\)/, "the destroy commit is strict and records destroyedTop");
   need("recover.ts", /for \(const n of numbers\) \{\s*if \(n <= meta\.destroyedTop\) break;/, "rule 3 adopts no manifest from before a destroy");
-  need("host/engine-host.ts", /await recordEmpty\(wal, fs\);[\s\S]*?await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, Number\.POSITIVE_INFINITY\)\);\s*await this\.reclaim\(fs, wal\);/, "destroy commits, then removes the manifests and sweeps, each unless a tab holds the reclaim lock");
+  need("host/engine-host.ts", /await recordEmpty\(wal, fs\);[\s\S]*?await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, asGeneration\(Number\.POSITIVE_INFINITY\)\)\);\s*await this\.reclaim\(fs, wal\);/, "destroy commits, then removes the manifests and sweeps, each unless a tab holds the reclaim lock");
   return out;
 }
 

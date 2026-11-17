@@ -2,7 +2,8 @@ import { checkDbName, type DbName } from "../check.js";
 import { codeOfError } from "../errors.js";
 import { IdBWal, uningestedBytes } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
-import { reconcile, recordEmpty } from "../recover.js";
+import { reconcile, recordEmpty, type Trusted } from "../recover.js";
+import { asGeneration, GENERATION_NONE, type Generation } from "../seq.js";
 import { CountingFs } from "../opfs/counting-fs.js";
 import {
   listRuns,
@@ -106,7 +107,7 @@ export class EngineHost {
    * Flush the WAL into L0 runs, then start compaction in the background.
    * With `waitForCompaction`, also wait until the levels are in shape.
    */
-  async ingest(name: string, waitForCompaction = false): Promise<{ generation: number }> {
+  async ingest(name: string, waitForCompaction = false): Promise<{ generation: Generation }> {
     return this.db(name).ingest(waitForCompaction);
   }
 
@@ -157,7 +158,7 @@ class HostedDb {
    * checks a recorded manifest's runs once, not on every flush. A tab that
    * records another generation makes the host check again.
    */
-  private trusted: number | undefined;
+  private trusted: Trusted;
   /** Set while `destroy` waits for the locks, so a compaction pass stops at its next step. */
   private destroying = false;
   /**
@@ -195,7 +196,7 @@ class HostedDb {
 
   async stats(): Promise<HostStats> {
     const fs = await this.fs();
-    const recorded = await this.withWal(async (wal) => (await wal.meta()).generation ?? 0);
+    const recorded = await this.withWal(async (wal) => (await wal.meta()).generation ?? GENERATION_NONE);
     const latest = await loadGeneration(fs.inner, recorded);
     const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
     for (const run of latest?.runs ?? []) {
@@ -208,13 +209,13 @@ class HostedDb {
     return structuredClone({
       fs: fs.counters,
       ...this.counts,
-      generation: latest?.generation ?? 0,
+      generation: latest?.generation ?? GENERATION_NONE,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
       memory: engineMemory(),
     });
   }
 
-  async ingest(waitForCompaction: boolean): Promise<{ generation: number }> {
+  async ingest(waitForCompaction: boolean): Promise<{ generation: Generation }> {
     const { generation } = await this.fold();
     const compaction = this.compact();
     if (!waitForCompaction) {
@@ -223,7 +224,7 @@ class HostedDb {
     }
     await compaction;
     return {
-      generation: await this.withWal(async (wal) => (await wal.meta()).generation ?? 0),
+      generation: await this.withWal(async (wal) => (await wal.meta()).generation ?? GENERATION_NONE),
     };
   }
 
@@ -262,7 +263,7 @@ class HostedDb {
 
   private async foldRuns(): Promise<IngestResult> {
     const fs = await this.fs();
-    const target = await this.withWal(async (wal) => (await wal.meta()).head);
+    const head = await this.withWal(async (wal) => (await wal.meta()).head);
     let foldedBytes = 0;
     let pastStop = false;
     try {
@@ -272,7 +273,7 @@ class HostedDb {
         const installed = this.installSignal();
         const chunk = await this.exclusive(() =>
           this.withWal(async (wal) => {
-            const folded = await ingestChunk(wal, fs, target, this.trusted, {
+            const folded = await ingestChunk(wal, fs, head, this.trusted, {
               maxBytes: budget.flushRunBytes,
               l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
             });
@@ -297,7 +298,7 @@ class HostedDb {
           watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
           watch.triggerAt = watch.maxWalBytes;
         }
-        if (chunk.kind === "empty" || chunk.ingestedThrough >= target) {
+        if (chunk.kind === "empty" || chunk.ingestedThrough >= head) {
           return { generation: chunk.generation, ingestedThrough: chunk.ingestedThrough, foldedBytes };
         }
       }
@@ -444,9 +445,9 @@ class HostedDb {
           this.withWal(async (wal) => {
             const fs = await this.fs();
             await recordEmpty(wal, fs);
-            this.trusted = 0;
+            this.trusted = GENERATION_NONE;
             if (this.watching) this.watching.pendingBytes = 0;
-            await unlessHeld(this.name, () => reclaimManifests(fs, Number.POSITIVE_INFINITY));
+            await unlessHeld(this.name, () => reclaimManifests(fs, asGeneration(Number.POSITIVE_INFINITY)));
             await this.reclaim(fs, wal);
           }),
         ),
@@ -477,7 +478,7 @@ class HostedDb {
     try {
       for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
         const meta = await this.withWal((wal) => wal.meta());
-        const base = await loadGeneration(fs, meta.generation ?? 0);
+        const base = await loadGeneration(fs, meta.generation ?? GENERATION_NONE);
         // Gone when a flush installed a newer generation since: plan again.
         if (!base) continue;
         const budget = this.budget();
@@ -570,14 +571,14 @@ class HostedDb {
    */
   private async sweepIdle(fs: AsyncFs, wal: IdBWal): Promise<void> {
     await unlessHeld(this.name, async () => {
-      const generation = (await wal.meta()).generation ?? 0;
+      const generation = (await wal.meta()).generation ?? GENERATION_NONE;
       if (generation === this.trusted) await sweep(fs, generation);
     });
   }
 }
 
 /** Reads the manifest of `generation` first, so a missing one throws before any file goes. */
-async function sweep(fs: AsyncFs, generation: number): Promise<void> {
+async function sweep(fs: AsyncFs, generation: Generation): Promise<void> {
   const live = await liveRuns(fs, generation);
   await reclaimManifests(fs, generation);
   await reclaimRuns(fs, await listRuns(fs), live);

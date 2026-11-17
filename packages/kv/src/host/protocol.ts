@@ -2,6 +2,7 @@ import type { WriterId } from "../check.js";
 import type { ErrorCode } from "../errors.js";
 import { reclaimLock, webLocks } from "../locks.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
+import type { Generation, Seq } from "../seq.js";
 
 /** What the host counted for one database since it started. Test and bench only. */
 export type HostStats = {
@@ -15,7 +16,7 @@ export type HostStats = {
   compactionSteps: number;
   /** Σ IngestResult.foldedBytes. */
   foldedBytes: number;
-  generation: number;
+  generation: Generation;
   /** From the latest manifest, levels with at least one run. */
   layout: { level: number; runs: number; bytes: number }[];
   /**
@@ -73,7 +74,7 @@ export type BusMessage =
   | { readonly kind: "pressure"; readonly pressure: Pressure }
   | { readonly kind: "pressure-pull" | "pressure-done" };
 
-export type BusRow = { readonly seq: number; readonly record: ArrayBuffer };
+export type BusRow = { readonly seq: Seq; readonly record: ArrayBuffer };
 
 /**
  * Run `fn` holding the reclaim lock shared. While any tab holds it, the
@@ -127,7 +128,7 @@ export type HostToClient =
   | {
       readonly type: "ingest-ok";
       readonly id: number;
-      readonly generation: number;
+      readonly generation: Generation;
     }
   | {
       readonly type: "err";
@@ -144,7 +145,7 @@ export type IngestClient = {
    * Flush every WAL record acked before the call. A no-op when they are
    * already in OPFS. With `waitForCompaction`, resolve once compaction has finished too.
    */
-  ingest(name: string, waitForCompaction?: boolean): Promise<{ generation: number }>;
+  ingest(name: string, waitForCompaction?: boolean): Promise<{ generation: Generation }>;
   /**
    * Have the host ingest `name` on its own once the WAL waiting for ingest
    * passes `policy.maxWalBytes`, starting with what is already waiting,

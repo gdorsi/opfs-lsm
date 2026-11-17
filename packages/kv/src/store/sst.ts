@@ -1,4 +1,5 @@
 import { CorruptDatabaseError } from "../errors.js";
+import { asSeq, type Seq } from "../seq.js";
 import type { LayerEntry } from "./cursor.js";
 import { lz4Decompress } from "./lz4.js";
 
@@ -46,9 +47,9 @@ export type SstEntry =
       readonly kind: "put";
       readonly key: Uint8Array;
       readonly value: Uint8Array;
-      readonly seq: number;
+      readonly seq: Seq;
     }
-  | { readonly kind: "del"; readonly key: Uint8Array; readonly seq: number };
+  | { readonly kind: "del"; readonly key: Uint8Array; readonly seq: Seq };
 
 /** The smallest and largest key of a run. */
 export type KeyRange = {
@@ -157,8 +158,8 @@ export class RecordWalker {
     this.o = o;
   }
 
-  seq(): number {
-    return Number(this.view.getBigUint64(this.seqAt, true));
+  seq(): Seq {
+    return asSeq(Number(this.view.getBigUint64(this.seqAt, true)));
   }
 
   key(): Uint8Array {

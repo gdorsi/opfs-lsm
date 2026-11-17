@@ -1,4 +1,5 @@
 import { compareBytes, containsAll } from "../bytes.js";
+import type { Seq } from "../seq.js";
 
 export type LayerEntry = {
   readonly key: Uint8Array;
@@ -6,7 +7,7 @@ export type LayerEntry = {
   /** Present iff kind === "put". */
   readonly value?: Uint8Array;
   /** The WAL seq that wrote the entry. */
-  readonly seq: number;
+  readonly seq: Seq;
 };
 
 export type ScanBounds = {

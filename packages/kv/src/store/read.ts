@@ -12,7 +12,8 @@ import {
   type Maybe,
   type ScanBounds,
 } from "./cursor.js";
-import { coversRun, NO_MARKS, throughAt, type Marks, type Seq } from "./marks.js";
+import type { Seq } from "../seq.js";
+import { coversRun, NO_MARKS, throughAt, type Marks } from "./marks.js";
 import type { SstEntry } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
 import type { Entry } from "../db.js";

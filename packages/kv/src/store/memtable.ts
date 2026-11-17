@@ -1,18 +1,19 @@
 import { compareBytes } from "../bytes.js";
 import { ROW_OVERHEAD, type CheckedOp } from "../check.js";
+import { nextSeq, SEQ_ZERO, type Seq } from "../seq.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
 import { NO_MARKS, type Marks } from "./marks.js";
 
 /** The latest op for one user key, and the WAL seq that wrote it. */
 export type MemRow = {
   readonly key: Uint8Array;
-  readonly seq: number;
+  readonly seq: Seq;
   readonly kind: "put" | "del";
   readonly value?: Uint8Array;
 };
 
 export type WalRecord = {
-  readonly seq: number;
+  readonly seq: Seq;
   readonly ops: readonly CheckedOp[];
 };
 
@@ -95,8 +96,8 @@ class Chunks implements MemRows {
 export class Memtable extends Chunks {
   /** `owned[i]` is false while a pin may still read chunk `i`. */
   private owned: boolean[] = [true];
-  private applied = 0;
-  private ingested = 0;
+  private applied = SEQ_ZERO;
+  private ingested = SEQ_ZERO;
   private live = 0;
   /** The range deletes of the records held, oldest first. Replaced, never mutated. */
   private held: Marks = NO_MARKS;
@@ -105,7 +106,7 @@ export class Memtable extends Chunks {
     super([[]], [new Uint8Array(0)]);
   }
 
-  get appliedThrough(): number {
+  get appliedThrough(): Seq {
     return this.applied;
   }
 
@@ -128,7 +129,7 @@ export class Memtable extends Chunks {
   /** Apply `record` if it is the next seq. "applied" only when this call moved `appliedThrough`. */
   apply(record: WalRecord): "applied" | "already" | "gap" {
     if (record.seq <= this.applied) return "already";
-    if (record.seq !== this.applied + 1) return "gap";
+    if (record.seq !== nextSeq(this.applied)) return "gap";
     for (const op of record.ops) {
       switch (op.type) {
         case "put":
@@ -183,12 +184,12 @@ export class Memtable extends Chunks {
    * rows and range deletes it covers, and jump past seqs this table never
    * read. True when it jumped.
    */
-  advanceTo(through: number): boolean {
+  advanceTo(through: Seq): boolean {
     if (through <= this.ingested) return false;
     this.ingested = through;
     const jumped = through > this.applied;
     if (this.held[0] && this.held[0].at <= through) this.held = this.held.filter((m) => m.at > through);
-    this.applied = Math.max(this.applied, through);
+    this.applied = through > this.applied ? through : this.applied;
     this.rebuild(jumped ? [] : this.range().filter((row) => row.seq > through));
     return jumped;
   }

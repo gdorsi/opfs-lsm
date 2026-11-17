@@ -1,5 +1,6 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
+import { asSeq } from "../seq.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomMightContain, type BloomFilter } from "./bloom.js";
 import { filterCursor, Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanBounds } from "./cursor.js";
@@ -84,7 +85,7 @@ export class SstReader {
     private readonly file: RunFile,
     private readonly cache: PageCache,
     readonly range: KeyRange | undefined,
-    readonly marksThrough = Number.POSITIVE_INFINITY,
+    readonly marksThrough = asSeq(Number.POSITIVE_INFINITY),
   ) {
     this.runId = cache.nextRunId();
   }
