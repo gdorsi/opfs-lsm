@@ -103,6 +103,19 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo test -p engine-core
 
+  wasm-fresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Same toolchain and binaryen as the committed binary. A rustc or binaryen bump
+      # changes the bytes: rebuild with the new versions and update both lines.
+      - run: rustup toolchain install 1.93.1 --profile minimal --target wasm32-unknown-unknown && rustup default 1.93.1
+      - run: |
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz | tar xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_133/bin" >> "$GITHUB_PATH"
+      - run: sh crates/engine-wasm/build.sh
+      - run: git diff --exit-code packages/kv/wasm/engine.wasm || { echo "::error::packages/kv/wasm/engine.wasm does not match the Rust source. Run 'sh crates/engine-wasm/build.sh' and commit packages/kv/wasm/engine.wasm."; exit 1; }
+
   formal:
     runs-on: ubuntu-latest
     steps:
