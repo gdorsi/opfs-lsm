@@ -19,16 +19,20 @@ afterEach(async () => {
   await Promise.all(opened.splice(0).map((db) => db.close()));
 });
 
-function storage(hostFs?: (fs: MemoryFs) => AsyncFs) {
+function storage(hostFs?: (fs: MemoryFs) => AsyncFs, name = NAME) {
   const fs = new MemoryFs();
   const client = createLocalIngestClient(new EngineHost(() => hostFs?.(fs) ?? fs));
-  const options = { name: NAME, fs, ingest: client, maxWalBytes: 1 << 30 };
+  const options = { name, fs, ingest: client, maxWalBytes: 1 << 30 };
   const open = async () => {
     const db = await openHarnessDb(options);
     opened.push(db);
     return db;
   };
   return { fs, open, destroy: () => destroyHarnessDb(options) };
+}
+
+async function walDatabases(): Promise<(string | undefined)[]> {
+  return (await indexedDB.databases()).map((info) => info.name);
 }
 
 async function keys(db: Db): Promise<string[]> {
@@ -148,5 +152,28 @@ describe("destroyDb", () => {
     const reopened = await open();
     expect(await keys(reopened)).toEqual([]);
     expect(fs.publishedPaths()).toEqual([]);
+  });
+});
+
+describe("destroyDb gives the storage back", () => {
+  it("leaves no WAL database and no file", async () => {
+    const { fs, open, destroy } = storage(undefined, "removed");
+    const db = await open();
+    await fill(db, "k", 20);
+    await db.put(enc.encode("tail"), enc.encode("y"));
+    await db.close();
+
+    await destroy();
+
+    expect(await walDatabases()).not.toContain("opfs-lsm-wal/removed");
+    expect(fs.publishedPaths()).toEqual([]);
+  });
+
+  it("creates nothing for a name never opened", async () => {
+    const { destroy } = storage(undefined, "never-opened");
+
+    await destroy();
+
+    expect(await walDatabases()).not.toContain("opfs-lsm-wal/never-opened");
   });
 });
