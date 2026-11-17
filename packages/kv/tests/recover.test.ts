@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
-import { CorruptDatabaseError } from "../src/errors.js";
+import { ClosedError, CorruptDatabaseError } from "../src/errors.js";
+import type { ChangeEvent } from "../src/index.js";
 import { TabWal, encodeOps, advanceIngested, listUningested, uningestedBytes } from "../src/idb/wal.js";
 import { reconcile, recordEmpty } from "../src/recover.js";
 import { crc32 } from "../src/store/crc32.js";
@@ -295,7 +296,7 @@ describe("reconcile", () => {
     const fs = new MemoryFs();
     await manifest(fs, 1, 2, ["l0/old.sst"]);
     await advanceIngested(wal, { through: 2, generation: 1 });
-    await recordEmpty(wal, fs);
+    await recordEmpty(wal, fs, undefined);
     const after = await wal.appendAfter(0, () => ({ ops: put(9), result: undefined }));
     await advanceIngested(wal, { through: after!.seq!, generation: 2 });
 
@@ -394,15 +395,18 @@ describe("a deleted WAL", () => {
     expect(report.head).toBe(2);
   });
 
-  it("under an open handle: the handle fails, a new one reads the prefix", async () => {
+  it("under an open handle: the handle closes, a new one reads the prefix", async () => {
     name = `recover-${++n}`;
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
     const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(host) });
     const old = await seeded(open);
+    const events: ChangeEvent[] = [];
+    old.changes((event) => events.push(event));
     await deleteWal(name);
-    // The raw IndexedDB error, not an OpfsLsmError.
-    await expect(old.put(enc.encode("x"), enc.encode("9"))).rejects.toMatchObject({ name: "InvalidStateError" });
+    // The delete asked its connection to close, so the handle closed.
+    expect(events.at(-1)).toEqual({ kind: "closed", reason: "destroyed" });
+    await expect(old.put(enc.encode("x"), enc.encode("9"))).rejects.toBeInstanceOf(ClosedError);
     const db = await open();
     expect(text(await db.get(enc.encode("a")))).toBe("1");
     await db.put(enc.encode("c"), enc.encode("3"));

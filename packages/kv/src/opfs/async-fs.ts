@@ -45,4 +45,11 @@ export interface AsyncFs extends ReadFs {
   removeUnlessOpen(path: string): Promise<boolean>;
   /** Replace published file only when finish resolves. No append. */
   create(path: string): Promise<FileWriter>;
+  /**
+   * Remove every file and the database folder: `m/` first, so a crash part
+   * way leaves no manifest to adopt. Ignores open holds: `destroyDb` calls it
+   * once every handle closed, under the compaction and ingest locks.
+   * Idempotent. No other call is valid on this fs afterwards.
+   */
+  removeFolder(): Promise<void>;
 }

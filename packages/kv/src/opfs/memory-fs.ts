@@ -76,6 +76,11 @@ export class MemoryFs implements AsyncFs {
     this.published.delete(path);
   }
 
+  async removeFolder(): Promise<void> {
+    this.published.clear();
+    this.stages.clear();
+  }
+
   async create(path: string): Promise<FileWriter> {
     if (this.stages.has(path)) {
       throw new Error(`stage already open for ${path}`);

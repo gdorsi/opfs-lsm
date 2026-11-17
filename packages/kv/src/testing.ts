@@ -23,7 +23,7 @@ export {
 } from "./stats.js";
 export type { AsyncFs } from "./opfs/async-fs.js";
 export { MemoryFs } from "./opfs/memory-fs.js";
-export { openBrowserFs } from "./opfs/browser-fs.js";
+export { findBrowserFs, openBrowserFs } from "./opfs/browser-fs.js";
 export { ensureEngine } from "./store/engine.js";
 
 // The module names are variables so a browser bundle of this file does not resolve them.

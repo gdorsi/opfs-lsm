@@ -17,7 +17,7 @@ export type IoCounters = {
   removed: Record<string, number>;
 };
 
-function emptyIoCounters(): IoCounters {
+export function emptyIoCounters(): IoCounters {
   return { written: {}, read: {}, removed: {} };
 }
 
@@ -81,6 +81,10 @@ export class CountingFs implements AsyncFs {
     const removed = await this.inner.removeUnlessOpen(path);
     if (removed) this.countRemoved(path);
     return removed;
+  }
+
+  removeFolder(): Promise<void> {
+    return this.inner.removeFolder();
   }
 
   private countRemoved(path: string): void {

@@ -37,7 +37,6 @@ const META_TOP = "topGeneration";
  * below it hold writes from before that destroy, so recovery adopts none.
  */
 const META_DESTROYED_TOP = "destroyedTop";
-const IDB_VERSION = 1;
 
 /** The `meta` keys that say which log prefix the WAL and the manifest hold. */
 export type WalMeta = {
@@ -192,24 +191,43 @@ export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
   return ops;
 }
 
-function openIdb(dbName: DbName): Promise<IDBDatabase> {
+/** How an open treats a database that does not exist. */
+type OpenHow = {
+  /** Makes the stores of a database the open creates. Without it, such an open aborts its upgrade and resolves undefined. */
+  readonly create?: (db: IDBDatabase) => void;
+  /** Asks for an upgrade to this version (the fence in `IdBWal.openAlone`). Every other open is version-less. */
+  readonly version?: number;
+  /** Runs once another context's upgrade or delete closed the connection. */
+  readonly onAskedToClose?: () => void;
+};
+
+/**
+ * Open IndexedDB database `name`. A version-less open takes the database at
+ * whatever version a fence left it. An open without `create` that would
+ * create the database aborts its upgrade, so the browser drops it, and
+ * resolves undefined. The connection closes on `versionchange`, so it never
+ * blocks another context's upgrade or delete.
+ */
+export function openDatabase(name: string, how: OpenHow): Promise<IDBDatabase | undefined> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(idbName(dbName), IDB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(META_STORE)) {
-        db.createObjectStore(META_STORE);
-      }
-      if (!db.objectStoreNames.contains(WAL_STORE)) {
-        db.createObjectStore(WAL_STORE, { autoIncrement: true });
-      }
+    const req = how.version === undefined ? indexedDB.open(name) : indexedDB.open(name, how.version);
+    let refused = false;
+    req.onupgradeneeded = (ev) => {
+      if (ev.oldVersion !== 0) return;
+      if (how.create) return how.create(req.result);
+      refused = true;
+      req.transaction?.abort();
     };
     req.onsuccess = () => {
       const db = req.result;
-      db.onversionchange = () => db.close();
+      db.onversionchange = () => {
+        db.close();
+        how.onAskedToClose?.();
+      };
       resolve(db);
     };
     req.onerror = () => {
+      if (refused) return resolve(undefined);
       const cause = req.error;
       const detail = cause ? ` (${cause.name}: ${cause.message})` : "";
       reject(new StorageUnavailableError(`the browser's IndexedDB store failed to open${detail}`, { cause }));
@@ -217,14 +235,19 @@ function openIdb(dbName: DbName): Promise<IDBDatabase> {
   });
 }
 
-function reqToPromise<T>(req: IDBRequest<T>): Promise<T> {
+function createWalStores(db: IDBDatabase): void {
+  db.createObjectStore(META_STORE);
+  db.createObjectStore(WAL_STORE, { autoIncrement: true });
+}
+
+export function reqToPromise<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new CommitError("idb request failed"));
   });
 }
 
-function txDone(tx: IDBTransaction): Promise<void> {
+export function txDone(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new CommitError("idb tx failed"));
@@ -386,6 +409,8 @@ type Group = {
  * SST. This is what a tab and the host both need: the meta record and the
  * recovery write. `TabWal` adds the tab's reads and appends. The host's
  * transactions are the functions below it.
+ *
+ * Only `TabWal.open`, which only `openDb` calls, creates the database.
  */
 export class IdBWal {
   protected constructor(
@@ -393,12 +418,43 @@ export class IdBWal {
     readonly db: IDBDatabase,
   ) {}
 
-  static async open(dbName: DbName): Promise<IdBWal> {
-    return new IdBWal(dbName, await openIdb(dbName));
+  /** The host's open: undefined when `opfs-lsm-wal/<name>` does not exist. Creates nothing. */
+  static async openExisting(dbName: DbName): Promise<IdBWal | undefined> {
+    const db = await openDatabase(idbName(dbName), {});
+    return db && new IdBWal(dbName, db);
+  }
+
+  /**
+   * `destroyDb`'s open: the database as its only connection, or undefined
+   * when it does not exist (creates nothing). It opens one version up.
+   * IndexedDB first sends `versionchange` to every other connection, and
+   * runs the empty upgrade only once each has closed: every handle on the
+   * name, in every tab, and any host connection. When it resolves, no write
+   * by an earlier connection can commit any more. Waits while a connection
+   * does not close.
+   */
+  static async openAlone(dbName: DbName): Promise<IdBWal | undefined> {
+    const probe = await openDatabase(idbName(dbName), {});
+    if (!probe) return undefined;
+    const version = probe.version;
+    // Our own probe would block the upgrade.
+    probe.close();
+    const db = await openDatabase(idbName(dbName), { version: version + 1 });
+    return db && new IdBWal(dbName, db);
   }
 
   close(): void {
     this.db.close();
+  }
+
+  /** Close this connection and delete `opfs-lsm-wal/<name>`. Resolves once it is gone. */
+  async deleteDatabase(): Promise<void> {
+    this.db.close();
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.deleteDatabase(idbName(this.dbName));
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error ?? new CommitError("deleting the WAL database failed"));
+    });
   }
 
   async meta(): Promise<WalMeta> {
@@ -483,8 +539,14 @@ export class TabWal extends IdBWal {
   private queued: GroupEntry[] = [];
   private closing = false;
 
-  static override async open(dbName: DbName): Promise<TabWal> {
-    return new TabWal(dbName, await openIdb(dbName));
+  /**
+   * The tab's open, the one open that creates the database. The connection
+   * closes when another context upgrades or deletes the database
+   * (`destroyDb`), then `onAskedToClose` runs, so the handle closes itself.
+   */
+  static async open(dbName: DbName, onAskedToClose?: () => void): Promise<TabWal> {
+    const db = await openDatabase(idbName(dbName), { create: createWalStores, ...(onAskedToClose ? { onAskedToClose } : {}) });
+    return new TabWal(dbName, db!);
   }
 
   /** Closes the connection once the groups already started or queued commit. */

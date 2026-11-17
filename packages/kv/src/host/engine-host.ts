@@ -1,10 +1,10 @@
 import { checkDbName, type DbName } from "../check.js";
-import { codeOfError } from "../errors.js";
+import { ClosedError, codeOfError } from "../errors.js";
 import { IdBWal, uningestedBytes } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
 import { asGeneration, GENERATION_NONE, type Generation } from "../seq.js";
-import { CountingFs } from "../opfs/counting-fs.js";
+import { CountingFs, emptyIoCounters } from "../opfs/counting-fs.js";
 import {
   listRuns,
   liveRuns,
@@ -27,10 +27,24 @@ import {
   type IngestClient,
   type WatchPolicy,
 } from "./protocol.js";
-import { compactLock, ingestLock, layersChannel, webLocks } from "../locks.js";
+import { compactLock, ingestLock, layersChannel, withLock } from "../locks.js";
 import { coalesced, serial } from "../turns.js";
 
-type FsFactory = (name: DbName) => AsyncFs | Promise<AsyncFs>;
+/**
+ * The database folder as it is now, or undefined when it does not exist.
+ * Called at the start of every operation: `destroyDb` can remove the folder
+ * and `openDb` make a new one at the same path, so the host keeps no folder
+ * across operations. Must create nothing.
+ */
+type FsFactory = (name: DbName) => AsyncFs | undefined | Promise<AsyncFs | undefined>;
+
+/** The two stores of one database, opened for one operation. */
+type Stores = { readonly wal: IdBWal; readonly fs: CountingFs };
+
+/** What a tab's request to the host rejects with once `destroyDb` removed the database. */
+function destroyed(): ClosedError {
+  return new ClosedError("database was destroyed");
+}
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
@@ -73,7 +87,8 @@ type IngestWatch = {
 /**
  * OPFS publisher + ingest owner. Runs in the SharedWorker in production;
  * tests use the same class in-process or behind a MessagePort. It keeps one
- * `HostedDb` per database name, for as long as the host lives.
+ * `HostedDb` per database name, for as long as the host lives. It never
+ * creates a database: only `openDb` does.
  */
 export class EngineHost {
   private readonly dbs = new Map<DbName, HostedDb>();
@@ -139,9 +154,16 @@ export class EngineHost {
  * database, for example two builds whose script URLs differ. A flush holds
  * it for one L0 run at a time. Compaction merges without it and holds it
  * only to install the merged run.
+ *
+ * It opens the WAL database and the folder for each operation, and only if
+ * they exist, so an operation after `destroyDb` finds them gone and stops.
+ * A database born again under the name starts its seqs and manifest
+ * numbers past every one the removed one used, so `trusted` and `offer`
+ * never meet a reused number.
  */
 class HostedDb {
-  private fsReady: Promise<CountingFs> | undefined = undefined;
+  /** The fs IO of every operation, for stats. */
+  private readonly io = emptyIoCounters();
   private readonly counts: HostCounts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
   private readonly publishTurn = serial();
   private readonly foldTurn = serial();
@@ -177,22 +199,46 @@ class HostedDb {
     return { ...hostBudget(asked), ...this.overrides };
   }
 
-  /** Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
-  private fs(): Promise<CountingFs> {
-    this.fsReady ??= Promise.resolve(this.fsFactory(this.name)).then(
-      (inner) => new CountingFs(inner),
-      (err: unknown) => {
-        this.fsReady = undefined;
-        throw err;
-      },
-    );
-    return this.fsReady;
+  /** The folder as it is now. Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
+  private async folder(): Promise<CountingFs | undefined> {
+    const inner = await this.fsFactory(this.name);
+    return inner && new CountingFs(inner, this.io);
+  }
+
+  /** Open the WAL database, then the folder, for one operation. Undefined when either is gone. */
+  private async stores(): Promise<Stores | undefined> {
+    const wal = await IdBWal.openExisting(this.name);
+    if (!wal) return undefined;
+    const fs = await this.folder().catch((err: unknown) => {
+      wal.close();
+      throw err;
+    });
+    if (fs) return { wal, fs };
+    wal.close();
+    return undefined;
+  }
+
+  /** `fn` on the stores of one operation, or `gone()` when the database is not there. */
+  private async withStores<T>(fn: (stores: Stores) => Promise<T>, gone: () => T | Promise<T>): Promise<T> {
+    const stores = await this.stores();
+    if (!stores) return gone();
+    try {
+      return await fn(stores);
+    } finally {
+      stores.wal.close();
+    }
   }
 
   async stats(): Promise<HostStats> {
-    const fs = await this.fs();
-    const recorded = await this.withWal(async (wal) => (await wal.meta()).generation ?? GENERATION_NONE);
-    const latest = await loadGeneration(fs.inner, recorded);
+    const stores = await this.stores();
+    if (!stores) throw destroyed();
+    let recorded: Generation;
+    try {
+      recorded = (await stores.wal.meta()).generation ?? GENERATION_NONE;
+    } finally {
+      stores.wal.close();
+    }
+    const latest = await loadGeneration(stores.fs.inner, recorded);
     const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
     for (const run of latest?.runs ?? []) {
       const level = levelOf(run.path) ?? 0;
@@ -202,7 +248,7 @@ class HostedDb {
       byLevel.set(level, entry);
     }
     return structuredClone({
-      fs: fs.counters,
+      fs: this.io,
       ...this.counts,
       generation: latest?.generation ?? GENERATION_NONE,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
@@ -219,7 +265,10 @@ class HostedDb {
     }
     await compaction;
     return {
-      generation: await this.withWal(async (wal) => (await wal.meta()).generation ?? GENERATION_NONE),
+      generation: await this.withWal(
+        async (wal) => (await wal.meta()).generation ?? GENERATION_NONE,
+        () => Promise.reject(destroyed()),
+      ),
     };
   }
 
@@ -238,8 +287,10 @@ class HostedDb {
   }
 
   private async foldRuns(): Promise<IngestResult> {
-    const fs = await this.fs();
-    const head = await this.withWal(async (wal) => (await wal.meta()).head);
+    const head = await this.withWal(
+      async (wal) => (await wal.meta()).head,
+      () => Promise.reject(destroyed()),
+    );
     let foldedBytes = 0;
     let pastStop = false;
     try {
@@ -248,15 +299,18 @@ class HostedDb {
         // Taken before the attempt, so an install that lands during it is not missed.
         const installed = this.installSignal();
         const chunk = await this.exclusive(() =>
-          this.withWal(async (wal) => {
-            const folded = await ingestChunk(wal, fs, head, this.trusted, {
-              maxBytes: budget.flushRunBytes,
-              l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
-            });
-            // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-            await unlessHeld(this.name, () => reclaimManifests(fs, folded.generation));
-            return folded;
-          }),
+          this.withStores(
+            async ({ wal, fs }) => {
+              const folded = await ingestChunk(wal, fs, head, this.trusted, {
+                maxBytes: budget.flushRunBytes,
+                l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
+              });
+              // Skipped while a tab loads a generation; the next flush or reclaim removes them.
+              await unlessHeld(this.name, () => reclaimManifests(fs, folded.generation));
+              return folded;
+            },
+            () => Promise.reject(destroyed()),
+          ),
         );
         recycleEngine(budget.wasmRecycleBytes);
         pastStop = false;
@@ -324,7 +378,10 @@ class HostedDb {
       this.compact().catch(() => undefined);
     }
     watch.triggerAt = watch.maxWalBytes;
-    void this.withWal((wal) => uningestedBytes(wal, watch.maxWalBytes)).then(
+    void this.withWal(
+      (wal) => uningestedBytes(wal, watch.maxWalBytes),
+      () => 0,
+    ).then(
       (waiting) => {
         watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
         this.maybeIngest(watch);
@@ -367,8 +424,11 @@ class HostedDb {
           watch.bus?.postMessage(this.offer);
         } else if (msg.kind === "pressure-done" && "pressure" in this.offer) {
           this.offer = { after: Infinity };
-          this.withWal((wal) => wal.meta()).then(
-            ({ head }) => (this.offer = { after: head }),
+          this.withWal(
+            async (wal) => (await wal.meta()).head,
+            () => 0,
+          ).then(
+            (head) => (this.offer = { after: head }),
             () => (this.offer = { after: 0 }),
           );
         }
@@ -396,7 +456,8 @@ class HostedDb {
         if (foldedBytes === 0) watch.pendingBytes = 0;
         this.compact().catch(() => undefined);
       } catch (err) {
-        console.error(`opfs-lsm: ingest of ${this.name} failed`, err);
+        // A database `destroyDb` removed is not a failure.
+        if (!(err instanceof ClosedError)) console.error(`opfs-lsm: ingest of ${this.name} failed`, err);
         watch.triggerAt = watch.pendingBytes + watch.maxWalBytes;
       } finally {
         watch.state = "idle";
@@ -407,25 +468,28 @@ class HostedDb {
 
   /**
    * Empty the database, then remove the files no tab holds (design.md,
-   * "Destroy"). Holds the compaction and ingest locks, so no flush or merge
-   * publishes meanwhile, and a merge running when it is called stops after
-   * its current step. `recordEmpty` is the commit point. Tabs follow it like
-   * any new generation, and the runs a tab still holds go once it lets go,
-   * at a later reclaim.
+   * "Emptying"). `dangerousDestroy` only: the storage stays. Holds the
+   * compaction and ingest locks, so no flush or merge publishes meanwhile,
+   * and a merge running when it is called stops after its current step.
+   * `recordEmpty` is the commit point. Tabs follow it like any new
+   * generation, and the runs a tab still holds go once it lets go, at a
+   * later reclaim.
    */
   async destroy(): Promise<void> {
     this.destroying = true;
     try {
       await withLock(compactLock(this.name), () =>
         this.exclusive(() =>
-          this.withWal(async (wal) => {
-            const fs = await this.fs();
-            await recordEmpty(wal, fs);
-            this.trusted = GENERATION_NONE;
-            if (this.watching) this.watching.pendingBytes = 0;
-            await unlessHeld(this.name, () => reclaimManifests(fs, asGeneration(Number.POSITIVE_INFINITY)));
-            await this.reclaim(fs, wal);
-          }),
+          this.withStores(
+            async ({ wal, fs }) => {
+              await recordEmpty(wal, fs, undefined);
+              this.trusted = GENERATION_NONE;
+              if (this.watching) this.watching.pendingBytes = 0;
+              await unlessHeld(this.name, () => reclaimManifests(fs, asGeneration(Number.POSITIVE_INFINITY)));
+              await this.reclaim(fs, wal);
+            },
+            () => Promise.reject(destroyed()),
+          ),
         ),
       );
     } finally {
@@ -438,8 +502,10 @@ class HostedDb {
     return this.publishTurn(() => withLock(ingestLock(this.name), fn));
   }
 
-  private async withWal<T>(fn: (wal: IdBWal) => Promise<T>): Promise<T> {
-    const wal = await IdBWal.open(this.name);
+  /** `fn` on the WAL database for one operation, or `gone()` when it does not exist. */
+  private async withWal<T>(fn: (wal: IdBWal) => Promise<T>, gone: () => T | Promise<T>): Promise<T> {
+    const wal = await IdBWal.openExisting(this.name);
+    if (!wal) return gone();
     try {
       return await fn(wal);
     } finally {
@@ -447,13 +513,20 @@ class HostedDb {
     }
   }
 
+  /**
+   * Resolves the folder once: the pass holds the compaction lock throughout,
+   * and `destroyDb` takes it before it removes the folder. Each step opens
+   * the WAL database again, and the pass stops quietly once it is gone.
+   */
   private async compactPass(): Promise<void> {
-    const fs = await this.fs();
+    const fs = await this.folder();
+    if (!fs) return;
     let installed = false;
     let steps = 0;
     try {
       for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
-        const meta = await this.withWal((wal) => wal.meta());
+        const meta = await this.withWal((wal) => wal.meta(), () => undefined);
+        if (!meta) return;
         const base = await loadGeneration(fs, meta.generation ?? GENERATION_NONE);
         // Gone when a flush installed a newer generation since: plan again.
         if (!base) continue;
@@ -461,12 +534,17 @@ class HostedDb {
         const step = await mergeNextStep(fs, budget, base, meta.top);
         recycleEngine(budget.wasmRecycleBytes);
         if (!step) return this.measure(base, fs);
-        await this.exclusive(() =>
-          this.withWal(async (wal) => {
-            this.trusted = await installStep(fs, wal, step, this.trusted);
-            await this.reclaim(fs, wal);
-          }),
+        const landed = await this.exclusive(() =>
+          this.withWal(
+            async (wal) => {
+              this.trusted = await installStep(fs, wal, step, this.trusted);
+              await this.reclaim(fs, wal);
+              return true;
+            },
+            () => false,
+          ),
         );
+        if (!landed) return;
         installed = true;
         steps += 1;
         this.counts.compactionSteps += 1;
@@ -481,7 +559,7 @@ class HostedDb {
       // pass had to leave. Last, so it never delays a merge that a full L0
       // waits for, and best-effort: the next pass sweeps again.
       if (!installed && !this.destroying) {
-        await this.exclusive(() => this.withWal((wal) => this.sweepIdle(fs, wal))).catch(() => undefined);
+        await this.exclusive(() => this.withWal((wal) => this.sweepIdle(fs, wal), () => undefined)).catch(() => undefined);
       }
     }
   }
@@ -576,13 +654,6 @@ function isClosedDatabase(err: unknown): boolean {
     "name" in err &&
     (err as { name: string }).name === "InvalidStateError"
   );
-}
-
-function withLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  const locks = webLocks();
-  if (!locks) return fn();
-  // The DOM lib types the callback's promise as the result, unwrapped at runtime.
-  return locks.request(name, fn) as unknown as Promise<T>;
 }
 
 /** Serve EngineHost over a MessagePort (SharedWorker connection or test channel). */

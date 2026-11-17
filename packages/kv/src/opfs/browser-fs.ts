@@ -16,15 +16,17 @@ function splitPath(path: string): string[] {
  */
 class BrowserReadFs implements ReadFs {
   constructor(
-    private readonly root: FileSystemDirectoryHandle,
+    protected readonly root: FileSystemDirectoryHandle,
     protected readonly dbName: DbName,
   ) {}
 
   /**
-   * Directory handles by path. Nothing removes a directory, so a handle
-   * stays good, and a lookup costs a trip to the browser process.
+   * Directory handles by path. Only `destroyDb` removes a directory, after
+   * every handle on the database closed, and no host keeps a BrowserFs past
+   * one operation, so a handle stays good as long as it is used. A lookup
+   * costs a trip to the browser process.
    */
-  private readonly dirs = new Map<string, Promise<FileSystemDirectoryHandle>>();
+  protected readonly dirs = new Map<string, Promise<FileSystemDirectoryHandle>>();
 
   protected async dir(segments: readonly string[], create: boolean): Promise<FileSystemDirectoryHandle> {
     if (segments.length === 0) return this.root;
@@ -140,6 +142,15 @@ class BrowserReadFs implements ReadFs {
  * Publish = createWritable (no keepExistingData) + close.
  */
 export class BrowserFs extends BrowserReadFs implements AsyncFs {
+  /** `parent` is `opfs-lsm/`, so `removeFolder` can remove `root` itself. */
+  constructor(
+    private readonly parent: FileSystemDirectoryHandle,
+    root: FileSystemDirectoryHandle,
+    dbName: DbName,
+  ) {
+    super(root, dbName);
+  }
+
   async removeUnlessOpen(path: string): Promise<boolean> {
     return await navigator.locks.request(
       this.lockName(path),
@@ -162,6 +173,12 @@ export class BrowserFs extends BrowserReadFs implements AsyncFs {
     const fileName = parts[parts.length - 1]!;
     const dir = await this.dir(parts.slice(0, -1), false);
     await dir.removeEntry(fileName);
+  }
+
+  async removeFolder(): Promise<void> {
+    await ignoreNotFound(this.root.removeEntry("m", { recursive: true }));
+    await ignoreNotFound(this.parent.removeEntry(this.dbName, { recursive: true }));
+    this.dirs.clear();
   }
 
   async create(path: string): Promise<FileWriter> {
@@ -199,7 +216,15 @@ function isNotFound(err: unknown): boolean {
   );
 }
 
-/** Open (or create) `opfs-lsm/<name>/` under the origin private file system. */
+async function ignoreNotFound(removal: Promise<void>): Promise<void> {
+  try {
+    await removal;
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+}
+
+/** Open (or create) `opfs-lsm/<name>/` under the origin private file system. Only `openDb` creates it. */
 async function openIn<T>(
   name: string,
   adapter: new (root: FileSystemDirectoryHandle, dbName: DbName) => T,
@@ -213,5 +238,25 @@ async function openIn<T>(
 /** What a tab opens: the directory's read side. */
 export const openBrowserReadFs = (name: string): Promise<BrowserReadFs> => openIn(name, BrowserReadFs);
 
-/** What the host opens. */
-export const openBrowserFs = (name: string): Promise<BrowserFs> => openIn(name, BrowserFs);
+/** The full adapter, creating the folder as `openDb` does. Tests and proofs only: the host finds the folder with `findBrowserFs`. */
+export async function openBrowserFs(name: string): Promise<BrowserFs> {
+  const dbName: DbName = checkDbName(name);
+  const lsm = await (await navigator.storage.getDirectory()).getDirectoryHandle("opfs-lsm", { create: true });
+  return new BrowserFs(lsm, await lsm.getDirectoryHandle(dbName, { create: true }), dbName);
+}
+
+/**
+ * `opfs-lsm/<name>/` if it exists, else undefined. Creates nothing, not even
+ * `opfs-lsm/`. The SharedWorker resolves the folder with it at the start of
+ * every operation, and `destroyDb` finds what to remove.
+ */
+export async function findBrowserFs(name: string): Promise<BrowserFs | undefined> {
+  const dbName: DbName = checkDbName(name);
+  try {
+    const lsm = await (await navigator.storage.getDirectory()).getDirectoryHandle("opfs-lsm");
+    return new BrowserFs(lsm, await lsm.getDirectoryHandle(dbName), dbName);
+  } catch (err) {
+    if (isNotFound(err)) return undefined;
+    throw err;
+  }
+}

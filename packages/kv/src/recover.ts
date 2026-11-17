@@ -1,8 +1,9 @@
 import { CorruptDatabaseError } from "./errors.js";
+import { forgetDestroyed, readDestroyed, type DestroyedFloor } from "./idb/destroyed.js";
 import type { IdBWal, WalMeta } from "./idb/wal.js";
 import { emptyWal } from "./idb/wal.js";
 import type { ReadFs } from "./opfs/async-fs.js";
-import { asGeneration, GENERATION_NONE, nextSeq, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
+import { asGeneration, asSeq, GENERATION_NONE, nextSeq, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import {
   GENERATION_ZERO,
   isIntact,
@@ -38,6 +39,13 @@ export type Trusted = Generation | "recorded" | undefined;
  * the fold of the log through its `through`, so recovery picks one and
  * pairs it with the WAL records above it:
  *
+ * 0. The WAL database records no generation, so it was just created, and
+ *    `opfs-lsm-destroyed` has a row for the name: `destroyDb` removed a
+ *    database of this name, and a power loss may have kept some of its
+ *    files. Record the empty generation 0 past the row (strict), then
+ *    forget the row. No manifest from before the removal is adopted, now
+ *    or later. Without a row, rules 1 to 3 run, so a WAL database the
+ *    browser threw away still recovers the newest intact manifest.
  * 1. The newest intact manifest past the recorded one whose `through` is
  *    past the WAL head: OPFS kept writes IndexedDB lost. It is a longer
  *    prefix, and recording it moves `head` past its seqs before any of them
@@ -71,6 +79,16 @@ export async function reconcile(
   trusted: Trusted,
 ): Promise<Reconciled> {
   return untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
+    if (meta.generation === undefined) {
+      const known = await readDestroyed(wal.dbName);
+      if (known) {
+        const born = atLeast(known, { head: nextSeq(await highestThrough(fs, numbers, meta.head)), top });
+        if (!(await emptyWal(wal, { expect: meta, ...born }))) return undefined;
+        // Only after the strict birth: losing this delete leaves a row that is ignored.
+        await forgetDestroyed(wal.dbName, known);
+        return { generation: GENERATION_NONE, top: born.top };
+      }
+    }
     const pick = await choose(fs, meta, numbers, trusted);
     if (!pick) return { generation: meta.generation!, top };
     // No seq any manifest on disk names is handed out again, so a manifest
@@ -82,22 +100,45 @@ export async function reconcile(
 }
 
 /**
- * Empty the database in one IndexedDB transaction, the commit point of
- * `dangerousDestroy` (design.md, "Destroy"): drop every WAL record and
- * record generation 0 with `head` and `ingestedThrough` one past every seq
- * the WAL or a manifest on disk names, and `destroyedTop` at the highest
- * manifest number in use. Recovery then adopts no manifest on disk, now or
- * after later flushes: rule 1 needs a `through` past the head, rule 2 keeps
- * the recorded generation, and rule 3 skips every number up to
- * `destroyedTop`. So the files are garbage whether or not they are removed
- * after. The commit is on disk before it resolves, so no power loss keeps
- * a remove that follows and loses it.
+ * Empty the database in one IndexedDB transaction, the commit point of both
+ * destroys (design.md, "Destroy"): drop every WAL record and record
+ * generation 0 with `head` and `ingestedThrough` one past every seq the
+ * WAL, a manifest on disk or `known` names, and `destroyedTop` at the
+ * highest manifest number in use, and at least `known.top`. Recovery then
+ * adopts no manifest on disk, now or after later flushes: rule 1 needs a
+ * `through` past the head, rule 2 keeps the recorded generation, and rule 3
+ * skips every number up to `destroyedTop`. So the files are garbage whether
+ * or not they are removed after. The commit is on disk before it resolves,
+ * so no power loss keeps a remove that follows and loses it. `fs` is
+ * undefined when the database has no folder. Returns what it recorded.
  */
-export async function recordEmpty(wal: IdBWal, fs: ReadFs): Promise<void> {
-  await untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
-    const floor = await highestThrough(fs, numbers, meta.head);
-    return (await emptyWal(wal, { expect: meta, head: nextSeq(floor), top })) || undefined;
+export async function recordEmpty(
+  wal: IdBWal,
+  fs: ReadFs | undefined,
+  known: DestroyedFloor | undefined,
+): Promise<DestroyedFloor> {
+  return untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
+    const emptied = atLeast(known, { head: nextSeq(await highestThrough(fs, numbers, meta.head)), top });
+    return (await emptyWal(wal, { expect: meta, ...emptied })) ? emptied : undefined;
   });
+}
+
+/**
+ * The floor of a folder whose WAL database is gone: `head` past the highest
+ * `through` of the manifests on disk, `top` at the highest number, each at
+ * least `known`'s. Undefined when no manifest is on disk: then no file can
+ * be adopted.
+ */
+export async function floorOfFiles(fs: ReadFs, known: DestroyedFloor | undefined): Promise<DestroyedFloor | undefined> {
+  const numbers = await manifestNumbers(fs);
+  if (numbers.length === 0) return undefined;
+  return atLeast(known, { head: nextSeq(await highestThrough(fs, numbers, SEQ_ZERO)), top: numbers[0]! });
+}
+
+/** `floor`, raised to `known`'s figures. */
+function atLeast(known: DestroyedFloor | undefined, floor: DestroyedFloor): DestroyedFloor {
+  if (!known) return floor;
+  return { head: asSeq(Math.max(floor.head, known.head)), top: asGeneration(Math.max(floor.top, known.top)) };
 }
 
 /** What `meta` and `m/` held when a writer read them, and the number new manifests go past. */
@@ -110,11 +151,11 @@ type Seen = { readonly meta: WalMeta; readonly numbers: readonly Generation[]; r
  */
 async function untilAdopted<T>(
   wal: IdBWal,
-  fs: ReadFs,
+  fs: ReadFs | undefined,
   record: (seen: Seen) => Promise<T | undefined>,
 ): Promise<T> {
   for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
-    const [meta, numbers] = await Promise.all([wal.meta(), manifestNumbers(fs)]);
+    const [meta, numbers] = await Promise.all([wal.meta(), fs ? manifestNumbers(fs) : []]);
     const top = asGeneration(Math.max(numbers[0] ?? GENERATION_NONE, meta.top, meta.generation ?? GENERATION_NONE));
     const out = await record({ meta, numbers, top });
     if (out !== undefined) return out;
@@ -123,8 +164,9 @@ async function untilAdopted<T>(
 }
 
 /** The highest `through` of the manifests `numbers`, and at least `from`. */
-async function highestThrough(fs: ReadFs, numbers: readonly Generation[], from: Seq): Promise<Seq> {
+async function highestThrough(fs: ReadFs | undefined, numbers: readonly Generation[], from: Seq): Promise<Seq> {
   let floor = from;
+  if (!fs) return floor;
   for (const n of numbers) {
     const through = (await readManifest(fs, n))?.through ?? SEQ_ZERO;
     if (through > floor) floor = through;

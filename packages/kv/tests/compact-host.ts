@@ -1,3 +1,4 @@
+import { ClosedError } from "../src/errors.js";
 import type { EngineHost } from "../src/host/engine-host.js";
 import { unlessHeld } from "../src/host/protocol.js";
 import { reconcile } from "../src/recover.js";
@@ -12,14 +13,16 @@ import { reclaimManifests } from "../src/store/generation.js";
  */
 export async function compactHost(host: EngineHost, name: string): Promise<void> {
   const db = host["db"](name);
-  const fs = await db["fs"]();
   await db["foldTurn"](() =>
     db["exclusive"](() =>
-      db["withWal"](async (wal) => {
-        const { generation } = await reconcile(wal, fs, db["trusted"]);
-        db["trusted"] = generation;
-        await unlessHeld(name, () => reclaimManifests(fs, generation));
-      }),
+      db["withStores"](
+        async ({ wal, fs }) => {
+          const { generation } = await reconcile(wal, fs, db["trusted"]);
+          db["trusted"] = generation;
+          await unlessHeld(name, () => reclaimManifests(fs, generation));
+        },
+        () => Promise.reject(new ClosedError("database was destroyed")),
+      ),
     ),
   );
   await db["compact"]();

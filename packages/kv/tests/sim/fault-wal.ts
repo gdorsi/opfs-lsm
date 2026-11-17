@@ -1,4 +1,4 @@
-import { IdBWal } from "../../src/idb/wal.js";
+import { TabWal } from "../../src/idb/wal.js";
 import { checkDbName } from "../../src/check.js";
 import type { Faults, IdbMutation } from "./fault-fs.js";
 import { walStore } from "./check-database.js";
@@ -145,8 +145,8 @@ export function dumpWal(name: string): Promise<{ wal: [IDBValidKey, unknown][]; 
 
 /** A WAL database `name` holding the first `count` IndexedDB commits of `ops`. */
 export async function materializeWal(name: string, ops: readonly { store: string; muts?: readonly IdbMutation[] }[], count: number): Promise<void> {
-  // The schema, as `IdBWal` creates it.
-  (await IdBWal.open(checkDbName(name))).close();
+  // The schema, as `TabWal.open` creates it.
+  (await TabWal.open(checkDbName(name))).close();
   const commits = ops.filter((op) => op.store === "idb").slice(0, count);
   if (commits.length === 0) return;
   await walStore(name, "readwrite", (wal, meta) => {
