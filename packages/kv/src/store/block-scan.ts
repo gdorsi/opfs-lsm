@@ -45,7 +45,7 @@ export function* unpackHits(hits: Uint8Array): Generator<LayerEntry> {
     const seq = asSeq(Number(view.getBigUint64(o + 8, true)));
     o += 16;
     if (o + keyLen + valueLen > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
-    yield { key: hits.slice(o, o + keyLen), kind: "put", value: hits.slice(o + keyLen, o + keyLen + valueLen), seq };
+    yield { key: hits.subarray(o, o + keyLen), kind: "put", value: hits.subarray(o + keyLen, o + keyLen + valueLen), seq };
     o += keyLen + valueLen;
   }
 }

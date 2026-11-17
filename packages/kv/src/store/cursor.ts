@@ -1,6 +1,10 @@
 import { compareBytes, containsAll } from "../bytes.js";
 import type { Seq } from "../seq.js";
 
+/**
+ * The key and value may be views into a run's block bytes, which are never
+ * written once read, so a read copies them only when it hands them out.
+ */
 export type LayerEntry = {
   readonly key: Uint8Array;
   readonly kind: "put" | "del";

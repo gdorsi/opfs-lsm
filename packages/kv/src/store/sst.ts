@@ -177,6 +177,14 @@ export class RecordWalker {
     return this.buf.slice(this.valAt, this.valAt + this.valLen);
   }
 
+  /** The record as a scan entry: views into the block, except a key split by the block prefix. */
+  inPlace(): LayerEntry {
+    const { buf, keyAt, keyLen, valAt } = this;
+    const key = this.prefixLen === 0 ? buf.subarray(keyAt, keyAt + keyLen) : this.key();
+    const seq = this.seq();
+    return this.tag === TAG_PUT ? { key, kind: "put", value: buf.subarray(valAt, valAt + this.valLen), seq } : { key, kind: "del", seq };
+  }
+
   entry(): SstEntry {
     const key = this.key();
     const seq = this.seq();
@@ -328,7 +336,7 @@ export function findInBlock(b: BlockBytes, key: Uint8Array): SstEntry | undefine
 
 /**
  * The records of one block in key order, from the first key at or after
- * `seek`. Each entry's key and value are copied out once, when reached.
+ * `seek`, each as `RecordWalker.inPlace` gives it.
  */
 export class BlockEntries {
   private readonly w: RecordWalker;
@@ -342,11 +350,8 @@ export class BlockEntries {
   next(): LayerEntry | undefined {
     if (this.left === 0) return undefined;
     this.left--;
-    const w = this.w;
-    w.next();
-    const key = w.key();
-    const seq = w.seq();
-    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value(), seq } : { key, kind: "del", seq };
+    this.w.next();
+    return this.w.inPlace();
   }
 }
 
@@ -369,11 +374,8 @@ export class ReverseBlockEntries {
   next(): LayerEntry | undefined {
     const at = this.starts.pop();
     if (at === undefined) return undefined;
-    const w = this.w;
-    w.o = at;
-    w.next();
-    const key = w.key();
-    const seq = w.seq();
-    return w.tag === TAG_PUT ? { key, kind: "put", value: w.value(), seq } : { key, kind: "del", seq };
+    this.w.o = at;
+    this.w.next();
+    return this.w.inPlace();
   }
 }
