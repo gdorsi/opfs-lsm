@@ -2,12 +2,14 @@ import type { ComponentType } from "react";
 import { createRoot } from "react-dom/client";
 import Features from "./features/index.tsx";
 import Fits from "./fits/index.tsx";
+import Hood from "./hood/index.tsx";
 import type { SceneName } from "./sizes.ts";
 import Stack from "./stack/index.tsx";
 
 const SCENES: Record<SceneName, ComponentType<never>> = {
   features: Features as ComponentType<never>,
   fits: Fits as ComponentType<never>,
+  hood: Hood as ComponentType<never>,
   stack: Stack as ComponentType<never>,
 };
 
