@@ -14,8 +14,11 @@ import { MemoryFs } from "../../src/testing.js";
  * - OPFS publish: `create` → `write`… → `finish` (createWritable → close),
  *   recorded at `finish` with the whole file;
  * - OPFS remove: `remove`, or `removeUnlessOpen` that removed;
+ * - OPFS folder removal: `removeFolder`, one remove per file, manifests
+ *   first, then `rmdir`;
  * - IndexedDB commit: a readwrite transaction that wrote something,
- *   recorded at its `complete` event with every put, add and delete.
+ *   recorded at its `complete` event with every put, add and delete;
+ * - IndexedDB deletion of the WAL database: `drop`.
  *
  * A crash state is rebuilt from a prefix of the trace (`materializeFs`,
  * `materializeWal`), the way ALICE and RocksDB's FaultInjectionTestFS do it:
@@ -35,9 +38,13 @@ export type DurableOp =
       readonly muts: readonly IdbMutation[];
       /** Committed with durability "strict": on disk before any later op starts. */
       readonly strict?: true;
+      /** A commit to the row in `opfs-lsm-destroyed`, not to the WAL database. */
+      readonly db?: "destroyed";
+      /** The WAL database was deleted. */
+      readonly drop?: true;
     }
   | { readonly store: "opfs"; readonly i: number; readonly kind: "publish"; readonly path: string; readonly bytes: Uint8Array }
-  | { readonly store: "opfs"; readonly i: number; readonly kind: "touch" | "remove"; readonly path: string };
+  | { readonly store: "opfs"; readonly i: number; readonly kind: "touch" | "remove" | "rmdir"; readonly path: string };
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
@@ -175,6 +182,20 @@ export class FaultFs implements AsyncFs {
     });
   }
 
+  /** One remove per file, the manifests first, as a recursive removal promises no order. Then the folder. */
+  async removeFolder(): Promise<void> {
+    const dirs = await this.inner.list("");
+    const paths: string[] = [];
+    for (const dir of ["m", ...dirs.filter((d) => d !== "m")]) {
+      for (const file of await this.inner.list(dir)) paths.push(`${dir}/${file}`);
+    }
+    for (const path of paths) await this.remove(path);
+    await this.site("fs-write", "remove the folder", async () => {
+      await this.inner.removeFolder();
+      this.faults.record({ store: "opfs", kind: "rmdir", path: "" });
+    });
+  }
+
   create(path: string): Promise<FileWriter> {
     return this.site("fs-write", `create ${path}`, async () => {
       if ((await this.inner.read(path, 0, 0)) === undefined) {
@@ -229,6 +250,8 @@ export async function materializeFs(ops: readonly DurableOp[], count: number): P
     if (kept++ >= count) break;
     if (op.kind === "remove") {
       await fs.remove(op.path);
+    } else if (op.kind === "rmdir") {
+      await fs.removeFolder();
     } else if (op.kind === "publish" || (await fs.read(op.path, 0, 0)) === undefined) {
       const w = await fs.create(op.path);
       if (op.kind === "publish") await w.write(op.bytes);
