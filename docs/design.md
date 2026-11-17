@@ -77,8 +77,8 @@ start is not below its end, fails with `CommitError`.
 
 ### Append
 
-`put`, `delete` and `batch` append by group commit. A tab has at most one append transaction
-open. The append that opens it and the appends issued synchronously after it join it, and
+`put`, `delete` and `batch` append by group commit. A tab has at most one group-commit
+transaction open. The append that opens it and the appends issued synchronously after it join it, and
 appends that arrive while it commits form the next group. A group is one `readwrite`
 transaction over `wal`:
 
@@ -110,14 +110,15 @@ before that. At the promise, the writer sees its own write and every earlier one
 
 ### Reading the tail
 
-`openDb`, `sync`, a catch-up after an append, and ingest read the same way. One transaction
-reads the head and `ingestedThrough`, then every record in `(max(since, ingestedThrough), head]`,
-where `since` is the `appliedThrough` of the caller. An open starts at 0, so it replays the
-whole uningested WAL. The host flushes at `maxWalBytes`, so that replay is normally near the
-limit, but nothing in the read path truncates it.
+`openDb`, `sync` and a catch-up after an append read the same way: one transaction reads the
+head and `ingestedThrough`, then every record in `(max(since, ingestedThrough), head]`, where
+`since` is the `appliedThrough` of the caller. An open starts at 0, so it replays the whole
+uningested WAL; the host flushes at `maxWalBytes`, so that replay is normally near the limit,
+but the tab's read path truncates nothing. Ingest reads the same range in `flushRunBytes`
+chunks.
 
 Seqs are gapless above `ingestedThrough`, so the position of a record in its range gives its
-seq. A range that returns fewer records than it spans throws `wal gap`.
+seq. A range that returns fewer records than it spans throws `CommitError` (`wal gap`).
 
 ### Truncation
 
@@ -384,9 +385,10 @@ After a failed flush, the host waits for another `maxWalBytes` of writes or the 
 
 ### Flush
 
-A flush folds the WAL as it stands when it starts, oldest records first, into one L0 run per
-`flushRunBytes` of op bytes (see [Memory budget](#memory-budget)). One flush runs at a time per database. Records acked
-after it starts wait for the next one.
+A flush notes the head when it starts, then folds the WAL from `ingestedThrough` into one L0
+run per `flushRunBytes` of op bytes, oldest first (see [Memory budget](#memory-budget)). One
+flush runs at a time per database. A record acked after the start can join a later run of the
+same flush, because each run reads the WAL as it stands; the rest wait for the next flush.
 
 For each run, under the exclusive section for the database, the host:
 
@@ -650,7 +652,7 @@ of OPFS, independently.
 | The commit of a flush | Not its run or manifest | Rule 3. The previous manifest is intact, and the WAL still holds the seqs that flush folded. Nothing is lost. If OPFS lost more than one flush, the WAL is dropped. |
 | Not the commit of a compaction | Its manifest and its removals | Rule 3. The new manifest is intact and has the same `through`. Nothing is lost. |
 | Some appends, not the flush after them | The manifest of that flush | Rule 1. `head` moves to its `through`. |
-| Nothing | Some manifests | Rule 3 records the newest intact one, and `head` moves past its seqs. |
+| Nothing | Some manifests | Rule 1 records the newest intact one, and `head` moves past its seqs. |
 | A destroy's transaction | Any prefix of its removes and of later ops | No manifest from before the destroy is adopted. The database holds a prefix of the writes after it, or none. |
 | Not a destroy's transaction | None of its removes | The commit was not on disk, so no remove had started. As if the destroy had not run. |
 
