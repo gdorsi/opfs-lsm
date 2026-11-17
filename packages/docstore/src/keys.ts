@@ -12,8 +12,8 @@
  * the tuple encoding of `@opfs-lsm/kv/tuple`, which also owns the bounds of
  * every key that continues a prefix, an id included.
  */
-import type { Range } from "@opfs-lsm/kv";
-import { encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
+import type { Entry, Range } from "@opfs-lsm/kv";
+import { decodeTuple, encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
 import { DocStoreError } from "./errors.js";
 import type { Cursor, QueryInput, Scalar } from "./schema.js";
 
@@ -228,6 +228,21 @@ export function entryId(target: ScanTarget, key: Uint8Array, value: Uint8Array):
     case "text":
       return key.subarray(skipTuple(key, target.arity, target.prefix.length));
   }
+}
+
+export function decodeEntries(target: ScanTarget, entries: readonly Entry[], eqLength: number): { id: string; values: Scalar[] }[] {
+  if (target.kind === "rows") {
+    return entries.map(({ key }) => {
+      const id = idOf(key.subarray(target.prefix.length));
+      return { id, values: [id] };
+    });
+  }
+  if (entries.length === 0) return [];
+  const { values: eqValues, end: from } = decodeTuple(entries[0]!.key, eqLength, target.prefix.length);
+  return entries.map(({ key, value }) => {
+    const { values, end } = decodeTuple(key, target.arity - eqLength, from);
+    return { id: idOf(target.kind === "unique" ? value : key.subarray(end)), values: eqValues.concat(values) };
+  });
 }
 
 /** base64url of the key after the root byte, so it names the collection id and index id it came from. */

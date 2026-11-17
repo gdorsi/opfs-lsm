@@ -131,6 +131,22 @@ export const noteQueries: NoteQuery[] = [
   { index: "byOwnerUpdated", gte: since },
 ];
 
+export async function entryValues(store: DocStore<typeof notesSchema>): Promise<unknown[]> {
+  const notes = store.collection("notes");
+  const byTag: [string, number][] = (await notes.queryEntries({ index: "byTag", eq: ["work"] })).entries.map((e) => e.values);
+  const bySlug: [string][] = (await notes.queryEntries({ index: "bySlug" })).entries.map((e) => e.values);
+  const rows: [string][] = (await notes.queryEntries({ limit: 1 })).entries.map((e) => e.values);
+  const inView = await notes.view((snap) => snap.queryEntries({ index: "search", eq: ["ann"], match: "rep" }));
+  const search: [string, number][] = inView.entries.map((e) => e.values);
+  // @ts-expect-error updatedAt is a number
+  const wrong: [string, string][] = (await notes.queryEntries({ index: "byOwnerUpdated" })).entries.map((e) => e.values);
+  // @ts-expect-error revers is not a query option
+  await notes.queryEntries({ index: "byTag", revers: true });
+  // @ts-expect-error the element type of tags is string
+  await notes.queryEntries({ index: "byTag", eq: [1] });
+  return [byTag, bySlug, rows, search, wrong];
+}
+
 // @ts-expect-error [] marks an array field, and owner is a string
 defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { m: { by: "owner[]" } } } });
 // @ts-expect-error an array field needs the [] mark

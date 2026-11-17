@@ -345,6 +345,46 @@ await todos.count({ index: "open", limit: 1 });
 // => 1, count stops at limit
 ```
 
+### Entries
+
+An entry already holds the values its index orders by. `queryEntries` returns them with each id, typed from `by`, and reads no document.
+
+```ts
+await todos.queryEntries({ index: "open", eq: [false] });
+// => { entries: [{ id: "c", values: [false, 2] },
+//      { id: "a", values: [false, 3] }] }
+await todos.queryEntries({ lt: "b" });
+// => { entries: [{ id: "a", values: ["a"] }] }, a row's one
+// value is its id
+```
+
+Group on the values without reading documents.
+
+```ts
+const perTag = new Map<string, number>();
+const { entries } = await todos.queryEntries({ index: "byTag" });
+for (const { values: [tag] } of entries)
+	perTag.set(tag, (perTag.get(tag) ?? 0) + 1);
+// perTag => Map { "home" => 2, "shop" => 1 }
+```
+
+To show one page of several ranges in one order, query the entries of each, merge them on their values, and read only the documents of the page.
+
+```ts
+const page = await todos.view(async (snap) => {
+	const ranges = await Promise.all([false, true].map((done) =>
+		snap.queryEntries({ index: "open", eq: [done], limit: 2 })));
+	const top = ranges
+		.flatMap((r) => r.entries)
+		.sort((x, y) => x.values[1] - y.values[1])
+		.slice(0, 2);
+	return snap.getMany(top.map((e) => e.id));
+});
+// => [{ id: "b", ... }, { id: "c", ... }], by createdAt
+```
+
+**Note.** This pays when the ranges hold more than the page. When they hold a page or less, merging the documents of `query` on each range reads the same documents with less code. Decoding values also costs time per entry, so when you need only ids or `next`, use `queryIds`.
+
 ### Order
 
 ```ts
@@ -371,11 +411,12 @@ const { page, total } = await todos.view(async (snap) => ({
 	total: await snap.count({ index: "open" }),
 	// the same state as page
 }));
-// snap has seq, get, getMany, query, queryIds, and count
+// snap has seq, get, getMany, query, queryIds, queryEntries,
+// and count
 // changes events with a seq at or below snap.seq are in the
 // snapshot, later ones are not
-// todos.query, todos.queryIds, and todos.count each run a view
-// with one read
+// todos.query, todos.queryIds, todos.queryEntries, and
+// todos.count each run a view with one read
 ```
 
 A snapshot reads only. It does not see a write, a `clear`, or a schema change made after it began.
