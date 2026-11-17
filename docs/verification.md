@@ -19,6 +19,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | Point get versus SST, including tombstones (`pointGet`, `readKey`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
 | `view()` or the memtable pin | `formal:view-pin` |
 | SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge session in `merge.rs` and its oracle `tests/oracle/merge-ts.ts`, `host/compact.ts`) | `formal:compact-preserve`, `cargo test -p engine-core`, plus `drive bench kv/` for a real post-ingest get |
+| `destroyDb`, the `opfs-lsm-destroyed` row, the open lock, recovery rule 0, or the host's opens that never create | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `drive destroy`, then `power-loss-chrome --destroy`, then `kill-chrome --minutes 10` |
 | `openDb`, the SharedWorker, or cross-tab visibility | `drive two-tab` |
 | `BrowserFs` (`createWritable`, removes, file locks), the SharedWorker port, or any Web Lock | `kill-chrome --minutes 10` (see [Kill real Chrome](#kill-real-chrome)) |
 | `packages/automerge/src/index.ts`, or a kv change claimed to speed up Automerge | `drive bench automerge/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
@@ -50,7 +51,7 @@ From the repo root, in this order:
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `pressure`, `quota`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `fate/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
+`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `pressure`, `quota`, `destroy`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `fate/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
 
 `launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
 
@@ -65,6 +66,7 @@ The helper runs:
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `pressure` | `TWO_TAB_PRESSURE=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `quota` | `TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
+| `destroy` | `TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `bench <selector…>` | `pnpm bench <selector…>`, with the flags after it |
 | `bench-smoke` | `pnpm bench:smoke` |
 
@@ -77,6 +79,7 @@ A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is 
 | `two-tab-local` | `tabs=1`, `mode=local EngineHost`, `two-tab ok` |
 | `pressure` | `tabs=2`, `mode=SharedWorker`, `pressure answered by tab`, `both tabs read`, `no handler: one warning in each tab`, `pressure ok` |
 | `quota` | `tabs=2`, `mode=SharedWorker`, `handler 1 starts`, `handler calls: `, `quota ok`. Read the timeline: more than one call means a repeated offer. |
+| `destroy` | `mode=SharedWorker`, `other tab closed reason=destroyed`, `other tab put and view read rejected with ClosedError`, `wal database gone`, `folder gone`, `reopened empty`, `never-opened left nothing`, `crashed tab: destroyDb finished`, `destroy ok`. The `frozen tab:` and `tab navigated away:` lines are facts about the Chrome it ran on: a frozen tab holds `destroyDb` until it resumes, and a page in the back/forward cache is evicted. |
 | `bench`, `bench-smoke` | One `## <family>/<workload>: <title>` section per workload, a row per contender, and no `## Failed runs` section. Every read is checked against a model, so exit 0 means every value was right. |
 
 Evidence stays after cleanup:
@@ -174,6 +177,7 @@ Four behaviours it found:
 ```sh
 pnpm --filter @opfs-lsm/kv power-loss-chrome            # five scenarios, under a minute
 pnpm --filter @opfs-lsm/kv power-loss-chrome --verbose  # also print the WAL keys and ingestedThrough at each step
+pnpm --filter @opfs-lsm/kv power-loss-chrome --destroy  # OPFS loses the removes of destroyDb instead
 ```
 
 Exit 0 and a last line `power-loss-chrome ok (5 scenarios)`. Each scenario checks that:
@@ -183,6 +187,8 @@ Exit 0 and a last line `power-loss-chrome ok (5 scenarios)`. Each scenario check
 - a `put` after the open takes a seq past `ingestedThrough` and every WAL key, and is read back in that tab and after a restart.
 
 The scenarios lose the newest records, every record, or the commit of a second flush, and two of them lose the recovery itself a second time. The key generator of `wal` is in the copied directory, so it goes back with the records. That is the fact fake-indexeddb can only model: an adopt that does not move the key generator fails all five, because the put takes a seq already in use (`the put took seq 8, at or below 20` in the first).
+
+With `--destroy`, OPFS is the store that goes back. It copies the OPFS directory with Chrome quit, runs `destroyDb`, and puts the copy back, so the folder returns with its manifest and runs while IndexedDB keeps the deletion of the WAL database and the destroyed row. Exit 0 prints `destroyed rows stayed gone` and `power-loss-chrome ok (1 scenarios)`: the open reads none of the 25 removed keys, and a `put` takes a seq past every seq the removed database used. Recovery that skips rule 0 fails it, with `the open reads 20 writes`, the rows of the old manifest.
 
 What it does not show: a real power cut. The copy is a whole, consistent directory, and OPFS loses nothing. Every pair of prefixes of the two stores is covered by `crash-enum.test.ts` and `formal:power-loss`, on models of the stores.
 
