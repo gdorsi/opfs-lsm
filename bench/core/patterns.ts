@@ -50,11 +50,12 @@ export const PATTERNS = {
 
 export type Pattern = keyof typeof PATTERNS;
 
-/** Problems with the ownership of PATTERNS among `workloads`: a pattern owned twice or not at all. */
+/** Problems with the ownership of PATTERNS among `workloads`: a pattern owned twice or not at all, or a workload that owns none. */
 export function ownershipProblems(workloads: readonly { readonly workload: string; readonly owns: readonly string[] }[]): string[] {
   const owners = new Map<string, string[]>(Object.keys(PATTERNS).map((p) => [p, []]));
   const problems: string[] = [];
   for (const w of workloads) {
+    if (w.owns.length === 0) problems.push(`${w.workload} owns no pattern: a workload that only repeats an owner's pattern belongs in that owner`);
     for (const p of w.owns) {
       const list = owners.get(p);
       if (list) list.push(w.workload);

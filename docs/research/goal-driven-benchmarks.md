@@ -63,7 +63,7 @@ The suite has 13 workloads. The "also hit by" column lists workloads that make t
 | tracker/goals | document ingest with index upkeep; a list read while a large sync lands; bulk and single edits above the settled store; reads right after an edit; one pattern per goal | tanstack-live/screens |
 | tanstack/todos | TanStack DB eager: persisting transactions, loading every row | tanstack-live/screens |
 | tanstack-ondemand/queries | TanStack DB on demand: a live query that loads its rows through an index | tanstack-live/screens |
-| tanstack-live/screens | a screen's live query (joins, order, limit) to its first answer in a fresh tab; keeping open screens current while sync batches land | |
+| tanstack-live/screens | a screen's live query (joins, order, limit) to its first answer, the screens opened one after another in a fresh tab; keeping open screens current while sync batches land | |
 | yjs/trace | Yjs persistence of an editing trace; typing at one key per frame; reopen before and after settle | yjs/many-docs |
 | yjs/many-docs | Yjs: many small documents, each loaded cold | |
 | automerge/trace | the same for Automerge | automerge/many-docs |
@@ -91,7 +91,7 @@ The four app workloads are gone too: linearlite/first-sync, linearlite/browse, y
 - **Paced writes under a frame budget** (the whiteboard's drags, the notes typing). Both trace workloads type their last 300 keystrokes at one per 16 ms frame, with the main thread recorded.
 - **A cold load of a document whose latest updates have not settled** (the whiteboard and notes reopens). Both trace workloads reopen the document in a fresh tab before kv settles, then again after.
 - **Screens of an issue tracker** (linearlite/browse). The tracker goals own them, on normalized data with joins.
-- **TanStack DB's live-query overhead inside an app** (linearlite's screens were live queries). tanstack-live/screens runs four tracker screens as live queries on each TanStack adapter, times each to its first answer in a fresh tab, and times each sync batch until every open screen shows it, with the screens closed for the first half of the batches and open for the second.
+- **TanStack DB's live-query overhead inside an app** (linearlite's screens were live queries). tanstack-live/screens runs four tracker screens as live queries on each TanStack adapter, opens them one after another in a fresh tab, timing each to its first answer (only the first starts cold), and times each sync batch until every open screen shows it, with the screens closed for the first half of the batches and open for the second.
 
 ## 4. First results
 

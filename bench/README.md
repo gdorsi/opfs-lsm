@@ -41,7 +41,7 @@ The SQLite contenders run TanStack's adapter with a patch, [`patches/@tanstack__
 
 The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and values 100 bytes, half compressible (LevelDB's setup). Sizes are `tiny` 1,000 entries, `small` 100,000 and `large` 1,000,000.
 
-- `kv/fillrandom`: N/100 single puts, each awaited, on the empty store (db_bench's fillsync); a random fill; random reads before and after compaction settles; reads of missing keys; a cold open; then deletes of a random tenth, with the space before and after compaction.
+- `kv/fillrandom`: N/100 single puts, each awaited, on the empty store (db_bench's fillsync); a random fill; random reads before and after compaction settles; reads of missing keys; a cold open; then deletes of a random tenth, with the space before and after compaction. The deletes run in the cold-open tab, whose counters start there, so the W-Amp on that settle divides compaction bytes by the delete keys alone: read its Space-Amp and disk bytes, not its W-Amp.
 - `kv/fillseq`: ascending fill, a full scan, random seeks of 10 and 100 keys.
 - `kv/ycsb-a`: YCSB A (50% reads, 50% blind updates), then after a settle YCSB F (50% reads, 50% read-modify-writes in one transaction), zipfian, as in YCSB's workload files. Pebble uses the same letters for different mixes.
 - `kv/compaction-memory`: 20 rounds of N random puts into a 4N key pool, settle, then checked reads. Run it for the memory peaks below, not for throughput.
@@ -117,7 +117,7 @@ The phases:
 1. `import` (timed): the history's import through the collections, 1,000 rows per transaction.
 2. `settle` (untimed): kv flushes and compacts until stable.
 3. `prepare` (fresh page, untimed): the history, the oracle, each screen's binding (curated as in `tracker/goals`) and every expected answer.
-4. `open` (timed): the collections open (op `open`; an eager collection loads every row), then each screen is timed from creating its live query to its first answer (op named after the screen). Every answer is checked. `unopen` (untimed) closes the screens.
+4. `open` (timed): the collections open (op `open`; an eager collection loads every row), then the screens open one after another, as an app's would, each timed from creating its live query to its first answer (op named after the screen). Only the first screen starts cold: the later ones find the shared label list, the rows earlier joins loaded and kv's page cache warm, which matters for the on-demand contenders. Every answer is checked. `unopen` (untimed) closes the screens.
 5. `sync` (timed): the first half of the sync batches, with no screen open.
 6. `screens` (untimed): every screen opens again.
 7. `sync-live` (timed): the second half, with every screen open. A batch is timed until it is persisted and every open screen shows it: no live query and no collection waits for rows, since a join loads the rows it lacks through its source collection. Answers are checked every 10 batches. `close` (untimed) closes the screens.
