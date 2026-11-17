@@ -10,7 +10,6 @@ export {
   __resetMemoryFsForTests,
   type HarnessOpenOptions,
 } from "./harness.js";
-export type { OpenSpan, OpenTrace } from "./db.js";
 export { EngineHost, attachEngineHostPort, createLocalIngestClient } from "./host/engine-host.js";
 export { createPortIngestClient } from "./host/port-client.js";
 export type { IngestClient } from "./host/protocol.js";

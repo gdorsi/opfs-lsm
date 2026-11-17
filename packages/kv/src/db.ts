@@ -123,8 +123,6 @@ export type OpenKnobs = {
    * or responsive. When tabs pass different limits, the host uses the smallest.
    */
   readonly maxWalBytes?: number;
-  /** When set, open records phase durations here. Wasm init can append after the open promise resolves. */
-  readonly trace?: OpenTrace;
   /** Replaces `ROW_POST_MS`. At 0 every row is posted when it lands, so a simulation owns all the timing. */
   readonly rowPostMs?: number;
   /** Wraps the fs this tab reads runs through. `openHarnessDb` passes a `CountingFs`, so `readStats` can count the tab's IO. */
@@ -133,37 +131,6 @@ export type OpenKnobs = {
 
 /** What `openDbWith` takes. `openHarnessDb` in `@opfs-lsm/kv/testing` builds it. */
 export type OpenWithOptions = OpenOptions & OpenKnobs & Backing;
-
-/** One timed piece of open. `endedAt` is `performance.now()` on this thread. */
-export type OpenSpan = {
-  phase: string;
-  ms: number;
-  rows?: number;
-  endedAt: number;
-};
-
-export type OpenTrace = {
-  spans: OpenSpan[];
-};
-
-function span(trace: OpenTrace, phase: string, ms: number, rows?: number): void {
-  trace.spans.push({ phase, ms, endedAt: performance.now(), ...(rows === undefined ? {} : { rows }) });
-}
-
-/** `run()`, recorded as `phase` when tracing. `rowsOf` counts the rows of its result. */
-function timed<T>(
-  trace: OpenTrace | undefined,
-  phase: string,
-  run: () => Promise<T>,
-  rowsOf?: (out: T) => number,
-): Promise<T> {
-  if (!trace) return run();
-  const at = performance.now();
-  return run().then((out) => {
-    span(trace, phase, performance.now() - at, rowsOf?.(out));
-    return out;
-  });
-}
 
 export type Range = {
   /** Inclusive. Bounds are in key order whichever way `reverse` points. */
@@ -333,7 +300,6 @@ export async function openDb(options: OpenOptions): Promise<Db> {
 async function connect(
   name: DbName,
   backing: Backing,
-  trace: OpenTrace | undefined,
 ): Promise<{
   readonly fs: ReadFs;
   readonly ingest: IngestClient;
@@ -352,7 +318,7 @@ async function connect(
   const walOpen = TabWal.open(name);
   walOpen.catch(() => undefined);
   try {
-    const fs = await timed(trace, "opfs", () => openBrowserReadFs(name));
+    const fs = await openBrowserReadFs(name);
     if (backing.ingest) return { fs, ingest: backing.ingest, ownsIngestClient: false, walOpen };
     // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
     // only emit a worker chunk for this exact shape. Built in a helper, Vite
@@ -381,7 +347,7 @@ export async function destroyDb(name: string): Promise<void> {
 /** `destroyDb` on a given backing. */
 export async function destroyDbWith(options: { readonly name: string } & Backing): Promise<void> {
   const name = checkDbName(options.name);
-  const { ingest, ownsIngestClient, walOpen } = await connect(name, options, undefined);
+  const { ingest, ownsIngestClient, walOpen } = await connect(name, options);
   void walOpen?.then((w) => w.close(), () => undefined);
   try {
     await ingest.destroy(name);
@@ -391,31 +357,26 @@ export async function destroyDbWith(options: { readonly name: string } & Backing
 }
 
 /** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
-export function openDbWith(options: OpenWithOptions): Promise<Db> {
-  return timed(options.trace, "open", () => openTraced(options));
-}
-
-async function openTraced(options: OpenWithOptions): Promise<Db> {
-  const trace = options.trace;
+export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   const name = checkDbName(options.name);
   if (options.maxBytes !== undefined && options.maxBytes !== "quota" && !(options.maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
   // Started first, so the module loads while the rest of open runs.
-  const engine = timed(trace, "wasm", ensureEngine);
+  const engine = ensureEngine();
   // Awaited last: a throw before that must not leave its rejection unhandled.
   engine.catch(() => undefined);
   const caps = memtableCaps(options.memtableBytes);
 
-  const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, trace);
+  const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options);
   // What the catch below closes: the Db once it exists, else the WAL and an owned port.
   let heldWal: TabWal | undefined;
   let heldDb: DbImpl | undefined;
   try {
     const tabFs = options.wrapFs?.(fs) ?? fs;
-    const wal = await timed(trace, "idb-open", () => walOpen ?? TabWal.open(name));
+    const wal = await (walOpen ?? TabWal.open(name));
     heldWal = wal;
     // Pair the WAL with a manifest before the first read or write. The
     // recorded manifest's runs are checked by the first sync, which loads them.
-    await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
+    await reconcile(wal, tabFs, "recorded");
     const writerId = (options.writerId ?? newWriterId()) as WriterId;
     const maxBytes = options.maxBytes;
     const cache = new PageCache(
@@ -431,12 +392,11 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
       ownsIngestClient,
       caps,
       maxBytes,
-      trace,
       options.rowPostMs,
     );
     heldDb = db;
     internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
-    await timed(trace, "sync", () => db.sync());
+    await db.sync();
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
     ingest.watch(name, {
       maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
@@ -587,7 +547,6 @@ class DbImpl implements Db {
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
     private readonly maxBytes: number | "quota" | undefined,
-    private readonly trace?: OpenTrace,
     private readonly rowPostMs = ROW_POST_MS,
   ) {
     this.pressure = new Backpressure(
@@ -871,27 +830,20 @@ class DbImpl implements Db {
    * a file.
    */
   private async catchUpOnce(): Promise<"done" | Retry> {
-    const tail = await timed(
-      this.trace,
-      "wal-read",
-      () => this.wal.tail(this.mem.appliedThrough),
-      (t) => t.records.length,
-    );
+    const tail = await this.wal.tail(this.mem.appliedThrough);
     if (this.closed) return "done";
     let whole = true;
     if (tail.generation !== this.installed.generation) {
       const ahead = tail.ingestedThrough > this.mem.appliedThrough;
-      whole = await timed(this.trace, "sst", () => this.load(tail.generation, ahead));
+      whole = await this.load(tail.generation, ahead);
       if (this.closed) return "done";
     }
-    const memAt = this.trace ? performance.now() : 0;
     let missing: number | undefined;
     try {
       missing = this.catchUp(tail);
     } finally {
       this.announce();
     }
-    if (this.trace) span(this.trace, "memtable", performance.now() - memAt, tail.records.length);
     if (missing === undefined) return "done";
     return whole ? "behind" : "gone";
   }
