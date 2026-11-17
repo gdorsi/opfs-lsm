@@ -69,7 +69,7 @@ beforeEach(wipe);
 describe("WAL read", () => {
   it("returns every record after since and after ingestedThrough", async () => {
     const wal = await seeded(12);
-    await advanceIngested(wal, 4, 1);
+    await advanceIngested(wal, { through: 4, generation: 1 });
     const tail = await wal.tail(2);
     expect(tail.head).toBe(12);
     expect(tail.ingestedThrough).toBe(4);
@@ -143,7 +143,7 @@ describe("WAL read with a byte cap", () => {
     expect(seqs(await listUningested(wal, { maxBytes: 35 }))).toEqual([1, 2, 3]);
     expect(seqs(await listUningested(wal, { maxBytes: 30 }))).toEqual([1, 2, 3]);
     expect(seqs(await listUningested(wal, { maxBytes: 29 }))).toEqual([1, 2]);
-    await advanceIngested(wal, 3, 1);
+    await advanceIngested(wal, { through: 3, generation: 1 });
     expect(seqs(await listUningested(wal, { maxBytes: 1000 }))).toEqual([4, 5, 6]);
     expect(summary(await listUningested(wal, { maxBytes: 1000 }))).toEqual(
       summary(await listUningested(wal, { maxBytes: 1 << 30 })),
@@ -155,9 +155,9 @@ describe("WAL read with a byte cap", () => {
     const wal = await TabWal.open(checkDbName(NAME));
     for (const bytes of [5, 100, 5, 5]) await wal.append(encodeOps(sized(bytes)));
     expect(seqs(await listUningested(wal, { maxBytes: 20 }))).toEqual([1]);
-    await advanceIngested(wal, 1, 1);
+    await advanceIngested(wal, { through: 1, generation: 1 });
     expect(seqs(await listUningested(wal, { maxBytes: 20 }))).toEqual([2]);
-    await advanceIngested(wal, 2, 2);
+    await advanceIngested(wal, { through: 2, generation: 2 });
     expect(seqs(await listUningested(wal, { maxBytes: 20 }))).toEqual([3, 4]);
     expect(seqs(await listUningested(wal, { maxBytes: 1 }))).toEqual([3]);
     wal.close();
@@ -165,7 +165,7 @@ describe("WAL read with a byte cap", () => {
 
   it("returns nothing when everything is ingested", async () => {
     const wal = await seeded(3);
-    await advanceIngested(wal, 3, 1);
+    await advanceIngested(wal, { through: 3, generation: 1 });
     expect(await listUningested(wal, { maxBytes: 10 })).toEqual([]);
     wal.close();
   });

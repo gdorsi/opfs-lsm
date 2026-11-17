@@ -1,5 +1,6 @@
 import { compareBytes } from "./bytes.js";
 import { ConstraintError } from "./errors.js";
+import { asSeq, type Seq } from "./seq.js";
 
 const LIMITS = {
   keyBytes: 8 * 1024,
@@ -33,7 +34,7 @@ export type CheckedOp =
        * record's seq and always below it, so a batch never removes its own
        * writes.
        */
-      readonly through: number;
+      readonly through: Seq;
     };
 
 /** An op as `BatchTx` collects it, before `checkBatch`. */
@@ -111,7 +112,7 @@ function checkDeleteRange(op: Extract<BatchOp, { type: "deleteRange" }>): Checke
   if (op.through !== undefined && !(Number.isSafeInteger(op.through) && op.through >= 0)) {
     throw new ConstraintError(`deleteRange through must be a safe integer >= 0: got ${op.through}`);
   }
-  return { type: "deleteRange", start, ...(end ? { endExclusive: end } : {}), through: op.through ?? Number.MAX_SAFE_INTEGER };
+  return { type: "deleteRange", start, ...(end ? { endExclusive: end } : {}), through: asSeq(op.through ?? Number.MAX_SAFE_INTEGER) };
 }
 
 export function checkBatch(ops: readonly BatchOp[]): readonly CheckedOp[] {

@@ -1,6 +1,15 @@
 import { compareBytes } from "../bytes.js";
 import { opsBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName } from "../check.js";
 import { CommitError, StorageUnavailableError } from "../errors.js";
+import {
+  asGeneration,
+  asSeq,
+  GENERATION_NONE,
+  nextSeq,
+  prevSeq,
+  type Generation,
+  type Seq,
+} from "../seq.js";
 import type { WalRecord } from "../store/memtable.js";
 
 /**
@@ -32,21 +41,21 @@ const IDB_VERSION = 1;
 
 /** The `meta` keys that say which log prefix the WAL and the manifest hold. */
 export type WalMeta = {
-  readonly head: number;
-  readonly ingestedThrough: number;
+  readonly head: Seq;
+  readonly ingestedThrough: Seq;
   /** Undefined until an open or an ingest records one. */
-  readonly generation: number | undefined;
+  readonly generation: Generation | undefined;
   /** The highest manifest number recovery has seen, 0 for none. */
-  readonly top: number;
+  readonly top: Generation;
   /** The `topGeneration` the last destroy recorded, 0 for none. */
-  readonly destroyedTop: number;
+  readonly destroyedTop: Generation;
 };
 
 /** What a tab needs to bring its memtable up to the WAL head. */
 export type WalTail = {
-  readonly head: number;
-  readonly generation: number;
-  readonly ingestedThrough: number;
+  readonly head: Seq;
+  readonly generation: Generation;
+  readonly ingestedThrough: Seq;
   /** Every record above max(since, ingestedThrough), in seq order. */
   readonly records: readonly WalRecord[];
 };
@@ -59,14 +68,19 @@ function num(raw: unknown): number {
   return typeof raw === "number" ? raw : 0;
 }
 
-/** A `meta` number, 0 when unset. */
-function metaNum(meta: IDBObjectStore, key: string): Promise<number> {
-  return reqToPromise(meta.get(key)).then(num);
+/** A `meta` seq, 0 when unset. */
+function metaSeq(meta: IDBObjectStore, key: string): Promise<Seq> {
+  return reqToPromise(meta.get(key)).then((raw) => asSeq(num(raw)));
 }
 
-/** A `meta` number, undefined when unset. */
-function metaOpt(meta: IDBObjectStore, key: string): Promise<number | undefined> {
-  return reqToPromise(meta.get(key)).then((raw) => (typeof raw === "number" ? raw : undefined));
+/** A `meta` generation number, 0 when unset. */
+function metaGeneration(meta: IDBObjectStore, key: string): Promise<Generation> {
+  return reqToPromise(meta.get(key)).then((raw) => asGeneration(num(raw)));
+}
+
+/** A `meta` generation number, undefined when unset. */
+function metaGenerationOpt(meta: IDBObjectStore, key: string): Promise<Generation | undefined> {
+  return reqToPromise(meta.get(key)).then((raw) => (typeof raw === "number" ? asGeneration(raw) : undefined));
 }
 
 const EMPTY_RECORD = new ArrayBuffer(0);
@@ -76,8 +90,8 @@ const OP_DEL = 1;
 const OP_DELETE_RANGE = 3;
 
 /** A range delete asked for `asked` in the record at `seq` never covers its own batch. */
-function resolveThrough(asked: number, seq: number): number {
-  return Math.max(0, Math.min(asked, seq - 1));
+function resolveThrough(asked: Seq, seq: Seq): Seq {
+  return asSeq(Math.max(0, Math.min(asked, prevSeq(seq))));
 }
 
 /**
@@ -120,7 +134,7 @@ export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
 }
 
 /** The ops of `record` with each range delete's `through` resolved against `seq`. */
-export function resolveOps(ops: readonly CheckedOp[], seq: number): readonly CheckedOp[] {
+export function resolveOps(ops: readonly CheckedOp[], seq: Seq): readonly CheckedOp[] {
   if (!ops.some((op) => op.type === "deleteRange")) return ops;
   return ops.map((op) => (op.type === "deleteRange" ? { ...op, through: resolveThrough(op.through, seq) } : op));
 }
@@ -130,7 +144,7 @@ export function resolveOps(ops: readonly CheckedOp[], seq: number): readonly Che
  * buffer, which nothing else holds. Exported for the decoder fuzz tests
  * (`packages/kv/fuzz/`).
  */
-export function decodeOps(raw: unknown, seq: number): CheckedOp[] {
+export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new CommitError("corrupt wal row: not bytes");
   const bytes = new Uint8Array(raw);
   const view = new DataView(raw);
@@ -169,7 +183,7 @@ export function decodeOps(raw: unknown, seq: number): CheckedOp[] {
         type: "deleteRange",
         start: key,
         ...(end ? { endExclusive: end } : {}),
-        through: resolveThrough(Number(through), seq),
+        through: resolveThrough(asSeq(Number(through)), seq),
       });
     } else {
       throw new CommitError(`corrupt wal op ${type}`);
@@ -231,21 +245,21 @@ function txDone(tx: IDBTransaction): Promise<void> {
  * of folded records at once: right after one, a reverse lookup on an empty
  * tail costs tens of ms, while a forward one seeks past the deleted rows.
  */
-async function headOf(tx: IDBTransaction, ingestedThrough: number): Promise<number> {
+async function headOf(tx: IDBTransaction, ingestedThrough: Seq): Promise<Seq> {
   const wal = tx.objectStore(WAL_STORE);
   const past = IDBKeyRange.lowerBound(ingestedThrough, true);
   if (!(await reqToPromise(wal.openKeyCursor(past)))) return ingestedThrough;
   const last = await reqToPromise(wal.openKeyCursor(past, "prev"));
-  return Math.max(num(last?.key), ingestedThrough);
+  return asSeq(Math.max(num(last?.key), ingestedThrough));
 }
 
 async function readMeta(tx: IDBTransaction): Promise<WalMeta> {
   const meta = tx.objectStore(META_STORE);
   const [ingestedThrough, generation, top, destroyedTop] = await Promise.all([
-    metaNum(meta, META_INGESTED),
-    metaOpt(meta, META_GENERATION),
-    metaNum(meta, META_TOP),
-    metaNum(meta, META_DESTROYED_TOP),
+    metaSeq(meta, META_INGESTED),
+    metaGenerationOpt(meta, META_GENERATION),
+    metaGeneration(meta, META_TOP),
+    metaGeneration(meta, META_DESTROYED_TOP),
   ]);
   return { head: await headOf(tx, ingestedThrough), ingestedThrough, generation, top, destroyedTop };
 }
@@ -274,8 +288,8 @@ const READ_CHUNK = 25_000;
  */
 async function readRecords(
   wal: IDBObjectStore,
-  after: number,
-  head: number,
+  after: Seq,
+  head: Seq,
 ): Promise<WalRecord[]> {
   const chunks: Promise<WalRecord[]>[] = [];
   for (let lo = after + 1; lo <= head; lo += READ_CHUNK) {
@@ -285,7 +299,7 @@ async function readRecords(
         if (values.length !== hi - lo + 1) {
           throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
         }
-        return values.map((value, i) => ({ seq: lo + i, ops: decodeOps(value, lo + i) }));
+        return values.map((value, i) => ({ seq: asSeq(lo + i), ops: decodeOps(value, asSeq(lo + i)) }));
       }),
     );
   }
@@ -301,8 +315,8 @@ async function readRecords(
  */
 async function readRecordsUpTo(
   wal: IDBObjectStore,
-  after: number,
-  head: number,
+  after: Seq,
+  head: Seq,
   maxBytes: number,
 ): Promise<WalRecord[]> {
   const records: WalRecord[] = [];
@@ -315,10 +329,11 @@ async function readRecordsUpTo(
       throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
     }
     for (const [i, value] of values.entries()) {
-      const ops = decodeOps(value, lo + i);
+      const at = asSeq(lo + i);
+      const ops = decodeOps(value, at);
       const size = opsBytes(ops);
       if (records.length > 0 && bytes + size > maxBytes) return records;
-      records.push({ seq: lo + i, ops });
+      records.push({ seq: at, ops });
       bytes += size;
     }
     lo = hi + 1;
@@ -328,16 +343,16 @@ async function readRecordsUpTo(
   return records;
 }
 
-async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
+async function readTail(tx: IDBTransaction, since: Seq): Promise<WalTail> {
   const meta = tx.objectStore(META_STORE);
   const [generation, ingestedThrough] = await Promise.all([
-    metaNum(meta, META_GENERATION),
-    metaNum(meta, META_INGESTED),
+    metaGeneration(meta, META_GENERATION),
+    metaSeq(meta, META_INGESTED),
   ]);
   const head = await headOf(tx, ingestedThrough);
   const records = await readRecords(
     tx.objectStore(WAL_STORE),
-    Math.max(since, ingestedThrough),
+    asSeq(Math.max(since, ingestedThrough)),
     head,
   );
   return { head, generation, ingestedThrough, records };
@@ -350,14 +365,14 @@ async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
  * hold. An explicit key moves the generator, and the delete does not move
  * it back.
  */
-function passKeyGenerator(wal: IDBObjectStore, head: number): void {
+function passKeyGenerator(wal: IDBObjectStore, head: Seq): void {
   wal.add(EMPTY_RECORD, head);
   wal.delete(head);
 }
 
 type GroupEntry = {
   readonly record: ArrayBuffer;
-  readonly resolve: (seq: number) => void;
+  readonly resolve: (seq: Seq) => void;
   readonly reject: (err: unknown) => void;
 };
 
@@ -411,13 +426,14 @@ export class IdBWal {
    *   moves to the new `head`: the database is the manifest alone.
    * `head` never moves down, so a seq is never reused.
    */
-  async adopt(
-    expect: WalMeta,
-    generation: number,
-    through: number,
-    floor: number,
-    top: number,
-  ): Promise<boolean> {
+  async adopt(pairing: {
+    readonly expect: WalMeta;
+    readonly generation: Generation;
+    readonly through: Seq;
+    readonly floor: Seq;
+    readonly top: Generation;
+  }): Promise<boolean> {
+    const { expect, generation, through, floor, top } = pairing;
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
     const meta = tx.objectStore(META_STORE);
@@ -430,10 +446,10 @@ export class IdBWal {
     const { head, ingestedThrough: ingested, top: knownTop } = now;
     const above =
       head > through
-        ? await reqToPromise(wal.getAll(IDBKeyRange.bound(through + 1, head)))
+        ? await reqToPromise(wal.getAll(IDBKeyRange.bound(nextSeq(through), head)))
         : [];
-    const nextHead = Math.max(head, through, floor);
-    let nextIngested = through;
+    const nextHead = asSeq(Math.max(head, through, floor));
+    let nextIngested: Seq = through;
     if (nextHead === head && (through >= ingested || above.length === head - through)) {
       wal.delete(IDBKeyRange.upperBound(Math.min(ingested, through)));
     } else {
@@ -482,7 +498,7 @@ export class TabWal extends IdBWal {
   }
 
   /** The tail after `since`, from one readonly transaction. */
-  async tail(since: number): Promise<WalTail> {
+  async tail(since: Seq): Promise<WalTail> {
     // The reads are the result. Waiting for `complete` as well is one more trip.
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
     const tail = await readTail(tx, since);
@@ -496,13 +512,13 @@ export class TabWal extends IdBWal {
    * and a throw aborts the transaction and rethrows.
    */
   async appendAfter<R>(
-    since: number,
+    since: Seq,
     decide: (
       tail: WalTail,
     ) => { readonly ops: readonly CheckedOp[]; readonly result: R } | undefined,
   ): Promise<
     | {
-        readonly seq: number | undefined;
+        readonly seq: Seq | undefined;
         readonly ops: readonly CheckedOp[];
         /** The row written: `encodeOps(ops)`. Empty when nothing was. */
         readonly record: ArrayBuffer;
@@ -525,7 +541,7 @@ export class TabWal extends IdBWal {
       await done;
       return decision && { seq: undefined, ops: [], record: EMPTY_RECORD, result: decision.result };
     }
-    const seq = tail.head + 1;
+    const seq = nextSeq(tail.head);
     const record = encodeOps(decision.ops);
     tx.objectStore(WAL_STORE).add(record, seq);
     // Without this, Chrome waits for the add's success event to reach the
@@ -549,7 +565,7 @@ export class TabWal extends IdBWal {
    * head (`passKeyGenerator`), and an aborted transaction gives its keys
    * back, so committed seqs stay gapless.
    */
-  append(record: ArrayBuffer): Promise<number> {
+  append(record: ArrayBuffer): Promise<Seq> {
     return new Promise((resolve, reject) => {
       const entry: GroupEntry = { record, resolve, reject };
       if (!this.open) this.commitGroup([entry]);
@@ -590,7 +606,7 @@ export class TabWal extends IdBWal {
           this.appendedBytes += entry.record.byteLength;
         }
         this.finish(group);
-        for (const { entry, add } of group.adds) entry.resolve(add.result as number);
+        for (const { entry, add } of group.adds) entry.resolve(asSeq(add.result as number));
       },
       (err: unknown) => {
         this.finish(group);
@@ -621,7 +637,11 @@ export class TabWal extends IdBWal {
  * still reads `expect`. Resolves once the commit is on disk (durability
  * "strict"), so no power loss keeps a file removed after it and loses it.
  */
-export async function emptyWal(wal: IdBWal, expect: WalMeta, head: number, top: number): Promise<boolean> {
+export async function emptyWal(
+  wal: IdBWal,
+  emptied: { readonly expect: WalMeta; readonly head: Seq; readonly top: Generation },
+): Promise<boolean> {
+  const { expect, head, top } = emptied;
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readwrite", { durability: "strict" });
   const done = txDone(tx);
   const now = await readMeta(tx);
@@ -634,7 +654,7 @@ export async function emptyWal(wal: IdBWal, expect: WalMeta, head: number, top: 
   records.delete(IDBKeyRange.upperBound(now.head));
   if (head > now.head) passKeyGenerator(records, head);
   meta.put(head, META_INGESTED);
-  meta.put(0, META_GENERATION);
+  meta.put(GENERATION_NONE, META_GENERATION);
   meta.put(top, META_TOP);
   meta.put(top, META_DESTROYED_TOP);
   await done;
@@ -642,19 +662,19 @@ export async function emptyWal(wal: IdBWal, expect: WalMeta, head: number, top: 
 }
 
 /** Record `generation` unless a newer one is already recorded. */
-export async function raiseGeneration(wal: IdBWal, generation: number): Promise<void> {
+export async function raiseGeneration(wal: IdBWal, generation: Generation): Promise<void> {
   const tx = wal.db.transaction(META_STORE, "readwrite");
   const meta = tx.objectStore(META_STORE);
-  const recorded = await metaOpt(meta, META_GENERATION);
+  const recorded = await metaGenerationOpt(meta, META_GENERATION);
   if (recorded === undefined || generation > recorded) {
     meta.put(generation, META_GENERATION);
   }
   await txDone(tx);
 }
 
-export async function getIngestedThrough(wal: IdBWal): Promise<number> {
+export async function getIngestedThrough(wal: IdBWal): Promise<Seq> {
   const tx = wal.db.transaction(META_STORE, "readonly");
-  const through = await metaNum(tx.objectStore(META_STORE), META_INGESTED);
+  const through = await metaSeq(tx.objectStore(META_STORE), META_INGESTED);
   await txDone(tx);
   return through;
 }
@@ -669,7 +689,7 @@ export async function getIngestedThrough(wal: IdBWal): Promise<number> {
 export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number> {
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
   const done = txDone(tx);
-  const through = await metaNum(tx.objectStore(META_STORE), META_INGESTED);
+  const through = await metaSeq(tx.objectStore(META_STORE), META_INGESTED);
   const head = await headOf(tx, through);
   const store = tx.objectStore(WAL_STORE);
   const records = await readRecordsUpTo(store, through, head, cap);
@@ -689,7 +709,7 @@ export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: nu
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
   const done = txDone(tx);
   const meta = tx.objectStore(META_STORE);
-  const through = await metaNum(meta, META_INGESTED);
+  const through = await metaSeq(meta, META_INGESTED);
   const head = await headOf(tx, through);
   const store = tx.objectStore(WAL_STORE);
   const records = await readRecordsUpTo(store, through, head, limit.maxBytes);
@@ -705,13 +725,17 @@ export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: nu
  * commit and loses the new manifest can still recover them (design.md,
  * "Recovery").
  */
-export async function advanceIngested(wal: IdBWal, through: number, generation: number): Promise<void> {
+export async function advanceIngested(
+  wal: IdBWal,
+  folded: { readonly through: Seq; readonly generation: Generation },
+): Promise<void> {
+  const { through, generation } = folded;
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readwrite");
   const done = txDone(tx);
   const meta = tx.objectStore(META_STORE);
   const [existing, prevGen] = await Promise.all([
-    metaNum(meta, META_INGESTED),
-    metaNum(meta, META_GENERATION),
+    metaSeq(meta, META_INGESTED),
+    metaGeneration(meta, META_GENERATION),
   ]);
   if (through > existing) {
     tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(existing));

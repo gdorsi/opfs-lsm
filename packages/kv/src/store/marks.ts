@@ -1,5 +1,6 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
+import { asSeq, SEQ_ZERO, type Seq } from "../seq.js";
 import type { ScanBounds } from "./cursor.js";
 
 /**
@@ -17,8 +18,6 @@ import type { ScanBounds } from "./cursor.js";
  * A reader rejects truncation, a `has end` above 1, an end not above the
  * start, through 0, at <= through, and at past the manifest's `through`.
  */
-
-export type Seq = number;
 
 /** One range delete of a record, `through` resolved. */
 export type Mark = {
@@ -38,7 +37,7 @@ export const NO_MARKS: Marks = [];
 
 /** The highest `through` of the marks holding `key`, 0 when none. */
 export function throughAt(marks: Marks, key: Uint8Array): Seq {
-  let max = 0;
+  let max = SEQ_ZERO;
   for (const m of marks) {
     if (
       m.through > max &&
@@ -148,10 +147,10 @@ export function decodeMarks(
     const at = take(len);
     return bytes.slice(at, at + len);
   };
-  const u64 = (): number => {
+  const u64 = (): Seq => {
     const n = view.getBigUint64(take(8), true);
     if (n > BigInt(Number.MAX_SAFE_INTEGER)) throw new CorruptDatabaseError("marks seq out of range");
-    return Number(n);
+    return asSeq(Number(n));
   };
   const marks: Mark[] = [];
   for (let n = view.getUint32(take(4), true); n > 0; n--) {
