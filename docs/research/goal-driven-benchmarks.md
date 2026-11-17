@@ -12,19 +12,19 @@ Conventions as in the other research notes. **[E]** external fact, cited with th
 2. The tool for "no overlap" is LDBC's query × choke-point matrix: each query is designed against named technical challenges, and a gap is fixed by changing a query (§6). §3 applies it to this suite.
 3. Two LDBC choke points name what the example apps never isolated: CP-3.3 *scattered index access* and CP-3.2 *dimensional clustering* (§6). In docstore, an index page of 50 is one range plus 50 point gets, each on whatever 32 KB page its row landed on [R: packages/docstore/src/snapshot.ts].
 4. Realism moves from the app into the generator. Skew and correlation are built in (§7). The store is built by replaying a history, not by bulk-loading the final state, because an LSM's shape depends on write order (§7). Bindings are curated so a goal's reps do comparable work (§10).
-5. Example apps still catch what a goal cannot: adapter and live-query overhead, rendering competing for the main thread, sync running alongside reads, several tabs. Keep one workload per shipped adapter, and drop the app benchmarks whose patterns a goal now owns (§3).
+5. Example apps catch what a goal cannot: rendering competing for the main thread, several tabs. That is a reason to test them, not to benchmark them. The app benchmarks are removed. Each pattern they owned alone belongs to a goal, to a phase of an adapter workload, or to the live-query workload on the tracker dataset, and each shipped adapter keeps one workload. The suite is 13 workloads, one owner per access pattern, and the check is code (§3).
 6. First numbers at `small` (§4): the goals separate the libraries by access pattern in a way the app benchmarks never did, and they point at specific docstore API gaps (no index values in a query, no group-by, no offset).
 
 ---
 
-## 1. What the current suite measures
+## 1. What the suite measured before goals
 
-[R: bench/README.md] The suite has two halves.
+[R: bench/README.md at #283] The suite had two halves.
 
 - **Engine workloads.** db_bench and YCSB A to F on raw keys. They isolate engine paths, but six YCSB mixes and five db_bench fills overlap heavily, and no key is an index entry pointing at a row.
-- **App workloads.** linearlite, whiteboard, pages and todos run headless. Each number mixes the app's model, TanStack DB, sync and storage. The linearlite data is denormalized (the assignee is a string on the issue, with no labels or projects) and loaded in one sync, so no join and no aged store is ever measured.
+- **App workloads.** linearlite, whiteboard, pages and todos ran headless. Each number mixed the app's model, TanStack DB, sync and storage. The linearlite data was denormalized (the assignee was a string on the issue, with no labels or projects) and loaded in one sync, so no join and no aged store was ever measured.
 
-Batched small-value ingest appears in five workloads. Blob append plus prefix load appears in every CRDT workload. Index pages appear in three.
+Batched small-value ingest appeared in five workloads. Blob append plus prefix load appeared in every CRDT workload. Index pages appeared in three.
 
 ## 2. The shape
 
@@ -37,7 +37,7 @@ Three parts of the rejected sketch were kept:
 
 - the `recent` writes on top of a settled store;
 - the goal on a list a bulk edit just emptied (`drainedPage`);
-- the plan to make coverage a checked list (§3).
+- coverage as a checked list (§3).
 
 The rules, and why:
 
@@ -48,35 +48,50 @@ The rules, and why:
 
 The cost of this shape is about 33 hand-written goal bodies (11 goals × 3 contenders). Each number measures the library's own path, plus the skill of whoever wrote the contender. Shortcuts get a note in `fastPath`, not a ban, as in js-framework-benchmark (§8).
 
-## 3. Coverage and the proposed trim
+## 3. Coverage and the trim
 
-One owner per access pattern. "Hit also by" lists the workloads that would be deleted. This is a proposal: no workload is deleted yet.
+One owner per access pattern. The matrix is code [R: bench/core/patterns.ts]: one list names every pattern, every workload declares the patterns it owns in a required `owns`, and a goal workload derives its own from its dataset and its goals. `bench:smoke --check` fails when a pattern has no owner or two [R: bench/cli.ts]. A kv pattern stays with a kv workload even where a document workload makes the same calls, because the kv family is the one that compares raw kv with IndexedDB.
 
-| access pattern | owner | hit also by |
+The suite has 13 workloads. The "also hit by" column lists workloads that make the same calls without owning them.
+
+| workload | owns | also hit by |
 |---|---|---|
-| batched random ingest, flush and compaction, W-Amp; point get hit/miss; raw cold open | kv/fillrandom | kv/overwrite, kv/ycsb-b, kv/ycsb-c |
-| sequential ingest, full scan, seek then next | kv/fillseq | kv/ycsb-e |
-| zipfian mixed reads and updates | kv/ycsb-a | kv/ycsb-d (read-latest: `recentActivity`), kv/ycsb-f (read-modify-write: tracker `edit`) |
-| compaction memory peak | kv/compaction-memory | |
-| single awaited write | tracker `recent` (`edit`) | kv/fillsync |
-| deletes, tombstones, space after aging | tracker replay + settle footprint | kv/deleterandom |
-| document ingest with index upkeep | tracker replay (`import`, `sync`) | table/todos, linearlite/first-sync |
-| index counts, pages, joins, deep windows, search, cold screens | tracker goals | table/todos, linearlite/browse |
-| TanStack DB eager adapter | tanstack/todos | |
-| TanStack DB on-demand adapter | tanstack-ondemand/queries | linearlite/browse |
-| Yjs persistence | yjs/trace | yjs/many-docs, yjs/whiteboard-session |
-| Automerge persistence | automerge/trace | automerge/many-docs, pages/type |
-| fate persistence | fate/read-cache | fate/mutations (fate's own CPU dominates) |
+| kv/fillrandom | a single awaited put; batched random ingest, flush and compaction, W-Amp; point gets that hit and miss; cold open; batched deletes and the space compaction gives back | kv/compaction-memory, kv/ycsb-a |
+| kv/fillseq | sequential ingest; full scan; seeks followed by 10 or 100 nexts | |
+| kv/ycsb-a | zipfian reads with blind updates (YCSB A); zipfian reads with read-modify-writes in one transaction (YCSB F) | |
+| kv/compaction-memory | the memory peak of compaction | |
+| tracker/goals | document ingest with index upkeep; a list read while a large sync lands; bulk and single edits above the settled store; reads right after an edit; one pattern per goal | tanstack-live/screens |
+| tanstack/todos | TanStack DB eager: persisting transactions, loading every row | tanstack-live/screens |
+| tanstack-ondemand/queries | TanStack DB on demand: a live query that loads its rows through an index | tanstack-live/screens |
+| tanstack-live/screens | a screen's live query (joins, order, limit) to its first answer, the screens opened one after another in a fresh tab; keeping open screens current while sync batches land | |
+| yjs/trace | Yjs persistence of an editing trace; typing at one key per frame; reopen before and after settle | yjs/many-docs |
+| yjs/many-docs | Yjs: many small documents, each loaded cold | |
+| automerge/trace | the same for Automerge | automerge/many-docs |
+| automerge/many-docs | Automerge: many small documents, each loaded cold | |
+| fate/read-cache | fate persistence: saving request results, loading them cold from storage alone | |
 
-25 workloads become 10. Three patterns lose their owner and need a decision:
+Ten kv, table and adapter workloads are gone. Seven only repeated an owner's pattern. Each of their timed ops was checked against an owner that makes the same call on the same contenders at the same layer:
 
-- **Reads during a large sync** (linearlite/first-sync times the first rows while the import runs). This could become a tracker phase that runs `statusPage` while `import` batches land.
-- **Paced writes under a frame budget** (yjs/whiteboard-session). This could become a tracker goal that drags issues across board columns at 60 Hz.
-- **Many small docs, each loaded cold** (the many-docs workloads).
+- **kv/overwrite.** Its batched puts are kv/fillrandom's `putMany`. Old versions dropped by compaction are in kv/ycsb-a's settle after 50,000 updates, and in kv/compaction-memory's rounds over a key pool.
+- **kv/ycsb-b, kv/ycsb-c.** Their zipfian reads and updates are kv/ycsb-a's, in other proportions.
+- **kv/ycsb-d.** Its inserts are single blind puts, the call kv/ycsb-a's updates make. Its reads of the latest keys read data above the settled levels, as kv/ycsb-a's reads of keys it just updated and kv/fillrandom's reads before compaction do. At the document layer, `recentActivity` owns the newest end of a time index.
+- **kv/ycsb-e.** Its scans of 1 to 100 keys are seeks followed by nexts, kv/fillseq's `seek`.
+- **table/todos, with the `table` family and its docstore and Dexie contenders.** tracker/goals compares docstore with Dexie, and with SQLite: batched ingest with index upkeep, single edits, index pages and counts, joins by id, deletes in sync batches, and cold opens.
+- **fate/mutations.** fate's journal goes through the same storage calls as its cache (`writeBatch`, `scan`, `read`, `exclusive`), which fate/read-cache measures. Its time was mostly fate walking its own journal.
 
-The trim also touches docs/verification.md, two research notes and the app rows on the home page, which quote these workloads [R: `git grep`].
+The other three each made a kv call that no other kv workload makes, so each is now a phase of an owner:
 
-To make it stick, the matrix should become code: one list of access patterns in `bench/core`, a required `owns` on every workload (a goal workload derives it from its goals), and a check in `bench:smoke --check` that fails when a pattern has two owners or none.
+- **kv/fillsync** is kv/fillrandom's first phase: 1,000 puts at `small`, each awaited, on the empty store, as before.
+- **kv/deleterandom** is two phases at the end of kv/fillrandom: batched deletes of a random tenth, then a settle with the footprint and untimed reads that check the deletes. They run after the cold open, so the cold open still measures a store of N random keys.
+- **kv/ycsb-f** is a phase of kv/ycsb-a, after YCSB A and a settle: `KvStore.update`, a read-modify-write in one transaction, is a kv call nothing else times against IndexedDB.
+
+The four app workloads are gone too: linearlite/first-sync, linearlite/browse, yjs/whiteboard-session and pages/type. The examples carry no benchmark code. Each pattern they owned alone has another owner:
+
+- **Reads during a large sync** (linearlite/first-sync timed the first rows while the import ran). The tracker's replay reads the 50 most recently updated issues every 10 batches and checks them against the oracle at that point of the history.
+- **Paced writes under a frame budget** (the whiteboard's drags, the notes typing). Both trace workloads type their last 300 keystrokes at one per 16 ms frame, with the main thread recorded.
+- **A cold load of a document whose latest updates have not settled** (the whiteboard and notes reopens). Both trace workloads reopen the document in a fresh tab before kv settles, then again after.
+- **Screens of an issue tracker** (linearlite/browse). The tracker goals own them, on normalized data with joins.
+- **TanStack DB's live-query overhead inside an app** (linearlite's screens were live queries). tanstack-live/screens runs four tracker screens as live queries on each TanStack adapter, opens them one after another in a fresh tab, timing each to its first answer (only the first starts cold), and times each sync batch until every open screen shows it, with the screens closed for the first half of the batches and open for the second.
 
 ## 4. First results
 
@@ -99,11 +114,11 @@ To make it stick, the matrix should become code: one list of access patterns in 
 
 | writes | docstore | Dexie | SQLite |
 |---|---|---|---|
-| import, 44 batches of 1,000 rows (total) | 0.80 s | 2.9 s | 1.0 s |
-| sync, 875 batches of 50 events (total) | 3.2 s | 5.8 s | 11.7 s |
+| import, 47 batches of up to 1,000 rows (total) | 0.80 s | 2.9 s | 1.0 s |
+| sync, 870 batches of up to 50 events (total) | 3.2 s | 5.8 s | 11.7 s |
 | one edit | 0.61 | 0.40 | 1.1 |
 | bulk: 1,027 issues to done | 61 | 155 | 85 |
-| reread: a list read right after an edit | 1.7 | 15.3 | 0.43 |
+| reread: a count and two lists read right after an edit | 1.7 | 15.3 | 0.43 |
 
 What the goals show that the app workloads could not:
 
@@ -117,8 +132,8 @@ What the goals show that the app workloads could not:
   - `deepWindow` costs 1.9 against 0.43: there is no offset, so it walks ids and then reads rows.
 - **Tombstone-heavy ranges cost 3×.** `drainedPage` returns 7 rows in 1.3 ms warm, while `statusPage` returns 50 in 0.42. The bulk edit left the range mostly deletes above the settled levels.
 - **Writes are strong.**
-  - Sync batches are 1.8× faster than Dexie and 3.6× faster than SQLite, which pays one worker round trip per statement.
-  - The import is 1.3× faster than SQLite and 3.7× faster than Dexie.
+  - Sync batches are 1.8× faster than Dexie and 3.7× faster than SQLite. SQLite pays one worker round trip per statement, and its commits wait for the disk (`synchronous=FULL`, its default) where the IndexedDB contenders commit with Chrome's relaxed durability.
+  - The import is 1.3× faster than SQLite and 3.6× faster than Dexie. docstore has no transaction across collections, so its contender writes a batch as one kv transaction per collection, where Dexie and SQLite commit the whole batch atomically.
 
 An earlier run on main before #282, at load average 8 to 10, showed the same pattern, with docstore's `first` page reads about twice as slow. #282 added kv's read-ahead in scans.
 

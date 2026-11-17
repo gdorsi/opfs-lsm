@@ -218,34 +218,36 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
-/** The last key in `wal`, 0 when it holds no record. */
-function lastKey(tx: IDBTransaction): Promise<number> {
-  return reqToPromise(tx.objectStore(WAL_STORE).openKeyCursor(null, "prev")).then((cursor) =>
-    num(cursor?.key),
-  );
-}
-
 /**
  * The head, the seq of the last committed batch: the last key in `wal`, or
  * `ingestedThrough` when no record is past it. Nothing stores the head. An
  * append writes only its record, and recovery and destroy, which move the
  * head past the records, drop them all and set `ingestedThrough` to the new
  * head (`adopt`, `emptyWal`).
+ *
+ * It looks forward from `ingestedThrough` first, and walks back from the end
+ * only when a record is past it. In Chrome a reverse cursor steps over every
+ * row deleted since IndexedDB last compacted, and a flush deletes thousands
+ * of folded records at once: right after one, a reverse lookup on an empty
+ * tail costs tens of ms, while a forward one seeks past the deleted rows.
  */
-function headOf(last: number, ingestedThrough: number): number {
-  return Math.max(last, ingestedThrough);
+async function headOf(tx: IDBTransaction, ingestedThrough: number): Promise<number> {
+  const wal = tx.objectStore(WAL_STORE);
+  const past = IDBKeyRange.lowerBound(ingestedThrough, true);
+  if (!(await reqToPromise(wal.openKeyCursor(past)))) return ingestedThrough;
+  const last = await reqToPromise(wal.openKeyCursor(past, "prev"));
+  return Math.max(num(last?.key), ingestedThrough);
 }
 
 async function readMeta(tx: IDBTransaction): Promise<WalMeta> {
   const meta = tx.objectStore(META_STORE);
-  const [last, ingestedThrough, generation, top, destroyedTop] = await Promise.all([
-    lastKey(tx),
+  const [ingestedThrough, generation, top, destroyedTop] = await Promise.all([
     metaNum(meta, META_INGESTED),
     metaOpt(meta, META_GENERATION),
     metaNum(meta, META_TOP),
     metaNum(meta, META_DESTROYED_TOP),
   ]);
-  return { head: headOf(last, ingestedThrough), ingestedThrough, generation, top, destroyedTop };
+  return { head: await headOf(tx, ingestedThrough), ingestedThrough, generation, top, destroyedTop };
 }
 
 function sameMeta(a: WalMeta, b: WalMeta): boolean {
@@ -328,12 +330,11 @@ async function readRecordsUpTo(
 
 async function readTail(tx: IDBTransaction, since: number): Promise<WalTail> {
   const meta = tx.objectStore(META_STORE);
-  const [last, generation, ingestedThrough] = await Promise.all([
-    lastKey(tx),
+  const [generation, ingestedThrough] = await Promise.all([
     metaNum(meta, META_GENERATION),
     metaNum(meta, META_INGESTED),
   ]);
-  const head = headOf(last, ingestedThrough);
+  const head = await headOf(tx, ingestedThrough);
   const records = await readRecords(
     tx.objectStore(WAL_STORE),
     Math.max(since, ingestedThrough),
@@ -668,11 +669,8 @@ export async function getIngestedThrough(wal: IdBWal): Promise<number> {
 export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number> {
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
   const done = txDone(tx);
-  const [through, lastSeq] = await Promise.all([
-    metaNum(tx.objectStore(META_STORE), META_INGESTED),
-    lastKey(tx),
-  ]);
-  const head = headOf(lastSeq, through);
+  const through = await metaNum(tx.objectStore(META_STORE), META_INGESTED);
+  const head = await headOf(tx, through);
   const store = tx.objectStore(WAL_STORE);
   const records = await readRecordsUpTo(store, through, head, cap);
   await done;
@@ -691,11 +689,8 @@ export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: nu
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
   const done = txDone(tx);
   const meta = tx.objectStore(META_STORE);
-  const [through, last] = await Promise.all([
-    metaNum(meta, META_INGESTED),
-    lastKey(tx),
-  ]);
-  const head = headOf(last, through);
+  const through = await metaNum(meta, META_INGESTED);
+  const head = await headOf(tx, through);
   const store = tx.objectStore(WAL_STORE);
   const records = await readRecordsUpTo(store, through, head, limit.maxBytes);
   await done;

@@ -9,11 +9,8 @@ import {
 import { openStorage } from "../persistence/open.ts";
 import { faultable } from "./fault.ts";
 
-export type StorageKind = "kv" | "idb";
-
 export type Session = {
   readonly ws: Workspace;
-  readonly storage: StorageKind;
 };
 
 let opening: Promise<Session> | undefined;
@@ -24,18 +21,17 @@ export function openSession(): Promise<Session> {
 
 async function open(): Promise<Session> {
   const params = new URLSearchParams(location.search);
-  const storage: StorageKind = params.get("storage") === "idb" ? "idb" : "kv";
   const name = params.get("db") || "whiteboard";
-  const backend = await openStorage(storage, name);
+  const backend = await openStorage(name);
   const fault = params.get("fault") === "1" ? faultable(backend.storage) : null;
   const ws = await openWorkspace({
     storage: fault ? fault.storage : backend.storage,
-    sync: broadcastSync(BroadcastChannel, `whiteboard-yjs/${storage}:${name}`),
+    sync: broadcastSync(BroadcastChannel, `whiteboard-yjs/${name}`),
   });
   if (fault) Object.assign(globalThis, { whiteboardFault: fault.switch });
-  Object.assign(globalThis, { whiteboard: proof(storage, ws) });
+  Object.assign(globalThis, { whiteboard: proof(ws) });
   onPageHide(ws, backend.close);
-  return { ws, storage };
+  return { ws };
 }
 
 /** A page restored from the back-forward cache has a closed workspace, so pageshow with `persisted` reloads it. */
@@ -81,11 +77,10 @@ export function hideBoard(): Promise<void> {
   return closing;
 }
 
-function proof(storage: StorageKind, ws: Workspace) {
+function proof(ws: Workspace) {
   const shown = async () => (await slot?.board)?.view();
   return {
     ws,
-    storage,
     count: async () => (await shown())?.shapes.size ?? 0,
     viewport: async () => (await shown())?.viewport,
     selected: async () => [...((await shown())?.selection ?? [])],

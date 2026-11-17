@@ -4,10 +4,10 @@ import { scatterShape, type BoardMeta, type Workspace } from "../model/index.ts"
 import { useSession, useWorkspace } from "./hooks.ts";
 import { Icon, ICON, Mark } from "./icons.tsx";
 import { showBoard } from "./session.ts";
-import { IconButton, StorageChip, TitleInput, WorkspaceSaveBadge } from "./ui.tsx";
+import { IconButton, TitleInput, WorkspaceSaveBadge } from "./ui.tsx";
 
 export function BoardsScreen(): ReactNode {
-  const { ws, storage } = useSession();
+  const { ws } = useSession();
   const { boards } = useWorkspace(ws);
   const newestFirst = useMemo(() => [...boards].reverse(), [boards]);
   const navigate = useNavigate();
@@ -31,7 +31,6 @@ export function BoardsScreen(): ReactNode {
         </span>
         <div className="topbar-status">
           <WorkspaceSaveBadge ws={ws} />
-          <StorageChip storage={storage} />
         </div>
       </header>
       <main className="home-main">

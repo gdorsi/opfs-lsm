@@ -1,8 +1,8 @@
 /**
  * The task-tracker dataset as the goal workload takes it: the history, the
- * oracle, and per goal the access pattern it owns and how its bindings are
- * curated from the oracle (LDBC-style: bindings near one cost quantile, so
- * cold, first and warm calls do comparable work).
+ * oracle, and per goal the access pattern it owns (bench/core/patterns.ts)
+ * and how its bindings are curated from the oracle (LDBC-style: bindings near
+ * one cost quantile, so cold, first and warm calls do comparable work).
  */
 import type { Dataset } from "../../core/goals.ts";
 import { WORKSPACES, trackerHistory } from "./history.ts";
@@ -23,6 +23,7 @@ function countBy<T>(items: Iterable<T>, key: (t: T) => string | undefined): Map<
 
 export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
   title: "tracker: a task-tracker workspace aged by its history, then 11 screens' worth of goals, cold, first and warm",
+  owns: ["doc-ingest", "doc-read-during-sync", "doc-edit", "doc-reread"],
   seed: 1,
   entries: { tiny: WORKSPACES.tiny.issues, small: WORKSPACES.small.issues, large: WORKSPACES.large.issues },
   history: trackerHistory,
@@ -32,14 +33,14 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
   oracle: () => new TrackerOracle(),
   goals: {
     statusCounts: {
-      owns: "count over an index prefix, no row read",
+      owns: "doc-index-count",
       curate: (o, pick) => {
         const size = countBy(o.issues.values(), (i) => i.projectId);
         return pick.near(size.keys(), { cost: (p) => size.get(p)!, key: (p) => p, n: BINDINGS, q: 0.5 }).map((projectId) => ({ projectId }));
       },
     },
     statusPage: {
-      owns: "index page whose rows are scattered in key order, joined N:1 and M:N to names",
+      owns: "doc-scattered-page",
       curate: (o, pick) => {
         const todo = countBy(o.issues.values(), (i) => (i.status === "todo" ? i.projectId : undefined));
         return pick
@@ -48,11 +49,11 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
       },
     },
     drainedPage: {
-      owns: "index range a bulk edit just emptied, above the settled levels",
+      owns: "doc-drained-range",
       curate: (o) => [{ projectId: o.drained ?? [...o.projects.keys()][0]!, status: "in_progress" }],
     },
     deepWindow: {
-      owns: "a full window 90% deep into an ordered list (or its last window), with no offset in the index",
+      owns: "doc-deep-window",
       curate: (o, pick) => {
         const size = countBy(o.issues.values(), (i) => i.projectId);
         return pick
@@ -64,7 +65,7 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
       },
     },
     issueThread: {
-      owns: "two unique-key hops, then a 1:N child range joined to authors",
+      owns: "doc-key-hops",
       curate: (o, pick) => {
         const comments = o.commentCounts();
         return pick
@@ -73,14 +74,14 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
       },
     },
     triagePage: {
-      owns: "a child count per row of a page (1:N fan-out), over an IN-list ordered by another field",
+      owns: "doc-child-count",
       curate: (o, pick) => {
         const open = countBy(o.issues.values(), (i) => (isOpen(i.status) ? i.projectId : undefined));
         return pick.near(open.keys(), { cost: (p) => open.get(p)!, key: (p) => p, n: BINDINGS, q: 0.5 }).map((projectId) => ({ projectId }));
       },
     },
     labelPage: {
-      owns: "a filter through a multi-entry (array) index",
+      owns: "doc-multi-entry",
       curate: (o, pick) => {
         const pairs = new Map<string, { projectId: string; labelId: string; n: number }>();
         for (const i of o.issues.values()) {
@@ -98,25 +99,25 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
       },
     },
     myIssues: {
-      owns: "an IN-list on one field across every project, merged top-N",
+      owns: "doc-in-list-top-n",
       curate: (o, pick) => {
         const open = countBy(o.issues.values(), (i) => (i.assigneeId !== null && isOpen(i.status) ? i.assigneeId : undefined));
         return pick.near(open.keys(), { cost: (u) => open.get(u)!, key: (u) => u, n: BINDINGS, q: 0.5 }).map((userId) => ({ userId }));
       },
     },
     recentActivity: {
-      owns: "the newest end of a global time index under constant churn",
+      owns: "doc-newest-end",
       curate: () => [{}],
     },
     assigneeLoad: {
-      owns: "a group-by count on a non-leading field, joined to names",
+      owns: "doc-group-by",
       curate: (o, pick) => {
         const open = countBy(o.issues.values(), (i) => (isOpen(i.status) ? i.projectId : undefined));
         return pick.near(open.keys(), { cost: (p) => open.get(p)!, key: (p) => p, n: BINDINGS, q: 0.5 }).map((projectId) => ({ projectId }));
       },
     },
     search: {
-      owns: "a substring match on titles that no equality or range answers",
+      owns: "doc-substring",
       curate: (o, pick) => {
         // Candidates: a word of 4+ letters from a random issue's title, in that issue's project.
         const issues = [...o.issues.values()];
@@ -135,6 +136,7 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
       },
     },
   },
+  duringLoad: { during: "sync", every: 10, read: { goal: "recentActivity", params: {} } },
   reread(o) {
     // Move the most recently updated todo issue to in progress: its list, the next list and the counts must all show it.
     let latest: Issue | undefined;

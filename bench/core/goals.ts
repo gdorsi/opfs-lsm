@@ -6,6 +6,7 @@
  *
  * Nothing here touches a browser or Node API.
  */
+import type { Pattern } from "./patterns.ts";
 import type { SizeName } from "./types.ts";
 
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [k: string]: Json };
@@ -51,9 +52,9 @@ export type Picker = {
   rng(): number;
 };
 
-/** Per goal: the access pattern it owns, printed in the title, and how its bindings are picked from the oracle. */
+/** Per goal: the access pattern it owns, and how its bindings are picked from the oracle. */
 export type GoalMeta<P extends JsonRow, O> = {
-  readonly owns: string;
+  readonly owns: Pattern;
   /** 1 to 5 bindings from the oracle's state after the history. The first is the cold one. */
   curate(oracle: O, pick: Picker): readonly P[];
 };
@@ -74,6 +75,8 @@ export type History<Tx> = {
 /** Everything dataset-specific the generic workload needs. One object per dataset. */
 export type Dataset<S extends GoalSpecMap, Tx, O extends Oracle<S, Tx>> = {
   readonly title: string;
+  /** The patterns its history phases own (replay, recent, reread); each goal adds its own. */
+  readonly owns: readonly Pattern[];
   readonly seed: number;
   /** The main entity's count per size, for the setup line. */
   readonly entries: Readonly<Record<SizeName, number>>;
@@ -85,6 +88,12 @@ export type Dataset<S extends GoalSpecMap, Tx, O extends Oracle<S, Tx>> = {
   txBytes(tx: Tx): number;
   oracle(): O;
   readonly goals: GoalMetas<S, O>;
+  /**
+   * A read the replay makes after every `every`th batch whose op is `during`,
+   * as a list on screen re-queries while a large sync lands. It is timed as
+   * op "read" and not counted in the replay's ops.
+   */
+  readonly duringLoad: { readonly during: string; readonly every: number; readonly read: Call<S> };
   /** A write after the goals ran, and the reads that must show it. */
   reread(oracle: O): Reread<S, Tx>;
 };

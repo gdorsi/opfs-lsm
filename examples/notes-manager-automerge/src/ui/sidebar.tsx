@@ -129,15 +129,9 @@ function Menu({ onClose, children }: { onClose(): void; children: React.ReactNod
   );
 }
 
-const STORAGE = { kv: "kv on OPFS", idb: "IndexedDB" } as const;
-
 function Footer() {
-  const { kind } = useApp();
   return (
     <footer className="sidebar-foot">
-      <span className="mono" id="storage" data-storage={kind}>
-        Storage: {STORAGE[kind]}
-      </span>
       <span className="note">Notes are stored on this device only.</span>
     </footer>
   );

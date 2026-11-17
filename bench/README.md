@@ -9,14 +9,14 @@ pnpm bench kv/fillrandom kv/ycsb-a --size large --reps 7
 pnpm bench yjs/ --contenders kv              # one contender
 pnpm bench:size                              # bundle sizes
 pnpm bench:smoke                             # everything at size tiny, 1 rep
-pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, then the smoke, from one build
+pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke, from one build
 node bench/cli.ts compare results/a.jsonl results/b.jsonl
 node bench/cli.ts report results/a.jsonl
 ```
 
-Run `pnpm bench:smoke` first whenever the code under test changed. A full `pnpm bench` takes tens of minutes, and a broken path can run it into the 30-minute timeout; the smoke finds that in about a minute. Pass workload selectors as separate words, not one quoted variable: zsh does not split `$SEL`, so `pnpm bench $SEL` with `SEL="kv/ table/"` matches nothing.
+Run `pnpm bench:smoke` first whenever the code under test changed. A full `pnpm bench` takes tens of minutes, and a broken path can run it into the 30-minute timeout; the smoke finds that in about a minute. Pass workload selectors as separate words, not one quoted variable: zsh does not split `$SEL`, so `pnpm bench $SEL` with `SEL="kv/ tracker/"` matches nothing.
 
-Results go to `bench/results/<time>-<host>.jsonl` (one record per run) and a Markdown table next to it. They are not committed: numbers depend on the machine. To compare a change, run the same selection before and after on one machine and use `compare`. It calls a difference only when the min–max ranges of the two runs do not overlap.
+Results go to `bench/results/<time>-<cpu>.jsonl` (one record per run) and a Markdown table next to it. They are not committed, except a run whose numbers [docs/benchmarks.md](../docs/benchmarks.md) publishes: copy its `.jsonl` and `.md` to [docs/results/](../docs/results/) and link them under the table. To compare a change, run the same selection before and after on one machine and use `compare`. It calls a difference only when the min–max ranges of the two runs do not overlap.
 
 Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `google-chrome`.
 
@@ -25,15 +25,13 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 | family | ours | baseline |
 |---|---|---|
 | `kv` | kv (`openDb`, SharedWorker host) | a hand-written IndexedDB key-value store: one object store, one transaction per batch with an explicit `commit()`, `getAll` pages for scans |
-| `table` | docstore (`packages/docstore`) | Dexie |
 | `tanstack` | `docstoreCollectionOptions` from `@opfs-lsm/tanstack-db` (`packages/tanstack-db`), eager, over a docstore collection with no indexes | TanStack DB's `indexedDBCollectionOptions`, eager, its only mode |
 | `tanstack-ondemand` | `docstoreCollectionOptions` with `syncMode: "on-demand"` over a docstore index on `[owner, createdAt]` | TanStack DB's `@tanstack/browser-db-sqlite-persistence` (wa-sqlite on OPFS), on-demand, with `createIndex` on `owner`, `createdAt` and `id` and the adapter patch described below; `sqlite` keeps SQLite's `synchronous=FULL`, `sqlite-relaxed` sets `synchronous=OFF` |
 | `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | `KvPersistence` from `@opfs-lsm/yjs` (`packages/yjs`) | y-indexeddb |
 | `fate` | `kvStorage` from `@opfs-lsm/fate` (`packages/fate`) under fate's persistence | `createIndexedDBStorage` from `@nkzw/fate-indexeddb` under the same persistence |
-| `pages` | `kvStorage` from `@opfs-lsm/automerge` under the model of `examples/notes-manager-automerge`: its list doc and page bodies on one kv db | automerge-repo's `IndexedDBStorageAdapter`, one IndexedDB database; a third contender, `memory`, keeps the docs in a Map and is the floor |
-| `linearlite` | `docstore`: `openKvBackend` (`examples/linearlite-tanstackdb`), docstore on kv through `docstoreCollectionOptions`, on demand | `sqlite`: `openSqliteBackend`, TanStack DB's `persistedCollectionOptions` on `@tanstack/browser-db-sqlite-persistence` (wa-sqlite on OPFS in a dedicated WebWorker), on demand, TanStack's single-tab coordinator, and the adapter patch described below |
 | `tracker` | `docstore`: docstore on kv, a collection per entity and the indexes its goals need | `dexie`: Dexie 4 with compound and multiEntry indexes; `sqlite`: wa-sqlite on OPFS in a dedicated worker, normalized tables, plain SQL |
+| `tanstack-live` | `kv`: `docstoreCollectionOptions`, eager; `kv-ondemand`: on demand over docstore indexes that end in each screen's sort field | `indexeddb`: `indexedDBCollectionOptions`, eager; `sqlite`: TanStack's SQLite persistence, on demand, set up as in `tanstack-ondemand` |
 
 Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv's WAL commits with IndexedDB's default durability (relaxed in Chrome since version 121), so the IndexedDB baselines use the default too.
 
@@ -43,31 +41,27 @@ The SQLite contenders run TanStack's adapter with a patch, [`patches/@tanstack__
 
 The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and values 100 bytes, half compressible (LevelDB's setup). Sizes are `tiny` 1,000 entries, `small` 100,000 and `large` 1,000,000.
 
-- `kv/fillrandom`: random fill, random reads before and after compaction settles, reads of missing keys, then a cold open.
+- `kv/fillrandom`: N/100 single puts, each awaited, on the empty store (db_bench's fillsync); a random fill; random reads before and after compaction settles; reads of missing keys; a cold open; then deletes of a random tenth, with the space before and after compaction. The deletes run in the cold-open tab, whose counters start there, so the W-Amp on that settle divides compaction bytes by the delete keys alone: read its Space-Amp and disk bytes, not its W-Amp.
 - `kv/fillseq`: ascending fill, a full scan, random seeks of 10 and 100 keys.
-- `kv/fillsync`: N/100 single puts, each awaited.
-- `kv/overwrite`: random fill, then N random overwrites.
-- `kv/deleterandom`: random fill, delete 10%, space before and after compaction.
-- `kv/ycsb-a` … `kv/ycsb-f`: YCSB core workloads A to F, as in YCSB's workload files. Pebble uses the same letters for different mixes.
+- `kv/ycsb-a`: YCSB A (50% reads, 50% blind updates), then after a settle YCSB F (50% reads, 50% read-modify-writes in one transaction), zipfian, as in YCSB's workload files. Pebble uses the same letters for different mixes.
 - `kv/compaction-memory`: 20 rounds of N random puts into a 4N key pool, settle, then checked reads. Run it for the memory peaks below, not for throughput.
-- `table/todos`: the operations of RxDB's storage comparison on a todo table with two indexes: first insert, bulk and serial inserts, gets by id, index queries, updates, deletes, cold open.
-- `tanstack/todos`: the todo rows of `table/todos` through a TanStack DB collection: first insert, bulk inserts in transactions of 1,000, N/100 serial inserts, N/10 updates and N/10 deletes in transactions of 100, then a cold open that loads every row. Reads are TanStack's in-memory rows on both sides, so the timed work is persistence and load. Untimed `check-*` phases compare the whole collection with the model. Two tabs on one database are not covered: the harness runs one tab at a time.
+- `tanstack/todos`: todo rows (title, done, owner, createdAt) through a TanStack DB collection: first insert, bulk inserts in transactions of 1,000, N/100 serial inserts, N/10 updates and N/10 deletes in transactions of 100, then a cold open that loads every row. Reads are TanStack's in-memory rows on both sides, so the timed work is persistence and load. Untimed `check-*` phases compare the whole collection with the model. Two tabs on one database are not covered: the harness runs one tab at a time.
 - `tanstack-ondemand/queries`: the same todo rows in an on-demand collection: bulk inserts, then a cold open and live queries that each load their own rows: every row of one owner, pages of 50 rows of one owner ordered by `createdAt`, and 10 rows by id. A query is timed from creating the live query to its first result, plus releasing it. The page and id queries each start on a fresh page, because TanStack's SQLite collection keeps every row it has loaded after a query is released, and the owner queries before them load every row. Updates run on rows a held query keeps loaded. Every result is compared with the model. TanStack's `createIndex` takes one expression, so SQLite has no index on `[owner, createdAt]`.
-- `automerge/trace`, `yjs/trace`: the LaTeX editing trace (about 260k keystrokes; 2,000 at `tiny`, 26,000 at `small`) through the persistence layer, then a cold load. The trace downloads once into `bench/.data/`.
-- `yjs/whiteboard-session`: a session on one board of `examples/whiteboard-yjs`, through the example's own `kvStorage` and `idbStorage`: draw N shapes (100, 1,000, 5,000), drag single shapes and a 200-shape lasso at 120 Hz in real time (the model writes every 32 ms), 1,000 edit commands, 100 undos and redos, then a cold reopen of the board. Interaction phases record the main thread. The board is compared with a plain-data oracle live and after the reopen. Drag phases are paced, so their wall time and ops/s are the pacing; read the `move` and `drop-flush` latencies. `flush` ends `edit-mix` and `undo-redo`.
+- `automerge/trace`, `yjs/trace`: the LaTeX editing trace (about 260k keystrokes; 2,000 at `tiny`, 26,000 at `small`) through the persistence layer, and four steps after it:
+  - `persist` writes the trace's head as fast as it goes. `yjs/trace` then pauses for 2 s, past the 1 s idle delay after which both Yjs libraries merge their stored updates, as a real document's history is merged.
+  - `type` types its last 300 keystrokes (100 at `tiny`) at one per 60 Hz frame, one Yjs transaction or Automerge change each, with the main thread recorded. Typing is paced, so its wall time is the pacing: read the `key` latency, the frames and the `flush`. Yjs stores every update as it happens; automerge-repo saves a document at most every 100 ms (`saveDebounceRate`), so most Automerge keystrokes write nothing.
+  - `reopen` opens the document cold in a fresh tab before kv settles, so the typed updates are still in the log or the newest runs.
+  - `load` opens it cold again after the settle.
+
+  The settle runs in the `reopen` tab, and kv counts writes per tab, so these workloads report no W-Amp.
+
+  The trace downloads once into `bench/.data/`.
 - `automerge/many-docs`, `yjs/many-docs`: many small notes written, then each loaded cold.
 - `fate/read-cache`: a fate client saves lists of 100 issue-like records (about 200 B each) as separate requests, refreshes a tenth of the lists, then a new client on a fresh page loads every list from storage with a server that throws. Sizes are 1,000, 10,000 and 100,000 records. A save and a refresh time the request and `persistence.flush()` together, and the cold load ends with a timed `flush`, which writes the loaded records' last-use marks.
-- `fate/mutations`: a fate client that is offline renames N records, timing until each mutation is in the journal. A new client on a fresh page restores the journal and delivers every mutation, one at a time, to an in-memory server that logs what it receives. Sizes are 100, 300 and 1,000 mutations: fate walks its whole journal for every mutation it queues or delivers and yields to the event loop with a timer every 64 entries, so the time grows faster than the queue, and past a few hundred mutations the timers outweigh the storage on both sides. An untimed first request loads the records the mutations rename. The amplification columns do not apply to this workload: user bytes are the renamed inputs, while fate stores each mutation with the record it changes.
-
-- `pages/type`: a page of the notes example, through its headless model. Paste a document into an empty page (1 KB at `tiny`, 50 KB at `small`, 1 MB at `large`), type into it with the editing trace (200, 1,000 and 1,000 keystrokes), reload and reopen it. The model, seed, network adapter and oracle are the same for every contender, so only the storage under them differs. The model opens and stores its list doc before the first timed step, so opening a page and the reopen time the body alone. Typing runs 20 times faster than a person, 6 ms keys against a 5 ms save throttle, which keeps the storage calls per key at what a session at 8 keys a second makes; read the longest task, not dropped frames. The `memory` contender cannot reopen after a reload and skips that phase. The report adds a counters table (storage calls, saved bytes, and Automerge's own CPU from the Repo's `doc-metrics`) and the storage cost, each contender's mean per call minus `memory`'s. After typing, the body is compared with a plain-data oracle (`testing/reference.ts`), and the reopened body is compared with that.
-
-- `linearlite/first-sync`: an empty tab of linearlite-tanstackdb leads sync and pulls every issue (1,000 at `tiny`, 100,000 at `small`, 1,000,000 at `large`) in pages of 2,000 from an in-memory server while the issue list fills. It times the first 100 rows, the catch-up to the server's head, and the time after that until the list's total and the status counts are right. Afterwards every stored issue is compared with the server's row.
-- `linearlite/browse`: a synced replica, then a cold tab that opens the app and moves through it: the list under each sort, status and priority filters with their counts, a search typed key by key, jumps to 5%, 50% and 90% of the list, the board (five columns and the counts) under two filters, and 20 threads opened twice, first fetched from the server and then held. The cold open times `open` (for `sqlite`, starting wa-sqlite's dedicated WebWorker and the database) and the first rows; every later screen is warm. Each interaction phase sets `mainThread` and yields a macrotask between interactions. Each phase starts once the page is idle, as it is while a user moves to the next screen: TanStack DB drops a released query in an idle callback, and without the wait that cleanup lands in the next screen's timings. A view counts as shown when its row count, total and first row equal what the oracle computes from the server's rows; after the timed phases every window, count and thread is compared whole.
 - `tracker/goals`: a task-tracker workspace built from its history, then 11 goals, each on a fresh page; see [Goal workloads](#goal-workloads).
+- `tanstack-live/screens`: what TanStack DB live queries cost an app on the tracker dataset; see [Live queries](#live-queries).
 
-The two linearlite workloads build the app's headless model (`openLinearlite`) over the contender's `Backend` and an in-memory server (`memoryServer`, `memoryTransport`), so only the backend differs. The report prints each backend's `BackendPath`: how it loads, writes, counts, serves deep windows and handles pressure. The oracle (`examples/linearlite-tanstackdb/src/testing/reference.ts`) shares no code with the model's queries, the backends or TanStack. A fresh page rebuilds the server from the same seed and epoch, so a replica on disk keeps its rows. The server is built in an untimed phase, never inside a timed one. A run that fails at `large` is an `error` record, not a number. Not covered yet: edits, remote edits and offline queues, and the label and project entities.
-
-The fate workloads build the client; a contender supplies only fate's `PersistenceStorage`, so both run the same client code. The persistence budget is 1 GiB on both sides, so nothing is evicted. The server is in memory, so the timed work is fate's persistence and the storage under it. Untimed `check-*` phases load every list again through a client whose server throws and compare every record with the model, so a record that did not reach storage fails the run. The timed cold load compares each list with the model as it loads it. `node bench/probes/fate-storage.ts [workload] [--size small]` prints, per phase and contender, how much of the wall time was in storage calls and how much was fate's own work.
+The fate workload builds the client; a contender supplies only fate's `PersistenceStorage`, so both run the same client code. The persistence budget is 1 GiB on both sides, so nothing is evicted. The server is in memory, so the timed work is fate's persistence and the storage under it. Untimed `check-*` phases load every list again through a client whose server throws and compare every record with the model, so a record that did not reach storage fails the run. The timed cold load compares each list with the model as it loads it. `node bench/probes/fate-storage.ts [workload] [--size small]` prints, per phase and contender, how much of the wall time was in storage calls and how much was fate's own work.
 
 "Cold" means a new tab opened after every SharedWorker has exited: a cold page over warm OS storage. A page cannot drop the OS cache.
 
@@ -81,7 +75,7 @@ A goal workload is a dataset plus questions a screen asks of it, the shape of TP
 
 The phases:
 
-1. `replay` (timed): once 70% of the issues exist, that state is written as `import` batches of 1,000 rows of one entity, oldest change first. The rest of the simulation is written as `sync` batches of 50 events. Each event creates, patches or deletes one row. A patch carries the change, not the row, so the replica reads the stored row and folds the change in.
+1. `replay` (timed): once 70% of the issues exist, that state is written as `import` batches of 1,000 rows of one entity, oldest change first. The rest of the simulation is written as `sync` batches of 50 events. Each event creates, patches or deletes one row. A patch carries the change, not the row, so the replica reads the stored row and folds the change in. After every 10th `sync` batch the replay reads the 50 most recently updated issues (op `read`, not counted in the replay's ops), as a list on screen re-queries while a large sync lands, and checks them against the oracle at that point of the history.
 2. `settle` (untimed): kv flushes and compacts until stable.
 3. `recent` (timed): a `bulk` batch closes the sprint of the project with the most issues in progress, then single `edit`s (50 at `tiny`, 300 above), one user rename and one label rename. These writes sit above the settled store when the goals run.
 4. `prepare` (untimed): picks each goal's bindings, LDBC-style: up to 5 bindings whose cost in the oracle is nearest one quantile, the same for every rep and contender. It computes every expected answer and carries them to the later pages.
@@ -110,6 +104,26 @@ The rules for a contender:
 
 Contenders import only the dataset's `types.ts`. oxlint keeps the history and the oracle out of contender code, and keeps contender code and storage libraries out of the dataset.
 
+## Live queries
+
+`tanstack-live/screens` measures what TanStack DB live queries cost an app on top of a store. It runs on the tracker dataset, at its sizes, and checks answers against the tracker's oracle.
+
+Four tracker goals are one screen each: `statusPage`, `labelPage`, `myIssues` and `recentActivity`. Each is a live query built with TanStack's query builder: the issues the screen lists, left-joined to their project (for the key) and assignee (for the name), newest update first, 50 rows. Label names come from one live query of all labels, mapped by id, because TanStack joins only on equality and a card holds an array of label ids. Every join is a left join: TanStack loads a window in order from an on-demand collection only when no join can drop a row. Each screen subscribes to its query, as `useLiveQuery` does. TanStack collects a live query that has no subscriber after 5 s.
+
+The collections hold users, projects, labels and issues. No screen reads comments, so comment events are left out. A patch writes the changed fields of the row the collection holds: `update` on an eager collection. On demand, SQLite first holds the batch's rows with a live query on their ids, and docstore uses `utils.transact`, which reads them in its own transaction.
+
+The phases:
+
+1. `import` (timed): the history's import through the collections, 1,000 rows per transaction.
+2. `settle` (untimed): kv flushes and compacts until stable.
+3. `prepare` (fresh page, untimed): the history, the oracle, each screen's binding (curated as in `tracker/goals`) and every expected answer.
+4. `open` (timed): the collections open (op `open`; an eager collection loads every row), then the screens open one after another, as an app's would, each timed from creating its live query to its first answer (op named after the screen). Only the first screen starts cold: the later ones find the shared label list, the rows earlier joins loaded and kv's page cache warm, which matters for the on-demand contenders. Every answer is checked. `unopen` (untimed) closes the screens.
+5. `sync` (timed): the first half of the sync batches, with no screen open.
+6. `screens` (untimed): every screen opens again.
+7. `sync-live` (timed): the second half, with every screen open. A batch is timed until it is persisted and every open screen shows it: no live query and no collection waits for rows, since a join loads the rows it lacks through its source collection. Answers are checked every 10 batches. `close` (untimed) closes the screens.
+
+`open`, `sync` and `sync-live` record the main thread, and the sync phases yield a macrotask between batches. The difference per batch between `sync` and `sync-live` is the screens' upkeep. The two halves are different batches of one history, alike in shape but not identical.
+
 ## Amplification
 
 kv counts the bytes it writes in the configuration apps run: the tab and the SharedWorker host. The counters come from `readStats` in `@opfs-lsm/kv/testing`. The report derives:
@@ -131,6 +145,8 @@ Every run record carries peaks sampled every 100 ms over CDP: `Runtime.getHeapUs
 `node bench/probes/memory.ts` answers two Chrome questions behind the compaction-memory design: whether pending `createWritable` data stays in memory, and whether dropping a wasm instance returns its memory. Results are in [docs/research/bounded-compaction-memory.md](../docs/research/bounded-compaction-memory.md).
 
 `node bench/probes/live-set.ts [workload] [--compaction-memory-bytes N]` measures what is alive in the SharedWorker while a workload runs. A second DevTools session takes a heap snapshot every 500 ms (V8 collects garbage before it writes one) and the probe prints the wasm memory and everything else per snapshot. Each snapshot pauses the worker, so the run's timings mean nothing.
+
+`node bench/probes/idb-deleted-tail.ts [rows] [kept]` builds the states kv's IndexedDB WAL store is in and times finding its head from a fresh tab. A flush deletes the records the previous flush folded and keeps its own. In Chrome 157, right after a flush that deleted 24,700 records, a reverse cursor takes about 35 ms to find the head and a forward lookup from `ingestedThrough` about 5 ms, which is why kv looks forward first. With new records above `ingestedThrough`, both take about 21 ms.
 
 `node bench/probes/cpu-profile.ts <workload> <phase> [--contender kv/kv]` records a V8 CPU profile of one phase, in the tab and in the SharedWorker, and prints self time per function. The build is not minified, so the names are the source's. It writes each `.cpuprofile` to `bench/results/` for DevTools. Profiling slows the run, so compare the shares between functions, not the wall time.
 
@@ -155,6 +171,8 @@ Only phases that model a user interaction opt in, and they yield a macrotask bet
 
 A workload is one file in `workloads/<family>/`. A contender is one file in `contenders/<family>/`. Every workload runs on every contender of its family. The page finds both with `import.meta.glob`, so nothing else lists them. Each family's interface is in `core/families.ts`. A workload calls only that interface, so every contender does the same operations.
 
+A workload names the access patterns it owns in `owns`, from the list in `core/patterns.ts`. Each pattern has exactly one owner, and `bench:smoke --check` fails when one has none or two. A goal workload owns its dataset's patterns and one per goal. Before adding a workload, find the pattern's owner: a new phase there is usually the smaller change.
+
 A workload is a list of phases run in order on one database (`page: "fresh"` starts a new tab). A phase body only does the ops. `ctx.time` times one call, `ctx.model` holds the expected values, `ctx.rng` is seeded the same for every contender.
 
 A goal is one entry in its dataset's spec type (`datasets/tracker/types.ts`), whose doc comment is the answer spec. After that, `tsc` fails until the oracle, the goal's curation (`datasets/tracker/index.ts`) and every contender answer it, and its phase appears by itself. A second dataset is a `datasets/<name>/` directory with the same files, a family in `core/families.ts`, its contenders and a one-line workload that calls `goalWorkload`.
@@ -163,7 +181,7 @@ A goal is one entry in its dataset's spec type (`datasets/tracker/types.ts`), wh
 
 ```
 cli.ts            run | smoke | size | compare | report
-core/             types, family interfaces, the goal contract, histogram
+core/             types, family interfaces, the goal contract, access patterns, histogram
 datasets/         one directory per goal dataset: types and goal spec, history, oracle, curation
 driver/           Vite build, static server, Chrome over CDP, plan, run loop, report, size
 page/             the bench page: phase executor, data model, kv and IndexedDB helpers

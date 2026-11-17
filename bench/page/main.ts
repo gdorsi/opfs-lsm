@@ -39,19 +39,6 @@ function idOf(globKey: string): { family: Family; id: string } {
   return { family, id: `${m[1]}/${m[2]}` };
 }
 
-/**
- * Resolves in an idle period with 40 ms to spare: the page has run what it left
- * for idle time. Gives up after 2 s, so a page that never idles still runs.
- */
-async function untilIdle(): Promise<void> {
-  const until = performance.now() + 2000;
-  while (performance.now() < until) {
-    const timeout = Math.max(1, until - performance.now());
-    const spare = await new Promise<number>((resolve) => requestIdleCallback((deadline) => resolve(deadline.timeRemaining()), { timeout }));
-    if (spare >= 40) return;
-  }
-}
-
 async function load<T extends { family: Family }>(
   modules: Record<string, () => Promise<{ default: T }>>,
   id: string,
@@ -77,6 +64,7 @@ async function catalog(): Promise<Catalog> {
       workload: id,
       family,
       title: w.title,
+      owns: w.owns,
       phases: w.phases.map((p) => ({ name: p.name, page: p.page })),
       contenders: contenders
         .filter((c) => c.family === family && (!w.contenders || w.contenders.some((n) => c.id === `${family}/${n}`)))
@@ -108,7 +96,6 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
   const latency = new Map<string, Histogram>();
   let ops = 0;
   let userBytes = 0;
-  const counters = new Map<string, number>();
   const storeKey = `${req.contender}:${req.dbName}`;
 
   const time = async <T>(op: string, bytes: number, fn: () => Promise<T>, count = 1): Promise<T> => {
@@ -142,9 +129,6 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
     bytes(n) {
       userBytes += n;
     },
-    count(name, n) {
-      counters.set(name, (counters.get(name) ?? 0) + n);
-    },
     check(ok, what) {
       if (!ok) throw new CorrectnessError(what);
     },
@@ -152,7 +136,6 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
     progress,
   };
 
-  if (phase.idleFirst) await untilIdle();
   const t0 = performance.now();
   let mainThread: MainThread | undefined;
   if (phase.mainThread) mainThread = (await measureMainThread(() => phase.run(ctx))).mainThread;
@@ -182,7 +165,6 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
       latency: Object.fromEntries([...latency].map(([op, h]) => [op, h.snapshot()])),
       ...(footprint ? { footprint } : {}),
       ...(mainThread ? { mainThread } : {}),
-      ...(counters.size > 0 ? { counters: Object.fromEntries(counters) } : {}),
     },
     carry: JSON.stringify({ model: model.carry(), extra: ctx.carry }),
     durability: contender.durability,

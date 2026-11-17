@@ -3,7 +3,7 @@ import { WireError } from "../domain/parse.ts";
 import { MUTABLE_FIELDS, STREAMS, type Stream, streamOf } from "../domain/stores.ts";
 import type { DetailResponse, PullResponse, PushOp, PushResponse, PushResult, RowResponse } from "../domain/wire.ts";
 
-/** What the sync rules need from server storage. node:sqlite implements it for the app, Maps for bench and tests. */
+/** What the sync rules need from server storage. node:sqlite implements it for the app, Maps for tests. */
 export interface Tables {
   head(): number;
   setHead(head: number): void;

@@ -2,7 +2,7 @@ import type { Env } from "./types.ts";
 
 /**
  * The real clock, timers and ids. The only model file that may touch them (see .oxlintrc.json): everything else
- * receives an Env, so tests and bench replay exactly.
+ * receives an Env, so tests replay exactly.
  */
 export const systemEnv: Env = {
   id() {

@@ -87,7 +87,7 @@ export function issueViews(
    */
   function list(filter: IssueFilter): IssueList {
     const total = watched(`total ${counted(filter)}`, (emit: (total: number) => void) => backend.watchTotal(filter, emit));
-    const anchoring = backend.anchor?.(filter);
+    const anchoring = backend.anchor(filter);
     const top = windowQuery(issues, filter, LIST_WINDOW);
     let placement: Placement = { anchor: undefined, query: top, observed: observe(top), offset: 0, reach: REACH };
     let unwatch: Unsubscribe | undefined;

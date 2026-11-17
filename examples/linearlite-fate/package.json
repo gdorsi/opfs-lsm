@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@nkzw/fate": "2.0.1",
-    "@nkzw/fate-indexeddb": "2.0.1",
     "@opfs-lsm/fate": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
     "@tanstack/react-router": "^1.170.46",

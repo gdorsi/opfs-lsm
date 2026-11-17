@@ -2,7 +2,8 @@
  * One dataset -> one workload. The phases come from the dataset's goal list,
  * so adding a goal adds its phase:
  *
- *   replay   same   timed     the history's aging part through `apply`: ops per batch kind ("import", "sync")
+ *   replay   same   timed     the history's aging part through `apply`: ops per batch kind ("import", "sync"),
+ *                             and after every few sync batches the dataset's `duringLoad` read ("read", not counted in ops)
  *   settle   same   untimed   kv: flush and compact until stable; footprint
  *   recent   same   timed     writes on top of the settled store ("bulk", "edit"), as a user makes them
  *   prepare  same   untimed   curate bindings, compute every expected answer, carry them; footprint
@@ -54,11 +55,19 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
     async run(ctx) {
       const store = await storeOf(ctx);
       live = { history: d.history(ctx.size, d.seed), oracle: d.oracle() };
+      const { during, every, read } = d.duringLoad;
       let n = 0;
+      let matched = 0;
       for (const tx of live.history.load) {
         live.oracle.apply(tx);
-        await ctx.time(d.txOp(tx), d.txBytes(tx), () => store.apply(tx), d.txCount(tx));
-        if (++n % 500 === 0) ctx.progress(`replay: ${n} batches`);
+        const op = d.txOp(tx);
+        await ctx.time(op, d.txBytes(tx), () => store.apply(tx), d.txCount(tx));
+        n++;
+        if (op === during && ++matched % every === 0) {
+          const got = await ctx.time("read", 0, () => store.goals[read.goal]!(read.params), 0);
+          check(ctx, `${read.goal} after batch ${n}`, got, live.oracle.goals[read.goal]!(read.params));
+        }
+        if (n % 500 === 0) ctx.progress(`replay: ${n} batches`);
       }
       ctx.carry.liveLogicalBytes = live.oracle.liveBytes();
     },
@@ -153,12 +162,13 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
   return defineWorkload({
     family,
     title: d.title,
+    owns: [...d.owns, ...Object.values(d.goals).map((g) => g.owns)],
     params: (size) => ({ entries: d.entries[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: d.seed }),
     phases: [replay, settle, recent, prepare, ...Object.keys(d.goals).map(goal), reread],
   });
 }
 
-function picker(seed: number): Picker {
+export function picker(seed: number): Picker {
   const next = rng(seed);
   return {
     rng: next,
@@ -185,7 +195,7 @@ function canonical(v: Json | undefined): string {
 }
 
 /** Undefined when equal; otherwise both sides around the first difference. */
-function differ(got: Json, want: Json): string | undefined {
+export function differ(got: Json, want: Json): string | undefined {
   const a = canonical(got);
   const b = canonical(want);
   if (a === b) return undefined;

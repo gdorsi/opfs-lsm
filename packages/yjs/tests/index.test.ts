@@ -74,6 +74,25 @@ test("an open doc merges its updates once it has trimSize of them and goes quiet
   await db.close();
 });
 
+test("a merge that starts while this doc's own updates are in flight replaces every one of them", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  // Closed even when an assert fails: an open db keeps the test process alive.
+  t.after(() => db.close());
+  const open = await reopen(db, "doc", 10);
+  open.p.trimDelayMs = 1_000_000;
+  for (let i = 0; i < 500; i++) open.doc.getText("t").insert(i, "x");
+  await open.p.flush();
+  // The merge fires on the next macrotask, before the next 500 puts land.
+  open.p.trimDelayMs = 0;
+  for (let i = 500; i < 1000; i++) open.doc.getText("t").insert(i, "x");
+  await sleep(20);
+  await open.p.destroy();
+
+  const again = await reopen(db, "doc", 1_000_000);
+  assert.equal(again.p.loadedUpdates, 1, "only the merged state");
+  assert.equal(again.doc.getText("t").toString(), "x".repeat(1000));
+});
+
 test("a merge while open keeps the updates another tab stored after this one loaded", async () => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const mine = await reopen(db, "doc", 10);

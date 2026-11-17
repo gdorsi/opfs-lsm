@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge";
-import { Repo, type DocHandle, type DocMetrics, type DocumentId, type NetworkAdapterInterface, type PeerId, type StorageAdapterInterface } from "@automerge/automerge-repo";
+import { Repo, type DocHandle, type DocumentId, type NetworkAdapterInterface, type PeerId, type StorageAdapterInterface } from "@automerge/automerge-repo";
 import { findOrSeed, flushDoc, newPageId, openBodies, type Bodies } from "./bodies.ts";
 import { LIST_ID, MAX_TITLE, readTree, type ListDoc, type ListTree } from "./list.ts";
 import { saveFilter } from "./save-filter.ts";
@@ -13,8 +13,6 @@ export type NotesOptions = {
   readonly network?: readonly NetworkAdapterInterface[];
   /** How long the Repo waits after a change before it saves. Defaults to automerge-repo's 100 ms. */
   readonly saveDebounceMs?: number;
-  /** Automerge's own work, as automerge-repo reports it: `doc-loaded`, `doc-saved` and `doc-compacted` carry `durationMillis`. */
-  readonly onDocMetrics?: (metrics: DocMetrics) => void;
 };
 
 export interface Notes {
@@ -47,7 +45,6 @@ export async function openNotes(options: NotesOptions): Promise<Notes> {
     shareConfig: { announce: shared, access: shared },
     ...(options.saveDebounceMs !== undefined && { saveDebounceRate: options.saveDebounceMs }),
   });
-  if (options.onDocMetrics) repo.on("doc-metrics", options.onDocMetrics);
   let list: DocHandle<ListDoc>;
   try {
     ({ handle: list } = await findOrSeed<ListDoc>(repo, storage, LIST_ID, LIST_SEED));

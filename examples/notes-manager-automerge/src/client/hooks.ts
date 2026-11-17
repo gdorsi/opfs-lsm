@@ -44,8 +44,8 @@ function expandedStore(key: string) {
 const expandedStores = new Map<string, ReturnType<typeof expandedStore>>();
 
 export function useExpanded(): { readonly isOpen: (id: PageId) => boolean; readonly set: (id: PageId, open: boolean) => void } {
-  const { kind, db } = useApp();
-  const key = `notes:expanded:${kind}:${db}`;
+  const { db } = useApp();
+  const key = `notes:expanded:${db}`;
   let store = expandedStores.get(key);
   if (!store) expandedStores.set(key, (store = expandedStore(key)));
   const open = useSyncExternalStore(store.subscribe, store.read);

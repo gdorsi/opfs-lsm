@@ -3,13 +3,12 @@ import { BroadcastChannelNetworkAdapter } from "@automerge/automerge-repo-networ
 import { createContext, useContext } from "react";
 import type { MountedEditor } from "../editor/view.ts";
 import { openNotes, type Notes } from "../model/notes.ts";
-import { openStorage, type StorageKind } from "../storage/open.ts";
+import { openStorage } from "../storage/open.ts";
 import { bodyLeases, type Leases } from "./lease.ts";
 
 export type App = {
   readonly notes: Notes;
   readonly leases: Leases;
-  readonly kind: StorageKind;
   readonly db: string;
   readonly storage: StorageAdapterInterface;
 };
@@ -23,16 +22,15 @@ let opening: Promise<App> | undefined;
 export function openApp(): Promise<App> {
   return (opening ??= (async () => {
     const params = new URLSearchParams(location.search);
-    const kind: StorageKind = params.get("storage") === "idb" ? "idb" : "kv";
     const db = params.get("db") || "notes";
-    const storage = await openStorage(kind, db);
-    const notes = await openNotes({ storage, network: [new BroadcastChannelNetworkAdapter({ channelName: `notes:${kind}:${db}` })] });
+    const storage = await openStorage(db);
+    const notes = await openNotes({ storage, network: [new BroadcastChannelNetworkAdapter({ channelName: `notes:${db}` })] });
     const leases = bodyLeases(notes.bodies);
     addEventListener("pagehide", () => {
       notes.flush().catch((error: unknown) => console.warn("notes: the page list was not saved", error));
       void leases.flush();
     });
-    const app: App = { notes, leases, kind, db, storage };
+    const app: App = { notes, leases, db, storage };
     if (import.meta.env.DEV) globalThis.__notes = app;
     return app;
   })());

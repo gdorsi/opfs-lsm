@@ -6,7 +6,7 @@ Three APIs set the minimum version in every browser. Everything else kv uses shi
 
 | API | Chrome, Edge | Firefox | Safari | Chrome Android | Firefox Android | Safari iOS |
 | --- | --- | --- | --- | --- | --- | --- |
-| `SharedWorker` with `type: "module"` | 80 | 114 | 15 | 148 | 114 | 15 |
+| `SharedWorker` with `type: "module"` | 80 | 114 | 16 | 148 | 114 | 16 |
 | OPFS `FileSystemFileHandle.createWritable()` | 86 | 111 | 26 | 109 | 111 | 26 |
 | `crypto.randomUUID()` | 92 | 95 | 15.4 | 92 | 95 | 15.4 |
 | **Minimum for kv** | **92** | **114** | **26** | **148** | **114** | **26** |
@@ -17,8 +17,8 @@ kv is Baseline 2026. [Baseline](https://web.dev/baseline) names the year a featu
 - Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so kv does not run there.
 - Android WebView is not supported. MDN lists SharedWorker there from 148, but WebView 154, the version tested, has none, so `openDb` rejects with `StorageUnavailableError` in apps and browsers built on it.
 - `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119, Firefox and Firefox Android 121.
-- `@opfs-lsm/kv/tuple` also calls `String.prototype.isWellFormed()`, which raises its minimum to Chrome and Edge 111, Firefox and Firefox Android 119, and Safari and Safari iOS 16.4.
-- `@opfs-lsm/docstore` also calls `Object.hasOwn()`, which raises its minimum to Chrome and Edge 93. It imports `@opfs-lsm/kv/tuple`, so the minimum above applies to it.
+- `@opfs-lsm/kv/tuple` also calls `String.prototype.isWellFormed()`, which raises its minimum to Chrome and Edge 111, and Firefox and Firefox Android 119.
+- `@opfs-lsm/docstore` also calls `String.prototype.isWellFormed()`, itself and through `@opfs-lsm/kv/tuple`, so it has the same minimum.
 
 Versions are from [MDN browser-compat-data](https://github.com/mdn/browser-compat-data) 8.1.8. The engine is tested in desktop Chrome and on Android. In Chromium 160 on a Pixel 4a, the two-tab proofs and every benchmark workload pass, and no kill in the kill-and-recover loop lost an acked write. The Android run has limits:
 

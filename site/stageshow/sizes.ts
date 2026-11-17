@@ -4,11 +4,7 @@
  */
 export const COMPACT_BELOW = 600;
 
-/** The same for an illustration as wide as the page. `Illustration.vue` switches its box at the matching viewport. */
-export const FULL_COMPACT_BELOW = 720;
-
 export const SIZES = {
-  apps: { wide: [1152, 452], compact: [358, 1000] },
   features: { wide: [600, 416], compact: [358, 608] },
   fits: { wide: [300, 340], compact: [300, 340] },
   stack: { wide: [620, 400], compact: [358, 470] },

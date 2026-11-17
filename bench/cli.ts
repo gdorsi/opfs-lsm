@@ -4,7 +4,8 @@
  *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed]
  *       [--max-peak-bytes N] [--compaction-memory-bytes N]
  *   smoke [--check]         every workload × contender, size tiny, 1 rep, correctness only;
- *                           --check first applies the bundle-size budgets to the same build
+ *                           --check first applies the bundle-size budgets to the same build,
+ *                           then checks that every access pattern has exactly one owner
  *   size [--check]          bundle-size table; --check fails over a row's budget
  *   compare <a.jsonl> <b.jsonl>
  *   report <file.jsonl>
@@ -15,6 +16,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { ownershipProblems, PATTERNS } from "./core/patterns.ts";
 import { SIZES, type RunRecord, type SizeName } from "./core/types.ts";
 import { BENCH_DIR, buildBench, type BuildOutput } from "./driver/build.ts";
 import { DATA_DIR, ensureTrace } from "./driver/data.ts";
@@ -56,7 +58,7 @@ async function main(): Promise<number> {
         headless: !values.headed,
         timeoutMs: Number(values.timeout),
         smoke,
-        checkSizes: smoke && values.check,
+        check: smoke && values.check,
         maxPeakBytes: bytesFlag("max-peak-bytes", values["max-peak-bytes"]),
         compactionMemoryBytes: bytesFlag("compaction-memory-bytes", values["compaction-memory-bytes"]),
       });
@@ -89,20 +91,23 @@ async function run(o: {
   headless: boolean;
   timeoutMs: number;
   smoke: boolean;
-  checkSizes: boolean;
+  check: boolean;
   maxPeakBytes: number | undefined;
   compactionMemoryBytes: number | undefined;
 }): Promise<number> {
   await ensureTrace();
   const built = await buildBench({ quiet: true });
-  if (o.checkSizes && !sizes(built, true)) return 1;
+  if (o.check && !sizes(built, true)) return 1;
   const server = await serve({ "/": path.join(BENCH_DIR, ".out"), "/data/": DATA_DIR });
   try {
     const catalog = await readCatalog(server.origin, o.headless);
+    if (o.check && !owners(catalog)) return 1;
     const runs = plan(catalog, { workloads: o.workloads, contenders: o.contenders, size: o.size, reps: o.reps });
     mkdirSync(RESULTS_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const resultsFile = path.join(RESULTS_DIR, `${stamp}-${os.hostname().split(".")[0]}${o.smoke ? "-smoke" : ""}.jsonl`);
+    // Named by CPU, not hostname: published runs are committed under docs/results/.
+    const cpu = (os.cpus()[0]?.model ?? "cpu").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const resultsFile = path.join(RESULTS_DIR, `${stamp}-${cpu}${o.smoke ? "-smoke" : ""}.jsonl`);
     console.log(`${runs.length} runs → ${path.relative(process.cwd(), resultsFile)}`);
     const records = await runPlan(runs, {
       origin: server.origin,
@@ -142,6 +147,17 @@ function sizes(built: BuildOutput, check: boolean): boolean {
   const over = rows.filter((r) => r.budget !== undefined && r.afterOpen.brotli > r.budget);
   if (!check || over.length === 0) return true;
   console.error(`over budget: ${over.map((r) => `${r.id} ${r.afterOpen.brotli} > ${r.budget}`).join(", ")}`);
+  return false;
+}
+
+/** Every access pattern in bench/core/patterns.ts has exactly one owner among the workloads. */
+function owners(catalog: Awaited<ReturnType<typeof readCatalog>>): boolean {
+  const problems = ownershipProblems(catalog);
+  if (problems.length === 0) {
+    console.log(`${Object.keys(PATTERNS).length} access patterns, one owner each`);
+    return true;
+  }
+  console.error(`access patterns (bench/core/patterns.ts):\n${problems.join("\n")}`);
   return false;
 }
 

@@ -91,12 +91,6 @@ export const ICON = {
     </>
   ),
   close: <path d="M5.5 5.5l9 9M14.5 5.5l-9 9" />,
-  storage: (
-    <>
-      <ellipse cx="10" cy="5.5" rx="5.5" ry="2" />
-      <path d="M4.5 5.5v9c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-9M4.5 10c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2" />
-    </>
-  ),
   code: <path d="M7 6l-4 4 4 4M13 6l4 4-4 4" />,
 } satisfies Record<string, ReactNode>;
 

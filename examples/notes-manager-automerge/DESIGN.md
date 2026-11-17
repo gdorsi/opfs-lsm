@@ -3,34 +3,30 @@
 A Notion-like notes app: a sidebar tree of nested pages, each with a title and a rich-text body. Everything is an
 Automerge document on the device. One list doc holds the tree and the titles, and one doc per page holds its body.
 The tabs of one browser sync over a BroadcastChannel; there is no server. The docs persist on one kv database
-(`kvStorage` from `@opfs-lsm/automerge`), or with `?storage=idb` on automerge-repo's IndexedDB adapter, so the two
-can be compared on the same app. The bench (`bench/workloads/pages`) drives the same model without the UI.
+(`kvStorage` from `@opfs-lsm/automerge`).
 
 ## Running it
 
 ```
 pnpm --filter @opfs-lsm/example-notes-manager-automerge dev      # http://127.0.0.1:4184
-#   ?storage=idb   IndexedDB instead of kv
 #   ?db=work       another database name (default "notes")
 pnpm --filter @opfs-lsm/example-notes-manager-automerge build
 pnpm --filter @opfs-lsm/example-notes-manager-automerge start    # the build, with the offline shell
 ```
 
-Every link keeps `?storage=` and `?db=`, so a tab never switches storage by navigating. A new database starts with no
-pages.
+Every link keeps `?db=`, so a tab never switches database by navigating. A new database starts with no pages.
 
 ## The shape
 
 `openNotes` is the headless core: one Repo over the caller's storage, holding the list doc and every open body. It
-imports only Automerge and automerge-repo, and oxlint rejects anything else, so the app, the Node tests and the bench
-all run it unchanged. It resolves once the list doc is found or seeded and never waits on the network.
+imports only Automerge and automerge-repo, and oxlint rejects anything else, so the app and the Node tests both run
+it unchanged. It resolves once the list doc is found or seeded and never waits on the network.
 
 - The list doc has one fixed DocumentId in every database. A page's id is its body's DocumentId.
-- Storage is one database named by `?db=`: a kv database, or an IndexedDB database of that name. Keys are
-  automerge-repo's, `[docId, "snapshot" | "incremental", hash]` and `[docId, "sync-state", storageId]`, so a page's
-  body is every key under its id. The model wraps storage in a filter that never closes it, tracks the saves in
-  flight per doc and drops every save of a removed id.
-- The BroadcastChannel is `notes:<storage>:<db>`, so kv tabs and idb tabs never share a doc.
+- Storage is one kv database named by `?db=`. Keys are automerge-repo's, `[docId, "snapshot" | "incremental", hash]`
+  and `[docId, "sync-state", storageId]`, so a page's body is every key under its id. The model wraps storage in a
+  filter that never closes it, tracks the saves in flight per doc and drops every save of a removed id.
+- The BroadcastChannel is `notes:<db>`, so tabs on different databases never share a doc.
 
 ## The list
 
@@ -65,7 +61,7 @@ Each command is synchronous and one change:
 A change in one tab reaches the others over the BroadcastChannel, so a create, a rename or a delete shows in every
 sidebar of that database. A page created in one tab under a parent another tab deletes at the same time ends hidden in
 both, and its body is removed. Which rows are open is a viewer preference, kept in `localStorage` under
-`notes:expanded:<storage>:<db>`.
+`notes:expanded:<db>`.
 
 ## Bodies
 
@@ -119,8 +115,8 @@ the server cannot be reached. A new build replaces the cache. The dev server reg
 
 ## Browser proof
 
-Run it on `pnpm dev`, and on `pnpm build && pnpm start` for step 6. Run it once on kv and once with `?storage=idb`. A
-new `?db=` starts empty. In dev, `window.__notes` holds `notes`, `leases`, `storage` and the mounted `editor`.
+Run it on `pnpm dev`, and on `pnpm build && pnpm start` for step 6. A new `?db=` starts empty. In dev,
+`window.__notes` holds `notes`, `leases`, `storage` and the mounted `editor`.
 
 1. Nested pages. Create a top-level page, a child and a grandchild. Each opens at once with its title focused, and
    its sidebar row shows every keystroke of the title. Collapse and expand.
@@ -137,8 +133,6 @@ new `?db=` starts empty. In dev, `window.__notes` holds `notes`, `leases`, `stor
 6. Offline. On the build, create a page and a child, type in the body, and reload once so the service worker
    controls the tab. Stop the preview server and reload. The sidebar and the page paint, the body takes edits and
    saves them, and a rename shows in the sidebar.
-7. `?storage=idb`. Repeat 1, 3 and 5. IndexedDB holds one database named by `?db=`, and a kv tab and an idb tab with
-   the same `?db=` show different pages.
 
 ## Left out
 
@@ -152,8 +146,8 @@ new `?db=` starts empty. In dev, `window.__notes` holds `notes`, `leases`, `stor
 
 ## Measured
 
-Step 4 on kv, dev server, headless Chrome 157 on an Apple M2 Pro, timed from one editor's DOM change to the other
+Step 4, dev server, headless Chrome 157 on an Apple M2 Pro, timed from one editor's DOM change to the other
 editor's on one clock. Over three runs, 30 keystrokes typed 40 ms apart in one tab reached the other in 50 to 56 ms
-median and 97 to 102 ms at most, and 19 keystrokes the other way in 48 to 54 ms median and 101 to 105 ms at most. One
-run on IndexedDB gave 48 ms median both ways, 95 and 98 ms at most. automerge-repo sends a doc's sync messages at most
-once per 100 ms, which bounds the wait. Both editors ended equal in every run.
+median and 97 to 102 ms at most, and 19 keystrokes the other way in 48 to 54 ms median and 101 to 105 ms at most.
+automerge-repo sends a doc's sync messages at most once per 100 ms, which bounds the wait. Both editors ended equal
+in every run.

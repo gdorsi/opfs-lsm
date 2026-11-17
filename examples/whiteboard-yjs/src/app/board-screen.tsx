@@ -7,10 +7,10 @@ import { useBoardSlice, useSession, useUi, useWorkspace } from "./hooks.ts";
 import { Icon, ICON } from "./icons.tsx";
 import { canvasMeasure } from "./paint.ts";
 import { Stage } from "./stage.tsx";
-import { editable, IconButton, keys, MAC, SaveStatus, StorageChip, TitleInput } from "./ui.tsx";
+import { editable, IconButton, keys, MAC, SaveStatus, TitleInput } from "./ui.tsx";
 
 export function BoardScreen({ board }: { board: Board }) {
-  const { ws, storage } = useSession();
+  const { ws } = useSession();
   const [controller] = useState(() => createController(board, { measure: canvasMeasure() }));
   const meta = useWorkspace(ws).boards.find((b) => b.id === board.id);
   const navigate = useNavigate();
@@ -35,7 +35,6 @@ export function BoardScreen({ board }: { board: Board }) {
         </div>
         <div className="island status-island">
           <BoardSaveBadge board={board} ws={ws} />
-          <StorageChip storage={storage} />
         </div>
       </header>
       <Toolbar controller={controller} />
