@@ -161,7 +161,7 @@ function sameSpec(a: IndexSpec, b: IndexSpec): boolean {
 }
 
 const utf8 = new TextEncoder();
-const fromUtf8 = new TextDecoder();
+const fromUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /** A catalog of another format is a "schema" error: this library cannot read it. A wrong shape is corruption. */
 export function parseCatalog(bytes: Uint8Array): StoredCatalog {

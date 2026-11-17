@@ -32,7 +32,7 @@ export type IndexId = number & { readonly __brand: "IndexId" };
 export type DocId = string & { readonly __brand: "DocId" };
 
 const utf8 = new TextEncoder();
-const fromUtf8 = new TextDecoder();
+const fromUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /** Every string in a key must be well formed: TextEncoder writes each lone surrogate as U+FFFD, so two strings holding one could share a key. */
 export function parseId(id: unknown): DocId {

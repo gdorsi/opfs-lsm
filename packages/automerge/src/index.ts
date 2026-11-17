@@ -46,7 +46,7 @@ const REMOVE_BATCH = 1000;
 const MAX_SEGMENT_BYTES = 65_535;
 
 const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder("utf-8", { fatal: true });
+const textDecoder = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
 
 export function encodeKey(key: StorageKey): Uint8Array {
   const parts: Uint8Array[] = [];

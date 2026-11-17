@@ -124,7 +124,7 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   }
   const { marks, end } = decodeMarks(buf, 32, crcOff, through);
   let o = end;
-  const dec = new TextDecoder();
+  const dec = new TextDecoder("utf-8", { ignoreBOM: true });
   const runs: RunMeta[] = [];
   // Past the CRC only bytes written on purpose reach here; each read is
   // still checked, so they throw CorruptDatabaseError, not RangeError.
