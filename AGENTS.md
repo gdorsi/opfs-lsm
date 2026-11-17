@@ -28,7 +28,11 @@ The apps under `examples/` show how to build a web app on our packages, and test
 
 ## Worktrees
 
-Create worktrees inside `.claude/worktrees/` in the repository, never in the parent directory or elsewhere
+Several sessions work in this repository at once, and the main checkout holds their uncommitted changes. Make your changes in your own worktree. A T3 thread already runs in one under `~/.t3/worktrees/`. Otherwise, create one inside `.claude/worktrees/` from `origin/main`, never in the parent directory.
+
+## Dev servers
+
+`pnpm dev <site|example>` starts the docs site or an example app, or reuses the one this checkout already runs. The server keeps running after your session ends, and the command prints its URL and log file.
 
 ## docs/design.md
 
@@ -47,4 +51,4 @@ Create worktrees inside `.claude/worktrees/` in the repository, never in the par
 
 ## Static checks
 
-`pnpm static` runs oxlint (`.oxlintrc.json`), `check:docs`, and fallow dead-code detection (`.fallowrc.json`). CI runs all three in the `static` job. If fallow reports a new script entry point as unused, add it to `entry` in `.fallowrc.json`. oxlint rejects `fake-indexeddb` imports under `bench/`, which must run on real IndexedDB; see bench/README.md.
+`pnpm static` runs oxlint (`.oxlintrc.json`), `check:docs`, and fallow dead-code detection (`.fallowrc.json`). CI runs all three in the `static` job. If fallow reports a new script entry point as unused, add it to `entry` in `.fallowrc.json`. oxlint rejects `fake-indexeddb` imports under `bench/`, which must run on real IndexedDB; see bench/README.md. The repository's own oxlint rules are in `scripts/oxlint-plugin.mjs`.
