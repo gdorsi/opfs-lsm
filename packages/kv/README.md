@@ -100,6 +100,14 @@ const count = await db.update([enc("count")], ([current], tx) => {
 count; // => 1
 ```
 
+The body reads further keys with `tx.read`, such as a key one of the values names. If their bytes are not loaded yet, kv drops that run of the body, loads them and runs the body again, so keep its effects to `tx` and its return value.
+
+```ts
+const name = await db.update([enc("user/1")], ([user], tx) =>
+  dec(tx.read([enc(`team/${dec(user)}`)])[0])
+);
+```
+
 ## Range scans
 
 ```ts

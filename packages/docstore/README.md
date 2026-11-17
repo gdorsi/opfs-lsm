@@ -50,6 +50,7 @@ const schema = defineSchema<{ todos: Todo; users: User }>()({
 			open: { by: ["done", "createdAt"] },        // sorted
 			byTag: { by: "tags[]" },                    // multi
 			search: { by: "createdAt", text: "title" }, // text
+			perDone: { count: "done" },                 // count
 		},
 		users: { byEmail: { by: "email", unique: true } }, // unique
 	},
@@ -258,6 +259,25 @@ await users.put({ id: "u5", email: "\uD800" });
 // sorted and multi indexes can be unique, text indexes cannot
 ```
 
+### Count
+
+A count index keeps how many documents hold each value of its fields, in the same kv transaction as the documents. It holds one or two small rows per value and no entries, so only `count` reads it. It suits fields with few values: a status, a flag, a tag.
+
+```ts
+await todos.count({ index: "perDone", eq: [false] });
+// => 2, read from one or two rows
+await todos.count({ index: "perDone" });
+// => 3, one or two rows per value of done
+// count: ["done", "createdAt"] counts each pair of values, and
+// eq and one bound pick pairs as they do in a sorted index
+// count: "tags[]" counts a document once per distinct tag
+// a write that moves a document to another value reads and
+// writes two numbers; one that moves none, nothing more
+await todos.query({ index: "perDone" });
+// type error, and DocStoreError "query": no entries to read
+todos.indexes.has("perDone"); // => false, it lists what query reads
+```
+
 ## Queries
 
 A query names an index and a range in it. Without `index`, it reads the documents in id order.
@@ -344,6 +364,8 @@ await todos.count({ index: "byTag" });
 await todos.count({ index: "open", limit: 1 });
 // => 1, count stops at limit
 ```
+
+`count` walks the entries it counts. On a [count index](#count) it adds the numbers of the values in range instead, and takes `eq`, one bound and `limit`, but not `after`, `reverse` or `match`.
 
 ### Order
 
@@ -479,6 +501,8 @@ await todos.put(todo);
 // a v1 handle keeps byCreated up to date too
 // a backfill cut short by a closed tab resumes on the next open
 ```
+
+Adding a count index to a stored collection counts its documents from one snapshot while other tabs keep writing. Redefining or removing one drops its numbers. A schema with a count index stores catalog format 2, which earlier versions of this library refuse to open.
 
 To delete a collection and its documents, name it in `drop`. A collection you only leave out keeps its documents for a later schema.
 

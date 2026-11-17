@@ -14,7 +14,7 @@ import type { QueryInput, Scalar } from "../src/schema.js";
 import { MODEL, checkQuery, queryArb, schema, textArb, type Doc } from "./docs.js";
 import { mirror } from "./mirror.js";
 import { codeOf, docstoreKeys, freshName, openKv, storedCatalog } from "./harness.js";
-import { expected, stored } from "./oracle.js";
+import { storedRows, stored } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
 import { ingest } from "@opfs-lsm/kv/testing";
 
@@ -177,7 +177,7 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
     await reader.reaches(model);
     await store.whenIdle();
     const docs = [...model.values()];
-    const entries = Object.values(MODEL).reduce((n, ix) => n + expected(docs, ix, {}).length, 0);
+    const entries = Object.values(MODEL).reduce((n, ix) => n + storedRows(docs, ix), 0);
     expect((await storedCatalog(kv)).dropped).toEqual([]);
     expect((await docstoreKeys(kv)).length).toBe(1 + docs.length + entries);
   } finally {
@@ -188,7 +188,7 @@ async function run(cmds: readonly Cmd[]): Promise<void> {
 
 describe("docstore against an in-memory model", () => {
   it(
-    "agrees on every read, and leaves exactly the catalog, the rows and their entries in kv",
+    "agrees on every read, and leaves exactly the catalog, the rows, their entries and one row per counted group in kv",
     async () => {
       await expect(
         fc.assert(fc.asyncProperty(fc.array(cmdArb, { maxLength: 40 }), (cmds) => run(cmds)), { numRuns: RUNS, ...replay }),

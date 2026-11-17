@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { prefixBound } from "../src/index.js";
+import { prefixBound, type UpdateTx } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { checkBatch, checkDbName } from "../src/check.js";
 import { TabWal } from "../src/idb/wal.js";
@@ -134,6 +134,64 @@ describe("rangeJoin", () => {
       const range = { ...prefixBound(utf("idx/")), reverse: true, ...(limit !== undefined ? { limit } : {}) };
       expect(shown(await db.rangeJoin(range, (e) => e.value))).toEqual([...forward].reverse().slice(0, limit));
     }
+    await db.close();
+  });
+});
+
+describe("update tx.read", () => {
+  /** An ingested run of 1,000 rows of 1 KiB, so `ptr` and the rows it names sit in different blocks. */
+  async function pointers(fs: MemoryFs) {
+    const writer = await openHarnessDb({ name: NAME, writerId: "w", fs, forceMemory: true, maxWalBytes });
+    for (let from = 0; from < 1_000; from += 250) {
+      await writer.batch((tx) => {
+        for (let i = from; i < from + 250; i++) tx.put(utf(`row/${String(i).padStart(4, "0")}`), new Uint8Array(1_024).fill(i % 251));
+      });
+    }
+    await writer.put(utf("ptr"), utf("row/0900"));
+    await ingest(writer);
+    await writer.close();
+    return openHarnessDb({ name: NAME, writerId: "r", fs, forceMemory: true, maxWalBytes, cacheBytes: 1 });
+  }
+
+  it("reads a key that a value names, running the body again once its block loads", async () => {
+    const db = await pointers(new MemoryFs());
+    let runs = 0;
+    const seen = await db.update([utf("ptr")], ([ptr], tx) => {
+      runs++;
+      const [row, absent] = tx.read([ptr!, utf("row/none")]);
+      return [row?.[0], absent];
+    });
+    expect(seen).toEqual([900 % 251, undefined]);
+    expect(runs).toBeGreaterThan(1);
+    await db.close();
+  });
+
+  it("drops a run whose body swallowed the miss", async () => {
+    const db = await pointers(new MemoryFs());
+    await db.update([utf("ptr")], ([ptr], tx) => {
+      let outcome = "swallowed";
+      try {
+        tx.read([ptr!]);
+        outcome = "read";
+      } catch {
+        // a body must not catch it, but kv must not commit this run either way
+      }
+      tx.put(utf("outcome"), utf(outcome));
+    });
+    expect(text(await db.get(utf("outcome")))).toBe("read");
+    await db.close();
+  });
+
+  it("reads before the body's own ops, and only inside update", async () => {
+    const db = await openHarnessDb({ name: NAME, writerId: "a", fs: new MemoryFs(), forceMemory: true, maxWalBytes });
+    await db.put(utf("k"), utf("old"));
+    const seen = await db.update([], (_values, tx) => {
+      tx.put(utf("k"), utf("new"));
+      return text(tx.read([utf("k")])[0]);
+    });
+    expect(seen).toBe("old");
+    expect(text(await db.get(utf("k")))).toBe("new");
+    await expect(db.batch((tx) => (tx as UpdateTx).read([utf("k")]))).rejects.toThrow(/only inside update/);
     await db.close();
   });
 });

@@ -12,18 +12,24 @@ import { DocStoreError } from "./errors.js";
 import { indexPrefix, rowPrefix, type CollectionId, type IndexId, type ScanTarget } from "./keys.js";
 import type { AnySchema, IndexInfo } from "./schema.js";
 
-/** Bumped when stored bytes change meaning. */
-const FORMAT = 1;
+/**
+ * Bumped when stored bytes change meaning. A catalog is written with the
+ * lowest format that describes it: 2 once some index is a count index, which
+ * a library that reads only format 1 would not maintain.
+ */
+const FORMAT_PLAIN = 1;
+const FORMAT_COUNT = 2;
 const MAX_COLLECTION_ID = 0xffff;
 const MAX_INDEX_ID = 0xff;
 const MAX_FIELDS = 8;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Ends the first field of `by` when it holds an array. */
 const ARRAY_MARK = "[]";
-const OPTIONS = ["by", "unique", "text"];
+const OPTIONS = ["by", "unique", "text", "count"];
 
 export type StoredCatalog = {
-  readonly format: typeof FORMAT;
+  /** Set by `encodeCatalog`. */
+  readonly format: number;
   /** The app version that last changed the catalog. Only a higher declared version may change definitions. */
   readonly version: number;
   /** Every collection and every `clear` takes the next id. Never reused. */
@@ -54,6 +60,13 @@ export type IndexSpec =
       readonly kind: "text";
       readonly on: readonly string[];
       readonly text: string;
+    }
+  | {
+      /** How many documents hold each value tuple of `on`. No entries. */
+      readonly kind: "count";
+      readonly on: readonly string[];
+      /** The first path holds an array: a document counts once per distinct element. */
+      readonly multi: boolean;
     };
 
 /**
@@ -91,6 +104,17 @@ function checkField(field: unknown, where: string): string {
 
 const isArrayField = (field: unknown): field is string => typeof field === "string" && field.endsWith(ARRAY_MARK);
 
+/** The paths of `by` or `count`, and whether the first holds an array. */
+function fieldsOf(fields: unknown, option: string, where: string): { readonly on: string[]; readonly multi: boolean } {
+  const list: unknown[] = Array.isArray(fields) ? fields : [fields];
+  if (list.length === 0 || list.length > MAX_FIELDS) badSchema(`${where}: ${option} takes 1 to ${MAX_FIELDS} fields`);
+  const first = list[0];
+  const multi = isArrayField(first);
+  const on = list.map((f, i) => checkField(multi && i === 0 ? first.slice(0, -ARRAY_MARK.length) : f, where));
+  if (new Set(on).size !== on.length) badSchema(`${where}: ${option} repeats a field`);
+  return { on, multi };
+}
+
 export function normalizeSchema(decl: AnySchema): DeclaredSchema {
   if (!Number.isInteger(decl.version) || decl.version < 1) badSchema("version must be an integer >= 1");
   if (!isObject(decl.collections)) badSchema("collections must be an object");
@@ -106,13 +130,13 @@ export function normalizeSchema(decl: AnySchema): DeclaredSchema {
       for (const key of Object.keys(d)) {
         if (!OPTIONS.includes(key)) badSchema(`${where}: unknown option "${key}", expected ${OPTIONS.join(", ")}`);
       }
-      if (d["by"] === undefined) badSchema(`${where}: by is required`);
-      const by: unknown[] = Array.isArray(d["by"]) ? d["by"] : [d["by"]];
-      if (by.length === 0 || by.length > MAX_FIELDS) badSchema(`${where}: by takes 1 to ${MAX_FIELDS} fields`);
-      const first = by[0];
-      const multi = isArrayField(first);
-      const on = by.map((f, i) => checkField(multi && i === 0 ? first.slice(0, -ARRAY_MARK.length) : f, where));
-      if (new Set(on).size !== on.length) badSchema(`${where}: by repeats a field`);
+      if (d["count"] !== undefined) {
+        if (Object.keys(d).length > 1) badSchema(`${where}: a count index takes only count`);
+        specs.set(index, { kind: "count", ...fieldsOf(d["count"], "count", where) });
+        continue;
+      }
+      if (d["by"] === undefined) badSchema(`${where}: by or count is required`);
+      const { on, multi } = fieldsOf(d["by"], "by", where);
       const { unique = false, text } = d;
       if (typeof unique !== "boolean") badSchema(`${where}: unique is a boolean`);
       if (text === undefined) {
@@ -135,9 +159,11 @@ export function normalizeSchema(decl: AnySchema): DeclaredSchema {
   return { version: decl.version, collections, drop };
 }
 
+/** The indexes `query` can read. Count indexes are left out: they hold no entries. */
 export function describeIndexes(specs: ReadonlyMap<string, IndexSpec>): ReadonlyMap<string, IndexInfo> {
   const out = new Map<string, IndexInfo>();
   for (const [name, s] of specs) {
+    if (s.kind === "count") continue;
     out.set(
       name,
       s.kind === "text"
@@ -157,6 +183,8 @@ function sameSpec(a: IndexSpec, b: IndexSpec): boolean {
       return b.kind === "sorted" && a.unique === b.unique && a.multi === b.multi;
     case "text":
       return b.kind === "text" && a.text === b.text;
+    case "count":
+      return b.kind === "count" && a.multi === b.multi;
   }
 }
 
@@ -171,8 +199,8 @@ export function parseCatalog(bytes: Uint8Array): StoredCatalog {
   } catch {
     throw new CorruptDatabaseError("the docstore catalog is not JSON");
   }
-  if (isObject(c) && c["format"] !== FORMAT) {
-    badSchema(`the stored catalog has format ${String(c["format"])}; this library reads format ${FORMAT}`);
+  if (isObject(c) && c["format"] !== FORMAT_PLAIN && c["format"] !== FORMAT_COUNT) {
+    badSchema(`the stored catalog has format ${String(c["format"])}; this library reads formats ${FORMAT_PLAIN} and ${FORMAT_COUNT}`);
   }
   if (!isCatalog(c)) throw new CorruptDatabaseError("the docstore catalog has an unknown shape");
   return c;
@@ -201,7 +229,11 @@ function isCollection(c: unknown): boolean {
     Number.isInteger(c["nextIndexId"]) &&
     isObject(c["indexes"]) &&
     Object.values(c["indexes"]).every(
-      (i) => isObject(i) && isId(i["id"], MAX_INDEX_ID) && isSpec(i["spec"]) && isState(i["state"]),
+      (i) =>
+        isObject(i) &&
+        isId(i["id"], MAX_INDEX_ID) &&
+        isSpec(i["spec"]) &&
+        isState(i["state"]),
     )
   );
 }
@@ -209,6 +241,7 @@ function isCollection(c: unknown): boolean {
 function isSpec(s: unknown): boolean {
   if (!isObject(s) || !Array.isArray(s["on"]) || !s["on"].every((p) => typeof p === "string")) return false;
   if (s["kind"] === "sorted") return typeof s["unique"] === "boolean" && typeof s["multi"] === "boolean";
+  if (s["kind"] === "count") return typeof s["multi"] === "boolean";
   return s["kind"] === "text" && typeof s["text"] === "string";
 }
 
@@ -224,7 +257,8 @@ function isState(s: unknown): boolean {
 }
 
 export function encodeCatalog(catalog: StoredCatalog): Uint8Array {
-  return utf8.encode(JSON.stringify(catalog));
+  const counted = Object.values(catalog.collections).some((coll) => Object.values(coll.indexes).some((i) => i.spec.kind === "count"));
+  return utf8.encode(JSON.stringify({ ...catalog, format: counted ? FORMAT_COUNT : FORMAT_PLAIN }));
 }
 
 /**
@@ -253,7 +287,7 @@ export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredS
 }
 
 function fresh(declared: DeclaredSchema): StoredCatalog {
-  const empty: StoredCatalog = { format: FORMAT, version: declared.version, nextCollectionId: 1, collections: {}, dropped: [] };
+  const empty: StoredCatalog = { format: FORMAT_PLAIN, version: declared.version, nextCollectionId: 1, collections: {}, dropped: [] };
   return upgrade(empty, declared);
 }
 
@@ -273,43 +307,51 @@ function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog
     const id = old?.id ?? nextCollectionId++;
     if (id > MAX_COLLECTION_ID) badSchema("no collection ids left");
     let nextIndexId = old?.nextIndexId ?? 1;
+    const takeId = () => {
+      if (nextIndexId > MAX_INDEX_ID) badSchema(`"${name}" has no index ids left`);
+      return nextIndexId++;
+    };
     const indexes: Record<string, StoredIndex> = {};
     for (const [index, spec] of specs) {
       const was = old?.indexes[index];
-      if (was && was.state.kind !== "failed" && sameSpec(was.spec, spec)) {
-        indexes[index] = was;
-        continue;
-      }
-      if (nextIndexId > MAX_INDEX_ID) badSchema(`"${name}" has no index ids left`);
-      indexes[index] = { id: nextIndexId++, spec, state: old ? { kind: "building" } : { kind: "ready" } };
+      indexes[index] =
+        was && was.state.kind !== "failed" && sameSpec(was.spec, spec)
+          ? was
+          : { id: takeId(), spec, state: old ? { kind: "building" } : { kind: "ready" } };
     }
     for (const [index, was] of Object.entries(old?.indexes ?? {})) {
-      if (indexes[index] !== was && was.state.kind !== "failed") dropped.push({ collection: id, index: was.id });
+      if (was.state.kind !== "failed" && indexes[index]?.id !== was.id) dropped.push({ collection: id, index: was.id });
     }
     collections[name] = { id, nextIndexId, indexes };
   }
-  return { format: FORMAT, version: declared.version, nextCollectionId, collections, dropped };
+  return { format: FORMAT_PLAIN, version: declared.version, nextCollectionId, collections, dropped };
 }
 
+/**
+ * Changes one index, named by ids: a collection id is never reused, so the
+ * pair names that index for good, while a collection dropped and declared
+ * again reuses its name and its index ids.
+ */
 function withIndex(
   c: StoredCatalog,
-  collection: string,
+  collection: CollectionId,
   index: IndexId,
-  next: (was: StoredIndex, coll: StoredCollection) => { index: StoredIndex; dropped?: DroppedPrefix } | undefined,
+  next: (was: StoredIndex, coll: StoredCollection) => { index: StoredIndex; dropped?: readonly DroppedPrefix[] } | undefined,
 ): StoredCatalog | undefined {
-  const coll = c.collections[collection];
-  if (!coll) return undefined;
+  const found = Object.entries(c.collections).find(([, coll]) => coll.id === collection);
+  if (!found) return undefined;
+  const [name, coll] = found;
   const entry = Object.entries(coll.indexes).find(([, i]) => i.id === index);
   const out = entry && next(entry[1], coll);
   if (!entry || !out) return undefined;
   return {
     ...c,
-    collections: { ...c.collections, [collection]: { ...coll, indexes: { ...coll.indexes, [entry[0]]: out.index } } },
-    dropped: out.dropped ? [...c.dropped, out.dropped] : c.dropped,
+    collections: { ...c.collections, [name]: { ...coll, indexes: { ...coll.indexes, [entry[0]]: out.index } } },
+    dropped: out.dropped ? [...c.dropped, ...out.dropped] : c.dropped,
   };
 }
 
-export function markReady(c: StoredCatalog, collection: string, index: IndexId): StoredCatalog | undefined {
+export function markReady(c: StoredCatalog, collection: CollectionId, index: IndexId): StoredCatalog | undefined {
   return withIndex(c, collection, index, (was) =>
     was.state.kind === "building" ? { index: { ...was, state: { kind: "ready" } } } : undefined,
   );
@@ -317,14 +359,14 @@ export function markReady(c: StoredCatalog, collection: string, index: IndexId):
 
 export function markFailed(
   c: StoredCatalog,
-  collection: string,
+  collection: CollectionId,
   index: IndexId,
   reason: "unique" | "value",
   ids: readonly string[],
 ): StoredCatalog | undefined {
   return withIndex(c, collection, index, (was, coll) =>
     was.state.kind === "building"
-      ? { index: { ...was, state: { kind: "failed", reason, ids } }, dropped: { collection: coll.id, index: was.id } }
+      ? { index: { ...was, state: { kind: "failed", reason, ids } }, dropped: [{ collection: coll.id, index: was.id }] }
       : undefined,
   );
 }
@@ -361,7 +403,7 @@ export function removeDropped(c: StoredCatalog, prefix: DroppedPrefix): StoredCa
 export type Path = readonly string[];
 
 export type CompiledSpec =
-  | { readonly kind: "sorted"; readonly on: readonly Path[]; readonly unique: boolean; readonly multi: boolean }
+  | { readonly kind: "sorted" | "count"; readonly on: readonly Path[]; readonly unique: boolean; readonly multi: boolean }
   | { readonly kind: "text"; readonly on: readonly Path[]; readonly text: Path };
 
 export type IndexPlan = {
@@ -369,7 +411,7 @@ export type IndexPlan = {
   readonly id: IndexId;
   readonly state: IndexState;
   readonly spec: CompiledSpec;
-  readonly target: Extract<ScanTarget, { readonly rowPrefix: Uint8Array }>;
+  readonly target: Exclude<ScanTarget, { readonly kind: "rows" }>;
 };
 
 export type Unreadable = { readonly kind: "missing" } | { readonly kind: "spec-changed" } | Exclude<IndexState, { kind: "ready" }>;
@@ -378,8 +420,10 @@ export type BoundCollection = {
   readonly name: string;
   readonly id: CollectionId;
   readonly rows: Extract<ScanTarget, { readonly kind: "rows" }>;
-  /** Every building or ready index in the catalog, declared by this handle or not. Writes derive entries for exactly these. */
+  /** Every building or ready index in the catalog, declared by this handle or not. Writes keep exactly these. */
   readonly maintained: readonly IndexPlan[];
+  /** Some maintained index is a count index, so writes tally groups. */
+  readonly counted: boolean;
   /** By declared index name: the plan if this handle may query it, else why not. */
   readonly readable: ReadonlyMap<string, IndexPlan | Unreadable>;
 };
@@ -391,10 +435,10 @@ export type Bound = {
   readonly collections: ReadonlyMap<string, BoundCollection>;
 };
 
-export function readableTarget(coll: BoundCollection, index: string): ScanTarget {
+export function readablePlan(coll: BoundCollection, index: string): IndexPlan {
   const r = coll.readable.get(index);
   if (r === undefined) throw new DocStoreError("schema", `"${coll.name}" has no index "${index}" in this schema`);
-  if (!("kind" in r)) return r.target;
+  if (!("kind" in r)) return r;
   const where = `index "${index}" of "${coll.name}"`;
   switch (r.kind) {
     case "missing":
@@ -427,7 +471,9 @@ export function bind(bytes: Uint8Array, catalog: StoredCatalog, declared: Declar
       else if (!sameSpec(i.spec, spec)) readable.set(index, { kind: "spec-changed" });
       else readable.set(index, i.state.kind === "ready" ? maintained.get(index)! : i.state);
     }
-    collections.set(name, { name, id, rows: { kind: "rows", prefix: rows }, maintained: [...maintained.values()], readable });
+    const plans = [...maintained.values()];
+    const counted = plans.some((p) => p.target.kind === "count");
+    collections.set(name, { name, id, rows: { kind: "rows", prefix: rows }, maintained: plans, counted, readable });
   }
   return { bytes, catalog, collections };
 }
@@ -435,10 +481,13 @@ export function bind(bytes: Uint8Array, catalog: StoredCatalog, declared: Declar
 function compile(collection: CollectionId, rows: Uint8Array, name: string, i: StoredIndex): IndexPlan {
   const on = i.spec.on.map((p) => p.split("."));
   const spec: CompiledSpec =
-    i.spec.kind === "sorted"
-      ? { kind: "sorted", on, unique: i.spec.unique, multi: i.spec.multi }
-      : { kind: "text", on, text: i.spec.text.split(".") };
-  const kind = spec.kind === "text" ? "text" : spec.unique ? "unique" : "sorted";
+    i.spec.kind === "text"
+      ? { kind: "text", on, text: i.spec.text.split(".") }
+      : { kind: i.spec.kind, on, unique: i.spec.kind === "sorted" && i.spec.unique, multi: i.spec.multi };
   const prefix = indexPrefix(collection, i.id as IndexId);
-  return { name, id: i.id as IndexId, state: i.state, spec, target: { kind, prefix, rowPrefix: rows, arity: on.length } };
+  const target =
+    spec.kind === "count"
+      ? ({ kind: "count", prefix, arity: on.length } as const)
+      : ({ kind: spec.kind === "text" ? "text" : spec.unique ? "unique" : "sorted", prefix, rowPrefix: rows, arity: on.length } as const);
+  return { name, id: i.id as IndexId, state: i.state, spec, target };
 }

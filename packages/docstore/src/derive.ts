@@ -64,7 +64,8 @@ const NONE: Entry[] = [];
  * On the "next" side, the document about to be written, a value an index
  * cannot hold throws, so nothing is stored. On the "stored" side it gives no
  * entries: such a row predates a still-building index and never had any.
- * The entries of unique indexes are also pushed to `unique`.
+ * The entries of unique indexes are also pushed to `unique`. The groups of
+ * count indexes are not entries: their keys go to `groups` only.
  */
 export function entriesOf(
   coll: BoundCollection,
@@ -72,11 +73,16 @@ export function entriesOf(
   doc: StoredDoc,
   side: "next" | "stored",
   unique?: Entry[],
+  groups?: Uint8Array[],
 ): Entry[] {
   const out: Entry[] = [];
   for (const plan of coll.maintained) {
     const entries = indexEntries(plan, id, doc);
     if (Array.isArray(entries)) {
+      if (plan.target.kind === "count") {
+        if (groups) for (const e of entries) groups.push(e.key);
+        continue;
+      }
       for (const e of entries) out.push(e);
       if (unique && plan.target.kind === "unique") for (const e of entries) unique.push(e);
     } else if (side === "next") {
@@ -89,9 +95,10 @@ export function entriesOf(
   return out;
 }
 
+/** The entries of `doc` in one index. For a count index, one entry per group of `doc`: the group's key, no value. */
 export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): Entry[] | Unindexable {
   const { spec } = plan;
-  const multi = spec.kind === "sorted" && spec.multi;
+  const multi = spec.kind !== "text" && spec.multi;
   const values: Scalar[] = [];
   let firsts: readonly Scalar[] | undefined;
   for (let i = 0; i < spec.on.length; i++) {
@@ -120,6 +127,10 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
       if (spec.unique) tail = undefined;
       else value = EMPTY;
       break;
+    case "count":
+      tail = undefined;
+      value = EMPTY;
+      break;
     case "text": {
       const text = readPath(doc, spec.text);
       if (text === undefined) return NONE;
@@ -130,11 +141,13 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
   }
 
   const prefix = plan.target.prefix;
+  // A count key also has a base row, one byte longer (keys.ts).
+  const max = spec.kind === "count" ? MAX_KEY_BYTES - 1 : MAX_KEY_BYTES;
   const out: Entry[] = [];
   for (const first of firsts ?? [values[0]!]) {
     values[0] = first;
     const key = encodeTuple(values, prefix, tail);
-    if (key.length > MAX_KEY_BYTES) return { path: spec.on.map((p) => p.join(".")).join(","), why: "key-too-long" };
+    if (key.length > max) return { path: spec.on.map((p) => p.join(".")).join(","), why: "key-too-long" };
     out.push({ key, value });
   }
   return out;

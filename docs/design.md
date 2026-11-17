@@ -100,7 +100,8 @@ IndexedDB serializes `readwrite` transactions that share a store, so two tabs ca
 same seq. An aborted transaction reverts the key generator, so committed seqs stay gapless.
 
 `update(keys, body)` reads the tail, applies it to the memtable, runs the synchronous `body` and
-adds the batch at `head + 1`, all in one transaction. It cannot conflict with another writer.
+adds the batch at `head + 1`, all in one transaction, so it cannot conflict with another writer.
+The body may read more keys; one not loaded yet appends nothing and runs the body again once it is.
 
 The commit point is the `complete` event of the transaction, at the default IndexedDB
 durability. The writes of a group commit in seq order. A commit survives a tab crash. It may not

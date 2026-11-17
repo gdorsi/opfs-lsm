@@ -60,13 +60,30 @@ type Fields<T> = readonly [ScalarPath<T> | `${ArrayPath<T>}[]`, ...ScalarPath<T>
  * - `text`: a string field whose words the entries also carry, for
  *   `query({ match })`. Not with `unique`, nor with a `[]` first field.
  */
-export type IndexDecl<T> = {
+export type SortedDecl<T> = {
   readonly by: Fields<T> | Fields<T>[0];
   readonly unique?: boolean;
   readonly text?: StringPath<T>;
+  readonly count?: never;
 };
 
-type Options = { readonly by?: unknown; readonly unique?: unknown; readonly text?: unknown };
+/**
+ * A count index: how many documents hold each value tuple of the fields at
+ * `count`, kept in the same kv transaction as the documents. It holds one or
+ * two small rows per tuple and no entries, so only `count` reads it. A `[]`
+ * first field counts a document once per distinct element. Worth it when the
+ * fields take few values: a status, a flag, a tag.
+ */
+export type CountDecl<T> = {
+  readonly count: Fields<T> | Fields<T>[0];
+  readonly by?: never;
+  readonly unique?: never;
+  readonly text?: never;
+};
+
+export type IndexDecl<T> = SortedDecl<T> | CountDecl<T>;
+
+type Options = { readonly by?: unknown; readonly unique?: unknown; readonly text?: unknown; readonly count?: unknown };
 
 /**
  * What a declaration must not be, as a type that fails with the reason: it
@@ -146,7 +163,7 @@ export type IndexesOf<S, C extends string> = S extends { readonly collections: i
     : never
   : never;
 
-/** What a declared index is, for layers that plan queries. */
+/** What a declared index that `query` can read is, for layers that plan queries. */
 export type IndexInfo = {
   readonly kind: "sorted" | "multi" | "text";
   /** The fields the index orders by, as declared. The first field of a multi index ends in `[]`. */
@@ -164,7 +181,16 @@ declare const cursorBrand: unique symbol;
  */
 export type Cursor = string & { readonly [cursorBrand]: true };
 
-type ByTuple<D> = D extends { readonly by: infer B } ? (B extends string ? readonly [B] : B) : never;
+/** The fields an index orders by, or a count index groups by. */
+type ByTuple<D> = D extends { readonly by: infer B extends string | readonly string[] }
+  ? B extends string
+    ? readonly [B]
+    : B
+  : D extends { readonly count: infer C extends string | readonly string[] }
+    ? C extends string
+      ? readonly [C]
+      : C
+    : never;
 
 type ValuesAt<T, Ps> = { -readonly [K in keyof Ps]: At<T, Ps[K] & string> };
 type ElementOf<A> = A extends readonly (infer E)[] ? E : never;
@@ -218,16 +244,28 @@ type IndexQuery<I, V extends readonly unknown[], D> = { readonly index: I } & Wh
 /** No index: the rows in id order. The id is the one component. */
 type RowsQuery = { readonly index?: undefined; readonly match?: undefined } & Where<readonly [string]> & PageOptions;
 
-/** Everything `query`, `queryIds` and `count` accept for a collection with indexes `Ix`. */
-export type Query<T, Ix> =
-  | RowsQuery
-  | {
-      [I in keyof Ix & string]: IndexQuery<
-        I,
-        ValuesOf<T, Ix[I]> extends readonly unknown[] ? ValuesOf<T, Ix[I]> : never,
-        Ix[I]
-      >;
-    }[keyof Ix & string];
+/** The names in `Ix` of count indexes (`Count` true) or of the others. */
+type NamesOf<Ix, Count extends boolean> = {
+  [I in keyof Ix & string]: (Ix[I] extends { readonly count: unknown } ? true : false) extends Count ? I : never;
+}[keyof Ix & string];
+
+type Values<T, D> = ValuesOf<T, D> extends readonly unknown[] ? ValuesOf<T, D> : never;
+
+/** Everything `query` and `queryIds` accept for a collection with indexes `Ix`. */
+export type Query<T, Ix> = RowsQuery | { [I in NamesOf<Ix, false>]: IndexQuery<I, Values<T, Ix[I]>, Ix[I]> }[NamesOf<Ix, false>];
+
+/** A count index takes a range of its groups: `eq` and one bound, and `limit`. */
+type CountIndexQuery<I, V extends readonly unknown[]> = { readonly index: I } & Where<V> & {
+    readonly limit?: number | undefined;
+    readonly after?: undefined;
+    readonly reverse?: undefined;
+    readonly match?: undefined;
+  };
+
+/** Everything `count` accepts: what `query` does, and a count index. */
+export type CountQuery<T, Ix> =
+  | Query<T, Ix>
+  | { [I in NamesOf<Ix, true>]: CountIndexQuery<I, Values<T, Ix[I]>> }[NamesOf<Ix, true>];
 
 export type Page<T> = { readonly docs: T[]; readonly next?: Cursor };
 export type IdPage = { readonly ids: string[]; readonly next?: Cursor };

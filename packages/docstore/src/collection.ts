@@ -1,16 +1,17 @@
 import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
+import { CountDeltas } from "./counts.js";
 import { decodeDoc, diffEntries, encodeDoc, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { CATALOG_KEY, bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
-import type { IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
+import type { CountQuery, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
 import { CollectionReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
 
 export interface Collection<T extends JsonDoc, Ix> {
   readonly name: string;
-  /** The indexes this handle's schema declares for the collection, by name. */
+  /** The indexes this handle's schema declares for the collection, by name, except count indexes: the ones `query` reads. */
   readonly indexes: ReadonlyMap<string, IndexInfo>;
 
   /** The stored document, or undefined. */
@@ -72,8 +73,12 @@ export interface Collection<T extends JsonDoc, Ix> {
   query(q: Query<T, Ix>): Promise<Page<T>>;
   /** As `query`, without reading the documents. */
   queryIds(q: Query<T, Ix>): Promise<IdPage>;
-  /** How many entries `query` would walk, stopping at `limit` if given. */
-  count(q: Query<T, Ix>): Promise<number>;
+  /**
+   * How many entries `query` would walk, stopping at `limit` if given. On a
+   * count index: how many documents its groups in range hold, read from one
+   * or two rows per group.
+   */
+  count(q: CountQuery<T, Ix>): Promise<number>;
 
   /**
    * Reads from one kv snapshot: every read in `body` sees the same state,
@@ -94,16 +99,18 @@ export interface Collection<T extends JsonDoc, Ix> {
 export const RETRY: unique symbol = Symbol("retry");
 
 const NONE: readonly Entry[] = [];
+const NO_GROUPS: readonly Uint8Array[] = [];
 
 /**
  * A row read before the transaction. The body retries unless the row still
  * holds `bytes`. `owned` lists the row's unique entries while some unique
- * index is building, and is empty otherwise.
+ * index is building, and is empty otherwise. `groups` are its count groups.
  */
 type Prior = {
   readonly bytes: Uint8Array | undefined;
   readonly before: readonly Entry[];
   readonly owned: readonly Entry[];
+  readonly groups: readonly Uint8Array[];
 };
 
 /**
@@ -118,9 +125,11 @@ const buildingUnique = (coll: BoundCollection) =>
   coll.maintained.some((p) => p.target.kind === "unique" && p.state.kind === "building");
 
 function priorOf(coll: BoundCollection, idb: Uint8Array, bytes: Uint8Array | undefined, doc?: StoredDoc): Prior {
-  if (!bytes) return { bytes, before: NONE, owned: NONE };
+  if (!bytes) return { bytes, before: NONE, owned: NONE, groups: NO_GROUPS };
   const owned: Entry[] | undefined = buildingUnique(coll) ? [] : undefined;
-  return { bytes, before: entriesOf(coll, idb, doc ?? decodeDoc(bytes), "stored", owned), owned: owned ?? NONE };
+  const groups: Uint8Array[] = [];
+  const before = entriesOf(coll, idb, doc ?? decodeDoc(bytes), "stored", owned, groups);
+  return { bytes, before, owned: owned ?? NONE, groups };
 }
 
 /**
@@ -142,15 +151,19 @@ function planChanges(
   const idbs = ids.map(idBytes);
   const rowKeys = idbs.map((b) => concat(coll.rows.prefix, b));
   const after: (readonly Entry[])[] = [];
+  const afterGroups: (readonly Uint8Array[])[] = [];
   const claims = new Map<string, { readonly key: Uint8Array; readonly at: number }>();
   for (let i = 0; i < n; i++) {
     const doc = docs[i];
     if (!doc) {
       after.push(NONE);
+      afterGroups.push(NO_GROUPS);
       continue;
     }
     const unique: Entry[] = [];
-    after.push(entriesOf(coll, idbs[i]!, doc.doc, "next", unique));
+    const groups: Uint8Array[] = [];
+    after.push(entriesOf(coll, idbs[i]!, doc.doc, "next", unique, groups));
+    afterGroups.push(groups);
     for (const u of unique) {
       const k = keyString(u.key);
       const other = claims.get(k);
@@ -182,6 +195,7 @@ function planChanges(
       }
       const removes: Uint8Array[] = [];
       const writes: Entry[] = [];
+      const counts = coll.counted ? new CountDeltas() : undefined;
       let existed = 0;
       for (let i = 0; i < n; i++) {
         const old = values[i];
@@ -190,7 +204,15 @@ function planChanges(
         if (doc ? bytesEqual(old, doc.bytes) : old === undefined) continue;
         if (doc) tx.put(rowKeys[i]!, doc.bytes);
         else tx.delete(rowKeys[i]!);
-        const before = prior ? prior[i]!.before : old ? entriesOf(coll, idbs[i]!, decodeDoc(old), "stored") : NONE;
+        let before: readonly Entry[] = NONE;
+        let groups: readonly Uint8Array[] = NO_GROUPS;
+        if (prior) ({ before, groups } = prior[i]!);
+        else if (old) {
+          const g: Uint8Array[] = [];
+          before = entriesOf(coll, idbs[i]!, decodeDoc(old), "stored", undefined, g);
+          groups = g;
+        }
+        counts?.tally(groups, afterGroups[i]!);
         const diff = diffEntries(before, after[i]!);
         for (const k of diff.remove) {
           const at = owners.get(keyString(k));
@@ -200,6 +222,7 @@ function planChanges(
       }
       for (const k of removes) tx.delete(k);
       for (const e of writes) tx.put(e.key, e.value);
+      counts?.apply(tx);
       return existed;
     },
   };
@@ -383,7 +406,7 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     return this.view((snap) => snap.queryIds(q));
   }
 
-  count(q: Query<T, Ix>): Promise<number> {
+  count(q: CountQuery<T, Ix>): Promise<number> {
     return this.view((snap) => snap.count(q));
   }
 

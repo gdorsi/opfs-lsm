@@ -11,6 +11,7 @@ import {
   scanPlan,
   type CollectionId,
   type IndexId,
+  type EntryTarget,
   type ScanTarget,
 } from "../src/keys.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
@@ -27,7 +28,7 @@ const hex = (key: Uint8Array) => Array.from(key, (b) => b.toString(16).padStart(
 type Stored = { readonly values: Scalar[]; readonly id: string };
 type Ix = { readonly kind: "sorted" | "unique" | "text"; readonly arity: number; readonly entries: Stored[] };
 
-const indexTarget = (ix: Ix): ScanTarget => ({
+const indexTarget = (ix: Ix): EntryTarget => ({
   kind: ix.kind,
   prefix: indexPrefix(COLLECTION, INDEX),
   rowPrefix: rowPrefix(COLLECTION),

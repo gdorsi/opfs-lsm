@@ -1,9 +1,10 @@
 import { CorruptDatabaseError, type Entry, type Range, type ViewSnapshot } from "@opfs-lsm/kv";
-import { readableTarget, type BoundCollection } from "./catalog.js";
+import { readablePlan, type BoundCollection } from "./catalog.js";
+import { sumCounts } from "./counts.js";
 import { decodeDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { concat, encodeCursor, entryId, idBytes, idOf, parseId, scanPlan } from "./keys.js";
-import type { Cursor, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
+import type { CountQuery, Cursor, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
 
 /** Reads of one collection from one kv snapshot. */
 export interface CollectionSnapshot<T extends JsonDoc, Ix> {
@@ -20,8 +21,8 @@ export interface CollectionSnapshot<T extends JsonDoc, Ix> {
   query(q: Query<T, Ix>): Promise<Page<T>>;
   /** As `query`, without reading the documents. */
   queryIds(q: Query<T, Ix>): Promise<IdPage>;
-  /** How many entries `query` would walk, stopping at `limit` if given. */
-  count(q: Query<T, Ix>): Promise<number>;
+  /** See `Collection.count`. */
+  count(q: CountQuery<T, Ix>): Promise<number>;
 }
 
 function limitOf(limit: unknown): number | undefined {
@@ -75,7 +76,7 @@ export class CollectionReader<T extends JsonDoc, Ix> {
   }
 
   async query(q: Query<T, Ix>): Promise<Page<T>> {
-    const { target, range, limit } = this.plan(q, 1);
+    const { target, range, limit } = this.entries(q);
     const page = await collect(this.snap.range(range));
     const next = trimPage(page, limit);
     if (target.kind === "rows") return { docs: page.map((h) => decodeDoc(h.value) as unknown as T), ...next };
@@ -90,22 +91,36 @@ export class CollectionReader<T extends JsonDoc, Ix> {
   }
 
   async queryIds(q: Query<T, Ix>): Promise<IdPage> {
-    const { target, range, limit } = this.plan(q, 1);
+    const { target, range, limit } = this.entries(q);
     const page = await collect(this.snap.range(range));
     const next = trimPage(page, limit);
     return { ids: page.map((h) => idOf(entryId(target, h.key, h.value))), ...next };
   }
 
-  count(q: Query<T, Ix>): Promise<number> {
-    return this.snap.count(this.plan(q, 0).range);
-  }
-
-  /** `peek` extra entries tell whether another page follows. */
-  private plan(q: Query<T, Ix>, peek: number) {
+  /** A count index adds its rows in range; any other index, or the rows, is walked. */
+  async count(q: CountQuery<T, Ix>): Promise<number> {
     const input = q as QueryInput;
     const limit = limitOf(input.limit);
-    const target = input.index === undefined ? this.coll.rows : readableTarget(this.coll, input.index);
-    return { target, limit, range: withLimit(scanPlan(target, input), limit && limit + peek) };
+    const target = this.target(input);
+    const range = scanPlan(target, input);
+    if (target.kind !== "count") return this.snap.count(withLimit(range, limit));
+    const n = await sumCounts(this.snap, range);
+    return limit === undefined ? n : Math.min(n, limit);
+  }
+
+  /** A query's range, with one entry past `limit` to tell whether another page follows. */
+  private entries(q: Query<T, Ix>) {
+    const input = q as QueryInput;
+    const limit = limitOf(input.limit);
+    const target = this.target(input);
+    if (target.kind === "count") {
+      throw new DocStoreError("query", `"${input.index}" of "${this.coll.name}" is a count index, which only count reads`);
+    }
+    return { target, limit, range: withLimit(scanPlan(target, input), limit && limit + 1) };
+  }
+
+  private target(input: QueryInput) {
+    return input.index === undefined ? this.coll.rows : readablePlan(this.coll, input.index).target;
   }
 }
 
