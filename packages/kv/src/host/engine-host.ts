@@ -625,11 +625,7 @@ export function attachEngineHostPort(
           return;
         }
         case "watch":
-          host.watch(msg.name, {
-            maxWalBytes: msg.maxWalBytes,
-            compactionMemoryBytes: msg.compactionMemoryBytes,
-            maxBytes: msg.maxBytes,
-          });
+          host.watch(msg.name, msg);
           return;
         case "unwatch":
           host.unwatch(msg.name);

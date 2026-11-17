@@ -33,18 +33,10 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
       return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
     },
     watch(name, policy) {
-      const msg: ClientToHost = {
-        type: "watch",
-        name,
-        maxWalBytes: policy.maxWalBytes,
-        compactionMemoryBytes: policy.compactionMemoryBytes,
-        maxBytes: policy.maxBytes,
-      };
-      port.postMessage(msg);
+      port.postMessage({ type: "watch", name, ...policy } satisfies ClientToHost);
     },
     unwatch(name) {
-      const msg: ClientToHost = { type: "unwatch", name };
-      port.postMessage(msg);
+      port.postMessage({ type: "unwatch", name } satisfies ClientToHost);
     },
     async destroy(name) {
       await request({ type: "destroy", id: nextId++, name });
