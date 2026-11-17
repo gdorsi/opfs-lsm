@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, useId } from "vue";
 import { ratioTone } from "../tone.ts";
-import { LINE, pairText, ticks, xOf, type Group } from "./bench.ts";
+import { lanes, LINE, pairText, ticks, xOf, type Group } from "./bench.ts";
 
 /**
  * One group of a benchmark card: its head, then a row per result. A bar runs from the 1× line to the result's ratio,
  * right when opfs-lsm is faster and left when it is slower, with the ratio at its end and the two values on the right.
  * The page renders the bars drawn. A group that starts below the screen folds them back to the line once mounted and
  * grows them, one row after the next, when it scrolls into view.
+ *
+ * In a narrow card the group starts closed, as one button: its title, how many results went each way, and a dot per
+ * result on the card's scale. Opening it shows the rows, their bars growing out of the 1× line. The wide card has no
+ * button and always shows the rows.
  */
 const props = defineProps<{ group: Group }>();
 
@@ -23,6 +27,20 @@ const rows = computed(() =>
     };
   }),
 );
+
+const WORDS = { success: "faster", warning: "slower", neutral: "even" } as const;
+const counts = computed(() =>
+  (["success", "warning", "neutral"] as const)
+    .map((tone) => ({ tone, word: WORDS[tone], n: rows.value.filter((r) => r.tone === tone).length }))
+    .filter((c) => c.n > 0),
+);
+const dots = computed(() => {
+  const y = lanes(rows.value.map((r) => r.x));
+  return rows.value.map((r, i) => ({ key: r.measure, x: r.x, tone: r.tone, y: y[i] }));
+});
+
+const open = ref(false);
+const body = useId();
 
 const root = ref<HTMLElement>();
 const folded = ref(false);
@@ -52,17 +70,20 @@ function tipAt(r: (typeof rows.value)[number]) {
 </script>
 
 <template>
-  <section ref="root" class="bench-group" :data-folded="folded || undefined">
-    <header class="bench-group-head">
-      <h4 class="bench-group-title">{{ group.title }} <span>{{ group.versus }}</span></h4>
-      <p v-if="group.setup" class="bench-group-setup">{{ group.setup }}</p>
-    </header>
-    <ul class="bench-rows">
-      <li v-for="(r, i) in rows" :key="r.measure" class="bench-row" :style="{ '--i': i }">
-        <span class="bench-sr">{{ r.label }}</span>
-        <span class="bench-measure" aria-hidden="true">{{ r.measure }}</span>
-        <div class="bench-plot" aria-hidden="true">
-          <div class="bench-inner">
+  <section ref="root" class="bench-group" :data-folded="folded || undefined" :data-open="open || undefined">
+    <h4 class="bench-toggle-head">
+      <button type="button" class="bench-toggle" :aria-expanded="open" :aria-controls="body" @click="open = !open">
+        <span class="bench-toggle-line">
+          <span class="bench-toggle-title">{{ group.title }}</span>
+          <span class="bench-count">
+            <span v-for="(c, i) in counts" :key="c.tone" :data-tone="c.tone"
+              ><template v-if="i > 0"> · </template><b>{{ c.n }}</b> {{ c.word }}</span
+            >
+          </span>
+        </span>
+        <span class="bench-toggle-versus">{{ group.versus }}</span>
+        <span class="bench-strip" aria-hidden="true">
+          <span class="bench-inner">
             <span
               v-for="t in ticks"
               :key="t.label"
@@ -71,17 +92,57 @@ function tipAt(r: (typeof rows.value)[number]) {
               :style="{ left: `${t.x}%` }"
             />
             <span
-              class="bench-bar"
-              :data-tone="r.tone"
-              :style="{ '--cut-left': `${Math.min(r.x, LINE)}%`, '--cut-right': `${100 - Math.max(r.x, LINE)}%` }"
+              v-for="d in dots"
+              :key="d.key"
+              class="bench-strip-dot"
+              :data-tone="d.tone"
+              :style="{ left: `${d.x}%`, '--y': `${d.y}px` }"
             />
-            <span v-if="r.tone === 'neutral'" class="bench-dot" />
-            <span class="bench-tip" :style="tipAt(r)">{{ r.ratio }}</span>
+          </span>
+        </span>
+        <svg class="bench-chevron" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M4 6l4 4 4-4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    </h4>
+    <div :id="body" class="bench-body">
+      <header class="bench-group-head">
+        <h4 class="bench-group-title">{{ group.title }} <span>{{ group.versus }}</span></h4>
+        <p v-if="group.setup" class="bench-group-setup">{{ group.setup }}</p>
+      </header>
+      <ul class="bench-rows">
+        <li v-for="(r, i) in rows" :key="r.measure" class="bench-row" :style="{ '--i': i }">
+          <span class="bench-sr">{{ r.label }}</span>
+          <span class="bench-measure" aria-hidden="true">{{ r.measure }}</span>
+          <div class="bench-plot" aria-hidden="true">
+            <div class="bench-inner">
+              <span
+                v-for="t in ticks"
+                :key="t.label"
+                class="bench-grid"
+                :data-one="t.x === LINE || undefined"
+                :style="{ left: `${t.x}%` }"
+              />
+              <span
+                class="bench-bar"
+                :data-tone="r.tone"
+                :style="{ '--cut-left': `${Math.min(r.x, LINE)}%`, '--cut-right': `${100 - Math.max(r.x, LINE)}%` }"
+              />
+              <span v-if="r.tone === 'neutral'" class="bench-dot" />
+              <span class="bench-tip" :style="tipAt(r)">{{ r.ratio }}</span>
+            </div>
           </div>
-        </div>
-        <span class="bench-values" aria-hidden="true">{{ r.shown }}</span>
-      </li>
-    </ul>
-    <p v-if="group.note" class="bench-note">{{ group.note }}</p>
+          <span class="bench-values" aria-hidden="true">{{ r.shown }}</span>
+        </li>
+      </ul>
+      <p v-if="group.note" class="bench-note">{{ group.note }}</p>
+    </div>
   </section>
 </template>
