@@ -1,4 +1,4 @@
-import { CorruptDatabaseError, prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry } from "@opfs-lsm/kv";
+import { prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry } from "@opfs-lsm/kv";
 import { tupleBounds } from "@opfs-lsm/kv/tuple";
 import {
   bind,
@@ -102,6 +102,9 @@ function collectionOf(bound: Bound, name: string): BoundCollection {
   return coll;
 }
 
+/** `Bound.bytes` of the catalog a destroy left unwritten. Matches no stored catalog. */
+const NO_CATALOG = new Uint8Array(0);
+
 const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
 
 class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
@@ -117,6 +120,8 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   private rereading: Promise<void> | undefined;
   /** Catalog writes the feed delivered, so a reread that one overtook is dropped. */
   private catalogWrites = 0;
+  /** The catalog a fresh open would write, bound. Built the first time a destroy leaves no catalog. */
+  private emptied: Bound | undefined;
 
   constructor(
     readonly kv: Db,
@@ -203,6 +208,11 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
       const bound = this.bound;
       const plan = await planner(collectionOf(bound, name));
       const out = await this.kv.update([CATALOG_KEY, ...plan.keys], ([catalog, ...values], tx) => {
+        if (!catalog) {
+          // A destroy emptied the database. Store the catalog a fresh open writes, then plan again against it.
+          tx.put(CATALOG_KEY, encodeCatalog(this.boundIn(undefined).catalog));
+          return RETRY;
+        }
         if (!sameCatalog(catalog, bound.bytes)) {
           this.adopt(catalog);
           return RETRY;
@@ -231,9 +241,13 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     });
   }
 
-  /** The catalog `bytes` bound, or `bound` itself when it is the same catalog. Leaves `bound` alone. */
+  /**
+   * The catalog `bytes` bound, or `bound` itself when it is the same catalog. Leaves `bound` alone.
+   * No catalog means a destroy emptied the database: it reads as the catalog a fresh open would write,
+   * and the next write stores that catalog.
+   */
   private boundIn(bytes: Uint8Array | undefined): Bound {
-    if (!bytes) throw new CorruptDatabaseError("the docstore catalog is gone");
+    if (!bytes) return (this.emptied ??= bind(NO_CATALOG, reconcile(undefined, this.declared)!, this.declared));
     return sameCatalog(bytes, this.bound.bytes) ? this.bound : bind(bytes, parseCatalog(bytes), this.declared);
   }
 
