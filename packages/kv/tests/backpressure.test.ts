@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Backpressure, memtableCaps } from "../src/backpressure.js";
 import type { Db } from "../src/index.js";
-import { loadLatestGeneration } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 import {
   EngineHost,
   MemoryFs,

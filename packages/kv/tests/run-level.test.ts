@@ -1,8 +1,8 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { compareBytes, containsAll } from "../src/bytes.js";
-import { untilHit, type ScanBounds } from "../src/store/cursor.js";
-import { countOf, entriesOf, latestSstEntry, matchingStep, mergeCursors, runLevels, type RunLevel } from "../src/store/read.js";
+import { untilHit, type LayerCursor, type ScanBounds } from "../src/store/cursor.js";
+import { countOf, entriesOf, latestSstEntry, liveStep, matchingStep, runLevels, type RunLevel } from "../src/store/read.js";
 import { countLayers, scanLayers } from "../src/view.js";
 import type { SstEntry } from "../src/store/sst.js";
 import { encodeSstRef, sstKeyRange } from "./oracle/sst-ref.js";
@@ -44,7 +44,11 @@ function range(from: number, to: number, step: number): number[] {
   return out;
 }
 
-async function scan(cursors: Parameters<typeof mergeCursors>[0], limit?: number, reverse?: boolean): Promise<string[]> {
+function mergeCursors(cursors: readonly LayerCursor[], marks: Marks, limit?: number, reverse = false) {
+  return entriesOf(liveStep(cursors, marks, reverse), limit);
+}
+
+async function scan(cursors: readonly LayerCursor[], limit?: number, reverse?: boolean): Promise<string[]> {
   return (await collect(mergeCursors(cursors, NO_MARKS, limit, reverse))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
 }
 

@@ -1,4 +1,4 @@
-/** CRC-32 (IEEE), for SST / generation footers. */
+/** CRC-32 (IEEE), the checksum of a manifest's bytes. */
 const TABLE = /* @__PURE__ */ (() => {
   const t = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {

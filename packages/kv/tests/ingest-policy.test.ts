@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { type Db } from "../src/index.js";
+import type { Db } from "../src/index.js";
 import {
   openHarnessDb,
   __resetMemoryFsForTests,
@@ -12,7 +12,7 @@ import {
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
 import { TabWal, encodeOps, advanceIngested, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
-import { loadLatestGeneration } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 import { checkDatabase, deleteWal, walStore } from "./sim/check-database.js";
 
 const enc = new TextEncoder();

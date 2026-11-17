@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
-import { loadLatestGeneration, type RunMeta } from "../src/store/generation.js";
+import type { RunMeta } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 import { planCompaction, replaceRuns, type CompactionPlan } from "../src/store/levels.js";
 import { NO_MARKS } from "../src/store/marks.js";
 import { decodeSst } from "./oracle/sst-ref.js";

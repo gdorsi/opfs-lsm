@@ -13,7 +13,7 @@ import {
 } from "../src/testing.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { CountingFs } from "../src/opfs/counting-fs.js";
-import { loadLatestGeneration } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 import { levelOf } from "../src/store/levels.js";
 
 const enc = new TextEncoder();

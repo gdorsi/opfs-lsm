@@ -1,7 +1,7 @@
 /**
  * Engine-core bridge. Loads a module that implements `crates/engine-abi.md`.
- * The module is required: encoding a run and merging runs have no other
- * implementation, so a context where it does not load cannot flush.
+ * The module is required: the engine writes and merges runs only through it,
+ * so a context where it does not load cannot flush.
  */
 import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
@@ -487,10 +487,6 @@ function restartEngine(): void {
   } catch {
     // No memory for a second instance: the old one stays.
   }
-}
-
-export function engineUsingWasm(): boolean {
-  return engine !== undefined;
 }
 
 /** What this context's wasm engine holds, for `HostStats.memory`. Zero before it loads. */

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConstraintError, type Db, type Pressure } from "../src/index.js";
-import { loadLatestGeneration } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 import { createLocalIngestClient, EngineHost, ingest, MemoryFs, openHarnessDb, settle } from "../src/testing.js";
 
 const KiB = 1024;

@@ -387,16 +387,6 @@ export async function countOf(step: ScanStep, limit?: number): Promise<number> {
   return n;
 }
 
-/** `entriesOf` the live puts of `cursors`, `cursors[0]` newest. */
-export function mergeCursors(
-  cursors: readonly LayerCursor[],
-  marks: Marks,
-  limit?: number,
-  reverse = false,
-): AsyncGenerator<Entry> {
-  return entriesOf(liveStep(cursors, marks, reverse), limit);
-}
-
 /** Whether a level before `level` holds `key`. */
 function shadowed(levels: readonly RunLevel[], level: number, key: Uint8Array): Maybe<boolean> {
   for (let l = 0; l < level; l++) {

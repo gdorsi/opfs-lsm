@@ -2,7 +2,8 @@
 //! block index, and a 44-byte footer. Each block stores its shared key
 //! prefix once; records hold the suffix and use varint lengths. Magic and
 //! version sit in the last 8 bytes.
-//! Must stay byte-compatible with `packages/kv/src/store/sst.ts`.
+//! Must stay byte-compatible with the reader in `packages/kv/src/store/sst.ts` and
+//! the reference writer in `packages/kv/tests/oracle/sst-ref.ts`.
 
 use crate::bloom::{bloom_from_hashes, key_hash};
 use crate::crc32::{crc32, Crc32};
@@ -222,7 +223,7 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
 /// A record's bytes besides its key suffix. The suffix length varint is
 /// sized from the whole key, an upper bound that stays fixed as the
 /// block prefix shrinks, so a block is sized from running sums.
-/// `packages/kv/src/store/sst.ts` sizes blocks the same way.
+/// `packages/kv/tests/oracle/sst-ref.ts` sizes blocks the same way.
 fn record_overhead(e: EntryRef<'_>) -> usize {
     let n = 1 + 8 + varint_len(e.key().len());
     match e {

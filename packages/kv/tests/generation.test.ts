@@ -2,13 +2,8 @@ import { crc32 } from "../src/store/crc32.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { __resetMemoryFsForTests, MemoryFs } from "../src/testing.js";
-import {
-  decodeGeneration,
-  encodeGeneration,
-  loadLatestGeneration,
-  publishGeneration,
-  publishL0,
-} from "../src/store/generation.js";
+import { decodeGeneration, encodeGeneration, publishGeneration, publishL0 } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 import { encodeRunRef, sstKeyRange } from "./oracle/sst-ref.js";
 import { NO_MARKS } from "../src/store/marks.js";
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConstraintError, prefixBound, type ChangeEvent, type Db, type Range } from "../src/index.js";
-import { loadLatestGeneration } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 import { decodeSst } from "./oracle/sst-ref.js";
 import {
   __resetMemoryFsForTests,
