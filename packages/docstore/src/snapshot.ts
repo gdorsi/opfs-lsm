@@ -35,10 +35,10 @@ function withLimit(range: Range, limit: number | undefined): Range {
 }
 
 /** `hits` holds one entry past the page iff another page follows: drop it and name the cursor. */
-function trimPage(hits: Entry[], limit: number | undefined): { next?: Cursor } {
+function trimPage<H>(hits: H[], keyOf: (hit: H) => Uint8Array, limit: number | undefined): { next?: Cursor } {
   if (limit === undefined || hits.length <= limit) return {};
   hits.length = limit;
-  return { next: encodeCursor(hits[limit - 1]!.key) };
+  return { next: encodeCursor(keyOf(hits[limit - 1]!)) };
 }
 
 async function collect(entries: AsyncIterable<Entry>): Promise<Entry[]> {
@@ -47,20 +47,18 @@ async function collect(entries: AsyncIterable<Entry>): Promise<Entry[]> {
   return out;
 }
 
-/** What a reader needs of kv: a `Db` and a view snapshot both fit. */
-type Source = Pick<ViewSnapshot, "get" | "range" | "count">;
+/** What a point read needs of kv: a `Db` and a view snapshot both fit. */
+type PointSource = Pick<ViewSnapshot, "get">;
 
 /**
- * The one implementation of every read. `coll` must come from the catalog
- * that `source` holds. Over a snapshot, the prefixes and readable indexes
- * then match the data for good: no later `clear` or schema change reaches
- * them. Over a live `Db`, only point reads are safe, since a scan could
+ * The point reads of one collection. `coll` must come from the catalog that
+ * `source` holds. Over a live `Db`, only point reads are safe: a scan could
  * straddle a `clear`.
  */
-export class CollectionReader<T extends JsonDoc, Ix> {
+export class PointReader<T extends JsonDoc> {
   constructor(
-    private readonly snap: Source,
-    private readonly coll: BoundCollection,
+    protected readonly snap: PointSource,
+    protected readonly coll: BoundCollection,
   ) {}
 
   async get(id: string): Promise<T | undefined> {
@@ -73,18 +71,35 @@ export class CollectionReader<T extends JsonDoc, Ix> {
     const rows = await Promise.all(keys.map((k) => this.snap.get(k)));
     return rows.map((bytes) => bytes && (decodeDoc(bytes) as unknown as T));
   }
+}
+
+/**
+ * The one implementation of every read. The prefixes and readable indexes
+ * match the data for good: no later `clear` or schema change reaches them.
+ */
+export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implements CollectionSnapshot<T, Ix> {
+  readonly seq: number;
+
+  constructor(
+    protected override readonly snap: ViewSnapshot,
+    coll: BoundCollection,
+  ) {
+    super(snap, coll);
+    this.seq = snap.seq;
+  }
 
   async query(q: Query<T, Ix>): Promise<Page<T>> {
     const { target, range, limit } = this.plan(q, 1);
-    const page = await collect(this.snap.range(range));
-    const next = trimPage(page, limit);
-    if (target.kind === "rows") return { docs: page.map((h) => decodeDoc(h.value) as unknown as T), ...next };
-    const rows = await Promise.all(
-      page.map((h) => this.snap.get(concat(target.rowPrefix, entryId(target, h.key, h.value)))),
-    );
-    const docs = rows.map((bytes) => {
-      if (!bytes) throw new CorruptDatabaseError(`an index entry of "${this.coll.name}" points at a missing document`);
-      return decodeDoc(bytes) as unknown as T;
+    if (target.kind === "rows") {
+      const page = await collect(this.snap.range(range));
+      const next = trimPage(page, (h) => h.key, limit);
+      return { docs: page.map((h) => decodeDoc(h.value) as unknown as T), ...next };
+    }
+    const hits = await this.snap.rangeJoin(range, (h) => concat(target.rowPrefix, entryId(target, h.key, h.value)));
+    const next = trimPage(hits, (h) => h.entry.key, limit);
+    const docs = hits.map(({ joined }) => {
+      if (!joined) throw new CorruptDatabaseError(`an index entry of "${this.coll.name}" points at a missing document`);
+      return decodeDoc(joined) as unknown as T;
     });
     return { docs, ...next };
   }
@@ -92,7 +107,7 @@ export class CollectionReader<T extends JsonDoc, Ix> {
   async queryIds(q: Query<T, Ix>): Promise<IdPage> {
     const { target, range, limit } = this.plan(q, 1);
     const page = await collect(this.snap.range(range));
-    const next = trimPage(page, limit);
+    const next = trimPage(page, (h) => h.key, limit);
     return { ids: page.map((h) => idOf(entryId(target, h.key, h.value))), ...next };
   }
 
@@ -106,14 +121,5 @@ export class CollectionReader<T extends JsonDoc, Ix> {
     const limit = limitOf(input.limit);
     const target = input.index === undefined ? this.coll.rows : readableTarget(this.coll, input.index);
     return { target, limit, range: withLimit(scanPlan(target, input), limit && limit + peek) };
-  }
-}
-
-export class SnapshotReader<T extends JsonDoc, Ix> extends CollectionReader<T, Ix> implements CollectionSnapshot<T, Ix> {
-  readonly seq: number;
-
-  constructor(snap: ViewSnapshot, coll: BoundCollection) {
-    super(snap, coll);
-    this.seq = snap.seq;
   }
 }
