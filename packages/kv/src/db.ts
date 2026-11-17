@@ -28,8 +28,8 @@ import { GENERATION_NONE, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
-import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
-import { openBrowserFs } from "./opfs/browser-fs.js";
+import type { AsyncFs, OpenFile, ReadFs } from "./opfs/async-fs.js";
+import { openBrowserReadFs } from "./opfs/browser-fs.js";
 import {
   loadGeneration,
   type RunMeta,
@@ -128,7 +128,7 @@ export type OpenKnobs = {
   /** Replaces `ROW_POST_MS`. At 0 every row is posted when it lands, so a simulation owns all the timing. */
   readonly rowPostMs?: number;
   /** Wraps the fs this tab reads runs through. `openHarnessDb` passes a `CountingFs`, so `readStats` can count the tab's IO. */
-  readonly wrapFs?: (fs: AsyncFs) => AsyncFs;
+  readonly wrapFs?: (fs: ReadFs) => ReadFs;
 };
 
 /** What `openDbWith` takes. `openHarnessDb` in `@opfs-lsm/kv/testing` builds it. */
@@ -309,7 +309,7 @@ export function prefixBound(prefix: Uint8Array): {
 type DbInternals = {
   readonly name: DbName;
   readonly wal: TabWal;
-  readonly fs: AsyncFs;
+  readonly fs: ReadFs;
   readonly ingest: IngestClient;
   /** Flush the memtable now and wait for the compaction it starts. */
   readonly flush: () => Promise<{ generation: number }>;
@@ -335,7 +335,7 @@ async function connect(
   backing: Backing,
   trace: OpenTrace | undefined,
 ): Promise<{
-  readonly fs: AsyncFs;
+  readonly fs: ReadFs;
   readonly ingest: IngestClient;
   readonly ownsIngestClient: boolean;
   readonly walOpen: Promise<TabWal> | undefined;
@@ -352,7 +352,7 @@ async function connect(
   const walOpen = TabWal.open(name);
   walOpen.catch(() => undefined);
   try {
-    const fs = await timed(trace, "opfs", () => openBrowserFs(name));
+    const fs = await timed(trace, "opfs", () => openBrowserReadFs(name));
     if (backing.ingest) return { fs, ingest: backing.ingest, ownsIngestClient: false, walOpen };
     // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
     // only emit a worker chunk for this exact shape. Built in a helper, Vite
@@ -581,7 +581,7 @@ class DbImpl implements Db {
     readonly name: DbName,
     readonly writerId: WriterId,
     private readonly wal: TabWal,
-    private readonly fs: AsyncFs,
+    private readonly fs: ReadFs,
     private readonly cache: PageCache,
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,

@@ -1,4 +1,4 @@
-import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
+import type { AsyncFs, FileWriter, OpenFile, ReadFs } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { runLock } from "../locks.js";
@@ -9,15 +9,15 @@ function splitPath(path: string): string[] {
 }
 
 /**
- * Async OPFS adapter rooted at `opfs-lsm/<dbName>/`.
- * Publish = createWritable (no keepExistingData) + close.
- * An open file is a shared Web Lock per path, held across tabs and workers
- * of the origin, so the host deletes a run only when no reader holds it.
+ * The read side of the async OPFS adapter rooted at `opfs-lsm/<dbName>/`,
+ * which is all a tab uses. An open file is a shared Web Lock per path, held
+ * across tabs and workers of the origin, so the host deletes a run only when
+ * no reader holds it.
  */
-export class BrowserFs implements AsyncFs {
+export class BrowserReadFs implements ReadFs {
   constructor(
     private readonly root: FileSystemDirectoryHandle,
-    private readonly dbName: DbName,
+    protected readonly dbName: DbName,
   ) {}
 
   /**
@@ -26,7 +26,7 @@ export class BrowserFs implements AsyncFs {
    */
   private readonly dirs = new Map<string, Promise<FileSystemDirectoryHandle>>();
 
-  private async dir(segments: readonly string[], create: boolean): Promise<FileSystemDirectoryHandle> {
+  protected async dir(segments: readonly string[], create: boolean): Promise<FileSystemDirectoryHandle> {
     if (segments.length === 0) return this.root;
     const key = segments.join("/");
     const known = this.dirs.get(key);
@@ -48,14 +48,14 @@ export class BrowserFs implements AsyncFs {
     return found;
   }
 
-  private async fileHandle(path: string, create: boolean): Promise<FileSystemFileHandle> {
+  protected async fileHandle(path: string, create: boolean): Promise<FileSystemFileHandle> {
     const parts = splitPath(path);
     if (parts.length === 0) throw new Error("empty path");
     const dir = await this.dir(parts.slice(0, -1), create);
     return dir.getFileHandle(parts[parts.length - 1]!, { create });
   }
 
-  private lockName(path: string): string {
+  protected lockName(path: string): string {
     return runLock(this.dbName, path);
   }
 
@@ -95,22 +95,6 @@ export class BrowserFs implements AsyncFs {
     };
   }
 
-  async removeUnlessOpen(path: string): Promise<boolean> {
-    return await navigator.locks.request(
-      this.lockName(path),
-      { mode: "exclusive", ifAvailable: true },
-      async (lock) => {
-        if (!lock) return false;
-        try {
-          await this.remove(path);
-        } catch (err) {
-          if (!isNotFound(err)) throw err;
-        }
-        return true;
-      },
-    );
-  }
-
   async read(
     path: string,
     offset: number,
@@ -148,6 +132,28 @@ export class BrowserFs implements AsyncFs {
       if (isNotFound(err)) return [];
       throw err;
     }
+  }
+}
+
+/**
+ * The adapter the host uses: reads, and the writes.
+ * Publish = createWritable (no keepExistingData) + close.
+ */
+export class BrowserFs extends BrowserReadFs implements AsyncFs {
+  async removeUnlessOpen(path: string): Promise<boolean> {
+    return await navigator.locks.request(
+      this.lockName(path),
+      { mode: "exclusive", ifAvailable: true },
+      async (lock) => {
+        if (!lock) return false;
+        try {
+          await this.remove(path);
+        } catch (err) {
+          if (!isNotFound(err)) throw err;
+        }
+        return true;
+      },
+    );
   }
 
   async remove(path: string): Promise<void> {
@@ -194,10 +200,18 @@ function isNotFound(err: unknown): boolean {
 }
 
 /** Open (or create) `opfs-lsm/<name>/` under the origin private file system. */
-export async function openBrowserFs(name: string): Promise<BrowserFs> {
+async function openIn<T>(
+  name: string,
+  adapter: new (root: FileSystemDirectoryHandle, dbName: DbName) => T,
+): Promise<T> {
   const dbName: DbName = checkDbName(name);
   const root = await navigator.storage.getDirectory();
   const lsm = await root.getDirectoryHandle("opfs-lsm", { create: true });
-  const db = await lsm.getDirectoryHandle(dbName, { create: true });
-  return new BrowserFs(db, dbName);
+  return new adapter(await lsm.getDirectoryHandle(dbName, { create: true }), dbName);
 }
+
+/** What a tab opens: the directory's read side. */
+export const openBrowserReadFs = (name: string): Promise<BrowserReadFs> => openIn(name, BrowserReadFs);
+
+/** What the host opens. */
+export const openBrowserFs = (name: string): Promise<BrowserFs> => openIn(name, BrowserFs);

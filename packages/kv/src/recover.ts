@@ -1,7 +1,7 @@
 import { CorruptDatabaseError } from "./errors.js";
 import type { IdBWal, WalMeta } from "./idb/wal.js";
 import { emptyWal } from "./idb/wal.js";
-import type { AsyncFs } from "./opfs/async-fs.js";
+import type { ReadFs } from "./opfs/async-fs.js";
 import { asGeneration, GENERATION_NONE, nextSeq, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import {
   GENERATION_ZERO,
@@ -67,7 +67,7 @@ export type Trusted = Generation | "recorded" | undefined;
  */
 export async function reconcile(
   wal: IdBWal,
-  fs: AsyncFs,
+  fs: ReadFs,
   trusted: Trusted,
 ): Promise<Reconciled> {
   return untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
@@ -93,7 +93,7 @@ export async function reconcile(
  * after. The commit is on disk before it resolves, so no power loss keeps
  * a remove that follows and loses it.
  */
-export async function recordEmpty(wal: IdBWal, fs: AsyncFs): Promise<void> {
+export async function recordEmpty(wal: IdBWal, fs: ReadFs): Promise<void> {
   await untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
     const floor = await highestThrough(fs, numbers, meta.head);
     return (await emptyWal(wal, { expect: meta, head: nextSeq(floor), top })) || undefined;
@@ -110,7 +110,7 @@ type Seen = { readonly meta: WalMeta; readonly numbers: readonly Generation[]; r
  */
 async function untilAdopted<T>(
   wal: IdBWal,
-  fs: AsyncFs,
+  fs: ReadFs,
   record: (seen: Seen) => Promise<T | undefined>,
 ): Promise<T> {
   for (let attempt = 0; attempt < RECONCILE_TRIES; attempt++) {
@@ -123,7 +123,7 @@ async function untilAdopted<T>(
 }
 
 /** The highest `through` of the manifests `numbers`, and at least `from`. */
-async function highestThrough(fs: AsyncFs, numbers: readonly Generation[], from: Seq): Promise<Seq> {
+async function highestThrough(fs: ReadFs, numbers: readonly Generation[], from: Seq): Promise<Seq> {
   let floor = from;
   for (const n of numbers) {
     const through = (await readManifest(fs, n))?.through ?? SEQ_ZERO;
@@ -134,7 +134,7 @@ async function highestThrough(fs: AsyncFs, numbers: readonly Generation[], from:
 
 /** The manifest to record instead of the recorded one, or undefined to keep it. */
 async function choose(
-  fs: AsyncFs,
+  fs: ReadFs,
   meta: WalMeta,
   numbers: readonly Generation[],
   trusted: Trusted,
