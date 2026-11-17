@@ -11,7 +11,7 @@ import { OpfsLsmError } from "../src/index.js";
 import { openBrowserFs, openHarnessDb, ingest, ensureEngine } from "../src/testing.js";
 import { checkDatabase, walMeta, walRows } from "../tests/sim/check-database.js";
 import { decodeGeneration, listRuns } from "../src/store/generation.js";
-import { decodeSst } from "../src/store/sst.js";
+import { decodeSst } from "../tests/oracle/sst-ref.js";
 import { attempts, type WorkOp } from "./kill-chrome-workload.js";
 
 type Db = Awaited<ReturnType<typeof openHarnessDb>>;

@@ -3,7 +3,7 @@ import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src
 import { loadLatestGeneration, type RunMeta } from "../src/store/generation.js";
 import { planCompaction, replaceRuns, type CompactionPlan } from "../src/store/levels.js";
 import { NO_MARKS } from "../src/store/marks.js";
-import { decodeSst } from "../src/store/sst.js";
+import { decodeSst } from "./oracle/sst-ref.js";
 
 const enc = new TextEncoder();
 

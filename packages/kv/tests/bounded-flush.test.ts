@@ -12,7 +12,7 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../src/testing.js";
-import { decodeSst } from "../src/store/sst.js";
+import { decodeSst } from "./oracle/sst-ref.js";
 
 const NAME = "bounded-flush";
 const enc = new TextEncoder();

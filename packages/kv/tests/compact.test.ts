@@ -10,7 +10,7 @@ import {
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { loadLatestGeneration } from "../src/store/generation.js";
 import { throughAt } from "../src/store/marks.js";
-import { decodeSst } from "../src/store/sst.js";
+import { decodeSst } from "./oracle/sst-ref.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);

@@ -1,9 +1,10 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { untilHit } from "../src/store/cursor.js";
-import { encodeSst as encodeWasm, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
+import { encodeRun, ensureEngine } from "../src/store/engine.js";
 import { PageCache } from "../src/store/page-cache.js";
-import { decodeSst, encodeSst, sstGet, sstKeyRange, type SstEntry } from "../src/store/sst.js";
+import type { SstEntry } from "../src/store/sst.js";
+import { decodeSst, encodeSstRef, sstGet, sstKeyRange } from "./oracle/sst-ref.js";
 import { PAGE_TARGET, SstReader } from "../src/store/sst-reader.js";
 import { coalesceReads } from "../src/opfs/coalesce-reads.js";
 import { bytesFile, drain } from "./runs.js";
@@ -32,8 +33,8 @@ function probesOf(all: readonly SstEntry[]): Uint8Array[] {
 
 async function encodings(entries: readonly SstEntry[]): Promise<[string, Uint8Array][]> {
   return [
-    ["raw", encodeSst(entries)],
-    ["lz4", await encodeWasm(entries, "lz4")],
+    ["raw", encodeSstRef(entries)],
+    ["lz4", (await encodeRun(entries, "lz4")).body],
   ];
 }
 
@@ -48,7 +49,6 @@ function gapWorkload(): SstEntry[] {
 describe("lazy sst reader", () => {
   beforeAll(async () => {
     await ensureEngine();
-    expect(engineUsingWasm()).toBe(true);
   });
 
   const cases: [string, SstEntry[]][] = [
@@ -78,7 +78,7 @@ describe("lazy sst reader", () => {
       value: utf("v"),
       seq: i + 1,
     }));
-    const reader = openRun(encodeSst(entries), new PageCache());
+    const reader = openRun(encodeSstRef(entries), new PageCache());
     expect((await untilHit(() => reader.get(utf("k00149999"))))?.seq).toBe(n);
     expect((await untilHit(() => reader.get(utf("k00000000"))))?.seq).toBe(1);
     expect(await untilHit(() => reader.get(utf("k00150000")))).toBeUndefined();
@@ -166,7 +166,7 @@ describe("lazy sst reader", () => {
       value: utf(`v${i}`.padEnd(200, ".")),
       seq: i + 1,
     }));
-    const body = encodeSst(entries);
+    const body = encodeSstRef(entries);
     const pages = Math.floor(body.byteLength / PAGE_TARGET);
 
     function coldRun(reads: Reads): SstReader {

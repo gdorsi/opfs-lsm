@@ -24,7 +24,8 @@ import { decodeGeneration, type GenerationMeta } from "../src/store/generation.j
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import { decodeSst, type KeyRange, type SstEntry } from "../src/store/sst.js";
+import type { KeyRange, SstEntry } from "../src/store/sst.js";
+import { decodeSst } from "../tests/oracle/sst-ref.js";
 
 export class RuleBroken extends Error {
   constructor(message: string) {

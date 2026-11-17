@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { HostBudget } from "../src/host/budget.js";
 import {
-  encodeSst,
+  encodeRun,
   engineMemory,
-  engineUsingWasm,
   ensureEngine,
   openMerge,
   recycleEngine,
@@ -29,12 +28,11 @@ const dec = new TextDecoder();
 
 /** A run whose one value is 3 MiB from a few KiB packed, so decoding it grows the instance that does. */
 const bigRun = (codec: "raw" | "lz4") =>
-  encodeSst([{ kind: "put", key: utf("big"), value: new Uint8Array(3 * MiB).fill(7), seq: 1 }], codec);
+  encodeRun([{ kind: "put", key: utf("big"), value: new Uint8Array(3 * MiB).fill(7), seq: 1 }], codec).then((run) => run.body);
 
 describe("recycleEngine", () => {
   it("replaces an instance past the threshold with a fresh one", async () => {
     await ensureEngine();
-    expect(engineUsingWasm()).toBe(true);
     await bigRun("raw");
     const grown = engineMemory();
     expect(grown.wasmBytes).toBeGreaterThan(4 * MiB);

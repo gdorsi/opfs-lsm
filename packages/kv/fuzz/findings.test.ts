@@ -6,7 +6,8 @@ import { decodeGeneration, encodeGeneration } from "../src/store/generation.js";
 import { lz4Decompress } from "../src/store/lz4.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import { decodeSst, encodeSst, readFooter } from "../src/store/sst.js";
+import { readFooter } from "../src/store/sst.js";
+import { decodeSst, encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { untilHit } from "../src/store/cursor.js";
 import { mergeRuns } from "../tests/runs.js";
 import { bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
@@ -84,7 +85,7 @@ describe("decoder bugs the fuzzers found", () => {
   // count near 2^32 made one get take about two minutes. The encoder
   // always writes 7; `readFooter` now refuses more than 32.
   it("KT1: a corrupt bloom hash count does not make a get loop", async () => {
-    const buf = encodeSst(entries);
+    const buf = encodeSstRef(entries);
     const f = readFooter(buf, buf.byteLength);
     buf.fill(0xff, f.dataLen, f.indexStart);
     footer(buf).setUint32(16, 5_000_000, true);
@@ -100,7 +101,7 @@ describe("decoder bugs the fuzzers found", () => {
   // flipped bit in the count's high byte was enough. `readFooter` now
   // refuses a count whose 16-byte index entries pass the index length.
   it("KT2: a corrupt block count does not size an allocation", async () => {
-    const buf = encodeSst(entries);
+    const buf = encodeSstRef(entries);
     footer(buf).setUint32(4, 0x01000000, true);
     await expect(corruptWithinBounds("SstReader.get", () => tabGet(buf, utf("k001")))).resolves.toBeUndefined();
   });
@@ -110,7 +111,7 @@ describe("decoder bugs the fuzzers found", () => {
   // no bounds checks, so a CRC-valid run with a bad index threw a
   // RangeError from DataView instead of CorruptDatabaseError.
   it("KT3: decodeSst throws CorruptDatabaseError on a CRC-valid run with a bad index", async () => {
-    const buf = encodeSst(entries);
+    const buf = encodeSstRef(entries);
     const f = readFooter(buf, buf.byteLength);
     new DataView(buf.buffer).setUint32(f.indexStart, 0x7fffffff, true);
     fixSstCrc(buf);
@@ -150,7 +151,7 @@ describe("decoder bugs the fuzzers found", () => {
   // CorruptDatabaseError. The engine now wraps it, and the port carries the
   // error's code so the tab rethrows the same class.
   it("KW2: a compaction over a run with a bad CRC throws CorruptDatabaseError", async () => {
-    const buf = encodeSst(entries);
+    const buf = encodeSstRef(entries);
     buf[5]! ^= 1;
     await expect(corruptWithinBounds("merge session", () => mergeRuns([[buf]]))).resolves.toBeUndefined();
   });
@@ -184,11 +185,9 @@ describe("wasm traps", () => {
     const errors = await import("../src/errors.js");
     await import("../src/testing.js");
     await engine.ensureEngine();
-    expect(engine.engineUsingWasm()).toBe(true);
     const src = new Uint8Array(17_000_000);
     expect(() => lz4.lz4Decompress(src, 0xfffffff0)).toThrow(errors.CorruptDatabaseError);
-    expect(engine.engineUsingWasm()).toBe(true);
-    expect(decodeSst(await engine.encodeSst(entries))).toHaveLength(entries.length);
+    expect(decodeSst((await engine.encodeRun(entries)).body)).toHaveLength(entries.length);
     vi.resetModules();
   });
 });

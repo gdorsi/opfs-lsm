@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep } from "../src/host/compact.js";
-import { encodeRun, encodeSst, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
+import { encodeRun, ensureEngine } from "../src/store/engine.js";
 import { loadLatestGeneration, publishGeneration } from "../src/store/generation.js";
 import { lz4DecompressJs, useLz4Decoder } from "../src/store/lz4.js";
 import { untilHit } from "../src/store/cursor.js";
-import { decodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
+import type { SstEntry } from "../src/store/sst.js";
+import { decodeSst, sstKeyRange } from "./oracle/sst-ref.js";
 import type { SstReader } from "../src/store/sst-reader.js";
 import { drain, publish, readerOfBytes } from "./runs.js";
 import { MemoryFs } from "../src/testing.js";
@@ -58,10 +59,9 @@ const show = (rows: readonly (Row | undefined)[]) =>
 describe("LZ4 runs", () => {
   it("read back the same rows as a raw run", async () => {
     await ensureEngine();
-    expect(engineUsingWasm()).toBe(true);
     const rows = mixedRows();
-    const raw = await encodeSst(rows, "raw");
-    const packed = await encodeSst(rows, "lz4");
+    const raw = (await encodeRun(rows, "raw")).body;
+    const packed = (await encodeRun(rows, "lz4")).body;
     expect(packed.byteLength).toBeLessThan(raw.byteLength);
     const want = show(decodeSst(raw));
     expect(show(decodeSst(packed))).toEqual(want);
@@ -80,8 +80,8 @@ describe("LZ4 runs", () => {
   it("read back the same rows with the JS decoder", async () => {
     await ensureEngine();
     const rows = mixedRows();
-    const want = show(decodeSst(await encodeSst(rows, "raw")));
-    const packed = await encodeSst(rows, "lz4");
+    const want = show(decodeSst((await encodeRun(rows, "raw")).body));
+    const packed = (await encodeRun(rows, "lz4")).body;
     const wasmDecoder = useLz4Decoder(lz4DecompressJs);
     expect(wasmDecoder).toBeDefined();
     try {
@@ -94,14 +94,14 @@ describe("LZ4 runs", () => {
   });
 
   it("read back an empty run", async () => {
-    const packed = await encodeSst([], "lz4");
+    const packed = (await encodeRun([], "lz4")).body;
     expect(decodeSst(packed)).toEqual([]);
     expect(sstKeyRange(packed)).toBeUndefined();
     expect(await drain(readerOfBytes(packed).cursor())).toEqual([]);
   });
 
   it("throw CorruptDatabaseError on a mangled block, with either decoder", async () => {
-    const packed = await encodeSst(mixedRows(), "lz4");
+    const packed = (await encodeRun(mixedRows(), "lz4")).body;
     packed.fill(0xff, 4, 64);
     const get = () => {
       const reader = readerOfBytes(packed);

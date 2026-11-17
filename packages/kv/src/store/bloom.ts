@@ -1,6 +1,7 @@
 /**
- * Classic Bloom filter (double hashing). A point get consults it before
- * decoding the one block that might hold the key.
+ * Classic Bloom filter (double hashing), read here. A point get consults it
+ * before decoding the one block that might hold the key. The wasm encoder
+ * builds it.
  */
 
 const FNV_OFFSET = 2166136261;
@@ -29,32 +30,8 @@ export type BloomFilter = {
   readonly hashCount: number;
 };
 
-/** ~1% false-positive with 10 bits/key → k ≈ 7. */
-function bloomParams(
-  keyCount: number,
-  bitsPerKey = 10,
-): { bitCount: number; hashCount: number } {
-  const n = Math.max(1, keyCount);
-  const bitCount = Math.max(64, n * bitsPerKey);
-  const hashCount = Math.max(1, Math.round((bitsPerKey * Math.LN2)));
-  return { bitCount, hashCount };
-}
-
-export function createBloom(keyCount: number, bitsPerKey = 10): BloomFilter {
-  const { bitCount, hashCount } = bloomParams(keyCount, bitsPerKey);
-  return {
-    bits: new Uint8Array(Math.ceil(bitCount / 8)),
-    hashCount,
-  };
-}
-
 function bitLen(bits: Uint8Array): number {
   return bits.byteLength * 8;
-}
-
-function setBit(bits: Uint8Array, i: number): void {
-  const idx = i >>> 3;
-  bits[idx] = (bits[idx] ?? 0) | (1 << (i & 7));
 }
 
 function getBit(bits: Uint8Array, i: number): boolean {
@@ -64,15 +41,6 @@ function getBit(bits: Uint8Array, i: number): boolean {
 
 function bloomIndex(h1: number, h2: number, i: number, m: number): number {
   return ((h1 + Math.imul(i, h2)) >>> 0) % m;
-}
-
-export function bloomAdd(filter: BloomFilter, key: Uint8Array): void {
-  const m = bitLen(filter.bits);
-  const h1 = fnv1a(key);
-  const h2 = mix(h1) | 1;
-  for (let i = 0; i < filter.hashCount; i++) {
-    setBit(filter.bits, bloomIndex(h1, h2, i, m));
-  }
 }
 
 export function bloomMightContain(filter: BloomFilter, key: Uint8Array): boolean {

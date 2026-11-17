@@ -2,15 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   EngineOutOfMemoryError,
   encodeRun,
-  encodeSst,
-  engineUsingWasm,
   ensureEngine,
   flatEngine,
 } from "../src/store/engine.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { crc32 } from "../src/store/crc32.js";
 import { untilHit } from "../src/store/cursor.js";
-import { decodeSst, encodeRun as encodeRunTs, sstKeyRange, type EncodedRun, type SstEntry } from "../src/store/sst.js";
+import type { EncodedRun, SstEntry } from "../src/store/sst.js";
+import { decodeSst, encodeRunRef as encodeRunTs, sstKeyRange } from "./oracle/sst-ref.js";
 import { mergeRuns, readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
@@ -19,11 +18,10 @@ const utf = (s: string) => enc.encode(s);
 describe("engine WASM", () => {
   it("loads wasm and round-trips SST", async () => {
     await ensureEngine();
-    expect(engineUsingWasm()).toBe(true);
-    const body = await encodeSst([
+    const body = (await encodeRun([
       { kind: "put", key: utf("a"), value: utf("1") },
       { kind: "del", key: utf("b") },
-    ]);
+    ])).body;
     const entries = decodeSst(body);
     expect(entries).toHaveLength(2);
     // Sorted by key: "a" put, then "b" del
@@ -35,13 +33,13 @@ describe("engine WASM", () => {
   it("merges into a run whose Bloom filter is over 64 KiB", async () => {
     await ensureEngine();
     const half = (from: number) =>
-      encodeSst(
+      encodeRun(
         Array.from({ length: 30_000 }, (_, i) => ({
           kind: "put" as const,
           key: utf(`k${String(from + i).padStart(8, "0")}`),
           value: utf("v"),
         })),
-      );
+      ).then((run) => run.body);
     const { runs } = await mergeRuns([[await half(0)], [await half(30_000)]]);
     expect(runs).toHaveLength(1);
     expect(decodeSst(runs[0]!.body)).toHaveLength(60_000);
@@ -51,13 +49,13 @@ describe("engine WASM", () => {
 
   it("cuts merge output into runs of about the target size, in key order", async () => {
     await ensureEngine();
-    const body = await encodeSst(
+    const body = (await encodeRun(
       Array.from({ length: 1000 }, (_, i) => ({
         kind: "put" as const,
         key: utf(`k${String(i).padStart(4, "0")}`),
         value: new Uint8Array(100),
       })),
-    );
+    )).body;
     const { runs } = await mergeRuns([[body]], { targetBytes: 16 * 1024 });
     expect(runs.length).toBeGreaterThan(5);
     const keys = runs.flatMap((r) => decodeSst(r.body)).map((e) => new TextDecoder().decode(e.key));
@@ -89,7 +87,6 @@ describe("the end of a run", () => {
 
   it.each(shapes)("a run of %s reports the size and key range the file holds, from wasm and from TypeScript", async (_name, entries) => {
     await ensureEngine();
-    expect(engineUsingWasm()).toBe(true);
     for (const run of [await encodeRun(entries, "raw"), await encodeRun(entries, "lz4"), encodeRunTs(entries)]) {
       expectReportMatchesFile(run);
       expect(run.end.range === undefined).toBe(entries.length === 0);
@@ -132,24 +129,22 @@ describe("a run whose keys are out of order", () => {
 
   it("is refused by the wasm merge, in one output run and when a cut falls between the two keys", async () => {
     await ensureEngine();
-    expect(engineUsingWasm()).toBe(true);
     const sst = misordered();
     expect(decodeSst(sst).map((e) => new TextDecoder().decode(e.key))).toEqual(["b", "a"]);
     await expect(mergeRuns([[sst]])).rejects.toThrow(CorruptDatabaseError);
     // A target of 1 byte cuts after every entry, so each key opens an output run of its own.
     await expect(mergeRuns([[sst]], { targetBytes: 1 })).rejects.toThrow("keys out of order");
-    expect(engineUsingWasm()).toBe(true);
   });
 });
 
 describe("engine bridge", () => {
   it("keeps an encoded run valid after later calls", async () => {
     await ensureEngine();
-    const run = await encodeSst([
+    const run = (await encodeRun([
       { kind: "put", key: utf("alpha"), value: utf("one"), seq: 7 },
       { kind: "del", key: utf("beta"), seq: 2 ** 33 + 5 },
-    ]);
-    await encodeSst(
+    ])).body;
+    await encodeRun(
       Array.from({ length: 5000 }, (_, i) => ({
         kind: "put" as const,
         key: utf(`z${String(i).padStart(6, "0")}`),
@@ -222,7 +217,6 @@ describe("a context where the wasm module does not load", () => {
       engine.setEngineUrlForTests(undefined);
     }
     await engine.ensureEngine();
-    expect(engine.engineUsingWasm()).toBe(true);
     const db = await openHarnessDb({ name: "no-wasm", forceMemory: true });
     await db.close();
     vi.resetModules();

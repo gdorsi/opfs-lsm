@@ -5,7 +5,8 @@ import { untilHit, type LayerCursor, type LayerEntry } from "../src/store/cursor
 import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.js";
 import { NO_MARKS } from "../src/store/marks.js";
 import { PageCache } from "../src/store/page-cache.js";
-import { sstKeyRange, type EncodedRun, type SstCodec } from "../src/store/sst.js";
+import type { EncodedRun, SstCodec } from "../src/store/sst.js";
+import { sstKeyRange } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 
 export { bytesFile };

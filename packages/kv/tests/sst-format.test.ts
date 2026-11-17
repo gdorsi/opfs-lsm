@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { encodeSst as encodeWasm, engineUsingWasm, ensureEngine } from "../src/store/engine.js";
-import { decodeSst, encodeSst, sstGet, type SstEntry } from "../src/store/sst.js";
+import { encodeRun, ensureEngine } from "../src/store/engine.js";
+import type { SstEntry } from "../src/store/sst.js";
+import { decodeSst, encodeSstRef, sstGet } from "./oracle/sst-ref.js";
 import { Miss, untilHit, type LayerEntry, type ScanBounds } from "../src/store/cursor.js";
 import { compareBytes } from "../src/bytes.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
@@ -55,19 +56,18 @@ async function expectReaderAgreesWithDecode(body: Uint8Array): Promise<void> {
 describe("sst format", () => {
   beforeAll(async () => {
     await ensureEngine();
-    expect(engineUsingWasm()).toBe(true);
   });
 
   const cases: [string, SstEntry[]][] = [["multi-index workload", indexWorkload(2_000)], ...Object.entries(EDGE_CASES)];
 
   for (const [name, entries] of cases) {
     it(`the TS and wasm encoders write the same bytes: ${name}`, async () => {
-      expect(encodeSst(entries)).toEqual(await encodeWasm(entries, "raw"));
+      expect(encodeSstRef(entries)).toEqual((await encodeRun(entries, "raw")).body);
     });
 
     it(`SstReader get and cursor agree with decodeSst: ${name}`, async () => {
       const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
-      for (const body of [encodeSst(entries), await encodeWasm(entries, "lz4")]) {
+      for (const body of [encodeSstRef(entries), (await encodeRun(entries, "lz4")).body]) {
         expect(decodeSst(body).map(show)).toEqual(sorted.map((e) => show({ ...e, seq: e.seq ?? 0 })));
         await expectReaderAgreesWithDecode(body);
       }
@@ -76,7 +76,7 @@ describe("sst format", () => {
 
   it("reads blocks of a single record backward", async () => {
     const entries = indexWorkload(40);
-    const body = encodeSst(entries, 1);
+    const body = encodeSstRef(entries, 1);
     expect(new DataView(body.buffer).getUint32(body.byteLength - 40, true)).toBe(entries.length);
     const sorted = decodeSst(body);
     const keys = sorted.map((e) => e.key);
@@ -96,7 +96,7 @@ describe("sst format", () => {
   });
 
   it("leaves a cursor where it was when a block boundary misses, in both directions", async () => {
-    const body = encodeSst(indexWorkload(300), 256);
+    const body = encodeSstRef(indexWorkload(300), 256);
     const sorted = decodeSst(body);
     const keysOf = (es: LayerEntry[]) => es.map((e) => [...e.key].join());
     const cut = { start: sorted[sorted.length >> 2]!.key, endExclusive: cat(sorted[(3 * sorted.length) >> 2]!.key, Uint8Array.of(0)) };
@@ -129,11 +129,11 @@ describe("sst format", () => {
   it("stores the multi-index workload in less than half the whole-key record bytes", () => {
     const entries = indexWorkload(2_000).filter((e) => e.key[0] === 0x69);
     const wholeKey = entries.reduce((n, e) => n + 1 + 8 + 4 + e.key.byteLength + (e.kind === "put" ? 4 + e.value.byteLength : 0), 0);
-    expect(encodeSst(entries).byteLength).toBeLessThan(wholeKey / 2);
+    expect(encodeSstRef(entries).byteLength).toBeLessThan(wholeKey / 2);
   });
 
   it("fills blocks to the target in encoded bytes", () => {
-    const body = encodeSst(indexWorkload(2_000));
+    const body = encodeSstRef(indexWorkload(2_000));
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     const blocks = view.getUint32(body.byteLength - 40, true);
     const dataLen = view.getUint32(body.byteLength - 36, true);

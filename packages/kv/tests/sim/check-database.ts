@@ -9,7 +9,8 @@ import {
   type RunMeta,
 } from "../../src/store/generation.js";
 import { codecForLevel, levelOf } from "../../src/store/levels.js";
-import { decodeSst, readFooter, type SstEntry } from "../../src/store/sst.js";
+import { readFooter, type SstEntry } from "../../src/store/sst.js";
+import { decodeSst } from "../oracle/sst-ref.js";
 import { show, type OracleEntry } from "./oracle.js";
 
 /**
