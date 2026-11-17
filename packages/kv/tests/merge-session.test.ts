@@ -5,9 +5,11 @@ import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.
 import { mergeNextStep, pumpMerge } from "../src/host/compact.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../src/opfs/async-fs.js";
 import { encodeRunIn, openMergeIn, type MergeCore, type MergeSpec } from "../src/store/engine.js";
-import { loadLatestGeneration, publishGeneration, type RunMeta } from "../src/store/generation.js";
+import { publishGeneration, type RunMeta } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 import { openMergeTs } from "./oracle/merge-ts.js";
-import { decodeSst, encodeRun, entryRecordSize, sstKeyRange, type SstCodec, type SstEntry } from "../src/store/sst.js";
+import type { SstCodec, SstEntry } from "../src/store/sst.js";
+import { decodeSst, encodeRunRef, entryRecordSize, sstKeyRange } from "./oracle/sst-ref.js";
 import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
 import { publish } from "./runs.js";
@@ -81,7 +83,7 @@ function source(r: Rng, seq: { next: number }): Source {
     from = cut;
   }
   if (r.chance(0.1)) pieces.splice(r.below(pieces.length + 1), 0, []);
-  const runs = pieces.map((p) => (r.chance(0.5) ? encodeRun(p).body : encodeRunIn(wasm, p, true).body));
+  const runs = pieces.map((p) => (r.chance(0.5) ? encodeRunRef(p).body : encodeRunIn(wasm, p, true).body));
   return { runs, entries };
 }
 
@@ -292,7 +294,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
       for (const tailBytes of [44, 60]) expect((await merge(fs, open, intact(tailBytes), [["in/blockless.sst"]], label)).runs).toEqual([]);
     }
 
-    const runs = [blockless(), encodeRun([]).body, encodeRun(puts("a", "b", "c")).body, encodeRunIn(wasm, puts("a", "b", "c"), true).body];
+    const runs = [blockless(), encodeRunRef([]).body, encodeRunRef(puts("a", "b", "c")).body, encodeRunIn(wasm, puts("a", "b", "c"), true).body];
     for (const run of runs) {
       for (let at = 0; at < run.byteLength; at++) {
         const bad = run.slice();
@@ -319,18 +321,18 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
   });
 
   it("a source whose keys go back from one run to the next", async () => {
-    expect(await ends([encodeRun(puts("b", "d")).body, encodeRun(puts("c", "e")).body])).toEqual(bothRefuse);
+    expect(await ends([encodeRunRef(puts("b", "d")).body, encodeRunRef(puts("c", "e")).body])).toEqual(bothRefuse);
   });
 
   it("a footer that miscounts its entries", async () => {
-    const run = encodeRun(puts("a", "b", "c")).body;
+    const run = encodeRunRef(puts("a", "b", "c")).body;
     footer(run).setUint32(0, 4, true);
     fixSstCrc(run);
     expect(await ends([run])).toEqual(bothRefuse);
   });
 
   it("an index whose blocks do not tile the data", async () => {
-    const run = encodeRun(puts(...Array.from({ length: 400 }, (_, i) => `key/${String(i).padStart(4, "0")}`))).body;
+    const run = encodeRunRef(puts(...Array.from({ length: 400 }, (_, i) => `key/${String(i).padStart(4, "0")}`))).body;
     // The first index row's offset: past its two key lengths and keys.
     const f = footer(run);
     const index = new DataView(run.buffer, run.byteOffset + f.getUint32(20, true));
@@ -344,8 +346,8 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
 
 describe("a session's protocol, in both sessions", () => {
   it("takes a feed only for a listed demand of its length, and refuses a pump before every demand is fed", async () => {
-    const a = encodeRun([{ kind: "put", key: utf("a"), value: utf("1"), seq: 1 }]).body;
-    const b = encodeRun([{ kind: "put", key: utf("b"), value: utf("2"), seq: 2 }]).body;
+    const a = encodeRunRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 1 }]).body;
+    const b = encodeRunRef([{ kind: "put", key: utf("b"), value: utf("2"), seq: 2 }]).body;
     const spec: MergeSpec = {
       sources: [[a.byteLength], [b.byteLength]],
       dropTombstones: false,
@@ -384,7 +386,7 @@ describe("a session's protocol, in both sessions", () => {
   });
 
   it("keeps a closed wasm handle away from the session opened after it", () => {
-    const a = encodeRun([{ kind: "put", key: utf("a"), value: utf("1"), seq: 1 }]).body;
+    const a = encodeRunRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 1 }]).body;
     const spec: MergeSpec = {
       sources: [[a.byteLength]],
       dropTombstones: false,
@@ -515,11 +517,11 @@ describe("a compaction step at full size", () => {
     }
     const metas: RunMeta[] = [];
     for (const [i, entries] of sources.entries()) {
-      const { body, end } = encodeRun(entries);
+      const { body, end } = encodeRunRef(entries);
       await publish(fs, `l0/${10 - i}.sst`, body);
       metas.push({ path: `l0/${10 - i}.sst`, ...end, marksThrough: 0 });
     }
-    const { body, end } = encodeRun(l1);
+    const { body, end } = encodeRunRef(l1);
     await publish(fs, "l1/c1.0.sst", body);
     metas.push({ path: "l1/c1.0.sst", ...end, marksThrough: 0 });
     await publishGeneration(fs, { generation: 1, runs: metas, through: 0, marks: NO_MARKS });

@@ -1,7 +1,7 @@
 /**
  * Engine-core bridge. Loads a module that implements `crates/engine-abi.md`.
- * The module is required: encoding a run and merging runs have no other
- * implementation, so a context where it does not load cannot flush.
+ * The module is required: the engine writes and merges runs only through it,
+ * so a context where it does not load cannot flush.
  */
 import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
@@ -87,7 +87,11 @@ export type MergeSpec = {
   readonly dropTombstones: boolean;
   /** The base manifest's marks: a winner one covers is dropped. */
   readonly marks: Marks;
-  /** Close an output run once its entries' `entryRecordSize`s reach this. */
+  /**
+   * Close an output run once its entries' estimated sizes reach this: a
+   * record's tag, seq, u32 key length and key, and for a put a u32 value
+   * length and the value.
+   */
   readonly targetBytes: number;
   readonly codec: SstCodec;
   /** About how much of each source to hold, and the most a `write` carries. */
@@ -485,10 +489,6 @@ function restartEngine(): void {
   }
 }
 
-export function engineUsingWasm(): boolean {
-  return engine !== undefined;
-}
-
 /** What this context's wasm engine holds, for `HostStats.memory`. Zero before it loads. */
 type EngineMemory = {
   /** The current instance's memory. Talc never gives memory back, so it only grows until a recycle. */
@@ -555,14 +555,6 @@ export async function encodeRun(
     afterTrap(err);
     throw err;
   }
-}
-
-/** `encodeRun`'s bytes. */
-export async function encodeSst(
-  entries: readonly SstEntry[],
-  codec: SstCodec = "raw",
-): Promise<Uint8Array> {
-  return (await encodeRun(entries, codec)).body;
 }
 
 /**

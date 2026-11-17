@@ -194,16 +194,6 @@ export async function isIntact(fs: AsyncFs, meta: GenerationMeta): Promise<boole
   return true;
 }
 
-export async function loadLatestGeneration(
-  fs: AsyncFs,
-): Promise<GenerationMeta | undefined> {
-  for (const generation of await manifestNumbers(fs)) {
-    const meta = await readManifest(fs, generation);
-    if (meta) return meta;
-  }
-  return undefined;
-}
-
 export async function publishGeneration(
   fs: AsyncFs,
   meta: GenerationMeta,

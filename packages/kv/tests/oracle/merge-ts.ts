@@ -3,18 +3,8 @@ import { CorruptDatabaseError } from "../../src/errors.js";
 import { crc32 } from "../../src/store/crc32.js";
 import { throughAt, type Marks } from "../../src/store/marks.js";
 import type { Demand, MergeCore, MergeSpec, MergeStop } from "../../src/store/engine.js";
-import {
-  blockLengths,
-  decodeBlock,
-  encodeRun,
-  entryRecordSize,
-  readFooter,
-  SST_FOOTER_BYTES,
-  type RunEnd,
-  type SstCodec,
-  type SstEntry,
-  type SstFooter,
-} from "../../src/store/sst.js";
+import { readFooter, SST_FOOTER_BYTES, type RunEnd, type SstCodec, type SstEntry, type SstFooter } from "../../src/store/sst.js";
+import { blockLengths, decodeBlock, encodeRunRef, entryRecordSize } from "./sst-ref.js";
 
 /**
  * The merge session in TypeScript (crates/engine-abi.md, "Merge session"),
@@ -157,7 +147,7 @@ class Session implements MergeCore {
   }
 
   private finish(): void {
-    const { body, end } = encodeRun(this.gathered);
+    const { body, end } = encodeRunRef(this.gathered);
     this.finished = { body, end, at: 0 };
     this.gathered = [];
     this.gatheredBytes = 0;

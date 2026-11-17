@@ -3,7 +3,7 @@
  * (incl. tombstones), and an SST version a range delete covers reads as
  * absent. Runs against the real pointGet over a one-run level.
  */
-import { encodeSst, sstKeyRange } from "../../src/store/sst.js";
+import { encodeSstRef, sstKeyRange } from "../../tests/oracle/sst-ref.js";
 import { pointGet, runLevels, type RunLevel } from "../../src/store/read.js";
 import { untilHit } from "../../src/store/cursor.js";
 import { PageCache } from "../../src/store/page-cache.js";
@@ -44,7 +44,7 @@ function readers(kind: Kind): RunLevel[] {
           value: kind === "valueA" ? A : B,
           seq: SST_SEQ,
         };
-  const body = encodeSst([entry]);
+  const body = encodeSstRef([entry]);
   return runLevels(["l0/1-1.sst"], [new SstReader(bytesFile(body), new PageCache(), sstKeyRange(body))]);
 }
 

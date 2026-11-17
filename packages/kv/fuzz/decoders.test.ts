@@ -1,8 +1,9 @@
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { encodeGeneration, type GenerationMeta } from "../src/store/generation.js";
-import { encodeSst as encodeSstWasm } from "../src/store/engine.js";
-import { encodeSst, type SstEntry } from "../src/store/sst.js";
+import { encodeRun as encodeWasmRun } from "../src/store/engine.js";
+import type { SstEntry } from "../src/store/sst.js";
+import { encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
 import {
   checkDecodeSst,
@@ -62,7 +63,7 @@ const runArb = fc.record({
 
 /** A run as the engine writes it: TypeScript raw blocks of any target, or wasm LZ4. */
 async function encodeRun(r: { entries: SstEntry[]; codec: Codec; blockTarget: number }): Promise<Uint8Array> {
-  return r.codec === "raw" ? encodeSst(r.entries, r.blockTarget) : encodeSstWasm(r.entries, "lz4");
+  return r.codec === "raw" ? encodeSstRef(r.entries, r.blockTarget) : encodeWasmRun(r.entries, "lz4").then((run) => run.body);
 }
 
 /** Probe keys: every key of the run, and a few that it lacks. */
@@ -246,6 +247,6 @@ const lz4BlockArb = fc.record({ entries: entriesArb.filter((e) => e.length > 0),
 
 /** One framed LZ4 block (u32 size, then LZ4 bytes) of a wasm-encoded run. */
 async function lz4Block(b: { entries: SstEntry[]; pick: number }): Promise<Uint8Array> {
-  const blocks = framedBlocks(await encodeSstWasm(b.entries, "lz4"));
+  const blocks = framedBlocks((await encodeWasmRun(b.entries, "lz4")).body);
   return blocks[b.pick % blocks.length]!;
 }

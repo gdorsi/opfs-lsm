@@ -109,7 +109,11 @@ export class SstReader {
   /** Every entry in `bounds`, in key order, or from the largest key down with `reverse`. */
   cursor(bounds?: ScanBounds, reverse = false): LayerCursor {
     return this.blocks(bounds, reverse, (block, seek) => {
-      const walk = reverse ? new ReverseBlockEntries(block(), seek) : new BlockEntries(block(), seek);
+      if (reverse) {
+        const walk = new ReverseBlockEntries(block(), seek);
+        return () => walk.next();
+      }
+      const walk = new BlockEntries(block(), seek);
       return () => walk.next();
     });
   }

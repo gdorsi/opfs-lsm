@@ -98,23 +98,4 @@ describe("openDb({ compactionMemoryBytes })", () => {
 
     expect(flushes).toBe(5);
   });
-
-  it("keeps the smallest budget when a tab of an older build sends none", async () => {
-    const flushes = await runsFlushed([16 * MiB], (host) => {
-      const { port1, port2 } = new MessageChannel();
-      const detach = attachEngineHostPort(port1, host);
-      port2.postMessage({ type: "watch", name: NAME, maxWalBytes: 1e12 });
-      const client = createPortIngestClient(port2);
-      return {
-        client,
-        close: () => {
-          client.close();
-          detach();
-          port1.close();
-        },
-      };
-    });
-
-    expect(flushes).toBe(5);
-  });
 });

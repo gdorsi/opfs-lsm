@@ -23,8 +23,9 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../src/testing.js";
-import { encodeSst as encodeSstWasm, ensureEngine, engineUsingWasm } from "../src/store/engine.js";
-import { encodeSst, type SstEntry } from "../src/store/sst.js";
+import { encodeRun, ensureEngine } from "../src/store/engine.js";
+import type { SstEntry } from "../src/store/sst.js";
+import { encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { mergeRuns } from "../tests/runs.js";
 import { walStore } from "../tests/sim/check-database.js";
 import { framedBlocks } from "./targets.js";
@@ -100,18 +101,17 @@ function todoEntries(n: number, from = 0): SstEntry[] {
 
 async function main(): Promise<void> {
   await ensureEngine();
-  if (!engineUsingWasm()) throw new Error("wasm did not load: run `pnpm --filter @opfs-lsm/kv build:wasm`");
   const db = await realDatabase();
 
   const lz4Runs = [
-    await encodeSstWasm(todoEntries(40), "lz4"),
+    (await encodeRun(todoEntries(40), "lz4")).body,
     // An L2-sized compaction output: several LZ4 blocks.
-    ...(await mergeRuns([[await encodeSstWasm(todoEntries(150, 100), "raw")], [db.runs[0]!]], { codec: "lz4" })).runs.map((r) => r.body),
+    ...(await mergeRuns([[(await encodeRun(todoEntries(150, 100), "raw")).body], [db.runs[0]!]], { codec: "lz4" })).runs.map((r) => r.body),
   ];
   const edgeRuns = [
-    encodeSst([]),
-    encodeSst([{ kind: "put", key: utf("big"), value: new Uint8Array(6000).fill(0x61), seq: 1 }]),
-    encodeSst([...todoEntries(30), { kind: "del", key: utf("todo/zz"), seq: 99 }], 256),
+    encodeSstRef([]),
+    encodeSstRef([{ kind: "put", key: utf("big"), value: new Uint8Array(6000).fill(0x61), seq: 1 }]),
+    encodeSstRef([...todoEntries(30), { kind: "del", key: utf("todo/zz"), seq: 99 }], 256),
   ];
   const runs = [...db.runs, ...lz4Runs, ...edgeRuns].filter((r) => r.byteLength < 60_000);
   const lz4Blocks = lz4Runs.flatMap((r) => framedBlocks(r)).slice(0, 6);
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
     session([0, 0, 0, 0x00, 0], small[1]!, small[0]!),
     session([1, 4, 0, 0x12, 1], small[1]!, small[0]!),
     session([2 | 8, 0, 0, 0x34, 2], lz4Runs[0]!, small[0]!),
-    session([1, 1, 0b1, 0x51, 3], encodeSst(todoEntries(30)), encodeSst(todoEntries(30, 30)), edgeRuns[2]!),
+    session([1, 1, 0b1, 0x51, 3], encodeSstRef(todoEntries(30)), encodeSstRef(todoEntries(30, 30)), edgeRuns[2]!),
     session([0, 0, 0, 0x60, 4], edgeRuns[0]!, edgeRuns[1]!),
   ]);
   console.log(

@@ -14,7 +14,7 @@ import {
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
-import { compactionMemoryOf, DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
@@ -626,7 +626,7 @@ export function attachEngineHostPort(
         case "watch":
           host.watch(msg.name, {
             maxWalBytes: msg.maxWalBytes,
-            compactionMemoryBytes: compactionMemoryOf(msg.compactionMemoryBytes),
+            compactionMemoryBytes: msg.compactionMemoryBytes,
             maxBytes: msg.maxBytes,
           });
           return;

@@ -25,7 +25,7 @@ export {
 export type { AsyncFs } from "./opfs/async-fs.js";
 export { MemoryFs } from "./opfs/memory-fs.js";
 export { openBrowserFs } from "./opfs/browser-fs.js";
-export { engineUsingWasm, ensureEngine } from "./store/engine.js";
+export { ensureEngine } from "./store/engine.js";
 
 // The module names are variables so a browser bundle of this file does not resolve them.
 if ((globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node) {

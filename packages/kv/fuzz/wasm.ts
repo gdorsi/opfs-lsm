@@ -5,7 +5,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { ensureEngine, engineUsingWasm, flatEngine, type FlatEngine } from "../src/store/engine.js";
+import { ensureEngine, flatEngine, type FlatEngine } from "../src/store/engine.js";
 import { useBlockScanner } from "../src/store/block-scan.js";
 import { useLz4Decoder } from "../src/store/lz4.js";
 import { watchWasmMemory } from "./targets.js";
@@ -14,7 +14,6 @@ export type { FlatEngine };
 
 export async function loadWasm(): Promise<FlatEngine> {
   await ensureEngine();
-  if (!engineUsingWasm()) throw new Error("wasm did not load: run `pnpm --filter @opfs-lsm/kv build:wasm`");
   const bytes = await readFile(fileURLToPath(new URL("../wasm/engine.wasm", import.meta.url)));
   const { instance } = await WebAssembly.instantiate(bytes, {});
   const { memory } = instance.exports as { memory: WebAssembly.Memory };

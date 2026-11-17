@@ -10,7 +10,7 @@ import {
   createPortIngestClient,
 } from "../src/testing.js";
 import { CorruptDatabaseError, OpfsLsmError } from "../src/errors.js";
-import { loadLatestGeneration } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);

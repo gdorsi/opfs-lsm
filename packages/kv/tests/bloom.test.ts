@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  bloomAdd,
-  bloomMightContain,
-  createBloom,
-} from "../src/store/bloom.js";
+import { bloomMightContain } from "../src/store/bloom.js";
+import { bloomAdd, createBloom } from "./oracle/sst-ref.js";
 
 const enc = new TextEncoder();
 

@@ -1,10 +1,11 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { compareBytes, containsAll } from "../src/bytes.js";
-import { untilHit, type ScanBounds } from "../src/store/cursor.js";
-import { countOf, entriesOf, latestSstEntry, matchingStep, mergeCursors, runLevels, type RunLevel } from "../src/store/read.js";
+import { untilHit, type LayerCursor, type ScanBounds } from "../src/store/cursor.js";
+import { countOf, entriesOf, latestSstEntry, liveStep, matchingStep, runLevels, type RunLevel } from "../src/store/read.js";
 import { countLayers, scanLayers } from "../src/view.js";
-import { encodeSst, sstKeyRange, type SstEntry } from "../src/store/sst.js";
+import type { SstEntry } from "../src/store/sst.js";
+import { encodeSstRef, sstKeyRange } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { collect, readerOfBytes } from "./runs.js";
@@ -20,7 +21,7 @@ function run(keys: number[], tag: string): SstReader {
       ? { kind: "del", key: key(i), seq: 1 }
       : { kind: "put", key: key(i), value: enc.encode(`${tag}${i}`), seq: 1 },
   );
-  return readerOfBytes(encodeSst(entries, 64));
+  return readerOfBytes(encodeSstRef(entries, 64));
 }
 
 /** Newest first: two overlapping L0 runs, then L1 and L2 cut into disjoint runs with gaps. */
@@ -43,7 +44,11 @@ function range(from: number, to: number, step: number): number[] {
   return out;
 }
 
-async function scan(cursors: Parameters<typeof mergeCursors>[0], limit?: number, reverse?: boolean): Promise<string[]> {
+function mergeCursors(cursors: readonly LayerCursor[], marks: Marks, limit?: number, reverse = false) {
+  return entriesOf(liveStep(cursors, marks, reverse), limit);
+}
+
+async function scan(cursors: readonly LayerCursor[], limit?: number, reverse?: boolean): Promise<string[]> {
   return (await collect(mergeCursors(cursors, NO_MARKS, limit, reverse))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
 }
 
@@ -127,7 +132,7 @@ describe("a scan under range deletes", () => {
         else if (kind === "put") entries.push({ kind, key: key(i), value: enc.encode(`${tag}${i % 3}`), seq: ++seq });
       }
       if (entries.length === 0) return undefined;
-      const body = encodeSst(entries, 64);
+      const body = encodeSstRef(entries, 64);
       return { body, marksThrough: claim ?? seq };
     };
     const l1 = [runOf(layout.l1, 0, layout.split, "l1:"), runOf(layout.l1, layout.split, KEYS, "l1:")];

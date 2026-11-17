@@ -2,14 +2,9 @@ import { crc32 } from "../src/store/crc32.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { __resetMemoryFsForTests, MemoryFs } from "../src/testing.js";
-import {
-  decodeGeneration,
-  encodeGeneration,
-  loadLatestGeneration,
-  publishGeneration,
-  publishL0,
-} from "../src/store/generation.js";
-import { encodeRun, sstKeyRange } from "../src/store/sst.js";
+import { decodeGeneration, encodeGeneration, publishGeneration, publishL0 } from "../src/store/generation.js";
+import { loadLatestGeneration } from "./latest-generation.js";
+import { encodeRunRef, sstKeyRange } from "./oracle/sst-ref.js";
 import { NO_MARKS } from "../src/store/marks.js";
 
 const NAME = "generation-coherence";
@@ -86,7 +81,7 @@ describe("publishL0", () => {
     expect(run.path).toBe("l0/1-500.sst");
     expect(run.bytes).toBe(file.byteLength);
     expect(run.range).toEqual(sstKeyRange(file));
-    expect(file).toEqual(encodeRun(entries).body);
+    expect(file).toEqual(encodeRunRef(entries).body);
   });
 
   it("gives an empty run no key range, and its size", async () => {

@@ -4,10 +4,11 @@ import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns, unpackHits } from "../src/store/block-scan.js";
 import type { LayerEntry } from "../src/store/cursor.js";
-import { encodeSst as encodeSstWasm, openMergeIn, type MergeSpec } from "../src/store/engine.js";
+import { encodeRun as encodeWasmRun, openMergeIn, type MergeSpec } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { openMergeTs } from "../tests/oracle/merge-ts.js";
-import { BlockEntries, blockBytes, decodeSst, encodeSst, type EncodedRun, type SstEntry } from "../src/store/sst.js";
+import { BlockEntries, blockBytes, type EncodedRun, type SstEntry } from "../src/store/sst.js";
+import { decodeSst, encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { mergeRuns } from "../tests/runs.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
 import { bounded, framedBlocks, RuleBroken, tally } from "./targets.js";
@@ -74,7 +75,7 @@ type Codec = "raw" | "lz4";
 const runArb = fc.record({ entries: entriesArb, codec: fc.constantFrom<Codec>("raw", "lz4"), blockTarget: fc.constantFrom(64, 512, 4096) });
 
 async function encodeRun(r: { entries: SstEntry[]; codec: Codec; blockTarget: number }): Promise<Uint8Array> {
-  return r.codec === "raw" ? encodeSst(r.entries, r.blockTarget) : encodeSstWasm(r.entries, "lz4");
+  return r.codec === "raw" ? encodeSstRef(r.entries, r.blockTarget) : encodeWasmRun(r.entries, "lz4").then((run) => run.body);
 }
 
 const plain = (es: readonly { kind: string; key: Uint8Array; value?: Uint8Array; seq?: number }[]) =>
@@ -164,7 +165,7 @@ describe("wasm against TypeScript", () => {
       await expect(
         fc.assert(
           fc.asyncProperty(entriesArb, mutationsArb, fc.boolean(), fc.nat(), async (entries, ms, mutate, pick) => {
-            const blocks = framedBlocks(await encodeSstWasm(entries, "lz4"));
+            const blocks = framedBlocks((await encodeWasmRun(entries, "lz4")).body);
             if (blocks.length === 0) return;
             const block = blocks[pick % blocks.length]!;
             const size = new DataView(block.buffer, block.byteOffset).getUint32(0, true);
