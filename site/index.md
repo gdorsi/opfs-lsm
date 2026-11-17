@@ -198,8 +198,6 @@ Still, storage is fault-tolerant and heavily tested, so if you want to play arou
 
 ## Use cases
 
-Pick what your app is built on. Each adapter keeps that library's API and stores its data in opfs-lsm.
-
 <UseCases :cases="$frontmatter.fits">
 <template v-slot:tanstack-db>
 

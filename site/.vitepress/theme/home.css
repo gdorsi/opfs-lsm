@@ -5,6 +5,11 @@
   max-width: 760px;
 }
 
+/* Sections are set apart by space alone, without the line VitePress draws above each h2. */
+.VPHome .vp-doc h2 {
+  border-top: 0;
+}
+
 /* The status note under the hero: a card like the feature cards, with an amber dot and its first line as the lead. */
 .vp-doc .home-warnings {
   margin: 8px 0 24px;
