@@ -66,7 +66,12 @@ export default defineContender({
   async open(name) {
     const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tracker-${name}.sqlite` });
     const sql = <T>(text: string, params: readonly unknown[] = []) => database.execute<T>(text, params);
-    for (const statement of SCHEMA) await sql(statement);
+    // Like an app's migration check: the schema statements run on the first open only, not on every fresh page.
+    const [version] = await sql<{ user_version: number }>("PRAGMA user_version");
+    if (!version?.user_version) {
+      for (const statement of SCHEMA) await sql(statement);
+      await sql("PRAGMA user_version = 1");
+    }
 
     async function write(e: Event): Promise<void> {
       if (e.op === "delete") {

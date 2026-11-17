@@ -57,8 +57,8 @@ const issue = (k: number, over: Partial<Issue> = {}): Issue => ({
 });
 
 /**
- * What every backend must do for the model. A backend joins by calling this once more in `contract.test.ts`. The
- * expected values come from the rows the test wrote, not from any backend.
+ * What the backend must do for the model, run on the kv backend by `contract.test.ts`. The expected values come
+ * from the rows the test wrote, not from the backend.
  */
 export function contract(label: string, open: OpenBackend): void {
   describe(`the ${label} backend`, () => {
@@ -356,17 +356,16 @@ export function contract(label: string, open: OpenBackend): void {
       const live = () => every.toArray.filter((i) => !i.deleted).length;
       const anchorable = () =>
         SORT_FIELDS.flatMap((sort) => (["asc", "desc"] as const).map((dir) => parseIssueFilter({ sort, dir }))).filter(
-          (filter) => backend().anchor?.(filter) !== undefined,
+          (filter) => backend().anchor(filter) !== undefined,
         );
 
       before(() => put(backend(), "issues", all));
       after(() => every.cleanup());
 
-      it("starts a window at row n that shows the rows the list shows there", async (t) => {
-        if (!backend().anchor) return t.skip("this backend does not anchor");
+      it("starts a window at row n that shows the rows the list shows there", async () => {
         assert.ok(anchorable().length > 0, "anchors some list");
         for (const filter of anchorable()) {
-          const anchoring = backend().anchor!(filter)!;
+          const anchoring = backend().anchor(filter)!;
           for (const n of [0, 1, 63, 64, 65, 66, 129, 200, live() - SIZE, live() - 1]) {
             const what = JSON.stringify({ sort: filter.sort, dir: filter.dir, n });
             const anchor = await anchoring.locate(n);
@@ -381,18 +380,16 @@ export function contract(label: string, open: OpenBackend): void {
         }
       });
 
-      it("has no anchor past the end of the list", async (t) => {
-        if (!backend().anchor) return t.skip("this backend does not anchor");
-        const anchoring = backend().anchor!(anchorable()[0]!)!;
+      it("has no anchor past the end of the list", async () => {
+        const anchoring = backend().anchor(anchorable()[0]!)!;
         assert.equal(await anchoring.locate(live()), undefined);
         assert.equal(await anchoring.locate(live() + 500), undefined);
       });
 
-      it("keeps showing the right rows at the right position as writes move rows across its anchor", async (t) => {
-        if (!backend().anchor) return t.skip("this backend does not anchor");
+      it("keeps showing the right rows at the right position as writes move rows across its anchor", async () => {
         const filter = parseIssueFilter({});
         const n = 200;
-        const anchoring = backend().anchor!(filter)!;
+        const anchoring = backend().anchor(filter)!;
         const anchor = (await anchoring.locate(n))!;
         const offset = n - anchor.base;
         const q = windowQuery(backend().collection("issues"), filter, SIZE, undefined, { from: anchor.value, offset });

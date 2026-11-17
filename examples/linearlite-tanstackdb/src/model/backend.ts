@@ -34,8 +34,8 @@ export interface Anchoring {
 }
 
 /**
- * Where the model keeps its replica. Merges, the outbox, clocks, query shapes, windows and sync are the model's and
- * run unchanged on every backend.
+ * Where the model keeps its replica: the kv backend (`src/backends/kv.ts`) in the app and in the tests. Merges, the
+ * outbox, clocks, query shapes, windows and sync are the model's; storage is reached only through this interface.
  *
  * - Only `transact` writes rows. The model never calls insert, update or delete on a collection.
  * - `transact` is atomic per row and serialized within this tab. A backend may commit one call in several
@@ -64,10 +64,10 @@ export interface Backend {
   watchCounts(filter: IssueFilter, emit: (counts: StatusCounts) => void): Unsubscribe;
   /** Emits how many live issues are under `filter` once counted, then again after changes. */
   watchTotal(filter: IssueFilter, emit: (total: number) => void): Unsubscribe;
-  /** Undefined for a list whose deep windows this backend cannot anchor. Absent: every deep window is one query from the top. */
-  anchor?(filter: IssueFilter): Anchoring | undefined;
-  /** Calls `ask` when storage wants space and enough threads are cached to be worth clearing. Absent: never. */
-  onPressure?(ask: () => Promise<void>): Unsubscribe;
+  /** How deep windows of the list under `filter` start without reading the rows above. Undefined when they cannot: each such window is one query from the top. */
+  anchor(filter: IssueFilter): Anchoring | undefined;
+  /** Calls `ask` when storage wants space and enough threads are cached to be worth clearing. */
+  onPressure(ask: () => Promise<void>): Unsubscribe;
   /** Releases the collections. A database the caller opened and passed in stays open. */
   close(): Promise<void>;
 }
