@@ -190,7 +190,6 @@ bench:
           - { measure: "First answer: the 50 latest issues", ours: 8.8 ms, theirs: 9.4 ms, ratio: 1.1× }
 demo:
   count: 100,000
-  source: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-docstore
 ---
 
 ## Use cases
