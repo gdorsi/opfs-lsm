@@ -20,22 +20,16 @@ export const xOf = (ratio: number) => ((Math.log10(Math.min(Math.max(ratio, 0.1)
 export const LINE = xOf(1);
 export const ticks = [0.1, 1, 10, 100].map((r) => ({ label: `${r}×`, x: xOf(r) }));
 
-/** A narrow card's strip of dots: the middle lane first, then one up, one down, and so on, in px. */
-const LANES = [0, -6, 6, -12, 12];
-/** Dots closer than this, in percent of the scale, would touch. */
-const NEAR = 4;
+const LANE_Y_PX = [0, -6, 6, -12, 12];
+const MIN_GAP_PCT = 4;
 
-/** For each ratio's place on the scale, the lane its dot takes so it doesn't hide another, in the order given. */
-export function lanes(xs: number[]): number[] {
-  const last: (number | undefined)[] = LANES.map(() => undefined);
+export function dotYs(xs: number[]): number[] {
+  const last: (number | undefined)[] = LANE_Y_PX.map(() => undefined);
   const out = xs.map(() => 0);
   for (const i of xs.map((_, i) => i).sort((a, b) => xs[a]! - xs[b]!)) {
-    const lane = Math.max(
-      0,
-      last.findIndex((at) => at === undefined || xs[i]! - at >= NEAR),
-    );
+    const lane = Math.max(0, last.findIndex((at) => at === undefined || xs[i]! - at >= MIN_GAP_PCT));
     last[lane] = xs[i];
-    out[i] = LANES[lane]!;
+    out[i] = LANE_Y_PX[lane]!;
   }
   return out;
 }

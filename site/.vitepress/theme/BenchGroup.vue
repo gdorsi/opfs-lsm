@@ -1,17 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, useId } from "vue";
 import { ratioTone } from "../tone.ts";
-import { lanes, LINE, pairText, ticks, xOf, type Group } from "./bench.ts";
+import { dotYs, LINE, pairText, ticks, xOf, type Group } from "./bench.ts";
 
 /**
  * One group of a benchmark card: its head, then a row per result. A bar runs from the 1× line to the result's ratio,
  * right when opfs-lsm is faster and left when it is slower, with the ratio at its end and the two values on the right.
  * The page renders the bars drawn. A group that starts below the screen folds them back to the line once mounted and
  * grows them, one row after the next, when it scrolls into view.
- *
- * In a narrow card the group starts closed, as one button: its title, how many results went each way, and a dot per
- * result on the card's scale. Opening it shows the rows, their bars growing out of the 1× line. The wide card has no
- * button and always shows the rows.
  */
 const props = defineProps<{ group: Group }>();
 
@@ -30,12 +26,12 @@ const rows = computed(() =>
 
 const WORDS = { success: "faster", warning: "slower", neutral: "even" } as const;
 const counts = computed(() =>
-  (["success", "warning", "neutral"] as const)
-    .map((tone) => ({ tone, word: WORDS[tone], n: rows.value.filter((r) => r.tone === tone).length }))
+  Object.entries(WORDS)
+    .map(([tone, word]) => ({ tone, word, n: rows.value.filter((r) => r.tone === tone).length }))
     .filter((c) => c.n > 0),
 );
 const dots = computed(() => {
-  const y = lanes(rows.value.map((r) => r.x));
+  const y = dotYs(rows.value.map((r) => r.x));
   return rows.value.map((r, i) => ({ key: r.measure, x: r.x, tone: r.tone, y: y[i] }));
 });
 
@@ -120,7 +116,7 @@ function tipAt(r: (typeof rows.value)[number]) {
       <ul class="bench-rows">
         <li v-for="(r, i) in rows" :key="r.measure" class="bench-row" :style="{ '--i': i }">
           <span class="bench-sr">{{ r.label }}</span>
-          <span class="bench-measure" aria-hidden="true">{{ r.measure }}</span>
+          <span class="bench-measure" :title="r.measure" aria-hidden="true">{{ r.measure }}</span>
           <div class="bench-plot" aria-hidden="true">
             <div class="bench-inner">
               <span
