@@ -83,6 +83,11 @@
   aspect-ratio: var(--wide);
 }
 
+.illustration-steps {
+  width: 100%;
+  max-width: var(--wide-width);
+}
+
 
 @media (max-width: 647px) {
   .illustration {
@@ -92,6 +97,10 @@
   .illustration-stage {
     max-width: var(--compact-width);
     aspect-ratio: var(--compact);
+  }
+
+  .illustration-steps {
+    max-width: var(--compact-width);
   }
 }
 
@@ -105,6 +114,20 @@
   .illustration.full .illustration-stage {
     max-width: var(--compact-width);
     aspect-ratio: var(--compact);
+  }
+
+  .illustration.full .illustration-steps {
+    max-width: var(--compact-width);
+  }
+
+  /* The phone design is taller than the screen: the caption and buttons stay at its foot while the stage scrolls. */
+  .illustration.full.stepped .illustration-steps {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    padding-block: 12px;
+    background: var(--vp-c-bg);
+    box-shadow: 0 -1px 0 var(--vp-c-divider);
   }
 }
 
@@ -121,6 +144,140 @@
 .illustration-replay:hover {
   color: var(--vp-c-text-1);
   background: var(--vp-c-default-soft);
+}
+
+/* A figure the viewer clicks through: the caption, then the step count and its two buttons. The caption cell holds
+   every caption at once, unseen, so it is as tall as the longest and the page under it never moves. */
+.illustration.stepped {
+  outline: none;
+}
+
+.illustration-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px 24px;
+  padding-top: 8px;
+}
+
+.illustration-caption {
+  display: grid;
+  flex: 1 1 360px;
+  max-width: 660px;
+  min-width: 0;
+  padding-top: 5px;
+  color: var(--vp-c-text-1);
+  font-size: 16px;
+  line-height: 26px;
+}
+
+.illustration-caption > * {
+  grid-area: 1 / 1;
+  margin: 0;
+}
+
+.illustration-caption-size {
+  visibility: hidden;
+}
+
+.illustration-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.illustration-nav {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.illustration-count {
+  margin-right: 8px;
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.illustration-step {
+  min-width: 72px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 18px;
+  background: var(--vp-c-default-soft);
+  color: var(--vp-c-text-1);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: color 0.2s, background-color 0.2s, opacity 0.2s;
+}
+
+.illustration-step:hover {
+  background: var(--vp-c-default-3);
+}
+
+.illustration-step[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.illustration-step[aria-disabled="true"]:hover {
+  background: var(--vp-c-default-soft);
+}
+
+.illustration-step-next {
+  min-width: 112px;
+  background: var(--vp-button-brand-bg);
+  color: var(--vp-button-brand-text);
+}
+
+.illustration-step-next:hover {
+  background: var(--vp-button-brand-hover-bg);
+}
+
+.illustration-step:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+@media (max-width: 647px) {
+  .illustration-steps {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding-inline: 8px;
+  }
+
+  .illustration.stepped .illustration-steps {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    padding-block: 12px;
+    background: var(--vp-c-bg);
+    box-shadow: 0 -1px 0 var(--vp-c-divider);
+  }
+
+  .illustration-caption {
+    flex: none;
+    padding-top: 0;
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .illustration-nav {
+    margin-left: 0;
+  }
+
+  .illustration-count {
+    margin-right: auto;
+  }
 }
 
 /* The hero: the name line, the pitch, then LinearLite running in a browser frame. Its box has the widths and side

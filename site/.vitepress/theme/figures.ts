@@ -12,3 +12,9 @@ export const FIGURES: Partial<Record<SceneName, string>> = {
   stack:
     "A tab puts a record, which becomes a row of the write-ahead log in IndexedDB: that row is the ack. The SharedWorker flushes the rows of the log into one SST file in OPFS and truncates the log. The tab reads the SST files itself.",
 };
+
+/**
+ * The steps of an illustration the viewer clicks through, one caption each. The page shows the caption under the
+ * figure and passes the step to the scene, whose frames and beats line up with these index for index.
+ */
+export const STEPS: Partial<Record<SceneName, readonly string[]>> = {};
