@@ -5,7 +5,7 @@ import { kvCommon, openKv } from "../../page/kv.ts";
 export default defineContender({
   family: "automerge",
   durability: "idb-default",
-  fastPath: "examples/automerge-todo kvStorage(openDb): save = put, loadRange = one range scan",
+  fastPath: "kvStorage from @opfs-lsm/automerge: save = put, loadRange = one range scan",
   engine: true,
   async open(name) {
     const db = await openKv(name);

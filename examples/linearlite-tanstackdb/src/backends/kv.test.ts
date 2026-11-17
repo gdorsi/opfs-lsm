@@ -91,8 +91,8 @@ describe("the kv backend", () => {
     assert.ok(emoji < fullwidth, "the list's order");
     assert.ok(Buffer.compare(Buffer.from(emoji), Buffer.from(fullwidth)) > 0, "the index's order");
     for (const sort of SORT_FIELDS) {
-      for (const dir of ["asc", "desc"] as const) assert.equal(backend.anchor!(parseIssueFilter({ sort, dir })) !== undefined, sort !== "title", `${sort} ${dir}`);
+      for (const dir of ["asc", "desc"] as const) assert.equal(backend.anchor(parseIssueFilter({ sort, dir })) !== undefined, sort !== "title", `${sort} ${dir}`);
     }
-    for (const filtered of [{ q: "a" }, { status: "1" }, { priority: "2" }]) assert.equal(backend.anchor!(parseIssueFilter(filtered)), undefined, JSON.stringify(filtered));
+    for (const filtered of [{ q: "a" }, { status: "1" }, { priority: "2" }]) assert.equal(backend.anchor(parseIssueFilter(filtered)), undefined, JSON.stringify(filtered));
   });
 });

@@ -41,7 +41,7 @@ The SQLite contenders run TanStack's adapter with a patch, [`patches/@tanstack__
 
 The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and values 100 bytes, half compressible (LevelDB's setup). Sizes are `tiny` 1,000 entries, `small` 100,000 and `large` 1,000,000.
 
-- `kv/fillrandom`: N/100 single puts, each awaited, on the empty store (db_bench's fillsync); a random fill; random reads before and after compaction settles; reads of missing keys; a cold open; then deletes of a random tenth, with the space before and after compaction.
+- `kv/fillrandom`: N/100 single puts, each awaited, on the empty store (db_bench's fillsync); a random fill; random reads before and after compaction settles; reads of missing keys; a cold open; then deletes of a random tenth, with the space before and after compaction. The deletes run in the cold-open tab, whose counters start there, so the W-Amp on that settle divides compaction bytes by the delete keys alone: read its Space-Amp and disk bytes, not its W-Amp.
 - `kv/fillseq`: ascending fill, a full scan, random seeks of 10 and 100 keys.
 - `kv/ycsb-a`: YCSB A (50% reads, 50% blind updates), then after a settle YCSB F (50% reads, 50% read-modify-writes in one transaction), zipfian, as in YCSB's workload files. Pebble uses the same letters for different mixes.
 - `kv/compaction-memory`: 20 rounds of N random puts into a 4N key pool, settle, then checked reads. Run it for the memory peaks below, not for throughput.
@@ -49,9 +49,11 @@ The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and value
 - `tanstack-ondemand/queries`: the same todo rows in an on-demand collection: bulk inserts, then a cold open and live queries that each load their own rows: every row of one owner, pages of 50 rows of one owner ordered by `createdAt`, and 10 rows by id. A query is timed from creating the live query to its first result, plus releasing it. The page and id queries each start on a fresh page, because TanStack's SQLite collection keeps every row it has loaded after a query is released, and the owner queries before them load every row. Updates run on rows a held query keeps loaded. Every result is compared with the model. TanStack's `createIndex` takes one expression, so SQLite has no index on `[owner, createdAt]`.
 - `automerge/trace`, `yjs/trace`: the LaTeX editing trace (about 260k keystrokes; 2,000 at `tiny`, 26,000 at `small`) through the persistence layer, and four steps after it:
   - `persist` writes the trace's head as fast as it goes. `yjs/trace` then pauses for 2 s, past the 1 s idle delay after which both Yjs libraries merge their stored updates, as a real document's history is merged.
-  - `type` types its last 300 keystrokes (100 at `tiny`) at one per 16 ms frame, one Yjs transaction or Automerge change each, with the main thread recorded. Typing is paced, so its wall time is the pacing: read the `key` latency, the frames and the `flush`.
+  - `type` types its last 300 keystrokes (100 at `tiny`) at one per 60 Hz frame, one Yjs transaction or Automerge change each, with the main thread recorded. Typing is paced, so its wall time is the pacing: read the `key` latency, the frames and the `flush`. Yjs stores every update as it happens; automerge-repo saves a document at most every 100 ms (`saveDebounceRate`), so most Automerge keystrokes write nothing.
   - `reopen` opens the document cold in a fresh tab before kv settles, so the typed updates are still in the log or the newest runs.
   - `load` opens it cold again after the settle.
+
+  The settle runs in the `reopen` tab, and kv counts writes per tab, so these workloads report no W-Amp.
 
   The trace downloads once into `bench/.data/`.
 - `automerge/many-docs`, `yjs/many-docs`: many small notes written, then each loaded cold.
@@ -73,7 +75,7 @@ A goal workload is a dataset plus questions a screen asks of it, the shape of TP
 
 The phases:
 
-1. `replay` (timed): once 70% of the issues exist, that state is written as `import` batches of 1,000 rows of one entity, oldest change first. The rest of the simulation is written as `sync` batches of 50 events. Each event creates, patches or deletes one row. A patch carries the change, not the row, so the replica reads the stored row and folds the change in. Every 10 batches the replay reads the 50 most recently updated issues (op `read`), as a list on screen re-queries while a large sync lands, and checks them against the oracle at that point of the history.
+1. `replay` (timed): once 70% of the issues exist, that state is written as `import` batches of 1,000 rows of one entity, oldest change first. The rest of the simulation is written as `sync` batches of 50 events. Each event creates, patches or deletes one row. A patch carries the change, not the row, so the replica reads the stored row and folds the change in. After every 10th `sync` batch the replay reads the 50 most recently updated issues (op `read`, not counted in the replay's ops), as a list on screen re-queries while a large sync lands, and checks them against the oracle at that point of the history.
 2. `settle` (untimed): kv flushes and compacts until stable.
 3. `recent` (timed): a `bulk` batch closes the sprint of the project with the most issues in progress, then single `edit`s (50 at `tiny`, 300 above), one user rename and one label rename. These writes sit above the settled store when the goals run.
 4. `prepare` (untimed): picks each goal's bindings, LDBC-style: up to 5 bindings whose cost in the oracle is nearest one quantile, the same for every rep and contender. It computes every expected answer and carries them to the later pages.
@@ -115,7 +117,7 @@ The phases:
 1. `import` (timed): the history's import through the collections, 1,000 rows per transaction.
 2. `settle` (untimed): kv flushes and compacts until stable.
 3. `prepare` (fresh page, untimed): the history, the oracle, each screen's binding (curated as in `tracker/goals`) and every expected answer.
-4. `open` (timed): the collections open (op `open`; an eager collection loads every row), then each screen is timed from creating its live query to its first answer (op named after the screen). Every answer is checked. `unopen` (untimed) closes the screens.
+4. `open` (timed): the collections open (op `open`; an eager collection loads every row), then the screens open one after another, as an app's would, each timed from creating its live query to its first answer (op named after the screen). Only the first screen starts cold: the later ones find the shared label list, the rows earlier joins loaded and kv's page cache warm, which matters for the on-demand contenders. Every answer is checked. `unopen` (untimed) closes the screens.
 5. `sync` (timed): the first half of the sync batches, with no screen open.
 6. `screens` (untimed): every screen opens again.
 7. `sync-live` (timed): the second half, with every screen open. A batch is timed until it is persisted and every open screen shows it: no live query and no collection waits for rows, since a join loads the rows it lacks through its source collection. Answers are checked every 10 batches. `close` (untimed) closes the screens.
@@ -143,6 +145,8 @@ Every run record carries peaks sampled every 100 ms over CDP: `Runtime.getHeapUs
 `node bench/probes/memory.ts` answers two Chrome questions behind the compaction-memory design: whether pending `createWritable` data stays in memory, and whether dropping a wasm instance returns its memory. Results are in [docs/research/bounded-compaction-memory.md](../docs/research/bounded-compaction-memory.md).
 
 `node bench/probes/live-set.ts [workload] [--compaction-memory-bytes N]` measures what is alive in the SharedWorker while a workload runs. A second DevTools session takes a heap snapshot every 500 ms (V8 collects garbage before it writes one) and the probe prints the wasm memory and everything else per snapshot. Each snapshot pauses the worker, so the run's timings mean nothing.
+
+`node bench/probes/idb-deleted-tail.ts [rows] [kept]` builds the states kv's IndexedDB WAL store is in and times finding its head from a fresh tab. A flush deletes the records the previous flush folded and keeps its own. In Chrome 157, right after a flush that deleted 24,700 records, a reverse cursor takes about 35 ms to find the head and a forward lookup from `ingestedThrough` about 5 ms, which is why kv looks forward first. With new records above `ingestedThrough`, both take about 21 ms.
 
 `node bench/probes/cpu-profile.ts <workload> <phase> [--contender kv/kv]` records a V8 CPU profile of one phase, in the tab and in the SharedWorker, and prints self time per function. The build is not minified, so the names are the source's. It writes each `.cpuprofile` to `bench/results/` for DevTools. Profiling slows the run, so compare the shares between functions, not the wall time.
 

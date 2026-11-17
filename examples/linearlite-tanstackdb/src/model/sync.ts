@@ -153,10 +153,11 @@ class Leader {
     );
     // Every tab shows the alert while `evict` is asked. A confirmation from any tab lands in the row, and the loop
     // evicts after a push, so no page lands rows after the clear.
-    const unpressure = this.backend.onPressure?.(async () => {
-      if (this.state.evict === "idle") await this.save({ evict: "asked" });
-    });
-    if (unpressure) this.offs.push(unpressure);
+    this.offs.push(
+      this.backend.onPressure(async () => {
+        if (this.state.evict === "idle") await this.save({ evict: "asked" });
+      }),
+    );
     this.kick("start");
   }
 

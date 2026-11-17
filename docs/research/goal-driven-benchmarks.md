@@ -63,7 +63,7 @@ The suite has 13 workloads. The "also hit by" column lists workloads that make t
 | tracker/goals | document ingest with index upkeep; a list read while a large sync lands; bulk and single edits above the settled store; reads right after an edit; one pattern per goal | tanstack-live/screens |
 | tanstack/todos | TanStack DB eager: persisting transactions, loading every row | tanstack-live/screens |
 | tanstack-ondemand/queries | TanStack DB on demand: a live query that loads its rows through an index | tanstack-live/screens |
-| tanstack-live/screens | a screen's live query (joins, order, limit) to its first answer in a fresh tab; keeping open screens current while sync batches land | |
+| tanstack-live/screens | a screen's live query (joins, order, limit) to its first answer, the screens opened one after another in a fresh tab; keeping open screens current while sync batches land | |
 | yjs/trace | Yjs persistence of an editing trace; typing at one key per frame; reopen before and after settle | yjs/many-docs |
 | yjs/many-docs | Yjs: many small documents, each loaded cold | |
 | automerge/trace | the same for Automerge | automerge/many-docs |
@@ -91,7 +91,7 @@ The four app workloads are gone too: linearlite/first-sync, linearlite/browse, y
 - **Paced writes under a frame budget** (the whiteboard's drags, the notes typing). Both trace workloads type their last 300 keystrokes at one per 16 ms frame, with the main thread recorded.
 - **A cold load of a document whose latest updates have not settled** (the whiteboard and notes reopens). Both trace workloads reopen the document in a fresh tab before kv settles, then again after.
 - **Screens of an issue tracker** (linearlite/browse). The tracker goals own them, on normalized data with joins.
-- **TanStack DB's live-query overhead inside an app** (linearlite's screens were live queries). tanstack-live/screens runs four tracker screens as live queries on each TanStack adapter, times each to its first answer in a fresh tab, and times each sync batch until every open screen shows it, with the screens closed for the first half of the batches and open for the second.
+- **TanStack DB's live-query overhead inside an app** (linearlite's screens were live queries). tanstack-live/screens runs four tracker screens as live queries on each TanStack adapter, opens them one after another in a fresh tab, timing each to its first answer (only the first starts cold), and times each sync batch until every open screen shows it, with the screens closed for the first half of the batches and open for the second.
 
 ## 4. First results
 
@@ -114,11 +114,11 @@ The four app workloads are gone too: linearlite/first-sync, linearlite/browse, y
 
 | writes | docstore | Dexie | SQLite |
 |---|---|---|---|
-| import, 44 batches of 1,000 rows (total) | 0.80 s | 2.9 s | 1.0 s |
-| sync, 875 batches of 50 events (total) | 3.2 s | 5.8 s | 11.7 s |
+| import, 47 batches of up to 1,000 rows (total) | 0.80 s | 2.9 s | 1.0 s |
+| sync, 870 batches of up to 50 events (total) | 3.2 s | 5.8 s | 11.7 s |
 | one edit | 0.61 | 0.40 | 1.1 |
 | bulk: 1,027 issues to done | 61 | 155 | 85 |
-| reread: a list read right after an edit | 1.7 | 15.3 | 0.43 |
+| reread: a count and two lists read right after an edit | 1.7 | 15.3 | 0.43 |
 
 What the goals show that the app workloads could not:
 
@@ -132,8 +132,8 @@ What the goals show that the app workloads could not:
   - `deepWindow` costs 1.9 against 0.43: there is no offset, so it walks ids and then reads rows.
 - **Tombstone-heavy ranges cost 3×.** `drainedPage` returns 7 rows in 1.3 ms warm, while `statusPage` returns 50 in 0.42. The bulk edit left the range mostly deletes above the settled levels.
 - **Writes are strong.**
-  - Sync batches are 1.8× faster than Dexie and 3.6× faster than SQLite, which pays one worker round trip per statement.
-  - The import is 1.3× faster than SQLite and 3.7× faster than Dexie.
+  - Sync batches are 1.8× faster than Dexie and 3.7× faster than SQLite. SQLite pays one worker round trip per statement, and its commits wait for the disk (`synchronous=FULL`, its default) where the IndexedDB contenders commit with Chrome's relaxed durability.
+  - The import is 1.3× faster than SQLite and 3.6× faster than Dexie. docstore has no transaction across collections, so its contender writes a batch as one kv transaction per collection, where Dexie and SQLite commit the whole batch atomically.
 
 An earlier run on main before #282, at load average 8 to 10, showed the same pattern, with docstore's `first` page reads about twice as slow. #282 added kv's read-ahead in scans.
 
