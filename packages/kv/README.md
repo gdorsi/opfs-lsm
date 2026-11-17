@@ -200,20 +200,18 @@ After a complete field the next byte is a tag (01..05), a UTF-8 byte or nothing,
 
 ## Joins
 
-`rangeJoin` scans a range and reads the key `keyOf` returns for each entry, the way an index entry points at its row.
+`snap.rangeJoin` scans a range and reads the key `keyOf` returns for each entry, the way an index entry points at its row. It runs inside a `view`, so the scan and the joined reads see one state.
 
 ```ts
 // post/1 holds its author's key.
-const posts = await db.rangeJoin(
-  prefixBound(enc("post/")),
-  (entry) => entry.value
+const posts = await db.view((snap) =>
+  snap.rangeJoin(prefixBound(enc("post/")), (entry) => entry.value)
 );
 dec(posts[0]?.entry.key); // => "post/1"
 dec(posts[0]?.joined);    // => "Grace"
 
 // `joined` is undefined when keyOf returns undefined or the key
-// has no value. The scan and the joined reads see one state.
-// Writes that land meanwhile are not seen.
+// has no value. Writes that land meanwhile are not seen.
 ```
 
 ## Snapshots
@@ -227,6 +225,7 @@ const seen = await db.view(async (snap) => {
 seen; // => undefined
 
 // snap.range(...) and snap.count(...) take the same options as db.range.
+// snap.rangeJoin(...) is described under Joins.
 // snap.seq is the seq of the last write the snapshot includes.
 ```
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { prefixBound } from "../src/index.js";
+import { prefixBound, type Range, type ViewSnapshot } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { checkBatch, checkDbName } from "../src/check.js";
 import { TabWal } from "../src/idb/wal.js";
@@ -100,7 +100,7 @@ describe("rangeJoin", () => {
       tx.put(utf("idx/3"), utf("doc/missing"));
     });
     const reader = await openHarnessDb({ name: NAME, writerId: "r", fs, forceMemory: true, maxWalBytes });
-    const hits = await reader.rangeJoin(prefixBound(utf("idx/")), (e) => e.value);
+    const hits = await reader.view((snap) => snap.rangeJoin(prefixBound(utf("idx/")), (e) => e.value));
     expect(hits.map((h) => [text(h.entry.key), text(h.joined)])).toEqual([
       ["idx/1", "one"],
       ["idx/2", "two"],
@@ -108,6 +108,42 @@ describe("rangeJoin", () => {
     ]);
     await writer.close();
     await reader.close();
+  });
+
+  it("does not see a write that lands during the view", async () => {
+    const db = await openHarnessDb({ name: NAME, writerId: "w", fs: new MemoryFs(), forceMemory: true, maxWalBytes });
+    await db.batch((tx) => {
+      tx.put(utf("doc/1"), utf("one"));
+      tx.put(utf("idx/1"), utf("doc/1"));
+    });
+    const hits = await db.view(async (snap) => {
+      await db.batch((tx) => {
+        tx.put(utf("doc/1"), utf("changed"));
+        tx.put(utf("idx/2"), utf("doc/1"));
+      });
+      return snap.rangeJoin(prefixBound(utf("idx/")), (e) => e.value);
+    });
+    expect(hits.map((h) => [text(h.entry.key), text(h.joined)])).toEqual([["idx/1", "one"]]);
+    await db.close();
+  });
+
+  it("asks keyOf once per entry and joins keys that repeat", async () => {
+    const db = await openHarnessDb({ name: NAME, writerId: "w", fs: new MemoryFs(), forceMemory: true, maxWalBytes });
+    await db.batch((tx) => {
+      tx.put(utf("doc/1"), utf("one"));
+      for (const i of [1, 2, 3]) tx.put(utf(`idx/${i}`), utf(i === 2 ? "doc/none" : "doc/1"));
+    });
+    await ingest(db);
+    let asked = 0;
+    const hits = await db.view((snap) =>
+      snap.rangeJoin(prefixBound(utf("idx/")), (e) => {
+        asked++;
+        return text(e.value) === "doc/none" ? undefined : e.value;
+      }),
+    );
+    expect(asked).toBe(3);
+    expect(hits.map((h) => text(h.joined))).toEqual(["one", undefined, "one"]);
+    await db.close();
   });
 
   it("joins the entries of a reverse range, last first", async () => {
@@ -126,13 +162,14 @@ describe("rangeJoin", () => {
       tx.delete(utf("idx/2"));
       tx.put(utf("doc/3"), utf("doc 3, newer"));
     });
-    const shown = (hits: Awaited<ReturnType<typeof db.rangeJoin>>) =>
+    const shown = (hits: Awaited<ReturnType<ViewSnapshot["rangeJoin"]>>) =>
       hits.map((h) => `${text(h.entry.key)}>${text(h.joined)}`);
-    const forward = shown(await db.rangeJoin(prefixBound(utf("idx/")), (e) => e.value));
+    const join = (range: Range) => db.view((snap) => snap.rangeJoin(range, (e) => e.value));
+    const forward = shown(await join(prefixBound(utf("idx/"))));
     expect(forward).toHaveLength(4);
     for (const limit of [undefined, 1, 3]) {
       const range = { ...prefixBound(utf("idx/")), reverse: true, ...(limit !== undefined ? { limit } : {}) };
-      expect(shown(await db.rangeJoin(range, (e) => e.value))).toEqual([...forward].reverse().slice(0, limit));
+      expect(shown(await join(range))).toEqual([...forward].reverse().slice(0, limit));
     }
     await db.close();
   });

@@ -232,8 +232,8 @@ skips a run unread when one mark holds all its keys within the scan's bounds, wi
 or past the run's `marksThrough`.
 
 A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the read
-point. Writes that commit during the callback are invisible to it. `rangeJoin` scans a range
-and point-reads one key per entry under one such pin.
+point. Writes that commit during the callback are invisible to it. `snap.rangeJoin` scans a
+range and point-reads one key per entry under that pin.
 
 ## Range deletes
 

@@ -7,7 +7,6 @@ import {
   newWriterId,
   opsBytes,
   type BatchOp,
-  type CheckedKey,
   type CheckedOp,
   type DbName,
   type WriterId,
@@ -26,7 +25,7 @@ import { layersChannel, pressureLock, webLocks } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
-import { allMissed, Miss, ReadSet, untilHit, type Maybe } from "./store/cursor.js";
+import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
 import { openBrowserFs } from "./opfs/browser-fs.js";
@@ -35,7 +34,7 @@ import {
   type RunMeta,
 } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
-import { pointGet, runLevels, type RunLevel } from "./store/read.js";
+import { pointGet, readKeys, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
@@ -242,17 +241,6 @@ export interface Db {
     keys: readonly Uint8Array[],
     body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T>;
-  /**
-   * Scan `range` and join each entry to the value at `keyOf(entry)`, as an
-   * index entry joins its row. `joined` is undefined when `keyOf` returns no
-   * key or the key has no value. The scan and the reads use one pinned memtable and one held
-   * generation, so they see the same state although a page load can make them
-   * wait. Writes that land meanwhile are not seen.
-   */
-  rangeJoin(
-    range: Range,
-    keyOf: (entry: Entry) => Uint8Array | undefined,
-  ): Promise<{ readonly entry: Entry; readonly joined: Uint8Array | undefined }[]>;
   range(range?: Range): AsyncIterable<Entry>;
   /** How many entries `range` would yield, `limit` included, without copying them. */
   count(range?: Range): Promise<number>;
@@ -1025,22 +1013,6 @@ class DbImpl implements Db {
     return at;
   }
 
-  /** Every key read, or one Miss for all the bytes they lack. */
-  private readKeys(
-    ks: readonly CheckedKey[],
-    levels: readonly RunLevel[],
-    at: Marks,
-  ): Maybe<(Uint8Array | undefined)[]> {
-    const values: (Uint8Array | undefined)[] = [];
-    let misses: Miss[] | undefined;
-    for (const k of ks) {
-      const v = pointGet(this.mem.get(k), levels, k, at);
-      if (v instanceof Miss) (misses ??= []).push(v);
-      else values.push(v);
-    }
-    return misses ? allMissed(misses) : values;
-  }
-
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
     this.ensureOpen();
     const k = checkKey(key);
@@ -1077,7 +1049,7 @@ class DbImpl implements Db {
     // One set for the warm reads and the read inside the transaction, which cannot wait for a load.
     const held = new ReadSet();
     const out = await this.write(() => {
-      const values = held.attempt(() => this.readKeys(ks, this.installed.levels, this.point()));
+      const values = held.attempt(() => readKeys(this.mem, ks, this.installed.levels, this.point()));
       if (values instanceof Miss) return held.keep(values);
       let result!: T;
       const ops = collectBatch((tx) => {
@@ -1087,38 +1059,9 @@ class DbImpl implements Db {
       return { ops, result };
     }, () => {
       const at = this.point();
-      return this.settleInstalled((levels) => this.readKeys(ks, levels, at), held);
+      return this.settleInstalled((levels) => readKeys(this.mem, ks, levels, at), held);
     });
     return out.result;
-  }
-
-  async rangeJoin(
-    range: Range,
-    keyOf: (entry: Entry) => Uint8Array | undefined,
-  ): Promise<{ readonly entry: Entry; readonly joined: Uint8Array | undefined }[]> {
-    this.ensureOpen();
-    const bounds = boundsOf(range);
-    const rows = this.mem.pin();
-    const layers = this.installed;
-    const at = this.point();
-    this.retain(layers);
-    try {
-      const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
-      for await (const entry of scanLayers(rows.range(bounds), layers.levels, at, bounds, range)) {
-        const key = keyOf(entry);
-        let joined: Uint8Array | undefined;
-        if (key !== undefined) {
-          const k = checkKey(key);
-          const row = rows.get(k);
-          const got = pointGet(row, layers.levels, k, at);
-          joined = got instanceof Miss ? await untilHit(() => pointGet(row, layers.levels, k, at), got) : got;
-        }
-        out.push({ entry, joined });
-      }
-      return out;
-    } finally {
-      this.release(layers);
-    }
   }
 
   async count(range?: Range): Promise<number> {

@@ -114,7 +114,14 @@ export function wrapViews(kv: Db, over: (snap: ViewSnapshot) => Partial<ViewSnap
   return wrap(kv, {
     view: <T>(body: (snap: ViewSnapshot) => Promise<T> | T) =>
       kv.view((snap) =>
-        body({ seq: snap.seq, get: (k) => snap.get(k), range: (r) => snap.range(r), count: (r) => snap.count(r), ...over(snap) }),
+        body({
+          seq: snap.seq,
+          get: (k) => snap.get(k),
+          range: (r) => snap.range(r),
+          count: (r) => snap.count(r),
+          rangeJoin: (r, keyOf) => snap.rangeJoin(r, keyOf),
+          ...over(snap),
+        }),
       ),
   });
 }

@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import type { MemRow } from "./memtable.js";
+import type { MemRow, MemRows } from "./memtable.js";
 import {
   allMissed,
   entryCursor,
@@ -113,6 +113,23 @@ export function pointGet(
   if (hit instanceof Miss) return hit;
   if (!hit || gone(hit, throughAt(marks, key))) return undefined;
   return hit.kind === "put" ? new Uint8Array(hit.value) : undefined;
+}
+
+/** Every key read, or one Miss for all the bytes they lack. */
+export function readKeys(
+  rows: Pick<MemRows, "get">,
+  keys: readonly Uint8Array[],
+  levels: readonly RunLevel[],
+  at: Marks,
+): Maybe<(Uint8Array | undefined)[]> {
+  const values: (Uint8Array | undefined)[] = [];
+  let misses: Miss[] | undefined;
+  for (const k of keys) {
+    const v = pointGet(rows.get(k), levels, k, at);
+    if (v instanceof Miss) (misses ??= []).push(v);
+    else values.push(v);
+  }
+  return misses ? allMissed(misses) : values;
 }
 
 /**

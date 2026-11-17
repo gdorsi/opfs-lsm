@@ -5,7 +5,7 @@ import { decodeDoc, diffEntries, encodeDoc, entriesOf, type EncodedDoc, type Sto
 import { DocStoreError } from "./errors.js";
 import { CATALOG_KEY, bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
 import type { IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
-import { CollectionReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
+import { PointReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
 
 export interface Collection<T extends JsonDoc, Ix> {
@@ -267,8 +267,8 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
   ) {}
 
   /** Point reads need no snapshot: a read that straddles a `clear` or a schema change is a read before it. */
-  private async live(): Promise<Pick<CollectionReader<T, Ix>, "get" | "getMany">> {
-    return new CollectionReader(this.store.kv, await this.store.collectionNow(this.name));
+  private async live(): Promise<PointReader<T>> {
+    return new PointReader(this.store.kv, await this.store.collectionNow(this.name));
   }
 
   async get(id: string): Promise<T | undefined> {
