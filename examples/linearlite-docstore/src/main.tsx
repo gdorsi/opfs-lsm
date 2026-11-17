@@ -136,7 +136,8 @@ async function main() {
 
 /**
  * The databases earlier builds stored their issues in: the TanStack DB demo's, the unversioned one, and every lower
- * `DATA_VERSION`. Removed in the background, so a visitor of an earlier build gets the space back.
+ * `DATA_VERSION`. Removed in the background, so a visitor of an earlier build gets the space back. `destroyDb` on a
+ * name with nothing stored creates nothing, so it runs on every load.
  */
 const RETIRED = [
   "opfs-lsm-home",
@@ -145,15 +146,7 @@ const RETIRED = [
 ].filter((name) => name !== NAME);
 
 async function dropRetired(): Promise<void> {
-  const lsm = await navigator.storage
-    .getDirectory()
-    .then((root) => root.getDirectoryHandle("opfs-lsm"))
-    .catch(() => undefined);
-  if (!lsm) return;
-  for (const name of RETIRED) {
-    const stored = await lsm.getDirectoryHandle(name).then(() => true, () => false);
-    if (stored) await destroyDb(name).catch(() => undefined);
-  }
+  for (const name of RETIRED) await destroyDb(name).catch(() => undefined);
 }
 
 main().catch(failed);
