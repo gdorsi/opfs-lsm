@@ -132,6 +132,8 @@ Every run record carries peaks sampled every 100 ms over CDP: `Runtime.getHeapUs
 
 `node bench/probes/live-set.ts [workload] [--compaction-memory-bytes N]` measures what is alive in the SharedWorker while a workload runs. A second DevTools session takes a heap snapshot every 500 ms (V8 collects garbage before it writes one) and the probe prints the wasm memory and everything else per snapshot. Each snapshot pauses the worker, so the run's timings mean nothing.
 
+`node bench/probes/idb-deleted-tail.ts [rows] [kept]` builds the states kv's IndexedDB WAL store is in and times finding its head from a fresh tab. A flush deletes the records the previous flush folded and keeps its own. In Chrome 157, right after a flush that deleted 24,700 records, a reverse cursor takes about 35 ms to find the head and a forward lookup from `ingestedThrough` about 5 ms, which is why kv looks forward first. With new records above `ingestedThrough`, both take about 21 ms.
+
 `node bench/probes/cpu-profile.ts <workload> <phase> [--contender kv/kv]` records a V8 CPU profile of one phase, in the tab and in the SharedWorker, and prints self time per function. The build is not minified, so the names are the source's. It writes each `.cpuprofile` to `bench/results/` for DevTools. Profiling slows the run, so compare the shares between functions, not the wall time.
 
 ## Main thread
