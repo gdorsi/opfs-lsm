@@ -188,7 +188,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   }
 
   collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection {
-    return collectionOf(this.adopt(bytes), name);
+    return collectionOf(this.boundIn(bytes), name);
   }
 
   async write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R> {
@@ -224,10 +224,15 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     });
   }
 
-  private adopt(bytes: Uint8Array | undefined): Bound {
+  /** The catalog `bytes` bound, or `bound` itself when it is the same catalog. Leaves `bound` alone. */
+  private boundIn(bytes: Uint8Array | undefined): Bound {
     if (!bytes) throw new CorruptDatabaseError("the docstore catalog is gone");
-    if (!bytesEqual(bytes, this.bound.bytes)) this.bound = bind(bytes, parseCatalog(bytes), this.declared);
-    return this.bound;
+    return bytesEqual(bytes, this.bound.bytes) ? this.bound : bind(bytes, parseCatalog(bytes), this.declared);
+  }
+
+  /** Make `bytes` the catalog of point reads. Only a read of the newest catalog may call it: a snapshot's catalog can be older. */
+  private adopt(bytes: Uint8Array | undefined): Bound {
+    return (this.bound = this.boundIn(bytes));
   }
 
   startJobs(): void {
