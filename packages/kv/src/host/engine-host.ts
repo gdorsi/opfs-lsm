@@ -146,19 +146,19 @@ export class EngineHost {
  * only to install the merged run.
  */
 class HostedDb {
-  private fsReady: Promise<CountingFs> | undefined;
+  private fsReady: Promise<CountingFs> | undefined = undefined;
   private readonly counts: HostCounts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
   private readonly publishTurn = serial();
   private readonly foldTurn = serial();
   /** Settles at the next compaction install, for a flush that waits on a full L0. */
   private nextInstall: { readonly settled: Promise<void>; readonly resolve: () => void } | undefined;
-  private watching: IngestWatch | undefined;
+  private watching: IngestWatch | undefined = undefined;
   /**
    * The generation this host last published or found intact, so `reconcile`
    * checks a recorded manifest's runs once, not on every flush. A tab that
    * records another generation makes the host check again.
    */
-  private trusted: Trusted;
+  private trusted: Trusted = undefined;
   /** Set while `destroy` waits for the locks, so a compaction pass stops at its next step. */
   private destroying = false;
   /**

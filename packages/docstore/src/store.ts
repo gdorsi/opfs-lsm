@@ -116,7 +116,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
    * open, for a write between open's read and the subscription.
    */
   private stale = true;
-  private rereading: Promise<void> | undefined;
+  private rereading: Promise<void> | undefined = undefined;
   /** Catalog writes the feed delivered, so a reread that one overtook is dropped. */
   private catalogWrites = 0;
 

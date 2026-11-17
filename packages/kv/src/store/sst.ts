@@ -86,7 +86,7 @@ export class RecordWalker {
   keyLen = 0;
   valAt = 0;
   valLen = 0;
-  private prefix: Uint8Array | undefined;
+  private prefix: Uint8Array | undefined = undefined;
 
   constructor(
     readonly buf: Uint8Array,

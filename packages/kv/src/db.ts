@@ -548,7 +548,7 @@ class DbImpl implements Db {
     refs: 1,
   };
   /** The newest generation loaded and not yet installed. */
-  private loaded: Layers | undefined;
+  private loaded: Layers | undefined = undefined;
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
   private readonly catchUpToWal = coalesced(() => this.syncOnce());
@@ -565,7 +565,7 @@ class DbImpl implements Db {
   /** `performance.now()` of the last post. */
   private postedAt = Number.NEGATIVE_INFINITY;
   /** Posts the rows that no later landing posted. */
-  private postTimer: ReturnType<typeof setTimeout> | undefined;
+  private postTimer: ReturnType<typeof setTimeout> | undefined = undefined;
   /** Posts the rows that wait when the page is hidden, before the browser slows the timer. */
   private readonly onVisibility = () => this.postRows();
   private readonly pressure: Backpressure;
