@@ -2,8 +2,8 @@ import { CorruptDatabaseError, type Entry, type Range, type ViewSnapshot } from 
 import { readableTarget, type BoundCollection } from "./catalog.js";
 import { decodeDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { concat, encodeCursor, entryId, idBytes, idOf, parseId, scanPlan } from "./keys.js";
-import type { Cursor, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
+import { concat, decodeEntries, encodeCursor, entryId, idBytes, idOf, parseId, scanPlan } from "./keys.js";
+import type { Cursor, EntryPage, EntryValues, IdPage, IndexEntry, JsonDoc, Page, Query, QueryInput } from "./schema.js";
 
 /** Reads of one collection from one kv snapshot. */
 export interface CollectionSnapshot<T extends JsonDoc, Ix> {
@@ -20,6 +20,10 @@ export interface CollectionSnapshot<T extends JsonDoc, Ix> {
   query(q: Query<T, Ix>): Promise<Page<T>>;
   /** As `query`, without reading the documents. */
   queryIds(q: Query<T, Ix>): Promise<IdPage>;
+  /** See `Collection.queryEntries`. */
+  queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
+    q: Query<T, Ix> & { readonly index?: I | undefined },
+  ): Promise<EntryPage<EntryValues<T, Ix, I>>>;
   /** How many entries `query` would walk, stopping at `limit` if given. */
   count(q: Query<T, Ix>): Promise<number>;
 }
@@ -109,6 +113,16 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
     const page = await collect(this.snap.range(range));
     const next = trimPage(page, (h) => h.key, limit);
     return { ids: page.map((h) => idOf(entryId(target, h.key, h.value))), ...next };
+  }
+
+  async queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
+    q: Query<T, Ix> & { readonly index?: I | undefined },
+  ): Promise<EntryPage<EntryValues<T, Ix, I>>> {
+    const { target, range, limit } = this.plan(q, 1);
+    const page = await collect(this.snap.range(range));
+    const next = trimPage(page, (h) => h.key, limit);
+    const entries = decodeEntries(target, page, (q as QueryInput).eq?.length ?? 0);
+    return { entries: entries as IndexEntry<EntryValues<T, Ix, I>>[], ...next };
   }
 
   count(q: Query<T, Ix>): Promise<number> {

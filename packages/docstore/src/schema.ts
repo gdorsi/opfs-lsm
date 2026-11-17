@@ -232,6 +232,11 @@ export type Query<T, Ix> =
 export type Page<T> = { readonly docs: T[]; readonly next?: Cursor };
 export type IdPage = { readonly ids: string[]; readonly next?: Cursor };
 
+/** One index entry: its document's id and the values the index orders it by, in `by` order. A row's one value is its id. */
+export type IndexEntry<V = Scalar[]> = { readonly id: string; readonly values: V };
+export type EntryPage<V = Scalar[]> = { readonly entries: IndexEntry<V>[]; readonly next?: Cursor };
+export type EntryValues<T, Ix, I> = I extends keyof Ix ? ValuesOf<T, Ix[I]> : [id: string];
+
 export type QueryInput = {
   readonly index?: string | undefined;
   readonly eq?: readonly Scalar[] | undefined;

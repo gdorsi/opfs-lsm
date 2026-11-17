@@ -65,6 +65,27 @@ describe("query matches a brute-force filter and sort", () => {
   });
 });
 
+describe("queryEntries", () => {
+  it("gives each entry the values of by, in by order, the ones eq fixed included", async () => {
+    const { c } = await docs();
+    await c.putMany([
+      { id: "x", a: "p", b: 2, tags: ["t", "u"], u: 9 },
+      { id: "y", a: "p", b: 1, tags: ["t"] },
+      { id: "z", a: "q", b: 0 },
+    ]);
+    expect((await c.queryEntries({ index: "two", eq: ["p"] })).entries).toEqual([
+      { id: "y", values: ["p", 1] },
+      { id: "x", values: ["p", 2] },
+    ]);
+    expect((await c.queryEntries({ index: "tags", eq: ["t"], reverse: true })).entries).toEqual([
+      { id: "x", values: ["t", 2] },
+      { id: "y", values: ["t", 1] },
+    ]);
+    expect((await c.queryEntries({ index: "uniq" })).entries).toEqual([{ id: "x", values: [9] }]);
+    expect((await c.queryEntries({ index: "two", eq: ["r"] })).entries).toEqual([]);
+  });
+});
+
 describe("order", () => {
   it("sorts string values by UTF-8 bytes, a U+0000 continuation after the string that stops there", async () => {
     const { c } = await docs();

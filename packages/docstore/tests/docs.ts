@@ -109,7 +109,7 @@ export const queryArb: fc.Arbitrary<{ index: string | undefined; q: QueryInput }
   });
 
 export async function checkQuery(
-  c: Pick<Docs, "query" | "queryIds" | "count">,
+  c: Pick<Docs, "query" | "queryIds" | "queryEntries" | "count">,
   docs: readonly Doc[],
   index: string | undefined,
   q: QueryInput,
@@ -118,6 +118,7 @@ export async function checkQuery(
   const want = expected(docs, index === undefined ? undefined : MODEL[index], q);
   const query = asQuery(q);
   expect((await c.queryIds(query)).ids).toEqual(want.map((h) => h.id));
+  expect((await c.queryEntries(query)).entries).toEqual(want.map(({ id, values }) => ({ id, values })));
   expect((await c.query(query)).docs).toEqual(want.map((h) => h.doc));
   expect(await c.count(query)).toBe(want.length);
   expect(await c.count(asQuery({ ...q, limit: pageSize }))).toBe(Math.min(pageSize, want.length));
@@ -125,7 +126,13 @@ export async function checkQuery(
   const paged: string[] = [];
   let pages = 0;
   for (let after: Cursor | undefined; ; ) {
-    const page = await c.query(asQuery({ ...q, limit: pageSize, ...(after ? { after } : {}) }));
+    const pageQuery = asQuery({ ...q, limit: pageSize, ...(after ? { after } : {}) });
+    const page = await c.query(pageQuery);
+    const entryPage = await c.queryEntries(pageQuery);
+    const idPage = await c.queryIds(pageQuery);
+    expect(entryPage.next).toBe(page.next);
+    expect(entryPage.entries.map((e) => e.id)).toEqual(idPage.ids);
+    expect(entryPage.next).toBe(idPage.next);
     pages++;
     paged.push(...page.docs.map((d) => d.id));
     if (page.next === undefined) break;
