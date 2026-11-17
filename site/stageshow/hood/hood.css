@@ -1,5 +1,6 @@
 /* Two tabs of LinearLite above a cut line, the engine under it. One 32px gutter wide, 16px narrow. Wide, the
-   windows are cut by the line. The cards in the hood run off the bottom. */
+   windows are cut by the line. The cards in the hood run off the bottom. The scene sits in .hd-scene, which dims when
+   the power goes out; the "Power lost" mark is outside it, so it does not dim. */
 
 .hood {
   & .ss-stage {
@@ -48,6 +49,7 @@
   .hd-win {
     position: absolute;
     height: 700px;
+    will-change: transform;
   }
 
   .hd-win--1 {
@@ -64,6 +66,7 @@
     box-shadow: var(--ss-shadow-satellite);
   }
 
+  /* Where the cursor rests between presses: empty surface in tab 1's toolbar, near its next move. */
   .hd-rest {
     position: absolute;
     left: 332px;
@@ -186,7 +189,19 @@
     color: var(--ll-muted);
   }
 
-  /* Todo to Done as one mark: the ring fills into the disc, then the tick draws. */
+  /* Todo to In Progress or Done as one mark: the half fills in sideways, or the ring fills into the disc and the
+     tick draws. */
+  .hd-morph__half {
+    transform-box: fill-box;
+    transform-origin: left center;
+    transform: scaleX(0);
+    transition: transform 0.28s cubic-bezier(0.25, 0.8, 0.25, 1);
+  }
+
+  .hd-morph[data-st="2"] .hd-morph__half {
+    transform: scaleX(1);
+  }
+
   .hd-morph__disc {
     transform-box: fill-box;
     transform-origin: center;
@@ -208,7 +223,7 @@
     stroke-dashoffset: 0;
   }
 
-  /* The status menu, as LinearLite draws it, under the status it changes. */
+  /* The status menu, as LinearLite draws it, under the status it changes: the first issue's, then the second's. */
   .hd-menu {
     margin-top: 10px;
     width: 180px;
@@ -235,6 +250,92 @@
   .hd-tick {
     margin-left: auto;
     color: var(--ll-accent);
+  }
+
+  /* Tab 2's older issue is first a placeholder row, then the real one: the bars fade as the words come in. */
+  .hd-swap {
+    position: relative;
+    height: 40px;
+    border-bottom: 1px solid var(--ll-line);
+  }
+
+  .hd-swap > div {
+    position: absolute;
+    inset: 0;
+  }
+
+  .hd-swap .hd-row {
+    border-bottom: 0;
+  }
+
+  .hd-swap__ph {
+    transition: opacity 0.3s ease 0.1s;
+  }
+
+  .hd-swap__real {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .hd-swap[data-ready] .hd-swap__ph {
+    opacity: 0;
+  }
+
+  .hd-swap[data-ready] .hd-swap__real {
+    opacity: 1;
+    transition: opacity 0.45s ease 0.15s;
+  }
+
+  /* The power goes out: the windows and the hood dim. The mark that says why stays lit. */
+  .hd-scene {
+    position: absolute;
+    inset: 0;
+    transition: filter 0.7s ease;
+  }
+
+  .hd-scene[data-off] {
+    filter: brightness(0.4) saturate(0.55);
+  }
+
+  /* The ground goes dark with what stands on it. */
+  & .ss-stage {
+    transition: background-color 0.7s ease;
+  }
+
+  & .ss-stage:has(.hd-scene[data-off]) {
+    background: color-mix(in srgb, var(--ss-well) 40%, #000);
+  }
+
+  .hd-power {
+    position: absolute;
+    left: 576px;
+    top: 352px;
+    z-index: 40;
+    translate: -50% -50%;
+    opacity: 0;
+    scale: 0.94;
+    transition: opacity 0.5s ease, scale 0.5s cubic-bezier(0.25, 0.8, 0.25, 1);
+    will-change: transform, scale, opacity;
+    pointer-events: none;
+  }
+
+  .hd-power[data-on] {
+    opacity: 1;
+    scale: 1;
+    transition-delay: 0.25s;
+  }
+
+  .hd-power .ss-badge {
+    justify-content: center;
+    gap: 8px;
+    width: 112px;
+    height: 34px;
+    padding: 0;
+    background: var(--ss-danger);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.5);
   }
 
   /* Under the cut: the hood. */
@@ -336,13 +437,114 @@
     transition-delay: 0.35s;
   }
 
+  /* Record 44 after the reopen: struck through, and its badge says why. */
+  .hd-mono {
+    background: linear-gradient(currentColor, currentColor) no-repeat 0 58% / 0 1px;
+    transition: background-size 0.45s ease 0.2s, color 0.3s ease 0.2s;
+  }
+
+  .hd-rec[data-lost] .hd-mono {
+    background-size: 100% 1px;
+    color: var(--ss-text-faint);
+  }
+
+  .hd-rec[data-lost] .hd-seq {
+    color: var(--ss-text-faint);
+  }
+
+  /* A compacted file is many 32 KB pages. Tab 2 reads one: it lights, then keeps a ring where it was copied from. */
+  .hd-pages {
+    display: flex;
+    gap: 3px;
+    margin-left: auto;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+  }
+
+  .hd-pages[data-in] {
+    opacity: 1;
+  }
+
+  .hd-cell {
+    width: 11px;
+    height: 18px;
+    border-radius: 3px;
+    background: var(--ss-ink-2);
+    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  .hd-cell[data-state="lit"] {
+    background: var(--ss-accent);
+  }
+
+  .hd-cell[data-state="taken"] {
+    background: var(--ss-accent-soft);
+    box-shadow: inset 0 0 0 1.5px var(--ss-accent);
+  }
+
+  .hd-flyer {
+    display: block;
+    border-radius: 3px;
+    background: var(--ss-accent);
+  }
+
+  /* The copy buds off the lit page (held) and, once it has flown, fades out over the meter's head as the meter fills (the flight's 760ms, set in index.tsx). */
+  .hd-fly[data-go] {
+    animation: hd-fly 760ms linear both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hd-fly[data-go] { animation: none; }
+  }
+
+  /* Tab 2's page cache, hung under the tab in the gap at the cut: what it holds, against its cap. */
+  .hd-cache {
+    position: absolute;
+    right: 32px;
+    top: 360px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 14px;
+    background: var(--ss-surface);
+    box-shadow: var(--ss-shadow-ground);
+    font-size: 11.5px;
+    white-space: nowrap;
+    opacity: 0;
+    transform: translateY(-4px);
+    transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+    will-change: transform;
+  }
+
+  .hd-cache[data-in] {
+    opacity: 1;
+    transform: none;
+  }
+
+  .hd-cache__name {
+    color: var(--ss-text);
+  }
+
+  .hd-cache__bar {
+    flex: none;
+    width: 72px;
+  }
+
+  .hd-cache__text {
+    font-variant-numeric: tabular-nums;
+  }
+
   .hd-node-slot {
     display: flex;
     justify-content: center;
     padding-top: 54px;
   }
 
+  /* The note holds the larger of its two texts, so the card keeps its size as the note changes. */
   .hd-node {
+    will-change: transform;
     display: grid;
     justify-items: center;
     gap: 1px;
@@ -364,19 +566,21 @@
     line-height: 14px;
   }
 
+  /* Narrow, no window covers another: tab 1 runs across the top, tab 2 sits under its right side, and both run off the
+     right edge. Tab 2 runs on under the band, which cuts it. */
   & .ss-stage[data-layout="compact"] {
     .hd-win--1 {
       left: 16px;
       top: 16px;
       width: 380px;
-      height: 116px;
+      height: 154px;
     }
 
     .hd-win--2 {
       left: 100px;
-      top: 184px;
+      top: 222px;
       width: 292px;
-      height: 200px;
+      height: 230px;
     }
 
     .hd-rest {
@@ -412,13 +616,35 @@
       font-size: 13px;
     }
 
+    .hd-swap {
+      height: 38px;
+    }
+
     .hd-band {
-      top: 312px;
+      top: 426px;
       width: 358px;
     }
 
+    /* In the log card's empty lower half, under the record it follows: there is no free place on the cut. */
+    .hd-power {
+      left: 179px;
+      top: 598px;
+    }
+
+    .hd-cache {
+      right: 12px;
+      top: 434px;
+      gap: 6px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+
+    .hd-cache__bar {
+      width: 48px;
+    }
+
     .hd-hood {
-      top: 336px;
+      top: 470px;
       left: 16px;
       width: 326px;
       display: flex;
@@ -505,4 +731,10 @@
       font-size: 12px;
     }
   }
+}
+
+/* Outside .hood: a keyframes rule can't be nested in a style rule. */
+@keyframes hd-fly {
+  0%, 68% { opacity: 1; }
+  100% { opacity: 0; }
 }
