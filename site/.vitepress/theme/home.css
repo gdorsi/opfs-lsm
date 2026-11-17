@@ -1,10 +1,5 @@
 /* The home page: the hero with the live demo, then sections with their illustrations. */
 
-/* A section's few lines of copy, kept to a readable measure above a figure as wide as the page. */
-.vp-doc .home-lede {
-  max-width: 760px;
-}
-
 /* Sections are set apart by space alone, without the line VitePress draws above each h2. */
 .VPHome .vp-doc h2 {
   border-top: 0;
