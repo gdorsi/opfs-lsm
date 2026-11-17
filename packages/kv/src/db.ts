@@ -216,6 +216,19 @@ export interface BatchTx {
   deleteRange(bounds: KeyBounds, options?: DeleteRangeOptions): void;
 }
 
+/** What `update`'s body writes with, and reads the keys it finds while it runs through. */
+export interface UpdateTx extends BatchTx {
+  /**
+   * The values of `keys`, in their order, read at the same point as
+   * `update`'s own keys: before this body's ops. Synchronous. When a key's
+   * bytes are not loaded, kv drops this run of the body, even if the body
+   * catches what `read` throws, loads every missing key at once and runs the
+   * body again. So a body that calls `read` may run more than once: keep its
+   * effects to `tx` and its result.
+   */
+  read(keys: readonly Uint8Array[]): (Uint8Array | undefined)[];
+}
+
 export interface Db {
   /** The name passed to `openDb`. */
   readonly name: string;
@@ -237,10 +250,11 @@ export interface Db {
    * Read `keys` and write, in one IndexedDB transaction. `body` runs
    * synchronously with the current values, in the order of `keys`. No other
    * write can land between the reads and the commit, so there is no conflict.
+   * Keys that only the values name are read with `tx.read`.
    */
   update<T>(
     keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
   ): Promise<T>;
   /**
    * Scan `range` and join each entry to the value at `keyOf(entry)`, as an
@@ -461,7 +475,8 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
 }
 
 function collectBatch(
-  build: (tx: BatchTx) => unknown,
+  build: (tx: UpdateTx) => unknown,
+  read: UpdateTx["read"] = readOutsideUpdate,
 ): readonly CheckedOp[] {
   const ops: BatchOp[] = [];
   const ret = build({
@@ -474,6 +489,7 @@ function collectBatch(
     deleteRange: (bounds, options) => {
       ops.push({ type: "deleteRange", start: bounds.start, endExclusive: bounds.endExclusive, through: options?.through });
     },
+    read,
   });
   if (
     ret !== undefined &&
@@ -484,6 +500,13 @@ function collectBatch(
   }
   return checkBatch(ops);
 }
+
+function readOutsideUpdate(): never {
+  throw new ConstraintError("tx.read works only inside update");
+}
+
+/** Thrown by `tx.read` on a miss. `update` drops the attempt whether or not the body lets it through. */
+const READ_MISSED = new Error("tx.read is loading; update runs the body again");
 
 /** An open run file and the number of `Layers` that list it. */
 type Run = {
@@ -1066,20 +1089,37 @@ class DbImpl implements Db {
 
   async update<T>(
     keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
     // One set for the warm reads and the read inside the transaction, which cannot wait for a load.
     const held = new ReadSet();
     const out = await this.write(() => {
-      const values = held.attempt(() => this.readKeys(ks, this.installed.levels, this.point()));
+      const levels = this.installed.levels;
+      const at = this.point();
+      const values = held.attempt(() => this.readKeys(ks, levels, at));
       if (values instanceof Miss) return held.keep(values);
+      let missed: Miss | undefined;
+      const read = (more: readonly Uint8Array[]) => {
+        if (!missed) {
+          const got = held.attempt(() => this.readKeys(more.map(checkKey), levels, at));
+          if (!(got instanceof Miss)) return got;
+          missed = got;
+        }
+        throw READ_MISSED;
+      };
       let result!: T;
-      const ops = collectBatch((tx) => {
-        result = body(values, tx);
-        return result;
-      });
+      let ops: readonly CheckedOp[] = [];
+      try {
+        ops = collectBatch((tx) => {
+          result = body(values, tx);
+          return result;
+        }, read);
+      } catch (err) {
+        if (!missed) throw err;
+      }
+      if (missed) return held.keep(missed);
       return { ops, result };
     }, () => {
       const at = this.point();
