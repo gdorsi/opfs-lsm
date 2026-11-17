@@ -1,6 +1,7 @@
 import type { Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
 import { defineSchema, openDocStore, type DocStore } from "../src/index.js";
+import { encodeCatalog, type StoredCatalog } from "../src/catalog.js";
 import { CATALOG_KEY } from "../src/keys.js";
 import type { AnySchema, Json } from "../src/schema.js";
 import {
@@ -93,7 +94,7 @@ describe("opening a schema", () => {
 
   it("refuses a stored catalog of another format", async () => {
     const kv = await kvOn(freshName());
-    await kv.put(CATALOG_KEY, new TextEncoder().encode(JSON.stringify({ format: 2 })));
+    await kv.put(CATALOG_KEY, encodeCatalog({ format: 2 } as unknown as StoredCatalog));
     expect(await codeOf(openDocStore(kv, v1))).toBe("schema");
   });
 

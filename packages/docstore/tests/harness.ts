@@ -1,7 +1,7 @@
 import { prefixBound, type BatchTx, type Db, type Entry, type ViewSnapshot } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
-import type { StoredCatalog } from "../src/catalog.js";
-import { CATALOG_KEY, ROOT, collectionPrefix, indexPrefix, type CollectionId, type IndexId } from "../src/keys.js";
+import { parseCatalog, type StoredCatalog } from "../src/catalog.js";
+import { CATALOG_KEY, ROOT, bytesEqual, collectionPrefix, indexPrefix, type CollectionId, type IndexId } from "../src/keys.js";
 
 let dbs = 0;
 
@@ -26,9 +26,12 @@ export async function openKvWithoutBus(name: string): Promise<Db> {
   }
 }
 
+/** Every docstore entry. The catalog's revision differs per write, so its value is the catalog's JSON. */
 export async function docstoreKeys(kv: Db): Promise<Entry[]> {
   const out: Entry[] = [];
-  for await (const e of kv.range({ start: Uint8Array.of(ROOT), endExclusive: Uint8Array.of(ROOT + 1) })) out.push(e);
+  for await (const e of kv.range({ start: Uint8Array.of(ROOT), endExclusive: Uint8Array.of(ROOT + 1) })) {
+    out.push(bytesEqual(e.key, CATALOG_KEY) ? { key: e.key, value: new TextEncoder().encode(JSON.stringify(parseCatalog(e.value))) } : e);
+  }
   return out;
 }
 
@@ -39,7 +42,7 @@ export async function keysUnder(kv: Db, prefix: Uint8Array): Promise<number> {
 }
 
 export async function storedCatalog(kv: Db): Promise<StoredCatalog> {
-  return JSON.parse(new TextDecoder().decode(await kv.get(CATALOG_KEY))) as StoredCatalog;
+  return parseCatalog((await kv.get(CATALOG_KEY))!);
 }
 
 export async function storedPrefix(kv: Db, collection: string, index?: string): Promise<Uint8Array> {
