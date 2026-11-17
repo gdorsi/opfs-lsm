@@ -1,4 +1,4 @@
-import type { Block, Depth, MarkName, Marks, TextEdit } from "../model/types.ts";
+import type { Block, Depth, MarkName, Marks, PageId, TextEdit } from "../model/types.ts";
 import type { ReferenceBody } from "./reference.ts";
 
 /** mulberry32: a small seeded generator, so a failing seed replays exactly. */
@@ -15,6 +15,7 @@ export function random(seed: number): () => number {
 const TEXTS = ["a", "b", "xy", " ", "é", "hello"];
 const LINKS = ["https://a.example", "https://b.example"];
 const NAMES: readonly MarkName[] = ["bold", "italic", "code", "link"];
+const PAGES = ["3QoMNR5KKpnaE7JpywzzxJDTw8Xn", "X4wkkmmjJrWMoCGKjrCwHcU9Db5"] as PageId[];
 
 /**
  * A batch of 1 to 3 random edits, each valid against the body the edits
@@ -31,6 +32,7 @@ export function randomBatch(rand: () => number, body: ReferenceBody): TextEdit[]
       () => ({ type: "heading", level: int(1, 3) as 1 | 2 | 3 }),
       () => ({ type: "item", list: pick(["bullet", "number"] as const), depth: depth() }),
       () => ({ type: "todo", depth: depth(), checked: rand() < 0.5 }),
+      () => ({ type: "page", id: pick(PAGES) }),
     ])();
   const marks = (): Marks => ({
     ...(rand() < 0.25 && { bold: true }),

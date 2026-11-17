@@ -4,6 +4,7 @@
  * proxy, and patches translate in O(patches). Only `toSpans` is O(doc).
  */
 import * as A from "@automerge/automerge";
+import { isValidDocumentId } from "@automerge/automerge-repo";
 import { PagesError } from "./errors.ts";
 import type { Block, Depth, MarkEdit, MarkName, Marks, Span, TextEdit } from "./types.ts";
 
@@ -34,6 +35,9 @@ function parseBlock(raw: { [key: string]: A.MaterializeValue } | null): Block {
       break;
     case "todo":
       return { type: "todo", depth, checked: attrs.checked === true };
+    case "page":
+      if (isValidDocumentId(attrs.id)) return { type: "page", id: attrs.id };
+      break;
   }
   return { type: "paragraph" };
 }

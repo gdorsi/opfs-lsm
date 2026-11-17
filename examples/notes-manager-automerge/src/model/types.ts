@@ -11,7 +11,9 @@ export type Block =
   | { readonly type: "paragraph" }
   | { readonly type: "heading"; readonly level: 1 | 2 | 3 }
   | { readonly type: "item"; readonly list: "bullet" | "number"; readonly depth: Depth }
-  | { readonly type: "todo"; readonly depth: Depth; readonly checked: boolean };
+  | { readonly type: "todo"; readonly depth: Depth; readonly checked: boolean }
+  /** A sub-page, shown in its parent's body. The list doc says whether the page exists; this block only places it. */
+  | { readonly type: "page"; readonly id: PageId };
 
 /** The marks a run of text carries. A link's value is its URL. */
 export type Marks = {
