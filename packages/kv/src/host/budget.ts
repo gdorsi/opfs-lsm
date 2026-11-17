@@ -6,7 +6,7 @@ const MiB = 1024 * KiB;
 /** What `openDb` assumes when the app sets no `compactionMemoryBytes`. */
 export const DEFAULT_COMPACTION_MEMORY_BYTES = 32 * MiB;
 
-/** The app's `compactionMemoryBytes`, or the default unless it is positive. `openDb` and the host's port both read it through here. */
+/** The app's `compactionMemoryBytes`, or the default unless it is positive. The tab normalizes it once, before it tells the host. */
 export function compactionMemoryOf(asked: number | undefined): number {
   return asked !== undefined && asked > 0 ? asked : DEFAULT_COMPACTION_MEMORY_BYTES;
 }

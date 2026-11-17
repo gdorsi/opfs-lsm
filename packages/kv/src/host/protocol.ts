@@ -116,8 +116,7 @@ export type ClientToHost =
       readonly type: "watch";
       readonly name: string;
       readonly maxWalBytes: number;
-      /** Absent from a tab of a build before the option existed. */
-      readonly compactionMemoryBytes?: number;
+      readonly compactionMemoryBytes: number;
       readonly maxBytes?: number | "quota" | undefined;
     }
   | { readonly type: "unwatch"; readonly name: string }
