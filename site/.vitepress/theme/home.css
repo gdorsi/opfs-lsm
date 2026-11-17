@@ -1224,6 +1224,7 @@
 /* A bar spans the scale and is cut down to the stretch between 1× and its ratio. In a folded group it is cut to
    nothing at the line, and it grows back out of it when the group unfolds, row after row. */
 .bench-bar {
+  --folded-clip: inset(0 calc(100% - var(--one)) 0 var(--one) round 0 4px 4px 0);
   position: absolute;
   top: 11px;
   right: 0;
@@ -1235,16 +1236,13 @@
 }
 
 .bench-bar[data-tone="warning"] {
+  --folded-clip: inset(0 calc(100% - var(--one)) 0 var(--one) round 4px 0 0 4px);
   background: var(--bench-slower);
   clip-path: inset(0 var(--cut-right) 0 var(--cut-left) round 4px 0 0 4px);
 }
 
 .bench-group[data-folded] .bench-bar {
-  clip-path: inset(0 calc(100% - var(--one)) 0 var(--one) round 0 4px 4px 0);
-}
-
-.bench-group[data-folded] .bench-bar[data-tone="warning"] {
-  clip-path: inset(0 calc(100% - var(--one)) 0 var(--one) round 4px 0 0 4px);
+  clip-path: var(--folded-clip);
 }
 
 .bench-dot {
@@ -1294,19 +1292,20 @@
   line-height: 20px;
 }
 
-/* Narrow: the measure and its values on one line, the bar under them. */
+.bench-toggle-head {
+  display: none;
+}
+
 @container (max-width: 759.98px) {
-  .bench-axis,
-  .bench-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "measure values" "plot plot";
-    padding: 0 12px;
+  .bench {
+    interpolate-size: allow-keywords;
   }
 
   .bench-axis {
-    grid-template-areas: "title title" "plot plot";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "title" "plot";
     height: auto;
-    padding-top: 10px;
+    padding: 10px 12px 0;
   }
 
   .vp-doc h3.bench-card-title {
@@ -1322,40 +1321,235 @@
     height: 44px;
   }
 
+  .bench-inner {
+    inset: 0 42px;
+  }
+
+  .bench-group + .bench-group {
+    border-top: 1px solid var(--bench-grid);
+  }
+
+  .vp-doc h4.bench-toggle-head {
+    display: block;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    font-size: inherit;
+    line-height: inherit;
+    letter-spacing: normal;
+  }
+
+  .bench-toggle {
+    position: relative;
+    display: grid;
+    gap: 1px;
+    width: 100%;
+    margin: 0;
+    padding: 12px 12px 8px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 150ms ease-out;
+  }
+
+  .bench-toggle:active {
+    background: var(--vp-c-default-soft);
+  }
+
+  .bench-toggle:focus-visible {
+    outline: 2px solid var(--vp-c-brand-1);
+    outline-offset: -2px;
+    border-radius: 6px;
+  }
+
+  .bench-toggle-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 10px;
+    padding-right: 24px;
+  }
+
+  .bench-toggle-title {
+    flex: 0 0 auto;
+    max-width: 100%;
+    color: var(--vp-c-text-1);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 22px;
+  }
+
+  .bench-count {
+    margin-left: auto;
+    color: var(--vp-c-text-2);
+    font-size: 12.5px;
+    line-height: 22px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bench-count b {
+    font-weight: 650;
+  }
+
+  .bench-count [data-tone="success"] b {
+    color: var(--bench-faster);
+  }
+
+  .bench-count [data-tone="warning"] b {
+    color: var(--bench-slower);
+  }
+
+  .bench-toggle-versus {
+    color: var(--vp-c-text-2);
+    font-size: 13px;
+    line-height: 19px;
+  }
+
+  .bench-chevron {
+    position: absolute;
+    top: 15px;
+    right: 12px;
+    width: 16px;
+    height: 16px;
+    color: var(--vp-c-text-3);
+    transition: transform 200ms var(--bench-ease);
+  }
+
+  .bench-group[data-open] .bench-chevron {
+    transform: rotate(180deg);
+  }
+
+  .bench-strip {
+    position: relative;
+    display: block;
+    height: 38px;
+    margin-top: 2px;
+  }
+
+  .bench-strip .bench-grid {
+    top: 3px;
+    bottom: 3px;
+  }
+
+  .bench-strip-dot {
+    position: absolute;
+    top: calc(50% - 5px + var(--y));
+    width: 10px;
+    height: 10px;
+    margin-left: -5px;
+    border: 1.5px solid var(--bench-surface);
+    border-radius: 50%;
+    background: var(--bench-faster);
+  }
+
+  .bench-strip-dot[data-tone="warning"] {
+    background: var(--bench-slower);
+  }
+
+  .bench-strip-dot[data-tone="neutral"] {
+    background: var(--bench-even);
+  }
+
+  /* The height eases in only where the browser can animate to auto. */
+  .bench-body {
+    overflow: clip;
+    transition:
+      height 260ms var(--bench-ease),
+      visibility 260ms allow-discrete;
+  }
+
+  .bench-body::after {
+    content: "";
+    display: block;
+    height: 12px;
+  }
+
+  .bench-group:not([data-open]) .bench-body {
+    height: 0;
+    visibility: hidden;
+  }
+
+  .bench-group:not([data-open]) .bench-bar {
+    clip-path: var(--folded-clip);
+  }
+
+  .bench-group:not([data-open]) .bench-dot,
+  .bench-group:not([data-open]) .bench-tip {
+    opacity: 0;
+  }
+
+  .bench-group-head {
+    min-height: 0;
+    padding: 0 12px 2px;
+  }
+
+  .bench-group-head:not(:has(.bench-group-setup)),
+  .vp-doc h4.bench-group-title {
+    display: none;
+  }
+
+  .bench-row {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "measure" "values" "plot";
+    padding: 0 12px;
+  }
+
   .vp-doc .bench-row {
     height: auto;
-    padding-top: 6px;
+    padding-top: 8px;
   }
 
   .bench-measure {
     grid-area: measure;
+    font-size: 14px;
     white-space: normal;
   }
 
   .bench-values {
     grid-area: values;
-    align-self: start;
-    padding-top: 1px;
+    text-align: left;
   }
 
   .bench-row .bench-plot {
     grid-area: plot;
-    height: 30px;
+    height: 24px;
   }
 
-  .bench-group-head {
-    padding: 14px 12px 4px;
+  .bench-row .bench-bar {
+    top: 8px;
+  }
+
+  .bench-row .bench-dot {
+    top: 6px;
+  }
+
+  .bench-row .bench-tip {
+    top: 3px;
+    font-size: 13px;
   }
 
   .vp-doc .bench-note {
-    margin: 8px 12px 0;
+    margin: 10px 12px 0;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .bench-toggle:hover {
+    background: var(--vp-c-default-soft);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .bench-bar,
   .bench-dot,
-  .bench-tip {
+  .bench-tip,
+  .bench-body,
+  .bench-chevron {
     transition: none;
   }
 }
