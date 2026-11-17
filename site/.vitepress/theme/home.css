@@ -1218,7 +1218,7 @@ button.alpha-tag:focus-visible,
   height: 100%;
 }
 
-/* The scale's room: on each side enough for a ratio past the scale's end, 0.1× or 92×. */
+/* The scale's room: on each side enough for a ratio past the scale's end, 0.1× or 78×. */
 .bench-inner {
   position: absolute;
   inset: 0 34px;
