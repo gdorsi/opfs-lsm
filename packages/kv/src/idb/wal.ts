@@ -239,12 +239,11 @@ function txDone(tx: IDBTransaction): Promise<void> {
  * head past the records, drop them all and set `ingestedThrough` to the new
  * head (`adopt`, `emptyWal`).
  *
- * `after` is a seq the head has reached: `ingestedThrough`, or a tab's
- * `appliedThrough` past it. Seqs above `ingestedThrough` are gapless, so the
- * head is past `after` only when `after + 1` is a key. A point read answers
- * that, and the last key is looked up only then. In Chrome a range read
- * past the last record steps over every row deleted since IndexedDB last
- * compacted, and a flush deletes thousands of folded records at once.
+ * `after` is a seq the head has reached. Seqs above `ingestedThrough` are
+ * gapless, so the head is past `after` only when `after + 1` is a key, and
+ * the last key is read only then. In Chrome a range read past the last
+ * record steps over every row deleted since IndexedDB last compacted, and a
+ * flush deletes thousands of folded records at once.
  */
 async function headOf(tx: IDBTransaction, after: Seq): Promise<Seq> {
   const wal = tx.objectStore(WAL_STORE);

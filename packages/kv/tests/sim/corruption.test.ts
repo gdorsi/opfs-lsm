@@ -497,8 +497,6 @@ describe("a corrupt WAL row: no checksum", () => {
     expect(r.open).toBe("commit");
   });
 
-  // The head lookup reads only `ingestedThrough + 1` when that key is gone,
-  // so the rows after it are not read.
   it("the first uningested row deleted: open reads without the rows after it", async () => {
     const r = await run("WAL row: first one deleted", standard, async (f) => {
       const { ingestedThrough } = await walMeta(f.name);

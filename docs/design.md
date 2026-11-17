@@ -110,15 +110,18 @@ before that. At the promise, the writer sees its own write and every earlier one
 
 ### Reading the tail
 
-`openDb`, `sync` and a catch-up after an append read the same way: one transaction reads the
-head and `ingestedThrough`, then every record in `(max(since, ingestedThrough), head]`, where
-`since` is the `appliedThrough` of the caller. An open starts at 0, so it replays the whole
-uningested WAL; the host flushes at `maxWalBytes`, so that replay is normally near the limit,
-but the tab's read path truncates nothing. Ingest reads the same range in `flushRunBytes`
-chunks.
+`openDb`, `sync` and a catch-up after an append read the same way. One transaction reads
+`ingestedThrough`, then the head, then every record in `(after, head]`, where `after` is
+`max(since, ingestedThrough)` and `since` is the `appliedThrough` of the caller. An open starts
+at 0, so it replays the whole uningested WAL; the host flushes at `maxWalBytes`, so that replay
+is normally near the limit, but the tab's read path truncates nothing. Ingest reads the same
+range in `flushRunBytes` chunks.
 
-Seqs are gapless above `ingestedThrough`, so the position of a record in its range gives its
-seq. A range that returns fewer records than it spans throws `CommitError` (`wal gap`).
+Seqs are gapless above `ingestedThrough`, and no tab has applied a seq past the head, so the head
+is past `after` only when `after + 1` is a key. One point read answers that, and the last key is
+read only when it is there. In Chrome a range read past the last record steps over every row
+deleted since IndexedDB last compacted. The position of a record in its range gives its seq. A
+range that returns fewer records than it spans throws `CommitError` (`wal gap`).
 
 ### Truncation
 

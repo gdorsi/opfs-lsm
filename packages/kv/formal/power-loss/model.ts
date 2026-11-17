@@ -5,9 +5,8 @@
  * IndexedDB: the key generator of `wal`, `ingestedThrough`, `generation`,
  * and WAL rows seq -> write id. Nothing stores the head: it is the last row,
  * or `ingestedThrough` when no row is past it, and `headOf` finds it the way
- * the product does. The key generator
- * is part of the store, so a crash state that loses commits gets the
- * generator those commits left behind. OPFS: run files (sets of writes) and manifests. A write id
+ * the product does. The key generator is part of the store, so a crash
+ * state that loses commits gets the generator those commits left behind. OPFS: run files (sets of writes) and manifests. A write id
  * stands for one acked batch's content, so a run's content is the set of
  * writes folded into it, and a merge is their union. Each engine action
  * runs against live stores and records its durable ops in order, one
