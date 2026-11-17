@@ -18,17 +18,10 @@ it, calls one operation, reads the result, and is done. Both regions are
 valid only until the next call into the module.
 
 ```text
-init(capacity: u32) -> i32
-    Called once after instantiation. `capacity` is the number of bytes the
-    module may use for all work (inputs, scratch, results). An
-    implementation that allocates dynamically may ignore it and return 0.
-    An implementation that reserves once must reserve here and never grow
-    memory afterwards. Returns -11 (OUT_OF_MEMORY) when it cannot reserve.
-
 input_ptr(len: u32) -> u32
     Address of an input region of at least `len` bytes. JS writes the
-    packed arguments of the next operation there. Returns 0 when `len`
-    does not fit the capacity. The region may move between calls.
+    packed arguments of the next operation there. Returns 0 when the module
+    cannot allocate it. The region may move between calls.
 
 result_ptr() -> u32
 result_len() -> u32
@@ -143,27 +136,20 @@ when the run is complete.
 ```
 
 The loader maps any negative status to `CorruptDatabaseError`, except
-`-11`, which it reports as a capacity error naming the operation and the
-input size so the host can be configured with a larger `init` capacity,
-and -13, -15 and -16, which are host bugs, not corrupt data.
+`-11`, which it reports as an out of memory error naming the operation
+and the input size, and -13, -15 and -16, which are host bugs, not corrupt data.
 
 ## Memory
 
-The Rust module allocates dynamically. `init` ignores `capacity` and
-returns 0, `input_ptr` grows a reused input buffer, and an operation
-allocates what it needs through the module's allocator. Outside a merge
-session it never returns -11; running out of memory inside an operation
-aborts, which the loader sees as a `WebAssembly.RuntimeError` and answers
-by replacing the instance and throwing. A merge session
+The Rust module allocates dynamically. `input_ptr` grows a reused input
+buffer, and an operation allocates what it needs through the module's
+allocator. Outside a merge session it never returns -11; running out of
+memory inside an operation aborts, which the loader sees as a
+`WebAssembly.RuntimeError` and answers by replacing the instance and
+throwing. A merge session
 reserves its working set in `merge_open` and grows its input buffers (for
 a block, a run's bloom and index, or an entry larger than any before)
 without aborting, so it returns -11 instead. The output writer's per-run
 state (one bloom hash per key and one index row per block of the open
 run) still grows with the run, bounded by `target_bytes`, and running
 out of memory there aborts as it does outside a session.
-
-The contract carries `capacity` and -11 so that an implementation that
-reserves once in `init` and serves every call from that slab can conform
-without a loader change. Such an implementation must return -11, never
-trap, when an operation exceeds the slab. The loader passes a capacity
-sized for that case; a dynamic implementation ignores it.

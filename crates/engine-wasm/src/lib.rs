@@ -189,11 +189,6 @@ fn parse_entries(buf: &[u8]) -> Result<Vec<Entry>, i32> {
 }
 
 #[no_mangle]
-pub extern "C" fn init(_capacity: u32) -> i32 {
-    0
-}
-
-#[no_mangle]
 pub extern "C" fn input_ptr(len: u32) -> u32 {
     let buf = input();
     let len = len as usize;

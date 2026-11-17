@@ -9,21 +9,11 @@ import { useBlockScanner } from "./block-scan.js";
 import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
 
-/**
- * Bytes handed to the module's `init`. A module that reserves once serves
- * every call from this slab and never grows; the Rust module allocates
- * dynamically and ignores it. Sized from a prototype that reserved once,
- * where an encode peaked at 2.75x its input, so a 73 MB flush needs 200 MiB.
- */
-const ENGINE_CAPACITY = 1024 * 1024 * 1024;
-
-/** The module could not fit an operation in the capacity it was given. */
-export class EngineCapacityError extends Error {
-  constructor(op: string, inputBytes: number, capacity: number) {
-    super(
-      `wasm engine out of capacity in ${op}: input ${inputBytes} bytes, capacity ${capacity} bytes; raise the capacity passed to init`,
-    );
-    this.name = "EngineCapacityError";
+/** The module could not allocate the memory an operation needed. */
+export class EngineOutOfMemoryError extends Error {
+  constructor(op: string, inputBytes: number) {
+    super(`wasm engine out of memory in ${op}: input ${inputBytes} bytes`);
+    this.name = "EngineOutOfMemoryError";
   }
 }
 
@@ -60,7 +50,6 @@ const RUN_HEAD_BYTES = 16;
 
 export type EngineExports = {
   memory: WebAssembly.Memory;
-  init(capacity: number): number;
   input_ptr(len: number): number;
   result_ptr(): number;
   result_len(): number;
@@ -147,8 +136,6 @@ export interface MergeCore {
  */
 export type FlatEngine = {
   readonly ex: EngineExports;
-  /** The bytes handed to the module's `init`. */
-  readonly capacity: number;
   /** Write `len` bytes through `fill`, run `op`, return a copy of the result. */
   call(name: string, len: number, fill: (into: Uint8Array) => void, op: (ptr: number) => number): Uint8Array;
   lz4Decompress(src: Uint8Array, size: number): Uint8Array;
@@ -163,10 +150,8 @@ const TAG_PUT = 1;
 const TAG_DEL = 2;
 const TWO_32 = 0x1_0000_0000;
 
-export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAPACITY): FlatEngine {
+export function flatEngine(instance: WebAssembly.Instance): FlatEngine {
   const ex = instance.exports as unknown as EngineExports;
-  const status = ex.init(capacity);
-  if (status < 0) throw statusError("init", status, 0, capacity);
 
   function call(
     name: string,
@@ -175,17 +160,16 @@ export function flatEngine(instance: WebAssembly.Instance, capacity = ENGINE_CAP
     op: (ptr: number) => number,
   ): Uint8Array {
     const ptr = ex.input_ptr(len);
-    if (ptr === 0 && len > 0) throw new EngineCapacityError(name, len, capacity);
+    if (ptr === 0 && len > 0) throw new EngineOutOfMemoryError(name, len);
     fill(new Uint8Array(ex.memory.buffer, ptr, len));
     const code = op(ptr);
-    if (code < 0) throw statusError(name, code, len, capacity);
+    if (code < 0) throw statusError(name, code, len);
     const at = ex.result_ptr();
     return new Uint8Array(ex.memory.buffer).slice(at, at + ex.result_len());
   }
 
   return {
     ex,
-    capacity,
     call,
     lz4Decompress(src, size) {
       return call("lz4_decompress", src.byteLength, (into) => into.set(src), (ptr) =>
@@ -249,7 +233,7 @@ export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz
  * throws: the host takes turns (`inMergeSlot`).
  */
 export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
-  const { ex, capacity } = engine;
+  const { ex } = engine;
   let words = 1;
   let inputBytes = 0;
   for (const runs of spec.sources) {
@@ -260,7 +244,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
   const len = 4 * words + marks.byteLength;
   // Addresses are u32 and come back as i32: past 2 GiB they read negative.
   const ptr = ex.input_ptr(len) >>> 0;
-  if (ptr === 0) throw new EngineCapacityError("merge_open", len, capacity);
+  if (ptr === 0) throw new EngineOutOfMemoryError("merge_open", len);
   const list = new DataView(ex.memory.buffer, ptr, len);
   let o = 0;
   const put = (v: number) => {
@@ -283,7 +267,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
     spec.tailBytes,
     spec.yieldBytes,
   );
-  if (opened < 0) throw statusError("merge_open", opened, inputBytes, capacity);
+  if (opened < 0) throw statusError("merge_open", opened, inputBytes);
   engine.sessionOpen = true;
   // The module holds one session and `merge_close` drops whichever is
   // open, so a closed handle must not reach a session opened after it.
@@ -295,7 +279,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
     pump() {
       live();
       const code = ex.merge_pump();
-      if (code < 0) throw statusError("merge_pump", code, inputBytes, capacity);
+      if (code < 0) throw statusError("merge_pump", code, inputBytes);
       const result = new Uint8Array(ex.memory.buffer, ex.result_ptr() >>> 0, ex.result_len());
       const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
       switch (code) {
@@ -361,8 +345,8 @@ function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
   };
 }
 
-function statusError(op: string, code: number, inputBytes: number, capacity: number): Error {
-  if (code === OUT_OF_MEMORY) return new EngineCapacityError(op, inputBytes, capacity);
+function statusError(op: string, code: number, inputBytes: number): Error {
+  if (code === OUT_OF_MEMORY) return new EngineOutOfMemoryError(op, inputBytes);
   const bug = HOST_BUGS[code];
   if (bug) return new Error(`${op}: ${bug} (status ${code})`);
   return new CorruptDatabaseError(`${op}: ${STATUS_NAMES[code] ?? "corrupt"} (status ${code})`);
@@ -486,9 +470,9 @@ function afterTrap(err: unknown): boolean {
   return true;
 }
 
-/** A bad status means the bytes are corrupt, or the capacity is too small, and is thrown as is. */
+/** A bad status means the bytes are corrupt, or the module ran out of memory, and is thrown as is. */
 function corrupt(err: unknown, what: string): unknown {
-  if (err instanceof CorruptDatabaseError || err instanceof EngineCapacityError) return err;
+  if (err instanceof CorruptDatabaseError || err instanceof EngineOutOfMemoryError) return err;
   return new CorruptDatabaseError(`${what}: ${String(err)}`);
 }
 
