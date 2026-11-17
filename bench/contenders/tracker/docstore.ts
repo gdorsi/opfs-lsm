@@ -1,6 +1,6 @@
 import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import { defineContender } from "../../core/types.ts";
-import { LIMITS, OPEN, STATUSES, type Comment, type Issue, type IssueCard, type IssueRef, type Label, type Project, type User } from "../../datasets/tracker/types.ts";
+import { LIMITS, OPEN, STATUSES, type Comment, type Issue, type IssueCard, type IssueRef, type Label, type Project, type Status, type User } from "../../datasets/tracker/types.ts";
 import { kvCommon, openKv } from "../../page/kv.ts";
 import { changesOf, mergeTop } from "../../page/tracker.ts";
 
@@ -26,12 +26,13 @@ const schema = defineSchema<{ users: User; projects: Project; labels: Label; iss
 
 const byUpdatedDesc = (a: Issue, b: Issue) => b.updatedAt - a.updatedAt;
 const distinct = <T>(xs: Iterable<T>) => [...new Set(xs)];
+const isOpen = (s: Status) => (OPEN as readonly Status[]).includes(s);
 
 export default defineContender({
   family: "tracker",
   durability: "idb-default",
   fastPath:
-    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; count on index entries; joins = getMany of distinct foreign keys; IN = one query per status, merged; a batch = putMany or modifyMany per collection",
+    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; count on index entries; joins = getMany of distinct foreign keys; IN = one query per status, merged, or for ranges longer than a page, queryEntries per status merged on the index values, then getMany of the page; group-by = one queryEntries scan; a batch = putMany or modifyMany per collection",
   engine: true,
   async open(name) {
     const kv = await openKv(name);
@@ -110,8 +111,11 @@ export default defineContender({
           };
         },
         async triagePage({ projectId }) {
-          const lists = await Promise.all(OPEN.map(async (s) => (await issues.query({ index: "byTriage", eq: [projectId, s], limit: LIMITS.page })).docs));
-          const page = mergeTop(lists, (a, b) => a.priority - b.priority || a.createdAt - b.createdAt, LIMITS.page);
+          const page = await issues.view(async (snap) => {
+            const ranges = await Promise.all(OPEN.map((s) => snap.queryEntries({ index: "byTriage", eq: [projectId, s], limit: LIMITS.page })));
+            const top = mergeTop(ranges.map((r) => r.entries), (a, b) => a.values[2] - b.values[2] || a.values[3] - b.values[3], LIMITS.page);
+            return (await snap.getMany(top.map((e) => e.id))) as Issue[];
+          });
           const [ref, counts] = await Promise.all([refs(page), Promise.all(page.map((i) => comments.count({ index: "byIssue", eq: [i.id] })))]);
           return page.map((i, k) => ({ ...ref[k]!, status: i.status, priority: i.priority, comments: counts[k]! }));
         },
@@ -127,16 +131,16 @@ export default defineContender({
         },
         recentActivity: async () => cards((await issues.query({ index: "byUpdated", reverse: true, limit: LIMITS.page })).docs),
         async assigneeLoad({ projectId }) {
-          // docstore has no group-by and no index values in a query, so: one count of index entries per (person, open status).
-          const people = (await users.query({})).docs;
-          const counts = await Promise.all(
-            people.map(async (u) => {
-              const per = await Promise.all(OPEN.map((s) => issues.count({ index: "byProjectAssignee", eq: [projectId, u.id, s] })));
-              return { name: u.name, open: per.reduce((a, b) => a + b, 0) };
-            }),
-          );
-          return counts
-            .filter((c) => c.open > 0)
+          const [{ entries }, people] = await Promise.all([
+            issues.queryEntries({ index: "byProjectAssignee", eq: [projectId] }),
+            users.query({}),
+          ]);
+          const open = new Map<string, number>();
+          for (const { values: [, assigneeId, status] } of entries) {
+            if (assigneeId !== null && isOpen(status)) open.set(assigneeId, (open.get(assigneeId) ?? 0) + 1);
+          }
+          return people.docs
+            .flatMap((u) => (open.has(u.id) ? [{ name: u.name, open: open.get(u.id)! }] : []))
             .sort((a, b) => b.open - a.open || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
             .slice(0, LIMITS.load);
         },
