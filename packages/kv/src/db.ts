@@ -362,23 +362,22 @@ async function connect(
   // IndexedDB opens while OPFS does.
   const walOpen = TabWal.open(name);
   walOpen.catch(() => undefined);
-  let fs: AsyncFs;
   try {
-    fs = await timed(trace, "opfs", () => openBrowserFs(name));
+    const fs = await timed(trace, "opfs", () => openBrowserFs(name));
+    if (backing.ingest) return { fs, ingest: backing.ingest, ownsIngestClient: false, walOpen };
+    // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
+    // only emit a worker chunk for this exact shape. Built in a helper, Vite
+    // treated it as a plain asset and inlined the unbundled entry as a
+    // data: URL whose relative imports could not resolve.
+    const worker = new SharedWorker(
+      new URL("./host/shared-worker.js", import.meta.url),
+      { type: "module", name: `opfs-lsm:${name}` },
+    );
+    return { fs, ingest: createPortIngestClient(worker.port), ownsIngestClient: true, walOpen };
   } catch (err) {
     void walOpen.then((w) => w.close(), () => undefined);
     throw err;
   }
-  if (backing.ingest) return { fs, ingest: backing.ingest, ownsIngestClient: false, walOpen };
-  // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
-  // only emit a worker chunk for this exact shape. Built in a helper, Vite
-  // treated it as a plain asset and inlined the unbundled entry as a
-  // data: URL whose relative imports could not resolve.
-  const worker = new SharedWorker(
-    new URL("./host/shared-worker.js", import.meta.url),
-    { type: "module", name: `opfs-lsm:${name}` },
-  );
-  return { fs, ingest: createPortIngestClient(worker.port), ownsIngestClient: true, walOpen };
 }
 
 /**
@@ -418,46 +417,54 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
   const caps = memtableCaps(options.memtableBytes);
 
   const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, trace);
-  const tabFs = options.wrapFs?.(fs) ?? fs;
-
-  const wal = await timed(trace, "idb-open", () => walOpen ?? TabWal.open(name));
-  // Pair the WAL with a manifest before the first read or write. The
-  // recorded manifest's runs are checked by the first sync, which loads them.
-  await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
-  const writerId = (options.writerId ?? newWriterId()) as WriterId;
-  const maxBytes = options.maxBytes;
-  const cache = new PageCache(
-    Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
-  );
-  const db = new DbImpl(
-    name,
-    writerId,
-    wal,
-    tabFs,
-    cache,
-    ingest,
-    ownsIngestClient,
-    caps,
-    maxBytes,
-    trace,
-    options.rowPostMs,
-  );
-  internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
-  await timed(trace, "sync", () => db.sync());
-  // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
-  ingest.watch(name, {
-    maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
-    compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
-    maxBytes,
-  });
-  // The host cannot flush without the module, so a page that cannot load it does not open.
+  // What the catch below closes: the Db once it exists, else the WAL and an owned port.
+  let heldWal: TabWal | undefined;
+  let heldDb: DbImpl | undefined;
   try {
+    const tabFs = options.wrapFs?.(fs) ?? fs;
+    const wal = await timed(trace, "idb-open", () => walOpen ?? TabWal.open(name));
+    heldWal = wal;
+    // Pair the WAL with a manifest before the first read or write. The
+    // recorded manifest's runs are checked by the first sync, which loads them.
+    await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
+    const writerId = (options.writerId ?? newWriterId()) as WriterId;
+    const maxBytes = options.maxBytes;
+    const cache = new PageCache(
+      Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
+    );
+    const db = new DbImpl(
+      name,
+      writerId,
+      wal,
+      tabFs,
+      cache,
+      ingest,
+      ownsIngestClient,
+      caps,
+      maxBytes,
+      trace,
+      options.rowPostMs,
+    );
+    heldDb = db;
+    internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
+    await timed(trace, "sync", () => db.sync());
+    // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
+    ingest.watch(name, {
+      maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
+      compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
+      maxBytes,
+    });
+    // The host cannot flush without the module, so a page that cannot load it does not open.
     await engine;
+    return db;
   } catch (err) {
-    await db.close();
+    if (heldDb) await heldDb.close();
+    else {
+      if (ownsIngestClient) ingest.close();
+      heldWal?.close();
+    }
     throw err;
   }
-  return db;
 }
 
 function collectBatch(

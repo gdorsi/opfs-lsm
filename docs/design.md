@@ -609,7 +609,8 @@ OPFS publishes a file whole, and the host removes a run only after the recorded 
 listing it. A manifest numbered past the recorded one is a crash leftover, and its runs may go.
 A power loss therefore never leaves a manifest that fails to decode, or the recorded manifest on
 disk with a run missing. Those states are corruption. Recovery throws `CorruptDatabaseError` and
-writes nothing, so the database stays as it is on disk.
+writes nothing, so the database stays as it is on disk. An `openDb` that throws closes everything
+it opened, so `destroyDb` can run next.
 
 * The recorded manifest does not decode: refuse.
 * The recorded manifest lists a run that is gone: an intact manifest whose `through` is at or
