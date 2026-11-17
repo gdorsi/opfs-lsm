@@ -8,24 +8,18 @@
  *     text      64 CC CC II <v1>..<vn> <id>   -> "w1 w2 ..." (lowercased words)
  *
  * CC CC is a collection id (u16be, 1..65535) and II an index id (1..255);
- * index id 00 is the rows. <id> is raw UTF-8. A value <v> is one of
- *
- *     01 null   02 false   03 true
- *     04 + float64 big-endian, -0 as +0; sign bit set: every bit flipped, else the sign bit flipped
- *     05 + UTF-8 with each 00 written 00 FF, then 00
- *
- * Every field is prefix-free, so ids sort by content and need no length.
- * After a complete field the next byte is a tag (01..05), a UTF-8 byte or
- * nothing, never FF: `upperOf` relies on that.
+ * index id 00 is the rows. <id> is raw UTF-8. A value <v> is one field of
+ * the tuple encoding of `@opfs-lsm/kv/tuple`, which also owns the bounds of
+ * every key that continues a prefix, an id included.
  */
-import { CorruptDatabaseError, type Range } from "@opfs-lsm/kv";
+import type { Range } from "@opfs-lsm/kv";
+import { encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
 import { DocStoreError } from "./errors.js";
 import type { Cursor, QueryInput, Scalar } from "./schema.js";
 
 export const ROOT = 0x64;
 export const CATALOG_KEY: Uint8Array = Uint8Array.of(ROOT, 0x00, 0x00);
 const ROWS = 0x00;
-const TAG = { null: 0x01, false: 0x02, true: 0x03, number: 0x04, string: 0x05 } as const;
 /** kv's key limit. */
 export const MAX_KEY_BYTES = 8 * 1024;
 const MAX_ID_BYTES = 1024;
@@ -82,12 +76,6 @@ export function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   return out;
 }
 
-/** `prefix ++ FF`: above every key that continues `prefix` at a field boundary, below a string that continues it with U+0000. */
-export function upperOf(prefix: Uint8Array): Uint8Array {
-  return concat(prefix, FF);
-}
-const FF = Uint8Array.of(0xff);
-
 /** The smallest key after `key`. */
 export function after(key: Uint8Array): Uint8Array {
   return concat(key, ZERO);
@@ -119,107 +107,6 @@ export function compareBytes(a: Uint8Array, b: Uint8Array): number {
     if (d !== 0) return d;
   }
   return a.length - b.length;
-}
-
-// One buffer for every key under construction. A key is built synchronously
-// from the first write to `take`, so nothing else can interleave.
-let buf = new Uint8Array(256);
-let len = 0;
-const f64 = new DataView(new ArrayBuffer(8));
-
-function room(n: number): void {
-  if (len + n <= buf.length) return;
-  const next = new Uint8Array(Math.max(buf.length * 2, len + n));
-  next.set(buf.subarray(0, len));
-  buf = next;
-}
-
-function write(bytes: Uint8Array): void {
-  room(bytes.length);
-  buf.set(bytes, len);
-  len += bytes.length;
-}
-
-/** Encodes straight into `buf` (a UTF-16 unit is at most 3 UTF-8 bytes), then makes room for the escapes, which are rare. */
-function writeEscaped(s: string): void {
-  room(s.length * 3);
-  const start = len;
-  len += utf8.encodeInto(s, buf.subarray(len)).written;
-  let zeros = 0;
-  for (let i = start; i < len; i++) if (buf[i] === 0) zeros++;
-  if (zeros === 0) return;
-  room(zeros);
-  let w = len + zeros;
-  for (let r = len - 1; r >= start; r--) {
-    const b = buf[r]!;
-    if (b === 0) buf[--w] = 0xff;
-    buf[--w] = b;
-  }
-  len += zeros;
-}
-
-function writeScalar(v: Scalar): void {
-  room(9);
-  if (v === null) buf[len++] = TAG.null;
-  else if (v === false) buf[len++] = TAG.false;
-  else if (v === true) buf[len++] = TAG.true;
-  else if (typeof v === "number") {
-    buf[len++] = TAG.number;
-    f64.setFloat64(0, v === 0 ? 0 : v);
-    const negative = f64.getUint8(0) >= 0x80;
-    for (let i = 0; i < 8; i++) {
-      const b = f64.getUint8(i);
-      buf[len++] = negative ? ~b & 0xff : i === 0 ? b ^ 0x80 : b;
-    }
-  } else {
-    buf[len++] = TAG.string;
-    writeEscaped(v);
-    room(1);
-    buf[len++] = 0x00;
-  }
-}
-
-function take(): Uint8Array {
-  return buf.slice(0, len);
-}
-
-/** `prefix ++ enc(v1) ++ .. ++ enc(vn) ++ tail`. Values come from `JSON.parse` or `checkQueryValue`. */
-export function encodeKey(prefix: Uint8Array, values: readonly Scalar[], tail?: Uint8Array): Uint8Array {
-  len = 0;
-  write(prefix);
-  for (const v of values) writeScalar(v);
-  if (tail) write(tail);
-  return take();
-}
-
-/** `prefix ++ 05 ++ escaped(s)`, unterminated: what every string starting with `s` begins with. */
-function encodeStringPrefix(prefix: Uint8Array, s: string): Uint8Array {
-  len = 0;
-  write(prefix);
-  room(1);
-  buf[len++] = TAG.string;
-  writeEscaped(s);
-  return take();
-}
-
-function skipValue(key: Uint8Array, at: number): number {
-  switch (key[at]) {
-    case TAG.null:
-    case TAG.false:
-    case TAG.true:
-      return at + 1;
-    case TAG.number:
-      if (at + 9 <= key.length) return at + 9;
-      break;
-    case TAG.string:
-      for (let i = at + 1; i < key.length; i++) {
-        if (key[i] !== 0x00) continue;
-        if (key[i + 1] !== 0xff) return i + 1;
-        i++;
-      }
-      break;
-  }
-  throw new CorruptDatabaseError(`index key has no value at byte ${at}`);
 }
 
 function badQuery(message: string): never {
@@ -303,14 +190,14 @@ export function scanPlan(target: ScanTarget, q: QueryInput): Range {
 }
 
 function indexBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [Uint8Array, Uint8Array] {
-  const p = encodeKey(prefix, eq.map(checkQueryValue));
-  const at = (v: unknown) => encodeKey(p, [checkQueryValue(v)]);
+  const p = encodeTuple(eq.map(checkQueryValue), prefix);
+  const at = (v: unknown) => tupleBounds(encodeTuple([checkQueryValue(v)], p));
   if (q.startsWith !== undefined) {
-    const lower = encodeStringPrefix(p, q.startsWith);
-    return [lower, upperOf(lower)];
+    const { start, endExclusive } = stringPrefixBounds(p, q.startsWith);
+    return [start, endExclusive];
   }
-  const lower = q.gte !== undefined ? at(q.gte) : q.gt !== undefined ? upperOf(at(q.gt)) : p;
-  const upper = q.lte !== undefined ? upperOf(at(q.lte)) : q.lt !== undefined ? at(q.lt) : upperOf(p);
+  const lower = q.gte !== undefined ? at(q.gte).start : q.gt !== undefined ? at(q.gt).endExclusive : p;
+  const upper = q.lte !== undefined ? at(q.lte).endExclusive : q.lt !== undefined ? at(q.lt).start : tupleBounds(p).endExclusive;
   return [lower, upper];
 }
 
@@ -323,11 +210,11 @@ function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [
     return [k, after(k)];
   }
   if (q.startsWith !== undefined) {
-    const lower = at(q.startsWith);
-    return [lower, upperOf(lower)];
+    const { start, endExclusive } = tupleBounds(at(q.startsWith));
+    return [start, endExclusive];
   }
   const lower = q.gte !== undefined ? at(q.gte) : q.gt !== undefined ? after(at(q.gt)) : prefix;
-  const upper = q.lte !== undefined ? after(at(q.lte)) : q.lt !== undefined ? at(q.lt) : upperOf(prefix);
+  const upper = q.lte !== undefined ? after(at(q.lte)) : q.lt !== undefined ? at(q.lt) : tupleBounds(prefix).endExclusive;
   return [lower, upper];
 }
 
@@ -338,11 +225,8 @@ export function entryId(target: ScanTarget, key: Uint8Array, value: Uint8Array):
     case "unique":
       return value;
     case "sorted":
-    case "text": {
-      let at = target.prefix.length;
-      for (let i = 0; i < target.arity; i++) at = skipValue(key, at);
-      return key.subarray(at);
-    }
+    case "text":
+      return key.subarray(skipTuple(key, target.arity, target.prefix.length));
   }
 }
 

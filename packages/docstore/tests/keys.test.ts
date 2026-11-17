@@ -1,10 +1,10 @@
+import { encodeTuple } from "@opfs-lsm/kv/tuple";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { DocStoreError } from "../src/errors.js";
 import {
   compareBytes,
   encodeCursor,
-  encodeKey,
   entryId,
   indexPrefix,
   rowPrefix,
@@ -14,7 +14,7 @@ import {
   type ScanTarget,
 } from "../src/keys.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
-import { compareCodePoints, compareScalar, compareTuple, denseScalarArb, scalarArb, stringArb } from "./order.js";
+import { compareCodePoints, compareScalar, compareTuple, denseScalarArb, stringArb } from "./order.js";
 
 const RUNS = Number(process.env.DOCSTORE_KEYS_RUNS ?? 300);
 const EMPTY = new Uint8Array(0);
@@ -22,35 +22,7 @@ const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
 const COLLECTION = 0x0107 as CollectionId;
 const INDEX = 3 as IndexId;
-const sign = (n: number) => (n > 0 ? 1 : n < 0 ? -1 : 0);
 const hex = (key: Uint8Array) => Array.from(key, (b) => b.toString(16).padStart(2, "0")).join("");
-
-describe("value encoding", () => {
-  it("byte order of encoded tuples equals the documented value order", () => {
-    const tuple = fc.array(scalarArb, { maxLength: 3 });
-    fc.assert(
-      fc.property(tuple, tuple, (a, b) => {
-        expect(sign(compareBytes(encodeKey(EMPTY, a), encodeKey(EMPTY, b)))).toBe(sign(compareTuple(a, b)));
-      }),
-      { numRuns: RUNS * 10 },
-    );
-  });
-
-  it("orders null, false, true, numbers ascending with -0 equal to 0, then strings", () => {
-    const values: Scalar[] = [null, false, true, -Number.MAX_VALUE, -1, -0.5, 0, 0.5, 1, Number.MAX_VALUE, "", "a"];
-    const keys = values.map((v) => encodeKey(EMPTY, [v]));
-    for (let i = 1; i < keys.length; i++) expect(compareBytes(keys[i - 1]!, keys[i]!)).toBeLessThan(0);
-    expect(encodeKey(EMPTY, [-0])).toEqual(encodeKey(EMPTY, [0]));
-  });
-
-  it("orders strings by UTF-8 bytes, U+0000 inside a string after the string that stops there", () => {
-    const sorted = ["b", "aa", "a\u0000b", "a", "", "\uffff", "😀"]
-      .map((s) => ({ s, key: encodeKey(EMPTY, [s]) }))
-      .sort((x, y) => compareBytes(x.key, y.key))
-      .map((x) => x.s);
-    expect(sorted).toEqual(["", "a", "a\u0000b", "aa", "b", "\uffff", "😀"]);
-  });
-});
 
 type Stored = { readonly values: Scalar[]; readonly id: string };
 type Ix = { readonly kind: "sorted" | "unique" | "text"; readonly arity: number; readonly entries: Stored[] };
@@ -65,8 +37,8 @@ const indexTarget = (ix: Ix): ScanTarget => ({
 function entryOf(ix: Ix, e: Stored): { key: Uint8Array; value: Uint8Array } {
   const prefix = indexPrefix(COLLECTION, INDEX);
   return ix.kind === "unique"
-    ? { key: encodeKey(prefix, e.values), value: utf8.encode(e.id) }
-    : { key: encodeKey(prefix, e.values, utf8.encode(e.id)), value: EMPTY };
+    ? { key: encodeTuple(e.values, prefix), value: utf8.encode(e.id) }
+    : { key: encodeTuple(e.values, prefix, utf8.encode(e.id)), value: EMPTY };
 }
 
 function dedupe<T>(items: readonly T[], keyOf: (t: T) => Uint8Array): T[] {
@@ -243,7 +215,7 @@ describe("scanPlan", () => {
   });
 
   it("rejects a cursor from another eq group, past the upper bound, from another collection id, or not a cursor, with code cursor", () => {
-    const key = (values: Scalar[], c = COLLECTION) => encodeKey(indexPrefix(c, INDEX), values, utf8.encode("id"));
+    const key = (values: Scalar[], c = COLLECTION) => encodeTuple(values, indexPrefix(c, INDEX), utf8.encode("id"));
     const inA = encodeCursor(key(["a", 1]));
     expect(code(() => scanPlan(two, { eq: ["a"], after: inA }))).toBe("no error");
     expect(code(() => scanPlan(two, { eq: ["b"], after: inA }))).toBe("cursor");

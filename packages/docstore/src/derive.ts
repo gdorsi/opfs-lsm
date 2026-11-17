@@ -1,7 +1,8 @@
 import { CorruptDatabaseError, type Entry } from "@opfs-lsm/kv";
+import { encodeTuple } from "@opfs-lsm/kv/tuple";
 import type { BoundCollection, IndexPlan, Path } from "./catalog.js";
 import { DocStoreError } from "./errors.js";
-import { MAX_KEY_BYTES, bytesEqual, encodeKey, keyString, parseId, textValue, type DocId } from "./keys.js";
+import { MAX_KEY_BYTES, bytesEqual, keyString, parseId, textValue, type DocId } from "./keys.js";
 import type { JsonDoc, Scalar } from "./schema.js";
 
 declare const storedBrand: unique symbol;
@@ -132,7 +133,7 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
   const out: Entry[] = [];
   for (const first of firsts ?? [values[0]!]) {
     values[0] = first;
-    const key = encodeKey(prefix, values, tail);
+    const key = encodeTuple(values, prefix, tail);
     if (key.length > MAX_KEY_BYTES) return { path: spec.on.map((p) => p.join(".")).join(","), why: "key-too-long" };
     out.push({ key, value });
   }

@@ -71,6 +71,10 @@ describe("public API", () => {
     expect(typeof api.openDb).toBe("function");
   });
 
+  it("resolves the tuple codec from the package exports map", () => {
+    expect(exportFile("@opfs-lsm/kv/tuple").endsWith("/dist/tuple.js")).toBe(true);
+  });
+
   it("runs put, get, batch, update, view, changes, ingest, and close", async () => {
     const fs = new testing.MemoryFs();
     const db = await testing.openHarnessDb({

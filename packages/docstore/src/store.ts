@@ -1,4 +1,5 @@
 import { CorruptDatabaseError, prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry } from "@opfs-lsm/kv";
+import { tupleBounds } from "@opfs-lsm/kv/tuple";
 import {
   bind,
   clearCollection,
@@ -29,7 +30,6 @@ import {
   idOf,
   indexPrefix,
   keyString,
-  upperOf,
   type CollectionId,
   type IndexId,
 } from "./keys.js";
@@ -272,7 +272,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
       const derived: (Entry[] | Unindexable)[] = [];
       let ops = 0;
       let bytes = 0;
-      const range = { start: from ? after(from) : rowPrefix, endExclusive: upperOf(rowPrefix), limit: BACKFILL_ROWS };
+      const range = { start: from ? after(from) : rowPrefix, endExclusive: tupleBounds(rowPrefix).endExclusive, limit: BACKFILL_ROWS };
       for await (const row of this.kv.range(range)) {
         const entries = indexEntries(plan, row.key.subarray(rowPrefix.length), decodeDoc(row.value));
         rows.push(row);
@@ -336,7 +336,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     const collection = p.collection as CollectionId;
     const prefix = "index" in p ? indexPrefix(collection, p.index as IndexId) : collectionPrefix(collection);
     // One op: nothing reaches the prefix any more, so no later write can land in it.
-    // Not `upperOf`: index id 255 is `64 CC CC FF`, which `upperOf(64 CC CC)` would exclude.
+    // Not `tupleBounds`: index id 255 is `64 CC CC FF`, which `tupleBounds(64 CC CC)` would exclude.
     await this.kv.batch((tx) => tx.deleteRange(prefixBound(prefix)));
     await this.editCatalog((c) => removeDropped(c, p));
   }
