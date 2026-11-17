@@ -82,7 +82,6 @@ export async function ingestChunk(
   await publishGeneration(fs, {
     generation,
     runs,
-    tombstoneSeq: prev.tombstoneSeq,
     through: last,
     marks: retireMarks([...prev.marks, ...folded.marks], runs),
   });

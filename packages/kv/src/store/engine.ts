@@ -122,7 +122,7 @@ export type MergeStop =
   /** About `yieldBytes` of input were merged since the pump began. */
   | { readonly kind: "yield" }
   /** Every input was read and every run's CRC matched: the outputs may be installed. */
-  | { readonly kind: "done"; readonly droppedSeq: number };
+  | { readonly kind: "done" };
 
 export interface MergeCore {
   /**
@@ -318,7 +318,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
         case YIELD:
           return { kind: "yield" };
         case DONE:
-          return { kind: "done", droppedSeq: view.getUint32(0, true) + view.getUint32(4, true) * TWO_32 };
+          return { kind: "done" };
         default:
           throw new Error(`merge_pump: unknown stop ${code}`);
       }

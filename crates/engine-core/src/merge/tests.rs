@@ -1,5 +1,5 @@
 //! The session against the whole-buffer oracle in `oracle.rs`: for the same
-//! sources, the same output bytes and the same dropped seq, however the host
+//! sources, the same output bytes, however the host
 //! answers (chunk and tail sizes, feed order, early pumps, yields).
 
 use super::oracle::Mark;
@@ -85,7 +85,7 @@ fn feed(session: &mut MergeSession, sources: &[Vec<Vec<u8>>], d: &Demand) {
 }
 
 /// Drive a session over `sources` (each a list of run bytes) to the end.
-fn drive(config: MergeConfig, sources: &[Vec<Vec<u8>>], host: &mut Host) -> Result<(Vec<EncodedRun>, u64), MergeError> {
+fn drive(config: MergeConfig, sources: &[Vec<Vec<u8>>], host: &mut Host) -> Result<Vec<EncodedRun>, MergeError> {
     let sizes: Vec<Vec<u32>> = sources.iter().map(|runs| runs.iter().map(|r| r.len() as u32).collect()).collect();
     let mut session = MergeSession::open(config, &sizes, &marks_block(&host.marks))?;
     let (mut runs, mut bytes) = (Vec::new(), Vec::new());
@@ -114,10 +114,10 @@ fn drive(config: MergeConfig, sources: &[Vec<Vec<u8>>], host: &mut Host) -> Resu
             }
             Stop::RunEnd(end) => runs.push(EncodedRun { bytes: mem::take(&mut bytes), end: end.clone() }),
             Stop::Yield => {}
-            Stop::Done(dropped) => {
+            Stop::Done => {
                 assert!(bytes.is_empty(), "every written byte belongs to a finished run");
-                assert_eq!(session.pump(), Ok(Stop::Done(dropped)), "Done is final");
-                return Ok((runs, dropped));
+                assert_eq!(session.pump(), Ok(Stop::Done), "Done is final");
+                return Ok(runs);
             }
         }
     }
@@ -140,7 +140,7 @@ fn host(seed: u64) -> Host {
 }
 
 /// Merge sources of one run each.
-fn merge(runs: &[Vec<u8>], drop_tombstones: bool, target_bytes: usize, codec: Codec) -> Result<(Vec<EncodedRun>, u64), MergeError> {
+fn merge(runs: &[Vec<u8>], drop_tombstones: bool, target_bytes: usize, codec: Codec) -> Result<Vec<EncodedRun>, MergeError> {
     let sources: Vec<Vec<Vec<u8>>> = runs.iter().map(|r| vec![r.clone()]).collect();
     drive(config(drop_tombstones, target_bytes, codec), &sources, &mut host(1))
 }
@@ -168,10 +168,8 @@ fn as_one_run(runs: &[Vec<u8>]) -> Vec<u8> {
 
 fn assert_matches_oracle(cfg: MergeConfig, sources: &[Vec<Vec<u8>>], host: &mut Host, context: &str) {
     let inputs: Vec<Vec<u8>> = sources.iter().map(|runs| as_one_run(runs)).collect();
-    let (want, want_dropped) =
-        oracle::merge_sst_bytes(&inputs, cfg.drop_tombstones, &host.marks, cfg.target_bytes, cfg.codec).unwrap();
-    let (got, dropped) = drive(cfg, sources, host).unwrap_or_else(|e| panic!("{context}: {e:?}"));
-    assert_eq!(dropped, want_dropped, "{context}: dropped seq");
+    let want = oracle::merge_sst_bytes(&inputs, cfg.drop_tombstones, &host.marks, cfg.target_bytes, cfg.codec).unwrap();
+    let got = drive(cfg, sources, host).unwrap_or_else(|e| panic!("{context}: {e:?}"));
     assert_eq!(got.len(), want.len(), "{context}: output runs");
     for (i, (g, w)) in got.iter().zip(&want).enumerate() {
         assert_eq!(g.end, w.end, "{context}: run {i} end");
@@ -284,8 +282,7 @@ fn random_marks(rng: &mut Rng, sources: &[Vec<Vec<u8>>]) -> Vec<Mark> {
         .collect()
 }
 
-/// A winner a mark covers is gone in any merge, tombstone or not, and its
-/// seq is not a dropped tombstone's. A winner past `through`, or outside the
+/// A winner a mark covers is gone in any merge, tombstone or not. A winner past `through`, or outside the
 /// mark, stays.
 #[test]
 fn a_winner_a_mark_covers_is_dropped_in_any_merge() {
@@ -297,9 +294,8 @@ fn a_winner_a_mark_covers_is_dropped_in_any_merge() {
     for drop_tombstones in [false, true] {
         let cfg = config(drop_tombstones, usize::MAX, Codec::Raw);
         assert_matches_oracle(cfg, &sources, &mut marked, "marks");
-        let (out, dropped) = drive(cfg, &sources, &mut marked).unwrap();
+        let out = drive(cfg, &sources, &mut marked).unwrap();
         assert_eq!(entries(&out), vec![put(b"a", b"old", 1), put(b"m4", b"new", 8), put(b"z", b"old", 4)]);
-        assert_eq!(dropped, 0);
     }
 }
 
@@ -360,29 +356,27 @@ fn every_single_byte_flip_is_refused() {
 fn newer_wins() {
     let older = encode_sst(&[put(b"k", b"old", 1)], Codec::Raw);
     let newer = encode_sst(&[put(b"k", b"new", 2)], Codec::Raw);
-    let (out, dropped) = merge(&[newer, older], false, usize::MAX, Codec::Raw).unwrap();
+    let out = merge(&[newer, older], false, usize::MAX, Codec::Raw).unwrap();
     assert_eq!(entries(&out), vec![put(b"k", b"new", 2)]);
-    assert_eq!(dropped, 0);
 }
 
 #[test]
 fn bottom_merge_drops_tombstones() {
     let older = encode_sst(&[put(b"a", b"1", 1), put(b"b", b"1", 1)], Codec::Raw);
     let newer = encode_sst(&[del(b"a", 5)], Codec::Raw);
-    let (kept, _) = merge(&[newer.clone(), older.clone()], false, usize::MAX, Codec::Raw).unwrap();
+    let kept = merge(&[newer.clone(), older.clone()], false, usize::MAX, Codec::Raw).unwrap();
     assert_eq!(entries(&kept), vec![del(b"a", 5), put(b"b", b"1", 1)]);
-    let (out, dropped) = merge(&[newer, older], true, usize::MAX, Codec::Raw).unwrap();
+    let out = merge(&[newer, older], true, usize::MAX, Codec::Raw).unwrap();
     assert_eq!(entries(&out), vec![put(b"b", b"1", 1)]);
-    assert_eq!(dropped, 5);
 }
 
 #[test]
 fn splits_output_at_key_boundaries() {
     let rows: Vec<Entry> = (0..100u64).map(|i| put(format!("k{i:03}").as_bytes(), &[b'x'; 50], i)).collect();
-    let (out, _) = merge(&[encode_sst(&rows, Codec::Raw)], false, 1000, Codec::Raw).unwrap();
+    let out = merge(&[encode_sst(&rows, Codec::Raw)], false, 1000, Codec::Raw).unwrap();
     assert!(out.len() > 1);
     assert_eq!(entries(&out), rows);
-    let (none, _) = merge(&[encode_sst(&[del(b"a", 1)], Codec::Raw)], true, 1000, Codec::Raw).unwrap();
+    let none = merge(&[encode_sst(&[del(b"a", 1)], Codec::Raw)], true, 1000, Codec::Raw).unwrap();
     assert!(none.is_empty());
 }
 
@@ -454,32 +448,29 @@ fn newest_of_many_overlapping_runs_wins() {
         .map(|r| (0..30u64).filter(|i| i % (r + 1) == 0).map(|i| put(format!("k{i:02}").as_bytes(), &[b'0' + r as u8], 10 - r)).collect())
         .collect();
     let blobs: Vec<Vec<u8>> = runs.iter().map(|r| encode_sst(r, Codec::Raw)).collect();
-    let (out, _) = merge(&blobs, false, 200, Codec::Raw).unwrap();
+    let out = merge(&blobs, false, 200, Codec::Raw).unwrap();
     let want: Vec<Entry> = (0..30u64).map(|i| put(format!("k{i:02}").as_bytes(), b"0", 10)).collect();
     assert_eq!(entries(&out), want);
-    let (reversed, _) = merge(&blobs.iter().rev().cloned().collect::<Vec<_>>(), false, usize::MAX, Codec::Raw).unwrap();
+    let reversed = merge(&blobs.iter().rev().cloned().collect::<Vec<_>>(), false, usize::MAX, Codec::Raw).unwrap();
     let newest = |i: u64| [2u64, 1, 0].into_iter().find(|r| i % (r + 1) == 0).unwrap();
     let want: Vec<Entry> = (0..30u64).map(|i| put(format!("k{i:02}").as_bytes(), &[b'0' + newest(i) as u8], 10 - newest(i))).collect();
     assert_eq!(entries(&reversed), want);
 }
 
 /// Later duplicates in the winning source win, including a put that follows
-/// a delete of the same key, and a dropped tombstone reports its own seq.
+/// a delete of the same key.
 #[test]
 fn last_duplicate_in_the_newest_run_wins() {
     let newest = encode_sst(&[put(b"a", b"first", 1), del(b"a", 2), put(b"a", b"last", 3), put(b"b", b"b", 4)], Codec::Raw);
     let older = encode_sst(&[put(b"a", b"old", 9), del(b"a", 8), put(b"b", b"old-b", 1)], Codec::Raw);
-    let (out, dropped) = merge(&[newest.clone(), older.clone()], false, usize::MAX, Codec::Raw).unwrap();
+    let out = merge(&[newest.clone(), older.clone()], false, usize::MAX, Codec::Raw).unwrap();
     assert_eq!(entries(&out), vec![put(b"a", b"last", 3), put(b"b", b"b", 4)]);
-    assert_eq!(dropped, 0);
-    let (out, dropped) = merge(&[newest, older], true, 1, Codec::Raw).unwrap();
-    assert_eq!(dropped, 0);
+    let out = merge(&[newest, older], true, 1, Codec::Raw).unwrap();
     assert_eq!(entries(&out), vec![put(b"a", b"last", 3), put(b"b", b"b", 4)]);
 
     let newest_del = encode_sst(&[put(b"a", b"first", 1), del(b"a", 6)], Codec::Raw);
-    let (out, dropped) = merge(&[newest_del], true, usize::MAX, Codec::Raw).unwrap();
+    let out = merge(&[newest_del], true, usize::MAX, Codec::Raw).unwrap();
     assert!(out.is_empty());
-    assert_eq!(dropped, 6);
 }
 
 /// A key repeated on both sides of a run boundary inside one source: the
@@ -490,7 +481,7 @@ fn the_last_duplicate_wins_across_a_run_boundary() {
     let second = encode_sst(&[put(b"k", b"late", 3), put(b"z", b"9", 4)], Codec::Lz4);
     let older = encode_sst(&[put(b"k", b"older", 9)], Codec::Raw);
     let sources = vec![vec![first, second], vec![older]];
-    let (out, _) = drive(config(false, usize::MAX, Codec::Raw), &sources, &mut host(5)).unwrap();
+    let out = drive(config(false, usize::MAX, Codec::Raw), &sources, &mut host(5)).unwrap();
     assert_eq!(entries(&out), vec![put(b"a", b"1", 1), put(b"k", b"late", 3), put(b"z", b"9", 4)]);
     assert_matches_oracle(config(false, 1, Codec::Raw), &sources, &mut host(6), "boundary");
 }
@@ -504,7 +495,7 @@ fn the_last_duplicate_wins_across_blocks_and_reads() {
     cfg.tail_bytes = 0;
     for codec in [Codec::Raw, Codec::Lz4] {
         let sources = vec![vec![encode_sst(&rows[..30], codec), encode_sst(&rows[30..], codec)]];
-        let (out, _) = drive(cfg, &sources, &mut host(7)).unwrap();
+        let out = drive(cfg, &sources, &mut host(7)).unwrap();
         assert_eq!(entries(&out), vec![rows[59].clone()]);
     }
 }
@@ -513,9 +504,9 @@ fn the_last_duplicate_wins_across_blocks_and_reads() {
 fn writes_the_codec_it_is_given_and_reads_either() {
     let rows: Vec<Entry> = (0..300u64).map(|i| put(format!("k{i:03}").as_bytes(), &[b'x'; 40], i)).collect();
     let raw = encode_sst(&rows, Codec::Raw);
-    let (packed, _) = merge(&[raw.clone()], false, usize::MAX, Codec::Lz4).unwrap();
+    let packed = merge(&[raw.clone()], false, usize::MAX, Codec::Lz4).unwrap();
     assert!(packed[0].bytes.len() < raw.len() / 2);
-    let (back, _) = merge(&[packed[0].bytes.clone()], false, usize::MAX, Codec::Raw).unwrap();
+    let back = merge(&[packed[0].bytes.clone()], false, usize::MAX, Codec::Raw).unwrap();
     assert!(back[0].bytes == raw);
 }
 
@@ -524,9 +515,8 @@ fn empty_inputs_merge_to_nothing() {
     let empty = encode_sst(&[], Codec::Raw);
     let empty_lz4 = encode_sst(&[], Codec::Lz4);
     for sources in [vec![], vec![vec![]], vec![vec![empty.clone()]], vec![vec![empty.clone(), empty_lz4.clone()], vec![], vec![empty_lz4]]] {
-        let (out, dropped) = drive(config(true, 0, Codec::Lz4), &sources, &mut host(8)).unwrap();
+        let out = drive(config(true, 0, Codec::Lz4), &sources, &mut host(8)).unwrap();
         assert!(out.is_empty());
-        assert_eq!(dropped, 0);
     }
 }
 
@@ -542,7 +532,7 @@ fn a_value_larger_than_the_window_is_merged() {
     for codec in [Codec::Raw, Codec::Lz4] {
         let sources = vec![vec![encode_sst(&rows, codec)], vec![encode_sst(&older, codec)]];
         assert_matches_oracle(cfg, &sources, &mut host(10), "huge value");
-        let (out, _) = drive(cfg, &sources, &mut host(11)).unwrap();
+        let out = drive(cfg, &sources, &mut host(11)).unwrap();
         assert_eq!(entries(&out), vec![rows[0].clone(), rows[1].clone(), rows[2].clone(), older[1].clone()]);
     }
 }
@@ -560,7 +550,7 @@ fn demand_count(cfg: MergeConfig, sources: &[Vec<Vec<u8>>]) -> usize {
                     feed(&mut session, sources, d);
                 }
             }
-            Stop::Done(_) => return count,
+            Stop::Done => return count,
             _ => {}
         }
     }
@@ -636,7 +626,7 @@ fn yields_come_after_about_yield_bytes() {
                 }
             }
             Stop::Yield => yields += 1,
-            Stop::Done(_) => break,
+            Stop::Done => break,
             _ => {}
         }
     }

@@ -368,7 +368,7 @@ async function inspect(name: string, pattern: string): Promise<unknown> {
     const buf = (await fs.read(`m/${file}`, 0, Number.POSITIVE_INFINITY)) ?? new Uint8Array(0);
     try {
       const g = decodeGeneration(buf);
-      manifests.push({ file, bytes: buf.byteLength, generation: g.generation, through: g.through, tombstoneSeq: g.tombstoneSeq, runs: g.runs.map((r) => r.path) });
+      manifests.push({ file, bytes: buf.byteLength, generation: g.generation, through: g.through, runs: g.runs.map((r) => r.path) });
     } catch (err) {
       manifests.push({ file, bytes: buf.byteLength, error: errorInfo(err).message });
     }

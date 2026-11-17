@@ -117,7 +117,7 @@ fn warm_allocations(codec: Codec) -> Warm {
                 run.clear();
             }
             Stop::Yield => {}
-            Stop::Done(_) => return warm,
+            Stop::Done => return warm,
         }
         if ended >= 2 {
             warm.allocs += allocs;

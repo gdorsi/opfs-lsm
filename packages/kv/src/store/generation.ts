@@ -9,8 +9,8 @@ import type { RunEnd, SstEntry } from "./sst.js";
 const GEN_PREFIX = "m/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-/** Version 4 records the marks and each run's `marksThrough`. */
-const GEN_VERSION = 4;
+/** Version 5: the marks and each run's `marksThrough`. */
+const GEN_VERSION = 5;
 
 /**
  * A run of the generation: what the encoder reported when it wrote the file
@@ -32,11 +32,6 @@ export type GenerationMeta = {
   /** L0 newest first, then each level's runs in key order. */
   readonly runs: readonly RunMeta[];
   /**
-   * The highest seq of any tombstone a bottom compaction dropped. A key with
-   * no entry may have been deleted at any seq up to this one.
-   */
-  readonly tombstoneSeq: number;
-  /**
    * The runs hold every seq of the log up to this one and none past it: the
    * manifest is the fold of one log prefix (design.md, "Recovery").
    */
@@ -49,7 +44,7 @@ export type GenerationMeta = {
 };
 
 /** The empty database: no runs, no seqs, no marks. */
-export const GENERATION_ZERO: GenerationMeta = { generation: 0, runs: [], tombstoneSeq: 0, through: 0, marks: NO_MARKS };
+export const GENERATION_ZERO: GenerationMeta = { generation: 0, runs: [], through: 0, marks: NO_MARKS };
 
 function genPath(generation: number): string {
   return `${GEN_PREFIX}${String(generation).padStart(16, "0")}.mft`;
@@ -59,7 +54,7 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const enc = new TextEncoder();
   const paths = meta.runs.map((r) => enc.encode(r.path));
   const marks = encodeMarks(meta.marks);
-  let size = 4 + 4 + 8 + 8 + 8 + marks.byteLength + 4;
+  let size = 4 + 4 + 8 + 8 + marks.byteLength + 4;
   meta.runs.forEach((r, i) => {
     size += 2 + paths[i]!.byteLength + 4 + 1 + 8;
     if (r.range) size += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
@@ -73,8 +68,6 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   view.setUint32(o, GEN_VERSION, true);
   o += 4;
   view.setBigUint64(o, BigInt(meta.generation), true);
-  o += 8;
-  view.setBigUint64(o, BigInt(meta.tombstoneSeq), true);
   o += 8;
   view.setBigUint64(o, BigInt(meta.through), true);
   o += 8;
@@ -105,7 +98,7 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
 }
 
 export function decodeGeneration(buf: Uint8Array): GenerationMeta {
-  if (buf.byteLength < 44) {
+  if (buf.byteLength < 36) {
     throw new CorruptDatabaseError("generation too short");
   }
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -116,13 +109,12 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     throw new CorruptDatabaseError("bad generation version");
   }
   const generation = Number(view.getBigUint64(8, true));
-  const tombstoneSeq = Number(view.getBigUint64(16, true));
-  const through = Number(view.getBigUint64(24, true));
+  const through = Number(view.getBigUint64(16, true));
   const crcOff = buf.byteLength - 4;
   if (crc32(buf.subarray(0, crcOff)) !== view.getUint32(crcOff, true)) {
     throw new CorruptDatabaseError("generation crc mismatch");
   }
-  const { marks, end } = decodeMarks(buf, 32, crcOff, through);
+  const { marks, end } = decodeMarks(buf, 24, crcOff, through);
   let o = end;
   const dec = new TextDecoder("utf-8", { ignoreBOM: true });
   const runs: RunMeta[] = [];
@@ -150,7 +142,7 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     runs.push(range ? { path, bytes, range, marksThrough } : { path, bytes, marksThrough });
   }
   if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
-  return { generation, runs, tombstoneSeq, through, marks };
+  return { generation, runs, through, marks };
 }
 
 /** The numbers of the manifest files in `m/`, newest first. */

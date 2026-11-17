@@ -503,7 +503,6 @@ type Layers = {
   readonly runs: readonly Run[];
   /** The readers as scan sources, newest first. */
   readonly levels: readonly RunLevel[];
-  readonly tombstoneSeq: number;
   /** The manifest's marks: the range deletes its runs may still hold covered versions for. */
   readonly marks: Marks;
   refs: number;
@@ -549,7 +548,6 @@ class DbImpl implements Db {
     generation: 0,
     runs: [],
     levels: [],
-    tombstoneSeq: 0,
     marks: NO_MARKS,
     refs: 1,
   };
@@ -745,7 +743,6 @@ class DbImpl implements Db {
       generation,
       runs: held,
       levels: runLevels(paths, held.map((r) => r.reader)),
-      tombstoneSeq: meta.tombstoneSeq,
       marks: meta.marks,
       refs: 1,
     };

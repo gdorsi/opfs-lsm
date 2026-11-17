@@ -73,7 +73,7 @@ merge_pump() -> i32
       3 RUN_END  result: run head (below) · first_key · last_key. Every byte
                  of the run was in a WRITE.
       4 YIELD    about `yield_bytes` of input were merged; result empty.
-      5 DONE     result: u64 dropped_seq. Every run's CRC matched.
+      5 DONE     result empty. Every run's CRC matched.
     or a negative error code. -16 (UNFED) means a demand was not fed yet
     and leaves the session as it was; any other error is final, every later
     pump returns it, and no output of the session may be installed.
@@ -100,7 +100,7 @@ across block and run boundaries. A source whose keys go back fails with -14.
 Output runs are cut at key boundaries once their entries, sized as entry
 records (below), reach `target_bytes`, and written with `lz4`'s codec.
 A winner whose seq is at or below the highest `through` among the marks
-that hold its key is dropped, delete or put, and its seq is not a dropped seq.
+that hold its key is dropped, delete or put.
 
 ## Wire formats
 

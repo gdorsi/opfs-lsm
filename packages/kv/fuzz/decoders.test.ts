@@ -213,7 +213,6 @@ function marksArb(through: number): fc.Arbitrary<Marks> {
 const manifestArb: fc.Arbitrary<GenerationMeta> = fc.integer({ min: 0, max: 2 ** 40 }).chain((through) =>
   fc.record({
     generation: fc.integer({ min: 0, max: 2 ** 40 }),
-    tombstoneSeq: fc.integer({ min: 0, max: 2 ** 40 }),
     through: fc.constant(through),
     marks: marksArb(through),
     runs: fc.array(

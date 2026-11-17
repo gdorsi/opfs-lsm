@@ -72,9 +72,8 @@ pub enum Stop<'a> {
     RunEnd(&'a RunEnd),
     /// About `yield_bytes` of input were merged since the pump began.
     Yield,
-    /// Every input was read and every run's CRC matched. Holds the highest
-    /// seq of a dropped tombstone, or 0.
-    Done(u64),
+    /// Every input was read and every run's CRC matched.
+    Done,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,7 +132,6 @@ pub struct MergeSession {
     yield_bytes: usize,
     /// Framed input bytes opened since the pump began.
     consumed: usize,
-    dropped: u64,
     stage: Stage,
 }
 
@@ -211,7 +209,6 @@ impl MergeSession {
             chunk_bytes: config.chunk_bytes.max(1),
             yield_bytes: config.yield_bytes.max(1),
             consumed: 0,
-            dropped: 0,
             stage: Stage::Running,
         })
     }
@@ -223,7 +220,7 @@ impl MergeSession {
     pub fn pump(&mut self) -> Result<Stop<'_>, MergeError> {
         match &self.stage {
             Stage::Failed(e) => return Err(e.clone()),
-            Stage::Done => return Ok(Stop::Done(self.dropped)),
+            Stage::Done => return Ok(Stop::Done),
             Stage::Feeding => {
                 if self.sources.iter().any(|s| matches!(s.reader.ask, Ask::Asked { .. })) {
                     return Err(MergeError::Unfed);
@@ -247,7 +244,7 @@ impl MergeSession {
             Ok(Next::Yield) => Ok(Stop::Yield),
             Ok(Next::Done) => {
                 self.stage = Stage::Done;
-                Ok(Stop::Done(self.dropped))
+                Ok(Stop::Done)
             }
             Err(e) => {
                 self.stage = Stage::Failed(e.clone());
@@ -373,7 +370,7 @@ impl MergeSession {
             return Ok(());
         }
         match winner.kind {
-            Kind::Del if self.drop_tombstones => self.dropped = self.dropped.max(winner.seq),
+            Kind::Del if self.drop_tombstones => {}
             _ => {
                 let entry = winner.entry();
                 let size = match self.output {

@@ -131,7 +131,7 @@ describe("compaction codec", () => {
     const { body, end } = await encodeRun(todoRows(0));
     await publish(fs, path, body);
     // A size past L1's target makes the run a compaction input without writing 40 MB.
-    await publishGeneration(fs, { generation: 1, runs: [{ path, ...end, bytes: 50_000_000, marksThrough: 0 }], tombstoneSeq: 0, through: 0, marks: NO_MARKS });
+    await publishGeneration(fs, { generation: 1, runs: [{ path, ...end, bytes: 50_000_000, marksThrough: 0 }], through: 0, marks: NO_MARKS });
     const step = await mergeNextStep(fs, budget, (await loadLatestGeneration(fs))!, 0);
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;
@@ -157,7 +157,7 @@ describe("compaction codec", () => {
       await publish(fs, path, body);
       runs.push({ path, ...end, marksThrough: 0 });
     }
-    await publishGeneration(fs, { generation: 1, runs, tombstoneSeq: 0, through: 0, marks: NO_MARKS });
+    await publishGeneration(fs, { generation: 1, runs, through: 0, marks: NO_MARKS });
     const step = await mergeNextStep(fs, budget, (await loadLatestGeneration(fs))!, 0);
     const out = step!.outputs[0]!;
     const bytes = (await fs.read(out.path, 0, Number.POSITIVE_INFINITY))!;

@@ -1,5 +1,5 @@
 //! The whole-buffer merge the session replaced, kept as the oracle the
-//! session is tested against: same sources, same bytes, same dropped seq. Do
+//! session is tested against: same sources, same bytes. Do
 //! not change it to follow the session. A change to the merge rules changes
 //! both on purpose.
 //!
@@ -69,7 +69,7 @@ pub(crate) fn merge_sst_bytes(
     marks: &[Mark],
     target_bytes: usize,
     codec: Codec,
-) -> Result<(Vec<EncodedRun>, u64), SstError> {
+) -> Result<Vec<EncodedRun>, SstError> {
     let mut inputs = sst_bytes
         .iter()
         .map(|bytes| decode_sst(bytes).map(Vec::into_iter))
@@ -81,7 +81,6 @@ pub(crate) fn merge_sst_bytes(
         }
     }
 
-    let mut dropped = 0u64;
     let mut runs = Vec::new();
     let mut writer = SstWriter::new(codec);
     let mut bytes = Vec::new();
@@ -119,7 +118,6 @@ pub(crate) fn merge_sst_bytes(
             continue;
         }
         if drop_tombstones && matches!(entry, Entry::Del { .. }) {
-            dropped = dropped.max(entry.seq());
             continue;
         }
         size += entry_size((&entry).into());
@@ -134,5 +132,5 @@ pub(crate) fn merge_sst_bytes(
         let end = writer.finish(&mut bytes);
         runs.push(EncodedRun { bytes, end });
     }
-    Ok((runs, dropped))
+    Ok(runs)
 }
