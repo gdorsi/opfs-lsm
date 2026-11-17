@@ -16,6 +16,7 @@ import { checkDatabase, deleteWal } from "./check-database.js";
 import { expectEntries, SIM_HOST_LIMITS } from "./commands.js";
 import { checkHistory, History, type NewOp, type OpOf, type ViewRead } from "./history.js";
 import { applyOps, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
+import { compactHost } from "../compact-host.js";
 
 /**
  * Several `Db` handles (stand-ins for tabs) over one `EngineHost`, one
@@ -382,7 +383,7 @@ class World {
     // A failed run leaves tasks the scheduler never released.
     await this.s.waitAll().catch(() => undefined);
     for (let i = 0; i < this.slots.length; i++) if (this.slots[i]) await this.close(i).catch(() => undefined);
-    await this.host.compact(this.name).catch(() => undefined);
+    await compactHost(this.host, this.name).catch(() => undefined);
     await deleteWal(this.name);
     world = undefined;
   }
@@ -733,7 +734,7 @@ class FlushCmd implements Cmd {
 class CompactCmd implements Cmd {
   constructor(private readonly wait: boolean) {}
   check = () => true;
-  run = (_m: Model, w: World) => w.hostWork(() => w.host.compact(w.name), this.wait);
+  run = (_m: Model, w: World) => w.hostWork(() => compactHost(w.host, w.name), this.wait);
   toString = () => `host compact${waitTag(this.wait)}`;
 }
 
@@ -833,7 +834,7 @@ export async function runWorld(
     expect(counterOf(oracle.valueAt(COUNTER)), "counter after every committed increment").toBe(increments);
 
     // The files: quiesce the host, then the integrity check against the oracle.
-    await w.host.compact(name);
+    await compactHost(w.host, name);
     const report = await checkDatabase(w.fs, name);
     expect(report.problems, "checkDatabase problems").toEqual([]);
     expect(report.orphans, "orphan runs").toEqual([]);

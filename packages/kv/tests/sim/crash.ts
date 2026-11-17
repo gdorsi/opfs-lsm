@@ -13,6 +13,7 @@ import { checkDatabase, decodeWalRow, deleteWal, type DatabaseReport } from "./c
 import { describeOp, FaultFs, Faults, fsFiles, materializeFs, type DurableOp } from "./fault-fs.js";
 import { dumpWal, materializeWal, traceWal } from "./fault-wal.js";
 import { applyOps, Oracle, show, type OracleEntry, type OracleOp } from "./oracle.js";
+import { compactHost } from "../compact-host.js";
 
 /**
  * Crash states and the recovery check (docs/research/corruption-hardening-test-suite.md,
@@ -348,7 +349,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   } finally {
     await db.close();
   }
-  await host.compact(name);
+  await compactHost(host, name);
   const after = await checkDatabase(fs, name);
   const withWrite = after.state.filter((e) => compareBytes(e.key, key) !== 0);
   expectFiles({ ...after, state: withWrite }, oracle, prefixes, "after a write on the recovered database");

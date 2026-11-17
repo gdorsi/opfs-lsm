@@ -13,6 +13,7 @@ import { checkDatabase, deleteWal, walMeta } from "./check-database.js";
 import { loadGeneration } from "../../src/store/generation.js";
 import { compareBytes } from "../../src/bytes.js";
 import { applyOps, Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
+import { compactHost } from "../compact-host.js";
 
 /**
  * fast-check commands for one `Db` handle over MemoryFs and fake-indexeddb,
@@ -112,7 +113,7 @@ export class Sut {
   /** Wait for compaction in flight, and run one more pass. Folds no WAL. */
   settle(): Promise<unknown> {
     this.release();
-    return this.host.compact(this.name);
+    return compactHost(this.host, this.name);
   }
 
   async dispose(): Promise<void> {

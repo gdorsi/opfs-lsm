@@ -111,11 +111,6 @@ export class EngineHost {
     return this.db(name).ingest(waitForCompaction);
   }
 
-  /** Wait for a flush in flight, then compact until the levels are in shape. Folds no WAL. */
-  async compact(name: string): Promise<void> {
-    return this.db(name).compactNow();
-  }
-
   /**
    * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
    * with no tab asking. Reads up to `maxWalBytes` of the waiting records in the
@@ -226,25 +221,6 @@ class HostedDb {
     return {
       generation: await this.withWal(async (wal) => (await wal.meta()).generation ?? GENERATION_NONE),
     };
-  }
-
-  /**
-   * Wait for a fold in flight, reconcile and remove old manifests as a fold
-   * that found nothing to fold does, then compact. Removes no run file here:
-   * that needs the compaction lock, and `compactPass` does it under it.
-   */
-  async compactNow(): Promise<void> {
-    const fs = await this.fs();
-    await this.foldTurn(() =>
-      this.exclusive(() =>
-        this.withWal(async (wal) => {
-          const { generation } = await reconcile(wal, fs, this.trusted);
-          this.trusted = generation;
-          await unlessHeld(this.name, () => reclaimManifests(fs, generation));
-        }),
-      ),
-    );
-    await this.compact();
   }
 
   /**
