@@ -467,13 +467,13 @@ class HostedDb {
   }
 
   /**
-   * Empty the database, then remove the files no tab holds (design.md,
-   * "Emptying"). `dangerousDestroy` only: the storage stays. Holds the
-   * compaction and ingest locks, so no flush or merge publishes meanwhile,
-   * and a merge running when it is called stops after its current step.
-   * `recordEmpty` is the commit point. Tabs follow it like any new
-   * generation, and the runs a tab still holds go once it lets go, at a
-   * later reclaim.
+   * Empty the database, then remove the files no tab holds
+   * (design.md, "Emptying"). `dangerousDestroy` only: the storage
+   * stays. Holds the compaction and ingest locks, so no flush or merge
+   * publishes meanwhile, and a merge running when it is called stops
+   * after its current step. `recordEmpty` is the commit point. Tabs
+   * follow it like any new generation, and the runs a tab still holds
+   * go once it lets go, at a later reclaim.
    */
   async destroy(): Promise<void> {
     this.destroying = true;

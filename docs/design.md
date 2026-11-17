@@ -33,6 +33,9 @@ IndexedDB  "opfs-lsm-wal/<name>"
              "topGeneration"   -> n    highest manifest number recovery has seen
              "destroyedTop"    -> n    manifests numbered up to this predate a destroy
 
+IndexedDB  "opfs-lsm-destroyed"         one per origin
+  └── destroyed  <name> -> { head, top }  a database destroyDb removed, until <name> opens again
+
 OPFS  opfs-lsm/<name>/
   ├── m/<generation, 16 digits>.mft    manifests
   ├── l0/<firstSeq>-<lastSeq>.sst      flushed runs, may overlap
@@ -272,49 +275,7 @@ hold a mark back, so its rows leave the disk.
 
 `openDb({ maxBytes })` asks the database to stay under a size. kv measures and asks: it never
 removes a row or writes to the WAL for the cap, and a write never waits for it or fails because of
-it. The host holds the smallest numeric `maxBytes` any open tab passed, and whether any tab passed
-`"quota"`, until the last tab closes the database. Both apply at once. Nothing about the cap is
-stored.
-
-**Measure.** A compaction pass that finds nothing left to plan measures its manifest: `bytes` is
-the sum of its runs' file bytes. A pass runs after each flush and when a tab opens the database
-with `maxBytes`. Covered and overwritten versions count until a merge drops them; the WAL and the
-retired runs a `view` holds do not count.
-
-**Quota.** With `"quota"`, a measure that finds the numeric cap met or absent, and no run file on
-disk outside its manifest, reads `navigator.storage.estimate()` after the pass, holding no lock. A
-retired run that a tab still holds counts in the estimate, so the read waits for a pass after it
-is gone. The cap is then 90% of `quota`,
-rounded down, and `need` is `usage` less 4/5 of it. `bytes` stays the sum of the runs' file bytes.
-The estimate covers the whole origin (the WAL in IndexedDB, other databases, caches) and is
-approximate, so `need` can pass `bytes`: a handler that frees `need` regardless empties the
-database. Each database opened with `"quota"` is offered the whole `need`. A missing or rejected estimate, or one
-without `usage` or `quota`, makes no offer.
-
-**Offer.** Over a cap, the host posts `{ kind: "pressure", pressure: { bytes, maxBytes, need } }`
-on the layers channel, with `need` the bytes over 4/5 of the cap. It holds one of two states:
-
-| State | Event | Next |
-|---|---|---|
-| after `s` | a measure over the cap, of a manifest whose `through` is at least `s` | open, posted |
-| open | `pressure-pull` | open, posted again |
-| open | `pressure-done` | after the WAL head |
-| any | the last tab closes the database | after 0 |
-
-An answer counts only once a flush holds what the handlers wrote. Handlers that wrote nothing
-leave the manifest at the WAL head, so the host asks again at most once per compaction pass. A
-pass that stops at its step limit measures nothing: under heavy writes the offer waits for a pass
-that finishes. An open offer keeps the numbers it was posted with, and no other offer follows
-until a holder posts `pressure-done`. The three messages are posted once each: if the channel
-loses one, offers stop until the holder's handle closes. A new host starts at "after 0".
-
-**Answer.** A handle with an `onPressure` handler asks for the Web Lock
-`opfs-lsm-pressure/<name>` and keeps it while it has one. On the grant it posts `pressure-pull`,
-for an offer posted while another handle held the lock. Only the holder answers: it calls its
-handlers in turn, then posts `pressure-done`, whether they resolved or threw. A holder that closes
-mid-answer, or whose tab goes away, posts nothing, and the next holder pulls the offer. A handle
-opened with `maxBytes` and no handler asks for the lock shared with `ifAvailable` on each offer;
-granted, no handle answers, and it warns.
+it. How the host measures and which tab answers is in [size-cap.md](size-cap.md).
 
 ## Multi-tab coordination
 
@@ -521,33 +482,59 @@ and so does a pass that used all 8.
 
 ## Destroy
 
-`db.dangerousDestroy()` and `destroyDb(name)` empty the database. Seen from the log, a destroy
-is one entry that deletes every key: the writes acked before it are gone, and the writes after
-it land in the empty database. `destroyDb` does not open the database, so it also empties one
-that `openDb` refuses as corrupt. The host:
+Seen from the log, a destroy is one entry that deletes every key: the writes acked before it are
+gone, and the writes after it land in the empty database. `db.dangerousDestroy()` empties the
+database and keeps it. `destroyDb(name)` removes it, without opening it, so it also removes one
+that `openDb` refuses as corrupt.
+
+### Emptying
+
+For `dangerousDestroy`, the host:
 
 1. Takes the compaction lock, then the ingest lock: the order a compaction pass takes them in.
    No flush or merge publishes while it holds them, and a merge already running stops after its
    current step.
 2. Commits in one IndexedDB transaction at durability `"strict"`, which completes only once it
-   is on disk. It drops every WAL record and records generation 0, with
-   `ingestedThrough` one past every seq the WAL or a manifest on disk names, and
-   `topGeneration` and `destroyedTop` at the highest manifest number in use.
-3. Removes every manifest, then sweeps: against generation 0, every run goes. Both skip
-   while a tab holds the reclaim lock, and the sweep skips each run a tab still holds open, as
-   any sweep does. A tab holds its runs until it installs generation 0, or until a `view` that
-   started before the destroy ends, and that view reads the old data meanwhile.
-4. Posts `{ kind: "ingest" }`. Each tab installs generation 0 at its next `sync` or append, as
-   it would any generation, and its memtable drops every row. Handles stay open, and each
-   reports a `gap` change event.
+   is on disk. It drops every WAL record and records generation 0, with `ingestedThrough` one
+   past every seq the WAL or a manifest on disk names, and `topGeneration` and `destroyedTop` at
+   the highest manifest number in use.
+3. Removes every manifest, then sweeps: against generation 0, every run goes. Both skip while a
+   tab holds the reclaim lock, and the sweep skips each run a tab still holds open. A tab holds
+   its runs until it installs generation 0, or until a `view` that started before the destroy ends.
+4. Posts `{ kind: "ingest" }`. Each tab installs generation 0 at its next `sync` or append, and
+   its memtable drops every row. Handles stay open, and each reports a `gap` change event.
 
-`dangerousDestroy` then syncs its own tab, which lets go of its runs, and asks the host for a
-flush, whose compaction pass sweeps them. The runs other tabs held go at a later pass.
+`dangerousDestroy` then syncs its tab and asks for a flush, whose pass sweeps the runs it let go.
 
 The transaction is the commit point. After it, recovery adopts no manifest on disk: rule 1
 needs a `through` past `head`, rule 2 keeps the recorded generation, and rule 3 skips every
 manifest numbered up to `destroyedTop`. Since the commit is on disk before step 3 starts, no
 power loss keeps a remove and loses the commit.
+
+### Removing
+
+`destroyDb` runs in the calling page and starts no SharedWorker. It:
+
+1. Takes the Web Lock `opfs-lsm-open/<name>` exclusively, then the compaction and ingest locks.
+   `openDb` holds the open lock shared until it resolves, so no open is half done, and an open
+   that starts meanwhile waits, then opens an empty database.
+2. Opens `opfs-lsm-wal/<name>` one version up, which closes every other connection first
+   (assumption 7). Each handle closes, with a `closed` event whose `reason` is `"destroyed"`, and
+   no write by an earlier connection commits after this step. No other open names a version.
+   If neither store of the database exists, it stops here and creates nothing.
+3. Commits as in [Emptying](#emptying), step 2.
+4. Writes that `ingestedThrough` and `destroyedTop` under `<name>` in `opfs-lsm-destroyed`, as
+   `head` and `top`, at durability `"strict"`, never below a row already there.
+5. Removes `m/`, then the folder `opfs-lsm/<name>/`.
+6. Deletes `opfs-lsm-wal/<name>`.
+
+With `opfs-lsm-wal/<name>` gone already, it skips steps 3 and 6, and step 4 takes `head` one past
+the highest `through` and `top` at the highest number of the manifests on disk. With no manifest,
+it writes no row. The row is on disk before step 5 starts, so a power loss that keeps any remove
+keeps the row, and the next open starts past it ([rule 0](#the-rule)).
+
+Only `openDb` creates either store. The host opens each only if it exists, at the start of every
+operation, and stops when either is gone.
 
 ## Change events
 
@@ -558,14 +545,14 @@ ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
 * The promise of `put`, `delete` or `batch` resolves with its seq, after its record was announced.
 * `gap` replaces the records that a handle skipped because a flush folded them before it read
   them, or because a repair recorded another generation. A listener reads again.
-* `closed` is the last event.
+* `closed` is the last event. Its `reason` is `"destroyed"` when `destroyDb` closed the handle.
 
 ## Recovery
 
 Writes go to two stores, and nothing orders one against the other on disk. No OPFS `close` and no
-IndexedDB commit is an fsync, except the commit of a destroy. After a power loss, each store keeps
-a prefix of its own completed writes, and the two prefixes are independent. Acked writes may be lost. The database
-must still open, and read the fold of one prefix of the log.
+IndexedDB commit is an fsync, except a commit at durability `"strict"`. After a power loss, each
+store keeps a prefix of its own completed writes, and the two prefixes are independent. Acked
+writes may be lost. The database must still open, and read the fold of one prefix of the log.
 
 ### The invariant
 
@@ -584,6 +571,10 @@ prefix. Without those records, the manifest alone is one.
 
 `reconcile` picks the manifest to record:
 
+0. **Nothing recorded, and `opfs-lsm-destroyed` has a row for the name.** `destroyDb` removed a
+   database of this name. Record generation 0 as a destroy does, at durability `"strict"`, with
+   `ingestedThrough` at least the row's `head` and `destroyedTop` at least its `top`, then delete
+   the row. While `opfs-lsm-wal/<name>` records a generation, the row is ignored.
 1. **OPFS kept seqs that IndexedDB lost.** The newest intact manifest that is numbered past the
    recorded one and whose `through` is past `head`. It is a longer prefix than the WAL.
 2. **Otherwise the recorded manifest**, if it is intact.
@@ -644,7 +635,7 @@ A **process crash** keeps every completed write of both stores. Every acked writ
 | Manifest written, before the IndexedDB commit | The manifest is ignored. The records are in the WAL, and the next flush folds them again. |
 | IndexedDB commit, before reclaim | Old manifests and runs stay until a later pass removes them. |
 | Compaction outputs written, before install | The outputs are garbage. |
-| Destroy's transaction, before its removes finish | The database is empty. The files left are garbage. |
+| A destroy's transaction, before its removes finish | The database is empty. A sweep, or the next `destroyDb`, removes what is left. |
 
 A sweep lists the run files and removes those the recorded manifest lacks and no tab holds open.
 
@@ -659,6 +650,7 @@ of OPFS, independently.
 | Nothing | Some manifests | Rule 1 records the newest intact one, and `head` moves past its seqs. |
 | A destroy's transaction | Any prefix of its removes and of later ops | No manifest from before the destroy is adopted. The database holds a prefix of the writes after it, or none. |
 | Not a destroy's transaction | None of its removes | The commit was not on disk, so no remove had started. As if the destroy had not run. |
+| The deletion of a `destroyDb` | Any prefix of its removes | Rule 0. No manifest from before it is adopted. |
 
 ## Limits
 
@@ -687,10 +679,13 @@ A tab reads in TypeScript so that a `get` never posts a message. The wasm module
    moves the generator past that key, and deleting the record does not move it back.
 2. An OPFS `createWritable().close()` publishes the whole file atomically.
 3. Each store keeps the order of its own completed writes across a power loss, so a prefix of
-   them survives. Nothing orders IndexedDB against OPFS, except that an IndexedDB transaction
-   at durability `"strict"` completes only once it is on disk.
+   them survives. Nothing orders IndexedDB against OPFS, or two IndexedDB databases, except that
+   an IndexedDB transaction at durability `"strict"` completes only once it is on disk. A
+   recursive OPFS removal is a series of removes in no promised order.
 4. A SharedWorker with the same URL and name is shared by every tab of the origin.
 5. Web Locks are shared by the tabs and workers of an origin, and the browser releases the
    locks of a context when it goes away.
 6. BroadcastChannel delivers the messages of one sender in order. Messages may arrive late or
    not at all.
+7. An IndexedDB open at a higher version sends `versionchange` to every other connection and
+   waits until each has closed.

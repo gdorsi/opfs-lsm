@@ -91,7 +91,7 @@ export type OpenOptions = {
    * storage quota for the origin. kv never removes a row for it: it asks
    * an `onPressure` handler to, and a write never waits for it. When tabs
    * differ, the host uses the smallest figure and honors `"quota"` too
-   * (design.md, "Size cap").
+   * (docs/size-cap.md).
    */
   readonly maxBytes?: number | "quota";
 };
