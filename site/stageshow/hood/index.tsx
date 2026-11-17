@@ -15,7 +15,8 @@ import "./hood.css";
 // The engine keeps the rows a flush folded until the next flush, as a recovery copy no read uses; the figure lets
 // them go with the flush that folded them. It also flushes after one write, where the engine waits for the log to
 // reach `maxWalBytes`.
-// Tab 1, where the click is, leads; tab 2 lies over its right edge. Both run under the hood's band, which is the cut.
+// Wide, tab 1 leads, since the click is there, and tab 2 lies over its right edge. Both run under the hood's band, which
+// is the cut.
 
 type Props = { readonly theme: SceneTheme };
 
@@ -132,7 +133,6 @@ const NEIGHBORS: Issue[] = [
   { id: "LL-0B7E2", title: "Add a shortcut to assign to me", who: "Ana Ruiz", date: "Nov 9", status: 1, priority: 3 },
 ];
 const FILLER = [150, 112, 136, 96, 124];
-const FILLER_NARROW = [120, 96];
 
 /**
  * What a tab shows of a row. Tab 1 leads, and tab 2 lies over its right end, so tab 1 draws nothing there. Tab 2 is
@@ -176,7 +176,7 @@ function FillerRow({ w, cols }: { w: number; cols: Cols }) {
       className="hd-row"
       lead={
         <span className="hd-lead">
-          {cols.prio && <span className="hd-btn"><Bar w={14} h={7} r={3.5} tone={1} /></span>}
+          <span className="hd-btn"><Bar w={14} h={7} r={3.5} tone={1} /></span>
           {cols.id && <Bar w={56} h={7} r={3.5} tone={1} />}
           <span className="hd-btn"><Bar w={14} h={7} r={3.5} tone={1} /></span>
         </span>
@@ -333,6 +333,7 @@ export default function Hood({ theme }: Props) {
       {(s, rect, layout) => {
         const compact = layout === "compact";
         const tab1 = rect("tab-1");
+        const status1 = rect("status-1");
         const tab2 = rect("tab-2");
         const row2 = rect("row-2");
         const title1 = rect("title-1");
@@ -342,7 +343,7 @@ export default function Hood({ theme }: Props) {
         const node = rect("node");
         const band = rect("band");
         const ready = [tab1, tab2, row2, title1, row1, wal, sst, node, band].every((r) => r.width > 0);
-        const putX = compact ? wal.x + 32 : wal.x + 64;
+        const putX = compact ? (wal.x + tab2.x) / 2 : wal.x + 64;
         const putFrom = compact ? tab1.y + tab1.height + 5 : band.y + 5;
         const n = mid(node);
         const bcX = (tab2.x + COMPACT[0]) / 2;
@@ -361,14 +362,14 @@ export default function Hood({ theme }: Props) {
               n={2}
               done={s.done2}
               neighbors={compact ? 0 : 2}
-              filler={compact ? FILLER_NARROW : FILLER.slice(0, 2)}
+              filler={compact ? [] : FILLER.slice(0, 2)}
               cols={{ id: false, trail: !compact, prio: !compact }}
               button={!compact}
             />
             <span className="hd-rest" data-target="rest" />
             <div className="hd-band" data-target="band" />
             <Engine s={s} compact={compact} />
-            <Popover show={s.menu} className="hd-menu" origin="top left">
+            <Popover show={s.menu} className="hd-menu" origin="top left" style={{ left: Math.round(status1.x) - 4, top: Math.round(status1.y + status1.height) }}>
               <Menu
                 items={STATUS_LABELS.map((label, code) => (
                   <span key={label} className="hd-item" data-cursor="hand">

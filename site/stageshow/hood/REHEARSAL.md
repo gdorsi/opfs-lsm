@@ -12,7 +12,7 @@ Beats:
 `play="once"`, about 13s. The poster is the payoff.
 
 Captured on the home page:
-- Widths: 1440 (wide, 1152 x 576 stage) and 390 (compact, 358 x 736, full below 720).
+- Widths: 1440 (wide, 1152 x 576 stage) and 390 (compact, 358 x 728, full below 720).
 - Looks: light and dark.
 - `--gate` at both widths in both looks; `--states` at both widths.
 - `--reduced` posters at 1440 light and 390 dark.
@@ -22,7 +22,7 @@ Gate: `rehearsal passed (necessary, not sufficient: references/verify.md and the
 
 Film:
 - `framing: narrower than tall` (390) → cleared by the compact layout below.
-- Compact relayout, picked from three phone prototypes because the 880px compact layout was hard to read. Nothing overlaps: Tab 1 is 380 x 116, cut just under the issue, and runs off the right. Tab 2 is 292 wide, sits under Tab 1's right side, runs off the right and ends under the band. "put" drops down the free lane left of Tab 2. The engine's type is a step larger than wide.
+- Compact relayout, picked from three phone prototypes because the 880px compact layout was hard to read. No window covers another: Tab 1 is 380 x 116, cut just under the issue, and runs off the right. Tab 2 is 292 wide, sits under Tab 1's right side, runs off the right and ends under the band. "put" drops down the free lane left of Tab 2. The engine's type is a step larger than wide.
 - `uneven gutters: div.ss-window` (390, Tab 1 inside the stage) → both tabs run off the right edge → cleared.
 - `uneven padding: div.hd-app` (390, Tab 2 without its toolbar) → Tab 2 keeps LinearLite's toolbar, as wide does → cleared.
 - `framing: real words "l1/c7.0.sst" cut by the crop` (390, once the new file pushes the list down) → compact lists one real file and a placeholder row, which bleeds → cleared.
@@ -35,6 +35,7 @@ Film:
 Assumptions:
 - The flush right after one write is a simplification. The real trigger is the log reaching `maxWalBytes`.
 - The engine deletes the rows a flush folded at the next flush, keeping them as a recovery copy that no read uses (design.md, "Truncation"). The figure lets them go with the flush that folded them.
+- On phones, the open status menu draws past Tab 1's window onto Tab 2 for about a second. A real menu stays inside its window. Tab 1 can't hold the menu unless the figure grows by about 150px.
 - The tab writes the log itself; the SharedWorker only flushes and compacts. That is why "put" comes from the band under Tab 1, not from the SharedWorker.
 
 Not checked:

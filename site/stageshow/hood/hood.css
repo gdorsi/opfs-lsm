@@ -1,5 +1,5 @@
-/* Two tabs of LinearLite above a cut line, the engine under it. One 32px gutter wide, 16px narrow. The windows are
-   cut by the line, the cards in the hood run off the bottom. */
+/* Two tabs of LinearLite above a cut line, the engine under it. One 32px gutter wide, 16px narrow. Wide, the
+   windows are cut by the line. The cards in the hood run off the bottom. */
 
 .hood {
   & .ss-stage {
@@ -210,8 +210,7 @@
 
   /* The status menu, as LinearLite draws it, under the status it changes. */
   .hd-menu {
-    left: 152px;
-    top: 156px;
+    margin-top: 10px;
     width: 180px;
     --ss-popover-bg: var(--ll-raised);
     --ss-row: 28px;
@@ -405,8 +404,7 @@
     }
 
     .hd-menu {
-      left: 52px;
-      top: 129px;
+      margin-top: 4px;
       width: 170px;
     }
 
