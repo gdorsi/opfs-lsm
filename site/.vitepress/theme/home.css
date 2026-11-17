@@ -1,30 +1,8 @@
-/* The home page: the hero with the live demo, then claims beside their illustrations. */
-.home-claim {
-  display: grid;
-  gap: 24px;
-  align-items: center;
-  margin: 72px 0;
-}
+/* The home page: the hero with the live demo, then sections with their illustrations. */
 
-.home-claim > .home-copy > h2 {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
-}
-
-@media (min-width: 1152px) {
-  .home-claim {
-    grid-template-columns: minmax(0, 1fr) 620px;
-    gap: 56px;
-  }
-
-  .home-claim.flip > .home-copy {
-    order: 2;
-  }
-
-  .home-claim.flip {
-    grid-template-columns: 620px minmax(0, 1fr);
-  }
+/* A section's few lines of copy, kept to a readable measure above a figure as wide as the page. */
+.vp-doc .home-lede {
+  max-width: 760px;
 }
 
 /* What kv offers, below the hero: a card per feature, each a name, one line and a few lines of code. */

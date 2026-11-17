@@ -7,6 +7,8 @@ import type { SceneName } from "../../stageshow/sizes.ts";
 export const FIGURES: Partial<Record<SceneName, string>> = {
   features:
     "Six features of opfs-lsm. Live subscriptions: two tabs of one app, where an issue checked off in one tab shows as checked in the other, in the same order, from either tab. Lightweight and fast. Quota management: storage fills to the app's cap, the app evicts its oldest data, and usage falls back under the cap. Use it with your framework: adapters for TanStack DB, Yjs, Automerge and fate. A low-level API for your own adapter: a batch of puts and deletes on keys and bytes. Fault tolerant and consistent: a tab crashes in the middle of a write, and the database reopens with every acknowledged write intact.",
+  hood:
+    "Two tabs of LinearLite above the engine. In tab 1 an issue is marked Done. Tab 1 writes record 43 to the write-ahead log in IndexedDB, where it is saved, and tells tab 2 over a BroadcastChannel; tab 2 shows the issue as Done. The SharedWorker then moves records 41 to 43 into a new SST file in OPFS, l0/41-43.sst, and they leave the log, which is empty again.",
   stack:
     "A tab puts a record, which becomes a row of the write-ahead log in IndexedDB: that row is the ack. The SharedWorker flushes the rows of the log into one SST file in OPFS and truncates the log. The tab reads the SST files itself.",
 };

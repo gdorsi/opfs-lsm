@@ -275,13 +275,14 @@ for await (const { key, value } of db.range({ limit: 50 })) {
 </template>
 </UseCases>
 
-<div class="home-claim">
-<div class="home-copy">
-
 ## Under the hood
 
-[Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../docs/browser-support.md)
+<div class="home-lede">
+
+A write is one row in a write-ahead log, a list of recent writes kept in IndexedDB, and the other tabs of your app hear about it over a BroadcastChannel, a message channel between tabs. One SharedWorker, a background script that all those tabs share, then moves the log into sorted files in OPFS, the browser's private file system.
 
 </div>
-<Illustration name="stack" />
-</div>
+
+[How it works](../docs/how-it-works.md) · [Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../docs/browser-support.md)
+
+<Illustration name="hood" full />
