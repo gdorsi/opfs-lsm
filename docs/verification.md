@@ -72,9 +72,9 @@ A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is 
 
 | Feature | Proof strings |
 | --- | --- |
-| `two-tab` | `tabs=2`, `mode=SharedWorker`, `two-tab ok` |
-| `two-tab-nobc` | `mode=SharedWorker nobc`, `two-tab ok`, and `bc_posts=` with a positive count |
-| `two-tab-local` | `tabs=1`, `mode=local EngineHost`, `two-tab ok` |
+| `two-tab` | `tabs=2`, `mode=SharedWorker`, `two-databases ok`, `two-tab ok` |
+| `two-tab-nobc` | `mode=SharedWorker nobc`, `two-databases ok`, `two-tab ok`, and `bc_posts=` with a positive count |
+| `two-tab-local` | `tabs=1`, `mode=local EngineHost`, `two-databases ok`, `two-tab ok` |
 | `pressure` | `tabs=2`, `mode=SharedWorker`, `pressure answered by tab`, `both tabs read`, `no handler: one warning in each tab`, `pressure ok` |
 | `quota` | `tabs=2`, `mode=SharedWorker`, `handler 1 starts`, `handler calls: `, `quota ok`. Read the timeline: more than one call means a repeated offer. |
 | `bench`, `bench-smoke` | One `## <family>/<workload>: <title>` section per workload, a row per contender, and no `## Failed runs` section. Every read is checked against a model, so exit 0 means every value was right. |

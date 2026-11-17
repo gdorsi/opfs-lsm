@@ -30,9 +30,11 @@ const MIME: Record<string, string> = {
 };
 
 type ClientCmd =
-  | { op: "put"; key: string; value: string }
-  | { op: "get"; key: string }
-  | { op: "ingest" }
+  | { op: "put"; key: string; value: string; name?: string }
+  | { op: "get"; key: string; name?: string }
+  | { op: "ingest"; name?: string }
+  | { op: "rows"; name: string }
+  | { op: "destroy"; name: string }
   | { op: "cap"; key: string; value: string };
 
 type PeerCmd = ClientCmd & { id: number };
@@ -89,20 +91,24 @@ function transpileTs(source: string, fileName: string): string {
 
 function parseClientCmd(value: unknown): ClientCmd | null {
   if (!value || typeof value !== "object") return null;
-  const rec = value as { op?: unknown; key?: unknown; value?: unknown };
-  if (rec.op === "ingest") return { op: "ingest" };
+  const rec = value as { op?: unknown; key?: unknown; value?: unknown; name?: unknown };
+  const name = typeof rec.name === "string" ? { name: rec.name } : {};
+  if (rec.op === "ingest") return { op: "ingest", ...name };
+  if ((rec.op === "rows" || rec.op === "destroy") && typeof rec.name === "string") {
+    return { op: rec.op, name: rec.name };
+  }
   if (rec.op === "cap" && typeof rec.key === "string" && typeof rec.value === "string") {
     return { op: "cap", key: rec.key, value: rec.value };
   }
   if (rec.op === "get" && typeof rec.key === "string") {
-    return { op: "get", key: rec.key };
+    return { op: "get", key: rec.key, ...name };
   }
   if (
     rec.op === "put" &&
     typeof rec.key === "string" &&
     typeof rec.value === "string"
   ) {
-    return { op: "put", key: rec.key, value: rec.value };
+    return { op: "put", key: rec.key, value: rec.value, ...name };
   }
   return null;
 }
@@ -534,6 +540,9 @@ async function runOnce(options: RunOptions): Promise<number> {
       exitCode = 1;
     } else if (!parsed.log?.includes(options.quota ? "quota ok" : options.pressure ? "pressure ok" : "two-tab ok")) {
       console.error("missing the ok line");
+      exitCode = 1;
+    } else if (!options.quota && !options.pressure && !parsed.log.includes("two-databases ok")) {
+      console.error("missing the two-databases ok line");
       exitCode = 1;
     } else if (!options.local && !parsed.log.includes("mode=SharedWorker")) {
       console.error("missing SharedWorker mode");
