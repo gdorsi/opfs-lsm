@@ -7,6 +7,7 @@ import "./app.css";
 import { Compose } from "./compose.tsx";
 import { Detail } from "./detail.tsx";
 import { IssueList } from "./issues.tsx";
+import type { Item } from "./menu.tsx";
 import { SOURCE, failed, post, type ToDemo } from "./protocol.ts";
 import { openStore } from "./store.ts";
 import { Toolbar } from "./toolbar.tsx";
@@ -35,7 +36,6 @@ function Page({ app }: { app: App | undefined }) {
         </div>
         <span className="nav active">All issues</span>
         <div className="spacer" />
-        {app && <Sync app={app} />}
       </aside>
       <main className="main">{app ? <Issues app={app} /> : <div className="topbar" />}</main>
     </div>
@@ -44,30 +44,15 @@ function Page({ app }: { app: App | undefined }) {
 
 const useAppState = (app: App) => useSyncExternalStore(app.subscribe, app.state);
 
-function Sync({ app }: { app: App }) {
-  const { generating } = useAppState(app);
-  return (
-    <div className="sync">
-      <b>Local only</b>
-      <button className="btn" id="more" onClick={() => void app.generate(COUNT).catch(failed)}>
-        Generate {n(COUNT)} more
-      </button>
-      {generating && !generating.first && (
-        <div className="bar" id="more-bar">
-          <i style={{ width: width(generating) }} />
-        </div>
-      )}
-      <button className="btn" id="delete" onClick={app.destroy}>
-        Delete the data
-      </button>
-    </div>
-  );
-}
-
 function Issues({ app }: { app: App }) {
   const { empty, generating, filter, total, issue, detail } = useAppState(app);
   const [composing, setComposing] = useState(false);
   const close = useCallback(() => setComposing(false), []);
+  const generate = () => void app.generate(COUNT).catch(failed);
+  const data: Item[] = [
+    { label: <span>Generate {n(COUNT)} more</span>, on: false, pick: generate },
+    { label: <span>Delete the data</span>, on: false, pick: app.destroy },
+  ];
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -79,7 +64,14 @@ function Issues({ app }: { app: App }) {
 
   return (
     <>
-      <Toolbar filter={filter} total={total} set={app.filter} create={() => setComposing(true)} />
+      <Toolbar
+        filter={filter}
+        total={total}
+        data={data}
+        progress={generating && !generating.first ? width(generating) : undefined}
+        set={app.filter}
+        create={() => setComposing(true)}
+      />
       {empty ? (
         <div className="empty">
           {generating ? (
@@ -96,7 +88,7 @@ function Issues({ app }: { app: App }) {
             <div id="start">
               <h2>No issues yet</h2>
               <p>They are generated in a dedicated WebWorker and stored in this browser.</p>
-              <button className="btn primary" id="demo-generate" onClick={() => void app.generate(COUNT).catch(failed)}>
+              <button className="btn primary" id="demo-generate" onClick={generate}>
                 Generate {n(COUNT)} issues
               </button>
             </div>

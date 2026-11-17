@@ -7,9 +7,9 @@ export type Item = { readonly label: ReactNode; readonly on: boolean; pick(): vo
 
 /**
  * A button that opens a menu under itself. A pick closes the menu, unless `keepOpen`: a menu of toggles stays open
- * and shows the items of the next render.
+ * and shows the items of the next render. `label` names a button that holds only an icon.
  */
-export function MenuButton(props: { className: string; title: string; keepOpen?: boolean; items: Item[]; children: ReactNode }) {
+export function MenuButton(props: { className: string; title: string; label?: string; keepOpen?: boolean; items: Item[]; children: ReactNode }) {
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   return (
@@ -18,6 +18,7 @@ export function MenuButton(props: { className: string; title: string; keepOpen?:
         ref={anchor}
         className={props.className}
         title={props.title}
+        aria-label={props.label}
         type="button"
         onClick={(e) => {
           e.stopPropagation();

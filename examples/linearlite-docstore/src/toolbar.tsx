@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Dots } from "./icons.tsx";
 import { codeItems, MenuButton, type Item } from "./menu.tsx";
 import { PRIORITY_LABELS, SORTS, SORT_LABELS, STATUS_LABELS, type Code, type Filter } from "./model.ts";
 
@@ -7,8 +8,18 @@ const toggled = (codes: readonly Code[], code: Code) => (codes.includes(code) ? 
 const chipText = (name: "Status" | "Priority", codes: readonly Code[], labels: readonly string[]) =>
   codes.length === 0 ? name : codes.length === 1 ? labels[codes[0]!]! : `${codes.length} ${name === "Status" ? "statuses" : "priorities"}`;
 
-/** The filter chips, the sort menu, the title search and the button for a new issue. `set` gets every change to the filter. */
-export function Toolbar(props: { filter: Filter; total: number | undefined; set(patch: Partial<Filter>): void; create(): void }) {
+/**
+ * The filter chips, the sort menu, the button for a new issue, the `data` menu and the title search. `set` gets every
+ * change to the filter. `progress`, a CSS width, draws a bar along the toolbar's edge.
+ */
+export function Toolbar(props: {
+  filter: Filter;
+  total: number | undefined;
+  data: Item[];
+  progress: string | undefined;
+  set(patch: Partial<Filter>): void;
+  create(): void;
+}) {
   const { filter, set } = props;
   const [search, setSearch] = useState("");
 
@@ -60,9 +71,17 @@ export function Toolbar(props: { filter: Filter; total: number | undefined; set(
       <button className="btn primary" id="new" onClick={props.create}>
         New issue
       </button>
+      <MenuButton className="btn icon" title="Data" label="Data" items={props.data}>
+        <Dots />
+      </MenuButton>
       <label className="search">
         <input id="search" type="search" placeholder="Search titles" autoComplete="off" value={search} onChange={(e) => setSearch(e.target.value)} />
       </label>
+      {props.progress && (
+        <div className="bar">
+          <i style={{ width: props.progress }} />
+        </div>
+      )}
     </div>
   );
 }
