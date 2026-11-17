@@ -294,7 +294,7 @@ for await (const { key, value } of db.range({ limit: 50 })) {
 <div class="home-features">
 <div>
 
-### Lightweight, and faster than IndexedDB in most cases
+### Lightweight
 
 The wasm engine loads in parallel with the open, outside your main bundle
 
