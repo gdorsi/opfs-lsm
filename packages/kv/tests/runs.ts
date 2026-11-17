@@ -52,7 +52,7 @@ export async function mergeRuns(
     readonly codec?: SstCodec;
     readonly open?: (spec: MergeSpec) => MergeCore | Promise<MergeCore>;
   } = {},
-): Promise<{ runs: EncodedRun[]; droppedSeq: number }> {
+): Promise<{ runs: EncodedRun[] }> {
   const fs = new MemoryFs();
   const paths = sources.map((runs, i) => runs.map((_, j) => `in/${i}.${j}.sst`));
   for (const [i, runs] of sources.entries()) for (const [j, run] of runs.entries()) await publish(fs, paths[i]![j]!, run);
@@ -68,9 +68,9 @@ export async function mergeRuns(
     yieldBytes: 1024 * 1024,
   });
   try {
-    const { outputs, droppedSeq } = await pumpMerge(fs, core, files, (i) => `out/${i}.sst`);
+    const outputs = await pumpMerge(fs, core, files, (i) => `out/${i}.sst`);
     const runs = await Promise.all(outputs.map(async ({ path, ...end }) => ({ body: (await fs.read(path, 0, Infinity))!, end })));
-    return { runs, droppedSeq };
+    return { runs };
   } finally {
     core.close();
     for (const file of files.flat()) file.close();

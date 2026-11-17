@@ -201,7 +201,6 @@ describe("wasm against TypeScript", () => {
             const t = await mergeRuns(sources, { ...options, open: openMergeTs });
             const flat = async (out: readonly EncodedRun[]) => plain(out.flatMap((r) => decodeSst(r.body)));
             expect(await flat(w.runs)).toEqual(await flat(t.runs));
-            expect(w.droppedSeq).toBe(t.droppedSeq);
             // Raw runs cut blocks and runs in the same places (design.md), so the bytes match too.
             expect(w.runs.map((r) => [...r.body])).toEqual(t.runs.map((r) => [...r.body]));
             // And both report the same size and key range at the end of each run.

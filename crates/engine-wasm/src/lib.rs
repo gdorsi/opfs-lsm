@@ -189,11 +189,6 @@ fn parse_entries(buf: &[u8]) -> Result<Vec<Entry>, i32> {
 }
 
 #[no_mangle]
-pub extern "C" fn init(_capacity: u32) -> i32 {
-    0
-}
-
-#[no_mangle]
 pub extern "C" fn input_ptr(len: u32) -> u32 {
     let buf = input();
     let len = len as usize;
@@ -309,7 +304,7 @@ pub unsafe extern "C" fn merge_open(
 
 /// Run the session to its next stop. The result holds the stop's bytes:
 /// demand records for NEED, output bytes for WRITE (in the session's own
-/// buffer), a run head and keys for RUN_END, u64 dropped seq for DONE.
+/// buffer), a run head and keys for RUN_END, nothing for YIELD and DONE.
 #[no_mangle]
 pub extern "C" fn merge_pump() -> i32 {
     show(&[]);
@@ -338,10 +333,7 @@ pub extern "C" fn merge_pump() -> i32 {
             RUN_END
         }
         Ok(Stop::Yield) => YIELD,
-        Ok(Stop::Done(dropped)) => {
-            show_result(|out| out.extend_from_slice(&dropped.to_le_bytes()));
-            DONE
-        }
+        Ok(Stop::Done) => DONE,
         Err(e) => merge_error(e),
     }
 }

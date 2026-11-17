@@ -30,10 +30,7 @@ type MergedRun = Omit<RunMeta, "marksThrough">;
 type CompactionOutput = {
   readonly inputs: readonly string[];
   readonly outputs: readonly RunMeta[];
-  readonly droppedSeq: number;
 };
-
-type Merged = { readonly outputs: readonly MergedRun[]; readonly droppedSeq: number };
 
 /**
  * Plan one step on `base`, the recorded generation, merge its inputs, and
@@ -60,8 +57,7 @@ export async function mergeNextStep(
     inputs: plan.inputs.map((r) => r.path),
     // The merge applied every mark of `base`. One the manifest gains before
     // the install is past `base.through`, so the output claims none of it.
-    outputs: merged.outputs.map((run) => ({ ...run, marksThrough: base.through })),
-    droppedSeq: merged.droppedSeq,
+    outputs: merged.map((run) => ({ ...run, marksThrough: base.through })),
   };
 }
 
@@ -71,7 +67,7 @@ async function writeStep(
   name: (i: number) => string,
   budget: HostBudget,
   base: GenerationMeta,
-): Promise<Merged> {
+): Promise<MergedRun[]> {
   const inputs: OpenFile[][] = [];
   let merge: MergeCore | undefined;
   try {
@@ -113,7 +109,7 @@ export async function pumpMerge(
   merge: MergeCore,
   inputs: readonly (readonly OpenFile[])[],
   name: (i: number) => string,
-): Promise<Merged> {
+): Promise<MergedRun[]> {
   const outputs: MergedRun[] = [];
   const created: string[] = [];
   let open: { readonly path: string; readonly writer: FileWriter } | undefined;
@@ -144,7 +140,7 @@ export async function pumpMerge(
           await new Promise((resolve) => setTimeout(resolve, 0));
           break;
         case "done":
-          return { outputs, droppedSeq: stop.droppedSeq };
+          return outputs;
       }
     }
   } catch (err) {
@@ -178,7 +174,6 @@ export async function installStep(
   await publishGeneration(fs, {
     generation,
     runs,
-    tombstoneSeq: Math.max(meta.tombstoneSeq, step.droppedSeq),
     through: meta.through,
     marks: retireMarks(meta.marks, runs),
   });

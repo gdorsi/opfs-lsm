@@ -5,9 +5,8 @@ The byte layout of a manifest, `m/<generation>.mft`. What a manifest means is in
 
 ```layout
 | u32 magic       "OLGN" (0x4f4c474e)                                        |
-| u32 version     4                                                          |
+| u32 version     5                                                          |
 | u64 generation                                                             |
-| u64 tombstoneSeq                                                           |
 | u64 through                                                                |
 | marks block                                                                |
 | u32 run count                                                              |
@@ -36,8 +35,6 @@ per mark:
 | u64 through                                                                |
 | u64 at                                                                     |
 ```
-
-`tombstoneSeq` is the highest seq of any delete that a bottom-level compaction dropped.
 
 `bytes` and the key range let the compaction planner size and route levels without opening a
 file. The level of a run is in its path.

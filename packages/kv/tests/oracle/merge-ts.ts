@@ -45,7 +45,6 @@ class Session implements MergeCore {
   private readonly chunkBytes: number;
   private readonly yieldBytes: number;
   private stage: Stage = { kind: "running" };
-  private dropped = 0;
   /** The open output run's entries and their encoded size. */
   private gathered: SstEntry[] = [];
   private gatheredBytes = 0;
@@ -72,7 +71,7 @@ class Session implements MergeCore {
       case "closed":
         throw new Error("merge session closed");
       case "done":
-        return { kind: "done", droppedSeq: this.dropped };
+        return { kind: "done" };
       case "feeding":
         if (this.sources.some((s) => s.reader.waiting())) throw new Error("merge pump: a demand was not fed");
         break;
@@ -134,7 +133,7 @@ class Session implements MergeCore {
         }
       }
       if (!winner || !entry) {
-        if (this.gathered.length === 0) return { kind: "done", droppedSeq: this.dropped };
+        if (this.gathered.length === 0) return { kind: "done" };
         this.finish();
         continue;
       }
@@ -150,7 +149,6 @@ class Session implements MergeCore {
   private emit(e: SstEntry): void {
     if (this.marks.length > 0 && e.seq <= throughAt(this.marks, e.key)) return;
     if (e.kind === "del" && this.dropTombstones) {
-      this.dropped = Math.max(this.dropped, e.seq ?? 0);
       return;
     }
     this.gathered.push(e);

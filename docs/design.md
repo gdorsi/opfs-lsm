@@ -199,8 +199,7 @@ A manifest, `m/<generation>.mft`, lists the runs of one generation. Its byte lay
 past it. An ingest sets it to the last seq it folded. A compaction keeps the value of its base.
 
 A manifest also holds the marks of the range deletes up to `through` that its runs may still hold
-versions for, and for each run its `marksThrough` (see [Range deletes](#range-deletes)). Its
-`tombstoneSeq` is the highest seq of a tombstone a bottom merge dropped; no read consults it.
+versions for, and for each run its `marksThrough` (see [Range deletes](#range-deletes)).
 
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
@@ -506,9 +505,8 @@ exclusive section, so flushes go on while it runs. A flush adds L0 runs in front
 under the exclusive section, the host:
 
 1. Reconciles, and checks that every input is still in the recorded manifest `G`.
-2. Writes manifest `top + 1`, with the inputs replaced by the outputs, `tombstoneSeq` raised to
-   the highest dropped tombstone, and the `through` and marks of `G`, retired against the new
-   runs.
+2. Writes manifest `top + 1`, with the inputs replaced by the outputs, and the `through` and
+   marks of `G`, retired against the new runs.
 3. Raises `meta.generation` to `top + 1`.
 4. Sweeps: deletes the older manifests, and every run outside `top + 1` that no tab holds open.
    While a tab holds the reclaim lock, it deletes nothing and tries again on the next pass.

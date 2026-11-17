@@ -122,7 +122,6 @@ describe("decoder bugs the fuzzers found", () => {
   it("KT4: decodeGeneration throws CorruptDatabaseError on a CRC-valid manifest with a bad length", async () => {
     const m = encodeGeneration({
       generation: 1,
-      tombstoneSeq: 0,
       through: 0,
       marks: NO_MARKS,
       runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") }, marksThrough: 0 }],

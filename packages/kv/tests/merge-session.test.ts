@@ -104,17 +104,15 @@ function randomMarks(r: Rng, seqs: number): Marks {
  * The newest-wins fold: oldest source first, so newer sources and later
  * duplicates overwrite. A winner a mark covers is gone.
  */
-function fold(sources: readonly Source[], drop: boolean, marks: Marks): { entries: SstEntry[]; droppedSeq: number } {
+function fold(sources: readonly Source[], drop: boolean, marks: Marks): SstEntry[] {
   const byKey = new Map<string, SstEntry>();
   for (let i = sources.length - 1; i >= 0; i--) for (const e of sources[i]!.entries) byKey.set(keyToString(e.key), e);
-  let droppedSeq = 0;
   const entries: SstEntry[] = [];
   for (const e of [...byKey.values()].sort((a, b) => compareBytes(a.key, b.key))) {
     if (marks.length > 0 && e.seq <= throughAt(marks, e.key)) continue;
-    if (drop && e.kind === "del") droppedSeq = Math.max(droppedSeq, e.seq ?? 0);
-    else entries.push(e);
+    if (!(drop && e.kind === "del")) entries.push(e);
   }
-  return { entries, droppedSeq };
+  return entries;
 }
 
 /** `entries` cut where a run's `entryRecordSize`s reach `target`, as a merge cuts them. */
@@ -140,7 +138,7 @@ const plain = (entries: readonly SstEntry[]) =>
 
 const same = (a: Uint8Array, b: Uint8Array) => Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(b);
 
-type Merged = { runs: { meta: RunMeta; body: Uint8Array }[]; droppedSeq: number };
+type Merged = { runs: { meta: RunMeta; body: Uint8Array }[] };
 
 /** Pump a session opened by `open` over the runs at `paths`, writing to `out/<label>.<i>.sst`. */
 async function merge(
@@ -155,9 +153,9 @@ async function merge(
   const inputs = await Promise.all(paths.map((runs) => Promise.all(runs.map(async (p) => wrapFile((await fs.open(p))!)))));
   const core = open(spec);
   try {
-    const { outputs, droppedSeq } = await pumpMerge(wrapFs(fs), core, inputs, (i) => `out/${label}.${i}.sst`);
+    const outputs = await pumpMerge(wrapFs(fs), core, inputs, (i) => `out/${label}.${i}.sst`);
     const runs = await Promise.all(outputs.map(async (meta) => ({ meta, body: (await fs.read(meta.path, 0, Infinity))! })));
-    return { runs, droppedSeq };
+    return { runs };
   } finally {
     core.close();
     for (const file of inputs.flat()) file.close();
@@ -199,8 +197,7 @@ describe("the TypeScript and wasm merge sessions, through the compaction driver"
         const ts = await merge(fs, openMergeTs, spec, paths, "ts");
         const w = await merge(fs, openWasm, spec, paths, "wasm");
         for (const out of [ts, w]) {
-          expect(out.droppedSeq).toBe(expected.droppedSeq);
-          expect(out.runs.map((run) => plain(decodeSst(run.body)))).toEqual(cut(expected.entries, spec.targetBytes).map(plain));
+          expect(out.runs.map((run) => plain(decodeSst(run.body)))).toEqual(cut(expected, spec.targetBytes).map(plain));
           for (const run of out.runs) {
             expect(run.meta.bytes).toBe(run.body.byteLength);
             expect(run.meta.range).toEqual(sstKeyRange(run.body));
@@ -525,7 +522,7 @@ describe("a compaction step at full size", () => {
     const { body, end } = encodeRun(l1);
     await publish(fs, "l1/c1.0.sst", body);
     metas.push({ path: "l1/c1.0.sst", ...end, marksThrough: 0 });
-    await publishGeneration(fs, { generation: 1, runs: metas, tombstoneSeq: 0, through: 0, marks: NO_MARKS });
+    await publishGeneration(fs, { generation: 1, runs: metas, through: 0, marks: NO_MARKS });
     return [...sources, l1];
   }
 
@@ -563,8 +560,7 @@ describe("a compaction step at full size", () => {
 
       const expected = fold(sources.map((entries) => ({ runs: [], entries })), true, NO_MARKS);
       const bodies = await Promise.all(step.outputs.map(async (o) => (await base.read(o.path, 0, Infinity))!));
-      expect(plain(bodies.flatMap((b) => decodeSst(b)))).toEqual(plain(expected.entries));
-      expect(step.droppedSeq).toBe(expected.droppedSeq);
+      expect(plain(bodies.flatMap((b) => decodeSst(b)))).toEqual(plain(expected));
     },
     60_000,
   );

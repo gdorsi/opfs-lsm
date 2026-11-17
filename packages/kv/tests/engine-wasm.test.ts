@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  EngineCapacityError,
+  EngineOutOfMemoryError,
   encodeRun,
   encodeSst,
   engineUsingWasm,
@@ -174,7 +174,6 @@ describe("engine status codes", () => {
     return {
       exports: {
         memory,
-        init: () => 0,
         input_ptr: () => 8,
         result_ptr: () => 0,
         result_len: () => 0,
@@ -192,18 +191,18 @@ describe("engine status codes", () => {
     expect(() => engine.scanBlockContains(new Uint8Array(4), false, new Uint8Array(0))).toThrow(CorruptDatabaseError);
   });
 
-  it("turns -11 into an error naming the operation, input size and capacity", () => {
-    const engine = flatEngine(stub(-11), 1234);
+  it("turns -11 into an error naming the operation and input size", () => {
+    const engine = flatEngine(stub(-11));
     const run = () => engine.lz4Decompress(new Uint8Array(40), 8);
-    expect(run).toThrow(EngineCapacityError);
+    expect(run).toThrow(EngineOutOfMemoryError);
     expect(run).not.toThrow(CorruptDatabaseError);
-    expect(run).toThrow(/lz4_decompress.*40 bytes.*1234/);
+    expect(run).toThrow(/lz4_decompress.*40 bytes/);
   });
 
-  it("reports a refused input region as a capacity error", () => {
+  it("reports a refused input region as an out of memory error", () => {
     const instance = stub(0);
     (instance.exports as unknown as { input_ptr: () => number }).input_ptr = () => 0;
-    expect(() => flatEngine(instance, 99).lz4Decompress(new Uint8Array(40), 8)).toThrow(EngineCapacityError);
+    expect(() => flatEngine(instance).lz4Decompress(new Uint8Array(40), 8)).toThrow(EngineOutOfMemoryError);
   });
 });
 

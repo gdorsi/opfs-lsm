@@ -82,7 +82,7 @@ const many = (prefix: string, n: number, tag: string) =>
 /**
  * Eight flushes: two compactions. The second merges four L0 runs into the
  * overlapping L1 run (reclaiming an L1 run) at the bottom, so it drops
- * tombstones and raises `tombstoneSeq`. Multi-block runs from a big batch.
+ * tombstones. Multi-block runs from a big batch.
  */
 const CASCADE: Step[] = [
   many("n", 300, "x"), ingest,

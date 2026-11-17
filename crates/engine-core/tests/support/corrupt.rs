@@ -217,7 +217,7 @@ pub fn blocks_tile(buf: &[u8]) -> bool {
 
 /// Drive a merge session over `sources` (each a list of runs, newest source
 /// first) to its end, feeding each `Need` in an order picked by `seed`.
-pub fn drive_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) -> Result<(Vec<EncodedRun>, u64), MergeError> {
+pub fn drive_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) -> Result<Vec<EncodedRun>, MergeError> {
     let sizes: Vec<Vec<u32>> = sources.iter().map(|runs| runs.iter().map(|r| r.len() as u32).collect()).collect();
     let mut session = MergeSession::open(config, &sizes, &[])?;
     let mut state = seed | 1;
@@ -241,9 +241,9 @@ pub fn drive_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) -
             Stop::Write(b) => bytes.extend_from_slice(b),
             Stop::RunEnd(end) => runs.push(EncodedRun { bytes: std::mem::take(&mut bytes), end: end.clone() }),
             Stop::Yield => {}
-            Stop::Done(dropped) => {
+            Stop::Done => {
                 assert!(bytes.is_empty(), "every written byte belongs to a finished run");
-                return Ok((runs, dropped));
+                return Ok(runs);
             }
         }
     }
@@ -273,7 +273,7 @@ pub fn check_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) {
     };
     let sorted = decoded.iter().all(|s| s.windows(2).all(|w| w[0].key() <= w[1].key()));
     let tiled = sources.iter().flatten().all(|run| blocks_tile(run));
-    let (runs, dropped) = match outcome {
+    let runs = match outcome {
         Ok(ok) => ok,
         Err(e) => {
             assert!(!(sorted && tiled), "a session over runs that decode, tile and keep key order must finish: {e:?}");
@@ -297,19 +297,14 @@ pub fn check_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) {
             map.insert(e.key().to_vec(), e.clone());
         }
     }
-    let mut want_dropped = 0;
     let want: Vec<Entry> = map
         .into_values()
         .filter(|e| match e {
-            Entry::Del { seq, .. } if config.drop_tombstones => {
-                want_dropped = want_dropped.max(*seq);
-                false
-            }
+            Entry::Del { .. } => !config.drop_tombstones,
             _ => true,
         })
         .collect();
     assert_eq!(out, want, "the session's output is the newest-wins fold");
-    assert_eq!(dropped, want_dropped, "the session reports the highest dropped tombstone");
 }
 
 /// Split fuzz bytes into a session: five header bytes, then each run as a

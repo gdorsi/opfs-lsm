@@ -123,9 +123,6 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
   const current: GenerationMeta | undefined =
     recorded === 0 ? GENERATION_ZERO : manifests.get(recorded);
   if (!current) problems.push(`recorded generation ${recorded} has no readable manifest`);
-  if (current && current.tombstoneSeq > current.through) {
-    problems.push(`tombstoneSeq ${current.tombstoneSeq} past the manifest's through ${current.through}`);
-  }
   if (current && current.through > ingestedThrough) {
     problems.push(`manifest through ${current.through} past ingestedThrough ${ingestedThrough}`);
   }

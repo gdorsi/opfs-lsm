@@ -188,7 +188,6 @@ asserts:
   disjoint and sorted by smallest key, as the manifest order promises.
 - The newest seq in any run is ≤ `meta.ingestedThrough`. WAL keys are exactly
   `(ingestedThrough, head]` with no gaps.
-- No tombstone at or below `tombstoneSeq` hides a value below it in a deeper level.
 - Codec matches `codecForLevel`.
 - Orphans (files no live manifest lists) are reported as a count, not as an error. They are
   allowed today (`docs/design.md`, "Files that no manifest lists are never deleted on startup"),
