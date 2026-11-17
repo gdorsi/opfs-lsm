@@ -5,9 +5,9 @@ import type { Node as PMNode } from "prosemirror-model";
 import { NodeSelection, Plugin, type Command, type PluginView } from "prosemirror-state";
 import { Decoration, DecorationSet, EditorView, type NodeView } from "prosemirror-view";
 import type { Page, PageBody, PageId, Tree, View } from "../model/types.ts";
-import { applyLocal, bodyState, isRemote, remoteTransaction } from "./binding.ts";
+import { applyLocal, bodyState, remoteTransaction } from "./binding.ts";
 import { pageKeymap, setLink, toggleTodo } from "./commands.ts";
-import { caretAtTop, fixPages, isPageFix, pageBlocks, removedPages } from "./pages.ts";
+import { caretAtTop, fixPages, guardPages } from "./pages.ts";
 import { pageInputRules } from "./rules.ts";
 import { schema } from "./schema.ts";
 import { addBlock, blockMenuTarget, menuPlugin, pointMenu, runMenu, toggleBlockMenu, type Anchor, type MenuHooks } from "./menu.ts";
@@ -40,8 +40,11 @@ export type EditorOptions = {
   readonly askHref: (at: At) => void;
   readonly pages: PageLinks;
   readonly onMenu: MenuHooks["show"];
-  /** Removing these blocks would delete their pages: the page confirms, then deletes them, and the editor drops the blocks. */
-  readonly askDelete: (ask: { readonly ids: readonly PageId[]; readonly at: Anchor }) => void;
+  /**
+   * Removing these blocks would delete their pages. On yes the page calls `confirm`, which applies the held change,
+   * then deletes the pages; a change that came in since makes the editor drop the blocks when the pages go instead.
+   */
+  readonly askDelete: (ask: { readonly ids: readonly PageId[]; readonly at: Anchor; confirm(): void }) => void;
 };
 
 const HINT = "Type / for a page or a block, # for a heading, - for a list";
@@ -97,11 +100,13 @@ function icon(markup: string): SVGElement {
   return svg;
 }
 
+/** The page icon on page blocks and in the menus. */
+export const PAGE_ICON = ["M4.5 2.5h6l3 3v9.25a.75.75 0 0 1-.75.75h-8.25a.75.75 0 0 1-.75-.75V3.25a.75.75 0 0 1 .75-.75z", "M10.5 2.5v3h3M6.5 9h5M6.5 11.75h5"] as const;
+
 const pageIcon = () =>
-  icon(
-    '<path d="M4.5 2.5h6l3 3v9.25a.75.75 0 0 1-.75.75h-8.25a.75.75 0 0 1-.75-.75V3.25a.75.75 0 0 1 .75-.75z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>' +
-      '<path d="M10.5 2.5v3h3M6.5 9h5M6.5 11.75h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>',
-  );
+  icon(PAGE_ICON.map((d) => `<path d="${d}" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>`).join(""));
+
+const MOD = typeof navigator !== "undefined" && /Mac|iP(hone|[oa]d)/.test(navigator.platform) ? "⌘" : "Ctrl+";
 
 const plusIcon = () => icon('<path d="M9 4v10M4 9h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>');
 
@@ -148,9 +153,11 @@ class BlockGutter implements PluginView {
     const add = document.createElement("button");
     add.className = "gutter-add";
     add.setAttribute("aria-label", "Add a block below");
+    add.title = "Add a block below";
     add.append(plusIcon());
     this.handle.className = "gutter-handle";
     this.handle.setAttribute("aria-label", "Open block menu");
+    this.handle.title = `Open block menu (${MOD}/)`;
     this.handle.setAttribute("aria-haspopup", "listbox");
     this.handle.append(gripIcon());
     for (const button of [add, this.handle]) button.tabIndex = -1;
@@ -273,27 +280,6 @@ function pageView(links: PageLinks): (node: PMNode) => NodeView {
   };
 }
 
-/** Holds back a local change that removes a child's last block, and asks the page to confirm the delete instead. */
-function guardPages(parent: PageId, options: EditorOptions): Plugin {
-  let view: EditorView | null = null;
-  return new Plugin({
-    view(v) {
-      view = v;
-      return { destroy: () => void (view = null) };
-    },
-    filterTransaction(tr) {
-      if (isRemote(tr) || isPageFix(tr)) return true;
-      const children = options.pages.tree.read().children(parent);
-      const ids = removedPages(tr, (id) => children.includes(id));
-      if (ids.length === 0) return true;
-      const first = pageBlocks(tr.before).find((block) => block.id === ids[0])!;
-      const rect = (view?.nodeDOM(first.pos) as HTMLElement | null)?.getBoundingClientRect();
-      options.askDelete({ ids, at: rect ?? { left: 0, top: 0, bottom: 0 } });
-      return false;
-    },
-  });
-}
-
 export function mountEditor(place: HTMLElement, body: PageBody, options: EditorOptions): MountedEditor {
   const { pages } = options;
   const removed = () => body.save.read().state === "removed";
@@ -309,7 +295,13 @@ export function mountEditor(place: HTMLElement, body: PageBody, options: EditorO
       pageKeymap(askHref, pages.open),
       keymap(baseKeymap),
       history(),
-      guardPages(body.id, options),
+      guardPages(
+        (id) => pages.tree.read().children(body.id).includes(id),
+        (ids, pos, confirm) => {
+          const rect = (view.nodeDOM(pos) as HTMLElement | null)?.getBoundingClientRect();
+          options.askDelete({ ids, at: rect ?? { left: 0, top: 0, bottom: 0 }, confirm: () => void confirm(view.state, view.dispatch) });
+        },
+      ),
       todoCheckbox,
       decorations,
       blockGutter(),

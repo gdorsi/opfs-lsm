@@ -4,8 +4,9 @@
  * functions keep the two agreeing, and run in Node tests.
  */
 import type { Node as PMNode } from "prosemirror-model";
-import { NodeSelection, TextSelection, type Command, type EditorState, type Transaction } from "prosemirror-state";
+import { NodeSelection, Plugin, TextSelection, type Command, type EditorState, type Transaction } from "prosemirror-state";
 import type { PageId } from "../model/types.ts";
+import { isRemote } from "./binding.ts";
 import { schema } from "./schema.ts";
 
 const page = schema.nodes.page!;
@@ -14,12 +15,12 @@ const paragraph = schema.nodes.paragraph!;
 /** Marks the editor's own repairs: they may remove page blocks, and never enter the undo history. */
 const FIX = "pages:fix";
 
-export const isPageFix = (tr: Transaction): boolean => tr.getMeta(FIX) === true;
+const isPageFix = (tr: Transaction): boolean => tr.getMeta(FIX) === true;
 
 type PageBlock = { readonly id: PageId; readonly pos: number; readonly node: PMNode };
 
 /** Every page block, in order. They sit at the top level only. */
-export function pageBlocks(doc: PMNode): PageBlock[] {
+function pageBlocks(doc: PMNode): PageBlock[] {
   const out: PageBlock[] = [];
   doc.forEach((node, pos) => {
     if (node.type === page) out.push({ id: node.attrs.id, pos, node });
@@ -49,6 +50,29 @@ export function removedPages(tr: Transaction, isChild: (id: PageId) => boolean):
   if (!tr.docChanged || !touchesPage(tr)) return [];
   const after = new Set(pageBlocks(tr.doc).map((block) => block.id));
   return [...new Set(pageBlocks(tr.before).map((block) => block.id))].filter((id) => isChild(id) && !after.has(id));
+}
+
+const CONFIRMED = "pages:confirmed";
+
+/**
+ * Holds back a local change that removes a child's last page block, and asks with those pages and the old position
+ * of the first one's block. `confirm` applies the held change whole, and is false when the body changed since.
+ */
+export function guardPages(isChild: (id: PageId) => boolean, ask: (ids: readonly PageId[], pos: number, confirm: Command) => void): Plugin {
+  return new Plugin({
+    filterTransaction(tr) {
+      if (isRemote(tr) || isPageFix(tr) || tr.getMeta(CONFIRMED)) return true;
+      const ids = removedPages(tr, isChild);
+      if (ids.length === 0) return true;
+      const confirm: Command = (state, dispatch) => {
+        if (!state.doc.eq(tr.before)) return false;
+        dispatch?.(tr.setMeta(CONFIRMED, true));
+        return true;
+      };
+      ask(ids, pageBlocks(tr.before).find((block) => block.id === ids[0])!.pos, confirm);
+      return false;
+    },
+  });
 }
 
 export type PageFix = {

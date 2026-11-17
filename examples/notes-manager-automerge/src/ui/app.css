@@ -788,6 +788,7 @@ a:focus-visible {
   top: auto;
   right: auto;
   z-index: 20;
+  overflow: auto;
 }
 
 .link-field {

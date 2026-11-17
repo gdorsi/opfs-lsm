@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NodeSelection, Plugin, TextSelection } from "prosemirror-state";
+import { NodeSelection, TextSelection, type Command } from "prosemirror-state";
 import { addBlock, menuKey, runMenu, toggleBlockMenu } from "../src/editor/menu.ts";
-import { removedPages } from "../src/editor/pages.ts";
+import { guardPages } from "../src/editor/pages.ts";
 import { newPageId } from "../src/model/bodies.ts";
 import type { Block, Depth, PageId } from "../src/model/types.ts";
 import { P, block, menuPage, pageOf, text } from "./editor.ts";
@@ -48,6 +48,12 @@ test("opened from the handle the caret lands at the end of that block, and a ran
   p.run(toggleBlockMenu());
   p.key("Escape");
   assert.deepEqual([p.state.selection.from, p.state.selection.to], [6, 8], "a range inside the block comes back whole");
+
+  p.view.dispatch(p.state.tr.setSelection(TextSelection.create(p.state.doc, 2, 7)));
+  p.run(toggleBlockMenu());
+  assert.equal(p.state.selection.from, 5, "Mod-/ acts on the block the range ends in");
+  p.key("Escape");
+  assert.deepEqual([p.state.selection.from, p.state.selection.to], [2, 7], "and puts back a range across blocks");
 });
 
 test("a block menu does not open over the / menu, and the / menu replaces nothing of it", async () => {
@@ -118,13 +124,14 @@ test("deleting the only block, or the one after a page block, leaves an empty pa
 test("a page block's menu opens it, and deleting it goes through the page guard, which closes the menu on blur", async () => {
   const id = newPageId();
   const asked: PageId[][] = [];
-  const guard = new Plugin({
-    filterTransaction(tr) {
-      const ids = removedPages(tr, () => true);
-      if (ids.length > 0) asked.push(ids);
-      return ids.length === 0;
+  let confirm: Command | null = null;
+  const guard = guardPages(
+    () => true,
+    (ids, _pos, yes) => {
+      asked.push([...ids]);
+      confirm = yes;
     },
-  });
+  );
   const p = await menuPage([P, text("x"), pageOf(id), P], newPageId, [guard]);
   p.view.dispatch(p.state.tr.setSelection(NodeSelection.create(p.state.doc, 3)));
   p.run(toggleBlockMenu());
@@ -143,6 +150,8 @@ test("a page block's menu opens it, and deleting it goes through the page guard,
   p.blur();
   assert.equal(p.menu(), null);
   assert.ok(p.state.selection instanceof NodeSelection && p.state.selection.from === 3);
+  assert.ok(p.run(confirm!), "the confirm's yes");
+  assert.deepEqual(p.spans, [P, text("x"), P]);
 });
 
 test("the gutter's + opens a / menu on a new line, and Escape takes the / back out unless a query was typed", async () => {
@@ -230,4 +239,42 @@ test("a remote delete of the block closes its menu and leaves the new selection 
   assert.equal(p.menu(), null);
   assert.ok(!(p.state.selection instanceof NodeSelection));
   assert.equal(p.run(runMenu(0, { createPage: newPageId, openPage: () => {} })), false, "a late click finds no menu");
+});
+
+test("the + menu's / goes however the menu closes, and a typed query keeps it", async () => {
+  const p = await menuPage([P, text("one"), P, text("two")]);
+  p.at(2);
+  p.run(addBlock(0));
+  assert.deepEqual(p.spans, [P, text("one"), P, text("/"), P, text("two")]);
+  p.at(p.state.doc.content.size - 1);
+  assert.equal(p.menu(), null, "a click in another block closes it");
+  assert.deepEqual(p.spans, [P, text("one"), P, P, text("two")]);
+
+  p.run(addBlock(0));
+  p.type("h");
+  p.at(p.state.doc.content.size - 1);
+  assert.deepEqual(p.spans, [P, text("one"), P, text("/h"), P, P, text("two")]);
+});
+
+test("a remote merge of the selected block into the one above closes the block menu", async () => {
+  const p = await menuPage([P, text("mine"), P, text("target")]);
+  p.at(8);
+  p.run(toggleBlockMenu());
+  assert.equal(p.state.selection.from, 6);
+  p.remote([{ type: "delete", at: 5, count: 1 }]);
+  assert.equal(p.menu(), null, "it does not move onto the merged block");
+  assert.ok(!(p.state.selection instanceof NodeSelection));
+  assert.deepEqual(p.spans, [P, text("minetarget")]);
+});
+
+test("the / menu goes back to its first row when the query changes", async () => {
+  const p = await menuPage([P]);
+  p.at(1);
+  p.type("/");
+  p.key("ArrowDown");
+  p.key("ArrowDown");
+  assert.equal(p.menu()?.index, 2);
+  p.type("h");
+  assert.deepEqual(labels(p.menu()), ["Heading 1", "Heading 2", "Heading 3"]);
+  assert.equal(p.menu()?.index, 0);
 });

@@ -1,9 +1,10 @@
 import * as A from "@automerge/automerge";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { deleteSelection } from "prosemirror-commands";
 import { undo } from "prosemirror-history";
-import { NodeSelection } from "prosemirror-state";
-import { caretAtTop, fixPages, insertPageBlock, openSelectedPage, removedPages, selectPageAfter, selectPageBefore } from "../src/editor/pages.ts";
+import { NodeSelection, TextSelection, type Command } from "prosemirror-state";
+import { caretAtTop, fixPages, guardPages, insertPageBlock, openSelectedPage, removedPages, selectPageAfter, selectPageBefore } from "../src/editor/pages.ts";
 import { schema } from "../src/editor/schema.ts";
 import { newPageId } from "../src/model/bodies.ts";
 import { toSpans, type BodyDoc } from "../src/model/text-edits.ts";
@@ -93,6 +94,42 @@ test("removedPages names a child whose last block a change removes, and nothing 
   assert.deepEqual(removedPages(p.state.tr.insertText("y", 2), child), [], "typing touches no page");
   assert.deepEqual(removedPages(p.state.tr.setNodeMarkup(aPos, schema.nodes.paragraph!), child), [a], "retyping the block removes it");
   assert.equal(doc, p.state.doc);
+});
+
+type Ask = { readonly ids: readonly PageId[]; readonly pos: number; readonly confirm: Command };
+
+test("the page guard holds back removing a child's block, and its confirm applies the whole change", async () => {
+  const child = newPageId();
+  const asked: Ask[] = [];
+  const guard = guardPages((id) => id === child, (ids, pos, confirm) => void asked.push({ ids, pos, confirm }));
+  const spans = [P, text("keep"), P, text("cut me"), pageOf(child), P, text("and me")];
+  const p = await page(spans, [guard]);
+  p.view.dispatch(p.state.tr.setSelection(TextSelection.create(p.state.doc, 7, p.state.doc.content.size - 1)));
+  p.run(deleteSelection);
+  assert.deepEqual(p.spans, spans, "held back");
+  assert.deepEqual(asked.map(({ ids, pos }) => ({ ids, pos })), [{ ids: [child], pos: 14 }]);
+  assert.ok(p.run(asked[0]!.confirm));
+  assert.deepEqual(p.spans, [P, text("keep"), P], "the text went with the page block");
+});
+
+test("the page guard's confirm refuses once the body changed, and lets other changes through", async () => {
+  const child = newPageId();
+  const other = newPageId();
+  const asked: Ask[] = [];
+  const p = await page([P, text("a"), pageOf(child), P, text("b"), pageOf(other), P], [guardPages((id) => id === child, (ids, pos, confirm) => void asked.push({ ids, pos, confirm }))]);
+  p.view.dispatch(p.state.tr.setSelection(NodeSelection.create(p.state.doc, 3)));
+  p.run(deleteSelection);
+  assert.equal(asked.length, 1);
+  p.view.dispatch(p.state.tr.insertText("!", 2));
+  assert.equal(p.run(asked[0]!.confirm), false, "the held change no longer fits");
+  assert.deepEqual(p.spans, [P, text("a!"), pageOf(child), P, text("b"), pageOf(other), P]);
+
+  p.view.dispatch(p.state.tr.setSelection(NodeSelection.create(p.state.doc, 9)));
+  p.run(deleteSelection);
+  assert.deepEqual(p.spans, [P, text("a!"), pageOf(child), P, text("b"), P], "a page that is not a child goes without asking");
+  p.remote([{ type: "delete", at: 3, count: 1 }]);
+  assert.deepEqual(p.spans, [P, text("a!"), P, text("b"), P], "another tab's change is not held");
+  assert.equal(asked.length, 1);
 });
 
 test("on open the body drops stale and second blocks, adds missing children at the end, and ends with a line", async () => {

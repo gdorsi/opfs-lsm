@@ -6,7 +6,7 @@
  * duplicates it, deletes it, or opens a page block. One plugin holds either
  * menu and its keys, so two never show at once; the page draws it.
  */
-import { NodeSelection, Plugin, PluginKey, TextSelection, type Command, type EditorState, type SelectionBookmark, type Transaction } from "prosemirror-state";
+import { NodeSelection, Plugin, PluginKey, TextSelection, type Command, type EditorState, type Selection, type SelectionBookmark, type Transaction } from "prosemirror-state";
 import type { Block, PageId } from "../model/types.ts";
 import { insertPageBlock } from "./pages.ts";
 import { blockOf, nodeTypeOf, schema } from "./schema.ts";
@@ -154,7 +154,7 @@ function readBlock(state: EditorState, restore: SelectionBookmark, query: string
   return { kind: "block", block, restore, query, items, index: clamp(index ?? current, items.length), current };
 }
 
-/** The selection a block menu opened on `target` puts back: the caret it came from, else the end of the block's text, else the block itself. */
+/** The selection a block menu opened by the handle on `target` puts back: the caret in it, else the end of its text, else the page block itself. */
 function restoreFor(state: EditorState, target: number): SelectionBookmark {
   const { selection, doc } = state;
   const node = doc.nodeAt(target)!;
@@ -167,18 +167,24 @@ function closeMenu(state: EditorState): Transaction {
   const menu = menuKey.getState(state);
   const tr = state.tr.setMeta(menuKey, CLOSE);
   if (menu?.kind === "block") tr.setSelection(menu.restore.resolve(state.doc));
-  else if (menu?.kind === "slash" && menu.added && menu.query === "") tr.delete(menu.from, menu.from + 1);
   return tr;
 }
 
+/** The top-level block a selection selects or holds its head in, or null. */
+function blockOfSelection(selection: Selection): number | null {
+  if (selection instanceof NodeSelection && selection.$from.depth === 0) return selection.from;
+  return selection.$head.depth >= 1 ? selection.$head.before(1) : null;
+}
+
 /**
- * Opens the block menu on the block starting at `at`, or on the selection's block when `at` is omitted.
- * Closes it when it is already open there. False when no block is found or the `/` menu is open.
+ * Opens the block menu on the block starting at `at`, or on the selection's block when `at` is omitted, which then
+ * puts the selection back as it was on close. Closes it when it is already open there. False when no block is found
+ * or the `/` menu is open.
  */
 export function toggleBlockMenu(at?: number): Command {
   return (state, dispatch) => {
     const { selection } = state;
-    const target = at ?? (selection instanceof NodeSelection && selection.$from.depth === 0 ? selection.from : selection.$head.depth >= 1 ? selection.$head.before(1) : null);
+    const target = at ?? blockOfSelection(selection);
     if (target === null || target > state.doc.content.size || state.doc.resolve(target).depth !== 0 || !state.doc.resolve(target).nodeAfter) return false;
     const menu = menuKey.getState(state);
     if (menu?.kind === "slash") return false;
@@ -187,7 +193,7 @@ export function toggleBlockMenu(at?: number): Command {
       return true;
     }
     if (dispatch) {
-      const restore = restoreFor(state, target);
+      const restore = at === undefined ? selection.getBookmark() : restoreFor(state, target);
       dispatch(state.tr.setSelection(NodeSelection.create(state.doc, target)).setMeta(menuKey, { block: restore } satisfies Meta));
     }
     return true;
@@ -305,8 +311,17 @@ export function menuPlugin(hooks: MenuHooks): Plugin<MenuState | null> {
         const index = meta ? meta.index : prev.index;
         if (prev.kind === "block") return readBlock(state, prev.restore.map(tr.mapping), meta?.query ?? prev.query, index);
         const next = readSlash(state, tr.mapping.map(prev.from), index, prev.added);
+        if (next && !meta && next.query !== prev.query) return { ...next, index: 0 };
         return next && next.from === prev.from && next.query === prev.query && next.index === prev.index ? prev : next;
       },
+    },
+    // However the "+" menu closes, a `/` it typed that stands alone on its line goes with it.
+    appendTransaction(trs, oldState, newState) {
+      const prev = menuKey.getState(oldState);
+      if (prev?.kind !== "slash" || !prev.added || menuKey.getState(newState)) return null;
+      const from = trs.reduce((pos, tr) => tr.mapping.map(pos), prev.from);
+      const $from = newState.doc.resolve(from);
+      return $from.parentOffset === 0 && $from.parent.textContent === "/" ? newState.tr.delete(from, from + 1) : null;
     },
     props: {
       handleTextInput(view, from, to, text) {
@@ -369,14 +384,28 @@ export function menuPlugin(hooks: MenuHooks): Plugin<MenuState | null> {
         return menu ? { "aria-controls": "editor-menu", "aria-activedescendant": `editor-menu-${menu.index}` } : {};
       },
     },
-    view: () => ({
-      update(view, prevState) {
+    view(view) {
+      const show = () => {
         const menu = menuKey.getState(view.state) ?? null;
-        if (menu === (menuKey.getState(prevState) ?? null) && (!menu || view.state.doc === prevState.doc)) return;
         hooks.show(menu && { kind: menu.kind, items: menu.items, index: menu.index, query: menu.query, current: menu.kind === "block" ? menu.current : -1, at: anchorOf(view, menu) });
-      },
-      destroy: () => hooks.show(null),
-    }),
+      };
+      // The page draws the menu fixed to the window, so it moves with its block when the page scrolls or resizes.
+      const follow = () => menuKey.getState(view.state) && show();
+      const win = view.dom.ownerDocument.defaultView!;
+      win.addEventListener("scroll", follow, true);
+      win.addEventListener("resize", follow);
+      return {
+        update(view, prevState) {
+          const menu = menuKey.getState(view.state) ?? null;
+          if (menu !== (menuKey.getState(prevState) ?? null) || (menu && view.state.doc !== prevState.doc)) show();
+        },
+        destroy() {
+          win.removeEventListener("scroll", follow, true);
+          win.removeEventListener("resize", follow);
+          hooks.show(null);
+        },
+      };
+    },
   });
 }
 

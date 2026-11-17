@@ -87,7 +87,8 @@ list. A marker whose id is not a valid DocumentId reads as a paragraph.
 - `/page` creates the page under the open one, puts its block in place of the empty line it was typed on, or after the
   line, then opens the page. A paragraph follows a page block that would end the body.
 - A local change that removes a child's last block, such as Backspace on a selected block, cut or typing over it, is
-  held back, and the page asks to delete the page and the pages inside it. On yes it deletes the page from the list.
+  held back, and the page asks to delete the page and the pages inside it. On yes the editor applies the held change
+  whole and the page deletes the pages from the list; when the body changed meanwhile, only the page blocks go.
   A change that moves a block keeps its id and asks nothing. A paste never brings a page block back, so a copy never
   places a page twice.
 - The editor repairs the body, outside the undo history. On open it drops every block of a page that is not a
@@ -143,12 +144,14 @@ page. A position maps to an Automerge index by subtracting the number of blocks 
   Delete. The menu starts on the block's current kind, which is marked, and a turn into that kind changes nothing, so a
   checked to-do stays checked and an item keeps its depth. Typed letters filter by label or keyword prefix, and the keys
   are the `/` menu's. Backspace and Delete edit the filter and never reach the block. Deleting a page block asks the
-  delete confirm like any other removal. Deleting the last block, or the one after a page block, leaves an empty
-  paragraph.
+  delete confirm like any other removal. Deleting the only block, or the last block when a page block is before it,
+  leaves an empty paragraph.
 - A block menu closes on Escape, on Mod-/, on a click elsewhere in the editor, or when another tab deletes its block.
   The selection is then put back: the caret or range it came from, the end of the block's text when the handle opened
   it, the page block itself for a page block. A click in text keeps its own caret. Another tab retyping the selected
-  block, a to-do check included, leaves the block selected and the menu on it.
+  block, a to-do check included, leaves the block selected and the menu on it; a merge into the block above closes it.
+- The menus and the delete confirm open below what they act on, or above it when more room is there, and stay inside
+  the window. A menu follows its block when the page scrolls or the window resizes.
 - Selection reads the same everywhere: a selected block is tinted, in a lighter tone while the editor is blurred, and a
   page block inside a text range is tinted like the text. An empty line with the caret shows "Type / for blocks".
 - Numbered items count with one CSS counter per depth over consecutive blocks.

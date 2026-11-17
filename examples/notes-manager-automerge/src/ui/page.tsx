@@ -3,7 +3,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, ty
 import { useApp } from "../client/app.ts";
 import { useBody, useCreatePage, useExpanded, usePage, useSaveState } from "../client/hooks.ts";
 import type { Anchor, MenuItem, MenuShown } from "../editor/menu.ts";
-import { mountEditor, type MountedEditor, type PageLinks } from "../editor/view.ts";
+import { PAGE_ICON, mountEditor, type MountedEditor, type PageLinks } from "../editor/view.ts";
 import { MAX_TITLE } from "../model/list.ts";
 import type { PageBody, PageId, SaveState } from "../model/types.ts";
 import { useDismiss } from "./dismiss.ts";
@@ -109,7 +109,7 @@ function Body({ id, editor }: { id: PageId; editor: RefObject<MountedEditor | nu
 }
 
 type At = { readonly left: number; readonly bottom: number };
-type DeleteAsk = { readonly ids: readonly PageId[]; readonly at: Anchor };
+type DeleteAsk = { readonly ids: readonly PageId[]; readonly at: Anchor; confirm(): void };
 
 /** What the editor's page blocks and `/` menu call, read fresh on each call so the editor mounts once per body. */
 function usePageLinks(parent: PageId): PageLinks {
@@ -195,6 +195,7 @@ function Editor({ body, editor }: { body: PageBody; editor: RefObject<MountedEdi
           ask={ask}
           onCancel={closeAsk}
           onDelete={() => {
+            ask.confirm();
             for (const id of ask.ids) notes.deletePage(id);
             closeAsk();
           }}
@@ -205,11 +206,19 @@ function Editor({ body, editor }: { body: PageBody; editor: RefObject<MountedEdi
 }
 
 const MARGIN = 8;
+const GAP = 6;
 
-/** Below `at`, or above it when `height` does not fit under it, and inside the window. */
+/**
+ * Below `at`, or above it when `height` does not fit below and more room is above. Inside the window even when `at`
+ * is scrolled out of it, and no taller than the room on its side.
+ */
 function placeAt(at: Anchor, width: number, height: number): CSSProperties {
   const left = Math.max(MARGIN, Math.min(at.left, innerWidth - width - MARGIN));
-  return at.bottom + 6 + height <= innerHeight ? { left, width, top: at.bottom + 6 } : { left, width, bottom: innerHeight - at.top + 6 };
+  const top = Math.max(MARGIN, at.bottom + GAP);
+  const bottom = Math.max(MARGIN, innerHeight - at.top + GAP);
+  const below = innerHeight - MARGIN - top;
+  const above = innerHeight - MARGIN - bottom;
+  return below >= height || below >= above ? { left, width, top, maxHeight: Math.min(height, below) } : { left, width, bottom, maxHeight: Math.min(height, above) };
 }
 
 /** The `/` menu lists two-line rows; the block menu is a compact filter list in two groups: turn into, then the rest. */
@@ -230,13 +239,24 @@ function MenuList({ menu, onPick, onPoint }: { menu: MenuShown; onPick(index: nu
       // Keeps the editor focused, so typing keeps filtering and the keys keep working.
       onMouseDown={(event) => event.preventDefault()}
     >
-      {block && <div className="menu-query">{menu.query || <span>Type to filter</span>}</div>}
+      {block && (
+        <div className="menu-query" aria-hidden>
+          {menu.query || <span>Type to filter</span>}
+        </div>
+      )}
       {menu.items.map((item, i) => {
         const turns = item.action.type === "turn";
         const first = block && (i === 0 || (menu.items[i - 1]!.action.type === "turn") !== turns);
         return (
           <Fragment key={item.label}>
-            {first && (turns ? <div className="menu-heading">Turn into</div> : i > 0 && <div className="menu-divider" role="separator" />)}
+            {first &&
+              (turns ? (
+                <div className="menu-heading" aria-hidden>
+                  Turn into
+                </div>
+              ) : (
+                i > 0 && <div className="menu-divider" aria-hidden />
+              ))}
             <div
               role="option"
               id={`editor-menu-${i}`}
@@ -254,7 +274,7 @@ function MenuList({ menu, onPick, onPoint }: { menu: MenuShown; onPick(index: nu
                 {!block && <span className="menu-hint">{item.hint}</span>}
               </span>
               {i === menu.current && (
-                <svg className="tick" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-label="Current">
+                <svg className="tick" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" role="img" aria-label="Current">
                   <path d="M3.5 8.5l3 3 6-7" />
                 </svg>
               )}
@@ -267,7 +287,7 @@ function MenuList({ menu, onPick, onPoint }: { menu: MenuShown; onPick(index: nu
 }
 
 const ICONS = {
-  page: ["M4.5 2.5h6l3 3v9.25a.75.75 0 0 1-.75.75h-8.25a.75.75 0 0 1-.75-.75V3.25a.75.75 0 0 1 .75-.75z", "M10.5 2.5v3h3M6.5 9h5M6.5 11.75h5"],
+  page: PAGE_ICON,
   open: ["M7 4H4.75A.75.75 0 0 0 4 4.75v8.5c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75V11", "M10 4h4v4M14 4l-6 6"],
   duplicate: ["M6.5 6.5h6.75c.41 0 .75.34.75.75v6c0 .41-.34.75-.75.75H7.25a.75.75 0 0 1-.75-.75z", "M4 11.5V4.75C4 4.34 4.34 4 4.75 4H11"],
   delete: ["M3.5 5h11M7 5V3.5h4V5M5 5l.6 8.4c.03.38.35.6.75.6h5.3c.4 0 .72-.22.75-.6L13 5", "M7.5 8v3.5M10.5 8v3.5"],
@@ -304,7 +324,7 @@ function DeleteConfirm({ ask, onCancel, onDelete }: { ask: DeleteAsk; onCancel()
   const [first] = ask.ids;
   const title = (first && notes.tree.read().page(first)?.title) || "Untitled";
   return (
-    <div ref={ref} role="alertdialog" aria-label="Delete page" className="menu popover" style={placeAt(ask.at, 244, 120)}>
+    <div ref={ref} role="alertdialog" aria-label="Delete page" className="menu popover" style={placeAt(ask.at, 244, 160)}>
       <p className="menu-text">
         {ask.ids.length === 1 ? (
           <>

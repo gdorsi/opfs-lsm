@@ -188,12 +188,13 @@ export function remoteTransaction(state: EditorState, edits: readonly TextEdit[]
       }
     }
   }
-  // A retype maps a block selection to a caret, as a replacement does. The block's first content position survives a
-  // retype and a merge, and only a delete drops it.
+  // A retype maps a block selection to a caret, as a replacement does. The block keeps the selection while its text
+  // still starts a block: a merge into the block above, or a delete, lets it go.
   const { selection } = state;
   if (selection instanceof NodeSelection && !(tr.selection instanceof NodeSelection)) {
     const inside = tr.mapping.mapResult(selection.from + 1);
-    if (!inside.deleted) tr.setSelection(NodeSelection.create(tr.doc, tr.doc.resolve(inside.pos).before(1)));
+    const $inside = tr.doc.resolve(inside.pos);
+    if (!inside.deleted && $inside.depth === 1 && $inside.parentOffset === 0) tr.setSelection(NodeSelection.create(tr.doc, $inside.before(1)));
   }
   return tr;
 }
