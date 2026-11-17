@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import BenchGroup from "./BenchGroup.vue";
-import { ONE, ticks, type Chart } from "./bench.ts";
+import { LINE, ticks, type Chart } from "./bench.ts";
 
 /**
  * The home page's benchmarks: a card per baseline, IndexedDB and then SQLite on OPFS, all on one log scale of how
@@ -11,7 +11,7 @@ defineProps<{ charts: Chart[] }>();
 </script>
 
 <template>
-  <div class="bench" :style="{ '--one': `${ONE}%` }">
+  <div class="bench" :style="{ '--one': `${LINE}%` }">
     <section v-for="c in charts" :key="c.title" class="bench-card">
       <div class="bench-axis">
         <h3 class="bench-card-title">{{ c.title }}</h3>

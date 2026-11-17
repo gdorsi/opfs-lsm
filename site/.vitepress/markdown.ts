@@ -146,6 +146,8 @@ function figureHtml(token: Token): string | undefined {
 }
 
 const RATIO = /^\d+(?:\.\d+)?×$/;
+/** A cold / warm pair of ratios in one cell, such as "1.0× / 0.6×". */
+const RATIO_PAIR = /^(\d+(?:\.\d+)?×) \/ (\d+(?:\.\d+)?×)$/;
 const MEASURE = /^\d[\d,]*(?:\.\d+)?[kMG]?(?: [A-Za-z]+(?:\/[a-z]+)?)?$/;
 
 type Cell = "num" | "ratio" | "code" | "text";
@@ -154,7 +156,7 @@ function cellOf(inline: Token): Cell {
   const children = inline.children ?? [];
   if (children.every((c) => ["text", "strong_open", "strong_close"].includes(c.type))) {
     const text = children.map((c) => c.content).join("");
-    if (RATIO.test(text)) return "ratio";
+    if (RATIO.test(text) || RATIO_PAIR.test(text)) return "ratio";
     if (MEASURE.test(text)) return "num";
   }
   const shown = children.filter((c) => c.type !== "link_open" && c.type !== "link_close");
@@ -178,8 +180,12 @@ function classifyTable(tokens: Token[], open: number, html: (content: string) =>
     const cell = cellOf(inline);
     (columns[col++] ??= []).push({ open: t, cell });
     if (cell === "ratio") {
-      const tone = ratioTone(inline.children!.map((c) => c.content).join(""));
-      inline.children = [html(`<span class="ratio" data-tone="${tone}">`), ...inline.children!, html("</span>")];
+      const text = inline.children!.map((c) => c.content).join("");
+      const pair = RATIO_PAIR.exec(text);
+      const pill = (ratio: string) => `<span class="ratio" data-tone="${ratioTone(ratio)}">${ratio}</span>`;
+      inline.children = pair
+        ? [html(`${pill(pair[1]!)} / ${pill(pair[2]!)}`)]
+        : [html(`<span class="ratio" data-tone="${ratioTone(text)}">`), ...inline.children!, html("</span>")];
     }
   }
   if (heads.length >= 6) tokens[open]!.attrJoin("class", "dense");

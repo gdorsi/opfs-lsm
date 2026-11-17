@@ -1243,8 +1243,8 @@
   background: var(--vp-c-text-3);
 }
 
-/* A bar spans the scale and is cut down to the stretch between 1× and its ratio. Until the group shows, it is cut
-   to nothing at the line. */
+/* A bar spans the scale and is cut down to the stretch between 1× and its ratio. In a folded group it is cut to
+   nothing at the line, and it grows back out of it when the group unfolds, row after row. */
 .bench-bar {
   position: absolute;
   top: 11px;
@@ -1252,21 +1252,21 @@
   left: 0;
   height: 8px;
   background: var(--bench-faster);
-  clip-path: inset(0 calc(100% - var(--one)) 0 var(--one) round 0 4px 4px 0);
-  transition: clip-path 400ms var(--bench-ease);
+  clip-path: inset(0 var(--cut-right) 0 var(--cut-left) round 0 4px 4px 0);
+  transition: clip-path 400ms var(--bench-ease) calc(var(--i) * 24ms);
 }
 
 .bench-bar[data-tone="warning"] {
   background: var(--bench-slower);
+  clip-path: inset(0 var(--cut-right) 0 var(--cut-left) round 4px 0 0 4px);
+}
+
+.bench-group[data-folded] .bench-bar {
+  clip-path: inset(0 calc(100% - var(--one)) 0 var(--one) round 0 4px 4px 0);
+}
+
+.bench-group[data-folded] .bench-bar[data-tone="warning"] {
   clip-path: inset(0 calc(100% - var(--one)) 0 var(--one) round 4px 0 0 4px);
-}
-
-.bench-group[data-shown] .bench-bar {
-  clip-path: inset(0 var(--r) 0 var(--l) round 0 4px 4px 0);
-}
-
-.bench-group[data-shown] .bench-bar[data-tone="warning"] {
-  clip-path: inset(0 var(--r) 0 var(--l) round 4px 0 0 4px);
 }
 
 .bench-dot {
@@ -1278,8 +1278,7 @@
   border: 2px solid var(--bench-surface);
   border-radius: 50%;
   background: var(--bench-even);
-  opacity: 0;
-  transition: opacity 200ms ease-out;
+  transition: opacity 200ms ease-out calc(var(--i) * 24ms + 160ms);
 }
 
 .bench-tip {
@@ -1291,13 +1290,12 @@
   line-height: 18px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  opacity: 0;
-  transition: opacity 200ms ease-out;
+  transition: opacity 200ms ease-out calc(var(--i) * 24ms + 160ms);
 }
 
-.bench-group[data-shown] .bench-dot,
-.bench-group[data-shown] .bench-tip {
-  opacity: 1;
+.bench-group[data-folded] .bench-dot,
+.bench-group[data-folded] .bench-tip {
+  opacity: 0;
 }
 
 /* Under the cards: the setup on the left, the links on the right. */

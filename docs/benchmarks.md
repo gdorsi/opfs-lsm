@@ -36,14 +36,14 @@ The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexedd
 
 ### Typing, then reopening
 
-The editing-trace workloads write the trace's first 25,700 keystrokes, then type the last 300 at one per 60 Hz frame, one update each. Then they open the document cold in a fresh tab, once before kv settles and once after. Medians of 3 runs at size `small`, headless Chrome 157 on an Apple M2 Pro with a load average of 1.9 to 2.8. Full results: [2026-11-17T00-58-58](results/2026-11-17T00-58-58-apple-m2-pro.md).
+The editing-trace workloads write the trace's first 25,700 keystrokes, then type the last 300 at one per 60 Hz frame, one update each. Then they open the document cold in a fresh tab, once before kv settles and once after. Medians of 3 runs at size `small`, headless Chrome 157 on an Apple M2 Pro with a load average of 1.9 to 2.8. Full results: [2026-11-17T00-58-58](results/2026-11-17T00-58-58-apple-m2-pro.md). The last two columns are the IndexedDB option's time over kv's: below 1×, kv is slower.
 
-| | y-indexeddb | Yjs on kv | automerge-repo IndexedDB | Automerge on kv |
-| --- | ---: | ---: | ---: | ---: |
-| One keystroke, with its persistence | 0.23 ms | 0.28 ms | 0.56 ms | 0.61 ms |
-| Frames dropped over 300 keystrokes | 0 | 0 | 0 | 0 |
-| Cold open before the settle | 7.2 ms | 16 ms | 57 ms | 62 ms |
-| Cold open after the settle | 7.3 ms | 22 ms | 56 ms | 64 ms |
+| | y-indexeddb | Yjs on kv | automerge-repo IndexedDB | Automerge on kv | Yjs, kv vs y-indexeddb | Automerge, kv vs IndexedDB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| One keystroke, with its persistence | 0.23 ms | 0.28 ms | 0.56 ms | 0.61 ms | 0.8× | 0.9× |
+| Frames dropped over 300 keystrokes | 0 | 0 | 0 | 0 | | |
+| Cold open before the settle | 7.2 ms | 16 ms | 57 ms | 62 ms | 0.5× | 0.9× |
+| Cold open after the settle | 7.3 ms | 22 ms | 56 ms | 64 ms | 0.3× | 0.9× |
 
 Yjs stores each update as it happens. automerge-repo saves a document at most every 100 ms (`saveDebounceRate`), so most Automerge keystrokes write nothing, and Automerge's own load of the document takes most of its cold open on both stores. On kv a cold open includes opening the database in the new tab: 9 ms before the settle and 13 ms after.
 
@@ -77,7 +77,7 @@ Medians of 3 runs in headless Chrome 157 on an Apple M2 Pro with a load average 
 | First 50 open issues with a label | 8.2 / 4.6 | 8.7 / 1.6 | 6.2 / 0.27 | 1.4× / 5.9× |
 | First 50 open issues assigned to a person | 2.2 / 1.1 | 7.3 / 0.50 | 9.0 / 0.42 | 0.8× / 1.2× |
 | The 50 most recently updated issues | 2.2 / 1.3 | 6.5 / 0.81 | 3.8 / 0.63 | 1.7× / 1.3× |
-| Open issues per person, top 10 | 10.7 / 7.3 | 6.8 / 0.36 | 16.4 / 4.5 | 0.4× / 0.1× |
+| Open issues per person, top 10 | 10.7 / 7.3 | 6.8 / 0.36 | 16.4 / 4.5 | 0.4× / 0.08× |
 | First 20 issues whose title contains a word | 11.8 / 7.2 | 7.7 / 0.87 | 7.5 / 0.30 | 1.0× / 2.9× |
 | Opening the store in a fresh tab | 2.2 | 24 | 18 | 1.3× |
 
