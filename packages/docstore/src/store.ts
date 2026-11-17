@@ -1,4 +1,4 @@
-import { CorruptDatabaseError, prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry } from "@opfs-lsm/kv";
+import { prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry } from "@opfs-lsm/kv";
 import { tupleBounds } from "@opfs-lsm/kv/tuple";
 import {
   bind,
@@ -102,6 +102,8 @@ function collectionOf(bound: Bound, name: string): BoundCollection {
   return coll;
 }
 
+const NO_CATALOG = new Uint8Array(0);
+
 const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
 
 class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
@@ -203,6 +205,10 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
       const bound = this.bound;
       const plan = await planner(collectionOf(bound, name));
       const out = await this.kv.update([CATALOG_KEY, ...plan.keys], ([catalog, ...values], tx) => {
+        if (!catalog) {
+          tx.put(CATALOG_KEY, encodeCatalog(reconcile(undefined, this.declared)!));
+          return RETRY;
+        }
         if (!sameCatalog(catalog, bound.bytes)) {
           this.adopt(catalog);
           return RETRY;
@@ -224,16 +230,16 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
    * result once this resolves: kv announces a write before it resolves it
    * (the contract on kv's `ChangeEvent`), and `follow` adopts it.
    */
-  private async editCatalog(edit: (c: StoredCatalog) => StoredCatalog | undefined): Promise<void> {
+  private async editCatalog(edit: (c: StoredCatalog, tx: BatchTx) => StoredCatalog | undefined): Promise<void> {
     await this.kv.update([CATALOG_KEY], ([stored], tx) => {
-      const next = edit(this.adopt(stored).catalog);
+      const next = edit(this.adopt(stored).catalog, tx);
       if (next) tx.put(CATALOG_KEY, encodeCatalog(next));
     });
   }
 
   /** The catalog `bytes` bound, or `bound` itself when it is the same catalog. Leaves `bound` alone. */
   private boundIn(bytes: Uint8Array | undefined): Bound {
-    if (!bytes) throw new CorruptDatabaseError("the docstore catalog is gone");
+    if (!bytes) return bind(NO_CATALOG, reconcile(undefined, this.declared)!, this.declared);
     return sameCatalog(bytes, this.bound.bytes) ? this.bound : bind(bytes, parseCatalog(bytes), this.declared);
   }
 
@@ -347,9 +353,11 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   private async sweep(p: DroppedPrefix): Promise<void> {
     const collection = p.collection as CollectionId;
     const prefix = "index" in p ? indexPrefix(collection, p.index as IndexId) : collectionPrefix(collection);
-    // One op: nothing reaches the prefix any more, so no later write can land in it.
     // Not `tupleBounds`: index id 255 is `64 CC CC FF`, which `tupleBounds(64 CC CC)` would exclude.
-    await this.kv.batch((tx) => tx.deleteRange(prefixBound(prefix)));
-    await this.editCatalog((c) => removeDropped(c, p));
+    await this.editCatalog((c, tx) => {
+      const next = removeDropped(c, p);
+      if (next) tx.deleteRange(prefixBound(prefix));
+      return next;
+    });
   }
 }

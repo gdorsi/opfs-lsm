@@ -2,7 +2,7 @@ import type { Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
 import { defineSchema, openDocStore } from "../src/index.js";
 import { CATALOG_KEY } from "../src/keys.js";
-import { codeOf, freshName, openKv, recording } from "./harness.js";
+import { codeOf, freshName, gate, openKv, recording } from "./harness.js";
 
 type Todo = { id: string; title?: string; done?: boolean };
 
@@ -55,6 +55,50 @@ describe("a reader and the catalog", () => {
 });
 
 describe("a store held across dangerousDestroy", () => {
+  it("reads empty and keeps writing after another handle's destroy, before any store writes a catalog", async () => {
+    const name = freshName();
+    const heldKv = await kvOn(name);
+    const held = (await openDocStore(heldKv, v1)).collection("todos");
+    await held.putMany([{ id: "a", title: "x" }, { id: "b", title: "y" }]);
+
+    await (await kvOn(name)).dangerousDestroy();
+    await heldKv.sync();
+    expect(await held.get("a")).toBeUndefined();
+    expect(await held.count({ index: "byTitle" })).toBe(0);
+    expect(await held.view((snap) => snap.count({ index: "byTitle" }))).toBe(0);
+
+    await held.put({ id: "c", title: "z" });
+    expect((await held.query({ index: "byTitle" })).docs.map((d) => d.id)).toEqual(["c"]);
+  });
+
+  it("keeps writing after its own handle's destroy", async () => {
+    const kv = await kvOn(freshName());
+    const held = (await openDocStore(kv, v1)).collection("todos");
+    await held.put({ id: "a", title: "x" });
+
+    await kv.dangerousDestroy();
+    expect(await held.count({ index: "byTitle" })).toBe(0);
+    await held.put({ id: "b", title: "y" });
+    expect((await held.query({ index: "byTitle" })).docs.map((d) => d.id)).toEqual(["b"]);
+  });
+
+  it("keeps a write made after the destroy when a sweep from before it runs late", async () => {
+    const kv = await kvOn(freshName());
+    const sweeps = gate(kv, "catalog-or-batch", 2);
+    const store = await openDocStore(sweeps.db, v1);
+    const todos = store.collection("todos");
+    await todos.put({ id: "a", title: "x" });
+    await todos.clear();
+    await sweeps.arrived(3);
+
+    await kv.dangerousDestroy();
+    await todos.put({ id: "b", title: "y" });
+    sweeps.release();
+    await store.whenIdle();
+    expect(await todos.get("b")).toEqual({ id: "b", title: "y" });
+    expect(await todos.count({ index: "byTitle" })).toBe(1);
+  });
+
   it("refuses a collection the reopened database does not have", async () => {
     const kv = await kvOn(freshName());
     const held = (await openDocStore(kv, v1)).collection("todos");
