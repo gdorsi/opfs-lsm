@@ -365,27 +365,9 @@ function setEngine(next: FlatEngine | undefined): void {
   engine = next;
 }
 
-let engineUrlOverride: string | undefined;
-
-/**
- * Test seam: the next engine load in this context fetches this `.wasm` (a URL
- * or a path relative to this module) instead of the bundled one. `undefined`
- * restores the bundled engine.
- */
-export function setEngineUrlForTests(url: string | undefined): void {
-  engineUrlOverride = url;
-}
-
-function engineUrl(): URL {
-  // A variable base: webpack turns `new URL(expr, import.meta.url)` into a module context and warns.
-  const base = import.meta.url;
-  if (engineUrlOverride !== undefined) return new URL(engineUrlOverride, base);
-  // Keep this a literal `new URL(..., import.meta.url)`: bundlers emit the .wasm only for that form.
-  return new URL("../../wasm/engine.wasm", import.meta.url);
-}
-
 async function loadWasm(): Promise<FlatEngine> {
-  const module = await WebAssembly.compile(await readEngine(engineUrl()));
+  // Keep this a literal `new URL(..., import.meta.url)`: bundlers emit the .wasm only for that form.
+  const module = await WebAssembly.compile(await readEngine(new URL("../../wasm/engine.wasm", import.meta.url)));
   const loaded = flatEngine(await WebAssembly.instantiate(module, {}));
   wasmModule = module;
   return loaded;

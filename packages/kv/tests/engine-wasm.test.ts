@@ -207,16 +207,17 @@ describe("a context where the wasm module does not load", () => {
   it("rejects ensureEngine and openDb with StorageUnavailableError, and loads on a later try", async () => {
     vi.resetModules();
     const engine = await import("../src/store/engine.js");
-    engine.setEngineUrlForTests("./no-such-engine.wasm");
     const { StorageUnavailableError } = await import("../src/errors.js");
     const { openHarnessDb } = await import("../src/testing.js");
+    const { readFile } = await import("node:fs/promises");
     try {
+      engine.readEngineWith(() => Promise.reject(new Error("no such engine")));
       await expect(engine.ensureEngine()).rejects.toBeInstanceOf(StorageUnavailableError);
       await expect(openHarnessDb({ name: "no-wasm", forceMemory: true })).rejects.toBeInstanceOf(
         StorageUnavailableError,
       );
     } finally {
-      engine.setEngineUrlForTests(undefined);
+      engine.readEngineWith((url) => readFile(url));
     }
     await engine.ensureEngine();
     const db = await openHarnessDb({ name: "no-wasm", forceMemory: true });
