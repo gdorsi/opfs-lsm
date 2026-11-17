@@ -1,8 +1,8 @@
+import { encodeTuple } from "@opfs-lsm/kv/tuple";
 import { describe, expect, it } from "vitest";
 import { bind, encodeCatalog, normalizeSchema, reconcile, type BoundCollection } from "../src/catalog.js";
 import { diffEntries, encodeDoc, entriesOf } from "../src/derive.js";
 import { DocStoreError } from "../src/errors.js";
-import { encodeKey } from "../src/keys.js";
 import type { JsonDoc, Scalar } from "../src/schema.js";
 
 const utf8 = new TextEncoder();
@@ -17,7 +17,7 @@ function coll(indexes: Record<string, object>): BoundCollection {
 const prefixOf = (c: BoundCollection, index: string) => c.maintained.find((p) => p.name === index)!.target.prefix;
 
 const entry = (c: BoundCollection, index: string, values: Scalar[], id = "1") => ({
-  key: encodeKey(prefixOf(c, index), values, utf8.encode(id)),
+  key: encodeTuple(values, prefixOf(c, index), utf8.encode(id)),
   value: EMPTY,
 });
 
@@ -89,7 +89,7 @@ describe("unique and text entries", () => {
   it("keys a unique entry by its values alone and stores the id as its value", () => {
     const c = coll({ slug: { by: "slug", unique: true } });
     expect(entries(c, { id: "doc-1", slug: "hi" })).toEqual([
-      { key: encodeKey(prefixOf(c, "slug"), ["hi"]), value: utf8.encode("doc-1") },
+      { key: encodeTuple(["hi"], prefixOf(c, "slug")), value: utf8.encode("doc-1") },
     ]);
   });
 

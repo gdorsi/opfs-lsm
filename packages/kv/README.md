@@ -162,6 +162,42 @@ await db.count(users); // => 3
 await db.count({ ...users, valueContains: [enc("e")] }); // => 1
 ```
 
+## Tuple keys
+
+`@opfs-lsm/kv/tuple` encodes a tuple of `null`, booleans, finite numbers and strings as key bytes. The bytes sort the way the tuples sort, so a range scan reads tuples in order.
+
+```ts
+import { decodeTuple, encodeTuple, tupleBounds } from "@opfs-lsm/kv/tuple";
+
+await db.batch((tx) => {
+  tx.put(encodeTuple(["ada", 1]), enc("first"));
+  tx.put(encodeTuple(["ada", 2]), enc("second"));
+  tx.put(encodeTuple(["ada\u0000", 1]), enc("other"));
+  tx.put(encodeTuple(["adam", 1]), enc("other"));
+});
+// Every key that continues ["ada"], and none that continues "ada\u0000" or "adam".
+for await (const { key } of db.range(tupleBounds(encodeTuple(["ada"])))) {
+  decodeTuple(key).values; // => ["ada", 1], then ["ada", 2]
+}
+```
+
+Tuples compare field by field. Fields sort as `null`, then `false`, then `true`, then numbers, then strings. Numbers compare by value with `-0` equal to `0`, and strings compare by code point. A tuple sorts before every longer tuple that starts with it.
+
+- `encodeTuple(values, prefix?, tail?)` returns `prefix`, the fields, then `tail`. It throws a `TypeError` for another type of value, and a `RangeError` for a number that is not finite, a string with a lone surrogate, or a `tail` that starts with byte FF.
+- `decodeTuple(key, count?, from?)` returns `{ values, end }`. Without `count` it reads every field to the end of `key`. A `tail` can start with any byte but FF, a tag included, so a key with a tail needs its `count`. `key.subarray(end)` is the tail. Bytes that `encodeTuple` does not write throw `CorruptDatabaseError`.
+- `skipTuple(key, count, from?)` returns the `end` of the fields without decoding them. It throws `CorruptDatabaseError` when a field has no end, and does not check what the field holds.
+- `tupleBounds(prefix)` and `stringPrefixBounds(prefix, s)` return `KeyBounds`. The first holds every key that continues `prefix` where a field ends. The second holds every key whose next field is a string that starts with `s`.
+
+A field holds its own end, so neither the fields nor a tail need a length.
+
+```text
+01 null   02 false   03 true
+04 + float64 big-endian, -0 as +0; sign bit set: every bit flipped, else the sign bit flipped
+05 + UTF-8 with each 00 written 00 FF, then 00
+```
+
+After a complete field the next byte is a tag (01..05), a UTF-8 byte or nothing, never FF. `tupleBounds` relies on that: its range is `prefix` up to `prefix ++ FF`. Do not use `prefixBound` for a tuple. The key of `["ada"]` is `05 61 64 61 00`, and the key of `["ada\u0000"]` starts with the same bytes, so `prefixBound` returns both.
+
 ## Joins
 
 `rangeJoin` scans a range and reads the key `keyOf` returns for each entry, the way an index entry points at its row.

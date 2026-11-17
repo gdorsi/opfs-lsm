@@ -48,7 +48,7 @@ const numberArb: fc.Arbitrary<number> = fc.oneof(
   fc.double({ noNaN: true, noDefaultInfinity: true }),
 );
 
-export const scalarArb: fc.Arbitrary<Scalar> = fc.oneof(fc.constant(null), fc.boolean(), numberArb, stringArb);
+const scalarArb: fc.Arbitrary<Scalar> = fc.oneof(fc.constant(null), fc.boolean(), numberArb, stringArb);
 
 /** Mostly a small pool of values, so random entries share values and random queries hit them. */
 export const denseScalarArb: fc.Arbitrary<Scalar> = fc.oneof(
