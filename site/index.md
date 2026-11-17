@@ -299,7 +299,8 @@ The wasm engine loads in parallel with the open, outside your main bundle
 ```ts
 // 18.8 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
-// the SharedWorker and wasm load here
+// the SharedWorker loads here, but you
+// can already do everything without it
 const db = await openDb({ name: "app" });
 ```
 
