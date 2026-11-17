@@ -30,13 +30,6 @@ const width = (g: AppState["generating"]) => `${g?.phase === "writing" ? (g.writ
 function Page({ app }: { app: App | undefined }) {
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">L</span>LinearLite
-        </div>
-        <span className="nav active">All issues</span>
-        <div className="spacer" />
-      </aside>
       <main className="main">{app ? <Issues app={app} /> : <div className="topbar" />}</main>
     </div>
   );

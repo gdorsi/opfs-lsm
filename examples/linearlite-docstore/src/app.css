@@ -55,12 +55,6 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .mono { font-variant-numeric: tabular-nums; }
 
 .app { display: flex; height: 100vh; }
-.sidebar { width: 224px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 12px 10px; gap: 4px; }
-.brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 12px; font-weight: 600; font-size: 14px; }
-.brand-mark { width: 20px; height: 20px; border-radius: 6px; background: var(--accent); display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
-.nav { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; color: var(--muted); }
-.nav.active { background: var(--accent-soft); color: var(--text); }
-.spacer { flex: 1; }
 .bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
 .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s linear; }
 
@@ -145,12 +139,12 @@ svg.ico { display: block; }
 .modal textarea { width: 100%; min-height: 110px; resize: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none; font-size: 14px; }
 .modal textarea:focus, .modal input:focus { border-color: var(--accent); }
 .modal-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.spacer { flex: 1; }
 .pill { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--line); }
 .pill:hover { background: var(--hover); }
 
 /* The docs site frames the app as narrow as a phone. */
 @media (max-width: 720px) {
-  .sidebar { display: none; }
   .topbar { height: auto; flex-wrap: wrap; row-gap: 8px; padding: 8px 12px; }
   /* "New issue" and the Data menu stay on the first row, and the chips and the search wrap under them. */
   .chips { order: 1; flex: 1 1 100%; }
