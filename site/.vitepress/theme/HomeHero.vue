@@ -1,38 +1,49 @@
 <script setup lang="ts">
-import { useData } from "vitepress";
-import { VPButton } from "vitepress/theme";
+import { useData, withBase } from "vitepress";
 import { computed } from "vue";
+import AlphaNotice from "./AlphaNotice.vue";
 import HomeDemo from "./HomeDemo.vue";
 
 /**
- * The home page's first screen: what opfs-lsm is, the ways in, and LinearLite running on it in this tab. The copy and
- * the actions are the page's `intro` frontmatter.
+ * The home page's first screen: the name line, what opfs-lsm is, and LinearLite running on it in this tab. The copy, the
+ * menu and the alpha notice are the page's `intro` frontmatter.
  */
-type Action = { theme: "brand" | "alt"; text: string; link: string };
+type Intro = {
+  title: string;
+  menu: { text: string; link: string }[];
+  notice: { title: string; body: string; link: string };
+};
 
 const { frontmatter, site } = useData();
-const intro = computed(() => frontmatter.value.intro as { title: string; actions: Action[] });
+const intro = computed(() => frontmatter.value.intro as Intro);
+const menu = computed(() =>
+  intro.value.menu.map(({ text, link }) => {
+    const external = /^https?:/.test(link);
+    return { text, external, href: external ? link : withBase(link) };
+  }),
+);
 </script>
 
 <template>
   <section class="home-hero">
-    <div class="home-hero-head">
-      <div>
-        <p class="home-hero-name">{{ site.title }}</p>
-        <h1 class="home-hero-title">{{ intro.title }}</h1>
+    <div class="home-line">
+      <div class="home-line-brand">
+        <span class="home-line-name">{{ site.title }}</span>
+        <AlphaNotice :notice="intro.notice" />
       </div>
-      <div class="home-hero-actions">
-        <VPButton
-          v-for="action in intro.actions"
-          :key="action.link"
-          tag="a"
-          size="medium"
-          :theme="action.theme"
-          :text="action.text"
-          :href="action.link"
-        />
-      </div>
+      <nav class="home-line-menu" aria-label="Main">
+        <a
+          v-for="item in menu"
+          :key="item.href"
+          :href="item.href"
+          :target="item.external ? '_blank' : undefined"
+          :rel="item.external ? 'noreferrer' : undefined"
+        >
+          {{ item.text }}<span v-if="item.external" aria-hidden="true"> ↗</span>
+        </a>
+      </nav>
     </div>
+    <h1 class="home-hero-title">{{ intro.title }}</h1>
     <HomeDemo />
   </section>
 </template>

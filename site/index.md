@@ -1,15 +1,24 @@
 ---
 layout: home
 title: opfs-lsm
+navbar: false
 intro:
   title: Fast local storage for your web app
-  actions:
-    - theme: brand
-      text: Get started
+  menu:
+    - text: Use cases
+      link: /#use-cases
+    - text: Under the hood
+      link: /#under-the-hood
+    - text: Benchmarks
+      link: /#our-benchmarks
+    - text: Docs
       link: /guide/
-    - theme: alt
-      text: GitHub
+    - text: GitHub
       link: https://github.com/gdorsi/opfs-lsm
+  notice:
+    title: Still under heavy development
+    body: We want opfs-lsm to be the building block for the best UX in web apps, and we are still ironing out the fundamentals. Storage is fault-tolerant and heavily tested, so try it, and tell us what you find.
+    link: https://github.com/gdorsi/opfs-lsm/issues
 fits:
   - case: Offline-first apps
     detail: The whole dataset lives in the browser, and the UI queries it there
@@ -183,18 +192,6 @@ demo:
   count: 100,000
   source: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-docstore
 ---
-
-<div class="home-warnings">
-
-::: warning
-opfs-lsm is still under heavy development.
-
-We want it to be the building block for the best UX in web apps, and still ironing the fundamental details.
-
-Still, storage is fault-tolerant and heavily tested, so if you want to play around, [feedback](https://github.com/gdorsi/opfs-lsm/issues) is very welcome!
-:::
-
-</div>
 
 ## Use cases
 

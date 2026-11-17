@@ -10,54 +10,6 @@
   border-top: 0;
 }
 
-/* The status note under the hero: a card like the feature cards, with an amber dot and its first line as the lead. */
-.vp-doc .home-warnings {
-  margin: 8px 0 24px;
-}
-
-.vp-doc .home-warnings .warning {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr);
-  column-gap: 14px;
-  margin: 0;
-  padding: 16px 20px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 12px;
-  background: var(--vp-c-bg-soft);
-  color: var(--vp-c-text-2);
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.vp-doc .home-warnings .warning::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  margin-top: 7px;
-  border-radius: 50%;
-  background: var(--vp-c-warning-1);
-  box-shadow: 0 0 0 4px var(--vp-c-warning-soft);
-}
-
-.vp-doc .home-warnings .custom-block-title {
-  display: none;
-}
-
-.vp-doc .home-warnings .warning p {
-  grid-column: 2;
-  margin: 0;
-}
-
-.vp-doc .home-warnings .custom-block-title + p {
-  color: var(--vp-c-text-1);
-  font-weight: 600;
-}
-
-.vp-doc .home-warnings .warning a {
-  color: var(--vp-c-brand-1);
-  font-weight: 500;
-}
-
 /* What kv offers: a card per feature, each a name, one line and a few lines of code. */
 .vp-doc .home-features {
   display: grid;
@@ -171,57 +123,201 @@
   background: var(--vp-c-default-soft);
 }
 
-/* The hero: the pitch and its actions, then LinearLite running in a browser frame. Its box has the widths and
-   paddings of the content under it. */
+/* The hero: the name line, the pitch, then LinearLite running in a browser frame. Its box has the widths and side
+   paddings of the content under it, and no nav above it, so its top padding only clears the name line. */
 .home-hero {
   max-width: 1152px;
   margin: 0 auto;
-  padding: 40px 24px 48px;
+  padding: 20px 24px 48px;
   box-sizing: content-box;
 }
 
 @media (min-width: 640px) {
   .home-hero {
-    padding: 64px 48px;
+    padding: 20px 48px 64px;
   }
 }
 
 @media (min-width: 960px) {
   .home-hero {
-    padding: 72px 64px;
+    padding: 20px 64px 72px;
   }
 }
 
-.home-hero-head {
-  display: grid;
-  gap: 20px;
-  align-items: end;
+/* The name line: the name and its alpha tag on the left, the page's menu on the right. */
+.home-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+  min-height: 48px;
+  margin-bottom: 32px;
 }
 
-@media (min-width: 640px) {
-  .home-hero-head {
-    gap: 24px;
+@media (min-width: 720px) {
+  .home-line {
+    margin-bottom: 48px;
   }
 }
 
 @media (min-width: 960px) {
-  .home-hero-head {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 40px;
+  .home-line {
+    margin-bottom: 64px;
   }
 }
 
-.home-hero-name {
-  margin: 0;
-  color: var(--vp-c-brand-1);
-  font-family: var(--vp-font-family-mono);
+/* The notice's card is placed against the brand, so it starts at the page's left edge. */
+.home-line-brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.home-line-name {
+  color: var(--vp-c-text-1);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 24px;
+  letter-spacing: -0.01em;
+}
+
+.home-line-menu {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: -10px;
+}
+
+.home-line-menu a {
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .home-line-menu a:hover {
+    color: var(--vp-c-text-1);
+    background: var(--vp-c-default-soft);
+  }
+}
+
+.home-line-menu a:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: -2px;
+}
+
+/* On a phone the menu takes its own row and scrolls sideways. */
+@media (max-width: 719px) {
+  .home-line-menu {
+    order: 2;
+    flex: 1 0 100%;
+    margin-inline: -10px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .home-line-menu a {
+    padding: 12px;
+  }
+}
+
+/* The alpha tag, as the button that opens the status notice. */
+button.alpha-tag {
+  position: relative;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+/* A touch target well past the tag's 20px. */
+button.alpha-tag::after {
+  content: "";
+  position: absolute;
+  inset: -12px -8px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  button.alpha-tag:hover {
+    border-color: var(--vp-c-text-3);
+    color: var(--vp-c-text-1);
+  }
+}
+
+button.alpha-tag[aria-expanded="true"] {
+  border-color: var(--vp-c-text-3);
+  color: var(--vp-c-text-1);
+}
+
+button.alpha-tag:focus-visible,
+.alpha-notice-card a:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+.alpha-notice-card {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: min(340px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-3);
+  font-size: 13px;
+  line-height: 20px;
+  transform-origin: top left;
+}
+
+.alpha-notice-card strong {
+  color: var(--vp-c-text-1);
   font-size: 14px;
   font-weight: 600;
-  line-height: 20px;
+}
+
+.alpha-notice-card p {
+  margin: 6px 0 10px;
+  color: var(--vp-c-text-2);
+  text-wrap: pretty;
+}
+
+.alpha-notice-card a {
+  color: var(--vp-c-brand-1);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.alpha-notice-enter-active {
+  transition:
+    opacity 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.alpha-notice-leave-active {
+  transition: opacity 100ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.alpha-notice-enter-from {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+}
+
+.alpha-notice-leave-to {
+  opacity: 0;
 }
 
 .home-hero-title {
-  margin: 12px 0 0;
+  margin: 0;
   color: var(--vp-c-text-1);
   font-size: 34px;
   font-weight: 700;
@@ -235,12 +331,6 @@
     font-size: 48px;
     line-height: 56px;
   }
-}
-
-.home-hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
 }
 
 /* The demo: a browser frame around the app, with the timings it measured in this tab at its foot. */
@@ -673,6 +763,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .alpha-notice-enter-from {
+    transform: none;
+  }
+
   .demo-status-leave-active,
   .demo-value-enter-active,
   .demo-value-leave-active,
