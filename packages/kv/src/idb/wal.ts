@@ -239,18 +239,17 @@ function txDone(tx: IDBTransaction): Promise<void> {
  * head past the records, drop them all and set `ingestedThrough` to the new
  * head (`adopt`, `emptyWal`).
  *
- * It looks forward from `ingestedThrough` first, and walks back from the end
- * only when a record is past it. In Chrome a reverse cursor steps over every
- * row deleted since IndexedDB last compacted, and a flush deletes thousands
- * of folded records at once: right after one, a reverse lookup on an empty
- * tail costs tens of ms, while a forward one seeks past the deleted rows.
+ * `after` is a seq the head has reached. Seqs above `ingestedThrough` are
+ * gapless, so the head is past `after` only when `after + 1` is a key, and
+ * the last key is read only then. In Chrome a range read past the last
+ * record steps over every row deleted since IndexedDB last compacted, and a
+ * flush deletes thousands of folded records at once.
  */
-async function headOf(tx: IDBTransaction, ingestedThrough: Seq): Promise<Seq> {
+async function headOf(tx: IDBTransaction, after: Seq): Promise<Seq> {
   const wal = tx.objectStore(WAL_STORE);
-  const past = IDBKeyRange.lowerBound(ingestedThrough, true);
-  if (!(await reqToPromise(wal.openKeyCursor(past)))) return ingestedThrough;
-  const last = await reqToPromise(wal.openKeyCursor(past, "prev"));
-  return asSeq(Math.max(num(last?.key), ingestedThrough));
+  if ((await reqToPromise(wal.getKey(nextSeq(after)))) === undefined) return after;
+  const last = await reqToPromise(wal.openKeyCursor(IDBKeyRange.lowerBound(after, true), "prev"));
+  return asSeq(Math.max(num(last?.key), after));
 }
 
 async function readMeta(tx: IDBTransaction): Promise<WalMeta> {
@@ -349,12 +348,9 @@ async function readTail(tx: IDBTransaction, since: Seq): Promise<WalTail> {
     metaGeneration(meta, META_GENERATION),
     metaSeq(meta, META_INGESTED),
   ]);
-  const head = await headOf(tx, ingestedThrough);
-  const records = await readRecords(
-    tx.objectStore(WAL_STORE),
-    asSeq(Math.max(since, ingestedThrough)),
-    head,
-  );
+  const after = asSeq(Math.max(since, ingestedThrough));
+  const head = await headOf(tx, after);
+  const records = await readRecords(tx.objectStore(WAL_STORE), after, head);
   return { head, generation, ingestedThrough, records };
 }
 

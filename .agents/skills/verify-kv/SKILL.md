@@ -68,9 +68,9 @@ A pass is for the model/domain above, not the whole browser stack (SharedWorker 
 | WalOverSst | `pointGet` |
 | ViewPin | `ViewSnapshotImpl`, `Db.view`, `Memtable.pin` |
 | CompactPreserve | `latestSstEntry`, the pick of the merge session and its oracle (`before` in `merge.rs`, `Session.run` in `tests/oracle/merge-ts.ts`), the covered-winner drop (`next_key`, `Session.emit`), the claim in `mergeNextStep` |
-| PowerPrefix | `reconcile`, `IdBWal.adopt`, `advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `HostedDb.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, destroy committing generation 0 past every seq at strict durability before it removes a file, recovery skipping manifests up to `destroyedTop`, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`), the head derived from the last WAL key and `ingestedThrough` (`headOf`), appends taking the seq of the key generator, and adopt and destroy moving that generator with the head (`passKeyGenerator`) |
+| PowerPrefix | `reconcile`, `IdBWal.adopt`, `advanceIngested` retention, `ingestChunk` and `installStep` building on the recorded generation and numbering past `top`, `HostedDb.reclaim` and `fold` removing files only under `unlessHeld`, `installStep` removing none, destroy committing generation 0 past every seq at strict durability before it removes a file, recovery skipping manifests up to `destroyedTop`, `openDb` and `syncOnce` repair under `holdingFiles`, `reconcile` refusing a recorded manifest that does not decode or lists a gone run (`formal/power-loss/model.ts`, regex guards in `check.ts`), the head as `headOf` finds it (`ingestedThrough` when no record is at `ingestedThrough + 1`, else the last WAL key), appends taking the seq of the key generator, and adopt and destroy moving that generator with the head (`passKeyGenerator`) |
 
-**Sync commit:** `1889313da0c4070000ff04626a10d175bc3421da` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
+**Sync commit:** `c30ae578e5ca82aa7fd7baf431d40764cb72d54d` — confirmed against the symbols above. Move forward only after `formal:kv` passes and models still match.
 
 ## Intentional product change
 
@@ -85,4 +85,4 @@ Drift without recheck → `/maintain-formal-verification-skill`.
 
 - Multi-tab BroadcastChannel versus an SST generation bump.
 - Compaction reclaim versus an open view pin (generation lifetime).
-- `pendingBytes` in `EngineHost` (the ingest trigger), and how the head is read from the last WAL key. The checks do not model them.
+- `pendingBytes` in `EngineHost` (the ingest trigger), and a tab's head lookup past its own `appliedThrough`. The checks do not model them.

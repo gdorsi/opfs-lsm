@@ -78,7 +78,7 @@ describe("WAL read", () => {
     );
     expect(summary(await listUningested(wal, { maxBytes: 1 << 30 }))).toEqual(summary(tail.records));
     expect(summary((await wal.tail(10)).records)).toEqual(["11:k11", "12:k12"]);
-    expect((await wal.tail(12)).records).toEqual([]);
+    expect(await wal.tail(12)).toMatchObject({ head: 12, records: [] });
     wal.close();
   });
 
