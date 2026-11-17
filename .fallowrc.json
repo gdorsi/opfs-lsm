@@ -8,6 +8,7 @@
     "packages/*/fuzz/make-corpus.ts",
     "packages/*/fuzz/jazzer/*.ts",
     "packages/docstore/tests/usage.ts",
+    "packages/spaces/tests/usage.typecheck.ts",
     "examples/*/scripts/**/*.ts",
     "examples/*/bench/*.ts",
     "examples/*/bench/*.js",
