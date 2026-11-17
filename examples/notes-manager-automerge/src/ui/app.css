@@ -1,6 +1,7 @@
 :root {
   color-scheme: light;
   --bg: #ffffff;
+  --surface: #ffffff;
   --sidebar: #f7f7f5;
   --hover: rgba(55, 53, 47, 0.08);
   --active: rgba(55, 53, 47, 0.12);
@@ -9,6 +10,9 @@
   --muted: rgba(55, 53, 47, 0.65);
   --faint: rgba(55, 53, 47, 0.4);
   --accent: #2383e2;
+  --selected: rgba(35, 131, 226, 0.14);
+  --selected-text: rgba(35, 131, 226, 0.28);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --danger: #e03e3e;
   --code-bg: rgba(135, 131, 120, 0.15);
   --code-text: #eb5757;
@@ -21,6 +25,7 @@
   :root {
     color-scheme: dark;
     --bg: #191919;
+    --surface: #252525;
     --sidebar: #202020;
     --hover: rgba(255, 255, 255, 0.055);
     --active: rgba(255, 255, 255, 0.09);
@@ -29,10 +34,12 @@
     --muted: rgba(255, 255, 255, 0.55);
     --faint: rgba(255, 255, 255, 0.3);
     --accent: #529cca;
+    --selected: rgba(82, 156, 202, 0.22);
+    --selected-text: rgba(82, 156, 202, 0.4);
     --danger: #ff7369;
     --code-bg: rgba(135, 131, 120, 0.2);
     --code-text: #ff7369;
-    --shadow: 0 0 0 1px rgba(15, 15, 15, 0.1), 0 3px 6px rgba(15, 15, 15, 0.2), 0 9px 24px rgba(15, 15, 15, 0.4);
+    --shadow: 0 0 0 1px rgba(255, 255, 255, 0.094), 0 3px 6px rgba(0, 0, 0, 0.2), 0 9px 24px rgba(0, 0, 0, 0.4);
   }
 }
 
@@ -52,6 +59,11 @@ button {
 }
 a {
   color: inherit;
+}
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .splash,
@@ -188,7 +200,7 @@ a {
   min-width: 140px;
   padding: 4px;
   border-radius: 8px;
-  background: var(--bg);
+  background: var(--surface);
   box-shadow: var(--shadow);
 }
 .menu button {
@@ -212,8 +224,14 @@ a {
   font-size: 13px;
 }
 .menu-text b {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--text);
   font-weight: 500;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
 }
 .menu .menu-row {
   display: flex;
@@ -357,10 +375,17 @@ a {
 .ProseMirror-hideselection {
   caret-color: transparent;
 }
+.editor .ProseMirror:not(.ProseMirror-hideselection) ::selection {
+  background: var(--selected-text);
+}
 
+/* The strip left of the text holds the gutter, and counts as part of the editor for hover. */
 .editor {
-  margin-top: 16px;
+  --gutter: 48px;
+  position: relative;
   min-height: 200px;
+  margin: 16px 0 0 calc(-1 * var(--gutter));
+  padding-left: var(--gutter);
 }
 .editor .ProseMirror {
   outline: none;
@@ -371,13 +396,30 @@ a {
   color: var(--muted);
 }
 .editor .ProseMirror > * {
+  position: relative;
   margin: 2px 0;
   padding: 3px 2px;
+}
+.editor .ProseMirror > .ProseMirror-selectednode::after,
+.editor .ProseMirror > .page-ref.in-range::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 calc(var(--depth, 0) * 24px);
+  border-radius: 4px;
+  background: var(--selected);
+  pointer-events: none;
+}
+.editor .ProseMirror > .page-ref.in-range::after {
+  background: var(--selected-text);
+}
+.editor .ProseMirror:not(.ProseMirror-focused) > .ProseMirror-selectednode::after {
+  background: var(--hover);
 }
 .editor p {
   min-height: 1.5em;
 }
-.editor .ProseMirror[contenteditable="true"] p.hint::before {
+.editor .ProseMirror[contenteditable="true"] p.hint::before,
+.editor .ProseMirror-focused[contenteditable="true"] p.hint-focused::before {
   content: attr(data-hint);
   float: left;
   height: 0;
@@ -451,6 +493,9 @@ a {
 }
 .editor .item[data-list="bullet"]::before {
   content: "•";
+  color: var(--text);
+  font-size: 1.4em;
+  line-height: 1.5rem;
 }
 .editor .item[data-list="bullet"][data-depth="1"]::before,
 .editor .item[data-list="bullet"][data-depth="4"]::before {
@@ -542,9 +587,208 @@ a {
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
     center / 14px no-repeat;
 }
+@media (hover: hover) {
+  .editor .todo .check:hover {
+    border-color: var(--accent);
+    background-color: var(--hover);
+  }
+  .editor .todo[data-checked="true"] .check:hover {
+    border-color: var(--accent);
+    background-color: color-mix(in srgb, var(--accent) 86%, black);
+  }
+}
 .editor .todo[data-checked="true"] .text {
   color: var(--faint);
   text-decoration: line-through;
+}
+
+.editor .page-ref {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 4px;
+  color: var(--text);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+}
+.editor .page-ref:hover {
+  background: var(--hover);
+}
+.editor .page-ref svg {
+  flex: none;
+  color: var(--muted);
+}
+.page-ref-title {
+  min-width: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor .page-ref.untitled .page-ref-title {
+  color: var(--faint);
+}
+.editor .page-ref.missing {
+  color: var(--faint);
+  font-weight: 400;
+  cursor: default;
+}
+.editor .page-ref.missing .page-ref-title {
+  border-bottom: 0;
+}
+
+.gutter {
+  position: absolute;
+  top: 0;
+  left: calc(var(--depth, 0) * 24px + 1px);
+  z-index: 1;
+  display: flex;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+}
+/* Fades in on hover and snaps out, so typing hides it at once. */
+.gutter.on {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 120ms ease;
+}
+.gutter button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+}
+.gutter button:hover {
+  background: var(--hover);
+  color: var(--muted);
+}
+.gutter button:active,
+.gutter-handle[aria-expanded="true"] {
+  background: var(--active);
+  color: var(--text);
+}
+
+.editor-menu {
+  position: fixed;
+  z-index: 20;
+  max-height: 340px;
+  overflow: auto;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.menu-item.on {
+  background: var(--hover);
+}
+.menu-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+}
+.menu-glyph {
+  font-size: 15px;
+  font-weight: 600;
+}
+.menu-glyph.bullet {
+  font-size: 24px;
+  line-height: 1;
+}
+.menu-box {
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+}
+.menu-copy {
+  flex: 1;
+  min-width: 0;
+}
+.menu-label {
+  display: block;
+  color: var(--text);
+}
+.menu-hint {
+  display: block;
+  color: var(--faint);
+  font-size: 12px;
+}
+.tick {
+  flex: none;
+  color: var(--muted);
+}
+.menu-item.danger .menu-label,
+.menu-item.danger .menu-icon {
+  color: var(--danger);
+}
+.editor-menu.compact .menu-item {
+  gap: 8px;
+  min-height: 28px;
+}
+.editor-menu.compact .menu-icon {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  background: none;
+}
+.editor-menu.compact .menu-glyph {
+  font-size: 12px;
+}
+.editor-menu.compact .menu-glyph.bullet {
+  font-size: 20px;
+}
+.editor-menu.compact .menu-box {
+  width: 13px;
+  height: 13px;
+}
+.menu-query {
+  padding: 4px 6px 6px;
+  font-size: 13px;
+}
+.menu-query span,
+.menu-heading {
+  color: var(--faint);
+}
+.menu-heading {
+  padding: 6px 6px 2px;
+  font-size: 12px;
+}
+.menu-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--line);
+}
+
+.menu.popover {
+  position: fixed;
+  top: auto;
+  right: auto;
+  z-index: 20;
+  overflow: auto;
 }
 
 .link-field {
@@ -554,7 +798,7 @@ a {
   gap: 6px;
   padding: 6px;
   border-radius: 8px;
-  background: var(--bg);
+  background: var(--surface);
   box-shadow: var(--shadow);
 }
 .link-field input {
@@ -579,12 +823,26 @@ a {
     grid-template-columns: 200px minmax(0, 1fr);
   }
   .page {
-    padding: 48px 20px 120px;
+    padding: 48px 20px 120px 52px;
   }
   .save {
     right: 20px;
   }
   .title {
     font-size: 30px;
+  }
+}
+
+@media (hover: none) {
+  .editor {
+    --gutter: 0px;
+  }
+  .gutter {
+    display: none;
+  }
+}
+@media (hover: none) and (max-width: 720px) {
+  .page {
+    padding-left: 20px;
   }
 }

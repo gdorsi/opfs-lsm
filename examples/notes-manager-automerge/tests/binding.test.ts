@@ -152,6 +152,7 @@ const BLOCKS = [
   { type: "item", list: "bullet", depth: 0 },
   { type: "item", list: "number", depth: 2 },
   { type: "todo", depth: 1, checked: false },
+  { type: "page", id: "3QoMNR5KKpnaE7JpywzzxJDTw8Xn" },
 ] as const;
 
 /** One random user action against `state`. A caret never sits inside a surrogate pair, so neither does this. */

@@ -79,6 +79,16 @@ export const schema = new Schema({
         ["span", { class: "text" }, 0],
       ],
     },
+    // A sub-page. Its text is the body's text after the marker, which only a merge leaves there, so the content is
+    // `text*` to keep one PM block per marker. `atom` keeps the caret out; the editor moves stray text to a paragraph.
+    // No parse rule: a pasted page block never comes back, so a copy never places a page twice.
+    page: {
+      group: "block",
+      content: "text*",
+      atom: true,
+      attrs: { id: {} },
+      toDOM: (node): DOMOutputSpec => ["div", { class: "page-ref", "data-page": node.attrs.id }],
+    },
     text: {},
   },
   marks: {
@@ -112,6 +122,8 @@ export function blockOf(node: PMNode): Block {
       return { type: "item", list: a.list, depth: a.depth };
     case "todo":
       return { type: "todo", depth: a.depth, checked: a.checked };
+    case "page":
+      return { type: "page", id: a.id };
     default:
       return { type: "paragraph" };
   }
