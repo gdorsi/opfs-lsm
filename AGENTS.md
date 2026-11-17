@@ -28,7 +28,7 @@ The apps under `examples/` show how to build a web app on our packages, and test
 
 ## Worktrees
 
-Several sessions work in this repository at once, and the main checkout holds their uncommitted changes. Make your changes in your own worktree. A T3 thread already runs in one under `~/.t3/worktrees/`. Otherwise, create one inside `.claude/worktrees/` from `origin/main`, never in the parent directory.
+Create worktrees inside `.claude/worktrees/` in the repository, never change code in the main worktree.
 
 ## Dev servers
 
