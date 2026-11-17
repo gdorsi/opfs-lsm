@@ -1,8 +1,9 @@
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useApp } from "../client/app.ts";
 import { useChildren, useCreatePage, useExpanded, usePage } from "../client/hooks.ts";
 import type { PageId } from "../model/types.ts";
+import { useDismiss } from "./dismiss.ts";
 
 const indent = (depth: number) => ({ "--depth": depth }) as React.CSSProperties;
 
@@ -41,17 +42,12 @@ function Row({ id, depth }: { id: PageId; depth: number }) {
   const page = usePage(id);
   const { isOpen, set } = useExpanded();
   const open = isOpen(id);
-  const create = useCreatePage();
   const navigate = useNavigate();
   const current = useParams({ strict: false }).pageId;
   const [menu, setMenu] = useState<"closed" | "actions" | "confirm">("closed");
   if (!page) return null;
   const title = page.title || "Untitled";
 
-  const onNewChild = () => {
-    set(id, true);
-    void create(id);
-  };
   const onDelete = async () => {
     setMenu("closed");
     if (current && notes.tree.read().subtree(id).includes(current as PageId)) await navigate({ to: "/" });
@@ -77,9 +73,6 @@ function Row({ id, depth }: { id: PageId; depth: number }) {
             onClick={() => setMenu(menu === "closed" ? "actions" : "closed")}
           >
             <Dots />
-          </button>
-          <button className="icon-btn" title="Add a page inside" aria-label={`Add a page inside ${title}`} onClick={onNewChild}>
-            <Plus />
           </button>
         </span>
         {menu === "actions" && (
@@ -112,16 +105,7 @@ function Row({ id, depth }: { id: PageId; depth: number }) {
 
 function Menu({ onClose, children }: { onClose(): void; children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const away = (event: Event) => ref.current && !ref.current.contains(event.target as Node) && onClose();
-    const escape = (event: KeyboardEvent) => event.key === "Escape" && onClose();
-    document.addEventListener("pointerdown", away);
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("pointerdown", away);
-      document.removeEventListener("keydown", escape);
-    };
-  }, [onClose]);
+  useDismiss(ref, onClose);
   return (
     <div ref={ref} role="menu" className="menu">
       {children}
