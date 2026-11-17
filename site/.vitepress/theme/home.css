@@ -5,27 +5,63 @@
   max-width: 760px;
 }
 
-/* What kv offers, below the hero: a card per feature, each a name, one line and a few lines of code. */
-/* The warning notes under the hero: boxes without a title, tight together. */
+/* Sections are set apart by space alone, without the line VitePress draws above each h2. */
+.VPHome .vp-doc h2 {
+  border-top: 0;
+}
+
+/* The status note under the hero: a card like the feature cards, with an amber dot and its first line as the lead. */
 .vp-doc .home-warnings {
   margin: 8px 0 24px;
+}
+
+.vp-doc .home-warnings .warning {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  column-gap: 14px;
+  margin: 0;
+  padding: 16px 20px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.vp-doc .home-warnings .warning::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--vp-c-warning-1);
+  box-shadow: 0 0 0 4px var(--vp-c-warning-soft);
 }
 
 .vp-doc .home-warnings .custom-block-title {
   display: none;
 }
 
-.vp-doc .home-warnings .warning + .warning {
-  margin-top: 8px;
-}
-
 .vp-doc .home-warnings .warning p {
+  grid-column: 2;
   margin: 0;
 }
 
+.vp-doc .home-warnings .custom-block-title + p {
+  color: var(--vp-c-text-1);
+  font-weight: 600;
+}
+
+.vp-doc .home-warnings .warning a {
+  color: var(--vp-c-brand-1);
+  font-weight: 500;
+}
+
+/* What kv offers: a card per feature, each a name, one line and a few lines of code. */
 .vp-doc .home-features {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
   gap: 12px;
   margin: 8px 0 16px;
 }
@@ -79,11 +115,6 @@
   .vp-doc .home-features div[class*="language-"] code {
     font-size: 11.25px;
   }
-}
-
-.vp-doc .home-features + p {
-  margin: 0 0 56px;
-  font-size: 14px;
 }
 
 /* An illustration: a box of the stage's shape, so the page does not move when the stage mounts. */
@@ -199,23 +230,10 @@
   text-wrap: balance;
 }
 
-.home-hero-tagline {
-  margin: 12px 0 0;
-  color: var(--vp-c-text-2);
-  font-size: 17px;
-  line-height: 26px;
-  text-wrap: pretty;
-}
-
 @media (min-width: 640px) {
   .home-hero-title {
     font-size: 48px;
     line-height: 56px;
-  }
-
-  .home-hero-tagline {
-    font-size: 19px;
-    line-height: 30px;
   }
 }
 

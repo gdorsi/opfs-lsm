@@ -11,7 +11,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
  * so a swipe over it scrolls the page, not the app's list. Tapping it opens the app full screen.
  */
 const SOURCE = "linearlite-demo";
-const DB = "linearlite-docstore";
 
 type Host = "restarted" | "alive" | "unknown";
 
@@ -161,7 +160,7 @@ onMounted(() => {
   whenIdle(() => {
     if (!mounted) return;
     state.value = "loading";
-    src.value = withBase(`/demo/index.html?db=${DB}&count=${count.value}`);
+    src.value = withBase(`/demo/index.html?count=${count.value}`);
   });
 });
 onBeforeUnmount(() => {

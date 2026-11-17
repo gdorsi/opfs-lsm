@@ -3,7 +3,6 @@ layout: home
 title: opfs-lsm
 intro:
   title: Fast local storage for your web app
-  tagline: This issue tracker keeps 100,000 issues in your browser. There is no server.
   actions:
     - theme: brand
       text: Get started
@@ -11,8 +10,6 @@ intro:
     - theme: alt
       text: GitHub
       link: https://github.com/gdorsi/opfs-lsm
-size:
-  main: 18.8 kB
 fits:
   - case: Offline-first apps
     detail: The whole dataset lives in the browser, and the UI queries it there
@@ -194,108 +191,12 @@ opfs-lsm is still under heavy development.
 
 We want it to be the building block for the best UX in web apps, and still ironing the fundamental details.
 
-Still, storage is fault-tolerant and heavily tested, so if you want to play around, feedback is very welcome!
+Still, storage is fault-tolerant and heavily tested, so if you want to play around, [feedback](https://github.com/gdorsi/opfs-lsm/issues) is very welcome!
 :::
 
 </div>
 
-<div class="home-features">
-<div>
-
-### Lightweight, with super-fast loads
-
-18.8 kB at import, and up to 4.8× faster cold loads with the Yjs adapter
-
-```ts
-// 18.8 kB gzip in your main bundle
-import { openDb } from "@opfs-lsm/kv";
-// the SharedWorker and wasm load here
-const db = await openDb({ name: "app" });
-```
-
-</div>
-<div>
-
-### Use it with your framework
-
-Adapters for TanStack DB, Yjs, Automerge and fate
-
-```ts
-const todos = createCollection(
-  docstoreCollectionOptions({
-    collection: store.collection("todos"),
-  }),
-);
-```
-
-</div>
-<div>
-
-### A low-level API for your own adapter
-
-A key-value storage you can use to build your own DB
-
-```ts
-await db.put(key, bytes);
-const saved = await db.get(key);
-for await (const { value } of db.range({ limit: 50 })) {
-  // ...
-}
-```
-
-</div>
-<div>
-
-### Quota management
-
-Your app picks what to drop before the browser refuses writes
-
-```ts
-const db = await openDb({
-  name: "app",
-  maxBytes: "quota",
-});
-db.onPressure(({ need }) => evict(need));
-```
-
-</div>
-<div>
-
-### Live subscriptions
-
-Every write, from any tab, in order
-
-```ts
-db.changes((event) => {
-  if (event.kind !== "append") return;
-  render(event.seq, event.ops);
-});
-```
-
-</div>
-<div>
-
-### Snapshot reads
-
-Reads that later writes cannot change
-
-```ts
-await db.view(async (snap) => {
-  const issue = await snap.get(issueKey);
-  for await (const { key, value } of snap.range(ofIssue)) {
-    render(key, value);
-  }
-});
-```
-
-</div>
-</div>
-
-[TanStack DB](../packages/tanstack-db/README.md) · [fate](../packages/fate/README.md) · [Yjs](../packages/yjs/README.md) · [Automerge](../packages/automerge/README.md) · [docstore](../packages/docstore/README.md) · [kv API](../packages/kv/README.md)
-
 ## Use cases
-
-Pick what your app is built on. Each adapter keeps that library's API and stores its data in opfs-lsm.
 
 <UseCases :cases="$frontmatter.fits">
 <template v-slot:tanstack-db>
@@ -386,16 +287,68 @@ for await (const { key, value } of db.range({ limit: 50 })) {
 </template>
 </UseCases>
 
-## Our benchmarks
+## What kv gives you
 
-<Benchmarks :charts="$frontmatter.bench" />
+<div class="home-features">
+<div>
 
-<div class="bench-foot">
+### Lightweight
 
-Storage calls on an Apple M5 Max; the task tracker, SQLite and typing runs on an Apple M2 Pro, in headless Chrome 157.
+The wasm engine loads in parallel with the open, outside your main bundle
 
-[Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
+```ts
+// 18.8 kB gzip in your main bundle
+import { openDb } from "@opfs-lsm/kv";
+// the SharedWorker and wasm load here
+const db = await openDb({ name: "app" });
+```
 
+</div>
+<div>
+
+### Quota management
+
+Your app picks what to drop before the browser refuses writes
+
+```ts
+const db = await openDb({
+  name: "app",
+  maxBytes: "quota",
+});
+db.onPressure(({ need }) => evict(need));
+```
+
+</div>
+<div>
+
+### Live subscriptions
+
+Every write, from any tab, in order
+
+```ts
+db.changes((event) => {
+  if (event.kind !== "append") return;
+  render(event.seq, event.ops);
+});
+```
+
+</div>
+<div>
+
+### Snapshot reads
+
+Reads that later writes cannot change
+
+```ts
+await db.view(async (snap) => {
+  const issue = await snap.get(issueKey);
+  for await (const { key, value } of snap.range(ofIssue)) {
+    render(key, value);
+  }
+});
+```
+
+</div>
 </div>
 
 ## Under the hood
@@ -409,3 +362,15 @@ A write is one row in a write-ahead log, a list of recent writes kept in Indexed
 [How it works](../docs/how-it-works.md) · [Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../docs/browser-support.md)
 
 <Illustration name="hood" full />
+
+## Our benchmarks
+
+<Benchmarks :charts="$frontmatter.bench" />
+
+<div class="bench-foot">
+
+Storage calls on an Apple M5 Max; the task tracker, SQLite and typing runs on an Apple M2 Pro, in headless Chrome 157.
+
+[Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
+
+</div>
