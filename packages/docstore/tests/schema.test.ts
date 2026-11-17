@@ -93,7 +93,7 @@ describe("opening a schema", () => {
 
   it("refuses a stored catalog of another format", async () => {
     const kv = await kvOn(freshName());
-    await kv.put(CATALOG_KEY, new TextEncoder().encode(JSON.stringify({ format: 2 })));
+    await kv.put(CATALOG_KEY, new TextEncoder().encode(JSON.stringify({ format: 3 })));
     expect(await codeOf(openDocStore(kv, v1))).toBe("schema");
   });
 

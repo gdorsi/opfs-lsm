@@ -6,13 +6,18 @@
  *     sorted    64 CC CC II <v1>..<vn> <id>   -> empty
  *     unique    64 CC CC II <v1>..<vn>        -> <id>
  *     text      64 CC CC II <v1>..<vn> <id>   -> "w1 w2 ..." (lowercased words)
+ *     count     64 CC CC II <v1>..<vn>        -> float64 BE, documents the group gained since the index was added
+ *     base      64 CC CC II <v1>..<vn> 00     -> float64 BE, documents in the group when the index was added
  *
  * CC CC is a collection id (u16be, 1..65535) and II an index id (1..255);
- * index id 00 is the rows. <id> is raw UTF-8. A value <v> is one field of
+ * index id 00 is the rows. A group of a count index is one value tuple of its
+ * fields; its count is the sum of its two rows, an absent row being 0. No
+ * field starts with 00, so the two rows stay together under every bound.
+ * <id> is raw UTF-8. A value <v> is one field of
  * the tuple encoding of `@opfs-lsm/kv/tuple`, which also owns the bounds of
  * every key that continues a prefix, an id included.
  */
-import type { Range } from "@opfs-lsm/kv";
+import { CorruptDatabaseError, type Range } from "@opfs-lsm/kv";
 import { encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
 import { DocStoreError } from "./errors.js";
 import type { Cursor, QueryInput, Scalar } from "./schema.js";
@@ -149,7 +154,11 @@ export type ScanTarget =
       readonly prefix: Uint8Array;
       readonly rowPrefix: Uint8Array;
       readonly arity: number;
-    };
+    }
+  | { readonly kind: "count"; readonly prefix: Uint8Array; readonly arity: number };
+
+/** A target whose keys are entries: `query` reads these. */
+export type EntryTarget = Exclude<ScanTarget, { readonly kind: "count" }>;
 
 /**
  * The one bound builder. `eq` fixes the first k components and one bound
@@ -170,6 +179,9 @@ export function scanPlan(target: ScanTarget, q: QueryInput): Range {
     badQuery("eq fixes every component, so no bound can follow");
   }
   if (q.match !== undefined && target.kind !== "text") badQuery("match needs a text index");
+  if (target.kind === "count" && (q.after !== undefined || q.reverse !== undefined)) {
+    badQuery("a count index has no order, so no after or reverse");
+  }
 
   let [lower, upper] = target.kind === "rows" ? rowBounds(target.prefix, q, eq) : indexBounds(target.prefix, q, eq);
   const reverse = q.reverse === true;
@@ -218,7 +230,32 @@ function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [
   return [lower, upper];
 }
 
-export function entryId(target: ScanTarget, key: Uint8Array, value: Uint8Array): Uint8Array {
+/** `64 CC CC II`, the prefix of every index entry and count row. */
+const INDEX_PREFIX = 4;
+
+/** The base row of a group, from its count row. */
+export function baseKey(group: Uint8Array): Uint8Array {
+  return after(group);
+}
+
+export function isBaseKey(key: Uint8Array, arity: number): boolean {
+  return skipTuple(key, arity, INDEX_PREFIX) !== key.length;
+}
+
+const count64 = new DataView(new ArrayBuffer(8));
+
+export function encodeCount(n: number): Uint8Array {
+  count64.setFloat64(0, n);
+  return new Uint8Array(count64.buffer.slice(0));
+}
+
+export function decodeCount(bytes: Uint8Array | undefined): number {
+  if (bytes === undefined) return 0;
+  if (bytes.length !== 8) throw new CorruptDatabaseError("a docstore count is not 8 bytes");
+  return new DataView(bytes.buffer, bytes.byteOffset, 8).getFloat64(0);
+}
+
+export function entryId(target: EntryTarget, key: Uint8Array, value: Uint8Array): Uint8Array {
   switch (target.kind) {
     case "rows":
       return key.subarray(target.prefix.length);

@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { expect } from "vitest";
-import { defineSchema, type Collection, type Cursor, type Query } from "../src/index.js";
+import { defineSchema, type Collection, type CountQuery, type Cursor, type Query } from "../src/index.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
 import { expected, type ModelIndex } from "./oracle.js";
 import { denseScalarArb, stringArb } from "./order.js";
@@ -23,6 +23,9 @@ export const schema = defineSchema<{ docs: Doc }>()({
       tags: { by: ["tags[]", "b"] },
       uniq: { by: "u", unique: true },
       search: { by: "a", text: "t" },
+      perA: { count: "a" },
+      perAB: { count: ["a", "b"] },
+      perTag: { count: "tags[]" },
     },
   },
 });
@@ -33,13 +36,18 @@ export const MODEL: Record<string, ModelIndex> = {
   tags: { kind: "multi", on: ["tags", "b"] },
   uniq: { kind: "unique", on: ["u"] },
   search: { kind: "text", on: ["a"], text: "t" },
+  perA: { kind: "count", on: ["a"], multi: false },
+  perAB: { kind: "count", on: ["a", "b"], multi: false },
+  perTag: { kind: "count", on: ["tags"], multi: true },
 };
-const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1 };
+const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1, perA: 1, perAB: 2, perTag: 1 };
 
 export type Docs = Collection<Doc, (typeof schema)["collections"]["docs"]>;
 export type DocQuery = Query<Doc, (typeof schema)["collections"]["docs"]>;
+type DocCountQuery = CountQuery<Doc, (typeof schema)["collections"]["docs"]>;
 
 export const asQuery = (q: QueryInput) => q as DocQuery;
+const asCountQuery = (q: QueryInput) => q as DocCountQuery;
 
 const WORDS = ["Buy", "milk", "MILKSHAKE", "buyer", "Bacon", "rép", "Ünï", "x1", "2024", ",", " ", "-"];
 export const textArb = fc.array(fc.constantFrom(...WORDS), { maxLength: 5 }).map((ws) => ws.join(" "));
@@ -87,12 +95,13 @@ export const queryArb: fc.Arbitrary<{ index: string | undefined; q: QueryInput }
   .chain((index) => {
     const arity = index === undefined ? 1 : ARITY[index]!;
     const value = index === undefined ? idArb : denseScalarArb;
+    const counted = index !== undefined && MODEL[index]!.kind === "count";
     return fc.integer({ min: 0, max: arity }).chain((k) =>
       fc
         .record({
           eq: fc.array(value, { minLength: k, maxLength: k }),
           bound: k === arity ? fc.constant({}) : boundArb(value),
-          reverse: fc.boolean(),
+          reverse: counted ? fc.constant(false) : fc.boolean(),
           match: index === "search" ? fc.option(matchArb, { nil: undefined }) : fc.constant(undefined),
         })
         .map(({ eq, bound, reverse, match }) => ({
@@ -116,6 +125,12 @@ export async function checkQuery(
   pageSize: number,
 ): Promise<void> {
   const want = expected(docs, index === undefined ? undefined : MODEL[index], q);
+  if (index !== undefined && MODEL[index]!.kind === "count") {
+    expect(await c.count(asCountQuery(q))).toBe(want.length);
+    expect(await c.count(asCountQuery({ ...q, limit: pageSize }))).toBe(Math.min(pageSize, want.length));
+    await expect(c.query(asQuery(q))).rejects.toMatchObject({ code: "query" });
+    return;
+  }
   const query = asQuery(q);
   expect((await c.queryIds(query)).ids).toEqual(want.map((h) => h.id));
   expect((await c.query(query)).docs).toEqual(want.map((h) => h.doc));

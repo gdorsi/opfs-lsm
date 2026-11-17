@@ -1,4 +1,4 @@
-import { defineSchema, type DocStore, type IndexInfo, type Query } from "../src/index.js";
+import { defineSchema, type CountQuery, type DocStore, type IndexInfo, type Query } from "../src/index.js";
 
 type Todo = {
   id: string;
@@ -149,3 +149,39 @@ defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { on: "
 defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { by: ["owner", "updatedAtt"] } } } });
 // @ts-expect-error an empty list of fields
 defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { by: [] } } } });
+
+export const countedSchema = defineSchema<{ todos: Todo }>()({
+  version: 1,
+  collections: {
+    todos: {
+      byCreated: { by: "createdAt" },
+      perDone: { count: ["done", "titleSort"] },
+      perTitle: { count: "titleSort" },
+    },
+  },
+});
+type Counted = (typeof countedSchema)["collections"]["todos"];
+
+export const countQueries: CountQuery<Todo, Counted>[] = [
+  { index: "perDone", eq: [false] },
+  { index: "perDone", eq: [true], startsWith: "buy", limit: 10 },
+  { index: "perTitle", gte: "a", lt: "m" },
+  { index: "byCreated", gte: 0, reverse: true },
+  // @ts-expect-error done is a boolean
+  { index: "perDone", eq: ["no"] },
+  // @ts-expect-error a count index has no positions
+  { index: "perDone", after: cursor },
+  // @ts-expect-error a count index has no order
+  { index: "perDone", reverse: true },
+  // @ts-expect-error a count index has no words
+  { index: "perTitle", match: "x" },
+];
+// @ts-expect-error query and queryIds cannot read a count index
+export const countIsNoQuery: Query<Todo, Counted> = { index: "perDone" };
+
+// @ts-expect-error count does not go with by
+defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { c: { count: "done", by: "createdAt" } } } });
+// @ts-expect-error count does not go with unique
+defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { c: { count: "done", unique: true } } } });
+// @ts-expect-error not a field of Todo
+defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { c: { count: "dne" } } } });

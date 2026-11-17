@@ -1,4 +1,4 @@
-import { CorruptDatabaseError, prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry } from "@opfs-lsm/kv";
+import { CorruptDatabaseError, prefixBound, type ChangeEvent, type Db, type Entry, type UpdateTx } from "@opfs-lsm/kv";
 import { tupleBounds } from "@opfs-lsm/kv/tuple";
 import {
   bind,
@@ -19,6 +19,7 @@ import {
   type StoredCatalog,
 } from "./catalog.js";
 import { CollectionImpl, RETRY, type Collection } from "./collection.js";
+import { readBases } from "./counts.js";
 import { decodeDoc, indexEntries, type Unindexable } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import {
@@ -68,8 +69,8 @@ export async function openDocStore<S extends AnySchema>(kv: Db, schema: S): Prom
 export type WritePlan<R> = {
   /** Point keys the body reads, after CATALOG_KEY, which the store puts first. */
   readonly keys: readonly Uint8Array[];
-  /** Runs inside kv's `update` with the values of `keys`. RETRY must leave `tx` empty. */
-  readonly apply: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => R | typeof RETRY;
+  /** Runs inside kv's `update` with the values of `keys`, so it may run more than once. RETRY must leave `tx` empty. */
+  readonly apply: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => R | typeof RETRY;
 };
 
 export interface StoreCore {
@@ -96,6 +97,16 @@ function collectionOf(bound: Bound, name: string): BoundCollection {
 }
 
 const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
+
+/** The collection and plan of an index while it is building, or undefined. By ids, as catalog.ts's `withIndex`. */
+function building(bound: Bound, collection: CollectionId, index: IndexId): { coll: BoundCollection; plan: IndexPlan } | undefined {
+  for (const coll of bound.collections.values()) {
+    if (coll.id !== collection) continue;
+    const plan = coll.maintained.find((p) => p.id === index);
+    return plan?.state.kind === "building" ? { coll, plan } : undefined;
+  }
+  return undefined;
+}
 
 class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   private readonly jobs = new Map<string, Promise<void>>();
@@ -177,6 +188,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     while (this.jobs.size > 0) await Promise.all(this.jobs.values());
   }
 
+  /** The jobs that build the indexes this handle declared. */
   declaredBuilds(): Promise<unknown> {
     const builds = [...this.bound.collections.values()].flatMap((coll) =>
       coll.maintained.flatMap((plan) => {
@@ -233,7 +245,10 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   startJobs(): void {
     for (const coll of this.bound.collections.values()) {
       for (const plan of coll.maintained) {
-        if (plan.state.kind === "building") this.job(backfillKey(coll, plan), () => this.backfill(coll.name, plan.id));
+        if (plan.state.kind !== "building") continue;
+        this.job(backfillKey(coll, plan), () =>
+          plan.target.kind === "count" ? this.buildCount(coll.id, plan.id) : this.backfill(coll.id, plan.id),
+        );
       }
     }
     for (const p of this.bound.catalog.dropped) {
@@ -260,13 +275,13 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
    * Progress is not stored, because storing it in the catalog would make
    * every concurrent writer retry once per chunk.
    */
-  private async backfill(collection: string, index: IndexId): Promise<void> {
+  private async backfill(collection: CollectionId, index: IndexId): Promise<void> {
     let from: Uint8Array | undefined;
     for (;;) {
       const bound = this.bound;
-      const coll = bound.collections.get(collection);
-      const plan = coll?.maintained.find((p) => p.id === index);
-      if (!coll || !plan || plan.state.kind !== "building") return;
+      const now = building(bound, collection, index);
+      if (!now) return;
+      const { coll, plan } = now;
       const rowPrefix = coll.rows.prefix;
       const rows: Entry[] = [];
       const derived: (Entry[] | Unindexable)[] = [];
@@ -329,6 +344,43 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
         return;
       }
       from = rows.at(-1)!.key;
+    }
+  }
+
+  /**
+   * Fill a building count index with the base rows of one snapshot
+   * (counts.ts), then mark it ready. Each chunk of puts commits only while the
+   * catalog still has this index building; an unrelated catalog change does
+   * not matter, because a base row is the same from any snapshot. So any
+   * handle may run it, two at once write the same bytes, and a crash restarts
+   * it from the first row.
+   */
+  private async buildCount(collection: CollectionId, index: IndexId): Promise<void> {
+    for (;;) {
+      if (!building(this.bound, collection, index)) return;
+      const read = await this.kv.view(async (snap) => {
+        const now = building(this.adopt(await snap.get(CATALOG_KEY)), collection, index);
+        return now && readBases(snap, now.plan, now.coll.rows.prefix);
+      });
+      if (!read) return;
+      if ("unindexable" in read) {
+        await this.editCatalog((c) => markFailed(c, collection, index, "value", [idOf(read.unindexable)]));
+        this.startJobs();
+        return;
+      }
+      let done = true;
+      for (let at = 0; done && at < read.bases.length; at += BACKFILL_OPS) {
+        const chunk = read.bases.slice(at, at + BACKFILL_OPS);
+        done = await this.kv.update([CATALOG_KEY], ([catalog], tx) => {
+          if (!building(this.adopt(catalog), collection, index)) return false;
+          for (const b of chunk) tx.put(b.key, b.value);
+          return true;
+        });
+      }
+      if (done) {
+        await this.editCatalog((c) => markReady(c, collection, index));
+        return;
+      }
     }
   }
 
