@@ -38,7 +38,7 @@ type Cmd =
 /** What one slot of a `modifyMany` call does to its document. */
 type Slot = { readonly id: string; readonly act: "set" | "delete" | "leave"; readonly patch: Partial<Doc> };
 
-const ids = fc.constantFrom("a", "aa", "ab", "b", "\u0000", "a\u0000", "😀", "z");
+const ids = fc.constantFrom("a", "aa", "ab", "b", "\u0000", "a\u0000", "\ufeffa", "😀", "z");
 const uArb = fc.option(fc.constantFrom<Scalar>(null, true, 1, -0, "x", "y"), { nil: undefined });
 const fields = {
   a: fc.option(denseScalarArb, { nil: undefined }),

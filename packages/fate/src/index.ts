@@ -6,7 +6,7 @@ const MAX_LOCK_NAME = 1024;
 const MAX_LIMIT = 2 ** 32 - 1;
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /**
  * fate persistence storage on a kv `Db`. The caller owns `db` and closes it.

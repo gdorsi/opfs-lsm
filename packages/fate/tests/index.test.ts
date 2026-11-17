@@ -164,6 +164,12 @@ test("keys with quotes, backslashes, non-ASCII and astral characters come back e
     for (const key of keys) assert.deepEqual(await storage.read(key), { key });
   }));
 
+test("a key that starts with U+FEFF comes back exactly from scan", () =>
+  withDb(async (_db, storage) => {
+    await put(storage, "\ufeffa");
+    assert.deepEqual(await keysOf(storage, "\ufeff"), ["\ufeffa"]);
+  }));
+
 test("a key with a lone surrogate is rejected everywhere", () =>
   withDb(async (_db, storage) => {
     for (const key of ["\ud800", "a\udc00", "\udc00\ud800", "x\ud83d"]) {

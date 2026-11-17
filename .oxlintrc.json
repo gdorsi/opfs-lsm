@@ -5,6 +5,9 @@
     "oxc",
     "vitest"
   ],
+  "jsPlugins": [
+    "./scripts/oxlint-plugin.mjs"
+  ],
   "categories": {
     "correctness": "error"
   },
@@ -517,6 +520,14 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "files": [
+        "packages/*/src/**"
+      ],
+      "rules": {
+        "opfs-lsm/text-decoder-ignore-bom": "error"
       }
     }
   ]

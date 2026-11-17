@@ -22,7 +22,7 @@ export type EncodedDoc = {
 };
 
 const utf8 = new TextEncoder();
-const fromUtf8 = new TextDecoder();
+const fromUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /** Parsing the text, not the bytes, skips a decode. The two agree because `JSON.stringify` escapes lone surrogates. */
 export function encodeDoc(doc: JsonDoc): EncodedDoc {

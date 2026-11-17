@@ -20,6 +20,7 @@
     "docs:dev": "pnpm --filter @opfs-lsm/site dev",
     "docs:build": "pnpm --filter @opfs-lsm/site build",
     "docs:preview": "pnpm --filter @opfs-lsm/site preview",
+    "dev": "node scripts/dev.mjs",
     "lint": "oxlint",
     "deadcode": "fallow dead-code",
     "static": "pnpm lint && pnpm check:docs && pnpm deadcode",
@@ -28,7 +29,7 @@
     "test:suites": "pnpm --filter @opfs-lsm/kv test:unit && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test && pnpm --filter @opfs-lsm/tanstack-db test && pnpm --filter @opfs-lsm/fate test && pnpm --filter @opfs-lsm/example-whiteboard-yjs test && pnpm --filter @opfs-lsm/example-notes-manager-automerge test",
     "test:examples": "pnpm --filter './examples/*' run build",
     "test:kv": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/kv test:unit",
-    "test:docstore": "pnpm --filter @opfs-lsm/kv run build && pnpm --filter @opfs-lsm/docstore run build && pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
+    "test:docstore": "pnpm --filter @opfs-lsm/docstore test && pnpm --filter @opfs-lsm/yjs test && pnpm --filter @opfs-lsm/automerge test",
     "bench": "pnpm --filter './packages/*' build && node bench/cli.ts run",
     "bench:smoke": "pnpm --filter './packages/*' build && node bench/cli.ts smoke",
     "bench:size": "pnpm --filter './packages/*' build && node bench/cli.ts size"

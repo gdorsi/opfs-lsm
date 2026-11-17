@@ -16,6 +16,10 @@ pnpm bench kv/
 
 `pnpm test` typechecks and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, docstore against Dexie, the TanStack DB adapter against TanStack DB's IndexedDB adapter, and the Yjs, Automerge and fate adapters against their IndexedDB counterparts. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
 
+## Figures show what the engine does
+
+A site figure that shows a kv mechanism, such as the WAL, a flush, a broadcast or a read, draws what kv does today. Check the mechanism in `docs/design.md` and `packages/kv/src` before drawing it, and name every simplification in the scene's `REHEARSAL.md`.
+
 ## Add a changeset when you change a published package
 
 The repository publishes six packages to npm: `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/tanstack-db`, `@opfs-lsm/yjs`, `@opfs-lsm/automerge`, and `@opfs-lsm/fate`. [Changesets](https://github.com/changesets/changesets) versions them and writes each package's `CHANGELOG.md`.
