@@ -106,7 +106,7 @@ describe.each(Object.entries(STAGES))("deleteRange, %s", (_stage, { before, afte
     expect(await keys(db, { limit: 1 })).toEqual(["a=v:a"]);
     expect(await keys(db, { valueContains: [b("v:")] })).toEqual(["a=v:a", "z=v:z"]);
     expect(await keys(db, { valueContains: [b("v:m")] })).toEqual([]);
-    const joined = await db.rangeJoin({ endExclusive: b("b") }, () => b("m/2"));
+    const joined = await db.view((snap) => snap.rangeJoin({ endExclusive: b("b") }, () => b("m/2")));
     expect(joined.map((j) => [s(j.entry.key), s(j.joined)])).toEqual([["a", undefined]]);
     const seen = await db.update([b("m/1"), b("a")], (values) => values.map(s));
     expect(seen).toEqual([undefined, "v:a"]);

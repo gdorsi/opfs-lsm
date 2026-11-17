@@ -2,7 +2,7 @@ import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { entryCursor, untilHit, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, Miss, untilHit, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,
@@ -10,9 +10,16 @@ import {
   liveStep,
   matchingStep,
   pointGet,
+  readKeys,
   type RunLevel,
   type ScanStep,
 } from "./store/read.js";
+
+interface Joined {
+  readonly entry: Entry;
+  /** Undefined when `keyOf` returned no key or the key has no value. */
+  readonly joined: Uint8Array | undefined;
+}
 
 export interface ViewSnapshot {
   /** The seq of the last record the snapshot includes, as write acks and `changes` count it. */
@@ -21,6 +28,12 @@ export interface ViewSnapshot {
   range(range?: Range): AsyncIterable<Entry>;
   /** How many entries `range` would yield, `limit` included, without copying them. */
   count(range?: Range): Promise<number>;
+  /**
+   * Scan `range` and join each entry to the value at `keyOf(entry)`, as an
+   * index entry joins its row. The scan and the reads see the snapshot, so a
+   * page load that makes one wait does not change what the next sees.
+   */
+  rangeJoin(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined): Promise<Joined[]>;
 }
 
 export function boundsOf(range?: Range): ScanBounds | undefined {
@@ -106,6 +119,33 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     const k = checkKey(key);
     const row = this.rows.get(k);
     return untilHit(() => pointGet(row, this.levels, k, this.at));
+  }
+
+  async rangeJoin(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined): Promise<Joined[]> {
+    this.ensureOpen();
+    const bounds = boundsOf(range);
+    const release = this.hold();
+    try {
+      const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
+      const keys: Uint8Array[] = [];
+      const owners: typeof out = [];
+      for await (const entry of scanLayers(this.rows.range(bounds), this.levels, this.at, bounds, range)) {
+        const hit = { entry, joined: undefined };
+        out.push(hit);
+        const key = keyOf(entry);
+        if (key === undefined) continue;
+        keys.push(checkKey(key));
+        owners.push(hit);
+      }
+      // One read for every key, so the pages they lack load together.
+      const read = () => readKeys(this.rows, keys, this.levels, this.at);
+      const first = read();
+      const values = first instanceof Miss ? await untilHit(read, first) : first;
+      values.forEach((value, i) => (owners[i]!.joined = value));
+      return out;
+    } finally {
+      release();
+    }
   }
 
   async count(range?: Range): Promise<number> {
