@@ -16,7 +16,6 @@ import "./hood.css";
 // them go with the flush that folded them. It also flushes after one write, where the engine waits for the log to
 // reach `maxWalBytes`.
 // Tab 1, where the click is, leads; tab 2 lies over its right edge. Both run under the hood's band, which is the cut.
-// Narrow, the same story runs down one column: tab 1, tab 2 over its lower half, then the hood.
 
 type Props = { readonly theme: SceneTheme };
 
@@ -133,14 +132,13 @@ const NEIGHBORS: Issue[] = [
   { id: "LL-0B7E2", title: "Add a shortcut to assign to me", who: "Ana Ruiz", date: "Nov 9", status: 1, priority: 3 },
 ];
 const FILLER = [150, 112, 136, 96, 124];
-// Narrow, the broadcast line runs down past tab 1's placeholder rows, so they stay short of it.
-const FILLER_NARROW = [96, 72, 88, 64, 80];
+const FILLER_NARROW = [120, 96];
 
 /**
  * What a tab shows of a row. Tab 1 leads, and tab 2 lies over its right end, so tab 1 draws nothing there. Tab 2 is
  * narrower, so it drops the id, as LinearLite does in a narrow window.
  */
-type Cols = { id: boolean; trail: boolean };
+type Cols = { id: boolean; trail: boolean; prio: boolean };
 
 function IssueRow({ issue, lead, cols, target, titleTarget }: { issue: Issue; lead: ReactNode; cols: Cols; target?: string; titleTarget?: string }) {
   return (
@@ -150,7 +148,7 @@ function IssueRow({ issue, lead, cols, target, titleTarget }: { issue: Issue; le
       data-target={target}
       lead={
         <span className="hd-lead">
-          <Priority code={issue.priority} />
+          {cols.prio && <Priority code={issue.priority} />}
           {cols.id && <span className="hd-id">{issue.id}</span>}
           {lead}
         </span>
@@ -178,7 +176,7 @@ function FillerRow({ w, cols }: { w: number; cols: Cols }) {
       className="hd-row"
       lead={
         <span className="hd-lead">
-          <span className="hd-btn"><Bar w={14} h={7} r={3.5} tone={1} /></span>
+          {cols.prio && <span className="hd-btn"><Bar w={14} h={7} r={3.5} tone={1} /></span>}
           {cols.id && <Bar w={56} h={7} r={3.5} tone={1} />}
           <span className="hd-btn"><Bar w={14} h={7} r={3.5} tone={1} /></span>
         </span>
@@ -196,7 +194,7 @@ function FillerRow({ w, cols }: { w: number; cols: Cols }) {
 }
 
 /** One tab of LinearLite: the list pane, as the hero shows it, without its sidebar. */
-function Tab({ n, done, neighbors, filler, cols, button, menu, open }: { n: 1 | 2; done: boolean; neighbors: number; filler: readonly number[]; cols: Cols; button: boolean; menu?: ReactNode; open?: boolean }) {
+function Tab({ n, done, neighbors, filler, cols, button, open }: { n: 1 | 2; done: boolean; neighbors: number; filler: readonly number[]; cols: Cols; button: boolean; open?: boolean }) {
   return (
     <Window url={`LinearLite · Tab ${n}`} className={`hd-win hd-win--${n}`} data-target={`tab-${n}`}>
       <div className="hd-app">
@@ -226,7 +224,6 @@ function Tab({ n, done, neighbors, filler, cols, button, menu, open }: { n: 1 | 
         {filler.map((w, i) => (
           <FillerRow key={i} w={w} cols={cols} />
         ))}
-        {menu}
       </div>
     </Window>
   );
@@ -290,7 +287,7 @@ function Engine({ s, compact }: { s: S; compact: boolean }) {
       <div className="hd-node-slot">
         <div className="hd-node" data-target="node">
           <span className="hd-node-name">SharedWorker</span>
-          <span className="hd-node-note">one for every tab</span>
+          <span className="hd-node-note">a single instance for all the tabs</span>
         </div>
       </div>
 
@@ -335,6 +332,7 @@ export default function Hood({ theme }: Props) {
     >
       {(s, rect, layout) => {
         const compact = layout === "compact";
+        const tab1 = rect("tab-1");
         const tab2 = rect("tab-2");
         const row2 = rect("row-2");
         const title1 = rect("title-1");
@@ -343,57 +341,60 @@ export default function Hood({ theme }: Props) {
         const sst = rect("sst");
         const node = rect("node");
         const band = rect("band");
-        const ready = [tab2, row2, title1, row1, wal, sst, node, band].every((r) => r.width > 0);
-        const putX = wal.x + 64;
+        const ready = [tab1, tab2, row2, title1, row1, wal, sst, node, band].every((r) => r.width > 0);
+        const putX = compact ? wal.x + 32 : wal.x + 64;
+        const putFrom = compact ? tab1.y + tab1.height + 5 : band.y + 5;
         const n = mid(node);
-        // Narrow, the broadcast drops straight from the issue in tab 1 onto tab 2's top edge, right of the
-        // placeholder rows it passes, so its label sits on nothing but their empty ends.
-        const bcX = 262;
-        const menu = (
-          <Popover show={s.menu} className="hd-menu" origin="top left">
-            <Menu
-              items={STATUS_LABELS.map((label, code) => (
-                <span key={label} className="hd-item" data-cursor="hand">
-                  <StatusGlyph code={code} />
-                  <span>{label}</span>
-                  {code === 1 && (
-                    <svg className="hd-tick" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                      <path d="M2.5 6.3l2.4 2.4 4.6-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )}
-                </span>
-              ))}
-              targets={[undefined, undefined, undefined, "menu-done", undefined]}
-            />
-          </Popover>
-        );
+        const bcX = (tab2.x + COMPACT[0]) / 2;
         return (
           <>
             <Tab
               n={1}
               done={s.done1}
               neighbors={compact ? 0 : 2}
-              filler={compact ? FILLER_NARROW : FILLER.slice(0, 3)}
-              cols={{ id: !compact, trail: false }}
+              filler={compact ? [] : FILLER.slice(0, 3)}
+              cols={{ id: !compact, trail: false, prio: true }}
               button={false}
-              menu={menu}
               open={s.menu}
             />
-            <Tab n={2} done={s.done2} neighbors={compact ? 0 : 2} filler={FILLER.slice(0, 2)} cols={{ id: false, trail: !compact }} button={!compact} />
+            <Tab
+              n={2}
+              done={s.done2}
+              neighbors={compact ? 0 : 2}
+              filler={compact ? FILLER_NARROW : FILLER.slice(0, 2)}
+              cols={{ id: false, trail: !compact, prio: !compact }}
+              button={!compact}
+            />
             <span className="hd-rest" data-target="rest" />
             <div className="hd-band" data-target="band" />
             <Engine s={s} compact={compact} />
+            <Popover show={s.menu} className="hd-menu" origin="top left">
+              <Menu
+                items={STATUS_LABELS.map((label, code) => (
+                  <span key={label} className="hd-item" data-cursor="hand">
+                    <StatusGlyph code={code} />
+                    <span>{label}</span>
+                    {code === 1 && (
+                      <svg className="hd-tick" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <path d="M2.5 6.3l2.4 2.4 4.6-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </span>
+                ))}
+                targets={[undefined, undefined, undefined, "menu-done", undefined]}
+              />
+            </Popover>
 
             {ready && (
               <>
-                <Connector show={s.put} route="straight" arrow label="put" from={{ x: putX, y: band.y + 5 }} to={{ x: putX, y: wal.y - 5 }} />
+                <Connector show={s.put} route="straight" arrow label="put" from={{ x: putX, y: putFrom }} to={{ x: putX, y: wal.y - 5 }} />
                 {compact ? (
                   <Connector
                     show={s.bc}
                     route="straight"
                     arrow
                     label="BroadcastChannel"
-                    from={{ x: bcX, y: row1.y + row1.height + 4 }}
+                    from={{ x: bcX, y: tab1.y + tab1.height + 5 }}
                     to={{ x: bcX, y: tab2.y - 5 }}
                   />
                 ) : (

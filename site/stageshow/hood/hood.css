@@ -210,8 +210,8 @@
 
   /* The status menu, as LinearLite draws it, under the status it changes. */
   .hd-menu {
-    left: 120px;
-    top: 86px;
+    left: 152px;
+    top: 156px;
     width: 180px;
     --ss-popover-bg: var(--ll-raised);
     --ss-row: 28px;
@@ -365,26 +365,24 @@
     line-height: 14px;
   }
 
-  /* Narrow: one column. Tab 1, tab 2 over its lower half, then the hood. */
   & .ss-stage[data-layout="compact"] {
-    /* Tab 1 runs off the right edge; tab 2 lies over its foot, runs off the right too and ends under the band. */
     .hd-win--1 {
       left: 16px;
       top: 16px;
       width: 380px;
-      height: 340px;
+      height: 116px;
     }
 
     .hd-win--2 {
-      left: 92px;
-      top: 300px;
-      width: 300px;
-      height: 186px;
+      left: 100px;
+      top: 184px;
+      width: 292px;
+      height: 200px;
     }
 
     .hd-rest {
-      left: 216px;
-      top: 74px;
+      left: 250px;
+      top: 70px;
     }
 
     .hd-bar {
@@ -401,20 +399,28 @@
       gap: 8px;
     }
 
+    .hd-name {
+      font-size: 13.5px;
+      font-weight: 500;
+    }
+
     .hd-menu {
-      left: 40px;
-      top: 80px;
+      left: 52px;
+      top: 129px;
       width: 170px;
-      --ss-row: 26px;
+    }
+
+    .hd-menu .ss-menu__item {
+      font-size: 13px;
     }
 
     .hd-band {
-      top: 476px;
+      top: 312px;
       width: 358px;
     }
 
     .hd-hood {
-      top: 520px;
+      top: 336px;
       left: 16px;
       width: 326px;
       display: flex;
@@ -429,7 +435,7 @@
     /* The log keeps three rows: the new record slides in on top and the oldest leaves at the bottom, so the
        SharedWorker and the files below never move. */
     .hd-card[data-target="wal"] {
-      height: 156px;
+      height: 164px;
       overflow: hidden;
     }
 
@@ -446,14 +452,59 @@
       padding: 10px 14px 9px;
     }
 
+    .hd-card-title {
+      font-size: 14px;
+      line-height: 18px;
+    }
+
+    .hd-where {
+      font-size: 12px;
+      line-height: 16px;
+    }
+
     .hd-rec,
     .hd-empty {
-      height: 34px;
       padding-inline: 14px;
     }
 
+    .hd-seq {
+      width: 20px;
+      font-size: 12px;
+    }
+
+    .hd-mono {
+      font-size: 12.5px;
+      line-height: 17px;
+    }
+
+    .hd-size {
+      font-size: 12px;
+    }
+
+    .hd-empty {
+      font-size: 12.5px;
+    }
+
     .hd-node-slot {
-      padding: 24px 0;
+      padding: 22px 0;
+    }
+
+    .hd-node {
+      padding: 6px 14px 7px;
+    }
+
+    .hd-node-name {
+      font-size: 13px;
+      line-height: 17px;
+    }
+
+    .hd-node-note {
+      font-size: 12px;
+      line-height: 16px;
+    }
+
+    .ss-connector__label {
+      font-size: 12px;
     }
   }
 }

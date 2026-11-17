@@ -12,7 +12,7 @@ Beats:
 `play="once"`, about 13s. The poster is the payoff.
 
 Captured on the home page:
-- Widths: 1440 (wide, 1152 x 576 stage) and 390 (compact, 358 x 880, full below 720).
+- Widths: 1440 (wide, 1152 x 576 stage) and 390 (compact, 358 x 736, full below 720).
 - Looks: light and dark.
 - `--gate` at both widths in both looks; `--states` at both widths.
 - `--reduced` posters at 1440 light and 390 dark.
@@ -21,7 +21,11 @@ Captured on the home page:
 Gate: `rehearsal passed (necessary, not sufficient: references/verify.md and the fresh eye in review.md still stand)` at 1440 and 390, light and dark.
 
 Film:
-- `framing: narrower than tall` (390) → Tab 1 is 380 x 340 and runs off the right. Tab 2 is 300 x 186, lies over Tab 1's foot, runs off the right and ends under the band → cleared.
+- `framing: narrower than tall` (390) → cleared by the compact layout below.
+- Compact relayout, picked from three phone prototypes because the 880px compact layout was hard to read. Nothing overlaps: Tab 1 is 380 x 116, cut just under the issue, and runs off the right. Tab 2 is 292 wide, sits under Tab 1's right side, runs off the right and ends under the band. "put" drops down the free lane left of Tab 2. The engine's type is a step larger than wide.
+- `uneven gutters: div.ss-window` (390, Tab 1 inside the stage) → both tabs run off the right edge → cleared.
+- `uneven padding: div.hd-app` (390, Tab 2 without its toolbar) → Tab 2 keeps LinearLite's toolbar, as wide does → cleared.
+- `framing: real words "l1/c7.0.sst" cut by the crop` (390, once the new file pushes the list down) → compact lists one real file and a placeholder row, which bleeds → cleared.
 - `steps in its box: div.hd-node` (390) → the log card grew by a row and pushed the SharedWorker down. The compact log card is pinned to three rows → cleared.
 - `hard edge: span.ss-bar cut by section.hd-card` (390) → the oldest record, a placeholder row, is drawn at 30% so it passes under the card's edge without a hard cut → cleared.
 - `touching: placeholder span.ss-bar running into svg/span` (1.5 to 2.0s) → stands. These are Tab 1's filler bars under the open status menu. The menu is opaque, so nothing of them shows.
