@@ -29,18 +29,22 @@
   ],
   "exports": {
     ".": {
+      "opfs-lsm-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
     "./tuple": {
+      "opfs-lsm-source": "./src/tuple.ts",
       "types": "./dist/tuple.d.ts",
       "import": "./dist/tuple.js"
     },
     "./testing": {
+      "opfs-lsm-source": "./src/testing.ts",
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
     },
     "./shared-worker": {
+      "opfs-lsm-source": "./src/host/shared-worker.ts",
       "types": "./dist/host/shared-worker.d.ts",
       "import": "./dist/host/shared-worker.js"
     }
