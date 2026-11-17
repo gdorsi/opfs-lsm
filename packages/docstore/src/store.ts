@@ -102,7 +102,6 @@ function collectionOf(bound: Bound, name: string): BoundCollection {
   return coll;
 }
 
-/** `Bound.bytes` of the catalog a destroy left unwritten. Matches no stored catalog. */
 const NO_CATALOG = new Uint8Array(0);
 
 const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
@@ -120,8 +119,6 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   private rereading: Promise<void> | undefined;
   /** Catalog writes the feed delivered, so a reread that one overtook is dropped. */
   private catalogWrites = 0;
-  /** The catalog a fresh open would write, bound. Built the first time a destroy leaves no catalog. */
-  private emptied: Bound | undefined;
 
   constructor(
     readonly kv: Db,
@@ -209,8 +206,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
       const plan = await planner(collectionOf(bound, name));
       const out = await this.kv.update([CATALOG_KEY, ...plan.keys], ([catalog, ...values], tx) => {
         if (!catalog) {
-          // A destroy emptied the database. Store the catalog a fresh open writes, then plan again against it.
-          tx.put(CATALOG_KEY, encodeCatalog(this.boundIn(undefined).catalog));
+          tx.put(CATALOG_KEY, encodeCatalog(reconcile(undefined, this.declared)!));
           return RETRY;
         }
         if (!sameCatalog(catalog, bound.bytes)) {
@@ -241,13 +237,9 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
     });
   }
 
-  /**
-   * The catalog `bytes` bound, or `bound` itself when it is the same catalog. Leaves `bound` alone.
-   * No catalog means a destroy emptied the database: it reads as the catalog a fresh open would write,
-   * and the next write stores that catalog.
-   */
+  /** The catalog `bytes` bound, or `bound` itself when it is the same catalog. Leaves `bound` alone. */
   private boundIn(bytes: Uint8Array | undefined): Bound {
-    if (!bytes) return (this.emptied ??= bind(NO_CATALOG, reconcile(undefined, this.declared)!, this.declared));
+    if (!bytes) return bind(NO_CATALOG, reconcile(undefined, this.declared)!, this.declared);
     return sameCatalog(bytes, this.bound.bytes) ? this.bound : bind(bytes, parseCatalog(bytes), this.declared);
   }
 
@@ -361,7 +353,6 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   private async sweep(p: DroppedPrefix): Promise<void> {
     const collection = p.collection as CollectionId;
     const prefix = "index" in p ? indexPrefix(collection, p.index as IndexId) : collectionPrefix(collection);
-    // Only while the catalog lists the prefix: a destroy restarts ids, so a later collection can take this one.
     // Not `tupleBounds`: index id 255 is `64 CC CC FF`, which `tupleBounds(64 CC CC)` would exclude.
     await this.editCatalog((c, tx) => {
       const next = removeDropped(c, p);

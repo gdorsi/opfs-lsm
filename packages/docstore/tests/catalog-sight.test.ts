@@ -84,7 +84,7 @@ describe("a store held across dangerousDestroy", () => {
 
   it("keeps a write made after the destroy when a sweep from before it runs late", async () => {
     const kv = await kvOn(freshName());
-    const sweeps = gate(kv, "catalog", 2);
+    const sweeps = gate(kv, "catalog-or-batch", 2);
     const store = await openDocStore(sweeps.db, v1);
     const todos = store.collection("todos");
     await todos.put({ id: "a", title: "x" });

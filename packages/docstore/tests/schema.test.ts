@@ -506,7 +506,7 @@ describe("clear", () => {
       for (const [, read, whole] of reads) {
         const name = freshName();
         await (await at(name, v1)).store.collection("todos").putMany(docs);
-        const sweeper = gate(await kvOn(name), "catalog", chunks + 1);
+        const sweeper = gate(await kvOn(name), "catalog-or-batch", chunks + 1);
         const clearing = await openOn(sweeper.db, v1);
         const readerKv = await kvOn(name);
         let armed = false;

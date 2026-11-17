@@ -41,7 +41,7 @@ async function loaded(): Promise<string> {
 }
 
 /** Run `start` on a handle whose `method` holds every call after the first `k`, close that handle once one is held, and reopen. */
-async function stopAt(name: string, method: "range" | "catalog", k: number, start: (db: Db) => Promise<unknown>): Promise<Db> {
+async function stopAt(name: string, method: "range" | "catalog-or-batch", k: number, start: (db: Db) => Promise<unknown>): Promise<Db> {
   const kv = await openKv(name);
   const held = gate(kv, method, k);
   const running = start(held.db).catch(() => undefined);
@@ -90,7 +90,7 @@ describe("a sweep stopped before its range delete", () => {
     const kept = rows.slice(0, 3).map((r) => ({ ...r, id: `kept-${r.id}` }));
     const name = await loaded();
     let prefix: Uint8Array | undefined;
-    const kv = await stopAt(name, "catalog", k, async (db) => {
+    const kv = await stopAt(name, "catalog-or-batch", k, async (db) => {
       const c = (await openDocStore(db, v1)).collection("rows");
       prefix = await storedPrefix(db, "rows");
       await c.clear();
@@ -118,7 +118,7 @@ describe("a sweep stopped before its range delete", () => {
     const before = await openKv(name);
     const prefix = await storedPrefix(before, "rows", "byA");
     await before.close();
-    const kv = await stopAt(name, "catalog", k, (db) => openDocStore(db, withoutA));
+    const kv = await stopAt(name, "catalog-or-batch", k, (db) => openDocStore(db, withoutA));
     try {
       expect((await storedCatalog(kv)).dropped).toHaveLength(1);
       await (await openDocStore(kv, withoutA)).whenIdle();
