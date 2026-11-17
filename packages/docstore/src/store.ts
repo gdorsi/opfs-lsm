@@ -234,9 +234,9 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
    * result once this resolves: kv announces a write before it resolves it
    * (the contract on kv's `ChangeEvent`), and `follow` adopts it.
    */
-  private async editCatalog(edit: (c: StoredCatalog) => StoredCatalog | undefined): Promise<void> {
+  private async editCatalog(edit: (c: StoredCatalog, tx: BatchTx) => StoredCatalog | undefined): Promise<void> {
     await this.kv.update([CATALOG_KEY], ([stored], tx) => {
-      const next = edit(this.adopt(stored).catalog);
+      const next = edit(this.adopt(stored).catalog, tx);
       if (next) tx.put(CATALOG_KEY, encodeCatalog(next));
     });
   }
@@ -361,9 +361,12 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
   private async sweep(p: DroppedPrefix): Promise<void> {
     const collection = p.collection as CollectionId;
     const prefix = "index" in p ? indexPrefix(collection, p.index as IndexId) : collectionPrefix(collection);
-    // One op: nothing reaches the prefix any more, so no later write can land in it.
+    // Only while the catalog lists the prefix: a destroy restarts ids, so a later collection can take this one.
     // Not `tupleBounds`: index id 255 is `64 CC CC FF`, which `tupleBounds(64 CC CC)` would exclude.
-    await this.kv.batch((tx) => tx.deleteRange(prefixBound(prefix)));
-    await this.editCatalog((c) => removeDropped(c, p));
+    await this.editCatalog((c, tx) => {
+      const next = removeDropped(c, p);
+      if (next) tx.deleteRange(prefixBound(prefix));
+      return next;
+    });
   }
 }
