@@ -481,13 +481,31 @@ describe("a corrupt WAL row: no checksum", () => {
     expect(r.open).toBe("commit");
   });
 
-  it("an uningested row deleted: open fails on the gap", async () => {
+  it("an uningested row deleted between two others: open fails on the gap", async () => {
     const r = await run("WAL row: deleted (a gap)", standard, async (f) => {
       const seq = await head(f);
-      await walStore(f.name, "readwrite", (wal) => wal.delete(seq - 1));
+      await walStore(f.name, "readwrite", async (wal) => {
+        const raw = await new Promise<unknown>((resolve) => {
+          const req = wal.get(seq);
+          req.onsuccess = () => resolve(req.result);
+        });
+        wal.put(raw, seq + 1);
+        return wal.delete(seq);
+      });
     });
     expect(crashes(r)).toEqual([]);
     expect(r.open).toBe("commit");
+  });
+
+  // The head lookup reads only `ingestedThrough + 1` when that key is gone,
+  // so the rows after it are not read.
+  it("the first uningested row deleted: open reads without the rows after it", async () => {
+    const r = await run("WAL row: first one deleted", standard, async (f) => {
+      const { ingestedThrough } = await walMeta(f.name);
+      await walStore(f.name, "readwrite", (wal) => wal.delete(ingestedThrough + 1));
+    });
+    expect(crashes(r)).toEqual([]);
+    expect(r.open).toBe("ok");
   });
 
   it("meta.generation names a manifest that is not there", async () => {

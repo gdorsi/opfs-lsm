@@ -4,7 +4,8 @@
  *
  * IndexedDB: the key generator of `wal`, `ingestedThrough`, `generation`,
  * and WAL rows seq -> write id. Nothing stores the head: it is the last row,
- * or `ingestedThrough` when no row is past it (`headOf`). The key generator
+ * or `ingestedThrough` when no row is past it, and `headOf` finds it the way
+ * the product does. The key generator
  * is part of the store, so a crash state that loses commits gets the
  * generator those commits left behind. OPFS: run files (sets of writes) and manifests. A write id
  * stands for one acked batch's content, so a run's content is the set of
@@ -117,11 +118,20 @@ export function cloneOpfs(s: Opfs): Opfs {
   return { runs: new Map(s.runs), manifests: new Map(s.manifests) };
 }
 
-/** `headOf` in src/idb/wal.ts: the last WAL row, or `ingestedThrough` when no row is past it. */
-function headOf(idb: Idb): number {
+/** The last WAL row, or `ingestedThrough` when no row is past it. */
+function lastRow(idb: Idb): number {
   let head = idb.ingested;
   for (const seq of idb.rows.keys()) head = Math.max(head, seq);
   return head;
+}
+
+/**
+ * `headOf` in src/idb/wal.ts: `ingestedThrough` when no row is at
+ * `ingestedThrough + 1`, else the last row. It is the head only while the
+ * rows past `ingestedThrough` have no gap, which `problem` checks.
+ */
+function headOf(idb: Idb): number {
+  return idb.rows.has(idb.ingested + 1) ? lastRow(idb) : idb.ingested;
 }
 
 function applyOp(idb: Idb, opfs: Opfs, op: Op): void {
@@ -367,7 +377,7 @@ export class Sys {
    */
   problem(): string | undefined {
     const { generation, ingested } = this.idb;
-    const head = headOf(this.idb);
+    const head = lastRow(this.idb);
     if (generation === undefined) return "no recorded generation";
     const meta = this.manifest(generation);
     if (!this.intact(meta)) return `recorded manifest ${generation} does not load`;
@@ -377,14 +387,18 @@ export class Sys {
     return undefined;
   }
 
-  /** What a tab reads after `reconcile`: the recorded manifest's runs, then the WAL above ingestedThrough. */
+  /** What a tab reads after `reconcile`: the recorded manifest's runs, then the WAL in (ingestedThrough, head]. */
   read(): Set<number> {
     const { gen } = this.reconcile();
     const meta = this.manifest(gen);
     if (!this.intact(meta)) throw new Stuck(`manifest ${gen} does not load`);
     const out = new Set<number>();
     for (const p of meta.runs) for (const w of this.opfs.runs.get(p)!) out.add(w.id);
-    for (const [seq, id] of this.idb.rows) if (seq > this.idb.ingested) out.add(id);
+    for (let seq = this.idb.ingested + 1; seq <= headOf(this.idb); seq++) {
+      const id = this.idb.rows.get(seq);
+      if (id === undefined) throw new Stuck(`wal gap at ${seq}`);
+      out.add(id);
+    }
     return out;
   }
 }
