@@ -294,12 +294,12 @@ for await (const { key, value } of db.range({ limit: 50 })) {
 <div class="home-features">
 <div>
 
-### Lightweight, with super-fast loads
+### Lightweight, and faster than IndexedDB in most cases
 
-18.8 kB gzip at import, and up to 4.8× faster cold loads with the Yjs adapter
+The wasm engine loads in parallel with the open, outside your main bundle
 
 ```ts
-// in your main bundle
+// 18.8 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
 // the SharedWorker and wasm load here
 const db = await openDb({ name: "app" });
