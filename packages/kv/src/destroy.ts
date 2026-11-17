@@ -30,7 +30,7 @@ export async function removeDatabase(name: DbName, findFiles: () => Promise<Asyn
     withLock(compactLock(name), () =>
       withLock(ingestLock(name), async () => {
         const files = await findFiles();
-        const wal = await IdBWal.openAlone(name);
+        const wal: IdBWal | undefined = await IdBWal.openAlone(name);
         try {
           if (!wal && !files) return;
           const known = await readDestroyed(name);
