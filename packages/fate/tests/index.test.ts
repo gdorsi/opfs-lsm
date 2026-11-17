@@ -166,8 +166,8 @@ test("keys with quotes, backslashes, non-ASCII and astral characters come back e
 
 test("a key that starts with U+FEFF comes back exactly from scan", () =>
   withDb(async (_db, storage) => {
-    await put(storage, "﻿a");
-    assert.deepEqual(await keysOf(storage, "﻿"), ["﻿a"]);
+    await put(storage, "\ufeffa");
+    assert.deepEqual(await keysOf(storage, "\ufeff"), ["\ufeffa"]);
   }));
 
 test("a key with a lone surrogate is rejected everywhere", () =>

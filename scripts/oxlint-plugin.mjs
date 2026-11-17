@@ -1,5 +1,7 @@
 // Repository rules for oxlint, loaded through `jsPlugins` in .oxlintrc.json.
 
+const DECODERS = new Set(["TextDecoder", "TextDecoderStream"]);
+
 /** True when `options` is an object literal that sets `ignoreBOM: true`. */
 function setsIgnoreBom(options) {
   if (options?.type !== "ObjectExpression") return false;
@@ -21,12 +23,12 @@ export default {
       create(context) {
         return {
           NewExpression(node) {
-            if (node.callee.type !== "Identifier" || node.callee.name !== "TextDecoder") return;
+            if (node.callee.type !== "Identifier" || !DECODERS.has(node.callee.name)) return;
             if (setsIgnoreBom(node.arguments[1])) return;
             context.report({
               node,
               message:
-                'TextDecoder drops a leading U+FEFF unless told otherwise, so a stored string that starts with one reads back changed. Use new TextDecoder("utf-8", { ignoreBOM: true }).',
+                `${node.callee.name} drops a leading U+FEFF unless told otherwise, so a stored string that starts with one reads back changed. Pass ("utf-8", { ignoreBOM: true }).`,
             });
           },
         };

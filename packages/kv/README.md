@@ -10,7 +10,7 @@ pnpm add @opfs-lsm/kv
 import { openDb } from "@opfs-lsm/kv";
 
 const enc = (s: string) => new TextEncoder().encode(s);
-const dec = (b?: Uint8Array) => b && new TextDecoder().decode(b);
+const dec = (b?: Uint8Array) => b && new TextDecoder("utf-8", { ignoreBOM: true }).decode(b);
 
 const db = await openDb({ name: "notes" });
 const key = enc("hello");

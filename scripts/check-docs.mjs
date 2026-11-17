@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,32 +39,24 @@ for (const hit of citations.trim().split("\n").filter(Boolean)) {
 }
 
 // Every figure a page names is registered: VitePress would otherwise fail only when it renders the page.
-function registryKeys(file, name) {
-  const source = readFileSync(join(root, file), "utf8");
-  const body = source.match(new RegExp(`export const ${name}\\b[^=]*= \\{\\n([\\s\\S]*?)\\n\\}`))?.[1] ?? "";
-  const keys = new Set([...body.matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]));
-  if (keys.size === 0) errors.push(`scripts/check-docs.mjs: read no names from ${name} in ${file}. Update registryKeys.`);
-  return keys;
-}
-const scenes = registryKeys("site/stageshow/sizes.ts", "SIZES");
-const described = registryKeys("site/.vitepress/theme/figures.ts", "FIGURES");
+const { SIZES } = await import("../site/stageshow/sizes.ts");
+const { FIGURES } = await import("../site/.vitepress/theme/figures.ts");
 const figureRefs = [
-  // POSIX patterns for git grep: no \s or \b.
-  { pattern: "<!--[[:space:]]*figure:[[:space:]]*[a-z]+", names: described, registry: "FIGURES in site/.vitepress/theme/figures.ts" },
-  { pattern: '<Illustration[[:space:]]([^>]*[[:space:]])?name="[a-z]+"', names: scenes, registry: "SIZES in site/stageshow/sizes.ts" },
+  // The same pattern as figureHtml in site/.vitepress/markdown.ts.
+  { pattern: /^<!--\s*figure:\s*(\S+)\s*-->\s*$/gm, names: FIGURES, registry: "FIGURES in site/.vitepress/theme/figures.ts" },
+  { pattern: /<Illustration\s(?:[^>]*\s)?name="([^"]*)"/g, names: SIZES, registry: "SIZES in site/stageshow/sizes.ts" },
 ];
-for (const { pattern, names, registry } of figureRefs) {
-  let hits = "";
-  try {
-    hits = execFileSync("git", ["grep", "--untracked", "-nE", pattern, "--", "*.md", "*.vue"], { cwd: root, encoding: "utf8" });
-  } catch (error) {
-    if (error.status !== 1) throw error;
-  }
-  for (const hit of hits.trim().split("\n").filter(Boolean)) {
-    const name = hit.match(/figure:\s*([a-z]+)|\bname="([a-z]+)"/);
-    const figure = name?.[1] ?? name?.[2];
-    if (figure && !names.has(figure)) {
-      errors.push(`${hit.split(":").slice(0, 2).join(":")}: names the figure "${figure}", which is not in ${registry}.`);
+const pages = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "--", "docs/*.md", "site/*.md", "site/*.vue"], {
+  cwd: root,
+  encoding: "utf8",
+});
+for (const page of new Set(pages.trim().split("\n").filter((page) => page && existsSync(join(root, page))))) {
+  const text = readFileSync(join(root, page), "utf8");
+  for (const { pattern, names, registry } of figureRefs) {
+    for (const match of text.matchAll(pattern)) {
+      if (Object.hasOwn(names, match[1])) continue;
+      const line = text.slice(0, match.index).split("\n").length;
+      errors.push(`${page}:${line}: names the figure "${match[1]}", which is not in ${registry}.`);
     }
   }
 }
