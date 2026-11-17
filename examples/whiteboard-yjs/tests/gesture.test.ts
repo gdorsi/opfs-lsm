@@ -30,15 +30,14 @@ describe("how often a drag writes", () => {
   /** 120 events over one second at 120 Hz, the pointer 1 px further each time, then pointer up. */
   async function dragOneSecond(interval: number) {
     const storage = memoryStorage();
-    const meter: string[] = [];
-    const board = await open(storage, { gestureIntervalMs: interval, meter: (name) => meter.push(name) });
+    const board = await open(storage, { gestureIntervalMs: interval });
     const made = board.dispatch({ type: "create", shapes: [rect(5, 5), rect(50, 50)] });
     const [a] = made.created;
     const before = stored(storage);
     const gesture = board.beginGesture({ kind: "translate", ids: [a!] });
     for (let i = 1; i <= 120; i++) gesture.update({ dx: i, dy: 0 }, i * STEP);
     const applied = gesture.end();
-    return { storage, board, a: a!, made, applied, writes: stored(storage) - before, meter };
+    return { storage, board, a: a!, made, applied, writes: stored(storage) - before };
   }
 
   const expected = [
@@ -55,8 +54,6 @@ describe("how often a drag writes", () => {
     test(`interval ${interval}: ${writes} ${writes === 1 ? "update reaches" : "updates reach"} storage, and the final state is the same`, async () => {
       const run = await dragOneSecond(interval);
       assert.equal(run.writes, writes);
-      assert.equal(run.meter.length, writes + 1, "the meter saw every update, and the create");
-      assert.equal(run.meter.at(-1), DOC);
 
       assert.equal(at(run.board, run.a).x, 125);
       assert.deepEqual(

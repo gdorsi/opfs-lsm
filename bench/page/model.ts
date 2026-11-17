@@ -212,6 +212,17 @@ export function zipfian(n: number, next: () => number): () => number {
   return () => fnv64mod(z(), n);
 }
 
+/**
+ * Zipfian with theta 0.99 over a small set, every item reachable: ranks map
+ * to items through a seeded permutation. `zipfian` hashes ranks instead,
+ * which collides when n is small and leaves some items never picked.
+ */
+export function zipfianOf(n: number, next: () => number): () => number {
+  const items = permutation(n, next);
+  const z = zipfRaw(n, next);
+  return () => items[z()]!;
+}
+
 /** YCSB "latest": zipfian skewed toward the most recently written id. */
 export function latest(end: () => number, next: () => number, maxN: number): () => number {
   const z = zipfRaw(maxN, next);

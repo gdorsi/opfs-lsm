@@ -272,8 +272,7 @@ class LiveBoard implements Board {
     return { shapes: this.shapes, order: this.order };
   }
 
-  private readonly onUpdate = (update: Uint8Array): void => {
-    this.settings.meter?.(boardDocName(this.id), update);
+  private readonly onUpdate = (): void => {
     this.saver.touch();
   };
 

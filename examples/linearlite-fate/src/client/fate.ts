@@ -1,4 +1,3 @@
-import { createIndexedDBStorage } from "@nkzw/fate-indexeddb";
 import { createPersistence, type PersistenceStorage } from "@nkzw/fate/persistence";
 import { kvStorage } from "@opfs-lsm/fate";
 import { openDb } from "@opfs-lsm/kv";
@@ -55,28 +54,23 @@ declare module "@nkzw/fate" {
   }
 }
 
-/** `kv` stores fate's cache and queue through `@opfs-lsm/fate`, `idb` through fate's own IndexedDB storage. */
-export type StorageKind = "kv" | "idb";
-/** Who is signed in and where the cache lives: fixed for the page, provided next to the client. */
-export type Session = { readonly user: string; readonly storage: StorageKind };
+/** Who is signed in: fixed for the page, provided next to the client. */
+export type Session = { readonly user: string };
 export type Opened = Session & { readonly fate: Fate };
 
 let opening: Promise<Opened> | undefined;
 
-/** Creates the client once the user is known (`?user=`), and waits until its persistence has restored. */
+/**
+ * Creates the client once the user is known (`?user=`), with fate's cache and queue on kv (`?db=` names the
+ * database), and waits until its persistence has restored.
+ */
 export function openFate(): Promise<Opened> {
   return (opening ??= (async () => {
-    performance.mark("fate:open-start");
     const params = new URLSearchParams(location.search);
     const user = userName(params.get("user"));
-    const kind: StorageKind = params.get("storage") === "idb" ? "idb" : "kv";
-    const storage = kind === "idb" ? createIndexedDBStorage() : kvStorage(await openDb({ name: params.get("db") ?? "linearlite" }));
-    // IndexedDB opens its database on first use, so for `idb` this mark is early and `fate:ready` holds the open.
-    performance.mark("fate:storage-open");
-    const fate = makeClient(storage, user);
+    const fate = makeClient(kvStorage(await openDb({ name: params.get("db") ?? "linearlite" })), user);
     await fate.persistence!.ready;
-    performance.mark("fate:ready");
-    return { fate, storage: kind, user };
+    return { fate, user };
   })());
 }
 

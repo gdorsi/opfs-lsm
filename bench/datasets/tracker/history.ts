@@ -18,7 +18,7 @@
  */
 import type { SizeName } from "../../core/types.ts";
 import type { History } from "../../core/goals.ts";
-import { rng, seedOf, zipfian } from "../../page/model.ts";
+import { rng, seedOf, zipfianOf } from "../../page/model.ts";
 import type { Comment, EntityName, Event, Issue, IssuePatch, Label, Priority, Project, Status, Tx, User } from "./types.ts";
 
 type Size = { readonly users: number; readonly projects: number; readonly labels: number; readonly issues: number; readonly recentEdits: number };
@@ -91,9 +91,9 @@ class Workspace {
   constructor(size: Size, seed: number) {
     this.size = size;
     this.r = rng(seedOf("tracker", seed));
-    this.pickUser = zipfian(size.users, this.r);
-    this.pickProject = zipfian(size.projects, this.r);
-    this.pickLabel = zipfian(size.labels, this.r);
+    this.pickUser = zipfianOf(size.users, this.r);
+    this.pickProject = zipfianOf(size.projects, this.r);
+    this.pickLabel = zipfianOf(size.labels, this.r);
     for (let i = 0; i < size.users; i++) {
       const first = FIRST[i % FIRST.length]!;
       const last = LAST[Math.floor(i / FIRST.length) % LAST.length]!;

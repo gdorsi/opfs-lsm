@@ -49,7 +49,7 @@ export function link(a: Y.Doc, b: Y.Doc): void {
 /**
  * A memory storage whose flush rejects while `control.failing` is set, and counts every flush it is asked for.
  * The suites that use it run on a virtual clock and a real adapter acks on real time, so they stay on memory.
- * contract/save-state.test.ts runs the same save states on each adapter, with a real failing disk.
+ * contract/save-state.test.ts runs the same save states on kv, with a real failing disk.
  */
 export function flakyStorage() {
   const inner = memoryStorage();

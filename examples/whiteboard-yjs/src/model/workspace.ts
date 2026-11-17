@@ -208,8 +208,7 @@ class LiveWorkspace implements Workspace {
     if (this.closed) throw new Error("the workspace is closed");
   }
 
-  private readonly onUpdate = (update: Uint8Array): void => {
-    this.settings.meter?.(INDEX_DOC, update);
+  private readonly onUpdate = (): void => {
     this.saver.touch();
   };
 

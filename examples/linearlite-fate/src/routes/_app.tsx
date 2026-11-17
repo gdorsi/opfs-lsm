@@ -26,10 +26,10 @@ export const Route = createFileRoute("/_app")({
 });
 
 function AppShell() {
-  const { fate, user, storage } = Route.useLoaderData();
+  const { fate, user } = Route.useLoaderData();
   return (
     <FateClient client={fate}>
-      <SessionContext value={{ user, storage }}>
+      <SessionContext value={{ user }}>
         <Shell creating={Route.useSearch().new === 1} />
       </SessionContext>
     </FateClient>

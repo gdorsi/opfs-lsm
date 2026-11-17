@@ -4,7 +4,7 @@
  * import: the history and the oracle stay out of contender code.
  *
  * Every sort key ends in a field the generator keeps unique (`updatedAt`,
- * `createdAt`: one simulated clock that ticks at least 1 ms per event;
+ * `createdAt`: one simulated clock that ticks at least 1 ms per action;
  * `number` within a project), so no order needs an id tie-break.
  */
 

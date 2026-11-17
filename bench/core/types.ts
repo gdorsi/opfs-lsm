@@ -80,12 +80,6 @@ export type Phase<F extends Family> = {
    * calls with no yield is one giant task, which is not a user metric.
    */
   readonly mainThread?: boolean;
-  /**
-   * Start once the page is idle, as it is while a user moves to the next
-   * screen, so the work an app leaves for idle time after one phase does
-   * not land in the next one's timings.
-   */
-  readonly idleFirst?: boolean;
   run(ctx: PhaseContext<F>): Promise<void>;
 };
 
@@ -124,8 +118,6 @@ export type PhaseContext<F extends Family> = {
   time<T>(op: string, userBytes: number, fn: () => Promise<T>, count?: number): Promise<T>;
   /** Count bytes handed to storage outside ctx.time (a CRDT's saves): the W-Amp denominator. */
   bytes(n: number): void;
-  /** Add `n` to the phase's counter `name`, for facts that are not a latency (storage calls, library CPU). The report prints them next to the phase. */
-  count(name: string, n: number): void;
   /** Fails the run: it never reports a number. */
   check(ok: boolean, what: string): void;
   /** Opaque JSON a phase hands to later phases (for workloads that do not use the model). */
@@ -189,8 +181,6 @@ export type PhaseResult = {
   readonly latency: Readonly<Record<string, HistogramSnapshot>>;
   readonly footprint?: Footprint;
   readonly mainThread?: MainThread;
-  /** Named totals the phase counted with `ctx.count`. */
-  readonly counters?: Readonly<Record<string, number>>;
 };
 
 export type HostInfo = {

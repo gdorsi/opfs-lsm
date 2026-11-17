@@ -70,7 +70,7 @@ Harness mapping (repo-native; do not invent a second browser stack):
 | `two-tab` | `pnpm --filter @opfs-lsm/kv two-tab` |
 | `two-tab-nobc` | `TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
-| `bench <args…>` | `pnpm bench <args…>`: a selector (`kv/`, `table/`, `automerge/`, `yjs/`, `fate/`, or one workload such as `kv/fillrandom`) plus optional `--size`, `--reps`, `--contenders` |
+| `bench <args…>` | `pnpm bench <args…>`: a selector (`kv/`, `table/`, `tracker/`, `automerge/`, `yjs/`, `fate/`, or one workload such as `kv/fillrandom`) plus optional `--size`, `--reps`, `--contenders` |
 | `bench-smoke` | `pnpm bench:smoke` |
 
 Stable proof strings (from harness stdout, not DOM coordinates):

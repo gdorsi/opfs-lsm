@@ -21,7 +21,6 @@ export type Shape =
   /** Flat x, y pairs as integers 0..65535 of the frame, so a resize only changes x, y, w and h. Written once. */
   | (Common & { readonly kind: "pen"; readonly points: readonly number[] });
 
-export type ShapeKind = Shape["kind"];
 export type Shapes = ReadonlyMap<ShapeId, Shape>;
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -158,7 +157,7 @@ export interface DocBinding {
   clear(): Promise<void>;
 }
 
-/** Everything nondeterministic, so tests and bench replay exactly. */
+/** Everything nondeterministic, so tests replay exactly. */
 export type Env = {
   /** A fresh id. 12 base36 characters by default. */
   id(): string;
@@ -171,9 +170,6 @@ export type Env = {
 /** Relays a doc's updates to the other tabs. Returns the detach. It knows nothing of storage. */
 export type Sync = (docName: string, doc: Y.Doc) => () => void;
 
-/** Called with every Yjs update a doc emits, local or remote, for bytes-in accounting. */
-export type Meter = (docName: string, update: Uint8Array) => void;
-
 /** The knobs of a board and of a workspace. */
 export type SessionOptions = {
   /** Default: no relay. */
@@ -182,7 +178,6 @@ export type SessionOptions = {
   gestureIntervalMs?: number;
   /** Default 400. A flush runs this long after the first unflushed update, and again while updates keep coming. `null` never flushes by itself. */
   autosaveMs?: number | null;
-  meter?: Meter;
   env?: Env;
 };
 

@@ -4,7 +4,7 @@ import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, type Collection } from "@tanstack/db";
 import { priorityOrder, STATUSES, stored, type Body, type Comment, type Issue, type StatusCode, type StoredIssue, type SyncState } from "../domain/model.ts";
 import { STORES, type Stream } from "../domain/stores.ts";
-import type { Anchor, Backend, BackendPath, CollectionRows, StoreName, StoreRows } from "../model/backend.ts";
+import type { Anchor, Backend, CollectionRows, StoreName, StoreRows } from "../model/backend.ts";
 import type { IssueFilter, SortField } from "../model/filter.ts";
 import { ORDER } from "../model/query.ts";
 import { recount, type Pause } from "./recount.ts";
@@ -34,20 +34,10 @@ const KV_BATCH_OPS = 10_000;
 /** Cached threads below which storage pressure asks nothing: the visible rows reload right after an eviction. */
 const MIN_EVICTION = 100;
 
-export const KV_PATH: BackendPath = {
-  name: "docstore",
-  loads: "docstoreCollectionOptions over openDocStore; issues, bodies and comments on demand through docstore indexes, sync eager",
-  writes: "utils.transact: read and write in one kv transaction per slice of at most 10,000 kv ops, sized by the store's index count",
-  counts: "docstore index entries per status (byStatus, byPriority), no document read; a one-word search counts the entries of byStatus, a text index on the title; a longer search, or one under a priority filter, reads the documents the search index matches",
-  deep: "anchor: walks the sort index to row n, and counts the rows before it again after changes",
-  pressure: "db.onPressure while more than 100 bodies are stored; bodies and comments are cleared once a user confirms",
-  tabs: "every tab; transact atomic across tabs",
-};
-
 type Transact<T> = (ids: readonly string[], merge: (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<object | null | undefined>) => Promise<void>;
 
 export type KvBackend = Backend & {
-  /** The docstore under the collections, for the app's bench hooks and for tests. */
+  /** The docstore under the collections, for tests that check what it stores. */
   readonly docs: Docs;
 };
 
@@ -86,7 +76,6 @@ export async function openKvBackend(db: Db, { hidden = () => false }: KvOptions 
     );
 
   return {
-    path: KV_PATH,
     docs,
     collection: <S extends StoreName>(store: S) => collections[store] as unknown as Collection<CollectionRows[S], string>,
     read: (store, ids) => docs.collection(store).getMany(ids),

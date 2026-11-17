@@ -8,7 +8,6 @@
  * `bulkPut`.
  */
 import type { StorageAdapterInterface } from "@automerge/react";
-import type { Backend } from "../../examples/linearlite-tanstackdb/src/model/backend.ts";
 import type { PersistenceStorage } from "@nkzw/fate/persistence";
 import type { KvStats } from "@opfs-lsm/kv/testing";
 import type { GoalStore } from "./goals.ts";
@@ -124,17 +123,6 @@ export type FateStore = Common & {
   readonly storage: PersistenceStorage;
 };
 
-export type PagesStore = Common & {
-  readonly storage: StorageAdapterInterface;
-  /** True when nothing survives a reload, so a workload skips the phases that read back from a new page. */
-  readonly volatile?: true;
-};
-
-/** linearlite-tanstackdb's replica as its app opens it. A workload builds the headless model over `backend` with an in-memory server, so every contender runs the same model code and only the storage under it differs. */
-export type LinearliteStore = Common & {
-  readonly backend: Backend;
-};
-
 /** The task-tracker dataset's goals: each contender replays the history through its write API and answers every goal with its own query API. */
 export type TrackerStore = Common & GoalStore<TrackerSpec, TrackerTx>;
 
@@ -147,9 +135,7 @@ export type FamilyStores = {
   automerge: AutomergeStore;
   yjs: YjsStore;
   fate: FateStore;
-  pages: PagesStore;
-  linearlite: LinearliteStore;
   tracker: TrackerStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "pages", "linearlite", "tracker"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "table", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "tracker"];

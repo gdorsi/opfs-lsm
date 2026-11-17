@@ -132,22 +132,6 @@ kbd {
 .tooltip[hidden] { display: none; }
 .tooltip kbd { min-width: 0; padding: 0 4px; border: 0; background: rgba(255, 255, 255, 0.16); color: rgba(255, 255, 255, 0.88); font-size: 11px; }
 
-.chip {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 9px 0 7px;
-  border: 1px solid var(--line);
-  border-radius: 99px;
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 550;
-  white-space: nowrap;
-}
-
 .save { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink-2); font-size: 12.5px; white-space: nowrap; }
 .save > svg { flex: none; color: var(--ok); }
 .save[data-state="saving"] > svg { color: var(--ink-3); animation: spin 0.9s linear infinite; }
@@ -331,7 +315,7 @@ kbd {
 .hud-top { position: absolute; z-index: 2; top: 12px; right: 12px; left: 12px; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; pointer-events: none; }
 .title-island, .status-island { min-width: 0; max-width: calc(50% - 156px); }
 .title-island { padding-right: 6px; }
-.status-island { gap: 12px; padding: 4px 9px 4px 12px; }
+.status-island { gap: 12px; padding: 4px 12px; }
 .board-title { min-width: 0; font-size: 14px; font-weight: 600; }
 .title-btn {
   display: block;

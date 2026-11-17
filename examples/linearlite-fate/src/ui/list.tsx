@@ -142,9 +142,6 @@ function Window({ filter, offset, rows, focus, onOpen }: { filter: IssueFilter; 
   }, [refetch]);
   useRefetchOnDelivery(request);
   const [items = []] = useListView(WindowView, cached?.issues);
-  useEffect(() => {
-    if (items.length > 0 && performance.getEntriesByName("linearlite:first-rows").length === 0) performance.mark("linearlite:first-rows");
-  }, [items.length]);
   return rows.map((v) => {
     const node = items[v.index - offset]?.node;
     return node ? (

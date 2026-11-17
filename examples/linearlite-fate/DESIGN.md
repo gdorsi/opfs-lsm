@@ -3,8 +3,7 @@
 The same Linear clone as `examples/linearlite-tanstackdb` (list, board, issue detail, comments, filters, sorts, title search,
 create, delete, a "not synced yet" dot), with fate as the client data layer instead of TanStack DB. fate keeps a
 normalized cache of what the screens fetched and a queue of offline mutations. Both persist through
-`@opfs-lsm/fate`'s `kvStorage` on kv, or through fate's own IndexedDB storage with `?storage=idb`, so the two can
-be compared on the same app.
+`@opfs-lsm/fate`'s `kvStorage` on kv.
 
 ## The shape
 
@@ -107,15 +106,14 @@ requires the two to match.
 ## Persistence and sync status
 
 `createPersistence({ key: "linearlite:user:<user>", storage })`: one key per user, as fate's guide asks, so two
-users in one browser keep separate caches and queues. The default storage is `kvStorage(await openDb({ name }))`,
-with the kv database name from `?db=` (default `linearlite`). `?storage=idb` uses `createIndexedDBStorage()`,
-which opens an IndexedDB database named `fate`. The footer names the storage in use. The client is created in the
-browser only, in the `_app` route's loader, behind a pending screen that the server renders into the page. The route
-sets `pendingMinMs: 0`, so the screen goes away as soon as the open resolves.
+users in one browser keep separate caches and queues. The storage is `kvStorage(await openDb({ name }))`, with the
+kv database name from `?db=` (default `linearlite`). The client is created in the browser only, in the `_app`
+route's loader, behind a pending screen that the server renders into the page. The route sets `pendingMinMs: 0`, so
+the screen goes away as soon as the open resolves.
 
 The persistence keeps fate's defaults. A saved request lasts 24 hours from its last fetch (`maxAge`), and the cache
 holds 25 MiB by fate's own count of its entries (`maxBytes`), after which fate drops the requests used longest ago.
-A queued mutation lasts 30 days. fate enforces all three through the storage, so they are the same on both storages.
+A queued mutation lasts 30 days. fate enforces all three through the storage.
 
 The footer reads fate's persistence snapshot and `navigator.onLine`: offline, server unreachable (fate is retrying
 a delivery), syncing, or idle, with the number of unsynced and failed mutations. A row or card shows the dot while
@@ -140,42 +138,3 @@ they change.
 ## Left out
 
 - Live views. fate's live transport needs a server push channel; screens revalidate instead.
-- The original's `bench/` folder, except `bench/reload.ts`.
-
-## Measured
-
-`node` against a seeded 100,000-issue database, warm, in process:
-
-- One list window at offset 49,950 under each sort: 2 to 5 ms.
-- The request the list sends for that window (window plus counts): 8 to 10 ms.
-
-Cold reload, `bench/reload.ts`, against `vite build` and `vite preview` with 10,000 seeded issues:
-
-```
-node examples/linearlite-fate/bench/reload.ts http://127.0.0.1:4181 --reps 7
-```
-
-For each storage the script scrolls 20 list windows in one Chrome profile so the cache holds a few thousand records,
-then starts a new Chrome process on that profile 7 times, alternating kv and idb. Each start blocks `/api/fate`,
-so the list can only come from the persisted cache. The script rejects a rep whose list total differs from the cached
-one or whose API was reachable. On the last rep it also scrolls to a window that the prepare step visited and rejects
-the rep unless that window's rows paint. It times, from navigation start, the marks `openFate` sets
-(`fate:storage-open`, `fate:ready`), the first render of the app shell, and the first `.row[data-id]` in the DOM.
-
-Result, median and range of 7 good reps per storage, 0 errors, on a machine with a load average of 5 to 6 on 18 cores:
-
-| ms | kv | idb |
-| --- | --- | --- |
-| `fate:ready` | 78 (61-133) | 73 (52-96) |
-| app shell | 82 (66-139) | 78 (57-105) |
-| first list row | 135 (122-194) | 153 (133-217) |
-
-No measurable difference: the ranges overlap, and the medians are 18 ms apart. A second run of 7 gave 124 ms
-(109-366) on kv and 135 ms (112-176) on idb, with the same verdict.
-
-The shell renders about 5 ms after `fate:ready` on both storages. `fate:ready` is the page load plus the storage open,
-and idb opens its database on first use, so its open time sits inside that mark. The first row comes 55 to 75 ms
-after the shell: fate reads the request's 152 records from the storage, then the list renders its rows. Four runs per
-storage with a hook around fate's restore of the request put the read at 8 to 11 ms on kv and 35 to 69 ms on idb, and
-the render after it at about 40 ms on both. kv's faster read is partly offset by a later `fate:ready` (5 and 14 ms later at the median in the two runs), so the
-totals overlap.
