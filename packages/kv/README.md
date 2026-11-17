@@ -184,8 +184,8 @@ for await (const { key } of db.range(tupleBounds(encodeTuple(["ada"])))) {
 Tuples compare field by field. Fields sort as `null`, then `false`, then `true`, then numbers, then strings. Numbers compare by value with `-0` equal to `0`, and strings compare by code point. A tuple sorts before every longer tuple that starts with it.
 
 - `encodeTuple(values, prefix?, tail?)` returns `prefix`, the fields, then `tail`. It throws a `TypeError` for another type of value, and a `RangeError` for a number that is not finite, a string with a lone surrogate, or a `tail` that starts with byte FF.
-- `decodeTuple(key, count?, from?)` returns `{ values, end }`. Without `count` it reads every field to the end of `key`. A `tail` can start with any byte but FF, a tag included, so a key with a tail needs its `count`. `key.subarray(end)` is the tail. A key that is not a tuple throws `CorruptDatabaseError`.
-- `skipTuple(key, count, from?)` returns the `end` of the fields without decoding them.
+- `decodeTuple(key, count?, from?)` returns `{ values, end }`. Without `count` it reads every field to the end of `key`. A `tail` can start with any byte but FF, a tag included, so a key with a tail needs its `count`. `key.subarray(end)` is the tail. Bytes that `encodeTuple` does not write throw `CorruptDatabaseError`.
+- `skipTuple(key, count, from?)` returns the `end` of the fields without decoding them. It throws `CorruptDatabaseError` when a field has no end, and does not check what the field holds.
 - `tupleBounds(prefix)` and `stringPrefixBounds(prefix, s)` return `KeyBounds`. The first holds every key that continues `prefix` where a field ends. The second holds every key whose next field is a string that starts with `s`.
 
 A field holds its own end, so neither the fields nor a tail need a length.

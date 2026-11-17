@@ -57,7 +57,7 @@ function compareTuple(a: readonly TupleValue[], b: readonly TupleValue[]): numbe
 const extendsTuple = (q: readonly TupleValue[], p: readonly TupleValue[]) =>
   q.length >= p.length && p.every((v, i) => compareValue(v, q[i]!) === 0);
 
-const unitArb = fc.constantFrom("\0", "a", "b", "\u0001", "\u0005", "ÿ", "\u{ffff}", "😀");
+const unitArb = fc.constantFrom("\0", "a", "b", "\u0001", "\u0005", "ÿ", "\ufeff", "\u{ffff}", "😀");
 /** Few distinct characters, so equal strings, prefixes, U+0000 and tag bytes collide often. */
 const denseStringArb = fc.string({ unit: unitArb, maxLength: 3 });
 
@@ -96,11 +96,11 @@ describe("encodeTuple", () => {
   });
 
   it("orders strings by code point, U+0000 inside a string after the string that stops there", () => {
-    const sorted = ["b", "aa", "a\u0000b", "a", "", "￿", "😀"]
+    const sorted = ["b", "aa", "a\u0000b", "a", "", "\uffff", "😀"]
       .map((s) => ({ s, key: encodeTuple([s]) }))
       .sort((x, y) => compareBytes(x.key, y.key))
       .map((x) => x.s);
-    expect(sorted).toEqual(["", "a", "a\u0000b", "aa", "b", "￿", "😀"]);
+    expect(sorted).toEqual(["", "a", "a\u0000b", "aa", "b", "\uffff", "😀"]);
   });
 
   it("writes the documented bytes", () => {
@@ -146,7 +146,7 @@ describe("decodeTuple", () => {
       fc.property(tupleArb, (values) => {
         const key = encodeTuple(values);
         const out = decodeTuple(key);
-        expect(out.values.map((v) => (v === 0 ? 0 : v))).toEqual(values.map((v) => (v === 0 ? 0 : v)));
+        expect(out.values).toEqual(values.map((v) => (v === 0 ? 0 : v)));
         expect(out.end).toBe(key.length);
       }),
       { numRuns: RUNS * 4 },
@@ -158,12 +158,16 @@ describe("decodeTuple", () => {
       fc.property(tupleArb, prefixArb, tailArb, (values, prefix, tail) => {
         const key = encodeTuple(values, prefix, tail);
         const out = decodeTuple(key, values.length, prefix.length);
-        expect(out.values.map((v) => (v === 0 ? 0 : v))).toEqual(values.map((v) => (v === 0 ? 0 : v)));
+        expect(out.values).toEqual(values.map((v) => (v === 0 ? 0 : v)));
         expect(key.subarray(out.end)).toEqual(tail);
         expect(skipTuple(key, values.length, prefix.length)).toBe(out.end);
       }),
       { numRuns: RUNS * 4 },
     );
+  });
+
+  it("keeps a U+FEFF at the start of a string", () => {
+    expect(decodeTuple(encodeTuple(["\ufeffa", "\ufeff", "a\ufeff"])).values).toEqual(["\ufeffa", "\ufeff", "a\ufeff"]);
   });
 
   it("reads a tail that looks like a field only because `count` says where the tuple ends", () => {
@@ -182,6 +186,19 @@ describe("decodeTuple", () => {
   ])("rejects %s with CorruptDatabaseError", (_, bytes, count) => {
     expect(() => decodeTuple(Uint8Array.from(bytes), count)).toThrow(CorruptDatabaseError);
     expect(() => skipTuple(Uint8Array.from(bytes), count ?? 1)).toThrow(CorruptDatabaseError);
+  });
+
+  it.each<[string, number[]]>([
+    ["a string that is not UTF-8", [0x05, 0xc3, 0x00]],
+    ["a string with a UTF-16 surrogate", [0x05, 0xed, 0xa0, 0x80, 0x00]],
+    ["an escaped string that is not UTF-8", [0x05, 0x00, 0xff, 0xff, 0x00]],
+    ["-0", [0x04, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]],
+    ["NaN", [0x04, 0xff, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]],
+    ["Infinity", [0x04, 0xff, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]],
+    ["-Infinity", [0x04, 0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]],
+  ])("rejects %s, which encodeTuple never writes, and skipTuple still finds its end", (_, bytes) => {
+    expect(() => decodeTuple(Uint8Array.from(bytes))).toThrow(CorruptDatabaseError);
+    expect(skipTuple(Uint8Array.from(bytes), 1)).toBe(bytes.length);
   });
 });
 

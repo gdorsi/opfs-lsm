@@ -8,7 +8,8 @@ export type TupleBounds = Required<KeyBounds>;
 
 const TAG = { null: 0x01, false: 0x02, true: 0x03, number: 0x04, string: 0x05 } as const;
 const utf8 = new TextEncoder();
-const fromUtf8 = new TextDecoder();
+// `ignoreBOM` keeps a leading U+FEFF, which is part of the string. `fatal` rejects bytes no string encodes to.
+const fromUtf8 = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
 const f64 = new DataView(new ArrayBuffer(8));
 
 // One buffer for every key under construction. A key is built synchronously
@@ -138,7 +139,7 @@ function fieldEnd(key: Uint8Array, at: number): number {
   return corrupt(at);
 }
 
-/** Where `count` fields from `from` end, without decoding them. */
+/** Where `count` fields from `from` end. It finds where each field ends and does not check what the field holds. */
 export function skipTuple(key: Uint8Array, count: number, from = 0): number {
   let at = from;
   for (let i = 0; i < count; i++) at = fieldEnd(key, at);
@@ -159,18 +160,26 @@ function valueAt(key: Uint8Array, at: number, end: number): TupleValue {
         const b = key[at + 1 + i]!;
         f64.setUint8(i, negative ? ~b & 0xff : i === 0 ? b ^ 0x80 : b);
       }
-      return f64.getFloat64(0);
+      const v = f64.getFloat64(0);
+      // `encodeTuple` writes neither a number that is not finite nor -0.
+      return Number.isFinite(v) && !Object.is(v, -0) ? v : corrupt(at);
     }
     default: {
-      const body = key.subarray(at + 1, end - 1);
-      if (!body.includes(0)) return fromUtf8.decode(body);
-      const out = new Uint8Array(body.length);
-      let n = 0;
-      for (let i = 0; i < body.length; i++) {
-        out[n++] = body[i]!;
-        if (body[i] === 0) i++;
+      let body = key.subarray(at + 1, end - 1);
+      if (body.includes(0)) {
+        const out = new Uint8Array(body.length);
+        let n = 0;
+        for (let i = 0; i < body.length; i++) {
+          out[n++] = body[i]!;
+          if (body[i] === 0) i++;
+        }
+        body = out.subarray(0, n);
       }
-      return fromUtf8.decode(out.subarray(0, n));
+      try {
+        return fromUtf8.decode(body);
+      } catch {
+        return corrupt(at);
+      }
     }
   }
 }
@@ -179,7 +188,8 @@ function valueAt(key: Uint8Array, at: number, end: number): TupleValue {
  * Decodes `count` fields starting at byte `from`, or every field up to the
  * end of `key` when `count` is not given. `end` is where the last field
  * stops, so a tail is `key.subarray(end)`. A tail can start with any byte
- * but FF, a tag included, so a key with a tail needs its `count`.
+ * but FF, a tag included, so a key with a tail needs its `count`. Throws
+ * `CorruptDatabaseError` for bytes `encodeTuple` does not write.
  */
 export function decodeTuple(key: Uint8Array, count?: number, from = 0): { values: TupleValue[]; end: number } {
   const values: TupleValue[] = [];
