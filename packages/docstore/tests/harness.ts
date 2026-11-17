@@ -54,8 +54,10 @@ export async function storedPrefix(kv: Db, collection: string, index?: string): 
 /**
  * `kv` whose `method` lets `free` calls through and holds the later ones
  * until `release`. `arrived(n)` resolves once n calls have been made.
+ * "catalog" counts every write a document write is not: each `batch`, and
+ * each `update` that reads only the catalog, as a catalog edit or a sweep does.
  */
-export function gate(kv: Db, method: "range" | "batch", free: number) {
+export function gate(kv: Db, method: "range" | "catalog", free: number) {
   let allowed = free;
   let calls = 0;
   let wake: (() => void)[] = [];
@@ -73,7 +75,13 @@ export function gate(kv: Db, method: "range" | "batch", free: number) {
             yield* kv.range(range);
           },
         }
-      : { batch: async (build) => (await pass(), kv.batch(build)) };
+      : {
+          batch: async (build) => (await pass(), kv.batch(build)),
+          update: async (keys, body) => {
+            if (keys.length === 1 && bytesEqual(keys[0]!, CATALOG_KEY)) await pass();
+            return kv.update(keys, body);
+          },
+        };
   return {
     db: wrap(kv, over),
     arrived: (n: number) =>
