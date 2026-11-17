@@ -83,10 +83,6 @@ export class CountingFs implements AsyncFs {
     return removed;
   }
 
-  removeFolder(): Promise<void> {
-    return this.inner.removeFolder();
-  }
-
   private countRemoved(path: string): void {
     const key = pathClass(path);
     this.counters.removed[key] = (this.counters.removed[key] ?? 0) + 1;

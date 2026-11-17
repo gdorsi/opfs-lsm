@@ -21,7 +21,7 @@ export {
   type IoCounters,
   type KvStats,
 } from "./stats.js";
-export type { AsyncFs } from "./opfs/async-fs.js";
+export type { AsyncFs, RemovableFs } from "./opfs/async-fs.js";
 export { MemoryFs } from "./opfs/memory-fs.js";
 export { findBrowserFs, openBrowserFs } from "./opfs/browser-fs.js";
 export { ensureEngine } from "./store/engine.js";

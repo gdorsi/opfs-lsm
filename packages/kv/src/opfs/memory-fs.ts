@@ -1,10 +1,10 @@
 import { CorruptDatabaseError } from "../errors.js";
-import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
+import type { FileWriter, OpenFile, RemovableFs } from "./async-fs.js";
 
 /**
  * In-memory AsyncFs: publish-on-finish. Stages are invisible until finish.
  */
-export class MemoryFs implements AsyncFs {
+export class MemoryFs implements RemovableFs {
   private readonly published = new Map<string, Uint8Array>();
   private readonly stages = new Map<string, Uint8Array[]>();
   /** Open holds per path, standing in for BrowserFs's shared Web Locks. */

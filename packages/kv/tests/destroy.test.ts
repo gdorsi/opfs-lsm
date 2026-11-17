@@ -7,6 +7,7 @@ import {
   EngineHost,
   MemoryFs,
   type AsyncFs,
+  type RemovableFs,
   createLocalIngestClient,
   destroyHarnessDb,
   ingest,
@@ -130,7 +131,6 @@ describe("dangerousDestroy", () => {
         return inner.removeUnlessOpen(path);
       },
       create: (path) => inner.create(path),
-      removeFolder: () => inner.removeFolder(),
     }));
     const a = await open();
     await fill(a, "k", 20);
@@ -212,7 +212,7 @@ describe("destroyDb", () => {
   it("fails a view's read of a removed file with ClosedError", async () => {
     const mem = new MemoryFs();
     let removed = false;
-    const fs: AsyncFs = {
+    const fs: RemovableFs = {
       read: (path, offset, length) => mem.read(path, offset, length),
       open: async (path) => {
         const file = await mem.open(path);

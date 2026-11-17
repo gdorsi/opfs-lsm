@@ -8,7 +8,7 @@ import {
   ingest,
 } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
-import { BrowserFs, findBrowserFs, openBrowserFs } from "../src/opfs/browser-fs.js";
+import { BrowserFs, findBrowserFs, findRemovableBrowserFs, openBrowserFs } from "../src/opfs/browser-fs.js";
 import { checkDbName } from "../src/check.js";
 import { compactHost } from "./compact-host.js";
 
@@ -210,7 +210,6 @@ const fsKinds: [string, () => AsyncFs][] = [
     () =>
       new BrowserFs(
         new FakeDir() as unknown as FileSystemDirectoryHandle,
-        new FakeDir() as unknown as FileSystemDirectoryHandle,
         checkDbName(`holds-${++browserDbs}`),
       ),
   ],
@@ -283,7 +282,8 @@ describe("BrowserFs folder lookup and removal", () => {
     const lsm = root.children.get("opfs-lsm") as FakeDir;
     expect([...lsm.children.keys()]).toEqual(["present"]);
 
-    const found = (await findBrowserFs("present"))!;
+    expect([...(await (await findBrowserFs("present"))!.list(""))].sort()).toEqual(["l0", "l1", "m"]);
+    const found = (await findRemovableBrowserFs(checkDbName("present")))!;
     expect([...(await found.list(""))].sort()).toEqual(["l0", "l1", "m"]);
     removals.length = 0;
     await found.removeFolder();

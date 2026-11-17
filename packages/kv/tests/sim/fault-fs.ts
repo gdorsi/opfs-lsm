@@ -1,4 +1,4 @@
-import type { AsyncFs, FileWriter } from "../../src/opfs/async-fs.js";
+import type { AsyncFs, FileWriter, RemovableFs } from "../../src/opfs/async-fs.js";
 import { MemoryFs } from "../../src/testing.js";
 
 /**
@@ -128,9 +128,9 @@ export class Faults {
 const never = <T>() => new Promise<T>(() => undefined);
 
 /** An `AsyncFs` over `inner` that traces durable ops and injects `faults`. */
-export class FaultFs implements AsyncFs {
+export class FaultFs implements AsyncFs, RemovableFs {
   constructor(
-    readonly inner: AsyncFs,
+    readonly inner: RemovableFs,
     private readonly faults: Faults,
   ) {}
 

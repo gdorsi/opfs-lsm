@@ -23,7 +23,7 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | `store/read.ts` `pointGet`, `db.ts` `readKey` / `get` | `formal:wal-over-sst` + ingest |
 | `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
 | `store/read.ts` `latestSstEntry`, the merge session (`crates/engine-core/src/merge.rs`) and its oracle (`tests/oracle/merge-ts.ts`), `host/compact.ts` | `formal:compact-preserve` |
-| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `HostedDb.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair, destroy (`recordEmpty`, `emptyWal`, `HostedDb.destroy`, `destroyedTop` in rule 3), `destroyDb` (`removeDatabase`, `idb/destroyed.ts`, rule 0, `IdBWal.openAlone`, `BrowserFs.removeFolder`), the host's opens (`IdBWal.openExisting`, `findBrowserFs`) | `formal:power-loss` |
+| `recover.ts`, `idb/wal.ts` (`adopt`, `advanceIngested`), `host/ingest.ts`, `host/compact.ts` `installStep`, `HostedDb.reclaim` / `fold` and the reclaim lock (`unlessHeld`), manifest numbering, `openDb` / `syncOnce` repair, destroy (`recordEmpty`, `emptyWal`, `HostedDb.destroy`, `destroyedTop` in rule 3), `destroyDb` (`destroy.ts`: `removeDatabase`, `openAlone`, `deleteWal`; `idb/destroyed.ts`, rule 0, `RemovableBrowserFs.removeFolder`), the host's opens (`IdBWal.openExisting`, `findBrowserFs`) | `formal:power-loss` |
 | Unknown / several areas | **`formal:kv`** (all) |
 
 ## Tool and why

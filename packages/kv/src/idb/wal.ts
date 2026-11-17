@@ -59,7 +59,7 @@ export type WalTail = {
   readonly records: readonly WalRecord[];
 };
 
-function idbName(dbName: DbName): string {
+export function idbName(dbName: DbName): string {
   return `opfs-lsm-wal/${dbName}`;
 }
 
@@ -195,7 +195,7 @@ export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
 type OpenHow = {
   /** Makes the stores of a database the open creates. Without it, such an open aborts its upgrade and resolves undefined. */
   readonly create?: (db: IDBDatabase) => void;
-  /** Asks for an upgrade to this version (the fence in `IdBWal.openAlone`). Every other open is version-less. */
+  /** Asks for an upgrade to this version (`destroyDb`'s fence). Every other open is version-less. */
   readonly version?: number;
   /** Runs once another context's upgrade or delete closed the connection. */
   readonly onAskedToClose?: () => void;
@@ -413,7 +413,8 @@ type Group = {
  * Only `TabWal.open`, which only `openDb` calls, creates the database.
  */
 export class IdBWal {
-  protected constructor(
+  /** `db` is a connection to `opfs-lsm-wal/<dbName>`. */
+  constructor(
     readonly dbName: DbName,
     readonly db: IDBDatabase,
   ) {}
@@ -424,37 +425,8 @@ export class IdBWal {
     return db && new IdBWal(dbName, db);
   }
 
-  /**
-   * `destroyDb`'s open: the database as its only connection, or undefined
-   * when it does not exist (creates nothing). It opens one version up.
-   * IndexedDB first sends `versionchange` to every other connection, and
-   * runs the empty upgrade only once each has closed: every handle on the
-   * name, in every tab, and any host connection. When it resolves, no write
-   * by an earlier connection can commit any more. Waits while a connection
-   * does not close.
-   */
-  static async openAlone(dbName: DbName): Promise<IdBWal | undefined> {
-    const probe = await openDatabase(idbName(dbName), {});
-    if (!probe) return undefined;
-    const version = probe.version;
-    // Our own probe would block the upgrade.
-    probe.close();
-    const db = await openDatabase(idbName(dbName), { version: version + 1 });
-    return db && new IdBWal(dbName, db);
-  }
-
   close(): void {
     this.db.close();
-  }
-
-  /** Close this connection and delete `opfs-lsm-wal/<name>`. Resolves once it is gone. */
-  async deleteDatabase(): Promise<void> {
-    this.db.close();
-    await new Promise<void>((resolve, reject) => {
-      const req = indexedDB.deleteDatabase(idbName(this.dbName));
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error ?? new CommitError("deleting the WAL database failed"));
-    });
   }
 
   async meta(): Promise<WalMeta> {

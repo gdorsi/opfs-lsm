@@ -29,8 +29,8 @@ import { GENERATION_NONE, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
-import type { AsyncFs, OpenFile, ReadFs } from "./opfs/async-fs.js";
-import { findBrowserFs, openBrowserReadFs } from "./opfs/browser-fs.js";
+import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
+import { findRemovableBrowserFs, openBrowserReadFs } from "./opfs/browser-fs.js";
 import {
   loadGeneration,
   type RunMeta,
@@ -352,15 +352,15 @@ export async function destroyDb(name: string): Promise<void> {
   return destroyDbWith({ name });
 }
 
-/** `destroyDb` on a given backing. With `fs`, that fs is the folder to remove; the ingest client is unused. */
-export async function destroyDbWith(options: { readonly name: string } & Backing): Promise<void> {
+/** `destroyDb` on a given folder: with `fs`, that fs is the folder to remove. */
+export async function destroyDbWith(options: { readonly name: string; readonly fs?: RemovableFs | undefined }): Promise<void> {
   const name = checkDbName(options.name);
   const fs = options.fs;
   const opfs = typeof navigator !== "undefined" && typeof navigator.storage?.getDirectory === "function";
   if (typeof indexedDB === "undefined" || (!fs && !opfs)) {
     throw new StorageUnavailableError("destroyDb needs IndexedDB and navigator.storage.getDirectory");
   }
-  await removeDatabase(name, fs ? async () => fs : () => findBrowserFs(name));
+  await removeDatabase(name, fs ? async () => fs : () => findRemovableBrowserFs(name));
 }
 
 /** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */

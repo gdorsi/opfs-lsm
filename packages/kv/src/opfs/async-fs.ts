@@ -45,6 +45,10 @@ export interface AsyncFs extends ReadFs {
   removeUnlessOpen(path: string): Promise<boolean>;
   /** Replace published file only when finish resolves. No append. */
   create(path: string): Promise<FileWriter>;
+}
+
+/** A database folder `destroyDb` can remove. Kept off `AsyncFs`, so the fs of `openDb` and of the SharedWorker carries no removal. */
+export interface RemovableFs extends AsyncFs {
   /**
    * Remove every file and the database folder: `m/` first, so a crash part
    * way leaves no manifest to adopt. Ignores open holds: `destroyDb` calls it

@@ -6,6 +6,7 @@ import {
   destroyHarnessDb,
   ingest,
   type AsyncFs,
+  type RemovableFs,
   EngineHost,
   MemoryFs,
   createLocalIngestClient,
@@ -56,7 +57,7 @@ export class Sut {
   constructor(
     readonly name: string,
     private readonly maxWalBytes: number,
-    readonly fs: AsyncFs = new MemoryFs(),
+    readonly fs: RemovableFs = new MemoryFs(),
   ) {}
 
   /** The host ingests on its own once the WAL passes `maxWalBytes`, racing every command. */
