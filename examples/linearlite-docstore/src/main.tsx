@@ -8,7 +8,7 @@ import { Compose } from "./compose.tsx";
 import { Detail } from "./detail.tsx";
 import { IssueList } from "./issues.tsx";
 import { SOURCE, failed, post, type ToDemo } from "./protocol.ts";
-import { hostOf, openStore } from "./store.ts";
+import { openStore } from "./store.ts";
 import { Toolbar } from "./toolbar.tsx";
 
 /**
@@ -130,7 +130,7 @@ async function main() {
 
   const { rows, at } = await app.start();
   post({ type: "opened", ms: openedMs, issues: rows });
-  if (rows > 0) post({ type: "first-rows", ms: at - t0, host: await hostOf(store) });
+  if (rows > 0) post({ type: "first-rows", ms: at - t0 });
   void dropRetired();
 }
 

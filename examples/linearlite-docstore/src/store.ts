@@ -1,8 +1,6 @@
 import { openDocStore, type Cursor, type DocStore } from "@opfs-lsm/docstore";
 import { openDb, type Db } from "@opfs-lsm/kv";
-import { readStats } from "@opfs-lsm/kv/testing";
 import { CODES, schema, type Code, type Detail, type Filter, type Issue } from "./model.ts";
-import type { Host } from "./protocol.ts";
 import type { SeedMessage } from "./seed-worker.ts";
 import { generateDetail } from "./seed.ts";
 
@@ -234,28 +232,6 @@ export async function writeIssues(
     progress("writing", Math.min(rows.length, at + BATCH));
   }
   return { generateMs, writeMs: performance.now() - t0 };
-}
-
-const FLUSHES = "linearlite-demo:flushes";
-
-export const forgetHost = () => sessionStorage.removeItem(FLUSHES);
-
-/**
- * Whether this page found the database's SharedWorker running. The SharedWorker counts its flushes from the moment it
- * starts, and writing the issues takes many. A count below the one this browser tab last saw means a new
- * SharedWorker; so does a count of zero when a flush has happened and no count was seen.
- */
-export async function hostOf({ db }: Store): Promise<Host> {
-  try {
-    const { host } = await readStats(db);
-    const seen = Number(sessionStorage.getItem(FLUSHES) ?? "0");
-    sessionStorage.setItem(FLUSHES, String(host.flushes));
-    if (host.flushes < seen) return "restarted";
-    if (host.flushes > 0) return "alive";
-    return host.generation > 0 ? "restarted" : "unknown";
-  } catch {
-    return "unknown";
-  }
 }
 
 export type Draft = Pick<Issue, "title" | "status" | "priority"> & { readonly description: string };
