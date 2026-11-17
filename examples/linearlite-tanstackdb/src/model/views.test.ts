@@ -13,20 +13,9 @@ import { openLinearlite, type Linearlite } from "./index.ts";
 import { hold, type Held, type Live } from "./live.ts";
 import type { Thread } from "./views.ts";
 
-/** docstore without `anchor` and `onPressure`, the parts a backend may leave out, so the views run without them. */
-async function withoutOptions(db: Db): Promise<Backend> {
-  const { anchor: _anchor, onPressure: _onPressure, ...backend } = await openKvBackend(db);
-  return backend;
-}
+describe("the views", () => views(openKvBackend));
 
-for (const [label, openBackend] of [
-  ["docstore", openKvBackend],
-  ["docstore without anchor or onPressure", withoutOptions],
-] as const) {
-  describe(`the views on ${label}`, () => views(label, openBackend));
-}
-
-function views(label: string, openBackend: (db: Db) => Promise<Backend>) {
+function views(openBackend: (db: Db) => Promise<Backend>) {
   const server = memoryServer({ issues: 1500 });
   let db: Db;
   let backend: Backend;
@@ -36,7 +25,7 @@ function views(label: string, openBackend: (db: Db) => Promise<Backend>) {
   const shown: Held<unknown>[] = [];
 
   before(async () => {
-    db = await openHarnessDb({ name: `linearlite-views-${label.replaceAll(" ", "-")}-${process.pid}`, forceMemory: true });
+    db = await openHarnessDb({ name: `linearlite-views-${process.pid}`, forceMemory: true });
     backend = await openBackend(db);
     model = openLinearlite({ backend, transport: memoryTransport(server, "ada") });
     leading = model.sync.lead(stopLeading.signal);
@@ -97,7 +86,7 @@ function views(label: string, openBackend: (db: Db) => Promise<Backend>) {
       await shows(view, windowOf, { ids: ids(want.slice(100, 200)), offset: 100 });
     });
 
-    it("shows a window deep in the list, and after another user's edit moves a row above it, its rows one lower if anchored, else the rows at its offset", async () => {
+    it("shows a window deep in the list, and after another user's edit moves a row above it, its rows one lower", async () => {
       const list = model.issues.list(parseIssueFilter({}));
       const view = show(list);
       list.setRange(1100, 1200);
@@ -109,7 +98,7 @@ function views(label: string, openBackend: (db: Db) => Promise<Backend>) {
       await model.sync.settled();
       const want = live().sort(byModified);
       assert.equal(want[0]!.id, below.id);
-      const at = backend.anchor ? 1101 : 1100;
+      const at = 1101;
       await shows(view, windowOf, { ids: ids(want.slice(at, at + 100)), offset: at });
     });
   });

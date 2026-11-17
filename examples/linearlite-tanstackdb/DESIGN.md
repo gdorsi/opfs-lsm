@@ -19,7 +19,7 @@ version that last changed it, so "what changed since V" is an index scan, not a 
 headless: `openLinearlite({ backend, transport })` returns live views, commands and sync, and runs in Node over the
 in-memory server; the app (`src/app/`) brings the browser, the HTTP transport, the sync lock and the docstore
 backend (`src/backends/kv.ts`). The model reaches storage only through its `Backend` (`src/model/backend.ts`), and
-`src/backends/contract.ts` is the suite a backend passes.
+`src/backends/contract.ts` is the suite the backend passes.
 
 ## Why nothing is eager
 

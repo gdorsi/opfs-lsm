@@ -104,11 +104,11 @@ To make the matrix stick, it should become code: one list of access patterns in 
 
 | writes | docstore | Dexie | SQLite |
 |---|---|---|---|
-| import, 44 batches of 1,000 rows (total) | 0.80 s | 2.9 s | 1.0 s |
-| sync, 875 batches of 50 events (total) | 3.2 s | 5.8 s | 11.7 s |
+| import, 47 batches of up to 1,000 rows (total) | 0.80 s | 2.9 s | 1.0 s |
+| sync, 870 batches of up to 50 events (total) | 3.2 s | 5.8 s | 11.7 s |
 | one edit | 0.61 | 0.40 | 1.1 |
 | bulk: 1,027 issues to done | 61 | 155 | 85 |
-| reread: a list read right after an edit | 1.7 | 15.3 | 0.43 |
+| reread: a count and two lists read right after an edit | 1.7 | 15.3 | 0.43 |
 
 What the goals show that the app workloads could not:
 
@@ -122,8 +122,8 @@ What the goals show that the app workloads could not:
   - `deepWindow` costs 1.9 against 0.43: there is no offset, so it walks ids and then reads rows.
 - **Tombstone-heavy ranges cost 3×.** `drainedPage` returns 7 rows in 1.3 ms warm, while `statusPage` returns 50 in 0.42. The bulk edit left the range mostly deletes above the settled levels.
 - **Writes are strong.**
-  - Sync batches are 1.8× faster than Dexie and 3.6× faster than SQLite, which pays one worker round trip per statement.
-  - The import is 1.3× faster than SQLite and 3.7× faster than Dexie.
+  - Sync batches are 1.8× faster than Dexie and 3.7× faster than SQLite. SQLite pays one worker round trip per statement, and its commits wait for the disk (`synchronous=FULL`, its default) where the IndexedDB contenders commit with Chrome's relaxed durability.
+  - The import is 1.3× faster than SQLite and 3.6× faster than Dexie. docstore has no transaction across collections, so its contender writes a batch as one kv transaction per collection, where Dexie and SQLite commit the whole batch atomically.
 
 An earlier run on main before #282, at load average 8 to 10, showed the same pattern, with docstore's `first` page reads about twice as slow. #282 added kv's read-ahead in scans.
 
