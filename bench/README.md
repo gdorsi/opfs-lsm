@@ -53,9 +53,11 @@ The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and value
 - `tanstack-ondemand/queries`: the same todo rows in an on-demand collection: bulk inserts, then a cold open and live queries that each load their own rows: every row of one owner, pages of 50 rows of one owner ordered by `createdAt`, and 10 rows by id. A query is timed from creating the live query to its first result, plus releasing it. The page and id queries each start on a fresh page, because TanStack's SQLite collection keeps every row it has loaded after a query is released, and the owner queries before them load every row. Updates run on rows a held query keeps loaded. Every result is compared with the model. TanStack's `createIndex` takes one expression, so SQLite has no index on `[owner, createdAt]`.
 - `automerge/trace`, `yjs/trace`: the LaTeX editing trace (about 260k keystrokes; 2,000 at `tiny`, 26,000 at `small`) through the persistence layer, and four steps after it:
   - `persist` writes the trace's head as fast as it goes. `yjs/trace` then pauses for 2 s, past the 1 s idle delay after which both Yjs libraries merge their stored updates, as a real document's history is merged.
-  - `type` types its last 300 keystrokes (100 at `tiny`) at one per 16 ms frame, one Yjs transaction or Automerge change each, with the main thread recorded. Typing is paced, so its wall time is the pacing: read the `key` latency, the frames and the `flush`.
+  - `type` types its last 300 keystrokes (100 at `tiny`) at one per 60 Hz frame, one Yjs transaction or Automerge change each, with the main thread recorded. Typing is paced, so its wall time is the pacing: read the `key` latency, the frames and the `flush`. Yjs stores every update as it happens; automerge-repo saves a document at most every 100 ms (`saveDebounceRate`), so most Automerge keystrokes write nothing.
   - `reopen` opens the document cold in a fresh tab before kv settles, so the typed updates are still in the log or the newest runs.
   - `load` opens it cold again after the settle.
+
+  The settle runs in the `reopen` tab, and kv counts writes per tab, so these workloads report no W-Amp.
 
   The trace downloads once into `bench/.data/`.
 - `automerge/many-docs`, `yjs/many-docs`: many small notes written, then each loaded cold.
@@ -78,7 +80,7 @@ A goal workload is a dataset plus questions a screen asks of it, the shape of TP
 
 The phases:
 
-1. `replay` (timed): once 70% of the issues exist, that state is written as `import` batches of 1,000 rows of one entity, oldest change first. The rest of the simulation is written as `sync` batches of 50 events. Each event creates, patches or deletes one row. A patch carries the change, not the row, so the replica reads the stored row and folds the change in. Every 10 batches the replay reads the 50 most recently updated issues (op `read`), as a list on screen re-queries while a large sync lands, and checks them against the oracle at that point of the history.
+1. `replay` (timed): once 70% of the issues exist, that state is written as `import` batches of 1,000 rows of one entity, oldest change first. The rest of the simulation is written as `sync` batches of 50 events. Each event creates, patches or deletes one row. A patch carries the change, not the row, so the replica reads the stored row and folds the change in. After every 10th `sync` batch the replay reads the 50 most recently updated issues (op `read`, not counted in the replay's ops), as a list on screen re-queries while a large sync lands, and checks them against the oracle at that point of the history.
 2. `settle` (untimed): kv flushes and compacts until stable.
 3. `recent` (timed): a `bulk` batch closes the sprint of the project with the most issues in progress, then single `edit`s (50 at `tiny`, 300 above), one user rename and one label rename. These writes sit above the settled store when the goals run.
 4. `prepare` (untimed): picks each goal's bindings, LDBC-style: up to 5 bindings whose cost in the oracle is nearest one quantile, the same for every rep and contender. It computes every expected answer and carries them to the later pages.

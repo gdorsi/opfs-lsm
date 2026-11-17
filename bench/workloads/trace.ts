@@ -43,8 +43,8 @@ export function hashText(s: string): string {
   return `${s.length}:${h.toString(16)}`;
 }
 
-/** One keystroke per frame in the paced `type` phase: fast typing, and one storage write per frame at most. */
-export const KEY_MS = 16;
+/** One keystroke per 60 Hz frame in the paced `type` phase: fast typing, and one storage write per frame at most. */
+export const KEY_MS = 1000 / 60;
 
 /** How many of the trace's last keystrokes the `type` phase replays at KEY_MS each; `persist` writes the rest unpaced. */
 export function typedKeys(size: SizeName, edits: number): number {

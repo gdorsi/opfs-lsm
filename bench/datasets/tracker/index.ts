@@ -135,7 +135,7 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
       },
     },
   },
-  duringLoad: { every: 10, read: { goal: "recentActivity", params: {} } },
+  duringLoad: { during: "sync", every: 10, read: { goal: "recentActivity", params: {} } },
   reread(o) {
     // Move the most recently updated todo issue to in progress: its list, the next list and the counts must all show it.
     let latest: Issue | undefined;
