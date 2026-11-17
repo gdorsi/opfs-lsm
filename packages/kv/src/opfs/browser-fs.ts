@@ -14,7 +14,7 @@ function splitPath(path: string): string[] {
  * across tabs and workers of the origin, so the host deletes a run only when
  * no reader holds it.
  */
-export class BrowserReadFs implements ReadFs {
+class BrowserReadFs implements ReadFs {
   constructor(
     private readonly root: FileSystemDirectoryHandle,
     protected readonly dbName: DbName,
