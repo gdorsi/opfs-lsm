@@ -110,6 +110,12 @@ export class KvPersistence {
    */
   private async trim(): Promise<void> {
     this.trimTimer = undefined;
+    // The range delete stops at the read's seq. An own update still in flight
+    // would stay stored, keyed before the merged state, and a later load would
+    // replay it without the updates it builds on: Yjs then holds it as pending,
+    // which costs quadratic time in the number of such updates.
+    await Promise.all(this.pending);
+    if (this.destroyed) return;
     const { updates, through } = await this.readStored();
     if (this.destroyed) return;
     this.apply(updates);
