@@ -22,6 +22,10 @@ The apps under `examples/` show how to build a web app on our packages, and test
 - Store data with our packages only. No switch to another storage, and no hooks, marks or options that exist for a benchmark.
 - Keep the app's core testable without the UI, and test it. A test that fails because of our package is a bug in the package.
 
+## Format changes
+
+A change that makes stored data read differently, such as a kv or docstore format or the LinearLite demo's schema, raises `DATA_VERSION` in `examples/linearlite-docstore/src/main.tsx`. The home page demo then opens a fresh database for returning visitors and frees the old one.
+
 ## Benchmarks
 
 `bench/` measures the packages, never the example apps. A new access pattern becomes a goal on a dataset, with one workload owning each pattern (see [bench/README.md](bench/README.md), "Goal workloads"). A number added to [docs/benchmarks.md](docs/benchmarks.md) links to its full run, committed under [docs/results/](docs/results/). The older tables whose runs were not kept say so; replace them with a committed run when you re-measure them.

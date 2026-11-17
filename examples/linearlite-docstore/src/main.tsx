@@ -11,8 +11,15 @@ import { SOURCE, failed, post, type ToDemo } from "./protocol.ts";
 import { hostOf, openStore } from "./store.ts";
 import { Toolbar } from "./toolbar.tsx";
 
+/**
+ * The version of the data this app stores, in its database name. Raise it in any change that makes data written before
+ * it read differently: a kv or docstore format, or this app's schema. A visitor then starts on a fresh database, and
+ * the app frees the old one.
+ */
+const DATA_VERSION = 1;
+
 const params = new URLSearchParams(location.search);
-const NAME = params.get("db") ?? "linearlite-docstore";
+const NAME = params.get("db") ?? `linearlite-docstore-v${DATA_VERSION}`;
 const COUNT = Number(params.get("count")) || 100_000;
 const n = (x: number) => x.toLocaleString("en-US");
 
@@ -128,19 +135,25 @@ async function main() {
 }
 
 /**
- * The docs home page's earlier demo, the TanStack DB build of LinearLite, kept its issues in a database of this name
- * with another schema. Removed in the background, once, so a visitor of that version gets the space back.
+ * The databases earlier builds stored their issues in: the TanStack DB demo's, the unversioned one, and every lower
+ * `DATA_VERSION`. Removed in the background, so a visitor of an earlier build gets the space back.
  */
-const RETIRED = "opfs-lsm-home";
+const RETIRED = [
+  "opfs-lsm-home",
+  "linearlite-docstore",
+  ...Array.from({ length: DATA_VERSION - 1 }, (_, i) => `linearlite-docstore-v${i + 1}`),
+].filter((name) => name !== NAME);
 
 async function dropRetired(): Promise<void> {
-  try {
-    const root = await navigator.storage.getDirectory();
-    await (await root.getDirectoryHandle("opfs-lsm")).getDirectoryHandle(RETIRED);
-  } catch {
-    return;
+  const lsm = await navigator.storage
+    .getDirectory()
+    .then((root) => root.getDirectoryHandle("opfs-lsm"))
+    .catch(() => undefined);
+  if (!lsm) return;
+  for (const name of RETIRED) {
+    const stored = await lsm.getDirectoryHandle(name).then(() => true, () => false);
+    if (stored) await destroyDb(name).catch(() => undefined);
   }
-  await destroyDb(RETIRED).catch(() => undefined);
 }
 
 main().catch(failed);
