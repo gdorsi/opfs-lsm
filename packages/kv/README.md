@@ -242,7 +242,7 @@ const stop = db.changes((event) => {
     case "gap":
       // this handle skipped records a flush folded. Read again.
       break;
-    case "closed": // the last event
+    case "closed": // the last event. event.reason is "close" or "destroyed"
   }
 });
 ```
@@ -354,7 +354,7 @@ db.onPressure(async ({ bytes, need }) => {
 });
 ```
 
-The offer comes back after a flush while too little was freed, so make the handler safe to run again. The engine's [Size cap](../../docs/design.md#size-cap) covers how kv measures and which tab answers.
+The offer comes back after a flush while too little was freed, so make the handler safe to run again. [Size cap](../../docs/size-cap.md) covers how kv measures and which tab answers.
 
 **Note.** If the origin runs out anyway, flushes fail with `StorageFullError`. The acked writes stay in the WAL, and the SharedWorker flushes again after another 1 MiB of writes or the next `openDb`.
 
@@ -366,21 +366,24 @@ await db.get(key);           // => undefined
 await db.put(key, value);
 // writes after it land in the empty database
 
-// Handles stay open. Other tabs read empty at their next sync()
-// or write, each with a `gap` event. It waits for a running flush
-// or compaction step. Once it resolves, the records never come
-// back, even after a power loss. A crash before that leaves the
-// database as if it had not run.
+// Handles stay open, and so does the storage. Other tabs read
+// empty at their next sync() or write, each with a `gap` event.
 ```
 
 ```ts
 import { destroyDb } from "@opfs-lsm/kv";
 
-// Does not open the database, so it also empties one that openDb
-// refuses with CorruptDatabaseError.
+// Removes the database: its rows, its OPFS folder and its
+// IndexedDB database. Every handle on it, in every tab and this
+// one, closes first, with a `closed` event whose reason is
+// "destroyed". Works when openDb throws CorruptDatabaseError.
+// On a name with nothing stored it creates nothing.
 await destroyDb("notes");
-// open handles behave as after dangerousDestroy()
 ```
+
+Both wait for a running flush or compaction step. Once one resolves, the records never come back, even after a power loss. A crash before that leaves the database as if it had not run, or empty.
+
+`destroyDb` keeps one small row per removed name in the IndexedDB database `opfs-lsm-destroyed`. Opening the name after `destroyDb` finished deletes it. That row is what keeps a power loss from bringing the removed rows back.
 
 ## Testing
 
@@ -406,7 +409,7 @@ await tabB.sync();
 dec(await tabB.get(key)); // => "world"
 ```
 
-`openHarnessDb` also takes `fs`, `ingest`, `writerId`, `trace`, and `maxWalBytes`, which replaces the 1 MiB flush trigger.
+`openHarnessDb` also takes `fs`, `ingest`, `writerId`, and `maxWalBytes`, which replaces the 1 MiB flush trigger.
 
 ## Options
 
@@ -437,9 +440,9 @@ try {
 | --- | --- | --- | --- |
 | `StorageUnavailableError` | `unavailable` | No SharedWorker or OPFS, the wasm engine did not load, or IndexedDB did not open. `cause` holds the browser's error. | Retry `openDb`, or reload the page. |
 | `StorageFullError` | `quota` | The origin is out of quota, so a flush fails. No `Db` method throws it, but `ingest(db)` does. | Free space. See [Storage quota](#storage-quota). |
-| `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone. kv changes nothing. | Do not retry. `destroyDb(name)` empties it. |
+| `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone. kv changes nothing. | Do not retry. `destroyDb(name)` removes it. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
 | `ConstraintError` | `constraint` | A name, key, value, batch or range is invalid or over a limit. | Fix the call. |
-| `ClosedError` | `closed` | The handle is closed. | Open a new one. |
+| `ClosedError` | `closed` | The handle is closed, by `close()` or by `destroyDb`. | Open a new one. |
 
 **Note.** Chrome can damage its IndexedDB store when it crashes, then delete it or keep failing the open. If it deletes it, writes not flushed to OPFS yet are lost, and flushed data stays.

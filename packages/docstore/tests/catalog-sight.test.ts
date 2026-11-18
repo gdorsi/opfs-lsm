@@ -1,4 +1,5 @@
 import type { Db } from "@opfs-lsm/kv";
+import { destroyHarnessDb } from "@opfs-lsm/kv/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { defineSchema, openDocStore } from "../src/index.js";
 import { CATALOG_KEY } from "../src/keys.js";
@@ -119,6 +120,41 @@ describe("a store held across dangerousDestroy", () => {
     await fresh.putMany([{ id: "b", title: "y", done: true }, { id: "c", title: "z", done: false }]);
     expect(await codeOf(held.count({ index: "byTitle" }))).toBe("schema");
     expect(await fresh.count({ index: "byDone" })).toBe(2);
+  });
+});
+
+describe("destroyDb of one of two names", () => {
+  it("closes the stores on that name, and leaves the stores on the other reading and writing", async () => {
+    const [nameA, nameB] = [freshName(), freshName()];
+    const a = (await openDocStore(await kvOn(nameA), v1)).collection("todos");
+    const onA: unknown[] = [];
+    a.changes((event) => onA.push(event));
+    const bStore = await openDocStore(await kvOn(nameB), v1);
+    const b = bStore.collection("todos");
+    const onB: { kind: string }[] = [];
+    b.changes((event) => onB.push(event));
+    const readerKv = await kvOn(nameB);
+    const bReader = (await openDocStore(readerKv, v1)).collection("todos");
+    await a.putMany([{ id: "a", title: "x" }, { id: "b", title: "y" }]);
+    await b.putMany([{ id: "a", title: "p" }, { id: "c", title: "q" }]);
+
+    await destroyHarnessDb({ name: nameA, forceMemory: true });
+
+    expect(onA.at(-1)).toEqual({ kind: "closed", reason: "destroyed" });
+    expect(onB.some((event) => event.kind === "closed")).toBe(false);
+    expect(await codeOf(a.count({ index: "byTitle" }))).toBe("closed");
+    expect(await codeOf(a.put({ id: "d", title: "z" }))).toBe("closed");
+    expect((await b.query({ index: "byTitle" })).docs.map((d) => d.id)).toEqual(["a", "c"]);
+    await b.put({ id: "d", title: "r" });
+    await bStore.whenIdle();
+    await readerKv.sync();
+    expect(await bReader.count({ index: "byTitle" })).toBe(3);
+
+    const reopened = (await openDocStore(await kvOn(nameA), v1)).collection("todos");
+    expect(await reopened.count({ index: "byTitle" })).toBe(0);
+    await reopened.put({ id: "e", title: "s" });
+    expect((await reopened.query({ index: "byTitle" })).docs.map((d) => d.id)).toEqual(["e"]);
+    expect(await b.get("a")).toEqual({ id: "a", title: "p" });
   });
 });
 

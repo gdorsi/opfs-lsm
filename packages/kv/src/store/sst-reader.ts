@@ -265,7 +265,7 @@ export class SstReader {
 class ReadAhead {
   private readonly pages = new Map<number, Page>();
   private window = 0;
-  private asked: number | undefined;
+  private asked: number | undefined = undefined;
 
   constructor(
     private readonly load: (page: number) => Maybe<Page>,

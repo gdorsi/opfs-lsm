@@ -134,16 +134,14 @@ export interface MergeCore {
  * this file is the only place that packs and unpacks them. Results are
  * copied out of wasm memory once, so they stay valid after later calls.
  *
- * The methods are what a tab calls on its reads. What only the host calls,
- * `encodeRunIn` and `openMergeIn`, are functions over the engine, so a
- * bundle that never encodes or merges does not carry them.
+ * What a tab calls on its reads, `lz4DecompressIn` and `scanBlockContainsIn`,
+ * and what only the host calls, `encodeRunIn` and `openMergeIn`, are
+ * functions over the engine, so a bundle carries only the side it runs.
  */
 export type FlatEngine = {
   readonly ex: EngineExports;
   /** Write `len` bytes through `fill`, run `op`, return a copy of the result. */
   call(name: string, len: number, fill: (into: Uint8Array) => void, op: (ptr: number) => number): Uint8Array;
-  lz4Decompress(src: Uint8Array, size: number): Uint8Array;
-  scanBlockContains(framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array;
   /** The module's memory. It only grows. */
   memoryBytes(): number;
   /** Whether a merge session is open, from its `openMergeIn` to its `close`. */
@@ -172,32 +170,28 @@ export function flatEngine(instance: WebAssembly.Instance): FlatEngine {
     return new Uint8Array(ex.memory.buffer).slice(at, at + ex.result_len());
   }
 
-  return {
-    ex,
-    call,
-    lz4Decompress(src, size) {
-      return call("lz4_decompress", src.byteLength, (into) => into.set(src), (ptr) =>
-        ex.lz4_decompress(ptr, src.byteLength, size),
-      );
-    },
+  return { ex, call, memoryBytes: () => ex.memory.buffer.byteLength, sessionOpen: false };
+}
 
-    scanBlockContains(framed, lz4, patterns) {
-      const len = framed.byteLength + patterns.byteLength;
-      return call(
-        "scan_block_contains",
-        len,
-        (into) => {
-          into.set(framed);
-          into.set(patterns, framed.byteLength);
-        },
-        (ptr) =>
-          ex.scan_block_contains(ptr, framed.byteLength, lz4 ? 1 : 0, ptr + framed.byteLength, patterns.byteLength),
-      );
-    },
+/** `src`, an LZ4 block of `size` bytes, decompressed by `engine`. */
+export function lz4DecompressIn(engine: FlatEngine, src: Uint8Array, size: number): Uint8Array {
+  return engine.call("lz4_decompress", src.byteLength, (into) => into.set(src), (ptr) =>
+    engine.ex.lz4_decompress(ptr, src.byteLength, size),
+  );
+}
 
-    memoryBytes: () => ex.memory.buffer.byteLength,
-    sessionOpen: false,
-  };
+/** The hits of `patterns` in one framed block, as `engine` packs them. */
+export function scanBlockContainsIn(engine: FlatEngine, framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array {
+  return engine.call(
+    "scan_block_contains",
+    framed.byteLength + patterns.byteLength,
+    (into) => {
+      into.set(framed);
+      into.set(patterns, framed.byteLength);
+    },
+    (ptr) =>
+      engine.ex.scan_block_contains(ptr, framed.byteLength, lz4 ? 1 : 0, ptr + framed.byteLength, patterns.byteLength),
+  );
 }
 
 /** `entries` as one run, encoded by `engine`. */
@@ -371,27 +365,9 @@ function setEngine(next: FlatEngine | undefined): void {
   engine = next;
 }
 
-let engineUrlOverride: string | undefined;
-
-/**
- * Test seam: the next engine load in this context fetches this `.wasm` (a URL
- * or a path relative to this module) instead of the bundled one. `undefined`
- * restores the bundled engine.
- */
-export function setEngineUrlForTests(url: string | undefined): void {
-  engineUrlOverride = url;
-}
-
-function engineUrl(): URL {
-  // A variable base: webpack turns `new URL(expr, import.meta.url)` into a module context and warns.
-  const base = import.meta.url;
-  if (engineUrlOverride !== undefined) return new URL(engineUrlOverride, base);
-  // Keep this a literal `new URL(..., import.meta.url)`: bundlers emit the .wasm only for that form.
-  return new URL("../../wasm/engine.wasm", import.meta.url);
-}
-
 async function loadWasm(): Promise<FlatEngine> {
-  const module = await WebAssembly.compile(await readEngine(engineUrl()));
+  // Keep this a literal `new URL(..., import.meta.url)`: bundlers emit the .wasm only for that form.
+  const module = await WebAssembly.compile(await readEngine(new URL("../../wasm/engine.wasm", import.meta.url)));
   const loaded = flatEngine(await WebAssembly.instantiate(module, {}));
   wasmModule = module;
   return loaded;
@@ -440,7 +416,7 @@ export async function ensureEngine(): Promise<void> {
   // They read `engine` at each call: it is replaced when the instance is.
   useLz4Decoder((src, size) => {
     try {
-      return engine!.lz4Decompress(src, size);
+      return lz4DecompressIn(engine!, src, size);
     } catch (err) {
       if (!afterTrap(err)) throw corrupt(err, "sst lz4 block corrupt");
       // The JS decoder says whether the block is corrupt or the module is wrong.
@@ -449,7 +425,7 @@ export async function ensureEngine(): Promise<void> {
   });
   useBlockScanner((framed, lz4, patterns) => {
     try {
-      return engine!.scanBlockContains(framed, lz4, patterns);
+      return scanBlockContainsIn(engine!, framed, lz4, patterns);
     } catch (err) {
       afterTrap(err);
       throw corrupt(err, "sst block corrupt");

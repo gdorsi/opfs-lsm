@@ -24,6 +24,7 @@ import {
   type Step,
 } from "./crash.js";
 import { Oracle } from "./oracle.js";
+import { compactHost } from "../compact-host.js";
 
 /**
  * Crash-state enumeration (docs/research/corruption-hardening-test-suite.md,
@@ -35,8 +36,9 @@ import { Oracle } from "./oracle.js";
  * - power loss: every pair (IndexedDB prefix, OPFS prefix). The database
  *   opens and holds some log prefix (design.md, "Recovery").
  *
- * Fixed workloads cover ingest, compaction install and reclaim; random
- * histories reuse the single-handle commands of model.test.ts.
+ * Fixed workloads cover ingest, compaction install and reclaim, destroy and
+ * removal; random histories reuse the single-handle commands of
+ * model.test.ts.
  *
  *   KV_CRASH_RUNS=200 pnpm exec vitest run tests/sim/crash-enum.test.ts
  *   KV_MODEL_SEED=<seed> KV_MODEL_PATH=<path> KV_MODEL_REPLAY=<replayPath> pnpm exec vitest run tests/sim/crash-enum.test.ts
@@ -106,6 +108,16 @@ const DESTROY: Step[] = [
   put("h", "h1"), ingest,
 ];
 
+/** A removal over runs at two levels and a WAL tail, then writes and a flush on the database opened again, and a second removal. */
+const REMOVE: Step[] = [
+  ...COMPACTION,
+  put("f", "f1"),
+  { remove: true },
+  put("a", "a9"), ingest,
+  put("g", "g1"),
+  { remove: true },
+];
+
 /**
  * Range deletes over flushed rows, unflushed rows and their own flush, one
  * that a later write into its range outlives, and the compaction of runs
@@ -124,6 +136,7 @@ const WORKLOADS: [string, Step[]][] = [
   ["compaction", COMPACTION],
   ["cascade", CASCADE],
   ["destroy", DESTROY],
+  ["remove", REMOVE],
   ["range delete", RANGE_DELETE],
 ];
 
@@ -344,7 +357,7 @@ describe("risks to target first (research note)", () => {
         await ingestDb(db);
       }
       await db.close();
-      await t.host.compact(t.name);
+      await compactHost(t.host, t.name);
       const report = await checkDatabase(t.fs, t.name);
       expect(report.problems).toEqual([]);
       expect(report.orphans).toEqual([]);
@@ -607,12 +620,12 @@ describe("crash leftovers", () => {
     const t = new Traced(`leak-${++runs}`);
     try {
       await t.load(ops, cut);
-      await t.host.compact(t.name); // the first pass sweeps
+      await compactHost(t.host, t.name); // the first pass sweeps
       const db = await t.open();
       await db.put(new TextEncoder().encode("x"), new TextEncoder().encode("x1"));
       await ingestDb(db);
       await db.close();
-      await t.host.compact(t.name);
+      await compactHost(t.host, t.name);
       expect((await checkDatabase(t.fs, t.name)).orphans).toEqual([]);
     } finally {
       await t.dispose();

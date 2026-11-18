@@ -19,7 +19,11 @@ export interface OpenFile {
   close(): void;
 }
 
-export interface AsyncFs {
+/**
+ * What a tab uses of the run directory: it reads manifests and run files and
+ * never writes them. Only the host does (`AsyncFs`).
+ */
+export interface ReadFs {
   /** At most `length` bytes from `offset`. Pass Infinity to read to the end. */
   read(
     path: string,
@@ -33,9 +37,23 @@ export interface AsyncFs {
    */
   open(path: string): Promise<OpenFile | undefined>;
   list(dir: string): Promise<readonly string[]>;
+}
+
+export interface AsyncFs extends ReadFs {
   remove(path: string): Promise<void>;
   /** Remove `path` unless some tab holds it open. True when it is gone. */
   removeUnlessOpen(path: string): Promise<boolean>;
   /** Replace published file only when finish resolves. No append. */
   create(path: string): Promise<FileWriter>;
+}
+
+/** A database folder `destroyDb` can remove. Kept off `AsyncFs`, so the fs of `openDb` and of the SharedWorker carries no removal. */
+export interface RemovableFs extends AsyncFs {
+  /**
+   * Remove every file and the database folder: `m/` first, so a crash part
+   * way leaves no manifest to adopt. Ignores open holds: `destroyDb` calls it
+   * once every handle closed, under the compaction and ingest locks.
+   * Idempotent. No other call is valid on this fs afterwards.
+   */
+  removeFolder(): Promise<void>;
 }

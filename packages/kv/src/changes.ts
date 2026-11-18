@@ -30,8 +30,13 @@ export type ChangeEvent =
   | { readonly kind: "append"; readonly seq: number; readonly ops: readonly ChangeOp[] }
   /** The handle's state moved to `through` past records it never announced. Read again. */
   | { readonly kind: "gap"; readonly through: number }
-  /** The last event: the handle closed. */
-  | { readonly kind: "closed" };
+  /**
+   * The last event: the handle closed. `reason` is "close" for its own
+   * `close()`, and "destroyed" when its IndexedDB database was asked to
+   * close: by `destroyDb`, or by the browser or DevTools deleting it. An
+   * `openDb` after a destroy opens an empty database.
+   */
+  | { readonly kind: "closed"; readonly reason: "close" | "destroyed" };
 
 export type ChangeKind = ChangeEvent["kind"];
 

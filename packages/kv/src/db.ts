@@ -21,15 +21,16 @@ import {
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type Pressure } from "./host/protocol.js";
-import { layersChannel, pressureLock, webLocks } from "./locks.js";
+import { removeDatabase } from "./destroy.js";
+import { layersChannel, openLock, pressureLock, webLocks, withLock } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { GENERATION_NONE, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
-import type { AsyncFs, OpenFile } from "./opfs/async-fs.js";
-import { openBrowserFs } from "./opfs/browser-fs.js";
+import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
+import { findRemovableBrowserFs, openBrowserReadFs } from "./opfs/browser-fs.js";
 import {
   loadGeneration,
   type RunMeta,
@@ -90,7 +91,7 @@ export type OpenOptions = {
    * storage quota for the origin. kv never removes a row for it: it asks
    * an `onPressure` handler to, and a write never waits for it. When tabs
    * differ, the host uses the smallest figure and honors `"quota"` too
-   * (design.md, "Size cap").
+   * (docs/size-cap.md).
    */
   readonly maxBytes?: number | "quota";
 };
@@ -123,47 +124,14 @@ export type OpenKnobs = {
    * or responsive. When tabs pass different limits, the host uses the smallest.
    */
   readonly maxWalBytes?: number;
-  /** When set, open records phase durations here. Wasm init can append after the open promise resolves. */
-  readonly trace?: OpenTrace;
   /** Replaces `ROW_POST_MS`. At 0 every row is posted when it lands, so a simulation owns all the timing. */
   readonly rowPostMs?: number;
   /** Wraps the fs this tab reads runs through. `openHarnessDb` passes a `CountingFs`, so `readStats` can count the tab's IO. */
-  readonly wrapFs?: (fs: AsyncFs) => AsyncFs;
+  readonly wrapFs?: (fs: ReadFs) => ReadFs;
 };
 
 /** What `openDbWith` takes. `openHarnessDb` in `@opfs-lsm/kv/testing` builds it. */
 export type OpenWithOptions = OpenOptions & OpenKnobs & Backing;
-
-/** One timed piece of open. `endedAt` is `performance.now()` on this thread. */
-export type OpenSpan = {
-  phase: string;
-  ms: number;
-  rows?: number;
-  endedAt: number;
-};
-
-export type OpenTrace = {
-  spans: OpenSpan[];
-};
-
-function span(trace: OpenTrace, phase: string, ms: number, rows?: number): void {
-  trace.spans.push({ phase, ms, endedAt: performance.now(), ...(rows === undefined ? {} : { rows }) });
-}
-
-/** `run()`, recorded as `phase` when tracing. `rowsOf` counts the rows of its result. */
-function timed<T>(
-  trace: OpenTrace | undefined,
-  phase: string,
-  run: () => Promise<T>,
-  rowsOf?: (out: T) => number,
-): Promise<T> {
-  if (!trace) return run();
-  const at = performance.now();
-  return run().then((out) => {
-    span(trace, phase, performance.now() - at, rowsOf?.(out));
-    return out;
-  });
-}
 
 export type Range = {
   /** Inclusive. Bounds are in key order whichever way `reverse` points. */
@@ -272,12 +240,13 @@ export interface Db {
    * Delete every record of this database, in every tab. Seen from the log,
    * it is one write that deletes every key: writes acked before it are
    * gone, and writes after it land in the empty database. Every handle
-   * stays open; this one reads empty once it resolves, other tabs at their
-   * next `sync`, and each reports a `gap` change event. One IndexedDB
-   * transaction, on disk before the removes start, empties the database.
-   * Then the host removes every run file no tab still reads, and the rest
-   * once their tabs move on. Waits for a flush or compaction step already
-   * running. `destroyDb` does the same without opening the database.
+   * stays open, and so does the storage; this one reads empty once it
+   * resolves, other tabs at their next `sync`, and each reports a `gap`
+   * change event. One IndexedDB transaction, on disk before the removes
+   * start, empties the database. Then the host removes every run file no
+   * tab still reads, and the rest once their tabs move on. Waits for a
+   * flush or compaction step already running. `destroyDb` removes the
+   * database instead, and closes every handle on it.
    */
   dangerousDestroy(): Promise<void>;
 }
@@ -309,7 +278,7 @@ export function prefixBound(prefix: Uint8Array): {
 type DbInternals = {
   readonly name: DbName;
   readonly wal: TabWal;
-  readonly fs: AsyncFs;
+  readonly fs: ReadFs;
   readonly ingest: IngestClient;
   /** Flush the memtable now and wait for the compaction it starts. */
   readonly flush: () => Promise<{ generation: number }>;
@@ -333,9 +302,9 @@ export async function openDb(options: OpenOptions): Promise<Db> {
 async function connect(
   name: DbName,
   backing: Backing,
-  trace: OpenTrace | undefined,
+  onAskedToClose: () => void,
 ): Promise<{
-  readonly fs: AsyncFs;
+  readonly fs: ReadFs;
   readonly ingest: IngestClient;
   readonly ownsIngestClient: boolean;
   readonly walOpen: Promise<TabWal> | undefined;
@@ -349,10 +318,10 @@ async function connect(
     );
   }
   // IndexedDB opens while OPFS does.
-  const walOpen = TabWal.open(name);
+  const walOpen = TabWal.open(name, onAskedToClose);
   walOpen.catch(() => undefined);
   try {
-    const fs = await timed(trace, "opfs", () => openBrowserFs(name));
+    const fs = await openBrowserReadFs(name);
     if (backing.ingest) return { fs, ingest: backing.ingest, ownsIngestClient: false, walOpen };
     // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
     // only emit a worker chunk for this exact shape. Built in a helper, Vite
@@ -370,52 +339,61 @@ async function connect(
 }
 
 /**
- * Delete every record of database `name` without opening it, so it works
- * when `openDb` throws `CorruptDatabaseError`. Open handles on it stay
- * open, as after `dangerousDestroy`.
+ * Remove database `name`: every handle on it, in every tab and this one,
+ * closes with a `closed` change event whose reason is "destroyed", then its
+ * rows, its OPFS folder and its IndexedDB database go. It does not open the
+ * database, so it also removes one that `openDb` refuses as corrupt. On a
+ * name with nothing stored it creates nothing and starts no SharedWorker.
+ * Once it resolves, no removed row comes back, even after a power loss.
+ * Waits for a flush or compaction step already running, and for every
+ * handle to close.
  */
 export async function destroyDb(name: string): Promise<void> {
   return destroyDbWith({ name });
 }
 
-/** `destroyDb` on a given backing. */
-export async function destroyDbWith(options: { readonly name: string } & Backing): Promise<void> {
+/** `destroyDb` on a given folder: with `fs`, that fs is the folder to remove. */
+export async function destroyDbWith(options: { readonly name: string; readonly fs?: RemovableFs | undefined }): Promise<void> {
   const name = checkDbName(options.name);
-  const { ingest, ownsIngestClient, walOpen } = await connect(name, options, undefined);
-  void walOpen?.then((w) => w.close(), () => undefined);
-  try {
-    await ingest.destroy(name);
-  } finally {
-    if (ownsIngestClient) ingest.close();
+  const fs = options.fs;
+  const opfs = typeof navigator !== "undefined" && typeof navigator.storage?.getDirectory === "function";
+  if (typeof indexedDB === "undefined" || (!fs && !opfs)) {
+    throw new StorageUnavailableError("destroyDb needs IndexedDB and navigator.storage.getDirectory");
   }
+  await removeDatabase(name, fs ? async () => fs : () => findRemovableBrowserFs(name));
 }
 
 /** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
-export function openDbWith(options: OpenWithOptions): Promise<Db> {
-  return timed(options.trace, "open", () => openTraced(options));
-}
-
-async function openTraced(options: OpenWithOptions): Promise<Db> {
-  const trace = options.trace;
+export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   const name = checkDbName(options.name);
   if (options.maxBytes !== undefined && options.maxBytes !== "quota" && !(options.maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
   // Started first, so the module loads while the rest of open runs.
-  const engine = timed(trace, "wasm", ensureEngine);
+  const engine = ensureEngine();
   // Awaited last: a throw before that must not leave its rejection unhandled.
   engine.catch(() => undefined);
   const caps = memtableCaps(options.memtableBytes);
+  // Held until the open resolves, so `destroyDb` never meets a half-done open (design.md, "Removing").
+  return withLock(openLock(name), () => openStores(name, options, caps, engine), "shared");
+}
 
-  const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, trace);
+async function openStores(
+  name: DbName,
+  options: OpenWithOptions,
+  caps: MemtableCaps,
+  engine: Promise<unknown>,
+): Promise<Db> {
   // What the catch below closes: the Db once it exists, else the WAL and an owned port.
   let heldWal: TabWal | undefined;
   let heldDb: DbImpl | undefined;
+  const onAskedToClose = () => void heldDb?.closeFor("destroyed");
+  const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, onAskedToClose);
   try {
     const tabFs = options.wrapFs?.(fs) ?? fs;
-    const wal = await timed(trace, "idb-open", () => walOpen ?? TabWal.open(name));
+    const wal = await (walOpen ?? TabWal.open(name, onAskedToClose));
     heldWal = wal;
     // Pair the WAL with a manifest before the first read or write. The
     // recorded manifest's runs are checked by the first sync, which loads them.
-    await timed(trace, "generation", () => reconcile(wal, tabFs, "recorded"));
+    await reconcile(wal, tabFs, "recorded");
     const writerId = (options.writerId ?? newWriterId()) as WriterId;
     const maxBytes = options.maxBytes;
     const cache = new PageCache(
@@ -431,12 +409,11 @@ async function openTraced(options: OpenWithOptions): Promise<Db> {
       ownsIngestClient,
       caps,
       maxBytes,
-      trace,
       options.rowPostMs,
     );
     heldDb = db;
     internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
-    await timed(trace, "sync", () => db.sync());
+    await db.sync();
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
     ingest.watch(name, {
       maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
@@ -548,7 +525,7 @@ class DbImpl implements Db {
     refs: 1,
   };
   /** The newest generation loaded and not yet installed. */
-  private loaded: Layers | undefined;
+  private loaded: Layers | undefined = undefined;
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
   private readonly catchUpToWal = coalesced(() => this.syncOnce());
@@ -565,7 +542,7 @@ class DbImpl implements Db {
   /** `performance.now()` of the last post. */
   private postedAt = Number.NEGATIVE_INFINITY;
   /** Posts the rows that no later landing posted. */
-  private postTimer: ReturnType<typeof setTimeout> | undefined;
+  private postTimer: ReturnType<typeof setTimeout> | undefined = undefined;
   /** Posts the rows that wait when the page is hidden, before the browser slows the timer. */
   private readonly onVisibility = () => this.postRows();
   private readonly pressure: Backpressure;
@@ -581,13 +558,12 @@ class DbImpl implements Db {
     readonly name: DbName,
     readonly writerId: WriterId,
     private readonly wal: TabWal,
-    private readonly fs: AsyncFs,
+    private readonly fs: ReadFs,
     private readonly cache: PageCache,
     private readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
     private readonly maxBytes: number | "quota" | undefined,
-    private readonly trace?: OpenTrace,
     private readonly rowPostMs = ROW_POST_MS,
   ) {
     this.pressure = new Backpressure(
@@ -871,27 +847,20 @@ class DbImpl implements Db {
    * a file.
    */
   private async catchUpOnce(): Promise<"done" | Retry> {
-    const tail = await timed(
-      this.trace,
-      "wal-read",
-      () => this.wal.tail(this.mem.appliedThrough),
-      (t) => t.records.length,
-    );
+    const tail = await this.wal.tail(this.mem.appliedThrough);
     if (this.closed) return "done";
     let whole = true;
     if (tail.generation !== this.installed.generation) {
       const ahead = tail.ingestedThrough > this.mem.appliedThrough;
-      whole = await timed(this.trace, "sst", () => this.load(tail.generation, ahead));
+      whole = await this.load(tail.generation, ahead);
       if (this.closed) return "done";
     }
-    const memAt = this.trace ? performance.now() : 0;
     let missing: number | undefined;
     try {
       missing = this.catchUp(tail);
     } finally {
       this.announce();
     }
-    if (this.trace) span(this.trace, "memtable", performance.now() - memAt, tail.records.length);
     if (missing === undefined) return "done";
     return whole ? "behind" : "gone";
   }
@@ -994,6 +963,9 @@ class DbImpl implements Db {
     this.retain(layers);
     try {
       return await (held ?? new ReadSet()).settle(read, first);
+    } catch (err) {
+      this.ensureOpen();
+      throw err;
     } finally {
       this.release(layers);
     }
@@ -1073,6 +1045,9 @@ class DbImpl implements Db {
     this.retain(layers);
     try {
       return await countLayers(this.mem.range(bounds), layers.levels, at, bounds, range);
+    } catch (err) {
+      this.ensureOpen();
+      throw err;
     } finally {
       this.release(layers);
     }
@@ -1089,6 +1064,9 @@ class DbImpl implements Db {
         this.ensureOpen();
         yield entry;
       }
+    } catch (err) {
+      this.ensureOpen();
+      throw err;
     } finally {
       this.release(layers);
     }
@@ -1107,6 +1085,7 @@ class DbImpl implements Db {
         this.retain(layers);
         return () => this.release(layers);
       },
+      () => this.ensureOpen(),
     );
     try {
       return await body(snap);
@@ -1195,10 +1174,20 @@ class DbImpl implements Db {
     await this.ingestClient.ingest(this.name, true);
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    return this.closeFor("close");
+  }
+
+  /**
+   * Close the handle, with `reason` in its `closed` event. "destroyed": the
+   * WAL connection was asked to close, by `destroyDb`'s fence or by the
+   * browser deleting the database. A read that fails afterwards rejects
+   * with `ClosedError`: the files may be gone.
+   */
+  async closeFor(reason: "close" | "destroyed"): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.emit({ kind: "closed" });
+    this.emit({ kind: "closed", reason });
     this.changeBus.clear();
     this.unlock?.();
     if (this.bus && this.onBusMessage) {

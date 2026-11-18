@@ -17,7 +17,8 @@ export type CollectionChange<T extends JsonDoc> =
   | { readonly kind: "append"; readonly seq: number; readonly changes: readonly DocChange<T>[] }
   /** What the listener holds may be stale: read again. Sent for kv's `gap`, and when the collection was cleared or dropped (its catalog id changed). */
   | { readonly kind: "gap" }
-  | { readonly kind: "closed" };
+  /** The last event. `reason` is kv's: "close" for the kv handle's `close()`, "destroyed" when its database was removed. */
+  | { readonly kind: "closed"; readonly reason: "close" | "destroyed" };
 
 function docChange<T extends JsonDoc>(id: string, bytes: Uint8Array | undefined): DocChange<T> {
   let parsed: T | undefined;
@@ -124,7 +125,7 @@ export function followCollection<T extends JsonDoc>(
         emit({ kind: "gap" });
         return resync();
       case "closed":
-        emit({ kind: "closed" });
+        emit({ kind: "closed", reason: event.reason });
         live = false;
         return;
     }

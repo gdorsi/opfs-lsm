@@ -7,7 +7,7 @@ import { checkDbName } from "./check.js";
 import { destroyDbWith, openDbWith, type Backing, type Db, type OpenKnobs, type OpenOptions } from "./db.js";
 import { EngineHost, createLocalIngestClient } from "./host/engine-host.js";
 import type { IngestClient } from "./host/protocol.js";
-import type { AsyncFs } from "./opfs/async-fs.js";
+import type { AsyncFs, RemovableFs } from "./opfs/async-fs.js";
 import { CountingFs } from "./opfs/counting-fs.js";
 import { MemoryFs } from "./opfs/memory-fs.js";
 
@@ -62,11 +62,14 @@ function backingOf(options: HarnessOpenOptions): Backing {
 
 export async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
   const { fs: _fs, ingest: _ingest, forceMemory: _forceMemory, ...rest } = options;
-  return openDbWith({ wrapFs: (fs) => new CountingFs(fs), ...rest, ...backingOf(options) });
+  return openDbWith({ // The tab only reads its fs, so a read-only one counts like a full one.
+    wrapFs: (fs) => new CountingFs(fs as AsyncFs), ...rest, ...backingOf(options) });
 }
 
-export async function destroyHarnessDb(options: HarnessOpenOptions): Promise<void> {
-  return destroyDbWith({ name: options.name, ...backingOf(options) });
+/** `destroyDb` on the harness's storage: `fs`, or the memory fs of `forceMemory`, is the folder to remove. */
+export async function destroyHarnessDb(options: HarnessOpenOptions & { readonly fs?: RemovableFs }): Promise<void> {
+  const fs = options.fs ?? (options.forceMemory === true ? memoryFs(checkDbName(options.name)) : undefined);
+  return destroyDbWith({ name: options.name, fs });
 }
 
 export function __resetMemoryFsForTests(name: string): void {

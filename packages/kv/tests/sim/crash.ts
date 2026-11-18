@@ -3,6 +3,7 @@ import { __resetMergeSlotForTests } from "../../src/host/merge-slot.js";
 import { __restartEngineForTests } from "../../src/store/engine.js";
 import {
   openHarnessDb,
+  destroyHarnessDb,
   ingest,
   EngineHost,
   MemoryFs,
@@ -11,8 +12,9 @@ import {
 import type { Db } from "../../src/index.js";
 import { checkDatabase, decodeWalRow, deleteWal, type DatabaseReport } from "./check-database.js";
 import { describeOp, FaultFs, Faults, fsFiles, materializeFs, type DurableOp } from "./fault-fs.js";
-import { dumpWal, materializeWal, traceWal } from "./fault-wal.js";
+import { destroyedRow, dumpWal, materializeWal, traceWal } from "./fault-wal.js";
 import { applyOps, Oracle, show, type OracleEntry, type OracleOp } from "./oracle.js";
+import { compactHost } from "../compact-host.js";
 
 /**
  * Crash states and the recovery check (docs/research/corruption-hardening-test-suite.md,
@@ -34,7 +36,8 @@ import { applyOps, Oracle, show, type OracleEntry, type OracleOp } from "./oracl
  * After the reopen, recovery runs: a fresh host flushes, compacts and
  * reclaims, and the files must pass `checkDatabase` with no orphans. Then
  * one more write and ingest, which builds on the recorded manifest
- * (design.md, "Recovery"), must read back.
+ * (design.md, "Recovery"), must read back. Apart from that, `destroyDb` on
+ * a copy of the crash state must leave no file and no WAL database.
  */
 
 /**
@@ -86,10 +89,9 @@ export class Traced {
     const replayed = `${this.name}-replay`;
     try {
       await materializeWal(replayed, ops, ops.length);
-      const [want, got] = await Promise.all([dumpWal(this.name), dumpWal(replayed)]);
-      if (JSON.stringify(serialize(want)) !== JSON.stringify(serialize(got))) {
-        throw new Error(`replayed IndexedDB differs:\n${JSON.stringify(serialize(want))}\n${JSON.stringify(serialize(got))}`);
-      }
+      const dump = async (name: string) => JSON.stringify({ wal: serialize(await dumpWal(name)), row: await destroyedRow(name) });
+      const [want, got] = await Promise.all([dump(this.name), dump(replayed)]);
+      if (want !== got) throw new Error(`replayed IndexedDB differs:\n${want}\n${got}`);
     } finally {
       await deleteWal(replayed);
     }
@@ -112,7 +114,8 @@ export class Traced {
   }
 }
 
-function serialize(dump: { wal: [IDBValidKey, unknown][]; meta: [IDBValidKey, unknown][] }): unknown {
+function serialize(dump: { wal: [IDBValidKey, unknown][]; meta: [IDBValidKey, unknown][] } | undefined): unknown {
+  if (!dump) return "no WAL database";
   const bytes = (v: unknown) => (v instanceof ArrayBuffer ? [...new Uint8Array(v)] : v);
   return { wal: dump.wal.map(([k, v]) => [k, bytes(v)]), meta: dump.meta.map(([k, v]) => [k, bytes(v)]) };
 }
@@ -126,6 +129,8 @@ export type Step =
   | { readonly deleteRange: string; readonly end?: string }
   | { readonly ingest: true }
   | { readonly destroy: true }
+  /** `destroyDb`, then open again. */
+  | { readonly remove: true }
   | { readonly reopen: true };
 
 const utf = (s: string) => new TextEncoder().encode(s);
@@ -162,6 +167,11 @@ export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): 
         // Destroy takes one seq: a delete of every key written before it.
         await db.dangerousDestroy();
         log.append(log.keys().map((key) => ({ type: "del" as const, key })));
+      } else if ("remove" in step) {
+        // So does a removal: the next open starts one past its head.
+        await destroyHarnessDb({ name: t.name, fs: t.fs, ingest: createLocalIngestClient(t.host) });
+        log.append(log.keys().map((key) => ({ type: "del" as const, key })));
+        db = await t.open();
       } else {
         await db.close();
         db = await t.open();
@@ -299,14 +309,25 @@ export async function checkCrashState(
 ): Promise<void> {
   const name = `crash-${++states}`;
   try {
+    await removeLeavesNothing(`${name}-gone`, ops, cut);
     await recover(name, ops, oracle, cut, model);
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     const error = new Error(`${model} crash state is not a log prefix or does not open: ${msg}\n${describeCut(ops, cut)}`);
     throw error;
   } finally {
-    await deleteWal(name);
+    await Promise.all([deleteWal(name), deleteWal(`${name}-gone`)]);
   }
+}
+
+/** `destroyDb` from the crash state `cut`, under `name`, leaves no file and no WAL database. */
+async function removeLeavesNothing(name: string, ops: readonly DurableOp[], cut: Cut): Promise<void> {
+  await materializeWal(name, ops, cut.idb);
+  const fs = await materializeFs(ops, cut.opfs);
+  await destroyHarnessDb({ name, fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+  const left = fs.publishedPaths();
+  if (left.length > 0) throw new Error(`destroyDb left ${left.join(", ")}`);
+  if ((await indexedDB.databases()).some((d) => d.name === `opfs-lsm-wal/${name}`)) throw new Error("destroyDb left the WAL database");
 }
 
 async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, cut: Cut, model: CrashModel): Promise<void> {
@@ -348,7 +369,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   } finally {
     await db.close();
   }
-  await host.compact(name);
+  await compactHost(host, name);
   const after = await checkDatabase(fs, name);
   const withWrite = after.state.filter((e) => compareBytes(e.key, key) !== 0);
   expectFiles({ ...after, state: withWrite }, oracle, prefixes, "after a write on the recovered database");

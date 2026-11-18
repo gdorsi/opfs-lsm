@@ -7,6 +7,7 @@
  *   TWO_TAB_REPEAT=3 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_PRESSURE=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+ *   TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -30,9 +31,11 @@ const MIME: Record<string, string> = {
 };
 
 type ClientCmd =
-  | { op: "put"; key: string; value: string }
-  | { op: "get"; key: string }
-  | { op: "ingest" }
+  | { op: "put"; key: string; value: string; name?: string }
+  | { op: "get"; key: string; name?: string }
+  | { op: "ingest"; name?: string }
+  | { op: "rows"; name: string }
+  | { op: "destroy"; name: string }
   | { op: "cap"; key: string; value: string };
 
 type PeerCmd = ClientCmd & { id: number };
@@ -52,6 +55,8 @@ type RunOptions = {
   pressure: boolean;
   /** Run the maxBytes: "quota" scenario, which asks this script to override the origin's quota. */
   quota: boolean;
+  /** Run the destroyDb scenario, which asks this script to open, crash, freeze and navigate tabs. */
+  destroy: boolean;
 };
 
 function chromePath(): string {
@@ -89,20 +94,24 @@ function transpileTs(source: string, fileName: string): string {
 
 function parseClientCmd(value: unknown): ClientCmd | null {
   if (!value || typeof value !== "object") return null;
-  const rec = value as { op?: unknown; key?: unknown; value?: unknown };
-  if (rec.op === "ingest") return { op: "ingest" };
+  const rec = value as { op?: unknown; key?: unknown; value?: unknown; name?: unknown };
+  const name = typeof rec.name === "string" ? { name: rec.name } : {};
+  if (rec.op === "ingest") return { op: "ingest", ...name };
+  if ((rec.op === "rows" || rec.op === "destroy") && typeof rec.name === "string") {
+    return { op: rec.op, name: rec.name };
+  }
   if (rec.op === "cap" && typeof rec.key === "string" && typeof rec.value === "string") {
     return { op: "cap", key: rec.key, value: rec.value };
   }
   if (rec.op === "get" && typeof rec.key === "string") {
-    return { op: "get", key: rec.key };
+    return { op: "get", key: rec.key, ...name };
   }
   if (
     rec.op === "put" &&
     typeof rec.key === "string" &&
     typeof rec.value === "string"
   ) {
-    return { op: "put", key: rec.key, value: rec.value };
+    return { op: "put", key: rec.key, value: rec.value, ...name };
   }
   return null;
 }
@@ -306,8 +315,72 @@ function cdp(wsUrl: string, method: string, params: object): Promise<{ targetId?
   });
 }
 
-async function openTarget(wsUrl: string, url: string): Promise<void> {
-  if (!(await cdp(wsUrl, "Target.createTarget", { url })).targetId) throw new Error("devtools did not return a target id");
+async function openTarget(wsUrl: string, url: string): Promise<string> {
+  const { targetId } = await cdp(wsUrl, "Target.createTarget", { url });
+  if (!targetId) throw new Error("devtools did not return a target id");
+  return targetId;
+}
+
+/** A DevTools session on one page that stays open, so a frozen page stays frozen, and that keeps why the page was not restored from the back/forward cache. */
+class PageSession {
+  private id = 0;
+  private readonly waiting = new Map<number, (msg: { result?: unknown; error?: { message?: string } }) => void>();
+  readonly notRestored: string[] = [];
+
+  private constructor(private readonly ws: WebSocket) {
+    ws.addEventListener("message", (ev) => {
+      const msg = JSON.parse(String(ev.data)) as {
+        id?: number;
+        method?: string;
+        params?: { notRestoredExplanations?: { reason: string }[] };
+        result?: unknown;
+        error?: { message?: string };
+      };
+      if (msg.method === "Page.backForwardCacheNotUsed") {
+        for (const e of msg.params?.notRestoredExplanations ?? []) this.notRestored.push(e.reason);
+      }
+      if (msg.id !== undefined) this.waiting.get(msg.id)?.(msg);
+    });
+    ws.addEventListener("close", () => {
+      for (const settle of this.waiting.values()) settle({ error: { message: "devtools socket closed" } });
+      this.waiting.clear();
+    });
+  }
+
+  static async open(debugPort: number, targetId: string): Promise<PageSession> {
+    const list = (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()) as { id: string; webSocketDebuggerUrl: string }[];
+    const target = list.find((t) => t.id === targetId);
+    if (!target) throw new Error(`no target ${targetId}`);
+    const ws = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve());
+      ws.addEventListener("error", () => reject(new Error("devtools socket error")));
+    });
+    const session = new PageSession(ws);
+    await session.send("Page.enable");
+    return session;
+  }
+
+  send<T = Record<string, unknown>>(method: string, params: object = {}): Promise<T> {
+    const id = ++this.id;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        reject(new Error(`devtools ${method} timeout`));
+      }, 60_000);
+      this.waiting.set(id, (msg) => {
+        clearTimeout(timer);
+        this.waiting.delete(id);
+        if (msg.error) reject(new Error(msg.error.message ?? `devtools ${method} failed`));
+        else resolve(msg.result as T);
+      });
+      this.ws.send(JSON.stringify({ id, method, params }));
+    });
+  }
+
+  close(): void {
+    this.ws.close();
+  }
 }
 
 async function countProofTabs(debugPort: number): Promise<number> {
@@ -379,9 +452,89 @@ async function runOnce(options: RunOptions): Promise<number> {
     };
   });
 
+  /** The destroy scenario's holder tabs, by tag. */
+  const holders = new Map<string, { targetId: string; session?: PageSession }>();
+  const latches = new Map<string, { promise: Promise<void>; open: () => void }>();
+  const latch = (what: string) => {
+    let entry = latches.get(what);
+    if (!entry) {
+      let open!: () => void;
+      const promise = new Promise<void>((resolve) => (open = resolve));
+      entry = { promise, open };
+      latches.set(what, entry);
+    }
+    return entry;
+  };
+  const sessionOf = async (tag: string) => {
+    const entry = holders.get(tag);
+    if (!entry) throw new Error(`no tab ${tag}`);
+    entry.session ??= await PageSession.open(debugPort, entry.targetId);
+    return entry.session;
+  };
+  /** One DevTools step of the destroy scenario on the tab `tag`. */
+  const devtools = async (q: URLSearchParams): Promise<unknown> => {
+    const op = q.get("op");
+    const tag = q.get("tag") ?? "";
+    if (op === "open") {
+      const url = `http://127.0.0.1:${port}/proof/two-tab.html?${new URLSearchParams({ role: "holder", tag, db: q.get("db") ?? "" })}`;
+      holders.set(tag, { targetId: await openTarget(wsUrl!, url) });
+      await Promise.race([latch(tag).promise, sleep(30_000).then(() => Promise.reject(new Error(`tab ${tag} did not get ready`)))]);
+      return "ready";
+    }
+    const page = await sessionOf(tag);
+    switch (op) {
+      case "eval": {
+        const r = await page.send<{ result?: { value?: unknown }; exceptionDetails?: { exception?: { description?: string } } }>("Runtime.evaluate", {
+          expression: q.get("expr"),
+          awaitPromise: true,
+          returnByValue: true,
+        });
+        if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? "evaluate failed");
+        return r.result?.value ?? null;
+      }
+      case "crash":
+        // The renderer dies before it answers.
+        void page.send("Page.crash").catch(() => undefined);
+        await sleep(500);
+        return "crashed";
+      case "freeze":
+      case "resume":
+        await page.send("Page.setWebLifecycleState", { state: op === "freeze" ? "frozen" : "active" });
+        return op;
+      case "away":
+        await page.send("Page.navigate", { url: `http://127.0.0.1:${port}/proof/two-tab.html?role=idle` });
+        await sleep(1_500);
+        return "away";
+      case "back": {
+        const { currentIndex, entries } = await page.send<{ currentIndex: number; entries: { id: number }[] }>("Page.getNavigationHistory");
+        await page.send("Page.navigateToHistoryEntry", { entryId: entries[currentIndex - 1]!.id });
+        await sleep(1_500);
+        return "back";
+      }
+      case "notRestored":
+        return page.notRestored;
+      default:
+        throw new Error(`unknown devtools op ${op}`);
+    }
+  };
+  let wsUrl: string | undefined;
+
   const server = http.createServer(async (req, res) => {
     const urlPath = (req.url ?? "/").split("?")[0] ?? "/";
     try {
+      if (req.method === "POST" && urlPath === "/signal") {
+        latch(new URL(req.url!, "http://x").searchParams.get("what") ?? "").open();
+        json(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === "POST" && urlPath === "/cdp") {
+        try {
+          json(res, 200, { value: await devtools(new URL(req.url!, "http://x").searchParams) });
+        } catch (err) {
+          json(res, 200, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
       if (req.method === "POST" && urlPath === "/two-tab-results") {
         resolveResults(await readBody(req));
         json(res, 200, { ok: true });
@@ -459,7 +612,8 @@ async function runOnce(options: RunOptions): Promise<number> {
       }
       res.writeHead(200, {
         "content-type": contentType(filePath),
-        "cache-control": "no-store",
+        // The profile is new on each run, so nothing stale is cached. "no-store" keeps a page out of the back/forward cache.
+        "cache-control": options.destroy ? "no-cache" : "no-store",
       });
       res.end(body);
     });
@@ -480,6 +634,7 @@ async function runOnce(options: RunOptions): Promise<number> {
   if (options.nobc) query.set("nobc", "1");
   if (options.pressure) query.set("scenario", "pressure");
   if (options.quota) query.set("scenario", "quota");
+  if (options.destroy) query.set("scenario", "destroy");
   if (options.local) query.set("local", "1");
   else query.set("role", "a");
   const tabA = `http://127.0.0.1:${port}/proof/two-tab.html?${query}`;
@@ -506,11 +661,11 @@ async function runOnce(options: RunOptions): Promise<number> {
   chrome.stdout?.on("data", (chunk: Buffer) => {
     if (process.env.TWO_TAB_VERBOSE) process.stdout.write(chunk);
   });
-  const timeoutMs = 45_000;
+  const timeoutMs = options.destroy ? 150_000 : 45_000;
   let exitCode = 0;
   try {
-    const wsUrl = await waitForDebugger(debugPort);
-    if (!options.local) await openTarget(wsUrl, tabB);
+    wsUrl = await waitForDebugger(debugPort);
+    if (!options.local && !options.destroy) await openTarget(wsUrl, tabB);
     const raw = await Promise.race([
       resultsPromise,
       sleep(timeoutMs).then(() => {
@@ -532,8 +687,11 @@ async function runOnce(options: RunOptions): Promise<number> {
     if (parsed.error) {
       console.error(parsed.error);
       exitCode = 1;
-    } else if (!parsed.log?.includes(options.quota ? "quota ok" : options.pressure ? "pressure ok" : "two-tab ok")) {
+    } else if (!parsed.log?.includes(options.destroy ? "destroy ok" : options.quota ? "quota ok" : options.pressure ? "pressure ok" : "two-tab ok")) {
       console.error("missing the ok line");
+      exitCode = 1;
+    } else if (!options.quota && !options.pressure && !options.destroy && !parsed.log.includes("two-databases ok")) {
+      console.error("missing the two-databases ok line");
       exitCode = 1;
     } else if (!options.local && !parsed.log.includes("mode=SharedWorker")) {
       console.error("missing SharedWorker mode");
@@ -546,6 +704,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     console.error(err instanceof Error ? err.message : err);
     exitCode = 1;
   } finally {
+    for (const { session } of holders.values()) session?.close();
     killChrome(chrome);
     chrome.stdout?.destroy();
     chrome.stderr?.destroy();
@@ -567,7 +726,13 @@ async function main(): Promise<number> {
     console.error("TWO_TAB_REPEAT must be a positive integer");
     return 1;
   }
-  const options = { local: flag("TWO_TAB_LOCAL"), nobc: flag("TWO_TAB_NOBC"), pressure: flag("TWO_TAB_PRESSURE"), quota: flag("TWO_TAB_QUOTA") };
+  const options = {
+    local: flag("TWO_TAB_LOCAL"),
+    nobc: flag("TWO_TAB_NOBC"),
+    pressure: flag("TWO_TAB_PRESSURE"),
+    quota: flag("TWO_TAB_QUOTA"),
+    destroy: flag("TWO_TAB_DESTROY"),
+  };
   for (let i = 0; i < repeat; i += 1) {
     if (repeat > 1) console.log(`run ${i + 1}/${repeat}`);
     const code = await runOnce(options);

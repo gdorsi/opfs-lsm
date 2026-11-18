@@ -2,7 +2,7 @@
 import { useData } from "vitepress";
 import { computed, markRaw, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { createPlayhead } from "../../stageshow/playhead.ts";
-import { SIZES, STILLS, type SceneName } from "../../stageshow/sizes.ts";
+import { SIZES, type SceneName } from "../../stageshow/sizes.ts";
 import { CHAPTERS, FIGURES } from "./figures.ts";
 import PlayerBar from "./PlayerBar.vue";
 
@@ -12,12 +12,11 @@ import PlayerBar from "./PlayerBar.vue";
  */
 /**
  * `full`: the illustration is as wide as the page, not one column of a claim.
- * `label`: what a screen reader reads, by default the one in `FIGURES`.
  * An illustration with an entry in `CHAPTERS` plays with a player: pause and a timeline of the chapters on the
  * stage's bottom edge, and the playing chapter's title and detail under them. They are page elements, because the
  * stage is one `role="img"` and nothing inside it is reachable.
  */
-const props = defineProps<{ name: SceneName; label?: string; data?: Record<string, unknown>; full?: boolean }>();
+const props = defineProps<{ name: SceneName; full?: boolean }>();
 
 const { isDark } = useData();
 const host = ref<HTMLElement>();
@@ -61,7 +60,6 @@ const onMotion = () => (still.value = !!motion?.matches);
 
 const render = () =>
   scene?.render({
-    ...props.data,
     theme: isDark.value ? "dark" : "light",
     run: run.value,
     ...(chapters.value && { jump: jump.value, playhead, onChapter }),
@@ -78,8 +76,7 @@ onMounted(async () => {
   scene = mount(host.value, props.name);
   render();
 });
-// A page that passes new data (the use cases picking a case) redraws the scene in place.
-watch([isDark, run, jump, () => props.data], render, { deep: true });
+watch([isDark, run, jump], render);
 onBeforeUnmount(() => {
   motion?.removeEventListener("change", onMotion);
   scene?.unmount();
@@ -89,7 +86,7 @@ onBeforeUnmount(() => {
 <template>
   <figure v-if="chapters" class="illustration player" :class="{ full }" :style="vars">
     <div class="player-main">
-      <div ref="host" class="illustration-stage" role="img" :aria-label="label ?? FIGURES[name]" />
+      <div ref="host" class="illustration-stage" role="img" :aria-label="FIGURES[name]" />
       <PlayerBar
         :chapters="chapters"
         :playhead="playhead"
@@ -117,7 +114,7 @@ onBeforeUnmount(() => {
     </div>
   </figure>
   <figure v-else class="illustration" :class="{ full }">
-    <div ref="host" class="illustration-stage" role="img" :aria-label="label ?? FIGURES[name]" :style="vars" />
-    <button v-if="!STILLS.has(name)" class="illustration-replay" type="button" @click="run++">Replay</button>
+    <div ref="host" class="illustration-stage" role="img" :aria-label="FIGURES[name]" :style="vars" />
+    <button class="illustration-replay" type="button" @click="run++">Replay</button>
   </figure>
 </template>

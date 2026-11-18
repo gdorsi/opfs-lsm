@@ -5,8 +5,8 @@ navbar: false
 intro:
   title: Fast local storage for your web app
   menu:
-    - text: Use cases
-      link: /#use-cases
+    - text: Adapters
+      link: /#adapters
     - text: Under the hood
       link: /#under-the-hood
     - text: Benchmarks
@@ -19,64 +19,48 @@ intro:
     title: Still under heavy development
     body: We want opfs-lsm to be the building block for the best UX in web apps, and we are still ironing out the fundamentals. Storage is fault-tolerant and heavily tested, so try it, and tell us what you find.
     link: https://github.com/gdorsi/opfs-lsm/issues
-fits:
-  - case: Offline-first apps
-    detail: The whole dataset lives in the browser, and the UI queries it there
-    name: TanStack DB
-    stores: every row
-    adapters:
-      - name: TanStack DB
-        library: TanStack DB collections
-        package: "@opfs-lsm/tanstack-db"
-        slot: tanstack-db
-        guide: /tanstack-db/
-        example:
-          name: LinearLite
-          link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-tanstackdb
-  - case: A cache of server data
-    detail: What the app has fetched, plus the mutations made while offline
-    name: fate
-    stores: cached records and queued mutations
-    adapters:
-      - name: fate
-        library: fate client
-        package: "@opfs-lsm/fate"
-        slot: fate
-        guide: /fate/
-        example:
-          name: LinearLite on fate
-          link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-fate
-  - case: Collaborative documents
-    detail: Persist your CRDT locally, so it is available offline and loads faster
-    name: Yjs or Automerge
-    stores: document updates
-    adapters:
-      - name: Yjs
-        library: Y.Doc
-        package: "@opfs-lsm/yjs"
-        slot: yjs
-        guide: /yjs/
-        example:
-          name: Whiteboard
-          link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/whiteboard-yjs
-      - name: Automerge
-        library: automerge-repo
-        package: "@opfs-lsm/automerge"
-        slot: automerge
-        guide: /automerge/
-        example:
-          name: Notes
-          link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/notes-manager-automerge
-  - case: Your own sync engine
-    detail: kv is a faster alternative to IndexedDB with a better API, to make your sync engine load faster
-    name: kv
-    stores: your keys and bytes
-    adapters:
-      - name: kv
-        library: your sync engine
-        package: "@opfs-lsm/kv"
-        slot: kv
-        guide: /kv/
+adapters:
+  - name: TanStack DB
+    detail: Live queries over collections, with the whole dataset in the browser.
+    replaces: indexedDBCollectionOptions
+    bench: "TanStack DB: cold load of 91,000 rows"
+    slot: tanstack-db
+    guide: /tanstack-db/
+    example:
+      name: LinearLite
+      link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-tanstackdb
+  - name: fate
+    detail: A cache of what the app has fetched, plus the mutations made while offline.
+    replaces: "@nkzw/fate-indexeddb"
+    bench: "fate: cold load of 100 lists"
+    slot: fate
+    guide: /fate/
+    example:
+      name: LinearLite on fate
+      link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-fate
+  - name: Automerge
+    detail: Documents that merge edits from every device, saved in the browser so they open offline.
+    replaces: IndexedDBStorageAdapter
+    bench: "Automerge: cold load of 500 notes"
+    slot: automerge
+    guide: /automerge/
+    example:
+      name: Notes
+      link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/notes-manager-automerge
+  - name: Yjs
+    detail: Shared text and drawings, saved in the browser so they open offline and load faster.
+    replaces: y-indexeddb
+    bench: "Yjs: cold load of 500 notes"
+    slot: yjs
+    guide: /yjs/
+    example:
+      name: Whiteboard
+      link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/whiteboard-yjs
+  - name: Build your own
+    detail: kv is an ordered key-value store shared by every tab. Build your own adapter or sync engine on it.
+    bench: Random point reads
+    slot: kv
+    guide: /kv/
 bench:
   - title: Against IndexedDB
     theirs: IndexedDB
@@ -192,9 +176,11 @@ demo:
   count: 100,000
 ---
 
-## Use cases
+## Adapters
 
-<UseCases :cases="$frontmatter.fits">
+Keep your library's API. Its adapter stores the data in opfs-lsm instead of IndexedDB.
+
+<Adapters :adapters="$frontmatter.adapters" :charts="$frontmatter.bench">
 <template v-slot:tanstack-db>
 
 ```sh
@@ -204,12 +190,11 @@ pnpm add @opfs-lsm/tanstack-db @opfs-lsm/docstore @opfs-lsm/kv
 ```ts
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 
-const kv = await openDb({ name: "app" });
-const store = await openDocStore(kv, schema);
+const kv = await openDb({ name: "app" }); // [!code ++]
+const store = await openDocStore(kv, schema); // [!code ++]
 const todos = createCollection(
-  docstoreCollectionOptions({
-    collection: store.collection("todos"),
-  }),
+  indexedDBCollectionOptions({ db, name: "todos", getKey }), // [!code --]
+  docstoreCollectionOptions({ collection: store.collection("todos") }), // [!code ++]
 );
 ```
 
@@ -217,34 +202,18 @@ const todos = createCollection(
 <template v-slot:fate>
 
 ```sh
-pnpm add @opfs-lsm/fate @opfs-lsm/kv @nkzw/fate
+pnpm add @opfs-lsm/fate @opfs-lsm/kv
 ```
 
 ```ts
 import { kvStorage } from "@opfs-lsm/fate";
 
-const db = await openDb({ name: "app" });
+const db = await openDb({ name: "app" }); // [!code ++]
 const persistence = createPersistence({
   key: "acct:1",
-  storage: kvStorage(db),
+  storage: createIndexedDBStorage(), // [!code --]
+  storage: kvStorage(db), // [!code ++]
 });
-const client = createClient({ persistence, roots, transport, types });
-```
-
-</template>
-<template v-slot:yjs>
-
-```sh
-pnpm add @opfs-lsm/yjs @opfs-lsm/kv
-```
-
-```ts
-import { KvPersistence } from "@opfs-lsm/yjs";
-
-const db = await openDb({ name: "notes" });
-const doc = new Y.Doc();
-const persistence = new KvPersistence(db, "note-1", doc);
-await persistence.whenSynced;
 ```
 
 </template>
@@ -257,8 +226,28 @@ pnpm add @opfs-lsm/automerge @opfs-lsm/kv
 ```ts
 import { kvStorage } from "@opfs-lsm/automerge";
 
-const db = await openDb({ name: "notes" });
-const repo = new Repo({ storage: kvStorage(db) });
+const db = await openDb({ name: "notes" }); // [!code ++]
+const repo = new Repo({
+  storage: new IndexedDBStorageAdapter(), // [!code --]
+  storage: kvStorage(db), // [!code ++]
+});
+```
+
+</template>
+<template v-slot:yjs>
+
+```sh
+pnpm add @opfs-lsm/yjs @opfs-lsm/kv
+```
+
+```ts
+import { KvPersistence } from "@opfs-lsm/yjs";
+
+const db = await openDb({ name: "notes" }); // [!code ++]
+const doc = new Y.Doc();
+const persistence = new IndexeddbPersistence("note-1", doc); // [!code --]
+const persistence = new KvPersistence(db, "note-1", doc); // [!code ++]
+await persistence.whenSynced;
 ```
 
 </template>
@@ -281,7 +270,7 @@ for await (const { key, value } of db.range({ limit: 50 })) {
 ```
 
 </template>
-</UseCases>
+</Adapters>
 
 ## What kv gives you
 
