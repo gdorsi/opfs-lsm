@@ -5,7 +5,8 @@ during every measurement, and the same build opened in 3.4 to 6.8 ms from one ru
 The comparisons below rotate their variants inside one run and report paired differences.
 
 Status: five small changes are implemented, and on 2026-11-18 the manifest copy and an open whose
-steps overlap ([below](#2026-11-18-the-manifest-copy-and-an-open-whose-steps-overlap)). Reading every run's layout at open is not.
+steps overlap ([below](#2026-11-18-the-manifest-copy-and-an-open-whose-steps-overlap)), and a
+flush of a quiet database ([below](#2026-11-18-a-wal-tail-at-open-and-the-idle-flush)). Reading every run's layout at open is not.
 
 ## Question
 
@@ -145,3 +146,39 @@ read. It lets the run opens start one step earlier.
   later session, which would replace every lookup with one `getFile` per run. Whether Firefox
   and Safari keep such a handle good after the folder is removed and made again was not checked.
 - Firefox and Safari.
+
+## 2026-11-18: a WAL tail at open, and the idle flush
+
+Chrome 157 headless, macOS arm64, Apple M5 Max, 12 fresh tabs per row.
+
+**Question.** A tab replays the unflushed WAL before `openDb` resolves, and the host flushed only
+at `maxWalBytes`, 1 MiB. What does a tail cost a fresh tab, and what does flushing it cost the
+reads that follow?
+
+**Probe.** A temporary bench workload: fill 100,000 entries and settle; overwrite 6,000 of them
+in batches of 1,000, which leaves 0.66 MiB of ops in the WAL; then open in a fresh tab after the
+SharedWorker has exited, read one overwritten key, 20 more, and one key that was not overwritten.
+The same open ran three times: right after the burst, after 3 s with a tab open and no write, and
+after `settle`. p50:
+
+| The fresh tab finds | `openDb` | First recent `get` | Each of 20 more recent `get`s | First other `get` |
+|---|---:|---:|---:|---:|
+| the burst in the WAL | 7.55 ms | 0.10 ms | under 0.01 ms | 1.82 ms |
+| the burst flushed by the idle flush | 3.90 ms | 1.25 ms | 0.18 ms | 0.72 ms |
+| the burst flushed and compacted (`settle`) | 3.78 ms | 1.18 ms | 0.19 ms | 0.66 ms |
+
+**What it shows.**
+
+- The tail costs the open 3.7 ms, about 0.6 ms per 1,000 rows of 116 bytes.
+- A flushed row is read from a run page, not from memory. The first read pays 1.2 ms, the file's
+  first page read, and each further key on a page not yet read pays 0.18 ms.
+- From `openDb` to the first recent row, the flush wins 2.5 ms (7.65 ms against 5.15 ms). A tab
+  that reads 20 scattered recent rows one by one ends level (9.8 ms against 9.2 ms for the phase).
+
+**Choice.** The host flushes a database after 2 s with no row, when at least an eighth of
+`maxWalBytes` waits. At an eighth, 128 KiB by default, the tail costs an open about 0.7 ms by the
+rate above, which is what the first read of the flushed run costs: below it a flush saves nothing
+a first screen would see, and a slow typist would get a run per pause.
+
+**Not measured.** The cost of the extra L0 runs to compaction over a long session, and a tail of
+many small records, where the replay costs more per byte.

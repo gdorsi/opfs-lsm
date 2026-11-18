@@ -21,6 +21,18 @@ export function compactionMemoryOf(asked: number | undefined): number {
 export const DEFAULT_MAX_WAL_BYTES = MiB;
 
 /**
+ * A database with no row from any tab for this long is flushed, when at
+ * least `maxWalBytes / IDLE_FLUSH_SHARE` wait. A fresh tab replays the tail
+ * before `openDb` resolves, and reads a flushed row from a run page instead
+ * of memory: below the share, the open saves less than that first page costs.
+ */
+export const IDLE_FLUSH_MS = 2000;
+export const IDLE_FLUSH_SHARE = 8;
+
+/** Figures a test replaces: the budget's, and the idle wait. */
+export type HostOverrides = Partial<HostBudget> & { readonly idleFlushMs?: number };
+
+/**
  * Below this a step would merge fewer than 18 sources, and a stop at one
  * less would hold writes after 17 flush runs.
  */

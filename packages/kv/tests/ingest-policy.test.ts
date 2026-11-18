@@ -460,4 +460,35 @@ describe("ingest policy", () => {
     expect(errors).toHaveBeenCalledTimes(1);
     await db.close();
   });
+
+  it("flushes a quiet database once an eighth of maxWalBytes waits", async () => {
+    const fs = new MemoryFs();
+    const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);
+    await db.put(utf("a"), new Uint8Array(120));
+    await flushed(fs);
+    expect((await loadLatestGeneration(fs))?.through).toBe(1);
+    await db.close();
+  });
+
+  it("leaves a quiet database alone below that share", async () => {
+    const fs = new MemoryFs();
+    const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);
+    await db.put(utf("a"), new Uint8Array(50));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    await db.close();
+  });
+
+  it("flushes the tail an open finds, once the database is quiet", async () => {
+    const fs = new MemoryFs();
+    const first = await open(new EngineHost(() => fs), fs, "a", 800);
+    await first.put(utf("a"), new Uint8Array(120));
+    await first.close();
+    opened.length = 0;
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "b", 800);
+    await flushed(fs);
+    expect(new Uint8Array((await db.get(utf("a")))!)).toHaveLength(120);
+    await db.close();
+  });
 });
