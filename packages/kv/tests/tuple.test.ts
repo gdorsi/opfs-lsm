@@ -109,6 +109,62 @@ describe("encodeTuple", () => {
     expect(hex(encodeTuple(["", "a\u0000b", "é"]))).toBe("05 00 05 61 00 ff 62 00 05 c3 a9 00");
   });
 
+  describe("a string field", () => {
+    /** The layout from its definition: the tag, the UTF-8 with each U+0000 written as 00 FF, then 00. */
+    function stringField(s: string): number[] {
+      const out = [0x05];
+      for (const b of utf8.encode(s)) out.push(b, ...(b === 0 ? [0xff] : []));
+      out.push(0x00);
+      return out;
+    }
+
+    const asciiUnit = fc.oneof({ weight: 12, arbitrary: fc.integer({ min: 0x01, max: 0x7f }).map((c) => String.fromCharCode(c)) }, { weight: 1, arbitrary: fc.constant("\0") });
+    const otherUnit = fc.constantFrom("\u0080", "\u00ff", "é", "\u07ff", "日", "\ufeff", "\u{ffff}", "😀", "\u{10ffff}");
+    const lengthAround = fc.constantFrom(0, 1, 2, 62, 63, 64, 65, 66, 100, 300);
+
+    /** Strings of ASCII only, ASCII with one other unit anywhere, and mixes, over the lengths where the encoder changes route. */
+    const stringArb = fc.oneof(
+      fc.string({ unit: asciiUnit, maxLength: 300 }),
+      fc.tuple(fc.string({ unit: asciiUnit, maxLength: 130 }), otherUnit, fc.string({ unit: asciiUnit, maxLength: 130 })).map(([a, c, b]) => a + c + b),
+      fc.string({ unit: fc.oneof(asciiUnit, otherUnit), maxLength: 100 }),
+      fc.tuple(lengthAround, fc.integer({ min: 0, max: 1 })).map(([n, nul]) => (nul ? "\0" : "x").repeat(n)),
+    );
+
+    it("is the tag, the UTF-8 with each U+0000 as 00 FF, and 00, whatever the length and the alphabet", () => {
+      fc.assert(
+        fc.property(stringArb, prefixArb, tailArb, (s, prefix, tail) => {
+          expect(Array.from(encodeTuple([s], prefix, tail))).toEqual([...prefix, ...stringField(s), ...tail]);
+        }),
+        { numRuns: RUNS * 10 },
+      );
+    });
+
+    it("is the same after a long string grew the buffer and after a string that was rejected", () => {
+      const long = "a\0".repeat(400);
+      expect(Array.from(encodeTuple([long]))).toEqual(stringField(long));
+      expect(() => encodeTuple(["ab", "x".repeat(70) + "\ud800"])).toThrow(RangeError);
+      expect(Array.from(encodeTuple(["a\0b", "ab"]))).toEqual([...stringField("a\0b"), ...stringField("ab")]);
+    });
+
+    it("makes the start of stringPrefixBounds the tag and the escaped string, with no terminator", () => {
+      fc.assert(
+        fc.property(stringArb, prefixArb, (s, prefix) => {
+          const bounds = stringPrefixBounds(prefix, s);
+          expect(Array.from(bounds.start)).toEqual([...prefix, ...stringField(s).slice(0, -1)]);
+        }),
+        { numRuns: RUNS * 4 },
+      );
+    });
+
+    it.each([0, 1, 62, 63, 64, 65, 100])("rejects a lone surrogate after %i ASCII units", (n) => {
+      for (const lone of ["\ud800", "\udfff"]) {
+        const s = "a".repeat(n) + lone;
+        expect(() => encodeTuple([s])).toThrow(RangeError);
+        expect(() => stringPrefixBounds(new Uint8Array(0), s)).toThrow(RangeError);
+      }
+    });
+  });
+
   it("puts the prefix before the fields and the tail after them", () => {
     expect(hex(encodeTuple([true, "a"], Uint8Array.of(0x64, 0x00), Uint8Array.of(0x78)))).toBe("64 00 03 05 61 00 78");
     expect(encodeTuple([])).toEqual(new Uint8Array(0));

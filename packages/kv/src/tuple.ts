@@ -30,8 +30,34 @@ function write(bytes: Uint8Array): void {
   len += bytes.length;
 }
 
+/** Past this many UTF-16 units TextEncoder beats the loop in `writeAscii`. */
+const ASCII_LOOP_MAX = 64;
+
+/**
+ * Copies a short string of ASCII only, nearly every string, unit by unit with
+ * each NUL as 00 FF. That beats the call into TextEncoder and needs no
+ * well-formedness check, since ASCII holds no surrogate. Any other string
+ * writes nothing and returns false.
+ */
+function writeAscii(s: string): boolean {
+  const n = s.length;
+  if (n > ASCII_LOOP_MAX) return false;
+  room(n * 2);
+  const out = buf;
+  let w = len;
+  for (let i = 0; i < n; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0x80) return false;
+    out[w++] = c;
+    if (c === 0) out[w++] = 0xff;
+  }
+  len = w;
+  return true;
+}
+
 /** Encodes straight into `buf` (a UTF-16 unit is at most 3 UTF-8 bytes), then makes room for the escapes, which are rare. */
 function writeEscaped(s: string): void {
+  if (writeAscii(s)) return;
   if (!s.isWellFormed()) throw new RangeError("a tuple string must not hold a lone surrogate");
   room(s.length * 3);
   const start = len;
