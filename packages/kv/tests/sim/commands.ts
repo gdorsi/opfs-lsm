@@ -3,8 +3,10 @@ import { expect } from "vitest";
 import type { Db, Entry } from "../../src/index.js";
 import {
   openHarnessDb,
+  destroyHarnessDb,
   ingest,
   type AsyncFs,
+  type RemovableFs,
   EngineHost,
   MemoryFs,
   createLocalIngestClient,
@@ -55,7 +57,7 @@ export class Sut {
   constructor(
     readonly name: string,
     private readonly maxWalBytes: number,
-    readonly fs: AsyncFs = new MemoryFs(),
+    readonly fs: RemovableFs = new MemoryFs(),
   ) {}
 
   /** The host ingests on its own once the WAL passes `maxWalBytes`, racing every command. */
@@ -466,6 +468,23 @@ class ReopenCmd implements Cmd {
 }
 
 /**
+ * `destroyDb`, then open again. It takes one seq, as a range delete of every
+ * key: the next open starts one past its head. A held compaction is let go
+ * first, since the removal waits for the compaction lock.
+ */
+class RemoveCmd implements Cmd {
+  check = () => true;
+  async run(m: Model, r: Sut): Promise<void> {
+    r.release();
+    await destroyHarnessDb({ name: r.name, fs: r.fs, ingest: createLocalIngestClient(r.host) });
+    m.oracle.append([{ type: "deleteRange", start: new Uint8Array(0) }]);
+    await r.open();
+    m.reader.synced(m.oracle.head);
+  }
+  toString = () => "remove";
+}
+
+/**
  * Quiesce, then run the integrity check and compare the on-disk state with
  * the oracle. With background ingest on, only closing the handle stops the
  * host from starting another one, so the check closes and reopens. Once
@@ -546,6 +565,7 @@ export const commandsArb = (replayPath?: string, maxCommands = 80) => fc.command
     fc.constant(new HoldCompactionCmd()),
     fc.constant(new CompactCmd()),
     fc.constant(new ReopenCmd()),
+    fc.constant(new RemoveCmd()),
     fc.constant(new CheckCmd()),
   ],
   { maxCommands, size: "max", ...(replayPath ? { replayPath } : {}) },

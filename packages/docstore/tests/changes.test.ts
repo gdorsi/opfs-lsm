@@ -293,7 +293,7 @@ describe("changes", () => {
     await settled(() => expect(live.events).toHaveLength(2));
     expect(summary(stopped.events)).toEqual(["+a"]);
     await kv.close();
-    expect(live.events.at(-1)).toEqual({ kind: "closed" });
+    expect(live.events.at(-1)).toEqual({ kind: "closed", reason: "close" });
   });
 
   it("keeps the other listeners and the store working when a listener throws", async () => {

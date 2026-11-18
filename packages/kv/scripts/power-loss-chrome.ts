@@ -4,6 +4,7 @@
  * and that a write acked after recovery is read back.
  *
  *   pnpm --filter @opfs-lsm/kv power-loss-chrome [--verbose]
+ *   pnpm --filter @opfs-lsm/kv power-loss-chrome --destroy [--verbose]
  *
  * This is the state a power loss leaves when OPFS reached the disk and the
  * newest IndexedDB commits did not (design.md, "Recovery"). `kill-chrome`
@@ -15,6 +16,11 @@
  *
  * It is not a power cut: the copy is whole, and OPFS loses nothing. The
  * crash simulator and `formal:power-loss` cover every pair of prefixes.
+ *
+ * With `--destroy`, OPFS is the store that goes back: the OPFS directory of
+ * the profile is copied before `destroyDb`, and put back after it, while
+ * IndexedDB keeps the deletion of the WAL database and the destroyed row.
+ * The removed rows must not come back (design.md, "Removing").
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -26,11 +32,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const verbose = process.argv.includes("--verbose");
+const destroy = process.argv.includes("--destroy");
 const DB = "power-loss";
 
 /** The page: kv from `dist`, plus a raw read of the WAL database that never creates it. */
 const PAGE = `<!doctype html><script type="module">
-import { openDb } from "/src/index.js";
+import { destroyDb, openDb } from "/src/index.js";
 import { settle } from "/src/testing.js";
 const enc = (s) => new TextEncoder().encode(s);
 const dec = (b) => (b ? new TextDecoder().decode(b) : null);
@@ -41,6 +48,25 @@ window.kv = {
   async put(from, to) { for (let i = from; i <= to; i++) await db.put(enc("k" + i), enc("v" + i)); },
   async get(from, to) { const out = []; for (let i = from; i <= to; i++) out.push(dec(await db.get(enc("k" + i)))); return out; },
   async flush() { await settle(db); },
+  async destroy() { await destroyDb(${JSON.stringify(DB)}); },
+  async folder() {
+    try {
+      await (await (await navigator.storage.getDirectory()).getDirectoryHandle("opfs-lsm")).getDirectoryHandle(${JSON.stringify(DB)});
+      return true;
+    } catch (err) {
+      if (err.name === "NotFoundError") return false;
+      throw err;
+    }
+  },
+  async row() {
+    if (!(await indexedDB.databases()).some((d) => d.name === "opfs-lsm-destroyed")) return null;
+    const idb = await req(indexedDB.open("opfs-lsm-destroyed"));
+    try {
+      return (await req(idb.transaction("destroyed").objectStore("destroyed").get(${JSON.stringify(DB)}))) ?? null;
+    } finally {
+      idb.close();
+    }
+  },
   async raw() {
     const name = "opfs-lsm-wal/" + ${JSON.stringify(DB)};
     if (!(await indexedDB.databases()).some((d) => d.name === name)) return null;
@@ -204,16 +230,40 @@ class Run {
   private session: Session | undefined;
   private readonly idbDir: string;
   private readonly copy: string;
+  private readonly opfsDir: string;
+  private readonly opfsCopy: string;
   /** Keys put so far: k1..kWritten. */
   written = 0;
 
   constructor(
     private readonly profile: string,
     private readonly origin: string,
-    private readonly note: (line: string) => void,
+    readonly note: (line: string) => void,
   ) {
     this.idbDir = path.join(profile, "Default", "IndexedDB");
     this.copy = path.join(profile, "indexeddb-copy");
+    this.opfsDir = path.join(profile, "Default", "File System");
+    this.opfsCopy = path.join(profile, "opfs-copy");
+  }
+
+  evaluate<T>(expression: string): Promise<T> {
+    return this.tab.evaluate<T>(expression);
+  }
+
+  /** Quit, copy the OPFS directory, relaunch: the copy is whole. */
+  async copyOpfs(): Promise<void> {
+    await this.quit();
+    fs.rmSync(this.opfsCopy, { recursive: true, force: true });
+    fs.cpSync(this.opfsDir, this.opfsCopy, { recursive: true });
+    await this.launch();
+  }
+
+  /** Quit, put OPFS back to the copy while IndexedDB keeps what it has, relaunch. */
+  async loseOpfsSince(): Promise<void> {
+    await this.quit();
+    fs.rmSync(this.opfsDir, { recursive: true, force: true });
+    fs.cpSync(this.opfsCopy, this.opfsDir, { recursive: true });
+    await this.launch();
   }
 
   private get tab(): Session {
@@ -284,14 +334,16 @@ class Run {
   }
 
   /**
-   * After a loss: open, read at least `atLeast` writes as a prefix, put one
-   * more key, and check that it took a seq past every seq in use and that
-   * it is read back, here and after a clean restart.
+   * After a loss: open, read at least `atLeast` writes as a prefix (and at
+   * most `atMost`), put one more key, and check that it took a seq past
+   * every seq in use and past `pastSeq`, and that it is read back, here and
+   * after a clean restart.
    */
-  async recoverAndWrite(atLeast: number): Promise<void> {
+  async recoverAndWrite(atLeast: number, { atMost = Infinity, pastSeq = 0 } = {}): Promise<void> {
     await this.open();
     const kept = await this.readPrefix();
     check(kept >= atLeast, `OPFS held ${atLeast} writes and the open reads ${kept}`);
+    check(kept <= atMost, `the open reads ${kept} writes, more than the ${atMost} expected`);
     // Writes the loss dropped are gone for good: number on from what was kept.
     this.written = kept;
     const before = await this.raw();
@@ -302,7 +354,7 @@ class Run {
     this.note(`  kept ${kept}, WAL before the put ${JSON.stringify(before)}, after ${JSON.stringify(after)}`);
     check(added.length === 1, `the put added ${added.length} WAL records`);
     const used = Math.max(before!.ingestedThrough, ...before!.keys);
-    check(added[0]! > used, `the put took seq ${added[0]}, at or below ${used}, a seq already in use`);
+    check(added[0]! > Math.max(used, pastSeq), `the put took seq ${added[0]}, at or below ${Math.max(used, pastSeq)}, a seq already in use`);
     check((await this.readPrefix()) === this.written, "the put is not read back in the tab that wrote it");
     await this.quit();
     await this.launch();
@@ -376,11 +428,35 @@ const scenarios: Scenario[] = [
   },
 ];
 
+const destroyScenarios: Scenario[] = [
+  {
+    name: "OPFS loses every remove of destroyDb, IndexedDB keeps the deletion and the row",
+    async run(r) {
+      await r.put(20);
+      await r.flush();
+      await r.put(5);
+      const old = await r.raw();
+      await r.copyOpfs();
+      await r.evaluate("kv.destroy()");
+      check((await r.raw()) === null && !(await r.evaluate<boolean>("kv.folder()")), "destroyDb left a store");
+      await r.loseOpfsSince();
+      const row = await r.evaluate<{ head: number; top: number } | null>("kv.row()");
+      r.note(`  before destroyDb ${JSON.stringify(old)}, row ${JSON.stringify(row)}`);
+      check(await r.evaluate<boolean>("kv.folder()"), "the OPFS copy did not bring the folder back: the scenario tests nothing");
+      check((await r.raw()) === null && row !== null, `IndexedDB did not keep the deletion and the row: ${JSON.stringify(row)}`);
+      // Every one of the 25 removed keys must read empty, and the next put takes a seq past them.
+      await r.recoverAndWrite(0, { atMost: 0, pastSeq: Math.max(old!.ingestedThrough, ...old!.keys) });
+      console.log("destroyed rows stayed gone");
+    },
+  },
+];
+
 async function main(): Promise<number> {
   const { server, origin } = await startServer();
   let failures = 0;
+  const chosen = destroy ? destroyScenarios : scenarios;
   try {
-    for (const scenario of scenarios) {
+    for (const scenario of chosen) {
       const profile = fs.mkdtempSync(path.join(os.tmpdir(), "opfs-power-loss-chrome-"));
       const notes: string[] = [];
       const run = new Run(profile, origin, (line) => notes.push(line));
@@ -403,7 +479,7 @@ async function main(): Promise<number> {
   } finally {
     server.close();
   }
-  console.log(failures === 0 ? `power-loss-chrome ok (${scenarios.length} scenarios)` : `power-loss-chrome FAILED (${failures} of ${scenarios.length})`);
+  console.log(failures === 0 ? `power-loss-chrome ok (${chosen.length} scenarios)` : `power-loss-chrome FAILED (${failures} of ${chosen.length})`);
   return failures === 0 ? 0 : 1;
 }
 

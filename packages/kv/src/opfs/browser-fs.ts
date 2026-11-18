@@ -1,4 +1,4 @@
-import type { AsyncFs, FileWriter, OpenFile, ReadFs } from "./async-fs.js";
+import type { AsyncFs, FileWriter, OpenFile, ReadFs, RemovableFs } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { runLock } from "../locks.js";
@@ -16,13 +16,15 @@ function splitPath(path: string): string[] {
  */
 class BrowserReadFs implements ReadFs {
   constructor(
-    private readonly root: FileSystemDirectoryHandle,
+    protected readonly root: FileSystemDirectoryHandle,
     protected readonly dbName: DbName,
   ) {}
 
   /**
-   * Directory handles by path. Nothing removes a directory, so a handle
-   * stays good, and a lookup costs a trip to the browser process.
+   * Directory handles by path. Only `destroyDb` removes a directory, after
+   * every handle on the database closed, and no host keeps a BrowserFs past
+   * one operation, so a handle stays good as long as it is used. A lookup
+   * costs a trip to the browser process.
    */
   private readonly dirs = new Map<string, Promise<FileSystemDirectoryHandle>>();
 
@@ -199,7 +201,7 @@ function isNotFound(err: unknown): boolean {
   );
 }
 
-/** Open (or create) `opfs-lsm/<name>/` under the origin private file system. */
+/** Open (or create) `opfs-lsm/<name>/` under the origin private file system. Only `openDb` creates it. */
 async function openIn<T>(
   name: string,
   adapter: new (root: FileSystemDirectoryHandle, dbName: DbName) => T,
@@ -213,5 +215,57 @@ async function openIn<T>(
 /** What a tab opens: the directory's read side. */
 export const openBrowserReadFs = (name: string): Promise<BrowserReadFs> => openIn(name, BrowserReadFs);
 
-/** What the host opens. */
+/** The full adapter, creating the folder as `openDb` does. Tests and proofs only: the host finds the folder with `findBrowserFs`. */
 export const openBrowserFs = (name: string): Promise<BrowserFs> => openIn(name, BrowserFs);
+
+/** `opfs-lsm/` and `opfs-lsm/<name>/`, or undefined when either does not exist. Creates nothing. */
+async function findFolder(dbName: DbName): Promise<[FileSystemDirectoryHandle, FileSystemDirectoryHandle] | undefined> {
+  try {
+    const lsm = await (await navigator.storage.getDirectory()).getDirectoryHandle("opfs-lsm");
+    return [lsm, await lsm.getDirectoryHandle(dbName)];
+  } catch (err) {
+    if (isNotFound(err)) return undefined;
+    throw err;
+  }
+}
+
+/**
+ * `opfs-lsm/<name>/` if it exists, else undefined. Creates nothing, not even
+ * `opfs-lsm/`. The SharedWorker resolves the folder with it at the start of
+ * every operation.
+ */
+export async function findBrowserFs(name: string): Promise<BrowserFs | undefined> {
+  const dbName: DbName = checkDbName(name);
+  const found = await findFolder(dbName);
+  return found && new BrowserFs(found[1], dbName);
+}
+
+async function ignoreNotFound(removal: Promise<void>): Promise<void> {
+  try {
+    await removal;
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+}
+
+/** `parent` is `opfs-lsm/`, so `removeFolder` can remove `root` itself. */
+class RemovableBrowserFs extends BrowserFs implements RemovableFs {
+  constructor(
+    private readonly parent: FileSystemDirectoryHandle,
+    root: FileSystemDirectoryHandle,
+    dbName: DbName,
+  ) {
+    super(root, dbName);
+  }
+
+  async removeFolder(): Promise<void> {
+    await ignoreNotFound(this.root.removeEntry("m", { recursive: true }));
+    await ignoreNotFound(this.parent.removeEntry(this.dbName, { recursive: true }));
+  }
+}
+
+/** The folder `destroyDb` removes, found as `findBrowserFs` finds it. */
+export async function findRemovableBrowserFs(dbName: DbName): Promise<RemovableFs | undefined> {
+  const found = await findFolder(dbName);
+  return found && new RemovableBrowserFs(found[0], found[1], dbName);
+}

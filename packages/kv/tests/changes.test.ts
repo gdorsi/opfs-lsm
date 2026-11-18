@@ -119,7 +119,7 @@ describe("changes()", () => {
     expect(seqs(events), "a flush announces nothing").toEqual([1, 2, 3, 4]);
 
     await db.close();
-    expect(events.at(-1)).toEqual({ kind: "closed" });
+    expect(events.at(-1)).toEqual({ kind: "closed", reason: "close" });
     expect(events.filter((e) => e.kind === "closed")).toHaveLength(1);
   });
 

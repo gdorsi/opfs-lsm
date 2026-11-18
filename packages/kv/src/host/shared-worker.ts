@@ -1,4 +1,4 @@
-import { openBrowserFs } from "../opfs/browser-fs.js";
+import { findBrowserFs } from "../opfs/browser-fs.js";
 import { EngineHost, attachEngineHostPort } from "./engine-host.js";
 
 /**
@@ -10,7 +10,7 @@ import { EngineHost, attachEngineHostPort } from "./engine-host.js";
 const scope = globalThis as unknown as {
   onconnect: ((ev: MessageEvent) => void) | null;
 };
-const host = new EngineHost((name) => openBrowserFs(name));
+const host = new EngineHost((name) => findBrowserFs(name));
 
 scope.onconnect = (ev: MessageEvent) => {
   const port = (ev as MessageEvent & { ports: MessagePort[] }).ports[0];

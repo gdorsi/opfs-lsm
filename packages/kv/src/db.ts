@@ -21,15 +21,16 @@ import {
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type Pressure } from "./host/protocol.js";
-import { layersChannel, pressureLock, webLocks } from "./locks.js";
+import { removeDatabase } from "./destroy.js";
+import { layersChannel, openLock, pressureLock, webLocks, withLock } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile } from "./recover.js";
 import { GENERATION_NONE, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
-import type { AsyncFs, OpenFile, ReadFs } from "./opfs/async-fs.js";
-import { openBrowserReadFs } from "./opfs/browser-fs.js";
+import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
+import { findRemovableBrowserFs, openBrowserReadFs } from "./opfs/browser-fs.js";
 import {
   loadGeneration,
   type RunMeta,
@@ -90,7 +91,7 @@ export type OpenOptions = {
    * storage quota for the origin. kv never removes a row for it: it asks
    * an `onPressure` handler to, and a write never waits for it. When tabs
    * differ, the host uses the smallest figure and honors `"quota"` too
-   * (design.md, "Size cap").
+   * (docs/size-cap.md).
    */
   readonly maxBytes?: number | "quota";
 };
@@ -239,12 +240,13 @@ export interface Db {
    * Delete every record of this database, in every tab. Seen from the log,
    * it is one write that deletes every key: writes acked before it are
    * gone, and writes after it land in the empty database. Every handle
-   * stays open; this one reads empty once it resolves, other tabs at their
-   * next `sync`, and each reports a `gap` change event. One IndexedDB
-   * transaction, on disk before the removes start, empties the database.
-   * Then the host removes every run file no tab still reads, and the rest
-   * once their tabs move on. Waits for a flush or compaction step already
-   * running. `destroyDb` does the same without opening the database.
+   * stays open, and so does the storage; this one reads empty once it
+   * resolves, other tabs at their next `sync`, and each reports a `gap`
+   * change event. One IndexedDB transaction, on disk before the removes
+   * start, empties the database. Then the host removes every run file no
+   * tab still reads, and the rest once their tabs move on. Waits for a
+   * flush or compaction step already running. `destroyDb` removes the
+   * database instead, and closes every handle on it.
    */
   dangerousDestroy(): Promise<void>;
 }
@@ -300,6 +302,7 @@ export async function openDb(options: OpenOptions): Promise<Db> {
 async function connect(
   name: DbName,
   backing: Backing,
+  onAskedToClose: () => void,
 ): Promise<{
   readonly fs: ReadFs;
   readonly ingest: IngestClient;
@@ -315,7 +318,7 @@ async function connect(
     );
   }
   // IndexedDB opens while OPFS does.
-  const walOpen = TabWal.open(name);
+  const walOpen = TabWal.open(name, onAskedToClose);
   walOpen.catch(() => undefined);
   try {
     const fs = await openBrowserReadFs(name);
@@ -336,24 +339,28 @@ async function connect(
 }
 
 /**
- * Delete every record of database `name` without opening it, so it works
- * when `openDb` throws `CorruptDatabaseError`. Open handles on it stay
- * open, as after `dangerousDestroy`.
+ * Remove database `name`: every handle on it, in every tab and this one,
+ * closes with a `closed` change event whose reason is "destroyed", then its
+ * rows, its OPFS folder and its IndexedDB database go. It does not open the
+ * database, so it also removes one that `openDb` refuses as corrupt. On a
+ * name with nothing stored it creates nothing and starts no SharedWorker.
+ * Once it resolves, no removed row comes back, even after a power loss.
+ * Waits for a flush or compaction step already running, and for every
+ * handle to close.
  */
 export async function destroyDb(name: string): Promise<void> {
   return destroyDbWith({ name });
 }
 
-/** `destroyDb` on a given backing. */
-export async function destroyDbWith(options: { readonly name: string } & Backing): Promise<void> {
+/** `destroyDb` on a given folder: with `fs`, that fs is the folder to remove. */
+export async function destroyDbWith(options: { readonly name: string; readonly fs?: RemovableFs | undefined }): Promise<void> {
   const name = checkDbName(options.name);
-  const { ingest, ownsIngestClient, walOpen } = await connect(name, options);
-  void walOpen?.then((w) => w.close(), () => undefined);
-  try {
-    await ingest.destroy(name);
-  } finally {
-    if (ownsIngestClient) ingest.close();
+  const fs = options.fs;
+  const opfs = typeof navigator !== "undefined" && typeof navigator.storage?.getDirectory === "function";
+  if (typeof indexedDB === "undefined" || (!fs && !opfs)) {
+    throw new StorageUnavailableError("destroyDb needs IndexedDB and navigator.storage.getDirectory");
   }
+  await removeDatabase(name, fs ? async () => fs : () => findRemovableBrowserFs(name));
 }
 
 /** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
@@ -365,14 +372,24 @@ export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   // Awaited last: a throw before that must not leave its rejection unhandled.
   engine.catch(() => undefined);
   const caps = memtableCaps(options.memtableBytes);
+  // Held until the open resolves, so `destroyDb` never meets a half-done open (design.md, "Removing").
+  return withLock(openLock(name), () => openStores(name, options, caps, engine), "shared");
+}
 
-  const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options);
+async function openStores(
+  name: DbName,
+  options: OpenWithOptions,
+  caps: MemtableCaps,
+  engine: Promise<unknown>,
+): Promise<Db> {
   // What the catch below closes: the Db once it exists, else the WAL and an owned port.
   let heldWal: TabWal | undefined;
   let heldDb: DbImpl | undefined;
+  const onAskedToClose = () => void heldDb?.closeFor("destroyed");
+  const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, onAskedToClose);
   try {
     const tabFs = options.wrapFs?.(fs) ?? fs;
-    const wal = await (walOpen ?? TabWal.open(name));
+    const wal = await (walOpen ?? TabWal.open(name, onAskedToClose));
     heldWal = wal;
     // Pair the WAL with a manifest before the first read or write. The
     // recorded manifest's runs are checked by the first sync, which loads them.
@@ -946,6 +963,9 @@ class DbImpl implements Db {
     this.retain(layers);
     try {
       return await (held ?? new ReadSet()).settle(read, first);
+    } catch (err) {
+      this.ensureOpen();
+      throw err;
     } finally {
       this.release(layers);
     }
@@ -1025,6 +1045,9 @@ class DbImpl implements Db {
     this.retain(layers);
     try {
       return await countLayers(this.mem.range(bounds), layers.levels, at, bounds, range);
+    } catch (err) {
+      this.ensureOpen();
+      throw err;
     } finally {
       this.release(layers);
     }
@@ -1041,6 +1064,9 @@ class DbImpl implements Db {
         this.ensureOpen();
         yield entry;
       }
+    } catch (err) {
+      this.ensureOpen();
+      throw err;
     } finally {
       this.release(layers);
     }
@@ -1059,6 +1085,7 @@ class DbImpl implements Db {
         this.retain(layers);
         return () => this.release(layers);
       },
+      () => this.ensureOpen(),
     );
     try {
       return await body(snap);
@@ -1147,10 +1174,20 @@ class DbImpl implements Db {
     await this.ingestClient.ingest(this.name, true);
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    return this.closeFor("close");
+  }
+
+  /**
+   * Close the handle, with `reason` in its `closed` event. "destroyed": the
+   * WAL connection was asked to close, by `destroyDb`'s fence or by the
+   * browser deleting the database. A read that fails afterwards rejects
+   * with `ClosedError`: the files may be gone.
+   */
+  async closeFor(reason: "close" | "destroyed"): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.emit({ kind: "closed" });
+    this.emit({ kind: "closed", reason });
     this.changeBus.clear();
     this.unlock?.();
     if (this.bus && this.onBusMessage) {

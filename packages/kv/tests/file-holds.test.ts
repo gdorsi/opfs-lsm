@@ -8,7 +8,7 @@ import {
   ingest,
 } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
-import { BrowserFs } from "../src/opfs/browser-fs.js";
+import { BrowserFs, findBrowserFs, findRemovableBrowserFs, openBrowserFs } from "../src/opfs/browser-fs.js";
 import { checkDbName } from "../src/check.js";
 import { compactHost } from "./compact-host.js";
 
@@ -158,6 +158,9 @@ describe("host boot sweep", () => {
 
 type Node = FakeDir | Uint8Array;
 
+/** Every entry a `FakeDir` removed, by name, in order. */
+const removals: string[] = [];
+
 class FakeDir {
   readonly children = new Map<string, Node>();
   async getDirectoryHandle(name: string, opts?: { create?: boolean }) {
@@ -185,8 +188,14 @@ class FakeDir {
       },
     };
   }
-  async removeEntry(name: string) {
-    if (!this.children.delete(name)) throw new DOMException(name, "NotFoundError");
+  async removeEntry(name: string, opts?: { recursive?: boolean }) {
+    const child = this.children.get(name);
+    if (child === undefined) throw new DOMException(name, "NotFoundError");
+    if (child instanceof FakeDir && child.children.size > 0 && !opts?.recursive) {
+      throw new DOMException(name, "InvalidModificationError");
+    }
+    this.children.delete(name);
+    removals.push(name);
   }
   async *entries(): AsyncIterableIterator<[string, unknown]> {
     yield* this.children.entries();
@@ -252,5 +261,36 @@ describe.each(fsKinds)("%s open files", (_kind, makeFs) => {
     await withFile(fs, "l2/b.sst", "x");
     await withFile(fs, "m/1.mft", "x");
     expect([...(await fs.list(""))].sort()).toEqual(["l0", "l2", "m"]);
+  });
+});
+
+describe("BrowserFs folder lookup and removal", () => {
+  const root = new FakeDir();
+  beforeEach(() => vi.stubGlobal("navigator", { storage: { getDirectory: async () => root } }));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("finds a folder without creating one, and removes m/ before the folder", async () => {
+    expect(await findBrowserFs("absent")).toBeUndefined();
+    expect([...root.children.keys()]).toEqual([]);
+    const made = await openBrowserFs("present");
+    for (const path of ["l0/1-2.sst", "m/0000000000000001.mft", "l1/c2.0.sst"]) {
+      const w = await made.create(path);
+      await w.write(utf("x"));
+      await w.finish();
+    }
+    expect(await findBrowserFs("absent")).toBeUndefined();
+    const lsm = root.children.get("opfs-lsm") as FakeDir;
+    expect([...lsm.children.keys()]).toEqual(["present"]);
+
+    expect([...(await (await findBrowserFs("present"))!.list(""))].sort()).toEqual(["l0", "l1", "m"]);
+    const found = (await findRemovableBrowserFs(checkDbName("present")))!;
+    expect([...(await found.list(""))].sort()).toEqual(["l0", "l1", "m"]);
+    removals.length = 0;
+    await found.removeFolder();
+
+    expect(removals).toEqual(["m", "present"]);
+    expect([...lsm.children.keys()]).toEqual([]);
+    await found.removeFolder();
+    expect(await findBrowserFs("present")).toBeUndefined();
   });
 });

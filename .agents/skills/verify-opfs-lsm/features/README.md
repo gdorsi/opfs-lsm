@@ -41,3 +41,4 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior, 
 - [Two-tab local EngineHost](./two-tab-local.md) — one page, two handles, no SharedWorker.
 - [Size cap across two tabs](./pressure.md) — `maxBytes` offers answered by one tab's handler, and the warning when no tab has one.
 - [Size cap from the storage quota](./quota.md) — `maxBytes: "quota"` offers answered by a range delete, with the usage estimate timed.
+- [destroyDb with other tabs open](./destroy.md) — every handle closes, both stores go, the next open starts past them, and crashed, frozen and back/forward-cached tabs.

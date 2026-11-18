@@ -3,9 +3,27 @@ export function webLocks(): LockManager | undefined {
   return (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks;
 }
 
+/** Run `fn` holding Web Lock `name`, or unprotected where the platform has none. */
+export function withLock<T>(name: string, fn: () => Promise<T>, mode: LockMode = "exclusive"): Promise<T> {
+  const locks = webLocks();
+  if (!locks) return fn();
+  // The DOM lib types the callback's promise as the result, unwrapped at runtime.
+  return locks.request(name, { mode }, fn) as unknown as Promise<T>;
+}
+
 /** The BroadcastChannel where tabs share appends and new generations. */
 export function layersChannel(name: string): string {
   return `opfs-lsm-layers/${name}`;
+}
+
+/**
+ * Held shared by `openDb` from before it touches either store until it
+ * resolves, and exclusively by `destroyDb` for its whole run. No handle
+ * holds it while open: `destroyDb` waits on the handles' IndexedDB
+ * connections instead. Lock order everywhere: open, compaction, ingest.
+ */
+export function openLock(name: string): string {
+  return `opfs-lsm-open/${name}`;
 }
 
 export function reclaimLock(name: string): string {

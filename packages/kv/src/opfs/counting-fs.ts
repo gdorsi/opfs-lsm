@@ -17,7 +17,7 @@ export type IoCounters = {
   removed: Record<string, number>;
 };
 
-function emptyIoCounters(): IoCounters {
+export function emptyIoCounters(): IoCounters {
   return { written: {}, read: {}, removed: {} };
 }
 

@@ -439,7 +439,7 @@ const stop = todos.changes((event) => {
 	// what you hold may be stale
 	if (event.kind === "gap") console.log("read again");
 	// the last event
-	if (event.kind === "closed") console.log("kv closed");
+	if (event.kind === "closed") console.log("kv closed:", event.reason); // "close" or "destroyed"
 });
 await todos.put(todo); // the listener sees it before put resolves
 stop();

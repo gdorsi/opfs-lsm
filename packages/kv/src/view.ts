@@ -103,6 +103,8 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     private readonly levels: readonly RunLevel[],
     private readonly at: Marks,
     private readonly hold: () => () => void,
+    /** Throws `ClosedError` once the handle closed, so a read that fails after `destroyDb` says so. */
+    private readonly handleOpen: () => void,
   ) {}
 
   private ensureOpen(): void {
@@ -118,7 +120,12 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     this.ensureOpen();
     const k = checkKey(key);
     const row = this.rows.get(k);
-    return untilHit(() => pointGet(row, this.levels, k, this.at));
+    try {
+      return await untilHit(() => pointGet(row, this.levels, k, this.at));
+    } catch (err) {
+      this.handleOpen();
+      throw err;
+    }
   }
 
   async rangeJoin(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined): Promise<Joined[]> {
@@ -143,6 +150,9 @@ export class ViewSnapshotImpl implements ViewSnapshot {
       const values = first instanceof Miss ? await untilHit(read, first) : first;
       values.forEach((value, i) => (owners[i]!.joined = value));
       return out;
+    } catch (err) {
+      this.handleOpen();
+      throw err;
     } finally {
       release();
     }
@@ -154,6 +164,9 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     const release = this.hold();
     try {
       return await countLayers(this.rows.range(bounds), this.levels, this.at, bounds, range);
+    } catch (err) {
+      this.handleOpen();
+      throw err;
     } finally {
       release();
     }
@@ -168,6 +181,9 @@ export class ViewSnapshotImpl implements ViewSnapshot {
         this.ensureOpen();
         yield entry;
       }
+    } catch (err) {
+      this.handleOpen();
+      throw err;
     } finally {
       release();
     }
