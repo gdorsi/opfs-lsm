@@ -127,8 +127,12 @@ describe("destroyDb of one of two names", () => {
   it("closes the stores on that name, and leaves the stores on the other reading and writing", async () => {
     const [nameA, nameB] = [freshName(), freshName()];
     const a = (await openDocStore(await kvOn(nameA), v1)).collection("todos");
+    const onA: unknown[] = [];
+    a.changes((event) => onA.push(event));
     const bStore = await openDocStore(await kvOn(nameB), v1);
     const b = bStore.collection("todos");
+    const onB: { kind: string }[] = [];
+    b.changes((event) => onB.push(event));
     const readerKv = await kvOn(nameB);
     const bReader = (await openDocStore(readerKv, v1)).collection("todos");
     await a.putMany([{ id: "a", title: "x" }, { id: "b", title: "y" }]);
@@ -136,6 +140,8 @@ describe("destroyDb of one of two names", () => {
 
     await destroyHarnessDb({ name: nameA, forceMemory: true });
 
+    expect(onA.at(-1)).toEqual({ kind: "closed", reason: "destroyed" });
+    expect(onB.some((event) => event.kind === "closed")).toBe(false);
     expect(await codeOf(a.count({ index: "byTitle" }))).toBe("closed");
     expect(await codeOf(a.put({ id: "d", title: "z" }))).toBe("closed");
     expect((await b.query({ index: "byTitle" })).docs.map((d) => d.id)).toEqual(["a", "c"]);
