@@ -101,7 +101,9 @@ onMounted(() => {
   measure();
   resize = new ResizeObserver(measure);
   for (const el of [track.value, flag.value, hoverFlag.value]) if (el) resize.observe(el);
-  seen = new IntersectionObserver(([entry]) => (visible.value = !!entry?.isIntersecting));
+  // One callback can carry several entries, oldest first (off screen at load, then on screen after a jump to the
+  // anchor): the last is the one that holds.
+  seen = new IntersectionObserver((entries) => (visible.value = !!entries.at(-1)?.isIntersecting));
   if (root.value) seen.observe(root.value);
 });
 watch(() => [visible.value, props.paused, props.still, props.current], loop);
