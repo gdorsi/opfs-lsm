@@ -545,7 +545,8 @@ ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
 * The promise of `put`, `delete` or `batch` resolves with its seq, after its record was announced.
 * `gap` replaces the records that a handle skipped because a flush folded them before it read
   them, or because a repair recorded another generation. A listener reads again.
-* `closed` is the last event. Its `reason` is `"destroyed"` when `destroyDb` closed the handle.
+* `closed` is the last event. Its `reason` is `"destroyed"` when the handle's WAL database was
+  asked to close: by `destroyDb`, or by the browser or DevTools deleting it.
 
 ## Recovery
 
@@ -574,7 +575,10 @@ prefix. Without those records, the manifest alone is one.
 0. **Nothing recorded, and `opfs-lsm-destroyed` has a row for the name.** `destroyDb` removed a
    database of this name. Record generation 0 as a destroy does, at durability `"strict"`, with
    `ingestedThrough` at least the row's `head` and `destroyedTop` at least its `top`, then delete
-   the row. While `opfs-lsm-wal/<name>` records a generation, the row is ignored.
+   the row. A manifest numbered past the row's `top` was written by a database born after the
+   removal, whose WAL database was then lost: record generation 0 at the row's own `head` and
+   `top` instead, delete the row, and go on to rules 1 to 3, which recover that database. While
+   `opfs-lsm-wal/<name>` records a generation, the row is ignored.
 1. **OPFS kept seqs that IndexedDB lost.** The newest intact manifest that is numbered past the
    recorded one and whose `through` is past `head`. It is a longer prefix than the WAL.
 2. **Otherwise the recorded manifest**, if it is intact.

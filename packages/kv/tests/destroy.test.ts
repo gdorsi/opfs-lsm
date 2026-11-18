@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName } from "../src/check.js";
-import { readDestroyed } from "../src/idb/destroyed.js";
+import { forgetDestroyed, readDestroyed, recordDestroyed } from "../src/idb/destroyed.js";
 import { IdBWal, type WalMeta } from "../src/idb/wal.js";
 import { ClosedError, CorruptDatabaseError, type ChangeEvent, type Db } from "../src/index.js";
 import {
@@ -13,6 +13,8 @@ import {
   ingest,
   openHarnessDb,
 } from "../src/testing.js";
+import { recordEmpty } from "../src/recover.js";
+import { asGeneration, asSeq } from "../src/seq.js";
 import { compactHost } from "./compact-host.js";
 
 const NAME = "destroy";
@@ -38,6 +40,87 @@ function storage(hostFs?: (fs: MemoryFs) => AsyncFs, name = NAME) {
 
 async function walDatabases(): Promise<(string | undefined)[]> {
   return (await indexedDB.databases()).map((info) => info.name);
+}
+
+/** What the browser does when it throws one IndexedDB database away. */
+async function dropWalDatabase(name: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${name}`);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** The published files of `fs` and their bytes, to put back as a lost removal would. */
+async function snapshot(fs: MemoryFs): Promise<Map<string, Uint8Array>> {
+  const files = new Map<string, Uint8Array>();
+  for (const path of fs.publishedPaths()) files.set(path, (await fs.read(path, 0, Number.POSITIVE_INFINITY))!);
+  return files;
+}
+
+async function putBack(fs: MemoryFs, files: Map<string, Uint8Array>): Promise<void> {
+  for (const [path, bytes] of files) {
+    const w = await fs.create(path);
+    await w.write(bytes);
+    await w.finish();
+  }
+}
+
+const manifestNumber = (path: string) => Number(/^m\/(\d+)\.mft$/.exec(path)?.[1] ?? Number.NaN);
+
+/**
+ * A folder whose run reads wait at a gate while it is shut, and fail with
+ * NotFoundError once `removeFolder` ran, as OPFS reads do after a removal.
+ * Manifest reads never wait, so a destroy can run while a read waits.
+ */
+function gatedFolder() {
+  const mem = new MemoryFs();
+  let removed = false;
+  let gate: Promise<void> | undefined;
+  let open = () => {};
+  let arrived = () => {};
+  let reached = Promise.resolve();
+  const notFound = (path: string) => Promise.reject(new DOMException(path, "NotFoundError"));
+  const fs: RemovableFs = {
+    read: (path, offset, length) => mem.read(path, offset, length),
+    open: async (path) => {
+      const file = await mem.open(path);
+      return (
+        file && {
+          size: file.size,
+          read: async (offset, length) => {
+            if (gate) {
+              arrived();
+              await gate;
+            }
+            return removed ? notFound(path) : file.read(offset, length);
+          },
+          close: () => file.close(),
+        }
+      );
+    },
+    list: (dir) => mem.list(dir),
+    remove: (path) => mem.remove(path),
+    removeUnlessOpen: (path) => mem.removeUnlessOpen(path),
+    create: (path) => mem.create(path),
+    removeFolder: async () => {
+      removed = true;
+      await mem.removeFolder();
+    },
+  };
+  return {
+    fs,
+    /** Shut the gate; resolves `reached` once a run read waits at it. */
+    shut() {
+      gate = new Promise<void>((resolve) => (open = resolve));
+      reached = new Promise<void>((resolve) => (arrived = resolve));
+    },
+    reached: () => reached,
+    open() {
+      gate = undefined;
+      open();
+    },
+  };
 }
 
 async function walMeta(name: string): Promise<WalMeta> {
@@ -169,6 +252,20 @@ describe("destroyDb", () => {
   });
 });
 
+describe("the destroyed row", () => {
+  it("keeps the higher of each figure, and is forgotten only while it still reads the floor given", async () => {
+    const name = checkDbName("row-cas");
+    await recordDestroyed(name, { head: asSeq(10), top: asGeneration(8) });
+    await recordDestroyed(name, { head: asSeq(20), top: asGeneration(5) });
+    expect(await readDestroyed(name)).toEqual({ head: 20, top: 8 });
+
+    await forgetDestroyed(name, { head: asSeq(10), top: asGeneration(8) });
+    expect(await readDestroyed(name)).toEqual({ head: 20, top: 8 });
+    await forgetDestroyed(name, { head: asSeq(20), top: asGeneration(8) });
+    expect(await readDestroyed(name)).toBeUndefined();
+  });
+});
+
 describe("destroyDb gives the storage back", () => {
   it("leaves no WAL database and no file", async () => {
     const { fs, open, destroy } = storage(undefined, "removed");
@@ -244,6 +341,31 @@ describe("destroyDb", () => {
     });
   });
 
+  it("fails a range and a count that a destroy cut off mid-read with ClosedError", async () => {
+    const reads: [string, (db: Db) => Promise<unknown>][] = [
+      ["range", (db) => keys(db)],
+      ["count", (db) => db.count()],
+    ];
+    for (const [what, read] of reads) {
+      const folder = gatedFolder();
+      const options = { name: `${what}-gone`, fs: folder.fs, ingest: createLocalIngestClient(new EngineHost(() => folder.fs)), maxWalBytes: 1 << 30 };
+      const db = await openHarnessDb(options);
+      opened.push(db);
+      await fill(db, "k", 20);
+
+      folder.shut();
+      const cut = read(db);
+      await folder.reached();
+      await destroyHarnessDb(options);
+      folder.open();
+      const failed = await cut.then(
+        () => "resolved",
+        (err: unknown) => (err instanceof ClosedError ? "ClosedError" : String(err)),
+      );
+      expect(`${what}: ${failed}`).toBe(`${what}: ClosedError`);
+    }
+  });
+
   it("finishes an append in flight below the head the destroyed row records", async () => {
     const { open, destroy } = storage(undefined, "in-flight");
     const db = await open();
@@ -308,6 +430,116 @@ describe("destroyDb", () => {
     expect(await keys(again)).toEqual(["new"]);
     expect(await keys(await open())).toEqual(["new"]);
     expect(fs.publishedPaths().filter((path) => files.has(path))).toEqual([]);
+  });
+
+  it("keeps a database born after a destroy that left its row, when the browser later drops the WAL database", async () => {
+    const name = "outgrown";
+    const { fs, open } = storage(undefined, name);
+    const old = await open();
+    await fill(old, "old", 10);
+    await old.close();
+    // A destroyDb cut off after its row: the WAL database reads empty, and no file is removed.
+    const wal = (await IdBWal.openExisting(checkDbName(name)))!;
+    try {
+      await recordDestroyed(checkDbName(name), await recordEmpty(wal, fs, undefined));
+    } finally {
+      wal.close();
+    }
+    const reborn = await open();
+    expect(await keys(reborn)).toEqual([]);
+    await fill(reborn, "new", 5);
+    await reborn.close();
+    expect(await readDestroyed(checkDbName(name))).toBeDefined();
+
+    // The browser throws the WAL database away and keeps OPFS.
+    await dropWalDatabase(name);
+
+    const again = await open();
+    expect(await keys(again)).toEqual(["new-0", "new-1", "new-2", "new-3", "new-4"]);
+    expect(await readDestroyed(checkDbName(name))).toBeUndefined();
+    await again.put(enc.encode("after"), enc.encode("1"));
+    await ingest(again);
+    expect(await keys(await open())).toEqual(["after", "new-0", "new-1", "new-2", "new-3", "new-4"]);
+  });
+
+  it("never lowers a row: a second destroyDb over older files lost removes kept leaves it as it was", async () => {
+    const name = "floor-holds";
+    const { fs, open, destroy } = storage(undefined, name);
+    const db = await open();
+    await fill(db, "a", 5);
+    const older = await snapshot(fs);
+    for (let round = 0; round < 4; round++) await fill(db, `b${round}`, 10);
+    await db.close();
+    await destroy();
+    const row = (await readDestroyed(checkDbName(name)))!;
+
+    // OPFS lost the removal of the older files; the WAL database is gone.
+    await putBack(fs, older);
+    await destroy();
+
+    expect(await readDestroyed(checkDbName(name))).toEqual(row);
+    expect(fs.publishedPaths()).toEqual([]);
+  });
+
+  it("takes the row from the manifests on disk when the WAL database is gone, and writes none for a folder without one", async () => {
+    const name = "wal-gone";
+    const { fs, open, destroy } = storage(undefined, name);
+    const db = await open();
+    await fill(db, "k", 10);
+    await db.close();
+    const before = await walMeta(name);
+    const top = Math.max(...fs.publishedPaths().filter((path) => path.startsWith("m/")).map(manifestNumber));
+    await dropWalDatabase(name);
+
+    await destroy();
+
+    const row = (await readDestroyed(checkDbName(name)))!;
+    expect(row.top).toBe(top);
+    expect(row.head).toBeGreaterThan(before.ingestedThrough);
+    expect(fs.publishedPaths()).toEqual([]);
+
+    const bare = storage(undefined, "wal-gone-bare");
+    const orphan = await bare.fs.create("l0/orphan.sst");
+    await orphan.write(enc.encode("a run no manifest lists"));
+    await orphan.finish();
+    await bare.destroy();
+    expect(await readDestroyed(checkDbName("wal-gone-bare"))).toBeUndefined();
+    expect(bare.fs.publishedPaths()).toEqual([]);
+  });
+
+  it("opens a database whose destroyDb raised the WAL version and then stopped", async () => {
+    const name = "fenced";
+    const { open } = storage(undefined, name);
+    const db = await open();
+    await fill(db, "k", 3);
+    await db.put(enc.encode("tail"), enc.encode("t"));
+    const events: ChangeEvent[] = [];
+    db.changes((event) => events.push(event));
+
+    // The fence alone: one version up, then the tab that ran it went away.
+    const idb = `opfs-lsm-wal/${name}`;
+    const version = await new Promise<number>((resolve, reject) => {
+      const req = indexedDB.open(idb);
+      req.onsuccess = () => {
+        resolve(req.result.version);
+        req.result.close();
+      };
+      req.onerror = () => reject(req.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open(idb, version + 1);
+      req.onsuccess = () => {
+        req.result.close();
+        resolve();
+      };
+      req.onerror = () => reject(req.error);
+    });
+
+    expect(events.at(-1)).toEqual({ kind: "closed", reason: "destroyed" });
+    const again = await open();
+    expect(await keys(again)).toEqual(["k-0", "k-1", "k-2", "tail"]);
+    await again.put(enc.encode("after"), enc.encode("1"));
+    expect(await keys(await open())).toEqual(["after", "k-0", "k-1", "k-2", "tail"]);
   });
 
   it("leaves the host nothing to recreate", async () => {

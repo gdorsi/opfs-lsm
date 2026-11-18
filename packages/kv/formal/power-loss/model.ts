@@ -122,6 +122,8 @@ export type Variant = {
   readonly birthFloorFromDisk?: boolean;
   /** Rule 0 commits at the default durability, then forgets the row. */
   readonly birthRelaxed?: boolean;
+  /** Rule 0 births past the row even when a manifest past the row's `top` shows a database born after it. */
+  readonly birthOverOutgrown?: boolean;
   /** `destroyDb` deletes the WAL database before it writes the row. */
   readonly dropFirst?: boolean;
   /**
@@ -302,12 +304,16 @@ export class Sys implements Disk {
     const top = this.v.reuseNumbers ? (numbers[0] ?? 0) : Math.max(numbers[0] ?? 0, idb.top, generation ?? 0);
     const known = this.reg;
     if (generation === undefined && known && !this.v.birthIgnoresRow) {
-      // Rule 0: a strict birth past the row, then forget the row.
+      // Rule 0: a strict birth past the row, then forget the row. A manifest
+      // past the row's top was written by a database born after it: birth at
+      // the row's own figures, then rules 1 to 3 recover that database.
+      const outgrown = !this.v.birthOverOutgrown && (numbers[0] ?? 0) > known.top;
       const floor = { head: this.highestThrough(head) + 1, top };
-      const born = this.v.birthFloorFromDisk ? floor : { head: Math.max(floor.head, known.head), top: Math.max(floor.top, known.top) };
+      const past = this.v.birthFloorFromDisk ? floor : { head: Math.max(floor.head, known.head), top: Math.max(floor.top, known.top) };
+      const born = outgrown ? known : past;
       this.write({ store: "idb", label: "birth", deleteTo: head, ingested: born.head, generation: 0, next: born.head + 1, top: born.top, destroyedTop: born.top, strict: !this.v.birthRelaxed });
       this.write({ store: "reg", label: "forget the row", clear: known });
-      return { gen: 0, top: born.top };
+      return outgrown ? this.reconcile() : { gen: 0, top: born.top };
     }
     let pick: Manifest | undefined;
     if (!this.v.noNewerAdopt) {

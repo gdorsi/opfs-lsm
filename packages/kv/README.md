@@ -383,7 +383,7 @@ await destroyDb("notes");
 
 Both wait for a running flush or compaction step. Once one resolves, the records never come back, even after a power loss. A crash before that leaves the database as if it had not run, or empty.
 
-`destroyDb` keeps one small row per removed name in the IndexedDB database `opfs-lsm-destroyed`, until the name is opened again. That row is what keeps a power loss from bringing the removed rows back.
+`destroyDb` keeps one small row per removed name in the IndexedDB database `opfs-lsm-destroyed`. Opening the name after `destroyDb` finished deletes it. That row is what keeps a power loss from bringing the removed rows back.
 
 ## Testing
 

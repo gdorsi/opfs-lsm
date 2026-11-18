@@ -24,6 +24,10 @@
  *   strict, so no power loss keeps such an op without it (`possibleCut`).
  * - RemoveClean: from every crash state, `destroyDb` leaves no WAL database
  *   and no OPFS file, and an open after it reads empty.
+ * - WalLost: after recovery and the writes that follow it are flushed,
+ *   the browser throwing away the WAL database alone changes no read. A
+ *   row a crash left in the row store never empties a database born after
+ *   it.
  * Broken variants (build on the newest manifest, no head raise, an adopt or
  * a destroy that moves the head and not the key generator, no fallback, no
  * newer-manifest adoption, destroy files before its commit, a destroy
@@ -167,6 +171,18 @@ function destroyedBefore(ops: readonly Op[], cut: Cut): number {
   return through;
 }
 
+/** WalLost: once `sys` flushed every write, an open with no WAL database reads what `sys` reads. */
+function walLost(sys: Sys, v: Variant, where: string): void {
+  const flushed = new Sys(cloneDisk({ idb: sys.idb, reg: sys.reg, opfs: sys.opfs }), v, 950);
+  run(flushed, "ingest");
+  const want = read(flushed, `${where}: flushed`);
+  const lost = new Sys(cloneDisk({ idb: undefined, reg: flushed.reg, opfs: flushed.opfs }), v, 960);
+  const got = read(lost, `${where}: open after the WAL database is lost`);
+  if (!same(got, want)) {
+    throw new Violation(`${where}: with the WAL database lost, open read {${[...got].join(",")}}, not {${[...want].join(",")}}`);
+  }
+}
+
 /** RemoveClean: `destroyDb` on the crash state `st` leaves no trace, and an open after it reads empty. */
 function removeClean(st: Disk, v: Variant, where: string): void {
   const sys = new Sys(cloneDisk(st), v, 900);
@@ -208,6 +224,7 @@ function recover(st: Disk, log: readonly number[], mustHold: number | undefined,
   if (prefixOf(read(sys, `${where}: after writes`), full, `${where}: after writes`) !== full.length) {
     throw new Violation(`${where}: writes after recovery did not read back`);
   }
+  walLost(sys, v, where);
   if (depth >= CRASHES) return;
   for (const cut of cuts(sys.ops)) {
     const proc = isProcessCut(sys.ops, cut) ? kept.length + committed(sys.ops, cut).length : undefined;
@@ -338,7 +355,7 @@ function sourceSync(): string[] {
   need("destroy.ts", /withLock\(openLock\(name\),[\s\S]*?withLock\(compactLock\(name\),[\s\S]*?withLock\(ingestLock\(name\),[\s\S]*?const files = await findFiles\(\);\s*const wal = await openAlone\(name\);[\s\S]*?if \(!wal && !files\) return;\s*const known = await readDestroyed\(name\);\s*const floor = wal \? await recordEmpty\(wal, files, known\) : await floorOfFiles\(files!, known\);\s*if \(floor\) await recordDestroyed\(name, floor\);\s*await files\?\.removeFolder\(\);\s*if \(wal\) await deleteWal\(wal\);/, "destroyDb fences, commits empty, writes the row, removes the files, then deletes the WAL database");
   need("idb/destroyed.ts", /export async function recordDestroyed[\s\S]*?durability: "strict"[\s\S]*?Math\.max\(old\?\.head \?\? 0, floor\.head\), top: Math\.max\(old\?\.top \?\? 0, floor\.top\)/, "the row is written strict and never moves down");
   need("destroy.ts", /async function openAlone[\s\S]*?openDatabase\(idbName\(name\), \{ version: version \+ 1 \}\)/, "destroyDb opens the WAL database one version up, which closes every other connection");
-  need("recover.ts", /if \(meta\.generation === undefined\) \{\s*const known = await readDestroyed\(wal\.dbName\);\s*if \(known\) \{\s*const born = atLeast\(known, \{ head: nextSeq\(await highestThrough\(fs, numbers, meta\.head\)\), top \}\);\s*if \(!\(await emptyWal\(wal, \{ expect: meta, \.\.\.born \}\)\)\) return undefined;[^\n]*\n(\s*\/\/[^\n]*\n)*\s*await forgetDestroyed\(wal\.dbName, known\);/, "rule 0: a WAL database with no generation and a row is born past the row, strict, before the row is forgotten");
+  need("recover.ts", /if \(meta\.generation === undefined\) \{\s*const known = await readDestroyed\(wal\.dbName\);\s*if \(known\) \{\s*(\/\/[^\n]*\n\s*)*const outgrown = \(numbers\[0\] \?\? GENERATION_NONE\) > known\.top;\s*const born = outgrown \? known : atLeast\(known, \{ head: nextSeq\(await highestThrough\(fs, numbers, meta\.head\)\), top \}\);\s*if \(!\(await emptyWal\(wal, \{ expect: meta, \.\.\.born \}\)\)\) return undefined;[^\n]*\n(\s*\/\/[^\n]*\n)*\s*await forgetDestroyed\(wal\.dbName, known\);\s*(\/\/[^\n]*\n\s*)*if \(outgrown\) return undefined;/, "rule 0: a WAL database with no generation and a row is born past the row, strict, before the row is forgotten; a manifest past the row's top births at the row and runs rules 1 to 3");
   need("recover.ts", /export async function floorOfFiles[\s\S]*?if \(numbers\.length === 0\) return undefined;\s*return atLeast\(known, \{ head: nextSeq\(await highestThrough\(fs, numbers, SEQ_ZERO\)\), top: numbers\[0\]! \}\);/, "with no WAL database, the row comes from the manifests on disk");
   need("opfs/browser-fs.ts", /class RemovableBrowserFs extends BrowserFs[\s\S]*?async removeFolder\(\): Promise<void> \{\s*await ignoreNotFound\(this\.root\.removeEntry\("m", \{ recursive: true \}\)\);\s*await ignoreNotFound\(this\.parent\.removeEntry\(this\.dbName, \{ recursive: true \}\)\);/, "the folder removal takes m/ first, then the folder");
   need("host/shared-worker.ts", /new EngineHost\(\(name\) => findBrowserFs\(name\)\)/, "the SharedWorker host finds the folder and never creates it");
@@ -355,7 +372,7 @@ function sourceSync(): string[] {
 function main(): void {
   console.log(`bound: workloads of up to ${MAX_CMDS} appends/ingests/compactions/destroys/removals, every (WAL database, row, OPFS) prefix triple,`);
   console.log(`       then recovery + [${AFTER.join(", ")}] and every triple of the next crash, ${CRASHES} crashes deep`);
-  console.log("property: PowerPrefix, ProcessAll, RecoveryStable, DestroyHolds, RemoveClean");
+  console.log("property: PowerPrefix, ProcessAll, RecoveryStable, DestroyHolds, RemoveClean, WalLost");
 
   const drift = sourceSync();
   if (drift.length > 0) {
@@ -380,6 +397,7 @@ function main(): void {
     ["recovery ignores the row", { birthIgnoresRow: true }],
     ["rule 0 takes its floor from the files on disk", { birthFloorFromDisk: true }],
     ["rule 0 commits at the default durability, then forgets the row", { birthRelaxed: true }],
+    ["rule 0 births past a row that a later database outgrew", { birthOverOutgrown: true }],
     ["destroyDb deletes the WAL database before it writes the row", { dropFirst: true }],
   ];
   for (const [name, v] of broken) {
@@ -408,6 +426,7 @@ function main(): void {
   }
   console.log(`\nPASS PowerPrefix — ${states} crash states (${CRASHES} power losses deep) in ${Math.round(performance.now() - started)} ms`);
   console.log(`PASS RemoveClean — destroyDb from each of the ${states} crash states left no WAL database and no file`);
+  console.log(`PASS WalLost — losing only the WAL database after each of the ${states} recoveries changed no read`);
 
   const corrupt = exploreCorrupt({}, MAX_CMDS);
   if (corrupt) {

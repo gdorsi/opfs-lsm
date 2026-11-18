@@ -44,8 +44,13 @@ export type Trusted = Generation | "recorded" | undefined;
  *    database of this name, and a power loss may have kept some of its
  *    files. Record the empty generation 0 past the row (strict), then
  *    forget the row. No manifest from before the removal is adopted, now
- *    or later. Without a row, rules 1 to 3 run, so a WAL database the
- *    browser threw away still recovers the newest intact manifest.
+ *    or later. A manifest numbered past the row's `top` means a database
+ *    born after the removal wrote it, and the browser threw away its WAL
+ *    database: record generation 0 at the row's own figures instead, forget
+ *    the row, and run rules 1 to 3, which recover the newer database and
+ *    skip every manifest at or below the row. Without a row, rules 1 to 3
+ *    run, so a WAL database the browser threw away still recovers the
+ *    newest intact manifest.
  * 1. The newest intact manifest past the recorded one whose `through` is
  *    past the WAL head: OPFS kept writes IndexedDB lost. It is a longer
  *    prefix, and recording it moves `head` past its seqs before any of them
@@ -82,10 +87,14 @@ export async function reconcile(
     if (meta.generation === undefined) {
       const known = await readDestroyed(wal.dbName);
       if (known) {
-        const born = atLeast(known, { head: nextSeq(await highestThrough(fs, numbers, meta.head)), top });
+        // A manifest numbered past the row was written by a database born after it.
+        const outgrown = (numbers[0] ?? GENERATION_NONE) > known.top;
+        const born = outgrown ? known : atLeast(known, { head: nextSeq(await highestThrough(fs, numbers, meta.head)), top });
         if (!(await emptyWal(wal, { expect: meta, ...born }))) return undefined;
         // Only after the strict birth: losing this delete leaves a row that is ignored.
         await forgetDestroyed(wal.dbName, known);
+        // Read `meta` again: it records generation 0 now, and rule 1 adopts the newer database's manifest.
+        if (outgrown) return undefined;
         return { generation: GENERATION_NONE, top: born.top };
       }
     }
