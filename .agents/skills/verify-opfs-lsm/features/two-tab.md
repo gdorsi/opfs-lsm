@@ -13,6 +13,7 @@ Two-tab visibility lets one tab put and ingest while another tab keeps a pinned 
 - `two-tab-second-db` opens a second database name next to the first in both tabs, writes the same keys with different values in each, flushes both, and reads each name from the other tab: only its own values.
 - `two-tab-storage` finds an IndexedDB database `opfs-lsm-wal/<name>` and a non-empty OPFS folder `opfs-lsm/<name>/` for each name.
 - `two-tab-destroy-second` runs `dangerousDestroy` on the second name; it reads empty in both tabs and the first name still reads every row in both tabs, and takes a write.
+- `two-tab-remove-second` runs `destroyDb` on the second name while both tabs hold a handle on each name. The second name's handle closes in both tabs, with reason `destroyed` in tab A; no handle on the first name closes. `opfs-lsm-wal/<name>-second` and `opfs-lsm/<name>-second/` are gone, the first name's database and folder stay, and the first name reads and takes writes in both tabs.
 
 ## How to get to it (user POV)
 
@@ -29,7 +30,7 @@ Preconditions:
 - **Run SharedWorker two-tab.** Execute `.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab`. Exit code `0`.
 - **Confirm two pages.** Stdout contains `tabs=2`.
 - **Confirm SharedWorker mode.** Stdout contains `mode=SharedWorker` and does not claim local EngineHost as the only mode.
-- **Confirm scenario.** Stdout contains `warm seed generation=`, `pinned generation=`, `fresh k=v`, `range has k`, `other tab saw after=yes`, `tab B reads only its own values in two-tab and two-tab-second`, `tab A reads only its own values in two-tab and two-tab-second`, `two-tab-second destroyed, two-tab reads its`, `two-databases ok`, and `two-tab ok`.
+- **Confirm scenario.** Stdout contains `warm seed generation=`, `pinned generation=`, `fresh k=v`, `range has k`, `other tab saw after=yes`, `tab B reads only its own values in two-tab and two-tab-second`, `tab A reads only its own values in two-tab and two-tab-second`, `two-tab-second destroyed, two-tab reads its`, `destroyDb(two-tab-second) closed its handle in both tabs`, `opfs-lsm-wal/two-tab-second and opfs-lsm/two-tab-second/ gone`, `two-tab reads and writes in both tabs after destroyDb(two-tab-second)`, `two-databases ok`, and `two-tab ok`.
 - **Proof.** Keep `artifacts/two-tab/<run-id>/stdout.txt` and `exit_code.txt`. The log must include `two-databases ok`, `two-tab ok` and `tabs=2`.
 
 ## Gotchas
@@ -38,4 +39,4 @@ Preconditions:
 - Headless background throttling breaks tab B ingest; the harness already passes `--disable-background-timer-throttling` and related flags. Do not strip them.
 - `TWO_TAB_LOCAL=1` is a different feature (`two-tab-local`). It must not be reported as SharedWorker proof.
 - Success is the `two-databases ok` and `two-tab ok` lines, not merely Chrome exiting. The driver exits `1` when `two-databases ok` is missing from a default run (`pressure`, `quota` and `destroy` do not run that step).
-- The second name is `<name>-second`, so a run leaves `opfs-lsm/two-tab-second/` in the disposable profile only.
+- The second name is `<name>-second`. The run removes it with `destroyDb`, so it leaves no `opfs-lsm/two-tab-second/` behind.

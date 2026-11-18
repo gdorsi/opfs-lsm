@@ -1,7 +1,9 @@
 import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ChangeEvent, Db, Entry } from "../src/index.js";
-import { compactLock, ingestLock, pressureLock, reclaimLock, runLock } from "../src/locks.js";
+import { checkDbName } from "../src/check.js";
+import { readDestroyed } from "../src/idb/destroyed.js";
+import { ClosedError, type ChangeEvent, type Db, type Entry } from "../src/index.js";
+import { compactLock, ingestLock, openLock, pressureLock, reclaimLock, runLock } from "../src/locks.js";
 import {
   EngineHost,
   MemoryFs,
@@ -189,6 +191,10 @@ async function settle(writer: Db, events: ChangeEvent[]): Promise<ChangeEvent[]>
   await until(marker, () => writtenKeys(events).includes(marker));
   return withoutMarkers(events);
 }
+
+const walDatabases = async () => (await indexedDB.databases()).map((db) => db.name);
+const destroyedRow = (name: string) => readDestroyed(checkDbName(name));
+const closedByDestroy = { kind: "closed", reason: "destroyed" };
 
 const levels = async (host: EngineHost, name: string) => (await host.stats(name)).layout;
 const lowLevels = (layout: { level: number }[]) => layout.filter((l) => l.level > 0);
@@ -417,34 +423,165 @@ describe("dangerousDestroy of one name", () => {
 });
 
 describe("destroyDb of one name", () => {
-  it("empties that name while the other stays open and keeps its rows", async () => {
+  it("removes that name's stores and closes only its handles, while every handle of the other keeps its rows", async () => {
     const { host, folder, open, destroy } = origin();
     const [A, B] = names();
-    const a = await open(A);
-    const b = await open(B);
+    const a1 = await open(A);
+    const a2 = await open(A);
+    const b1 = await open(B);
     const b2 = await open(B);
     for (let round = 0; round < 5; round++) {
-      await flushRound(a, round);
-      await flushRound(b, round);
+      await flushRound(a1, round);
+      await flushRound(b1, round);
     }
-    await a.put(key(0), enc.encode("wal-a"));
-    await b.put(key(0), enc.encode("wal-b"));
-    await a.close();
+    // Rows that wait in the WAL, over the runs.
+    await a1.put(key(0), enc.encode("wal-a"));
+    await b1.put(key(0), enc.encode("wal-b"));
+    await a2.sync();
+    await b2.sync();
     const bFiles = folder(B).publishedPaths();
     const bLayout = await levels(host, B);
-    const onB = record(b);
+    const bGeneration = (await host.stats(B)).generation;
+    const onA1 = record(a1);
+    const onA2 = record(a2);
+    const onB1 = record(b1);
+    const onB2 = record(b2);
+    const expectedB = roundOf(B, 4).map((v, i) => (i === 0 ? "wal-b" : v));
 
     await destroy(A);
 
-    expect(await settle(b2, onB)).toEqual([]);
+    expect(onA1.at(-1)).toEqual(closedByDestroy);
+    expect(onA2.at(-1)).toEqual(closedByDestroy);
+    await expect(a2.get(key(1))).rejects.toBeInstanceOf(ClosedError);
+    expect(await walDatabases()).not.toContain(`opfs-lsm-wal/${A}`);
     expect(folder(A).publishedPaths()).toEqual([]);
+
+    await settle(b2, onB1);
+    await settle(b1, onB2);
+    expect(withoutMarkers(onB1)).toEqual([]);
+    expect(withoutMarkers(onB2)).toEqual([]);
+    expect(await walDatabases()).toContain(`opfs-lsm-wal/${B}`);
     expect(folder(B).publishedPaths()).toEqual(bFiles);
     expect(await levels(host, B)).toEqual(bLayout);
-    await expectRows(b, roundOf(B, 4).map((v, i) => (i === 0 ? "wal-b" : v)));
-    await expectRows(await open(A), none);
+    expect((await host.stats(B)).generation).toBe(bGeneration);
+    expect(await destroyedRow(B)).toBeUndefined();
+    await expectRows(b1, expectedB);
+    await expectRows(b2, expectedB);
 
-    await flushRound(b, 5);
-    await expectRows(b, roundOf(B, 5));
+    await flushRound(b1, 5);
+    await b2.sync();
+    expect((await host.stats(B)).generation).toBeGreaterThan(bGeneration);
+    await expectRows(b2, roundOf(B, 5));
+
+    const reborn = await open(A);
+    await expectRows(reborn, none);
+    await flushRound(reborn, 0);
+    await expectRows(reborn, roundOf(A, 0));
+    await expectRows(b1, roundOf(B, 5));
+  });
+
+  it("keeps each name's destroyed row apart, and reopening a name forgets only its own", async () => {
+    const { open, destroy } = origin();
+    const [A, B] = names();
+    await flushRound(await open(A), 0);
+    const b = await open(B);
+    for (let round = 0; round < 3; round++) await flushRound(b, round);
+    await b.put(key(0), enc.encode("wal-b"));
+
+    await destroy(A);
+    await destroy(B);
+
+    const rowA = (await destroyedRow(A))!;
+    const rowB = (await destroyedRow(B))!;
+    expect(rowA.head).toBeLessThan(rowB.head);
+
+    const againA = await open(A);
+    expect(await destroyedRow(A)).toBeUndefined();
+    expect(await destroyedRow(B)).toEqual(rowB);
+    expect(await againA.put(key(0), enc.encode("a"))).toBeGreaterThanOrEqual(rowA.head);
+
+    // B starts past its own row, which is higher than A's.
+    const againB = await open(B);
+    expect(await destroyedRow(B)).toBeUndefined();
+    expect(await againB.put(key(0), enc.encode("b"))).toBeGreaterThanOrEqual(rowB.head);
+    expect(text(await againA.get(key(0)))).toBe("a");
+    expect(text(await againB.get(key(0)))).toBe("b");
+  });
+
+  it("brings no row of a destroyed name back after a power loss, while a new name opens next to it", async () => {
+    const { folder, open, destroy } = origin();
+    const [A, B] = names();
+    const a = await open(A);
+    for (let round = 0; round < 2; round++) await flushRound(a, round);
+    const fs = folder(A);
+    const files = new Map<string, Uint8Array>();
+    for (const path of fs.publishedPaths()) files.set(path, (await fs.read(path, 0, Number.POSITIVE_INFINITY))!);
+
+    await destroy(A);
+    // OPFS lost the removes; IndexedDB kept the row and the delete.
+    for (const [path, bytes] of files) {
+      const w = await fs.create(path);
+      await w.write(bytes);
+      await w.finish();
+    }
+    const row = await destroyedRow(A);
+    expect(row).toBeDefined();
+
+    // A name never destroyed starts without a row, and leaves A's alone.
+    const b = await open(B);
+    await flushRound(b, 0);
+    expect(await destroyedRow(B)).toBeUndefined();
+    expect(await destroyedRow(A)).toEqual(row);
+
+    await expectRows(await open(A), none);
+    await expectRows(b, roundOf(B, 0));
+  });
+
+  it("creates nothing for a name never opened, and leaves the open names alone", async () => {
+    const { open, destroy } = origin();
+    const [A, B] = names();
+    const [C] = names();
+    const a = await open(A);
+    const a2 = await open(A);
+    const b = await open(B);
+    const b2 = await open(B);
+    await flushRound(a, 0);
+    await flushRound(b, 0);
+    const onA = record(a);
+    const onB = record(b);
+
+    await destroy(C);
+
+    expect(await walDatabases()).not.toContain(`opfs-lsm-wal/${C}`);
+    expect(await destroyedRow(C)).toBeUndefined();
+    expect(await settle(a2, onA)).toEqual([]);
+    expect(await settle(b2, onB)).toEqual([]);
+    await expectRows(a, roundOf(A, 0));
+    await expectRows(b, roundOf(B, 0));
+  });
+
+  it("destroys two names at once while a third writes and flushes", async () => {
+    const { open, destroy } = origin();
+    const [A, B] = names();
+    const [C] = names();
+    const a = await open(A);
+    const b = await open(B);
+    const c = await open(C);
+    for (let round = 0; round < 3; round++) {
+      await flushRound(a, round);
+      await flushRound(b, round);
+      await flushRound(c, round);
+    }
+
+    await Promise.all([destroy(A), destroy(B), flushRound(c, 3), flushRound(c, 4)]);
+
+    const wals = await walDatabases();
+    expect(wals).not.toContain(`opfs-lsm-wal/${A}`);
+    expect(wals).not.toContain(`opfs-lsm-wal/${B}`);
+    expect(wals).toContain(`opfs-lsm-wal/${C}`);
+    await expectRows(c, roundOf(C, 4));
+    await expectRows(await open(A), none);
+    await expectRows(await open(B), none);
   });
 });
 
@@ -460,7 +597,7 @@ describe("the Web Locks of one name", () => {
 
     // Every lock of A, and a reader's hold on each of B's run paths under A's name.
     const release = await hold([
-      ...[compactLock(A), ingestLock(A), reclaimLock(A), pressureLock(A)].map((name) => [name, "exclusive"] as const),
+      ...[openLock(A), compactLock(A), ingestLock(A), reclaimLock(A), pressureLock(A)].map((name) => [name, "exclusive"] as const),
       ...runs.map((path) => [runLock(A, path), "shared"] as const),
     ]);
     try {

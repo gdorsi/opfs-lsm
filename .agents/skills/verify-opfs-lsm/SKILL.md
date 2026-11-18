@@ -103,7 +103,7 @@ Proof standards:
 
 - Exercise the SharedWorker + OPFS path (default harness). `MemoryFs`, `forceMemory`, and vitest alone do not count as browser proof.
 - Capture the action log and the resulting assertions the harness already prints (`two-tab ok`, post-ingest gets), not only exit code.
-- Side effects the harness checks: cross-tab get after put, pinned view across peer ingest, range after ingest, warm and post-ingest point gets, and two database names side by side, each with its own SharedWorker, IndexedDB database and OPFS folder, that read only their own rows (`two-databases ok`). Do not stub IndexedDB/OPFS/SharedWorker.
+- Side effects the harness checks: cross-tab get after put, pinned view across peer ingest, range after ingest, warm and post-ingest point gets, and two database names side by side, each with its own SharedWorker, IndexedDB database and OPFS folder, that read only their own rows, where `destroyDb` of one closes and removes only that one (`two-databases ok`). Do not stub IndexedDB/OPFS/SharedWorker.
 - Timing rows are evidence of a completed path. A performance claim needs `--reps 5` or more and `node bench/cli.ts compare` (see `features/bench.md`).
 
 ## Cleanup

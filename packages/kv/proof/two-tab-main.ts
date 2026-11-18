@@ -616,7 +616,10 @@ async function opfsFiles(name: string): Promise<string[]> {
  * Opens a second database name next to the first, in both tabs. Both names
  * get the same keys with different values, and the other tab reads in each
  * only its own. Each name has its own IndexedDB database and OPFS folder.
- * Destroying the second leaves the first reading every row, in both tabs.
+ * Emptying the second with `dangerousDestroy`, and then removing it with
+ * `destroyDb`, leaves the first reading and writing every row, in both tabs.
+ * `destroyDb` closes the second's handles in both tabs and no handle on the
+ * first, and removes only the second's IndexedDB database and OPFS folder.
  */
 async function twoDatabases(
   open: (name: string) => Promise<Handle>,
@@ -674,7 +677,46 @@ async function twoDatabases(
   await first.sync();
   must(text(await first.get(enc.encode("dup/c"))) === `${DB_NAME}:c`, `${DB_NAME} lost a write after the destroy`);
   log(`${SECOND} destroyed, ${DB_NAME} reads its ${kept[0]!.length} rows in both tabs`);
-  await second.close();
+
+  const mod = await import("../dist/index.js");
+  const closed = new Map<string, string>();
+  for (const [name, db] of names) {
+    db.changes((e) => {
+      if (e.kind === "closed") closed.set(name, e.reason);
+    });
+  }
+  await second.put(enc.encode("dup/gone"), enc.encode(`${SECOND}:gone`));
+  await mod.destroyDb(SECOND);
+  must(closed.get(SECOND) === "destroyed" && !closed.has(DB_NAME), `closed in tab A: ${JSON.stringify([...closed])}`);
+  const peer = await other.rows(SECOND).then(
+    () => "open",
+    (err: Error) => err.message,
+  );
+  must(peer === "database is closed", `tab B's handle on ${SECOND} after destroyDb: ${peer}`);
+  log(`destroyDb(${SECOND}) closed its handle in both tabs, and no handle on ${DB_NAME}`);
+  const left = (await indexedDB.databases()).map((db) => db.name);
+  must(!left.includes(`opfs-lsm-wal/${SECOND}`), `opfs-lsm-wal/${SECOND} is still listed`);
+  must(!(await folderExists(SECOND)), `opfs-lsm/${SECOND}/ is still in OPFS`);
+  must(left.includes(`opfs-lsm-wal/${DB_NAME}`), `opfs-lsm-wal/${DB_NAME} is gone`);
+  must((await opfsFiles(DB_NAME)).length > 0, `opfs-lsm/${DB_NAME}/ holds no files`);
+  log(`opfs-lsm-wal/${SECOND} and opfs-lsm/${SECOND}/ gone, ${DB_NAME}'s stay`);
+  await other.put("dup/d", `${DB_NAME}:d`);
+  await other.ingest();
+  await first.put(enc.encode("dup/e"), enc.encode(`${DB_NAME}:e`));
+  await first.ingest();
+  const extra: Rows = [
+    ["dup/c", `${DB_NAME}:c`],
+    ["dup/d", `${DB_NAME}:d`],
+    ["dup/e", `${DB_NAME}:e`],
+  ];
+  const want = [...dupRows(DB_NAME, true), ...extra].sort(([x], [y]) => (x < y ? -1 : 1));
+  for (const [tab, rows] of [
+    ["A", await rowsOf(first)],
+    ["B", await other.rows(DB_NAME)],
+  ] as const) {
+    sameRows(`tab ${tab} in ${DB_NAME} after destroyDb(${SECOND})`, dupsOf(rows), want);
+  }
+  log(`${DB_NAME} reads and writes in both tabs after destroyDb(${SECOND})`);
   log("two-databases ok");
 }
 
