@@ -8,7 +8,7 @@ intro:
     - text: Use cases
       link: /#use-cases
     - text: Under the hood
-      link: /#built-to-beat-indexeddb-with-few-ways-to-fail
+      link: /#under-the-hood
     - text: Benchmarks
       link: /#our-benchmarks
     - text: Docs
@@ -348,7 +348,7 @@ await db.view(async (snap) => {
 </div>
 </div>
 
-## Built to beat IndexedDB, with few ways to fail
+## Under the hood
 
 <Illustration name="hood" full />
 
