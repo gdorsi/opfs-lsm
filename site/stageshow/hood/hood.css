@@ -404,6 +404,14 @@
     font: 11.5px/16px var(--ss-mono);
   }
 
+  .hd-batch {
+    white-space: pre;
+  }
+
+  .hd-ops {
+    color: var(--ss-text-faint);
+  }
+
   .hd-fresh {
     color: var(--ss-accent-text);
   }

@@ -6,7 +6,7 @@ Changed from the gold: the scene is told in chapters and plays with a player (`s
 
 Chapters (`CHAPTERS.hood[n]` in `site/.vitepress/theme/figures.ts` is the label, title, detail and length, `FRAMES[n]` the whole scene, `BEATS[n]` what plays):
 1. Both tabs open the same database. No beat.
-2. pick, put (about 5s): Tab 1's status opens LinearLite's menu, the cursor picks Done, and record 43 is written to the write-ahead log and shows "saved".
+2. pick, put (about 5s): Tab 1's status opens LinearLite's menu, the cursor picks Done, and "batch" runs to the write-ahead log: record 43, one row that holds the change's 7 operations ("LL-2A91F · 7 ops"), shows "saved". The log card reads "one row per batch".
 3. broadcast (2s): a BroadcastChannel line runs to Tab 2, and its row turns Done.
 4. flush, cleared (3.3s): the SharedWorker moves the log into a new file, `l0/41-43.sst`; the log's rows fold away; the SharedWorker's note changes from "a single instance for all the tabs" to "the only file writer".
 5. read (2.7s): one of the 9 pages of `l1/c7.0.sst` lights, a copy of it flies to Tab 2's cache meter ("32 KB of 256 MiB"), and Tab 2's placeholder row turns into the real issue. No connector touches the SharedWorker.
@@ -15,7 +15,7 @@ Chapters (`CHAPTERS.hood[n]` in `site/.vitepress/theme/figures.ts` is the label,
 
 Layout:
 - Wide (1152 x 576): Tab 1 leads, Tab 2 lies over its right edge, both cut by the band. Each status menu hangs under the status button it opens from, measured from that button.
-- Phone (358 x 864, below 720): the compact layout that `main` picked from three phone prototypes, grown by what the steps add. No window covers another. Tab 1 is 380 x 154: the toolbar and the two issues the story changes, cut under the second, and it runs off the right. Tab 2 is 292 wide, sits under Tab 1's right side, keeps its toolbar, shows the same two issues and the older one that step 5 reads, runs off the right and ends under the band. "put" leaves Tab 1's foot and drops down the free lane left of Tab 2 into the log, for both writes (records 43 and 44). "BroadcastChannel" drops from Tab 1's foot onto Tab 2's top, for both broadcasts. The cache pill hangs under Tab 2 in the band, right-aligned. The engine's type is a step larger than wide. The log keeps three rows, and the "Power lost" mark sits in the log card's empty lower half. The SST card lists `l0/41-43.sst` (after the flush), `l1/c7.0.sst` with its page strip, and a placeholder row that bleeds off the bottom.
+- Phone (358 x 864, below 720): the compact layout that `main` picked from three phone prototypes, grown by what the steps add. No window covers another. Tab 1 is 380 x 154: the toolbar and the two issues the story changes, cut under the second, and it runs off the right. Tab 2 is 292 wide, sits under Tab 1's right side, keeps its toolbar, shows the same two issues and the older one that step 5 reads, runs off the right and ends under the band. "batch" leaves Tab 1's foot and drops down the free lane left of Tab 2 into the log, for both writes (records 43 and 44). "BroadcastChannel" drops from Tab 1's foot onto Tab 2's top, for both broadcasts. The cache pill hangs under Tab 2 in the band, right-aligned. The engine's type is a step larger than wide. The log keeps three rows, and the "Power lost" mark sits in the log card's empty lower half. The SST card lists `l0/41-43.sst` (after the flush), `l1/c7.0.sst` with its page strip, and a placeholder row that bleeds off the bottom.
 - Against the phone design on `main` (358 x 728) the height grows by 136px: 38 for Tab 1's second issue, 76 for two more issues in Tab 2, and 20 for the cache pill under the cut. The foot cuts the SST card at the same depth as `main`'s, about 138px down, which with the new file listed leaves `l1/c7.0.sst` and its page strip whole.
 
 Captured on the home page, at `figure.stepped .illustration-stage`, while the scene was stepped with Next (the beats and frames are the same in the player):
@@ -62,10 +62,11 @@ Assumptions (each drawn the way it reads):
 - The log's rows leave it with the flush that folded them. The engine keeps them until the next flush, as a recovery copy that no read uses (design.md, "Truncation").
 - Step 5 shows one get. An app query reads index entries and documents, so it loads several pages.
 - Step 7 shows one legal outcome of a power loss. A loss could also take record 43 and any earlier write that no flush had reached, but it takes a write only together with every write after it.
+- Each record is one status change, 7 operations: the issue, and for each of its three indexes on status or modified time, the old entry deleted and the new one put (counted from `docstore` with LinearLite's schema). Records 41 and 42 are drawn as status changes too. A new issue is 5 operations; an import, one batch of thousands.
 - The cache meter's fill is drawn wider than 32 KB of 256 MiB really is, so it can be seen.
 - A reopened tab has an empty cache, so Tab 2's older issue is a placeholder row again until the tab reads it.
 - On phones, an open status menu draws past Tab 1's window onto Tab 2. The first covers Tab 2's title bar for about a second. The second, opened from the second issue, also covers Tab 2's toolbar and the left of its first issue. A real menu stays inside its window. Tab 1 can't hold either unless the figure grows by about 150px.
-- The tab writes the log itself; the SharedWorker only flushes and compacts. That is why "put" comes from the band under Tab 1 wide, and from Tab 1's foot on a phone, and never from the SharedWorker.
+- The tab writes the log itself; the SharedWorker only flushes and compacts. That is why "batch" comes from the band under Tab 1 wide, and from Tab 1's foot on a phone, and never from the SharedWorker.
 - A tab's first read of a file also loads its footer, Bloom filter and block index; step 5 shows only the page.
 
 Filming:

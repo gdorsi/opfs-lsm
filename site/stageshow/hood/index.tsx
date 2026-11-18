@@ -13,8 +13,9 @@ import "./hood.css";
 // player plays the chapters in a loop; each plays its beat and lands on its frame (`FRAMES[n]`, `BEATS[n]`, the text
 // and length `CHAPTERS.hood[n]`):
 //   0. Both tabs open the same database.
-//   1. In tab 1 the cursor opens an issue's status menu and picks Done. "put": the tab appends record 43 to the log
-//      itself; the committed row is the ack, marked "saved".
+//   1. In tab 1 the cursor opens an issue's status menu and picks Done. "batch": the tab appends record 43 to the log
+//      itself, one row that holds the 7 operations of the change (the issue and its index entries); the committed
+//      row is the ack, marked "saved".
 //   2. "BroadcastChannel": tab 1 tells tab 2, whose same issue turns Done in place.
 //   3. The SharedWorker folds the log into a new file, l0/41-43.sst, and the log's rows leave it. The SharedWorker's
 //      note changes from "a single instance for all the tabs" to the claim: it is the only code that writes files.
@@ -28,6 +29,8 @@ import "./hood.css";
 //      the log.
 // Simplifications, each drawn the way it reads:
 //   - The flush runs after one write. The engine waits for the log to reach `maxWalBytes`.
+//   - Records 41 and 42 are drawn as status changes too, 7 operations each. A new issue would be 5 (the issue and an
+//     entry in each of its four indexes), and an app's import of many issues one batch of thousands.
 //   - The log's rows leave it with the flush that folded them. The engine keeps them until the next flush, as a
 //     recovery copy no read uses.
 //   - Chapter 4 shows one get. An app query reads index entries and documents, so it loads several pages.
@@ -38,7 +41,7 @@ import "./hood.css";
 //   - Narrow, an open status menu draws past tab 1's window onto tab 2. A real menu stays inside its window.
 // Wide, tab 1 leads, since the click is there, and tab 2 lies over its right edge. Both run under the hood's band, which
 // is the cut. Narrow, no window covers another: tab 1 runs across the top, tab 2 sits under its right side, and the
-// hood follows. The lane left of tab 2 is free, so "put" drops down it from tab 1.
+// hood follows. The lane left of tab 2 is free, so "batch" drops down it from tab 1.
 
 type Props = PlayerProps & { readonly theme: SceneTheme };
 
@@ -403,6 +406,12 @@ function OlderRecord({ w }: { w: number }) {
   );
 }
 
+/**
+ * One row of the log: one batch. Setting an issue's status in LinearLite is 7 operations in one batch: the issue, and
+ * each of the three indexes that hold its status or modified time trades its old entry for a new one.
+ */
+const OPS = 7;
+
 function Record({ seq, id, lost }: { seq: number; id: string; lost?: boolean }) {
   return (
     <Row
@@ -410,7 +419,12 @@ function Record({ seq, id, lost }: { seq: number; id: string; lost?: boolean }) 
       className="hd-rec"
       data-lost={lost || undefined}
       lead={<span className="hd-seq">{seq}</span>}
-      title={<Text className="hd-mono">{`put ${id}`}</Text>}
+      title={
+        <span className="hd-batch">
+          <Text className="hd-mono">{id}</Text>
+          <Text className="hd-mono hd-ops">{` · ${OPS} ops`}</Text>
+        </span>
+      }
     >
       <Badge tone={lost ? "danger" : "success"} className="hd-badge">
         <Roll variant="fade">{lost ? "lost" : "saved"}</Roll>
@@ -441,7 +455,7 @@ function Engine({ s, compact }: { s: S; compact: boolean }) {
       <section className="hd-card" data-target="wal">
         <header className="hd-head">
           <Text className="hd-card-title">Write-ahead log</Text>
-          <Text className="hd-where">IndexedDB, one row per write</Text>
+          <Text className="hd-where">IndexedDB, one row per batch</Text>
         </header>
         {/* The card keeps its height as its rows leave, so the SharedWorker and the files never move. */}
         <div className="hd-rows">
@@ -599,7 +613,7 @@ export default function Hood({ theme, jump, playhead, onChapter }: Props) {
 
               {ready && (
                 <>
-                  <Connector show={s.put} route="straight" arrow label="put" from={{ x: putX, y: putFrom }} to={{ x: putX, y: wal.y - 5 }} />
+                  <Connector show={s.put} route="straight" arrow label="batch" from={{ x: putX, y: putFrom }} to={{ x: putX, y: wal.y - 5 }} />
                   {broadcast(s.bc, focusTitle1, focus1, focus2)}
                   {broadcast(s.bc2, secondTitle1, second1, second2)}
                   {compact ? (
