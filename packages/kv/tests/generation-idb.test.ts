@@ -20,6 +20,22 @@ function wipe(): Promise<void> {
   });
 }
 
+function putManifestCopy(bytes: Uint8Array): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open(`opfs-lsm-wal/${NAME}`);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction("meta", "readwrite");
+      tx.objectStore("meta").put(bytes, "manifest");
+      tx.onerror = () => reject(tx.error);
+      tx.oncomplete = () => {
+        open.result.close();
+        resolve();
+      };
+    };
+  });
+}
+
 beforeEach(async () => {
   __resetMemoryFsForTests(NAME);
   await wipe();
@@ -185,22 +201,26 @@ describe("generation recorded in IndexedDB", () => {
     await first.put(utf("b"), utf("2"));
     await ingest(first);
     await first.close();
-    await new Promise<void>((resolve, reject) => {
-      const open = indexedDB.open(`opfs-lsm-wal/${NAME}`);
-      open.onerror = () => reject(open.error);
-      open.onsuccess = () => {
-        const tx = open.result.transaction("meta", "readwrite");
-        tx.objectStore("meta").put(stale, "manifest");
-        tx.oncomplete = () => {
-          open.result.close();
-          resolve();
-        };
-      };
-    });
+    await putManifestCopy(stale!);
 
     const db = await openHarnessDb({ name: NAME, writerId: "w2", fs: inner, maxWalBytes });
     expect(text(await db.get(utf("a")))).toBe("1");
     expect(text(await db.get(utf("b")))).toBe("2");
+    await db.close();
+  });
+
+  it("a reopen reads the manifest file when the copy does not decode", async () => {
+    const inner = new MemoryFs();
+    const first = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, maxWalBytes });
+    await first.put(utf("a"), utf("1"));
+    await ingest(first);
+    await first.close();
+    const damaged = (await manifestCopy())!.slice();
+    damaged[damaged.length - 1]! ^= 0xff;
+    await putManifestCopy(damaged);
+
+    const db = await openHarnessDb({ name: NAME, writerId: "w2", fs: inner, maxWalBytes });
+    expect(text(await db.get(utf("a")))).toBe("1");
     await db.close();
   });
 });

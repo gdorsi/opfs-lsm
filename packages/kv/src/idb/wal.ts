@@ -765,11 +765,10 @@ export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: nu
 /**
  * Mark seqs <= through as ingested and record `generation` and its
  * `manifest` bytes in the same transaction. A tab that has not read them
- * jumps to the SST for that
- * generation. Deletes the records the previous ingest folded: the ones
- * this ingest folded stay until the next, so a power loss that keeps this
- * commit and loses the new manifest can still recover them (design.md,
- * "Recovery").
+ * jumps to the SST for that generation. Deletes the records the previous
+ * ingest folded: the ones this ingest folded stay until the next, so a
+ * power loss that keeps this commit and loses the new manifest can still
+ * recover them (design.md, "Recovery").
  */
 export async function advanceIngested(
   wal: IdBWal,

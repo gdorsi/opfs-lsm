@@ -31,7 +31,7 @@ import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
-import { decodeGeneration, loadGeneration, type RunMeta } from "./store/generation.js";
+import { loadGeneration, manifestFromCopy, type RunMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
 import { pointGet, readKeys, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
@@ -669,8 +669,7 @@ class DbImpl implements Db {
    */
   private async load(generation: Generation, ahead: boolean, copy?: Uint8Array): Promise<boolean> {
     if (this.has(generation, ahead)) return true;
-    const copied = copy && decodeGeneration(copy);
-    const known = copied?.generation === generation ? copied : undefined;
+    const known = manifestFromCopy(copy, generation);
     const meta = known ?? (await loadGeneration(this.fs, generation));
     if (!meta) return false;
     const paths = meta.runs.map((r) => r.path);

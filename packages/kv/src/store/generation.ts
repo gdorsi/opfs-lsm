@@ -146,6 +146,22 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   return { generation, runs, through, marks };
 }
 
+/**
+ * The manifest of `generation` from IndexedDB's copy of its bytes. Undefined
+ * when the copy is another generation's or does not decode: the manifest
+ * file decides then.
+ */
+export function manifestFromCopy(copy: Uint8Array | undefined, generation: Generation): GenerationMeta | undefined {
+  if (!(copy instanceof Uint8Array)) return undefined;
+  try {
+    const meta = decodeGeneration(copy);
+    return meta.generation === generation ? meta : undefined;
+  } catch (err) {
+    if (err instanceof CorruptDatabaseError) return undefined;
+    throw err;
+  }
+}
+
 /** The numbers of the manifest files in `m/`, newest first. */
 export async function manifestNumbers(fs: ReadFs): Promise<Generation[]> {
   const gens: Generation[] = [];

@@ -301,7 +301,7 @@ A tab installs a generation only when the WAL tail tells it to, during `sync` or
 installed generation never holds a seq past `appliedThrough`. If the tail names a generation the
 tab has not loaded, the tab loads the manifest and opens its runs outside the transaction, then
 reads the tail again. A flush or a compaction records the manifest's bytes in `meta.manifest`
-with its generation, and such a tail reads them: when the copy has that generation's number, the
+with its generation, and such a tail reads them: when the copy decodes to that generation, the
 tab opens the runs from it while it reads the manifest file. The load still fails without the
 file: a power loss can keep the copy and lose the file and its runs. Recovery never reads it.
 
