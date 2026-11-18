@@ -35,7 +35,7 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior, 
 
 ## Features
 
-- [Two-tab SharedWorker visibility](./two-tab.md) — peer put/get/ingest across two tabs.
+- [Two-tab SharedWorker visibility](./two-tab.md) — peer put/get/ingest across two tabs, then two database names side by side.
 - [Benchmark suite](./bench.md) — `pnpm bench <family>/` for kv vs IndexedDB, docstore vs Dexie, the Automerge adapter, and Yjs `KvPersistence`, with every read checked; `bench-smoke` for all of them at size `tiny`.
 - [Two-tab without BroadcastChannel](./two-tab-nobc.md) — same scenario with BC silenced.
 - [Two-tab local EngineHost](./two-tab-local.md) — one page, two handles, no SharedWorker.

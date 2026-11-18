@@ -78,8 +78,8 @@ Harness mapping (repo-native; do not invent a second browser stack):
 
 Stable proof strings (from harness stdout, not DOM coordinates):
 
-- Two-tab SharedWorker: `tabs=2`, `mode=SharedWorker`, `two-tab ok`, exit `0`.
-- Two-tab local: `tabs=1`, `mode=local EngineHost`, `two-tab ok`, exit `0`.
+- Two-tab SharedWorker: `tabs=2`, `mode=SharedWorker`, `two-databases ok`, `two-tab ok`, exit `0`.
+- Two-tab local: `tabs=1`, `mode=local EngineHost`, `two-databases ok`, `two-tab ok`, exit `0`.
 - Destroy: `other tab closed reason=destroyed`, `wal database gone`, `folder gone`, `reopened empty`, `never-opened left nothing`, `crashed tab: destroyDb finished`, `destroy ok`, exit `0`. The full list is in `features/destroy.md`.
 - Bench and bench-smoke: one `## <family>/<workload>: <title>` section per workload with a row per contender, no `## Failed runs` section, exit `0`. Every read is checked against a model, so exit `0` means every value was right.
 
@@ -103,7 +103,7 @@ Proof standards:
 
 - Exercise the SharedWorker + OPFS path (default harness). `MemoryFs`, `forceMemory`, and vitest alone do not count as browser proof.
 - Capture the action log and the resulting assertions the harness already prints (`two-tab ok`, post-ingest gets), not only exit code.
-- Side effects the harness checks: cross-tab get after put, pinned view across peer ingest, range after ingest, warm and post-ingest point gets. Do not stub IndexedDB/OPFS/SharedWorker.
+- Side effects the harness checks: cross-tab get after put, pinned view across peer ingest, range after ingest, warm and post-ingest point gets, and two database names side by side, each with its own SharedWorker, IndexedDB database and OPFS folder, that read only their own rows (`two-databases ok`). Do not stub IndexedDB/OPFS/SharedWorker.
 - Timing rows are evidence of a completed path. A performance claim needs `--reps 5` or more and `node bench/cli.ts compare` (see `features/bench.md`).
 
 ## Cleanup
