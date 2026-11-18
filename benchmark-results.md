@@ -1,6 +1,6 @@
 # Benchmark results, for the homepage update
 
-Every number below comes from `docs/benchmarks.md` on `main`. Each value is written exactly as it appears there. Full run files are under `docs/results/`. Every table was re-measured on 2026-11-17 on an Apple M5 Max, after #311, #312, #313 and #315.
+Every number below comes from `docs/benchmarks.md` on `main`. Each value is written exactly as it appears there. Full run files are under `docs/results/`. Every table was re-measured on 2026-11-17 on an Apple M5 Max, after #311, #312, #313 and #315, except sections 5 and 6: they come from one run on 2026-11-18 on an Apple M2 Pro, with #333.
 
 ## Rules for the homepage agent
 
@@ -71,24 +71,24 @@ Takeaway, using only values from the table: with four live screens open, a sync 
 
 ## 5. Goal benchmarks: a task tracker's screens (new)
 
-20,000 issues (about 19,500 left after deletes), 42,000 comments, 120 people, 24 projects and 30 labels, built from a sync history. Each library answers each screen with its own query API, and every answer is checked against an oracle. Apple M5 Max, medians of 3 runs, load average 6.2 to 7.4. Run: `docs/results/2026-11-17T20-27-42-apple-m5-max.md`. Cells are cold / warm in ms: cold is the first call in a fresh tab, warm repeats it.
+20,000 issues (about 19,500 left after deletes), 42,000 comments, 120 people, 24 projects and 30 labels, built from a sync history. Each library answers each screen with its own query API, and every answer is checked against an oracle. Apple M2 Pro, medians of 3 runs, load average 1.9 to 4.4. Run: `docs/results/2026-11-18T17-24-38-apple-m2-pro.md`. Cells are cold / warm in ms: cold is the first call in a fresh tab, warm repeats it.
 
 | Goal | Dexie | SQLite on OPFS | docstore (opfs-lsm) | Headline |
 | --- | ---: | ---: | ---: | --- |
-| Issues per status in a project | 5.4 / 2.4 | 4.0 / 0.14 | 2.7 / 0.17 | caveat (fastest cold, SQLite faster warm) |
-| First 50 todo issues, with assignee and label names | 2.3 / 0.95 | 5.2 / 0.41 | 7.2 / 0.32 | warm only |
-| The column a sprint close just emptied | 8.4 / 5.1 | 4.3 / 0.24 | 4.3 / 0.91 | no (SQLite faster warm) |
-| Rows at 90% of a project's list | 12.9 / 7.6 | 4.5 / 0.31 | 9.4 / 0.96 | no (no offset in docstore) |
-| An issue with its comments and their authors | 1.4 / 0.34 | 4.5 / 0.25 | 4.7 / 0.092 | warm only |
-| First 50 open issues by priority, with comment counts | 5.4 / 2.1 | 7.0 / 1.1 | 9.9 / 0.70 | warm only |
-| First 50 open issues with a label | 6.9 / 3.5 | 7.0 / 1.3 | 4.9 / 0.16 | yes (fastest cold and warm) |
-| First 50 open issues assigned to a person | 2.4 / 0.80 | 5.6 / 0.44 | 8.4 / 0.28 | warm only |
-| The 50 most recently updated issues | 2.0 / 1.3 | 5.1 / 0.68 | 3.4 / 0.39 | warm only |
-| Open issues per person, top 10 | 11.4 / 6.1 | 5.1 / 0.29 | 3.6 / 0.55 | caveat (fastest cold, SQLite faster warm) |
-| First 20 issues whose title contains a word | 8.8 / 5.2 | 6.2 / 0.74 | 6.5 / 0.18 | warm only |
-| Opening the store in a fresh tab (ms) | 1.7 | 22 | 13 | no (Dexie faster) |
+| Issues per status in a project | 5.9 / 3.3 | 5.1 / 0.17 | 3.6 / 0.11 | yes (fastest cold and warm) |
+| First 50 todo issues, with assignee and label names | 2.3 / 1.2 | 6.8 / 0.55 | 9.4 / 0.47 | warm only |
+| The column a sprint close just emptied | 7.7 / 5.8 | 5.9 / 0.28 | 6.4 / 1.7 | no (SQLite faster cold and warm) |
+| Rows at 90% of a project's list | 14.7 / 9.6 | 6.1 / 0.38 | 10.7 / 0.40 | no (SQLite faster cold, about level warm) |
+| An issue with its comments and their authors | 1.5 / 0.42 | 5.9 / 0.30 | 6.3 / 0.16 | warm only |
+| First 50 open issues by priority, with comment counts | 5.2 / 2.8 | 8.8 / 1.4 | 14.3 / 0.98 | warm only |
+| First 50 open issues with a label | 8.3 / 4.5 | 9.0 / 1.6 | 6.7 / 0.27 | yes (fastest cold and warm) |
+| First 50 open issues assigned to a person | 2.2 / 1.1 | 7.7 / 0.50 | 9.6 / 0.43 | warm only |
+| The 50 most recently updated issues | 2.2 / 1.3 | 6.7 / 0.78 | 4.6 / 0.69 | warm only |
+| Open issues per person, top 10 | 10.7 / 7.5 | 6.8 / 0.37 | 5.7 / 0.85 | caveat (fastest cold, SQLite faster warm) |
+| First 20 issues whose title contains a word | 11.9 / 7.2 | 7.6 / 0.88 | 9.3 / 0.31 | warm only |
+| Opening the store in a fresh tab (ms) | 2.1 | 24 | 14 | no (Dexie faster) |
 
-Summary sentence you may quote, since it is in `docs/benchmarks.md`: "Warm, docstore answers 7 of the 11 goals fastest". Cold, docstore is the slowest on 4 of the 11, so don't claim cold read speed.
+Summary sentence you may quote, since it is in `docs/benchmarks.md`: "Warm, docstore answers 8 of the 11 goals fastest". Cold, docstore is the slowest on 4 of the 11, so don't claim cold read speed.
 
 ## 6. Writing the tracker's history (new)
 
@@ -96,11 +96,11 @@ Same run as section 5.
 
 | Measure | Dexie | SQLite on OPFS | docstore (opfs-lsm) | Headline |
 | --- | ---: | ---: | ---: | --- |
-| Import, 47 batches of up to 1,000 rows | 2.4 s | 0.92 s | 0.62 s | yes |
-| Sync, 851 batches of about 50 changes | 4.8 s | 10.9 s | 2.5 s | yes |
-| One edit | 0.33 ms | 3.2 ms | 0.36 ms | no (Dexie faster) |
-| Sprint close, 1,054 issues in one batch | 114 ms | 72 ms | 50 ms | yes |
-| Re-reading the 50 latest issues after every 10th sync batch | 1.3 ms | 0.47 ms | 0.56 ms | no (SQLite faster) |
+| Import, 47 batches of up to 1,000 rows | 2.9 s | 1.0 s | 0.84 s | yes |
+| Sync, 851 batches of about 50 changes | 5.6 s | 11.5 s | 3.0 s | yes |
+| One edit | 0.40 ms | 2.4 ms | 0.46 ms | no (Dexie faster) |
+| Sprint close, 1,054 issues in one batch | 159 ms | 87 ms | 77 ms | yes |
+| Re-reading the 50 latest issues after every 10th sync batch | 1.4 ms | 0.54 ms | 0.65 ms | no (SQLite faster) |
 
 SQLite's commits wait for the disk (its default), where Dexie and docstore commit with Chrome's relaxed durability. Mention it next to any write comparison with SQLite.
 
@@ -133,6 +133,6 @@ For comparison: Dexie is 31.4 kB gzip. `y-indexeddb` adds 1.2 kB on top of Yjs.
 - 78× faster reads of missing keys than IndexedDB, 27× faster point reads, 12× faster random writes.
 - Yjs: 17× faster editing-trace persistence and 4.2× faster cold loads than y-indexeddb.
 - TanStack DB: 6.7× faster bulk inserts than its IndexedDB option. With four live screens, a sync batch takes 3.8 ms against 85 ms on SQLite.
-- Task tracker: a sync of 851 batches takes 2.5 s on docstore, against 4.8 s on Dexie and 10.9 s on SQLite. Warm, docstore answers 7 of the 11 goals fastest.
+- Task tracker: a sync of 851 batches takes 3.0 s on docstore, against 5.6 s on Dexie and 11.5 s on SQLite. Warm, docstore answers 8 of the 11 goals fastest.
 - No dropped frames while typing into a Yjs or Automerge document at one key per frame.
 - 18.8 kB at import, 47.6 kB after open.
