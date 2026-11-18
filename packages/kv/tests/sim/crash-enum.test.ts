@@ -24,6 +24,7 @@ import {
   type Step,
 } from "./crash.js";
 import { Oracle } from "./oracle.js";
+import { compactHost } from "../compact-host.js";
 
 /**
  * Crash-state enumeration (docs/research/corruption-hardening-test-suite.md,
@@ -344,7 +345,7 @@ describe("risks to target first (research note)", () => {
         await ingestDb(db);
       }
       await db.close();
-      await t.host.compact(t.name);
+      await compactHost(t.host, t.name);
       const report = await checkDatabase(t.fs, t.name);
       expect(report.problems).toEqual([]);
       expect(report.orphans).toEqual([]);
@@ -607,12 +608,12 @@ describe("crash leftovers", () => {
     const t = new Traced(`leak-${++runs}`);
     try {
       await t.load(ops, cut);
-      await t.host.compact(t.name); // the first pass sweeps
+      await compactHost(t.host, t.name); // the first pass sweeps
       const db = await t.open();
       await db.put(new TextEncoder().encode("x"), new TextEncoder().encode("x1"));
       await ingestDb(db);
       await db.close();
-      await t.host.compact(t.name);
+      await compactHost(t.host, t.name);
       expect((await checkDatabase(t.fs, t.name)).orphans).toEqual([]);
     } finally {
       await t.dispose();

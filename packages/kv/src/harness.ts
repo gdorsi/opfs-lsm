@@ -62,7 +62,8 @@ function backingOf(options: HarnessOpenOptions): Backing {
 
 export async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
   const { fs: _fs, ingest: _ingest, forceMemory: _forceMemory, ...rest } = options;
-  return openDbWith({ wrapFs: (fs) => new CountingFs(fs), ...rest, ...backingOf(options) });
+  return openDbWith({ // The tab only reads its fs, so a read-only one counts like a full one.
+    wrapFs: (fs) => new CountingFs(fs as AsyncFs), ...rest, ...backingOf(options) });
 }
 
 export async function destroyHarnessDb(options: HarnessOpenOptions): Promise<void> {

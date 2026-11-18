@@ -406,7 +406,7 @@ await tabB.sync();
 dec(await tabB.get(key)); // => "world"
 ```
 
-`openHarnessDb` also takes `fs`, `ingest`, `writerId`, `trace`, and `maxWalBytes`, which replaces the 1 MiB flush trigger.
+`openHarnessDb` also takes `fs`, `ingest`, `writerId`, and `maxWalBytes`, which replaces the 1 MiB flush trigger.
 
 ## Options
 

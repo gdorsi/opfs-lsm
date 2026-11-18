@@ -7,6 +7,7 @@ import { installFaultWal } from "./fault-wal.js";
 import { committedLog, Traced } from "./crash.js";
 import { show, type Oracle, type OracleEntry } from "./oracle.js";
 import { ingest as ingestDb, EngineHost } from "../../src/testing.js";
+import { compactHost } from "../compact-host.js";
 
 /**
  * I/O-error sweep (docs/research/corruption-hardening-test-suite.md,
@@ -223,7 +224,7 @@ async function run(kinds: ReadonlySet<SiteKind>, failAt: number | undefined, per
     const report = await checkDatabase(t.fs, t.name);
     expect(report.problems, "checkDatabase after heal").toEqual([]);
     expectState(report.state, log.stateAt(), "files after heal");
-    await new EngineHost(() => t.fs).compact(t.name);
+    await compactHost(new EngineHost(() => t.fs), t.name);
     const swept = await checkDatabase(t.fs, t.name);
     expect(swept.orphans, "orphans after a fresh host's sweep").toEqual([]);
     expect(swept.staleManifests, "stale manifests after a fresh host's sweep").toEqual([]);

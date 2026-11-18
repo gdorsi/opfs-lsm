@@ -111,11 +111,6 @@ export class EngineHost {
     return this.db(name).ingest(waitForCompaction);
   }
 
-  /** Wait for a flush in flight, then compact until the levels are in shape. Folds no WAL. */
-  async compact(name: string): Promise<void> {
-    return this.db(name).compactNow();
-  }
-
   /**
    * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
    * with no tab asking. Reads up to `maxWalBytes` of the waiting records in the
@@ -146,19 +141,19 @@ export class EngineHost {
  * only to install the merged run.
  */
 class HostedDb {
-  private fsReady: Promise<CountingFs> | undefined;
+  private fsReady: Promise<CountingFs> | undefined = undefined;
   private readonly counts: HostCounts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
   private readonly publishTurn = serial();
   private readonly foldTurn = serial();
   /** Settles at the next compaction install, for a flush that waits on a full L0. */
   private nextInstall: { readonly settled: Promise<void>; readonly resolve: () => void } | undefined;
-  private watching: IngestWatch | undefined;
+  private watching: IngestWatch | undefined = undefined;
   /**
    * The generation this host last published or found intact, so `reconcile`
    * checks a recorded manifest's runs once, not on every flush. A tab that
    * records another generation makes the host check again.
    */
-  private trusted: Trusted;
+  private trusted: Trusted = undefined;
   /** Set while `destroy` waits for the locks, so a compaction pass stops at its next step. */
   private destroying = false;
   /**
@@ -226,25 +221,6 @@ class HostedDb {
     return {
       generation: await this.withWal(async (wal) => (await wal.meta()).generation ?? GENERATION_NONE),
     };
-  }
-
-  /**
-   * Wait for a fold in flight, reconcile and remove old manifests as a fold
-   * that found nothing to fold does, then compact. Removes no run file here:
-   * that needs the compaction lock, and `compactPass` does it under it.
-   */
-  async compactNow(): Promise<void> {
-    const fs = await this.fs();
-    await this.foldTurn(() =>
-      this.exclusive(() =>
-        this.withWal(async (wal) => {
-          const { generation } = await reconcile(wal, fs, this.trusted);
-          this.trusted = generation;
-          await unlessHeld(this.name, () => reclaimManifests(fs, generation));
-        }),
-      ),
-    );
-    await this.compact();
   }
 
   /**
@@ -625,11 +601,7 @@ export function attachEngineHostPort(
           return;
         }
         case "watch":
-          host.watch(msg.name, {
-            maxWalBytes: msg.maxWalBytes,
-            compactionMemoryBytes: msg.compactionMemoryBytes,
-            maxBytes: msg.maxBytes,
-          });
+          host.watch(msg.name, msg);
           return;
         case "unwatch":
           host.unwatch(msg.name);

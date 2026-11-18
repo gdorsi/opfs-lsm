@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConstraintError, type Db, type Pressure } from "../src/index.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { createLocalIngestClient, EngineHost, ingest, MemoryFs, openHarnessDb, settle } from "../src/testing.js";
+import { compactHost } from "./compact-host.js";
 
 const KiB = 1024;
 const CAP = 200 * KiB;
@@ -96,7 +97,7 @@ describe("maxBytes", () => {
     const [p] = calls;
     expect(p).toEqual({ bytes: measured[0], maxBytes: CAP, need: measured[0]! - (CAP * 4) / 5 });
     await turns();
-    await host.compact(name);
+    await compactHost(host, name);
     expect(calls.length).toBe(1);
     await settle(a);
     await turns();
@@ -113,7 +114,7 @@ describe("maxBytes", () => {
     await open();
     await fill(a, new Set(), 0, 300);
     await until(() => warn.mock.calls.length === 2, "a warning from each capped handle");
-    await host.compact(name);
+    await compactHost(host, name);
     await turns();
     expect(warn).toHaveBeenCalledTimes(2);
     expect(String(warn.mock.calls[0]![0])).toMatch(`under maxBytes ${CAP}`);
@@ -189,7 +190,7 @@ describe("maxBytes", () => {
     await turns(200);
     expect(calls).toBe(1);
     expect(error).toHaveBeenCalledWith(expect.stringMatching(/onPressure handler/), expect.any(Error));
-    await host.compact(name);
+    await compactHost(host, name);
     await until(() => calls === 2, "a second offer after the next pass");
     await db.close();
     host = new EngineHost(() => fs);
@@ -211,13 +212,13 @@ describe("maxBytes", () => {
       const calls: Pressure[] = [];
       db.onPressure(async (p) => void calls.push(p));
       await fill(db, new Set(), 0, 300);
-      await host.compact(name);
+      await compactHost(host, name);
       await turns();
       expect(spy).toHaveBeenCalled();
       expect(calls).toEqual([]);
 
       estimate(901, 1000);
-      await host.compact(name);
+      await compactHost(host, name);
       await until(() => calls.length === 1, "a quota offer");
       expect(calls).toEqual([{ bytes: await runBytes(), maxBytes: 900, need: 901 - 720 }]);
     });
@@ -232,7 +233,7 @@ describe("maxBytes", () => {
       db.onPressure(async (p) => void calls.push(p));
       const model = new Set<number>();
       await fill(db, model, 0, 300);
-      await host.compact(name);
+      await compactHost(host, name);
       await settle(db);
       await turns();
       expect(calls).toEqual([]);
@@ -254,7 +255,7 @@ describe("maxBytes", () => {
       await db.batch((tx) => tx.deleteRange({}));
       await ingest(db);
       const spy = estimate(901, 1000);
-      await host.compact(name);
+      await compactHost(host, name);
       await turns();
       expect(spy).not.toHaveBeenCalled();
 
@@ -262,7 +263,7 @@ describe("maxBytes", () => {
       await read;
       // One pass sweeps the file, and a pass after it reads the estimate.
       for (let i = 0; i < 3 && calls.length === 0; i++) {
-        await host.compact(name);
+        await compactHost(host, name);
         await turns();
       }
       expect(calls.length).toBe(1);

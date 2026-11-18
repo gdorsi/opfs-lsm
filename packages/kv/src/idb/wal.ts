@@ -478,7 +478,7 @@ export class TabWal extends IdBWal {
    */
   groupSizes: number[] = [];
   /** The group whose transaction is open, from its creation to its end. */
-  private open: Group | undefined;
+  private open: Group | undefined = undefined;
   /** Appends that arrived after `open` went inactive: the next group. */
   private queued: GroupEntry[] = [];
   private closing = false;

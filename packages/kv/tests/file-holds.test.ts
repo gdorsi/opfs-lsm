@@ -10,6 +10,7 @@ import {
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { BrowserFs } from "../src/opfs/browser-fs.js";
 import { checkDbName } from "../src/check.js";
+import { compactHost } from "./compact-host.js";
 
 const NAME = "file-holds";
 const enc = new TextEncoder();
@@ -142,14 +143,14 @@ describe("host boot sweep", () => {
     const fs = new MemoryFs();
     const { db, host } = await openWithHost(fs);
     await threeRuns(db);
-    await host.compact(NAME);
+    await compactHost(host, NAME);
     const live = runFiles(fs);
     // What a failed install or another host's compaction leaves behind.
     const w = await fs.create("l1/c9.0-100.sst");
     await w.write(utf("orphan"));
     await w.finish();
 
-    await host.compact(NAME);
+    await compactHost(host, NAME);
     expect(runFiles(fs)).toEqual(live);
     await db.close();
   });

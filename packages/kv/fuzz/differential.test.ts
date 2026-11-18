@@ -4,7 +4,7 @@ import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns, unpackHits } from "../src/store/block-scan.js";
 import type { LayerEntry } from "../src/store/cursor.js";
-import { encodeRun as encodeWasmRun, openMergeIn, type MergeSpec } from "../src/store/engine.js";
+import { encodeRun as encodeWasmRun, lz4DecompressIn, openMergeIn, scanBlockContainsIn, type MergeSpec } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { openMergeTs } from "../tests/oracle/merge-ts.js";
 import { BlockEntries, blockBytes, type EncodedRun, type SstEntry } from "../src/store/sst.js";
@@ -84,7 +84,7 @@ const plain = (es: readonly { kind: string; key: Uint8Array; value?: Uint8Array;
 /** Both block scans of one framed block: `scanBlockContains` and the TypeScript cursor a tab falls back to. */
 async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array): Promise<"same" | "differ" | "rejected"> {
   return bounded("scan_block_contains (both)", () => {
-    const w = wasmOutcome("scanBlockContains", () => [...unpackHits(wasm.scanBlockContains(framed, lz4, packPatterns([pattern])))]);
+    const w = wasmOutcome("scanBlockContains", () => [...unpackHits(scanBlockContainsIn(wasm, framed, lz4, packPatterns([pattern])))]);
     const t = tsOutcome("BlockEntries", () => {
       const b = blockBytes(framed, new DataView(framed.buffer, framed.byteOffset, framed.byteLength), 0, { offset: 0, length: framed.byteLength }, lz4 ? "lz4" : "raw");
       const walk = new BlockEntries(b);
@@ -171,7 +171,7 @@ describe("wasm against TypeScript", () => {
             const size = new DataView(block.buffer, block.byteOffset).getUint32(0, true);
             const src = mutate ? applyMutations(block.subarray(4), ms, block) : block.subarray(4);
             await bounded("lz4 (both)", () => {
-              const w = wasmOutcome("lz4Decompress", () => wasm.lz4Decompress(src, size));
+              const w = wasmOutcome("lz4Decompress", () => lz4DecompressIn(wasm, src, size));
               const t = tsOutcome("lz4DecompressJs", () => lz4DecompressJs(src, size));
               if (!mutate) expect(w.ok && t.ok).toBe(true);
               if (w.ok && t.ok) expect(sameBytes(w.value, t.value)).toBe(true);

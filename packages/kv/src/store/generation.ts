@@ -1,4 +1,4 @@
-import type { AsyncFs } from "../opfs/async-fs.js";
+import type { AsyncFs, ReadFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { asGeneration, asSeq, GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "../seq.js";
 import { crc32 } from "./crc32.js";
@@ -147,7 +147,7 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
 }
 
 /** The numbers of the manifest files in `m/`, newest first. */
-export async function manifestNumbers(fs: AsyncFs): Promise<Generation[]> {
+export async function manifestNumbers(fs: ReadFs): Promise<Generation[]> {
   const gens: Generation[] = [];
   for (const name of await fs.list("m")) {
     const n = Number(name.replace(/\.mft$/, ""));
@@ -163,7 +163,7 @@ export async function manifestNumbers(fs: AsyncFs): Promise<Generation[]> {
  * file whole).
  */
 export async function probeManifest(
-  fs: AsyncFs,
+  fs: ReadFs,
   generation: Generation,
 ): Promise<GenerationMeta | "missing" | "corrupt"> {
   if (generation === GENERATION_NONE) return GENERATION_ZERO;
@@ -179,7 +179,7 @@ export async function probeManifest(
 
 /** Manifest `generation`, or undefined when it is missing, empty or does not decode. */
 export async function readManifest(
-  fs: AsyncFs,
+  fs: ReadFs,
   generation: Generation,
 ): Promise<GenerationMeta | undefined> {
   const m = await probeManifest(fs, generation);
@@ -187,7 +187,7 @@ export async function readManifest(
 }
 
 /** True when every run `meta` lists is on disk and not empty. */
-export async function isIntact(fs: AsyncFs, meta: GenerationMeta): Promise<boolean> {
+export async function isIntact(fs: ReadFs, meta: GenerationMeta): Promise<boolean> {
   for (const run of meta.runs) {
     const head = await fs.read(run.path, 0, 1);
     if (!head || head.byteLength === 0) return false;
@@ -222,7 +222,7 @@ export async function publishL0(
 
 /** The manifest of `generation`, or undefined when a newer publish removed it. */
 export async function loadGeneration(
-  fs: AsyncFs,
+  fs: ReadFs,
   generation: Generation,
 ): Promise<GenerationMeta | undefined> {
   if (generation === GENERATION_NONE) return GENERATION_ZERO;
@@ -278,14 +278,14 @@ export async function reclaimRuns(
  * throws, and a manifest that is gone throws too: nothing may be swept
  * against it.
  */
-export async function liveRuns(fs: AsyncFs, recorded: Generation): Promise<string[]> {
+export async function liveRuns(fs: ReadFs, recorded: Generation): Promise<string[]> {
   const meta = await loadGeneration(fs, recorded);
   if (!meta) throw new CorruptDatabaseError(`manifest ${recorded} is gone`);
   return meta.runs.map((run) => run.path);
 }
 
 /** Every run file on disk, from the `l<n>/` directories. */
-export async function listRuns(fs: AsyncFs): Promise<string[]> {
+export async function listRuns(fs: ReadFs): Promise<string[]> {
   const out: string[] = [];
   for (const dir of await fs.list("")) {
     if (levelOfDir(dir) === undefined) continue;

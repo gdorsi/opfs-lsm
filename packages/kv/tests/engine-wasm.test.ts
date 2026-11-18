@@ -4,6 +4,8 @@ import {
   encodeRun,
   ensureEngine,
   flatEngine,
+  lz4DecompressIn,
+  scanBlockContainsIn,
 } from "../src/store/engine.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { crc32 } from "../src/store/crc32.js";
@@ -182,13 +184,13 @@ describe("engine status codes", () => {
 
   it("turns a negative status into CorruptDatabaseError", () => {
     const engine = flatEngine(stub(-4));
-    expect(() => engine.lz4Decompress(new Uint8Array(4), 8)).toThrow(CorruptDatabaseError);
-    expect(() => engine.scanBlockContains(new Uint8Array(4), false, new Uint8Array(0))).toThrow(CorruptDatabaseError);
+    expect(() => lz4DecompressIn(engine, new Uint8Array(4), 8)).toThrow(CorruptDatabaseError);
+    expect(() => scanBlockContainsIn(engine, new Uint8Array(4), false, new Uint8Array(0))).toThrow(CorruptDatabaseError);
   });
 
   it("turns -11 into an error naming the operation and input size", () => {
     const engine = flatEngine(stub(-11));
-    const run = () => engine.lz4Decompress(new Uint8Array(40), 8);
+    const run = () => lz4DecompressIn(engine, new Uint8Array(40), 8);
     expect(run).toThrow(EngineOutOfMemoryError);
     expect(run).not.toThrow(CorruptDatabaseError);
     expect(run).toThrow(/lz4_decompress.*40 bytes/);
@@ -197,7 +199,7 @@ describe("engine status codes", () => {
   it("reports a refused input region as an out of memory error", () => {
     const instance = stub(0);
     (instance.exports as unknown as { input_ptr: () => number }).input_ptr = () => 0;
-    expect(() => flatEngine(instance).lz4Decompress(new Uint8Array(40), 8)).toThrow(EngineOutOfMemoryError);
+    expect(() => lz4DecompressIn(flatEngine(instance), new Uint8Array(40), 8)).toThrow(EngineOutOfMemoryError);
   });
 });
 
@@ -205,16 +207,17 @@ describe("a context where the wasm module does not load", () => {
   it("rejects ensureEngine and openDb with StorageUnavailableError, and loads on a later try", async () => {
     vi.resetModules();
     const engine = await import("../src/store/engine.js");
-    engine.setEngineUrlForTests("./no-such-engine.wasm");
     const { StorageUnavailableError } = await import("../src/errors.js");
     const { openHarnessDb } = await import("../src/testing.js");
+    const { readFile } = await import("node:fs/promises");
     try {
+      engine.readEngineWith(() => Promise.reject(new Error("no such engine")));
       await expect(engine.ensureEngine()).rejects.toBeInstanceOf(StorageUnavailableError);
       await expect(openHarnessDb({ name: "no-wasm", forceMemory: true })).rejects.toBeInstanceOf(
         StorageUnavailableError,
       );
     } finally {
-      engine.setEngineUrlForTests(undefined);
+      engine.readEngineWith((url) => readFile(url));
     }
     await engine.ensureEngine();
     const db = await openHarnessDb({ name: "no-wasm", forceMemory: true });
