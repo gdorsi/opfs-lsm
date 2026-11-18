@@ -2,9 +2,9 @@
 
 Gold: `hero-demo` and `payout-flow`. Kept from them: named targets, a cursor that does one thing and then rests, connectors that arrive and stay, and a payoff that holds. Framing follows the device-pair pattern: Tab 1 is the hero and bleeds under the cut, Tab 2 is a satellite on Tab 1's wider side, one gutter from the right edge, and the stage is split by a band drawn over both windows. The band's top edge is the cut, and the engine sits under it. On a phone no window covers another (see Layout).
 
-Changed from the gold: the scene is not on a clock. It is a stepped scene (`site/stageshow/stepped.tsx`, ported from the deck's `Stepped`): the page's Next button plays one beat, and the scene then holds on that step's frame until the next press. Back, Start over, a reload and a jump of two steps land on the frame at once, with no beat. A press while a beat plays waits for it: Next plays the next beat after it, Back snaps after it ends. Under reduced motion each step is its own still.
+Changed from the gold: the scene is told in chapters and plays with a player (`site/stageshow/chapters.tsx`, and the page's `PlayerBar.vue`, after the demo player on everr.dev). The chapters play in a loop: each plays its beat, then holds its frame for reading, for the time its entry gives; the last goes back to the first by the same transitions. On the stage's bottom edge, pause, the chapters as colored segments with a bar at the play position and the chapter's name in a flag under it, and the time. Under them, the playing chapter's title and detail. A segment starts its chapter from the frame before it. Pause holds the beat at its next wait; a cursor move or a CSS transition already running finishes. Under reduced motion each chapter is its own still, and the segments only jump.
 
-Steps (`STEPS.hood[n]` in `site/.vitepress/theme/figures.ts` is the caption, `FRAMES[n]` the whole scene, `BEATS[n]` what plays on the way in):
+Chapters (`CHAPTERS.hood[n]` in `site/.vitepress/theme/figures.ts` is the label, title, detail and length, `FRAMES[n]` the whole scene, `BEATS[n]` what plays):
 1. Both tabs open the same database. No beat.
 2. pick, put (about 5s): Tab 1's status opens LinearLite's menu, the cursor picks Done, and record 43 is written to the write-ahead log and shows "saved".
 3. broadcast (2s): a BroadcastChannel line runs to Tab 2, and its row turns Done.
@@ -18,7 +18,7 @@ Layout:
 - Phone (358 x 864, below 720): the compact layout that `main` picked from three phone prototypes, grown by what the steps add. No window covers another. Tab 1 is 380 x 154: the toolbar and the two issues the story changes, cut under the second, and it runs off the right. Tab 2 is 292 wide, sits under Tab 1's right side, keeps its toolbar, shows the same two issues and the older one that step 5 reads, runs off the right and ends under the band. "put" leaves Tab 1's foot and drops down the free lane left of Tab 2 into the log, for both writes (records 43 and 44). "BroadcastChannel" drops from Tab 1's foot onto Tab 2's top, for both broadcasts. The cache pill hangs under Tab 2 in the band, right-aligned. The engine's type is a step larger than wide. The log keeps three rows, and the "Power lost" mark sits in the log card's empty lower half. The SST card lists `l0/41-43.sst` (after the flush), `l1/c7.0.sst` with its page strip, and a placeholder row that bleeds off the bottom.
 - Against the phone design on `main` (358 x 728) the height grows by 136px: 38 for Tab 1's second issue, 76 for two more issues in Tab 2, and 20 for the cache pill under the cut. The foot cuts the SST card at the same depth as `main`'s, about 138px down, which with the new file listed leaves `l1/c7.0.sst` and its page strip whole.
 
-Captured on the home page, at `figure.stepped .illustration-stage`:
+Captured on the home page, at `figure.stepped .illustration-stage`, while the scene was stepped with Next (the beats and frames are the same in the player):
 - Widths: 1440 (wide) and 390 (compact, the phone design below 720).
 - Looks: light and dark.
 - `--gate` on each of the six beats at both widths in both looks (24 runs).
@@ -26,6 +26,10 @@ Captured on the home page, at `figure.stepped .illustration-stage`:
 - Every step as a page screenshot at 390 light and at 1440 dark, taken after the beat settled.
 
 Gate (the verdict line of each of the 24 runs and of the two whole-story runs): `rehearsal passed (necessary, not sufficient: references/verify.md and the fresh eye in review.md still stand)`. No `framing:`, `touching`, `steps in its box` or `hard edge` line stands in any of them.
+
+Captured with the player, at `figure.player .illustration-stage`, with the shipped film: `--gate --states` on the whole loop and into the second pass (62 to 70s) at 1440, twice in dark and once in light, and on the first 16s twice in dark. Every run ends `rehearsal passed`.
+- The first loop snapped from the last chapter back to the first: five `appears with no entrance` and `vanishes with no exit` lines (record 44's row, the new file's row, the cache pill, the SharedWorker's note) → the wrap plays the transitions back to the first frame → cleared.
+- `steps in its box: div.ss-menu__item "Done"` once, on the second pass through the first menu, in one of the three loop runs. Not seen on the first pass in any run, nor in the light run's second pass.
 
 Film:
 - `framing: narrower than tall` (390) → cleared by the compact layout.
@@ -43,7 +47,7 @@ Film:
 - Fixed while filming, before the rebase: the SharedWorker's two note lines started 5px apart; tab 2's window title and the SharedWorker card moved by layout (`will-change: transform`); the cache pill landed on a transform (same); the copy of the page that flies to the cache appeared and vanished without a fade (it buds off the lit page and fades out over the meter as the meter fills); "Power lost" sat on a half pixel (even-sized pill, 16px icon) and landed on a transform (`will-change`).
 
 Review (a fresh reviewer, given the frames, this folder's gold and the page; not this file). It saw the figure before `main`'s phone layout was merged, so it did not see the Layout above:
-- Fixed: the pressed look of the status icon showed in Tab 2 as well as Tab 1 (hover mirrored across tabs); the power cut dimmed the windows and the hood but left the stage's ground bright (the ground dims too); Tab 2's dates were not in order (now Nov 12, 11, 9); the caption's first line sat 5px above the buttons at 1440; "Start over" was wider than "Next" and moved Back by 5px (both buttons are 112px wide at least); the phone caption and its sticky bar were 168px tall (14px type, three lines, about 132px).
+- Fixed: the pressed look of the status icon showed in Tab 2 as well as Tab 1 (hover mirrored across tabs); the power cut dimmed the windows and the hood but left the stage's ground bright (the ground dims too); Tab 2's dates were not in order (now Nov 12, 11, 9); and two of the Next and Back controls the player has since replaced.
 - Not changed, my call: step 6 repeats step 2's menu on purpose, so the second write reads as another change like the first; the log shows "Empty. Records 41 to 43 are in a file." after the flush because that is what the flush does; the reboot first shows the state before the crash and then undoes it piece by piece, so the loss is seen as a transition (the alternative, reverting in the dark and lighting up on the recovered state, shows no loss); the "32 KB of 256 MiB" units are the ones design.md uses.
 - Kit behavior, not changed (the kit is read-only here): the status menu fades in over the row text for about 120ms, the cursor's pointing hand swaps to the arrow by a short cross-fade, and avatars take their color from the name.
 - Open, with the fix I would make:
@@ -51,7 +55,7 @@ Review (a fresh reviewer, given the frames, this folder's gold and the page; not
   - At 1440 the engine gets the smaller and emptier half of the frame (cards of two to four rows, an empty strip around the SharedWorker). Fix: raise the cut and widen the cards.
   - The cursor stays full white over the dimmed stage for about a second after the power cut.
   - The nine tiles on `l1/c7.0.sst` carry no words; the caption names the 32 KB page.
-  - The phone design is 864px, still taller than a phone screen, and the sticky caption and buttons (about 132px) cover its foot. `main`'s layout does fix the part that hurt: Tab 1 and the engine are no longer 560px apart with Tab 2 between them. The parts each step acts on now lie within 540px of each other (step 2: Tab 1's first issue to the log's records; step 5: Tab 2's older issue to the `l1/c7.0.sst` row), so each step fits above the sticky bar once the page is scrolled to it, and Next stays reachable. A shorter design, one tab and the one card each step touches moved by a Camera, would still be shorter, but it is a redesign of `main`'s layout, so it is not done.
+  - The phone design is 864px, still taller than a phone screen. `main`'s layout does fix the part that hurt: Tab 1 and the engine are no longer 560px apart with Tab 2 between them. The parts each chapter acts on now lie within 540px of each other (chapter 2: Tab 1's first issue to the log's records; chapter 5: Tab 2's older issue to the `l1/c7.0.sst` row). The player and the playing chapter's text sit under the stage, so on a phone they come into view only once the reader has scrolled down to the engine. A shorter design, one tab and the one card each chapter touches moved by a Camera, would still be shorter, but it is a redesign of `main`'s layout, so it is not done.
 
 Assumptions (each drawn the way it reads):
 - The flush runs after one write. The engine waits for the write-ahead log to reach `maxWalBytes`.
@@ -65,19 +69,21 @@ Assumptions (each drawn the way it reads):
 - A tab's first read of a file also loads its footer, Bloom filter and block index; step 5 shows only the page.
 
 Filming:
-- `film.mjs` as shipped cannot press a page button, so the beats were filmed with a copy of it kept outside the repository. The copy adds `--from n` (scroll the figure into view, wait 2s for its script to start, click Next n times in one tick so the stage lands on step n by a snap, wait 2.6s, then empty the box and motion recorders, which run from page load and would otherwise judge that snap as a jump) and `--press-every ms --press-count n` (click Next on a timer once filming starts). The beat into step k, counting steps from 1 as above, is filmed with `--from k-2 --press-every 900 --press-count 1`. The whole-story runs use `--press-every 9000 --press-count 6 --states`.
-- Everything else is the shipped film, `--gate`, at the real page URL, selecting `figure.stepped .illustration-stage`.
+- The player plays by itself, so the shipped `film.mjs` films it as it is (`--gate --states --states-for 70000` for the whole loop). The stepped runs above were filmed while the scene was stepped with Next, which `film.mjs` as shipped cannot press, so the beats were filmed with a copy of it kept outside the repository. The copy adds `--from n` (scroll the figure into view, wait 2s for its script to start, click Next n times in one tick so the stage lands on step n by a snap, wait 2.6s, then empty the box and motion recorders, which run from page load and would otherwise judge that snap as a jump) and `--press-every ms --press-count n` (click Next on a timer once filming starts). The beat into step k, counting steps from 1 as above, is filmed with `--from k-2 --press-every 900 --press-count 1`. The whole-story runs use `--press-every 9000 --press-count 6 --states`.
+- Everything else is the shipped film, `--gate`, at the real page URL, selecting `figure.stepped .illustration-stage` (now `figure.player .illustration-stage`).
 - Page screenshots were taken with Playwright in headless Chrome: the stage alone, after waiting 9s for each beat to settle, in a 1500px-high viewport at 390 and a 1000px-high one at 1440.
 
+Checked by hand with the player, in Chrome: pause holds the time and the scene, a segment jumps to its chapter and plays on, no horizontal scroll, at 1440 and 390, light and dark; under reduced motion the pause and time are gone and a segment shows its chapter's still.
+
 Not checked since `main`'s phone layout was merged in (checked before, on the branch's own phone design):
-- The host's controls with `layout.mjs`, Next, Back, Start over, the arrow keys, a press during a beat, a reload, and horizontal scroll, at 1440 and 390.
-- Reduced-motion stills of each step.
-- A fresh-eye review (`review.md`) of the merged phone layout.
+- The host's controls with `layout.mjs`.
+- Reduced-motion stills of every chapter (the last one was checked).
+- A fresh-eye review (`review.md`) of the merged phone layout or of the player.
 
 Not checked:
 - Safari, Firefox and a real phone. All filming was headless Chrome on a Mac.
-- Widths between 390 and 1152, where the stage scales, and 648 to 719, where the page switches the controls from a column to a row while the phone design still shows.
+- Widths between 390 and 1152, where the stage scales.
 - Live frame rate: the film's clock proves geometry, not smoothness.
-- A long burst of presses on Next during a beat: two quick presses were checked, before the merge.
-- Screen reader output of the live caption beyond its markup (`aria-live="polite"`, a "Step n of 7." prefix); focus order; hover states of the buttons.
+- A burst of segment clicks during a beat, and pause and play many times in one beat.
+- Screen reader output and focus order of the player; touch on the segments' hover preview.
 - The merged page's other sections (hero, notices, benchmarks) beyond the figure's own section.

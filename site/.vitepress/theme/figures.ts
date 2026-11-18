@@ -13,18 +13,66 @@ export const FIGURES: Partial<Record<SceneName, string>> = {
     "A tab puts a record, which becomes a row of the write-ahead log in IndexedDB: that row is the ack. The SharedWorker flushes the rows of the log into one SST file in OPFS and truncates the log. The tab reads the SST files itself.",
 };
 
+/** One chapter of an illustration that plays with a player. */
+export type Chapter = {
+  /** The chapter's name on the player's timeline. */
+  readonly label: string;
+  /** What the chapter shows, in a few words, under the figure. */
+  readonly title: string;
+  /** The chapter told in full, shown with its title while it plays. */
+  readonly detail: string;
+  /** How long the chapter plays: its beat, then its frame held for reading. */
+  readonly ms: number;
+};
+
 /**
- * The steps of an illustration the viewer clicks through, one caption each. The page shows the caption under the
- * figure and passes the step to the scene, whose frames and beats line up with these index for index.
+ * The chapters of an illustration that plays with a player: pause, the chapters on a timeline, and their titles. The
+ * page passes the scene the chapter to play from, and the scene's frames and beats line up with these index for
+ * index.
  */
-export const STEPS: Partial<Record<SceneName, readonly string[]>> = {
+export const CHAPTERS: Partial<Record<SceneName, readonly Chapter[]>> = {
   hood: [
-    "Two tabs of LinearLite open the same kv database.",
-    "Tab 1 marks an issue Done. The write becomes one row in the write-ahead log, a list of recent writes kept in IndexedDB.",
-    "Tab 1 tells tab 2 over a BroadcastChannel, a message channel between tabs, and tab 2 shows the change.",
-    "The SharedWorker, a background script all tabs share, moves the log into a sorted file in OPFS, the browser's private file system. No other code writes files.",
-    "Tab 2 reads an older issue. It loads only the 32 KB page of the file that holds it, into a cache with a size cap.",
-    "Tab 1 saves another change, record 44, and IndexedDB acks it. The power goes out before the operating system writes it to disk.",
-    "After the reboot, kv opens with every write up to record 43 and none after it. A power loss can lose the newest writes, never one from the middle.",
+    {
+      label: "Open",
+      title: "Two tabs share one database",
+      detail: "Both tabs run LinearLite, the app at the top of this page, on the same kv database.",
+      ms: 5000,
+    },
+    {
+      label: "Write",
+      title: "A write is one row in IndexedDB",
+      detail: "Tab 1 marks an issue Done. The write becomes one row in the write-ahead log, a list of recent writes kept in IndexedDB.",
+      ms: 9000,
+    },
+    {
+      label: "Broadcast",
+      title: "The other tab sees it at once",
+      detail: "Tab 1 tells tab 2 over a BroadcastChannel, a message channel between tabs, and tab 2 shows the change.",
+      ms: 8000,
+    },
+    {
+      label: "Flush",
+      title: "One SharedWorker writes every file",
+      detail: "The SharedWorker, a background script all tabs share, moves the log into a sorted file in OPFS, the browser's private file system. No other code writes files.",
+      ms: 9500,
+    },
+    {
+      label: "Read",
+      title: "A read loads one page",
+      detail: "Tab 2 reads an older issue. It loads only the 32 KB page of the file that holds it, into a cache with a size cap.",
+      ms: 9000,
+    },
+    {
+      label: "Power cut",
+      title: "The power goes out",
+      detail: "Tab 1 saves another change, record 44, and IndexedDB acks it. The power goes out before the operating system writes it to disk.",
+      ms: 10000,
+    },
+    {
+      label: "Reopen",
+      title: "kv reopens without gaps",
+      detail: "After the reboot, kv opens with every write up to record 43 and none after it. A power loss can lose the newest writes, never one from the middle.",
+      ms: 9500,
+    },
   ],
 };

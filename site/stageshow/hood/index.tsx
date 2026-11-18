@@ -1,17 +1,17 @@
 import { ZapOff } from "lucide-react";
 import type { ReactNode } from "react";
-import { STEPS } from "../../.vitepress/theme/figures.ts";
+import { CHAPTERS } from "../../.vitepress/theme/figures.ts";
 import { Avatar, Badge, Bar, Button, Collapse, Connector, Fly, Menu, Meter, Popover, Roll, Row, States, Text, Window, type Rect } from "../kit";
 import { isDev } from "../kit/util";
 import { ACCENT, tokens, type SceneTheme } from "../look.ts";
 import { FULL_COMPACT_BELOW, SIZES } from "../sizes.ts";
-import { Stepped, type Beat } from "../stepped.tsx";
+import { Chapters, type Beat, type PlayerProps } from "../chapters.tsx";
 import "./hood.css";
 
-// The engine shown through the app the reader met in the hero, one click at a time. Two tabs of LinearLite sit above
-// a cut line; under it, the hood: the write-ahead log in IndexedDB, the SharedWorker and the SST files in OPFS. The
-// viewer presses Next, and each press plays one step's beat and lands on its frame (`FRAMES[n]`, `BEATS[n]`, the
-// caption `STEPS.hood[n]`):
+// The engine shown through the app the reader met in the hero, in chapters. Two tabs of LinearLite sit above a cut
+// line; under it, the hood: the write-ahead log in IndexedDB, the SharedWorker and the SST files in OPFS. The page's
+// player plays the chapters in a loop; each plays its beat and lands on its frame (`FRAMES[n]`, `BEATS[n]`, the text
+// and length `CHAPTERS.hood[n]`):
 //   0. Both tabs open the same database.
 //   1. In tab 1 the cursor opens an issue's status menu and picks Done. "put": the tab appends record 43 to the log
 //      itself; the committed row is the ack, marked "saved".
@@ -30,8 +30,8 @@ import "./hood.css";
 //   - The flush runs after one write. The engine waits for the log to reach `maxWalBytes`.
 //   - The log's rows leave it with the flush that folded them. The engine keeps them until the next flush, as a
 //     recovery copy no read uses.
-//   - Step 4 shows one get. An app query reads index entries and documents, so it loads several pages.
-//   - Step 6 shows one legal outcome of a power loss. A loss could also take record 43 and earlier writes that no
+//   - Chapter 4 shows one get. An app query reads index entries and documents, so it loads several pages.
+//   - Chapter 6 shows one legal outcome of a power loss. A loss could also take record 43 and earlier writes that no
 //     flush had reached, but never a write without the ones after it.
 //   - The cache meter's fill is drawn wider than 32 KB of 256 MiB, so it can be seen. A reopened tab has an empty
 //     cache, so its older issue is a placeholder row again until the tab reads it.
@@ -40,7 +40,7 @@ import "./hood.css";
 // is the cut. Narrow, no window covers another: tab 1 runs across the top, tab 2 sits under its right side, and the
 // hood follows. The lane left of tab 2 is free, so "put" drops down it from tab 1.
 
-type Props = { readonly theme: SceneTheme; readonly step?: number };
+type Props = PlayerProps & { readonly theme: SceneTheme };
 
 const { wide: WIDE, compact: COMPACT } = SIZES.hood;
 
@@ -48,8 +48,8 @@ const { wide: WIDE, compact: COMPACT } = SIZES.hood;
  * Everything the scene shows. `menu`: which status menu is open in tab 1. `done1` and `done2`: the first issue is
  * Done in each tab. `prog1` and `prog2`: the second issue is In Progress in each tab. `put`, `bc`, `bc2`, `flush`
  * and `flush2`: which connectors are drawn. `rec`: record 43 is in the log. `cleared`: the log's rows have left it.
- * `file`: the new SST file is listed. `rec44`: record 44 is not there, saved, or lost. `read`: the page read of step
- * 4, from nothing to the page lit in its file, in flight, and landed. `cache`: what tab 2's page cache holds in KB,
+ * `file`: the new SST file is listed. `rec44`: record 44 is not there, saved, or lost. `read`: the page read of
+ * chapter 4, from nothing to the page lit in its file, in flight, and landed. `cache`: what tab 2's page cache holds in KB,
  * or null while its meter is not shown. `off`: the power is out.
  */
 type S = {
@@ -98,7 +98,7 @@ const F4: S = { ...F3, flush: false, flush2: false, read: "done", cache: 32 };
 const F5: S = { ...F4, prog1: true, prog2: true, put: true, bc2: true, rec44: "saved", off: true };
 const F6: S = { ...F5, put: false, bc2: false, prog1: false, prog2: false, rec44: "lost", read: "none", cache: 0, off: false };
 
-/** The whole scene at each step, aligned with `STEPS.hood`. */
+/** The whole scene at the end of each chapter, aligned with `CHAPTERS.hood`. */
 const FRAMES: S[] = [F0, F1, F2, F3, F4, F5, F6];
 
 const pick: Beat<S> = async (a) => {
@@ -198,11 +198,13 @@ const reopen: Beat<S> = async (a) => {
   await a.wait(600);
 };
 
-/** The beat that plays on the way into each step; step 0 is where the story starts. */
+/** The beat each chapter plays; chapter 0 is where the story starts, held for reading. */
 const BEATS: readonly (Beat<S> | undefined)[] = [undefined, pick, broadcast, flush, read, powerLoss, reopen];
 
-if (isDev() && (FRAMES.length !== STEPS.hood?.length || BEATS.length !== FRAMES.length)) {
-  throw new Error(`hood: ${FRAMES.length} frames and ${BEATS.length} beats, but ${STEPS.hood?.length} captions in STEPS.hood`);
+const MS = (CHAPTERS.hood ?? []).map((c) => c.ms);
+
+if (isDev() && (FRAMES.length !== MS.length || BEATS.length !== FRAMES.length)) {
+  throw new Error(`hood: ${FRAMES.length} frames and ${BEATS.length} beats, but ${MS.length} chapters in CHAPTERS.hood`);
 }
 
 // LinearLite's own status and priority glyphs (examples/linearlite-docstore/src/icons.tsx), 14px.
@@ -502,12 +504,15 @@ const mid = (r: Rect) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
 /** The part of the meter the cache's 32 KB fills, as the meter draws it. */
 const CACHE_FILL = 0.14;
 
-export default function Hood({ theme, step = 0 }: Props) {
+export default function Hood({ theme, jump, playhead, onChapter }: Props) {
   return (
-    <Stepped<S>
-      step={step}
+    <Chapters<S>
+      jump={jump}
+      playhead={playhead}
+      onChapter={onChapter}
       frames={FRAMES}
       beats={BEATS}
+      ms={MS}
       width={WIDE[0]}
       height={WIDE[1]}
       compact={{ below: FULL_COMPACT_BELOW, width: COMPACT[0], height: COMPACT[1] }}
@@ -622,6 +627,6 @@ export default function Hood({ theme, step = 0 }: Props) {
           </>
         );
       }}
-    </Stepped>
+    </Chapters>
   );
 }

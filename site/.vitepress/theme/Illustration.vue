@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { useData } from "vitepress";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, markRaw, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { createPlayhead } from "../../stageshow/playhead.ts";
 import { SIZES, STILLS, type SceneName } from "../../stageshow/sizes.ts";
-import { FIGURES, STEPS } from "./figures.ts";
+import { CHAPTERS, FIGURES } from "./figures.ts";
+import PlayerBar from "./PlayerBar.vue";
 
 /**
  * One illustration from `site/stageshow`. They are React components, so this mounts a React root in the browser
@@ -11,18 +13,17 @@ import { FIGURES, STEPS } from "./figures.ts";
 /**
  * `full`: the illustration is as wide as the page, not one column of a claim.
  * `label`: what a screen reader reads, by default the one in `FIGURES`.
- * An illustration with an entry in `STEPS` is clicked through: its caption and Back and Next buttons sit under it
- * as page elements, because the stage is one `role="img"` and nothing inside it is reachable.
+ * An illustration with an entry in `CHAPTERS` plays with a player: pause and a timeline of the chapters on the
+ * stage's bottom edge, and the playing chapter's title and detail under them. They are page elements, because the
+ * stage is one `role="img"` and nothing inside it is reachable.
  */
 const props = defineProps<{ name: SceneName; label?: string; data?: Record<string, unknown>; full?: boolean }>();
 
 const { isDark } = useData();
 const host = ref<HTMLElement>();
 const run = ref(0);
-const step = ref(0);
 const size = computed(() => SIZES[props.name]);
-const steps = computed(() => STEPS[props.name]);
-const last = computed(() => step.value === (steps.value?.length ?? 1) - 1);
+const chapters = computed(() => CHAPTERS[props.name]);
 const vars = computed(() => ({
   "--wide": `${size.value.wide[0]} / ${size.value.wide[1]}`,
   "--wide-width": `${size.value.wide[0]}px`,
@@ -31,53 +32,92 @@ const vars = computed(() => ({
 }));
 let scene: { render(props: Record<string, unknown>): void; unmount(): void } | undefined;
 
-const render = () => scene?.render({ ...props.data, theme: isDark.value ? "dark" : "light", run: run.value, step: step.value });
+// The player. The scene plays from `jump` and reports each chapter it starts; `clock` holds the playing chapter and
+// when it started, read by the timeline every frame, and `current` the same chapter for the page.
+const playhead = markRaw(createPlayhead());
+const clock = markRaw({ chapter: 0, startedAt: Number.POSITIVE_INFINITY });
+const current = ref(0);
+const jump = shallowRef({ chapter: 0 });
+const paused = ref(false);
+const still = ref(false);
+const onChapter = (chapter: number, startedAt: number) => {
+  clock.chapter = chapter;
+  clock.startedAt = startedAt;
+  current.value = chapter;
+};
+const go = (chapter: number) => {
+  playhead.setPaused(false);
+  paused.value = false;
+  onChapter(chapter, playhead.now());
+  jump.value = { chapter };
+};
+const toggle = () => {
+  paused.value = !paused.value;
+  playhead.setPaused(paused.value);
+};
 
-const back = () => {
-  if (step.value > 0) step.value--;
-};
-const next = () => {
-  step.value = last.value ? 0 : step.value + 1;
-};
-// Left and Right step while focus is anywhere in the figure. Right stops at the last step: only Start over wraps.
-const onKey = (e: KeyboardEvent) => {
-  if (!steps.value || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-  if (e.key === "ArrowRight" && !last.value) next();
-  else if (e.key === "ArrowLeft") back();
-  else return;
-  e.preventDefault();
-};
+let motion: MediaQueryList | undefined;
+const onMotion = () => (still.value = !!motion?.matches);
+
+const render = () =>
+  scene?.render({
+    ...props.data,
+    theme: isDark.value ? "dark" : "light",
+    run: run.value,
+    ...(chapters.value && { jump: jump.value, playhead, onChapter }),
+  });
 
 onMounted(async () => {
+  if (chapters.value) {
+    motion = matchMedia("(prefers-reduced-motion: reduce)");
+    onMotion();
+    motion.addEventListener("change", onMotion);
+  }
   const { mount } = await import("../../stageshow/mount.tsx");
   if (!host.value) return;
   scene = mount(host.value, props.name);
   render();
 });
 // A page that passes new data (the use cases picking a case) redraws the scene in place.
-watch([isDark, run, step, () => props.data], render, { deep: true });
-onBeforeUnmount(() => scene?.unmount());
+watch([isDark, run, jump, () => props.data], render, { deep: true });
+onBeforeUnmount(() => {
+  motion?.removeEventListener("change", onMotion);
+  scene?.unmount();
+});
 </script>
 
 <template>
-  <figure class="illustration" :class="{ full, stepped: !!steps }" :tabindex="steps ? -1 : undefined" @keydown="onKey">
-    <div ref="host" class="illustration-stage" role="img" :aria-label="label ?? FIGURES[name]" :style="vars" />
-    <div v-if="steps" class="illustration-steps" :style="vars">
-      <div class="illustration-caption">
-        <div class="illustration-caption-live" aria-live="polite">
-          <span class="illustration-sr">Step {{ step + 1 }} of {{ steps.length }}. </span>{{ steps[step] }}
+  <figure v-if="chapters" class="illustration player" :class="{ full }" :style="vars">
+    <div class="player-main">
+      <div ref="host" class="illustration-stage" role="img" :aria-label="label ?? FIGURES[name]" />
+      <PlayerBar
+        :chapters="chapters"
+        :playhead="playhead"
+        :clock="clock"
+        :current="current"
+        :paused="paused"
+        :still="still"
+        @toggle="toggle"
+        @jump="go"
+      />
+    </div>
+    <!-- The playing chapter, under the controls. Every chapter is laid out in the same cell, unseen, so the box is as
+         tall as the longest and the page below never moves. -->
+    <div class="player-caption">
+      <Transition name="player-caption">
+        <div :key="current" class="player-caption-text">
+          <div class="player-caption-title">{{ chapters[current]?.title }}</div>
+          <div class="player-caption-detail">{{ chapters[current]?.detail }}</div>
         </div>
-        <!-- Every caption laid out in the same cell, unseen, so the caption's box is as tall as the longest and the page below never moves. -->
-        <span v-for="text in steps" :key="text" class="illustration-caption-size" aria-hidden="true">{{ text }}</span>
-      </div>
-      <div class="illustration-nav">
-        <span class="illustration-count">{{ step + 1 }} of {{ steps.length }}</span>
-        <button class="illustration-step" type="button" :aria-disabled="step === 0" @click="back">Back</button>
-        <button class="illustration-step illustration-step-next" type="button" @click="next">
-          {{ last ? "Start over" : "Next" }}
-        </button>
+      </Transition>
+      <div v-for="chapter in chapters" :key="chapter.label" class="player-caption-text player-caption-size" aria-hidden="true">
+        <div class="player-caption-title">{{ chapter.title }}</div>
+        <div class="player-caption-detail">{{ chapter.detail }}</div>
       </div>
     </div>
-    <button v-else-if="!STILLS.has(name)" class="illustration-replay" type="button" @click="run++">Replay</button>
+  </figure>
+  <figure v-else class="illustration" :class="{ full }">
+    <div ref="host" class="illustration-stage" role="img" :aria-label="label ?? FIGURES[name]" :style="vars" />
+    <button v-if="!STILLS.has(name)" class="illustration-replay" type="button" @click="run++">Replay</button>
   </figure>
 </template>
