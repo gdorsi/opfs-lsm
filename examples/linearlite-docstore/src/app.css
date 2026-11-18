@@ -55,19 +55,12 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .mono { font-variant-numeric: tabular-nums; }
 
 .app { display: flex; height: 100vh; }
-.sidebar { width: 224px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 12px 10px; gap: 4px; }
-.brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 12px; font-weight: 600; font-size: 14px; }
-.brand-mark { width: 20px; height: 20px; border-radius: 6px; background: var(--accent); display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
-.nav { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; color: var(--muted); }
-.nav.active { background: var(--accent-soft); color: var(--text); }
-.spacer { flex: 1; }
-.sync { padding: 10px; border-radius: 8px; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; background: var(--accent-soft); }
-.sync b { color: var(--text); font-weight: 500; }
 .bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
 .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s linear; }
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
-.topbar { display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 48px; border-bottom: 1px solid var(--line); flex: none; }
+.topbar { display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 48px; border-bottom: 1px solid var(--line); flex: none; position: relative; }
+.topbar .bar { position: absolute; inset: auto 0 -1px; height: 2px; border-radius: 0; }
 .title { font-size: 14px; font-weight: 600; white-space: nowrap; }
 .count { color: var(--muted); min-width: 52px; }
 .chips { display: flex; gap: 6px; align-items: center; }
@@ -101,6 +94,8 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .btn:hover { background: var(--hover); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { filter: brightness(1.1); }
+.btn.icon { width: 28px; padding: 0; color: var(--muted); }
+.btn.icon:hover { color: var(--text); }
 
 .menu { position: fixed; z-index: 60; min-width: 190px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 4px; }
 .menu-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 5px; text-align: left; }
@@ -144,14 +139,16 @@ svg.ico { display: block; }
 .modal textarea { width: 100%; min-height: 110px; resize: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none; font-size: 14px; }
 .modal textarea:focus, .modal input:focus { border-color: var(--accent); }
 .modal-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.spacer { flex: 1; }
 .pill { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--line); }
 .pill:hover { background: var(--hover); }
 
 /* The docs site frames the app as narrow as a phone. */
 @media (max-width: 720px) {
-  .sidebar { display: none; }
   .topbar { height: auto; flex-wrap: wrap; row-gap: 8px; padding: 8px 12px; }
-  .search { flex: 1 1 100%; }
+  /* "New issue" and the Data menu stay on the first row, and the chips and the search wrap under them. */
+  .chips { order: 1; flex: 1 1 100%; }
+  .search { order: 2; flex: 1 1 100%; }
   .detail-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px 12px 48px; }
   .props { padding-top: 16px; border-top: 1px solid var(--line); margin-top: 16px; }
   .search input { width: 100%; }

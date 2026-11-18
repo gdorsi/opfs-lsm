@@ -10,54 +10,6 @@
   border-top: 0;
 }
 
-/* The status note under the hero: a card like the feature cards, with an amber dot and its first line as the lead. */
-.vp-doc .home-warnings {
-  margin: 8px 0 24px;
-}
-
-.vp-doc .home-warnings .warning {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr);
-  column-gap: 14px;
-  margin: 0;
-  padding: 16px 20px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 12px;
-  background: var(--vp-c-bg-soft);
-  color: var(--vp-c-text-2);
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.vp-doc .home-warnings .warning::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  margin-top: 7px;
-  border-radius: 50%;
-  background: var(--vp-c-warning-1);
-  box-shadow: 0 0 0 4px var(--vp-c-warning-soft);
-}
-
-.vp-doc .home-warnings .custom-block-title {
-  display: none;
-}
-
-.vp-doc .home-warnings .warning p {
-  grid-column: 2;
-  margin: 0;
-}
-
-.vp-doc .home-warnings .custom-block-title + p {
-  color: var(--vp-c-text-1);
-  font-weight: 600;
-}
-
-.vp-doc .home-warnings .warning a {
-  color: var(--vp-c-brand-1);
-  font-weight: 500;
-}
-
 /* What kv offers: a card per feature, each a name, one line and a few lines of code. */
 .vp-doc .home-features {
   display: grid;
@@ -171,57 +123,201 @@
   background: var(--vp-c-default-soft);
 }
 
-/* The hero: the pitch and its actions, then LinearLite running in a browser frame. Its box has the widths and
-   paddings of the content under it. */
+/* The hero: the name line, the pitch, then LinearLite running in a browser frame. Its box has the widths and side
+   paddings of the content under it, and no nav above it, so its top padding only clears the name line. */
 .home-hero {
   max-width: 1152px;
   margin: 0 auto;
-  padding: 40px 24px 48px;
+  padding: 20px 24px 48px;
   box-sizing: content-box;
 }
 
 @media (min-width: 640px) {
   .home-hero {
-    padding: 64px 48px;
+    padding: 20px 48px 64px;
   }
 }
 
 @media (min-width: 960px) {
   .home-hero {
-    padding: 72px 64px;
+    padding: 20px 64px 72px;
   }
 }
 
-.home-hero-head {
-  display: grid;
-  gap: 20px;
-  align-items: end;
+/* The name line: the name and its alpha tag on the left, the page's menu on the right. */
+.home-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+  min-height: 48px;
+  margin-bottom: 32px;
 }
 
-@media (min-width: 640px) {
-  .home-hero-head {
-    gap: 24px;
+@media (min-width: 720px) {
+  .home-line {
+    margin-bottom: 48px;
   }
 }
 
 @media (min-width: 960px) {
-  .home-hero-head {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 40px;
+  .home-line {
+    margin-bottom: 64px;
   }
 }
 
-.home-hero-name {
-  margin: 0;
-  color: var(--vp-c-brand-1);
-  font-family: var(--vp-font-family-mono);
+/* The notice's card is placed against the brand, so it starts at the page's left edge. */
+.home-line-brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.home-line-name {
+  color: var(--vp-c-text-1);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 24px;
+  letter-spacing: -0.01em;
+}
+
+.home-line-menu {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: -10px;
+}
+
+.home-line-menu a {
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .home-line-menu a:hover {
+    color: var(--vp-c-text-1);
+    background: var(--vp-c-default-soft);
+  }
+}
+
+.home-line-menu a:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: -2px;
+}
+
+/* On a phone the menu takes its own row and scrolls sideways. */
+@media (max-width: 719px) {
+  .home-line-menu {
+    order: 2;
+    flex: 1 0 100%;
+    margin-inline: -10px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .home-line-menu a {
+    padding: 12px;
+  }
+}
+
+/* The alpha tag, as the button that opens the status notice. */
+button.alpha-tag {
+  position: relative;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+/* A touch target well past the tag's 20px. */
+button.alpha-tag::after {
+  content: "";
+  position: absolute;
+  inset: -12px -8px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  button.alpha-tag:hover {
+    border-color: var(--vp-c-text-3);
+    color: var(--vp-c-text-1);
+  }
+}
+
+button.alpha-tag[aria-expanded="true"] {
+  border-color: var(--vp-c-text-3);
+  color: var(--vp-c-text-1);
+}
+
+button.alpha-tag:focus-visible,
+.alpha-notice-card a:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+.alpha-notice-card {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: min(340px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-3);
+  font-size: 13px;
+  line-height: 20px;
+  transform-origin: top left;
+}
+
+.alpha-notice-card strong {
+  color: var(--vp-c-text-1);
   font-size: 14px;
   font-weight: 600;
-  line-height: 20px;
+}
+
+.alpha-notice-card p {
+  margin: 6px 0 10px;
+  color: var(--vp-c-text-2);
+  text-wrap: pretty;
+}
+
+.alpha-notice-card a {
+  color: var(--vp-c-brand-1);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.alpha-notice-enter-active {
+  transition:
+    opacity 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.alpha-notice-leave-active {
+  transition: opacity 100ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.alpha-notice-enter-from {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+}
+
+.alpha-notice-leave-to {
+  opacity: 0;
 }
 
 .home-hero-title {
-  margin: 12px 0 0;
+  margin: 0;
   color: var(--vp-c-text-1);
   font-size: 34px;
   font-weight: 700;
@@ -237,13 +333,7 @@
   }
 }
 
-.home-hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-/* The demo: a browser frame around the app, with the timings it measured in this tab at its foot. */
+/* The demo: a browser frame around the app, with a toast over it that tells the visit. */
 .demo {
   margin-top: 36px;
   overflow: hidden;
@@ -285,7 +375,7 @@
   background: var(--vp-c-default-3);
 }
 
-.demo-address {
+.demo-title {
   padding: 0 14px;
   border-radius: 8px;
   background: var(--vp-c-default-soft);
@@ -293,19 +383,12 @@
   font-size: 12px;
   line-height: 28px;
   white-space: nowrap;
-  transition: color 150ms ease-out;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .demo-address:hover {
-    color: var(--vp-c-text-1);
-  }
 }
 
 /* On a phone the bar names the app on the left; the window dots would only take its room. */
 @media (max-width: 519px) {
   .demo-bar {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     padding-left: 12px;
   }
 
@@ -313,44 +396,11 @@
     display: none;
   }
 
-  .demo-address {
+  .demo-title {
     justify-self: start;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 }
 
-.demo-reload {
-  justify-self: end;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 12px;
-  border-radius: 8px;
-  color: var(--vp-c-text-1);
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-  transition:
-    background-color 150ms ease-out,
-    color 150ms ease-out,
-    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
-}
-
-@media (max-width: 519px) {
-  .demo-reload {
-    height: 36px;
-    padding: 0 10px;
-  }
-
-  .demo-reload span {
-    display: none;
-  }
-}
-
-.demo-reload svg,
 .demo-screen-button svg,
 .demo-open-pill svg {
   width: 14px;
@@ -362,23 +412,6 @@
   stroke-linejoin: round;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .demo-reload:hover:not(:disabled) {
-    background: var(--vp-c-default-soft);
-  }
-}
-
-.demo-reload:active:not(:disabled) {
-  transform: scale(0.97);
-}
-
-.demo-reload:disabled {
-  color: var(--vp-c-text-3);
-  cursor: default;
-}
-
-.demo-address:focus-visible,
-.demo-reload:focus-visible,
 .demo-screen-button:focus-visible {
   outline: 2px solid var(--vp-c-brand-1);
   outline-offset: 0;
@@ -417,7 +450,7 @@
   background: var(--vp-c-bg);
 }
 
-/* Full screen: Close, the latest timing, and Reload. */
+/* Full screen: Close, and the app's name. */
 .demo-screen-bar {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -457,25 +490,9 @@
   background: var(--vp-c-default-soft);
 }
 
-.demo-screen-button:disabled {
-  color: var(--vp-c-text-3);
-}
-
-.demo-screen-reload {
-  justify-self: end;
-  justify-content: center;
-  width: 44px;
-  padding: 0;
-}
-
-.demo-latest {
-  overflow: hidden;
+.demo-screen-title {
   color: var(--vp-c-text-2);
   font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The preview's cover: the whole box is the button, with a fade and a pill at its foot. */
@@ -530,7 +547,8 @@
   outline-offset: 2px;
 }
 
-/* On a wide screen, while the app starts, a chip at the frame's foot says so. */
+/* On a wide screen, while the app starts, a chip at the frame's foot says so. It goes without a fade, so it never
+   overlaps the toast that takes its place. */
 .demo-status {
   position: absolute;
   left: 50%;
@@ -546,123 +564,223 @@
   transform: translateX(-50%);
 }
 
-.demo-status-leave-active {
-  transition:
-    opacity 180ms ease-out,
-    transform 180ms ease-out;
+/* The toast: the visit's message, centered at the frame's foot. Its region spans the frame and lets clicks through to
+   the app; only the message takes them. */
+.demo-toast-region {
+  position: absolute;
+  inset: auto 16px 16px;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
 }
 
-.demo-status-leave-to {
-  opacity: 0;
-  transform: translate(-50%, 6px);
+.demo-screen[data-expanded] .demo-toast-region {
+  bottom: calc(16px + env(safe-area-inset-bottom));
 }
 
-/* The timings: three columns at every width, with short labels on a phone. */
-.demo-timings {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 0;
-  border-top: 1px solid var(--vp-c-divider);
+/* On the phone's preview the cover's button holds the foot, so the toast sits at the top. */
+.demo[data-compact] .demo-screen:not([data-expanded]) .demo-toast-region {
+  inset: 12px 16px auto;
 }
 
-.demo-timings > div {
+.demo-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px 16px;
   min-width: 0;
-  padding: 14px 20px 16px;
-}
-
-.demo-timings > div + div {
-  border-left: 1px solid var(--vp-c-divider);
-}
-
-.demo-timings dt {
-  color: var(--vp-c-text-2);
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.demo-timings dd {
-  margin: 4px 0 0;
-  min-height: 32px;
-}
-
-.demo-timings b {
-  display: inline-flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0 8px;
+  max-width: 100%;
+  padding: 8px 16px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-3);
   color: var(--vp-c-text-1);
-  font-size: 24px;
-  font-weight: 600;
-  line-height: 32px;
-  font-variant-numeric: tabular-nums;
-}
-
-.demo-timings b span {
-  color: var(--vp-c-text-3);
-  font-size: 13px;
-  font-weight: 400;
+  font-size: 14px;
   line-height: 20px;
+  pointer-events: auto;
 }
 
-.demo-timings b.demo-none {
-  color: var(--vp-c-text-3);
-  font-size: 15px;
-  font-weight: 400;
+.demo-toast p {
+  margin: 0;
+  padding: 6px 0;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
 }
 
-.demo-short {
-  display: none;
+.demo-toast b {
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-@media (max-width: 719px) {
-  .demo-timings > div {
-    padding: 12px 12px 14px;
-  }
-
-  .demo-timings dt {
-    font-size: 12px;
-    line-height: 16px;
-  }
-
-  .demo-timings dd {
-    min-height: 28px;
-  }
-
-  .demo-timings b {
-    font-size: 20px;
-    line-height: 28px;
-  }
-
-  .demo-timings b.demo-none {
-    font-size: 14px;
-  }
-
-  .demo-long {
-    display: none;
-  }
-
-  .demo-short {
-    display: inline;
-  }
+.demo-toast-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-right: -8px;
 }
 
-.demo-value-enter-active {
+.demo-toast-button {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--vp-c-default-soft);
+  color: var(--vp-c-text-1);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
   transition:
-    opacity 200ms ease-out,
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.demo-toast-primary {
+  background: var(--vp-button-brand-bg);
+  color: var(--vp-button-brand-text);
+}
+
+.demo-toast-quiet {
+  background: transparent;
+  color: var(--vp-c-text-2);
+}
+
+.demo-toast-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--vp-c-text-2);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.demo-toast-close svg,
+.demo-toast-pill svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .demo-toast-button:hover {
+    background: var(--vp-c-default-2);
+  }
+
+  .demo-toast-primary:hover {
+    background: var(--vp-button-brand-hover-bg);
+  }
+
+  .demo-toast-quiet:hover,
+  .demo-toast-close:hover {
+    background: var(--vp-c-default-soft);
+    color: var(--vp-c-text-1);
+  }
+
+  .demo-toast-pill:hover {
+    border-color: var(--vp-c-text-3);
+  }
+}
+
+.demo-toast-button:active,
+.demo-toast-close:active,
+.demo-toast-pill:active {
+  transform: scale(0.97);
+}
+
+@media (pointer: coarse) {
+  .demo-toast-button,
+  .demo-toast-close {
+    height: 40px;
+  }
+
+  .demo-toast-close {
+    width: 40px;
+  }
+
+  .demo-toast-pill {
+    height: 40px;
+  }
+}
+
+/* Closed, the toast is a pill with the latest time. */
+.demo-toast-pill {
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.demo-toast-button:focus-visible,
+.demo-toast-close:focus-visible,
+.demo-toast-pill:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+@media (max-width: 639px) {
+  .demo-toast-region {
+    inset-inline: 12px;
+  }
+
+  .demo-toast:not(.demo-toast-pill) {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    padding: 6px 8px 10px 14px;
+  }
+
+  .demo-toast-actions {
+    margin-right: 0;
+  }
+
+  .demo-toast-close {
+    margin-left: auto;
+  }
+}
+
+.demo-toast-enter-active {
+  transition:
+    opacity 200ms cubic-bezier(0.23, 1, 0.32, 1),
     transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.demo-value-leave-active {
-  transition: opacity 100ms ease-out;
+/* A message on its way out takes no clicks, so a double click cannot reach the message that replaces it. */
+.demo-toast-leave-active {
+  transition: opacity 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  pointer-events: none;
 }
 
-.demo-value-enter-from {
+.demo-toast-enter-from {
   opacity: 0;
-  transform: translateY(4px);
+  transform: translateY(8px);
 }
 
-.demo-value-leave-to {
+.demo-toast-leave-to {
   opacity: 0;
+}
+
+/* At the top of the preview the toast drops in, the way it would rise at the foot. */
+.demo[data-compact] .demo-screen:not([data-expanded]) .demo-toast-enter-from {
+  transform: translateY(-8px);
 }
 
 .demo-failed {
@@ -670,12 +788,19 @@
   padding: 0 20px 16px;
   color: var(--vp-c-danger-1);
   font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .demo-status-leave-active,
-  .demo-value-enter-active,
-  .demo-value-leave-active,
+  .alpha-notice-enter-from,
+  .demo-toast-enter-from,
+  .demo[data-compact] .demo-screen:not([data-expanded]) .demo-toast-enter-from,
+  .demo-toast-button:active,
+  .demo-toast-close:active,
+  .demo-toast-pill:active {
+    transform: none;
+  }
+
   .demo-open-pill {
     transition: none;
   }
@@ -1093,7 +1218,7 @@
   height: 100%;
 }
 
-/* The scale's room: on each side enough for a ratio past the scale's end, 0.1× or 92×. */
+/* The scale's room: on each side enough for a ratio past the scale's end, 0.1× or 78×. */
 .bench-inner {
   position: absolute;
   inset: 0 34px;

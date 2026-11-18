@@ -7,7 +7,7 @@ pnpm --filter "@opfs-lsm/example-linearlite-docstore^..." build
 pnpm --filter @opfs-lsm/example-linearlite-docstore dev
 ```
 
-On first load it holds no issue. **Generate** makes 100,000 issues in a dedicated WebWorker (a background thread of the page) and writes them in transactions of 2,000. **Generate more** appends as many again, with new ids, beside the issues already stored. `?count=` changes how many, and `?db=` names the database.
+On first load it holds no issue. **Generate** makes 100,000 issues in a dedicated WebWorker (a background thread of the page) and writes them in transactions of 2,000. The Data menu at the end of the toolbar holds two more actions. **Generate more** appends as many again, with new ids, beside the issues already stored, and a bar along the toolbar's bottom edge shows its progress. **Delete the data** destroys the database and reloads the page. `?count=` changes how many, and `?db=` names the database.
 
 ## Reads
 

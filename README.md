@@ -1,6 +1,6 @@
 # opfs-lsm
 
-opfs-lsm stores your web app's data in the browser, in place of IndexedDB or SQLite. Every tab of your site shares one database and sees the writes of the other tabs as they happen. In batches of 1,000, it writes 14× faster than IndexedDB, and it reads a key 30× faster.
+opfs-lsm stores your web app's data in the browser, in place of IndexedDB or SQLite. Every tab of your site shares one database and sees the writes of the other tabs as they happen. In batches of 1,000, it writes 12× faster than IndexedDB, and it reads a key 27× faster.
 
 > [!WARNING]
 > opfs-lsm is still under heavy development.
@@ -16,7 +16,7 @@ opfs-lsm helps most when your app keeps its data in the browser and reads it on 
 Use another store in these cases:
 
 - **Your users run older browsers.** kv is [Baseline 2026](docs/browser-support.md): every major browser has run it since May 2026, when Chrome on Android added SharedWorker. Samsung Internet and Android WebView do not run it.
-- **Your app stores little and writes one record at a time.** IndexedDB opens in 1.2 ms against 7.8 ms for kv, and writes a single awaited record about as fast.
+- **Your app stores little and writes one record at a time.** IndexedDB opens in 0.9 ms against 6.7 ms for kv, and writes a single awaited record about as fast.
 - **You need SQL.** opfs-lsm has no query language. docstore reads only through the indexes you declare in its schema.
 
 ## Packages

@@ -34,7 +34,7 @@ export function dotYs(xs: number[]): number[] {
   return out;
 }
 
-/** "432k ops/s" against "30.2k ops/s" reads "432k vs 30.2k ops/s": the unit once when both share it. */
+/** "494k ops/s" against "42.0k ops/s" reads "494k vs 42.0k ops/s": the unit once when both share it. */
 export function pairText(ours: string, theirs: string) {
   const unit = (s: string) => s.replace(/^[\d.,]+[kM]?\s*/, "");
   const head = (s: string) => s.slice(0, s.length - unit(s).length).trim();

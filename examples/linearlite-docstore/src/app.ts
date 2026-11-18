@@ -1,7 +1,7 @@
 import { createList, type Change } from "./list.ts";
 import { DEFAULT_FILTER, describe, type Detail, type Filter, type Issue } from "./model.ts";
 import { failed, post } from "./protocol.ts";
-import { createIssue, detailOf, editIssue, forgetHost, hostOf, writeIssues, type Draft, type Store } from "./store.ts";
+import { createIssue, detailOf, editIssue, writeIssues, type Draft, type Store } from "./store.ts";
 
 /** A run of generated issues: the first ones into the empty database, or more beside the ones it holds. */
 export type Generating = { readonly first: boolean; readonly phase: "generating" | "writing"; readonly written: number; readonly count: number };
@@ -161,7 +161,6 @@ export function createApp(store: Store) {
         post({ type: "generated", count, generateMs, writeMs });
         if (first) set({ empty: false });
         await show(undefined, !first);
-        await hostOf(store);
       } finally {
         appending = false;
         set({ generating: undefined });
@@ -170,7 +169,6 @@ export function createApp(store: Store) {
 
     destroy() {
       store.db.dangerousDestroy().then(() => {
-        forgetHost();
         if (parent === window) location.reload();
         else post({ type: "deleted" });
       }, failed);
