@@ -489,15 +489,15 @@ describe("destroyDb of one name", () => {
     await b.put(key(0), enc.encode("wal-b"));
 
     await destroy(A);
-    await destroy(B);
-
     const rowA = (await destroyedRow(A))!;
-    const rowB = (await destroyedRow(B))!;
-    expect(rowA.head).toBeLessThan(rowB.head);
+    expect(rowA).toBeDefined();
 
-    const againA = await open(A);
+    // A reopens, which forgets A's row, while B's destroy writes B's.
+    const [againA] = await Promise.all([open(A), destroy(B)]);
+    const rowB = (await destroyedRow(B))!;
+    expect(rowB).toBeDefined();
     expect(await destroyedRow(A)).toBeUndefined();
-    expect(await destroyedRow(B)).toEqual(rowB);
+    expect(rowA.head).toBeLessThan(rowB.head);
     expect(await againA.put(key(0), enc.encode("a"))).toBeGreaterThanOrEqual(rowA.head);
 
     // B starts past its own row, which is higher than A's.
@@ -560,10 +560,16 @@ describe("destroyDb of one name", () => {
     await expectRows(b, roundOf(B, 0));
   });
 
-  it("destroys two names at once while a third writes and flushes", async () => {
-    const { open, destroy } = origin();
+  it("destroys two names at once while a third flushes and compacts", async () => {
+    const { host, open, destroy } = origin();
     const [A, B] = names();
     const [C] = names();
+    // Both destroys create the shared row store.
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.deleteDatabase("opfs-lsm-destroyed");
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
     const a = await open(A);
     const b = await open(B);
     const c = await open(C);
@@ -573,8 +579,15 @@ describe("destroyDb of one name", () => {
       await flushRound(c, round);
     }
 
+    expect((await host.stats(C)).compactionSteps).toBe(0);
+
+    // C's fourth run starts a compaction.
     await Promise.all([destroy(A), destroy(B), flushRound(c, 3), flushRound(c, 4)]);
 
+    expect((await host.stats(C)).compactionSteps).toBeGreaterThan(0);
+    expect(await destroyedRow(A)).toBeDefined();
+    expect(await destroyedRow(B)).toBeDefined();
+    expect(await destroyedRow(C)).toBeUndefined();
     const wals = await walDatabases();
     expect(wals).not.toContain(`opfs-lsm-wal/${A}`);
     expect(wals).not.toContain(`opfs-lsm-wal/${B}`);

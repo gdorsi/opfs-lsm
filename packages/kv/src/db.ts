@@ -1180,8 +1180,9 @@ class DbImpl implements Db {
 
   /**
    * Close the handle, with `reason` in its `closed` event. "destroyed": the
-   * WAL connection was asked to close, by `destroyDb`'s fence. A read that
-   * fails afterwards rejects with `ClosedError`: the files may be gone.
+   * WAL connection was asked to close, by `destroyDb`'s fence or by the
+   * browser deleting the database. A read that fails afterwards rejects
+   * with `ClosedError`: the files may be gone.
    */
   async closeFor(reason: "close" | "destroyed"): Promise<void> {
     if (this.closed) return;
