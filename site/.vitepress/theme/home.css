@@ -124,16 +124,6 @@
 
 /* A player's chapter colors. Neighbours differ in lightness as well as hue, and each carries black text. */
 :root {
-  --player-0: oklch(0.6 0.16 255);
-  --player-1: oklch(0.74 0.15 75);
-  --player-2: oklch(0.64 0.19 340);
-  --player-3: oklch(0.7 0.12 190);
-  --player-4: oklch(0.6 0.16 295);
-  --player-5: oklch(0.6 0.21 25);
-  --player-6: oklch(0.7 0.18 140);
-}
-
-.dark {
   --player-0: oklch(0.7 0.15 255);
   --player-1: oklch(0.83 0.15 80);
   --player-2: oklch(0.74 0.17 340);
@@ -331,6 +321,135 @@
   outline-offset: 2px;
 }
 
+/* The chapters as a list beside the stage, on screens wide enough for it. Inactive titles are dimmed, and only the
+   playing chapter shows its detail and a mark in its color. */
+.player-index {
+  display: none;
+}
+
+.illustration .player-index ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.illustration .player-index li {
+  margin: 0;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.illustration .player-index li:last-child {
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.player-index button {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 12px 0 12px 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.player-index button:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+.player-index-mark {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  opacity: 0;
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.player-index-title {
+  display: block;
+  color: color-mix(in srgb, var(--vp-c-text-1) 45%, transparent);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 23px;
+  letter-spacing: -0.015em;
+  text-wrap: pretty;
+  transition: color 0.2s;
+}
+
+.player-index button:hover .player-index-title {
+  color: color-mix(in srgb, var(--vp-c-text-1) 80%, transparent);
+}
+
+.player-index-detail {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.player-index-detail > span {
+  min-height: 0;
+  overflow: hidden;
+  padding-top: 0;
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  line-height: 21px;
+  text-wrap: pretty;
+}
+
+.player-index [aria-current] .player-index-mark {
+  opacity: 1;
+  transform: none;
+}
+
+.player-index [aria-current] .player-index-title {
+  color: var(--vp-c-text-1);
+}
+
+.player-index [aria-current] .player-index-detail {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.player-index [aria-current] .player-index-detail > span {
+  padding-top: 6px;
+}
+
+/* The list takes 290px and a 40px gap beside the stage, so the figure reaches past the text column into the page's
+   margins, 32px from each edge. From this width the stage keeps 0.85 of its size or more; type reads small below. */
+@media (min-width: 1376px) {
+  .illustration.full.player {
+    --player-width: min(calc(100vw - 64px), calc(var(--wide-width) + 330px));
+    width: var(--player-width);
+    margin-inline: calc((100% - var(--player-width)) / 2);
+  }
+
+  .illustration.full .player-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 40px;
+  }
+
+  .illustration.full .player-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .illustration.full .player-index {
+    display: block;
+    flex: none;
+    width: 290px;
+  }
+
+  .illustration.full .player-caption {
+    display: none;
+  }
+}
+
 @media (max-width: 647px) {
   .player-caption {
     padding-inline: 8px;
@@ -349,7 +468,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   .player-caption-enter-active,
-  .player-caption-leave-active {
+  .player-caption-leave-active,
+  .player-index-mark,
+  .player-index-detail {
     transition: none;
   }
 }
@@ -571,10 +692,6 @@ button.alpha-tag:focus-visible,
   border: 1px solid var(--vp-c-divider);
   border-radius: 14px;
   background: var(--vp-c-bg-alt);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 24px 48px -24px rgba(0, 0, 0, 0.2);
-}
-
-.dark .demo {
   box-shadow: 0 24px 48px -24px rgba(0, 0, 0, 0.7);
 }
 
@@ -1041,19 +1158,13 @@ button.alpha-tag:focus-visible,
    a code card beside it. */
 .ad {
   --ad-ease: cubic-bezier(0.23, 1, 0.32, 1);
-  --ad-surface: #ffffff;
-  --ad-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --ad-surface: #2b2c33;
+  --ad-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
   container-type: inline-size;
   margin: 20px 0 72px;
   padding: 6px;
   border-radius: 14px;
   background: var(--vp-c-bg-soft);
-}
-
-/* The stageshow cards' surface on the dark page. */
-.dark .ad {
-  --ad-surface: #2b2c33;
-  --ad-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
 /* A segmented control: the raised pill slides to the picked tab. Until it is placed, the tab draws its own. */
@@ -1325,14 +1436,14 @@ button.alpha-tag:focus-visible,
 
 /* The benchmarks: a raised card per baseline on the soft gray, each a log scale of how many times faster opfs-lsm
    is. Three columns: what was measured, the bar, the two values. Faster is a blue, slower an amber, even a gray,
-   checked for color-vision deficiency against the card in both modes. */
+   checked for color-vision deficiency against the card. */
 .bench {
-  --bench-faster: #5672cd;
-  --bench-slower: #b97509;
-  --bench-even: #8f8f96;
-  --bench-surface: #ffffff;
-  --bench-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.04);
-  --bench-grid: #ebebef;
+  --bench-faster: #6b84ea;
+  --bench-slower: #c9801a;
+  --bench-even: #7d7d86;
+  --bench-surface: #2b2c33;
+  --bench-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --bench-grid: #3a3b43;
   --bench-ease: cubic-bezier(0.23, 1, 0.32, 1);
   container-type: inline-size;
   display: grid;
@@ -1341,15 +1452,6 @@ button.alpha-tag:focus-visible,
   padding: 6px;
   border-radius: 14px;
   background: var(--vp-c-bg-soft);
-}
-
-.dark .bench {
-  --bench-faster: #6b84ea;
-  --bench-slower: #c9801a;
-  --bench-even: #7d7d86;
-  --bench-surface: #2b2c33;
-  --bench-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
-  --bench-grid: #3a3b43;
 }
 
 .bench-card {

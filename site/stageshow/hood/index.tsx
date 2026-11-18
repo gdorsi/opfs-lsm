@@ -16,17 +16,17 @@ import "./hood.css";
 //   1. In tab 1 the cursor opens an issue's status menu and picks Done. "batch": the tab appends record 43 to the log
 //      itself, one row that holds the 7 operations of the change (the issue and its index entries); the committed
 //      row is the ack, marked "saved".
-//   2. "BroadcastChannel": tab 1 tells tab 2, whose same issue turns Done in place.
+//   2. "BroadcastChannel": tab 1 sends record 43 with its operations to tab 2, which applies it in memory, and its
+//      same issue turns Done in place.
 //   3. The SharedWorker folds the log into a new file, l0/41-43.sst, and the log's rows leave it. The SharedWorker's
 //      note changes from "a single instance for all the tabs" to the claim: it is the only code that writes files.
 //   4. Tab 2 reads an older issue from l1/c7.0.sst, a compacted file of many pages. One 32 KB page lights up and
 //      flies into the tab's page cache, and the issue's placeholder row turns into the real row. No message goes to
 //      the SharedWorker: a tab reads files itself.
 //   5. Tab 1 sets a second issue to In Progress. Record 44 lands in the log, "saved", and tab 2 follows. Then the
-//      power goes out: the scene dims under a "Power lost" mark.
-//   6. The reopen. Record 44 is gone and shown as lost, the second issue is Todo again in both tabs, the first is
-//      still Done, the file is still listed, and the cache is empty, because reopening reads only the file list and
-//      the log.
+//      power goes out: the scene dims under a "Power lost" mark. The reopen follows in the same chapter: record 44 is
+//      gone and shown as lost, the second issue is Todo again in both tabs, the first is still Done, the file is still
+//      listed, and the cache is empty, because reopening reads only the file list and the log.
 // Simplifications, each drawn the way it reads:
 //   - The flush runs after one write. The engine waits for the log to reach `maxWalBytes`.
 //   - Records 41 and 42 are drawn as status changes too, 7 operations each. A new issue would be 5 (the issue and an
@@ -34,7 +34,11 @@ import "./hood.css";
 //   - The log's rows leave it with the flush that folded them. The engine keeps them until the next flush, as a
 //     recovery copy no read uses.
 //   - Chapter 4 shows one get. An app query reads index entries and documents, so it loads several pages.
-//   - Chapter 6 shows one legal outcome of a power loss. A loss could also take record 43 and earlier writes that no
+//   - The manifest is not drawn. Its caption has the get find the file by the key ranges the manifest lists. A get
+//     also asks the newer L0 files first, whose ranges may overlap, and their Bloom filters rule them out.
+//   - Chapter 5's caption sums up recovery as the newest manifest whose files are all on disk, plus the log after it.
+//     The full rule is in docs/design.md, "Recovery".
+//   - Chapter 5 shows one legal outcome of a power loss. A loss could also take record 43 and earlier writes that no
 //     flush had reached, but never a write without the ones after it.
 //   - The cache meter's fill is drawn wider than 32 KB of 256 MiB, so it can be seen. A reopened tab has an empty
 //     cache, so its older issue is a placeholder row again until the tab reads it.
@@ -101,8 +105,11 @@ const F4: S = { ...F3, flush: false, flush2: false, read: "done", cache: 32 };
 const F5: S = { ...F4, prog1: true, prog2: true, put: true, bc2: true, rec44: "saved", off: true };
 const F6: S = { ...F5, put: false, bc2: false, prog1: false, prog2: false, rec44: "lost", read: "none", cache: 0, off: false };
 
-/** The whole scene at the end of each chapter, aligned with `CHAPTERS.hood`. */
-const FRAMES: S[] = [F0, F1, F2, F3, F4, F5, F6];
+/**
+ * The whole scene at the end of each chapter, aligned with `CHAPTERS.hood`. `F5`, the power cut, is a moment inside
+ * the last chapter.
+ */
+const FRAMES: S[] = [F0, F1, F2, F3, F4, F6];
 
 const pick: Beat<S> = async (a) => {
   await a.wait(150);
@@ -201,8 +208,15 @@ const reopen: Beat<S> = async (a) => {
   await a.wait(600);
 };
 
+/** The last chapter: the power cut, held a moment in the dark, then the reopen. */
+const lossAndReopen: Beat<S> = async (a) => {
+  await powerLoss(a);
+  await a.wait(1100);
+  await reopen(a);
+};
+
 /** The beat each chapter plays; chapter 0 is where the story starts, held for reading. */
-const BEATS: readonly (Beat<S> | undefined)[] = [undefined, pick, broadcast, flush, read, powerLoss, reopen];
+const BEATS: readonly (Beat<S> | undefined)[] = [undefined, pick, broadcast, flush, read, lossAndReopen];
 
 const MS = (CHAPTERS.hood ?? []).map((c) => c.ms);
 

@@ -40,6 +40,8 @@ export default ({ command }: { command: string }) => {
     title: "opfs-lsm",
     description: "A key-value store for the browser, on OPFS and IndexedDB.",
     base,
+    // The landing page is always dark. This sets it before the first paint, as the default theme's own script does.
+    head: [["script", {}, `${JSON.stringify([base, `${base}index.html`])}.includes(location.pathname) && document.documentElement.classList.add("dark")`]],
     srcDir: "..",
     srcExclude,
     rewrites,
