@@ -479,6 +479,25 @@ describe("ingest policy", () => {
     await db.close();
   });
 
+  it("waits for another maxWalBytes after a failed flush, however quiet the database", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { fs, state } = l0Fs();
+    state.fail = true;
+    const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);
+    await db.put(utf("a"), new Uint8Array(120));
+    await vi.waitFor(() => expect(errors).toHaveBeenCalledTimes(1), WAIT);
+
+    state.fail = false;
+    await db.put(utf("b"), new Uint8Array(120));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+
+    await db.put(utf("c"), new Uint8Array(700));
+    await flushed(fs);
+    expect(errors).toHaveBeenCalledTimes(1);
+    await db.close();
+  });
+
   it("flushes the tail an open finds, once the database is quiet", async () => {
     const fs = new MemoryFs();
     const first = await open(new EngineHost(() => fs), fs, "a", 800);
@@ -490,5 +509,29 @@ describe("ingest policy", () => {
     await flushed(fs);
     expect(new Uint8Array((await db.get(utf("a")))!)).toHaveLength(120);
     await db.close();
+  });
+
+  it("leaves no idle wait scheduled once the last tab has closed", async () => {
+    const idleFlushMs = 4321;
+    const waiting = new Set<unknown>();
+    const set = globalThis.setTimeout;
+    const clear = globalThis.clearTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
+      const timer = set(fn, ms);
+      if (ms === idleFlushMs) waiting.add(timer);
+      return timer;
+    }) as typeof setTimeout);
+    vi.spyOn(globalThis, "clearTimeout").mockImplementation((timer) => {
+      waiting.delete(timer);
+      clear(timer);
+    });
+    const fs = new MemoryFs();
+    const db = await open(new EngineHost(() => fs, { idleFlushMs }), fs, "a", 800);
+    // The host is still measuring the WAL when the tab leaves.
+    await db.close();
+    await settle();
+    const left = waiting.size;
+    for (const timer of waiting) clear(timer as ReturnType<typeof setTimeout>);
+    expect(left).toBe(0);
   });
 });

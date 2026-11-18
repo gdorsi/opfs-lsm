@@ -446,26 +446,24 @@ class HostedDb {
 
   /**
    * Flush once the database has been quiet for `IDLE_FLUSH_MS`, so the next
-   * open replays a short tail. Each row heard restarts the wait.
+   * open replays a short tail. Each row heard restarts the wait, and a
+   * watch the last tab left gets none.
    */
   private quiet(watch: IngestWatch): void {
     clearTimeout(watch.idle);
+    if (this.watching !== watch) return;
     watch.idle = setTimeout(() => this.maybeIngest(watch, true), this.overrides.idleFlushMs ?? IDLE_FLUSH_MS);
   }
 
   /**
    * One ingest in flight per watch; it checks again when it finishes. A
-   * quiet database (`idle`) flushes at a share of the trigger.
+   * quiet database (`idle`) flushes at a share of the limit, unless a
+   * failed flush raised the trigger.
    */
   private maybeIngest(watch: IngestWatch, idle = false): void {
-    const share = idle ? watch.maxWalBytes - watch.maxWalBytes / IDLE_FLUSH_SHARE : 0;
-    if (
-      watch.state !== "idle" ||
-      watch.pendingBytes < watch.triggerAt - share ||
-      this.watching !== watch
-    ) {
-      return;
-    }
+    const trigger =
+      idle && watch.triggerAt === watch.maxWalBytes ? watch.maxWalBytes / IDLE_FLUSH_SHARE : watch.triggerAt;
+    if (watch.state !== "idle" || watch.pendingBytes < trigger || this.watching !== watch) return;
     watch.state = "ingesting";
     void (async () => {
       try {
@@ -483,7 +481,7 @@ class HostedDb {
       }
       this.maybeIngest(watch);
       // What arrived during the ingest waits for the next quiet stretch.
-      if (this.watching === watch) this.quiet(watch);
+      this.quiet(watch);
     })();
   }
 
