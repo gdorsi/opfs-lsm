@@ -1,13 +1,15 @@
 import { checkKey } from "./check.js";
-import { ClosedError } from "./errors.js";
+import { ClosedError, ConstraintError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { entryCursor, Miss, untilHit, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, lowerBoundKeys, Miss, untilHit, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,
   entriesOf,
+  liveCount,
   liveStep,
+  seekOffset,
   matchingStep,
   pointGet,
   readKeys,
@@ -66,26 +68,66 @@ function scanStep(
     : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse);
 }
 
-/** The entries `range` yields over memtable `rows` already cut to `bounds` and the levels under them. */
-export function scanLayers(
+/**
+ * The entries `range` yields over memtable `rows` already cut to `bounds` and
+ * the levels under them. A large `offset` starts the scan past most of what
+ * it skips (`seekOffset`), and walks the rest.
+ */
+export async function* scanLayers(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
   at: Marks,
   bounds: ScanBounds | undefined,
   range: Range | undefined,
 ): AsyncGenerator<Entry> {
-  return entriesOf(scanStep(rows, levels, at, bounds, range), range?.limit);
+  let offset = offsetOf(range);
+  if (!range?.valueContains?.length) {
+    const reverse = range?.reverse ?? false;
+    const seek = () => seekOffset(rows, levels, at, bounds, offset, reverse);
+    const first = seek();
+    const found = first instanceof Miss ? await untilHit(seek, first) : first;
+    if (found) {
+      const cut = lowerBoundKeys(rows, found.at);
+      rows = reverse ? rows.slice(0, cut) : rows.slice(cut);
+      bounds = reverse ? { ...bounds, endExclusive: found.at } : { ...bounds, start: found.at };
+      offset -= found.skipped;
+    }
+  }
+  yield* entriesOf(scanStep(rows, levels, at, bounds, range), range?.limit, offset);
 }
 
-/** How many entries `scanLayers` would yield, without copying them. */
-export function countLayers(
+/** `range.offset`, 0 when not given. `ConstraintError` unless it is a whole number from 0 up. */
+function offsetOf(range: Range | undefined): number {
+  const offset = range?.offset ?? 0;
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new ConstraintError(`offset must be a whole number from 0 up: got ${offset}`);
+  return offset;
+}
+
+/**
+ * How many entries `scanLayers` would yield. With no `valueContains` it adds
+ * up what the rows and the runs say (`liveCount`) and reads at most two
+ * blocks of each level. It scans, without copying an entry, when they cannot
+ * say.
+ */
+export async function countLayers(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
   at: Marks,
   bounds: ScanBounds | undefined,
   range: Range | undefined,
 ): Promise<number> {
-  return countOf(scanStep(rows, levels, at, bounds, range), range?.limit);
+  const offset = offsetOf(range);
+  const limit = range?.limit;
+  if (!range?.valueContains?.length) {
+    const read = () => liveCount(rows, levels, at, bounds);
+    const first = read();
+    const live = first instanceof Miss ? await untilHit(read, first) : first;
+    if (live !== undefined) {
+      const left = Math.max(0, live - offset);
+      return limit === undefined ? left : Math.min(left, limit);
+    }
+  }
+  return countOf(scanStep(rows, levels, at, bounds, range), limit, offset);
 }
 
 /**

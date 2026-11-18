@@ -23,10 +23,14 @@ import {
  */
 
 const SST_MAGIC = 0x4f4c5354;
-const VERSION = 1;
+const VERSION = 2;
 const CODEC_RAW = 0;
 const TAG_PUT = 1;
 const TAG_DEL = 2;
+/** Added to a tag: what the record says held before it. */
+const TAG_WAS = { absent: 4, present: 8 } as const;
+/** Bytes of an index entry after its two keys. */
+const INDEX_ROW_TAIL = 14;
 const OFFSET_STRIDE = 4;
 
 /** Target encoded size of one data block. */
@@ -41,7 +45,20 @@ type BlockIndexEntry = {
   lastKey: Uint8Array;
   offset: number;
   length: number;
+  /** How many of the block's records put an absent key, deleted a present one, and did not say. */
+  plus: number;
+  minus: number;
+  unknown: number;
 };
+
+/** What `entries` say they do to the number of live keys. */
+export function tallyOf(entries: readonly SstEntry[]): { plus: number; minus: number; unknown: number } {
+  return {
+    plus: entries.filter((e) => e.kind === "put" && e.was === "absent").length,
+    minus: entries.filter((e) => e.kind === "del" && e.was === "present").length,
+    unknown: entries.filter((e) => e.was === undefined).length,
+  };
+}
 
 /**
  * Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
@@ -154,9 +171,12 @@ function encodeBlock(block: readonly SstEntry[]): Uint8Array {
   return out;
 }
 
-/** u8 tag | u64 seq | varint suffixLen | suffix | (put) varint valLen | value */
+/**
+ * u8 tag | u64 seq | varint suffixLen | suffix | (put) varint valLen | value
+ * The tag is the kind, plus 4 when the record says its key was absent before it and 8 when present.
+ */
 function writeRecord(out: Uint8Array, view: DataView, o: number, e: SstEntry, prefixLen: number): number {
-  out[o++] = e.kind === "put" ? TAG_PUT : TAG_DEL;
+  out[o++] = (e.kind === "put" ? TAG_PUT : TAG_DEL) + (e.was ? TAG_WAS[e.was] : 0);
   view.setBigUint64(o, BigInt(e.seq), true);
   o = writeVarint(out, o + 8, e.key.byteLength - prefixLen);
   out.set(e.key.subarray(prefixLen), o);
@@ -170,14 +190,15 @@ function writeRecord(out: Uint8Array, view: DataView, o: number, e: SstEntry, pr
 }
 
 /**
- * Encode SST version 1 with raw blocks. LZ4 blocks come only from the wasm encoder.
+ * Encode SST version 2 with raw blocks. LZ4 blocks come only from the wasm encoder.
  *   data blocks (see `encodeBlock`)
  *   bloom bits
- *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
+ *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length
+ *          | u16 plus | u16 minus | u16 unknown, see `tallyOf`)
  *   footer, 44 bytes:
  *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
  *     u32 bloomHashCount | u32 indexOffset | u32 indexLen | u32 codec
- *     u32 crc32 of every byte before it | u32 version=1 | u32 magic
+ *     u32 crc32 of every byte before it | u32 version=2 | u32 magic
  */
 export function encodeRunRef(
   entries: readonly SstEntry[],
@@ -200,6 +221,7 @@ export function encodeRunRef(
       lastKey: block[block.length - 1]?.key ?? new Uint8Array(0),
       offset: dataLen,
       length: blob.byteLength,
+      ...tallyOf(block),
     });
     blockBlobs.push(blob);
     dataLen += blob.byteLength;
@@ -207,7 +229,7 @@ export function encodeRunRef(
 
   let indexSize = 0;
   for (const ix of index) {
-    indexSize += 4 + ix.firstKey.byteLength + 4 + ix.lastKey.byteLength + 8;
+    indexSize += 4 + ix.firstKey.byteLength + 4 + ix.lastKey.byteLength + INDEX_ROW_TAIL;
   }
 
   const out = new Uint8Array(dataLen + bloom.bits.byteLength + indexSize + SST_FOOTER_BYTES);
@@ -234,6 +256,10 @@ export function encodeRunRef(
     o += 4;
     view.setUint32(o, ix.length, true);
     o += 4;
+    for (const n of [ix.plus, ix.minus, ix.unknown]) {
+      view.setUint16(o, n, true);
+      o += 2;
+    }
   }
 
   for (const field of [
@@ -259,6 +285,7 @@ export function encodeRunRef(
     end: {
       bytes: out.byteLength,
       ...(first && last && { range: { smallest: first.key.slice(), largest: last.key.slice() } }),
+      tally: tallyOf(sorted),
     },
   };
 }
@@ -323,7 +350,10 @@ function readBlockIndex(
     const lastKey = key();
     const offset = u32();
     const length = u32();
-    index.push({ firstKey, lastKey, offset, length });
+    if (o + 6 > indexEnd) throw new CorruptDatabaseError("sst index OOB");
+    const [plus, minus, unknown] = [0, 2, 4].map((at) => view.getUint16(o + at, true)) as [number, number, number];
+    o += 6;
+    index.push({ firstKey, lastKey, offset, length, plus, minus, unknown });
   }
   if (o !== indexEnd) throw new CorruptDatabaseError("sst index trailing");
   return index;
@@ -379,7 +409,12 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   );
   const out: SstEntry[] = [];
   for (const ix of index) {
-    out.push(...walkBlock(blockBytes(buf, meta.view, meta.dataStart, ix, meta.codec)));
+    const block = walkBlock(blockBytes(buf, meta.view, meta.dataStart, ix, meta.codec));
+    const said = tallyOf(block);
+    if (said.plus !== ix.plus || said.minus !== ix.minus || said.unknown !== ix.unknown) {
+      throw new CorruptDatabaseError("sst index tally mismatch");
+    }
+    out.push(...block);
   }
   if (out.length !== meta.entryCount) {
     throw new CorruptDatabaseError("sst entry count mismatch");

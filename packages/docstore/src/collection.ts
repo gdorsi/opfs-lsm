@@ -1,7 +1,7 @@
 import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
-import { decodeDoc, diffEntries, encodeDoc, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
+import { decodeDoc, diffEntries, encodeDoc, entriesOf, type Derived, type EncodedDoc, type EntryWrite, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { CATALOG_KEY, bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
 import type { EntryPage, EntryValues, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
@@ -79,7 +79,14 @@ export interface Collection<T extends JsonDoc, Ix> {
   queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPage<EntryValues<T, Ix, I>>>;
-  /** How many entries `query` would walk, stopping at `limit` if given. */
+  /**
+   * How many entries `query` would walk, after `offset` and stopping at
+   * `limit` if given. Without `match`, kv adds the count up from what each
+   * write said it did to its key, and reads no entry (kv's `count`). It
+   * walks the range instead while a write in it did not say: a collection
+   * with no index, whose puts read nothing, and an index a backfill built,
+   * until compaction has merged those writes down.
+   */
   count(q: Query<T, Ix>): Promise<number>;
 
   /**
@@ -100,7 +107,7 @@ export interface Collection<T extends JsonDoc, Ix> {
 
 export const RETRY: unique symbol = Symbol("retry");
 
-const NONE: readonly Entry[] = [];
+const NONE: readonly Derived[] = [];
 
 /**
  * A row read before the transaction. The body retries unless the row still
@@ -109,7 +116,7 @@ const NONE: readonly Entry[] = [];
  */
 type Prior = {
   readonly bytes: Uint8Array | undefined;
-  readonly before: readonly Entry[];
+  readonly before: readonly Derived[];
   readonly owned: readonly Entry[];
 };
 
@@ -148,7 +155,7 @@ function planChanges(
   const n = ids.length;
   const idbs = ids.map(idBytes);
   const rowKeys = idbs.map((b) => concat(coll.rows.prefix, b));
-  const after: (readonly Entry[])[] = [];
+  const after: (readonly Derived[])[] = [];
   const claims = new Map<string, { readonly key: Uint8Array; readonly at: number }>();
   for (let i = 0; i < n; i++) {
     const doc = docs[i];
@@ -187,26 +194,33 @@ function planChanges(
         const ownerId = idOf(owner);
         if (!(batch ??= new Set(ids)).has(ownerId)) throw uniqueError(ids[at]!, ownerId);
       }
-      const removes: Uint8Array[] = [];
-      const writes: Entry[] = [];
+      const removes: Derived[] = [];
+      const writes: EntryWrite[] = [];
       let existed = 0;
       for (let i = 0; i < n; i++) {
         const old = values[i];
         const doc = docs[i];
         if (old) existed++;
         if (doc ? bytesEqual(old, doc.bytes) : old === undefined) continue;
-        if (doc) tx.put(rowKeys[i]!, doc.bytes);
-        else tx.delete(rowKeys[i]!);
+        // The transaction read the row, so each write says what it found: kv then counts rows without a scan.
+        if (doc) tx.put(rowKeys[i]!, doc.bytes, { was: old ? "present" : "absent" });
+        else tx.delete(rowKeys[i]!, { was: "present" });
         const before = prior ? prior[i]!.before : old ? entriesOf(coll, idbs[i]!, decodeDoc(old), "stored") : NONE;
         const diff = diffEntries(before, after[i]!);
-        for (const k of diff.remove) {
-          const at = owners.get(keyString(k));
-          if (at === undefined || bytesEqual(values[at], idbs[i])) removes.push(k);
+        for (const e of diff.remove) {
+          const at = owners.get(keyString(e.key));
+          if (at === undefined || bytesEqual(values[at], idbs[i])) removes.push(e);
         }
         for (const e of diff.write) writes.push(e);
       }
-      for (const k of removes) tx.delete(k);
-      for (const e of writes) tx.put(e.key, e.value);
+      // An entry of a ready index follows from the row the transaction read: the row's own
+      // entries are there and no other is. A unique entry is a key the transaction read, so
+      // kv knows what it held. An index still building says nothing.
+      for (const e of removes) tx.delete(e.key, e.ready ? { was: "present" } : undefined);
+      for (const e of writes) {
+        if (!e.ready || claims.has(keyString(e.key))) tx.put(e.key, e.value);
+        else tx.put(e.key, e.value, { was: e.replaces ? "present" : "absent" });
+      }
       return existed;
     },
   };

@@ -1,6 +1,7 @@
 import { compareBytes } from "./bytes.js";
 import { ConstraintError } from "./errors.js";
 import { asSeq, type Seq } from "./seq.js";
+import type { Was } from "./store/sst.js";
 
 const LIMITS = {
   keyBytes: 8 * 1024,
@@ -21,8 +22,8 @@ export type CheckedKey = Uint8Array & { readonly __brand: "CheckedKey" };
 export type CheckedValue = Uint8Array & { readonly __brand: "CheckedValue" };
 
 export type CheckedOp =
-  | { readonly type: "put"; readonly key: CheckedKey; readonly value: CheckedValue }
-  | { readonly type: "del"; readonly key: CheckedKey }
+  | { readonly type: "put"; readonly key: CheckedKey; readonly value: CheckedValue; readonly was?: Was | undefined }
+  | { readonly type: "del"; readonly key: CheckedKey; readonly was?: Was | undefined }
   | {
       readonly type: "deleteRange";
       /** Empty: from the first key. */
@@ -39,8 +40,8 @@ export type CheckedOp =
 
 /** An op as `BatchTx` collects it, before `checkBatch`. */
 export type BatchOp =
-  | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array }
-  | { readonly type: "del"; readonly key: Uint8Array }
+  | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array; readonly was?: Was | undefined }
+  | { readonly type: "del"; readonly key: Uint8Array; readonly was?: Was | undefined }
   | {
       readonly type: "deleteRange";
       readonly start?: Uint8Array | undefined;
@@ -115,6 +116,11 @@ function checkDeleteRange(op: Extract<BatchOp, { type: "deleteRange" }>): Checke
   return { type: "deleteRange", start, ...(end ? { endExclusive: end } : {}), through: asSeq(op.through ?? Number.MAX_SAFE_INTEGER) };
 }
 
+function checkWas(was: unknown): Was | undefined {
+  if (was === undefined || was === "absent" || was === "present") return was;
+  throw new ConstraintError(`was must be "absent" or "present": got ${String(was)}`);
+}
+
 export function checkBatch(ops: readonly BatchOp[]): readonly CheckedOp[] {
   let bytes = 0;
   const out: CheckedOp[] = [];
@@ -131,10 +137,10 @@ export function checkBatch(ops: readonly BatchOp[]): readonly CheckedOp[] {
     }
     switch (op.type) {
       case "put":
-        out.push({ type: "put", key: checkKey(op.key), value: checkValue(op.value) });
+        out.push({ type: "put", key: checkKey(op.key), value: checkValue(op.value), was: checkWas(op.was) });
         break;
       case "del":
-        out.push({ type: "del", key: checkKey(op.key) });
+        out.push({ type: "del", key: checkKey(op.key), was: checkWas(op.was) });
         break;
       case "deleteRange":
         out.push(checkDeleteRange(op));

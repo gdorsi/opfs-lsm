@@ -218,8 +218,9 @@ function appliesMarksInSource(): boolean {
   const session = read("../../tests/oracle/merge-ts.ts");
   const compact = read("../../src/host/compact.ts");
   return (
-    /if\s+through\s*>\s*0\s*&&\s*winner\.seq\s*<=\s*through\s*\{\s*self\.retire\(w\);\s*return\s+Ok\(\(\)\);\s*\}\s*match\s+winner\.kind/.test(engine) &&
-    /private\s+emit\(e:\s*SstEntry\):\s*void\s*\{\s*if\s*\(\s*this\.marks\.length\s*>\s*0\s*&&\s*e\.seq\s*<=\s*throughAt\(\s*this\.marks\s*,\s*e\.key\s*\)\s*\)\s*return;/.test(session) &&
+    // The covered winner returns before the session decides what the winner says, and before it writes.
+    /if\s+through\s*>\s*0\s*&&\s*winner\.seq\s*<=\s*through\s*\{\s*self\.retire\(w\);\s*return\s+Ok\(\(\)\);\s*\}(?:(?!self\.writer\.push)[\s\S])*?match\s+winner\.kind/.test(engine) &&
+    /private\s+emit\(winner:\s*SstEntry,\s*versions:\s*readonly\s+SstEntry\[\]\):\s*void\s*\{\s*const\s+through\s*=\s*throughAt\(\s*this\.marks\s*,\s*winner\.key\s*\);\s*if\s*\(\s*this\.marks\.length\s*>\s*0\s*&&\s*winner\.seq\s*<=\s*through\s*\)\s*return;/.test(session) &&
     /marksThrough:\s*base\.through\s*\}/.test(compact)
   );
 }

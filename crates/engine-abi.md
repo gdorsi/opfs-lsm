@@ -95,25 +95,34 @@ records (below), reach `target_bytes`, and written with `lz4`'s codec.
 A winner whose seq is at or below the highest `through` among the marks
 that hold its key is dropped, delete or put.
 
+A winner is written with the `was` of the oldest version of its key the
+session read that no mark covers, the last duplicate of a source taking the
+`was` of the first. With `drop_tombstones` every put is written as absent
+before. Otherwise a `was` of present becomes unknown when a mark that holds
+the key has an `at` past that version's seq (docs/counted-ranges.md).
+
 ## Wire formats
 
 All integers little-endian.
 
 ```text
-entry record     u8 tag (1 put, 2 del) · u64 seq · u32 key_len · key
-                 · for put only: u32 value_len · value
+entry record     u8 tag · u64 seq · u32 key_len · key
+                 · for put only: u32 value_len · value. The tag is the
+                 kind (1 put, 2 del) plus `was` times 4 (0 not said,
+                 1 absent, 2 present), as a run's record stores it
 pattern list     repeated: u32 len · bytes
 hit record       u32 key_len · u32 value_len · u64 seq · key · value
-run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_len
-                 · sst (size bytes) · first_key · last_key
+run record       run head · sst (size bytes) · first_key · last_key
 source list      u32 count · repeated: u32 run_count · run_count × u32 size
 demand record    u32 source · u32 run · u32 offset · u32 len
 run head         u32 entries · u32 size · u32 first_key_len · u32 last_key_len
+                 · u32 plus · u32 minus · u32 unknown: the run's tally, the
+                 sum of its index entries'
 marks block      u32 count · per mark: u32 start_len · start · u8 has_end
                  · (u32 end_len · end, when has_end is 1) · u64 through
                  · u64 at. The end is exclusive, no end is the end of the
-                 key space. The module ignores `at` and `count`: it reads
-                 marks to the end of the block, so an empty block is no marks
+                 key space. The module ignores `count`: it reads marks to
+                 the end of the block, so an empty block is no marks
 ```
 
 A run record carries what the manifest records about a run, so the caller

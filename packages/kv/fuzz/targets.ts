@@ -325,9 +325,9 @@ export async function checkWalRow(raw: unknown): Promise<void> {
       ops.map((op): RowOp => {
         switch (op.type) {
           case "put":
-            return { put: op.key, value: op.value };
+            return { put: op.key, value: op.value, ...(op.was ? { was: op.was } : {}) };
           case "del":
-            return { del: op.key };
+            return { del: op.key, ...(op.was ? { was: op.was } : {}) };
           case "deleteRange":
             return { deleteRange: op.start, ...(op.endExclusive ? { end: op.endExclusive } : {}), through: op.through };
         }
@@ -343,9 +343,10 @@ export async function checkWalRow(raw: unknown): Promise<void> {
   });
 }
 
+/** `was`: what a put or a delete says its key held before it. */
 export type RowOp =
-  | { readonly put: Uint8Array; readonly value: Uint8Array }
-  | { readonly del: Uint8Array }
+  | { readonly put: Uint8Array; readonly value: Uint8Array; readonly was?: "absent" | "present" }
+  | { readonly del: Uint8Array; readonly was?: "absent" | "present" }
   | { readonly deleteRange: Uint8Array; readonly end?: Uint8Array; readonly through: number };
 
 /** A WAL row in the format of design.md, "WAL records", written by the harness. */
@@ -373,7 +374,8 @@ export function encodeWalRow(ops: readonly RowOp[]): Uint8Array {
       o += 8;
       continue;
     }
-    out[o++] = "put" in op ? 0 : 1;
+    // The type, with what the op says its key held before in bits 4 and 5.
+    out[o++] = ("put" in op ? 0 : 1) + (op.was === "absent" ? 0x10 : op.was === "present" ? 0x20 : 0);
     bytes("put" in op ? op.put : op.del);
     if ("put" in op) bytes(op.value);
   }

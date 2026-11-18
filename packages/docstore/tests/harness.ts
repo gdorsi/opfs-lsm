@@ -1,5 +1,5 @@
 import { prefixBound, type BatchTx, type Db, type Entry, type ViewSnapshot } from "@opfs-lsm/kv";
-import { openHarnessDb } from "@opfs-lsm/kv/testing";
+import { ingest, openHarnessDb } from "@opfs-lsm/kv/testing";
 import { parseCatalog, type StoredCatalog } from "../src/catalog.js";
 import { CATALOG_KEY, ROOT, bytesEqual, collectionPrefix, indexPrefix, type CollectionId, type IndexId } from "../src/keys.js";
 
@@ -10,8 +10,42 @@ export function freshName(): string {
 }
 
 /** One handle on `name`. Handles on one name share the WAL and the run files, like tabs of one origin. */
-export function openKv(name: string): Promise<Db> {
-  return openHarnessDb({ name, forceMemory: true, maxWalBytes: 1 << 30 });
+export async function openKv(name: string): Promise<Db> {
+  const audit = process.env["DOCSTORE_COUNT_AUDIT"];
+  if (!audit) return openHarnessDb({ name, forceMemory: true, maxWalBytes: 1 << 30 });
+  // The audit: flush every `audit` bytes of WAL, so that what docstore tells kv about each write reaches a run, and check kv's counts at close.
+  const kv = await openHarnessDb({ name, forceMemory: true, maxWalBytes: Number(audit) });
+  const close = kv.close.bind(kv);
+  kv.close = async () => {
+    await auditCounts(kv);
+    return close();
+  };
+  return kv;
+}
+
+/**
+ * Throws unless kv's count of docstore's keys, and of about 150 slices of
+ * them, is the number of keys a scan finds. kv adds a count up from what
+ * each write said it replaced (`was`), and does not check what docstore
+ * says: this does. A handle already closed or destroyed is skipped.
+ */
+async function auditCounts(kv: Db): Promise<void> {
+  try {
+    await ingest(kv);
+  } catch {
+    return;
+  }
+  const all = { start: Uint8Array.of(ROOT), endExclusive: Uint8Array.of(ROOT + 1) };
+  const keys: Uint8Array[] = [];
+  for await (const e of kv.range(all)) keys.push(e.key);
+  const check = (what: string, got: number, want: number) => {
+    if (got !== want) throw new Error(`count audit: ${what}: count says ${got}, a scan finds ${want}`);
+  };
+  check("every docstore key", await kv.count(all), keys.length);
+  const step = Math.max(1, Math.floor(keys.length / 150));
+  for (let i = 0; i + step < keys.length; i += step) {
+    check(`the ${step} keys from key ${i} of ${keys.length}`, await kv.count({ start: keys[i]!, endExclusive: keys[i + step]! }), step);
+  }
 }
 
 /** A handle that gets no BroadcastChannel message, so it learns of other writes only through `sync()`. */

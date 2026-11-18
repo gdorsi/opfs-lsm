@@ -271,7 +271,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
     const run = new Uint8Array(bloom + 44);
     const f = footer(run);
     [0, 0, 0, bloom, 7, bloom, 0, 0].forEach((v, i) => f.setUint32(4 * i, v, true));
-    f.setUint32(36, 1, true);
+    f.setUint32(36, 2, true);
     f.setUint32(40, 0x4f4c5354, true);
     fixSstCrc(run);
     return run;

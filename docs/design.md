@@ -59,11 +59,11 @@ OPFS  opfs-lsm/<name>/
 
 Each acked `put`, `delete` or `batch` with ops, and each `update` that writes, is one record in
 the `wal` store. A batch with no ops writes nothing and resolves with the `appliedThrough` of
-its tab. The key is the seq. The value is one `ArrayBuffer` that holds the ops of the batch back
-to back:
+its tab. The key is the seq. The value is one `ArrayBuffer`, the ops of the batch back to back:
 
 ```layout
-| u8 type         0 = put, 1 = delete, 3 = range delete                      |
+| u8 type         bits 0-3: 0 = put, 1 = delete, 3 = range delete            |
+|                 bits 4-5: `was`, the key before: 1 = absent, 2 = present   |
 | u32 key length                                                             |
 | key             the start key, for a range delete                          |
 | u32 value length                                    (puts only)            |
@@ -140,7 +140,7 @@ Each tab holds one memtable. It holds the WAL records in `(ingestedThrough, appl
 where `ingestedThrough` is that of the installed generation, folded to one row per key:
 
 ```
-MemRow = { key, seq, kind: "put" | "del", value? }
+MemRow = { key, seq, kind: "put" | "del", value?, was? }
 ```
 
 Rows are kept in key order, in chunks of up to 1024 rows, split at 512. Records apply in seq
@@ -230,8 +230,9 @@ that holds the key with a non-matching value or a tombstone drops the older hit.
 
 A scan reads keys and values in place in the block bytes, which are never written once read,
 and copies an entry only when it yields it. A key the block prefix splits is assembled.
-`count(range)` runs the same merge and filters, `limit` included, and returns how many entries
-the scan would yield.
+`count(range)` returns how many entries the scan would yield, `limit` and `offset` included.
+When the writes of the range said what they replaced, it adds tallies up and a large `offset`
+starts past what it skips; otherwise both run the merge ([counted-ranges.md](counted-ranges.md)).
 
 Every read judges the versions it finds in runs against one read point: the marks of the
 installed generation joined with those of the memtable, taken in the same turn as the layers it
@@ -423,9 +424,8 @@ drops tombstones.
 
 ### Merging
 
-A step reads its inputs as sources, newest first. Each L0 run is one source. The overlapped runs
-of the next level, which are disjoint, are one source together. A step has at most `maxSources`
-sources.
+A step reads its inputs as sources, newest first, at most `maxSources` of them. Each L0 run is
+one source. The overlapped runs of the next level, which are disjoint, are one source together.
 
 The merge is a session that the host pumps. The session owns every offset. Each pump stops
 between two keys and asks the host for one thing:
@@ -434,13 +434,13 @@ between two keys and asks the host for one thing:
 |---|---|
 | NEED | reads the listed byte ranges of the inputs and feeds them in |
 | WRITE | writes the bytes to the open output run |
-| RUN_END | finishes that file and records its size and key range |
+| RUN_END | finishes that file and records its size, key range and tally |
 | YIELD | gives the event loop a turn |
 | DONE | installs the outputs |
 
-For a key, the newest source wins, and is dropped when a mark covers it. The session checks the CRC of every input run before it uses
-the last entries of that run. It cuts the output into runs of about 4 MiB of records, named
-`c<top + 1>.<i>`.
+For a key, the newest source wins with the `was` of the oldest version merged, and is dropped
+when a mark covers it. The session checks the CRC of every input run before it uses the last
+entries of that run. It cuts the output into runs of about 4 MiB of records, named `c<top + 1>.<i>`.
 
 The memory a step holds does not depend on the size of its inputs: about one read window of
 blocks per source, plus the open output block and its bloom and index rows. If any input is corrupt, or any

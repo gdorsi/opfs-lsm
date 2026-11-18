@@ -32,7 +32,7 @@ export default defineContender({
   family: "tracker",
   durability: "idb-default",
   fastPath:
-    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; count on index entries; joins = getMany of distinct foreign keys; IN = one query per status, merged, or for ranges longer than a page, queryEntries per status merged on the index values, then getMany of the page; group-by = one queryEntries scan; a batch = putMany or modifyMany per collection",
+    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; count on index entries, added up from what each write said and not walked; a deep window = offset on the index, which skips without reading; joins = getMany of distinct foreign keys; IN = one query per status, merged, or for ranges longer than a page, queryEntries per status merged on the index values, then getMany of the page; group-by = one queryEntries scan; a batch = putMany or modifyMany per collection",
   engine: true,
   async open(name) {
     const kv = await openKv(name);
@@ -94,10 +94,8 @@ export default defineContender({
         statusCounts: ({ projectId }) => Promise.all(STATUSES.map((s) => issues.count({ index: "byProjectStatus", eq: [projectId, s] }))),
         statusPage,
         drainedPage: statusPage,
-        async deepWindow({ projectId, offset }) {
-          const { ids } = await issues.queryIds({ index: "byNumber", eq: [projectId], reverse: true, limit: offset + LIMITS.page });
-          return refs((await issues.getMany(ids.slice(offset))) as Issue[]);
-        },
+        deepWindow: async ({ projectId, offset }) =>
+          refs((await issues.query({ index: "byNumber", eq: [projectId], reverse: true, offset, limit: LIMITS.page })).docs),
         async issueThread({ projectKey, number }) {
           const project = (await projects.query({ index: "byKey", eq: [projectKey], limit: 1 })).docs[0];
           const issue = project && (await issues.query({ index: "byNumber", eq: [project.id, number], limit: 1 })).docs[0];

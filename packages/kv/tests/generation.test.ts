@@ -34,13 +34,13 @@ afterEach(async () => {
 });
 
 describe("manifest", () => {
-  it("round-trips each run's size, key range and marksThrough, and the marks", () => {
+  it("round-trips each run's size, key range, marksThrough and tally, and the marks", () => {
     const meta = {
       generation: 3,
       runs: [
-        { path: "l0/1-2.sst", bytes: 4_321, range: { smallest: utf("a"), largest: utf("m") }, marksThrough: 9 },
-        { path: "l1/c2.0.sst", bytes: 2 ** 32 - 1, marksThrough: 0 },
-        { path: "l2/c9.1.sst", bytes: 0, range: { smallest: new Uint8Array(0), largest: new Uint8Array(0) }, marksThrough: 5 },
+        { path: "l0/1-2.sst", bytes: 4_321, range: { smallest: utf("a"), largest: utf("m") }, marksThrough: 9, tally: { plus: 7, minus: 2, unknown: 1 } },
+        { path: "l1/c2.0.sst", bytes: 2 ** 32 - 1, marksThrough: 0, tally: { plus: 2 ** 32 - 1, minus: 0, unknown: 0 } },
+        { path: "l2/c9.1.sst", bytes: 0, range: { smallest: new Uint8Array(0), largest: new Uint8Array(0) }, marksThrough: 5, tally: { plus: 0, minus: 0, unknown: 0 } },
       ],
       through: 9,
       marks: [{ start: utf("c"), endExclusive: utf("d"), through: 6, at: 7 }],
@@ -51,14 +51,14 @@ describe("manifest", () => {
   it("refuses marks or a run that reach past the manifest's through", () => {
     const valid = { generation: 2, runs: [], through: 7, marks: NO_MARKS };
     const late = [{ start: utf("c"), through: 6, at: 8 }];
-    const run = { path: "l0/1-1.sst", bytes: 90, marksThrough: 8 };
+    const run = { path: "l0/1-1.sst", bytes: 90, marksThrough: 8, tally: { plus: 0, minus: 0, unknown: 0 } };
     for (const meta of [{ ...valid, marks: late }, { ...valid, runs: [run] }]) {
       expect(() => decodeGeneration(encodeGeneration(meta))).toThrow(CorruptDatabaseError);
     }
   });
 
-  it.each([1, 2, 3, 4])("refuses a version %i manifest rather than read it as version 5", (version) => {
-    const meta = { generation: 2, runs: [{ path: "l0/1-1.sst", bytes: 90, marksThrough: 7 }], through: 7, marks: NO_MARKS };
+  it.each([1, 2, 3, 4, 5])("refuses a version %i manifest rather than read it as version 6", (version) => {
+    const meta = { generation: 2, runs: [{ path: "l0/1-1.sst", bytes: 90, marksThrough: 7, tally: { plus: 0, minus: 0, unknown: 0 } }], through: 7, marks: NO_MARKS };
     const buf = encodeGeneration(meta);
     new DataView(buf.buffer).setUint32(4, version, true);
     new DataView(buf.buffer).setUint32(buf.byteLength - 4, crc32(buf.subarray(0, buf.byteLength - 4)), true);
@@ -93,7 +93,7 @@ describe("publishL0", () => {
 });
 
 describe("loadLatestGeneration", () => {
-  const a = { path: "l0/a.sst", bytes: 1, marksThrough: 0 };
+  const a = { path: "l0/a.sst", bytes: 1, marksThrough: 0, tally: { plus: 0, minus: 0, unknown: 0 } };
 
   it("skips an empty newest manifest and returns the older one", async () => {
     const fs = new MemoryFs();
@@ -132,6 +132,7 @@ describe("loadLatestGeneration", () => {
       bytes: 4_194_304,
       range: { smallest: key(i * 2), largest: key(i * 2 + 1) },
       marksThrough: 0,
+      tally: { plus: 0, minus: 0, unknown: 0 },
     }));
     await publishGeneration(fs, { generation: 2, runs, through: 0, marks: NO_MARKS });
     const meta = await loadLatestGeneration(fs);

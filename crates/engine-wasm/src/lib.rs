@@ -13,7 +13,7 @@ use alloc::{vec, vec::Vec};
 
 use core::cell::UnsafeCell;
 use engine_core::{
-    encode_run_into, lz4_unpack, Codec, Entry, MergeConfig, MergeError, MergeSession, RunEnd, SstError, Stop,
+    encode_run_into, lz4_unpack, Before, Codec, Entry, MergeConfig, MergeError, MergeSession, RunEnd, SstError, Stop,
 };
 
 const TAG_PUT: u8 = 1;
@@ -34,8 +34,9 @@ const RUN_END: i32 = 3;
 const YIELD: i32 = 4;
 const DONE: i32 = 5;
 
-/// Bytes of a run record's fixed head: entries, size, first and last key length.
-const RUN_HEAD: usize = 16;
+/// Bytes of a run record's fixed head: entries, size, first and last key
+/// length, then what the run's records say: plus, minus, unknown.
+const RUN_HEAD: usize = 28;
 
 /// The module is single-threaded, so a static handed out by `&mut` is never
 /// aliased across calls.
@@ -93,7 +94,8 @@ fn error_code(e: SstError) -> i32 {
 /// The fixed head of a run record, from what the writer reported.
 fn run_head(end: &RunEnd) -> [u8; RUN_HEAD] {
     let mut head = [0u8; RUN_HEAD];
-    let fields = [end.entries, end.size, end.first_key.len(), end.last_key.len()];
+    let said = end.tally;
+    let fields = [end.entries, end.size, end.first_key.len(), end.last_key.len(), said.plus, said.minus, said.unknown];
     for (slot, n) in head.chunks_exact_mut(4).zip(fields) {
         slot.copy_from_slice(&(n as u32).to_le_bytes());
     }
@@ -175,13 +177,20 @@ fn parse_entries(buf: &[u8]) -> Result<Vec<Entry>, i32> {
         let seq = r.u64().ok_or(TRUNCATED)?;
         let klen = r.u32().ok_or(TRUNCATED)?;
         let key = r.take(klen).ok_or(TRUNCATED)?.to_vec();
-        out.push(match tag {
+        // The kind in bits 0 and 1, the `Before` in bits 2 and 3, as a run stores it.
+        let before = match tag >> 2 {
+            0 => Before::Unknown,
+            1 => Before::Absent,
+            2 => Before::Present,
+            _ => return Err(BAD_TAG),
+        };
+        out.push(match tag & 3 {
             TAG_PUT => {
                 let vlen = r.u32().ok_or(TRUNCATED)?;
                 let value = r.take(vlen).ok_or(TRUNCATED)?.to_vec();
-                Entry::Put { key, value, seq }
+                Entry::Put { key, value, seq, before }
             }
-            TAG_DEL => Entry::Del { key, seq },
+            TAG_DEL => Entry::Del { key, seq, before },
             _ => return Err(BAD_TAG),
         });
     }

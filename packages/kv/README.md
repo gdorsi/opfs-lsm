@@ -100,6 +100,18 @@ const count = await db.update([enc("count")], ([current], tx) => {
 count; // => 1
 ```
 
+An `update` knows whether each key it read held a value, and its writes of those keys record it. A [`count`](#count) or an [`offset`](#offset) over keys written this way reads no entry. For a key the update writes without reading, such as an index entry derived from a row it did read, say it with `was`:
+
+```ts
+await db.update([enc("user/4")], ([row], tx) => {
+  tx.put(enc("user/4"), enc("Linus"));
+  // No row yet, so it has no entry yet either.
+  if (!row) tx.put(enc("by-name/Linus/4"), enc(""), { was: "absent" });
+});
+```
+
+kv trusts `was`. A wrong one makes counts of that range wrong. `batch`, `put` and `delete` read nothing, so they refuse it.
+
 ## Range scans
 
 ```ts
@@ -153,14 +165,27 @@ db.range({ ...users, valueContains: [enc("e")], limit: 1 });
 // yields "user/2", since limit counts matches
 ```
 
+### `offset`
+
+```ts
+// Skips entries first, in scan order. `limit` counts what follows.
+db.range({ ...users, offset: 1, limit: 1 });
+// yields "user/2"
+db.range({ ...users, offset: 1, reverse: true });
+// yields "user/2", "user/1"
+```
+
 ### `count`
 
 ```ts
 // How many entries db.range would yield, with the same options.
 // It copies no key or value.
 await db.count(users); // => 3
+await db.count({ ...users, offset: 1 }); // => 2
 await db.count({ ...users, valueContains: [enc("e")] }); // => 1
 ```
+
+A count, and a large `offset`, cost the same whatever the range holds when every write in the range recorded what it replaced: the writes of an [`update`](#read-modify-write). They add up what those writes did, and read at most two blocks of each level. Writes that read nothing, `put`, `delete` and `batch`, leave a range that is scanned, until compaction has merged them into the bottom level. A `deleteRange` over the range also makes it scan until compaction has removed what it covers, and so does `valueContains`.
 
 ## Tuple keys
 

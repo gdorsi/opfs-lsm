@@ -9,6 +9,7 @@ export {
   type DeleteRangeOptions,
   type Entry,
   type Range,
+  type WriteOptions,
   type ViewSnapshot,
   type ChangeEvent,
   type ChangeListener,

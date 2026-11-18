@@ -11,6 +11,7 @@ import {
   type Seq,
 } from "../seq.js";
 import type { WalRecord } from "../store/memtable.js";
+import { wasBits, type Was } from "../store/sst.js";
 
 /**
  * One record per batch, keyed by seq. Holds the seqs above ingestedThrough,
@@ -97,6 +98,9 @@ const EMPTY_RECORD = new ArrayBuffer(0);
 const OP_PUT = 0;
 const OP_DEL = 1;
 const OP_DELETE_RANGE = 3;
+/** A put's or a delete's type byte holds its `was` in bits 4 and 5: 0 unknown, 1 absent, 2 present. */
+const OP_KIND = 0x0f;
+const OP_WAS: readonly (Was | undefined)[] = [undefined, "absent", "present"];
 
 /** A range delete asked for `asked` in the record at `seq` never covers its own batch. */
 function resolveThrough(asked: Seq, seq: Seq): Seq {
@@ -135,7 +139,7 @@ export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
       at += 8;
       continue;
     }
-    view.setUint8(at++, op.type === "put" ? OP_PUT : OP_DEL);
+    view.setUint8(at++, (op.type === "put" ? OP_PUT : OP_DEL) | (wasBits(op.was) << 2));
     bytes(op.key);
     if (op.type === "put") bytes(op.value);
   }
@@ -172,14 +176,17 @@ export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
     return n;
   };
   while (at < bytes.byteLength) {
-    const type = view.getUint8(at);
+    const byte = view.getUint8(at);
     at += 1;
+    const type = byte & OP_KIND;
+    if (byte >> 4 > 2 || (type === OP_DELETE_RANGE && byte !== type)) throw new CommitError(`corrupt wal op ${byte}`);
+    const was = OP_WAS[byte >> 4];
     const key = take(u32()) as CheckedKey;
     if (type === OP_PUT) {
       const value = take(u32()) as CheckedValue;
-      ops.push({ type: "put", key, value });
+      ops.push({ type: "put", key, value, was });
     } else if (type === OP_DEL) {
-      ops.push({ type: "del", key });
+      ops.push({ type: "del", key, was });
     } else if (type === OP_DELETE_RANGE) {
       const hasEnd = take(1)[0]!;
       if (hasEnd > 1) throw new CommitError("corrupt wal row: end flag");
@@ -195,7 +202,7 @@ export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
         through: resolveThrough(asSeq(Number(through)), seq),
       });
     } else {
-      throw new CommitError(`corrupt wal op ${type}`);
+      throw new CommitError(`corrupt wal op ${byte}`);
     }
   }
   return ops;

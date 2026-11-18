@@ -18,6 +18,7 @@
 #![allow(dead_code)]
 
 use engine_core::{
+    Before,
     decode_block, decode_sst, encode_sst, scan_block_contains, Codec, EncodedRun, Entry, MergeConfig, MergeError,
     MergeSession, Stop,
 };
@@ -86,7 +87,8 @@ pub fn framed_blocks(buf: &[u8]) -> Vec<&[u8]> {
         let Some(last) = u32_at(buf, o) else { break };
         o = o.saturating_add(4).saturating_add(last as usize);
         let (Some(offset), Some(length)) = (u32_at(buf, o), u32_at(buf, o.saturating_add(4))) else { break };
-        o = o.saturating_add(8);
+        // Offset and length, then the block's tally: three u16.
+        o = o.saturating_add(14);
         let (start, len) = (offset as usize, length as usize);
         match buf.get(start..start.saturating_add(len)) {
             Some(b) if start.saturating_add(len) <= f.data_len as usize => out.push(b),
@@ -182,13 +184,21 @@ pub fn wrap_block(framed: &[u8], codec: Codec, count: u32) -> Vec<u8> {
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&data_len.to_le_bytes());
+    // What the block's records say, as the writer counts it. A block that does not decode
+    // fails before its tally is compared.
+    let entries = engine_core::decode_block(framed, codec).unwrap_or_default();
+    let said = |put: bool, before: Before| entries.iter().filter(|e| matches!(e, Entry::Put { .. }) == put && e.before() == before).count() as u16;
+    let unknown = said(true, Before::Unknown) + said(false, Before::Unknown);
+    for n in [said(true, Before::Absent), said(false, Before::Present), unknown] {
+        out.extend_from_slice(&n.to_le_bytes());
+    }
     let index_len = out.len() as u32 - index_start;
     for v in [count, 1, data_len, 0, 1, index_start, index_len, codec as u32] {
         out.extend_from_slice(&v.to_le_bytes());
     }
     let sum = crc32(&out);
     out.extend_from_slice(&sum.to_le_bytes());
-    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&0x4f4c_5354u32.to_le_bytes());
     out
 }
@@ -206,7 +216,8 @@ pub fn blocks_tile(buf: &[u8]) -> bool {
         let Some(last) = u32_at(buf, o) else { return false };
         o = o.saturating_add(4).saturating_add(last as usize);
         let (Some(offset), Some(length)) = (u32_at(buf, o), u32_at(buf, o.saturating_add(4))) else { return false };
-        o = o.saturating_add(8);
+        // Offset and length, then the block's tally: three u16.
+        o = o.saturating_add(14);
         if offset as usize != next {
             return false;
         }
@@ -291,17 +302,27 @@ pub fn check_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) {
         assert_eq!(run.end.last_key, entries.last().map_or(&[][..], |e| e.key()), "the reported last key");
         out.extend(entries);
     }
-    let mut map: BTreeMap<Vec<u8>, Entry> = BTreeMap::new();
+    // Oldest source first, so the last entry of a key is the newest and the first one says
+    // what held before them all. A bottom merge leaves nothing older: every put is an insert.
+    let mut map: BTreeMap<Vec<u8>, (Before, Entry)> = BTreeMap::new();
     for source in decoded.iter().rev() {
         for e in source {
-            map.insert(e.key().to_vec(), e.clone());
+            let said = map.get(e.key()).map_or(e.before(), |(first, _)| *first);
+            map.insert(e.key().to_vec(), (said, e.clone()));
         }
     }
     let want: Vec<Entry> = map
         .into_values()
-        .filter(|e| match e {
+        .filter(|(_, e)| match e {
             Entry::Del { .. } => !config.drop_tombstones,
             _ => true,
+        })
+        .map(|(said, e)| {
+            let before = if config.drop_tombstones { Before::Absent } else { said };
+            match e {
+                Entry::Put { key, value, seq, .. } => Entry::Put { key, value, seq, before },
+                Entry::Del { key, seq, .. } => Entry::Del { key, seq, before },
+            }
         })
         .collect();
     assert_eq!(out, want, "the session's output is the newest-wins fold");
@@ -418,10 +439,10 @@ pub fn sample_entries(n: u64, seed: u64) -> Vec<Entry> {
         .map(|i| {
             let key = format!("t/{:06}", i * 7 + seed).into_bytes();
             if (i + seed) % 5 == 0 {
-                Entry::Del { key, seq: i + 1 }
+                Entry::Del { key, seq: i + 1, before: Before::Unknown }
             } else {
                 let value = format!("{{\"n\":{i},\"tag\":\"{}\"}}", if i % 3 == 0 { " hot" } else { " cold" }).into_bytes();
-                Entry::Put { key, value, seq: i + 1 }
+                Entry::Put { key, value, seq: i + 1, before: Before::Unknown }
             }
         })
         .collect()

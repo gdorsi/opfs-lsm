@@ -14,6 +14,6 @@ pub use bloom::{
 };
 pub use merge::{decode_block, Demand, MergeConfig, MergeError, MergeSession, Stop};
 pub use sst::{
-    decode_sst, encode_run, encode_run_into, encode_sst, lz4_unpack, scan_block_contains, Codec, EncodedRun,
-    Entry, EntryRef, OutOfOrder, RunEnd, SstError, SstWriter,
+    decode_sst, encode_run, encode_run_into, encode_sst, lz4_unpack, scan_block_contains, Before, Codec, EncodedRun,
+    Entry, EntryRef, OutOfOrder, RunEnd, SstError, SstWriter, Tally,
 };

@@ -1,7 +1,9 @@
-//! SST format, version 1. Data blocks first, then the bloom filter, the
+//! SST format, version 2. Data blocks first, then the bloom filter, the
 //! block index, and a 44-byte footer. Each block stores its shared key
 //! prefix once; records hold the suffix and use varint lengths. Magic and
-//! version sit in the last 8 bytes.
+//! version sit in the last 8 bytes. A record says whether its key was live
+//! before it (`Before`), and the index counts what each block's records say,
+//! so a reader counts the live keys of a range without walking them.
 //! Must stay byte-compatible with the reader in `packages/kv/src/store/sst.ts` and
 //! the reference writer in `packages/kv/tests/oracle/sst-ref.ts`.
 
@@ -16,10 +18,16 @@ mod reference;
 mod writer_tests;
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 pub(crate) const FOOTER_BYTES: usize = 44;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
+/// A tag is the kind in bits 0 and 1 and the `Before` in bits 2 and 3.
+const TAG_KIND: u8 = 0b11;
+const TAG_BEFORE_SHIFT: u8 = 2;
+/// Bytes of an index row after its two keys: u32 offset, u32 length, and
+/// u16 plus, minus and unknown.
+pub(crate) const INDEX_ROW_TAIL: usize = 14;
 pub(crate) const BLOCK_TARGET: usize = 4 * 1024;
 /// A block stores the offset of every `OFFSET_STRIDE`th record after
 /// the first, so a get binary-searches them and walks at most
@@ -53,11 +61,65 @@ impl Codec {
     }
 }
 
+/// Whether a key was live just before the oldest write a record stands for.
+/// A writer that read the key says so. A blind write does not know.
+///
+/// With it a record states what it does to the number of live keys: a put
+/// over an absent key adds one, a delete of a present key takes one away, and
+/// the other two change nothing. Summed over every record of a key, in any
+/// set of runs that holds each version once, that is 1 for a live key and 0
+/// for a dead one, as long as no record of the key is `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Before {
+    #[default]
+    Unknown = 0,
+    Absent = 1,
+    Present = 2,
+}
+
+impl Before {
+    fn from_tag(tag: u8) -> Result<Before, SstError> {
+        match tag >> TAG_BEFORE_SHIFT {
+            0 => Ok(Before::Unknown),
+            1 => Ok(Before::Absent),
+            2 => Ok(Before::Present),
+            _ => Err(SstError::BadTag(tag)),
+        }
+    }
+}
+
+/// What the records of a block, or of a run, say they do to the number of
+/// live keys: `plus` put a key that was absent, `minus` deleted one that was
+/// present, and `unknown` did not say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Tally {
+    pub plus: usize,
+    pub minus: usize,
+    pub unknown: usize,
+}
+
+impl Tally {
+    fn count(&mut self, put: bool, before: Before) {
+        match (put, before) {
+            (_, Before::Unknown) => self.unknown += 1,
+            (true, Before::Absent) => self.plus += 1,
+            (false, Before::Present) => self.minus += 1,
+            _ => {}
+        }
+    }
+
+    fn add(&mut self, other: Tally) {
+        self.plus += other.plus;
+        self.minus += other.minus;
+        self.unknown += other.unknown;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// `seq` is the WAL seq that wrote the entry.
 pub enum Entry {
-    Put { key: Vec<u8>, value: Vec<u8>, seq: u64 },
-    Del { key: Vec<u8>, seq: u64 },
+    Put { key: Vec<u8>, value: Vec<u8>, seq: u64, before: Before },
+    Del { key: Vec<u8>, seq: u64, before: Before },
 }
 
 impl Entry {
@@ -72,6 +134,12 @@ impl Entry {
             Entry::Put { seq, .. } | Entry::Del { seq, .. } => *seq,
         }
     }
+
+    pub fn before(&self) -> Before {
+        match self {
+            Entry::Put { before, .. } | Entry::Del { before, .. } => *before,
+        }
+    }
 }
 
 /// An entry whose bytes stay with the caller. `SstWriter::push` copies what
@@ -79,8 +147,8 @@ impl Entry {
 /// next entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryRef<'a> {
-    Put { key: &'a [u8], value: &'a [u8], seq: u64 },
-    Del { key: &'a [u8], seq: u64 },
+    Put { key: &'a [u8], value: &'a [u8], seq: u64, before: Before },
+    Del { key: &'a [u8], seq: u64, before: Before },
 }
 
 impl<'a> EntryRef<'a> {
@@ -94,8 +162,8 @@ impl<'a> EntryRef<'a> {
 impl<'a> From<&'a Entry> for EntryRef<'a> {
     fn from(e: &'a Entry) -> Self {
         match e {
-            Entry::Put { key, value, seq } => EntryRef::Put { key, value, seq: *seq },
-            Entry::Del { key, seq } => EntryRef::Del { key, seq: *seq },
+            Entry::Put { key, value, seq, before } => EntryRef::Put { key, value, seq: *seq, before: *before },
+            Entry::Del { key, seq, before } => EntryRef::Del { key, seq: *seq, before: *before },
         }
     }
 }
@@ -153,6 +221,8 @@ pub struct RunEnd {
     /// entries, and also when its only key is empty, so `entries` says which.
     pub first_key: Vec<u8>,
     pub last_key: Vec<u8>,
+    /// What the run's records say, summed.
+    pub tally: Tally,
 }
 
 /// A run's bytes and its `RunEnd`.
@@ -239,6 +309,7 @@ fn record_overhead(e: EntryRef<'_>) -> usize {
 /// the block's encoded size however long the keys are.
 struct Staged {
     seq: u64,
+    before: Before,
     shared: usize,
     rest: usize,
     /// None for a tombstone.
@@ -288,6 +359,7 @@ pub struct SstWriter {
     entries: usize,
     first_key: Vec<u8>,
     last_key: Vec<u8>,
+    tally: Tally,
 }
 
 impl SstWriter {
@@ -309,6 +381,7 @@ impl SstWriter {
             entries: 0,
             first_key: Vec::new(),
             last_key: Vec::new(),
+            tally: Tally::default(),
         }
     }
 
@@ -346,11 +419,11 @@ impl SstWriter {
             self.first.clear();
             self.first.extend_from_slice(key);
         }
-        let (seq, value) = match e {
-            EntryRef::Put { value, seq, .. } => (seq, Some(value)),
-            EntryRef::Del { seq, .. } => (seq, None),
+        let (seq, before, value) = match e {
+            EntryRef::Put { value, seq, before, .. } => (seq, before, Some(value)),
+            EntryRef::Del { seq, before, .. } => (seq, before, None),
         };
-        self.recs.push(Staged { seq, shared, rest: key.len() - shared, value: value.map(<[u8]>::len) });
+        self.recs.push(Staged { seq, before, shared, rest: key.len() - shared, value: value.map(<[u8]>::len) });
         self.staged.extend_from_slice(&key[shared..]);
         if let Some(value) = value {
             self.staged.extend_from_slice(value);
@@ -408,6 +481,7 @@ impl SstWriter {
             size: self.sent.bytes + 12,
             first_key: mem::take(&mut self.first_key),
             last_key: mem::take(&mut self.last_key),
+            tally: mem::take(&mut self.tally),
         };
         self.reset();
         end
@@ -435,7 +509,11 @@ impl SstWriter {
     /// record `(j + 1) * OFFSET_STRIDE` starts, from the start of the block.
     /// A record is
     ///   u8 tag | u64 seq | varint suffixLen | suffix | (put) varint valLen | value
-    /// An LZ4 block is then framed with its uncompressed length.
+    /// where the tag is the kind (1 put, 2 delete) plus the `Before` times 4.
+    /// An LZ4 block is then framed with its uncompressed length. Its index
+    /// row is
+    ///   u32 len | first key | u32 len | last key | u32 offset | u32 length
+    ///   | u16 plus | u16 minus | u16 unknown
     fn cut(&mut self, out: &mut Vec<u8>) {
         let p = self.recs.last().map_or(0, |r| r.shared);
         let block = &mut self.block;
@@ -445,6 +523,7 @@ impl SstWriter {
         write_varint(block, p);
         block.extend_from_slice(&self.first[..p]);
         let mut at = 0;
+        let mut tally = Tally::default();
         for (i, r) in self.recs.iter().enumerate() {
             if i > 0 && i % OFFSET_STRIDE == 0 {
                 self.offsets.extend_from_slice(&(block.len() as u16).to_le_bytes());
@@ -452,7 +531,8 @@ impl SstWriter {
             let head = &self.first[p..r.shared];
             let rest = &self.staged[at..at + r.rest];
             at += r.rest;
-            block.push(if r.value.is_some() { TAG_PUT } else { TAG_DEL });
+            tally.count(r.value.is_some(), r.before);
+            block.push(if r.value.is_some() { TAG_PUT } else { TAG_DEL } | (r.before as u8) << TAG_BEFORE_SHIFT);
             block.extend_from_slice(&r.seq.to_le_bytes());
             write_varint(block, head.len() + rest.len());
             block.extend_from_slice(head);
@@ -491,6 +571,11 @@ impl SstWriter {
         }
         self.index.extend_from_slice(&(offset as u32).to_le_bytes());
         self.index.extend_from_slice(&(length as u32).to_le_bytes());
+        // A block of more than one record holds under `BLOCK_TARGET / MIN_RECORD_BYTES` of them.
+        for n in [tally.plus, tally.minus, tally.unknown] {
+            self.index.extend_from_slice(&(n as u16).to_le_bytes());
+        }
+        self.tally.add(tally);
 
         self.recs.clear();
         self.staged.clear();
@@ -596,6 +681,7 @@ pub fn lz4_unpack(src: &[u8], size: usize) -> Result<Vec<u8>, SstError> {
 /// A record of a data block, its key split the way the block stores it.
 pub(crate) struct Record<'b> {
     pub(crate) seq: u64,
+    pub(crate) before: Before,
     pub(crate) prefix: &'b [u8],
     pub(crate) suffix: &'b [u8],
     /// `None` for a tombstone.
@@ -608,8 +694,8 @@ impl Record<'_> {
         key.extend_from_slice(self.prefix);
         key.extend_from_slice(self.suffix);
         match self.value {
-            Some(value) => Entry::Put { key, value: value.to_vec(), seq: self.seq },
-            None => Entry::Del { key, seq: self.seq },
+            Some(value) => Entry::Put { key, value: value.to_vec(), seq: self.seq, before: self.before },
+            None => Entry::Del { key, seq: self.seq, before: self.before },
         }
     }
 }
@@ -667,7 +753,8 @@ impl BlockWalk {
         }
         let suffix = &block[o..o + key_len];
         o += key_len;
-        let value = match tag {
+        let before = Before::from_tag(tag)?;
+        let value = match tag & TAG_KIND {
             TAG_PUT => {
                 let val_len = read_varint(block, &mut o, end)?;
                 if val_len > end - o {
@@ -678,12 +765,12 @@ impl BlockWalk {
                 Some(value)
             }
             TAG_DEL => None,
-            other => return Err(SstError::BadTag(other)),
+            _ => return Err(SstError::BadTag(tag)),
         };
         self.o = o;
         self.left -= 1;
         let prefix = &block[self.prefix_at..self.prefix_at + self.prefix_len];
-        Ok(Some(Record { seq, prefix, suffix, value }))
+        Ok(Some(Record { seq, before, prefix, suffix, value }))
     }
 }
 
@@ -809,12 +896,14 @@ fn decode_blocks(buf: &[u8], layout: &Layout) -> Result<Vec<Entry>, SstError> {
     for _ in 0..block_count {
         skip_key(&mut o)?;
         skip_key(&mut o)?;
-        if index_end - o < 8 {
+        if index_end - o < INDEX_ROW_TAIL {
             return Err(SstError::Truncated);
         }
         let offset = read_u32(buf, o) as usize;
         let length = read_u32(buf, o + 4) as usize;
-        o += 8;
+        let u16_at = |at: usize| u16::from_le_bytes(buf[at..at + 2].try_into().unwrap()) as usize;
+        let claimed = Tally { plus: u16_at(o + 8), minus: u16_at(o + 10), unknown: u16_at(o + 12) };
+        o += INDEX_ROW_TAIL;
         if offset > data_len || length > data_len - offset {
             return Err(SstError::Truncated);
         }
@@ -831,7 +920,15 @@ fn decode_blocks(buf: &[u8], layout: &Layout) -> Result<Vec<Entry>, SstError> {
                 &unpacked[..]
             }
         };
-        out.extend(read_block(block)?);
+        let entries = read_block(block)?;
+        let mut tally = Tally::default();
+        for e in &entries {
+            tally.count(matches!(e, Entry::Put { .. }), e.before());
+        }
+        if tally != claimed {
+            return Err(SstError::CountMismatch);
+        }
+        out.extend(entries);
     }
     if o != index_end {
         return Err(SstError::TrailingGarbage);
@@ -860,15 +957,15 @@ mod tests {
     #[test]
     fn round_trip_keeps_seq() {
         let entries = vec![
-            Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 },
-            Entry::Del { key: b"a".to_vec(), seq: 9 },
-            Entry::Put { key: b"c".to_vec(), value: b"3".to_vec(), seq: 1 << 40 },
+            Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7, before: Before::Unknown },
+            Entry::Del { key: b"a".to_vec(), seq: 9, before: Before::Unknown },
+            Entry::Put { key: b"c".to_vec(), value: b"3".to_vec(), seq: 1 << 40, before: Before::Unknown },
         ];
         let bytes = encode_sst(&entries, Codec::Raw);
         assert_eq!(read_u32(&bytes, bytes.len() - 8), VERSION);
         let decoded = decode_sst(&bytes).unwrap();
-        assert_eq!(decoded[0], Entry::Del { key: b"a".to_vec(), seq: 9 });
-        assert_eq!(decoded[1], Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7 });
+        assert_eq!(decoded[0], Entry::Del { key: b"a".to_vec(), seq: 9, before: Before::Unknown });
+        assert_eq!(decoded[1], Entry::Put { key: b"b".to_vec(), value: b"2".to_vec(), seq: 7, before: Before::Unknown });
         assert_eq!(decoded[2].seq(), 1 << 40);
     }
 
@@ -890,12 +987,12 @@ mod tests {
         let mut entries: Vec<Entry> = (0..400u64)
             .map(|i| put(format!("s/t/{i:08}").as_bytes(), format!(" word{} common{}", i % 7, i % 3).as_bytes(), i + 1))
             .collect();
-        entries.push(Entry::Del { key: b"s/t/zzdel".to_vec(), seq: 999 });
+        entries.push(Entry::Del { key: b"s/t/zzdel".to_vec(), seq: 999, before: Before::Unknown });
         let want = |pats: &[&[u8]]| -> Vec<(Vec<u8>, Vec<u8>, u64)> {
             entries
                 .iter()
                 .filter_map(|e| match e {
-                    Entry::Put { key, value, seq } if pats.iter().all(|p| contains(value, p)) => Some((key.clone(), value.clone(), *seq)),
+                    Entry::Put { key, value, seq, .. } if pats.iter().all(|p| contains(value, p)) => Some((key.clone(), value.clone(), *seq)),
                     _ => None,
                 })
                 .collect()
@@ -911,7 +1008,7 @@ mod tests {
                 let last = read_u32(&sst, o) as usize;
                 o += 4 + last;
                 let (offset, length) = (read_u32(&sst, o) as usize, read_u32(&sst, o + 4) as usize);
-                o += 8;
+                o += INDEX_ROW_TAIL;
                 let framed = &sst[offset..offset + length];
                 for (i, pats) in [&[b" word3".as_slice()][..], &[b" word3", b" common0"], &[b" nope"], &[]].iter().enumerate() {
                     got[i].extend(hits(&scan_block_contains(framed, codec, pats).unwrap()));
@@ -934,7 +1031,7 @@ mod tests {
     }
 
     fn put(key: &[u8], value: &[u8], seq: u64) -> Entry {
-        Entry::Put { key: key.to_vec(), value: value.to_vec(), seq }
+        Entry::Put { key: key.to_vec(), value: value.to_vec(), seq, before: Before::Unknown }
     }
 
     fn round_trip(entries: Vec<Entry>) {
@@ -949,7 +1046,7 @@ mod tests {
     fn round_trips_edge_shapes() {
         round_trip(vec![]);
         round_trip(vec![put(b"only", b"v", 1)]);
-        round_trip(vec![put(b"", b"empty key", 1), put(b"a", b"", 2), Entry::Del { key: b"ab".to_vec(), seq: 3 }]);
+        round_trip(vec![put(b"", b"empty key", 1), put(b"a", b"", 2), Entry::Del { key: b"ab".to_vec(), seq: 3, before: Before::Unknown }]);
         round_trip(vec![put(b"apple", b"1", 1), put(b"zebra", b"2", 2), put(b"mango", b"3", 3)]);
         round_trip(vec![put(&[0xff; 300], &[7; 200], 1), put(&[0xff; 301], b"", u64::MAX)]);
     }
@@ -1035,6 +1132,7 @@ mod tests {
                 key: format!("todo/{i:013}").into_bytes(),
                 value: format!("{{\"title\":\"buy milk {}\",\"done\":false}}", i % 7).into_bytes(),
                 seq: i,
+                before: Before::Unknown,
             })
             .collect()
     }
@@ -1089,7 +1187,7 @@ mod tests {
 
     #[test]
     fn data_comes_first_and_the_footer_last() {
-        let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 }];
+        let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7, before: Before::Unknown }];
         let bytes = encode_sst(&entries, Codec::Raw);
         assert_eq!(read_u32(&bytes, 0), 1, "first block's record count");
         assert_eq!(read_u32(&bytes, bytes.len() - 4), MAGIC);
@@ -1097,7 +1195,7 @@ mod tests {
 
     #[test]
     fn rejects_a_flipped_data_byte() {
-        let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7 }];
+        let entries = vec![Entry::Put { key: b"a".to_vec(), value: b"1".to_vec(), seq: 7, before: Before::Unknown }];
         let mut bytes = encode_sst(&entries, Codec::Raw);
         bytes[5] ^= 0xff;
         assert_eq!(decode_sst(&bytes), Err(SstError::CrcMismatch));
@@ -1108,7 +1206,7 @@ mod tests {
         let mut entries = Vec::new();
         for i in 0..200 {
             let key = format!("k{i:04}").into_bytes();
-            entries.push(Entry::Put { key, value: vec![b'x'; 64], seq: i });
+            entries.push(Entry::Put { key, value: vec![b'x'; 64], seq: i, before: Before::Unknown });
         }
         let bytes = encode_sst(&entries, Codec::Raw);
         let block_count = read_u32(&bytes, bytes.len() - FOOTER_BYTES + 4);
@@ -1121,7 +1219,7 @@ mod tests {
     #[test]
     fn bloom_past_64_kib() {
         let entries: Vec<Entry> = (0..60_000u64)
-            .map(|i| Entry::Put { key: format!("k{i:08}").into_bytes(), value: b"v".to_vec(), seq: i })
+            .map(|i| Entry::Put { key: format!("k{i:08}").into_bytes(), value: b"v".to_vec(), seq: i, before: Before::Unknown })
             .collect();
         let bytes = encode_sst(&entries, Codec::Raw);
         assert!(read_u32(&bytes, bytes.len() - FOOTER_BYTES + 12) > u16::MAX as u32);

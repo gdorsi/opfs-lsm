@@ -10,7 +10,7 @@ import {
 } from "../../src/store/generation.js";
 import { codecForLevel, levelOf } from "../../src/store/levels.js";
 import { readFooter, type SstEntry } from "../../src/store/sst.js";
-import { decodeSst } from "../oracle/sst-ref.js";
+import { decodeSst, tallyOf } from "../oracle/sst-ref.js";
 import { show, type OracleEntry } from "./oracle.js";
 
 /**
@@ -145,6 +145,7 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
     const covering = (decoded[i] ?? []).find((e) => e.seq <= throughAt(applied, e.key));
     if (covering) problems.push(`${run.path}: holds ${show(covering.key)} at seq ${covering.seq}, covered by a mark it applied`);
   });
+  checkTallies(decoded, marks, problems);
 
   // --- Orphans: run files that no manifest from the recorded one on lists.
   const live = new Set<string>();
@@ -239,6 +240,10 @@ async function checkRun(
   ) {
     bad(`manifest range does not match keys ${show(first.key)}..${show(last.key)}`);
   }
+  const said = tallyOf(entries);
+  if (said.plus !== run.tally.plus || said.minus !== run.tally.minus || said.unknown !== run.tally.unknown) {
+    bad(`manifest tally ${JSON.stringify(run.tally)} is not what its records say, ${JSON.stringify(said)}`);
+  }
   for (const e of entries) {
     const seq = e.seq ?? 0;
     if (seq < 1 || seq > through) {
@@ -328,6 +333,33 @@ function checkOrder(
   });
 }
 
+/**
+ * counted-ranges.md, "The fold": when every version of a key in the runs says
+ * what held before it, and no mark holds the key, the versions say plus once
+ * more than minus if the runs' fold holds the key, and as often if it does
+ * not. That is what lets a count add runs up without merging them.
+ */
+function checkTallies(decoded: readonly (SstEntry[] | undefined)[], marks: GenerationMeta["marks"], problems: string[]): void {
+  const keys = new Map<string, { newest: SstEntry; net: number; said: boolean }>();
+  // Newest run first, so the first version seen of a key is the one a reader takes.
+  for (const run of decoded) {
+    for (const e of run ?? []) {
+      const id = keyToString(e.key);
+      const at = keys.get(id) ?? { newest: e, net: 0, said: true };
+      if (e.was === undefined) at.said = false;
+      else at.net += e.kind === "put" && e.was === "absent" ? 1 : e.kind === "del" && e.was === "present" ? -1 : 0;
+      keys.set(id, at);
+    }
+  }
+  const held = (key: Uint8Array) =>
+    marks.some((m) => compareBytes(key, m.start) >= 0 && (!m.endExclusive || compareBytes(key, m.endExclusive) < 0));
+  for (const { newest, net, said } of keys.values()) {
+    if (!said || held(newest.key)) continue;
+    const live = newest.kind === "put" ? 1 : 0;
+    if (net !== live) problems.push(`${show(newest.key)}: its versions say ${net} live keys, the runs hold ${live}`);
+  }
+}
+
 /** A put (`value`) or a delete; or a range delete with the `through` its writer asked for. */
 export type WalOp =
   | { key: Uint8Array; value: Uint8Array | undefined }
@@ -336,7 +368,9 @@ export type WalOp =
 /**
  * design.md, "WAL records": per op, u8 type | u32 keyLen | key | put: u32
  * valueLen | value; a range delete: u8 3 | u32 startLen | start | u8 has end
- * | end: u32 endLen | end | u64 through.
+ * | end: u32 endLen | end | u64 through. A put's or a delete's type holds in
+ * bits 4 and 5 what it says its key held before: 0 nothing said, 1 absent, 2
+ * present.
  */
 export function decodeWalRow(raw: unknown): WalOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new Error("not an ArrayBuffer");
@@ -357,7 +391,9 @@ export function decodeWalRow(raw: unknown): WalOp[] {
     return n;
   };
   while (at < bytes.byteLength) {
-    const type = bytes[at++];
+    const byte = bytes[at++]!;
+    const type = byte & 0x0f;
+    if (byte >> 4 > 2 || (type === 3 && byte !== 3)) throw new Error(`op type ${byte}`);
     const key = take(u32());
     if (type === 0) ops.push({ key, value: take(u32()) });
     else if (type === 1) ops.push({ key, value: undefined });
@@ -365,7 +401,7 @@ export function decodeWalRow(raw: unknown): WalOp[] {
       const end = take(1)[0] === 1 ? take(u32()) : undefined;
       const through = Number(new DataView(take(8).buffer).getBigUint64(0, true));
       ops.push({ start: key, ...(end ? { endExclusive: end } : {}), through });
-    } else throw new Error(`op type ${type}`);
+    } else throw new Error(`op type ${byte}`);
   }
   return ops;
 }

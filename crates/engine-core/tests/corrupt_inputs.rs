@@ -16,7 +16,7 @@
 
 mod support;
 
-use engine_core::{decode_sst, encode_sst, scan_block_contains, Codec, Entry};
+use engine_core::{decode_sst, encode_sst, scan_block_contains, Before, Codec, Entry};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use support::corrupt::{self, fix_crc, sample_entries, FOOTER_BYTES};
@@ -130,7 +130,7 @@ fn valid_run(rng: &mut Rng) -> (Vec<u8>, Codec) {
     let n = [0, 1, 3, 20, 200][rng.below(5)];
     let mut entries = sample_entries(n, rng.below(1000) as u64);
     if rng.chance(4) {
-        entries.push(Entry::Put { key: b"zz/big".to_vec(), value: vec![b'v'; 5000 + rng.below(3000)], seq: 9 });
+        entries.push(Entry::Put { key: b"zz/big".to_vec(), value: vec![b'v'; 5000 + rng.below(3000)], seq: 9, before: Before::Unknown });
     }
     (encode_sst(&entries, codec), codec)
 }

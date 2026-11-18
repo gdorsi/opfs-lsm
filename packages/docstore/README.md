@@ -297,6 +297,12 @@ await users.queryIds({
 
 `next` is exclusive, and each page reads one kv snapshot. An `after` made before a `clear`, or before the index was redefined, throws `"cursor"`.
 
+`offset` skips results first, from the start of the range or from `after`, and `limit` counts what follows. It reads only the entries around the window, where a count would read none (see [Counts](#counts)), so a window deep into a list costs what its first page costs.
+
+```ts
+await todos.queryIds({ index: "open", offset: 1, limit: 2 });
+```
+
 ```ts
 const first = await todos.queryIds({ index: "open", limit: 2 });
 // => { ids: ["c", "a"], next }
@@ -344,6 +350,8 @@ await todos.count({ index: "byTag" });
 await todos.count({ index: "open", limit: 1 });
 // => 1, count stops at limit
 ```
+
+A count costs the same whatever it counts: kv adds it up from what each write did to its index, and reads no entry. It walks the entries when the query has `match`, in a collection with no index, and in an index a newer schema built over stored rows, until kv has compacted those entries.
 
 ### Entries
 

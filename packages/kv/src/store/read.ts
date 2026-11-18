@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import type { MemRow, MemRows } from "./memtable.js";
+import { tallyRows, type MemRow, type MemRows } from "./memtable.js";
 import {
   allMissed,
   entryCursor,
@@ -14,7 +14,7 @@ import {
 } from "./cursor.js";
 import type { Seq } from "../seq.js";
 import { coversRun, NO_MARKS, throughAt, type Marks } from "./marks.js";
-import type { SstEntry } from "./sst.js";
+import { Sum, type SstEntry } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
 import type { Entry } from "../db.js";
 import { levelOf } from "./levels.js";
@@ -185,6 +185,42 @@ export class RunLevel {
     const r = this.seek("largest", key);
     if (r >= this.runs.length || compareBytes(this.runs[r]!.range.smallest, key) > 0) return undefined;
     return this.runs[r]!.get(key);
+  }
+
+  /**
+   * Adds to `sum` what the records with keys in `bounds` say (`Tally`). A
+   * run wholly inside adds the totals its manifest entry records, so only
+   * the run at each end of `bounds` is opened. On a Miss `sum` holds part
+   * of the answer and must be dropped. With `exact` false it reads no block
+   * and `plus - minus` is an upper bound (`SstReader.tally`).
+   */
+  tally(bounds: ScanBounds | undefined, sum: Sum, exact = true): Miss | undefined {
+    const { runs } = this;
+    const start = bounds?.start;
+    const end = bounds?.endExclusive;
+    let misses: Miss[] | undefined;
+    for (let r = start ? this.seek("largest", start) : 0; r < runs.length; r++) {
+      const run = runs[r]!;
+      if (end && compareBytes(run.range.smallest, end) >= 0) break;
+      const whole = (!start || compareBytes(start, run.range.smallest) <= 0) && (!end || compareBytes(run.range.largest, end) < 0);
+      if (whole && run.totals) sum.add(run.totals);
+      else {
+        const miss = run.tally(bounds, sum, exact);
+        if (miss) (misses ??= []).push(miss);
+      }
+    }
+    return misses && allMissed(misses);
+  }
+
+  /** The runs that may hold a key of `bounds`, in key order. */
+  overlapping(bounds: ScanBounds | undefined): readonly SstReader[] {
+    const { runs } = this;
+    const start = bounds?.start;
+    const end = bounds?.endExclusive;
+    const from = start ? this.seek("largest", start) : 0;
+    let to = from;
+    while (to < runs.length && !(end && compareBytes(runs[to]!.range.smallest, end) >= 0)) to++;
+    return runs.slice(from, to);
   }
 
   /** `marks` is the read point the scan judges by. */
@@ -383,8 +419,196 @@ export function matchingStep(
   };
 }
 
-/** Copies of the entries of `step`, up to `limit`. Awaits only on a miss. */
-export async function* entriesOf(step: ScanStep, limit?: number): AsyncGenerator<Entry> {
+/** Whether the range of `mark` holds a key of `bounds`. */
+function meets(mark: Marks[number], bounds: ScanBounds | undefined): boolean {
+  const start = bounds?.start;
+  const end = bounds?.endExclusive;
+  return (!end || compareBytes(mark.start, end) < 0) && (!mark.endExclusive || !start || compareBytes(start, mark.endExclusive) < 0);
+}
+
+/**
+ * How many live keys `bounds` holds, added up from what the memtable rows
+ * and the runs say they did to that number (`Tally`), with no merge: each
+ * key's records, over the sources that hold its versions once each, say
+ * plus once more than minus when it is live and as often when it is not.
+ *
+ * Undefined when the sum would be wrong, and the caller scans: a record in
+ * `bounds` does not say what held before it, or a mark meets `bounds`,
+ * since a version a mark covers is still counted by the run that holds it.
+ */
+export function liveCount(
+  rows: readonly MemRow[],
+  levels: readonly RunLevel[],
+  marks: Marks,
+  bounds: ScanBounds | undefined,
+): Maybe<number | undefined> {
+  if (marks.some((mark) => meets(mark, bounds))) return undefined;
+  const sum = new Sum();
+  tallyRows(rows, sum);
+  let misses: Miss[] | undefined;
+  for (const level of levels) {
+    if (sum.unknown > 0) return undefined;
+    const miss = level.tally(bounds, sum);
+    if (miss) (misses ??= []).push(miss);
+  }
+  if (misses) return allMissed(misses);
+  return sum.unknown > 0 || sum.plus < sum.minus ? undefined : sum.plus - sum.minus;
+}
+
+/** An offset below this is walked: finding where to start costs more than the walk. */
+const SEEK_FROM = 256;
+
+/** Where a scan may start (`at`: its new start, or its new end going back) after skipping `skipped` entries of its offset. */
+export type Seek = { readonly at: Uint8Array; readonly skipped: number };
+
+/**
+ * The first of `count` candidates for which `fits` holds when `fromEnd`, or
+ * the last one otherwise. `fits` must hold for a run of candidates at that
+ * end. Outside 0 to `count - 1` when it holds for none.
+ */
+function edgeOf(count: number, fromEnd: boolean, fits: (i: number) => Maybe<boolean>): Maybe<number> {
+  let lo = 0;
+  let hi = count;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const ok = fits(mid);
+    if (ok instanceof Miss) return ok;
+    if (ok === fromEnd) hi = mid;
+    else lo = mid + 1;
+  }
+  return fromEnd ? lo : lo - 1;
+}
+
+/**
+ * Where a scan of `bounds` that skips `offset` entries can start instead,
+ * so that it walks a block or two and not the entries it skips. Undefined
+ * when the scan should walk: the offset is small, or the entries to skip
+ * cannot be counted (`liveCount`).
+ *
+ * Each step moves the start as far as one level can take it (`seekStep`),
+ * then the next step goes on from there with what is left of the offset,
+ * until no level has a key to offer. A range spread over several levels
+ * takes a step per level.
+ */
+export function seekOffset(
+  rows: readonly MemRow[],
+  levels: readonly RunLevel[],
+  marks: Marks,
+  bounds: ScanBounds | undefined,
+  offset: number,
+  reverse: boolean,
+): Maybe<Seek | undefined> {
+  if (marks.some((mark) => meets(mark, bounds))) return undefined;
+  let found: Seek | undefined;
+  for (let steps = 0; steps < 2 * levels.length + 2 && offset - (found?.skipped ?? 0) >= SEEK_FROM; steps++) {
+    const step = seekStep(rows, levels, marks, bounds, offset - (found?.skipped ?? 0), reverse);
+    if (step instanceof Miss) return step;
+    if (!step) break;
+    found = { at: step.at, skipped: (found?.skipped ?? 0) + step.skipped };
+    const cut = lowerBoundKeys(rows, step.at);
+    rows = reverse ? rows.slice(0, cut) : rows.slice(cut);
+    bounds = reverse ? { ...bounds, endExclusive: step.at } : { ...bounds, start: step.at };
+  }
+  return found;
+}
+
+/**
+ * One step of `seekOffset`. The level that holds most of `bounds` gives the
+ * keys to start at: where its runs begin, then where the blocks of one run
+ * begin. For such a key, the indexes alone bound how many live keys the
+ * skipped part holds, a block's worth of slack per level and end. It takes
+ * the furthest key whose bound fits in `offset` and counts the skipped part
+ * exactly, which reads the blocks the scan is about to enter.
+ */
+function seekStep(
+  rows: readonly MemRow[],
+  levels: readonly RunLevel[],
+  marks: Marks,
+  bounds: ScanBounds | undefined,
+  offset: number,
+  reverse: boolean,
+): Maybe<Seek | undefined> {
+  const lo = bounds?.start;
+  const hi = bounds?.endExclusive;
+  // What the first i rows add up to, and how many of them do not say.
+  const net = new Int32Array(rows.length + 1);
+  const unsaid = new Int32Array(rows.length + 1);
+  rows.forEach((row, i) => {
+    const said = row.was === undefined ? 0 : row.kind === "put" ? (row.was === "absent" ? 1 : 0) : row.was === "present" ? -1 : 0;
+    net[i + 1] = net[i]! + said;
+    unsaid[i + 1] = unsaid[i]! + (row.was === undefined ? 1 : 0);
+  });
+  const skippedBy = (at: Uint8Array): ScanBounds => (reverse ? { start: at, ...(hi ? { endExclusive: hi } : {}) } : { ...(lo ? { start: lo } : {}), endExclusive: at });
+  /** Whether a scan that starts at `at` skips at most `offset` live keys, judged with no block read. */
+  const fits = (at: Uint8Array): Maybe<boolean> => {
+    const cut = lowerBoundKeys(rows, at);
+    const [i, j] = reverse ? [cut, rows.length] : [0, cut];
+    if (unsaid[j]! > unsaid[i]!) return false;
+    const sum = new Sum();
+    let misses: Miss[] | undefined;
+    for (const level of levels) {
+      const miss = level.tally(skippedBy(at), sum, false);
+      if (miss) (misses ??= []).push(miss);
+    }
+    if (misses) return allMissed(misses);
+    return sum.unknown === 0 && net[j]! - net[i]! + sum.plus - sum.minus <= offset;
+  };
+  // Strictly inside: a scan that starts at its own start has skipped nothing.
+  const inside = (key: Uint8Array) => (!lo || compareBytes(key, lo) > 0) && (!hi || compareBytes(key, hi) < 0);
+
+  // The level that has the most to skip in the bounds, by what its indexes say.
+  let most = 0;
+  let runs: readonly SstReader[] = [];
+  let misses: Miss[] | undefined;
+  for (const level of levels) {
+    const sum = new Sum();
+    const miss = level.tally(bounds, sum, false);
+    if (miss) (misses ??= []).push(miss);
+    else if (sum.plus - sum.minus > most) [most, runs] = [sum.plus - sum.minus, level.overlapping(bounds)];
+  }
+  if (misses) return allMissed(misses);
+
+  // Where the runs begin: the last one a forward scan may start at, the first one a backward scan may end at.
+  const starts = runs.map((run) => run.range!.smallest).filter(inside);
+  const edge = edgeOf(starts.length, reverse, (i) => fits(starts[i]!));
+  if (edge instanceof Miss) return edge;
+  let at = starts[edge];
+  // The run that holds the rest of the way: the one that begins at `at`, or going back the one before it.
+  const next = at === undefined ? (reverse ? runs.length - 1 : 0) : runs.findIndex((run) => run.range!.smallest === at) - (reverse ? 1 : 0);
+  const run: SstReader | undefined = runs[next];
+  if (run) {
+    const splits = run.splits();
+    if (splits instanceof Miss) return splits;
+    const block = edgeOf(splits.count, reverse, (i) => {
+      const key = splits.key(i);
+      // Outside the bounds a key cuts nothing: it counts as fitting on the side the scan starts from.
+      if (!inside(key)) return (lo !== undefined && compareBytes(key, lo) <= 0) !== reverse;
+      return fits(key);
+    });
+    if (block instanceof Miss) return block;
+    const key = block >= 0 && block < splits.count ? splits.key(block) : undefined;
+    if (key && inside(key)) at = key.slice();
+  }
+  if (!at) return undefined;
+  const cut = lowerBoundKeys(rows, at);
+  const skipped = liveCount(reverse ? rows.slice(cut) : rows.slice(0, cut), levels, marks, skippedBy(at));
+  if (skipped instanceof Miss) return skipped;
+  return skipped === undefined || skipped > offset ? undefined : { at, skipped };
+}
+
+/** Moves `step` past `offset` entries. False when it ended first. Awaits only on a miss. */
+async function skip(step: ScanStep, offset: number): Promise<boolean> {
+  for (let n = 0; n < offset; n++) {
+    let e = step();
+    if (e instanceof Miss) e = await untilHit(step, e);
+    if (!e) return false;
+  }
+  return true;
+}
+
+/** Copies of the entries of `step` after the first `offset`, up to `limit`. Awaits only on a miss. */
+export async function* entriesOf(step: ScanStep, limit?: number, offset = 0): AsyncGenerator<Entry> {
+  if (offset > 0 && !(await skip(step, offset))) return;
   for (let n = 0; limit === undefined || n < limit; n++) {
     let e = step();
     if (e instanceof Miss) e = await untilHit(step, e);
@@ -393,8 +617,9 @@ export async function* entriesOf(step: ScanStep, limit?: number): AsyncGenerator
   }
 }
 
-/** How many entries `step` has, up to `limit`, read without copying one. Awaits only on a miss. */
-export async function countOf(step: ScanStep, limit?: number): Promise<number> {
+/** How many entries `step` has after the first `offset`, up to `limit`, read without copying one. Awaits only on a miss. */
+export async function countOf(step: ScanStep, limit?: number, offset = 0): Promise<number> {
+  if (offset > 0 && !(await skip(step, offset))) return 0;
   let n = 0;
   while (limit === undefined || n < limit) {
     let e = step();

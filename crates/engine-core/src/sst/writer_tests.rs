@@ -66,11 +66,12 @@ fn entries(rng: &mut Rng) -> Vec<Entry> {
     for i in 0..n {
         let key = if i > 0 && rng.chance(12) { out[i - 1].key().to_vec() } else { key(rng, i, shape) };
         let seq = if rng.chance(20) { u64::MAX - rng.below(5) as u64 } else { rng.next() >> rng.below(64) };
+        let before = [Before::Unknown, Before::Absent, Before::Present][rng.below(3)];
         out.push(if rng.chance(5) {
-            Entry::Del { key, seq }
+            Entry::Del { key, seq, before }
         } else {
             let len = if shape == 3 { rng.below(30) } else { value_len(rng) };
-            Entry::Put { key, value: rng.bytes(len), seq }
+            Entry::Put { key, value: rng.bytes(len), seq, before }
         });
     }
     if rng.chance(2) {
@@ -98,10 +99,11 @@ fn assert_end(end: &RunEnd, bytes: &[u8], entries: &[Entry], context: &str) {
 }
 
 fn assert_same_bytes(entries: &[Entry], codec: Codec, context: &str) {
-    let want = reference::encode_sst(entries, codec);
+    let (want, [plus, minus, unknown]) = reference::encode_sst_tallied(entries, codec);
     let run = encode_run(entries, codec);
     assert!(run.bytes == want, "{context}: {codec:?} bytes differ ({} vs {} bytes)", run.bytes.len(), want.len());
     assert_end(&run.end, &run.bytes, entries, context);
+    assert_eq!(run.end.tally, Tally { plus, minus, unknown }, "{context}: tally");
     assert_eq!(decode_sst(&run.bytes).unwrap(), sorted(entries), "{context}: {codec:?} decodes to the sorted entries");
 }
 
@@ -118,8 +120,8 @@ fn random_runs_encode_to_the_reference_bytes() {
 
 #[test]
 fn named_shapes_encode_to_the_reference_bytes() {
-    let put = |k: &[u8], v: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: v.to_vec(), seq };
-    let del = |k: &[u8], seq: u64| Entry::Del { key: k.to_vec(), seq };
+    let put = |k: &[u8], v: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: v.to_vec(), seq, before: Before::Unknown };
+    let del = |k: &[u8], seq: u64| Entry::Del { key: k.to_vec(), seq, before: Before::Unknown };
     let cases: Vec<(&str, Vec<Entry>)> = vec![
         ("empty", vec![]),
         ("one empty key", vec![put(b"", b"", 0)]),
@@ -144,7 +146,7 @@ fn named_shapes_encode_to_the_reference_bytes() {
 /// being cut to the next one.
 #[test]
 fn a_block_may_fill_the_target_exactly() {
-    let put = |k: &[u8], v: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: v.to_vec(), seq };
+    let put = |k: &[u8], v: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: v.to_vec(), seq, before: Before::Unknown };
     let mut exact = 0;
     for pad in 0..400 {
         let mut entries: Vec<Entry> = (0..30).map(|i| put(format!("k{i:02}").as_bytes(), &[b'x'; 120], i)).collect();
@@ -257,14 +259,14 @@ fn a_writer_is_ready_for_the_next_run_after_finish() {
 
 #[test]
 fn a_key_below_the_last_is_refused_and_changes_nothing() {
-    let put = |k: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: b"v".to_vec(), seq };
+    let put = |k: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: b"v".to_vec(), seq, before: Before::Unknown };
     for codec in [Codec::Raw, Codec::Lz4] {
         let mut writer = SstWriter::new(codec);
         let mut out = Vec::new();
         writer.push((&put(b"b", 1)).into(), &mut out).unwrap();
         writer.push((&put(b"b", 2)).into(), &mut out).unwrap();
         assert_eq!(writer.push((&put(b"a", 3)).into(), &mut out), Err(OutOfOrder));
-        assert_eq!(writer.push(EntryRef::Del { key: b"", seq: 4 }, &mut out), Err(OutOfOrder));
+        assert_eq!(writer.push(EntryRef::Del { key: b"", seq: 4, before: Before::Unknown }, &mut out), Err(OutOfOrder));
         writer.push((&put(b"c", 5)).into(), &mut out).unwrap();
         let end = writer.finish(&mut out);
         let kept = [put(b"b", 1), put(b"b", 2), put(b"c", 5)];
@@ -278,10 +280,10 @@ fn an_unsorted_pair_across_a_block_boundary_is_refused() {
     let mut writer = SstWriter::new(Codec::Raw);
     let mut out = Vec::new();
     let big = vec![1u8; 3_000];
-    writer.push(EntryRef::Put { key: b"m", value: &big, seq: 1 }, &mut out).unwrap();
-    writer.push(EntryRef::Put { key: b"n", value: &big, seq: 2 }, &mut out).unwrap();
+    writer.push(EntryRef::Put { key: b"m", value: &big, seq: 1, before: Before::Unknown }, &mut out).unwrap();
+    writer.push(EntryRef::Put { key: b"n", value: &big, seq: 2, before: Before::Unknown }, &mut out).unwrap();
     assert!(!out.is_empty(), "the first block is out");
-    assert_eq!(writer.push(EntryRef::Del { key: b"a", seq: 3 }, &mut out), Err(OutOfOrder));
+    assert_eq!(writer.push(EntryRef::Del { key: b"a", seq: 3, before: Before::Unknown }, &mut out), Err(OutOfOrder));
 }
 
 /// The open block holds no more bytes than the block it will become, so a
@@ -294,7 +296,7 @@ fn the_open_block_is_held_in_no_more_bytes_than_it_is_written_in() {
     let mut most = 0;
     for i in 0..4_000 {
         let k = key(&mut rng, i, 3);
-        writer.push(EntryRef::Put { key: &k, value: b"v", seq: i as u64 }, &mut out).unwrap();
+        writer.push(EntryRef::Put { key: &k, value: b"v", seq: i as u64, before: Before::Unknown }, &mut out).unwrap();
         most = most.max(writer.staged.len());
         out.clear();
     }
@@ -307,8 +309,8 @@ fn the_open_block_is_held_in_no_more_bytes_than_it_is_written_in() {
 fn a_two_entry_run_has_the_documented_bytes() {
     let mut writer = SstWriter::new(Codec::Raw);
     let mut out = Vec::new();
-    writer.push(EntryRef::Put { key: b"ab", value: b"1", seq: 5 }, &mut out).unwrap();
-    writer.push(EntryRef::Del { key: b"ac", seq: 6 }, &mut out).unwrap();
+    writer.push(EntryRef::Put { key: b"ab", value: b"1", seq: 5, before: Before::Unknown }, &mut out).unwrap();
+    writer.push(EntryRef::Del { key: b"ac", seq: 6, before: Before::Unknown }, &mut out).unwrap();
     let end = writer.finish(&mut out);
 
     let mut block = vec![2, 0, 0, 0, 1, b'a'];
@@ -324,6 +326,8 @@ fn a_two_entry_run_has_the_documented_bytes() {
     index.extend_from_slice(b"ac");
     index.extend_from_slice(&0u32.to_le_bytes());
     index.extend_from_slice(&(block.len() as u32).to_le_bytes());
+    // Plus, minus, unknown: neither record says what held before it.
+    index.extend_from_slice(&[0, 0, 0, 0, 2, 0]);
     assert_eq!(&out[index_at..index_at + index.len()], &index[..]);
 
     let footer = &out[out.len() - FOOTER_BYTES..];
@@ -333,6 +337,6 @@ fn a_two_entry_run_has_the_documented_bytes() {
         [2, 1, block.len(), bloom_len, 7, index_at, index.len(), 0]
     );
     assert_eq!(field(8) as u32, crc32(&out[..out.len() - 12]));
-    assert_eq!((field(9), field(10) as u32), (1, MAGIC));
-    assert_eq!(end, RunEnd { entries: 2, size: out.len(), first_key: b"ab".to_vec(), last_key: b"ac".to_vec() });
+    assert_eq!((field(9), field(10) as u32), (2, MAGIC));
+    assert_eq!(end, RunEnd { entries: 2, size: out.len(), first_key: b"ab".to_vec(), last_key: b"ac".to_vec(), tally: Tally { plus: 0, minus: 0, unknown: 2 } });
 }

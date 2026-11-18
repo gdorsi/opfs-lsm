@@ -4,10 +4,10 @@
 //! both on purpose.
 //!
 //! It takes one SST per source. A test gives a source of several runs as one
-//! SST of their entries in order, and the marks as (start, end, through)
+//! SST of their entries in order, and the marks as (start, end, through, at)
 //! ranges, `None` for no end.
 
-use crate::sst::{decode_sst, entry_size, Codec, EncodedRun, Entry, SstError, SstWriter};
+use crate::sst::{decode_sst, entry_size, Before, Codec, EncodedRun, Entry, SstError, SstWriter};
 use alloc::vec::Vec;
 use core::mem;
 
@@ -60,8 +60,15 @@ impl Heads {
     }
 }
 
-/// A mark as the oracle takes it: start, exclusive end, through.
-pub(crate) type Mark = (Vec<u8>, Option<Vec<u8>>, u64);
+/// A mark as the oracle takes it: start, exclusive end, through, at.
+pub(crate) type Mark = (Vec<u8>, Option<Vec<u8>>, u64, u64);
+
+fn with_before(entry: Entry, before: Before) -> Entry {
+    match entry {
+        Entry::Put { key, value, seq, .. } => Entry::Put { key, value, seq, before },
+        Entry::Del { key, seq, .. } => Entry::Del { key, seq, before },
+    }
+}
 
 pub(crate) fn merge_sst_bytes(
     sst_bytes: &[Vec<u8>],
@@ -86,6 +93,9 @@ pub(crate) fn merge_sst_bytes(
     let mut bytes = Vec::new();
     let mut size = 0;
     while let Some(&Head { run, .. }) = heap.top() {
+        // Each source's version of the key, newest source first: the seq of its last
+        // duplicate and the `Before` of its first.
+        let mut versions = vec![(0, heap.top().unwrap().entry.before())];
         let mut entry = None;
         let next_after = loop {
             match inputs[run].next() {
@@ -95,31 +105,46 @@ pub(crate) fn merge_sst_bytes(
         };
         let Head { entry: first, .. } = heap.replace_top(next_after.map(|entry| Head { entry, run }));
         let entry = entry.unwrap_or(first);
+        versions[0].0 = entry.seq();
         while let Some(shadowed) = heap.top() {
             if shadowed.entry.key() != entry.key() {
                 break;
             }
             let shadowed_run = shadowed.run;
+            let mut version = (shadowed.entry.seq(), shadowed.entry.before());
             let replacement = loop {
                 match inputs[shadowed_run].next() {
-                    Some(next) if next.key() == entry.key() => continue,
+                    Some(next) if next.key() == entry.key() => version.0 = next.seq(),
                     other => break other,
                 }
             };
+            versions.push(version);
             heap.replace_top(replacement.map(|entry| Head { entry, run: shadowed_run }));
         }
-        let through = marks
-            .iter()
-            .filter(|(start, end, _)| start.as_slice() <= entry.key() && end.as_ref().map_or(true, |e| entry.key() < e.as_slice()))
-            .map(|m| m.2)
-            .max()
-            .unwrap_or(0);
+        let holding = || {
+            marks.iter().filter(|(start, end, ..)| {
+                start.as_slice() <= entry.key() && end.as_ref().map_or(true, |e| entry.key() < e.as_slice())
+            })
+        };
+        let through = holding().map(|m| m.2).max().unwrap_or(0);
+        let marked_at = holding().map(|m| m.3).max().unwrap_or(0);
         if through > 0 && entry.seq() <= through {
             continue;
         }
         if drop_tombstones && matches!(entry, Entry::Del { .. }) {
             continue;
         }
+        // The oldest version before the first one a mark covers says what held before them all.
+        let chain = 1 + versions[1..].iter().take_while(|v| v.0 > through).count();
+        let (oldest_seq, said) = versions[chain - 1];
+        let before = if drop_tombstones {
+            Before::Absent
+        } else if said == Before::Present && oldest_seq < marked_at {
+            Before::Unknown
+        } else {
+            said
+        };
+        let entry = with_before(entry, before);
         size += entry_size((&entry).into());
         writer.push((&entry).into(), &mut bytes)?;
         if size >= target_bytes {

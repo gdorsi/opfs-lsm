@@ -16,9 +16,11 @@ function coll(indexes: Record<string, object>): BoundCollection {
 
 const prefixOf = (c: BoundCollection, index: string) => c.maintained.find((p) => p.name === index)!.target.prefix;
 
+/** An entry of an index a fresh catalog declares, which is ready from the start. */
 const entry = (c: BoundCollection, index: string, values: Scalar[], id = "1") => ({
   key: encodeTuple(values, prefixOf(c, index), utf8.encode(id)),
   value: EMPTY,
+  ready: true,
 });
 
 function entries(c: BoundCollection, doc: JsonDoc, side: "next" | "stored" = "next") {
@@ -89,7 +91,7 @@ describe("unique and text entries", () => {
   it("keys a unique entry by its values alone and stores the id as its value", () => {
     const c = coll({ slug: { by: "slug", unique: true } });
     expect(entries(c, { id: "doc-1", slug: "hi" })).toEqual([
-      { key: encodeTuple(["hi"], prefixOf(c, "slug")), value: utf8.encode("doc-1") },
+      { key: encodeTuple(["hi"], prefixOf(c, "slug")), value: utf8.encode("doc-1"), ready: true },
     ]);
   });
 
@@ -135,7 +137,7 @@ describe("diffEntries", () => {
   it("removes and writes only the entries of the changed field", () => {
     const c = coll({ a: { by: "a" }, b: { by: "b" } });
     expect(diffEntries(derive(c, { id, a: 1, b: 2 }), derive(c, { id, a: 1, b: 3 }))).toEqual({
-      remove: [entry(c, "b", [2]).key],
+      remove: [entry(c, "b", [2])],
       write: [entry(c, "b", [3])],
     });
   });
@@ -144,20 +146,20 @@ describe("diffEntries", () => {
     const c = coll({ search: { by: "at", text: "title" } });
     const { remove, write } = diffEntries(derive(c, { id, at: 1, title: "old" }), derive(c, { id, at: 1, title: "new" }));
     expect(remove).toEqual([]);
-    expect(write.map((e) => new TextDecoder().decode(e.value))).toEqual(["new"]);
+    expect(write.map((e) => [new TextDecoder().decode(e.value), e.replaces])).toEqual([["new", true]]);
   });
 
   it("writes every entry of a new document and removes none, and the reverse for a deleted one", () => {
     const c = coll({ a: { by: "a" }, tags: { by: "tags[]" } });
     const doc = derive(c, { id, a: 1, tags: ["x", "y"] });
     expect(diffEntries([], doc)).toEqual({ remove: [], write: doc });
-    expect(diffEntries(doc, [])).toEqual({ remove: doc.map((e) => e.key), write: [] });
+    expect(diffEntries(doc, [])).toEqual({ remove: doc, write: [] });
   });
 
   it("removes only the entry of a removed tag", () => {
     const c = coll({ tags: { by: "tags[]" } });
     expect(diffEntries(derive(c, { id, tags: ["a", "b"] }), derive(c, { id, tags: ["b"] }))).toEqual({
-      remove: [entry(c, "tags", ["a"]).key],
+      remove: [entry(c, "tags", ["a"])],
       write: [],
     });
   });
