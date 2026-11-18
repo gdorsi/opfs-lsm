@@ -195,14 +195,16 @@ export async function isIntact(fs: ReadFs, meta: GenerationMeta): Promise<boolea
   return true;
 }
 
+/** Write the manifest of `meta`, and return its bytes for the transaction that records it. */
 export async function publishGeneration(
   fs: AsyncFs,
   meta: GenerationMeta,
-): Promise<void> {
+): Promise<Uint8Array> {
   const body = encodeGeneration(meta);
   const w = await fs.create(genPath(meta.generation));
   await w.write(body);
   await w.finish();
+  return body;
 }
 
 /** Write a non-empty L0 run that applied the range deletes through `marksThrough`. */

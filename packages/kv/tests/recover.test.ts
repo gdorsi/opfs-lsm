@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
 import { ClosedError, CorruptDatabaseError } from "../src/errors.js";
 import type { ChangeEvent } from "../src/index.js";
-import { TabWal, encodeOps, advanceIngested, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { TabWal, encodeOps, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { advance } from "./advance.js";
 import { reconcile, recordEmpty } from "../src/recover.js";
 import { crc32 } from "../src/store/crc32.js";
 import { decodeGeneration, publishGeneration, type GenerationMeta } from "../src/store/generation.js";
@@ -73,9 +74,9 @@ async function droppedWal(): Promise<{ fs: MemoryFs; dbName: string }> {
   const wal = await walWith(4);
   const dbName = name;
   const fs = new MemoryFs();
-  await advanceIngested(wal, { through: 1, generation: 1 });
-  await advanceIngested(wal, { through: 2, generation: 2 });
-  await advanceIngested(wal, { through: 3, generation: 3 });
+  await advance(wal, { through: 1, generation: 1 });
+  await advance(wal, { through: 2, generation: 2 });
+  await advance(wal, { through: 3, generation: 3 });
   expect((await reconcile(wal, fs, undefined)).generation).toBe(0);
   expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
   expect(await walRows(dbName)).toEqual([]);
@@ -91,15 +92,15 @@ describe("advanceIngested", () => {
     const wal = await walWith(4);
     expect(await metaRaw(name, "head")).toBeUndefined();
     expect(await metaRaw(name, "pendingBytes")).toBeUndefined();
-    await advanceIngested(wal, { through: 2, generation: 1 });
-    await advanceIngested(wal, { through: 4, generation: 2 });
+    await advance(wal, { through: 2, generation: 1 });
+    await advance(wal, { through: 4, generation: 2 });
     expect(await metaRaw(name, "head")).toBeUndefined();
     expect((await walRows(name)).map((r) => r.seq)).toEqual([3, 4]);
     expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4 });
     expect((await wal.tail(0)).head).toBe(4);
     const next = await wal.appendAfter(0, () => ({ ops: put(5), result: 0 }));
     expect(next?.seq).toBe(5);
-    await advanceIngested(wal, { through: 5, generation: 3 });
+    await advance(wal, { through: 5, generation: 3 });
     expect((await walRows(name)).map((r) => r.seq)).toEqual([5]);
     expect(await wal.meta()).toMatchObject({ head: 5, ingestedThrough: 5 });
     expect((await wal.tail(0)).head).toBe(5);
@@ -109,7 +110,7 @@ describe("advanceIngested", () => {
 
   it("keeps the records it folded until the next ingest", async () => {
     const wal = await walWith(3);
-    await advanceIngested(wal, { through: 2, generation: 1 });
+    await advance(wal, { through: 2, generation: 1 });
     // Seqs 1 and 2 stay: a power loss can keep this commit and lose manifest 1.
     expect(await wal.adopt({ expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 })).toBe(true);
     expect(await seqs(wal)).toEqual([1, 2, 3]);
@@ -119,8 +120,8 @@ describe("advanceIngested", () => {
 
   it("drops them at the next ingest", async () => {
     const wal = await walWith(3);
-    await advanceIngested(wal, { through: 2, generation: 1 });
-    await advanceIngested(wal, { through: 3, generation: 2 });
+    await advance(wal, { through: 2, generation: 1 });
+    await advance(wal, { through: 3, generation: 2 });
     // Seqs 1..2 are gone, so a manifest through 0 cannot be followed.
     expect(await wal.adopt({ expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 })).toBe(true);
     expect(await wal.meta()).toMatchObject({ head: 3, ingestedThrough: 3, generation: 0 });
@@ -134,16 +135,16 @@ describe("reconcile", () => {
     const wal = await walWith(2);
     const fs = new MemoryFs();
     await manifest(fs, 1, 1, ["l0/1-1.sst"]);
-    await advanceIngested(wal, { through: 1, generation: 1 });
+    await advance(wal, { through: 1, generation: 1 });
     const before = await wal.meta();
-    expect(await reconcile(wal, fs, undefined)).toEqual({ generation: 1, top: 1 });
+    expect(await reconcile(wal, fs, undefined)).toEqual({ generation: 1, top: 1, kept: true });
     expect(await wal.meta()).toEqual(before);
     wal.close();
   });
 
   it("records generation 0 on a new database", async () => {
     const wal = await walWith(0);
-    expect(await reconcile(wal, new MemoryFs(), "recorded")).toEqual({ generation: 0, top: 0 });
+    expect(await reconcile(wal, new MemoryFs(), "recorded")).toEqual({ generation: 0, top: 0, kept: false });
     expect(await wal.meta()).toMatchObject({ head: 0, ingestedThrough: 0, generation: 0 });
     wal.close();
   });
@@ -153,7 +154,7 @@ describe("reconcile", () => {
     const wal = await walWith(0);
     const fs = new MemoryFs();
     await manifest(fs, 1, 2, ["l0/1-2.sst"]);
-    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 1, top: 1 });
+    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 1, top: 1, kept: false });
     expect(await wal.meta()).toMatchObject({ head: 2, ingestedThrough: 2, generation: 1 });
     expect(await wal.append(encodeOps(put(3)))).toBe(3);
     wal.close();
@@ -176,7 +177,7 @@ describe("reconcile", () => {
     const fs = new MemoryFs();
     await wal.adopt({ expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 });
     await manifest(fs, 1, 3, ["l0/1-3.sst"]);
-    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 1 });
+    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 1, kept: true });
     expect(await seqs(wal)).toEqual([1, 2, 3]);
     wal.close();
   });
@@ -186,8 +187,8 @@ describe("reconcile", () => {
     const wal = await walWith(4);
     const fs = new MemoryFs();
     await manifest(fs, 1, 1, ["l0/1-1.sst"]);
-    await advanceIngested(wal, { through: 1, generation: 1 });
-    await advanceIngested(wal, { through: 3, generation: 2 });
+    await advance(wal, { through: 1, generation: 1 });
+    await advance(wal, { through: 3, generation: 2 });
     expect((await reconcile(wal, fs, undefined)).generation).toBe(1);
     expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 1, generation: 1 });
     expect(await seqs(wal)).toEqual([2, 3, 4]);
@@ -197,9 +198,9 @@ describe("reconcile", () => {
   it("drops the WAL when the seqs between the manifest and it are gone", async () => {
     const wal = await walWith(4);
     const fs = new MemoryFs();
-    await advanceIngested(wal, { through: 1, generation: 1 });
-    await advanceIngested(wal, { through: 2, generation: 2 });
-    await advanceIngested(wal, { through: 3, generation: 3 });
+    await advance(wal, { through: 1, generation: 1 });
+    await advance(wal, { through: 2, generation: 2 });
+    await advance(wal, { through: 3, generation: 3 });
     // Only generation 0 is left: seqs 1..1 are gone from both stores.
     expect((await reconcile(wal, fs, undefined)).generation).toBe(0);
     expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
@@ -223,7 +224,7 @@ describe("reconcile", () => {
     const fs = new MemoryFs();
     await manifest(fs, 1, 1, ["l0/1-1.sst"]);
     await manifest(fs, 2, 2, ["l0/1-1.sst", "l0/2-2.sst"]);
-    await advanceIngested(wal, { through: 2, generation: 2 });
+    await advance(wal, { through: 2, generation: 2 });
     await flipByte(fs, "m/");
     const before = await wal.meta();
     await expect(reconcile(wal, fs, undefined)).rejects.toThrow(CorruptDatabaseError);
@@ -236,7 +237,7 @@ describe("reconcile", () => {
     const fs = new MemoryFs();
     await manifest(fs, 1, 1, ["l0/1-1.sst"]);
     await manifest(fs, 2, 2, ["l0/1-1.sst", "l0/2-2.sst"]);
-    await advanceIngested(wal, { through: 3, generation: 3 });
+    await advance(wal, { through: 3, generation: 3 });
     await flipByte(fs, "m/");
     const before = await wal.meta();
     await expect(reconcile(wal, fs, undefined)).rejects.toThrow(CorruptDatabaseError);
@@ -250,9 +251,9 @@ describe("reconcile", () => {
     // manifest 1..3: IndexedDB may still name 3 after another power loss.
     const wal = await walWith(2);
     const fs = new MemoryFs();
-    await advanceIngested(wal, { through: 1, generation: 3 });
-    expect(await reconcile(wal, fs, undefined)).toEqual({ generation: 0, top: 3 });
-    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 3 });
+    await advance(wal, { through: 1, generation: 3 });
+    expect(await reconcile(wal, fs, undefined)).toEqual({ generation: 0, top: 3, kept: false });
+    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 3, kept: true });
     wal.close();
   });
 
@@ -264,8 +265,8 @@ describe("reconcile", () => {
       const wal = await walWith(4);
       const dbName = name;
       try {
-        await advanceIngested(wal, { through: 2, generation: 1 });
-        await advanceIngested(wal, { through: 4, generation: 2 });
+        await advance(wal, { through: 2, generation: 1 });
+        await advance(wal, { through: 4, generation: 2 });
         const before = await wal.meta();
         expect(before.head).toBe(4);
         expect(await wal.adopt({ expect: before, generation: 0, through, floor: through, top: 0 })).toBe(true);
@@ -295,10 +296,10 @@ describe("reconcile", () => {
     const wal = await walWith(2);
     const fs = new MemoryFs();
     await manifest(fs, 1, 2, ["l0/old.sst"]);
-    await advanceIngested(wal, { through: 2, generation: 1 });
+    await advance(wal, { through: 2, generation: 1 });
     await recordEmpty(wal, fs, undefined);
     const after = await wal.appendAfter(0, () => ({ ops: put(9), result: undefined }));
-    await advanceIngested(wal, { through: after!.seq!, generation: 2 });
+    await advance(wal, { through: after!.seq!, generation: 2 });
 
     expect((await reconcile(wal, fs, undefined)).generation).toBe(0);
     expect(await seqs(wal)).toEqual([]);
@@ -594,9 +595,9 @@ describe("an older build sharing the database", () => {
     const wal = await walWith(0);
     const fs = new MemoryFs();
     // This build never writes `meta.head`, so the older build reads 0.
-    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 0 });
+    expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 0, kept: false });
     for (let i = 1; i <= 4; i++) await wal.append(encodeOps(put(i)));
-    await advanceIngested(wal, { through: 2, generation: 1 });
+    await advance(wal, { through: 2, generation: 1 });
     expect((await legacyMeta(name)).head).toBe(0);
     expect((await wal.meta()).head).toBe(4);
     // A reload of the older build reads the same value.

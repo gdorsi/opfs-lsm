@@ -4,7 +4,8 @@ Date: 2026-11-11. Chrome 157 headless, macOS arm64, Apple M5 Max. The machine ra
 during every measurement, and the same build opened in 3.4 to 6.8 ms from one run to the next.
 The comparisons below rotate their variants inside one run and report paired differences.
 
-Status: five small changes are implemented. Two larger options are not.
+Status: five small changes are implemented, and on 2026-11-18 the manifest copy and an open whose
+steps overlap ([below](#2026-11-18-the-manifest-copy-and-an-open-whose-steps-overlap)). Reading every run's layout at open is not.
 
 ## Question
 
@@ -78,4 +79,69 @@ list where the WAL meta is, so that one read gives both. That was not prototyped
   the spread between runs is larger than the effect.
 - docstore's own part of its open.
 - A new tab after the SharedWorker has exited. The probe reopens on one page.
+- Firefox and Safari.
+
+## 2026-11-18: the manifest copy and an open whose steps overlap
+
+Chrome 157.0.8103.79 headless, Apple M5 Max. Every figure here is the `coldopen` phase of
+`kv/fillrandom` at size `small` (100,000 entries, 5 runs on disk): one open per fresh tab, 12
+tabs a run, median. The probe above reopened on one page, where a call to the browser process
+costs 0.3 to 0.5 ms. In a fresh tab the same calls cost 0.6 to 0.9 ms each, so these figures
+are not comparable with the table above.
+
+Three changes, each measured on the same workload:
+
+| build | open, median of 12, per run |
+|---|---|
+| before | 4.99, 4.99 ms |
+| 1: a flush stores the manifest's bytes in `meta`; the tab opens the runs while it reads the manifest file | 4.48, 4.22 ms |
+| 2: and `opfs-lsm/` is looked up while the open lock is requested, the database folder resolves behind the first file call, and recovery checks while the tail is read and the runs open | 3.78, 3.90 ms |
+
+The first `get` after the open stayed at 1.38 to 1.44 ms in every build.
+
+Where the open went in build 1, whose steps still ran one after another, ms from one step to
+the next (the 4.22 ms run):
+
+| step | time |
+|---|---:|
+| the open lock | 0.59 |
+| OPFS directory (three lookups), with the IndexedDB open beside it | 1.06 |
+| recovery: WAL meta, and the listing of `m/` | 1.12 |
+| WAL tail, the part still to come | 0.14 |
+| manifest file and runs, together | 1.18 |
+
+The open in build 2, ms from the `openDb` call to the end of each step (a 4.03 ms run, with
+the timers in):
+
+| step | at |
+|---|---:|
+| open lock granted | 0.69 |
+| IndexedDB open | 1.50 |
+| `opfs-lsm/` found (two lookups, started at 0) | 1.89 |
+| WAL tail and manifest copy read | 2.11 |
+| database folder found | 2.50 |
+| recovery check done | 3.14 |
+| manifest file read, runs open | 3.65 |
+| open resolves | 4.03 |
+
+The chain that decides the time is now OPFS alone: root, `opfs-lsm/`, the database folder, `m/`
+or a level folder, the file handle, `getFile`, and for the manifest its bytes. IndexedDB has
+everything a tab needs 2.1 ms in.
+
+### Why the manifest file is still read
+
+The first cut loaded a generation from the copy alone. Two tests refused it. After a power
+loss IndexedDB can keep the commit of a flush while OPFS lost its manifest and left its run
+created and empty, and the tab then opened a run with no bytes. And a recorded manifest that
+does not decode must refuse the open, which only reading it can tell. So the copy removes no
+read. It lets the run opens start one step earlier.
+
+### Not done
+
+- **Fewer folder levels.** Each level is one call on the chain that decides the open. The
+  database folder under the root and the runs beside the manifests would take two off, about
+  1.2 ms by the timeline above. It changes the layout on disk. Not prototyped.
+- **Handles kept in IndexedDB.** A `FileSystemHandle` can be stored in IndexedDB and used in a
+  later session, which would replace every lookup with one `getFile` per run. Whether Firefox
+  and Safari keep such a handle good after the folder is removed and made again was not checked.
 - Firefox and Safari.

@@ -11,7 +11,8 @@ import {
   readStats,
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
-import { TabWal, encodeOps, advanceIngested, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { TabWal, encodeOps, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { advance } from "./advance.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { checkDatabase, deleteWal, walStore } from "./sim/check-database.js";
 
@@ -178,7 +179,7 @@ describe("ingest policy", () => {
     expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([first]));
     const next = await wal.append(encodeOps([second]));
     expect(next).toBe(2);
-    await advanceIngested(wal, { through: seq ?? 0, generation: 1 });
+    await advance(wal, { through: seq ?? 0, generation: 1 });
     expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([second]));
     expect((await listUningested(wal, { maxBytes: 1 << 30 })).map((record) => record.seq)).toEqual([2]);
     await wal.append(encodeOps([first]));
@@ -219,7 +220,7 @@ describe("ingest policy", () => {
     const pastFirst = await uningestedBytes(wal, size(20) - 1);
     expect(pastFirst, "a record larger than the cap still says the WAL is over it").toBeGreaterThanOrEqual(size(20) - 1);
     expect(pastFirst).toBeLessThan(full);
-    await advanceIngested(wal, { through: 1, generation: 1 });
+    await advance(wal, { through: 1, generation: 1 });
     const rest = size(18) + size(10);
     expect(await uningestedBytes(wal, 1 << 30), "ingested rows are not counted").toBe(rest);
     expect(await uningestedBytes(wal, rest)).toBe(rest);

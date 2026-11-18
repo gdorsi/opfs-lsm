@@ -80,7 +80,7 @@ export async function ingestChunk(
   // A chunk whose range deletes left no entry publishes no run.
   const runs =
     folded.entries.length > 0 ? [await publishL0(fs, `${first}-${last}`, folded.entries, last), ...prev.runs] : prev.runs;
-  await publishGeneration(fs, {
+  const manifest = await publishGeneration(fs, {
     generation,
     runs,
     through: last,
@@ -88,6 +88,6 @@ export async function ingestChunk(
   });
   let foldedBytes = 0;
   for (const r of records) foldedBytes += opsBytes(r.ops);
-  await advanceIngested(wal, { through: last, generation });
+  await advanceIngested(wal, { through: last, generation, manifest });
   return { kind: "folded", generation, ingestedThrough: last, foldedBytes };
 }

@@ -24,17 +24,14 @@ import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type Pre
 import { removeDatabase } from "./destroy.js";
 import { layersChannel, openLock, pressureLock, webLocks, withLock } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
-import { reconcile } from "./recover.js";
-import { GENERATION_NONE, type Generation, type Seq } from "./seq.js";
+import { reconcile, type Reconciled } from "./recover.js";
+import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
-import { findRemovableBrowserFs, openBrowserReadFs } from "./opfs/browser-fs.js";
-import {
-  loadGeneration,
-  type RunMeta,
-} from "./store/generation.js";
+import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
+import { decodeGeneration, loadGeneration, type RunMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
 import { pointGet, readKeys, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
@@ -296,46 +293,31 @@ export async function openDb(options: OpenOptions): Promise<Db> {
 }
 
 /**
- * The fs and ingest client for `name`: the backing's, else OPFS and the
- * package SharedWorker. `walOpen` is set when IndexedDB opened alongside OPFS.
+ * The fs and ingest client for `name`: the backing's, else OPFS under
+ * `parent` and the package SharedWorker.
  */
-async function connect(
+function connect(
   name: DbName,
   backing: Backing,
-  onAskedToClose: () => void,
-): Promise<{
-  readonly fs: ReadFs;
-  readonly ingest: IngestClient;
-  readonly ownsIngestClient: boolean;
-  readonly walOpen: Promise<TabWal> | undefined;
-}> {
-  if (backing.fs) {
-    return { fs: backing.fs, ingest: backing.ingest, ownsIngestClient: false, walOpen: undefined };
-  }
-  if (!canUseBrowserOpfs()) {
+  parent: Promise<FileSystemDirectoryHandle> | undefined,
+): { readonly fs: ReadFs; readonly ingest: IngestClient; readonly ownsIngestClient: boolean } {
+  if (backing.fs) return { fs: backing.fs, ingest: backing.ingest, ownsIngestClient: false };
+  if (!parent) {
     throw new StorageUnavailableError(
       "openDb needs SharedWorker and navigator.storage.getDirectory",
     );
   }
-  // IndexedDB opens while OPFS does.
-  const walOpen = TabWal.open(name, onAskedToClose);
-  walOpen.catch(() => undefined);
-  try {
-    const fs = await openBrowserReadFs(name);
-    if (backing.ingest) return { fs, ingest: backing.ingest, ownsIngestClient: false, walOpen };
-    // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
-    // only emit a worker chunk for this exact shape. Built in a helper, Vite
-    // treated it as a plain asset and inlined the unbundled entry as a
-    // data: URL whose relative imports could not resolve.
-    const worker = new SharedWorker(
-      new URL("./host/shared-worker.js", import.meta.url),
-      { type: "module", name: `opfs-lsm:${name}` },
-    );
-    return { fs, ingest: createPortIngestClient(worker.port), ownsIngestClient: true, walOpen };
-  } catch (err) {
-    void walOpen.then((w) => w.close(), () => undefined);
-    throw err;
-  }
+  const fs = openBrowserReadFs(name, parent);
+  if (backing.ingest) return { fs, ingest: backing.ingest, ownsIngestClient: false };
+  // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
+  // only emit a worker chunk for this exact shape. Built in a helper, Vite
+  // treated it as a plain asset and inlined the unbundled entry as a
+  // data: URL whose relative imports could not resolve.
+  const worker = new SharedWorker(
+    new URL("./host/shared-worker.js", import.meta.url),
+    { type: "module", name: `opfs-lsm:${name}` },
+  );
+  return { fs, ingest: createPortIngestClient(worker.port), ownsIngestClient: true };
 }
 
 /**
@@ -372,8 +354,11 @@ export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   // Awaited last: a throw before that must not leave its rejection unhandled.
   engine.catch(() => undefined);
   const caps = memtableCaps(options.memtableBytes);
+  // `opfs-lsm/` names no database, so its lookup runs while the lock is requested.
+  const parent = options.fs || !canUseBrowserOpfs() ? undefined : openParent();
+  parent?.catch(() => undefined);
   // Held until the open resolves, so `destroyDb` never meets a half-done open (design.md, "Removing").
-  return withLock(openLock(name), () => openStores(name, options, caps, engine), "shared");
+  return withLock(openLock(name), () => openStores(name, options, caps, engine, parent), "shared");
 }
 
 async function openStores(
@@ -381,19 +366,20 @@ async function openStores(
   options: OpenWithOptions,
   caps: MemtableCaps,
   engine: Promise<unknown>,
+  parent: Promise<FileSystemDirectoryHandle> | undefined,
 ): Promise<Db> {
+  const { fs, ingest, ownsIngestClient } = connect(name, options, parent);
   // What the catch below closes: the Db once it exists, else the WAL and an owned port.
   let heldWal: TabWal | undefined;
   let heldDb: DbImpl | undefined;
-  const onAskedToClose = () => void heldDb?.closeFor("destroyed");
-  const { fs, ingest, ownsIngestClient, walOpen } = await connect(name, options, onAskedToClose);
   try {
     const tabFs = options.wrapFs?.(fs) ?? fs;
-    const wal = await (walOpen ?? TabWal.open(name, onAskedToClose));
+    const wal = await TabWal.open(name, () => void heldDb?.closeFor("destroyed"));
     heldWal = wal;
-    // Pair the WAL with a manifest before the first read or write. The
-    // recorded manifest's runs are checked by the first sync, which loads them.
-    await reconcile(wal, tabFs, "recorded");
+    // Pairs the WAL with a manifest before the first read or write resolves.
+    // The recorded manifest's runs are checked by the load, which opens them.
+    const recovering = reconcile(wal, tabFs, "recorded");
+    recovering.catch(() => undefined);
     const writerId = (options.writerId ?? newWriterId()) as WriterId;
     const maxBytes = options.maxBytes;
     const cache = new PageCache(
@@ -413,7 +399,7 @@ async function openStores(
     );
     heldDb = db;
     internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
-    await db.sync();
+    await db.boot(recovering);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
     ingest.watch(name, {
       maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
@@ -677,17 +663,25 @@ class DbImpl implements Db {
 
   /**
    * Make `generation` the loaded one, opening its runs when needed. `ahead`
-   * says its tail holds seqs past the memtable. False when its manifest or
-   * one of its runs is gone.
+   * says its tail holds seqs past the memtable, and `copy` is the manifest
+   * copy that tail read, which saves reading the file before the runs open.
+   * False when its manifest or one of its runs is gone.
    */
-  private async load(generation: Generation, ahead: boolean): Promise<boolean> {
+  private async load(generation: Generation, ahead: boolean, copy?: Uint8Array): Promise<boolean> {
     if (this.has(generation, ahead)) return true;
-    const meta = await loadGeneration(this.fs, generation);
+    const copied = copy && decodeGeneration(copy);
+    const known = copied?.generation === generation ? copied : undefined;
+    const meta = known ?? (await loadGeneration(this.fs, generation));
     if (!meta) return false;
     const paths = meta.runs.map((r) => r.path);
     const runs: (Run | undefined)[] = [];
     let next = 0;
     let gone = false;
+    // A power loss can keep the copy and lose the file with its runs, so
+    // the file is still read, while the runs open.
+    const onDisk = async (): Promise<void> => {
+      if (known && !(await loadGeneration(this.fs, generation))) gone = true;
+    };
     const openNext = async (): Promise<void> => {
       while (next < paths.length && !gone) {
         const i = next++;
@@ -695,20 +689,16 @@ class DbImpl implements Db {
         if (!runs[i]) gone = true;
       }
     };
-    const settled = await Promise.allSettled(
-      Array.from({ length: Math.min(OPEN_CONCURRENCY, paths.length) }, openNext),
-    );
+    const settled = await Promise.allSettled([
+      onDisk(),
+      ...Array.from({ length: Math.min(OPEN_CONCURRENCY, paths.length) }, openNext),
+    ]);
     const held = runs.filter((r) => r !== undefined);
     const failed = settled.find((r) => r.status === "rejected");
-    if (
-      failed ||
-      held.length < paths.length ||
-      this.closed ||
-      this.has(generation, ahead)
-    ) {
+    if (failed || gone || this.closed || this.has(generation, ahead)) {
       this.dropRuns(held);
       if (failed) throw failed.reason;
-      return held.length === paths.length;
+      return !gone;
     }
     if (this.loaded) this.release(this.loaded);
     this.loaded = {
@@ -841,18 +831,38 @@ class DbImpl implements Db {
     });
   }
 
+  /** Read the tail and catch up to it. */
+  private catchUpOnce(): Promise<"done" | Retry> {
+    return this.wal.tail(this.mem.appliedThrough, this.installed.generation).then((tail) => this.follow(tail));
+  }
+
   /**
-   * Read the tail and catch up to it. "behind" when another load installed
-   * a newer generation meanwhile, "gone" when the tail's generation lacks
-   * a file.
+   * The open's catch-up. The tail is read and its generation loaded while
+   * recovery checks, and the tail applies when recovery wrote nothing.
+   * Otherwise the tail is not one any more, and a sync reads again.
    */
-  private async catchUpOnce(): Promise<"done" | Retry> {
-    const tail = await this.wal.tail(this.mem.appliedThrough);
+  async boot(recovering: Promise<Reconciled>): Promise<void> {
+    const reading = this.wal.tail(SEQ_ZERO, GENERATION_NONE).then(async (tail) => {
+      await this.load(tail.generation, tail.ingestedThrough > SEQ_ZERO, tail.manifest);
+      return tail;
+    });
+    const [{ kept }, tail] = await Promise.all([recovering, reading.catch(() => undefined)]);
+    if (tail && kept && (await this.follow(tail)) === "done") return;
+    if (this.loaded) this.release(this.loaded);
+    this.loaded = undefined;
+    await this.sync();
+  }
+
+  /**
+   * Catch up to `tail`. "behind" when another load installed a newer
+   * generation meanwhile, "gone" when the tail's generation lacks a file.
+   */
+  private async follow(tail: WalTail): Promise<"done" | Retry> {
     if (this.closed) return "done";
     let whole = true;
     if (tail.generation !== this.installed.generation) {
       const ahead = tail.ingestedThrough > this.mem.appliedThrough;
-      whole = await this.load(tail.generation, ahead);
+      whole = await this.load(tail.generation, ahead, tail.manifest);
       if (this.closed) return "done";
     }
     let missing: number | undefined;

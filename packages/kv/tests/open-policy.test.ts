@@ -48,7 +48,13 @@ function installDocument(): void {
 }
 
 function installCaps(getDirectory: () => Promise<never>): void {
-  putGlobal("SharedWorker", class SharedWorker {});
+  // An open starts the worker while it looks the folder up, so the stand-in has a port.
+  putGlobal(
+    "SharedWorker",
+    class SharedWorker {
+      port = Object.assign(new EventTarget(), { start() {}, postMessage() {}, close() {} });
+    },
+  );
   putGlobal("navigator", {
     storage: { getDirectory },
   });
