@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { useData } from "vitepress";
 import { computed, markRaw, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { createPlayhead } from "../../stageshow/playhead.ts";
 import { SIZES, type SceneName } from "../../stageshow/sizes.ts";
+import { usePageDark } from "./dark.ts";
 import { CHAPTERS, FIGURES } from "./figures.ts";
 import PlayerBar from "./PlayerBar.vue";
 
@@ -13,12 +13,13 @@ import PlayerBar from "./PlayerBar.vue";
 /**
  * `full`: the illustration is as wide as the page, not one column of a claim.
  * An illustration with an entry in `CHAPTERS` plays with a player: pause and a timeline of the chapters on the
- * stage's bottom edge, and the playing chapter's title and detail under them. They are page elements, because the
- * stage is one `role="img"` and nothing inside it is reachable.
+ * stage's bottom edge, and the chapters' titles and details, in a list beside the stage on wide screens and as the
+ * playing chapter's caption under it otherwise. They are page elements, because the stage is one `role="img"` and
+ * nothing inside it is reachable.
  */
 const props = defineProps<{ name: SceneName; full?: boolean }>();
 
-const { isDark } = useData();
+const dark = usePageDark();
 const host = ref<HTMLElement>();
 const run = ref(0);
 const size = computed(() => SIZES[props.name]);
@@ -60,7 +61,7 @@ const onMotion = () => (still.value = !!motion?.matches);
 
 const render = () =>
   scene?.render({
-    theme: isDark.value ? "dark" : "light",
+    theme: dark.value ? "dark" : "light",
     run: run.value,
     ...(chapters.value && { jump: jump.value, playhead, onChapter }),
   });
@@ -76,7 +77,7 @@ onMounted(async () => {
   scene = mount(host.value, props.name);
   render();
 });
-watch([isDark, run, jump], render);
+watch([dark, run, jump], render);
 onBeforeUnmount(() => {
   motion?.removeEventListener("change", onMotion);
   scene?.unmount();
@@ -85,21 +86,35 @@ onBeforeUnmount(() => {
 
 <template>
   <figure v-if="chapters" class="illustration player" :class="{ full }" :style="vars">
-    <div class="player-main">
-      <div ref="host" class="illustration-stage" role="img" :aria-label="FIGURES[name]" />
-      <PlayerBar
-        :chapters="chapters"
-        :playhead="playhead"
-        :clock="clock"
-        :current="current"
-        :paused="paused"
-        :still="still"
-        @toggle="toggle"
-        @jump="go"
-      />
+    <div class="player-row">
+      <div class="player-main">
+        <div ref="host" class="illustration-stage" role="img" :aria-label="FIGURES[name]" />
+        <PlayerBar
+          :chapters="chapters"
+          :playhead="playhead"
+          :clock="clock"
+          :current="current"
+          :paused="paused"
+          :still="still"
+          @toggle="toggle"
+          @jump="go"
+        />
+      </div>
+      <!-- On wide screens, every chapter beside the stage, the playing one with its detail. -->
+      <nav class="player-index" aria-label="Chapters">
+        <ol>
+          <li v-for="(chapter, i) in chapters" :key="chapter.label">
+            <button type="button" :aria-current="i === current ? 'step' : undefined" @click="go(i)">
+              <span class="player-index-mark" :style="{ background: `var(--player-${i % 7})` }" aria-hidden="true" />
+              <span class="player-index-title">{{ chapter.title }}</span>
+              <span class="player-index-detail"><span>{{ chapter.detail }}</span></span>
+            </button>
+          </li>
+        </ol>
+      </nav>
     </div>
-    <!-- The playing chapter, under the controls. Every chapter is laid out in the same cell, unseen, so the box is as
-         tall as the longest and the page below never moves. -->
+    <!-- Narrower, the playing chapter, under the controls. Every chapter is laid out in the same cell, unseen, so the
+         box is as tall as the longest and the page below never moves. -->
     <div class="player-caption">
       <Transition name="player-caption">
         <div :key="current" class="player-caption-text">

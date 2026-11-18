@@ -2,7 +2,7 @@
 
 Gold: `hero-demo` and `payout-flow`. Kept from them: named targets, a cursor that does one thing and then rests, connectors that arrive and stay, and a payoff that holds. Framing follows the device-pair pattern: Tab 1 is the hero and bleeds under the cut, Tab 2 is a satellite on Tab 1's wider side, one gutter from the right edge, and the stage is split by a band drawn over both windows. The band's top edge is the cut, and the engine sits under it. On a phone no window covers another (see Layout).
 
-Changed from the gold: the scene is told in chapters and plays with a player (`site/stageshow/chapters.tsx`, and the page's `PlayerBar.vue`, after the demo player on everr.dev). The chapters play in a loop: each plays its beat, then holds its frame for reading, for the time its entry gives; the last goes back to the first by the same transitions. On the stage's bottom edge, pause, the chapters as colored segments with a bar at the play position and the chapter's name in a flag under it, and the time. Under them, the playing chapter's title and detail. A segment starts its chapter from the frame before it. Pause holds the beat at its next wait; a cursor move or a CSS transition already running finishes. Under reduced motion each chapter is its own still, and the segments only jump.
+Changed from the gold: the scene is told in chapters and plays with a player (`site/stageshow/chapters.tsx`, and the page's `PlayerBar.vue`, after the demo player on everr.dev). The chapters play in a loop: each plays its beat, then holds its frame for reading, for the time its entry gives; the last goes back to the first by the same transitions. On the stage's bottom edge, pause, the chapters as colored segments with a bar at the play position and the chapter's name in a flag under it, and the time. Under them, the playing chapter's title and detail; from 1376px wide, every chapter's title in a list beside the stage instead, the playing one with its detail. The landing page is always dark, so the scene plays in its dark look. A segment starts its chapter from the frame before it. Pause holds the beat at its next wait; a cursor move or a CSS transition already running finishes. Under reduced motion each chapter is its own still, and the segments only jump.
 
 Chapters (`CHAPTERS.hood[n]` in `site/.vitepress/theme/figures.ts` is the label, title, detail and length, `FRAMES[n]` the whole scene, `BEATS[n]` what plays):
 1. Both tabs open the same database. No beat.
@@ -10,8 +10,7 @@ Chapters (`CHAPTERS.hood[n]` in `site/.vitepress/theme/figures.ts` is the label,
 3. broadcast (2s): a BroadcastChannel line runs to Tab 2, and its row turns Done.
 4. flush, cleared (3.3s): the SharedWorker moves the log into a new file, `l0/41-43.sst`; the log's rows fold away; the SharedWorker's note changes from "a single instance for all the tabs" to "the only file writer".
 5. read (2.7s): one of the 9 pages of `l1/c7.0.sst` lights, a copy of it flies to Tab 2's cache meter ("32 KB of 256 MiB"), and Tab 2's placeholder row turns into the real issue. No connector touches the SharedWorker.
-6. power loss (about 6s): the cursor sets a second issue to In Progress, record 44 lands "saved", Tab 2 follows, then the whole stage dims under a "Power lost" mark.
-7. reopen (3s): the power returns, record 44 turns "lost", the second issue is Todo again in both tabs, the first is still Done, `l0/41-43.sst` is still listed and the cache is empty. This is the payoff; it holds.
+6. power loss, then reopen (about 10s of a 14s chapter): the cursor sets a second issue to In Progress, record 44 lands "saved", Tab 2 follows, then the whole stage dims under a "Power lost" mark and holds dark about 2s. The power returns, record 44 turns "lost", the second issue is Todo again in both tabs, the first is still Done, `l0/41-43.sst` is still listed and the cache is empty. This is the payoff; it holds.
 
 Layout:
 - Wide (1152 x 576): Tab 1 leads, Tab 2 lies over its right edge, both cut by the band. Each status menu hangs under the status button it opens from, measured from that button.
@@ -61,7 +60,7 @@ Assumptions (each drawn the way it reads):
 - The flush runs after one write. The engine waits for the write-ahead log to reach `maxWalBytes`.
 - The log's rows leave it with the flush that folded them. The engine keeps them until the next flush, as a recovery copy that no read uses (design.md, "Truncation").
 - Step 5 shows one get. An app query reads index entries and documents, so it loads several pages.
-- Step 7 shows one legal outcome of a power loss. A loss could also take record 43 and any earlier write that no flush had reached, but it takes a write only together with every write after it.
+- Step 6 shows one legal outcome of a power loss. A loss could also take record 43 and any earlier write that no flush had reached, but it takes a write only together with every write after it.
 - Each record is one status change, 7 operations: the issue, and for each of its three indexes on status or modified time, the old entry deleted and the new one put (counted from `docstore` with LinearLite's schema). Records 41 and 42 are drawn as status changes too. A new issue is 5 operations; an import, one batch of thousands.
 - The cache meter's fill is drawn wider than 32 KB of 256 MiB really is, so it can be seen.
 - A reopened tab has an empty cache, so Tab 2's older issue is a placeholder row again until the tab reads it.

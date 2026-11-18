@@ -182,7 +182,7 @@ onMounted(() => {
   whenIdle(() => {
     if (!mounted) return;
     enter({ kind: "loading" });
-    src.value = withBase(`/demo/index.html?count=${count.value}`);
+    src.value = withBase(`/demo/index.html?count=${count.value}&theme=dark`);
   });
 });
 onBeforeUnmount(() => {

@@ -24,7 +24,7 @@
   line-height: 1.4;
 }
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
     color-scheme: light;
     --bg: #ffffff;
     --panel: #f6f6f8;

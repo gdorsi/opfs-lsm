@@ -22,6 +22,8 @@ const DATA_VERSION = 2;
 const params = new URLSearchParams(location.search);
 const NAME = params.get("db") ?? `linearlite-docstore-v${DATA_VERSION}`;
 const COUNT = Number(params.get("count")) || 100_000;
+// `theme=dark` keeps the dark look on a light system, for a page that embeds the app on a dark background.
+if (params.get("theme") === "dark") document.documentElement.dataset.theme = "dark";
 const n = (x: number) => x.toLocaleString("en-US");
 
 const width = (g: AppState["generating"]) => `${g?.phase === "writing" ? (g.written / g.count) * 100 : 0}%`;
