@@ -749,6 +749,11 @@ class DbImpl implements Db {
     }
   }
 
+  /** True when `tail` was read before the installed generation was recorded. */
+  private old(tail: WalTail): boolean {
+    return tail.ingestedThrough < this.mem.ingestedThrough;
+  }
+
   /**
    * Apply `tail` to the memtable. Synchronous, so it can run inside an
    * IndexedDB transaction. Returns the generation to load when the tail
@@ -756,18 +761,18 @@ class DbImpl implements Db {
    */
   private catchUp(tail: WalTail): Generation | undefined {
     const behind = tail.ingestedThrough > this.mem.appliedThrough;
-    // A tail read before a newer generation was installed: its records are
-    // still a WAL prefix, but its generation and ingestedThrough are stale.
-    // Such a tail is never ahead of the memtable, which caught up to the
-    // newer generation. A tail that is ahead and names a lower generation
-    // comes after a repair that recorded an older manifest and emptied the
-    // WAL (design.md, "Recovery"), so this tab follows it.
+    const layers = this.loaded?.generation === tail.generation ? this.loaded : undefined;
+    // A tail read before the installed generation was recorded names a
+    // stale generation and ingestedThrough. It is never ahead of the
+    // memtable, which caught up to the installed one, and when it is `old`
+    // its generation can be the higher one: a destroy or a repair recorded
+    // a lower generation past its seqs. A tail that is ahead and names a
+    // lower generation comes after one of those (design.md, "Recovery"),
+    // so this tab follows it.
     if (
-      tail.generation > this.installed.generation ||
+      (tail.generation > this.installed.generation && !this.old(tail)) ||
       (behind && tail.generation < this.installed.generation)
     ) {
-      const layers =
-        this.loaded?.generation === tail.generation ? this.loaded : undefined;
       if (layers) {
         this.release(this.installed);
         this.installed = layers;
@@ -776,7 +781,7 @@ class DbImpl implements Db {
         return tail.generation;
       }
     }
-    if (this.loaded && this.loaded.generation <= this.installed.generation) {
+    if (this.loaded && (this.loaded.generation <= this.installed.generation || this.loaded === layers)) {
       this.release(this.loaded);
       this.loaded = undefined;
     }
@@ -859,7 +864,7 @@ class DbImpl implements Db {
   private async follow(tail: WalTail): Promise<"done" | Retry> {
     if (this.closed) return "done";
     let whole = true;
-    if (tail.generation !== this.installed.generation) {
+    if (tail.generation !== this.installed.generation && !this.old(tail)) {
       const ahead = tail.ingestedThrough > this.mem.appliedThrough;
       whole = await this.load(tail.generation, ahead, tail.manifest);
       if (this.closed) return "done";

@@ -329,9 +329,9 @@ A try that finds a file missing under the lock reconciles (see [Recovery](#recov
 such tries the tab throws `CorruptDatabaseError`. On a healthy database, `sync`, `update` and
 appends always succeed, however compaction is scheduled.
 
-A tab skips a tail that names a generation below its installed one, unless that tail is ahead of
-its memtable. A stale tail never is. A tail that is ahead comes from a recovery that recorded an
-older manifest and emptied the WAL, and the tab installs that generation.
+A tab keeps its generation when a tail has a lower `ingestedThrough` than the installed one, or
+names a lower generation and is not ahead of its memtable: it was read before that generation was
+recorded. A lower generation ahead of the memtable follows a destroy or a repair, and is installed.
 
 ## Ingest
 
