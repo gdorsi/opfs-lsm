@@ -172,12 +172,12 @@ export async function installStep(
   }
   const runs = replaceRuns(meta.runs, step.inputs, step.outputs);
   const generation = nextGeneration(base.top);
-  await publishGeneration(fs, {
+  const manifest = await publishGeneration(fs, {
     generation,
     runs,
     through: meta.through,
     marks: retireMarks(meta.marks, runs),
   });
-  await raiseGeneration(wal, generation);
+  await raiseGeneration(wal, generation, manifest);
   return generation;
 }

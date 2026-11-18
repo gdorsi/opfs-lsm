@@ -15,7 +15,7 @@ import {
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
-import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, type HostBudget } from "./budget.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, IDLE_FLUSH_MS, IDLE_FLUSH_SHARE, type HostBudget, type HostOverrides } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import {
@@ -82,6 +82,8 @@ type IngestWatch = {
   /** Open tabs that asked for this watch. The bus closes at zero. */
   watchers: number;
   bus: BroadcastChannel | undefined;
+  /** Fires `IDLE_FLUSH_MS` after the last row heard. */
+  idle: ReturnType<typeof setTimeout> | undefined;
 };
 
 /**
@@ -96,7 +98,7 @@ export class EngineHost {
   /** `overrides` replace figures of the budget, for tests that need a small flush run or no L0 stop. */
   constructor(
     private readonly fsFactory: FsFactory,
-    private readonly overrides: Partial<HostBudget> = {},
+    private readonly overrides: HostOverrides = {},
   ) {}
 
   private db(name: string): HostedDb {
@@ -191,7 +193,7 @@ class HostedDb {
   constructor(
     private readonly name: DbName,
     private readonly fsFactory: FsFactory,
-    private readonly overrides: Partial<HostBudget>,
+    private readonly overrides: HostOverrides,
   ) {}
 
   private budget(): HostBudget {
@@ -385,6 +387,7 @@ class HostedDb {
       (waiting) => {
         watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
         this.maybeIngest(watch);
+        this.quiet(watch);
       },
       (err: unknown) => {
         if (isClosedDatabase(err)) return;
@@ -397,6 +400,7 @@ class HostedDb {
     const watch = this.watching;
     if (!watch || --watch.watchers > 0) return;
     watch.bus?.close();
+    clearTimeout(watch.idle);
     this.watching = undefined;
     this.offer = { after: 0 };
   }
@@ -412,6 +416,7 @@ class HostedDb {
       state: "idle",
       watchers: 0,
       bus: undefined,
+      idle: undefined,
     };
     if (typeof BroadcastChannel !== "undefined") {
       watch.bus = new BroadcastChannel(layersChannel(this.name));
@@ -420,6 +425,7 @@ class HostedDb {
         if (msg.kind === "rows") {
           watch.pendingBytes += msg.bytes;
           this.maybeIngest(watch);
+          this.quiet(watch);
         } else if (msg.kind === "pressure-pull" && "pressure" in this.offer) {
           watch.bus?.postMessage(this.offer);
         } else if (msg.kind === "pressure-done" && "pressure" in this.offer) {
@@ -438,15 +444,26 @@ class HostedDb {
     return watch;
   }
 
-  /** One ingest in flight per watch; it checks again when it finishes. */
-  private maybeIngest(watch: IngestWatch): void {
-    if (
-      watch.state !== "idle" ||
-      watch.pendingBytes < watch.triggerAt ||
-      this.watching !== watch
-    ) {
-      return;
-    }
+  /**
+   * Flush once the database has been quiet for `IDLE_FLUSH_MS`, so the next
+   * open replays a short tail. Each row heard restarts the wait, and a
+   * watch the last tab left gets none.
+   */
+  private quiet(watch: IngestWatch): void {
+    clearTimeout(watch.idle);
+    if (this.watching !== watch) return;
+    watch.idle = setTimeout(() => this.maybeIngest(watch, true), this.overrides.idleFlushMs ?? IDLE_FLUSH_MS);
+  }
+
+  /**
+   * One ingest in flight per watch; it checks again when it finishes. A
+   * quiet database (`idle`) flushes at a share of the limit, unless a
+   * failed flush raised the trigger.
+   */
+  private maybeIngest(watch: IngestWatch, idle = false): void {
+    const trigger =
+      idle && watch.triggerAt === watch.maxWalBytes ? watch.maxWalBytes / IDLE_FLUSH_SHARE : watch.triggerAt;
+    if (watch.state !== "idle" || watch.pendingBytes < trigger || this.watching !== watch) return;
     watch.state = "ingesting";
     void (async () => {
       try {
@@ -463,6 +480,8 @@ class HostedDb {
         watch.state = "idle";
       }
       this.maybeIngest(watch);
+      // What arrived during the ingest waits for the next quiet stretch.
+      this.quiet(watch);
     })();
   }
 

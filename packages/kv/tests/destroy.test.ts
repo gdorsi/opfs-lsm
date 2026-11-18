@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkDbName } from "../src/check.js";
 import { forgetDestroyed, readDestroyed, recordDestroyed } from "../src/idb/destroyed.js";
 import { IdBWal, type WalMeta } from "../src/idb/wal.js";
@@ -178,6 +178,55 @@ describe("dangerousDestroy", () => {
     await b.put(enc.encode("after"), enc.encode("1"));
     await a.sync();
     expect(await keys(a)).toEqual(["after"]);
+  });
+
+  it("empties a handle whose open it crosses", async () => {
+    const mem = new MemoryFs();
+    const client = createLocalIngestClient(new EngineHost(() => mem));
+    const options = { name: "destroy-crossing", fs: mem as AsyncFs, ingest: client, maxWalBytes: 1 << 30 };
+    const a = await openHarnessDb(options);
+    opened.push(a);
+    await fill(a, "old", 20);
+
+    // The open reads its tail and opens the runs while recovery lists `m/`.
+    let runsOpened = 0;
+    let listing = false;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const opening = openHarnessDb({
+      ...options,
+      fs: {
+        read: (path, offset, length) => mem.read(path, offset, length),
+        open: async (path) => {
+          const file = await mem.open(path);
+          if (file) runsOpened += 1;
+          return file;
+        },
+        list: async (dir) => {
+          if (dir === "m") {
+            listing = true;
+            await held;
+          }
+          return mem.list(dir);
+        },
+        remove: (path) => mem.remove(path),
+        removeUnlessOpen: (path) => mem.removeUnlessOpen(path),
+        create: (path) => mem.create(path),
+      },
+    });
+    await vi.waitFor(() => expect(listing && runsOpened > 0).toBe(true));
+
+    await a.dangerousDestroy();
+    // The destroy's message reaches the opening handle before recovery returns.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    release();
+    const b = await opening;
+    opened.push(b);
+    await b.sync();
+
+    expect(await keys(b)).toEqual([]);
+    await ingest(b);
+    expect(mem.publishedPaths()).toEqual([]);
   });
 
   it("keeps the runs a view in another tab reads, and removes them once it ends", async () => {

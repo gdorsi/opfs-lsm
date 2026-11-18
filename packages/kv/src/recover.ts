@@ -13,7 +13,7 @@ import {
   type GenerationMeta,
 } from "./store/generation.js";
 
-type Reconciled = {
+export type Reconciled = {
   /** The recorded generation. Its manifest and the WAL hold one log prefix. */
   readonly generation: Generation;
   /**
@@ -23,6 +23,8 @@ type Reconciled = {
    * output overwrites a run a manifest on disk may list.
    */
   readonly top: Generation;
+  /** True when nothing was written: a tail read before the call is still a tail. */
+  readonly kept: boolean;
 };
 
 /** Attempts when another tab or host changes `meta` under a reconcile. */
@@ -95,16 +97,16 @@ export async function reconcile(
         await forgetDestroyed(wal.dbName, known);
         // Read `meta` again: it records generation 0 now, and rule 1 adopts the newer database's manifest.
         if (outgrown) return undefined;
-        return { generation: GENERATION_NONE, top: born.top };
+        return { generation: GENERATION_NONE, top: born.top, kept: false };
       }
     }
     const pick = await choose(fs, meta, numbers, trusted);
-    if (!pick) return { generation: meta.generation!, top };
+    if (!pick) return { generation: meta.generation!, top, kept: true };
     // No seq any manifest on disk names is handed out again, so a manifest
     // that is not intact now never becomes intact with other writes.
     const floor = await highestThrough(fs, numbers, pick.through);
     const adopted = await wal.adopt({ expect: meta, generation: pick.generation, through: pick.through, floor, top });
-    return adopted ? { generation: pick.generation, top } : undefined;
+    return adopted ? { generation: pick.generation, top, kept: false } : undefined;
   });
 }
 

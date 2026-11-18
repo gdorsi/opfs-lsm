@@ -1,6 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
+import { TabWal } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
+import { decodeGeneration } from "../src/store/generation.js";
 
 const NAME = "generation-idb";
 const enc = new TextEncoder();
@@ -18,14 +20,47 @@ function wipe(): Promise<void> {
   });
 }
 
+function putManifestCopy(bytes: Uint8Array): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open(`opfs-lsm-wal/${NAME}`);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction("meta", "readwrite");
+      tx.objectStore("meta").put(bytes, "manifest");
+      tx.onerror = () => reject(tx.error);
+      tx.oncomplete = () => {
+        open.result.close();
+        resolve();
+      };
+    };
+  });
+}
+
 beforeEach(async () => {
   __resetMemoryFsForTests(NAME);
   await wipe();
 });
 afterEach(() => __resetMemoryFsForTests(NAME));
 
+/** The `manifest` value of the WAL database's `meta` store. */
+function manifestCopy(): Promise<Uint8Array | undefined> {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open(`opfs-lsm-wal/${NAME}`);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const get = open.result.transaction("meta").objectStore("meta").get("manifest");
+      get.onerror = () => reject(get.error);
+      get.onsuccess = () => {
+        open.result.close();
+        resolve(get.result as Uint8Array | undefined);
+      };
+    };
+  });
+}
+
 function observedFs(inner: MemoryFs) {
   let lists = 0;
+  const opened: string[] = [];
   let holdNextManifestRead = false;
   let release!: () => void;
   const held = new Promise<void>((resolve) => {
@@ -50,13 +85,17 @@ function observedFs(inner: MemoryFs) {
       return inner.list(dir);
     },
     remove: (path) => inner.remove(path),
-    open: (path) => inner.open(path),
+    open: (path) => {
+      opened.push(path);
+      return inner.open(path);
+    },
     removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
     create: (path) => inner.create(path),
   };
   return {
     fs,
     lists: () => lists,
+    opened,
     holdNextManifestRead: () => {
       holdNextManifestRead = true;
     },
@@ -110,6 +149,78 @@ describe("generation recorded in IndexedDB", () => {
       expect(text(await db.get(utf(`k${i}`)))).toBe(`v${i}`);
     }
     expect(o.lists()).toBe(before);
+    await db.close();
+  });
+
+  it("stores the bytes of the manifest it records, at a flush and at a compaction", async () => {
+    const inner = new MemoryFs();
+    const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, maxWalBytes });
+    expect(await manifestCopy()).toBeUndefined();
+    // Six flushes pass the L0 trigger, so the last recorded generation is a compaction's.
+    for (let i = 0; i < 6; i++) {
+      await db.put(utf(`k${i}`), utf(`v${i}`));
+      await ingest(db);
+      const [file] = await inner.list("m");
+      const copy = await manifestCopy();
+      expect(copy).toEqual(await inner.read(`m/${file}`, 0, Number.POSITIVE_INFINITY));
+      expect(decodeGeneration(copy!).generation).toBe(Number(file!.replace(".mft", "")));
+    }
+    expect((await inner.list("l1")).length).toBeGreaterThan(0);
+    await db.close();
+  });
+
+  it("a reopen reads the tail once and opens the runs before the manifest file is read", async () => {
+    const inner = new MemoryFs();
+    const first = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, maxWalBytes });
+    for (let i = 0; i < 20; i++) await first.put(utf(`k${i}`), utf(`v${i}`));
+    await ingest(first);
+    await first.put(utf("tail"), utf("t"));
+    await first.close();
+
+    const o = observedFs(inner);
+    o.holdNextManifestRead();
+    const tails = vi.spyOn(TabWal.prototype, "tail");
+    const reopening = openHarnessDb({ name: NAME, writerId: "w2", fs: o.fs, maxWalBytes });
+    await o.isHeld;
+    expect(o.opened).toHaveLength(1);
+    o.release();
+    const db = await reopening;
+    expect(tails).toHaveBeenCalledTimes(1);
+    tails.mockRestore();
+    expect(text(await db.get(utf("k7")))).toBe("v7");
+    expect(text(await db.get(utf("tail")))).toBe("t");
+    await db.close();
+  });
+
+  it("a reopen reads the manifest file when the copy is another generation's", async () => {
+    const inner = new MemoryFs();
+    const first = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, maxWalBytes });
+    await first.put(utf("a"), utf("1"));
+    await ingest(first);
+    const stale = await manifestCopy();
+    await first.put(utf("b"), utf("2"));
+    await ingest(first);
+    await first.close();
+    await putManifestCopy(stale!);
+
+    const db = await openHarnessDb({ name: NAME, writerId: "w2", fs: inner, maxWalBytes });
+    expect(text(await db.get(utf("a")))).toBe("1");
+    expect(text(await db.get(utf("b")))).toBe("2");
+    await db.close();
+  });
+
+  it("a reopen reads the manifest file when the copy does not decode", async () => {
+    const inner = new MemoryFs();
+    const first = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, maxWalBytes });
+    await first.put(utf("a"), utf("1"));
+    await ingest(first);
+    await first.close();
+    const damaged = (await manifestCopy())!.slice();
+    damaged[damaged.length - 1]! ^= 0xff;
+    await putManifestCopy(damaged);
+
+    const db = await openHarnessDb({ name: NAME, writerId: "w2", fs: inner, maxWalBytes });
+    expect(text(await db.get(utf("a")))).toBe("1");
     await db.close();
   });
 });

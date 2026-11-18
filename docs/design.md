@@ -30,6 +30,7 @@ IndexedDB  "opfs-lsm-wal/<name>"
   ├── wal    seq -> bytes              one record per acked batch
   └── meta   "ingestedThrough" -> seq  no record at or below it is read
              "generation"      -> n    the manifest tabs read
+             "manifest"        -> bytes  a copy of the manifest last flushed or compacted
              "topGeneration"   -> n    highest manifest number recovery has seen
              "destroyedTop"    -> n    manifests numbered up to this predate a destroy
 
@@ -299,7 +300,10 @@ acked before the call. The broadcast is an optimization. The WAL tail is the sou
 A tab installs a generation only when the WAL tail tells it to, during `sync` or an append. The
 installed generation never holds a seq past `appliedThrough`. If the tail names a generation the
 tab has not loaded, the tab loads the manifest and opens its runs outside the transaction, then
-reads the tail again.
+reads the tail again. A flush or a compaction records the manifest's bytes in `meta.manifest`
+with its generation, and such a tail reads them: when the copy decodes to that generation, the
+tab opens the runs from it while it reads the manifest file. The load still fails without the
+file: a power loss can keep the copy and lose the file and its runs. Recovery never reads it.
 
 After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and
 tabs call `sync`.
@@ -325,9 +329,9 @@ A try that finds a file missing under the lock reconciles (see [Recovery](#recov
 such tries the tab throws `CorruptDatabaseError`. On a healthy database, `sync`, `update` and
 appends always succeed, however compaction is scheduled.
 
-A tab skips a tail that names a generation below its installed one, unless that tail is ahead of
-its memtable. A stale tail never is. A tail that is ahead comes from a recovery that recorded an
-older manifest and emptied the WAL, and the tab installs that generation.
+A tab keeps its generation when a tail has a lower `ingestedThrough` than the installed one, or
+names a lower generation and is not ahead of its memtable: it was read before that generation was
+recorded. A lower generation ahead of the memtable follows a destroy or a repair, and is installed.
 
 ## Ingest
 
@@ -338,13 +342,13 @@ Ingest moves WAL records into L0 runs. It runs in the host.
 Per database, the host keeps `pendingBytes`, the key and value bytes of the ops that are not yet
 folded. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
 host flushes. The limit is the smallest any open tab asked for, and each tab asks for at most
-7/8 of its `memtableBytes`.
+7/8 of its `memtableBytes`. The host also flushes after 2 s with no `rows` message when an
+eighth of the limit waits, so a tab that opens a quiet database replays a short tail.
 
 `openDb` registers the tab with the host. The host then measures the uningested records, so a
 database left over the limit catches up on open. The count only decides when to flush. Every
-flush reads the WAL, so a missed broadcast delays a flush and loses nothing.
-
-After a failed flush, the host waits for another `maxWalBytes` of writes or the next open.
+flush reads the WAL, so a missed broadcast delays a flush and loses nothing. After a failed
+flush, the host waits for another `maxWalBytes` of writes or the next open.
 
 `ingest(db)` from `@opfs-lsm/kv/testing` flushes through the end of the log and waits for the compaction it starts.
 
@@ -619,7 +623,8 @@ it opened, so `destroyDb` can run next.
 
 ### Who reconciles
 
-* `openDb`, before the first sync. Every tab writes only after its open reconciled.
+* `openDb`, while it reads the tail and loads its generation. It applies that tail only when
+  reconcile wrote nothing, and reads again otherwise. A tab writes only after its open reconciled.
 * `sync` and appends, when the recorded generation does not load under the reclaim lock.
 * The host, at the start of every flush and compaction install, under the exclusive section. It
   reconciles again before a sweep, except one in a pass that installed nothing: that sweep only

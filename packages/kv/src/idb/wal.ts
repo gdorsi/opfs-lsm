@@ -37,6 +37,14 @@ const META_TOP = "topGeneration";
  * below it hold writes from before that destroy, so recovery adopts none.
  */
 const META_DESTROYED_TOP = "destroyedTop";
+/**
+ * The bytes of a manifest, stored by the flush or compaction that recorded
+ * its generation. A tab that reads them with the tail opens the runs while
+ * it reads the manifest file. They are a copy: a recovery that records
+ * another manifest leaves them, so a reader checks their number, and
+ * recovery reads only OPFS.
+ */
+const META_MANIFEST = "manifest";
 
 /** The `meta` keys that say which log prefix the WAL and the manifest hold. */
 export type WalMeta = {
@@ -57,6 +65,8 @@ export type WalTail = {
   readonly ingestedThrough: Seq;
   /** Every record above max(since, ingestedThrough), in seq order. */
   readonly records: readonly WalRecord[];
+  /** The `manifest` copy, read when the reader does not hold `generation`. */
+  readonly manifest?: Uint8Array | undefined;
 };
 
 export function idbName(dbName: DbName): string {
@@ -365,16 +375,17 @@ async function readRecordsUpTo(
   return records;
 }
 
-async function readTail(tx: IDBTransaction, since: Seq): Promise<WalTail> {
+async function readTail(tx: IDBTransaction, since: Seq, held?: Generation): Promise<WalTail> {
   const meta = tx.objectStore(META_STORE);
   const [generation, ingestedThrough] = await Promise.all([
     metaGeneration(meta, META_GENERATION),
     metaSeq(meta, META_INGESTED),
   ]);
+  const copy = held === undefined || held === generation ? undefined : reqToPromise<Uint8Array | undefined>(meta.get(META_MANIFEST));
   const after = asSeq(Math.max(since, ingestedThrough));
   const head = await headOf(tx, after);
   const records = await readRecords(tx.objectStore(WAL_STORE), after, head);
-  return { head, generation, ingestedThrough, records };
+  return { head, generation, ingestedThrough, records, manifest: await copy };
 }
 
 /**
@@ -527,11 +538,14 @@ export class TabWal extends IdBWal {
     if (!this.open) this.db.close();
   }
 
-  /** The tail after `since`, from one readonly transaction. */
-  async tail(since: Seq): Promise<WalTail> {
+  /**
+   * The tail after `since`, from one readonly transaction, with the
+   * `manifest` copy when the recorded generation is not `held`.
+   */
+  async tail(since: Seq, held?: Generation): Promise<WalTail> {
     // The reads are the result. Waiting for `complete` as well is one more trip.
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
-    const tail = await readTail(tx, since);
+    const tail = await readTail(tx, since, held);
     return tail;
   }
 
@@ -691,13 +705,14 @@ export async function emptyWal(
   return true;
 }
 
-/** Record `generation` unless a newer one is already recorded. */
-export async function raiseGeneration(wal: IdBWal, generation: Generation): Promise<void> {
+/** Record `generation` and its `manifest` bytes unless a newer one is already recorded. */
+export async function raiseGeneration(wal: IdBWal, generation: Generation, manifest: Uint8Array): Promise<void> {
   const tx = wal.db.transaction(META_STORE, "readwrite");
   const meta = tx.objectStore(META_STORE);
   const recorded = await metaGenerationOpt(meta, META_GENERATION);
   if (recorded === undefined || generation > recorded) {
     meta.put(generation, META_GENERATION);
+    meta.put(manifest, META_MANIFEST);
   }
   await txDone(tx);
 }
@@ -748,18 +763,18 @@ export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: nu
 }
 
 /**
- * Mark seqs <= through as ingested and record `generation` in the same
- * transaction. A tab that has not read them jumps to the SST for that
- * generation. Deletes the records the previous ingest folded: the ones
- * this ingest folded stay until the next, so a power loss that keeps this
- * commit and loses the new manifest can still recover them (design.md,
- * "Recovery").
+ * Mark seqs <= through as ingested and record `generation` and its
+ * `manifest` bytes in the same transaction. A tab that has not read them
+ * jumps to the SST for that generation. Deletes the records the previous
+ * ingest folded: the ones this ingest folded stay until the next, so a
+ * power loss that keeps this commit and loses the new manifest can still
+ * recover them (design.md, "Recovery").
  */
 export async function advanceIngested(
   wal: IdBWal,
-  folded: { readonly through: Seq; readonly generation: Generation },
+  folded: { readonly through: Seq; readonly generation: Generation; readonly manifest: Uint8Array },
 ): Promise<void> {
-  const { through, generation } = folded;
+  const { through, generation, manifest } = folded;
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readwrite");
   const done = txDone(tx);
   const meta = tx.objectStore(META_STORE);
@@ -770,7 +785,10 @@ export async function advanceIngested(
   if (through > existing) {
     tx.objectStore(WAL_STORE).delete(IDBKeyRange.upperBound(existing));
     meta.put(through, META_INGESTED);
-    meta.put(Math.max(prevGen, generation), META_GENERATION);
+    if (generation >= prevGen) {
+      meta.put(generation, META_GENERATION);
+      meta.put(manifest, META_MANIFEST);
+    }
   }
   await done;
 }

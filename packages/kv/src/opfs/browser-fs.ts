@@ -15,8 +15,9 @@ function splitPath(path: string): string[] {
  * no reader holds it.
  */
 class BrowserReadFs implements ReadFs {
+  /** `root` can be a lookup still running: every call waits for it. */
   constructor(
-    protected readonly root: FileSystemDirectoryHandle,
+    protected readonly root: FileSystemDirectoryHandle | Promise<FileSystemDirectoryHandle>,
     protected readonly dbName: DbName,
   ) {}
 
@@ -201,22 +202,27 @@ function isNotFound(err: unknown): boolean {
   );
 }
 
-/** Open (or create) `opfs-lsm/<name>/` under the origin private file system. Only `openDb` creates it. */
-async function openIn<T>(
-  name: string,
-  adapter: new (root: FileSystemDirectoryHandle, dbName: DbName) => T,
-): Promise<T> {
-  const dbName: DbName = checkDbName(name);
-  const root = await navigator.storage.getDirectory();
-  const lsm = await root.getDirectoryHandle("opfs-lsm", { create: true });
-  return new adapter(await lsm.getDirectoryHandle(dbName, { create: true }), dbName);
+/** `opfs-lsm/`, the folder that holds every database's folder, created when missing. It names no database. */
+export async function openParent(): Promise<FileSystemDirectoryHandle> {
+  return (await navigator.storage.getDirectory()).getDirectoryHandle("opfs-lsm", { create: true });
 }
 
-/** What a tab opens: the directory's read side. */
-export const openBrowserReadFs = (name: string): Promise<BrowserReadFs> => openIn(name, BrowserReadFs);
+/**
+ * What a tab opens: the read side of `opfs-lsm/<name>/` under `parent`
+ * (`openParent`), created when missing. Only `openDb` creates it. Returns
+ * at once: the lookup runs behind the first call.
+ */
+export function openBrowserReadFs(name: DbName, parent: Promise<FileSystemDirectoryHandle>): BrowserReadFs {
+  const root = parent.then((lsm) => lsm.getDirectoryHandle(name, { create: true }));
+  root.catch(() => undefined);
+  return new BrowserReadFs(root, name);
+}
 
 /** The full adapter, creating the folder as `openDb` does. Tests and proofs only: the host finds the folder with `findBrowserFs`. */
-export const openBrowserFs = (name: string): Promise<BrowserFs> => openIn(name, BrowserFs);
+export async function openBrowserFs(name: string): Promise<BrowserFs> {
+  const dbName: DbName = checkDbName(name);
+  return new BrowserFs(await (await openParent()).getDirectoryHandle(dbName, { create: true }), dbName);
+}
 
 /** `opfs-lsm/` and `opfs-lsm/<name>/`, or undefined when either does not exist. Creates nothing. */
 async function findFolder(dbName: DbName): Promise<[FileSystemDirectoryHandle, FileSystemDirectoryHandle] | undefined> {
@@ -259,7 +265,7 @@ class RemovableBrowserFs extends BrowserFs implements RemovableFs {
   }
 
   async removeFolder(): Promise<void> {
-    await ignoreNotFound(this.root.removeEntry("m", { recursive: true }));
+    await ignoreNotFound((await this.root).removeEntry("m", { recursive: true }));
     await ignoreNotFound(this.parent.removeEntry(this.dbName, { recursive: true }));
   }
 }

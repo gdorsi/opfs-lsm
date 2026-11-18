@@ -11,7 +11,8 @@ import {
   readStats,
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
-import { TabWal, encodeOps, advanceIngested, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { TabWal, encodeOps, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { advance } from "./advance.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { checkDatabase, deleteWal, walStore } from "./sim/check-database.js";
 
@@ -178,7 +179,7 @@ describe("ingest policy", () => {
     expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([first]));
     const next = await wal.append(encodeOps([second]));
     expect(next).toBe(2);
-    await advanceIngested(wal, { through: seq ?? 0, generation: 1 });
+    await advance(wal, { through: seq ?? 0, generation: 1 });
     expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([second]));
     expect((await listUningested(wal, { maxBytes: 1 << 30 })).map((record) => record.seq)).toEqual([2]);
     await wal.append(encodeOps([first]));
@@ -219,7 +220,7 @@ describe("ingest policy", () => {
     const pastFirst = await uningestedBytes(wal, size(20) - 1);
     expect(pastFirst, "a record larger than the cap still says the WAL is over it").toBeGreaterThanOrEqual(size(20) - 1);
     expect(pastFirst).toBeLessThan(full);
-    await advanceIngested(wal, { through: 1, generation: 1 });
+    await advance(wal, { through: 1, generation: 1 });
     const rest = size(18) + size(10);
     expect(await uningestedBytes(wal, 1 << 30), "ingested rows are not counted").toBe(rest);
     expect(await uningestedBytes(wal, rest)).toBe(rest);
@@ -458,5 +459,79 @@ describe("ingest policy", () => {
     await vi.waitFor(async () => expect((await loadLatestGeneration(fs))?.runs).toHaveLength(1), WAIT);
     expect(errors).toHaveBeenCalledTimes(1);
     await db.close();
+  });
+
+  it("flushes a quiet database once an eighth of maxWalBytes waits", async () => {
+    const fs = new MemoryFs();
+    const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);
+    await db.put(utf("a"), new Uint8Array(120));
+    await flushed(fs);
+    expect((await loadLatestGeneration(fs))?.through).toBe(1);
+    await db.close();
+  });
+
+  it("leaves a quiet database alone below that share", async () => {
+    const fs = new MemoryFs();
+    const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);
+    await db.put(utf("a"), new Uint8Array(50));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    await db.close();
+  });
+
+  it("waits for another maxWalBytes after a failed flush, however quiet the database", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { fs, state } = l0Fs();
+    state.fail = true;
+    const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);
+    await db.put(utf("a"), new Uint8Array(120));
+    await vi.waitFor(() => expect(errors).toHaveBeenCalledTimes(1), WAIT);
+
+    state.fail = false;
+    await db.put(utf("b"), new Uint8Array(120));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+
+    await db.put(utf("c"), new Uint8Array(700));
+    await flushed(fs);
+    expect(errors).toHaveBeenCalledTimes(1);
+    await db.close();
+  });
+
+  it("flushes the tail an open finds, once the database is quiet", async () => {
+    const fs = new MemoryFs();
+    const first = await open(new EngineHost(() => fs), fs, "a", 800);
+    await first.put(utf("a"), new Uint8Array(120));
+    await first.close();
+    opened.length = 0;
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "b", 800);
+    await flushed(fs);
+    expect(new Uint8Array((await db.get(utf("a")))!)).toHaveLength(120);
+    await db.close();
+  });
+
+  it("leaves no idle wait scheduled once the last tab has closed", async () => {
+    const idleFlushMs = 4321;
+    const waiting = new Set<unknown>();
+    const set = globalThis.setTimeout;
+    const clear = globalThis.clearTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
+      const timer = set(fn, ms);
+      if (ms === idleFlushMs) waiting.add(timer);
+      return timer;
+    }) as typeof setTimeout);
+    vi.spyOn(globalThis, "clearTimeout").mockImplementation((timer) => {
+      waiting.delete(timer);
+      clear(timer);
+    });
+    const fs = new MemoryFs();
+    const db = await open(new EngineHost(() => fs, { idleFlushMs }), fs, "a", 800);
+    // The host is still measuring the WAL when the tab leaves.
+    await db.close();
+    await settle();
+    const left = waiting.size;
+    for (const timer of waiting) clear(timer as ReturnType<typeof setTimeout>);
+    expect(left).toBe(0);
   });
 });

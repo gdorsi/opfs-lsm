@@ -110,6 +110,11 @@ export class Memtable extends Chunks {
     return this.applied;
   }
 
+  /** The seq `advanceTo` last moved to: the installed generation holds every seq up to it. */
+  get ingestedThrough(): Seq {
+    return this.ingested;
+  }
+
   /** Key, value and `ROW_OVERHEAD` bytes of every row, moved by each write instead of counted by a scan. */
   get bytes(): number {
     return this.live;
