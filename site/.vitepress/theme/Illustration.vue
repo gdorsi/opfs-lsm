@@ -1,48 +1,120 @@
 <script setup lang="ts">
 import { useData } from "vitepress";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, markRaw, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { createPlayhead } from "../../stageshow/playhead.ts";
 import { SIZES, type SceneName } from "../../stageshow/sizes.ts";
-import { FIGURES } from "./figures.ts";
+import { CHAPTERS, FIGURES } from "./figures.ts";
+import PlayerBar from "./PlayerBar.vue";
 
 /**
  * One illustration from `site/stageshow`. They are React components, so this mounts a React root in the browser
  * and renders nothing on the server but a box of the stage's size, which keeps the page from moving when it loads.
  */
-/** `full`: the illustration is as wide as the page, not one column of a claim. */
+/**
+ * `full`: the illustration is as wide as the page, not one column of a claim.
+ * An illustration with an entry in `CHAPTERS` plays with a player: pause and a timeline of the chapters on the
+ * stage's bottom edge, and the playing chapter's title and detail under them. They are page elements, because the
+ * stage is one `role="img"` and nothing inside it is reachable.
+ */
 const props = defineProps<{ name: SceneName; full?: boolean }>();
 
 const { isDark } = useData();
 const host = ref<HTMLElement>();
 const run = ref(0);
 const size = computed(() => SIZES[props.name]);
+const chapters = computed(() => CHAPTERS[props.name]);
+const vars = computed(() => ({
+  "--wide": `${size.value.wide[0]} / ${size.value.wide[1]}`,
+  "--wide-width": `${size.value.wide[0]}px`,
+  "--compact": `${size.value.compact[0]} / ${size.value.compact[1]}`,
+  "--compact-width": `${size.value.compact[0]}px`,
+}));
 let scene: { render(props: Record<string, unknown>): void; unmount(): void } | undefined;
 
-const render = () => scene?.render({ theme: isDark.value ? "dark" : "light", run: run.value });
+// The player. The scene plays from `jump` and reports each chapter it starts; `clock` holds the playing chapter and
+// when it started, read by the timeline every frame, and `current` the same chapter for the page.
+const playhead = markRaw(createPlayhead());
+const clock = markRaw({ chapter: 0, startedAt: Number.POSITIVE_INFINITY });
+const current = ref(0);
+const jump = shallowRef({ chapter: 0 });
+const paused = ref(false);
+const still = ref(false);
+const onChapter = (chapter: number, startedAt: number) => {
+  clock.chapter = chapter;
+  clock.startedAt = startedAt;
+  current.value = chapter;
+};
+const go = (chapter: number) => {
+  playhead.setPaused(false);
+  paused.value = false;
+  onChapter(chapter, playhead.now());
+  jump.value = { chapter };
+};
+const toggle = () => {
+  paused.value = !paused.value;
+  playhead.setPaused(paused.value);
+};
+
+let motion: MediaQueryList | undefined;
+const onMotion = () => (still.value = !!motion?.matches);
+
+const render = () =>
+  scene?.render({
+    theme: isDark.value ? "dark" : "light",
+    run: run.value,
+    ...(chapters.value && { jump: jump.value, playhead, onChapter }),
+  });
 
 onMounted(async () => {
+  if (chapters.value) {
+    motion = matchMedia("(prefers-reduced-motion: reduce)");
+    onMotion();
+    motion.addEventListener("change", onMotion);
+  }
   const { mount } = await import("../../stageshow/mount.tsx");
   if (!host.value) return;
   scene = mount(host.value, props.name);
   render();
 });
-watch([isDark, run], render);
-onBeforeUnmount(() => scene?.unmount());
+watch([isDark, run, jump], render);
+onBeforeUnmount(() => {
+  motion?.removeEventListener("change", onMotion);
+  scene?.unmount();
+});
 </script>
 
 <template>
-  <figure class="illustration" :class="{ full }">
-    <div
-      ref="host"
-      class="illustration-stage"
-      role="img"
-      :aria-label="FIGURES[name]"
-      :style="{
-        '--wide': `${size.wide[0]} / ${size.wide[1]}`,
-        '--wide-width': `${size.wide[0]}px`,
-        '--compact': `${size.compact[0]} / ${size.compact[1]}`,
-        '--compact-width': `${size.compact[0]}px`,
-      }"
-    />
+  <figure v-if="chapters" class="illustration player" :class="{ full }" :style="vars">
+    <div class="player-main">
+      <div ref="host" class="illustration-stage" role="img" :aria-label="FIGURES[name]" />
+      <PlayerBar
+        :chapters="chapters"
+        :playhead="playhead"
+        :clock="clock"
+        :current="current"
+        :paused="paused"
+        :still="still"
+        @toggle="toggle"
+        @jump="go"
+      />
+    </div>
+    <!-- The playing chapter, under the controls. Every chapter is laid out in the same cell, unseen, so the box is as
+         tall as the longest and the page below never moves. -->
+    <div class="player-caption">
+      <Transition name="player-caption">
+        <div :key="current" class="player-caption-text">
+          <div class="player-caption-title">{{ chapters[current]?.title }}</div>
+          <div class="player-caption-detail">{{ chapters[current]?.detail }}</div>
+        </div>
+      </Transition>
+      <div v-for="chapter in chapters" :key="chapter.label" class="player-caption-text player-caption-size" aria-hidden="true">
+        <div class="player-caption-title">{{ chapter.title }}</div>
+        <div class="player-caption-detail">{{ chapter.detail }}</div>
+      </div>
+    </div>
+  </figure>
+  <figure v-else class="illustration" :class="{ full }">
+    <div ref="host" class="illustration-stage" role="img" :aria-label="FIGURES[name]" :style="vars" />
     <button class="illustration-replay" type="button" @click="run++">Replay</button>
   </figure>
 </template>

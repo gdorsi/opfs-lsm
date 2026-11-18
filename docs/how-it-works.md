@@ -10,7 +10,7 @@ Every browser ships IndexedDB, and most libraries that keep data in the browser 
 
 The Origin Private File System (OPFS) gives each site private files in the browser. It has two ways to write them.
 
-The synchronous API, `createSyncAccessHandle()`, exists only in a dedicated WebWorker, a script that a page starts with `new Worker()`. [Only one tab can open a file with it at a time](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createSyncAccessHandle). The modes that lift this limit, `read-only` and `readwrite-unsafe`, run only in Chrome and Edge. A database on this API makes one tab own the file and serve every other tab. Browsers freeze and throttle background tabs, so that owner can stop answering at any time.
+The synchronous API, `createSyncAccessHandle()`, exists only in a dedicated WebWorker, a script that a page starts with `new Worker()`. [Only one tab can open a file with it at a time](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createSyncAccessHandle). The modes that lift this limit, `read-only` and `readwrite-unsafe`, run only in Chrome and Edge. A database on this API makes one tab own the file and serve every other tab. Browsers freeze and throttle background tabs, so that owner can stop answering at any time. Handing a file to another tab also works differently in each browser. In [our probes](research/opfs-worker-probes.md), a stopped dedicated WebWorker released its lock after about 2 s in Chrome, and in under 40 ms in Safari and Firefox.
 
 The asynchronous API, `createWritable()`, also works in a SharedWorker, but it publishes whole files. A write shows up only when the file closes, and it replaces the whole file. A database that changes a file in place cannot run on it.
 
@@ -35,5 +35,11 @@ The split makes reads and batched writes fast. It also costs something:
 - **It needs SharedWorker.** Samsung Internet and Android WebView have none, so kv does not run there.
 
 For an app that reads its data on every screen, the faster reads outweigh these costs. For an app that stores little and opens often, IndexedDB is the better trade.
+
+## Consistent, not durable
+
+When a write's promise resolves, the write is in IndexedDB, and it survives a crash of its tab. It may not be on the disk yet. kv commits in IndexedDB's default mode, which since Chrome 121 [completes once the data reaches the operating system](https://developer.chrome.com/blog/indexeddb-durability-mode-now-defaults-to-relaxed/). The operating system usually writes it to disk within a few seconds. The `strict` mode does not promise an immediate disk write either, and neither does `createWritable()`, which kv writes its OPFS files with. A power loss can therefore lose the last writes.
+
+What kv does promise is consistency. After a power loss, it opens with every write up to some point and none after it. No write goes missing from the middle, and a batch is there whole or not at all.
 
 The formats on disk, the consistency rules, and the recovery after a crash are in [Engine design](design.md). How each promise is checked, with formal models and kill tests in real Chrome, is in [Verification](verification.md).

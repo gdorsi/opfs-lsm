@@ -1,6 +1,6 @@
 # @opfs-lsm/kv
 
-A key-value store for the browser. Every tab of an origin shares one database, and a write is durable when its promise resolves.
+A key-value store for the browser. Every tab of an origin shares one database, and a write survives a crash of its tab once its promise resolves.
 
 ```sh
 pnpm add @opfs-lsm/kv

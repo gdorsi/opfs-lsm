@@ -339,15 +339,9 @@ await db.view(async (snap) => {
 
 ## Under the hood
 
-<div class="home-lede">
-
-A write is one row in a write-ahead log, a list of recent writes kept in IndexedDB, and the other tabs of your app hear about it over a BroadcastChannel, a message channel between tabs. One SharedWorker, a background script that all those tabs share, then moves the log into sorted files in OPFS, the browser's private file system.
-
-</div>
-
-[How it works](../docs/how-it-works.md) · [Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../docs/browser-support.md)
-
 <Illustration name="hood" full />
+
+[How it works](../docs/how-it-works.md) · [What kv promises](../docs/how-it-works.md#consistent-not-durable) · [Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../docs/browser-support.md)
 
 ## Our benchmarks
 

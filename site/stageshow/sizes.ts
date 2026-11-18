@@ -9,7 +9,7 @@ export const FULL_COMPACT_BELOW = 720;
 
 export const SIZES = {
   features: { wide: [600, 416], compact: [358, 608] },
-  hood: { wide: [1152, 576], compact: [358, 728] },
+  hood: { wide: [1152, 576], compact: [358, 864] },
   stack: { wide: [620, 400], compact: [358, 470] },
 } as const satisfies Record<string, { wide: readonly [number, number]; compact: readonly [number, number] }>;
 

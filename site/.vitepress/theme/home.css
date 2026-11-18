@@ -1,10 +1,5 @@
 /* The home page: the hero with the live demo, then sections with their illustrations. */
 
-/* A section's few lines of copy, kept to a readable measure above a figure as wide as the page. */
-.vp-doc .home-lede {
-  max-width: 760px;
-}
-
 /* Sections are set apart by space alone, without the line VitePress draws above each h2. */
 .VPHome .vp-doc h2 {
   border-top: 0;
@@ -83,7 +78,6 @@
   aspect-ratio: var(--wide);
 }
 
-
 @media (max-width: 647px) {
   .illustration {
     margin-inline: -8px;
@@ -102,8 +96,13 @@
 }
 
 @container (max-width: 719.98px) {
-  .illustration.full .illustration-stage {
+  .illustration.full .illustration-stage,
+  .illustration.full .player-main,
+  .illustration.full .player-caption {
     max-width: var(--compact-width);
+  }
+
+  .illustration.full .illustration-stage {
     aspect-ratio: var(--compact);
   }
 }
@@ -121,6 +120,238 @@
 .illustration-replay:hover {
   color: var(--vp-c-text-1);
   background: var(--vp-c-default-soft);
+}
+
+/* A player's chapter colors. Neighbours differ in lightness as well as hue, and each carries black text. */
+:root {
+  --player-0: oklch(0.6 0.16 255);
+  --player-1: oklch(0.74 0.15 75);
+  --player-2: oklch(0.64 0.19 340);
+  --player-3: oklch(0.7 0.12 190);
+  --player-4: oklch(0.6 0.16 295);
+  --player-5: oklch(0.6 0.21 25);
+  --player-6: oklch(0.7 0.18 140);
+}
+
+.dark {
+  --player-0: oklch(0.7 0.15 255);
+  --player-1: oklch(0.83 0.15 80);
+  --player-2: oklch(0.74 0.17 340);
+  --player-3: oklch(0.84 0.12 185);
+  --player-4: oklch(0.7 0.15 295);
+  --player-5: oklch(0.66 0.2 25);
+  --player-6: oklch(0.86 0.19 135);
+}
+
+/* An illustration that plays with a player: its controls on the stage's bottom edge, the chapter's name in a flag under
+   them, then the playing chapter's title and detail. */
+.illustration.player {
+  display: block;
+  justify-items: normal;
+}
+
+.player-caption {
+  display: grid;
+  max-width: var(--wide-width);
+  margin: 40px auto 0;
+}
+
+.player-caption > * {
+  grid-area: 1 / 1;
+}
+
+.player-caption-size {
+  visibility: hidden;
+}
+
+.player-caption .player-caption-title {
+  color: var(--vp-c-text-1);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  letter-spacing: -0.01em;
+  text-wrap: pretty;
+}
+
+.player-caption .player-caption-detail {
+  max-width: 660px;
+  margin-top: 4px;
+  color: var(--vp-c-text-2);
+  font-size: 15px;
+  line-height: 24px;
+  text-wrap: pretty;
+}
+
+.player-caption-enter-active,
+.player-caption-leave-active {
+  transition: opacity 0.25s, transform 0.25s;
+}
+
+.player-caption-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.player-caption-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+.player-main {
+  width: 100%;
+  max-width: var(--wide-width);
+  margin-inline: auto;
+}
+
+.player-main .illustration-stage {
+  max-width: none;
+}
+
+/* The controls are the stage's bottom edge, so that edge squares off. */
+.player-main .ss-stage {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.player-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+  padding: 0 12px 0 8px;
+  border-radius: 0 0 12px 12px;
+  background: var(--vp-c-bg-soft);
+  box-shadow: inset 0 1px 0 var(--vp-c-divider);
+}
+
+.player-toggle {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--vp-c-text-2);
+  transition: color 0.2s, background-color 0.2s;
+}
+
+.player-toggle:hover {
+  background: var(--vp-c-default-soft);
+  color: var(--vp-c-text-1);
+}
+
+.player-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.player-track {
+  position: relative;
+  display: flex;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+}
+
+.player-segment {
+  display: flex;
+  align-items: center;
+  flex-basis: 0;
+  min-width: 0;
+  height: 24px;
+  cursor: pointer;
+}
+
+.player-segment-track {
+  display: block;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--vp-c-text-1) 14%, transparent);
+  transition: height 0.15s, background-color 0.15s;
+}
+
+.player-segment:hover .player-segment-track {
+  height: 7px;
+  background: color-mix(in srgb, var(--vp-c-text-1) 28%, transparent);
+}
+
+.player-segment-fill {
+  display: block;
+  height: 100%;
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.player-head {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 14px;
+  margin: -7px 0 0 -1.5px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px var(--vp-c-bg-soft);
+  pointer-events: none;
+}
+
+.player-flag {
+  position: absolute;
+  left: 0;
+  padding: 2px 8px;
+  border-radius: 6px;
+  color: #000;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.15s;
+  top: 100%;
+  margin-top: 14px;
+}
+
+.player-flag-hidden {
+  opacity: 0;
+}
+
+.player-time {
+  flex: none;
+  color: var(--vp-c-text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.player-toggle:focus-visible,
+.player-segment:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+@media (max-width: 647px) {
+  .player-caption {
+    padding-inline: 8px;
+  }
+
+  .player-caption .player-caption-title {
+    font-size: 18px;
+    line-height: 24px;
+  }
+
+  .player-caption .player-caption-detail {
+    font-size: 14px;
+    line-height: 21px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .player-caption-enter-active,
+  .player-caption-leave-active {
+    transition: none;
+  }
 }
 
 /* The hero: the name line, the pitch, then LinearLite running in a browser frame. Its box has the widths and side
