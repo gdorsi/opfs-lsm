@@ -1,4 +1,5 @@
 import { encodeTuple } from "@opfs-lsm/kv/tuple";
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { bind, encodeCatalog, normalizeSchema, reconcile, type BoundCollection } from "../src/catalog.js";
 import { diffEntries, encodeDoc, entriesOf } from "../src/derive.js";
@@ -160,5 +161,65 @@ describe("diffEntries", () => {
       remove: [entry(c, "tags", ["a"]).key],
       write: [],
     });
+  });
+});
+
+describe("diffEntries against a model", () => {
+  const VALUES = [EMPTY, Uint8Array.of(1), Uint8Array.of(1, 2)];
+  const hex = (key: Uint8Array) => Array.from(key, (b) => b.toString(16).padStart(2, "0")).join("");
+  const entryOf = (key: Uint8Array, v: number) => ({ key, value: VALUES[v]! });
+
+  /** The definition: write what is new or has another value, in the order of `after`; remove what `after` lacks, in the order of `before`. */
+  function model(before: { key: Uint8Array; value: Uint8Array }[], after: { key: Uint8Array; value: Uint8Array }[]) {
+    const old = new Map(before.map((e) => [hex(e.key), e]));
+    const now = new Set(after.map((e) => hex(e.key)));
+    return {
+      remove: before.filter((e) => !now.has(hex(e.key))).map((e) => e.key),
+      write: after.filter((e) => {
+        const was = old.get(hex(e.key));
+        return was === undefined || hex(was.value) !== hex(e.value);
+      }),
+    };
+  }
+
+  /** Keys that share bytes with each other and with the index prefix, so they collide and differ late. */
+  const keyArb = fc.array(fc.constantFrom(0, 1, 2, 0xff), { minLength: 1, maxLength: 4 }).map((bytes) => Uint8Array.of(0x64, 0, 1, 3, ...bytes));
+
+  it.each([
+    ["lists of up to 40 entries", 40],
+    ["lists of up to 18 entries", 18],
+  ])("matches it for %s, in any order", (_, max) => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(keyArb, { maxLength: max * 2, selector: hex }).chain((pool) =>
+          fc.record({
+            before: fc.shuffledSubarray(pool, { maxLength: Math.min(max, pool.length) }),
+            after: fc.shuffledSubarray(pool, { maxLength: Math.min(max, pool.length) }),
+            bv: fc.array(fc.nat(2), { minLength: pool.length, maxLength: pool.length }),
+            av: fc.array(fc.nat(2), { minLength: pool.length, maxLength: pool.length }),
+            pool: fc.constant(pool),
+          }),
+        ),
+        ({ before, after, bv, av, pool }) => {
+          const at = (k: (typeof pool)[number]) => pool.indexOf(k);
+          const b = before.map((k) => entryOf(k, bv[at(k)]!));
+          const a = after.map((k) => entryOf(k, av[at(k)]!));
+          expect(diffEntries(b, a)).toEqual(model(b, a));
+        },
+      ),
+      { numRuns: 1000 },
+    );
+  });
+
+  it.each([1, 15, 16, 17, 32, 33, 60])("finds the one changed entry among %i, whichever side of the 16 entry route it is", (n) => {
+    const keys = Array.from({ length: n }, (_, i) => Uint8Array.of(0x64, 0, 1, 3, i >> 8, i & 0xff));
+    const before = keys.map((k) => entryOf(k, 0));
+    for (const i of [0, n >> 1, n - 1]) {
+      const after = keys.map((k, j) => entryOf(j === i ? Uint8Array.of(...k, 9) : k, 0));
+      expect(diffEntries(before, after)).toEqual({ remove: [keys[i]!], write: [after[i]!] });
+      const valued = keys.map((k, j) => entryOf(k, j === i ? 1 : 0));
+      expect(diffEntries(before, valued)).toEqual({ remove: [], write: [valued[i]!] });
+    }
+    expect(diffEntries(before, [...before].reverse())).toEqual({ remove: [], write: [] });
   });
 });
