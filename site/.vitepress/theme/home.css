@@ -806,12 +806,12 @@ button.alpha-tag:focus-visible,
   }
 }
 
-/* The use cases: one card on the soft gray. Tabs across its top, then the case's stack drawn on the gray and its
-   code on a raised card beside it. */
-.uc {
-  --uc-ease: cubic-bezier(0.23, 1, 0.32, 1);
-  --uc-surface: #ffffff;
-  --uc-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.04);
+/* The adapters: one card on the soft gray. Tabs across its top, then the adapter's claim on the gray and its diff on
+   a code card beside it. */
+.ad {
+  --ad-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --ad-surface: #ffffff;
+  --ad-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.04);
   container-type: inline-size;
   margin: 20px 0 72px;
   padding: 6px;
@@ -820,253 +820,136 @@ button.alpha-tag:focus-visible,
 }
 
 /* The stageshow cards' surface on the dark page. */
-.dark .uc {
-  --uc-surface: #2b2c33;
-  --uc-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+.dark .ad {
+  --ad-surface: #2b2c33;
+  --ad-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
 /* A segmented control: the raised pill slides to the picked tab. Until it is placed, the tab draws its own. */
-.uc-tabs {
+.ad-tabs {
   position: relative;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
-.uc-pill {
+.ad-pill {
   position: absolute;
   top: 0;
   left: 0;
   border-radius: 9px;
-  background: var(--uc-surface);
-  box-shadow: var(--uc-shadow);
+  background: var(--ad-surface);
+  box-shadow: var(--ad-shadow);
   opacity: 0;
 }
 
-.uc-tabs[data-ready] .uc-pill {
+.ad-tabs[data-ready] .ad-pill {
   opacity: 1;
   transition:
-    transform 250ms var(--uc-ease),
-    width 250ms var(--uc-ease),
-    height 250ms var(--uc-ease);
+    transform 250ms var(--ad-ease),
+    width 250ms var(--ad-ease),
+    height 250ms var(--ad-ease);
 }
 
-.uc-tab {
+.ad-tab {
   position: relative;
-  display: grid;
-  align-content: start;
-  gap: 1px;
-  padding: 10px 14px 11px;
+  flex: 1 1 0;
+  padding: 10px 14px;
   border-radius: 9px;
-  text-align: left;
-}
-
-.uc-tabs:not([data-ready]) .uc-tab[aria-selected="true"] {
-  background: var(--uc-surface);
-  box-shadow: var(--uc-shadow);
-}
-
-.uc-tab:focus-visible {
-  outline: 2px solid var(--vp-c-brand-1);
-  outline-offset: -2px;
-}
-
-.uc-case {
   color: var(--vp-c-text-2);
   font-size: 14px;
   font-weight: 600;
   line-height: 20px;
+  white-space: nowrap;
   transition: color 150ms ease-out;
 }
 
-.uc-name {
-  color: var(--vp-c-text-3);
-  font-size: 12.5px;
-  line-height: 18px;
-  transition: color 150ms ease-out;
+.ad-tabs:not([data-ready]) .ad-tab[aria-selected="true"] {
+  background: var(--ad-surface);
+  box-shadow: var(--ad-shadow);
 }
 
-.uc-tab[aria-selected="true"] .uc-case {
+.ad-tab[aria-selected="true"] {
   color: var(--vp-c-text-1);
 }
 
-.uc-tab[aria-selected="true"] .uc-name {
-  color: var(--vp-c-text-2);
-}
-
 @media (hover: hover) and (pointer: fine) {
-  .uc-tab:hover .uc-case {
+  .ad-tab:hover {
     color: var(--vp-c-text-1);
   }
 }
 
-.uc-panel {
+.ad-tab:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: -2px;
+}
+
+.ad-panel {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  align-items: center;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 6px;
   margin-top: 6px;
 }
 
-.uc-panel .illustration {
-  margin: 0;
-}
-
-.uc-body {
+.ad-copy {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  align-self: stretch;
-  min-width: 0;
-  padding: 20px 22px 18px;
-  border-radius: 10px;
-  background: var(--uc-surface);
-  box-shadow: var(--uc-shadow);
+  gap: 16px;
+  padding: 16px 16px 14px;
 }
 
-.vp-doc .uc-detail {
+.vp-doc .ad-copy p {
   margin: 0;
+}
+
+.vp-doc .ad-detail {
   color: var(--vp-c-text-1);
   font-size: 15px;
   line-height: 24px;
 }
 
-.uc-code {
-  flex: 1;
-  overflow: hidden;
-  border-radius: 8px;
-  background: var(--vp-code-block-bg);
-}
-
-.uc-code-bar {
-  display: flex;
-  align-items: center;
+.vp-doc .ad-number {
+  display: grid;
   gap: 2px;
-  height: 36px;
-  padding: 0 6px;
-  border-bottom: 1px solid var(--vp-c-divider);
 }
 
-.uc-code-title {
-  padding: 0 10px;
-  color: var(--vp-c-text-2);
-  font-size: 12px;
-  font-weight: 500;
+.ad-number strong {
+  color: var(--vp-c-brand-1);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 36px;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
-.uc-code-tab {
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 6px;
-  color: var(--vp-c-text-2);
-  font-size: 12px;
-  font-weight: 500;
-  transition:
-    color 150ms ease-out,
-    background-color 150ms ease-out;
-}
-
-.uc-code-tab[aria-pressed="true"] {
-  background: var(--vp-c-default-soft);
-  color: var(--vp-c-text-1);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .uc-code-tab:hover {
-    color: var(--vp-c-text-1);
-  }
-}
-
-.uc-code-tab:focus-visible {
-  outline: 2px solid var(--vp-c-brand-1);
-  outline-offset: -2px;
-}
-
-/* The slot's blocks inside the code card: the install line a row with its copy button always shown, the code under
-   it as tall as the longest case's, so picking a case never moves the page below. */
-.vp-doc .uc-snippet div[class*="language-"] {
-  margin: 0;
-  border-radius: 0;
-  background: none;
-}
-
-/* VitePress pulls a block 8px up under the one before it. */
-.vp-doc .uc-snippet div[class*="language-"] + div[class*="language-"] {
-  margin-top: 0;
-}
-
-.vp-doc .uc-snippet div[class*="language-"] > span.lang {
-  display: none;
-}
-
-.vp-doc .uc-snippet div[class*="language-"] code {
-  padding: 0 16px;
-  font-size: 12.5px;
-  line-height: 20px;
-}
-
-.vp-doc .uc-snippet div.language-sh {
-  border-bottom: 1px solid var(--vp-c-divider);
-}
-
-.vp-doc .uc-snippet div.language-sh pre {
-  margin-right: 40px;
-  padding: 10px 0;
-}
-
-.vp-doc .uc-snippet div.language-sh > button.copy {
-  top: 0;
-  right: 0;
-  border-color: transparent;
-  border-radius: 0;
-  background-color: transparent;
-  background-size: 16px;
-  opacity: 1;
-}
-
-.vp-doc .uc-snippet div.language-ts {
-  min-height: 210px;
-}
-
-.vp-doc .uc-snippet div.language-ts pre {
-  padding: 14px 0 16px;
-}
-
-/* A package with no install line yet says so in the line's place. */
-.vp-doc .uc-snippet > p {
-  margin: 0;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--vp-c-divider);
+.ad-number span {
   color: var(--vp-c-text-2);
   font-size: 13px;
-  line-height: 20px;
+  line-height: 18px;
 }
 
-/* Held to the line's height, so this row is as tall as an install line. */
-.vp-doc .uc-snippet > p code {
-  display: inline-block;
-  padding-block: 0;
-  line-height: 20px;
-  vertical-align: top;
+.ad-number .ad-than {
+  white-space: nowrap;
 }
 
-.vp-doc .uc-links {
+.vp-doc .ad-links {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 20px;
-  margin: 0;
+  margin-top: auto;
   font-size: 14px;
   line-height: 20px;
 }
 
-.vp-doc .uc-guide {
+.vp-doc .ad-guide {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   text-decoration: none;
 }
 
-.uc-guide svg {
+.ad-guide svg {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.5;
@@ -1076,71 +959,135 @@ button.alpha-tag:focus-visible,
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .uc-guide:hover svg {
+  .ad-guide:hover svg {
     transform: translateX(2px);
   }
 }
 
-.vp-doc .uc-example {
+.vp-doc .ad-example {
   color: var(--vp-c-text-2);
   font-weight: 400;
   text-decoration: none;
 }
 
-.vp-doc .uc-example:hover {
+.vp-doc .ad-example:hover {
   color: var(--vp-c-text-1);
 }
 
-/* The words a pick changes come in from just below; the boxes holding them stay still. */
-.uc-in {
-  animation: uc-in 200ms var(--uc-ease) both;
+.ad-code {
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--vp-code-block-bg);
+  box-shadow: var(--ad-shadow);
 }
 
-@keyframes uc-in {
+.ad-code-bar {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--vp-c-divider);
+  color: var(--vp-c-text-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* The slot's blocks inside the code card: the install line a row with its copy button always shown, the code under
+   it as tall as the longest adapter's, so picking one never moves the page below. */
+.vp-doc .ad-snippet div[class*="language-"] {
+  margin: 0;
+  border-radius: 0;
+  background: none;
+}
+
+/* VitePress pulls a block 8px up under the one before it. */
+.vp-doc .ad-snippet div[class*="language-"] + div[class*="language-"] {
+  margin-top: 0;
+}
+
+.vp-doc .ad-snippet div[class*="language-"] > span.lang {
+  display: none;
+}
+
+/* VitePress's default code padding, which its diff markers and line backgrounds are placed against. */
+.vp-doc .ad-snippet div[class*="language-"] code {
+  padding: 0 24px;
+  font-size: 12.5px;
+  line-height: 20px;
+}
+
+.vp-doc .ad-snippet div.language-sh {
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc .ad-snippet div.language-sh pre {
+  margin-right: 40px;
+  padding: 10px 0;
+}
+
+.vp-doc .ad-snippet div.language-sh > button.copy {
+  top: 0;
+  right: 0;
+  border-color: transparent;
+  border-radius: 0;
+  background-color: transparent;
+  background-size: 16px;
+  opacity: 1;
+}
+
+.vp-doc .ad-snippet div.language-ts {
+  min-height: 190px;
+}
+
+.vp-doc .ad-snippet div.language-ts pre {
+  padding: 14px 0 16px;
+}
+
+/* The words a pick changes come in from just below; the boxes holding them stay still. */
+.ad-in {
+  animation: ad-in 200ms var(--ad-ease) both;
+}
+
+@keyframes ad-in {
   from {
     opacity: 0;
     transform: translateY(4px);
   }
 }
 
-/* Narrow: the tabs two by two, the stack over the code. */
+/* Narrow: the tabs wrap to fit their names, the claim over the code. */
 @container (max-width: 719.98px) {
-  .uc-tabs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .uc-tab {
-    padding: 9px 12px 10px;
-  }
-
-  .uc-case {
+  .ad-tab {
+    flex-basis: auto;
+    padding: 9px 12px;
     font-size: 13.5px;
   }
 
-  .uc-panel {
+  .ad-panel {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .uc-body {
-    padding: 16px 14px 14px;
+  .ad-copy {
+    padding: 14px 12px 12px;
   }
 
-  .vp-doc .uc-detail {
+  .vp-doc .ad-detail {
     font-size: 14px;
     line-height: 22px;
   }
 
-  .vp-doc .uc-snippet div[class*="language-"] code {
+  .vp-doc .ad-snippet div[class*="language-"] code {
     font-size: 12px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .uc-in {
+  .ad-in {
     animation: none;
   }
 
-  .uc-tabs[data-ready] .uc-pill {
+  .ad-tabs[data-ready] .ad-pill {
     transition: none;
   }
 }
