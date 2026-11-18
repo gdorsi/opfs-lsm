@@ -20,7 +20,7 @@ Preconditions:
 
 - **Run local two-tab.** Execute `.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-local`. Exit code `0`.
 - **Confirm one page.** Stdout contains `tabs=1`.
-- **Confirm local mode.** Stdout contains `mode=local EngineHost` and `two-tab ok`.
+- **Confirm local mode.** Stdout contains `mode=local EngineHost`, `two-databases ok` and `two-tab ok`. The second database name is served by the same in-page `EngineHost`, with one OPFS folder per name.
 - **Proof.** Keep `artifacts/two-tab-local/<run-id>/stdout.txt`. Do not label this run as SharedWorker proof.
 
 ## Gotchas
