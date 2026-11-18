@@ -2,7 +2,7 @@ import { checkKey } from "./check.js";
 import { ClosedError, ConstraintError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { entryCursor, lowerBoundKeys, Miss, untilHit, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, Miss, untilHit, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,
@@ -10,6 +10,7 @@ import {
   liveCount,
   liveStep,
   seekOffset,
+  type ScanStart,
   matchingStep,
   pointGet,
   readKeys,
@@ -80,20 +81,13 @@ export async function* scanLayers(
   bounds: ScanBounds | undefined,
   range: Range | undefined,
 ): AsyncGenerator<Entry> {
-  let offset = offsetOf(range);
+  let scan: ScanStart = { rows, bounds, offset: offsetOf(range) };
   if (!range?.valueContains?.length) {
-    const reverse = range?.reverse ?? false;
-    const seek = () => seekOffset(rows, levels, at, bounds, offset, reverse);
+    const seek = () => seekOffset(scan, levels, at, range?.reverse ?? false);
     const first = seek();
-    const found = first instanceof Miss ? await untilHit(seek, first) : first;
-    if (found) {
-      const cut = lowerBoundKeys(rows, found.at);
-      rows = reverse ? rows.slice(0, cut) : rows.slice(cut);
-      bounds = reverse ? { ...bounds, endExclusive: found.at } : { ...bounds, start: found.at };
-      offset -= found.skipped;
-    }
+    scan = first instanceof Miss ? await untilHit(seek, first) : first;
   }
-  yield* entriesOf(scanStep(rows, levels, at, bounds, range), range?.limit, offset);
+  yield* entriesOf(scanStep(scan.rows, levels, at, scan.bounds, range), range?.limit, scan.offset);
 }
 
 /** `range.offset`, 0 when not given. `ConstraintError` unless it is a whole number from 0 up. */
@@ -118,16 +112,11 @@ export async function countLayers(
 ): Promise<number> {
   const offset = offsetOf(range);
   const limit = range?.limit;
-  if (!range?.valueContains?.length) {
-    const read = () => liveCount(rows, levels, at, bounds);
-    const first = read();
-    const live = first instanceof Miss ? await untilHit(read, first) : first;
-    if (live !== undefined) {
-      const left = Math.max(0, live - offset);
-      return limit === undefined ? left : Math.min(left, limit);
-    }
-  }
-  return countOf(scanStep(rows, levels, at, bounds, range), limit, offset);
+  const read = () => liveCount(rows, levels, at, bounds);
+  const first = range?.valueContains?.length ? undefined : read();
+  const live = first instanceof Miss ? await untilHit(read, first) : first;
+  if (live === undefined) return countOf(scanStep(rows, levels, at, bounds, range), limit, offset);
+  return Math.min(Math.max(0, live - offset), limit ?? Infinity);
 }
 
 /**

@@ -27,7 +27,7 @@ import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wa
 import { reconcile, type Reconciled } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
-import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
+import { lowerBoundKeys, Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
@@ -455,19 +455,11 @@ async function openStores(
  * writes all say `was` pays nothing.
  */
 function readState(keys: readonly Uint8Array[], values: readonly (Uint8Array | undefined)[]): (key: Uint8Array) => Was | undefined {
-  let order: number[] | undefined;
+  let read: { readonly key: Uint8Array; readonly was: Was }[] | undefined;
   return (key) => {
-    order ??= keys.map((_, i) => i).sort((a, b) => compareBytes(keys[a]!, keys[b]!));
-    let lo = 0;
-    let hi = order.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (compareBytes(keys[order[mid]!]!, key) < 0) lo = mid + 1;
-      else hi = mid;
-    }
-    const i = order[lo];
-    if (i === undefined || compareBytes(keys[i]!, key) !== 0) return undefined;
-    return values[i] === undefined ? "absent" : "present";
+    read ??= keys.map((key, i): { key: Uint8Array; was: Was } => ({ key, was: values[i] ? "present" : "absent" })).sort((a, b) => compareBytes(a.key, b.key));
+    const at = read[lowerBoundKeys(read, key)];
+    return at && compareBytes(at.key, key) === 0 ? at.was : undefined;
   };
 }
 

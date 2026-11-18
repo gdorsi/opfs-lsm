@@ -3,46 +3,40 @@ import { ROW_OVERHEAD, type CheckedOp } from "../check.js";
 import { nextSeq, SEQ_ZERO, type Seq } from "../seq.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
 import { NO_MARKS, type Marks } from "./marks.js";
-import type { Sum, Was } from "./sst.js";
+import type { Was } from "./sst.js";
 
-/**
- * One op folded into a row after its first: its seq, and whether the key
- * was live before it, which the op before it says.
- */
-type Link = { readonly seq: Seq; readonly was: Was };
+/** One op folded into a row: its seq, and whether the key was live before it. */
+type Link = { readonly seq: Seq; readonly was: Was | undefined };
 
 /**
  * The latest op for one user key, and the WAL seq that wrote it.
  *
  * A row stands for every op of its key the table holds, so it says what
  * held before the oldest of them: `was`. When the generation moves past
- * that op, the row has to say what held before the oldest one left, so it
- * keeps the later ops as `later`. Most rows fold one op and have neither
- * `since` nor `later`.
+ * that op, the row has to say what held before the oldest one left, so a
+ * row that folds several ops keeps them as `ops`.
  */
 export type MemRow = {
   readonly key: Uint8Array;
   readonly seq: Seq;
   readonly kind: "put" | "del";
-  readonly value?: Uint8Array;
+  readonly value?: Uint8Array | undefined;
   /** Whether the key was live before the oldest op folded. Undefined: that op did not say. */
   readonly was?: Was | undefined;
-  /** The seq of the oldest op folded, when it is not `seq`. */
-  readonly since?: Seq;
-  /** The ops folded after the oldest, oldest first. The last one is at `seq`. */
-  readonly later?: readonly Link[];
+  /** The ops folded, oldest first, when there are several. The last one is at `seq`. */
+  readonly ops?: readonly Link[] | undefined;
 };
 
-/** The first op of `key`: nothing of it was held. */
-function firstRow(key: Uint8Array, seq: Seq, value: Uint8Array | undefined, was: Was | undefined): MemRow {
-  return value ? { key, seq, kind: "put", value, was } : { key, seq, kind: "del", was };
-}
-
-/** `held`, then one more op of its key. What held before that op is what `held` left. */
-function foldRow(held: MemRow, seq: Seq, value: Uint8Array | undefined): MemRow {
-  const link: Link = { seq, was: held.kind === "put" ? "present" : "absent" };
-  const chain = { was: held.was, since: held.since ?? held.seq, later: held.later ? [...held.later, link] : [link] };
-  return value ? { key: held.key, seq, kind: "put", value, ...chain } : { key: held.key, seq, kind: "del", ...chain };
+/**
+ * `held`, when the key has a row, then one more op of it: a put of `value`,
+ * or a delete. What held before the op is what `held` left, whatever the
+ * op says; with no row it is `was`.
+ */
+export function withOp(held: MemRow | undefined, key: Uint8Array, seq: Seq, value: Uint8Array | undefined, was: Was | undefined): MemRow {
+  const kind = value ? "put" : "del";
+  if (!held) return { key, seq, kind, value, was };
+  const ops = [...(held.ops ?? [{ seq: held.seq, was: held.was }]), { seq, was: held.kind === "put" ? ("present" as const) : ("absent" as const) }];
+  return { key, seq, kind, value, was: held.was, ops };
 }
 
 /**
@@ -51,14 +45,21 @@ function foldRow(held: MemRow, seq: Seq, value: Uint8Array | undefined): MemRow 
  */
 function rowAfter(row: MemRow, through: Seq): MemRow | undefined {
   if (row.seq <= through) return undefined;
-  if (row.since === undefined || row.since > through) return row;
-  const later = row.later!;
-  let i = 0;
-  while (later[i]!.seq <= through) i++;
-  const { key, seq, kind, value } = row;
-  const oldest = later[i]!;
-  const rest = oldest.seq === seq ? {} : { since: oldest.seq, later: later.slice(i + 1) };
-  return value ? { key, seq, kind, value, was: oldest.was, ...rest } : { key, seq, kind, was: oldest.was, ...rest };
+  const ops = row.ops?.filter((op) => op.seq > through);
+  if (!ops || ops.length === row.ops!.length) return row;
+  return { ...row, was: ops[0]!.was, ops: ops.length > 1 ? ops : undefined };
+}
+
+/**
+ * `row` under a range delete of `start` to `end` through `through`: itself
+ * outside the range, and inside it the ops the range delete spares. If the
+ * oldest of those saw the key present, what it saw may be a version the
+ * range delete covers, so the row no longer says what held before it.
+ */
+export function underDelete(row: MemRow, start: Uint8Array, end: Uint8Array | undefined, through: Seq): MemRow | undefined {
+  if (compareBytes(row.key, start) < 0 || (end && compareBytes(row.key, end) >= 0)) return row;
+  const left = rowAfter(row, through);
+  return left?.was === "present" ? { ...left, was: undefined } : left;
 }
 
 export type WalRecord = {
@@ -71,11 +72,6 @@ export interface MemRows {
   get(key: Uint8Array): MemRow | undefined;
   /** The rows inside `bounds`, in key order. */
   range(bounds?: ScanBounds): readonly MemRow[];
-}
-
-/** What `rows` say they do to the number of live keys (`Tally`). */
-export function tallyRows(rows: readonly MemRow[], sum: Sum): void {
-  for (const row of rows) sum.count(row.kind === "put", row.was);
 }
 
 /** Rows per chunk after a split. A chunk splits when it passes twice this. */
@@ -201,19 +197,14 @@ export class Memtable extends Chunks {
           this.put(op.key, record.seq, undefined, op.was);
           break;
         case "deleteRange": {
-          const { start, endExclusive: end, through } = op;
           // The rows' own seqs are below this record, so op order does not matter.
           const kept: MemRow[] = [];
           for (const row of this.range()) {
-            if (compareBytes(row.key, start) < 0 || (end !== undefined && compareBytes(row.key, end) >= 0)) {
-              kept.push(row);
-              continue;
-            }
-            const spared = rowAfter(row, through);
-            if (spared) kept.push(spared.was === "present" ? { ...spared, was: undefined } : spared);
+            const left = underDelete(row, op.start, op.endExclusive, op.through);
+            if (left) kept.push(left);
           }
           this.rebuild(kept);
-          if (through > 0) this.held = [...this.held, { ...op, at: record.seq }];
+          if (op.through > 0) this.held = [...this.held, { ...op, at: record.seq }];
           break;
         }
       }
@@ -232,15 +223,11 @@ export class Memtable extends Chunks {
     const rows = this.chunks[c]!;
     const i = lowerBoundKeys(rows, key);
     const at = rows[i];
-    if (at && compareBytes(at.key, key) === 0) {
-      const row = foldRow(at, seq, value);
-      this.live += rowBytes(row) - rowBytes(at);
-      rows[i] = row;
-    } else {
-      const row = firstRow(key, seq, value, was);
-      this.live += rowBytes(row);
-      rows.splice(i, 0, row);
-    }
+    const held = at && compareBytes(at.key, key) === 0 ? at : undefined;
+    const row = withOp(held, key, seq, value, was);
+    this.live += rowBytes(row) - (held ? rowBytes(held) : 0);
+    if (held) rows[i] = row;
+    else rows.splice(i, 0, row);
     if (rows.length > 2 * CHUNK_ROWS) {
       const tail = rows.splice(CHUNK_ROWS);
       this.chunks.splice(c + 1, 0, tail);

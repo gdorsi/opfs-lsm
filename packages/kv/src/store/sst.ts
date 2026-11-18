@@ -68,6 +68,11 @@ export class Sum {
   }
 
   /** One record: a put or a delete, and what it says held before. */
+  /** Plus less minus, the live keys of a range when every source of it is summed. Undefined when the sum cannot be that number. */
+  get live(): number | undefined {
+    return this.unknown > 0 || this.plus < this.minus ? undefined : this.plus - this.minus;
+  }
+
   count(put: boolean, was: Was | undefined): void {
     if (was === undefined) this.unknown++;
     else if (put && was === "absent") this.plus++;

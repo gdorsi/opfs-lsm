@@ -3,7 +3,7 @@ import { compareBytes } from "../src/bytes.js";
 import { ConstraintError, type Db, type Range } from "../src/index.js";
 import { untilHit } from "../src/store/cursor.js";
 import { encodeRun, ensureEngine } from "../src/store/engine.js";
-import { Memtable, tallyRows } from "../src/store/memtable.js";
+import { Memtable } from "../src/store/memtable.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { liveCount, RunLevel } from "../src/store/read.js";
 import { SstReader } from "../src/store/sst-reader.js";
@@ -107,7 +107,7 @@ describe("a memtable row says what held before the oldest record it folds", () =
   const del = (k: string, was?: Was): CheckedOp => ({ type: "del", key: checkKey(utf(k)), was });
   const said = (mem: Memtable) => {
     const sum = new Sum();
-    tallyRows(mem.range(), sum);
+    for (const row of mem.range()) sum.count(row.kind === "put", row.was);
     return { plus: sum.plus, minus: sum.minus, unknown: sum.unknown };
   };
   const apply = (mem: Memtable, ...records: CheckedOp[][]) => {
