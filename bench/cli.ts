@@ -126,7 +126,7 @@ async function run(o: {
     const catalog = await readCatalog(server.origin, o.headless);
     if (o.check && !owners(catalog)) return 1;
     const runs = plan(catalog, { workloads: o.workloads, contenders: o.contenders, size: o.size, reps: o.reps, seed: o.seed });
-    if (o.check) runs.push(...budgetRuns(catalog, o.size, o.seed));
+    if (o.check && o.seed === DEFAULT_SEED) runs.push(...budgetRuns(catalog, o.size));
     mkdirSync(RESULTS_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     // Named by CPU, not hostname: published runs are committed under docs/results/.
@@ -199,10 +199,10 @@ function owners(catalog: Awaited<ReturnType<typeof readCatalog>>): boolean {
   return false;
 }
 
-/** One run of each budget row above the size the smoke already runs. */
-function budgetRuns(catalog: Awaited<ReturnType<typeof readCatalog>>, ran: SizeName, seed: number): PlannedRun[] {
+/** One run of each budget row above the size the smoke already runs, on the seed the budgets hold for. */
+function budgetRuns(catalog: Awaited<ReturnType<typeof readCatalog>>, ran: SizeName): PlannedRun[] {
   const rows = new Map(BUDGETS.filter((b) => b.size !== ran).map((b) => [`${b.workload} ${b.contender} ${b.size}`, b]));
-  return [...rows.values()].flatMap((b) => plan(catalog, { workloads: [b.workload], contenders: [b.contender], size: b.size, reps: 1, seed }));
+  return [...rows.values()].flatMap((b) => plan(catalog, { workloads: [b.workload], contenders: [b.contender], size: b.size, reps: 1, seed: DEFAULT_SEED }));
 }
 
 /** Harness health: a kv footprint after writes must show counted WAL bytes. */
