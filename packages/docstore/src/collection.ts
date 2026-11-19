@@ -1,14 +1,18 @@
 import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
-import { decodeDoc, diffEntries, encodeDoc, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
+import { decodeDoc, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { CATALOG_KEY, bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
 import type { EntryPage, EntryValues, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
 import { PointReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
 
-export interface Collection<T extends JsonDoc, Ix> {
+/**
+ * `T` is the stored document. `In` is what a write takes, which differs from
+ * `T` when the schema's validator has defaults or transforms.
+ */
+export interface Collection<T extends JsonDoc, Ix, In = T> {
   readonly name: string;
   /** The indexes this handle's schema declares for the collection, by name. */
   readonly indexes: ReadonlyMap<string, IndexInfo>;
@@ -19,23 +23,25 @@ export interface Collection<T extends JsonDoc, Ix> {
   getMany(ids: readonly string[]): Promise<(T | undefined)[]>;
 
   /** Upsert. See `putMany`. */
-  put(doc: T): Promise<void>;
+  put(doc: In): Promise<void>;
   /**
    * Upsert every document in one kv transaction: all land or none do. In a
    * collection with an index, a document whose stored bytes would not change
    * writes nothing. A collection with no index reads no row and writes every
    * document. Throws DocStoreError "document" on a bad or repeated id or a
    * value an index cannot hold, "unique" if two documents would share a
-   * unique value, and kv's ConstraintError over kv's batch limits.
+   * unique value, "invalid" if the collection's validator rejects one or
+   * returns a Promise, and kv's ConstraintError over kv's batch limits. With
+   * a validator, each document is stored as the validator's output.
    */
-  putMany(docs: readonly T[]): Promise<void>;
+  putMany(docs: readonly In[]): Promise<void>;
   /**
    * Read-modify-write one document. `fn` gets the stored form and returns
    * the next document with the same id. It may run more than once, so it
    * must be pure. Returns the stored form of the result, or undefined if
    * there was no document (then `fn` does not run).
    */
-  modify(id: string, fn: (doc: T) => T): Promise<T | undefined>;
+  modify(id: string, fn: (doc: T) => In): Promise<T | undefined>;
   /**
    * Read-modify-write several documents in one kv transaction, so no write
    * from this handle, another handle or another tab lands between the read
@@ -50,7 +56,7 @@ export interface Collection<T extends JsonDoc, Ix> {
    */
   modifyMany(
     ids: readonly string[],
-    fn: (docs: readonly (T | undefined)[]) => readonly (T | null | undefined)[],
+    fn: (docs: readonly (T | undefined)[]) => readonly (In | null | undefined)[],
   ): Promise<void>;
 
   /** True if there was a document. */
@@ -232,12 +238,13 @@ type Slot = EncodedDoc | null | undefined;
  * Run `fn` on the rows `olds` and plan the writes of the slots it changed,
  * against those rows. `changed` lists the slot of each id in the plan.
  */
-function planModify<T extends JsonDoc>(
+function planModify<T extends JsonDoc, In>(
   coll: BoundCollection,
+  encode: (doc: unknown) => EncodedDoc,
   docIds: readonly DocId[],
   idbs: readonly Uint8Array[],
   olds: readonly (Uint8Array | undefined)[],
-  fn: (docs: readonly (T | undefined)[]) => readonly (T | null | undefined)[],
+  fn: (docs: readonly (T | undefined)[]) => readonly (In | null | undefined)[],
 ): { readonly next: readonly Slot[]; readonly changed: readonly number[]; readonly plan: WritePlan<number> } {
   const docs = olds.map((bytes) => bytes && decodeDoc(bytes));
   // Before `fn`, which may change the objects it is given.
@@ -249,7 +256,7 @@ function planModify<T extends JsonDoc>(
   }
   const next = out.map((d, i): Slot => {
     if (d === undefined || d === null) return d;
-    const encoded = encodeDoc(d);
+    const encoded = encode(d);
     if (encoded.id !== docIds[i]) {
       throw new DocStoreError("document", `fn returned a document with id "${encoded.id}" for "${docIds[i]}"`);
     }
@@ -266,11 +273,12 @@ function planModify<T extends JsonDoc>(
   return { next, changed, plan };
 }
 
-export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> {
+export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, Ix, In> {
   constructor(
     private readonly store: StoreCore,
     readonly name: string,
     readonly indexes: ReadonlyMap<string, IndexInfo>,
+    private readonly encode: (doc: unknown) => EncodedDoc,
   ) {}
 
   /** Point reads need no snapshot: a read that straddles a `clear` or a schema change is a read before it. */
@@ -286,12 +294,12 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     return (await this.live()).getMany(ids);
   }
 
-  put(doc: T): Promise<void> {
+  put(doc: In): Promise<void> {
     return this.putMany([doc]);
   }
 
-  async putMany(docs: readonly T[]): Promise<void> {
-    const encoded = docs.map(encodeDoc);
+  async putMany(docs: readonly In[]): Promise<void> {
+    const encoded = docs.map(this.encode);
     const ids = encoded.map((e) => e.id);
     if (new Set(ids).size !== ids.length) throw new DocStoreError("document", "putMany got one id twice");
     await this.store.write<unknown>(this.name, (coll) =>
@@ -299,14 +307,14 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
     );
   }
 
-  async modify(id: string, fn: (doc: T) => T): Promise<T | undefined> {
+  async modify(id: string, fn: (doc: T) => In): Promise<T | undefined> {
     const [slot] = await this.transact([id], ([doc]) => [doc === undefined ? undefined : fn(doc)]);
     return slot ? (slot.doc as unknown as T) : undefined;
   }
 
   async modifyMany(
     ids: readonly string[],
-    fn: (docs: readonly (T | undefined)[]) => readonly (T | null | undefined)[],
+    fn: (docs: readonly (T | undefined)[]) => readonly (In | null | undefined)[],
   ): Promise<void> {
     await this.transact(ids, fn);
   }
@@ -321,7 +329,7 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
    */
   private async transact(
     ids: readonly string[],
-    fn: (docs: readonly (T | undefined)[]) => readonly (T | null | undefined)[],
+    fn: (docs: readonly (T | undefined)[]) => readonly (In | null | undefined)[],
   ): Promise<readonly Slot[]> {
     const docIds = ids.map(parseId);
     if (new Set(docIds).size !== docIds.length) throw new DocStoreError("document", "modifyMany got one id twice");
@@ -332,14 +340,14 @@ export class CollectionImpl<T extends JsonDoc, Ix> implements Collection<T, Ix> 
         return {
           keys: rowKeys,
           apply: (olds, tx) => {
-            const { next, changed, plan } = planModify(coll, docIds, idbs, olds, fn);
+            const { next, changed, plan } = planModify(coll, this.encode, docIds, idbs, olds, fn);
             plan.apply(changed.map((i) => olds[i]), tx);
             return next;
           },
         };
       }
       const olds = await Promise.all(rowKeys.map((k) => this.store.kv.get(k)));
-      const { next, plan } = planModify(coll, docIds, idbs, olds, fn);
+      const { next, plan } = planModify(coll, this.encode, docIds, idbs, olds, fn);
       const left = next.flatMap((d, i) => (d === undefined ? [i] : []));
       return {
         keys: [...plan.keys, ...left.map((i) => rowKeys[i]!)],

@@ -159,6 +159,56 @@ await users.modifyMany(["u1", "u2"], ([u1, u2]) => [
 ]);
 ```
 
+## Validators
+
+Give `collection` a [Standard Schema](https://standardschema.dev) validator in place of a type. zod, valibot, arktype and others implement it, and docstore adds no dependency. The document type is the validator's output, and the indexes are checked against it. A schema can mix validated collections and collections declared with a type.
+
+```ts
+import * as v from "valibot";
+
+const Task = v.object({
+	id: v.string(),
+	title: v.pipe(v.string(), v.minLength(1)),
+	done: v.optional(v.boolean(), false),
+	createdAt: v.number(),
+});
+const schema = defineSchema({
+	version: 1,
+	collections: {
+		tasks: collection(Task).index("byCreated", "createdAt"),
+	},
+});
+const tasks = (await openDocStore(kv, schema)).collection("tasks");
+```
+
+`put`, `putMany`, and every document that `modify` or `modifyMany` returns go through the validator. The store keeps the validator's output.
+
+```ts
+await tasks.put({ id: "t1", title: "Buy milk", createdAt: 1 });
+await tasks.get("t1");
+// => { id: "t1", title: "Buy milk", done: false, createdAt: 1 }
+await tasks.modify("t1", (t) => ({ ...t, done: true }));
+await tasks.put({ id: "t2", title: "", createdAt: 2 });
+// throws DocStoreError "invalid", and nothing is stored
+// its issues are the validator's: [{ message, path }]
+```
+
+Writes take the validator's input type, and reads return its output type. A transform makes the two differ. `modify` then turns the stored form back into an input.
+
+```ts
+const Visit = v.object({
+	id: v.string(),
+	at: v.pipe(v.date(), v.transform((d) => d.getTime())),
+});
+// with visits, a collection declared with Visit
+await visits.put({ id: "v1", at: new Date() }); // stores at as a number
+await visits.modify("v1", (x) => ({ ...x, at: new Date(x.at) }));
+await visits.modify("v1", (x) => ({ ...x }));
+// type error: at is a number, and the input takes a Date
+```
+
+A validator must be synchronous: one that returns a Promise throws `"invalid"` with no issues. Reads never validate. The validators are not stored, so a change to one needs no `version` bump. They guard this handle's writes only: another schema, another tab or `kv.ingest` can still write documents they would reject.
+
 ## Deletes
 
 ```ts
@@ -617,6 +667,7 @@ try {
 | `"query"` | A query is malformed. | Fix the query. |
 | `"cursor"` | `after` belongs to another range, or predates a `clear` or a redefinition. | Query again without `after`. |
 | `"document"` | A bad or repeated id, a changed id, or a value an index cannot hold. | Fix the document. Nothing was stored. |
+| `"invalid"` | A validator rejected a document: `issues` lists why, and `ids` names it if it has a string id. Or a validator returned a Promise. | Fix the document, or use a synchronous validator. Nothing was stored. |
 | `ConstraintError` | A write passes kv's batch limit. | Split the write. |
 | `ClosedError` | The kv handle closed, also from `changes`. | Open kv again. |
 
