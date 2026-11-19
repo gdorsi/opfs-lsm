@@ -32,9 +32,10 @@ function initial(): State {
 
 /**
  * The pin holds when db.ts hands the view `mem.pin()` and the read point of
- * marks it captured then, `pin()` marks every chunk shared, a write copies a
- * shared chunk before it changes it, a range delete rebuilds the chunks as
- * fresh arrays, and the memtable's marks are replaced, never edited.
+ * marks it captured then, `pin()` marks every chunk shared and copies the
+ * chunks' first keys, a write copies a shared chunk, rows and fingerprints,
+ * before it changes it, a range delete rebuilds the chunks as fresh arrays,
+ * and the memtable's marks are replaced, never edited.
  */
 function viewPinsInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -45,10 +46,11 @@ function viewPinsInSource(): boolean {
   return (
     /new ViewSnapshotImpl\([^)]*this\.mem\.pin\(\),\s*layers\.levels,\s*this\.point\(\)/s.test(db) &&
     /case "deleteRange": \{[\s\S]*?this\.rebuild\(/.test(mem) &&
-    /const rows = keep\.slice\(i, i \+ CHUNK_ROWS\);\s*this\.chunks\.push\(rows\)/.test(mem) &&
+    /const rows = keep\.slice\(i, i \+ CHUNK_ROWS\);\s*this\.chunks\.push\(chunkOf\(rows\)\)/.test(mem) &&
     /this\.held = \[\.\.\.this\.held, /.test(mem) &&
-    /pin\(\)[^{]*\{\s*this\.owned\.fill\(false\)/.test(mem) &&
-    /if \(!this\.owned\[c\]\) \{\s*this\.chunks\[c\] = this\.chunks\[c\]!\.slice\(\);/.test(mem)
+    /pin\(\)[^{]*\{\s*this\.owned\.fill\(false\);\s*return new Chunks\(this\.chunks\.slice\(\), copyOf\(this\.top\)\)/.test(mem) &&
+    /if \(!this\.owned\[c\]\) \{\s*chunk = copyOf\(chunk\);/.test(mem) &&
+    /return \{ rows: chunk\.rows\.slice\(\), fps: chunk\.fps\.slice\(\), skip: chunk\.skip \}/.test(mem)
   );
 }
 

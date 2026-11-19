@@ -143,16 +143,16 @@ where `ingestedThrough` is that of the installed generation, folded to one row p
 MemRow = { key, seq, kind: "put" | "del", value? }
 ```
 
-Rows are kept in key order, in chunks of up to 1024 rows, split at 512. Records apply in seq
+Rows are kept in key order, in chunks of up to 128 rows, split at 64. Records apply in seq
 order with no gaps. A record that skips a seq is refused, and the tab reads the WAL tail instead.
 The memtable is therefore always one exact prefix of the log. Every read depends on this.
 
 The memtable also holds the marks of the range deletes in its records. Applying a range delete
 removes the rows it covers at once, so a row the memtable holds is never covered.
 
-A `view` pins the memtable without copying it. The pin copies the array of chunk references and
-marks every chunk as shared. The live table copies a shared chunk before its next write to it,
-and a range delete rebuilds the table from the rows it keeps.
+A `view` pins the memtable without copying it. The pin copies the chunk references and the chunks'
+first keys, and marks every chunk as shared. The live table copies a shared chunk before its next
+write to it, and a range delete rebuilds the table from the rows it keeps.
 
 When the installed generation moves forward, the memtable drops the rows that the newly ingested
 seqs wrote, and the marks of the newly ingested records.
