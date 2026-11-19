@@ -22,6 +22,13 @@ approximate, so `need` can pass `bytes`: a handler that frees `need` regardless 
 database. Each database opened with `"quota"` is offered the whole `need`. A missing or rejected estimate, or one
 without `usage` or `quota`, makes no offer.
 
+Chrome 133 and later report `quota` as `usage` plus 10 GiB, so that estimate never reaches 90%. A
+flush that fails with `QuotaExceededError` while a tab asked for `"quota"` therefore posts an offer
+of its own: `bytes` is the sum of the runs' file bytes, `maxBytes` is the same figure, and `need` is
+the WAL bytes the host had not folded. It ignores the `after` state below, since the failure is the
+measure, and it never replaces an open offer. The retry that follows the failed flush is the one
+described in design.md's Ingest section, so a full origin offers at most once per `maxWalBytes` of writes.
+
 **Offer.** Over a cap, the host posts `{ kind: "pressure", pressure: { bytes, maxBytes, need } }`
 on the layers channel, with `need` the bytes over 4/5 of the cap. It holds one of two states:
 

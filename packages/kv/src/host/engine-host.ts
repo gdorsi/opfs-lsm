@@ -434,8 +434,8 @@ class HostedDb {
             async (wal) => (await wal.meta()).head,
             () => 0,
           ).then(
-            (head) => (this.offer = { after: head }),
-            () => (this.offer = { after: 0 }),
+            (head) => this.answered({ after: head }),
+            () => this.answered({ after: 0 }),
           );
         }
       };
@@ -476,6 +476,7 @@ class HostedDb {
         // A database `destroyDb` removed is not a failure.
         if (!(err instanceof ClosedError)) console.error(`opfs-lsm: ingest of ${this.name} failed`, err);
         watch.triggerAt = watch.pendingBytes + watch.maxWalBytes;
+        this.offerFull(err, watch.pendingBytes);
       } finally {
         watch.state = "idle";
       }
@@ -603,6 +604,34 @@ class HostedDb {
         this.offerOver(base, bytes, usage, Math.floor(quota * 0.9));
       })
       .catch(() => undefined);
+  }
+
+  /** The answer's `after`, kept off an offer a failed flush posted meanwhile. */
+  private answered(next: { readonly after: number }): void {
+    if (!("pressure" in this.offer)) this.offer = next;
+  }
+
+  /**
+   * Offer pressure when a flush failed with the browser's quota error and a
+   * tab asked for `"quota"`. Chrome reports its quota as the usage plus a
+   * fixed 10 GiB, so the estimate never shows the real limit: the failed
+   * write is the only sign of it. `need` is what the flush could not place,
+   * and `maxBytes` is `bytes`, the size that fit.
+   */
+  private offerFull(err: unknown, need: number): void {
+    if (!this.watching?.quota || "pressure" in this.offer || codeOfError(err) !== "quota") return;
+    this.withStores(
+      async ({ wal, fs }) => {
+        const base = await loadGeneration(fs, (await wal.meta()).generation ?? GENERATION_NONE);
+        return base?.runs.reduce((n, run) => n + run.bytes, 0) ?? 0;
+      },
+      () => undefined,
+    ).then((bytes) => {
+      const bus = this.watching?.bus;
+      if (bytes === undefined || !bus || "pressure" in this.offer) return;
+      this.offer = { kind: "pressure", pressure: { bytes, maxBytes: bytes, need } };
+      bus.postMessage(this.offer);
+    }, () => undefined);
   }
 
   /** `used` is what counts against `maxBytes`: `bytes`, or the origin's usage. */

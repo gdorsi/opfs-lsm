@@ -3,6 +3,7 @@ import { ConstraintError, type Db, type Pressure } from "../src/index.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { createLocalIngestClient, EngineHost, ingest, MemoryFs, openHarnessDb, settle } from "../src/testing.js";
 import { compactHost } from "./compact-host.js";
+import { FaultFs, Faults } from "./sim/fault-fs.js";
 
 const KiB = 1024;
 const CAP = 200 * KiB;
@@ -267,6 +268,68 @@ describe("maxBytes", () => {
         await turns();
       }
       expect(calls.length).toBe(1);
+    });
+
+    it("offers when a flush fails with QuotaExceededError, though the estimate is far from the quota as it is on Chrome", async () => {
+      // Chrome reports quota as usage + 10 GiB: the estimate stays far under 90%.
+      estimate(1000, 1000 + 10 * 1024 ** 3);
+      const faults = new Faults();
+      faults.kinds = new Set();
+      faults.error = () => new DOMException("over quota", "QuotaExceededError");
+      host = new EngineHost(() => new FaultFs(fs, faults));
+      const db = await openHarnessDb({
+        name,
+        fs,
+        ingest: createLocalIngestClient(host),
+        maxWalBytes: 20 * KiB,
+        maxBytes: "quota",
+      });
+      opened.push(db);
+      const model = new Set<number>();
+      await fill(db, model, 0, 100);
+      const calls: Pressure[] = [];
+      db.onPressure(async (p) => void calls.push(p));
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      faults.kinds = new Set(["fs-write"]);
+      faults.failAt = 1;
+      faults.persistent = true;
+      for (let i = 100; i < 150; i += 25) {
+        await db.batch((tx) => {
+          for (let j = i; j < i + 25; j++) tx.put(keyOf(j), crypto.getRandomValues(new Uint8Array(VALUE)));
+        });
+      }
+      await until(() => calls.length === 1, "an offer after the failed flush");
+      expect(calls[0]).toEqual({ bytes: await runBytes(), maxBytes: await runBytes(), need: expect.any(Number) });
+      expect(calls[0]!.need).toBeGreaterThanOrEqual(20 * KiB);
+    });
+
+    it("makes no offer for a flush that fails with another error, or when no tab asked for \"quota\"", async () => {
+      estimate(1, 1000);
+      const faults = new Faults();
+      faults.kinds = new Set();
+      faults.error = () => new DOMException("over quota", "QuotaExceededError");
+      host = new EngineHost(() => new FaultFs(fs, faults));
+      const db = await openHarnessDb({
+        name,
+        fs,
+        ingest: createLocalIngestClient(host),
+        maxWalBytes: 20 * KiB,
+        maxBytes: CAP,
+      });
+      opened.push(db);
+      const calls: Pressure[] = [];
+      db.onPressure(async (p) => void calls.push(p));
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      faults.kinds = new Set(["fs-write"]);
+      faults.failAt = 1;
+      faults.persistent = true;
+      await db.batch((tx) => {
+        for (let j = 0; j < 40; j++) tx.put(keyOf(j), crypto.getRandomValues(new Uint8Array(VALUE)));
+      });
+      await turns(200);
+      expect(faults.injected).toBeGreaterThan(0);
+      expect(calls).toEqual([]);
     });
 
     it("still offers for a numeric cap another tab passed", async () => {

@@ -323,8 +323,7 @@ await db.view(async (snap) => {
 
 The WAL and the SST files count against the origin's storage quota. Open with `maxBytes`, and the SharedWorker asks an `onPressure` handler to free space. kv never removes a row itself, and a write never waits or fails because of the cap.
 
-> [!NOTE]
-> Chrome 133 and later report `quota` as `usage` plus 10 GiB, so `"quota"` offers only once the origin holds about 90 GiB. On Chrome, pass a number of bytes.
+Chrome 133 and later report the quota as the usage plus 10 GiB, so the 90% mark is out of reach there. With `"quota"`, kv also makes an offer when a flush fails because the browser refused the write for lack of space. `need` is then the size of the flush that failed.
 
 ```ts
 // offer when usage passes 90% of the origin's quota

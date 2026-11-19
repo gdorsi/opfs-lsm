@@ -299,7 +299,7 @@ Your app picks what to drop before the browser refuses writes
 ```ts
 const db = await openDb({
   name: "app",
-  maxBytes: 256 * 1024 * 1024,
+  maxBytes: "quota",
 });
 db.onPressure(({ need }) => evict(need));
 ```
