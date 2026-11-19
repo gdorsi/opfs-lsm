@@ -269,3 +269,11 @@ suite("rounds", () => {
     assert.equal(series(only, "mean:open", "goal")!.values[0], 3);
   });
 });
+
+suite("kv options", () => {
+  test("each set of overrides is listed once, and default runs list none", () => {
+    assert.deepEqual(measure([run([atRate(1)])]).kvOptions, []);
+    const small = { kv: { cacheBytes: 4_194_304 } };
+    assert.deepEqual(measure([run([atRate(1)], small), run([atRate(1)], small), run([atRate(1)])]).kvOptions, ["cacheBytes 4194304"]);
+  });
+});

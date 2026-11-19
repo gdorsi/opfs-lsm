@@ -5,7 +5,7 @@
  * disk and cores.
  */
 import { appendFileSync } from "node:fs";
-import type { Catalog, MemoryPeaks, PhaseReply, PhaseRequest, PhaseResult, RunRecord } from "../core/types.ts";
+import type { Catalog, KvOptions, MemoryPeaks, PhaseReply, PhaseRequest, PhaseResult, RunRecord } from "../core/types.ts";
 import { launchChrome } from "./chrome.ts";
 import { hostInfo } from "./host.ts";
 import type { PlannedRun } from "./plan.ts";
@@ -15,8 +15,7 @@ export type RunOptions = {
   readonly headless: boolean;
   readonly resultsFile: string;
   readonly phaseTimeoutMs: number;
-  /** Passed to every kv `openDb` as `compactionMemoryBytes`. Unset leaves the default. */
-  readonly compactionMemoryBytes?: number | undefined;
+  readonly kv: KvOptions;
   readonly log: (line: string) => void;
 };
 
@@ -45,15 +44,15 @@ export async function runPlan(runs: readonly PlannedRun[], opts: RunOptions): Pr
 
 async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
   const phases: PhaseResult[] = [];
-  let meta: Pick<RunRecord, "durability" | "fastPath" | "params"> | undefined;
+  let meta: Pick<PhaseReply, "durability" | "fastPath" | "engine" | "params"> | undefined;
   let chromeVersion = "unknown";
   let memory: MemoryPeaks | undefined;
   let error: string | undefined;
   const chrome = await launchChrome({ headless: opts.headless, onProgress: (line) => opts.log(`    ${line}`) });
   try {
     chromeVersion = chrome.version;
-    const query = opts.compactionMemoryBytes === undefined ? "" : `?compactionMemoryBytes=${opts.compactionMemoryBytes}`;
-    const url = `${opts.origin}/index.html${query}`;
+    const query = new URLSearchParams(Object.entries(opts.kv).map(([option, bytes]) => [option, String(bytes)]));
+    const url = `${opts.origin}/index.html${query.size > 0 ? `?${query}` : ""}`;
     let tab = await chrome.openTab(url);
     let carry: string | undefined;
     const freshTab = async () => {
@@ -78,7 +77,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
         };
         const reply = await tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, opts.phaseTimeoutMs);
         carry = reply.carry;
-        meta = { durability: reply.durability, fastPath: reply.fastPath, params: reply.params };
+        meta = { durability: reply.durability, fastPath: reply.fastPath, engine: reply.engine, params: reply.params };
         results.push(reply.result);
       }
       const [first, ...later] = results;
@@ -100,6 +99,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
     rep: run.rep,
     params: meta?.params ?? { entries: 0, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: 0 },
     host: hostInfo(chromeVersion, opts.headless),
+    ...(meta?.engine && Object.keys(opts.kv).length > 0 ? { kv: opts.kv } : {}),
     phases,
     ...(memory ? { memory } : {}),
     ...(error !== undefined ? { error } : {}),

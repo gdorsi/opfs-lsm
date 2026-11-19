@@ -44,6 +44,10 @@ test("a renamed phase fails its budget instead of switching it off", () => {
   assert.match(found[0]!, /recorded no such number/);
 });
 
+test("a run that overrode a kv option is not held to budgets set with the defaults", () => {
+  assert.deepEqual(problems([run([settle("settle", 9000)], { kv: { cacheBytes: 4_194_304 } })]), []);
+});
+
 test("a budget whose workload, contender or size did not run is skipped", () => {
   assert.deepEqual(problems([run([settle("settle", 9000)], { size: "small" })]), []);
   assert.deepEqual(problems([run([settle("settle", 9000)], { contender: "kv/idb" })]), []);

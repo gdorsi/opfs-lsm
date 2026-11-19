@@ -88,6 +88,7 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
   if (ok) {
     const h = ok.host;
     out.push(`${h.chrome}${h.headless ? " headless" : ""}, ${h.os}, ${h.cpu} × ${h.cores}, node ${h.node}, git ${h.gitSha}, load ${h.loadAvg1}`);
+    for (const options of measures.kvOptions) out.push(`kv opened with ${options}`);
   }
   for (const rows of groups(records).values()) {
     const first = rows[0]!.runs[0]!;
@@ -231,6 +232,10 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
   for (const sb of b.all) if (!a.get(sb.at)) count("B", sb.at);
 
   const out: string[] = [];
+  for (const [side, m] of [["A", a], ["B", b]] as const) {
+    for (const options of m.kvOptions) out.push(`${side} opened kv with ${options}`);
+  }
+  if (out.length > 0) out.push("");
   if (rows.length > 0) {
     out.push("| workload | size | phase | contender | metric | A | B | verdict |", "|---|---|---|---|---|---:|---:|---|", ...rows);
   }
