@@ -15,8 +15,9 @@ A fill that a crash cut off can leave `reserve.crswap`, which the host removes w
 at the file.
 
 **Settle.** A compaction pass that finds nothing left to plan settles over its manifest. A pass
-runs after each flush, and every 2 s while the reserve is not held. A pass that stops at its step
-limit settles nothing: under heavy writes the reserve waits for a pass that finishes.
+runs after each flush, and 2 s after the last write or `openDb` while the reserve is not held. A
+pass that stops at its step limit settles nothing: under heavy writes the reserve waits for a
+pass that finishes.
 
 **States.** The host holds one of four states for each database. A pair with no row changes
 nothing.

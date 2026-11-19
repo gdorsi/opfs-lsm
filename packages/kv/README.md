@@ -327,7 +327,8 @@ The WAL and the SST files count against the origin's storage quota. kv keeps a r
 // a 24 MiB reserve
 await openDb({ name: "log" });
 await openDb({ name: "log", reserveBytes: 64 * 1024 * 1024 });
-// no reserve: a refused write fails, and onStorageFull is never called
+// no reserve: a refused write fails, and
+// onStorageFull is never called
 await openDb({ name: "log", reserveBytes: 0 });
 await openDb({ name: "log", reserveBytes: -1 });
 // throws ConstraintError
