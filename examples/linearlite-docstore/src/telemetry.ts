@@ -17,7 +17,7 @@ export type Kpi = {
   readonly attributes: { readonly [key: `linearlite.${string}`]: number | boolean | ReadPath | undefined };
 };
 
-const endpoint = import.meta.env.VITE_EVERR_INGEST_ENDPOINT;
+const endpoint = import.meta.env?.VITE_EVERR_INGEST_ENDPOINT;
 /** Set by the last instrumentation below. The SDK sends an event with a name only through an instrumentation. */
 let emit: InstrumentationContext["emit"] | undefined;
 

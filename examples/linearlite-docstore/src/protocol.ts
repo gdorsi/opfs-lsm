@@ -20,7 +20,7 @@ export type FromDemo =
 export type ToDemo = { readonly type: "generate"; readonly count: number } | { readonly type: "delete" };
 
 const KPIS: { readonly [T in FromDemo["type"]]: ((message: Extract<FromDemo, { type: T }>) => Kpi) | null } = {
-  opened: (m) => ({ name: "linearlite.open", ms: m.ms, attributes: { "linearlite.issues": m.issues } }),
+  opened: (m) => ({ name: "linearlite.open", ms: m.ms, attributes: { "linearlite.first_page_rows": m.issues } }),
   "first-rows": (m) => ({ name: "linearlite.first_rows", ms: m.ms, attributes: {} }),
   filter: (m) => ({
     name: "linearlite.filter",

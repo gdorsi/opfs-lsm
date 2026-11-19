@@ -34,16 +34,16 @@ The `docs` workflow ([`.github/workflows/docs.yml`](../.github/workflows/docs.ym
 | Event | Service | Source | Attributes |
 |---|---|---|---|
 | `everr.browser.page_view`, `everr.browser.page_leave` | Both | `pageviews()` | The page, and the time on it for a leave. |
-| `everr.browser.interaction.click`, `everr.browser.interaction.submit` | Both | `interactions()` | The element's tag and selector, never its text. |
+| `everr.browser.interaction.click`, `everr.browser.interaction.submit` | Both | `interactions()` | A selector for the element: its tag, its stable classes and one naming attribute with its value (`aria-label`, `type`, `name`, `title` or `alt`). The `href` of the link around it. Never the element's text or a field's value. |
 | `browser.web_vital`, and `slow_interaction` spans | Both | `performance()` | LCP, CLS, TTFB and INP, with their rating. |
 | Client spans named after the method and path | Both | `network()` | The URL without its query, and the status. |
 | `exception` | Both | `errors()`, Vue's `errorHandler` on the site, `failed()` in the demo | `exception.type`, `exception.message`, `exception.stacktrace` |
-| `linearlite.open` | Demo | The `opened` message | `linearlite.duration_ms`, `linearlite.issues` |
+| `linearlite.open` | Demo | The `opened` message | `linearlite.duration_ms`, `linearlite.first_page_rows` (0 for an empty database, 50 at most) |
 | `linearlite.first_rows` | Demo | The `first-rows` message | `linearlite.duration_ms` |
 | `linearlite.filter` | Demo | The `filter` message | `linearlite.duration_ms` for the first page, `linearlite.total_duration_ms` for the count, `linearlite.total`, `linearlite.read_path` (`index`, `ranges`, `scan` or `search`) |
 | `linearlite.write` | Demo | The `generated` message | `linearlite.duration_ms`, `linearlite.generate_duration_ms`, `linearlite.count` |
 
-The demo's README defines each timing, in [Timings](../examples/linearlite-docstore/README.md#timings). Every record of the demo also carries `linearlite.framed`, `linearlite.navigation` (the frame's navigation type, such as `navigate` or `reload`), `linearlite.device.cores` and `linearlite.device.memory_gb`. The SDK adds the session, the page URL, the user agent, the screen size and the language to every record of both services.
+The demo's README defines each timing, in [Timings](../examples/linearlite-docstore/README.md#timings). Every record of the demo also carries `linearlite.framed`, `linearlite.navigation` (the frame's navigation type, such as `navigate` or `reload`), `linearlite.device.cores` and `linearlite.device.memory_gb`. The SDK adds these to every record of both services: the visitor id, the session id, the page URL, the referrer, the landing URL with its UTM parameters, the user agent, the screen size, the timezone and the language. For the demo in the frame, the referrer is the URL of the page around it.
 
 No record holds text a visitor typed. The demo's search text stays in the `filter` message to the page, and a KPI attribute cannot hold a free string. Page URLs are sent with their query, and neither app puts visitor input in one.
 

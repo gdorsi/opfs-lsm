@@ -47,8 +47,9 @@ export function createApp(store: Store) {
       return { total, at };
     });
     void Promise.allSettled([shown.rows, counted]).then(([r, c]) => {
+      if (r.status === "rejected") return;
       if (c.status === "rejected") return failed(c.reason);
-      if (r.status === "rejected" || !label || mine !== run) return;
+      if (!label || mine !== run) return;
       post({ type: "filter", label, path: shown.path, rowsMs: r.value.at - from, total: c.value.total, totalMs: c.value.at - from });
     });
     return shown.rows;
