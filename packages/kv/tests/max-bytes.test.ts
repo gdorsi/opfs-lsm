@@ -304,7 +304,7 @@ describe("maxBytes", () => {
       expect(calls[0]!.need).toBeGreaterThanOrEqual(20 * KiB);
     });
 
-    it("makes no offer for a flush that fails with another error, or when no tab asked for \"quota\"", async () => {
+    it("makes no offer for a flush that fails with QuotaExceededError when no tab asked for \"quota\"", async () => {
       estimate(1, 1000);
       const faults = new Faults();
       faults.kinds = new Set();
