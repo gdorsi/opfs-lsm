@@ -12,6 +12,8 @@
  *                           every metric both files hold, B against A by the min–max ranges;
  *                           --all also lists the rows with no measurable difference
  *   report <file.jsonl>
+ *   docs [--check]          rewrite the tables of docs/benchmarks.md from the runs under docs/results/;
+ *                           --check fails when the page differs, and needs no Chrome or build
  *
  * A workload selector is "kv/" (a family) or "kv/fillrandom" (one workload).
  */
@@ -21,12 +23,15 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { ownershipProblems, PATTERNS } from "./core/patterns.ts";
 import { SIZES, type KvOptions, type RunRecord, type SizeName } from "./core/types.ts";
+import { TABLES } from "./docs-tables.ts";
 import { BENCH_DIR, buildBench, type BuildOutput } from "./driver/build.ts";
 import { BUDGETS, budgetProblems } from "./driver/budgets.ts";
 import { DATA_DIR, ensureTrace } from "./driver/data.ts";
+import { PAGE, readPublished, renderDocs, staleTables } from "./driver/docs.ts";
 import { plan, type PlannedRun } from "./driver/plan.ts";
 import { measure } from "./driver/metrics.ts";
 import { compare, report } from "./driver/report.ts";
+import { readRecords } from "./driver/records.ts";
 import { readCatalog, runPlan } from "./driver/run.ts";
 import { serve } from "./driver/serve.ts";
 import { formatSizes, measureSizes } from "./driver/size.ts";
@@ -87,6 +92,8 @@ async function main(): Promise<number> {
       console.log(report(readRecords(file)));
       return 0;
     }
+    case "docs":
+      return docs(values.check);
     default:
       console.error(readFileSync(new URL(import.meta.url), "utf8").split("*/")[0]);
       return 1;
@@ -206,11 +213,18 @@ function peakChecks(records: readonly RunRecord[], maxBytes: number): string[] {
     .map((s) => `${s.at.workload} ${s.at.contender}: SharedWorker peak ${s.summary.max} B > --max-peak-bytes ${maxBytes}`);
 }
 
-function readRecords(file: string): RunRecord[] {
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l) as RunRecord);
+/** Write the generated tables into docs/benchmarks.md. With `check`, only say which tables differ. */
+function docs(check: boolean): number {
+  const page = readFileSync(PAGE, "utf8");
+  const stale = staleTables(page, TABLES, readPublished);
+  if (check) {
+    if (stale.length === 0) return 0;
+    console.error(`docs/benchmarks.md differs from the runs in docs/results/ in: ${stale.join(", ")}.\nRun \`node bench/cli.ts docs\` and commit the page.`);
+    return 1;
+  }
+  if (stale.length > 0) writeFileSync(PAGE, renderDocs(page, TABLES, readPublished));
+  console.log(stale.length === 0 ? "docs/benchmarks.md: every table is current" : `docs/benchmarks.md: rewrote ${stale.join(", ")}`);
+  return 0;
 }
 
 process.exitCode = await main().catch((e: unknown) => {

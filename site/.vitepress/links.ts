@@ -3,6 +3,7 @@ import { join, posix, relative } from "node:path";
 import { slug } from "github-slugger";
 import MarkdownIt from "markdown-it";
 import { everyPage, github, home, pageAt, pageOf, pages, repoRoot, url } from "./pages.ts";
+import { OVERLAP } from "./tone.ts";
 
 const external = /^[a-z][a-z\d+.-]*:|^\/\//i;
 const pagesFile = "site/.vitepress/pages.ts";
@@ -174,9 +175,32 @@ function problems(): string[] {
   return found;
 }
 
+/** A number as it must stand in docs/benchmarks.md: whole, not the start or the end of a longer one. */
+const verbatim = (number: string, after = "") => new RegExp(`(?<![\\d.,])${number.replace(/[.×]/g, "\\$&")}${after}(?!\\d)`);
+const HOME_ROW = /\{ measure: "[^"]+", ours: ([\d.,]+[kM]?)[^,]*, theirs: ([\d.,]+[kM]?)[^,]*, ratio: ([\d.]+×)( ‡)? \}/;
+
+/**
+ * A row of the home page's benchmarks is one line of docs/benchmarks.md: that line holds its two values and its
+ * ratio, and the ratio carries the overlap mark on both pages or on neither.
+ */
+function homeRowProblem(line: string, readme: string[]): string | undefined {
+  const row = HOME_ROW.exec(line);
+  if (!row) return /\bratio:/.test(line) ? `a benchmark row reads { measure: "…", ours: …, theirs: …, ratio: … }. Write it that way.` : undefined;
+  const [, ours, theirs, ratio, mark] = row;
+  const lines = readme.filter((l) => [ours!, theirs!, ratio!].every((n) => verbatim(n).test(l)));
+  if (lines.length === 0) {
+    return `${ours}, ${theirs} and ${ratio} are not on one line of ${numbersFrom}. Copy the row's values and its ratio from one row.`;
+  }
+  const marked = lines.some((l) => verbatim(ratio!, ` ${OVERLAP}`).test(l));
+  const plain = lines.some((l) => verbatim(ratio!, `(?! ${OVERLAP})`).test(l));
+  if (mark && !marked) return `"${ratio} ${OVERLAP}" is "${ratio}" in ${numbersFrom}. Remove the mark.`;
+  if (!mark && !plain) return `"${ratio}" is "${ratio} ${OVERLAP}" in ${numbersFrom}: the runs of the two overlap. Write "ratio: ${ratio} ${OVERLAP}".`;
+}
+
 function homeProblems(): string[] {
   const found: string[] = [];
   const readme = readFileSync(join(repoRoot, numbersFrom), "utf8");
+  const readmeLines = readme.split("\n");
   const lines = readFileSync(join(repoRoot, home.source), "utf8").split("\n");
   const frontEnd = lines.indexOf("---", 1);
   lines.forEach((line, i) => {
@@ -190,9 +214,10 @@ function homeProblems(): string[] {
     if (/^\s*(?:- )?(?:theme|layout):/.test(line) || line === "---") return;
     const prose = i < frontEnd ? line.replace(/^\s*(?:- )?\w+:/, "") : line.replace(/\]\([^)]*\)/g, "]");
     for (const [number] of prose.matchAll(/\d(?:[\d,.]*\d)?[k×%]?/g)) {
-      const verbatim = new RegExp(`(?<![\\d.,])${number.replace(/[.×]/g, "\\$&")}(?!\\d)`);
-      if (!verbatim.test(readme)) found.push(`${at}: "${number}" does not appear in ${numbersFrom}. Update the home copy to match it.`);
+      if (!verbatim(number).test(readme)) found.push(`${at}: "${number}" does not appear in ${numbersFrom}. Update the home copy to match it.`);
     }
+    const row = homeRowProblem(line, readmeLines);
+    if (row) found.push(`${at}: ${row}`);
   });
   return found;
 }
