@@ -176,6 +176,31 @@ export function skipTuple(key: Uint8Array, count: number, from = 0): number {
   return at;
 }
 
+/**
+ * `bytes[from, to)` as a string when it is at most `ASCII_LOOP_MAX` bytes of
+ * ASCII with no U+0000, else undefined, for the caller's TextDecoder. On an
+ * id or an indexed word, a TextDecoder call costs several times this loop.
+ */
+export function asciiAt(bytes: Uint8Array, from: number, to: number): string | undefined {
+  if (to - from > ASCII_LOOP_MAX) return undefined;
+  let s = "";
+  let i = from;
+  for (; i + 4 <= to; i += 4) {
+    const a = bytes[i]!;
+    const b = bytes[i + 1]!;
+    const c = bytes[i + 2]!;
+    const d = bytes[i + 3]!;
+    if ((a | b | c | d) > 0x7f || !(a && b && c && d)) return undefined;
+    s += String.fromCharCode(a, b, c, d);
+  }
+  for (; i < to; i++) {
+    const c = bytes[i]!;
+    if (c > 0x7f || c === 0) return undefined;
+    s += String.fromCharCode(c);
+  }
+  return s;
+}
+
 function valueAt(key: Uint8Array, at: number, end: number): TupleValue {
   switch (key[at]) {
     case TAG_NULL:
@@ -195,6 +220,8 @@ function valueAt(key: Uint8Array, at: number, end: number): TupleValue {
       return Number.isFinite(v) && !Object.is(v, -0) ? v : corrupt(at);
     }
     default: {
+      const ascii = asciiAt(key, at + 1, end - 1);
+      if (ascii !== undefined) return ascii;
       let body = key.subarray(at + 1, end - 1);
       if (body.includes(0)) {
         const out = new Uint8Array(body.length);

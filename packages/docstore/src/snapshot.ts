@@ -2,7 +2,7 @@ import { CorruptDatabaseError, type Entry, type Range, type ViewSnapshot } from 
 import { readableTarget, type BoundCollection } from "./catalog.js";
 import { decodeDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { concat, decodeEntries, encodeCursor, entryId, idBytes, idOf, parseId, scanPlan } from "./keys.js";
+import { concat, decodeEntries, encodeCursor, entryId, entryIdString, idBytes, idOf, parseId, scanPlan } from "./keys.js";
 import type { Cursor, EntryPage, EntryValues, IdPage, IndexEntry, JsonDoc, Page, Query, QueryInput } from "./schema.js";
 
 /** Reads of one collection from one kv snapshot. */
@@ -112,7 +112,7 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
     const { target, range, limit } = this.plan(q, 1);
     const page = await collect(this.snap.range(range));
     const next = trimPage(page, (h) => h.key, limit);
-    return { ids: page.map((h) => idOf(entryId(target, h.key, h.value))), ...next };
+    return { ids: page.map((h) => entryIdString(target, h.key, h.value)), ...next };
   }
 
   async queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
