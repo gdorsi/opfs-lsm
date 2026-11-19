@@ -1,3 +1,5 @@
+import type { InferInput, InferOutput, StandardSchemaV1 } from "./standard-schema.js";
+
 export type Json =
   | null
   | boolean
@@ -16,8 +18,6 @@ export type Scalar = null | boolean | number | string;
  * instance fails it, because JSON would not give it back.
  */
 export type JsonDoc = { readonly id: string; readonly [key: string]: Json | undefined };
-
-type DocsMap = { readonly [collection: string]: JsonDoc };
 
 /** Recursion budget: three levels of nesting. */
 type Budget = [never, 0, 1, 2];
@@ -49,102 +49,118 @@ type At<T, P extends string> = P extends `${infer H}.${infer R}`
 
 /** A scalar field, or an array field marked with `[]`. Only the first field may be an array field. */
 type Fields<T> = readonly [ScalarPath<T> | `${ArrayPath<T>}[]`, ...ScalarPath<T>[]];
+type By<T> = Fields<T> | Fields<T>[0];
+type TextBy<T> = readonly [ScalarPath<T>, ...ScalarPath<T>[]] | ScalarPath<T>;
+
+/** The error an index name already in use gets: the name is a parameter of a type that no string has. */
+type Free<Ix, N extends string> = N extends keyof Ix ? "an index of this name is already declared" : N;
+
+declare const docType: unique symbol;
+declare const inputType: unique symbol;
+
+/** A Standard Schema whose output is a document. */
+type Validator = StandardSchemaV1<unknown, JsonDoc>;
 
 /**
- * One index of a collection, ordered by the values at `by`, then the id.
+ * A collection's document type `T`, its indexes `Ix` and what a write takes,
+ * `In`, made by `collection` and grown by one method per kind of index. Each
+ * method returns a new declaration and leaves this one as it is, so a base
+ * can be shared.
  *
- * - `by`: a field or a list of fields. An array field is written with a `[]`
- *   suffix and only the first may be one: the index then has one entry per
- *   distinct element, each followed by the rest of `by`.
- * - `unique`: no two documents share the values at `by`.
- * - `text`: a string field whose words the entries also carry, for
- *   `query({ match })`. Not with `unique`, nor with a `[]` first field.
+ * An index is ordered by the values at `by`, then the id. `by` is a field or
+ * a list of fields. An array field is written with a `[]` suffix and only the
+ * first may be one: the index then has one entry per distinct element, each
+ * followed by the rest of `by`.
  */
-export type IndexDecl<T> = {
-  readonly by: Fields<T> | Fields<T>[0];
-  readonly unique?: boolean;
-  readonly text?: StringPath<T>;
-};
+export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
+  /** The indexes declared so far, by name, as the stored catalog reads them. */
+  readonly indexes: Ix;
+  /** The validator `collection` took. It is not stored: a change to it needs no new `version`. */
+  readonly validator?: Validator | undefined;
+  readonly [docType]?: T;
+  readonly [inputType]?: In;
+  /** A sorted index. */
+  index<const N extends string, const B extends By<T>>(
+    name: Free<Ix, N>,
+    by: B,
+  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B } }, In>;
+  /** A sorted index in which no two documents share the values at `by`. */
+  unique<const N extends string, const B extends By<T>>(
+    name: Free<Ix, N>,
+    by: B,
+  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly unique: true } }, In>;
+  /**
+   * A sorted index whose entries also carry the words of the string field
+   * `text`, for `query({ match })`. `by` has no array field.
+   */
+  text<const N extends string, const B extends TextBy<T>, const X extends StringPath<T>>(
+    name: Free<Ix, N>,
+    by: B,
+    text: X,
+  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly text: X } }, In>;
+}
 
-type Options = { readonly by?: unknown; readonly unique?: unknown; readonly text?: unknown };
+class Declaration {
+  constructor(
+    readonly indexes: object = {},
+    readonly validator?: Validator,
+  ) {}
+  index(name: string, by: unknown, option?: object): never {
+    return new Declaration({ ...this.indexes, [name]: { by, ...option } }, this.validator) as never;
+  }
+  unique(name: string, by: unknown): never {
+    return this.index(name, by, { unique: true });
+  }
+  text(name: string, by: unknown, text: unknown): never {
+    return this.index(name, by, { text });
+  }
+}
 
 /**
- * What a declaration must not be, as a type that fails with the reason: it
- * replaces the offending option by one that holds the message. The patterns
- * name every option, because an object literal type with a property the
- * pattern lacks does not extend it.
+ * Start the declaration of a collection, with a validator or with the type
+ * of its documents. A validator is any Standard Schema (zod, valibot,
+ * arktype...). The documents are then its outputs, and a write takes its
+ * input and stores what it returns.
+ *
+ *     collection(Todo).index("byCreated", "createdAt").text("search", "createdAt", "title")
+ *     collection<Todo>().index("byCreated", "createdAt")
  */
-type Rule<D> = D extends Options & { readonly text: string; readonly unique: true }
-  ? Omit<D, "unique"> & { readonly unique: { readonly error: "a text index cannot be unique" } }
-  : D extends Options & { readonly text: string; readonly by: `${string}[]` | readonly [`${string}[]`, ...unknown[]] }
-    ? Omit<D, "by"> & { readonly by: "a text index cannot start with an array field" }
-    : D;
+export function collection<V extends Validator>(validator: V): CollectionDecl<InferOutput<V>, {}, InferInput<V>>;
+export function collection<T extends JsonDoc>(): CollectionDecl<T>;
+export function collection(validator?: Validator): never {
+  return new Declaration({}, validator) as never;
+}
 
-type IndexDecls<T> = { readonly [index: string]: IndexDecl<T> };
-
-type Collections<Docs extends DocsMap> = { readonly [C in keyof Docs]: IndexDecls<Docs[C]> };
-
-/**
- * What the inferred collections must satisfy. A collection with no indexes
- * infers as `unknown`, which it also allows. An index with an option
- * `IndexDecl` lacks (`uniqe`) fails this, and TypeScript then checks the
- * declaration against `IndexDecl` itself, which names the option.
- */
-type Declarable<Docs extends DocsMap, Cs> = {
-  readonly [C in keyof Docs]: unknown extends (C extends keyof Cs ? Cs[C] : never) ? unknown : IndexDecls<Docs[C]>;
-};
-
-declare const docsType: unique symbol;
-
-/** A declared schema that remembers its document types. Made by `defineSchema`. */
-export type Schema<Docs extends DocsMap = DocsMap, Cs = Collections<Docs>> = {
+/** What `openDocStore` takes. Each collection is what `collection` made. */
+export type Schema = {
   /** An integer >= 1, bumped on every change to `collections`. */
   readonly version: number;
-  readonly collections: Cs;
+  readonly collections: { readonly [name: string]: CollectionDecl<any, any> };
   /**
    * Collections to delete, with every document and index, when this version
    * is stored. A collection only left out of `collections` is kept.
    */
   readonly drop?: readonly string[];
-  readonly [docsType]?: Docs;
 };
 
-/** The collections as `defineSchema` takes them: each index is inferred, then checked against `Rule` and the `Docs` of its collection. */
-type Checked<Docs extends DocsMap, Cs> = {
-  readonly [C in keyof Cs]: { readonly [I in keyof Cs[C]]: Rule<Cs[C][I]> & IndexDecl<Docs[C & keyof Docs]> };
-} & { readonly [C in Exclude<keyof Cs, keyof Docs>]: "not a collection of the document types" };
-
-/** Inference through `Checked` leaves each index a fresh object literal, which an `extends` check rejects for a property it does not name. A copy is a plain object type. */
-type Plain<Cs> = { readonly [C in keyof Cs]: { readonly [I in keyof Cs[C]]: { readonly [O in keyof Cs[C][I]]: Cs[C][I][O] } } };
-
-/**
- * Curried so the document types are given and the declaration is inferred
- * with literal fields, which the query types read.
- *
- *     defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byCreated: { by: "createdAt" } } } })
- */
-export function defineSchema<Docs extends DocsMap>(): <const Cs extends Declarable<Docs, Cs>>(
-  schema: Schema<Docs, Checked<Docs, Cs>>,
-) => Schema<Docs, Plain<Cs>> {
-  return (schema) => schema as never;
+/** Returns `schema`, so a mistake in it shows here and not at `openDocStore`. */
+export function defineSchema<S extends Schema>(schema: S): S {
+  return schema;
 }
 
-/** What `openDocStore` accepts. Looser than `Schema`: `defineSchema` already checked the fields. */
-export type AnySchema = {
-  readonly version: number;
-  readonly collections: { readonly [collection: string]: { readonly [index: string]: object } };
-  readonly drop?: readonly string[];
-  readonly [docsType]?: DocsMap;
+/** A mapped type, so that a handle's document type for a generic collection name relates to the document types an app keeps by name. */
+type DocsOf<S extends Schema> = {
+  readonly [C in keyof S["collections"]]: S["collections"][C] extends { readonly [docType]?: infer T extends JsonDoc } ? T : never;
+};
+type InputsOf<S extends Schema> = {
+  readonly [C in keyof S["collections"]]: S["collections"][C] extends { readonly [inputType]?: infer In } ? In : never;
 };
 
-type DocsOf<S> = S extends { readonly [docsType]?: infer D extends DocsMap } ? D : never;
-export type CollectionName<S> = keyof DocsOf<S> & string;
-export type DocOf<S, C extends CollectionName<S>> = DocsOf<S>[C];
-export type IndexesOf<S, C extends string> = S extends { readonly collections: infer Cs }
-  ? C extends keyof Cs
-    ? Cs[C]
-    : never
-  : never;
+export type CollectionName<S extends Schema> = keyof S["collections"] & string;
+export type DocOf<S extends Schema, C extends CollectionName<S>> = DocsOf<S>[C];
+/** What a write of collection `C` takes. */
+export type InputOf<S extends Schema, C extends CollectionName<S>> = InputsOf<S>[C];
+export type IndexesOf<S extends Schema, C extends CollectionName<S>> = S["collections"][C]["indexes"];
 
 /** What a declared index is, for layers that plan queries. */
 export type IndexInfo = {

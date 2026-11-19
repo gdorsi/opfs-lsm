@@ -1,7 +1,7 @@
 import { CorruptDatabaseError, type Db } from "@opfs-lsm/kv";
 import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
-import { defineSchema, openDocStore } from "../src/index.js";
+import { collection, defineSchema, openDocStore } from "../src/index.js";
 import { concat, rowPrefix, type CollectionId } from "../src/keys.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
 import { asQuery, checkQuery, datasetArb, queryArb, schema, type Doc, type DocQuery, type Docs } from "./docs.js";
@@ -194,9 +194,9 @@ describe("text search", () => {
     const notes = (
       await openDocStore(
         kv,
-        defineSchema<{ notes: Note }>()({
+        defineSchema({
           version: 1,
-          collections: { notes: { search: { by: ["owner", "updatedAt"], text: "body" } } },
+          collections: { notes: collection<Note>().text("search", ["owner", "updatedAt"], "body") },
         }),
       )
     ).collection("notes");

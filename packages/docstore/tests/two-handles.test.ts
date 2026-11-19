@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { defineSchema, openDocStore } from "../src/index.js";
+import { collection, defineSchema, openDocStore } from "../src/index.js";
 import type { Scalar } from "../src/schema.js";
 import { freshName, gate, openKv } from "./harness.js";
 import { expected, stored } from "./oracle.js";
@@ -8,10 +8,10 @@ import { denseScalarArb } from "./order.js";
 
 type Row = { id: string; a?: Scalar | undefined; b?: Scalar | undefined; tags?: Scalar[] | undefined };
 
-const v1 = defineSchema<{ rows: Row }>()({ version: 1, collections: { rows: { byA: { by: "a" } } } });
-const v2 = defineSchema<{ rows: Row }>()({
+const v1 = defineSchema({ version: 1, collections: { rows: collection<Row>().index("byA", "a") } });
+const v2 = defineSchema({
   version: 2,
-  collections: { rows: { byA: { by: "a" }, byB: { by: ["b", "a"] }, byTag: { by: "tags[]" } } },
+  collections: { rows: collection<Row>().index("byA", "a").index("byB", ["b", "a"]).index("byTag", "tags[]") },
 });
 
 const ROWS = 1_200;

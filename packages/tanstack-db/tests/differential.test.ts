@@ -11,7 +11,7 @@
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import {
@@ -36,16 +36,15 @@ import { docstoreCollectionOptions, type DocstoreCollectionUtils } from "../src/
 
 type Doc = { id: string; g: number; k: boolean; n: number | null; s: string | null; t: string };
 
-const schema = defineSchema<{ docs: Doc }>()({
+const schema = defineSchema({
   version: 1,
   collections: {
-    docs: {
-      byN: { by: "n" },
-      byGN: { by: ["g", "n"] },
-      byKS: { by: ["k", "s"] },
-      byGS: { by: ["g", "s"] },
-      search: { by: ["k", "n"], text: "t" },
-    },
+    docs: collection<Doc>()
+      .index("byN", "n")
+      .index("byGN", ["g", "n"])
+      .index("byKS", ["k", "s"])
+      .index("byGS", ["g", "s"])
+      .text("search", ["k", "n"], "t"),
   },
 });
 

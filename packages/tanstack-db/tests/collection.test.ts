@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterEach, test } from "node:test";
 import {
+  collection,
   defineSchema,
   DocStoreError,
   openDocStore,
@@ -30,14 +31,14 @@ type Body = { id: string; description: string };
 type Comment = { id: string; issue_id: string; body: string };
 type Issue = { id: string; modified: number };
 
-const schema = defineSchema<{ todo: Todo; todos: Todo; bodies: Body; comments: Comment; issues: Issue }>()({
+const schema = defineSchema({
   version: 1,
   collections: {
-    todo: {},
-    todos: {},
-    bodies: {},
-    comments: { byIssue: { by: "issue_id" } },
-    issues: { byModified: { by: "modified" } },
+    todo: collection<Todo>(),
+    todos: collection<Todo>(),
+    bodies: collection<Body>(),
+    comments: collection<Comment>().index("byIssue", "issue_id"),
+    issues: collection<Issue>().index("byModified", "modified"),
   },
 });
 

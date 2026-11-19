@@ -1,9 +1,9 @@
 import type { Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
-import { defineSchema, openDocStore, type DocStore } from "../src/index.js";
+import { collection, defineSchema, openDocStore, type DocStore } from "../src/index.js";
 import { encodeCatalog, type StoredCatalog } from "../src/catalog.js";
 import { CATALOG_KEY } from "../src/keys.js";
-import type { AnySchema, Json } from "../src/schema.js";
+import type { Json, Schema } from "../src/schema.js";
 import {
   codeOf,
   docstoreKeys,
@@ -29,26 +29,19 @@ type Todo = {
 type Labelled = { id: string; createdAt?: number | undefined; label?: string | undefined };
 type Tagged = { id: string; tags?: string[] | undefined };
 
-const byCreated = { by: "createdAt" } as const;
-const byTitle = { by: "title" } as const;
-const v1 = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byCreated, byTitle } } });
-const v2 = defineSchema<{ todos: Todo }>()({
+const byCreated = collection<Todo>().index("byCreated", "createdAt");
+const base = byCreated.index("byTitle", "title");
+const v1 = defineSchema({ version: 1, collections: { todos: base } });
+const v2 = defineSchema({ version: 2, collections: { todos: base.index("byDone", ["done", "createdAt"]) } });
+const unique = (version: number) => defineSchema({ version, collections: { todos: base.unique("bySlug", "slug") } });
+const labelled = defineSchema({
   version: 2,
-  collections: { todos: { byCreated, byTitle, byDone: { by: ["done", "createdAt"] } } },
+  collections: { todos: collection<Labelled>().index("byCreated", "createdAt").index("byLabel", "label") },
 });
-const unique = (version: number) =>
-  defineSchema<{ todos: Todo }>()({
-    version,
-    collections: { todos: { byCreated, byTitle, bySlug: { by: "slug", unique: true } } },
-  });
-const labelled = defineSchema<{ todos: Labelled }>()({
-  version: 2,
-  collections: { todos: { byCreated, byLabel: { by: "label" } } },
-});
-const tagged = defineSchema<{ tagged: Tagged }>()({ version: 1, collections: { tagged: { byTag: { by: "tags[]" } } } });
+const tagged = defineSchema({ version: 1, collections: { tagged: collection<Tagged>().index("byTag", "tags[]") } });
 
 const kvs: Db[] = [];
-const stores: DocStore<AnySchema>[] = [];
+const stores: Pick<DocStore<Schema>, "whenIdle">[] = [];
 afterEach(async () => {
   await Promise.allSettled(stores.splice(0).map((s) => s.whenIdle()));
   await Promise.all(kvs.splice(0).map((kv) => kv.close()));
@@ -60,13 +53,13 @@ async function kvOn(name: string): Promise<Db> {
   return kv;
 }
 
-async function openOn<S extends AnySchema>(kv: Db, schema: S): Promise<DocStore<S>> {
+async function openOn<S extends Schema>(kv: Db, schema: S): Promise<DocStore<S>> {
   const store = await openDocStore(kv, schema);
   stores.push(store);
   return store;
 }
 
-async function at<S extends AnySchema>(name: string, schema: S) {
+async function at<S extends Schema>(name: string, schema: S) {
   const kv = await kvOn(name);
   return { kv, store: await openOn(kv, schema) };
 }
@@ -87,7 +80,7 @@ describe("opening a schema", () => {
     const { kv, store } = await at(freshName(), v1);
     await store.collection("todos").putMany(rows(10));
     const before = await docstoreKeys(kv);
-    const other = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byCreated, byTitle: { by: "slug" } } } });
+    const other = defineSchema({ version: 1, collections: { todos: byCreated.index("byTitle", "slug") } });
     expect(await codeOf(openDocStore(kv, other))).toBe("schema");
     expect(await docstoreKeys(kv)).toEqual(before);
   });
@@ -123,7 +116,7 @@ describe("opening a schema", () => {
 
   it("moves a put on a handle with no index from the blind plan to the full one once a newer schema adds an index", async () => {
     const name = freshName();
-    const bare = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: {} } });
+    const bare = defineSchema({ version: 1, collections: { todos: collection<Todo>() } });
     const { db, updates } = recording(await kvOn(name));
     // Deaf to change events, so the old handle learns of the index only when its write reads the catalog.
     const old = await openOn(wrap(db, { changes: () => () => {} }), bare);
@@ -155,10 +148,7 @@ describe("opening a schema", () => {
       { id: "2", title: "a", slug: "s", createdAt: 2 },
     ]);
     const oldTitles = await storedPrefix(old.kv, "todos", "byTitle");
-    const redefined = defineSchema<{ todos: Todo }>()({
-      version: 2,
-      collections: { todos: { byCreated, byTitle: { by: "slug" } } },
-    });
+    const redefined = defineSchema({ version: 2, collections: { todos: byCreated.index("byTitle", "slug") } });
     const next = await at(name, redefined);
     expect((await next.store.collection("todos").query({ index: "byTitle" })).docs.map((d) => d.id)).toEqual(["2"]);
     await old.kv.sync();
@@ -190,7 +180,7 @@ describe("opening a schema", () => {
     );
     const query = reader.collection("todos").queryIds({ index: "byTitle" });
     await scanStarted;
-    await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated, byTitle: { by: "slug" } } } }));
+    await at(name, defineSchema({ version: 2, collections: { todos: byCreated.index("byTitle", "slug") } }));
     await readerKv.sync();
     release();
     const byTitle = [...docs].sort((a, b) => a.title!.localeCompare(b.title!) || a.id.localeCompare(b.id));
@@ -204,7 +194,7 @@ describe("opening a schema", () => {
     await old.store.collection("todos").putMany(rows(50));
     const titles = await storedPrefix(old.kv, "todos", "byTitle");
     expect(await keysUnder(old.kv, titles)).toBe(50);
-    const next = await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated } } }));
+    const next = await at(name, defineSchema({ version: 2, collections: { todos: byCreated } }));
     await next.store.whenIdle();
     expect(await keysUnder(next.kv, titles)).toBe(0);
     expect((await storedCatalog(next.kv)).dropped).toEqual([]);
@@ -214,10 +204,10 @@ describe("opening a schema", () => {
     type Note = { id: string; body: string };
     const name = freshName();
     const both = (version: number) =>
-      defineSchema<{ todos: Todo; notes: Note }>()({ version, collections: { todos: { byCreated }, notes: { byBody: { by: "body" } } } });
+      defineSchema({ version, collections: { todos: byCreated, notes: collection<Note>().index("byBody", "body") } });
     const first = await at(name, both(1));
     await first.store.collection("notes").putMany([{ id: "n1", body: "x" }, { id: "n2", body: "y" }]);
-    const second = await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated } } }));
+    const second = await at(name, defineSchema({ version: 2, collections: { todos: byCreated } }));
     await second.store.whenIdle();
     const third = await at(name, both(3));
     expect((await third.store.collection("notes").query({ index: "byBody" })).docs).toEqual([
@@ -229,9 +219,9 @@ describe("opening a schema", () => {
   it("deletes every key of a dropped collection, and the older schema's handle can no longer use it", async () => {
     type Note = { id: string; body: string };
     const name = freshName();
-    const both = defineSchema<{ todos: Todo; notes: Note }>()({
+    const both = defineSchema({
       version: 1,
-      collections: { todos: { byCreated }, notes: { byBody: { by: "body" } } },
+      collections: { todos: byCreated, notes: collection<Note>().index("byBody", "body") },
     });
     const old = await at(name, both);
     await old.store.collection("todos").putMany(rows(5));
@@ -239,7 +229,7 @@ describe("opening a schema", () => {
     const notes = await storedPrefix(old.kv, "notes");
     const next = await at(
       name,
-      defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated } }, drop: ["notes"] }),
+      defineSchema({ version: 2, collections: { todos: byCreated }, drop: ["notes"] }),
     );
     await next.store.whenIdle();
     const catalog = await storedCatalog(next.kv);
@@ -253,7 +243,7 @@ describe("opening a schema", () => {
 
   it("opens an older schema after a newer one is stored, writing and reading its unchanged indexes", async () => {
     const name = freshName();
-    await at(name, defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byCreated } } }));
+    await at(name, defineSchema({ version: 2, collections: { todos: byCreated } }));
     const old = await at(name, v1);
     await old.store.collection("todos").put({ id: "1", title: "t", createdAt: 1 });
     expect((await old.store.collection("todos").queryIds({ index: "byCreated" })).ids).toEqual(["1"]);
@@ -423,10 +413,9 @@ describe("clear", () => {
   });
 
   it("sweeps the entries of index id 255, the last id a collection can give", async () => {
-    const wide = defineSchema<{ todos: Todo }>()({
-      version: 1,
-      collections: { todos: Object.fromEntries(Array.from({ length: 255 }, (_, i) => [`i${i}`, byCreated])) },
-    });
+    let todos = collection<Todo>();
+    for (let i = 0; i < 255; i++) todos = todos.index(`i${i}`, "createdAt") as never;
+    const wide = defineSchema({ version: 1, collections: { todos } });
     const { kv, store } = await at(freshName(), wide);
     await store.collection("todos").put({ id: "1", createdAt: 1 });
     expect(Object.values((await storedCatalog(kv)).collections["todos"]!.indexes).map((i) => i.id)).toContain(255);

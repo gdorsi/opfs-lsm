@@ -1,26 +1,25 @@
-import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import { defineContender } from "../../core/types.ts";
 import { LIMITS, OPEN, STATUSES, type Comment, type Issue, type IssueCard, type IssueRef, type Label, type Project, type Status, type User } from "../../datasets/tracker/types.ts";
 import { kvCommon, openKv } from "../../page/kv.ts";
 import { changesOf, mergeTop } from "../../page/tracker.ts";
 
-const schema = defineSchema<{ users: User; projects: Project; labels: Label; issues: Issue; comments: Comment }>()({
+const schema = defineSchema({
   version: 1,
   collections: {
-    users: {},
-    labels: {},
-    projects: { byKey: { by: "key", unique: true } },
-    issues: {
-      byProjectStatus: { by: ["projectId", "status", "updatedAt"] },
-      byNumber: { by: ["projectId", "number"], unique: true },
-      byTriage: { by: ["projectId", "status", "priority", "createdAt"] },
-      byLabel: { by: ["labelIds[]", "projectId", "status", "updatedAt"] },
-      byAssignee: { by: ["assigneeId", "status", "updatedAt"] },
-      byProjectAssignee: { by: ["projectId", "assigneeId", "status"] },
-      byUpdated: { by: "updatedAt" },
-      byTitle: { by: ["projectId", "updatedAt"], text: "title" },
-    },
-    comments: { byIssue: { by: ["issueId", "createdAt"] } },
+    users: collection<User>(),
+    labels: collection<Label>(),
+    projects: collection<Project>().unique("byKey", "key"),
+    issues: collection<Issue>()
+      .index("byProjectStatus", ["projectId", "status", "updatedAt"])
+      .unique("byNumber", ["projectId", "number"])
+      .index("byTriage", ["projectId", "status", "priority", "createdAt"])
+      .index("byLabel", ["labelIds[]", "projectId", "status", "updatedAt"])
+      .index("byAssignee", ["assigneeId", "status", "updatedAt"])
+      .index("byProjectAssignee", ["projectId", "assigneeId", "status"])
+      .index("byUpdated", "updatedAt")
+      .text("byTitle", ["projectId", "updatedAt"], "title"),
+    comments: collection<Comment>().index("byIssue", ["issueId", "createdAt"]),
   },
 });
 

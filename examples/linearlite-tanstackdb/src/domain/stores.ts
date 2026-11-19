@@ -1,5 +1,4 @@
-import type { IndexDecl } from "@opfs-lsm/docstore";
-import { type Body, type Clean, commentKey, type Comment, type Issue, type StoredIssue, type Synced } from "./model.ts";
+import { type Body, type Clean, commentKey, type Comment, type Issue, type Synced } from "./model.ts";
 import { bool, code, id, kanbanorder, type Parse, text } from "./parse.ts";
 
 const MAX_TITLE = 500;
@@ -23,11 +22,10 @@ type Field<V> = {
   readonly ref?: "issues";
 };
 
-type StreamSpec<Stored extends { id: string }, Row extends Synced & { id: string }, Derived extends keyof Row = never> = {
+type StreamSpec<Row extends Synced & { id: string }, Derived extends keyof Row = never> = {
   readonly load: "eager" | "on-demand";
   /** `full`: pulled from version 0. `threads`: pulled from the head on, for the issues whose thread the replica holds. */
   readonly pull: "full" | "threads";
-  readonly indexes: { readonly [name: string]: IndexDecl<Stored> };
   readonly table: string;
   /** One entry per server column, in column order, `id` first. */
   readonly fields: { readonly [F in Exclude<keyof Clean<Row>, Derived>]-?: Field<Row[F & keyof Row]> };
@@ -36,26 +34,18 @@ type StreamSpec<Stored extends { id: string }, Row extends Synced & { id: string
 };
 
 const stream =
-  <Stored extends { id: string }, Row extends Synced & { id: string }, Derived extends keyof Row = never>() =>
-  <const S extends StreamSpec<Stored, Row, Derived>>(spec: S): S =>
+  <Row extends Synced & { id: string }, Derived extends keyof Row = never>() =>
+  <const S extends StreamSpec<Row, Derived>>(spec: S): S =>
     spec;
 
 /**
- * The stores of the replica, and for each stream (a store the server holds) how it loads, pulls, indexes and
+ * The stores of the replica, and for each stream (a store the server holds) how it loads, pulls and
  * validates. A push applies streams in this order, so a stream lists after the one its rows belong to.
  */
 export const STORES = {
-  issues: stream<StoredIssue, Issue>()({
+  issues: stream<Issue>()({
     load: "on-demand",
     pull: "full",
-    indexes: {
-      byCreated: { by: ["deleted", "created"] },
-      byTitle: { by: ["deleted", "title"] },
-      byPriority: { by: ["deleted", "priority", "priorityOrder"] },
-      byStatus: { by: ["deleted", "status", "statusOrder"], text: "title" },
-      search: { by: ["deleted", "modified"], text: "title" },
-      pending: { by: "pending" },
-    },
     table: "issue",
     fields: {
       id: { sql: "text" },
@@ -70,10 +60,9 @@ export const STORES = {
       version: { sql: "int" },
     },
   }),
-  bodies: stream<Body, Body>()({
+  bodies: stream<Body>()({
     load: "on-demand",
     pull: "threads",
-    indexes: { pending: { by: "pending" } },
     table: "body",
     fields: {
       id: { sql: "text", ref: "issues" },
@@ -81,10 +70,9 @@ export const STORES = {
       version: { sql: "int" },
     },
   }),
-  comments: stream<Comment, Comment, "key">()({
+  comments: stream<Comment, "key">()({
     load: "on-demand",
     pull: "threads",
-    indexes: { byIssue: { by: "issue_id" }, pending: { by: "pending" } },
     table: "comment",
     fields: {
       id: { sql: "text" },
@@ -97,7 +85,7 @@ export const STORES = {
     },
     derive: (c) => ({ key: commentKey(c.issue_id, c.id) }),
   }),
-  sync: { load: "eager", indexes: {} },
+  sync: { load: "eager" },
 } as const;
 
 export type Stream = { [N in keyof typeof STORES]: (typeof STORES)[N] extends { readonly pull: string } ? N : never }[keyof typeof STORES];

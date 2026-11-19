@@ -25,9 +25,9 @@ export const SIZE_ROWS: readonly SizeRow[] = [
   {
     id: "docstore",
     kv: true,
-    source: `export { defineSchema, openDocStore } from "@opfs-lsm/docstore"; export { openDb } from "@opfs-lsm/kv";`,
-    note: "defineSchema, openDocStore and openDb, includes kv",
-    budget: 53_700,
+    source: `export { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore"; export { openDb } from "@opfs-lsm/kv";`,
+    note: "collection, defineSchema, openDocStore and openDb, includes kv",
+    budget: 53_900,
   },
   { id: "dexie", source: `export { default } from "dexie";`, note: "Dexie" },
   { id: "yjs", source: `export * as Y from "yjs";`, note: "yjs alone, to subtract from the two rows below" },

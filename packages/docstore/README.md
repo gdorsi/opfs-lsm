@@ -8,7 +8,7 @@ pnpm add @opfs-lsm/docstore @opfs-lsm/kv
 
 ```ts
 import { openDb } from "@opfs-lsm/kv";
-import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 
 type Todo = {
 	id: string;
@@ -17,9 +17,11 @@ type Todo = {
 	createdAt: number;
 	tags: string[]
 };
-const schema = defineSchema<{ todos: Todo }>()({
+const schema = defineSchema({
 	version: 1,
-	collections: { todos: { open: { by: ["done", "createdAt"] } } },
+	collections: {
+		todos: collection<Todo>().index("open", ["done", "createdAt"]),
+	},
 });
 const kv = await openDb({ name: "app" });
 const store = await openDocStore(kv, schema);
@@ -37,23 +39,30 @@ await todos.query({ index: "open", eq: [false] });
 
 ## Schemas
 
-A schema names each collection and its indexes. The rest of this page uses this one.
+A schema names each collection, with its document type and its indexes. The rest of this page uses this one.
 
 ```ts
 type User = { id: string; email?: string };
-const schema = defineSchema<{ todos: Todo; users: User }>()({
+const schema = defineSchema({
 	version: 1,
 	// an integer of at least 1. Bump it on every change to
 	// collections
 	collections: {
-		todos: {
-			open: { by: ["done", "createdAt"] },        // sorted
-			byTag: { by: "tags[]" },                    // multi
-			search: { by: "createdAt", text: "title" }, // text
-		},
-		users: { byEmail: { by: "email", unique: true } }, // unique
+		todos: collection<Todo>()
+			.index("open", ["done", "createdAt"])  // sorted
+			.index("byTag", "tags[]")              // multi
+			.text("search", "createdAt", "title"), // text
+		users: collection<User>().unique("byEmail", "email"), // unique
 	},
 });
+```
+
+`collection<T>()` starts a declaration. `index`, `unique` and `text` each take the index name, then `by`: a field, or a list of fields. `text` takes the string field to search as its third argument. Each call returns a new declaration, so you can share a base.
+
+```ts
+const base = collection<Todo>().index("open", ["done", "createdAt"]);
+const withSearch = base.text("search", "createdAt", "title");
+// base is unchanged
 ```
 
 You open and close `kv` yourself, and other layers can keep using it.
@@ -75,12 +84,12 @@ A document is a JSON object with a string `id`. Declare its type with `type`, be
 
 ```ts
 interface Card { id: string }
-defineSchema<{ cards: Card }>(); // type error
-defineSchema<{ // type error, and so are Map, Uint8Array,
+collection<Card>(); // type error
+collection<{ // type error, and so are Map, Uint8Array,
 	// and classes
-	events: { id: string; at: Date }
+	id: string; at: Date
 }>();
-defineSchema<{ events: { id: string; at: number } }>(); // ok
+collection<{ id: string; at: number }>(); // ok
 ```
 
 The store keeps `JSON.stringify(doc)` and returns its `JSON.parse`. Indexes read that stored form too.
@@ -149,6 +158,56 @@ await users.modifyMany(["u1", "u2"], ([u1, u2]) => [
 	u1 && { ...u1, id: "u2" }, // u2 takes u1's email
 ]);
 ```
+
+## Validators
+
+Give `collection` a [Standard Schema](https://standardschema.dev) validator in place of a type. zod, valibot, arktype and others implement it, and docstore adds no dependency. The document type is the validator's output, and the indexes are checked against it. A schema can mix validated collections and collections declared with a type.
+
+```ts
+import * as v from "valibot";
+
+const Task = v.object({
+	id: v.string(),
+	title: v.pipe(v.string(), v.minLength(1)),
+	done: v.optional(v.boolean(), false),
+	createdAt: v.number(),
+});
+const schema = defineSchema({
+	version: 1,
+	collections: {
+		tasks: collection(Task).index("byCreated", "createdAt"),
+	},
+});
+const tasks = (await openDocStore(kv, schema)).collection("tasks");
+```
+
+`put`, `putMany`, and every document that `modify` or `modifyMany` returns go through the validator. The store keeps the validator's output, and reads the `id` from it: a validator that rewrites the id stores a `put` under the new one.
+
+```ts
+await tasks.put({ id: "t1", title: "Buy milk", createdAt: 1 });
+await tasks.get("t1");
+// => { id: "t1", title: "Buy milk", done: false, createdAt: 1 }
+await tasks.modify("t1", (t) => ({ ...t, done: true }));
+await tasks.put({ id: "t2", title: "", createdAt: 2 });
+// throws DocStoreError "invalid", and nothing is stored
+// its issues are the validator's: [{ message, path }]
+```
+
+Writes take the validator's input type, and reads return its output type. A transform makes the two differ. `modify` then turns the stored form back into an input.
+
+```ts
+const Visit = v.object({
+	id: v.string(),
+	at: v.pipe(v.date(), v.transform((d) => d.getTime())),
+});
+// with visits, a collection declared with Visit
+await visits.put({ id: "v1", at: new Date() }); // stores at as a number
+await visits.modify("v1", (x) => ({ ...x, at: new Date(x.at) }));
+await visits.modify("v1", (x) => ({ ...x }));
+// type error: at is a number, and the input takes a Date
+```
+
+A validator must be synchronous: one that returns a Promise throws `"invalid"` with no issues. An error it throws itself reaches the caller as it is, and nothing is stored. Reads never validate. The validators are not stored, so a change to one needs no `version` bump. They guard this handle's writes only: another schema, another tab or `kv.ingest` can still write documents they would reject.
 
 ## Deletes
 
@@ -504,13 +563,10 @@ await load();
 Open compares the declared `version` with the stored one, in one kv transaction. A higher version stores the new schema, builds new indexes, and sweeps the keys of removed ones.
 
 ```ts
-const v2 = defineSchema<{ todos: Todo; users: User }>()({
+const v2 = defineSchema({
 	version: 2,
 	collections: {
-		todos: {
-			...schema.collections.todos,
-			byCreated: { by: "createdAt" }
-		},
+		todos: schema.collections.todos.index("byCreated", "createdAt"),
 		users: schema.collections.users,
 	},
 });
@@ -524,7 +580,7 @@ await todos.put(todo);
 To delete a collection and its documents, name it in `drop`. A collection you only leave out keeps its documents for a later schema.
 
 ```ts
-const v3 = defineSchema<{ todos: Todo }>()({
+const v3 = defineSchema({
 	version: 3,
 	collections: { todos: v2.collections.todos },
 	drop: ["users"],
@@ -540,7 +596,7 @@ await users.get("u1");
 ```ts
 await openDocStore(kv, schema);
 // a lower version uses the stored catalog unchanged
-await openDocStore(kv, { ...v3, collections: { todos: {} } });
+await openDocStore(kv, { ...v3, collections: { todos: collection<Todo>() } });
 // throws DocStoreError "schema"
 // the same version must declare the stored indexes, and drop
 // nothing still stored
@@ -554,13 +610,10 @@ await todos.putMany([
 	{ ...todo, id: "d2" }
 ]);
 // same title
-const v4 = defineSchema<{ todos: Todo }>()({
+const v4 = defineSchema({
 	version: 4,
 	collections: {
-		todos: {
-			...v3.collections.todos,
-			byTitle: { by: "title", unique: true }
-		}
+		todos: v3.collections.todos.unique("byTitle", "title"),
 	},
 });
 const todos4 = (await openDocStore(kv, v4)).collection("todos");
@@ -614,6 +667,7 @@ try {
 | `"query"` | A query is malformed. | Fix the query. |
 | `"cursor"` | `after` belongs to another range, or predates a `clear` or a redefinition. | Query again without `after`. |
 | `"document"` | A bad or repeated id, a changed id, or a value an index cannot hold. | Fix the document. Nothing was stored. |
+| `"invalid"` | A validator rejected a document: `issues` lists why, and `ids` names it if it has a string id. Or a validator returned a Promise. | Fix the document, or use a synchronous validator. Nothing was stored. |
 | `ConstraintError` | A write passes kv's batch limit. | Split the write. |
 | `ClosedError` | The kv handle closed, also from `changes`. | Open kv again. |
 

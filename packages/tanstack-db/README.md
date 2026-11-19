@@ -8,15 +8,15 @@ pnpm add @opfs-lsm/tanstack-db @opfs-lsm/docstore @opfs-lsm/kv \
 ```
 
 ```ts
-import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import { openDb } from "@opfs-lsm/kv";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection } from "@tanstack/db";
 
 type Todo = { id: string; title: string; done: boolean };
-const schema = defineSchema<{ todos: Todo }>()({
+const schema = defineSchema({
 	version: 1,
-	collections: { todos: {} },
+	collections: { todos: collection<Todo>() },
 });
 const kv = await openDb({ name: "app" });
 const store = await openDocStore(kv, schema);
@@ -34,10 +34,10 @@ todos.insert({ id: "1", title: "Buy milk", done: false });
 
 ```ts
 type Issue = { id: string; status: number; modified: number };
-const tracker = defineSchema<{ issues: Issue }>()({
+const tracker = defineSchema({
 	version: 1,
 	collections: {
-		issues: { byStatus: { by: ["status", "modified"] } },
+		issues: collection<Issue>().index("byStatus", ["status", "modified"]),
 	},
 });
 const trackerKv = await openDb({ name: "tracker" });

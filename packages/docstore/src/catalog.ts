@@ -10,7 +10,7 @@ import { CorruptDatabaseError } from "@opfs-lsm/kv";
 import { isObject } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { fromUtf8, indexPrefix, rowPrefix, utf8, type CollectionId, type IndexId, type ScanTarget } from "./keys.js";
-import type { AnySchema, IndexInfo } from "./schema.js";
+import type { IndexInfo, Schema } from "./schema.js";
 
 /** Bumped when stored bytes change meaning. */
 const FORMAT = 1;
@@ -91,13 +91,14 @@ function checkField(field: unknown, where: string): string {
 
 const isArrayField = (field: unknown): field is string => typeof field === "string" && field.endsWith(ARRAY_MARK);
 
-export function normalizeSchema(decl: AnySchema): DeclaredSchema {
+export function normalizeSchema(decl: Schema): DeclaredSchema {
   if (!Number.isInteger(decl.version) || decl.version < 1) badSchema("version must be an integer >= 1");
   if (!isObject(decl.collections)) badSchema("collections must be an object");
   const collections = new Map<string, Map<string, IndexSpec>>();
-  for (const [name, indexes] of Object.entries(decl.collections)) {
+  for (const [name, coll] of Object.entries(decl.collections)) {
     if (!NAME.test(name)) badSchema(`collection name ${JSON.stringify(name)} must match ${NAME}`);
-    if (!isObject(indexes)) badSchema(`collection "${name}" must map index names to indexes`);
+    const indexes: unknown = coll?.indexes;
+    if (!isObject(indexes)) badSchema(`collection "${name}" was not made by collection()`);
     const specs = new Map<string, IndexSpec>();
     for (const [index, d] of Object.entries(indexes)) {
       const where = `index "${index}" of "${name}"`;

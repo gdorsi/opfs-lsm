@@ -69,10 +69,10 @@ Server (`node:sqlite`, `data/linearlite.db`): tables `issue`, `body`, `comment` 
 random id, so a client notices a reseeded server and starts over). Issues and comments carry `deleted`, and deletes
 are tombstones. Bodies are 1:1 with issues and are never tombstoned: an issue's tombstone hides its body.
 
-`STORES` (`src/domain/stores.ts`) lists every store once. Per stream it holds the load mode, the pull mode, the docstore
-indexes, the server table and, per column, its SQL type, its push parser, whether a local edit may change it and its
-server index. The stream list, the mutable fields, the push validation, the docstore schema and the server DDL derive
-from it, and so does the push order: streams apply in table order, so a child follows its parent.
+`STORES` (`src/domain/stores.ts`) lists every store once. Per stream it holds the load mode, the pull mode, the
+server table and, per column, its SQL type, its push parser, whether a local edit may change it and its server index.
+The stream list, the mutable fields, the push validation and the server DDL derive from it, and so does the push
+order: streams apply in table order, so a child follows its parent. The docstore indexes are in `src/backends/kv.ts`.
 
 ## One write path
 
@@ -194,17 +194,16 @@ reloads every loaded query.
 ### Indexes
 
 ```ts
-// src/domain/stores.ts, STORES[stream].indexes
-issues: {
-  byCreated:  { by: ["deleted", "created"] },
-  byTitle:    { by: ["deleted", "title"] },
-  byPriority: { by: ["deleted", "priority", "priorityOrder"] },
-  byStatus:   { by: ["deleted", "status", "statusOrder"], text: "title" },
-  search:     { by: ["deleted", "modified"], text: "title" },
-  pending:    { by: "pending" },
-},
-bodies:   { pending: { by: "pending" } },
-comments: { byIssue: { by: "issue_id" }, pending: { by: "pending" } },
+// src/backends/kv.ts, schema.collections
+issues: collection<StoredIssue>()
+  .index("byCreated", ["deleted", "created"])
+  .index("byTitle", ["deleted", "title"])
+  .index("byPriority", ["deleted", "priority", "priorityOrder"])
+  .text("byStatus", ["deleted", "status", "statusOrder"], "title")
+  .text("search", ["deleted", "modified"], "title")
+  .index("pending", "pending"),
+bodies:   collection<Body>().index("pending", "pending"),
+comments: collection<Comment>().index("byIssue", "issue_id").index("pending", "pending"),
 ```
 
 Every list read pins `deleted = false`, so every ordered index leads with `deleted`: the adapter reads an ordered

@@ -10,7 +10,7 @@ const utf8 = new TextEncoder();
 const EMPTY = new Uint8Array(0);
 
 function coll(indexes: Record<string, object>): BoundCollection {
-  const declared = normalizeSchema({ version: 1, collections: { c: indexes } });
+  const declared = normalizeSchema({ version: 1, collections: { c: { indexes } } } as never);
   const catalog = reconcile(undefined, declared)!;
   return bind(encodeCatalog(catalog), catalog, declared).collections.get("c")!;
 }

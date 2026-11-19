@@ -1,4 +1,4 @@
-import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection } from "@tanstack/db";
 import type { Todo } from "../../core/families.ts";
@@ -6,7 +6,7 @@ import { defineContender } from "../../core/types.ts";
 import { kvCommon, openKv } from "../../page/kv.ts";
 import { collectionOps } from "../../page/tanstack.ts";
 
-const schema = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: {} } });
+const schema = defineSchema({ version: 1, collections: { todos: collection<Todo>() } });
 
 export default defineContender({
   family: "tanstack",

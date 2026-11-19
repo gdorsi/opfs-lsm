@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { expect } from "vitest";
-import { defineSchema, type Collection, type Cursor, type Query } from "../src/index.js";
+import { collection, defineSchema, type Collection, type Cursor, type Query } from "../src/index.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
 import { expected, type ModelIndex } from "./oracle.js";
 import { denseScalarArb, stringArb } from "./order.js";
@@ -14,16 +14,15 @@ export type Doc = {
   t?: string | undefined;
 };
 
-export const schema = defineSchema<{ docs: Doc }>()({
+export const schema = defineSchema({
   version: 1,
   collections: {
-    docs: {
-      one: { by: "a" },
-      two: { by: ["a", "b"] },
-      tags: { by: ["tags[]", "b"] },
-      uniq: { by: "u", unique: true },
-      search: { by: "a", text: "t" },
-    },
+    docs: collection<Doc>()
+      .index("one", "a")
+      .index("two", ["a", "b"])
+      .index("tags", ["tags[]", "b"])
+      .unique("uniq", "u")
+      .text("search", "a", "t"),
   },
 });
 
@@ -36,8 +35,8 @@ export const MODEL: Record<string, ModelIndex> = {
 };
 const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1 };
 
-export type Docs = Collection<Doc, (typeof schema)["collections"]["docs"]>;
-export type DocQuery = Query<Doc, (typeof schema)["collections"]["docs"]>;
+export type Docs = Collection<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
+export type DocQuery = Query<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
 
 export const asQuery = (q: QueryInput) => q as DocQuery;
 

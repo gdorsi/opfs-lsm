@@ -399,9 +399,15 @@ importers:
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
+      valibot:
+        specifier: ^1.5.0
+        version: 1.5.0(typescript@5.9.3)
       vitest:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@26.6.6)(jiti@2.7.0)(lightningcss@1.33.0)(tsx@4.23.15)(yaml@2.9.1)
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/fate:
     dependencies:
@@ -3167,6 +3173,14 @@ packages:
     resolution: {integrity: sha512-Sc5u1VVln93y1Xnz4R+CunOZc7R9LUcTmhj7Rc7Eg3HVcf7rVn2FOoa812fe0W8p3jD7xeoGSYbfqCGGH2B6xw==}
     hasBin: true
 
+  valibot@1.5.0:
+    resolution: {integrity: sha512-nil6AkP2TChWL43Z5uJ6GTxX01CUA+g8LWUM+N/rB9NBbkUMaUsi9PUNzlUPgoKASgmx9f7eGOYpJ04/fSa6FQ==}
+    peerDependencies:
+      typescript: '>=5'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   vfile-message@4.0.4:
     resolution: {integrity: sha512-66ycRswIkNmHH9PHku7ADtv5RVwgIrOcuv3J8Svz6h4qgGRrKVa+9/neuKyJZUXyOpYwLTvS+whZ4R2urHHgQg==}
 
@@ -5904,6 +5918,10 @@ snapshots:
       react: 19.3.1
 
   uuid@14.0.3: {}
+
+  valibot@1.5.0(typescript@5.9.3):
+    optionalDependencies:
+      typescript: 5.9.3
 
   vfile-message@4.0.4:
     dependencies:

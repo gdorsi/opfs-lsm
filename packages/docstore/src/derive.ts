@@ -4,6 +4,7 @@ import type { BoundCollection, IndexPlan, Path } from "./catalog.js";
 import { DocStoreError } from "./errors.js";
 import { MAX_KEY_BYTES, bytesEqual, fromUtf8, keyString, parseId, textValue, utf8, type DocId } from "./keys.js";
 import type { JsonDoc, Scalar } from "./schema.js";
+import type { StandardSchemaV1 } from "./standard-schema.js";
 
 declare const storedBrand: unique symbol;
 
@@ -27,6 +28,23 @@ export function encodeDoc(doc: JsonDoc): EncodedDoc {
   const parsed: unknown = text === undefined ? undefined : JSON.parse(text);
   if (text === undefined || !isObject(parsed)) throw new DocStoreError("document", "a document must be a JSON object");
   return { id: parseId(parsed["id"]), bytes: utf8.encode(text), doc: parsed as StoredDoc };
+}
+
+/** What a write of collection `name` encodes for `value`: the output of `validator`, or `value` itself. */
+export function docEncoder(name: string, validator: StandardSchemaV1 | undefined): (value: unknown) => EncodedDoc {
+  if (!validator) return encodeDoc as (value: unknown) => EncodedDoc;
+  return (value) => {
+    const result = validator["~standard"].validate(value);
+    if (result instanceof Promise) {
+      // The write fails here, so a rejection of the Promise would reach nobody.
+      result.catch(() => {});
+      throw new DocStoreError("invalid", `"${name}": the validator is async`);
+    }
+    if (!result.issues) return encodeDoc(result.value as JsonDoc);
+    const id = isObject(value) ? value["id"] : undefined;
+    const ids = typeof id === "string" ? [id] : undefined;
+    throw new DocStoreError("invalid", `"${name}": ${result.issues[0]?.message}`, ids, result.issues);
+  };
 }
 
 export function decodeDoc(bytes: Uint8Array): StoredDoc {

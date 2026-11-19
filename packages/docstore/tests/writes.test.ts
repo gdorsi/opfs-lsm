@@ -1,6 +1,6 @@
 import type { Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
-import { defineSchema, openDocStore, type Query } from "../src/index.js";
+import { collection, defineSchema, openDocStore, type Query } from "../src/index.js";
 import { codeOf, freshName, openKv, recording, wrap } from "./harness.js";
 
 type Note = {
@@ -13,19 +13,18 @@ type Note = {
   body?: string | undefined;
 };
 
-const schema = defineSchema<{ notes: Note }>()({
+const schema = defineSchema({
   version: 1,
   collections: {
-    notes: {
-      byCreated: { by: "createdAt" },
-      bySlug: { by: "slug", unique: true },
-      byTag: { by: "tags[]" },
-      byTitle: { by: "title" },
-    },
+    notes: collection<Note>()
+      .index("byCreated", "createdAt")
+      .unique("bySlug", "slug")
+      .index("byTag", "tags[]")
+      .index("byTitle", "title"),
   },
 });
 
-type NoteQuery = Query<Note, (typeof schema)["collections"]["notes"]>;
+type NoteQuery = Query<Note, (typeof schema)["collections"]["notes"]["indexes"]>;
 const everyIndex: NoteQuery[] = [{ index: "byCreated" }, { index: "bySlug" }, { index: "byTag" }, { index: "byTitle" }];
 
 const open: Db[] = [];
@@ -134,7 +133,7 @@ describe("putMany", () => {
     const kv = await openKv(freshName());
     open.push(kv);
     const { db, updates } = recording(kv);
-    const bare = defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: {} } });
+    const bare = defineSchema({ version: 1, collections: { notes: collection<Note>() } });
     const c = (await openDocStore(db, bare)).collection("notes");
     await c.putMany([
       { id: "1", title: "a" },
@@ -556,9 +555,9 @@ describe("two handles on one database", () => {
 });
 
 describe("modifyMany on a collection without a unique index", () => {
-  const plain = defineSchema<{ notes: Note }>()({
+  const plain = defineSchema({
     version: 1,
-    collections: { notes: { byCreated: { by: "createdAt" }, byTag: { by: "tags[]" } } },
+    collections: { notes: collection<Note>().index("byCreated", "createdAt").index("byTag", "tags[]") },
   });
 
   async function plainNotes(name = freshName()) {

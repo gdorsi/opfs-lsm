@@ -1,7 +1,7 @@
 import type { Db, Entry } from "@opfs-lsm/kv";
 import { describe, expect, it } from "vitest";
-import { defineSchema, openDocStore } from "../src/index.js";
-import type { AnySchema } from "../src/schema.js";
+import { collection, defineSchema, openDocStore } from "../src/index.js";
+import type { Schema } from "../src/schema.js";
 import { docstoreKeys, freshName, gate, keysUnder, openKv, storedCatalog, storedPrefix } from "./harness.js";
 
 type Row = { id: string; a: number; b?: string; tags: string[]; u?: number; t: string };
@@ -16,15 +16,15 @@ const rows: Row[] = Array.from({ length: ROWS }, (_, i) => ({
   t: `w${i % 17} x${i % 19}`,
 }));
 
-const define = defineSchema<{ rows: Row }>();
-const v1 = define({ version: 1, collections: { rows: { byA: { by: "a" } } } });
+const byA = collection<Row>().index("byA", "a");
+const v1 = defineSchema({ version: 1, collections: { rows: byA } });
 const v2 = {
-  sorted: define({ version: 2, collections: { rows: { byA: { by: "a" }, added: { by: ["b", "a"] } } } }),
-  multi: define({ version: 2, collections: { rows: { byA: { by: "a" }, added: { by: "tags[]" } } } }),
-  unique: define({ version: 2, collections: { rows: { byA: { by: "a" }, added: { by: "u", unique: true } } } }),
-  text: define({ version: 2, collections: { rows: { byA: { by: "a" }, added: { by: "a", text: "t" } } } }),
+  sorted: defineSchema({ version: 2, collections: { rows: byA.index("added", ["b", "a"]) } }),
+  multi: defineSchema({ version: 2, collections: { rows: byA.index("added", "tags[]") } }),
+  unique: defineSchema({ version: 2, collections: { rows: byA.unique("added", "u") } }),
+  text: defineSchema({ version: 2, collections: { rows: byA.text("added", "a", "t") } }),
 };
-const withoutA = define({ version: 2, collections: { rows: {} } });
+const withoutA = defineSchema({ version: 2, collections: { rows: collection<Row>() } });
 
 /** 500 rows per chunk, then the empty scan that marks the index ready. */
 const BACKFILL_SCANS = Math.ceil(ROWS / 500) + 1;
@@ -53,7 +53,7 @@ async function stopAt(name: string, method: "range" | "catalog-or-batch", k: num
 }
 
 /** The keys an uninterrupted run leaves once idle. */
-async function finished<S extends AnySchema>(schema: S, before: (kv: Db) => Promise<void> = async () => {}): Promise<Entry[]> {
+async function finished<S extends Schema>(schema: S, before: (kv: Db) => Promise<void> = async () => {}): Promise<Entry[]> {
   const kv = await openKv(await loaded());
   try {
     await before(kv);
