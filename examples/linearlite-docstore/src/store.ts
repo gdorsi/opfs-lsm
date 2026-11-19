@@ -18,8 +18,11 @@ export async function openStore(name: string): Promise<Store> {
   return { db, issues: issuesOf(docs), details: detailsOf(docs) };
 }
 
+export type ReadPath = "index" | "ranges" | "scan" | "search";
+
 /** The list under one filter, as stored when it is asked. It reads nothing until then. */
 export type View = {
+  readonly path: ReadPath;
   /** How many issues the list holds. */
   total(): Promise<number>;
   /** Rows `offset` to `offset + n` of the list, fewer at its end. */
@@ -68,7 +71,7 @@ const sum = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0);
  * A list that is its ranges one after the other, each in index order. The total is the ranges' entry counts. A page
  * starts at a cursor: the one a page before it left, or one reached by walking index entries without their documents.
  */
-function rangeView(issues: Issues, list: readonly Range[], reverse: boolean): View {
+function rangeView(issues: Issues, list: readonly Range[], reverse: boolean, path: "index" | "ranges"): View {
   const order = reverse ? list.toReversed() : list;
   const query = (r: Range) => ({ index: r.index, ...(r.eq && { eq: r.eq }), ...(reverse && { reverse: true }) }) as IssueQuery;
   let counted: Promise<number[]> | undefined;
@@ -89,6 +92,7 @@ function rangeView(issues: Issues, list: readonly Range[], reverse: boolean): Vi
   }
 
   return {
+    path,
     total: () => counts().then(sum),
     async read(offset, n) {
       let i = 0;
@@ -137,6 +141,7 @@ function scanView(issues: Issues, filter: Filter): View {
 
   const counted = ranges(filter, filter.status.length > 0 ? "status" : "priority");
   return {
+    path: "scan",
     total: () => Promise.all(counted.map((r) => issues.count({ index: r.index, eq: r.eq } as IssueQuery))).then(sum),
     async read(offset, n) {
       await scanTo(offset + n);
@@ -166,16 +171,16 @@ function searchView(issues: Issues, filter: Filter): View {
     (found ??= issues
       .query({ index: "byModified", ...(words.length > 0 && { match: words.join(" ") }) })
       .then(({ docs }) => docs.filter(keeps(filter)).sort(orderOf(filter))));
-  return { total: () => rows().then((r) => r.length), read: async (offset, n) => (await rows()).slice(offset, offset + n) };
+  return { path: "search", total: () => rows().then((r) => r.length), read: async (offset, n) => (await rows()).slice(offset, offset + n) };
 }
 
 /** How the list under `filter` is read. Each case reads through an index: see the README, "Reads". */
 export function viewOf({ issues }: Store, filter: Filter): View {
   const reverse = filter.dir === "desc";
   if (filter.q !== "") return searchView(issues, filter);
-  if (filter.sort === "status" || filter.sort === "priority") return rangeView(issues, ranges(filter, filter.sort), reverse);
+  if (filter.sort === "status" || filter.sort === "priority") return rangeView(issues, ranges(filter, filter.sort), reverse, "ranges");
   if (filter.status.length > 0 || filter.priority.length > 0) return scanView(issues, filter);
-  return rangeView(issues, [{ index: filter.sort === "created" ? "byCreated" : "byModified" }], reverse);
+  return rangeView(issues, [{ index: filter.sort === "created" ? "byCreated" : "byModified" }], reverse, "index");
 }
 
 /** One write: the issue with `patch` over it and a new `modified`. Resolves with the stored issue. */

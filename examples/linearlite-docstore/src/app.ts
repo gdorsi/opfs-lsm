@@ -46,9 +46,12 @@ export function createApp(store: Store) {
       if (mine === run) set({ total });
       return { total, at };
     });
-    void Promise.all([shown.rows, counted]).then(([r, c]) => {
-      if (label && mine === run) post({ type: "filter", label, rowsMs: r.at - from, total: c.total, totalMs: c.at - from });
-    }, failed);
+    void Promise.allSettled([shown.rows, counted]).then(([r, c]) => {
+      if (r.status === "rejected") return;
+      if (c.status === "rejected") return failed(c.reason);
+      if (!label || mine !== run) return;
+      post({ type: "filter", label, path: shown.path, rowsMs: r.value.at - from, total: c.value.total, totalMs: c.value.at - from });
+    });
     return shown.rows;
   }
 

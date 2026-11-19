@@ -27,6 +27,10 @@ jobs:
       - run: pnpm install --frozen-lockfile --filter @opfs-lsm/site --filter "@opfs-lsm/example-linearlite-docstore..."
       - run: pnpm --filter @opfs-lsm/site check
       - run: pnpm docs:build
+        env:
+          VITE_EVERR_INGEST_ENDPOINT: ${{ vars.EVERR_INGEST_ENDPOINT }}
+          VITE_EVERR_PUBLIC_INGEST_KEY: ${{ vars.EVERR_PUBLIC_INGEST_KEY }}
+          VITE_EVERR_SERVICE_VERSION: ${{ github.sha }}
       - if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
         with:

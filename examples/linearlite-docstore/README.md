@@ -47,3 +47,20 @@ The app times itself and posts each figure to the page that frames it (`src/prot
 - **Open and read first rows** starts once the kv wasm module is loaded, at the call that opens the database. It ends when the store returns the first 50 issues, before they are drawn. A first visit and a reload measure the same work: open kv, open the document store, read the page.
 - **Read a filtered page** starts when a filter, the sort or the search changes and ends when the store returns the first page of the new list, before it is drawn.
 - **Write** starts after the issues are generated and ends when the last transaction is acknowledged.
+
+## Telemetry
+
+A build made with `VITE_EVERR_INGEST_ENDPOINT` set sends the timings and the browser's signals to Everr, as the service `opfs-lsm-demo` (`src/telemetry.ts`). `post()` turns each timing into one event, through the `KPIS` table in `src/protocol.ts`:
+
+- `linearlite.open` from `opened`.
+- `linearlite.first_rows` from `first-rows`.
+- `linearlite.filter` from `filter`, with the read that served the list as `linearlite.read_path`. The search text stays out.
+- `linearlite.write` from `generated`.
+
+Each event carries its time as `linearlite.duration_ms`. A message type with no entry in `KPIS` fails the type check. `failed()` records each error the app catches once. To run the app alone against a local collector:
+
+```sh
+VITE_EVERR_INGEST_ENDPOINT=<otlp-url-from-status> pnpm --filter @opfs-lsm/example-linearlite-docstore dev
+```
+
+The docs site's README holds the configuration, the other events, and the local and production setup, in [Telemetry](../../site/README.md#telemetry).

@@ -7,6 +7,8 @@ import Layout from "./Layout.vue";
 import "./home.css";
 import "./doc.css";
 
+const withoutTelemetry = () => undefined;
+
 export default {
   extends: DefaultTheme,
   Layout,
@@ -14,5 +16,6 @@ export default {
     app.component("Adapters", Adapters);
     app.component("Benchmarks", Benchmarks);
     app.component("Illustration", Illustration);
+    if (!import.meta.env.SSR && import.meta.env.VITE_EVERR_INGEST_ENDPOINT) void import("./telemetry.ts").then((t) => t.startTelemetry(app), withoutTelemetry);
   },
 } satisfies Theme;
