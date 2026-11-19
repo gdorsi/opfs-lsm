@@ -11,13 +11,14 @@ On first load it holds no issue. **Generate** makes 100,000 issues in a dedicate
 
 ## Reads
 
-An issue is one document. Four indexes serve the list, and every total is a count of index entries, which reads no document.
+An issue is one document, declared with a [valibot](https://valibot.dev) schema, and the document type is inferred from it. Four indexes serve the list, and every total is a count of index entries, which reads no document.
 
 ```ts
-byModified: { by: "modified", text: "title" },
-byCreated:  { by: "created" },
-byStatus:   { by: ["status", "priority", "modified"] },
-byPriority: { by: ["priority", "status", "modified"] },
+issues: collection(Issue)
+  .text("byModified", "modified", "title")
+  .index("byCreated", "created")
+  .index("byStatus", ["status", "priority", "modified"])
+  .index("byPriority", ["priority", "status", "modified"]),
 ```
 
 | List | Rows | Total |
@@ -33,7 +34,7 @@ An issue's description and comments are one document of a second collection, `de
 
 ## Writes
 
-Each edit of a title, a status or a priority is one `modify` of the issue. A new issue is two writes: its description, then the issue.
+Each edit of a title, a status or a priority is one `modify` of the issue. A new issue is two writes: its description, then the issue. Every write goes through the collection's schema, which rejects a document of another shape and stores nothing.
 
 The list does not read again after a write. It listens to the collection's change feed (`changes`), which sends every written issue, from this tab or another. For each one the list takes the row out of its old place and puts it in its new one, and moves the total by one where the filter gains or loses the issue. The feed says what an issue is now, not what it was, so the list uses the copy it holds: a row it has read, or the open issue. When it holds none, as after a write from another tab to an issue it never read, it reads the rows in view again and counts from the index entries.
 

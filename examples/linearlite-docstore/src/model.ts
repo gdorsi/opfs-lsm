@@ -1,24 +1,29 @@
 import { collection, defineSchema } from "@opfs-lsm/docstore";
+import * as v from "valibot";
 
 export const STATUS_LABELS = ["Backlog", "Todo", "In Progress", "Done", "Canceled"] as const;
 export const PRIORITY_LABELS = ["Urgent", "High", "Medium", "Low", "No priority"] as const;
 export const CODES = [0, 1, 2, 3, 4] as const;
-export type Code = (typeof CODES)[number];
+const Code = v.picklist(CODES);
+export type Code = v.InferOutput<typeof Code>;
 
-export type Issue = {
-  id: string;
-  title: string;
-  status: Code;
-  priority: Code;
-  username: string;
-  created: number;
-  modified: number;
-};
+/** A valibot schema per collection. Docstore stores what a schema returns, so these objects are strict: a key they do not list is an error, not dropped. */
+const Issue = v.strictObject({
+  id: v.string(),
+  title: v.pipe(v.string(), v.minLength(1)),
+  status: Code,
+  priority: Code,
+  username: v.string(),
+  created: v.number(),
+  modified: v.number(),
+});
+export type Issue = v.InferOutput<typeof Issue>;
 
-export type Comment = { id: string; body: string; username: string; created: number };
+const Comment = v.strictObject({ id: v.string(), body: v.string(), username: v.string(), created: v.number() });
 
 /** What the issue page shows besides the issue. Its id is the issue's. Written the first time the issue is opened. */
-export type Detail = { id: string; description: string; comments: Comment[] };
+const Detail = v.strictObject({ id: v.string(), description: v.string(), comments: v.array(Comment) });
+export type Detail = v.InferOutput<typeof Detail>;
 
 /**
  * One index per read of the list. `byModified` is also the text index of the titles: read without a `match`, it
@@ -28,12 +33,12 @@ export type Detail = { id: string; description: string; comments: Comment[] };
 export const schema = defineSchema({
   version: 2,
   collections: {
-    issues: collection<Issue>()
+    issues: collection(Issue)
       .text("byModified", "modified", "title")
       .index("byCreated", "created")
       .index("byStatus", ["status", "priority", "modified"])
       .index("byPriority", ["priority", "status", "modified"]),
-    details: collection<Detail>(),
+    details: collection(Detail),
   },
 });
 
