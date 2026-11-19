@@ -19,4 +19,20 @@ describe("bloom", () => {
     }
     expect(falsePos).toBeLessThan(40);
   });
+
+  it("probes the bits the encoder set, for every size and hash count a run can have", () => {
+    for (const bytes of [1, 8, 125, 4_099, 200_000]) {
+      for (const hashCount of [1, 7, 32]) {
+        const filter = { bits: new Uint8Array(bytes), hashCount };
+        const keys = Array.from({ length: 2_000 }, (_, i) => enc.encode(`key/${bytes}/${i}`));
+        for (const key of keys) bloomAdd(filter, key);
+        const missed = keys.filter((key) => !bloomMightContain(filter, key)).length;
+        expect(`${bytes} bytes, ${hashCount} hashes: ${missed} missed`).toBe(`${bytes} bytes, ${hashCount} hashes: 0 missed`);
+      }
+    }
+  });
+
+  it("holds no key when it has no bits", () => {
+    expect(bloomMightContain({ bits: new Uint8Array(0), hashCount: 7 }, enc.encode("k"))).toBe(false);
+  });
 });
