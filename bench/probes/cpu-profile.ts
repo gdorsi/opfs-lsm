@@ -120,14 +120,14 @@ try {
     const url = `${server.origin}/index.html`;
     let tab = await chrome.openTab(url);
     let carry: string | undefined;
-    for (const [phase, page] of run.pages.entries()) {
+    for (const [phase, { page }] of run.phases.entries()) {
       if (page === "fresh" && phase > 0) {
         await tab.evaluate("__bench.closeStore()", 60_000);
         await tab.close();
         await chrome.sharedWorkersGone(15_000);
         tab = await chrome.openTab(url);
       }
-      const req: PhaseRequest = { workload: run.workload, contender: run.contender, size: run.size, rep: 0, phase, dbName: "bench", carry };
+      const req: PhaseRequest = { workload: run.workload, contender: run.contender, size: run.size, rep: 0, phase, round: 0, dbName: "bench", carry };
       if (phase !== target) {
         carry = (await tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, 1_800_000)).carry;
         continue;

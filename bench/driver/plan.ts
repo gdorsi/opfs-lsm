@@ -10,7 +10,7 @@ export type PlannedRun = {
   readonly contender: string;
   readonly size: SizeName;
   readonly rep: number;
-  readonly pages: readonly PageMode[];
+  readonly phases: readonly { readonly page: PageMode; readonly rounds: number }[];
 };
 
 export type Selection = {
@@ -35,7 +35,7 @@ export function plan(catalog: Catalog, sel: Selection): PlannedRun[] {
       );
       for (let i = 0; i < contenders.length; i++) {
         const contender = contenders[(i + rep) % contenders.length]!;
-        runs.push({ workload: w.workload, contender, size: sel.size, rep, pages: w.phases.map((p) => p.page) });
+        runs.push({ workload: w.workload, contender, size: sel.size, rep, phases: w.phases.map(({ page, rounds }) => ({ page, rounds })) });
       }
     }
   }

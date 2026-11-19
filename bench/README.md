@@ -41,7 +41,7 @@ The SQLite contenders run TanStack's adapter with a patch, [`patches/@tanstack__
 
 The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and values 100 bytes, half compressible (LevelDB's setup). Sizes are `tiny` 1,000 entries, `small` 100,000 and `large` 1,000,000.
 
-- `kv/fillrandom`: N/100 single puts, each awaited, on the empty store (db_bench's fillsync); a random fill; random reads while compaction still runs (`readrandom-unsettled`); after the settle and one untimed scan of every key, random reads and reads of missing keys over warm pages (`readrandom`, `readmissing`); a cold open; the same random reads in that fresh tab, which loads each page once (`readrandom-cold`); then deletes of a random tenth, with the space before and after compaction. `readrandom-unsettled` races compaction, so its runs can form two clusters: when compaction ends early, the phase pays the page loads of the new files. The deletes run in the cold-open tab, whose counters start there, so the W-Amp on that settle divides compaction bytes by the delete keys alone: read its Space-Amp and disk bytes, not its W-Amp.
+- `kv/fillrandom`: N/100 single puts, each awaited, on the empty store (db_bench's fillsync); a random fill; random reads while compaction still runs (`readrandom-unsettled`); after the settle and one untimed scan of every key, random reads and reads of missing keys over warm pages (`readrandom`, `readmissing`); a cold open (5 fresh tabs, each opening the db and getting one random key, so a run has 5 samples of each); the same random reads in the last of them, which loads each page once (`readrandom-cold`); then deletes of a random tenth, with the space before and after compaction. `readrandom-unsettled` races compaction, so its runs can form two clusters: when compaction ends early, the phase pays the page loads of the new files. The deletes run in the cold-open tab, whose counters start there, so the W-Amp on that settle divides compaction bytes by the delete keys alone: read its Space-Amp and disk bytes, not its W-Amp.
 - `kv/fillseq`: ascending fill, a full scan, random seeks of 10 and 100 keys.
 - `kv/ycsb-a`: YCSB A (50% reads, 50% blind updates), then after a settle YCSB F (50% reads, 50% read-modify-writes in one transaction), zipfian, as in YCSB's workload files. Pebble uses the same letters for different mixes.
 - `kv/compaction-memory`: 20 rounds of N random puts into a 4N key pool, settle, then checked reads. Run it for the memory peaks below, not for throughput.
@@ -63,7 +63,7 @@ The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and value
 
 The fate workload builds the client; a contender supplies only fate's `PersistenceStorage`, so both run the same client code. The persistence budget is 1 GiB on both sides, so nothing is evicted. The server is in memory, so the timed work is fate's persistence and the storage under it. Untimed `check-*` phases load every list again through a client whose server throws and compare every record with the model, so a record that did not reach storage fails the run. The timed cold load compares each list with the model as it loads it. `node bench/probes/fate-storage.ts [workload] [--size small]` prints, per phase and contender, how much of the wall time was in storage calls and how much was fate's own work.
 
-"Cold" means a new tab opened after every SharedWorker has exited: a cold page over warm OS storage. A page cannot drop the OS cache.
+"Cold" means a new tab opened after every SharedWorker has exited: a cold page over warm OS storage. A page cannot drop the OS cache. One tab gives one cold sample, so a phase that wants more runs in several fresh tabs, as `rounds` (see [Adding a workload or contender](#adding-a-workload-or-contender)). The rounds add samples to each op: `mean:<op>` and the percentiles pool them. The phase's ops/s, wall time, main-thread cells and footprint stay those of its first round, so they mean the same as for a phase without rounds.
 
 Every read is checked against the expected value. One wrong value fails the run, and a failed run never feeds a number.
 
@@ -79,8 +79,8 @@ The phases:
 2. `settle` (untimed): kv flushes and compacts until stable.
 3. `recent` (timed): a `bulk` batch closes the sprint of the project with the most issues in progress, then single `edit`s (50 at `tiny`, 300 above), one user rename and one label rename. These writes sit above the settled store when the goals run.
 4. `prepare` (untimed): picks each goal's bindings, LDBC-style: up to 5 bindings whose cost in the oracle is nearest one quantile, the same for every rep and contender. It computes every expected answer and carries them to the later pages.
-5. One phase per goal, each on a fresh page. `cold` is the first call after the open, `first` calls each other binding once, and `warm` calls every binding 3 times.
-6. `reread`: one edit moves an issue from todo to in progress, then its status counts and both lists must show it.
+5. One phase per goal, in 5 rounds, each on its own fresh page. Round r opens the store and calls binding r once: that is `cold`, so a run has one `cold` sample per binding. Round 0 then calls each other binding once (`first`) and every binding 3 more times (`warm`). A goal with fewer than 5 bindings leaves its last rounds empty.
+6. `reread` (fresh page): each read once untimed, then one edit moves an issue from todo to in progress, and its status counts and both lists must show it.
 
 | goal | the screen | owns |
 |---|---|---|
@@ -173,7 +173,7 @@ A workload is one file in `workloads/<family>/`. A contender is one file in `con
 
 A workload names the access patterns it owns in `owns`, from the list in `core/patterns.ts`. Each pattern has exactly one owner, and `bench:smoke --check` fails when one has none or two. A goal workload owns its dataset's patterns and one per goal. Before adding a workload, find the pattern's owner: a new phase there is usually the smaller change.
 
-A workload is a list of phases run in order on one database (`page: "fresh"` starts a new tab). A phase body only does the ops. A timed read phase starts from one cache state: put `warmPhase()` before it for warm pages, or run it on a fresh page for cold ones. A read phase right after a settle is warm in some runs and cold in others. `ctx.time` times one call, `ctx.model` holds the expected values, `ctx.rng` is seeded the same for every contender.
+A workload is a list of phases run in order on one database (`page: "fresh"` starts a new tab, and `rounds: n` on it runs the phase in `n` tabs of its own and records the later rounds under the first; `ctx.round` says which). A phase body only does the ops. A timed read phase starts from one cache state: put `warmPhase()` before it for warm pages, or run it on a fresh page for cold ones. A read phase right after a settle is warm in some runs and cold in others. `ctx.time` times one call, `ctx.model` holds the expected values, `ctx.rng` is seeded the same for every contender.
 
 A goal is one entry in its dataset's spec type (`datasets/tracker/types.ts`), whose doc comment is the answer spec. After that, `tsc` fails until the oracle, the goal's curation (`datasets/tracker/index.ts`) and every contender answer it, and its phase appears by itself. A second dataset is a `datasets/<name>/` directory with the same files, a family in `core/families.ts`, its contenders and a one-line workload that calls `goalWorkload`.
 

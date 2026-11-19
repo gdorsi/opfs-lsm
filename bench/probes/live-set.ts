@@ -123,7 +123,7 @@ try {
   const catalog = await readCatalog(server.origin, true);
   const [run] = plan(catalog, { workloads: [workload], contenders: ["kv/kv"], size, reps: 1 });
   if (!run) throw new Error(`nothing to run for ${workload}`);
-  if (run.pages.some((page, phase) => phase > 0 && page === "fresh")) throw new Error(`${workload} opens a fresh page, so it has no one SharedWorker to watch`);
+  if (run.phases.some(({ page }, phase) => phase > 0 && page === "fresh")) throw new Error(`${workload} opens a fresh page, so it has no one SharedWorker to watch`);
   const phaseNames = catalog.find((w) => w.workload === workload)!.phases.map((p) => p.name);
 
   const chrome = await launchChrome({ headless: true, onProgress: () => {} });
@@ -136,7 +136,7 @@ try {
     let worker: string | undefined;
     let carry: string | undefined;
     for (const [phase, name] of phaseNames.entries()) {
-      const req: PhaseRequest = { workload: run.workload, contender: run.contender, size: run.size, rep: 0, phase, dbName: "bench", carry };
+      const req: PhaseRequest = { workload: run.workload, contender: run.contender, size: run.size, rep: 0, phase, round: 0, dbName: "bench", carry };
       let done = false;
       const reply = tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, 1_800_000);
       void reply.finally(() => (done = true)).catch(() => {});

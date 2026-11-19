@@ -4,7 +4,7 @@
  * Snapshots merge by adding counts, so percentiles pool across runs.
  * Shared by the page (records) and the driver (merges, reads percentiles).
  */
-import type { HistogramSnapshot } from "./types.ts";
+import type { HistogramSnapshot, PhaseResult } from "./types.ts";
 
 const SUB = 16;
 
@@ -20,6 +20,18 @@ function valueOf(bucket: number): number {
   const exp = Math.floor((bucket - SUB) / SUB);
   const base = SUB * 2 ** exp;
   return base + ((bucket - SUB - exp * SUB + 0.5) / SUB) * base;
+}
+
+const roundsOf = (p: PhaseResult): readonly PhaseResult[] => [p, ...(p.laterRounds ?? [])];
+
+/** The ops a phase timed in any of its rounds. */
+export function opsOf(p: PhaseResult): string[] {
+  return [...new Set(roundsOf(p).flatMap((r) => Object.keys(r.latency)))];
+}
+
+/** One op's samples of a phase, a snapshot per round that timed it. */
+export function samplesOf(p: PhaseResult, op: string): HistogramSnapshot[] {
+  return roundsOf(p).flatMap((r) => (r.latency[op] ? [r.latency[op]] : []));
 }
 
 export class Histogram {

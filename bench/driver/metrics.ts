@@ -17,6 +17,7 @@
  * are summed over the phases of the same page up to the footprint phase.
  */
 import type { IoCounters } from "@opfs-lsm/kv/testing";
+import { opsOf, samplesOf } from "../core/histogram.ts";
 import { SIZES, type PhaseResult, type RunRecord, type SizeName } from "../core/types.ts";
 
 const MAIN_FIELDS = ["longTasks", "longestMs", "blockedMs", "longestFrameMs", "droppedFrames"] as const;
@@ -117,7 +118,8 @@ function amplification(s: Sample): Record<AmpField, number> | undefined {
   let userIn = 0;
   for (let i = s.index; i >= 0; i--) {
     const q = s.run.phases[i]!;
-    userIn += q.userBytes;
+    // A later phase runs in the tab of the last round, so that round's writes are the ones its counters hold.
+    userIn += (i < s.index ? (q.laterRounds?.at(-1) ?? q) : q).userBytes;
     if (q.page === "fresh") break;
   }
   const kv = fp.kv;
@@ -200,11 +202,12 @@ const KINDS: { [K in Kind]: KindSpec } = {
     scope: "phase",
     direction: "lower",
     ratio: () => true,
-    ids: (ss) => [...new Set(timed(ss).flatMap((s) => Object.keys(phaseOf(s)?.latency ?? {})))],
+    ids: (ss) => [...new Set(timed(ss).flatMap((s) => opsOf(phaseOf(s)!)))],
     value: (s, op) => {
       const p = phaseOf(s);
-      const h = p?.timed ? p.latency[op] : undefined;
-      return h && h.n > 0 ? h.sumUs / h.n / 1000 : NaN;
+      const samples = p?.timed ? samplesOf(p, op) : [];
+      const n = samples.reduce((t, h) => t + h.n, 0);
+      return n > 0 ? samples.reduce((t, h) => t + h.sumUs, 0) / n / 1000 : NaN;
     },
     unit: () => " ms",
     format: fmtMs,

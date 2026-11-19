@@ -7,8 +7,9 @@
  *   settle   same   untimed   kv: flush and compact until stable; footprint
  *   recent   same   timed     writes on top of the settled store ("bulk", "edit"), as a user makes them
  *   prepare  same   untimed   curate bindings, compute every expected answer, carry them; footprint
- *   <goal>   fresh  timed     open; "cold" = binding 0; "first" = the other bindings once; "warm" = every binding WARM_ROUNDS times
- *   reread   same   timed     one write, then the reads that must show it ("edit", "reread")
+ *   <goal>   fresh  timed     COLD_ROUNDS rounds, each on its own fresh page. Round r: open, "cold" = binding r. Round 0 goes on:
+ *                             "first" = the other bindings once; "warm" = every binding WARM_ROUNDS times
+ *   reread   fresh  timed     one write, then the reads that must show it ("edit", "reread")
  *
  * The oracle folds the same history in the page that replays it and never
  * leaves that page: goal phases get the expected answers through `carry`.
@@ -20,6 +21,8 @@ import { rng, seedOf } from "../page/model.ts";
 
 /** Repeat calls per binding after its first. */
 const WARM_ROUNDS = 3;
+/** The dataset picks up to this many bindings. Each gets one cold call in a fresh tab of its own. */
+const COLD_ROUNDS = 5;
 
 type Store = GoalStore<GoalSpecMap, unknown> & { settle(): Promise<void> };
 type Read = { readonly goal: string; readonly params: JsonRow; readonly expected: Json };
@@ -108,7 +111,7 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
       const goals: Record<string, { bindings: readonly JsonRow[]; expected: Json[] }> = {};
       for (const [goal, meta] of Object.entries(d.goals)) {
         const bindings = meta.curate(oracle, picker(seedOf(d.seed, goal)));
-        ctx.check(bindings.length >= 1 && bindings.length <= 5, `${goal}: ${bindings.length} bindings`);
+        ctx.check(bindings.length >= 1 && bindings.length <= COLD_ROUNDS, `${goal}: ${bindings.length} bindings`);
         goals[goal] = { bindings, expected: bindings.map((b) => oracle.goals[goal]!(b)) };
       }
       const { tx, reads } = d.reread(oracle);
@@ -123,10 +126,12 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
   const goal = (name: string): Phase<F> => ({
     name,
     page: "fresh",
+    rounds: COLD_ROUNDS,
     timed: true,
     mainThread: true,
     async run(ctx) {
       const { bindings, expected } = scriptOf(ctx).goals[name]!;
+      if (ctx.round >= bindings.length) return;
       const store = await storeOf(ctx);
       const call = async (op: string, b: number) => {
         const got = await ctx.time(op, 0, () => store.goals[name]!(bindings[b]!));
@@ -134,7 +139,8 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
         await yieldTask();
       };
       await yieldTask();
-      await call("cold", 0);
+      await call("cold", ctx.round);
+      if (ctx.round > 0) return;
       for (let b = 1; b < bindings.length; b++) await call("first", b);
       for (let round = 0; round < WARM_ROUNDS; round++) for (let b = 0; b < bindings.length; b++) await call("warm", b);
     },
@@ -142,7 +148,7 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
 
   const reread: Phase<F> = {
     name: "reread",
-    page: "same",
+    page: "fresh",
     timed: true,
     mainThread: true,
     async run(ctx) {

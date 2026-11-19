@@ -67,10 +67,9 @@ export function defineContender<F extends Family>(c: Contender<F>): Contender<F>
  */
 export type PageMode = "same" | "fresh";
 
-export type Phase<F extends Family> = {
+type PhaseBase<F extends Family> = {
   /** db_bench-style name, printed in the report ("fillrandom", "readrandom"). */
   readonly name: string;
-  readonly page: PageMode;
   /** Untimed phases (settle) still verify reads but report no throughput. */
   readonly timed: boolean;
   /** Record disk footprint and engine counters at the end of this phase. */
@@ -83,6 +82,17 @@ export type Phase<F extends Family> = {
   readonly mainThread?: boolean;
   run(ctx: PhaseContext<F>): Promise<void>;
 };
+
+export type Phase<F extends Family> =
+  | (PhaseBase<F> & { readonly page: "same" })
+  | (PhaseBase<F> & {
+      readonly page: "fresh";
+      /**
+       * The driver runs the phase that many times (default 1), each on its own fresh page, and reports
+       * them as one phase. `ctx.round` says which. It is the way to get more than one cold sample per run.
+       */
+      readonly rounds?: number;
+    });
 
 export type Workload<F extends Family> = {
   readonly family: F;
@@ -107,11 +117,13 @@ export function defineWorkload<F extends Family>(w: Workload<F>): Workload<F> {
 export type PhaseContext<F extends Family> = {
   readonly params: Params;
   readonly size: SizeName;
+  /** Which round of a phase with `rounds` this page runs; 0 for a phase without. */
+  readonly round: number;
   /** Opens on the first call in this page; the open is timed as op "open". */
   store(): Promise<FamilyStores[F]>;
   /** Deterministic keys, values and the expected state. Carried to fresh pages. */
   readonly model: Model;
-  /** Seeded per (workload, phase, rep), not per contender: every contender replays the same ops. */
+  /** Seeded per (workload, phase, round, rep), not per contender: every contender replays the same ops. */
   readonly rng: () => number;
   /**
    * Time one awaited call into the histogram for `op`. It counts as `count`
@@ -184,6 +196,13 @@ export type PhaseResult = {
   readonly latency: Readonly<Record<string, HistogramSnapshot>>;
   readonly footprint?: Footprint;
   readonly mainThread?: MainThread;
+  /**
+   * The rounds after the first of a phase with `rounds`, each from its own
+   * fresh tab. This result is the first round, so every field above means
+   * what it means for a phase without rounds. Only the samples of an op are
+   * pooled over the rounds.
+   */
+  readonly laterRounds?: readonly PhaseResult[];
 };
 
 export type HostInfo = {
@@ -246,7 +265,7 @@ export type Catalog = readonly {
   readonly family: Family;
   readonly title: string;
   readonly owns: readonly Pattern[];
-  readonly phases: readonly { readonly name: string; readonly page: PageMode }[];
+  readonly phases: readonly { readonly name: string; readonly page: PageMode; readonly rounds: number }[];
   readonly contenders: readonly string[];
 }[];
 
@@ -257,6 +276,7 @@ export type PhaseRequest = {
   readonly size: SizeName;
   readonly rep: number;
   readonly phase: number;
+  readonly round: number;
   readonly dbName: string;
   readonly carry: string | undefined;
 };

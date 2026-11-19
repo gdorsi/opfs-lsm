@@ -52,6 +52,7 @@ export default defineWorkload({
     {
       name: "coldopen",
       page: "fresh",
+      rounds: 5,
       timed: true,
       footprint: true,
       async run(ctx) {
