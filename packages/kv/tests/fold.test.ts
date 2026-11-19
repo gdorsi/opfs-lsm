@@ -157,4 +157,20 @@ describe("foldRecords", () => {
       [9, 3],
     ]);
   });
+
+  it("tells long keys apart wherever they differ, at the edges of a string chunk and across two lengths", () => {
+    const same = (length: number) => new Uint8Array(length).fill(7) as CheckedKey;
+    const keys = [same(4_096), same(4_097), same(10_000)];
+    for (const at of [0, 1, 4_095, 4_096, 4_097, 8_191, 8_192, 9_999]) keys.push(same(10_000).fill(9, at, at + 1) as CheckedKey);
+    // Each key twice, the second time as a copy, so one entry per key with the later seq is the only right answer.
+    const records: WalRecord[] = [...keys, ...keys.map((k) => k.slice() as CheckedKey)].map((k, i) => ({
+      seq: asSeq(i + 1),
+      ops: [{ type: "put", key: k, value: value(i) }],
+    }));
+    const { entries } = observed(records);
+    expect(entries.length).toBe(keys.length);
+    for (const e of entries) {
+      expect(e.seq).toBe(keys.length + 1 + keys.findIndex((k) => compareBytes(k, e.key) === 0));
+    }
+  });
 });
