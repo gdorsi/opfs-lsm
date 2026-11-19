@@ -74,7 +74,7 @@ bench:
           - { measure: "Random point reads", ours: 592k ops/s, theirs: 21.9k ops/s, ratio: 27× }
           - { measure: "Reads of missing keys", ours: 1.89M ops/s, theirs: 24.4k ops/s, ratio: 78× }
           - { measure: "Full ordered scan", ours: 1.38M ops/s, theirs: 678k ops/s, ratio: 2.0× }
-          - { measure: "Single put, awaited one at a time", ours: 13.0k ops/s, theirs: 14.7k ops/s, ratio: 0.88× }
+          - { measure: "Single put, awaited one at a time", ours: 13.0k ops/s, theirs: 14.7k ops/s, ratio: 0.88× ‡ }
           - { measure: "Opening the database in a fresh tab", ours: 5.03 ms, theirs: 0.590 ms, ratio: 0.12× }
       - title: Framework adapters
         versus: against each framework's IndexedDB option
@@ -99,7 +99,7 @@ bench:
           - { measure: "Yjs: one keystroke, with its persistence", ours: 0.154 ms, theirs: 0.101 ms, ratio: 0.66× }
           - { measure: "Yjs: reopening right after typing", ours: 12.1 ms, theirs: 6.28 ms, ratio: 0.52× }
           - { measure: "Yjs: reopening once kv has settled", ours: 12.3 ms, theirs: 6.13 ms, ratio: 0.50× }
-          - { measure: "Automerge: one keystroke, with its persistence", ours: 0.293 ms, theirs: 0.276 ms, ratio: 0.94× }
+          - { measure: "Automerge: one keystroke, with its persistence", ours: 0.293 ms, theirs: 0.276 ms, ratio: 0.94× ‡ }
           - { measure: "Automerge: reopening right after typing", ours: 47.5 ms, theirs: 42.8 ms, ratio: 0.90× }
           - { measure: "Automerge: reopening once kv has settled", ours: 48.7 ms, theirs: 43.3 ms, ratio: 0.89× }
   - title: Against SQLite on OPFS
@@ -124,16 +124,16 @@ bench:
         note: Dexie, the third store in the full table, beats docstore at one edit, at opening the store and on 5 of the 11 cold screens.
         rows:
           - { measure: "Issues per status in a project", ours: 2.69 ms, theirs: 3.97 ms, ratio: 1.5× }
-          - { measure: "First 50 todo issues, with assignee and labels", ours: 7.24 ms, theirs: 5.16 ms, ratio: 0.71× }
-          - { measure: "The column a sprint close just emptied", ours: 4.28 ms, theirs: 4.30 ms, ratio: 1.0× }
+          - { measure: "First 50 todo issues, with assignee and labels", ours: 7.24 ms, theirs: 5.16 ms, ratio: 0.71× ‡ }
+          - { measure: "The column a sprint close just emptied", ours: 4.28 ms, theirs: 4.30 ms, ratio: 1.0× ‡ }
           - { measure: "Rows at 90% of a project's list", ours: 9.39 ms, theirs: 4.47 ms, ratio: 0.48× }
-          - { measure: "An issue with its comments and their authors", ours: 4.71 ms, theirs: 4.51 ms, ratio: 0.96× }
-          - { measure: "First 50 open issues by priority, with counts", ours: 9.91 ms, theirs: 6.99 ms, ratio: 0.71× }
+          - { measure: "An issue with its comments and their authors", ours: 4.71 ms, theirs: 4.51 ms, ratio: 0.96× ‡ }
+          - { measure: "First 50 open issues by priority, with counts", ours: 9.91 ms, theirs: 6.99 ms, ratio: 0.71× ‡ }
           - { measure: "First 50 open issues with a label", ours: 4.94 ms, theirs: 6.97 ms, ratio: 1.4× }
           - { measure: "First 50 open issues assigned to a person", ours: 8.36 ms, theirs: 5.61 ms, ratio: 0.67× }
           - { measure: "The 50 most recently updated issues", ours: 3.38 ms, theirs: 5.06 ms, ratio: 1.5× }
           - { measure: "Open issues per person, top 10", ours: 3.63 ms, theirs: 5.14 ms, ratio: 1.4× }
-          - { measure: "First 20 issues whose title contains a word", ours: 6.49 ms, theirs: 6.20 ms, ratio: 0.96× }
+          - { measure: "First 20 issues whose title contains a word", ours: 6.49 ms, theirs: 6.20 ms, ratio: 0.96× ‡ }
       - title: Its screens, warm
         versus: the same call again
         stores: [docstore, SQLite on OPFS]
@@ -156,7 +156,7 @@ bench:
         setup: 100,000 rows each; a query loads only the rows it asks for
         rows:
           - { measure: "Opening the collection in a fresh tab", ours: 7.22 ms, theirs: 37.7 ms, ratio: 5.2× }
-          - { measure: "First query in a fresh tab", ours: 63.1 ms, theirs: 65.6 ms, ratio: 1.0× }
+          - { measure: "First query in a fresh tab", ours: 63.1 ms, theirs: 65.6 ms, ratio: 1.0× ‡ }
           - { measure: "Warm query of one owner, 6,250 rows", ours: 205k rows/s, theirs: 132k rows/s, ratio: 1.6× }
           - { measure: "10 rows by id", ours: 5.28k queries/s, theirs: 2.17k queries/s, ratio: 2.4× }
       - title: TanStack DB live queries

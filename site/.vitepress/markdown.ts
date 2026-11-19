@@ -145,10 +145,12 @@ function figureHtml(token: Token): string | undefined {
   return `<Illustration name="${m[1]}" />\n`;
 }
 
-const RATIO = /^\d+(?:\.\d+)?×$/;
-/** A cold / warm pair of ratios in one cell, such as "1.0× / 0.6×". */
-const RATIO_PAIR = /^(\d+(?:\.\d+)?×) \/ (\d+(?:\.\d+)?×)$/;
-const MEASURE = /^\d[\d,]*(?:\.\d+)?[kMG]?(?: [A-Za-z]+(?:\/[a-z]+)?)?$/;
+/** A ratio, with the mark of two sides whose runs overlap: "8.1×", "0.88× ‡". */
+const RATIO = /^\d+(?:\.\d+)?×(?: ‡)?$/;
+/** A cold / warm pair of ratios in one cell, such as "1.0× ‡ / 0.6×". */
+const RATIO_PAIR = /^(\d+(?:\.\d+)?×(?: ‡)?) \/ (\d+(?:\.\d+)?×(?: ‡)?)$/;
+/** A value, with the mark of runs that form two clusters: "592k ops/s", "37.7 ms †". */
+const MEASURE = /^\d[\d,]*(?:\.\d+)?[kMG]?(?: [A-Za-z]+(?:\/[a-z]+)?)?(?: †)?$/;
 
 type Cell = "num" | "ratio" | "code" | "text";
 
