@@ -97,4 +97,4 @@ To send a local run to the remote installation, set both variables in the shell 
 |---|---|
 | Local collector | Verified on 2026-11-19 with a production build in headless Chrome. Both services sent page views, clicks, web vitals and one `exception` per thrown error. The demo sent `linearlite.open`, `linearlite.write`, `linearlite.filter` and `linearlite.first_rows` with the values it posted to the page. |
 | Remote installation | Verified on 2026-11-19 from a production build served at `http://localhost:4173`, an origin of the public key. Both services sent their browser signals, and the four demo events carried the values the demo posted to the page. |
-| Production | Not yet verified. The two repository variables are set. It needs a deploy from `main`. |
+| Production | Verified on 2026-11-19 on https://gdorsi.github.io/opfs-lsm/ at commit `333ad2d`. Both services sent their browser signals with `production` and the commit as version, and the four demo events carried the values the demo posted to the page. |
