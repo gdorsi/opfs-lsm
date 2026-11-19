@@ -282,7 +282,7 @@ for await (const { key, value } of db.range({ limit: 50 })) {
 The wasm engine loads in parallel with the open, outside your main bundle
 
 ```ts
-// 18.8 kB gzip in your main bundle
+// 19.5 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
 // the SharedWorker loads here, but you
 // can already do everything without it
@@ -294,14 +294,11 @@ const db = await openDb({ name: "app" });
 
 ### Quota management
 
-Your app picks what to drop before the browser refuses writes
+A reserve gives space back when the browser refuses a write, and your app picks what to drop
 
 ```ts
-const db = await openDb({
-  name: "app",
-  maxBytes: "quota",
-});
-db.onPressure(({ need }) => evict(need));
+const db = await openDb({ name: "app" });
+db.onStorageFull(({ need }) => evict(need));
 ```
 
 </div>

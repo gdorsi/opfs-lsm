@@ -154,7 +154,7 @@ class Leader {
     // Every tab shows the alert while `evict` is asked. A confirmation from any tab lands in the row, and the loop
     // evicts after a push, so no page lands rows after the clear.
     this.offs.push(
-      this.backend.onPressure(async () => {
+      this.backend.onStorageFull(async () => {
         if (this.state.evict === "idle") await this.save({ evict: "asked" });
       }),
     );
@@ -311,7 +311,7 @@ class Leader {
   }
 
   /**
-   * Frees space for kv's size cap once a user confirmed: drops every body and comment, which are loaded again when
+   * Frees space once a user confirmed, after the browser refused a write: drops every body and comment, which are loaded again when
    * their issue is visible or opened. Issues stay. Runs right after a push, and waits while a body or comment still
    * has an unsent edit; the next push tries again.
    */

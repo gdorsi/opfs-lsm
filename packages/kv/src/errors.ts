@@ -53,8 +53,8 @@ export class StorageUnavailableError extends OpfsLsmError {
 }
 
 export class StorageFullError extends OpfsLsmError {
-  constructor(message: string) {
-    super("quota", message);
+  constructor(message: string, options?: ErrorOptions) {
+    super("quota", message, options);
     this.name = "StorageFullError";
   }
 }

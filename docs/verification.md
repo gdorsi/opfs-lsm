@@ -27,7 +27,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | `packages/fate/src/index.ts`, or a kv change claimed to speed up fate's persistence | `pnpm --filter @opfs-lsm/fate test` and `drive bench fate/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
 | In-page `EngineHost` | `drive two-tab-local`. |
-| `maxBytes`, `onPressure`, the pressure offer or its Web Lock | `drive pressure`, and `drive quota` for `maxBytes: "quota"`. |
+| `reserveBytes`, `onStorageFull`, the reserve file, the storage-full offer or its Web Lock | `tests/reserve.test.ts`, `tests/reserve-step.test.ts` and `tests/wal-full.test.ts`, then `drive quota`. Add `formal:kv` when the WAL append changed. |
 | `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench tracker/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `packages/tanstack-db/src` | `pnpm --filter @opfs-lsm/tanstack-db test`, with `TSDB_DIFF_RUNS=2000` after a change to the planner or the on-demand run. For a performance claim, `drive bench tanstack/ tanstack-ondemand/ tanstack-live/` with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `examples/linearlite-tanstackdb` | `pnpm --filter @opfs-lsm/example-linearlite-tanstackdb test`, `check` and `build`. For a change to its reads, counts or sync, drive the app in a browser against a server seeded with 100k issues, in two tabs and offline. |
@@ -51,7 +51,7 @@ From the repo root, in this order:
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `pressure`, `quota`, `destroy`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `fate/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
+`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `quota`, `destroy`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `fate/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
 
 `launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
 
@@ -64,7 +64,6 @@ The helper runs:
 | `two-tab` | `pnpm --filter @opfs-lsm/kv two-tab` |
 | `two-tab-nobc` | `TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
-| `pressure` | `TWO_TAB_PRESSURE=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `quota` | `TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `destroy` | `TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `bench <selector…>` | `pnpm bench <selector…>`, with the flags after it |
@@ -77,8 +76,7 @@ A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is 
 | `two-tab` | `tabs=2`, `mode=SharedWorker`, `two-databases ok`, `two-tab ok` |
 | `two-tab-nobc` | `mode=SharedWorker nobc`, `two-databases ok`, `two-tab ok`, and `bc_posts=` with a positive count |
 | `two-tab-local` | `tabs=1`, `mode=local EngineHost`, `two-databases ok`, `two-tab ok` |
-| `pressure` | `tabs=2`, `mode=SharedWorker`, `pressure answered by tab`, `both tabs read`, `no handler: one warning in each tab`, `pressure ok` |
-| `quota` | `tabs=2`, `mode=SharedWorker`, `handler 1 starts`, `handler calls: `, `quota ok`. Read the timeline: more than one call means a repeated offer. |
+| `quota` | `tabs=2`, `mode=SharedWorker`, `OPFS write is refused`, `storage full answered once, by tab`, `run files`, `the reserve file is back`, `no handler: one warning in each tab, no row lost`, `limit lifted: the reserve file is back`, `quota ok`. The `fill of a 24 MiB reserve` line times the fill. |
 | `destroy` | `mode=SharedWorker`, `other tab closed reason=destroyed`, `other tab put and view read rejected with ClosedError`, `wal database gone`, `folder gone`, `reopened empty`, `never-opened left nothing`, `crashed tab: destroyDb finished`, `destroy ok`. The `frozen tab:` and `tab navigated away:` lines are facts about the Chrome it ran on: a frozen tab holds `destroyDb` until it resumes, and a page in the back/forward cache is evicted. |
 | `bench`, `bench-smoke` | One `## <family>/<workload>: <title>` section per workload, a row per contender, and no `## Failed runs` section. Every read is checked against a model, so exit 0 means every value was right. |
 
@@ -258,6 +256,8 @@ The same file holds the churn tests: a tab whose run opens are slow while the ho
 
 `tests/sim/io-error.test.ts` fails fault site N for N = 1, 2, … until a run reaches no site N, with one-shot and persistent faults, over durable sites and read sites. Every call must settle, every resolved call must be right, and after healing the database must reopen with the whole committed log. `KV_IO_SITES=durable|read` runs one sweep, and `KV_IO_REPORT=1` prints its size and error names.
 
+`tests/reserve.test.ts` runs a host over `tests/sim/byte-budget.ts`, a folder under an origin's byte limit: a write past the limit fails with `QuotaExceededError`, and a remove gives the bytes back at once. It fills a database until a write is refused, then checks that the flush lands, that one handler call frees half the rows and that the reserve file returns. `tests/reserve-step.test.ts` checks every row of the state table in [reserve.md](reserve.md). `tests/wal-full.test.ts` aborts the WAL transaction of fake-indexeddb with `QuotaExceededError` after its requests succeed, as Chromium and Firefox do at the limit.
+
 The tanstack-db suite includes a differential test (`packages/tanstack-db/tests/differential.test.ts`). It generates documents, live queries (a `where`, an order, a window and its moves) and writes through `transact`, TanStack mutations and a second docstore handle. Each query runs over an on-demand collection and over an in-memory collection that holds every document, and both must show the same rows in the same order. It runs 40 cases by default (under 1 s). `TSDB_DIFF_RUNS` widens it, `TSDB_DIFF_SEED` replays a failure, and `TSDB_DIFF_REPORT=1` prints how many loads of each shape TanStack sent. `tests/reads.test.ts` counts the documents each load reads.
 
 ## Fuzz the decoders
@@ -357,3 +357,5 @@ While you are changing product code and using verify-kv, follow that skill's "In
 These exist on main and have no feature file and no formal check. Leave them out of the feature map until a maintain pass adds a recipe.
 
 - `pendingBytes`, the ingest trigger in `packages/kv/src/host/engine-host.ts` and the WAL meta key of the same name in `packages/kv/src/idb/wal.ts`.
+- A refused WAL append in a real browser. Chrome's `Storage.overrideQuotaForOrigin` refuses OPFS writes and lets IndexedDB commits through, so `drive quota` proves the reserve on a refused flush only. The retry of a refused append (`make-room`, the new connection) runs in `tests/wal-full.test.ts`, over a fake-indexeddb transaction that aborts the way Chromium and Firefox were measured to.
+- The reserve in Firefox and Safari. No drive runs there.

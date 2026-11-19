@@ -99,9 +99,9 @@ docstore reads through the indexes you declare in its schema. Declare one for ea
 
 With TanStack DB, open a large collection with `syncMode: "on-demand"`. The default, `"eager"`, loads every row when the collection opens. On demand, a live query loads only its own rows, through the docstore index whose leading fields the query pins with `eq` or `inArray`. With no index that fits, the load reads every document.
 
-### Cap the data that can grow
+### Free space when the storage is full
 
-kv never deletes a row on its own. If your data can grow without limit, such as a cache of server data, open with `maxBytes` and free space in an `onPressure` handler. The kv [Storage quota](packages/kv/README.md#storage-quota) section shows how.
+kv never deletes a row on its own. If your data can grow without limit, such as a cache of server data, free space in an `onStorageFull` handler, which kv calls when the browser refuses a write. The kv [Storage quota](packages/kv/README.md#storage-quota) section shows how.
 
 ## Read more
 

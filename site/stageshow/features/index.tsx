@@ -128,7 +128,7 @@ function Bolt({ n }: PictureProps) {
   );
 }
 
-/* Quota management: storage fills to the app's cap, the app evicts its oldest data, and usage falls back under it. */
+/* Quota management: storage fills up, the app evicts its oldest data, and usage falls back. */
 
 const USAGE = [0.62, 1, 0.8] as const;
 
@@ -138,11 +138,11 @@ function Quota({ n }: PictureProps) {
       <Text className="ft-quota-label">Storage</Text>
       <States
         className="ft-quota-status"
-        value={["under", "cap", "evicted"][n]!}
+        value={["under", "full", "evicted"][n]!}
         align="end"
         states={{
           under: <span />,
-          cap: <Badge tone="warning">At your cap</Badge>,
+          full: <Badge tone="warning">Storage full</Badge>,
           evicted: <Badge tone="accent">Oldest evicted</Badge>,
         }}
       />

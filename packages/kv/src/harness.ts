@@ -60,10 +60,11 @@ function backingOf(options: HarnessOpenOptions): Backing {
   return options.ingest ? { ingest: options.ingest } : {};
 }
 
+/** `reserveBytes` is 0 unless given, so a test or a bench writes no reserve file it did not ask for. */
 export async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
   const { fs: _fs, ingest: _ingest, forceMemory: _forceMemory, ...rest } = options;
   return openDbWith({ // The tab only reads its fs, so a read-only one counts like a full one.
-    wrapFs: (fs) => new CountingFs(fs as AsyncFs), ...rest, ...backingOf(options) });
+    wrapFs: (fs) => new CountingFs(fs as AsyncFs), reserveBytes: 0, ...rest, ...backingOf(options) });
 }
 
 /** `destroyDb` on the harness's storage: `fs`, or the memory fs of `forceMemory`, is the folder to remove. */

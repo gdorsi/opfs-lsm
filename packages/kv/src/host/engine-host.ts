@@ -3,7 +3,7 @@ import { ClosedError, codeOfError } from "../errors.js";
 import { IdBWal, uningestedBytes } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
-import { asGeneration, GENERATION_NONE, type Generation } from "../seq.js";
+import { asGeneration, GENERATION_NONE, type Generation, type Seq } from "../seq.js";
 import { CountingFs, emptyIoCounters } from "../opfs/counting-fs.js";
 import {
   listRuns,
@@ -18,6 +18,7 @@ import { levelOf } from "../store/levels.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, IDLE_FLUSH_MS, IDLE_FLUSH_SHARE, type HostBudget, type HostOverrides } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
+import { fillReserve, inspectReserve, removeReserve, step, type Reserve, type ReserveEffect, type ReserveEvent } from "./reserve.js";
 import {
   unlessHeld,
   type BusMessage,
@@ -67,10 +68,8 @@ type IngestWatch = {
   maxWalBytes: number;
   /** The smallest `compactionMemoryBytes` any watching tab asked for. */
   compactionMemoryBytes: number;
-  /** The smallest numeric `maxBytes` any watching tab asked for; infinite while none did. */
-  maxBytes: number;
-  /** Some watching tab asked for `maxBytes: "quota"`. */
-  quota: boolean;
+  /** The largest `reserveBytes` any watching tab asked for. 0: no reserve, and no offer. */
+  reserveBytes: number;
   /** Op bytes heard or measured and not yet folded into a run. */
   pendingBytes: number;
   /**
@@ -132,7 +131,8 @@ export class EngineHost {
    * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
    * with no tab asking. Reads up to `maxWalBytes` of the waiting records in the
    * background and ingests when a reopened database is already over the limit.
-   * The host holds `name` to the smallest `compactionMemoryBytes` any tab passed.
+   * The host holds `name` to the smallest `compactionMemoryBytes` any tab passed,
+   * and keeps the largest `reserveBytes`.
    */
   watch(name: string, policy: WatchPolicy): void {
     this.db(name).watch(policy);
@@ -140,6 +140,11 @@ export class EngineHost {
 
   unwatch(name: string): void {
     this.db(name).unwatch();
+  }
+
+  /** Release the reserve of `name` for a tab whose WAL append the browser refused. */
+  async makeRoom(name: string): Promise<void> {
+    await this.db(name).refused();
   }
 
   /** Delete every record and file of `name`. See `Db.dangerousDestroy`. */
@@ -160,8 +165,8 @@ export class EngineHost {
  * It opens the WAL database and the folder for each operation, and only if
  * they exist, so an operation after `destroyDb` finds them gone and stops.
  * A database born again under the name starts its seqs and manifest
- * numbers past every one the removed one used, so `trusted` and `offer`
- * never meet a reused number.
+ * numbers past every one the removed one used, so `trusted` and the
+ * reserve's answer never meet a reused number.
  */
 class HostedDb {
   /** The fs IO of every operation, for stats. */
@@ -180,11 +185,8 @@ class HostedDb {
   private trusted: Trusted = undefined;
   /** Set while `destroy` waits for the locks, so a compaction pass stops at its next step. */
   private destroying = false;
-  /**
-   * The open pressure offer, or the seq the manifest must reach before the
-   * cap is measured again: an answer's writes count once a flush holds them.
-   */
-  private offer: Extract<BusMessage, { kind: "pressure" }> | { readonly after: number } = { after: 0 };
+  /** What this host knows of the reserve file (docs/reserve.md). Only `step` moves it. */
+  private reserve: Reserve = { kind: "unknown" };
   /** Run compaction passes until no request arrives during one. */
   private readonly compact = coalesced(() =>
     withLock(compactLock(this.name), () => this.compactPass()),
@@ -300,18 +302,20 @@ class HostedDb {
         const budget = this.budget();
         // Taken before the attempt, so an install that lands during it is not missed.
         const installed = this.installSignal();
-        const chunk = await this.exclusive(() =>
-          this.withStores(
-            async ({ wal, fs }) => {
-              const folded = await ingestChunk(wal, fs, head, this.trusted, {
-                maxBytes: budget.flushRunBytes,
-                l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
-              });
-              // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-              await unlessHeld(this.name, () => reclaimManifests(fs, folded.generation));
-              return folded;
-            },
-            () => Promise.reject(destroyed()),
+        const chunk = await this.withRoom(() =>
+          this.exclusive(() =>
+            this.withStores(
+              async ({ wal, fs }) => {
+                const folded = await ingestChunk(wal, fs, head, this.trusted, {
+                  maxBytes: budget.flushRunBytes,
+                  l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
+                });
+                // Skipped while a tab loads a generation; the next flush or reclaim removes them.
+                await unlessHeld(this.name, () => reclaimManifests(fs, folded.generation));
+                return folded;
+              },
+              () => Promise.reject(destroyed()),
+            ),
           ),
         );
         recycleEngine(budget.wasmRecycleBytes);
@@ -373,12 +377,9 @@ class HostedDb {
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
-    if (policy.maxBytes !== undefined) {
-      if (policy.maxBytes === "quota") watch.quota = true;
-      else watch.maxBytes = Math.min(watch.maxBytes, policy.maxBytes);
-      // A pass measures the cap, so a database already over it gets an offer without waiting for a write.
-      this.compact().catch(() => undefined);
-    }
+    watch.reserveBytes = Math.max(watch.reserveBytes, policy.reserveBytes);
+    // `destroyDb` may have removed the file since this host last looked.
+    this.reserve = step(this.reserve, { kind: "watch" }).next;
     watch.triggerAt = watch.maxWalBytes;
     void this.withWal(
       (wal) => uningestedBytes(wal, watch.maxWalBytes),
@@ -402,15 +403,14 @@ class HostedDb {
     watch.bus?.close();
     clearTimeout(watch.idle);
     this.watching = undefined;
-    this.offer = { after: 0 };
+    this.reserve = step(this.reserve, { kind: "last-unwatch" }).next;
   }
 
   private startWatch(policy: WatchPolicy): IngestWatch {
     const watch: IngestWatch = {
       maxWalBytes: policy.maxWalBytes,
       compactionMemoryBytes: policy.compactionMemoryBytes,
-      maxBytes: Infinity,
-      quota: false,
+      reserveBytes: policy.reserveBytes,
       pendingBytes: 0,
       triggerAt: policy.maxWalBytes,
       state: "idle",
@@ -426,17 +426,10 @@ class HostedDb {
           watch.pendingBytes += msg.bytes;
           this.maybeIngest(watch);
           this.quiet(watch);
-        } else if (msg.kind === "pressure-pull" && "pressure" in this.offer) {
-          watch.bus?.postMessage(this.offer);
-        } else if (msg.kind === "pressure-done" && "pressure" in this.offer) {
-          this.offer = { after: Infinity };
-          this.withWal(
-            async (wal) => (await wal.meta()).head,
-            () => 0,
-          ).then(
-            (head) => (this.offer = { after: head }),
-            () => (this.offer = { after: 0 }),
-          );
+        } else if (msg.kind === "full-pull") {
+          void this.onReserve({ kind: "pull" }).catch(() => undefined);
+        } else if (msg.kind === "full-done") {
+          void this.answered().catch(() => undefined);
         }
       };
     }
@@ -452,7 +445,11 @@ class HostedDb {
   private quiet(watch: IngestWatch): void {
     clearTimeout(watch.idle);
     if (this.watching !== watch) return;
-    watch.idle = setTimeout(() => this.maybeIngest(watch, true), this.overrides.idleFlushMs ?? IDLE_FLUSH_MS);
+    watch.idle = setTimeout(() => {
+      this.maybeIngest(watch, true);
+      // No flush will end a pass on a quiet database, and the reserve is written at the end of one.
+      if (watch.state === "idle" && this.reserve.kind !== "held") this.compact().catch(() => undefined);
+    }, this.overrides.idleFlushMs ?? IDLE_FLUSH_MS);
   }
 
   /**
@@ -550,17 +547,19 @@ class HostedDb {
         // Gone when a flush installed a newer generation since: plan again.
         if (!base) continue;
         const budget = this.budget();
-        const step = await mergeNextStep(fs, budget, base, meta.top);
+        const merged = await this.withRoom(() => mergeNextStep(fs, budget, base, meta.top));
         recycleEngine(budget.wasmRecycleBytes);
-        if (!step) return this.measure(base, fs);
-        const landed = await this.exclusive(() =>
-          this.withWal(
-            async (wal) => {
-              this.trusted = await installStep(fs, wal, step, this.trusted);
-              await this.reclaim(fs, wal);
-              return true;
-            },
-            () => false,
+        if (!merged) return await this.settle(base, meta.head);
+        const landed = await this.withRoom(() =>
+          this.exclusive(() =>
+            this.withWal(
+              async (wal) => {
+                this.trusted = await installStep(fs, wal, merged, this.trusted);
+                await this.reclaim(fs, wal);
+                return true;
+              },
+              () => false,
+            ),
           ),
         );
         if (!landed) return;
@@ -584,33 +583,123 @@ class HostedDb {
   }
 
   /**
-   * Offer pressure when `base`, which a pass found in shape, is over the
-   * cap, or when the origin's usage is over 90% of its quota. Writes nothing:
-   * the host never removes a row for the cap. The estimate is read after the
-   * pass, with no lock held, and a missing or rejected one makes no offer.
+   * Run a write. When the browser refuses it and the reserve is released
+   * for it, run it once more: a flush then resumes from `ingestedThrough`.
    */
-  private measure(base: GenerationMeta, fs: AsyncFs): void {
-    const watch = this.watching;
-    if (!watch) return;
-    const bytes = base.runs.reduce((n, run) => n + run.bytes, 0);
-    this.offerOver(base, bytes, bytes, watch.maxBytes);
-    if (!watch.quota || "pressure" in this.offer) return;
-    listRuns(fs)
-      .then(async (onDisk) => {
-        // A run a tab still holds counts in the estimate: an answer's bytes would look unfreed.
-        if (onDisk.length > base.runs.length) return;
-        const { usage = 0, quota = Infinity } = (await globalThis.navigator?.storage?.estimate?.()) ?? {};
-        this.offerOver(base, bytes, usage, Math.floor(quota * 0.9));
-      })
-      .catch(() => undefined);
+  private async withRoom<T>(write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } catch (err) {
+      if (codeOfError(err) !== "quota" || !(await this.refused())) throw err;
+      return write();
+    }
   }
 
-  /** `used` is what counts against `maxBytes`: `bytes`, or the origin's usage. */
-  private offerOver(base: GenerationMeta, bytes: number, used: number, maxBytes: number): void {
-    const bus = this.watching?.bus;
-    if (!bus || used <= maxBytes || "pressure" in this.offer || base.through < this.offer.after) return;
-    this.offer = { kind: "pressure", pressure: { bytes, maxBytes, need: used - Math.floor((maxBytes * 4) / 5) } };
-    bus.postMessage(this.offer);
+  /**
+   * The browser refused a write of this database, the host's or a tab's.
+   * True when the reserve was released for it. Resolves once the file is
+   * gone, whoever removed it.
+   */
+  async refused(): Promise<boolean> {
+    if (!this.watching?.reserveBytes) return false;
+    const head = await this.head();
+    return head !== undefined && this.onReserve({ kind: "refused", head });
+  }
+
+  /**
+   * A pass found `base` in shape. The reserve is written, and the handlers
+   * asked again, only here: by then a flush holds what they wrote and
+   * compaction has dropped what it could.
+   */
+  private async settle(base: GenerationMeta, head: Seq): Promise<void> {
+    const watch = this.watching;
+    if (!watch) return;
+    try {
+      await this.onReserve({ kind: "settle", through: base.through, head, target: watch.reserveBytes });
+    } catch (err) {
+      console.error(`opfs-lsm: writing the reserve of ${this.name} failed`, err);
+    }
+  }
+
+  /** The handlers settled, so every write of theirs is at or below the head read now. */
+  private async answered(): Promise<void> {
+    const head = await this.head();
+    if (head !== undefined) await this.onReserve({ kind: "done", head });
+  }
+
+  private head(): Promise<Seq | undefined> {
+    return this.withWal(
+      async (wal) => (await wal.meta()).head,
+      () => undefined,
+    );
+  }
+
+  /**
+   * Move the reserve by `event`, then by the outcome of each effect, in one
+   * exclusive section: the file has one writer at a time, across hosts, and
+   * a fill never overlaps a flush. True when it released the file. An event
+   * that changes nothing takes no lock, unless it is a refused write: a
+   * release in flight has the state ahead of the file.
+   */
+  private onReserve(event: ReserveEvent): Promise<boolean> {
+    const first = step(this.reserve, event);
+    if (event.kind !== "refused" && first.next === this.reserve && first.effect.kind === "none") return Promise.resolve(false);
+    return this.exclusive(async () => {
+      const fs = await this.folder();
+      if (!fs) return false;
+      let released = false;
+      for (let next: ReserveEvent | undefined = event; next; ) {
+        const moved = step(this.reserve, next);
+        this.reserve = moved.next;
+        released ||= moved.effect.kind === "release";
+        next = await this.act(fs, moved.effect);
+      }
+      return released;
+    });
+  }
+
+  /** Run `effect`, and return the event that says how it went. */
+  private async act(fs: AsyncFs, effect: ReserveEffect): Promise<ReserveEvent | undefined> {
+    switch (effect.kind) {
+      case "none":
+        return undefined;
+      case "inspect":
+        return { kind: "found", bytes: await inspectReserve(fs), head: effect.head, target: effect.target };
+      case "fill":
+        return (await fillReserve(fs, effect.target)) === "ok"
+          ? { kind: "filled", bytes: effect.target }
+          : { kind: "fill-refused", head: effect.head };
+      case "remove":
+        await removeReserve(fs);
+        return undefined;
+      case "release":
+        await removeReserve(fs);
+        await this.postOffer(fs);
+        return undefined;
+      case "offer":
+        await this.postOffer(fs);
+        return undefined;
+      case "flush":
+        this.ingest(false).catch((err: unknown) => {
+          if (!(err instanceof ClosedError)) console.error(`opfs-lsm: ingest of ${this.name} failed`, err);
+        });
+        return undefined;
+    }
+  }
+
+  /** Tell the tabs the browser refused a write. The handle that holds the full lock answers (`Db.onStorageFull`). */
+  private async postOffer(fs: AsyncFs): Promise<void> {
+    const watch = this.watching;
+    if (!watch?.bus) return;
+    const bytes = await this.withWal(
+      async (wal) => {
+        const recorded = await loadGeneration(fs, (await wal.meta()).generation ?? GENERATION_NONE);
+        return (recorded?.runs ?? []).reduce((n, run) => n + run.bytes, 0);
+      },
+      () => 0,
+    ).catch(() => 0);
+    const message: BusMessage = { kind: "full", full: { bytes, need: watch.reserveBytes } };
+    watch.bus.postMessage(message);
   }
 
   /**
@@ -696,6 +785,10 @@ export function attachEngineHostPort(
         case "unwatch":
           host.unwatch(msg.name);
           return;
+        case "make-room":
+          await host.makeRoom(msg.name);
+          reply({ type: "make-room-ok", id: msg.id });
+          return;
         case "stats":
           reply({ type: "stats-ok", id: msg.id, stats: await host.stats(msg.name) });
           return;
@@ -728,6 +821,7 @@ export function createLocalIngestClient(host: EngineHost): IngestClient {
     ingest: (name, waitForCompaction) => host.ingest(name, waitForCompaction),
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
+    makeRoom: (name) => host.makeRoom(name),
     destroy: (name) => host.destroy(name),
     stats: (name) => host.stats(name),
     close: () => undefined,
