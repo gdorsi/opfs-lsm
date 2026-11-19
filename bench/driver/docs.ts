@@ -3,12 +3,13 @@
  * docs/results/. The page holds each table between `<!-- bench:table <id> -->`
  * and `<!-- /bench:table -->`, and bench/docs-tables.ts says what every table
  * reads. A cell is the median of one `Series` and a ratio comes from
- * `versus`, so a published number is one that `compare` sees too.
+ * `versus`, so a published number is one that `compare` sees too. A ratio of
+ * two sides that `versus` cannot separate is refused.
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_SEED, type RunRecord, type SizeName } from "../core/types.ts";
-import { describe, measure, versus, type Measures, type Metric, type Series } from "./metrics.ts";
+import { describe, ENOUGH_RUNS, LEVEL, measure, versus, type Measures, type Metric, type Series } from "./metrics.ts";
 import { readRecords } from "./records.ts";
 
 const DOCS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../docs");
@@ -131,7 +132,7 @@ function renderTable(t: Table, pub: Published): string {
     throw new Error(`${t.file} has no record of size "${size}", which the table "${t.id}" reads`);
   }
   const used = new Set<Series>();
-  let overlap = false;
+  let unseparated = false;
   let clustered = false;
 
   const valueColumn = (head: string) => {
@@ -166,8 +167,15 @@ function renderTable(t: Table, pub: Published): string {
     const over = valueColumn(col.ratio.over);
     const parts = metricsOf(row).map((metric) => {
       if (!describe(metric).ratio) return undefined;
-      const v = versus(lookup(row, over, metric), lookup(row, of, metric));
-      if (!v.distinct) overlap = true;
+      const a = lookup(row, over, metric);
+      const b = lookup(row, of, metric);
+      const v = versus(a, b);
+      if (!v.separable) {
+        throw new Error(
+          `the table "${t.id}", row "${labelOf(row).join(" / ")}", column "${col.head}": ${a.summary.n} runs against ${b.summary.n} cannot show a difference, so the ratio could never lose its mark. Publish at least ${ENOUGH_RUNS} runs per contender: ${ENOUGH_RUNS} against ${ENOUGH_RUNS} is the smallest equal pair the rank-sum test separates at the ${LEVEL * 100}% level.`,
+        );
+      }
+      if (!v.distinct) unseparated = true;
       return times(v.times) + (v.distinct ? "" : " ‡");
     });
     return parts.every((p) => p === undefined) ? "" : parts.map((p) => p ?? "–").join(" / ");
@@ -189,7 +197,7 @@ function renderTable(t: Table, pub: Published): string {
   ];
   const notes = [
     provenance(t, pub, used, size),
-    ...(overlap ? ["‡ The min–max ranges of the two contenders overlap, so these runs do not separate them."] : []),
+    ...(unseparated ? [`‡ These runs do not separate the two contenders (rank-sum test, ${LEVEL * 100}% level).`] : []),
     ...(clustered ? ["† The runs of a marked cell form two clusters, so its median hides two states."] : []),
   ];
   return [table.join("\n"), ...notes].join("\n\n");

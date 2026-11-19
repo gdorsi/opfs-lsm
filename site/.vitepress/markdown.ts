@@ -145,7 +145,7 @@ function figureHtml(token: Token): string | undefined {
   return `<Illustration name="${m[1]}" />\n`;
 }
 
-/** A ratio, with the mark of two sides whose runs overlap: "8.1×", "0.88× ‡". */
+/** A ratio, with the mark of two sides whose runs do not separate them: "8.1×", "0.88× ‡". */
 const RATIO = /^\d+(?:\.\d+)?×(?: ‡)?$/;
 /** A cold / warm pair of ratios in one cell, such as "1.0× ‡ / 0.6×". */
 const RATIO_PAIR = /^(\d+(?:\.\d+)?×(?: ‡)?) \/ (\d+(?:\.\d+)?×(?: ‡)?)$/;

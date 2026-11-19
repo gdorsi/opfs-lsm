@@ -56,7 +56,7 @@ const render = (idb: number[], kv: number[], table: Table = TABLE, page = PAGE) 
 
 suite("renderDocs", () => {
   test("writes the table between its markers and leaves the other text byte for byte", () => {
-    const out = render([95, 100, 105], [190, 200, 210]);
+    const out = render([95, 100, 100, 105], [190, 200, 200, 210]);
     const [before, rest] = out.split(OPEN) as [string, string];
     const [block, after] = rest.split(CLOSE) as [string, string];
     assert.equal(before, "# Title\n\nText before.\n\n");
@@ -65,31 +65,43 @@ suite("renderDocs", () => {
   });
 
   test("rendering twice changes nothing", () => {
-    const once = render([95, 100, 105], [190, 200, 210]);
-    assert.equal(render([95, 100, 105], [190, 200, 210], TABLE, once), once);
+    const once = render([95, 100, 100, 105], [190, 200, 200, 210]);
+    assert.equal(render([95, 100, 100, 105], [190, 200, 200, 210], TABLE, once), once);
   });
 
   test("a provenance line states the runs, Chrome, CPU, load, commit and the link", () => {
-    const records = [...runsOf("kv/idb", [100, 100, 100], { host: { ...HOST, loadAvg1: 1.94 } }), ...runsOf("kv/kv", [200, 200, 200], { host: { ...HOST, loadAvg1: 4.52 } })];
+    const records = [...runsOf("kv/idb", [100, 100, 100, 100], { host: { ...HOST, loadAvg1: 1.94 } }), ...runsOf("kv/kv", [200, 200, 200, 200], { host: { ...HOST, loadAvg1: 4.52 } })];
     const out = renderDocs(PAGE, [TABLE], () => published(records));
     assert.match(
       out,
-      /Medians of 3 runs per contender, in headless Chrome 157 on Test CPU, load average 1\.9 to 4\.5, commit abc1234\. Full results: \[2026-01-01T00-00-00-test\]\(results\/2026-01-01T00-00-00-test\.md\)\./,
+      /Medians of 4 runs per contender, in headless Chrome 157 on Test CPU, load average 1\.9 to 4\.5, commit abc1234\. Full results: \[2026-01-01T00-00-00-test\]\(results\/2026-01-01T00-00-00-test\.md\)\./,
     );
   });
 
   test("two run counts name the workloads that have each", () => {
-    const records = [...runsOf("kv/idb", [100, 100, 100]), ...runsOf("kv/kv", [200, 200, 200]), ...runsOf("kv/idb", [5, 5], { workload: "kv/other" }), ...runsOf("kv/kv", [9, 9], { workload: "kv/other" })];
+    const records = [...runsOf("kv/idb", [100, 100, 100, 100, 100]), ...runsOf("kv/kv", [200, 200, 200, 200, 200]), ...runsOf("kv/idb", [5, 5, 5, 5], { workload: "kv/other" }), ...runsOf("kv/kv", [9, 9, 9, 9], { workload: "kv/other" })];
     const two: Table = { ...TABLE, rows: [...TABLE.rows, { label: "Other reads", workload: "kv/other", phase: "read", metric: "rate" }] };
     const out = renderDocs(PAGE, [two], () => published(records));
-    assert.match(out, /Medians of 3 runs per contender for kv\/test, 2 for kv\/other, in headless/);
+    assert.match(out, /Medians of 5 runs per contender for kv\/test, 4 for kv\/other, in headless/);
   });
 
-  test("a ratio over overlapping ranges is printed with a ‡ and the page says what it means", () => {
-    const out = render([95, 100, 150], [120, 160, 170]);
-    assert.match(out, /\| Random reads \| 100k ops\/s \| 160k ops\/s \| 1\.6× ‡ \|/);
-    assert.match(out, /\n‡ The min–max ranges of the two contenders overlap, so these runs do not separate them\.\n/);
-    assert.doesNotMatch(render([95, 100, 105], [190, 200, 210]), /‡/);
+  test("a ratio of runs the test does not separate is printed with a ‡ and the page says what it means", () => {
+    const out = render([95, 100, 100, 150], [100, 120, 120, 170]);
+    assert.match(out, /\| Random reads \| 100k ops\/s \| 120k ops\/s \| 1\.2× ‡ \|/);
+    assert.match(out, /\n‡ These runs do not separate the two contenders \(rank-sum test, 5% level\)\.\n/);
+    assert.doesNotMatch(render([95, 100, 100, 105], [190, 200, 200, 210]), /‡/);
+  });
+
+  test("runs whose ranges overlap but whose ranks separate carry no ‡", () => {
+    assert.doesNotMatch(render([42.8, 42.5, 43, 42.8, 47.4], [47.9, 47.6, 48.1, 47.3, 47.8]), /‡/);
+  });
+
+  test("a ratio of fewer than 4 runs per side throws and names the table, the row and the run counts", () => {
+    assert.throws(
+      () => render([95, 100, 105], [190, 200, 210]),
+      /table "reads", row "Random reads", column "": 3 runs against 3 cannot show a difference.*at least 4 runs per contender/,
+    );
+    assert.throws(() => render([95, 100, 105, 98], [190]), /4 runs against 1 cannot show a difference/);
   });
 
   test("a cell whose runs form two clusters is marked with a †, and a legend follows", () => {
@@ -130,7 +142,7 @@ suite("renderDocs", () => {
     const main: MainThread = { longTasks: 0, longestMs: 0, blockedMs: 0, frames: 10, frameIntervalMs: 16, longestFrameMs: 16, droppedFrames: 0 };
     const cold = { n: 1, sumUs: 2000, minUs: 0, maxUs: 2000, buckets: [] };
     const records = (contender: string, wall: number, dropped: number) =>
-      [1, 2, 3].map((i) =>
+      [1, 2, 3, 4].map((i) =>
         run(contender, 1, { phases: [phase("read", { wallMs: wall + i, latency: { cold }, mainThread: { ...main, droppedFrames: dropped } })] }),
       );
     const both: Table = {
@@ -142,7 +154,7 @@ suite("renderDocs", () => {
       ],
     };
     const out = renderDocs(PAGE, [both], () => published([...records("kv/idb", 600, 4), ...records("kv/kv", 300, 3)]));
-    assert.match(out, /\| A pair \| 2\.00 \/ 602 \| 2\.00 \/ 302 \| 1\.0× ‡ \/ 2\.0× \|\n/);
+    assert.match(out, /\| A pair \| 2\.00 \/ 603 \| 2\.00 \/ 303 \| 1\.0× ‡ \/ 2\.0× \|\n/);
     assert.match(out, /\| Dropped frames \| 4 \| 3 \| \|\n/);
   });
 });
@@ -150,7 +162,7 @@ suite("renderDocs", () => {
 suite("value formats", () => {
   const cell = (kops: number, over: Partial<Table["rows"][number]> = {}, table: Partial<Table> = {}) => {
     const t: Table = { ...TABLE, ...table, rows: [{ label: "Row", phase: "read", metric: "rate", ...over }] };
-    const out = renderDocs(PAGE, [t], () => published([...runsOf("kv/idb", [kops, kops, kops]), ...runsOf("kv/kv", [kops, kops, kops])]));
+    const out = renderDocs(PAGE, [t], () => published([...runsOf("kv/idb", [kops, kops, kops, kops]), ...runsOf("kv/kv", [kops, kops, kops, kops])]));
     return /\| Row \| ([^|]+) \|/.exec(out)![1]!;
   };
 
@@ -166,7 +178,7 @@ suite("value formats", () => {
   test("a time is in ms with three significant digits, and in s from a thousand ms", () => {
     const time = (ms: number, over: Partial<Table["rows"][number]> = {}, table: Partial<Table> = {}) => {
       const t: Table = { ...TABLE, ...table, rows: [{ label: "Row", phase: "read", metric: "wall", ...over }] };
-      const records = ["kv/idb", "kv/kv"].flatMap((c) => runsOf(c, [1, 1, 1]).map((r) => ({ ...r, phases: [phase("read", { wallMs: ms })] })));
+      const records = ["kv/idb", "kv/kv"].flatMap((c) => runsOf(c, [1, 1, 1, 1]).map((r) => ({ ...r, phases: [phase("read", { wallMs: ms })] })));
       return /\| Row \| ([^|]+) \|/.exec(renderDocs(PAGE, [t], () => published(records)))![1]!;
     };
     assert.equal(time(0.118), "0.118 ms");
@@ -180,7 +192,7 @@ suite("value formats", () => {
 
   test("a ratio is an integer from ten, and one decimal below", () => {
     const ratio = (idb: number, kv: number) => {
-      const out = render([idb, idb, idb], [kv, kv, kv]);
+      const out = render([idb, idb, idb, idb], [kv, kv, kv, kv]);
       return /\| ([^|]+) \|\n/.exec(out.split("\n").find((l) => l.startsWith("| Random reads"))! + "\n")![1]!;
     };
     assert.equal(ratio(10, 123), "12×");
@@ -244,7 +256,7 @@ suite("readPublished", () => {
 });
 
 suite("staleTables", () => {
-  const read = () => published([...runsOf("kv/idb", [95, 100, 105]), ...runsOf("kv/kv", [190, 200, 210])]);
+  const read = () => published([...runsOf("kv/idb", [95, 100, 100, 105]), ...runsOf("kv/kv", [190, 200, 200, 210])]);
 
   test("names the tables whose text differs from the runs, and none once the page is rendered", () => {
     assert.deepEqual(staleTables(PAGE, [TABLE], read), ["reads"]);

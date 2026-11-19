@@ -10,7 +10,7 @@
  *                           and also runs the byte-budget rows above size tiny
  *   size [--check]          bundle-size table; --check fails over a row's budget
  *   compare <a.jsonl> <b.jsonl> [--all]
- *                           every metric both files hold, B against A by the min–max ranges;
+ *                           every metric both files hold, B against A by a rank-sum test of the runs;
  *                           --all also lists the rows with no measurable difference
  *   report <file.jsonl>
  *   docs [--check]          rewrite the tables of docs/benchmarks.md from the runs under docs/results/;

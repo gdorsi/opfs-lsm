@@ -29,7 +29,7 @@ Preconditions:
 - **Run the smoke.** Execute `.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive bench-smoke`. Exit code `0`.
 - **Confirm tables.** Stdout has one `## <family>/<workload>: <title>` section per selected workload. Each section has a phase table with a row per contender (`phase | contender | runs | ops/s | …`). kv workloads that record a footprint also print an amplification table.
 - **Confirm no failure.** Stdout has no `## Failed runs` section and no `problem(s):` line on stderr.
-- **Performance claim.** Run with `--reps 5` or more, before and after the change, then run `node bench/cli.ts compare before.jsonl after.jsonl`. Report only rows whose verdict is `B faster` or `B slower`. `≈ no measurable difference` means the ranges overlap.
+- **Performance claim.** Run with `--reps 5` or more, before and after the change, then run `node bench/cli.ts compare before.jsonl after.jsonl`. Report only rows whose verdict is `B better` or `B worse`. `≈` means the rank-sum test of the runs does not separate the two files at the 5% level.
 - **Proof.** Keep `artifacts/bench/<run-id>/stdout.txt` (or `artifacts/bench-smoke/…`) and the `bench/results/*.md` file that stdout names on its first line.
 
 ## Gotchas
