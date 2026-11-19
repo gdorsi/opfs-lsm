@@ -2,9 +2,10 @@
 import { onBeforeUnmount, onMounted, ref } from "vue";
 
 /**
- * The "alpha" tag, with the page's status notice under it. The notice opens once the pointer has rested on the tag and
- * closes once it has left the tag and the notice. A click pins it open, which is how a touch screen or the keyboard
- * opens it. Escape, or a press outside, closes it.
+ * The "alpha" tag, with the page's status notice under it. Here the notice is what the tag's dot says: its "under
+ * construction" note stays hidden, and only names the button. The notice opens once the pointer has rested on the tag
+ * and closes once it has left the tag and the notice. A click pins it open, which is how a touch screen or the
+ * keyboard opens it. Escape, or a press outside, closes it.
  */
 defineProps<{ notice: { title: string; body: string; link: string } }>();
 
@@ -51,7 +52,9 @@ onBeforeUnmount(() => {
 
 <template>
   <span ref="root" class="alpha-notice" @pointerenter="hover(true, $event)" @pointerleave="hover(false, $event)">
-    <button type="button" class="alpha-tag" :aria-expanded="open" aria-controls="alpha-notice" @click="toggle">alpha</button>
+    <button type="button" class="alpha-tag" :aria-expanded="open" aria-controls="alpha-notice" @click="toggle">
+      <span class="alpha-dot" aria-hidden="true"></span>alpha <span class="alpha-note">under construction</span>
+    </button>
     <Transition name="alpha-notice">
       <div v-show="open" id="alpha-notice" class="alpha-notice-card">
         <strong>{{ notice.title }}</strong>
