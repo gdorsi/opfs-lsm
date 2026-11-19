@@ -22,11 +22,12 @@ function stat(xs: readonly number[]): Stat {
 type Row = { workload: string; phase: number; name: string; contender: string; runs: RunRecord[] };
 
 function groups(records: readonly RunRecord[]): Map<string, Row[]> {
-  const byWorkload = new Map<string, Map<string, Row>>();
+  const bySection = new Map<string, Map<string, Row>>();
   for (const r of records) {
     if (r.error) continue;
-    let rows = byWorkload.get(r.workload);
-    if (!rows) byWorkload.set(r.workload, (rows = new Map()));
+    const section = `${r.workload}\0${r.size}`;
+    let rows = bySection.get(section);
+    if (!rows) bySection.set(section, (rows = new Map()));
     r.phases.forEach((p, i) => {
       const key = `${i}\0${r.contender}`;
       let row = rows.get(key);
@@ -35,7 +36,7 @@ function groups(records: readonly RunRecord[]): Map<string, Row[]> {
     });
   }
   return new Map(
-    [...byWorkload].map(([w, rows]) => [w, [...rows.values()].sort((a, b) => a.phase - b.phase || a.contender.localeCompare(b.contender))]),
+    [...bySection].map(([section, rows]) => [section, [...rows.values()].sort((a, b) => a.phase - b.phase || a.contender.localeCompare(b.contender))]),
   );
 }
 
@@ -88,8 +89,9 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
     const h = ok.host;
     out.push(`${h.chrome}${h.headless ? " headless" : ""}, ${h.os}, ${h.cpu} × ${h.cores}, node ${h.node}, git ${h.gitSha}, load ${h.loadAvg1}`);
   }
-  for (const [workload, rows] of groups(records)) {
+  for (const rows of groups(records).values()) {
     const first = rows[0]!.runs[0]!;
+    const workload = first.workload;
     const p = first.params;
     const get = (row: Row, metric: Metric, phased = true) =>
       measures.get({ workload, size: row.runs[0]!.size, contender: row.contender, ...(phased ? { phase: row.name } : {}), metric });
