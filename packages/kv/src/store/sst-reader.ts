@@ -213,7 +213,7 @@ export class SstReader {
         if (at?.p !== p) {
           // Not on the first page, so a scan that ends there reads no further.
           if (at) {
-            ahead ??= new ReadAhead((q) => this.page(meta, q, "probation"), lastPage(index, bounds, reverse), step);
+            ahead ??= readAhead((q) => this.page(meta, q, "probation"), lastPage(index, bounds, reverse), step);
             ahead.extend(p);
           }
           const page = ahead?.take(p) ?? this.page(meta, p, "probation");
@@ -266,36 +266,31 @@ export class SstReader {
  * The scan keeps what arrives, so entering such a page is not a cache hit
  * and one pass over the data still shows no reuse.
  */
-class ReadAhead {
-  private readonly pages = new Map<number, Page>();
-  private window = 0;
-  private asked: number | undefined = undefined;
+type ReadAhead = ReturnType<typeof readAhead>;
 
-  constructor(
-    private readonly load: (page: number) => Maybe<Page>,
-    private readonly last: number,
-    private readonly step: 1 | -1,
-  ) {}
-
-  extend(p: number): void {
-    const { step } = this;
-    if (this.asked !== undefined && (this.asked - p) * step > this.window / 2) return;
-    this.window = Math.min(this.window * 2 || 1, MAX_READ_AHEAD);
-    const to = step > 0 ? Math.min(this.last, p + this.window) : Math.max(this.last, p - this.window);
-    for (let q = (this.asked ?? p) + step; (to - q) * step >= 0; q += step) {
-      const page = this.load(q);
-      // A failed read is dropped here: the scan reads that page again when it reaches it.
-      if (page instanceof Miss) page.ready.then((fills) => void this.pages.set(q, fills[0]![1] as Page), () => undefined);
-      else this.pages.set(q, page);
-      this.asked = q;
-    }
-  }
-
-  take(p: number): Page | undefined {
-    const page = this.pages.get(p);
-    this.pages.delete(p);
-    return page;
-  }
+function readAhead(load: (page: number) => Maybe<Page>, last: number, step: 1 | -1) {
+  const pages = new Map<number, Page>();
+  let windowSize = 0;
+  let asked: number | undefined;
+  return {
+    extend(p: number): void {
+      if (asked !== undefined && (asked - p) * step > windowSize / 2) return;
+      windowSize = Math.min(windowSize * 2 || 1, MAX_READ_AHEAD);
+      const to = step > 0 ? Math.min(last, p + windowSize) : Math.max(last, p - windowSize);
+      for (let q = (asked ?? p) + step; (to - q) * step >= 0; q += step) {
+        const page = load(q);
+        // A failed read is dropped here: the scan reads that page again when it reaches it.
+        if (page instanceof Miss) page.ready.then((fills) => void pages.set(q, fills[0]![1] as Page), () => undefined);
+        else pages.set(q, page);
+        asked = q;
+      }
+    },
+    take(p: number): Page | undefined {
+      const page = pages.get(p);
+      pages.delete(p);
+      return page;
+    },
+  };
 }
 
 /** The last page a scan of `bounds` can reach: the highest going forward, the lowest going back. */
