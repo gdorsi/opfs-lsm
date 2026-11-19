@@ -64,7 +64,7 @@ export function scanStep(
   const step =
     patterns && patterns.length > 0
       ? matchingStep(rows, levels, patterns, at, bounds, reverse)
-      : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse);
+      : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse, bounds);
   const limit = range?.limit;
   if (limit === undefined) return step;
   let n = 0;
