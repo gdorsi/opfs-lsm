@@ -38,11 +38,7 @@ import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
 import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type ViewSnapshot } from "./view.js";
-import {
-  ChangeBus,
-  type ChangeEvent,
-  type ChangeListener,
-} from "./changes.js";
+import type { ChangeEvent, ChangeListener } from "./changes.js";
 
 export type { ViewSnapshot } from "./view.js";
 export type { Pressure } from "./host/protocol.js";
@@ -509,7 +505,7 @@ class DbImpl implements Db {
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
   private readonly catchUpToWal = coalesced(() => this.syncOnce());
-  private readonly changeBus = new ChangeBus();
+  private readonly listeners = new Set<ChangeListener>();
   /** Applied and not yet announced, in seq order. Drained outside IndexedDB callbacks. */
   private unannounced: ChangeEvent[] = [];
   /** A repair may have recorded another manifest, so the next install can change what reads return. */
@@ -634,7 +630,15 @@ class DbImpl implements Db {
   private announce(): void {
     const events = this.unannounced;
     this.unannounced = [];
-    for (const event of events) this.changeBus.emit(event);
+    for (const event of events) {
+      for (const listener of this.listeners) {
+        try {
+          listener(event);
+        } catch (err) {
+          console.error("changes() listener threw", err);
+        }
+      }
+    }
   }
 
   private emit(event: ChangeEvent): void {
@@ -1101,7 +1105,10 @@ class DbImpl implements Db {
 
   changes(listener: ChangeListener): () => void {
     this.ensureOpen();
-    return this.changeBus.subscribe(listener);
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   onPressure(handler: PressureHandler): () => void {
@@ -1192,7 +1199,7 @@ class DbImpl implements Db {
     if (this.closed) return;
     this.closed = true;
     this.emit({ kind: "closed", reason });
-    this.changeBus.clear();
+    this.listeners.clear();
     this.unlock?.();
     if (this.bus && this.onBusMessage) {
       this.postRows();
