@@ -181,7 +181,7 @@ const schema = defineSchema({
 const tasks = (await openDocStore(kv, schema)).collection("tasks");
 ```
 
-`put`, `putMany`, and every document that `modify` or `modifyMany` returns go through the validator. The store keeps the validator's output.
+`put`, `putMany`, and every document that `modify` or `modifyMany` returns go through the validator. The store keeps the validator's output, and reads the `id` from it: a validator that rewrites the id stores a `put` under the new one.
 
 ```ts
 await tasks.put({ id: "t1", title: "Buy milk", createdAt: 1 });
@@ -207,7 +207,7 @@ await visits.modify("v1", (x) => ({ ...x }));
 // type error: at is a number, and the input takes a Date
 ```
 
-A validator must be synchronous: one that returns a Promise throws `"invalid"` with no issues. Reads never validate. The validators are not stored, so a change to one needs no `version` bump. They guard this handle's writes only: another schema, another tab or `kv.ingest` can still write documents they would reject.
+A validator must be synchronous: one that returns a Promise throws `"invalid"` with no issues. An error it throws itself reaches the caller as it is, and nothing is stored. Reads never validate. The validators are not stored, so a change to one needs no `version` bump. They guard this handle's writes only: another schema, another tab or `kv.ingest` can still write documents they would reject.
 
 ## Deletes
 

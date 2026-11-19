@@ -19,12 +19,24 @@ const Person = z.object({
 
 const Slow = v.objectAsync({ id: v.string() });
 
+const Tag = v.object({
+  id: v.pipe(v.string(), v.toLowerCase()),
+  label: v.pipe(
+    v.string(),
+    v.transform((label) => {
+      if (label === "boom") throw new RangeError("boom");
+      return label;
+    }),
+  ),
+});
+
 const schema = defineSchema({
   version: 1,
   collections: {
     tasks: collection(Task).index("byCreated", "createdAt"),
     people: collection(Person).index("byJoined", "joined"),
     slow: collection(Slow),
+    tags: collection(Tag).unique("byLabel", "label"),
   },
 });
 
@@ -167,6 +179,27 @@ describe("a collection with a validator", () => {
     await tasks.put({ id: "t1", title: "a", createdAt: 1 });
     expect(await codeOf(tasks.modify("t1", (t) => ({ ...t, id: "t2" })))).toBe("document");
     expect(await tasks.getMany(["t1", "t2"])).toEqual([{ id: "t1", title: "a", done: false, createdAt: 1 }, undefined]);
+  });
+
+  it("stores a put under the id the validator returns", async () => {
+    const { store: s } = await store();
+    const tags = s.collection("tags");
+    await tags.put({ id: "Bug", label: "bug" });
+    expect(await tags.getMany(["Bug", "bug"])).toEqual([undefined, { id: "bug", label: "bug" }]);
+    await tags.put({ id: "BUG", label: "defect" });
+    expect(await tags.count({ index: "byLabel" })).toBe(1);
+    expect((await tags.get("bug"))?.label).toBe("defect");
+  });
+
+  it("lets an error the validator throws reach the caller, and stores nothing", async () => {
+    const { store: s } = await store();
+    const tags = s.collection("tags");
+    await tags.put({ id: "a", label: "a" });
+    await expect(tags.putMany([{ id: "b", label: "b" }, { id: "c", label: "boom" }])).rejects.toThrow(RangeError);
+    await expect(tags.modify("a", (t) => ({ ...t, label: "boom" }))).rejects.toThrow(RangeError);
+    expect(await tags.getMany(["a", "b", "c"])).toEqual([{ id: "a", label: "a" }, undefined, undefined]);
+    await tags.put({ id: "b", label: "b" });
+    expect(await tags.count({ index: "byLabel" })).toBe(2);
   });
 
   it("opens with a changed validator at the same version", async () => {
