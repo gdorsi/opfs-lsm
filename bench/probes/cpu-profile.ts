@@ -108,6 +108,7 @@ try {
   const catalog = await readCatalog(server.origin, true);
   const [run] = plan(catalog, { workloads: [workload], contenders: [values.contender!], size: values.size as SizeName, reps: 1 });
   if (!run) throw new Error(`nothing to run for ${workload} on ${values.contender}`);
+  if (run.phases.some(({ page }) => page === "other")) throw new Error(`${workload} runs a phase in a second tab, which this probe does not open`);
   const names = catalog.find((w) => w.workload === workload)!.phases.map((p) => p.name);
   const target = names.indexOf(phaseName);
   if (target < 0) throw new Error(`${workload} has no phase ${phaseName}; it has ${names.join(", ")}`);

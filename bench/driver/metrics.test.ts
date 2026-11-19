@@ -230,6 +230,19 @@ suite("footprints", () => {
     ]);
     assert.deepEqual(series(m, "amp:userBytes", "settle")!.values, [17]);
   });
+
+  test("a footprint after a second tab wrote has disk bytes but no write amplification", () => {
+    const m = measure([
+      run([
+        phase("fill", { userBytes: 40 }),
+        phase("write-second", { page: "other", userBytes: 5 }),
+        phase("settle", { timed: false, ops: 0, footprint: base }),
+      ]),
+    ]);
+    assert.equal(series(m, "amp:wampTotal", "settle"), undefined);
+    assert.equal(series(m, "amp:userBytes", "settle"), undefined);
+    assert.ok(series(m, "amp:diskBytes", "settle"));
+  });
 });
 
 suite("memory", () => {

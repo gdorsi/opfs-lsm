@@ -6,9 +6,10 @@
  */
 import { appendFileSync } from "node:fs";
 import type { Catalog, KvOptions, MemoryPeaks, PhaseReply, PhaseRequest, PhaseResult, RunRecord } from "../core/types.ts";
-import { launchChrome } from "./chrome.ts";
+import { launchChrome, type Tab } from "./chrome.ts";
 import { hostInfo } from "./host.ts";
 import type { PlannedRun } from "./plan.ts";
+import { tabPlan } from "./tabs.ts";
 
 export type RunOptions = {
   readonly origin: string;
@@ -43,7 +44,7 @@ export async function runPlan(runs: readonly PlannedRun[], opts: RunOptions): Pr
 }
 
 async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
-  const phases: PhaseResult[] = [];
+  const rounds: PhaseResult[][] = run.phases.map(() => []);
   let meta: Pick<PhaseReply, "durability" | "fastPath" | "engine" | "params"> | undefined;
   let chromeVersion = "unknown";
   let memory: MemoryPeaks | undefined;
@@ -53,38 +54,34 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
     chromeVersion = chrome.version;
     const query = new URLSearchParams(Object.entries(opts.kv).map(([option, bytes]) => [option, String(bytes)]));
     const url = `${opts.origin}/index.html${query.size > 0 ? `?${query}` : ""}`;
-    let tab = await chrome.openTab(url);
+    let tabs: [Tab | undefined, Tab | undefined] = [undefined, undefined];
     let carry: string | undefined;
-    const freshTab = async () => {
-      await tab.evaluate("__bench.closeStore()", 60_000);
-      await tab.close();
+    const freshTabs = async () => {
+      for (const tab of tabs) await tab?.evaluate("__bench.closeStore()", 60_000);
+      for (const tab of tabs) await tab?.close();
+      tabs = [undefined, undefined];
       await chrome.sharedWorkersGone(15_000); // the kv host must be gone, or "cold" is warm
-      tab = await chrome.openTab(url);
     };
-    for (const [phase, { page, rounds }] of run.phases.entries()) {
-      const results: PhaseResult[] = [];
-      for (let round = 0; round < rounds; round++) {
-        if (round > 0 || (page === "fresh" && phase > 0)) await freshTab();
-        const req: PhaseRequest = {
-          workload: run.workload,
-          contender: run.contender,
-          size: run.size,
-          rep: run.rep,
-          phase,
-          round,
-          dbName: "bench",
-          carry,
-        };
-        const reply = await tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, opts.phaseTimeoutMs);
-        carry = reply.carry;
-        meta = { durability: reply.durability, fastPath: reply.fastPath, engine: reply.engine, params: reply.params };
-        results.push(reply.result);
-      }
-      const [first, ...later] = results;
-      phases.push(later.length > 0 ? { ...first!, laterRounds: later } : first!);
+    for (const { phase, round, fresh, slot } of tabPlan(run.phases)) {
+      if (fresh) await freshTabs();
+      const tab = (tabs[slot] ??= await chrome.openTab(url));
+      const req: PhaseRequest = {
+        workload: run.workload,
+        contender: run.contender,
+        size: run.size,
+        rep: run.rep,
+        phase,
+        round,
+        dbName: "bench",
+        carry,
+      };
+      const reply = await tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, opts.phaseTimeoutMs);
+      carry = reply.carry;
+      meta = { durability: reply.durability, fastPath: reply.fastPath, engine: reply.engine, params: reply.params };
+      rounds[phase]!.push(reply.result);
     }
     memory = await chrome.memory();
-    await tab.evaluate("__bench.closeStore()", 60_000);
+    for (const tab of tabs) await tab?.evaluate("__bench.closeStore()", 60_000);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   } finally {
@@ -100,7 +97,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
     params: meta?.params ?? { entries: 0, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: 0 },
     host: hostInfo(chromeVersion, opts.headless),
     ...(meta?.engine && Object.keys(opts.kv).length > 0 ? { kv: opts.kv } : {}),
-    phases,
+    phases: rounds.flatMap(([first, ...later]) => (!first ? [] : later.length > 0 ? [{ ...first, laterRounds: later }] : [first])),
     ...(memory ? { memory } : {}),
     ...(error !== undefined ? { error } : {}),
   };
