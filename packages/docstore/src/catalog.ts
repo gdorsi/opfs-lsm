@@ -308,42 +308,22 @@ function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog
   return { format: FORMAT, version: declared.version, nextCollectionId, collections, dropped };
 }
 
-function withIndex(
+/** A building index leaves `building` for `state`. A failed one also drops its entries. Anything else is already settled: undefined. */
+export function settleIndex(
   c: StoredCatalog,
   collection: string,
   index: IndexId,
-  next: (was: StoredIndex, coll: StoredCollection) => { index: StoredIndex; dropped?: DroppedPrefix } | undefined,
+  state: Exclude<IndexState, { kind: "building" }>,
 ): StoredCatalog | undefined {
   const coll = c.collections[collection];
-  if (!coll) return undefined;
-  const entry = Object.entries(coll.indexes).find(([, i]) => i.id === index);
-  const out = entry && next(entry[1], coll);
-  if (!entry || !out) return undefined;
+  const entry = coll && Object.entries(coll.indexes).find(([, i]) => i.id === index);
+  if (!entry || entry[1].state.kind !== "building") return undefined;
+  const [name, was] = entry;
   return {
     ...c,
-    collections: { ...c.collections, [collection]: { ...coll, indexes: { ...coll.indexes, [entry[0]]: out.index } } },
-    dropped: out.dropped ? [...c.dropped, out.dropped] : c.dropped,
+    collections: { ...c.collections, [collection]: { ...coll, indexes: { ...coll.indexes, [name]: { ...was, state } } } },
+    dropped: state.kind === "failed" ? [...c.dropped, { collection: coll.id, index: was.id }] : c.dropped,
   };
-}
-
-export function markReady(c: StoredCatalog, collection: string, index: IndexId): StoredCatalog | undefined {
-  return withIndex(c, collection, index, (was) =>
-    was.state.kind === "building" ? { index: { ...was, state: { kind: "ready" } } } : undefined,
-  );
-}
-
-export function markFailed(
-  c: StoredCatalog,
-  collection: string,
-  index: IndexId,
-  reason: "unique" | "value",
-  ids: readonly string[],
-): StoredCatalog | undefined {
-  return withIndex(c, collection, index, (was, coll) =>
-    was.state.kind === "building"
-      ? { index: { ...was, state: { kind: "failed", reason, ids } }, dropped: { collection: coll.id, index: was.id } }
-      : undefined,
-  );
 }
 
 /**

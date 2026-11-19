@@ -5,12 +5,11 @@ import {
   clearCollection,
   describeIndexes,
   encodeCatalog,
-  markFailed,
-  markReady,
   normalizeSchema,
   parseCatalog,
   reconcile,
   removeDropped,
+  settleIndex,
   type StoredCatalog,
 } from "../src/catalog.js";
 import { DocStoreError } from "../src/errors.js";
@@ -33,6 +32,10 @@ function codeOf(f: () => unknown): string {
   }
   return "no error";
 }
+
+const markReady = (c: StoredCatalog, collection: string, index: IndexId) => settleIndex(c, collection, index, { kind: "ready" });
+const markFailed = (c: StoredCatalog, collection: string, index: IndexId, reason: "unique" | "value", ids: string[]) =>
+  settleIndex(c, collection, index, { kind: "failed", reason, ids });
 
 const idOf = (c: StoredCatalog, coll: string, index: string) => c.collections[coll]!.indexes[index]!.id as IndexId;
 
