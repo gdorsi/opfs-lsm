@@ -10,8 +10,8 @@ const enc = new TextEncoder();
 
 const run = (path: string, bytes: number, smallest?: string, largest?: string): RunMeta =>
   smallest === undefined
-    ? { path, bytes, marksThrough: 0 }
-    : { path, bytes, range: { smallest: enc.encode(smallest), largest: enc.encode(largest ?? smallest) }, marksThrough: 0 };
+    ? { path, bytes, marksThrough: 0, tally: { plus: 0, minus: 0, unknown: 0 } }
+    : { path, bytes, range: { smallest: enc.encode(smallest), largest: enc.encode(largest ?? smallest) }, marksThrough: 0, tally: { plus: 0, minus: 0, unknown: 0 } };
 const manifest = (runs: readonly RunMeta[], marks = NO_MARKS) => ({ runs, marks });
 const paths = (plan: CompactionPlan | undefined) => plan?.inputs.map((r) => r.path);
 

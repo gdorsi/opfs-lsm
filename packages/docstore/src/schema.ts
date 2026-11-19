@@ -200,6 +200,12 @@ type Where<V extends readonly unknown[], E extends readonly unknown[] = []> = V 
 type PageOptions = {
   /** Most results to return. Absent: all of them. `count` stops at it. */
   readonly limit?: number | undefined;
+  /**
+   * Skip this many results first, counted from the start of the range, or
+   * from `after`. In an index, and in a collection that has one, the skipped
+   * entries are not read: the cost does not grow with the offset.
+   */
+  readonly offset?: number | undefined;
   /** The `next` of the previous page. */
   readonly after?: Cursor | undefined;
   /** Descending order of the same range. */
@@ -247,6 +253,7 @@ export type QueryInput = {
   readonly startsWith?: string | undefined;
   readonly match?: string | undefined;
   readonly limit?: number | undefined;
+  readonly offset?: number | undefined;
   readonly after?: Cursor | undefined;
   readonly reverse?: boolean | undefined;
 };

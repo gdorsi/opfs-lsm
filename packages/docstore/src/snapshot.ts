@@ -24,7 +24,7 @@ export interface CollectionSnapshot<T extends JsonDoc, Ix> {
   queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPage<EntryValues<T, Ix, I>>>;
-  /** How many entries `query` would walk, stopping at `limit` if given. */
+  /** See `Collection.count`. */
   count(q: Query<T, Ix>): Promise<number>;
 }
 
@@ -34,8 +34,14 @@ function limitOf(limit: unknown): number | undefined {
   throw new DocStoreError("query", "limit must be a positive integer");
 }
 
-function withLimit(range: Range, limit: number | undefined): Range {
-  return limit === undefined ? range : { ...range, limit };
+function offsetOf(offset: unknown): number {
+  if (offset === undefined) return 0;
+  if (typeof offset === "number" && Number.isSafeInteger(offset) && offset >= 0) return offset;
+  throw new DocStoreError("query", "offset must be a whole number from 0 up");
+}
+
+function paged(range: Range, limit: number | undefined, offset: number): Range {
+  return { ...range, ...(limit === undefined ? {} : { limit }), ...(offset > 0 ? { offset } : {}) };
 }
 
 /** `hits` holds one entry past the page iff another page follows: drop it and name the cursor. */
@@ -134,6 +140,6 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
     const input = q as QueryInput;
     const limit = limitOf(input.limit);
     const target = input.index === undefined ? this.coll.rows : readableTarget(this.coll, input.index);
-    return { target, limit, range: withLimit(scanPlan(target, input), limit && limit + peek) };
+    return { target, limit, range: paged(scanPlan(target, input), limit && limit + peek, offsetOf(input.offset)) };
   }
 }

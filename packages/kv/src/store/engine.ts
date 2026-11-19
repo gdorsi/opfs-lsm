@@ -3,7 +3,7 @@
  * The module is required: the engine writes and merges runs only through it,
  * so a context where it does not load cannot flush.
  */
-import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
+import { wasBits, type EncodedRun, type RunEnd, type SstCodec, type SstEntry } from "./sst.js";
 import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
 import { encodeMarks, type Marks } from "./marks.js";
@@ -46,7 +46,8 @@ const RUN_END = 3;
 const YIELD = 4;
 const DONE = 5;
 const DEMAND_BYTES = 16;
-const RUN_HEAD_BYTES = 16;
+/** Entries, size, first and last key length, then the run's tally: plus, minus, unknown. */
+const RUN_HEAD_BYTES = 28;
 
 export type EngineExports = {
   memory: WebAssembly.Memory;
@@ -208,7 +209,7 @@ export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz
       let o = 0;
       for (const e of entries) {
         const seq = e.seq;
-        view.setUint8(o, e.kind === "put" ? TAG_PUT : TAG_DEL);
+        view.setUint8(o, (e.kind === "put" ? TAG_PUT : TAG_DEL) | wasBits(e.was));
         view.setUint32(o + 1, seq % TWO_32, true);
         view.setUint32(o + 5, Math.floor(seq / TWO_32), true);
         view.setUint32(o + 9, e.key.byteLength, true);
@@ -336,10 +337,12 @@ function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
   const size = view.getUint32(4, true);
   const firstLen = view.getUint32(8, true);
   const lastLen = view.getUint32(12, true);
-  if (entries === 0) return { bytes: size };
+  const tally = { plus: view.getUint32(16, true), minus: view.getUint32(20, true), unknown: view.getUint32(24, true) };
+  if (entries === 0) return { bytes: size, tally };
   return {
     bytes: size,
     range: { smallest: bytes.slice(keys, keys + firstLen), largest: bytes.slice(keys + firstLen, keys + firstLen + lastLen) },
+    tally,
   };
 }
 

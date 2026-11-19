@@ -122,6 +122,13 @@ export async function checkQuery(
   expect((await c.query(query)).docs).toEqual(want.map((h) => h.doc));
   expect(await c.count(query)).toBe(want.length);
   expect(await c.count(asQuery({ ...q, limit: pageSize }))).toBe(Math.min(pageSize, want.length));
+  // An offset skips results of the same order: a window anywhere in it is a slice of the whole.
+  for (const offset of new Set([1, pageSize, want.length >> 1, want.length, want.length + 2])) {
+    const window = asQuery({ ...q, offset, limit: pageSize });
+    expect((await c.queryIds(window)).ids, `offset ${offset}`).toEqual(want.slice(offset, offset + pageSize).map((h) => h.id));
+    expect((await c.query(window)).docs, `offset ${offset}`).toEqual(want.slice(offset, offset + pageSize).map((h) => h.doc));
+    expect(await c.count(asQuery({ ...q, offset })), `offset ${offset}`).toBe(Math.max(0, want.length - offset));
+  }
 
   const paged: string[] = [];
   let pages = 0;

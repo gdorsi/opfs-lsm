@@ -3,7 +3,7 @@ import { MemoryFs } from "../src/opfs/memory-fs.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { untilHit, type LayerCursor, type LayerEntry } from "../src/store/cursor.js";
 import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.js";
-import { NO_MARKS } from "../src/store/marks.js";
+import { NO_MARKS, type Marks } from "../src/store/marks.js";
 import { PageCache } from "../src/store/page-cache.js";
 import type { EncodedRun, SstCodec } from "../src/store/sst.js";
 import { sstKeyRange } from "./oracle/sst-ref.js";
@@ -51,6 +51,7 @@ export async function mergeRuns(
     readonly dropTombstones?: boolean;
     readonly targetBytes?: number;
     readonly codec?: SstCodec;
+    readonly marks?: Marks;
     readonly open?: (spec: MergeSpec) => MergeCore | Promise<MergeCore>;
   } = {},
 ): Promise<{ runs: EncodedRun[] }> {
@@ -61,7 +62,7 @@ export async function mergeRuns(
   const core = await (options.open ?? openMerge)({
     sources: sources.map((runs) => runs.map((run) => run.byteLength)),
     dropTombstones: options.dropTombstones ?? false,
-    marks: NO_MARKS,
+    marks: options.marks ?? NO_MARKS,
     targetBytes: options.targetBytes ?? Number.MAX_SAFE_INTEGER,
     codec: options.codec ?? "raw",
     chunkBytes: 64 * 1024,

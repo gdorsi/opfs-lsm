@@ -223,18 +223,21 @@ const manifestArb: fc.Arbitrary<GenerationMeta> = fc.integer({ min: 0, max: 2 **
           bytes: fc.integer({ min: 0, max: 2 ** 32 - 1 }),
           range: fc.record({ smallest: fc.uint8Array({ maxLength: 12 }), largest: fc.uint8Array({ maxLength: 12 }) }),
           marksThrough: fc.integer({ min: 0, max: through }),
+          tally: fc.record({ plus: fc.nat(), minus: fc.nat(), unknown: fc.nat() }),
         },
-        { requiredKeys: ["path", "bytes", "marksThrough"] },
+        { requiredKeys: ["path", "bytes", "marksThrough", "tally"] },
       ),
       { maxLength: 6 },
     ),
   }),
 );
 
+const wasArb = fc.constantFrom("absent" as const, "present" as const);
+
 const walRowArb: fc.Arbitrary<RowOp[]> = fc.array(
   fc.oneof(
-    fc.record({ put: fc.uint8Array({ maxLength: 16 }), value: fc.uint8Array({ maxLength: 32 }) }),
-    fc.record({ del: fc.uint8Array({ maxLength: 16 }) }),
+    fc.record({ put: fc.uint8Array({ maxLength: 16 }), value: fc.uint8Array({ maxLength: 32 }), was: wasArb }, { requiredKeys: ["put", "value"] }),
+    fc.record({ del: fc.uint8Array({ maxLength: 16 }), was: wasArb }, { requiredKeys: ["del"] }),
     fc
       .record({ start: fc.uint8Array({ maxLength: 8 }), size: fc.option(fc.uint8Array({ minLength: 1, maxLength: 4 })), through: fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }) })
       .map(({ start, size, through }) => ({ deleteRange: start, ...(size === null ? {} : { end: new Uint8Array([...start, ...size]) }), through })),

@@ -5,15 +5,17 @@ import { lz4Decompress } from "./lz4.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 const SST_MAGIC = 0x4f4c5354;
-const VERSION = 1;
+const VERSION = 2;
 export const SST_FOOTER_BYTES = 44;
 /**
  * The most Bloom hashes a footer may name. The encoder writes 7; a get
  * loops once per hash, so a corrupt count must not set its cost.
  */
 const MAX_BLOOM_HASHES = 32;
-/** The smallest index entry: two u32 key lengths, offset and length. */
-const MIN_INDEX_ENTRY_BYTES = 16;
+/** Bytes of an index entry after its two keys: u32 offset, u32 length, and u16 plus, minus and unknown. */
+export const INDEX_ROW_TAIL = 14;
+/** The smallest index entry: two u32 key lengths and the tail. */
+const MIN_INDEX_ENTRY_BYTES = 8 + INDEX_ROW_TAIL;
 
 /**
  * How a run stores its data blocks. An LZ4 block is a u32 uncompressed
@@ -24,6 +26,59 @@ const CODECS: readonly SstCodec[] = ["raw", "lz4"];
 
 const TAG_PUT = 1;
 const TAG_DEL = 2;
+/** A tag is the kind in bits 0 and 1 and `Was` in bits 2 and 3: 0 unknown, 1 absent, 2 present. */
+const TAG_KIND = 3;
+const WAS: readonly (Was | undefined)[] = [undefined, "absent", "present"];
+
+/**
+ * Whether a key was live just before the oldest write a record stands for.
+ * A writer that read the key says so, and a blind write leaves it undefined.
+ *
+ * With it a record states what it does to the number of live keys: a put
+ * over an absent key adds one, a delete of a present key takes one away,
+ * and the other two change nothing. Summed over every record of a key, in
+ * any set of sources that holds each version once, that is 1 for a live key
+ * and 0 for a dead one, as long as every record of the key says.
+ */
+export type Was = "absent" | "present";
+
+/** The tag bits of `was`, as a run and an entry record store them. */
+export function wasBits(was: Was | undefined): number {
+  return was === "absent" ? 4 : was === "present" ? 8 : 0;
+}
+
+/**
+ * What records say they do to the number of live keys: `plus` put a key
+ * that was absent, `minus` deleted one that was present, and `unknown` did
+ * not say what held before.
+ */
+export type Tally = { readonly plus: number; readonly minus: number; readonly unknown: number };
+
+/** A tally being added up. */
+export class Sum {
+  plus = 0;
+  minus = 0;
+  unknown = 0;
+
+  add(t: Tally): this {
+    this.plus += t.plus;
+    this.minus += t.minus;
+    this.unknown += t.unknown;
+    return this;
+  }
+
+  /** Plus less minus, the live keys of a range when every source of it is summed. Undefined when the sum cannot be that number. */
+  get live(): number | undefined {
+    return this.unknown > 0 || this.plus < this.minus ? undefined : this.plus - this.minus;
+  }
+
+  /** One record: a put or a delete, and what it says held before. */
+  count(put: boolean, was: Was | undefined): void {
+    if (was === undefined) this.unknown++;
+    else if (put && was === "absent") this.plus++;
+    else if (!put && was === "present") this.minus++;
+  }
+}
 
 /**
  * A block stores the offset of every `OFFSET_STRIDE`th record after
@@ -48,8 +103,9 @@ export type SstEntry =
       readonly key: Uint8Array;
       readonly value: Uint8Array;
       readonly seq: Seq;
+      readonly was?: Was | undefined;
     }
-  | { readonly kind: "del"; readonly key: Uint8Array; readonly seq: Seq };
+  | { readonly kind: "del"; readonly key: Uint8Array; readonly seq: Seq; readonly was?: Was | undefined };
 
 /** The smallest and largest key of a run. */
 export type KeyRange = {
@@ -66,6 +122,8 @@ export type RunEnd = {
   readonly bytes: number;
   /** Undefined for an empty run, which has no keys. */
   readonly range?: KeyRange;
+  /** What the run's records say, summed, so a count adds a whole run without opening it. */
+  readonly tally: Tally;
 };
 
 /** A run's bytes and its `RunEnd`. */
@@ -137,7 +195,8 @@ export class RecordWalker {
     this.keyAt = o;
     this.keyLen = n;
     o += n;
-    if (tag === TAG_PUT) {
+    const kind = tag & TAG_KIND;
+    if (kind === TAG_PUT) {
       n = buf[o]!;
       if (n < 0x80) o++;
       else {
@@ -148,11 +207,12 @@ export class RecordWalker {
       this.valAt = o;
       this.valLen = n;
       o += n;
-    } else if (tag === TAG_DEL) {
+    } else if (kind === TAG_DEL) {
       this.valLen = 0;
     } else {
       throw new CorruptDatabaseError(`bad sst tag ${tag}`);
     }
+    if (tag > 11) throw new CorruptDatabaseError(`bad sst tag ${tag}`);
     if (o > this.end) throw new CorruptDatabaseError("sst record OOB");
     this.tag = tag;
     this.o = o;
@@ -160,6 +220,14 @@ export class RecordWalker {
 
   seq(): Seq {
     return asSeq(Number(this.view.getBigUint64(this.seqAt, true)));
+  }
+
+  isPut(): boolean {
+    return (this.tag & TAG_KIND) === TAG_PUT;
+  }
+
+  was(): Was | undefined {
+    return WAS[this.tag >> 2];
   }
 
   key(): Uint8Array {
@@ -182,13 +250,14 @@ export class RecordWalker {
     const { buf, keyAt, keyLen, valAt } = this;
     const key = this.prefixLen === 0 ? buf.subarray(keyAt, keyAt + keyLen) : this.key();
     const seq = this.seq();
-    return this.tag === TAG_PUT ? { key, kind: "put", value: buf.subarray(valAt, valAt + this.valLen), seq } : { key, kind: "del", seq };
+    return this.isPut() ? { key, kind: "put", value: buf.subarray(valAt, valAt + this.valLen), seq } : { key, kind: "del", seq };
   }
 
   entry(): SstEntry {
     const key = this.key();
     const seq = this.seq();
-    return this.tag === TAG_PUT ? { kind: "put", key, value: this.value(), seq } : { kind: "del", key, seq };
+    const was = this.was();
+    return this.isPut() ? { kind: "put", key, value: this.value(), seq, was } : { kind: "del", key, seq, was };
   }
 
   private len(): number {
@@ -332,6 +401,20 @@ export function findInBlock(b: BlockBytes, key: Uint8Array): SstEntry | undefine
   if (seekSuffix(w, key) === 0) return undefined;
   w.next();
   return compareAt(w.buf, w.keyAt, w.keyLen, key, p) === 0 ? w.entry() : undefined;
+}
+
+/**
+ * Adds to `sum` what the records of one block say, for the keys at or after
+ * `start` and below `end`. Reads tags and keys in place and copies nothing.
+ */
+export function tallyBlock(b: BlockBytes, start: Uint8Array | undefined, end: Uint8Array | undefined, sum: Sum): void {
+  const w = RecordWalker.ofBlock(b);
+  const from = start ? w.count - seekInBlock(w, start) : 0;
+  const to = end ? w.count - seekInBlock(RecordWalker.ofBlock(b), end) : w.count;
+  for (let i = from; i < to; i++) {
+    w.next();
+    sum.count(w.isPut(), w.was());
+  }
 }
 
 /**

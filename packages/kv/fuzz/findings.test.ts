@@ -125,7 +125,7 @@ describe("decoder bugs the fuzzers found", () => {
       generation: 1,
       through: 0,
       marks: NO_MARKS,
-      runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") }, marksThrough: 0 }],
+      runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") }, marksThrough: 0, tally: { plus: 0, minus: 0, unknown: 0 } }],
     });
     // Run count and the first path length, inflated (found by "manifests ... reject every change").
     // The run count follows the 32-byte header and the 4-byte empty marks block.

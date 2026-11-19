@@ -3,19 +3,91 @@ import { ROW_OVERHEAD, type CheckedOp } from "../check.js";
 import { nextSeq, SEQ_ZERO, type Seq } from "../seq.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
 import { NO_MARKS, type Marks } from "./marks.js";
+import type { Was } from "./sst.js";
 
-/** The latest op for one user key, and the WAL seq that wrote it. */
+/** One op folded into a row: its seq, whether the key was live before it, and the op of the key before it. */
+type Link = { readonly seq: Seq; readonly was: Was | undefined; readonly older?: Link | undefined };
+
+/**
+ * The latest op for one user key, and the WAL seq that wrote it.
+ *
+ * A row stands for every op of its key the table holds, so it says what
+ * held before the oldest of them: `was`. When the generation moves past
+ * that op, the row has to say what held before the oldest one left, so a
+ * row that folds several ops keeps them as `ops`.
+ */
 export type MemRow = {
   readonly key: Uint8Array;
   readonly seq: Seq;
   readonly kind: "put" | "del";
-  readonly value?: Uint8Array;
+  readonly value?: Uint8Array | undefined;
+  /** Whether the key was live before the oldest op folded. Undefined: that op did not say. */
+  readonly was?: Was | undefined;
+  /**
+   * The newest op folded, at `seq`, when there are several: each links to the
+   * one before it. A write adds one link and copies none, however often the
+   * key was written.
+   */
+  readonly ops?: Link | undefined;
 };
+
+/**
+ * `held`, when the key has a row, then one more op of it: a put of `value`,
+ * or a delete. What held before the op is what `held` left, whatever the
+ * op says; with no row it is `was`.
+ */
+export function withOp(held: MemRow | undefined, key: Uint8Array, seq: Seq, value: Uint8Array | undefined, was: Was | undefined): MemRow {
+  const kind = value ? "put" : "del";
+  if (!held) return { key, seq, kind, value, was };
+  const older = held.ops ?? { seq: held.seq, was: held.was };
+  return { key, seq, kind, value, was: held.was, ops: { seq, was: held.kind === "put" ? "present" : "absent", older } };
+}
+
+/**
+ * `row` without the ops at or below `through`, which a run now holds or a
+ * range delete covers. Undefined when no op is left.
+ */
+function rowAfter(row: MemRow, through: Seq): MemRow | undefined {
+  if (row.seq <= through) return undefined;
+  // The ops left, newest first. The newest is at `row.seq`, so there is one.
+  const left: Link[] = [];
+  let op = row.ops;
+  for (; op && op.seq > through; op = op.older) left.push(op);
+  if (!op) return row;
+  let ops: Link | undefined;
+  for (let i = left.length - 1; i >= 0; i--) ops = { seq: left[i]!.seq, was: left[i]!.was, older: ops };
+  return { ...row, was: left[left.length - 1]!.was, ops: left.length > 1 ? ops : undefined };
+}
+
+/**
+ * `row` under a range delete of `start` to `end` through `through`: itself
+ * outside the range, and inside it the ops the range delete spares. If the
+ * oldest of those saw the key present, what it saw may be a version the
+ * range delete covers, so the row no longer says what held before it.
+ */
+export function underDelete(row: MemRow, start: Uint8Array, end: Uint8Array | undefined, through: Seq): MemRow | undefined {
+  if (compareBytes(row.key, start) < 0 || (end && compareBytes(row.key, end) >= 0)) return row;
+  const left = rowAfter(row, through);
+  return left?.was === "present" ? { ...left, was: undefined } : left;
+}
 
 export type WalRecord = {
   readonly seq: Seq;
   readonly ops: readonly CheckedOp[];
 };
+
+/**
+ * The ops of one record in the order a memtable and a flush apply them: its
+ * puts and deletes, then its range deletes. A range delete covers no row of
+ * its own record, so every key reads the same in either order. A put or a
+ * delete of the record that says its key was present may still have seen a
+ * version the range delete covers, and only a range delete applied after it
+ * takes that back (`underDelete`).
+ */
+export function applyOrder(ops: readonly CheckedOp[]): readonly CheckedOp[] {
+  if (!ops.some((op) => op.type === "deleteRange")) return ops;
+  return [...ops.filter((op) => op.type !== "deleteRange"), ...ops.filter((op) => op.type === "deleteRange")];
+}
 
 /** Reads over rows in key order, live or pinned. */
 export interface MemRows {
@@ -87,7 +159,10 @@ class Chunks implements MemRows {
  *
  * A row a range delete covers is removed when that record applies, so no
  * row held is covered by `marks`, and a manifest's marks, whose `through`
- * is below its own `through`, cover none either.
+ * is below its own `through`, cover none either. A row the range delete
+ * spares, because an op of its key is past `through`, keeps only those ops.
+ * If the oldest of them saw the key present, what it saw may be a version
+ * the range delete covers, so the row no longer says what held before it.
  *
  * A pin shares chunks with the live table. The live table copies a shared
  * chunk before it writes to it, so a pin costs one array of chunk
@@ -135,23 +210,23 @@ export class Memtable extends Chunks {
   apply(record: WalRecord): "applied" | "already" | "gap" {
     if (record.seq <= this.applied) return "already";
     if (record.seq !== nextSeq(this.applied)) return "gap";
-    for (const op of record.ops) {
+    for (const op of applyOrder(record.ops)) {
       switch (op.type) {
         case "put":
-          this.put({ key: op.key, seq: record.seq, kind: "put", value: op.value });
+          this.put(op.key, record.seq, op.value, op.was);
           break;
         case "del":
-          this.put({ key: op.key, seq: record.seq, kind: "del" });
+          this.put(op.key, record.seq, undefined, op.was);
           break;
         case "deleteRange": {
-          const { start, endExclusive: end, through } = op;
-          // The rows' own seqs are below this record, so op order does not matter.
-          this.rebuild(
-            this.range().filter(
-              (row) => row.seq > through || compareBytes(row.key, start) < 0 || (end !== undefined && compareBytes(row.key, end) >= 0),
-            ),
-          );
-          if (through > 0) this.held = [...this.held, { ...op, at: record.seq }];
+          // It covers no row of its own record, and it comes after the record's puts and deletes (`applyOrder`).
+          const kept: MemRow[] = [];
+          for (const row of this.range()) {
+            const left = underDelete(row, op.start, op.endExclusive, op.through);
+            if (left) kept.push(left);
+          }
+          this.rebuild(kept);
+          if (op.through > 0) this.held = [...this.held, { ...op, at: record.seq }];
           break;
         }
       }
@@ -160,22 +235,21 @@ export class Memtable extends Chunks {
     return "applied";
   }
 
-  private put(row: MemRow): void {
-    const c = chunkFor(this.firsts, row.key);
+  /** One put, or a delete when `value` is undefined. `was` is what the op says held before it. */
+  private put(key: Uint8Array, seq: Seq, value: Uint8Array | undefined, was: Was | undefined): void {
+    const c = chunkFor(this.firsts, key);
     if (!this.owned[c]) {
       this.chunks[c] = this.chunks[c]!.slice();
       this.owned[c] = true;
     }
     const rows = this.chunks[c]!;
-    const i = lowerBoundKeys(rows, row.key);
+    const i = lowerBoundKeys(rows, key);
     const at = rows[i];
-    if (at && compareBytes(at.key, row.key) === 0) {
-      this.live += rowBytes(row) - rowBytes(at);
-      rows[i] = row;
-    } else {
-      this.live += rowBytes(row);
-      rows.splice(i, 0, row);
-    }
+    const held = at && compareBytes(at.key, key) === 0 ? at : undefined;
+    const row = withOp(held, key, seq, value, was);
+    this.live += rowBytes(row) - (held ? rowBytes(held) : 0);
+    if (held) rows[i] = row;
+    else rows.splice(i, 0, row);
     if (rows.length > 2 * CHUNK_ROWS) {
       const tail = rows.splice(CHUNK_ROWS);
       this.chunks.splice(c + 1, 0, tail);
@@ -195,7 +269,14 @@ export class Memtable extends Chunks {
     const jumped = through > this.applied;
     if (this.held[0] && this.held[0].at <= through) this.held = this.held.filter((m) => m.at > through);
     this.applied = through > this.applied ? through : this.applied;
-    this.rebuild(jumped ? [] : this.range().filter((row) => row.seq > through));
+    const kept: MemRow[] = [];
+    if (!jumped) {
+      for (const row of this.range()) {
+        const left = rowAfter(row, through);
+        if (left) kept.push(left);
+      }
+    }
+    this.rebuild(kept);
     return jumped;
   }
 

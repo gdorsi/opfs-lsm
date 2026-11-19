@@ -5,7 +5,7 @@ The byte layout of a manifest, `m/<generation>.mft`. What a manifest means is in
 
 ```layout
 | u32 magic       "OLGN" (0x4f4c474e)                                        |
-| u32 version     5                                                          |
+| u32 version     6                                                          |
 | u64 generation                                                             |
 | u64 through                                                                |
 | marks block                                                                |
@@ -21,6 +21,7 @@ per run:
 | u8 has range                                                               |
 | u32 length, smallest key, u32 length, largest key   (if has range)         |
 | u64 marksThrough                                                           |
+| u32 plus, u32 minus, u32 unknown                    the run's tally        |
 
 marks block:
 | u32 count       0 is valid: no marks                                       |
@@ -37,7 +38,8 @@ per mark:
 ```
 
 `bytes` and the key range let the compaction planner size and route levels without opening a
-file. The level of a run is in its path.
+file. The level of a run is in its path. The tally is the sum of the run's
+[index entries](sst-format.md#index-entry), so a count adds a whole run without opening it.
 
 Runs are listed L0 first, newest first. Each deeper level follows, with its runs sorted by
 smallest key. Reads use that order directly.

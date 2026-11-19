@@ -57,7 +57,15 @@ export type Unindexable = {
   readonly why: "not-scalar" | "lone-surrogate" | "text-not-string" | "key-too-long" | "too-many-entries";
 };
 
-const NONE: Entry[] = [];
+/**
+ * An index entry of a document. `ready` is whether its index is: then the
+ * entries of a stored row are all there, so a write that removes or replaces
+ * one knows the key held a value, and a write that adds one knows it did not.
+ * While an index builds, the backfill may not have reached the row yet.
+ */
+export type Derived = Entry & { readonly ready: boolean };
+
+const NONE: Derived[] = [];
 
 /**
  * Every entry of `doc` in every maintained index; `id` is the id's UTF-8.
@@ -72,8 +80,8 @@ export function entriesOf(
   doc: StoredDoc,
   side: "next" | "stored",
   unique?: Entry[],
-): Entry[] {
-  const out: Entry[] = [];
+): Derived[] {
+  const out: Derived[] = [];
   for (const plan of coll.maintained) {
     const entries = indexEntries(plan, id, doc);
     if (Array.isArray(entries)) {
@@ -89,7 +97,7 @@ export function entriesOf(
   return out;
 }
 
-export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): Entry[] | Unindexable {
+export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): Derived[] | Unindexable {
   const { spec } = plan;
   const multi = spec.kind === "sorted" && spec.multi;
   const values: Scalar[] = [];
@@ -130,12 +138,13 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
   }
 
   const prefix = plan.target.prefix;
-  const out: Entry[] = [];
+  const ready = plan.state.kind === "ready";
+  const out: Derived[] = [];
   for (const first of firsts ?? [values[0]!]) {
     values[0] = first;
     const key = encodeTuple(values, prefix, tail);
     if (key.length > MAX_KEY_BYTES) return { path: spec.on.map((p) => p.join(".")).join(","), why: "key-too-long" };
-    out.push({ key, value });
+    out.push({ key, value, ready });
   }
   return out;
 }
@@ -150,19 +159,24 @@ function readPath(doc: StoredDoc, path: Path): unknown {
   return v;
 }
 
+/** An entry to put: `replaces` when the stored row has an entry under the same key. */
+export type EntryWrite = Derived & { readonly replaces?: true };
+
+/** The entries of the stored row to delete, and the entries of the next row to put. */
 export function diffEntries(
-  before: readonly Entry[],
-  after: readonly Entry[],
-): { readonly remove: Uint8Array[]; readonly write: readonly Entry[] } {
+  before: readonly Derived[],
+  after: readonly Derived[],
+): { readonly remove: readonly Derived[]; readonly write: readonly EntryWrite[] } {
   if (before.length === 0) return { remove: [], write: after };
-  const old = new Map<string, Entry>();
+  const old = new Map<string, Derived>();
   for (const e of before) old.set(keyString(e.key), e);
-  const write: Entry[] = [];
+  const write: EntryWrite[] = [];
   for (const e of after) {
     const k = keyString(e.key);
     const was = old.get(k);
-    if (was === undefined || !bytesEqual(was.value, e.value)) write.push(e);
+    if (was === undefined) write.push(e);
+    else if (!bytesEqual(was.value, e.value)) write.push({ ...e, replaces: true });
     old.delete(k);
   }
-  return { remove: Array.from(old.values(), (e) => e.key), write };
+  return { remove: [...old.values()], write };
 }

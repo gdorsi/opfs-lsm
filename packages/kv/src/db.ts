@@ -1,5 +1,5 @@
 import { Backpressure, memtableCaps, type MemtableCaps } from "./backpressure.js";
-import { successor } from "./bytes.js";
+import { compareBytes, successor } from "./bytes.js";
 import {
   checkBatch,
   checkDbName,
@@ -27,7 +27,7 @@ import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wa
 import { reconcile, type Reconciled } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
-import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
+import { lowerBoundKeys, Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
@@ -37,6 +37,7 @@ import { pointGet, readKeys, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
+import type { Was } from "./store/sst.js";
 import {
   ViewSnapshotImpl,
   boundsOf,
@@ -138,6 +139,11 @@ export type Range = {
   /** At most this many entries, taken in scan order, so the largest keys with `reverse`. */
   readonly limit?: number;
   /**
+   * Skip this many entries first, in scan order. `limit` counts what follows.
+   * A `count` with an offset is how many entries are left after it.
+   */
+  readonly offset?: number;
+  /**
    * Scan from the largest key down. Yields the keys of the forward scan in
    * descending order. To page backward, pass the last key seen as
    * `endExclusive`.
@@ -169,9 +175,25 @@ export type DeleteRangeOptions = {
   readonly through?: number;
 };
 
+/**
+ * What a write knows about its key. Only an `update` takes it, since only a
+ * write that read the key in its own transaction knows.
+ */
+export type WriteOptions = {
+  /**
+   * Whether the key held a value before this write. `update` fills it in
+   * for a key it read, so pass it for a key the write derives from what it
+   * read: an index entry of a row, say. kv does not check it.
+   *
+   * A range whose every write says this is counted, and paged with
+   * `offset`, without a scan (`count`).
+   */
+  readonly was?: Was;
+};
+
 export interface BatchTx {
-  put(key: Uint8Array, value: Uint8Array): void;
-  delete(key: Uint8Array): void;
+  put(key: Uint8Array, value: Uint8Array, options?: WriteOptions): void;
+  delete(key: Uint8Array, options?: WriteOptions): void;
   /**
    * Every row in `bounds` last written at or before `through` reads as
    * absent from this batch on, in every tab, and older versions of those
@@ -208,7 +230,15 @@ export interface Db {
     body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T>;
   range(range?: Range): AsyncIterable<Entry>;
-  /** How many entries `range` would yield, `limit` included, without copying them. */
+  /**
+   * How many entries `range` would yield, `limit` and `offset` included.
+   *
+   * It reads at most two blocks of each level when every write in the
+   * range said whether its key held a value before (`WriteOptions.was`),
+   * or has since been merged into the bottom level, and no `deleteRange`
+   * over the range is still being compacted away. Otherwise it scans the
+   * range, without copying an entry. `valueContains` always scans.
+   */
   count(range?: Range): Promise<number>;
   /**
    * Read-only snapshot of every record through `snap.seq`.
@@ -419,16 +449,41 @@ async function openStores(
   }
 }
 
+/**
+ * Whether a key an `update` read held a value, undefined for a key it did
+ * not read. The keys are sorted on the first lookup, so an update whose
+ * writes all say `was` pays nothing.
+ */
+function readState(keys: readonly Uint8Array[], values: readonly (Uint8Array | undefined)[]): (key: Uint8Array) => Was | undefined {
+  let read: { readonly key: Uint8Array; readonly was: Was }[] | undefined;
+  return (key) => {
+    read ??= keys.map((key, i): { key: Uint8Array; was: Was } => ({ key, was: values[i] ? "present" : "absent" })).sort((a, b) => compareBytes(a.key, b.key));
+    const at = read[lowerBoundKeys(read, key)];
+    return at && compareBytes(at.key, key) === 0 ? at.was : undefined;
+  };
+}
+
+/**
+ * The ops `build` issues. `read` is what an `update` read: its writes may
+ * say `was`, and a write of a key it read says so by itself. A blind batch
+ * has no `read`, and a `was` in it is refused.
+ */
 function collectBatch(
   build: (tx: BatchTx) => unknown,
+  read?: (key: Uint8Array) => Was | undefined,
 ): readonly CheckedOp[] {
   const ops: BatchOp[] = [];
+  const wasOf = (key: Uint8Array, options: WriteOptions | undefined): Was | undefined => {
+    if (options?.was === undefined) return read?.(key);
+    if (!read) throw new ConstraintError("only an update can say what a key held before: it read it");
+    return options.was;
+  };
   const ret = build({
-    put: (key, value) => {
-      ops.push({ type: "put", key, value });
+    put: (key, value, options) => {
+      ops.push({ type: "put", key, value, was: wasOf(key, options) });
     },
-    delete: (key) => {
-      ops.push({ type: "del", key });
+    delete: (key, options) => {
+      ops.push({ type: "del", key, was: wasOf(key, options) });
     },
     deleteRange: (bounds, options) => {
       ops.push({ type: "deleteRange", start: bounds.start, endExclusive: bounds.endExclusive, through: options?.through });
@@ -715,7 +770,7 @@ class DbImpl implements Db {
    * the file is gone, which the generation retries handle. Reads no run
    * bytes: the reader loads its layout and pages on first use.
    */
-  private async openRun({ path, range, marksThrough }: RunMeta): Promise<Run | undefined> {
+  private async openRun({ path, range, marksThrough, tally }: RunMeta): Promise<Run | undefined> {
     let run = this.runs.get(path);
     if (!run) {
       const file = await this.fs.open(path);
@@ -724,7 +779,7 @@ class DbImpl implements Db {
       if (run) {
         file.close();
       } else {
-        run = { path, file, reader: new SstReader(file, this.cache, range, marksThrough), layers: 0 };
+        run = { path, file, reader: new SstReader(file, this.cache, range, marksThrough, tally), layers: 0 };
         this.runs.set(path, run);
       }
     }
@@ -1042,7 +1097,7 @@ class DbImpl implements Db {
       const ops = collectBatch((tx) => {
         result = body(values, tx);
         return result;
-      });
+      }, readState(ks, values));
       return { ops, result };
     }, () => {
       const at = this.point();

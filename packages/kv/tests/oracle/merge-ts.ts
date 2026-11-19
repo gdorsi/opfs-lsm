@@ -127,20 +127,44 @@ class Session implements MergeCore {
         this.finish();
         continue;
       }
+      // What the winner stands for: its key's version in each source, newest first.
+      const versions = [entry];
       for (const s of this.sources) {
         const e = s.settled();
-        if (s !== winner && e && compareBytes(e.key, entry.key) === 0) s.retire();
+        if (s !== winner && e && compareBytes(e.key, entry.key) === 0) {
+          versions.push(e);
+          s.retire();
+        }
       }
-      this.emit(entry);
+      this.emit(entry, versions);
       winner.retire();
     }
   }
 
-  private emit(e: SstEntry): void {
-    if (this.marks.length > 0 && e.seq <= throughAt(this.marks, e.key)) return;
-    if (e.kind === "del" && this.dropTombstones) {
+  /**
+   * The winner says what held before the oldest version merged that no mark
+   * covers: in a bottom merge nothing, and nothing certain when that version
+   * saw the key present before a mark that holds the key was written.
+   */
+  private emit(winner: SstEntry, versions: readonly SstEntry[]): void {
+    const through = throughAt(this.marks, winner.key);
+    if (this.marks.length > 0 && winner.seq <= through) return;
+    if (winner.kind === "del" && this.dropTombstones) {
       return;
     }
+    let oldest = winner;
+    for (const older of versions.slice(1)) {
+      if (older.seq <= through) break;
+      oldest = older;
+    }
+    const markedAt = Math.max(
+      0,
+      ...this.marks
+        .filter((m) => compareBytes(winner.key, m.start) >= 0 && (!m.endExclusive || compareBytes(winner.key, m.endExclusive) < 0))
+        .map((m) => m.at),
+    );
+    const was = this.dropTombstones ? "absent" : oldest.was === "present" && oldest.seq < markedAt ? undefined : oldest.was;
+    const e: SstEntry = { ...winner, was };
     this.gathered.push(e);
     this.gatheredBytes += entryRecordSize(e);
     if (this.gatheredBytes >= this.targetBytes) this.finish();
@@ -193,7 +217,8 @@ class Source {
       }
       const order = compareBytes(got.key, head.cur.key);
       if (order < 0) throw new CorruptDatabaseError("sst keys out of order");
-      this.head = order === 0 ? { kind: "scanning", cur: got } : { kind: "ready", cur: head.cur, look: got };
+      // The last duplicate wins, and stands for the ones before it.
+      this.head = order === 0 ? { kind: "scanning", cur: { ...got, was: head.cur.was } } : { kind: "ready", cur: head.cur, look: got };
     }
   }
 

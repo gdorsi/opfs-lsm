@@ -3,18 +3,22 @@ import { CorruptDatabaseError } from "../errors.js";
 import { asSeq } from "../seq.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomMightContain, type BloomFilter } from "./bloom.js";
-import { filterCursor, Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanBounds } from "./cursor.js";
+import { allMissed, filterCursor, Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanBounds } from "./cursor.js";
 import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
 import {
   BlockEntries,
   blockBytes,
   findInBlock,
+  INDEX_ROW_TAIL,
   readFooter,
   ReverseBlockEntries,
+  tallyBlock,
   type BlockBytes,
   type KeyRange,
   type SstCodec,
   type SstEntry,
+  type Sum,
+  type Tally,
 } from "./sst.js";
 
 /**
@@ -54,6 +58,13 @@ type RunIndex = {
   readonly blockStart: Uint32Array;
   /** First block of page p; `pageFirst[pages]` is the block count. */
   readonly pageFirst: Uint32Array;
+  /**
+   * What the records of the blocks before block i say (`Tally`), so the
+   * blocks `[a, b)` say `plus[b] - plus[a]` and so on, with no block read.
+   */
+  readonly plus: Uint32Array;
+  readonly minus: Uint32Array;
+  readonly unknown: Uint32Array;
   /** The run's largest key, so a key past it reads nothing. */
   readonly last: Uint8Array;
 };
@@ -79,13 +90,16 @@ export class SstReader {
   /**
    * `range` is undefined for a run with no keys. `marksThrough` is the one its
    * manifest entry records: the run holds no version past it. By default it
-   * claims nothing, so no mark lets a scan pass the run unread.
+   * claims nothing, so no mark lets a scan pass the run unread. `totals` is
+   * the tally its manifest entry records. Without it a count of the whole run
+   * reads the run's index.
    */
   constructor(
     private readonly file: RunFile,
     private readonly cache: PageCache,
     readonly range: KeyRange | undefined,
     readonly marksThrough = asSeq(Number.POSITIVE_INFINITY),
+    readonly totals?: Tally,
   ) {
     this.runId = cache.nextRunId();
   }
@@ -105,6 +119,83 @@ export class SstReader {
     const at = index.blockStart[b]! - index.blockStart[index.pageFirst[p]!]!;
     const length = index.blockStart[b + 1]! - index.blockStart[b]!;
     return findInBlock(blockBytes(page.buf, page.view, 0, { offset: at, length }, meta.codec), key);
+  }
+
+  /**
+   * Adds to `sum` what the records with keys in `bounds` say (`Tally`). The
+   * blocks wholly inside come from the index. Only a block that a bound cuts
+   * is read, so two at most. On a Miss `sum` holds part of the answer and
+   * must be dropped.
+   *
+   * With `exact` false no block is read: a cut block adds every plus and
+   * every unknown it holds and none of its minuses, so `plus - minus` is at
+   * least what the records in `bounds` add up to.
+   */
+  tally(bounds: ScanBounds | undefined, sum: Sum, exact = true): Miss | undefined {
+    const meta = this.meta();
+    if (meta instanceof Miss) return meta;
+    const { index } = meta;
+    const start = bounds?.start;
+    const end = bounds?.endExclusive;
+    if (meta.entryCount === 0 || (start && end && compareBytes(start, end) >= 0)) return undefined;
+    // The whole blocks are `[first, last)`. `cutStart` and `cutEnd` are the blocks a bound cuts, or -1.
+    let first = 0;
+    let cutStart = -1;
+    if (start) {
+      if (compareBytes(start, index.last) > 0) return undefined;
+      const b = findBlock(index, start);
+      // A block starts at or after its separator, so one whose separator is `start` is whole.
+      if (b >= 0 && compareSepAt(index, b, start) !== 0) cutStart = b;
+      first = b < 0 ? 0 : cutStart < 0 ? b : b + 1;
+    }
+    let last = index.sepEnd.length;
+    let cutEnd = -1;
+    if (end && compareBytes(end, index.last) <= 0) {
+      const b = findBlock(index, end);
+      if (b < 0) return undefined;
+      if (compareSepAt(index, b, end) !== 0) cutEnd = b;
+      last = b;
+    }
+    if (first < last) {
+      sum.plus += index.plus[last]! - index.plus[first]!;
+      sum.minus += index.minus[last]! - index.minus[first]!;
+      sum.unknown += index.unknown[last]! - index.unknown[first]!;
+    }
+    let misses: Miss[] | undefined;
+    const cut = (b: number, from: Uint8Array | undefined, to: Uint8Array | undefined): void => {
+      if (!exact) {
+        sum.plus += index.plus[b + 1]! - index.plus[b]!;
+        sum.unknown += index.unknown[b + 1]! - index.unknown[b]!;
+        return;
+      }
+      const p = pageOfBlock(index, b);
+      const page = this.page(meta, p, "main");
+      if (page instanceof Miss) {
+        (misses ??= []).push(page);
+        return;
+      }
+      const offset = index.blockStart[b]! - index.blockStart[index.pageFirst[p]!]!;
+      const length = index.blockStart[b + 1]! - index.blockStart[b]!;
+      tallyBlock(blockBytes(page.buf, page.view, 0, { offset, length }, meta.codec), from, to, sum);
+    };
+    if (cutStart >= 0 && cutStart === cutEnd) cut(cutStart, start, end);
+    else {
+      if (cutStart >= 0) cut(cutStart, start, undefined);
+      if (cutEnd >= 0) cut(cutEnd, undefined, end);
+    }
+    return misses && allMissed(misses);
+  }
+
+  /**
+   * The keys this run can be cut at with no block read: every key of block
+   * `i - 1` and before is below `key(i)`, and every key of block `i` and after
+   * is at or above it. In key order.
+   */
+  splits(): Maybe<{ readonly count: number; key(i: number): Uint8Array }> {
+    const meta = this.meta();
+    if (meta instanceof Miss) return meta;
+    const { sepBytes, sepEnd } = meta.index;
+    return { count: meta.entryCount === 0 ? 0 : sepEnd.length, key: (i) => sepBytes.subarray(i === 0 ? 0 : sepEnd[i - 1]!, sepEnd[i]!) };
   }
 
   /** Every entry in `bounds`, in key order, or from the largest key down with `reverse`. */
@@ -325,20 +416,24 @@ async function openMeta(file: RunFile): Promise<Sized<RunLayout>> {
     index.last.byteLength +
     index.sepEnd.byteLength +
     index.blockStart.byteLength +
-    index.pageFirst.byteLength;
+    index.pageFirst.byteLength +
+    3 * index.plus.byteLength;
   return { value: { bloom, index, codec: f.codec, entryCount: f.entryCount }, bytes };
 }
 
 /**
  * Packs the on-disk index (per block: u32 len | first key, u32 len | last
- * key, u32 offset, u32 length) in one pass, checking blocks are contiguous
- * and end at `dataLen`.
+ * key, u32 offset, u32 length, u16 plus, u16 minus, u16 unknown) in one
+ * pass, checking blocks are contiguous and end at `dataLen`.
  */
 function packIndex(raw: Uint8Array, blockCount: number, dataLen: number): RunIndex {
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const sepBytes = new Uint8Array(raw.byteLength);
   const sepEnd = new Uint32Array(blockCount);
   const blockStart = new Uint32Array(blockCount + 1);
+  const plus = new Uint32Array(blockCount + 1);
+  const minus = new Uint32Array(blockCount + 1);
+  const unknown = new Uint32Array(blockCount + 1);
   const pages: number[] = [0];
   let sepLen = 0;
   let o = 0;
@@ -355,10 +450,13 @@ function packIndex(raw: Uint8Array, blockCount: number, dataLen: number): RunInd
   for (let i = 0; i < blockCount; i++) {
     const first = key();
     const last = key();
-    if (o + 8 > raw.byteLength) throw new CorruptDatabaseError("sst index OOB");
+    if (o + INDEX_ROW_TAIL > raw.byteLength) throw new CorruptDatabaseError("sst index OOB");
     const offset = view.getUint32(o, true);
     const length = view.getUint32(o + 4, true);
-    o += 8;
+    plus[i + 1] = plus[i]! + view.getUint16(o + 8, true);
+    minus[i + 1] = minus[i]! + view.getUint16(o + 10, true);
+    unknown[i + 1] = unknown[i]! + view.getUint16(o + 12, true);
+    o += INDEX_ROW_TAIL;
     if (offset !== blockStart[i]) throw new CorruptDatabaseError("sst blocks not contiguous");
     const sep = prevLast ? first.subarray(0, separatorLength(prevLast, first)) : first;
     sepBytes.set(sep, sepLen);
@@ -379,6 +477,9 @@ function packIndex(raw: Uint8Array, blockCount: number, dataLen: number): RunInd
     sepEnd,
     blockStart,
     pageFirst: Uint32Array.from(pages),
+    plus,
+    minus,
+    unknown,
     last: prevLast ? prevLast.slice() : new Uint8Array(0),
   };
 }

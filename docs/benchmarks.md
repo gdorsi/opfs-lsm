@@ -66,33 +66,33 @@ In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack
 
 The tables above time storage calls. These time the questions an app's screens ask. A task tracker with 20,000 issues (about 19,500 left after deletes), 42,000 comments, 120 people, 24 projects and 30 labels is built from its history: an import, then sync batches that move issues between statuses and people, then a settle, then a sprint close and single edits on top. Each library replays the history through its own write API. It then answers each goal with its own query API and indexes, and every answer is checked against an oracle. [bench/README.md](../bench/README.md#goal-workloads) lists the goals, and [the research note](research/goal-driven-benchmarks.md) explains the method.
 
-Medians of 3 runs in headless Chrome 157 on an Apple M5 Max with a load average of 6.2 to 7.4. Full results: [2026-11-17T20-27-42](results/2026-11-17T20-27-42-apple-m5-max.md). Each cell is cold / warm in ms: cold is the first call after opening the store in a fresh tab, warm repeats it. The last column is SQLite's time over docstore's, cold / warm: above 1×, docstore is faster.
+Medians of 3 runs in headless Chrome 157 on an Apple M2 Pro with a load average of 1.9 to 4.4. Full results: [2026-11-18T17-24-38](results/2026-11-18T17-24-38-apple-m2-pro.md). Each cell is cold / warm in ms: cold is the first call after opening the store in a fresh tab, warm repeats it. The last column is SQLite's time over docstore's, cold / warm: above 1×, docstore is faster.
 
 | Goal | Dexie | SQLite on OPFS | docstore | docstore vs SQLite |
 | --- | ---: | ---: | ---: | ---: |
-| Issues per status in a project | 5.4 / 2.4 | 4.0 / 0.14 | 2.7 / 0.17 | 1.5× / 0.8× |
-| First 50 todo issues, with assignee and label names | 2.3 / 0.95 | 5.2 / 0.41 | 7.2 / 0.32 | 0.7× / 1.3× |
-| The column a sprint close just emptied | 8.4 / 5.1 | 4.3 / 0.24 | 4.3 / 0.91 | 1.0× / 0.3× |
-| Rows at 90% of a project's list | 12.9 / 7.6 | 4.5 / 0.31 | 9.4 / 0.96 | 0.5× / 0.3× |
-| An issue with its comments and their authors | 1.4 / 0.34 | 4.5 / 0.25 | 4.7 / 0.092 | 1.0× / 2.7× |
-| First 50 open issues by priority, with comment counts | 5.4 / 2.1 | 7.0 / 1.1 | 9.9 / 0.70 | 0.7× / 1.6× |
-| First 50 open issues with a label | 6.9 / 3.5 | 7.0 / 1.3 | 4.9 / 0.16 | 1.4× / 7.7× |
-| First 50 open issues assigned to a person | 2.4 / 0.80 | 5.6 / 0.44 | 8.4 / 0.28 | 0.7× / 1.6× |
-| The 50 most recently updated issues | 2.0 / 1.3 | 5.1 / 0.68 | 3.4 / 0.39 | 1.5× / 1.7× |
-| Open issues per person, top 10 | 11.4 / 6.1 | 5.1 / 0.29 | 3.6 / 0.55 | 1.4× / 0.5× |
-| First 20 issues whose title contains a word | 8.8 / 5.2 | 6.2 / 0.74 | 6.5 / 0.18 | 1.0× / 4.1× |
-| Opening the store in a fresh tab | 1.7 | 22 | 13 | 1.6× |
+| Issues per status in a project | 5.9 / 3.3 | 5.1 / 0.17 | 3.6 / 0.11 | 1.4× / 1.6× |
+| First 50 todo issues, with assignee and label names | 2.3 / 1.2 | 6.8 / 0.55 | 9.4 / 0.47 | 0.7× / 1.2× |
+| The column a sprint close just emptied | 7.7 / 5.8 | 5.9 / 0.28 | 6.4 / 1.7 | 0.9× / 0.2× |
+| Rows at 90% of a project's list | 14.7 / 9.6 | 6.1 / 0.38 | 10.7 / 0.40 | 0.6× / 0.9× |
+| An issue with its comments and their authors | 1.5 / 0.42 | 5.9 / 0.30 | 6.3 / 0.16 | 0.9× / 1.9× |
+| First 50 open issues by priority, with comment counts | 5.2 / 2.8 | 8.8 / 1.4 | 14.3 / 0.98 | 0.6× / 1.4× |
+| First 50 open issues with a label | 8.3 / 4.5 | 9.0 / 1.6 | 6.7 / 0.27 | 1.3× / 5.8× |
+| First 50 open issues assigned to a person | 2.2 / 1.1 | 7.7 / 0.50 | 9.6 / 0.43 | 0.8× / 1.2× |
+| The 50 most recently updated issues | 2.2 / 1.3 | 6.7 / 0.78 | 4.6 / 0.69 | 1.5× / 1.1× |
+| Open issues per person, top 10 | 10.7 / 7.5 | 6.8 / 0.37 | 5.7 / 0.85 | 1.2× / 0.4× |
+| First 20 issues whose title contains a word | 11.9 / 7.2 | 7.6 / 0.88 | 9.3 / 0.31 | 0.8× / 2.8× |
+| Opening the store in a fresh tab | 2.1 | 24 | 14 | 1.7× |
 
 | Writes | Dexie | SQLite on OPFS | docstore | docstore vs SQLite |
 | --- | ---: | ---: | ---: | ---: |
-| Import, 47 batches of up to 1,000 rows | 2.4 s | 0.92 s | 0.62 s | 1.5× |
-| Sync, 851 batches of about 50 changes | 4.8 s | 10.9 s | 2.5 s | 4.4× |
-| One edit | 0.33 ms | 3.2 ms | 0.36 ms | 9.0× |
-| Sprint close, 1,054 issues in one batch | 114 ms | 72 ms | 50 ms | 1.4× |
+| Import, 47 batches of up to 1,000 rows | 2.9 s | 1.0 s | 0.84 s | 1.2× |
+| Sync, 851 batches of about 50 changes | 5.6 s | 11.5 s | 3.0 s | 3.9× |
+| One edit | 0.40 ms | 2.4 ms | 0.46 ms | 5.3× |
+| Sprint close, 1,054 issues in one batch | 159 ms | 87 ms | 77 ms | 1.1× |
 
-After every 10th sync batch, the 50 most recently updated issues are read again, as a list on screen would be. That read took 1.3 ms on Dexie, 0.47 ms on SQLite and 0.56 ms on docstore, 0.8× as fast as SQLite.
+After every 10th sync batch, the 50 most recently updated issues are read again, as a list on screen would be. That read took 1.4 ms on Dexie, 0.54 ms on SQLite and 0.65 ms on docstore, 0.8× as fast as SQLite.
 
-Warm, docstore answers 7 of the 11 goals fastest, because a tab reads on its own main thread from its page cache. Cold, it is the slowest on 4 of them: a fresh tab loads from OPFS each 32 KB page its rows sit on, and the rows of one list are scattered over many pages. Open issues per person reads index entries alone, with no document, so cold it is the fastest of the three; warm, SQLite's group-by still takes half its time. A deep window costs more on docstore, because its index has no offset: it reads every entry up to the window. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart. SQLite's open runs no schema statement once the schema exists, so the warm-up those statements used to absorb now lands in its first query. On writes, SQLite commits wait for the disk (`synchronous=FULL`, its default) where Dexie and docstore commit with Chrome's relaxed durability, and docstore commits a batch as one transaction per collection where Dexie and SQLite commit it whole.
+Warm, docstore answers 8 of the 11 goals fastest, because a tab reads on its own main thread from its page cache. Cold, it is the slowest on 4 of them: a fresh tab loads from OPFS each 32 KB page its rows sit on, and the rows of one list are scattered over many pages. Issues per status does not walk the entries it counts: a [count](counted-ranges.md#counting) adds up the tallies that writes leave on each block and run, and reads at most two blocks of each level. It is the fastest of the three, cold and warm. Open issues per person reads index entries and no issue, so cold it is the fastest of the three; warm, SQLite's group-by takes less than half its time. A window 90% deep into a list [skips to its offset](counted-ranges.md#offset) by the same tallies and reads only the entries around the window, so it costs what a first page costs: 10.7 ms cold and 0.40 ms warm, against 9.4 ms and 0.47 ms for the first 50 todo issues. Warm, that is about level with SQLite; cold, SQLite is faster, as it is on a first page. The column a sprint close emptied is where docstore is furthest behind SQLite warm, 1.7 ms against 0.28 ms: the deletes of the close sit above the settled levels, and the read merges them with the entries they delete. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart. SQLite's open runs no schema statement once the schema exists, so its first query carries the warm-up those statements would absorb. On writes, SQLite commits wait for the disk (`synchronous=FULL`, its default) where Dexie and docstore commit with Chrome's relaxed durability, and docstore commits a batch as one transaction per collection where Dexie and SQLite commit it whole.
 
 ### TanStack DB live queries
 
@@ -113,13 +113,13 @@ The todo column opens first, so it also starts the label list every screen share
 
 ## Bundle size
 
-Importing `@opfs-lsm/kv` adds **18.8 kB** of JavaScript to your main bundle (gzip, 55.0 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
+Importing `@opfs-lsm/kv` adds **21.2 kB** of JavaScript to your main bundle (gzip, 62.8 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
 
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
-| Main-thread JS | 18.8 kB | 55.0 kB | at import |
-| SharedWorker chunk | 12.2 kB | 36.0 kB | on the first `openDb` |
-| wasm engine | 16.5 kB | 36.3 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **47.6 kB** | **127.3 kB** | |
+| Main-thread JS | 21.2 kB | 62.8 kB | at import |
+| SharedWorker chunk | 13.1 kB | 38.5 kB | on the first `openDb` |
+| wasm engine | 17.1 kB | 37.4 kB | on the first `openDb`, one file for the tab and the SharedWorker |
+| **Total after open** | **51.4 kB** | **138.6 kB** | |
 
-For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.2 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 28.8 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).
+For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.2 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 30.1 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).

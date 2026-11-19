@@ -8,8 +8,8 @@ import type { Seq } from "../seq.js";
 export type LayerEntry = {
   readonly key: Uint8Array;
   readonly kind: "put" | "del";
-  /** Present iff kind === "put". */
-  readonly value?: Uint8Array;
+  /** Set iff kind === "put". */
+  readonly value?: Uint8Array | undefined;
   /** The WAL seq that wrote the entry. */
   readonly seq: Seq;
 };

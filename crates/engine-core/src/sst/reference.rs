@@ -6,12 +6,12 @@
 //! std's stable sort, and the bloom filter is spelled out here, so neither
 //! shares code with the writer.
 
-use super::{Codec, Entry};
+use super::{Before, Codec, Entry};
 use crate::crc32::crc32;
 use alloc::{vec, vec::Vec};
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const FOOTER_BYTES: usize = 44;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
@@ -106,10 +106,16 @@ fn encode_block(block: &[&Entry]) -> Vec<u8> {
 
 fn write_record(out: &mut Vec<u8>, e: &Entry, prefix_len: usize) {
     let suffix = &e.key()[prefix_len..];
-    out.push(match e {
+    let kind = match e {
         Entry::Put { .. } => TAG_PUT,
         Entry::Del { .. } => TAG_DEL,
-    });
+    };
+    let before = match e.before() {
+        Before::Unknown => 0,
+        Before::Absent => 4,
+        Before::Present => 8,
+    };
+    out.push(kind + before);
     out.extend_from_slice(&e.seq().to_le_bytes());
     write_varint(out, suffix.len());
     out.extend_from_slice(suffix);
@@ -151,7 +157,8 @@ fn bloom_add(filter: &mut Bloom, key: &[u8]) {
     }
 }
 
-pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
+/// The run, and what its records say: plus, minus, unknown.
+pub(super) fn encode_sst_tallied(entries: &[Entry], codec: Codec) -> (Vec<u8>, [usize; 3]) {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
     sorted.sort_by(|a, b| a.key().cmp(b.key()));
 
@@ -163,7 +170,8 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
     }
 
     let mut block_blobs: Vec<Vec<u8>> = Vec::new();
-    let mut index: Vec<(Vec<u8>, Vec<u8>, u32, u32)> = Vec::new();
+    let mut index: Vec<(Vec<u8>, Vec<u8>, u32, u32, [u16; 3])> = Vec::new();
+    let mut tally = [0usize; 3];
     let mut data_len = 0usize;
     for block in &blocks {
         let blob = encode_block(block);
@@ -177,14 +185,20 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
         };
         let first = block.first().map(|e| e.key().to_vec()).unwrap_or_default();
         let last = block.last().map(|e| e.key().to_vec()).unwrap_or_default();
-        index.push((first, last, data_len as u32, blob.len() as u32));
+        // What the block's records say: puts over an absent key, deletes of a present key, and the ones that do not say.
+        let said = |put: bool, before: Before| block.iter().filter(|e| matches!(e, Entry::Put { .. }) == put && e.before() == before).count();
+        let counts = [said(true, Before::Absent), said(false, Before::Present), said(true, Before::Unknown) + said(false, Before::Unknown)];
+        for (total, n) in tally.iter_mut().zip(counts) {
+            *total += n;
+        }
+        index.push((first, last, data_len as u32, blob.len() as u32, counts.map(|n| n as u16)));
         data_len += blob.len();
         block_blobs.push(blob);
     }
 
     let mut index_size = 0usize;
-    for (first, last, _, _) in &index {
-        index_size += 4 + first.len() + 4 + last.len() + 8;
+    for (first, last, ..) in &index {
+        index_size += 4 + first.len() + 4 + last.len() + 14;
     }
 
     let total = data_len + bloom.bits.len() + index_size + FOOTER_BYTES;
@@ -198,7 +212,7 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
     o += bloom.bits.len();
 
     let index_offset = o;
-    for (first, last, offset, length) in &index {
+    for (first, last, offset, length, counts) in &index {
         write_u32(&mut out, &mut o, first.len() as u32);
         out[o..o + first.len()].copy_from_slice(first);
         o += first.len();
@@ -207,6 +221,10 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
         o += last.len();
         write_u32(&mut out, &mut o, *offset);
         write_u32(&mut out, &mut o, *length);
+        for n in counts {
+            out[o..o + 2].copy_from_slice(&n.to_le_bytes());
+            o += 2;
+        }
     }
 
     for field in [
@@ -226,5 +244,9 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
     write_u32(&mut out, &mut o, VERSION);
     write_u32(&mut out, &mut o, MAGIC);
     debug_assert_eq!(o, out.len());
-    out
+    (out, tally)
+}
+
+pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
+    encode_sst_tallied(entries, codec).0
 }

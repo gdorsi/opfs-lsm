@@ -42,11 +42,18 @@ fn env(name: &str, default: u64) -> u64 {
 }
 
 fn put(key: &[u8], value: &[u8], seq: u64) -> Entry {
-    Entry::Put { key: key.to_vec(), value: value.to_vec(), seq }
+    Entry::Put { key: key.to_vec(), value: value.to_vec(), seq, before: Before::Unknown }
 }
 
 fn del(key: &[u8], seq: u64) -> Entry {
-    Entry::Del { key: key.to_vec(), seq }
+    Entry::Del { key: key.to_vec(), seq, before: Before::Unknown }
+}
+
+fn saying(entry: Entry, before: Before) -> Entry {
+    match entry {
+        Entry::Put { key, value, seq, .. } => Entry::Put { key, value, seq, before },
+        Entry::Del { key, seq, .. } => Entry::Del { key, seq, before },
+    }
 }
 
 /// How the test host answers.
@@ -58,21 +65,21 @@ struct Host {
     marks: Vec<Mark>,
 }
 
-/// `marks` as the manifest encodes them. The session ignores `at`.
+/// `marks` as the manifest encodes them.
 fn marks_block(marks: &[Mark]) -> Vec<u8> {
     let mut out = (marks.len() as u32).to_le_bytes().to_vec();
     let key = |out: &mut Vec<u8>, k: &[u8]| {
         out.extend_from_slice(&(k.len() as u32).to_le_bytes());
         out.extend_from_slice(k);
     };
-    for (start, end, through) in marks {
+    for (start, end, through, at) in marks {
         key(&mut out, start);
         out.push(end.is_some() as u8);
         if let Some(end) = end {
             key(&mut out, end);
         }
         out.extend_from_slice(&through.to_le_bytes());
-        out.extend_from_slice(&(through + 1).to_le_bytes());
+        out.extend_from_slice(&at.to_le_bytes());
     }
     out
 }
@@ -186,8 +193,9 @@ fn source_entries(rng: &mut Rng, keys: usize) -> Vec<Entry> {
         .map(|_| {
             let key = format!("k{:04}", rng.below(keys)).into_bytes();
             let seq = rng.next() >> rng.below(64);
+            let before = rng.pick(&[Before::Unknown, Before::Absent, Before::Present, Before::Present]);
             if rng.chance(5) {
-                return Entry::Del { key, seq };
+                return Entry::Del { key, seq, before };
             }
             let len = match rng.below(60) {
                 0 => 70_000,
@@ -195,7 +203,7 @@ fn source_entries(rng: &mut Rng, keys: usize) -> Vec<Entry> {
                 2..=9 => big,
                 _ => rng.below(40),
             };
-            Entry::Put { key, value: rng.bytes(len), seq }
+            Entry::Put { key, value: rng.bytes(len), seq, before }
         })
         .collect();
     out.sort_by(|a, b| a.key().cmp(b.key()));
@@ -277,7 +285,9 @@ fn random_marks(rng: &mut Rng, sources: &[Vec<Vec<u8>>]) -> Vec<Mark> {
                 0 => 1,
                 n => seqs.get(rng.below(seqs.len())).map_or(1, |&s| (s + 1).saturating_sub(n as u64).max(1)),
             };
-            (start, end, through)
+            // A mark written right after what it covers, or later: then it spares the seqs in between.
+            let at = through.saturating_add(1 + if rng.chance(2) { 0 } else { rng.next() >> rng.below(64) });
+            (start, end, through, at)
         })
         .collect()
 }
@@ -290,12 +300,14 @@ fn a_winner_a_mark_covers_is_dropped_in_any_merge() {
     let newer = encode_sst(&[del(b"m1", 5), put(b"m2", b"new", 6), put(b"m3", b"new", 7), put(b"m4", b"new", 8)], Codec::Raw);
     let sources = [vec![newer], vec![older]];
     let mut marked = host(13);
-    marked.marks = vec![(b"m".to_vec(), Some(b"n".to_vec()), 7), (b"m2".to_vec(), None, 3)];
+    marked.marks = vec![(b"m".to_vec(), Some(b"n".to_vec()), 7, 8), (b"m2".to_vec(), None, 3, 4)];
     for drop_tombstones in [false, true] {
         let cfg = config(drop_tombstones, usize::MAX, Codec::Raw);
         assert_matches_oracle(cfg, &sources, &mut marked, "marks");
         let out = drive(cfg, &sources, &mut marked).unwrap();
-        assert_eq!(entries(&out), vec![put(b"a", b"old", 1), put(b"m4", b"new", 8), put(b"z", b"old", 4)]);
+        let said = if drop_tombstones { Before::Absent } else { Before::Unknown };
+        let want = [put(b"a", b"old", 1), put(b"m4", b"new", 8), put(b"z", b"old", 4)].map(|e| saying(e, said));
+        assert_eq!(entries(&out), want);
     }
 }
 
@@ -367,7 +379,63 @@ fn bottom_merge_drops_tombstones() {
     let kept = merge(&[newer.clone(), older.clone()], false, usize::MAX, Codec::Raw).unwrap();
     assert_eq!(entries(&kept), vec![del(b"a", 5), put(b"b", b"1", 1)]);
     let out = merge(&[newer, older], true, usize::MAX, Codec::Raw).unwrap();
-    assert_eq!(entries(&out), vec![put(b"b", b"1", 1)]);
+    assert_eq!(entries(&out), vec![saying(put(b"b", b"1", 1), Before::Absent)]);
+}
+
+fn said(entry: Entry) -> Before {
+    entry.before()
+}
+
+/// What a merge writes for a key says what held before the oldest version it read that no
+/// mark covers.
+#[test]
+fn a_winner_says_what_held_before_the_oldest_version_merged() {
+    let run = |entries: &[Entry]| encode_sst(entries, Codec::Raw);
+    let one = |sources: &[Vec<u8>], marks: Vec<Mark>| -> Vec<Entry> {
+        let sources: Vec<Vec<Vec<u8>>> = sources.iter().map(|r| vec![r.clone()]).collect();
+        let mut marked = host(5);
+        marked.marks = marks;
+        entries(&drive(config(false, usize::MAX, Codec::Raw), &sources, &mut marked).unwrap())
+    };
+    let new = saying(put(b"k", b"new", 9), Before::Present);
+    let old = saying(put(b"k", b"old", 3), Before::Absent);
+    let gone = saying(del(b"k", 9), Before::Present);
+
+    // An insert and an update of it are one insert. An insert and its delete change nothing.
+    assert_eq!(one(&[run(&[new.clone()]), run(&[old.clone()])], vec![]), vec![saying(put(b"k", b"new", 9), Before::Absent)]);
+    assert_eq!(one(&[run(&[gone.clone()]), run(&[old.clone()])], vec![]), vec![saying(del(b"k", 9), Before::Absent)]);
+    // A blind version anywhere in the chain leaves the answer unknown only when it is the oldest.
+    assert_eq!(said(one(&[run(&[put(b"k", b"new", 9)]), run(&[old.clone()])], vec![]).remove(0)), Before::Absent);
+    assert_eq!(said(one(&[run(&[new.clone()]), run(&[put(b"k", b"old", 3)])], vec![]).remove(0)), Before::Unknown);
+    // A version a mark covers is not part of the chain: the newer one stands on its own word.
+    let after_mark = saying(put(b"k", b"new", 9), Before::Absent);
+    assert_eq!(one(&[run(&[after_mark.clone()]), run(&[old.clone()])], vec![(b"a".to_vec(), None, 5, 6)]), vec![after_mark]);
+    // A version that saw the key present before a later mark spared it may have seen a version
+    // the mark covers.
+    assert_eq!(said(one(&[run(&[new.clone()])], vec![(b"a".to_vec(), None, 5, 12)]).remove(0)), Before::Unknown);
+    assert_eq!(said(one(&[run(&[new.clone()])], vec![(b"a".to_vec(), None, 5, 6)]).remove(0)), Before::Present);
+    let absent = saying(put(b"k", b"new", 9), Before::Absent);
+    assert_eq!(said(one(&[run(&[absent])], vec![(b"a".to_vec(), None, 5, 12)]).remove(0)), Before::Absent);
+}
+
+/// What `RunEnd` reports is what the index rows of the run add up to.
+#[test]
+fn a_run_end_tallies_what_its_records_say() {
+    let inserts: Vec<Entry> = (0..900u64).map(|i| saying(put(format!("k{i:05}").as_bytes(), b"value", i + 1), Before::Absent)).collect();
+    let mut edits: Vec<Entry> = (0..900u64)
+        .filter(|i| i % 3 != 0)
+        .map(|i| {
+            let key = format!("k{i:05}");
+            if i % 3 == 1 { saying(del(key.as_bytes(), 2000 + i), Before::Present) } else { put(key.as_bytes(), b"blind", 2000 + i) }
+        })
+        .collect();
+    edits.push(saying(put(b"zz", b"new", 5000), Before::Absent));
+    let out = merge(&[encode_sst(&edits, Codec::Raw), encode_sst(&inserts, Codec::Raw)], false, usize::MAX, Codec::Raw).unwrap();
+    // 300 untouched inserts and 300 blindly overwritten ones still say "absent", the 300 deleted ones say nothing changed, and one new key.
+    assert_eq!(out[0].end.tally, Tally { plus: 601, minus: 0, unknown: 0 });
+    let bottom = merge(&[encode_sst(&edits, Codec::Raw), encode_sst(&inserts, Codec::Raw)], true, usize::MAX, Codec::Raw).unwrap();
+    assert_eq!(bottom[0].end.tally, Tally { plus: 601, minus: 0, unknown: 0 });
+    assert_eq!(bottom[0].end.entries, 601);
 }
 
 #[test]
@@ -466,7 +534,7 @@ fn last_duplicate_in_the_newest_run_wins() {
     let out = merge(&[newest.clone(), older.clone()], false, usize::MAX, Codec::Raw).unwrap();
     assert_eq!(entries(&out), vec![put(b"a", b"last", 3), put(b"b", b"b", 4)]);
     let out = merge(&[newest, older], true, 1, Codec::Raw).unwrap();
-    assert_eq!(entries(&out), vec![put(b"a", b"last", 3), put(b"b", b"b", 4)]);
+    assert_eq!(entries(&out), [put(b"a", b"last", 3), put(b"b", b"b", 4)].map(|e| saying(e, Before::Absent)));
 
     let newest_del = encode_sst(&[put(b"a", b"first", 1), del(b"a", 6)], Codec::Raw);
     let out = merge(&[newest_del], true, usize::MAX, Codec::Raw).unwrap();

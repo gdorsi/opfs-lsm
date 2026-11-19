@@ -62,13 +62,19 @@ refer to the stored bytes.
 ## Record
 
 ```layout
-| u8 tag          1 = put, 2 = delete                                        |
+| u8 tag          bits 0-1: 1 = put, 2 = delete                              |
+|                 bits 2-3: what held before, 0 = not said, 1 = absent,      |
+|                           2 = present                                      |
 | u64 seq         the WAL seq that wrote the key                             |
 | varint suffix length                                                       |
 | suffix          the key after the block prefix                             |
 | varint value length                                 (puts only)            |
 | value                                               (puts only)            |
 ```
+
+Bits 2-3 say whether the key held a value before the oldest write the record stands for.
+[counted-ranges.md](counted-ranges.md) says who sets them and what a reader does with them. A
+reader rejects a tag with any other bit set.
 
 ## Index entry
 
@@ -81,7 +87,13 @@ One entry per data block, in block order.
 | last key        the largest key of the block                               |
 | u32 block offset                                    from the start of file |
 | u32 block length                                                           |
+| u16 plus        records that put a key that was absent                     |
+| u16 minus       records that delete a key that was present                 |
+| u16 unknown     records that do not say what held before                   |
 ```
+
+The three counts are the block's tally. A reader adds the tallies of whole blocks without reading
+them.
 
 ## Footer (44 bytes)
 
@@ -106,7 +118,7 @@ One entry per data block, in block order.
 
 `crc32` is the IEEE CRC-32 of every byte before the field.
 
-`version` must be 1. Any other version is rejected.
+`version` must be 2. Any other version is rejected.
 
 `magic` must be `OLST` (0x4f4c5354).
 

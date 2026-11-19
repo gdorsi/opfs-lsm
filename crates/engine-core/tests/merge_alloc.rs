@@ -6,7 +6,7 @@
 //! LZ4 output is the exception: lz4_flex 0.11 allocates its hash table for
 //! every block it compresses, with no way to pass one in.
 
-use engine_core::{encode_sst, Codec, Entry, MergeConfig, MergeSession, Stop};
+use engine_core::{encode_sst, Before, Codec, Entry, MergeConfig, MergeSession, Stop};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -57,7 +57,7 @@ fn counted<T>(f: impl FnOnce() -> T) -> T {
 /// settle on the first entries: every key, every second key, every third.
 /// The middle source is three LZ4 runs; the others are one raw run each.
 fn sources() -> (Vec<Vec<Vec<u8>>>, usize) {
-    let entry = |i: usize, s: usize| Entry::Put { key: format!("key/{i:08}").into_bytes(), value: vec![s as u8; 48], seq: i as u64 };
+    let entry = |i: usize, s: usize| Entry::Put { key: format!("key/{i:08}").into_bytes(), value: vec![s as u8; 48], seq: i as u64, before: Before::Unknown };
     let newest: Vec<Entry> = (0..30_000).filter(|i| i % 3 == 0).map(|i| entry(i, 0)).collect();
     let middle: Vec<Entry> = (0..30_000).filter(|i| i % 2 == 0).map(|i| entry(i, 1)).collect();
     let oldest: Vec<Entry> = (0..30_000).map(|i| entry(i, 2)).collect();

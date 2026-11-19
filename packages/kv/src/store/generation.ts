@@ -10,8 +10,8 @@ import type { RunEnd, SstEntry } from "./sst.js";
 const GEN_PREFIX = "m/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-/** Version 5: the marks and each run's `marksThrough`. */
-const GEN_VERSION = 5;
+/** Version 6: each run's tally. */
+const GEN_VERSION = 6;
 
 /**
  * A run of the generation: what the encoder reported when it wrote the file
@@ -57,7 +57,7 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const marks = encodeMarks(meta.marks);
   let size = 4 + 4 + 8 + 8 + marks.byteLength + 4;
   meta.runs.forEach((r, i) => {
-    size += 2 + paths[i]!.byteLength + 4 + 1 + 8;
+    size += 2 + paths[i]!.byteLength + 4 + 1 + 8 + 12;
     if (r.range) size += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
   });
   size += 4;
@@ -93,6 +93,10 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
     }
     view.setBigUint64(o, BigInt(r.marksThrough), true);
     o += 8;
+    for (const n of [r.tally.plus, r.tally.minus, r.tally.unknown]) {
+      view.setUint32(o, n, true);
+      o += 4;
+    }
   });
   view.setUint32(o, crc32(out.subarray(0, o)), true);
   return out;
@@ -140,7 +144,8 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     const range = buf[take(1)] === 1 ? { smallest: key(), largest: key() } : undefined;
     const marksThrough = asSeq(Number(view.getBigUint64(take(8), true)));
     if (marksThrough > through) throw new CorruptDatabaseError("generation run past through");
-    runs.push(range ? { path, bytes, range, marksThrough } : { path, bytes, marksThrough });
+    const tally = { plus: view.getUint32(take(4), true), minus: view.getUint32(take(4), true), unknown: view.getUint32(take(4), true) };
+    runs.push(range ? { path, bytes, range, marksThrough, tally } : { path, bytes, marksThrough, tally });
   }
   if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
   return { generation, runs, through, marks };

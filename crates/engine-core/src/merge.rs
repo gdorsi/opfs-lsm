@@ -12,6 +12,14 @@
 //! level that the step overlaps. For a key, the newest source wins and, within
 //! a source, the last duplicate wins, across block, read and run boundaries.
 //!
+//! The winner stands for every version of its key the step read, so it takes
+//! the `Before` of the oldest one that no mark covers: what was true of the
+//! key before any of them. It becomes `Unknown` when that version said the
+//! key was present and a mark that holds the key was written after it, since
+//! the version it saw may be one the mark covers. In a step whose output is
+//! the bottom level nothing older is left, so every put it writes is over an
+//! absent key.
+//!
 //! What it holds, whatever the inputs' size: per source about `chunk_bytes` of
 //! framed blocks (more only for a block, or a run's bloom and index, that is
 //! larger), one unpacked block and two entries; for the output, one open block, a bloom
@@ -20,8 +28,8 @@
 
 use crate::crc32::{crc32, crc32_combine, Crc32};
 use crate::sst::{
-    entry_size, lz4_size_fits, read_footer, read_u32, BlockWalk, Codec, Entry, EntryRef, Layout, OutOfOrder, Record,
-    RunEnd, SstError, SstWriter, BLOCK_TARGET, FOOTER_BYTES,
+    entry_size, lz4_size_fits, read_footer, read_u32, Before, BlockWalk, Codec, Entry, EntryRef, Layout, OutOfOrder,
+    Record, RunEnd, SstError, SstWriter, Tally, BLOCK_TARGET, FOOTER_BYTES, INDEX_ROW_TAIL,
 };
 use alloc::collections::TryReserveError;
 use alloc::vec::Vec;
@@ -202,7 +210,7 @@ impl MergeSession {
             writer: SstWriter::new(config.codec),
             out,
             output: Output::Filling { size: 0 },
-            ended: RunEnd { entries: 0, size: 0, first_key: Vec::new(), last_key: Vec::new() },
+            ended: RunEnd { entries: 0, size: 0, first_key: Vec::new(), last_key: Vec::new(), tally: Tally::default() },
             drop_tombstones: config.drop_tombstones,
             marks: owned,
             target_bytes: config.target_bytes,
@@ -341,38 +349,62 @@ impl MergeSession {
     /// its key has a smaller seq, so the same mark covers it too.
     fn next_key(&mut self) -> Result<(), MergeError> {
         let w = heap_pop(&mut self.heap, &self.sources);
+        // The highest `through`, and the highest `at`, of the marks that hold the key.
+        let (mut through, mut marked_at, mut o) = (0u64, 0u64, 4);
+        {
+            let key = &self.sources[w as usize].cur.key[..];
+            while o < self.marks.len() {
+                let start = o + 4;
+                let end = start + read_u32(&self.marks, o) as usize;
+                let (has_end, mut next) = (self.marks[end] == 1, end + 1);
+                let stop = if has_end {
+                    next += 4 + read_u32(&self.marks, next) as usize;
+                    &self.marks[end + 5..next]
+                } else {
+                    &[]
+                };
+                if self.marks[start..end] <= *key && (!has_end || key < stop) {
+                    through = through.max(u64::from_le_bytes(self.marks[next..next + 8].try_into().unwrap()));
+                    marked_at = marked_at.max(u64::from_le_bytes(self.marks[next + 8..next + 16].try_into().unwrap()));
+                }
+                o = next + 16;
+            }
+        }
+        // The oldest version of the key no mark covers, among the ones this step read. The
+        // heap hands the sources of one key out newest first, and a covered version ends
+        // the chain: every older one has a smaller seq.
+        let (mut oldest_seq, mut before) = {
+            let winner = &self.sources[w as usize].cur;
+            (winner.seq, winner.before)
+        };
+        let mut chained = true;
         while let Some(&t) = self.heap.first() {
             if self.sources[t as usize].cur.key != self.sources[w as usize].cur.key {
                 break;
             }
             heap_pop(&mut self.heap, &self.sources);
+            let older = &self.sources[t as usize].cur;
+            if chained && older.seq > through {
+                (oldest_seq, before) = (older.seq, older.before);
+            } else {
+                chained = false;
+            }
             self.retire(t);
         }
         let winner = &self.sources[w as usize].cur;
-        let (mut through, mut o) = (0u64, 4);
-        while o < self.marks.len() {
-            let start = o + 4;
-            let end = start + read_u32(&self.marks, o) as usize;
-            let (has_end, mut next) = (self.marks[end] == 1, end + 1);
-            let stop = if has_end {
-                next += 4 + read_u32(&self.marks, next) as usize;
-                &self.marks[end + 5..next]
-            } else {
-                &[]
-            };
-            if self.marks[start..end] <= winner.key[..] && (!has_end || winner.key[..] < *stop) {
-                through = through.max(u64::from_le_bytes(self.marks[next..next + 8].try_into().unwrap()));
-            }
-            o = next + 16;
-        }
         if through > 0 && winner.seq <= through {
             self.retire(w);
             return Ok(());
         }
+        if self.drop_tombstones {
+            before = Before::Absent;
+        } else if before == Before::Present && oldest_seq < marked_at {
+            before = Before::Unknown;
+        }
         match winner.kind {
             Kind::Del if self.drop_tombstones => {}
             _ => {
-                let entry = winner.entry();
+                let entry = winner.entry(before);
                 let size = match self.output {
                     Output::Filling { size } => size,
                     Output::Finished => 0,
@@ -486,7 +518,11 @@ impl Source {
                 },
                 Head::Scanning => match self.reader.next(&mut self.look, consumed)? {
                     Got::Entry => match self.look.key.cmp(&self.cur.key) {
-                        Ordering::Equal => mem::swap(&mut self.cur, &mut self.look),
+                        // The last duplicate wins, and stands for the ones before it.
+                        Ordering::Equal => {
+                            self.look.before = self.cur.before;
+                            mem::swap(&mut self.cur, &mut self.look);
+                        }
                         Ordering::Greater => {
                             self.head = Head::Ready;
                             return Ok(Advance::Ready);
@@ -518,6 +554,7 @@ struct Slot {
     key: Vec<u8>,
     value: Vec<u8>,
     seq: u64,
+    before: Before,
     kind: Kind,
 }
 
@@ -526,7 +563,7 @@ impl Slot {
         let (mut key, mut value) = (Vec::new(), Vec::new());
         key.try_reserve_exact(64)?;
         value.try_reserve_exact(256)?;
-        Ok(Slot { key, value, seq: 0, kind: Kind::Del })
+        Ok(Slot { key, value, seq: 0, before: Before::Unknown, kind: Kind::Del })
     }
 
     fn fill(&mut self, record: &Record<'_>) -> Result<(), MergeError> {
@@ -535,6 +572,7 @@ impl Slot {
         self.key.extend_from_slice(record.prefix);
         self.key.extend_from_slice(record.suffix);
         self.seq = record.seq;
+        self.before = record.before;
         match record.value {
             Some(value) => {
                 self.value.clear();
@@ -547,10 +585,10 @@ impl Slot {
         Ok(())
     }
 
-    fn entry(&self) -> EntryRef<'_> {
+    fn entry(&self, before: Before) -> EntryRef<'_> {
         match self.kind {
-            Kind::Put => EntryRef::Put { key: &self.key, value: &self.value, seq: self.seq },
-            Kind::Del => EntryRef::Del { key: &self.key, seq: self.seq },
+            Kind::Put => EntryRef::Put { key: &self.key, value: &self.value, seq: self.seq, before },
+            Kind::Del => EntryRef::Del { key: &self.key, seq: self.seq, before },
         }
     }
 }
@@ -914,12 +952,13 @@ impl Reader {
 
 /// The framed length of each block, from the index rows
 ///   u32 len | first key | u32 len | last key | u32 offset | u32 length
+///   | u16 plus | u16 minus | u16 unknown
 /// Blocks must tile the data region from 0, which a run written by
 /// `SstWriter` always does, so a block's offset is the sum before it.
 fn index_blocks(index: &[u8], count: usize, data_len: usize, blocks: &mut Vec<u32>) -> Result<(), MergeError> {
     blocks.clear();
-    // A row is at least 16 bytes, so this bounds the rows that can parse.
-    blocks.try_reserve(count.min(index.len() / 16))?;
+    // A row is at least 8 + `INDEX_ROW_TAIL` bytes, so this bounds the rows that can parse.
+    blocks.try_reserve(count.min(index.len() / (8 + INDEX_ROW_TAIL)))?;
     let end = index.len();
     let mut o = 0;
     let skip_key = |o: &mut usize| -> Result<(), SstError> {
@@ -938,12 +977,12 @@ fn index_blocks(index: &[u8], count: usize, data_len: usize, blocks: &mut Vec<u3
     for _ in 0..count {
         skip_key(&mut o)?;
         skip_key(&mut o)?;
-        if end - o < 8 {
+        if end - o < INDEX_ROW_TAIL {
             return Err(SstError::Truncated.into());
         }
         let offset = read_u32(index, o) as usize;
         let length = read_u32(index, o + 4) as usize;
-        o += 8;
+        o += INDEX_ROW_TAIL;
         if offset != next || length > data_len - offset {
             return Err(SstError::Truncated.into());
         }
