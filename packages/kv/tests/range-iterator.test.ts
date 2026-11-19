@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { ClosedError, type Db, type Entry } from "../src/index.js";
+import { ClosedError, ConstraintError, type Db, type Entry } from "../src/index.js";
 import { EngineHost, MemoryFs, createLocalIngestClient, ingest, openHarnessDb } from "../src/testing.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 
@@ -190,17 +190,47 @@ describe.each(scans)("%s as an async iterator", (_what, scan) => {
     expect(l0().filter((p) => inputs.includes(p))).toEqual([]);
   });
 
-  it("lets go of its runs when the caller returns early", async () => {
+  it("lets go of its runs when the caller returns early, once however often it returns", async () => {
     const { db, l0, inputs } = await seeded();
     const { it: iter, finish } = await scan(db);
+    const other = await scan(db);
     await iter.next();
+    await other.it.next();
     await compact(db);
     expect(l0()).toEqual(expect.arrayContaining(inputs));
+
     expect(await iter.return!()).toEqual({ value: undefined, done: true });
     expect(await iter.return!()).toEqual({ value: undefined, done: true });
     expect((await iter.next()).done).toBe(true);
     await finish();
     await ingest(db);
+    expect(l0()).toEqual(expect.arrayContaining(inputs));
+
+    await other.it.return!();
+    await other.finish();
+    await ingest(db);
+    expect(l0().filter((p) => inputs.includes(p))).toEqual([]);
+  });
+
+  it("runs a return() made while a read waits after that read, and ends every call made after it", async () => {
+    const { db, writer, folder, l0, inputs } = await seeded(true);
+    const { it: iter, finish } = await scan(db);
+    const reached = folder.shut();
+    const calls = [iter.next(), iter.return!(), iter.next(), iter.return!()];
+    const settled: number[] = [];
+    for (const [i, call] of calls.entries()) void call.then(() => settled.push(i));
+    await reached;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toEqual([]);
+    folder.lift();
+    const [first, ...rest] = await Promise.all(calls);
+    expect(first!.done ? "done" : show(first!.value)).toBe(want[0]);
+    expect(rest).toEqual(Array(3).fill({ value: undefined, done: true }));
+    expect(settled).toEqual([0, 1, 2, 3]);
+    await finish();
+    await db.close();
+    await compact(writer);
+    await ingest(writer);
     expect(l0().filter((p) => inputs.includes(p))).toEqual([]);
   });
 
@@ -248,6 +278,14 @@ describe("a range iterator and its handle", () => {
     const iter = db.range()[Symbol.asyncIterator]();
     await db.close();
     await expect(iter.next()).rejects.toBeInstanceOf(ClosedError);
+    expect((await iter.next()).done).toBe(true);
+  });
+
+  it("rejects a range whose bound is not a valid key, and is done afterwards", async () => {
+    const { db } = await seeded();
+    const iter = db.range({ start: new Uint8Array(64 * 1024) })[Symbol.asyncIterator]();
+    await expect(iter.next()).rejects.toBeInstanceOf(ConstraintError);
+    expect((await iter.next()).done).toBe(true);
   });
 
   it("rejects the next() after its view closed with ClosedError, and lets go of its runs", async () => {

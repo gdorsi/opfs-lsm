@@ -27,7 +27,7 @@ import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wa
 import { reconcile, type Reconciled } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
-import { entryOf, Miss, ReadSet, untilHit, type Maybe } from "./store/cursor.js";
+import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
@@ -37,7 +37,7 @@ import { countOf, pointGet, readKeys, runLevels, type RunLevel } from "./store/r
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
-import { ViewSnapshotImpl, boundsOf, scanStep, type ViewSnapshot } from "./view.js";
+import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type ViewSnapshot } from "./view.js";
 import {
   ChangeBus,
   type ChangeEvent,
@@ -1061,27 +1061,19 @@ class DbImpl implements Db {
     }
   }
 
-  async *range(range?: Range): AsyncIterable<Entry> {
-    this.ensureOpen();
-    const bounds = boundsOf(range);
-    const layers = this.installed;
-    const at = this.point();
-    this.retain(layers);
-    try {
-      const step = scanStep(this.mem.range(bounds), layers.levels, at, bounds, range);
-      for (;;) {
-        let e = step();
-        if (e instanceof Miss) e = await untilHit(step, e);
-        if (!e) return;
+  range(range?: Range): AsyncIterable<Entry> {
+    return rangeScan({
+      start: () => {
         this.ensureOpen();
-        yield entryOf(e);
-      }
-    } catch (err) {
-      this.ensureOpen();
-      throw err;
-    } finally {
-      this.release(layers);
-    }
+        const bounds = boundsOf(range);
+        const layers = this.installed;
+        const step = scanStep(this.mem.range(bounds), layers.levels, this.point(), bounds, range);
+        this.retain(layers);
+        return { step, release: () => this.release(layers) };
+      },
+      check: () => this.ensureOpen(),
+      failed: () => this.ensureOpen(),
+    });
   }
 
   async view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T> {

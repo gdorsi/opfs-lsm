@@ -2,7 +2,7 @@ import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { entryCursor, entryOf, Miss, untilHit, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, entryOf, Miss, untilHit, type LayerEntry, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,
@@ -50,8 +50,7 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
  * `range` over memtable `rows` already cut to `bounds` and the levels under
  * them, one entry at a time: every live put, or with `valueContains` only
  * the matching ones, and no more than `limit`. It is a sync step and not an
- * async iterator, so the `range` a caller reads is the only async generator
- * an entry passes through: each one costs several promise turns per entry.
+ * async iterator, so `range`, `count` and `rangeJoin` wait only on a miss.
  */
 export function scanStep(
   rows: readonly MemRow[],
@@ -74,6 +73,107 @@ export function scanStep(
     const e = step();
     if (e && !(e instanceof Miss)) n++;
     return e;
+  };
+}
+
+/** What a `range` iterator asks of the handle or view it reads. */
+type ScanHost = {
+  /**
+   * Runs at the first `next()`: checks the host is open, builds the scan, and
+   * takes the layers last, so nothing can throw while it holds them.
+   */
+  start(): { readonly step: ScanStep; readonly release: () => void };
+  /** Throws when the host closed. Runs before each entry is handed out. */
+  check(): void;
+  /** Runs when the scan threw. Throws `ClosedError` in its place when the handle closed. */
+  failed(): void;
+};
+
+type Step = IteratorResult<Entry, undefined>;
+
+/**
+ * The async iterator of a `range`, written by hand because an async generator
+ * spends several promise turns on every entry. A `next()` whose entry is in
+ * memory resolves in the call itself. It keeps what a generator promises a
+ * caller: calls are answered in the order they were made, a `return()` or a
+ * failed read ends the scan and frees its layers once, and nothing is taken
+ * before the first `next()`. It has no `throw()`, which `for await` never
+ * calls, and `return()` ignores its argument.
+ */
+export function rangeScan(host: ScanHost): AsyncIterableIterator<Entry, undefined> {
+  /** Set from the first `next()` until the scan ends. */
+  let scan: { readonly step: ScanStep; readonly release: () => void } | undefined;
+  let ended = false;
+  /** The last call still waiting for bytes. A call made meanwhile runs after it. */
+  let tail: Promise<unknown> | undefined;
+
+  function finish(): Step {
+    ended = true;
+    const release = scan?.release;
+    scan = undefined;
+    release?.();
+    return { value: undefined, done: true };
+  }
+
+  function fail(err: unknown): never {
+    finish();
+    host.failed();
+    throw err;
+  }
+
+  function emit(e: LayerEntry | undefined): Step {
+    if (!e) return finish();
+    host.check();
+    return { value: entryOf(e), done: false };
+  }
+
+  async function afterMiss(step: ScanStep, miss: Miss): Promise<Step> {
+    try {
+      return emit(await untilHit(step, miss));
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  function advance(): Step | Promise<Step> {
+    if (ended) return { value: undefined, done: true };
+    try {
+      const { step } = (scan ??= host.start());
+      const e = step();
+      return e instanceof Miss ? afterMiss(step, e) : emit(e);
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  /** Runs `op` now, or after the calls that wait for bytes. A call that waits is the one the next runs after. */
+  function run(op: () => Step | Promise<Step>): Promise<Step> {
+    let result: Promise<Step>;
+    if (tail) result = tail.then(op, op);
+    else {
+      let now: Step | Promise<Step>;
+      try {
+        now = op();
+      } catch (err) {
+        return Promise.reject(err);
+      }
+      if (!(now instanceof Promise)) return Promise.resolve(now);
+      result = now;
+    }
+    tail = result;
+    const settled = () => {
+      if (tail === result) tail = undefined;
+    };
+    result.then(settled, settled);
+    return result;
+  }
+
+  return {
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    next: () => run(advance),
+    return: () => run(finish),
   };
 }
 
@@ -165,24 +265,16 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     }
   }
 
-  async *range(range?: Range): AsyncIterable<Entry> {
-    this.ensureOpen();
-    const bounds = boundsOf(range);
-    const release = this.hold();
-    try {
-      const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
-      for (;;) {
-        let e = step();
-        if (e instanceof Miss) e = await untilHit(step, e);
-        if (!e) return;
+  range(range?: Range): AsyncIterable<Entry> {
+    return rangeScan({
+      start: () => {
         this.ensureOpen();
-        yield entryOf(e);
-      }
-    } catch (err) {
-      this.handleOpen();
-      throw err;
-    } finally {
-      release();
-    }
+        const bounds = boundsOf(range);
+        const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
+        return { step, release: this.hold() };
+      },
+      check: () => this.ensureOpen(),
+      failed: this.handleOpen,
+    });
   }
 }
