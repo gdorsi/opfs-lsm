@@ -30,7 +30,7 @@ const GOALS = [
 export const TABLES: readonly Table[] = [
   {
     id: "storage-calls",
-    file: "2026-11-19T18-27-57-apple-m2-pro",
+    file: "2026-11-19T20-05-36-apple-m5-max",
     columns: [
       { head: "Workload" },
       { head: "IndexedDB", at: "kv/idb" },
@@ -50,7 +50,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "framework-adapters",
-    file: "2026-11-19T18-52-42-apple-m2-pro",
+    file: "2026-11-19T20-20-58-apple-m5-max",
     columns: [
       { head: "Framework" },
       { head: "Workload" },
@@ -97,7 +97,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "typing-reopening",
-    file: "2026-11-19T18-52-42-apple-m2-pro",
+    file: "2026-11-19T20-20-58-apple-m5-max",
     columns: [
       { head: "" },
       { head: "y-indexeddb", at: { workload: "yjs/trace", contender: "yjs/y-indexeddb" } },
@@ -116,7 +116,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "on-demand-sqlite",
-    file: "2026-11-19T19-02-38-apple-m2-pro",
+    file: "2026-11-19T20-29-20-apple-m5-max",
     workload: "tanstack-ondemand/queries",
     columns: [
       { head: "Workload" },
@@ -133,7 +133,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "goals",
-    file: "2026-11-19T19-14-44-apple-m2-pro",
+    file: "2026-11-19T20-36-02-apple-m5-max",
     workload: "tracker/goals",
     unit: null,
     columns: [
@@ -150,7 +150,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "writes",
-    file: "2026-11-19T19-14-44-apple-m2-pro",
+    file: "2026-11-19T20-36-02-apple-m5-max",
     workload: "tracker/goals",
     columns: [
       { head: "Writes" },
@@ -164,11 +164,12 @@ export const TABLES: readonly Table[] = [
       { label: "Sync, mean of 851 batches of about 50 changes", phase: "replay", metric: "mean:sync" },
       { label: "One edit", phase: "recent", metric: "mean:edit" },
       { label: "Sprint close, 1,054 issues in one batch", phase: "recent", metric: "mean:bulk" },
+      { label: "The 50 latest issues, read again after every 10th sync batch", phase: "replay", metric: "mean:read" },
     ],
   },
   {
     id: "live-queries",
-    file: "2026-11-19T19-10-46-apple-m2-pro",
+    file: "2026-11-19T20-00-35-apple-m5-max",
     workload: "tanstack-live/screens",
     columns: [
       { head: "" },

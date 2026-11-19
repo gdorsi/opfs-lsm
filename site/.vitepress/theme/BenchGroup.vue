@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, useId } from "vue";
-import { OVERLAP, ratioTone } from "../tone.ts";
+import { NOT_SEPARATED, ratioTone } from "../tone.ts";
 import { dotYs, LINE, pairText, ticks, xOf, type Group } from "./bench.ts";
 
 /**
  * One group of a benchmark card: its head, then a row per result. A bar runs from the 1× line to the result's ratio,
  * right when opfs-lsm is faster and left when it is slower, with the ratio at its end and the two values on the right.
- * A result whose runs overlap the other store's sits on the line: it is even, whatever its ratio.
+ * A result whose runs do not separate the two stores sits on the line: it is even, whatever its ratio.
  * The page renders the bars drawn. A group that starts below the screen folds them back to the line once mounted and
  * grows them, one row after the next, when it scrolls into view.
  */
@@ -15,18 +15,18 @@ const props = defineProps<{ group: Group }>();
 const rows = computed(() =>
   props.group.rows.map((r) => {
     const [ours, theirs] = props.group.stores;
-    const overlaps = r.ratio.includes(OVERLAP);
+    const even = r.ratio.includes(NOT_SEPARATED);
     const pair = `${r.measure}: ${r.ours} on ${ours} against ${r.theirs} on ${theirs}`;
     return {
       ...r,
-      x: xOf(overlaps ? 1 : Number.parseFloat(r.ratio)),
+      x: xOf(even ? 1 : Number.parseFloat(r.ratio)),
       tone: ratioTone(r.ratio),
       shown: pairText(r.ours, r.theirs),
-      label: overlaps ? `${pair}. Their runs overlap.` : `${pair}, ${r.ratio} as fast.`,
+      label: even ? `${pair}. The runs do not tell them apart.` : `${pair}, ${r.ratio} as fast.`,
     };
   }),
 );
-const overlap = computed(() => props.group.rows.some((r) => r.ratio.includes(OVERLAP)));
+const unseparated = computed(() => props.group.rows.some((r) => r.ratio.includes(NOT_SEPARATED)));
 
 const WORDS = { success: "faster", warning: "slower", neutral: "even" } as const;
 const counts = computed(() =>
@@ -142,7 +142,7 @@ function tipAt(r: (typeof rows.value)[number]) {
           <span class="bench-values" aria-hidden="true">{{ r.shown }}</span>
         </li>
       </ul>
-      <p v-if="overlap" class="bench-note">{{ OVERLAP }} The runs of the two stores overlap, so the result counts as even.</p>
+      <p v-if="unseparated" class="bench-note">{{ NOT_SEPARATED }} The runs do not separate the two stores, so the result counts as even.</p>
       <p v-if="group.note" class="bench-note">{{ group.note }}</p>
     </div>
   </section>

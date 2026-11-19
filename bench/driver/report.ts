@@ -7,7 +7,7 @@
  */
 import { merge, opsOf, quantile, samplesOf } from "../core/histogram.ts";
 import { DEFAULT_SEED, type HeapPeak, type RunRecord } from "../core/types.ts";
-import { describe, measure, versus, type At, type Measures, type Metric, type Series } from "./metrics.ts";
+import { describe, ENOUGH_RUNS, measure, versus, type At, type Measures, type Metric, type Series } from "./metrics.ts";
 
 type Stat = { median: number; min: number; max: number; n: number };
 
@@ -203,8 +203,8 @@ function sideCell(s: Series): string {
 
 /**
  * Every series both measures hold, with the verdict of B against A by the
- * min–max ranges and the metric's direction. Without `all` only the series
- * with a measurable difference are listed.
+ * rank-sum test of the runs and the metric's direction. Without `all` only the
+ * series with a measurable difference are listed.
  */
 export function compare(a: Measures, b: Measures, { all = false }: { all?: boolean } = {}): string {
   const rows: string[] = [];
@@ -215,6 +215,7 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
   };
   let compared = 0;
   let same = 0;
+  let unseparable = 0;
   let marked = false;
   for (const sa of a.all) {
     const sb = b.get(sa.at);
@@ -225,6 +226,7 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
     compared++;
     const v = versus(sa, sb);
     if (!v.distinct) same++;
+    if (!v.separable) unseparable++;
     if (!all && !v.distinct) continue;
     marked ||= !!sa.summary.clusters || !!sb.summary.clusters;
     const at = sa.at;
@@ -243,6 +245,7 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
     out.push("| workload | size | phase | contender | metric | A | B | verdict |", "|---|---|---|---|---|---:|---:|---|", ...rows);
   }
   out.push("", `${compared} series compared, ${same} with no measurable difference`);
+  if (unseparable > 0) out.push(`${unseparable} of them have too few runs to show a difference: ${ENOUGH_RUNS} runs per side are enough`);
   if (marked) out.push("", "`†`: this side's runs form two clusters, so its median and range hide two states. `report` prints both.");
   for (const [name, map] of Object.entries(only)) {
     if (map.size > 0) out.push("", `Only in ${name}:`, ...[...map].map(([key, n]) => `- ${key} (${n} series)`));

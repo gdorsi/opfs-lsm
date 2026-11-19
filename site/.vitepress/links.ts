@@ -3,7 +3,7 @@ import { join, posix, relative } from "node:path";
 import { slug } from "github-slugger";
 import MarkdownIt from "markdown-it";
 import { everyPage, github, home, pageAt, pageOf, pages, repoRoot, url } from "./pages.ts";
-import { OVERLAP } from "./tone.ts";
+import { NOT_SEPARATED } from "./tone.ts";
 
 const external = /^[a-z][a-z\d+.-]*:|^\/\//i;
 const pagesFile = "site/.vitepress/pages.ts";
@@ -181,7 +181,7 @@ const HOME_ROW = /\{ measure: "[^"]+", ours: ([\d.,]+[kM]?)[^,]*, theirs: ([\d.,
 
 /**
  * A row of the home page's benchmarks is one line of docs/benchmarks.md: that line holds its two values and its
- * ratio, and the ratio carries the overlap mark on both pages or on neither.
+ * ratio, and the ratio carries the mark of runs that do not separate the two stores on both pages or on neither.
  */
 function homeRowProblem(line: string, readme: string[]): string | undefined {
   const row = HOME_ROW.exec(line);
@@ -191,10 +191,10 @@ function homeRowProblem(line: string, readme: string[]): string | undefined {
   if (lines.length === 0) {
     return `${ours}, ${theirs} and ${ratio} are not on one line of ${numbersFrom}. Copy the row's values and its ratio from one row.`;
   }
-  const marked = lines.some((l) => verbatim(ratio!, ` ${OVERLAP}`).test(l));
-  const plain = lines.some((l) => verbatim(ratio!, `(?! ${OVERLAP})`).test(l));
-  if (mark && !marked) return `"${ratio} ${OVERLAP}" is "${ratio}" in ${numbersFrom}. Remove the mark.`;
-  if (!mark && !plain) return `"${ratio}" is "${ratio} ${OVERLAP}" in ${numbersFrom}: the runs of the two overlap. Write "ratio: ${ratio} ${OVERLAP}".`;
+  const marked = lines.some((l) => verbatim(ratio!, ` ${NOT_SEPARATED}`).test(l));
+  const plain = lines.some((l) => verbatim(ratio!, `(?! ${NOT_SEPARATED})`).test(l));
+  if (mark && !marked) return `"${ratio} ${NOT_SEPARATED}" is "${ratio}" in ${numbersFrom}. Remove the mark.`;
+  if (!mark && !plain) return `"${ratio}" is "${ratio} ${NOT_SEPARATED}" in ${numbersFrom}: the runs do not separate the two. Write "ratio: ${ratio} ${NOT_SEPARATED}".`;
 }
 
 function homeProblems(): string[] {

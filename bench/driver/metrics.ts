@@ -19,6 +19,7 @@
 import type { IoCounters } from "@opfs-lsm/kv/testing";
 import { opsOf, samplesOf } from "../core/histogram.ts";
 import { SIZES, type PhaseResult, type RunRecord, type SizeName } from "../core/types.ts";
+import { rankSumP, smallestRankSumP } from "./ranksum.ts";
 
 const MAIN_FIELDS = ["longTasks", "longestMs", "blockedMs", "longestFrameMs", "droppedFrames"] as const;
 const AMP_FIELDS = [
@@ -91,8 +92,23 @@ export type MetricInfo = {
   format(x: number, withUnit?: boolean): string;
 };
 
-/** `times` is how many times better b is than a. `distinct` is false when the min–max ranges overlap. */
-export type Verdict = { readonly times: number; readonly distinct: boolean };
+/** The level of the rank-sum test that calls two sides distinct. */
+export const LEVEL = 0.05;
+
+/**
+ * `times` is how many times better b is than a. `distinct` is true when the
+ * rank-sum test of the two sides' runs gives a p below `LEVEL`. `separable` is
+ * false when the two sides have too few runs for the test to pass, so their
+ * not being `distinct` says nothing.
+ */
+export type Verdict = { readonly times: number; readonly distinct: boolean; readonly separable: boolean };
+
+/** The fewest runs per side, the same on both, that the test can separate at `LEVEL`. */
+export const ENOUGH_RUNS = (() => {
+  let n = 1;
+  while (smallestRankSumP(n, n) >= LEVEL) n++;
+  return n;
+})();
 
 // ---------------------------------------------------------------- formats
 
@@ -312,15 +328,15 @@ function summarize(values: readonly number[]): Summary {
   return split ? { ...all, clusters: [lo, hi] } : all;
 }
 
-/**
- * b against a, by the metric's direction. The ranges decide `distinct`, the
- * medians `times`. A side with one run has no range, so it is never distinct.
- */
+/** b against a, by the metric's direction. The medians decide `times`, the rank-sum test of the runs `distinct`. */
 export function versus(a: Series, b: Series): Verdict {
   const higher = describe(a.at.metric).direction === "higher";
+  const distinct = rankSumP(a.values, b.values) < LEVEL;
   return {
     times: higher ? b.summary.median / a.summary.median : a.summary.median / b.summary.median,
-    distinct: a.summary.n > 1 && b.summary.n > 1 && (b.summary.min > a.summary.max || b.summary.max < a.summary.min),
+    distinct,
+    // Tied values can pass with run counts that distinct values cannot.
+    separable: distinct || smallestRankSumP(a.values.length, b.values.length) < LEVEL,
   };
 }
 

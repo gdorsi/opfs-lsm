@@ -72,38 +72,71 @@ suite("clusters", () => {
 
 suite("versus", () => {
   const rate = (...r: number[]) => series(ratesOf(r), "rate")!;
+  const wall = (...ms: number[]) => series(measure(ms.map((w) => run([phase("read", { wallMs: w })]))), "wall")!;
 
-  test("higher is better: disjoint ranges are distinct and times is b over a", () => {
-    const v = versus(rate(95, 100, 105), rate(190, 200, 210));
-    assert.equal(v.distinct, true);
-    assert.equal(v.times, 2);
+  test("higher is better: disjoint runs are distinct and times is b over a", () => {
+    const v = versus(rate(95, 100, 105, 98, 102), rate(190, 200, 210, 195, 205));
+    assert.deepEqual(v, { times: 2, distinct: true, separable: true });
     assert.equal(describe("rate").direction, "higher");
   });
 
   test("higher is better: a slower b has times below 1", () => {
-    const v = versus(rate(190, 200, 210), rate(95, 100, 105));
+    const v = versus(rate(190, 200, 210, 195, 205), rate(95, 100, 105, 98, 102));
     assert.equal(v.distinct, true);
     assert.equal(v.times, 0.5);
   });
 
-  test("overlapping ranges are not distinct, whatever the medians say", () => {
-    const v = versus(rate(95, 100, 150), rate(120, 160, 170));
-    assert.equal(v.distinct, false);
-  });
-
-  test("a side with one run is never distinct: one value has no range", () => {
-    const one = (kops: number) => series(ratesOf([kops]), "rate")!;
-    assert.equal(versus(one(100), one(200)).distinct, false);
-    assert.equal(versus(one(100), series(ratesOf([190, 200, 210]), "rate")!).distinct, false);
-  });
-
   test("lower is better: times is a over b", () => {
-    const wall = (...ms: number[]) => series(measure(ms.map((w) => run([phase("read", { wallMs: w })]))), "wall")!;
-    const v = versus(wall(9, 10, 11), wall(4, 5, 6));
+    const v = versus(wall(9, 10, 11, 9.5, 10.5), wall(4, 5, 6, 4.5, 5.5));
     assert.equal(describe("wall").direction, "lower");
     assert.equal(v.distinct, true);
     assert.equal(v.times, 2);
-    assert.equal(versus(wall(4, 5, 6), wall(9, 10, 11)).times, 0.5);
+    assert.equal(versus(wall(4, 5, 6, 4.5, 5.5), wall(9, 10, 11, 9.5, 10.5)).times, 0.5);
+  });
+
+  test("overlapping runs are not distinct, whatever the medians say", () => {
+    const v = versus(rate(95, 100, 150, 99, 140), rate(120, 160, 170, 100, 155));
+    assert.equal(v.distinct, false);
+    assert.equal(v.separable, true);
+  });
+
+  test("a side with one run is neither distinct nor separable", () => {
+    const one = (kops: number) => rate(kops);
+    assert.deepEqual(versus(one(100), one(200)), { times: 2, distinct: false, separable: false });
+    const v = versus(one(100), rate(190, 200, 210, 195, 205));
+    assert.equal(v.distinct, false);
+    assert.equal(v.separable, false);
+  });
+
+  test("3 against 3 that do not overlap are neither distinct nor separable", () => {
+    const v = versus(rate(95, 100, 105), rate(190, 200, 210));
+    assert.equal(v.distinct, false);
+    assert.equal(v.separable, false);
+  });
+
+  test("4 against 4 that do not overlap are distinct", () => {
+    const v = versus(rate(95, 100, 105, 98), rate(190, 200, 210, 195));
+    assert.equal(v.distinct, true);
+    assert.equal(v.separable, true);
+  });
+
+  test("5 against 5 with one value inside the other range are still distinct", () => {
+    const v = versus(rate(42.8, 42.5, 43, 42.8, 47.4), rate(47.9, 47.6, 48.1, 47.3, 47.8));
+    assert.equal(v.distinct, true);
+  });
+
+  test("a run beyond the other side's range counts as one rank: four of five below is not enough", () => {
+    assert.equal(versus(wall(6.11, 6.17, 6.78, 9.74, 48.23), wall(10.18, 10.45, 10.85, 11.09, 11.36)).distinct, false);
+  });
+
+  test("interleaved runs are not distinct", () => {
+    assert.equal(versus(wall(100, 101, 102, 103, 104), wall(100.5, 101.5, 102.5, 103.5, 104.5)).distinct, false);
+  });
+
+  test("tied runs that pass with few runs are distinct and separable", () => {
+    const v = versus(wall(1, 1), wall(2, 2, 2, 2, 2));
+    assert.equal(v.distinct, true);
+    assert.equal(v.separable, true);
   });
 });
 
