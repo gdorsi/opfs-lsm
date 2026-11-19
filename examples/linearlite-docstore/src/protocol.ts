@@ -19,7 +19,6 @@ export type FromDemo =
 
 export type ToDemo = { readonly type: "generate"; readonly count: number } | { readonly type: "delete" };
 
-/** The KPI event telemetry records for each message, or `null` for none. A message type with no entry fails `tsc`. */
 const KPIS: { readonly [T in FromDemo["type"]]: ((message: Extract<FromDemo, { type: T }>) => Kpi) | null } = {
   opened: (m) => ({ name: "linearlite.open", ms: m.ms, attributes: { "linearlite.issues": m.issues } }),
   "first-rows": (m) => ({ name: "linearlite.first_rows", ms: m.ms, attributes: {} }),
@@ -33,11 +32,8 @@ const KPIS: { readonly [T in FromDemo["type"]]: ((message: Extract<FromDemo, { t
     ms: m.writeMs,
     attributes: { "linearlite.count": m.count, "linearlite.generate_duration_ms": m.generateMs },
   }),
-  // Many per write. `generated` holds the result.
   progress: null,
-  // `interactions()` records the click that asked for it.
   deleted: null,
-  // `failed()` records the error itself.
   failed: null,
 };
 
@@ -47,18 +43,7 @@ export const post = (message: FromDemo) => {
   if (parent !== window) parent.postMessage({ source: SOURCE, ...message }, location.origin);
 };
 
-/** `show()` in `app.ts` hands one rejection both to its own handler and to its caller's. */
-const seen = new WeakSet<object>();
-
-/**
- * Every rejection the app catches ends here, so `errors()` never sees it. Each error is logged, recorded and posted
- * once.
- */
 export const failed = (err: unknown) => {
-  if (typeof err === "object" && err !== null) {
-    if (seen.has(err)) return;
-    seen.add(err);
-  }
   console.error(err);
   report(err);
   post({ type: "failed", message: err instanceof Error ? err.message : String(err) });

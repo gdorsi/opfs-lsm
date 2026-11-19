@@ -4,6 +4,7 @@ import { keeps, orderOf, viewOf, type ReadPath, type Store, type View } from "./
 export const ROW = 40;
 const PAGE = 50;
 const OVERSCAN = 8;
+const reportedByCaller = () => undefined;
 
 /** One issue of a write: as the list held it before, and as it is stored now. Absent on a side where it does not exist. */
 export type Change = { readonly before: Issue | undefined; readonly after: Issue | undefined };
@@ -123,8 +124,7 @@ export function createList(store: Store) {
 
     /**
      * Reads the list under `next`, from its first row or, with `stay`, from the rows in view now. `rows` resolves with
-     * how many rows the first page read has and when the store returned them; `total` with the list's size. `path`
-     * names the read.
+     * how many rows the first page read has and when the store returned them; `total` with the list's size.
      */
     show(next: Filter, stay = false): { rows: Promise<{ rows: number; at: number }>; total: Promise<number>; path: ReadPath } {
       filter = next;
@@ -149,11 +149,14 @@ export function createList(store: Store) {
           resets++;
         }
         render();
-        void counted.then((n) => {
-          if (view !== from) return;
-          total = n;
-          render();
-        });
+        void counted.then(
+          (n) => {
+            if (view !== from) return;
+            total = n;
+            render();
+          },
+          reportedByCaller,
+        );
         return { rows: docs[0]!.length, at };
       });
       return { rows: read, total: counted, path: from.path };
