@@ -75,8 +75,9 @@ run("pnpm", ["test"]);
 run("pnpm", ["static"]);
 
 // 4. Find the packages whose version npm does not have yet.
-const packages: Package[] = readdirSync(join(root, "packages"))
-  .map((dir: string) => {
+const packages: Package[] = readdirSync(join(root, "packages"), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map(({ name: dir }) => {
     const manifest = JSON.parse(readFileSync(join(root, "packages", dir, "package.json"), "utf8"));
     return { dir, name: manifest.name, version: manifest.version };
   })
