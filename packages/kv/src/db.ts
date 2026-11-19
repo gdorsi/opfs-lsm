@@ -27,23 +27,17 @@ import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wa
 import { reconcile, type Reconciled } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import { Memtable, type WalRecord } from "./store/memtable.js";
-import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
+import { entryOf, Miss, ReadSet, untilHit, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
 import { loadGeneration, manifestFromCopy, type RunMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
-import { pointGet, readKeys, runLevels, type RunLevel } from "./store/read.js";
+import { countOf, pointGet, readKeys, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
-import {
-  ViewSnapshotImpl,
-  boundsOf,
-  countLayers,
-  scanLayers,
-  type ViewSnapshot,
-} from "./view.js";
+import { ViewSnapshotImpl, boundsOf, scanStep, type ViewSnapshot } from "./view.js";
 import {
   ChangeBus,
   type ChangeEvent,
@@ -1058,7 +1052,7 @@ class DbImpl implements Db {
     const at = this.point();
     this.retain(layers);
     try {
-      return await countLayers(this.mem.range(bounds), layers.levels, at, bounds, range);
+      return await countOf(scanStep(this.mem.range(bounds), layers.levels, at, bounds, range));
     } catch (err) {
       this.ensureOpen();
       throw err;
@@ -1074,9 +1068,13 @@ class DbImpl implements Db {
     const at = this.point();
     this.retain(layers);
     try {
-      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, at, bounds, range)) {
+      const step = scanStep(this.mem.range(bounds), layers.levels, at, bounds, range);
+      for (;;) {
+        let e = step();
+        if (e instanceof Miss) e = await untilHit(step, e);
+        if (!e) return;
         this.ensureOpen();
-        yield entry;
+        yield entryOf(e);
       }
     } catch (err) {
       this.ensureOpen();

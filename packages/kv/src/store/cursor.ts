@@ -1,4 +1,5 @@
 import { compareBytes, containsAll } from "../bytes.js";
+import type { Entry } from "../db.js";
 import type { Seq } from "../seq.js";
 
 /**
@@ -13,6 +14,11 @@ export type LayerEntry = {
   /** The WAL seq that wrote the entry. */
   readonly seq: Seq;
 };
+
+/** A put as a read hands it out: copies of the key and the value, which the caller owns. */
+export function entryOf(e: LayerEntry): Entry {
+  return { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) };
+}
 
 export type ScanBounds = {
   readonly start?: Uint8Array;

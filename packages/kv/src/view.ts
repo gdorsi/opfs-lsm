@@ -2,11 +2,10 @@ import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { entryCursor, Miss, untilHit, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, entryOf, Miss, untilHit, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,
-  entriesOf,
   liveStep,
   matchingStep,
   pointGet,
@@ -50,9 +49,11 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 /**
  * `range` over memtable `rows` already cut to `bounds` and the levels under
  * them, one entry at a time: every live put, or with `valueContains` only
- * the matching ones. `limit` is left to the caller.
+ * the matching ones, and no more than `limit`. It is a sync step and not an
+ * async iterator, so the `range` a caller reads is the only async generator
+ * an entry passes through: each one costs several promise turns per entry.
  */
-function scanStep(
+export function scanStep(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
   at: Marks,
@@ -61,31 +62,19 @@ function scanStep(
 ): ScanStep {
   const patterns = range?.valueContains;
   const reverse = range?.reverse ?? false;
-  return patterns && patterns.length > 0
-    ? matchingStep(rows, levels, patterns, at, bounds, reverse)
-    : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse);
-}
-
-/** The entries `range` yields over memtable `rows` already cut to `bounds` and the levels under them. */
-export function scanLayers(
-  rows: readonly MemRow[],
-  levels: readonly RunLevel[],
-  at: Marks,
-  bounds: ScanBounds | undefined,
-  range: Range | undefined,
-): AsyncGenerator<Entry> {
-  return entriesOf(scanStep(rows, levels, at, bounds, range), range?.limit);
-}
-
-/** How many entries `scanLayers` would yield, without copying them. */
-export function countLayers(
-  rows: readonly MemRow[],
-  levels: readonly RunLevel[],
-  at: Marks,
-  bounds: ScanBounds | undefined,
-  range: Range | undefined,
-): Promise<number> {
-  return countOf(scanStep(rows, levels, at, bounds, range), range?.limit);
+  const step =
+    patterns && patterns.length > 0
+      ? matchingStep(rows, levels, patterns, at, bounds, reverse)
+      : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse);
+  const limit = range?.limit;
+  if (limit === undefined) return step;
+  let n = 0;
+  return () => {
+    if (!(n < limit)) return undefined;
+    const e = step();
+    if (e && !(e instanceof Miss)) n++;
+    return e;
+  };
 }
 
 /**
@@ -136,10 +125,14 @@ export class ViewSnapshotImpl implements ViewSnapshot {
       const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
       const keys: Uint8Array[] = [];
       const owners: typeof out = [];
-      for await (const entry of scanLayers(this.rows.range(bounds), this.levels, this.at, bounds, range)) {
-        const hit = { entry, joined: undefined };
+      const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
+      for (;;) {
+        let e = step();
+        if (e instanceof Miss) e = await untilHit(step, e);
+        if (!e) break;
+        const hit = { entry: entryOf(e), joined: undefined };
         out.push(hit);
-        const key = keyOf(entry);
+        const key = keyOf(hit.entry);
         if (key === undefined) continue;
         keys.push(checkKey(key));
         owners.push(hit);
@@ -163,7 +156,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     const bounds = boundsOf(range);
     const release = this.hold();
     try {
-      return await countLayers(this.rows.range(bounds), this.levels, this.at, bounds, range);
+      return await countOf(scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range));
     } catch (err) {
       this.handleOpen();
       throw err;
@@ -177,9 +170,13 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     const bounds = boundsOf(range);
     const release = this.hold();
     try {
-      for await (const entry of scanLayers(this.rows.range(bounds), this.levels, this.at, bounds, range)) {
+      const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
+      for (;;) {
+        let e = step();
+        if (e instanceof Miss) e = await untilHit(step, e);
+        if (!e) return;
         this.ensureOpen();
-        yield entry;
+        yield entryOf(e);
       }
     } catch (err) {
       this.handleOpen();

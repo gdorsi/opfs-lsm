@@ -1,9 +1,11 @@
 import { pumpMerge } from "../src/host/compact.js";
 import { MemoryFs } from "../src/opfs/memory-fs.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
-import { untilHit, type LayerCursor, type LayerEntry } from "../src/store/cursor.js";
+import type { Entry } from "../src/index.js";
+import { entryOf, untilHit, type LayerCursor, type LayerEntry } from "../src/store/cursor.js";
 import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.js";
 import { NO_MARKS } from "../src/store/marks.js";
+import type { ScanStep } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
 import type { EncodedRun, SstCodec } from "../src/store/sst.js";
 import { sstKeyRange } from "./oracle/sst-ref.js";
@@ -30,6 +32,17 @@ export async function drain(cursor: LayerCursor): Promise<LayerEntry[]> {
 export async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = [];
   for await (const x of it) out.push(x);
+  return out;
+}
+
+/** The entries `step` has left, at most `limit`, as a range hands them out. */
+export async function entries(step: ScanStep, limit = Infinity): Promise<Entry[]> {
+  const out: Entry[] = [];
+  while (out.length < limit) {
+    const e = await untilHit(step);
+    if (!e) break;
+    out.push(entryOf(e));
+  }
   return out;
 }
 

@@ -16,7 +16,6 @@ import type { Seq } from "../seq.js";
 import { coversRun, NO_MARKS, throughAt, type Marks } from "./marks.js";
 import type { SstEntry } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
-import type { Entry } from "../db.js";
 import { levelOf } from "./levels.js";
 
 type HeapItem = { key: Uint8Array; source: number };
@@ -384,26 +383,15 @@ export function matchingStep(
   };
 }
 
-/** Copies of the entries of `step`, up to `limit`. Awaits only on a miss. */
-export async function* entriesOf(step: ScanStep, limit?: number): AsyncGenerator<Entry> {
-  for (let n = 0; limit === undefined || n < limit; n++) {
-    let e = step();
-    if (e instanceof Miss) e = await untilHit(step, e);
-    if (!e) return;
-    yield { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) };
-  }
-}
-
-/** How many entries `step` has, up to `limit`, read without copying one. Awaits only on a miss. */
-export async function countOf(step: ScanStep, limit?: number): Promise<number> {
+/** How many entries `step` has, read without copying one. Awaits only on a miss. */
+export async function countOf(step: ScanStep): Promise<number> {
   let n = 0;
-  while (limit === undefined || n < limit) {
+  for (;;) {
     let e = step();
     if (e instanceof Miss) e = await untilHit(step, e);
-    if (!e) break;
+    if (!e) return n;
     n++;
   }
-  return n;
 }
 
 /** Whether a level before `level` holds `key`. */

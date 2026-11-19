@@ -2,13 +2,13 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { compareBytes, containsAll } from "../src/bytes.js";
 import { untilHit, type LayerCursor, type ScanBounds } from "../src/store/cursor.js";
-import { countOf, entriesOf, latestSstEntry, liveStep, matchingStep, runLevels, type RunLevel } from "../src/store/read.js";
-import { countLayers, scanLayers } from "../src/view.js";
+import { countOf, latestSstEntry, liveStep, matchingStep, runLevels, type RunLevel } from "../src/store/read.js";
+import { scanStep } from "../src/view.js";
 import type { SstEntry } from "../src/store/sst.js";
 import { encodeSstRef, sstKeyRange } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { PageCache } from "../src/store/page-cache.js";
-import { collect, readerOfBytes } from "./runs.js";
+import { entries, readerOfBytes } from "./runs.js";
 import { coversRun, NO_MARKS, type Mark, type Marks } from "../src/store/marks.js";
 
 const enc = new TextEncoder();
@@ -45,11 +45,11 @@ function range(from: number, to: number, step: number): number[] {
 }
 
 function mergeCursors(cursors: readonly LayerCursor[], marks: Marks, limit?: number, reverse = false) {
-  return entriesOf(liveStep(cursors, marks, reverse), limit);
+  return entries(liveStep(cursors, marks, reverse), limit);
 }
 
 async function scan(cursors: readonly LayerCursor[], limit?: number, reverse?: boolean): Promise<string[]> {
-  return (await collect(mergeCursors(cursors, NO_MARKS, limit, reverse))).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
+  return (await mergeCursors(cursors, NO_MARKS, limit, reverse)).map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`);
 }
 
 describe("runLevels", () => {
@@ -163,10 +163,10 @@ describe("a scan under range deletes", () => {
         passedOver += readers.filter((r) => r.range && coversRun(marks, { range: r.range, marksThrough: r.marksThrough }, bounds)).length;
         const patterns = [enc.encode(pattern)];
         for (const reverse of [false, true]) {
-          const want = (await collect(mergeCursors(levels.map((l) => l.cursor(bounds, reverse)), marks, undefined, reverse))).map(show);
-          const got = (await collect(mergeCursors(levels.map((l) => l.cursor(bounds, reverse, marks)), marks, undefined, reverse))).map(show);
+          const want = (await mergeCursors(levels.map((l) => l.cursor(bounds, reverse)), marks, undefined, reverse)).map(show);
+          const got = (await mergeCursors(levels.map((l) => l.cursor(bounds, reverse, marks)), marks, undefined, reverse)).map(show);
           expect(got).toEqual(want);
-          const matching = (await collect(entriesOf(matchingStep([], levels, patterns, marks, bounds, reverse)))).map(show);
+          const matching = (await entries(matchingStep([], levels, patterns, marks, bounds, reverse))).map(show);
           expect(matching).toEqual(want.filter((row) => containsAll(enc.encode(row.split("=")[1]!), patterns)));
           expect(await countOf(matchingStep([], levels, patterns, marks, bounds, reverse))).toBe(matching.length);
         }
@@ -178,25 +178,22 @@ describe("a scan under range deletes", () => {
 });
 
 describe("the layers a view reads", () => {
-  it("hands its marks to every level, so a scan and a count both pass over a run a range delete covers", async () => {
+  it("hands its marks to every level, so a scan passes over a run a range delete covers", async () => {
     const { paths, readers } = layout();
     const levels = runLevels(paths, readers);
     const marks: Marks = [{ start: key(0), endExclusive: key(60), through: 1, at: 2 }];
     const bounds: ScanBounds = { start: key(10), endExclusive: key(50) };
-    for (const read of [scanLayers, countLayers]) {
-      for (const range of [undefined, { valueContains: [enc.encode("l1")] }]) {
-        const seen: (Marks | undefined)[] = [];
-        const spied = levels.map((level) =>
-          Object.assign(Object.create(level) as RunLevel, {
-            cursor: (b: ScanBounds | undefined, r: boolean, m?: Marks) => (seen.push(m), level.cursor(b, r, m)),
-            scanContains: (p: readonly Uint8Array[], b: ScanBounds | undefined, r: boolean, m?: Marks) => (seen.push(m), level.scanContains(p, b, r, m)),
-          }),
-        );
-        const out = read([], spied, marks, bounds, range);
-        await (Symbol.asyncIterator in out ? collect(out) : out);
-        expect(seen.length).toBeGreaterThan(0);
-        expect(seen.every((m) => m === marks)).toBe(true);
-      }
+    for (const range of [undefined, { valueContains: [enc.encode("l1")] }]) {
+      const seen: (Marks | undefined)[] = [];
+      const spied = levels.map((level) =>
+        Object.assign(Object.create(level) as RunLevel, {
+          cursor: (b: ScanBounds | undefined, r: boolean, m?: Marks) => (seen.push(m), level.cursor(b, r, m)),
+          scanContains: (p: readonly Uint8Array[], b: ScanBounds | undefined, r: boolean, m?: Marks) => (seen.push(m), level.scanContains(p, b, r, m)),
+        }),
+      );
+      await entries(scanStep([], spied, marks, bounds, range));
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((m) => m === marks)).toBe(true);
     }
   });
 });
