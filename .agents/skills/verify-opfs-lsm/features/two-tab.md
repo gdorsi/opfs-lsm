@@ -38,5 +38,5 @@ Preconditions:
 - Missing `dist` fails before Chrome opens — run `launch` first.
 - Headless background throttling breaks tab B ingest; the harness already passes `--disable-background-timer-throttling` and related flags. Do not strip them.
 - `TWO_TAB_LOCAL=1` is a different feature (`two-tab-local`). It must not be reported as SharedWorker proof.
-- Success is the `two-databases ok` and `two-tab ok` lines, not merely Chrome exiting. The driver exits `1` when `two-databases ok` is missing from a default run (`pressure`, `quota` and `destroy` do not run that step).
+- Success is the `two-databases ok` and `two-tab ok` lines, not merely Chrome exiting. The driver exits `1` when `two-databases ok` is missing from a default run (`quota` and `destroy` do not run that step).
 - The second name is `<name>-second`. The run removes it with `destroyDb`, so it leaves no `opfs-lsm/two-tab-second/` behind.
