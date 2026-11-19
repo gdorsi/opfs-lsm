@@ -4,7 +4,7 @@ Neither storage API in the browser gives a fast database that every tab can shar
 
 ## IndexedDB is slow and has no change feed
 
-Every browser ships IndexedDB, and most libraries that keep data in the browser store it there. In the [benchmarks](benchmarks.md#storage-calls), it answers random point reads 27× slower than kv. It has no change feed, so an app that keeps several tabs in sync builds its own messaging between them. Its transactions also [commit on their own](https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction) as soon as no request is pending, so a transaction cannot wait for other work, such as a `fetch`.
+Every browser ships IndexedDB, and most libraries that keep data in the browser store it there. In the [benchmarks](benchmarks.md#storage-calls), it answers random point reads 37× slower than kv. It has no change feed, so an app that keeps several tabs in sync builds its own messaging between them. Its transactions also [commit on their own](https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction) as soon as no request is pending, so a transaction cannot wait for other work, such as a `fetch`.
 
 ## Neither OPFS API fits a shared database
 
@@ -29,7 +29,7 @@ kv is a log-structured merge tree (LSM), the design of LevelDB and RocksDB. An L
 
 The split makes reads and batched writes fast. It also costs something:
 
-- **Opening is slower.** The first `openDb` loads the SharedWorker and a wasm engine. A cold open takes 6.7 ms, against 0.9 ms for IndexedDB.
+- **Opening is slower.** The first `openDb` loads the SharedWorker and a wasm engine. A cold open takes 3.7 ms, against 0.5 ms for IndexedDB.
 - **A single write costs what it costs in IndexedDB.** Every ack waits for an IndexedDB commit, so one awaited write at a time runs at the speed of IndexedDB. kv gains when writes come in groups.
 - **Other tabs see a write a moment later.** The BroadcastChannel message arrives after the ack. `db.sync()` reads the WAL to catch up.
 - **It needs SharedWorker.** Samsung Internet and Android WebView have none, so kv does not run there.

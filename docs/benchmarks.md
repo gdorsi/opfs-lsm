@@ -9,23 +9,21 @@ Each workload holds 100,000 entries with 16-byte keys and 100-byte values. The r
 <!-- bench:table storage-calls -->
 | Workload | IndexedDB | kv | |
 | --- | ---: | ---: | ---: |
-| Random writes, batches of 1,000 | 42.0k ops/s | 494k ops/s | 12× |
-| Random point reads | 21.9k ops/s | 592k ops/s † | 27× |
-| Reads of missing keys | 24.4k ops/s | 1.89M ops/s | 78× |
-| Full ordered scan | 678k ops/s | 1.38M ops/s | 2.0× |
-| Seeks of 100 keys | 5.07k ops/s | 19.5k ops/s | 3.8× |
-| Single put, awaited one at a time | 14.7k ops/s | 13.0k ops/s | 0.88× ‡ |
-| Read-modify-write in one transaction | 0.116 ms | 0.157 ms | 0.74× |
-| Opening the database in a fresh tab | 0.590 ms | 5.03 ms | 0.12× |
+| Random writes, batches of 1,000 | 42.2k ops/s | 487k ops/s | 12× |
+| Random point reads | 20.1k ops/s | 734k ops/s | 37× |
+| Reads of missing keys | 22.9k ops/s | 1.91M ops/s | 83× |
+| Full ordered scan | 674k ops/s | 1.79M ops/s | 2.7× |
+| Seeks of 100 keys | 4.93k ops/s | 25.4k ops/s | 5.2× |
+| Single put, awaited one at a time | 14.4k ops/s | 13.6k ops/s | 0.94× ‡ |
+| Read-modify-write in one transaction | 0.113 ms | 0.155 ms | 0.73× |
+| Opening the database in a fresh tab | 0.545 ms | 3.68 ms | 0.15× |
 
-Medians of 21 runs per contender for kv/fillrandom, 10 for kv/fillseq and kv/ycsb-a, in headless Chrome 157 on Apple M5 Max, load average 2.4 to 6.4, commit 89fe28d6. Full results: [2026-11-17T19-07-52-apple-m5-max](results/2026-11-17T19-07-52-apple-m5-max.md).
+Medians of 21 runs per contender for kv/fillrandom, 10 for kv/fillseq and kv/ycsb-a, in headless Chrome 157 on Apple M5 Max, load average 2.9 to 10.2, commit 75b01c94. Full results: [2026-11-19T09-50-18-apple-m5-max](results/2026-11-19T09-50-18-apple-m5-max.md).
 
 ‡ The min–max ranges of the two contenders overlap, so these runs do not separate them.
-
-† The runs of a marked cell form two clusters, so its median hides two states.
 <!-- /bench:table -->
 
-The read-modify-writes are the YCSB F half of `kv/ycsb-a`, zipfian, timed one at a time: kv's is slower than IndexedDB's. Over the whole mix, half of it reads, the two are level, at 12.5k and 12.4k ops/s. The bench also measures YCSB A's blind updates, seeks of 10 keys and batched deletes. This table has no row for them.
+Random point reads have two states. In 5 of the 21 runs the phase still loads pages from OPFS, about 355 gets of the 100,000 take over 50 µs, and kv reads 532k ops/s. In the other 16 it reads 760k ops/s. The read-modify-writes are the YCSB F half of `kv/ycsb-a`, zipfian, timed one at a time: kv's is slower than IndexedDB's. Over the whole mix, half of it reads, the two are level, at 12.9k and 12.5k ops/s. The bench also measures YCSB A's blind updates, seeks of 10 keys and batched deletes. This table has no row for them.
 
 ## Framework adapters
 
@@ -34,16 +32,18 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 <!-- bench:table framework-adapters -->
 | Framework | Workload | IndexedDB option | opfs-lsm | |
 | --- | --- | ---: | ---: | ---: |
-| TanStack DB | Open and load 91,000 rows | 663 ms | 202 ms | 3.3× |
-| TanStack DB | Bulk insert, 100,000 rows in transactions of 1,000 | 19.7k rows/s | 131k rows/s | 6.7× |
-| TanStack DB | Serial insert, one row per transaction | 6.92k rows/s | 5.75k rows/s † | 0.83× |
-| Yjs | Cold load of 500 notes | 3.00k notes/s | 12.7k notes/s | 4.2× |
-| Yjs | Editing trace, one update per keystroke | 2.13k edits/s | 36.0k edits/s | 17× |
-| Automerge | Cold load of 500 notes | 2.02k notes/s | 2.80k notes/s | 1.4× |
-| Automerge | Write 500 notes | 875 notes/s | 922 notes/s | 1.1× |
-| fate | Cold load of 100 lists of 100 records | 2.08k records/s | 4.11k records/s | 2.0× |
+| TanStack DB | Open and load 91,000 rows | 664 ms | 167 ms | 4.0× |
+| TanStack DB | Bulk insert, 100,000 rows in transactions of 1,000 | 19.4k rows/s | 141k rows/s | 7.3× |
+| TanStack DB | Serial insert, one row per transaction | 7.50k rows/s | 5.94k rows/s | 0.79× |
+| Yjs | Cold load of 500 notes | 2.81k notes/s † | 13.2k notes/s | 4.7× |
+| Yjs | Editing trace, one update per keystroke | 1.89k edits/s | 34.8k edits/s | 18× |
+| Automerge | Cold load of 500 notes | 1.97k notes/s | 2.81k notes/s | 1.4× |
+| Automerge | Write 500 notes | 873 notes/s | 910 notes/s | 1.0× ‡ |
+| fate | Cold load of 100 lists of 100 records | 2.12k records/s | 4.24k records/s | 2.0× |
 
-Medians of 5 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 2.0 to 4.5, commit 89fe28d6. Full results: [2026-11-17T19-45-25-apple-m5-max](results/2026-11-17T19-45-25-apple-m5-max.md).
+Medians of 5 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 4.2 to 27.0, commit 75b01c94. Full results: [2026-11-19T10-04-12-apple-m5-max](results/2026-11-19T10-04-12-apple-m5-max.md).
+
+‡ The min–max ranges of the two contenders overlap, so these runs do not separate them.
 
 † The runs of a marked cell form two clusters, so its median hides two states.
 <!-- /bench:table -->
@@ -57,19 +57,17 @@ The editing-trace workloads write the trace's first 25,700 keystrokes, then type
 <!-- bench:table typing-reopening -->
 | | y-indexeddb | Yjs on kv | automerge-repo IndexedDB | Automerge on kv | Yjs, kv vs y-indexeddb | Automerge, kv vs IndexedDB |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| One keystroke, with its persistence | 0.101 ms | 0.154 ms † | 0.276 ms | 0.293 ms | 0.66× | 0.94× ‡ |
+| One keystroke, with its persistence | 0.118 ms | 0.147 ms | 0.276 ms | 0.289 ms | 0.80× ‡ | 0.96× ‡ |
 | Frames dropped over 300 keystrokes | 0 | 0 | 0 | 0 | | |
-| Cold open before the settle | 6.28 ms | 12.1 ms | 42.8 ms | 47.5 ms | 0.52× | 0.90× |
-| Cold open after the settle | 6.13 ms | 12.3 ms | 43.3 ms | 48.7 ms | 0.50× | 0.89× |
+| Cold open before the settle | 6.78 ms | 10.8 ms | 42.8 ms | 46.6 ms | 0.63× ‡ | 0.92× ‡ |
+| Cold open after the settle | 6.56 ms | 11.5 ms | 42.8 ms | 47.8 ms | 0.57× | 0.90× ‡ |
 
-Medians of 5 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 1.9 to 3.4, commit 89fe28d6. Full results: [2026-11-17T19-45-25-apple-m5-max](results/2026-11-17T19-45-25-apple-m5-max.md).
+Medians of 5 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 4.0 to 27.0, commit 75b01c94. Full results: [2026-11-19T10-04-12-apple-m5-max](results/2026-11-19T10-04-12-apple-m5-max.md).
 
 ‡ The min–max ranges of the two contenders overlap, so these runs do not separate them.
-
-† The runs of a marked cell form two clusters, so its median hides two states.
 <!-- /bench:table -->
 
-Yjs stores each update as it happens. automerge-repo saves a document at most every 100 ms (`saveDebounceRate`), so most Automerge keystrokes write nothing, and Automerge's own load of the document takes most of its cold open on both stores. On kv a cold open includes opening the database in the new tab: 6.4 ms before the settle and 5.0 ms after for Yjs, 5.2 ms and 4.8 ms for Automerge.
+Yjs stores each update as it happens. automerge-repo saves a document at most every 100 ms (`saveDebounceRate`), so most Automerge keystrokes write nothing, and Automerge's own load of the document takes most of its cold open on both stores. On kv a cold open includes opening the database in the new tab: 5.1 ms before the settle and 4.2 ms after for Yjs, 3.5 ms and 3.4 ms for Automerge.
 
 ### On demand, against SQLite
 
@@ -78,12 +76,12 @@ In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack
 <!-- bench:table on-demand-sqlite -->
 | Workload | SQLite | opfs-lsm | |
 | --- | ---: | ---: | ---: |
-| Cold open | 37.7 ms † | 7.22 ms | 5.2× |
-| First query after a cold open, 6,250 rows | 65.6 ms | 63.1 ms | 1.0× ‡ |
-| Warm query of one owner, 6,250 rows | 132k rows/s | 205k rows/s † | 1.6× |
-| 10 rows by id | 2.17k queries/s | 5.28k queries/s † | 2.4× |
+| Cold open | 42.1 ms | 6.60 ms † | 6.4× |
+| First query after a cold open, 6,250 rows | 66.0 ms | 63.8 ms | 1.0× ‡ |
+| Warm query of one owner, 6,250 rows | 124k rows/s † | 221k rows/s | 1.8× |
+| 10 rows by id | 2.00k queries/s | 4.99k queries/s | 2.5× |
 
-Medians of 5 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 4.0 to 4.8, commit 89fe28d6-dirty. Full results: [2026-11-17T20-16-52-apple-m5-max](results/2026-11-17T20-16-52-apple-m5-max.md).
+Medians of 5 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 3.6 to 6.2, commit 75b01c94. Full results: [2026-11-19T10-13-22-apple-m5-max](results/2026-11-19T10-13-22-apple-m5-max.md).
 
 ‡ The min–max ranges of the two contenders overlap, so these runs do not separate them.
 
@@ -101,20 +99,20 @@ Each cell is cold / warm in ms: cold is the first call after opening the store i
 <!-- bench:table goals -->
 | Goal | Dexie | SQLite on OPFS | docstore | docstore vs SQLite |
 | --- | ---: | ---: | ---: | ---: |
-| Issues per status in a project | 5.39 / 2.41 | 3.97 / 0.144 | 2.69 / 0.175 | 1.5× / 0.83× |
-| First 50 todo issues, with assignee and label names | 2.31 / 0.948 | 5.16 / 0.406 | 7.24 / 0.322 | 0.71× ‡ / 1.3× |
-| The column a sprint close just emptied | 8.37 / 5.15 | 4.30 / 0.238 | 4.28 / 0.907 | 1.0× ‡ / 0.26× |
-| Rows at 90% of a project's list | 12.9 / 7.64 | 4.47 / 0.311 | 9.39 / 0.958 | 0.48× / 0.32× |
-| An issue with its comments and their authors | 1.43 / 0.344 | 4.51 / 0.249 | 4.71 / 0.0920 | 0.96× ‡ / 2.7× |
-| First 50 open issues by priority, with comment counts | 5.40 / 2.10 | 6.99 / 1.11 | 9.91 / 0.704 | 0.71× ‡ / 1.6× |
-| First 50 open issues with a label | 6.93 / 3.53 | 6.97 / 1.26 | 4.94 / 0.163 | 1.4× / 7.7× |
-| First 50 open issues assigned to a person | 2.42 / 0.800 | 5.61 / 0.444 | 8.36 / 0.284 | 0.67× / 1.6× |
-| The 50 most recently updated issues | 2.03 / 1.34 | 5.06 / 0.682 | 3.38 / 0.390 | 1.5× / 1.7× |
-| Open issues per person, top 10 | 11.4 / 6.06 | 5.14 / 0.286 | 3.63 / 0.545 | 1.4× / 0.53× |
-| First 20 issues whose title contains a word | 8.82 / 5.18 | 6.20 / 0.741 | 6.49 / 0.180 | 0.96× ‡ / 4.1× |
-| Opening the store in a fresh tab, before the todo issues goal | 1.70 | 21.9 | 13.3 | 1.6× |
+| Issues per status in a project | 3.41 / 2.41 | 4.10 / 0.144 | 2.55 / 0.138 | 1.6× / 1.0× ‡ |
+| First 50 todo issues, with assignee and label names | 1.68 / 0.820 | 5.22 / 0.423 | 6.04 / 0.271 | 0.86× ‡ / 1.6× |
+| The column a sprint close just emptied | 6.72 / 4.37 | 4.57 / 0.230 | 3.91 / 0.857 | 1.2× / 0.27× |
+| Rows at 90% of a project's list | 10.2 / 8.85 | 4.63 / 0.302 | 7.12 / 0.649 | 0.65× / 0.46× |
+| An issue with its comments and their authors | 1.32 / 0.361 | 4.86 / 0.230 | 4.51 / 0.0963 | 1.1× ‡ / 2.4× |
+| First 50 open issues by priority, with comment counts | 3.68 / 2.77 | 7.12 / 1.20 | 8.45 / 0.535 | 0.84× / 2.2× |
+| First 50 open issues with a label | 5.12 / 3.37 | 7.48 / 1.28 | 4.64 / 0.136 | 1.6× / 9.4× |
+| First 50 open issues assigned to a person | 1.53 / 0.745 | 5.94 / 0.424 | 6.30 / 0.239 | 0.94× ‡ / 1.8× |
+| The 50 most recently updated issues | 1.66 / 0.940 | 5.39 / 0.693 | 3.20 / 0.370 | 1.7× / 1.9× |
+| Open issues per person, top 10 | 8.50 / 4.79 | 5.63 / 0.331 | 3.35 / 0.438 | 1.7× / 0.76× ‡ |
+| First 20 issues whose title contains a word | 7.07 / 5.50 | 6.13 / 0.708 | 5.39 / 0.185 | 1.1× / 3.8× |
+| Opening the store in a fresh tab, before the todo issues goal | 1.69 | 24.8 | 10.6 | 2.3× |
 
-Medians of 3 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 6.2 to 7.4, commit 89fe28d6-dirty. Full results: [2026-11-17T20-27-42-apple-m5-max](results/2026-11-17T20-27-42-apple-m5-max.md).
+Medians of 3 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 5.0 to 12.2, commit 5a7d1b01. Full results: [2026-11-19T12-41-20-apple-m5-max](results/2026-11-19T12-41-20-apple-m5-max.md).
 
 ‡ The min–max ranges of the two contenders overlap, so these runs do not separate them.
 <!-- /bench:table -->
@@ -122,17 +120,17 @@ Medians of 3 runs per contender, in headless Chrome 157 on Apple M5 Max, load av
 <!-- bench:table writes -->
 | Writes | Dexie | SQLite on OPFS | docstore | docstore vs SQLite |
 | --- | ---: | ---: | ---: | ---: |
-| Import, mean of 47 batches of up to 1,000 rows | 51.5 ms | 19.7 ms | 13.3 ms | 1.5× |
-| Sync, mean of 851 batches of about 50 changes | 5.66 ms | 12.8 ms | 2.88 ms | 4.4× |
-| One edit | 0.327 ms | 3.20 ms | 0.356 ms | 9.0× |
-| Sprint close, 1,054 issues in one batch | 114 ms | 71.8 ms | 49.9 ms | 1.4× |
+| Import, mean of 47 batches of up to 1,000 rows | 68.3 ms | 17.4 ms | 14.4 ms | 1.2× |
+| Sync, mean of 851 batches of about 50 changes | 6.34 ms | 14.0 ms | 2.71 ms | 5.2× |
+| One edit | 0.330 ms | 2.80 ms | 0.348 ms | 8.1× |
+| Sprint close, 1,054 issues in one batch | 107 ms | 74.3 ms | 36.7 ms | 2.0× |
 
-Medians of 3 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 6.2 to 7.4, commit 89fe28d6-dirty. Full results: [2026-11-17T20-27-42-apple-m5-max](results/2026-11-17T20-27-42-apple-m5-max.md).
+Medians of 3 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 5.0 to 12.2, commit 5a7d1b01. Full results: [2026-11-19T12-41-20-apple-m5-max](results/2026-11-19T12-41-20-apple-m5-max.md).
 <!-- /bench:table -->
 
-After every 10th sync batch, the 50 most recently updated issues are read again, as a list on screen would be. That read took 1.3 ms on Dexie, 0.47 ms on SQLite and 0.56 ms on docstore, 0.8× as fast as SQLite.
+After every 10th sync batch, the 50 most recently updated issues are read again, as a list on screen would be. That read took 1.3 ms on Dexie, 0.51 ms on SQLite and 0.55 ms on docstore, 0.92× as fast as SQLite, and the ranges of the two overlap.
 
-Warm, docstore answers 7 of the 11 goals fastest, because a tab reads on its own main thread from its page cache. Cold, it is the slowest on 4 of them: a fresh tab loads from OPFS each 32 KB page its rows sit on, and the rows of one list are scattered over many pages. Open issues per person reads index entries alone, with no document, so cold it is the fastest of the three; warm, SQLite's group-by still takes half its time. A deep window costs more on docstore, because its index has no offset: it reads every entry up to the window. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart. SQLite's open runs no schema statement once the schema exists, so the warm-up those statements used to absorb now lands in its first query. On writes, SQLite commits wait for the disk (`synchronous=FULL`, its default) where Dexie and docstore commit with Chrome's relaxed durability, and docstore commits a batch as one transaction per collection where Dexie and SQLite commit it whole.
+Warm, docstore answers 7 of the 11 goals fastest and is level with SQLite on an eighth, because a tab reads on its own main thread from its page cache. Cold, it is faster than SQLite on 6 of the 11 goals and slower on 2, and it is the slowest of the three stores on 3: a fresh tab loads from OPFS each 32 KB page its rows sit on, and the rows of one list are scattered over many pages. Open issues per person reads index entries alone, with no document, so cold it is the fastest of the three; warm, the runs do not separate it from SQLite's group-by. A deep window costs more on docstore, because its index has no offset: it reads every entry up to the window. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart. SQLite's open runs no schema statement once the schema exists, so the warm-up those statements used to absorb now lands in its first query. On writes, SQLite commits wait for the disk (`synchronous=FULL`, its default) where Dexie and docstore commit with Chrome's relaxed durability, and docstore commits a batch as one transaction per collection where Dexie and SQLite commit it whole.
 
 ### TanStack DB live queries
 
@@ -141,19 +139,21 @@ The same workspace, written through TanStack DB collections of users, projects, 
 <!-- bench:table live-queries -->
 | | IndexedDB, eager | docstore, eager | docstore, on demand | SQLite, on demand | on demand, docstore vs SQLite |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Opening the collections in a fresh tab | 139 ms | 69.8 ms | 8.93 ms | 47.5 ms | 5.3× |
-| First answer: a project's todo column | 18.9 ms | 18.1 ms | 18.7 ms | 31.8 ms | 1.7× |
-| First answer: open issues with a label | 29.0 ms | 28.4 ms | 11.8 ms | 8.38 ms | 0.71× |
-| First answer: a person's open issues | 29.3 ms | 28.2 ms | 5.18 ms | 6.83 ms | 1.3× |
-| First answer: the 50 latest issues | 2.46 ms | 2.37 ms | 6.70 ms | 7.72 ms | 1.2× |
-| A sync batch, no screen open | 3.11 ms | 1.15 ms | 1.25 ms | 23.2 ms | 19× |
-| A sync batch, four screens open | 6.50 ms | 3.82 ms | 3.51 ms | 84.7 ms | 24× |
-| Frames dropped over 426 batches, screens open | 9 | 7 | 0 | 81 | |
+| Opening the collections in a fresh tab | 140 ms | 72.5 ms | 9.12 ms | 51.6 ms | 5.7× |
+| First answer: a project's todo column | 19.4 ms | 19.4 ms | 17.5 ms | 32.1 ms | 1.8× |
+| First answer: open issues with a label | 31.2 ms | 34.8 ms | 7.75 ms | 8.64 ms | 1.1× ‡ |
+| First answer: a person's open issues | 34.4 ms | 34.2 ms | 4.67 ms | 6.82 ms | 1.5× |
+| First answer: the 50 latest issues | 2.62 ms | 2.57 ms | 7.35 ms | 7.79 ms | 1.1× ‡ |
+| A sync batch, no screen open | 3.61 ms | 1.58 ms | 1.23 ms | 26.2 ms | 21× |
+| A sync batch, four screens open | 7.20 ms | 4.26 ms | 3.89 ms | 93.5 ms | 24× |
+| Frames dropped over 426 batches, screens open | 12 | 7 | 0 | 107 | |
 
-Medians of 3 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 5.5 to 8.5, commit 89fe28d6-dirty. Full results: [2026-11-17T20-29-34-apple-m5-max](results/2026-11-17T20-29-34-apple-m5-max.md).
+Medians of 3 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 4.8 to 9.0, commit 75b01c94. Full results: [2026-11-19T11-33-30-apple-m5-max](results/2026-11-19T11-33-30-apple-m5-max.md).
+
+‡ The min–max ranges of the two contenders overlap, so these runs do not separate them.
 <!-- /bench:table -->
 
-The todo column opens first, so it also starts the label list every screen shares, and the later screens find rows earlier joins loaded. Keeping four screens current adds 2 to 3.5 ms to a batch on IndexedDB and on docstore, eager or on demand. On SQLite it adds 61 ms. A [CPU profile](results/2026-11-16T22-25-41-apple-m2-pro-cpu-profile.txt) of that phase, from an earlier run, shows the tab idle two thirds of the time, waiting for SQLite's worker, and decoding the rows the worker sends back is the largest share of the rest. With no screen open, no contender dropped a frame.
+The todo column opens first, so it also starts the label list every screen shares, and the later screens find rows earlier joins loaded. Keeping four screens current adds 2.7 to 3.6 ms to a batch on IndexedDB and on docstore, eager or on demand. On SQLite it adds 67 ms. A [CPU profile](results/2026-11-16T22-25-41-apple-m2-pro-cpu-profile.txt) of that phase, from an earlier run, shows the tab idle two thirds of the time, waiting for SQLite's worker, and decoding the rows the worker sends back is the largest share of the rest. With no screen open, no contender dropped a frame.
 
 ## Bundle size
 

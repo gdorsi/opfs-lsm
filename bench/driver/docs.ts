@@ -16,14 +16,10 @@ const RESULTS_DIR = path.join(DOCS_DIR, "results");
 export const PAGE = path.join(DOCS_DIR, "benchmarks.md");
 
 /**
- * Runs published before a table had to come from a clean tree. An entry is
- * deleted when its table is republished, and none is ever added.
+ * Runs published before a table had to come from a clean tree. Every table
+ * has been republished since, so it is empty, and none is ever added.
  */
-export const LEGACY_DIRTY: ReadonlySet<string> = new Set([
-  "2026-11-17T20-16-52-apple-m5-max",
-  "2026-11-17T20-27-42-apple-m5-max",
-  "2026-11-17T20-29-34-apple-m5-max",
-]);
+export const LEGACY_DIRTY: ReadonlySet<string> = new Set([]);
 
 /** Where a value is read: a contender, with the workload when the row or the table does not name it. */
 type Cell = { readonly workload?: string; readonly contender: string };

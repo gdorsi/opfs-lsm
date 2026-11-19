@@ -27,7 +27,7 @@ The results tables of [docs/benchmarks.md](../docs/benchmarks.md) are generated.
 
 To publish a run:
 
-1. Run the benchmark from a clean tree. `docs` refuses a run that recorded `-dirty`. The three runs on the `LEGACY_DIRTY` list of `driver/docs.ts` were published before this rule: delete a run's entry when its table is republished, and add none.
+1. Run the benchmark from a clean tree. `docs` refuses a run that recorded `-dirty`. The `LEGACY_DIRTY` list of `driver/docs.ts` held the runs published before this rule and is now empty: add none.
 2. Copy its `.jsonl` and `.md` from `bench/results/` to [docs/results/](../docs/results/).
 3. Set the table's `file` in `docs-tables.ts` to the new stamp.
 4. Run `node bench/cli.ts docs`, and commit the page with the run.
