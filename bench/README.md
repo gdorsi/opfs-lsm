@@ -9,7 +9,7 @@ pnpm bench kv/fillrandom kv/ycsb-a --size large --reps 7
 pnpm bench yjs/ --contenders kv              # one contender
 pnpm bench:size                              # bundle sizes
 pnpm bench:smoke                             # everything at size tiny, 1 rep
-pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke, from one build
+pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke and the byte budgets, from one build
 node bench/cli.ts compare results/a.jsonl results/b.jsonl [--all]
 node bench/cli.ts report results/a.jsonl
 ```
@@ -137,6 +137,14 @@ kv counts the bytes it writes in the configuration apps run: the tab and the Sha
 IndexedDB baselines only have `navigator.storage.estimate()`, which is approximate. Those cells are marked `~`. For the CRDT families, user bytes are the bytes the CRDT asked storage to save, and live bytes are the encoded document size.
 
 The definitions and sources are in [docs/research/benchmark-prior-art.md](../docs/research/benchmark-prior-art.md).
+
+## Byte budgets
+
+`driver/budgets.ts` lists upper bounds on W-Amp total and Space-Amp for named rows: a workload, a contender, a size and a phase. Every `run` and `smoke` checks the rows it recorded, and one run over a bound fails it. `bench:smoke --check` also runs the rows above size `tiny` once, since compaction writes little at 1,000 entries.
+
+Timings on a shared CI runner are too noisy to gate. Byte counters are not: over 21 runs of `kv/fillrandom` at size `small`, WAL bytes were identical and flush bytes stayed within 0.1%. Each budget sits a few percent above the value on the commit that set it. A run that settles to another layout writes less, so only an upper bound is checked.
+
+A budget whose row ran but recorded no such number fails too, so renaming a phase cannot switch a budget off. To raise a budget, say in the commit what made the engine write more.
 
 ## Memory
 

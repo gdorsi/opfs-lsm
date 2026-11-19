@@ -3,9 +3,10 @@
  *
  *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed]
  *       [--max-peak-bytes N] [--compaction-memory-bytes N]
- *   smoke [--check]         every workload × contender, size tiny, 1 rep, correctness only;
+ *   smoke [--check]         every workload × contender, size tiny, 1 rep, correctness and the byte budgets;
  *                           --check first applies the bundle-size budgets to the same build,
- *                           then checks that every access pattern has exactly one owner
+ *                           then checks that every access pattern has exactly one owner,
+ *                           and also runs the byte-budget rows above size tiny
  *   size [--check]          bundle-size table; --check fails over a row's budget
  *   compare <a.jsonl> <b.jsonl> [--all]
  *                           every metric both files hold, B against A by the min–max ranges;
@@ -21,8 +22,9 @@ import { parseArgs } from "node:util";
 import { ownershipProblems, PATTERNS } from "./core/patterns.ts";
 import { SIZES, type RunRecord, type SizeName } from "./core/types.ts";
 import { BENCH_DIR, buildBench, type BuildOutput } from "./driver/build.ts";
+import { BUDGETS, budgetProblems } from "./driver/budgets.ts";
 import { DATA_DIR, ensureTrace } from "./driver/data.ts";
-import { plan } from "./driver/plan.ts";
+import { plan, type PlannedRun } from "./driver/plan.ts";
 import { measure } from "./driver/metrics.ts";
 import { compare, report } from "./driver/report.ts";
 import { readCatalog, runPlan } from "./driver/run.ts";
@@ -107,6 +109,7 @@ async function run(o: {
     const catalog = await readCatalog(server.origin, o.headless);
     if (o.check && !owners(catalog)) return 1;
     const runs = plan(catalog, { workloads: o.workloads, contenders: o.contenders, size: o.size, reps: o.reps });
+    if (o.check) runs.push(...budgetRuns(catalog, o.size));
     mkdirSync(RESULTS_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     // Named by CPU, not hostname: published runs are committed under docs/results/.
@@ -125,6 +128,7 @@ async function run(o: {
     writeFileSync(resultsFile.replace(/\.jsonl$/, ".md"), text + "\n");
     console.log("\n" + text);
     const problems = records.filter((r) => r.error).map((r) => `${r.workload} ${r.contender}: ${r.error}`);
+    problems.push(...budgetProblems(measure(records)));
     if (o.smoke) problems.push(...smokeChecks(records));
     if (o.maxPeakBytes !== undefined) problems.push(...peakChecks(records, o.maxPeakBytes));
     if (problems.length > 0) {
@@ -163,6 +167,12 @@ function owners(catalog: Awaited<ReturnType<typeof readCatalog>>): boolean {
   }
   console.error(`access patterns (bench/core/patterns.ts):\n${problems.join("\n")}`);
   return false;
+}
+
+/** One run of each budget row above the size the smoke already runs. */
+function budgetRuns(catalog: Awaited<ReturnType<typeof readCatalog>>, ran: SizeName): PlannedRun[] {
+  const rows = new Map(BUDGETS.filter((b) => b.size !== ran).map((b) => [`${b.workload} ${b.contender} ${b.size}`, b]));
+  return [...rows.values()].flatMap((b) => plan(catalog, { workloads: [b.workload], contenders: [b.contender], size: b.size, reps: 1 }));
 }
 
 /** Harness health: a kv footprint after writes must show counted WAL bytes. */
