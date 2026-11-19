@@ -343,47 +343,36 @@ export function findInBlock(b: BlockBytes, key: Uint8Array): SstEntry | undefine
 }
 
 /**
- * The records of one block in key order, from the first key at or after
- * `seek`, each as `RecordWalker.inPlace` gives it.
+ * A step through the records of one block in key order, from the first key at
+ * or after `seek`, each as `RecordWalker.inPlace` gives it.
  */
-export class BlockEntries {
-  private readonly w: RecordWalker;
-  private left: number;
-
-  constructor(b: BlockBytes, seek?: Uint8Array) {
-    this.w = RecordWalker.ofBlock(b);
-    this.left = seek ? seekInBlock(this.w, seek) : this.w.count;
-  }
-
-  next(): LayerEntry | undefined {
-    if (this.left === 0) return undefined;
-    this.left--;
-    this.w.next();
-    return this.w.inPlace();
-  }
+export function blockEntries(b: BlockBytes, seek?: Uint8Array): () => LayerEntry | undefined {
+  const w = RecordWalker.ofBlock(b);
+  let left = seek ? seekInBlock(w, seek) : w.count;
+  return () => {
+    if (left === 0) return undefined;
+    left--;
+    w.next();
+    return w.inPlace();
+  };
 }
 
-export class ReverseBlockEntries {
-  private readonly w: RecordWalker;
-  private readonly starts: number[] = [];
-
-  constructor(b: BlockBytes, seek?: Uint8Array) {
-    const w = (this.w = RecordWalker.ofBlock(b));
-    const first = w.o;
-    const below = seek ? w.count - seekInBlock(w, seek) : w.count;
-    w.o = first;
-    for (let i = 0; i < below; i++) {
-      const at = w.o;
-      w.next();
-      this.starts.push(at);
-    }
+/** Like `blockEntries`, from the last record below `seek` down. */
+export function reverseBlockEntries(b: BlockBytes, seek?: Uint8Array): () => LayerEntry | undefined {
+  const w = RecordWalker.ofBlock(b);
+  const first = w.o;
+  const below = seek ? w.count - seekInBlock(w, seek) : w.count;
+  const starts: number[] = [];
+  w.o = first;
+  for (let i = 0; i < below; i++) {
+    starts.push(w.o);
+    w.next();
   }
-
-  next(): LayerEntry | undefined {
-    const at = this.starts.pop();
+  return () => {
+    const at = starts.pop();
     if (at === undefined) return undefined;
-    this.w.o = at;
-    this.w.next();
-    return this.w.inPlace();
-  }
+    w.o = at;
+    w.next();
+    return w.inPlace();
+  };
 }

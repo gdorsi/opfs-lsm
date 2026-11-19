@@ -6,12 +6,12 @@ import { bloomMightContain, type BloomFilter } from "./bloom.js";
 import { filterCursor, Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanBounds } from "./cursor.js";
 import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
 import {
-  BlockEntries,
   blockBytes,
+  blockEntries,
   compareAt,
   findInBlock,
   readFooter,
-  ReverseBlockEntries,
+  reverseBlockEntries,
   type BlockBytes,
   type KeyRange,
   type SstCodec,
@@ -113,14 +113,8 @@ export class SstReader {
 
   /** Every entry in `bounds`, in key order, or from the largest key down with `reverse`. */
   cursor(bounds?: ScanBounds, reverse = false): LayerCursor {
-    return this.blocks(bounds, reverse, (block, seek) => {
-      if (reverse) {
-        const walk = new ReverseBlockEntries(block(), seek);
-        return () => walk.next();
-      }
-      const walk = new BlockEntries(block(), seek);
-      return () => walk.next();
-    });
+    const entriesOf = reverse ? reverseBlockEntries : blockEntries;
+    return this.blocks(bounds, reverse, (block, seek) => entriesOf(block(), seek));
   }
 
   /**
