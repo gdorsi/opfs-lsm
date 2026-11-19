@@ -2,7 +2,7 @@ import { collection, defineSchema, openDocStore, type Cursor, type DocStore, typ
 import type { Db } from "@opfs-lsm/kv";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, type Collection } from "@tanstack/db";
-import { priorityOrder, STATUSES, stored, type Body, type Comment, type Issue, type StatusCode, type StoredIssue, type SyncState } from "../domain/model.ts";
+import { Body, Comment, priorityOrder, STATUSES, stored, StoredIssue, SyncState, type Issue, type StatusCode } from "../domain/model.ts";
 import { STORES, type Stream } from "../domain/stores.ts";
 import type { Anchor, Backend, CollectionRows, StoreName, StoreRows } from "../model/backend.ts";
 import type { IssueFilter, SortField } from "../model/filter.ts";
@@ -13,16 +13,16 @@ import { recount, type Pause } from "./recount.ts";
 export const schema = defineSchema({
   version: 5,
   collections: {
-    issues: collection<StoredIssue>()
+    issues: collection(StoredIssue)
       .index("byCreated", ["deleted", "created"])
       .index("byTitle", ["deleted", "title"])
       .index("byPriority", ["deleted", "priority", "priorityOrder"])
       .text("byStatus", ["deleted", "status", "statusOrder"], "title")
       .text("search", ["deleted", "modified"], "title")
       .index("pending", "pending"),
-    bodies: collection<Body>().index("pending", "pending"),
-    comments: collection<Comment>().index("byIssue", "issue_id").index("pending", "pending"),
-    sync: collection<SyncState>(),
+    bodies: collection(Body).index("pending", "pending"),
+    comments: collection(Comment).index("byIssue", "issue_id").index("pending", "pending"),
+    sync: collection(SyncState),
   },
   drop: ["outbox"],
 });

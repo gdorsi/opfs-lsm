@@ -399,7 +399,9 @@ export function contract(label: string, open: OpenBackend): void {
         const base = watched((emit: (b: number) => void) => anchoring.watchBase(anchor.value, emit));
         const byModified = () => every.toArray.filter((i) => !i.deleted).sort((a, b) => b.modified - a.modified || (a.id < b.id ? -1 : 1));
         const write = async (id: string, change: Partial<Issue>) => {
-          const row = stored({ ...every.get(id)!, ...change });
+          // The stored row, not `every`'s: a row TanStack hands out also carries its virtual `$` properties.
+          const [local] = await backend().read("issues", [id]);
+          const row = stored({ ...local!, ...change });
           await put(backend(), "issues", [row]);
           every.update(id, (draft) => Object.assign(draft, row));
         };

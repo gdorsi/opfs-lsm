@@ -1,9 +1,10 @@
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
+import { DocStoreError } from "@opfs-lsm/docstore";
 import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
-import type { Issue, PriorityCode, StatusCode } from "../domain/model.ts";
+import type { Body, Issue, PriorityCode, StatusCode, SyncState } from "../domain/model.ts";
 import { parseIssueFilter, SORT_FIELDS } from "../model/filter.ts";
 import { windowQuery } from "../model/query.ts";
 import { openKvBackend, schema, type KvBackend } from "./kv.ts";
@@ -94,5 +95,76 @@ describe("the kv backend", () => {
       for (const dir of ["asc", "desc"] as const) assert.equal(backend.anchor(parseIssueFilter({ sort, dir })) !== undefined, sort !== "title", `${sort} ${dir}`);
     }
     for (const filtered of [{ q: "a" }, { status: "1" }, { priority: "2" }]) assert.equal(backend.anchor(parseIssueFilter(filtered)), undefined, JSON.stringify(filtered));
+  });
+
+  describe("validates every write against the row's schema", () => {
+    const edited: Issue = {
+      id: "edited",
+      title: "Edited",
+      status: 3,
+      priority: 2,
+      kanbanorder: "a1",
+      username: "ada",
+      created: 5,
+      modified: 1000,
+      deleted: false,
+      version: 2,
+      dirty: { title: 1000, status: 1000 },
+      pending: true,
+    };
+
+    it("stores a row as it is, with the sort keys of an issue, `dirty` and `pending`", async () => {
+      await backend.transact("issues", [edited], (_, row) => row);
+      assert.deepEqual((await backend.read("issues", ["edited"]))[0], { ...edited, priorityOrder: 230_000_000_001_000, statusOrder: "3a1" });
+
+      const { dirty: _dirty, pending: _pending, ...acknowledged } = edited;
+      const clean: Issue = { ...acknowledged, id: "clean", version: 3 };
+      await backend.transact("issues", [clean], (_, row) => row);
+      const [back] = await backend.read("issues", ["clean"]);
+      assert.deepEqual(back, { ...clean, priorityOrder: 230_000_000_001_000, statusOrder: "3a1" });
+      assert.equal("dirty" in back!, false);
+      assert.equal("pending" in back!, false);
+
+      const body: Body = { id: "edited", description: "text", version: 1, dirty: { description: 7 }, pending: true };
+      await backend.transact("bodies", [body], (_, row) => row);
+      assert.deepEqual((await backend.read("bodies", ["edited"]))[0], body);
+
+      const state: SyncState = {
+        id: "sync",
+        format: 4,
+        epoch: null,
+        cursors: { issues: 1, bodies: 2, comments: 3 },
+        head: 3,
+        online: true,
+        caughtUp: { issues: true, bodies: false, comments: true },
+        evict: "asked",
+      };
+      await backend.transact("sync", [state], (_, row) => row);
+      assert.deepEqual((await backend.read("sync", ["sync"]))[0], state);
+    });
+
+    it("rejects a row of the wrong shape with \"invalid\" and stores nothing", async () => {
+      const wrong: [string, object][] = [
+        ["a status that is no code", { ...edited, id: "w1", status: 7 }],
+        ["a title that is no string", { ...edited, id: "w2", title: 1 }],
+        ["a missing field", { ...edited, id: "w3", kanbanorder: undefined }],
+        ["a key the schema does not list", { ...edited, id: "w4", labels: [] }],
+        ["a `pending` that is not true", { ...edited, id: "w5", pending: false }],
+      ];
+      for (const [what, row] of wrong) {
+        const id = (row as { id: string }).id;
+        await assert.rejects(
+          backend.transact("issues", [{ id }], () => row as never),
+          (e) => e instanceof DocStoreError && e.code === "invalid" && e.issues !== undefined,
+          what,
+        );
+        assert.equal((await backend.read("issues", [id]))[0], undefined, what);
+      }
+      await assert.rejects(
+        backend.transact("sync", [{ id: "sync" }], () => ({ id: "sync", evict: "later" }) as never),
+        (e) => e instanceof DocStoreError && e.code === "invalid",
+      );
+      assert.equal((await backend.read("sync", ["sync"]))[0]!.evict, "asked", "the stored sync row is untouched");
+    });
   });
 });

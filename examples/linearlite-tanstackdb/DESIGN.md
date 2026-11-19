@@ -30,39 +30,54 @@ counts index entries for the total.
 ## Data
 
 ```ts
-// src/domain/model.ts. Codes are numbers so `orderBy(priority)` sorts by meaning.
+// src/domain/model.ts. valibot schemas: the row types are inferred from them (`v.InferOutput`).
+// Codes are numbers so `orderBy(priority)` sorts by meaning.
 export const STATUSES = ["backlog", "todo", "in_progress", "done", "canceled"] as const;  // code = index
-export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;           // code = index
-export type StatusCode = 0 | 1 | 2 | 3 | 4;
-export type PriorityCode = 0 | 1 | 2 | 3 | 4;
+const Code = v.picklist([0, 1, 2, 3, 4]);          // StatusCode, PriorityCode
+const ReadonlyString = v.pipe(v.string(), v.readonly());   // a server-owned field
+const ReadonlyNumber = v.pipe(v.number(), v.readonly());
 
 /** Field name -> local edit clock of an edit the server has not acknowledged. Absent = clean. */
-export type Clocks = Readonly<Record<string, number>>;
+const Clocks = v.pipe(v.record(v.string(), v.number()), v.readonly());
 /**
  * `version` is the server version of the last server state merged in; 0 = never reached the server.
  * `pending` is `true` exactly when `dirty` is present: no index can hold an object, a sparse one can hold `true`.
  */
-export type Synced = { readonly version: number; readonly dirty?: Clocks; readonly pending?: true };
+const Synced = v.strictObject({
+  version: ReadonlyNumber,
+  dirty: v.pipe(v.optional(Clocks), v.readonly()),
+  pending: v.pipe(v.optional(v.literal(true)), v.readonly()),
+});
 
-export type Issue = Synced & {               // on demand, ~220 B
-  readonly id: string; title: string; status: StatusCode; priority: PriorityCode; kanbanorder: string;
-  readonly username: string; readonly created: number; modified: number; deleted: boolean;
-};
-// src/domain/model.ts. What kv holds: the fields plus the two sort keys, derived on every write (see Indexes).
-export type StoredIssue = Issue & { readonly priorityOrder: number; readonly statusOrder: string };
-export type Body = Synced & { readonly id: string; description: string };   // on demand, by id
-export type Comment = Synced & {                                            // on demand, by issue
-  readonly key: string;  // `${issue_id}/${id}`, from the server; the collection keys comments by `id`
-  readonly id: string; readonly issue_id: string; body: string; readonly username: string;
-  readonly created: number; deleted: boolean;
-};
-export type Stream = "issues" | "bodies" | "comments";   // the streams of STORES
+const Issue = v.strictObject({               // on demand, ~220 B
+  id: ReadonlyString, title: v.string(), status: Code, priority: Code, kanbanorder: v.string(),
+  username: ReadonlyString, created: ReadonlyNumber, modified: v.number(), deleted: v.boolean(),
+  ...Synced.entries,
+});
+// What kv holds: the fields plus the two sort keys, derived on every write (see Indexes).
+const StoredIssue = v.strictObject({ ...Issue.entries, priorityOrder: ReadonlyNumber, statusOrder: ReadonlyString });
+const Body = v.strictObject({ id: ReadonlyString, description: v.string(), ...Synced.entries });   // on demand, by id
+const Comment = v.strictObject({                                                                   // on demand, by issue
+  key: ReadonlyString,   // `${issue_id}/${id}`, from the server; the collection keys comments by `id`
+  id: ReadonlyString, issue_id: ReadonlyString, body: v.string(), username: ReadonlyString,
+  created: ReadonlyNumber, deleted: v.boolean(),
+  ...Synced.entries,
+});
 /** One eager row per browser (`id: "sync"`), written by the leader, read by every tab's status bar. */
-export type SyncState = {
-  readonly id: "sync"; format: number; epoch: string | null; cursors: Record<Stream, number>; head: number;
-  online: boolean; caughtUp: Record<Stream, boolean>; evict: "idle" | "asked" | "confirmed";
-};
+const SyncState = v.strictObject({
+  id: v.pipe(v.literal("sync"), v.readonly()), format: v.number(), epoch: v.nullable(v.string()), head: v.number(),
+  cursors: v.strictObject({ issues: v.number(), bodies: v.number(), comments: v.number() }),   // one per stream of STORES
+  online: v.boolean(),
+  caughtUp: v.strictObject({ issues: v.boolean(), bodies: v.boolean(), comments: v.boolean() }),
+  evict: v.picklist(["idle", "asked", "confirmed"]),
+});
 ```
+
+Each docstore collection is declared with its schema (`collection(StoredIssue)`, see Indexes), so docstore validates
+every row this tab writes and a row of another shape fails with `"invalid"` and stores nothing. The objects are
+strict, because docstore stores what a schema returns: a key a schema does not list is an error, where a plain
+`v.object` would drop it without a word. The schemas check the shape only. Length limits are the server's, so a row
+the server accepts is always writable.
 
 Server (`node:sqlite`, `data/linearlite.db`): tables `issue`, `body`, `comment` with the same fields as above plus
 `version INTEGER NOT NULL` (indexed); table `meta(k, v)` holds `head` (the global version counter) and `epoch` (a
@@ -195,15 +210,16 @@ reloads every loaded query.
 
 ```ts
 // src/backends/kv.ts, schema.collections
-issues: collection<StoredIssue>()
+issues: collection(StoredIssue)
   .index("byCreated", ["deleted", "created"])
   .index("byTitle", ["deleted", "title"])
   .index("byPriority", ["deleted", "priority", "priorityOrder"])
   .text("byStatus", ["deleted", "status", "statusOrder"], "title")
   .text("search", ["deleted", "modified"], "title")
   .index("pending", "pending"),
-bodies:   collection<Body>().index("pending", "pending"),
-comments: collection<Comment>().index("byIssue", "issue_id").index("pending", "pending"),
+bodies:   collection(Body).index("pending", "pending"),
+comments: collection(Comment).index("byIssue", "issue_id").index("pending", "pending"),
+sync:     collection(SyncState),
 ```
 
 Every list read pins `deleted = false`, so every ordered index leads with `deleted`: the adapter reads an ordered
