@@ -13,6 +13,11 @@ import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 
 export { bytesFile };
 
+/** What a cache holds now: resident bytes, the metadata among them, and the loads in flight. */
+export function cacheUsage(cache: PageCache) {
+  return { budget: cache.budget, resident: cache["resident"], metadata: cache["queueBytes"].meta, inFlight: cache["loading"].size };
+}
+
 /** A lazy reader over a run held in memory, routed by the range its manifest entry would record. */
 export function readerOfBytes(buf: Uint8Array, cache = new PageCache()): SstReader {
   return new SstReader(bytesFile(buf), cache, sstKeyRange(buf));

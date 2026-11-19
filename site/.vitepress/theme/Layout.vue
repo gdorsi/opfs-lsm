@@ -7,7 +7,8 @@ import HomeHero from "./HomeHero.vue";
 import "./layout.css";
 
 /**
- * The default layout with two additions: an "alpha" tag after the site title on every page, and the home page's hero.
+ * The default layout with two additions: an "alpha" tag after the site title on every page, whose dot says
+ * "under construction" on hover, and the home page's hero.
  * The default theme sets the `dark` class from the reader's appearance; the landing page keeps it on.
  */
 const dark = usePageDark();
@@ -19,7 +20,9 @@ watchPostEffect(() => {
 <template>
   <DefaultTheme.Layout>
     <template #nav-bar-title-after>
-      <span class="alpha-tag">alpha</span>
+      <span class="alpha-tag">
+        <span class="alpha-dot" aria-hidden="true"></span>alpha <span class="alpha-note">under construction</span>
+      </span>
     </template>
     <template #home-hero-before>
       <HomeHero />

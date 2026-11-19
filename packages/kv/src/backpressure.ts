@@ -21,20 +21,16 @@ export function memtableCaps(requested = DEFAULT_MEMTABLE_BYTES): MemtableCaps {
 }
 
 /**
- * Where a tab stands against its caps. At most one flush is in flight, and
- * both states past `below` hold it, so a write that has to wait waits on the
- * flush the soft cap already asked for. `below` also holds the size at which
- * the tab asks next: the soft cap, or after a flush that did not help, one
- * eighth of the budget past where it ended.
+ * Keeps a tab's memtable near its caps by tying writes to the host's flushes.
+ * At most one flush is in flight, and a write that has to wait waits on the
+ * flush the soft cap already asked for. `askAt` is the size at which the tab
+ * asks next: the soft cap, or after a flush that did not help, one eighth of
+ * the budget past where it ended.
  */
-type Pressure =
-  | { readonly kind: "below"; readonly askAt: number }
-  | { readonly kind: "requested"; readonly flush: Promise<boolean> }
-  | { readonly kind: "waiting"; readonly flush: Promise<boolean> };
-
-/** Keeps a tab's memtable near its caps by tying writes to the host's flushes. */
 export class Backpressure {
-  private pressure: Pressure;
+  private askAt: number;
+  /** The flush in flight, if any. */
+  private flushing: Promise<boolean> | undefined;
 
   /**
    * `flush` asks the host to flush the WAL and loads what it published. It
@@ -45,12 +41,12 @@ export class Backpressure {
     private readonly bytes: () => number,
     private readonly flush: () => Promise<boolean>,
   ) {
-    this.pressure = { kind: "below", askAt: caps.soft };
+    this.askAt = caps.soft;
   }
 
   /** A write joined the memtable. Past the soft cap, ask for a flush and do not wait for it. */
   landed(): void {
-    if (this.pressure.kind === "below" && this.bytes() >= this.pressure.askAt) this.move("requested");
+    if (!this.flushing && this.bytes() >= this.askAt) this.start();
   }
 
   /** True at the hard cap. A write that finds room should not call `admit`: it would yield first. */
@@ -67,23 +63,18 @@ export class Backpressure {
    */
   async admit(): Promise<void> {
     while (this.full) {
-      if (this.pressure.kind === "below" && this.bytes() < this.pressure.askAt) return;
-      await this.move("waiting");
+      if (!this.flushing && this.bytes() < this.askAt) return;
+      await (this.flushing ?? this.start());
     }
-  }
-
-  private move(kind: "requested" | "waiting"): Promise<boolean> {
-    const flush = this.pressure.kind === "below" ? this.start() : this.pressure.flush;
-    this.pressure = { kind, flush };
-    return flush;
   }
 
   private start(): Promise<boolean> {
     const finish = (advanced: boolean): boolean => {
-      const retryAt = this.bytes() + (this.caps.hard - this.caps.soft);
-      this.pressure = { kind: "below", askAt: advanced ? this.caps.soft : retryAt };
+      this.flushing = undefined;
+      this.askAt = advanced ? this.caps.soft : this.bytes() + (this.caps.hard - this.caps.soft);
       return advanced;
     };
-    return this.flush().then(finish, () => finish(false));
+    this.flushing = this.flush().then(finish, () => finish(false));
+    return this.flushing;
   }
 }

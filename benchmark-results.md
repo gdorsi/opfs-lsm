@@ -9,7 +9,7 @@ Every number below comes from `docs/benchmarks.md` on `main`. Each value is writ
    `node -e 'import("./site/.vitepress/links.ts").then(m=>{m.checkSite();console.log("ok")})'`
 3. **Copy numbers exactly as the tables show them** ("4.8×", "127 ms", "3.2 s"). Don't compute new ratios. A derived figure such as "1.8× faster sync than Dexie" appears nowhere in `docs/benchmarks.md`, so it fails the check. Quote the two values instead ("3.2 s vs 5.8 s").
 4. **Only rows marked "yes" in the Headline column are safe to feature.** "Caveat" rows need their note next to them. "No" rows are true but must not be headlined: they are losses, or values from before an open fix.
-5. **Current homepage numbers** (`site/index.md`): `18.8 kB` (bundle), `4.2×` (Yjs cold loads), `100,000` (demo tracker). #289 removed the "Measured on real apps" card and its `apps:` frontmatter. Nothing has replaced it yet, and that is the slot to fill.
+5. **Current homepage numbers** (`site/index.md`): `19.5 kB` (bundle), `4.2×` (Yjs cold loads), `100,000` (demo tracker). #289 removed the "Measured on real apps" card and its `apps:` frontmatter. Nothing has replaced it yet, and that is the slot to fill.
 
 ## 1. Storage calls: kv vs IndexedDB
 
@@ -121,10 +121,10 @@ automerge-repo saves a document at most every 100 ms, so most Automerge keystrok
 
 | | gzip | raw | loaded | Headline |
 | --- | ---: | ---: | --- | --- |
-| Main-thread JS | 18.8 kB | 55.0 kB | at import | yes (already on the homepage) |
-| SharedWorker chunk | 12.2 kB | 36.0 kB | on the first `openDb` | |
-| wasm engine | 16.5 kB | 36.3 kB | on the first `openDb` | |
-| Total after open | 47.6 kB | 127.3 kB | | yes |
+| Main-thread JS | 19.5 kB | 57.4 kB | at import | yes (already on the homepage) |
+| SharedWorker chunk | 13.4 kB | 40.7 kB | on the first `openDb` | |
+| wasm engine | 16.6 kB | 36.3 kB | on the first `openDb` | |
+| Total after open | 49.5 kB | 134.4 kB | | yes |
 
 For comparison: Dexie is 31.4 kB gzip. `y-indexeddb` adds 1.2 kB on top of Yjs.
 
@@ -135,4 +135,4 @@ For comparison: Dexie is 31.4 kB gzip. `y-indexeddb` adds 1.2 kB on top of Yjs.
 - TanStack DB: 6.7× faster bulk inserts than its IndexedDB option. With four live screens, a sync batch takes 3.8 ms against 85 ms on SQLite.
 - Task tracker: a sync of 851 batches takes 2.5 s on docstore, against 4.8 s on Dexie and 10.9 s on SQLite. Warm, docstore answers 7 of the 11 goals fastest.
 - No dropped frames while typing into a Yjs or Automerge document at one key per frame.
-- 18.8 kB at import, 47.6 kB after open.
+- 19.5 kB at import, 49.5 kB after open.

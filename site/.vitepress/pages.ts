@@ -48,7 +48,7 @@ const sections: Section[] = [
       { label: "Engine design", source: "docs/design.md", route: "internals/design" },
       { label: "Manifest format", source: "docs/manifest-format.md", route: "internals/manifest-format" },
       { label: "SST file format", source: "docs/sst-format.md", route: "internals/sst-format" },
-      { label: "Size cap", source: "docs/size-cap.md", route: "internals/size-cap" },
+      { label: "Reserve", source: "docs/reserve.md", route: "internals/reserve" },
     ],
   },
 ];

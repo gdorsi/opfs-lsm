@@ -13,8 +13,7 @@ let opened: Linearlite | undefined;
 export function openApp(): Promise<Linearlite> {
   return (opening ??= (async () => {
     const params = new URLSearchParams(location.search);
-    // `?maxBytes=` sets a byte cap, to see an eviction without filling the disk.
-    const db = await openDb({ name: params.get("db") ?? "linearlite", maxBytes: Number(params.get("maxBytes")) || "quota" });
+    const db = await openDb({ name: params.get("db") ?? "linearlite" });
     const backend = await openKvBackend(db, { hidden: () => document.hidden });
     const model = openLinearlite({ backend, transport: httpTransport(params.get("user") ?? "anonymous") });
     void navigator.locks.request("linearlite:sync", () => model.sync.lead(new AbortController().signal));

@@ -19,20 +19,24 @@ export class EngineOutOfMemoryError extends Error {
 
 const OUT_OF_MEMORY = -11;
 const SESSION_OPEN = -13;
-const STATUS_NAMES: Record<number, string> = {
-  [-1]: "too short",
-  [-2]: "bad magic",
-  [-3]: "bad version",
-  [-4]: "crc mismatch",
-  [-5]: "truncated",
-  [-6]: "bad tag",
-  [-7]: "trailing garbage",
-  [-8]: "count mismatch",
-  [-9]: "bad codec",
-  [-10]: "bad block",
-  [-12]: "patterns truncated",
-  [-14]: "keys out of order",
-};
+/** What each status of the module means, by `-code`. An empty entry is not a corruption status: 0, out of memory, a host bug. */
+const STATUS_NAMES = [
+  "",
+  "too short",
+  "bad magic",
+  "bad version",
+  "crc mismatch",
+  "truncated",
+  "bad tag",
+  "trailing garbage",
+  "count mismatch",
+  "bad codec",
+  "bad block",
+  "",
+  "patterns truncated",
+  "",
+  "keys out of order",
+];
 /** The host broke the session protocol: a bug, not corrupt data. */
 const HOST_BUGS: Record<number, string> = {
   [SESSION_OPEN]: "a session is open",
@@ -347,7 +351,7 @@ function statusError(op: string, code: number, inputBytes: number): Error {
   if (code === OUT_OF_MEMORY) return new EngineOutOfMemoryError(op, inputBytes);
   const bug = HOST_BUGS[code];
   if (bug) return new Error(`${op}: ${bug} (status ${code})`);
-  return new CorruptDatabaseError(`${op}: ${STATUS_NAMES[code] ?? "corrupt"} (status ${code})`);
+  return new CorruptDatabaseError(`${op}: ${STATUS_NAMES[-code] || "corrupt"} (status ${code})`);
 }
 
 let engine: FlatEngine | undefined;

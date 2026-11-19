@@ -7,7 +7,7 @@ import type { SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef, sstGet, sstKeyRange } from "./oracle/sst-ref.js";
 import { PAGE_TARGET, SstReader } from "../src/store/sst-reader.js";
 import { coalesceReads } from "../src/opfs/coalesce-reads.js";
-import { bytesFile, drain } from "./runs.js";
+import { bytesFile, cacheUsage, drain } from "./runs.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
 
 class Reads {
@@ -110,7 +110,7 @@ describe("lazy sst reader", () => {
       const cache = new PageCache();
       const reader = openRun(body, cache);
       await untilHit(() => reader.get(utf("probe")));
-      metaBytes.push(cache.usage().metadata);
+      metaBytes.push(cacheUsage(cache).metadata);
     }
     const budget = Math.max(...metaBytes) + 2 * PAGE_TARGET;
     const totalMeta = metaBytes.reduce((a, b) => a + b, 0);
@@ -132,7 +132,7 @@ describe("lazy sst reader", () => {
           expect(show(await untilHit(() => reader.get(e.key)))).toBe(show(e));
           const missKey = cat(e.key, Uint8Array.of(0));
           expect(show(await untilHit(() => reader.get(missKey)))).toBe(show(sstGet(all, missKey)));
-          const u = cache.usage();
+          const u = cacheUsage(cache);
           expect(u.resident).toBeLessThanOrEqual(u.budget);
           minMeta = Math.min(minMeta, u.metadata);
         }

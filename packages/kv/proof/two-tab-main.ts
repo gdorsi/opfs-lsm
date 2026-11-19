@@ -9,8 +9,7 @@
  *   ?auto=1&role=b     peer tab
  *   ?local=1           one page, two handles, one EngineHost
  *   ?nobc=1            drop BroadcastChannel messages before openDb
- *   ?scenario=pressure databases over maxBytes, with a handler in each tab and with none
- *   ?scenario=quota    maxBytes "quota" over a quota the script overrides: what one answer does to the usage estimate
+ *   ?scenario=quota    databases with a reserve under an origin limit the script sets, with a handler in each tab and with none
  *   ?scenario=destroy  destroyDb with other tabs open: one live, one crashed, one frozen, one navigated away
  *   ?role=holder&tag=t&db=name  a tab that holds `name` open for the destroy scenario, read through DevTools
  */
@@ -20,7 +19,6 @@ const LOCAL = params.has("local");
 const NOBC = params.has("nobc");
 const AUTO = params.has("auto");
 const DB_NAME = params.get("name") ?? "two-tab";
-const PRESSURE = params.get("scenario") === "pressure";
 const QUOTA = params.get("scenario") === "quota";
 const DESTROY = params.get("scenario") === "destroy";
 
@@ -82,7 +80,7 @@ type OtherTab = {
   /** Every row of `name`, after a `sync`. Opens `name` in that tab when it is not open yet. */
   rows(name: string): Promise<Rows>;
   destroy(name: string): Promise<void>;
-  cap(name: string, mode: CapMode): Promise<CapReport>;
+  watchFull(name: string, mode: FullMode): Promise<FullReport>;
 };
 
 type PeerCmd =
@@ -91,46 +89,59 @@ type PeerCmd =
   | { id: number; op: "ingest"; name?: string }
   | { id: number; op: "rows"; name: string }
   | { id: number; op: "destroy"; name: string }
-  | { id: number; op: "cap"; key: string; value: CapMode };
+  | { id: number; op: "full"; key: string; value: FullMode };
 
-/** A handle opened with maxBytes, with a handler that range-deletes the oldest rows or with none. */
-type CapMode = "oldest" | "none";
-type CapReport = { calls: number; deleted: number; warns: number; rows: number; bytes: number };
+/** A handle opened with a reserve, with a handler that range-deletes the older three quarters of the rows or with none. */
+type FullMode = "oldest" | "none";
+/** `reserve` and `sst`: the bytes of the reserve file and of the run files when the handler started. */
+type FullReport = { calls: number; reserve: number; sst: number; warns: number; rows: number };
 
-const CAP = 1024 * 1024;
-const CAP_ROWS = 160;
-const capped = new Map<string, { db: import("../dist/index.js").Db; report: CapReport }>();
+const MiB = 1024 * 1024;
+const RESERVE = 16 * MiB;
+/** Room left under the limit the script sets: less than the flush that comes next. */
+const SLACK = 256 * 1024;
+/** Rows of 16 KiB: `FILL_ROWS` flushed before the limit, `LATE_ROWS` flushed under it. */
+const FILL_ROWS = 640;
+const LATE_ROWS = 160;
+const KEPT_ROWS = (FILL_ROWS + LATE_ROWS) / 4;
+const watched = new Map<string, { db: import("../dist/index.js").Db; report: FullReport }>();
 
 const warn = console.warn.bind(console);
 console.warn = (...args: unknown[]) => {
-  for (const [name, { report }] of capped) if (String(args[0]).includes(`${name} must free`)) report.warns += 1;
+  for (const [name, { report }] of watched) if (String(args[0]).includes(`refused a write to ${name},`)) report.warns += 1;
   warn(...args);
 };
 
+/** Bytes of the reserve file of `name`, 0 when there is none. */
+async function reserveSize(name: string): Promise<number> {
+  try {
+    const lsm = await (await navigator.storage.getDirectory()).getDirectoryHandle("opfs-lsm");
+    return (await (await (await lsm.getDirectoryHandle(name)).getFileHandle("reserve")).getFile()).size;
+  } catch {
+    return 0;
+  }
+}
+
 /** Opens `name` in this tab on the first call, then reports what this tab sees. */
-async function cap(name: string, mode: CapMode): Promise<CapReport> {
+async function watchFull(name: string, mode: FullMode): Promise<FullReport> {
   const testing = await import("../dist/testing.js");
-  let entry = capped.get(name);
+  let entry = watched.get(name);
   if (!entry) {
-    const db = await testing.openHarnessDb({ name, maxBytes: CAP, maxWalBytes });
-    const report = { calls: 0, deleted: 0, warns: 0, rows: 0, bytes: 0 };
+    const db = await testing.openHarnessDb({ name, reserveBytes: RESERVE, maxWalBytes });
+    const report = { calls: 0, reserve: -1, sst: 0, warns: 0, rows: 0 };
     entry = { db, report };
-    capped.set(name, entry);
+    watched.set(name, entry);
     if (mode === "oldest") {
-      db.onPressure(async ({ need }) => {
+      db.onStorageFull(async () => {
         report.calls += 1;
-        for await (const { key, value } of db.range()) {
-          if (need <= 0) return void (await db.batch((tx) => tx.deleteRange({ endExclusive: key })));
-          need -= key.byteLength + value.byteLength;
-          report.deleted += 1;
-        }
+        [report.reserve, report.sst] = [await reserveSize(name), await sstBytes(db)];
+        await db.batch((tx) => tx.deleteRange({ endExclusive: rowKey(FILL_ROWS + LATE_ROWS - KEPT_ROWS) }));
       });
     }
   }
   await entry.db.sync();
   entry.report.rows = 0;
   for await (const _ of entry.db.range()) entry.report.rows += 1;
-  entry.report.bytes = await sstBytes(entry.db);
   return { ...entry.report };
 }
 
@@ -140,123 +151,154 @@ async function sstBytes(db: Db): Promise<number> {
   return (await (await import("../dist/testing.js")).readStats(db)).host.layout.reduce((n, l) => n + l.bytes, 0);
 }
 
-async function fillPastCap(db: Db): Promise<void> {
-  const testing = await import("../dist/testing.js");
-  for (let i = 0; i < CAP_ROWS; i += 16) {
+/** Puts rows `from` to `to` of 16 KiB each. They stay in the WAL: `maxWalBytes` is far away. */
+async function putRows(db: Db, from: number, to: number): Promise<void> {
+  for (let i = from; i < to; i += 16) {
     await db.batch((tx) => {
-      for (let j = i; j < i + 16; j++) {
-        tx.put(enc.encode(`r${String(j).padStart(5, "0")}`), crypto.getRandomValues(new Uint8Array(16 * 1024)));
-      }
+      for (let j = i; j < i + 16; j++) tx.put(rowKey(j), crypto.getRandomValues(new Uint8Array(16 * 1024)));
     });
   }
-  await testing.ingest(db);
 }
 
-/** Waits for `cond`, then a while more so a second offer would have come. */
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function poll(cond: () => Promise<boolean>, what: string): Promise<void> {
-  for (let i = 0; i < 100 && !(await cond()); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  for (let i = 0; i < 150 && !(await cond()); i++) await pause(100);
   must(await cond(), `timed out waiting for ${what}`);
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+}
+
+const usage = async () => (await navigator.storage.estimate()).usage!;
+
+/** Has the script set the origin's real limit to `size` bytes, or lift it. */
+async function limit(size?: number): Promise<void> {
+  const set = await fetch(`/quota${size === undefined ? "" : `?size=${size}`}`, { method: "POST" });
+  must(set.ok, `the quota override failed: ${(await set.json()).error}`);
+}
+
+/** Whether the browser refuses a file of `bytes` now. Leaves no file. */
+async function refuses(bytes: number): Promise<boolean> {
+  const root = await navigator.storage.getDirectory();
+  const writer = await (await root.getFileHandle("probe", { create: true })).createWritable();
+  try {
+    await writer.write(new Uint8Array(bytes));
+    await writer.close();
+    return false;
+  } catch (err) {
+    await writer.abort().catch(() => undefined);
+    must((err as Error).name === "QuotaExceededError", `the probe failed with ${String(err)}`);
+    return true;
+  } finally {
+    await root.removeEntry("probe").catch(() => undefined);
+  }
+}
+
+/** Times the fill of a reserve of the default size, in a folder of its own. */
+async function timeFill(): Promise<void> {
+  const testing = await import("../dist/testing.js");
+  const { fillReserve, removeReserve } = await import("../dist/host/reserve.js");
+  const fs = await testing.openBrowserFs(`${DB_NAME}-fill`);
+  const took: number[] = [];
+  for (let i = 0; i < 3; i++) {
+    const t0 = performance.now();
+    must((await fillReserve(fs, 24 * MiB)) === "ok", "the timed fill was refused");
+    took.push(Math.round(performance.now() - t0));
+    await removeReserve(fs);
+  }
+  log(`fill of a 24 MiB reserve: ${took.join(", ")} ms`);
 }
 
 /**
- * Over maxBytes with a handler in each tab: one tab answers once, and both
- * read what it left, under the cap. With no handler: each tab warns once.
+ * Opens `name` in both tabs, flushes `rows` rows, waits for the reserve
+ * file, puts `LATE_ROWS` more in the WAL, and has the script set the
+ * origin's limit just over the usage. The flush that comes next is refused.
+ * Returns the limit.
  */
-async function pressureScenario(other: OtherTab): Promise<void> {
-  log(`mode=${modeLabel()}`);
-  const name = `${DB_NAME}-cap`;
-  await cap(name, "oldest");
-  await other.cap(name, "oldest");
-  await fillPastCap(capped.get(name)!.db);
-  await poll(async () => (await cap(name, "oldest")).calls + (await other.cap(name, "oldest")).calls > 0, "an answer");
-  await (await import("../dist/testing.js")).settle(capped.get(name)!.db);
-  const [a, b] = [await cap(name, "oldest"), await other.cap(name, "oldest")];
-  must(a.calls + b.calls === 1, `handlers ran ${a.calls} times in tab A and ${b.calls} in tab B`);
-  const left = CAP_ROWS - a.deleted - b.deleted;
-  must(a.rows === left && b.rows === left, `tabs read ${a.rows} and ${b.rows} rows, expected ${left}`);
-  must(a.bytes <= CAP && a.warns + b.warns === 0, `${a.bytes} bytes left, ${a.warns + b.warns} warnings`);
-  log(`pressure answered by tab ${a.calls === 1 ? "A" : "B"}, ${a.bytes} bytes left`);
-  log(`both tabs read ${left} of ${CAP_ROWS} rows`);
-
-  const bare = `${DB_NAME}-nohandler`;
-  await cap(bare, "none");
-  await other.cap(bare, "none");
-  await fillPastCap(capped.get(bare)!.db);
-  await poll(async () => (await cap(bare, "none")).warns > 0 && (await other.cap(bare, "none")).warns > 0, "warnings");
-  const [c, d] = [await cap(bare, "none"), await other.cap(bare, "none")];
-  must(c.warns === 1 && d.warns === 1, `warnings: tab A ${c.warns}, tab B ${d.warns}`);
-  must(c.rows === CAP_ROWS && d.rows === CAP_ROWS, "a row went missing with no handler");
-  log("no handler: one warning in each tab");
-  log("pressure ok");
+async function fillToLimit(other: OtherTab, name: string, mode: FullMode, rows: number): Promise<number> {
+  const testing = await import("../dist/testing.js");
+  await watchFull(name, mode);
+  await other.watchFull(name, mode);
+  const db = watched.get(name)!.db;
+  await putRows(db, 0, rows);
+  await testing.ingest(db);
+  await poll(async () => (await reserveSize(name)) === RESERVE, `the reserve file of ${name}`);
+  await testing.settle(db);
+  await putRows(db, rows, rows + LATE_ROWS);
+  const quota = (await usage()) + SLACK;
+  await limit(quota);
+  return quota;
 }
 
 /**
- * Fills a database, then has the script cut the origin's quota to just under
- * the usage. A handle opened with maxBytes "quota" gets an offer and range
- * deletes the oldest rows. Prints usage and SST bytes from the handler on,
- * and how often the handler ran.
+ * Two tabs, a reserve, and a real limit on the origin's storage. With a
+ * handler in each tab: the flush the browser refuses lands on the released
+ * reserve, one tab answers once, the run files shrink, and the reserve file
+ * comes back under the same limit. With no handler: each tab warns once, no
+ * row is lost, and the reserve comes back when the limit is lifted.
  */
-async function quotaScenario(): Promise<void> {
+async function quotaScenario(other: OtherTab): Promise<void> {
   log(`mode=${modeLabel()}`);
   const testing = await import("../dist/testing.js");
-  const name = `${DB_NAME}-quota`;
-  const filler = await testing.openHarnessDb({ name, maxWalBytes });
-  await fillPastCap(filler);
-  await testing.settle(filler);
-  const usage = async () => (await navigator.storage.estimate()).usage!;
-  const before = await usage();
-  const quota = Math.floor(before / 0.93);
-  const set = await fetch(`/quota?size=${quota}`, { method: "POST" });
-  must(set.ok, `the quota override failed: ${(await set.json()).error}`);
-  log(`usage ${before}, quota of the SharedWorker's estimate set to ${quota}`);
+  await timeFill();
 
-  const db = await testing.openHarnessDb({ name, maxBytes: "quota", maxWalBytes });
-  let t0 = 0;
-  let calls = 0;
-  let answered = 0;
-  let last = before;
-  let lastSst = 0;
-  /** Logs the usage and SST bytes now; a poll logs only when one moved. */
+  const name = `${DB_NAME}-full`;
+  const quota = await fillToLimit(other, name, "oldest", FILL_ROWS);
+  const db = watched.get(name)!.db;
+  const t0 = performance.now();
+  let last = "";
+  /** Logs the origin's usage, the run bytes and the reserve file; a poll logs only when one moved. */
   const snap = async (what: string, poll = false) => {
-    const [u, sst] = [await usage(), await sstBytes(db)];
-    if (poll && u === last && sst === lastSst) return;
-    [last, lastSst] = [u, sst];
-    log(`+${Math.round(performance.now() - t0)} ms ${what}: usage ${u}, sst ${sst}`);
+    const state = `usage ${await usage()}, sst ${await sstBytes(db)}, reserve ${await reserveSize(name)}`;
+    if (poll && state === last) return;
+    last = state;
+    log(`+${Math.round(performance.now() - t0)} ms ${what}: ${state}`);
   };
-  db.onPressure(async (p) => {
-    t0 ||= performance.now();
-    calls += 1;
-    await snap(`handler ${calls} starts, offer ${JSON.stringify(p)}`);
-    let need = p.need;
-    let end: Uint8Array | undefined;
-    for await (const { key, value } of db.range()) {
-      if (need <= 0) {
-        end = key;
-        break;
-      }
-      need -= key.byteLength + value.byteLength;
-    }
-    await db.batch((tx) => tx.deleteRange(end ? { endExclusive: end } : {}));
-    answered += 1;
-  });
-  for (let i = 0; i < 100 && !calls; i++) await new Promise((resolve) => setTimeout(resolve, 100));
-  must(calls, "no offer came");
-  let flushed = 0;
-  for (const end = performance.now() + 10_000; performance.now() < end; ) {
-    if (answered !== flushed) {
-      flushed = answered;
-      await snap("handler resolved");
-      await testing.ingest(db);
-      await snap("flushed");
-      await testing.settle(db);
-      await snap("settled");
-    } else await snap("poll", true);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  const atLimit = await usage();
+  await snap(`limit ${quota}`);
+  must(await refuses(2 * SLACK), `a ${2 * SLACK} byte write fits under the limit`);
+  log(`a ${2 * SLACK} byte OPFS write is refused`);
+
+  await testing.ingest(db);
+  await snap("the flush landed");
+  const calls = async () => (await watchFull(name, "oldest")).calls + (await other.watchFull(name, "oldest")).calls;
+  for (const end = performance.now() + 15_000; performance.now() < end; ) {
+    await snap("poll", true);
+    if ((await calls()) > 0 && (await reserveSize(name)) === RESERVE) break;
+    await pause(50);
   }
-  log(`unchanged until +${Math.round(performance.now() - t0)} ms, handler calls: ${calls}`);
-  must(calls === 1, `the handler ran ${calls} times for one answer`);
-  must(last < before, `usage went from ${before} to ${last}`);
+  await testing.settle(db);
+  // A while more, so a second offer would have come.
+  await pause(1500);
+  await snap("settled");
+  const [a, b] = [await watchFull(name, "oldest"), await other.watchFull(name, "oldest")];
+  must(a.calls + b.calls === 1, `handlers ran ${a.calls} times in tab A and ${b.calls} in tab B`);
+  const seen = a.calls === 1 ? a : b;
+  must(seen.reserve === 0, `the reserve file held ${seen.reserve} bytes when the handler ran`);
+  must(a.rows === KEPT_ROWS && b.rows === KEPT_ROWS, `tabs read ${a.rows} and ${b.rows} rows, expected ${KEPT_ROWS}`);
+  const [left, back, after] = [await sstBytes(db), await reserveSize(name), await usage()];
+  must(left < seen.sst, `the run files went from ${seen.sst} to ${left} bytes`);
+  must(back === RESERVE, `the reserve file holds ${back} bytes`);
+  must(after < atLimit, `usage went from ${atLimit} to ${after}`);
+  must(a.warns + b.warns === 0, `${a.warns + b.warns} warnings with a handler`);
+  log(`storage full answered once, by tab ${a.calls === 1 ? "A" : "B"}: reserve ${seen.reserve}, sst ${seen.sst} when the handler ran`);
+  log(`run files ${seen.sst} -> ${left} bytes, usage ${atLimit} -> ${after}, both tabs read ${KEPT_ROWS} of ${FILL_ROWS + LATE_ROWS} rows`);
+  log(`the reserve file is back: ${back} bytes under the limit ${quota}`);
+  await limit();
+
+  const bare = `${DB_NAME}-full-bare`;
+  await fillToLimit(other, bare, "none", LATE_ROWS);
+  const bareDb = watched.get(bare)!.db;
+  await testing.ingest(bareDb);
+  await poll(async () => (await watchFull(bare, "none")).warns > 0 && (await other.watchFull(bare, "none")).warns > 0, "warnings");
+  await pause(1500);
+  const [c, d] = [await watchFull(bare, "none"), await other.watchFull(bare, "none")];
+  must(c.warns === 1 && d.warns === 1, `warnings: tab A ${c.warns}, tab B ${d.warns}`);
+  must(c.rows === 2 * LATE_ROWS && d.rows === 2 * LATE_ROWS, "a row went missing with no handler");
+  log("no handler: one warning in each tab, no row lost");
+  await limit();
+  await bareDb.put(enc.encode("after"), enc.encode("v"));
+  await testing.ingest(bareDb);
+  await poll(async () => (await reserveSize(bare)) === RESERVE, "the reserve once the limit was lifted");
+  log("limit lifted: the reserve file is back");
   log("quota ok");
 }
 
@@ -554,7 +596,7 @@ async function rowsOf(db: Handle): Promise<Rows> {
 }
 
 /** A tab's handles, one per database name, opened on first use. */
-function tabOf(first: Handle, open: (name: string) => Promise<Handle>): Omit<OtherTab, "cap"> {
+function tabOf(first: Handle, open: (name: string) => Promise<Handle>): Omit<OtherTab, "watchFull"> {
   const handles = new Map([[DB_NAME, first]]);
   const handle = async (name = DB_NAME) => {
     let db = handles.get(name);
@@ -806,8 +848,8 @@ function parseCmd(value: unknown): PeerCmd | null {
   if ((rec.op === "rows" || rec.op === "destroy") && typeof rec.name === "string") {
     return { id: rec.id, op: rec.op, name: rec.name };
   }
-  if (rec.op === "cap" && typeof rec.key === "string" && (rec.value === "oldest" || rec.value === "none")) {
-    return { id: rec.id, op: "cap", key: rec.key, value: rec.value };
+  if (rec.op === "full" && typeof rec.key === "string" && (rec.value === "oldest" || rec.value === "none")) {
+    return { id: rec.id, op: "full", key: rec.key, value: rec.value };
   }
   if (rec.op === "get" && typeof rec.key === "string") {
     return { id: rec.id, op: "get", key: rec.key, ...name };
@@ -833,7 +875,7 @@ async function postResult(result: PeerResult): Promise<void> {
   }
 }
 
-async function servePeer(tab: Omit<OtherTab, "cap">): Promise<void> {
+async function servePeer(tab: Omit<OtherTab, "watchFull">): Promise<void> {
   for (;;) {
     const res = await fetch("/peer/next");
     if (!res.ok) throw new Error(`peer next ${res.status}`);
@@ -882,8 +924,8 @@ async function servePeer(tab: Omit<OtherTab, "cap">): Promise<void> {
           await tab.destroy(cmd.name);
           await postResult({ id: cmd.id, ok: true, value: null, generation: null, error: null });
           break;
-        case "cap": {
-          const value = JSON.stringify(await cap(cmd.key, cmd.value));
+        case "full": {
+          const value = JSON.stringify(await watchFull(cmd.key, cmd.value));
           await postResult({ id: cmd.id, ok: true, value, generation: null, error: null });
           break;
         }
@@ -926,8 +968,8 @@ async function remoteOther(): Promise<OtherTab> {
     async destroy(name) {
       await callPeer({ op: "destroy", name });
     },
-    async cap(name, mode) {
-      return JSON.parse((await callPeer({ op: "cap", key: name, value: mode })).value!) as CapReport;
+    async watchFull(name, mode) {
+      return JSON.parse((await callPeer({ op: "full", key: name, value: mode })).value!) as FullReport;
     },
   };
 }
@@ -972,7 +1014,7 @@ async function run(): Promise<void> {
     const otherDb = await openB(DB_NAME);
     const other: OtherTab = {
       ...tabOf(otherDb, openB),
-      cap: () => Promise.reject(new Error("the pressure scenario needs two tabs")),
+      watchFull: () => Promise.reject(new Error("the quota scenario needs two tabs")),
     };
     await scenario(self, other, openA);
     await self.close();
@@ -994,8 +1036,7 @@ async function run(): Promise<void> {
   if (DESTROY) return destroyScenario();
   const open = (name: string) => openHandle(mod, testing, "tab-a", name);
   const db = await open(DB_NAME);
-  if (QUOTA) await quotaScenario();
-  else if (PRESSURE) await pressureScenario(await remoteOther());
+  if (QUOTA) await quotaScenario(await remoteOther());
   else await scenario(db, await remoteOther(), open);
   await db.close();
 }

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName } from "../src/check.js";
 import { readDestroyed } from "../src/idb/destroyed.js";
 import { ClosedError, type ChangeEvent, type Db, type Entry } from "../src/index.js";
-import { compactLock, ingestLock, openLock, pressureLock, reclaimLock, runLock } from "../src/locks.js";
+import { compactLock, fullLock, ingestLock, openLock, reclaimLock, runLock } from "../src/locks.js";
 import {
   EngineHost,
   MemoryFs,
@@ -610,7 +610,7 @@ describe("the Web Locks of one name", () => {
 
     // Every lock of A, and a reader's hold on each of B's run paths under A's name.
     const release = await hold([
-      ...[openLock(A), compactLock(A), ingestLock(A), reclaimLock(A), pressureLock(A)].map((name) => [name, "exclusive"] as const),
+      ...[openLock(A), compactLock(A), ingestLock(A), reclaimLock(A), fullLock(A)].map((name) => [name, "exclusive"] as const),
       ...runs.map((path) => [runLock(A, path), "shared"] as const),
     ]);
     try {

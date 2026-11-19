@@ -9,4 +9,37 @@
   font-weight: 500;
   line-height: 18px;
   letter-spacing: 0.02em;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.alpha-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vp-c-warning-1);
+}
+
+/* What the dot says, shown under the tag in the nav. Hidden by opacity, so a screen reader still reads it after "alpha". */
+.alpha-note {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-2);
+  color: var(--vp-c-text-1);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+a .alpha-tag:hover .alpha-note,
+a:focus-visible .alpha-note {
+  opacity: 1;
 }

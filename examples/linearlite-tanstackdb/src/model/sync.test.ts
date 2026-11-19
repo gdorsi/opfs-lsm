@@ -2,7 +2,7 @@ import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import type { Db } from "@opfs-lsm/kv";
-import { ingest, openHarnessDb } from "@opfs-lsm/kv/testing";
+import { createLocalIngestClient, EngineHost, ingest, MemoryFs, openHarnessDb, type HarnessOpenOptions } from "@opfs-lsm/kv/testing";
 import { openKvBackend, type KvBackend } from "../backends/kv.ts";
 import type { StatusCode } from "../domain/model.ts";
 import { memoryServer, memoryTransport, type MemoryServer } from "../server/memory.ts";
@@ -11,7 +11,7 @@ import { hold } from "./live.ts";
 
 type Replica = { readonly db: Db; readonly backend: KvBackend; readonly model: Linearlite };
 
-async function replica(server: MemoryServer, name: string, options: { maxBytes?: number } = {}): Promise<Replica> {
+async function replica(server: MemoryServer, name: string, options: Partial<HarnessOpenOptions> = {}): Promise<Replica> {
   const db = await openHarnessDb({ name, forceMemory: true, ...options });
   const backend = await openKvBackend(db);
   return { db, backend, model: openLinearlite({ backend, transport: memoryTransport(server, "ada") }) };
@@ -90,16 +90,37 @@ describe("sync through memoryTransport", () => {
   });
 });
 
-describe("eviction under storage pressure", () => {
+/** A memory fs that refuses its next write once `refuse` is called, as a browser does at the origin's limit. */
+function refusableFs(): { readonly fs: MemoryFs; refuse(): void } {
+  const fs = new MemoryFs();
+  const create = fs.create.bind(fs);
+  let armed = false;
+  fs.create = async (path) => {
+    const writer = await create(path);
+    return {
+      ...writer,
+      write: async (bytes) => {
+        if (!armed) return writer.write(bytes);
+        armed = false;
+        throw new DOMException("the origin is full", "QuotaExceededError");
+      },
+    };
+  };
+  return { fs, refuse: () => void (armed = true) };
+}
+
+describe("eviction when the storage is full", () => {
   const server = memoryServer({ issues: 300 });
   const name = `linearlite-evict-${process.pid}`;
+  const { fs, refuse } = refusableFs();
   // Two handles on one database, as two tabs: A leads, B only shows the alert and confirms it.
   let a: Replica;
   let b: Replica;
   let stop: () => Promise<void>;
   before(async () => {
-    a = await replica(server, name, { maxBytes: 64 * 1024 });
-    b = await replica(server, name, { maxBytes: 64 * 1024 });
+    const open = { fs, ingest: createLocalIngestClient(new EngineHost(() => fs)), reserveBytes: 64 * 1024 };
+    a = await replica(server, name, open);
+    b = await replica(server, name, open);
     stop = lead(a.model);
     await a.model.sync.settled();
   });
@@ -118,6 +139,8 @@ describe("eviction under storage pressure", () => {
     assert.equal(await cachedBodies(), 150);
 
     const pressure = hold(b.model.sync.pressure);
+    // The flush is refused once, lands on the reserve kv releases, and kv asks the leader for space.
+    refuse();
     await ingest(a.db);
     await pressure.until((p) => p.pending);
     assert.equal(await syncRow(b), "asked");

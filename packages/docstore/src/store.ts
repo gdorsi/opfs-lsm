@@ -5,13 +5,12 @@ import {
   clearCollection,
   describeIndexes,
   encodeCatalog,
-  markFailed,
-  markReady,
   normalizeSchema,
   parseCatalog,
   reconcile,
   removeDropped,
   sameCatalog,
+  settleIndex,
   type Bound,
   type BoundCollection,
   type DeclaredSchema,
@@ -301,7 +300,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
         if (ops >= BACKFILL_OPS || bytes >= BACKFILL_BYTES) break;
       }
       if (rows.length === 0) {
-        await this.editCatalog((c) => markReady(c, collection, index));
+        await this.editCatalog((c) => settleIndex(c, collection, index, { kind: "ready" }));
         return;
       }
 
@@ -342,7 +341,7 @@ class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
       );
       if (out === RETRY) continue;
       if (out) {
-        await this.editCatalog((c) => markFailed(c, collection, index, out.reason, out.ids));
+        await this.editCatalog((c) => settleIndex(c, collection, index, { kind: "failed", reason: out.reason, ids: out.ids }));
         this.startJobs();
         return;
       }

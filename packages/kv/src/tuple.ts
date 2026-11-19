@@ -6,7 +6,11 @@ export type TupleValue = null | boolean | number | string;
 /** `KeyBounds` with an upper bound, which `tupleBounds` and `stringPrefixBounds` always set. */
 export type TupleBounds = Required<KeyBounds>;
 
-const TAG = { null: 0x01, false: 0x02, true: 0x03, number: 0x04, string: 0x05 } as const;
+const TAG_NULL = 0x01;
+const TAG_FALSE = 0x02;
+const TAG_TRUE = 0x03;
+const TAG_NUMBER = 0x04;
+const TAG_STRING = 0x05;
 const utf8 = new TextEncoder();
 // `ignoreBOM` keeps a leading U+FEFF, which is part of the string. `fatal` rejects bytes no string encodes to.
 const fromUtf8 = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
@@ -77,12 +81,12 @@ function writeEscaped(s: string): void {
 
 function writeValue(v: TupleValue): void {
   room(9);
-  if (v === null) buf[len++] = TAG.null;
-  else if (v === false) buf[len++] = TAG.false;
-  else if (v === true) buf[len++] = TAG.true;
+  if (v === null) buf[len++] = TAG_NULL;
+  else if (v === false) buf[len++] = TAG_FALSE;
+  else if (v === true) buf[len++] = TAG_TRUE;
   else if (typeof v === "number") {
     if (!Number.isFinite(v)) throw new RangeError("a tuple number must be finite");
-    buf[len++] = TAG.number;
+    buf[len++] = TAG_NUMBER;
     f64.setFloat64(0, v === 0 ? 0 : v);
     const negative = f64.getUint8(0) >= 0x80;
     for (let i = 0; i < 8; i++) {
@@ -90,7 +94,7 @@ function writeValue(v: TupleValue): void {
       buf[len++] = negative ? ~b & 0xff : i === 0 ? b ^ 0x80 : b;
     }
   } else if (typeof v === "string") {
-    buf[len++] = TAG.string;
+    buf[len++] = TAG_STRING;
     writeEscaped(v);
     room(1);
     buf[len++] = 0x00;
@@ -122,7 +126,7 @@ export function stringPrefixBounds(prefix: Uint8Array, s: string): TupleBounds {
   len = 0;
   write(prefix);
   room(1);
-  buf[len++] = TAG.string;
+  buf[len++] = TAG_STRING;
   writeEscaped(s);
   return tupleBounds(take());
 }
@@ -147,14 +151,14 @@ function corrupt(at: number): never {
 
 function fieldEnd(key: Uint8Array, at: number): number {
   switch (key[at]) {
-    case TAG.null:
-    case TAG.false:
-    case TAG.true:
+    case TAG_NULL:
+    case TAG_FALSE:
+    case TAG_TRUE:
       return at + 1;
-    case TAG.number:
+    case TAG_NUMBER:
       if (at + 9 <= key.length) return at + 9;
       break;
-    case TAG.string:
+    case TAG_STRING:
       for (let i = at + 1; i < key.length; i++) {
         if (key[i] !== 0x00) continue;
         if (key[i + 1] !== 0xff) return i + 1;
@@ -174,13 +178,13 @@ export function skipTuple(key: Uint8Array, count: number, from = 0): number {
 
 function valueAt(key: Uint8Array, at: number, end: number): TupleValue {
   switch (key[at]) {
-    case TAG.null:
+    case TAG_NULL:
       return null;
-    case TAG.false:
+    case TAG_FALSE:
       return false;
-    case TAG.true:
+    case TAG_TRUE:
       return true;
-    case TAG.number: {
+    case TAG_NUMBER: {
       const negative = key[at + 1]! < 0x80;
       for (let i = 0; i < 8; i++) {
         const b = key[at + 1 + i]!;

@@ -3,7 +3,7 @@ import { EngineHost, MemoryFs, createLocalIngestClient, openHarnessDb, __resetMe
 import type { OpenFile } from "../src/opfs/async-fs.js";
 import type { PageCache } from "../src/store/page-cache.js";
 import type { Db } from "../src/index.js";
-import { collect } from "./runs.js";
+import { cacheUsage, collect } from "./runs.js";
 
 const NAME = "memory-budget";
 const enc = new TextEncoder();
@@ -104,7 +104,7 @@ function open(fs: TracingFs, host: EngineHost, cacheBytes: number): Promise<Db> 
   });
 }
 
-const usage = (db: Db) => (db as unknown as { cache: PageCache }).cache.usage();
+const usage = (db: Db) => cacheUsage((db as unknown as { cache: PageCache }).cache);
 
 function expectWithinBudget(db: Db): void {
   const u = usage(db);

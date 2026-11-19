@@ -34,9 +34,9 @@ export function compactLock(name: string): string {
   return `opfs-lsm-compact/${name}`;
 }
 
-/** Held by the one handle that answers pressure offers, while it has a handler. */
-export function pressureLock(name: string): string {
-  return `opfs-lsm-pressure/${name}`;
+/** Held by the one handle that answers the host's offers when storage is full, while it has a handler. */
+export function fullLock(name: string): string {
+  return `opfs-lsm-full/${name}`;
 }
 
 export function ingestLock(name: string): string {

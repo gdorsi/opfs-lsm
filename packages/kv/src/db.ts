@@ -18,11 +18,11 @@ import {
   CorruptDatabaseError,
   StorageUnavailableError,
 } from "./errors.js";
-import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
+import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type Pressure } from "./host/protocol.js";
+import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull } from "./host/protocol.js";
 import { removeDatabase } from "./destroy.js";
-import { layersChannel, openLock, pressureLock, webLocks, withLock } from "./locks.js";
+import { fullLock, layersChannel, openLock, webLocks, withLock } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile, type Reconciled } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
@@ -38,14 +38,10 @@ import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
 import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type ViewSnapshot } from "./view.js";
-import {
-  ChangeBus,
-  type ChangeEvent,
-  type ChangeListener,
-} from "./changes.js";
+import type { ChangeEvent, ChangeListener } from "./changes.js";
 
 export type { ViewSnapshot } from "./view.js";
-export type { Pressure } from "./host/protocol.js";
+export type { StorageFull } from "./host/protocol.js";
 export type { ChangeEvent, ChangeListener, ChangeKind, ChangeOp } from "./changes.js";
 
 /** Public open options. Apps pass a database name; the library owns the rest. */
@@ -78,17 +74,17 @@ export type OpenOptions = {
    */
   readonly compactionMemoryBytes?: number;
   /**
-   * Bytes of run files to stay under, or `"quota"` for 90% of the browser's
-   * storage quota for the origin. kv never removes a row for it: it asks
-   * an `onPressure` handler to, and a write never waits for it. When tabs
-   * differ, the host uses the smallest figure and honors `"quota"` too
-   * (docs/size-cap.md).
+   * Bytes the SharedWorker keeps written in a reserve file, and removes when
+   * the browser refuses a write, so the write and the flush and compaction
+   * that free space have room (docs/reserve.md). Default 24 MiB, an
+   * integer of at least 0. 0 keeps none, and never calls `onStorageFull`.
+   * When tabs differ, the host keeps the largest, until the last tab closes
+   * the database.
    */
-  readonly maxBytes?: number | "quota";
+  readonly reserveBytes?: number;
 };
 
-/** Frees about `pressure.need` bytes with ordinary writes. See `Db.onPressure`. */
-export type PressureHandler = (pressure: Pressure) => Promise<void>;
+type StorageFullHandler = (full: StorageFull) => Promise<void>;
 
 /** Below this, one page per merge source may not fit. */
 const MIN_MEMORY_BUDGET = 1024 * 1024;
@@ -196,6 +192,8 @@ export interface Db {
    * Read `keys` and write, in one IndexedDB transaction. `body` runs
    * synchronously with the current values, in the order of `keys`. No other
    * write can land between the reads and the commit, so there is no conflict.
+   * `body` runs again when the browser refuses the write for lack of space
+   * and kv tries it once more.
    */
   update<T>(
     keys: readonly Uint8Array[],
@@ -216,11 +214,14 @@ export interface Db {
    */
   changes(listener: ChangeListener): () => void;
   /**
-   * Answer offers to bring the database under `maxBytes`. Only the handle
-   * holding the Web Lock `opfs-lsm-pressure/<name>` is called, once per
-   * offer. Returns unsubscribe.
+   * Called when the browser refused a write and kv removed its reserve, or
+   * could not write it back. Free about `full.need` bytes with ordinary
+   * writes: deletes free space once a flush and a compaction hold them, and
+   * the reserve is their room. Only the handle holding the Web Lock
+   * `opfs-lsm-full/<name>` is called, and not again before a flush holds
+   * what the handlers wrote. Returns unsubscribe.
    */
-  onPressure(handler: PressureHandler): () => void;
+  onStorageFull(handler: (full: StorageFull) => Promise<void>): () => void;
   /**
    * Catch up to every write acked before the call, from any tab. Other tabs'
    * writes otherwise arrive over BroadcastChannel, a moment after their ack.
@@ -266,20 +267,11 @@ export function prefixBound(prefix: Uint8Array): {
 }
 
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
-type DbInternals = {
-  readonly name: DbName;
-  readonly wal: TabWal;
-  readonly fs: ReadFs;
-  readonly ingest: IngestClient;
-  /** Flush the memtable now and wait for the compaction it starts. */
-  readonly flush: () => Promise<{ generation: number }>;
-};
-
-const internals = new WeakMap<Db, DbInternals>();
+type DbInternals = Pick<DbImpl, "name" | "wal" | "fs" | "ingestClient" | "flush">;
 
 /** Undefined for a Db not opened by `openDbWith`. */
 export function dbInternals(db: Db): DbInternals | undefined {
-  return internals.get(db);
+  return db instanceof DbImpl ? db : undefined;
 }
 
 export async function openDb(options: OpenOptions): Promise<Db> {
@@ -342,7 +334,7 @@ export async function destroyDbWith(options: { readonly name: string; readonly f
 /** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
 export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   const name = checkDbName(options.name);
-  if (options.maxBytes !== undefined && options.maxBytes !== "quota" && !(options.maxBytes > 0)) throw new ConstraintError("maxBytes must be positive");
+  const reserveBytes = reserveOf(options.reserveBytes);
   // Started first, so the module loads while the rest of open runs.
   const engine = ensureEngine();
   // Awaited last: a throw before that must not leave its rejection unhandled.
@@ -352,13 +344,14 @@ export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   const parent = options.fs || !canUseBrowserOpfs() ? undefined : openParent();
   parent?.catch(() => undefined);
   // Held until the open resolves, so `destroyDb` never meets a half-done open (design.md, "Removing").
-  return withLock(openLock(name), () => openStores(name, options, caps, engine, parent), "shared");
+  return withLock(openLock(name), () => openStores(name, options, caps, reserveBytes, engine, parent), "shared");
 }
 
 async function openStores(
   name: DbName,
   options: OpenWithOptions,
   caps: MemtableCaps,
+  reserveBytes: number,
   engine: Promise<unknown>,
   parent: Promise<FileSystemDirectoryHandle> | undefined,
 ): Promise<Db> {
@@ -368,14 +361,17 @@ async function openStores(
   let heldDb: DbImpl | undefined;
   try {
     const tabFs = options.wrapFs?.(fs) ?? fs;
-    const wal = await TabWal.open(name, () => void heldDb?.closeFor("destroyed"));
+    const wal = await TabWal.open(
+      name,
+      () => void heldDb?.closeFor("destroyed"),
+      () => ingest.makeRoom(name),
+    );
     heldWal = wal;
     // Pairs the WAL with a manifest before the first read or write resolves.
     // The recorded manifest's runs are checked by the load, which opens them.
     const recovering = reconcile(wal, tabFs, "recorded");
     recovering.catch(() => undefined);
     const writerId = (options.writerId ?? newWriterId()) as WriterId;
-    const maxBytes = options.maxBytes;
     const cache = new PageCache(
       Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
     );
@@ -388,17 +384,15 @@ async function openStores(
       ingest,
       ownsIngestClient,
       caps,
-      maxBytes,
       options.rowPostMs,
     );
     heldDb = db;
-    internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
     await db.boot(recovering);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
     ingest.watch(name, {
       maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
       compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
-      maxBytes,
+      reserveBytes,
     });
     // The host cannot flush without the module, so a page that cannot load it does not open.
     await engine;
@@ -509,13 +503,12 @@ class DbImpl implements Db {
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
   private readonly catchUpToWal = coalesced(() => this.syncOnce());
-  private readonly changeBus = new ChangeBus();
+  private readonly listeners = new Set<ChangeListener>();
   /** Applied and not yet announced, in seq order. Drained outside IndexedDB callbacks. */
   private unannounced: ChangeEvent[] = [];
   /** A repair may have recorded another manifest, so the next install can change what reads return. */
   private repaired = false;
   private readonly bus: BroadcastChannel | undefined;
-  private readonly onBusMessage: ((ev: MessageEvent<BusMessage>) => void) | undefined;
   /** Landed and not yet posted, in seq order, with the bytes of their ops. */
   private unposted: BusRow[] = [];
   private unpostedBytes = 0;
@@ -528,22 +521,23 @@ class DbImpl implements Db {
   private readonly pressure: Backpressure;
   /** The last read point and the two tables it joined. */
   private lastPoint: { readonly installed: Marks; readonly mem: Marks; readonly at: Marks } | undefined;
-  private readonly handlers = new Set<PressureHandler>();
-  /** Lets go of the pressure lock, or of the wait for it. Set while this handle has a handler. */
+  private readonly handlers = new Set<StorageFullHandler>();
+  /** Lets go of the full lock, or of the wait for it. Set while this handle has a handler. */
   private unlock: (() => void) | undefined;
   private holding = false;
   private answering = false;
+  /** This handle has said once that no tab has a handler. */
+  private warned = false;
 
   constructor(
     readonly name: DbName,
     readonly writerId: WriterId,
-    private readonly wal: TabWal,
-    private readonly fs: ReadFs,
+    readonly wal: TabWal,
+    readonly fs: ReadFs,
     private readonly cache: PageCache,
-    private readonly ingestClient: IngestClient,
+    readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
-    private readonly maxBytes: number | "quota" | undefined,
     private readonly rowPostMs = ROW_POST_MS,
   ) {
     this.pressure = new Backpressure(
@@ -553,8 +547,7 @@ class DbImpl implements Db {
     );
     if (typeof BroadcastChannel !== "undefined") {
       this.bus = new BroadcastChannel(layersChannel(name));
-      this.onBusMessage = (ev: MessageEvent<BusMessage>) => this.onMessage(ev.data);
-      this.bus.addEventListener("message", this.onBusMessage);
+      this.bus.addEventListener("message", (ev: MessageEvent<BusMessage>) => this.onMessage(ev.data));
       if (typeof document !== "undefined") {
         document.addEventListener("visibilitychange", this.onVisibility);
       }
@@ -574,8 +567,8 @@ class DbImpl implements Db {
       }
       return this.announce();
     }
-    if (data?.kind === "pressure") return void this.answer(data.pressure).catch(() => undefined);
-    if (data?.kind === "pressure-pull" || data?.kind === "pressure-done") return;
+    if (data?.kind === "full") return void this.answer(data.full).catch(() => undefined);
+    if (data?.kind === "full-pull" || data?.kind === "full-done") return;
     // An `ingest`, or a message this build does not know: catch up from the WAL.
     void this.sync().catch(() => undefined);
   }
@@ -634,7 +627,15 @@ class DbImpl implements Db {
   private announce(): void {
     const events = this.unannounced;
     this.unannounced = [];
-    for (const event of events) this.changeBus.emit(event);
+    for (const event of events) {
+      for (const listener of this.listeners) {
+        try {
+          listener(event);
+        } catch (err) {
+          console.error("changes() listener threw", err);
+        }
+      }
+    }
   }
 
   private emit(event: ChangeEvent): void {
@@ -1101,10 +1102,13 @@ class DbImpl implements Db {
 
   changes(listener: ChangeListener): () => void {
     this.ensureOpen();
-    return this.changeBus.subscribe(listener);
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
-  onPressure(handler: PressureHandler): () => void {
+  onStorageFull(handler: StorageFullHandler): () => void {
     this.ensureOpen();
     this.handlers.add(handler);
     if (!this.unlock) this.askLock();
@@ -1124,40 +1128,48 @@ class DbImpl implements Db {
       release();
     });
     webLocks()
-      ?.request(pressureLock(this.name), { signal: abort.signal }, () => {
+      ?.request(fullLock(this.name), { signal: abort.signal }, () => {
         // Granted before `unlock` could abort the request: `held` is settled, so the lock goes back.
         if (this.unlock !== unlock) return held;
         this.holding = true;
-        this.bus?.postMessage({ kind: "pressure-pull" } satisfies BusMessage);
+        this.bus?.postMessage({ kind: "full-pull" } satisfies BusMessage);
         return held;
       })
       .catch(() => undefined);
   }
 
-  private async answer(pressure: Pressure): Promise<void> {
+  /**
+   * Answer an offer. The holder of the full lock runs its handlers. A
+   * handle with no handler answers when no handle holds the lock, so the
+   * host tries the reserve again once space is free.
+   */
+  private async answer(full: StorageFull): Promise<void> {
     if (this.holding && !this.answering) {
       this.answering = true;
       for (const handler of [...this.handlers]) {
         try {
-          await handler(pressure);
+          await handler(full);
         } catch (err) {
-          console.error(`opfs-lsm: an onPressure handler of ${this.name} failed`, err);
+          console.error(`opfs-lsm: an onStorageFull handler of ${this.name} failed`, err);
         }
       }
       this.answering = false;
       // A handle that let go of the lock meanwhile stays silent, so the next holder pulls the offer.
-      if (this.holding) this.bus?.postMessage({ kind: "pressure-done" } satisfies BusMessage);
-    } else if (this.handlers.size === 0 && this.maxBytes !== undefined) {
+      if (this.holding) this.bus?.postMessage({ kind: "full-done" } satisfies BusMessage);
+    } else if (this.handlers.size === 0) {
       const free = await webLocks()?.request(
-        pressureLock(this.name),
+        fullLock(this.name),
         { mode: "shared", ifAvailable: true },
         (lock) => lock !== null,
       );
-      if (free) {
+      if (!free || this.closed) return;
+      if (!this.warned) {
+        this.warned = true;
         console.warn(
-          `opfs-lsm: ${this.name} must free ${pressure.need} bytes to stay under maxBytes ${pressure.maxBytes}, and no tab answers onPressure`,
+          `opfs-lsm: the browser refused a write to ${this.name}, and no tab has an onStorageFull handler to free ${full.need} bytes`,
         );
       }
+      this.bus?.postMessage({ kind: "full-done" } satisfies BusMessage);
     }
   }
 
@@ -1192,14 +1204,13 @@ class DbImpl implements Db {
     if (this.closed) return;
     this.closed = true;
     this.emit({ kind: "closed", reason });
-    this.changeBus.clear();
+    this.listeners.clear();
     this.unlock?.();
-    if (this.bus && this.onBusMessage) {
+    if (this.bus) {
       this.postRows();
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", this.onVisibility);
       }
-      this.bus.removeEventListener("message", this.onBusMessage);
       this.bus.close();
     }
     this.ingestClient.unwatch(this.name);

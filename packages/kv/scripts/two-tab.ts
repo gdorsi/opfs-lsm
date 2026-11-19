@@ -5,7 +5,6 @@
  *   TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_REPEAT=3 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
- *   TWO_TAB_PRESSURE=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  */
@@ -36,7 +35,7 @@ type ClientCmd =
   | { op: "ingest"; name?: string }
   | { op: "rows"; name: string }
   | { op: "destroy"; name: string }
-  | { op: "cap"; key: string; value: string };
+  | { op: "full"; key: string; value: string };
 
 type PeerCmd = ClientCmd & { id: number };
 
@@ -51,9 +50,7 @@ type PeerResult = {
 type RunOptions = {
   local: boolean;
   nobc: boolean;
-  /** Run the maxBytes scenario instead of the visibility one. */
-  pressure: boolean;
-  /** Run the maxBytes: "quota" scenario, which asks this script to override the origin's quota. */
+  /** Run the reserve scenario, which asks this script to set a real limit on the origin's storage. */
   quota: boolean;
   /** Run the destroyDb scenario, which asks this script to open, crash, freeze and navigate tabs. */
   destroy: boolean;
@@ -100,8 +97,8 @@ function parseClientCmd(value: unknown): ClientCmd | null {
   if ((rec.op === "rows" || rec.op === "destroy") && typeof rec.name === "string") {
     return { op: rec.op, name: rec.name };
   }
-  if (rec.op === "cap" && typeof rec.key === "string" && typeof rec.value === "string") {
-    return { op: "cap", key: rec.key, value: rec.value };
+  if (rec.op === "full" && typeof rec.key === "string" && typeof rec.value === "string") {
+    return { op: "full", key: rec.key, value: rec.value };
   }
   if (rec.op === "get" && typeof rec.key === "string") {
     return { op: "get", key: rec.key, ...name };
@@ -291,34 +288,28 @@ async function waitForDebugger(port: number): Promise<string> {
   throw new Error(`devtools not ready: ${last}`);
 }
 
-/** One DevTools command; resolves with its result. */
-function cdp(wsUrl: string, method: string, params: object): Promise<{ targetId?: string }> {
+function openTarget(wsUrl: string, url: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     const timer = setTimeout(() => {
       ws.close();
-      reject(new Error(`devtools ${method} timeout`));
+      reject(new Error("devtools target timeout"));
     }, 10_000);
-    ws.addEventListener("open", () => ws.send(JSON.stringify({ id: 1, method, params })));
+    ws.addEventListener("open", () => ws.send(JSON.stringify({ id: 1, method: "Target.createTarget", params: { url } })));
     ws.addEventListener("message", (ev) => {
       const msg = JSON.parse(String(ev.data)) as { id?: number; error?: { message?: string }; result?: { targetId?: string } };
       if (msg.id !== 1) return;
       clearTimeout(timer);
       ws.close();
-      if (msg.error) reject(new Error(msg.error.message ?? `devtools ${method} failed`));
-      else resolve(msg.result ?? {});
+      if (msg.error) reject(new Error(msg.error.message ?? "devtools target failed"));
+      else if (!msg.result?.targetId) reject(new Error("devtools did not return a target id"));
+      else resolve(msg.result.targetId);
     });
     ws.addEventListener("error", () => {
       clearTimeout(timer);
       reject(new Error("devtools socket error"));
     });
   });
-}
-
-async function openTarget(wsUrl: string, url: string): Promise<string> {
-  const { targetId } = await cdp(wsUrl, "Target.createTarget", { url });
-  if (!targetId) throw new Error("devtools did not return a target id");
-  return targetId;
 }
 
 /** A DevTools session on one page that stays open, so a frozen page stays frozen, and that keeps why the page was not restored from the back/forward cache. */
@@ -518,6 +509,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     }
   };
   let wsUrl: string | undefined;
+  let quotaSession: PageSession | undefined;
 
   const server = http.createServer(async (req, res) => {
     const urlPath = (req.url ?? "/").split("?")[0] ?? "/";
@@ -541,13 +533,16 @@ async function runOnce(options: RunOptions): Promise<number> {
         return;
       }
       if (req.method === "POST" && urlPath === "/quota") {
-        // Storage.overrideQuotaForOrigin leaves estimate() alone in Chrome 157, so the
-        // SharedWorker's estimate gets the quota here; its usage stays Chrome's own.
-        const quota = Number(new URL(req.url!, "http://x").searchParams.get("size"));
-        const targets = (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()) as { type: string; webSocketDebuggerUrl: string }[];
-        const expression = `{ const real = StorageManager.prototype.estimate; StorageManager.prototype.estimate = async function () { return { ...(await real.call(this)), quota: ${quota} }; }; }`;
-        // Chrome lists the one SharedWorker twice; the page's connection may be either.
-        for (const t of targets) if (t.type === "shared_worker") await cdp(t.webSocketDebuggerUrl, "Runtime.evaluate", { expression });
+        const size = new URL(req.url!, "http://x").searchParams.get("size");
+        // The override ends with the DevTools session that set it, so one session stays open.
+        if (!quotaSession) {
+          const targets = (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()) as { id: string; type: string; url: string }[];
+          const tab = targets.find((t) => t.type === "page" && t.url.includes("role=a"));
+          if (!tab) throw new Error("no tab A to set the quota from");
+          quotaSession = await PageSession.open(debugPort, tab.id);
+        }
+        const origin = `http://127.0.0.1:${port}`;
+        await quotaSession.send("Storage.overrideQuotaForOrigin", size === null ? { origin } : { origin, quotaSize: Number(size) });
         json(res, 200, { ok: true });
         return;
       }
@@ -632,7 +627,6 @@ async function runOnce(options: RunOptions): Promise<number> {
 
   const query = new URLSearchParams({ auto: "1", name: "two-tab" });
   if (options.nobc) query.set("nobc", "1");
-  if (options.pressure) query.set("scenario", "pressure");
   if (options.quota) query.set("scenario", "quota");
   if (options.destroy) query.set("scenario", "destroy");
   if (options.local) query.set("local", "1");
@@ -644,7 +638,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     role: "b",
   });
   if (options.nobc) tabBQuery.set("nobc", "1");
-  if (options.pressure) tabBQuery.set("scenario", "pressure");
+  if (options.quota) tabBQuery.set("scenario", "quota");
   const tabB = `http://127.0.0.1:${port}/proof/two-tab.html?${tabBQuery}`;
 
   console.log(`Opening ${tabA}`);
@@ -687,10 +681,10 @@ async function runOnce(options: RunOptions): Promise<number> {
     if (parsed.error) {
       console.error(parsed.error);
       exitCode = 1;
-    } else if (!parsed.log?.includes(options.destroy ? "destroy ok" : options.quota ? "quota ok" : options.pressure ? "pressure ok" : "two-tab ok")) {
+    } else if (!parsed.log?.includes(options.destroy ? "destroy ok" : options.quota ? "quota ok" : "two-tab ok")) {
       console.error("missing the ok line");
       exitCode = 1;
-    } else if (!options.quota && !options.pressure && !options.destroy && !parsed.log.includes("two-databases ok")) {
+    } else if (!options.quota && !options.destroy && !parsed.log.includes("two-databases ok")) {
       console.error("missing the two-databases ok line");
       exitCode = 1;
     } else if (!options.local && !parsed.log.includes("mode=SharedWorker")) {
@@ -705,6 +699,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     exitCode = 1;
   } finally {
     for (const { session } of holders.values()) session?.close();
+    quotaSession?.close();
     killChrome(chrome);
     chrome.stdout?.destroy();
     chrome.stderr?.destroy();
@@ -729,7 +724,6 @@ async function main(): Promise<number> {
   const options = {
     local: flag("TWO_TAB_LOCAL"),
     nobc: flag("TWO_TAB_NOBC"),
-    pressure: flag("TWO_TAB_PRESSURE"),
     quota: flag("TWO_TAB_QUOTA"),
     destroy: flag("TWO_TAB_DESTROY"),
   };

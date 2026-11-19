@@ -7,7 +7,7 @@ import { valueOf, type LayerEntry } from "../src/store/cursor.js";
 import { encodeRun as encodeWasmRun, lz4DecompressIn, openMergeIn, scanBlockContainsIn, type MergeSpec } from "../src/store/engine.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { openMergeTs } from "../tests/oracle/merge-ts.js";
-import { BlockEntries, blockBytes, type EncodedRun, type SstEntry } from "../src/store/sst.js";
+import { blockBytes, blockEntries, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { mergeRuns } from "../tests/runs.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
@@ -85,12 +85,12 @@ const plain = (es: readonly { kind: string; key: Uint8Array; value?: Uint8Array;
 async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array): Promise<"same" | "differ" | "rejected"> {
   return bounded("scan_block_contains (both)", () => {
     const w = wasmOutcome("scanBlockContains", () => [...unpackHits(scanBlockContainsIn(wasm, framed, lz4, packPatterns([pattern])))]);
-    const t = tsOutcome("BlockEntries", () => {
+    const t = tsOutcome("blockEntries", () => {
       const b = blockBytes(framed, new DataView(framed.buffer, framed.byteOffset, framed.byteLength), 0, { offset: 0, length: framed.byteLength }, lz4 ? "lz4" : "raw");
-      const walk = new BlockEntries(b);
+      const next = blockEntries(b);
       const out: LayerEntry[] = [];
-      for (let e = walk.next(); e; e = walk.next()) {
-        if (out.length > 255 * framed.byteLength + 16) throw new RuleBroken("BlockEntries did not end");
+      for (let e = next(); e; e = next()) {
+        if (out.length > 255 * framed.byteLength + 16) throw new RuleBroken("blockEntries did not end");
         if (e.kind === "put" && contains(valueOf(e), pattern)) out.push(e);
       }
       return out;
