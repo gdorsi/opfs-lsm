@@ -511,7 +511,6 @@ class DbImpl implements Db {
   /** A repair may have recorded another manifest, so the next install can change what reads return. */
   private repaired = false;
   private readonly bus: BroadcastChannel | undefined;
-  private readonly onBusMessage: ((ev: MessageEvent<BusMessage>) => void) | undefined;
   /** Landed and not yet posted, in seq order, with the bytes of their ops. */
   private unposted: BusRow[] = [];
   private unpostedBytes = 0;
@@ -549,8 +548,7 @@ class DbImpl implements Db {
     );
     if (typeof BroadcastChannel !== "undefined") {
       this.bus = new BroadcastChannel(layersChannel(name));
-      this.onBusMessage = (ev: MessageEvent<BusMessage>) => this.onMessage(ev.data);
-      this.bus.addEventListener("message", this.onBusMessage);
+      this.bus.addEventListener("message", (ev: MessageEvent<BusMessage>) => this.onMessage(ev.data));
       if (typeof document !== "undefined") {
         document.addEventListener("visibilitychange", this.onVisibility);
       }
@@ -1201,12 +1199,11 @@ class DbImpl implements Db {
     this.emit({ kind: "closed", reason });
     this.listeners.clear();
     this.unlock?.();
-    if (this.bus && this.onBusMessage) {
+    if (this.bus) {
       this.postRows();
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", this.onVisibility);
       }
-      this.bus.removeEventListener("message", this.onBusMessage);
       this.bus.close();
     }
     this.ingestClient.unwatch(this.name);
