@@ -63,4 +63,13 @@ Each event carries its time as `linearlite.duration_ms`. A message type with no 
 VITE_EVERR_INGEST_ENDPOINT=<otlp-url-from-status> pnpm --filter @opfs-lsm/example-linearlite-docstore dev
 ```
 
-The docs site's README holds the configuration, the other events, and the local and production setup, in [Telemetry](../../site/README.md#telemetry).
+Telemetry stores nothing in the browser. The SDK keeps its session id in memory, so the id lasts for one page load, and the records cannot count visitors or follow one. A browser that sends Global Privacy Control or Do Not Track turns telemetry off, and `record()` and `report()` then do nothing. `src/telemetry.ts` posts each batch itself and first removes these attributes, which help tell visitors apart:
+
+- `everr.visitor.id`
+- `everr.screen.width` and `everr.screen.height`
+- `everr.timezone`
+- `browser.language`
+
+The page URL keeps its query, which holds only `db`, `count` and `theme`. When telemetry is on, the docs site removes every query parameter except `utm_*` from its own address before it frames the demo. Each request still reaches Everr's ingest from the visitor's IP address, as any web request does, and the records still carry the user agent, the page URL and the referrer.
+
+The docs site's README holds the configuration, the other events, why each attribute is removed, and the local and production setup, in [Telemetry](../../site/README.md#telemetry).

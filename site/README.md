@@ -11,9 +11,28 @@ The site and the demo send OpenTelemetry from the visitor's browser to [Everr](h
 | `opfs-lsm-site` | [`.vitepress/theme/telemetry.ts`](.vitepress/theme/telemetry.ts), loaded by [`.vitepress/theme/index.ts`](.vitepress/theme/index.ts) | Errors, page views, clicks and submits, web vitals, `fetch` and XHR spans, and the errors Vue components throw. |
 | `opfs-lsm-demo` | [`src/telemetry.ts`](../examples/linearlite-docstore/src/telemetry.ts) of the demo, fed by `post()` and `failed()` in [`src/protocol.ts`](../examples/linearlite-docstore/src/protocol.ts) | The same browser signals, the demo's timings, and the errors the demo catches. |
 
-One build makes both apps, so they read the same variables. They share an origin, so they also share the visitor id and the session id the SDK keeps in `localStorage`. One visit is one session across the two services.
+One build makes both apps, so they read the same variables.
 
-Telemetry is on only when `VITE_EVERR_INGEST_ENDPOINT` is set for the build or the dev server. Without it, neither app constructs a client or sends a request, and the bundler leaves the SDK out of both builds. The demo starts the SDK before its first timing. The site loads it in the browser only, as a chunk of its own, so it misses errors and clicks from before that chunk runs.
+Telemetry is on only when `VITE_EVERR_INGEST_ENDPOINT` is set for the build or the dev server. Without it, neither app constructs a client or sends a request, and the bundler leaves the SDK out of both builds. A browser that sends Global Privacy Control or Do Not Track (`navigator.globalPrivacyControl` is `true` or `navigator.doNotTrack` is `"1"`) turns telemetry off in the same way, and the site then does not load its telemetry chunk. The demo starts the SDK before its first timing. The site loads it in the browser only, as a chunk of its own, so it misses errors and clicks from before that chunk runs.
+
+### Records cannot follow a visitor
+
+Telemetry stores nothing in the browser. Each app runs the SDK with `persistence: "memory"`, so its session id lasts for one page load. The site moves between its pages without a reload, so one session id covers every page a visitor opens until a reload or a new tab. The demo in its frame is a page load of its own, with its own session id. Nothing links two page loads, so the records cannot count visitors or follow one across reloads, tabs or the two services.
+
+The site deletes `everr.visitor.id` and `everr.session` from `localStorage` on every load. An earlier build kept the SDK's ids under those keys.
+
+Each app posts its batches itself, through the SDK's `send` option, and first removes these attributes from the payload:
+
+- `everr.visitor.id`
+- `everr.screen.width` and `everr.screen.height`
+- `everr.timezone`
+- `browser.language`
+
+The screen size, the timezone and the language add little to debugging, and together with the user agent they tell many visitors apart. The visitor id lasts one page load, as the session id does, so it would only count each page load as a new visitor. The SDK sets the screen size, the timezone and the language once, as resource attributes that its `beforeSend` hook cannot change, so the removal runs on the OTLP payload.
+
+When telemetry is on, the site removes every query parameter except `utm_*` from the address bar before the SDK starts and before the home page can load the demo frame. A click id such as `fbclid` or `gclid` then does not reach the landing URL, the page URL or the demo's referrer. The demo keeps its own query, which holds only `db`, `count` and `theme`.
+
+Two limits remain. Each request reaches Everr's ingest from the visitor's IP address, as any web request does. The records still carry the user agent, the page URL and the referrer.
 
 ### Configuration
 
@@ -43,7 +62,7 @@ The `docs` workflow ([`.github/workflows/docs.yml`](../.github/workflows/docs.ym
 | `linearlite.filter` | Demo | The `filter` message | `linearlite.duration_ms` for the first page, `linearlite.total_duration_ms` for the count, `linearlite.total`, `linearlite.read_path` (`index`, `ranges`, `scan` or `search`) |
 | `linearlite.write` | Demo | The `generated` message | `linearlite.duration_ms`, `linearlite.generate_duration_ms`, `linearlite.count` |
 
-The demo's README defines each timing, in [Timings](../examples/linearlite-docstore/README.md#timings). Every record of the demo also carries `linearlite.framed`, `linearlite.navigation` (the frame's navigation type, such as `navigate` or `reload`), `linearlite.device.cores` and `linearlite.device.memory_gb`. The SDK adds these to every record of both services: the visitor id, the session id, the page URL, the referrer, the landing URL with its UTM parameters, the user agent, the screen size, the timezone and the language. For the demo in the frame, the referrer is the URL of the page around it.
+The demo's README defines each timing, in [Timings](../examples/linearlite-docstore/README.md#timings). Every record of the demo also carries `linearlite.framed`, `linearlite.navigation` (the frame's navigation type, such as `navigate` or `reload`), `linearlite.device.cores` and `linearlite.device.memory_gb`. The SDK adds these to every record of both services: the session id, the page URL, the referrer, the landing URL with its UTM parameters and the user agent. For the demo in the frame, the referrer is the URL of the page around it.
 
 No record holds text a visitor typed. The demo's search text stays in the `filter` message to the page, and a KPI attribute cannot hold a free string. Page URLs are sent with their query, and neither app puts visitor input in one.
 
