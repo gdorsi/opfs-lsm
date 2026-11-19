@@ -436,6 +436,8 @@ function tallyOf(rows: readonly MemRow[], levels: readonly RunLevel[], bounds: S
   for (const row of rows) sum.count(row.kind === "put", row.was);
   let misses: Miss[] | undefined;
   for (const level of levels) {
+    // A record that does not say settles it: no older level can make the sum a count, so none is read.
+    if (sum.unknown > 0) return sum;
     const miss = level.tally(bounds, sum, exact);
     if (miss) (misses ??= []).push(miss);
   }

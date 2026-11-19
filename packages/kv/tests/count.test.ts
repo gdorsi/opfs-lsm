@@ -143,7 +143,8 @@ describe("a memtable row says what held before the oldest record it folds", () =
     expect(mem.get(utf("a"))).toMatchObject({ kind: "put", was: "absent" });
     mem.advanceTo(asSeq(3));
     expect(mem.get(utf("a"))).toMatchObject({ kind: "put", was: "present" });
-    expect(mem.get(utf("a"))).not.toHaveProperty("later");
+    // One op is left, so the row is all there is to keep.
+    expect(mem.get(utf("a"))!.ops).toBeUndefined();
     mem.advanceTo(asSeq(4));
     expect(mem.get(utf("a"))).toBeUndefined();
   });
@@ -154,6 +155,36 @@ describe("a memtable row says what held before the oldest record it folds", () =
     mem.apply({ seq: asSeq(5), ops: [{ type: "deleteRange", start: checkKey(utf("")), through: asSeq(3) }] });
     // "a" and "b" are covered. "c" keeps its record at seq 4, which saw the record at seq 3: a version the mark covers.
     expect(mem.range().map((r) => [dec.decode(r.key), r.seq, r.was])).toEqual([["c", 4, undefined]]);
+  });
+
+  it("a write in the record of a range delete is as unsure, before the range delete or after it", () => {
+    const everything: CheckedOp = { type: "deleteRange", start: checkKey(utf("")), through: asSeq(1) };
+    for (const ops of [
+      [everything, put("a", "present"), del("b", "present"), put("c", "absent")],
+      [put("a", "present"), del("b", "present"), put("c", "absent"), everything],
+    ]) {
+      const mem = new Memtable();
+      apply(mem, [put("a", "absent"), put("b", "absent")]);
+      mem.apply({ seq: asSeq(2), ops });
+      // "a" and "b" saw the rows of seq 1, which the range delete covers. "c" saw nothing, and still says so.
+      expect(mem.range().map((r) => [dec.decode(r.key), r.kind, r.was])).toEqual([
+        ["a", "put", undefined],
+        ["b", "del", undefined],
+        ["c", "put", "absent"],
+      ]);
+    }
+  });
+
+  it("a key written over and over keeps one link per write, and says what held before the oldest one left", () => {
+    const mem = new Memtable();
+    apply(mem, [put("a", "absent")]);
+    for (let i = 0; i < 50_000; i++) apply(mem, [i % 2 ? put("a", "absent") : del("a", "present")]);
+    expect(mem.get(utf("a"))).toMatchObject({ kind: "put", was: "absent", seq: 50_001 });
+    mem.advanceTo(asSeq(50_000));
+    // The record at seq 50,000 deleted the key.
+    expect(mem.get(utf("a"))).toMatchObject({ kind: "put", was: "absent", seq: 50_001 });
+    mem.advanceTo(asSeq(50_001));
+    expect(mem.get(utf("a"))).toBeUndefined();
   });
 });
 
@@ -350,6 +381,45 @@ describe("count", () => {
     await settle(db);
     expect(await db.count()).toBe(2_004);
     expect(await db.count({ start: key(10), endExclusive: key(1_010) })).toBe(1_000);
+  });
+
+  it("counts a key an update read, then cleared a range over and wrote again", async () => {
+    const db = await open();
+    const [kept, gone, fresh] = [key(1), key(2), key(3)];
+    await db.update([kept, gone], (_, tx) => {
+      tx.put(kept, utf("v1"));
+      tx.put(gone, utf("v1"));
+    });
+    await ingest(db);
+    // The update read both keys as present. Its range delete covers the versions it read.
+    await db.update([kept, gone, fresh], (_, tx) => {
+      tx.deleteRange({});
+      tx.put(kept, utf("v2"));
+      tx.delete(gone);
+      tx.put(fresh, utf("v2"));
+    });
+    expect(await db.count()).toBe(2);
+    await ingest(db);
+    expect(await scanned(db)).toBe(2);
+    expect(await db.count()).toBe(2);
+    await settle(db);
+    expect(await db.count()).toBe(2);
+    expect(await db.count({ start: kept, endExclusive: gone })).toBe(1);
+  });
+
+  it("stops at a `limit` where a scan would, whatever number it is", async () => {
+    const db = await open();
+    const keys = Array.from({ length: 10 }, (_, i) => key(i));
+    await db.update(keys, (_, tx) => keys.forEach((k) => tx.put(k, utf("v"))));
+    await db.put(key(20), utf("blind"));
+    // The first range is added up, the second holds a blind write and is scanned.
+    for (const range of [{ endExclusive: key(10) }, {}]) {
+      expect(await db.count({ ...range, limit: 0 })).toBe(0);
+      expect(await db.count({ ...range, limit: -1 })).toBe(0);
+      expect(await db.count({ ...range, limit: 2.5 })).toBe(3);
+      expect(await db.count({ ...range, limit: Number.NaN })).toBe(0);
+      expect(await db.count({ ...range, limit: 100 })).toBe(range.endExclusive ? 10 : 11);
+    }
   });
 
   it("refuses `was` outside an update, and an offset that is not a whole number", async () => {

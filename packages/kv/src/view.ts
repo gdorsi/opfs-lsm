@@ -73,21 +73,33 @@ function scanStep(
  * The entries `range` yields over memtable `rows` already cut to `bounds` and
  * the levels under them. A large `offset` starts the scan past most of what
  * it skips (`seekOffset`), and walks the rest.
+ *
+ * It is `entriesOf` itself, with no generator around it, unless finding
+ * where to start has to wait for a load: every entry of every scan would
+ * pay for the extra one.
  */
-export async function* scanLayers(
+export function scanLayers(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
   at: Marks,
   bounds: ScanBounds | undefined,
   range: Range | undefined,
 ): AsyncGenerator<Entry> {
-  let scan: ScanStart = { rows, bounds, offset: offsetOf(range) };
-  if (!range?.valueContains?.length) {
-    const seek = () => seekOffset(scan, levels, at, range?.reverse ?? false);
-    const first = seek();
-    scan = first instanceof Miss ? await untilHit(seek, first) : first;
-  }
-  yield* entriesOf(scanStep(scan.rows, levels, at, scan.bounds, range), range?.limit, scan.offset);
+  const scan: ScanStart = { rows, bounds, offset: offsetOf(range) };
+  const from = (start: ScanStart) => entriesOf(scanStep(start.rows, levels, at, start.bounds, range), range?.limit, start.offset);
+  if (range?.valueContains?.length) return from(scan);
+  const seek = () => seekOffset(scan, levels, at, range?.reverse ?? false);
+  const first = seek();
+  return first instanceof Miss ? onceSought(seek, first, from) : from(first);
+}
+
+/** The entries of `from`, started where `seek` says once what it missed has loaded. */
+async function* onceSought(
+  seek: () => ScanStart | Miss,
+  miss: Miss,
+  from: (start: ScanStart) => AsyncGenerator<Entry>,
+): AsyncGenerator<Entry> {
+  yield* from(await untilHit(seek, miss));
 }
 
 /** `range.offset`, 0 when not given. `ConstraintError` unless it is a whole number from 0 up. */
@@ -116,7 +128,9 @@ export async function countLayers(
   const first = range?.valueContains?.length ? undefined : read();
   const live = first instanceof Miss ? await untilHit(read, first) : first;
   if (live === undefined) return countOf(scanStep(rows, levels, at, bounds, range), limit, offset);
-  return Math.min(Math.max(0, live - offset), limit ?? Infinity);
+  // As many as a scan yields before it reaches `limit`, whatever number that is.
+  const most = limit === undefined ? Infinity : limit > 0 ? Math.ceil(limit) : 0;
+  return Math.min(Math.max(0, live - offset), most);
 }
 
 /**

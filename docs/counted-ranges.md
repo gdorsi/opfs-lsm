@@ -40,8 +40,10 @@ stretch does to the number of live keys.
   oldest version that no mark covers. In a bottom step nothing older is left, so every put it
   writes was absent, and deletes are dropped. This is what gives blind writes a `was`.
 * **Range deletes.** A version a mark covers is no part of the stretch. A version the mark
-  spares, written before the mark's record at a seq past its `through`, may have seen a version
-  the mark covers: if it says present, the memtable and a merge make it unknown.
+  spares, written in the mark's record or before it at a seq past its `through`, may have seen
+  a version the mark covers: if it says present, the memtable and a merge make it unknown. The
+  memtable and a flush apply a record's range deletes after its puts and deletes, so a write
+  of the mark's own record is spared and judged the same wherever it stands in the record.
 
 **Invariant.** Take the memtable and the runs of one generation. If every version of a key says
 `was`, and no mark holds the key, its versions say plus once more than minus when the key is live
