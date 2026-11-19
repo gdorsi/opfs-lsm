@@ -60,8 +60,22 @@ export function indexPrefix(collection: CollectionId, index: IndexId): Uint8Arra
   return Uint8Array.of(ROOT, collection >> 8, collection & 0xff, index);
 }
 
+/** Up to this many UTF-16 units `utf8Bytes` encodes into `scratch`. */
+const SCRATCH_UNITS = 1024;
+const scratch = new Uint8Array(SCRATCH_UNITS * 3);
+
+/**
+ * The same bytes as `utf8.encode`. `encode` allocates its result in the
+ * browser, which costs several times more than encoding a short string, so a
+ * string that fits is encoded into `scratch` and copied out.
+ */
+function utf8Bytes(s: string): Uint8Array {
+  if (s.length > SCRATCH_UNITS) return utf8.encode(s);
+  return scratch.slice(0, utf8.encodeInto(s, scratch).written);
+}
+
 export function idBytes(id: DocId): Uint8Array {
-  return utf8.encode(id);
+  return utf8Bytes(id);
 }
 
 /** The id whose UTF-8 is `bytes`. */
@@ -132,7 +146,7 @@ function wordsOf(text: string): string[] {
 
 /** A text entry's value. Words hold no space, so a typed word occurs in it iff it occurs inside one word. */
 export function textValue(text: string): Uint8Array {
-  return utf8.encode(wordsOf(text).join(" "));
+  return utf8Bytes(wordsOf(text).join(" "));
 }
 
 /** kv keeps an entry iff its value contains every pattern: every typed word occurs inside a word of the text. */

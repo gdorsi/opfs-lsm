@@ -150,11 +150,16 @@ function readPath(doc: StoredDoc, path: Path): unknown {
   return v;
 }
 
+/** Up to this many entries on each side `diffEntries` compares keys byte by byte, with no map. At most 32, the width of its bit mask. */
+const SMALL_DIFF = 16;
+
+/** The entries of `after` to write, and the keys of `before` to remove, each in list order. The keys of one list must be distinct, as those of `entriesOf` are. */
 export function diffEntries(
   before: readonly Entry[],
   after: readonly Entry[],
 ): { readonly remove: Uint8Array[]; readonly write: readonly Entry[] } {
   if (before.length === 0) return { remove: [], write: after };
+  if (before.length <= SMALL_DIFF && after.length <= SMALL_DIFF) return diffSmall(before, after);
   const old = new Map<string, Entry>();
   for (const e of before) old.set(keyString(e.key), e);
   const write: Entry[] = [];
@@ -165,4 +170,26 @@ export function diffEntries(
     old.delete(k);
   }
   return { remove: Array.from(old.values(), (e) => e.key), write };
+}
+
+/** No string per key: both lists come from the same indexes, so the entry at the same position is the usual match, and a search runs only when it is not. */
+function diffSmall(before: readonly Entry[], after: readonly Entry[]) {
+  let kept = 0;
+  const write: Entry[] = [];
+  for (let i = 0; i < after.length; i++) {
+    const e = after[i]!;
+    let j = i;
+    if (i >= before.length || !bytesEqual(before[i]!.key, e.key)) {
+      j = 0;
+      while (j < before.length && !bytesEqual(before[j]!.key, e.key)) j++;
+    }
+    if (j === before.length) write.push(e);
+    else {
+      kept |= 1 << j;
+      if (!bytesEqual(before[j]!.value, e.value)) write.push(e);
+    }
+  }
+  const remove: Uint8Array[] = [];
+  for (let j = 0; j < before.length; j++) if ((kept & (1 << j)) === 0) remove.push(before[j]!.key);
+  return { remove, write };
 }

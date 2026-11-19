@@ -6,9 +6,12 @@ import {
   compareBytes,
   encodeCursor,
   entryId,
+  idBytes,
   indexPrefix,
   rowPrefix,
   scanPlan,
+  textValue,
+  type DocId,
   type CollectionId,
   type IndexId,
   type ScanTarget,
@@ -222,5 +225,43 @@ describe("scanPlan", () => {
     expect(code(() => scanPlan(two, { eq: ["a"], lt: 1, after: inA }))).toBe("cursor");
     expect(code(() => scanPlan(two, { eq: ["a"], after: encodeCursor(key(["a", 1], 0x0108 as CollectionId)) }))).toBe("cursor");
     expect(code(() => scanPlan(two, { after: "not a cursor!" as never }))).toBe("cursor");
+  });
+});
+
+describe("idBytes and textValue", () => {
+  const unit = fc.constantFrom("a", "Z", "0", "-", "\0", "é", "\u07ff", "日", "\u{ffff}", "😀", "\ud800", "\udfff");
+  const stringOfAnyLength = fc.oneof(
+    fc.string({ unit: "grapheme-ascii", maxLength: 40 }),
+    fc.string({ unit, maxLength: 40 }),
+    fc.constantFrom(0, 1, 340, 341, 1023, 1024, 1025, 1026, 3000).chain((n) => fc.string({ unit: fc.constantFrom("a", "é", "😀"), minLength: n, maxLength: n })),
+  );
+
+  it("idBytes is the UTF-8 of the id, lone surrogates as U+FFFD, for ids of any length", () => {
+    fc.assert(
+      fc.property(stringOfAnyLength, (id) => {
+        expect(idBytes(id as DocId)).toEqual(utf8.encode(id));
+      }),
+      { numRuns: RUNS },
+    );
+  });
+
+  it("hands out a buffer of its own, which a later call does not change", () => {
+    const first = idBytes("abc" as DocId);
+    const second = idBytes("xyz-longer" as DocId);
+    expect(Array.from(first)).toEqual([0x61, 0x62, 0x63]);
+    expect(first.buffer.byteLength).toBeGreaterThanOrEqual(3);
+    expect(Array.from(second.subarray(0, 3))).toEqual([0x78, 0x79, 0x7a]);
+    expect(Array.from(idBytes("é" as DocId))).toEqual([0xc3, 0xa9]);
+    expect(Array.from(first)).toEqual([0x61, 0x62, 0x63]);
+  });
+
+  it("textValue is the lowercased words joined by one space, as UTF-8", () => {
+    expect(fromUtf8.decode(textValue("  Hello, WORLD!  Ünï-cödé 日本 "))).toBe("hello world ünï cödé 日本");
+    expect(textValue("")).toEqual(new Uint8Array(0));
+    const long = Array.from({ length: 600 }, (_, i) => `word${i}`);
+    expect(fromUtf8.decode(textValue(long.join(", ")))).toBe(long.join(" "));
+    expect(textValue(long.join(" ")).length).toBe(long.join(" ").length);
+    const wide = Array.from({ length: 400 }, () => "日本語").join(" ");
+    expect(textValue(wide)).toEqual(utf8.encode(wide));
   });
 });
