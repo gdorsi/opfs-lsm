@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { allMissed, Miss, untilHit } from "../src/store/cursor.js";
 import { metaKey, pageKey, PageCache, type Admit } from "../src/store/page-cache.js";
+import { cacheUsage } from "./runs.js";
 
 function harness(budget: number) {
   const cache = new PageCache(budget);
@@ -22,7 +23,7 @@ describe("page cache", () => {
     const hot = Array.from({ length: 50 }, (_, i) => pageKey(0, i));
     for (const key of hot) await fetch(key, "main", 1_000);
     for (let p = 0; p < 1_000; p++) await fetch(pageKey(1, p), "probation", 1_000);
-    expect(cache.usage().resident).toBeLessThanOrEqual(100_000);
+    expect(cacheUsage(cache).resident).toBeLessThanOrEqual(100_000);
     expect(hot.filter(isResident)).toEqual(hot);
   });
 
@@ -31,17 +32,17 @@ describe("page cache", () => {
     await fetch(metaKey(0), "meta", 3_000);
     for (let p = 0; p < 20; p++) await fetch(pageKey(1, p), "main", 1_000);
     expect(isResident(metaKey(0))).toBe(true);
-    expect(cache.usage().metadata).toBe(3_000);
+    expect(cacheUsage(cache).metadata).toBe(3_000);
 
     await fetch(pageKey(2, 0), "main", 9_500);
-    expect(cache.usage()).toMatchObject({ resident: 9_500, metadata: 0 });
+    expect(cacheUsage(cache)).toMatchObject({ resident: 9_500, metadata: 0 });
   });
 
   it("a read gets a value larger than the budget with one load", async () => {
     const { cache, fetch, loads } = harness(1_000);
     expect(await fetch(pageKey(0, 0), "main", 1_500)).toBe(pageKey(0, 0));
     expect(loads()).toBe(1);
-    expect(cache.usage().resident).toBe(0);
+    expect(cacheUsage(cache).resident).toBe(0);
   });
 
   it("stays within budget while concurrent misses land", async () => {
@@ -49,7 +50,7 @@ describe("page cache", () => {
     const keys = Array.from({ length: 50 }, (_, i) => pageKey(0, i));
     expect(await Promise.all(keys.map((key) => fetch(key, "main", 1_000)))).toEqual(keys);
     expect(loads()).toBe(50);
-    expect(cache.usage().resident).toBeLessThanOrEqual(2_000);
+    expect(cacheUsage(cache).resident).toBeLessThanOrEqual(2_000);
   });
 
   it("one read of many keys ends when they outweigh the budget", async () => {
@@ -69,7 +70,7 @@ describe("page cache", () => {
     };
     expect(await untilHit(readAll)).toBe(keys);
     expect(loads).toBe(keys.length);
-    expect(cache.usage().resident).toBeLessThanOrEqual(32_000);
+    expect(cacheUsage(cache).resident).toBeLessThanOrEqual(32_000);
   });
 
   it("drops a run's entries, and a load that lands after the drop", async () => {
@@ -78,7 +79,7 @@ describe("page cache", () => {
     const late = cache.lookup(pageKey(3, 1), "main", async () => ({ value: 1, bytes: 1_000 }));
     cache.dropRun(3);
     await (late as Miss).ready;
-    expect(cache.usage()).toMatchObject({ resident: 0, inFlight: 0 });
+    expect(cacheUsage(cache)).toMatchObject({ resident: 0, inFlight: 0 });
     expect(isResident(pageKey(3, 0))).toBe(false);
   });
 });

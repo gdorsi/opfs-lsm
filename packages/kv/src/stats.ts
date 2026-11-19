@@ -29,8 +29,8 @@ function internalsOf(db: Db) {
 }
 
 export async function readStats(db: Db): Promise<KvStats> {
-  const { name, wal, fs, ingest } = internalsOf(db);
-  const host = await ingest.stats(name);
+  const { name, wal, fs, ingestClient } = internalsOf(db);
+  const host = await ingestClient.stats(name);
   return {
     tab: {
       walAppends: wal.appendedRecords,
@@ -44,7 +44,7 @@ export async function readStats(db: Db): Promise<KvStats> {
 
 /** Flush the memtable now and wait for the compaction it starts. */
 export function ingest(db: Db): Promise<{ generation: number }> {
-  return internalsOf(db).flush();
+  return internalsOf(db).flush(true);
 }
 
 /**

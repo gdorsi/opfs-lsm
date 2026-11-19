@@ -38,11 +38,7 @@ import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
 import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type ViewSnapshot } from "./view.js";
-import {
-  ChangeBus,
-  type ChangeEvent,
-  type ChangeListener,
-} from "./changes.js";
+import type { ChangeEvent, ChangeListener } from "./changes.js";
 
 export type { ViewSnapshot } from "./view.js";
 export type { Pressure } from "./host/protocol.js";
@@ -266,20 +262,11 @@ export function prefixBound(prefix: Uint8Array): {
 }
 
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
-type DbInternals = {
-  readonly name: DbName;
-  readonly wal: TabWal;
-  readonly fs: ReadFs;
-  readonly ingest: IngestClient;
-  /** Flush the memtable now and wait for the compaction it starts. */
-  readonly flush: () => Promise<{ generation: number }>;
-};
-
-const internals = new WeakMap<Db, DbInternals>();
+type DbInternals = Pick<DbImpl, "name" | "wal" | "fs" | "ingestClient" | "flush">;
 
 /** Undefined for a Db not opened by `openDbWith`. */
 export function dbInternals(db: Db): DbInternals | undefined {
-  return internals.get(db);
+  return db instanceof DbImpl ? db : undefined;
 }
 
 export async function openDb(options: OpenOptions): Promise<Db> {
@@ -392,7 +379,6 @@ async function openStores(
       options.rowPostMs,
     );
     heldDb = db;
-    internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
     await db.boot(recovering);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
     ingest.watch(name, {
@@ -509,13 +495,12 @@ class DbImpl implements Db {
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
   private readonly catchUpToWal = coalesced(() => this.syncOnce());
-  private readonly changeBus = new ChangeBus();
+  private readonly listeners = new Set<ChangeListener>();
   /** Applied and not yet announced, in seq order. Drained outside IndexedDB callbacks. */
   private unannounced: ChangeEvent[] = [];
   /** A repair may have recorded another manifest, so the next install can change what reads return. */
   private repaired = false;
   private readonly bus: BroadcastChannel | undefined;
-  private readonly onBusMessage: ((ev: MessageEvent<BusMessage>) => void) | undefined;
   /** Landed and not yet posted, in seq order, with the bytes of their ops. */
   private unposted: BusRow[] = [];
   private unpostedBytes = 0;
@@ -537,10 +522,10 @@ class DbImpl implements Db {
   constructor(
     readonly name: DbName,
     readonly writerId: WriterId,
-    private readonly wal: TabWal,
-    private readonly fs: ReadFs,
+    readonly wal: TabWal,
+    readonly fs: ReadFs,
     private readonly cache: PageCache,
-    private readonly ingestClient: IngestClient,
+    readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
     private readonly maxBytes: number | "quota" | undefined,
@@ -553,8 +538,7 @@ class DbImpl implements Db {
     );
     if (typeof BroadcastChannel !== "undefined") {
       this.bus = new BroadcastChannel(layersChannel(name));
-      this.onBusMessage = (ev: MessageEvent<BusMessage>) => this.onMessage(ev.data);
-      this.bus.addEventListener("message", this.onBusMessage);
+      this.bus.addEventListener("message", (ev: MessageEvent<BusMessage>) => this.onMessage(ev.data));
       if (typeof document !== "undefined") {
         document.addEventListener("visibilitychange", this.onVisibility);
       }
@@ -634,7 +618,15 @@ class DbImpl implements Db {
   private announce(): void {
     const events = this.unannounced;
     this.unannounced = [];
-    for (const event of events) this.changeBus.emit(event);
+    for (const event of events) {
+      for (const listener of this.listeners) {
+        try {
+          listener(event);
+        } catch (err) {
+          console.error("changes() listener threw", err);
+        }
+      }
+    }
   }
 
   private emit(event: ChangeEvent): void {
@@ -1101,7 +1093,10 @@ class DbImpl implements Db {
 
   changes(listener: ChangeListener): () => void {
     this.ensureOpen();
-    return this.changeBus.subscribe(listener);
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   onPressure(handler: PressureHandler): () => void {
@@ -1192,14 +1187,13 @@ class DbImpl implements Db {
     if (this.closed) return;
     this.closed = true;
     this.emit({ kind: "closed", reason });
-    this.changeBus.clear();
+    this.listeners.clear();
     this.unlock?.();
-    if (this.bus && this.onBusMessage) {
+    if (this.bus) {
       this.postRows();
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", this.onVisibility);
       }
-      this.bus.removeEventListener("message", this.onBusMessage);
       this.bus.close();
     }
     this.ingestClient.unwatch(this.name);

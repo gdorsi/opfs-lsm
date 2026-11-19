@@ -39,15 +39,6 @@ let runs = 0;
 export const DEFAULT_BUDGET = 256 * 1024 * 1024;
 const PROBATION_SHARE = 0.1;
 
-type CacheUsage = {
-  readonly budget: number;
-  /** Bytes of every resident entry, metadata included. Never above `budget`. */
-  readonly resident: number;
-  readonly metadata: number;
-  /** Reads started and not landed. */
-  readonly inFlight: number;
-};
-
 /**
  * The bytes of run files a tab holds, under one byte budget. S3-FIFO-lite:
  * a hit is one `Map.get` and a flag write. Eviction drops the probation
@@ -120,15 +111,6 @@ export class PageCache {
     const inRun = (key: CacheKey) => key >= from && key < from + SLOTS;
     for (const key of this.loading.keys()) if (inRun(key)) this.loading.delete(key);
     for (const [key, e] of this.entries) if (inRun(key)) this.remove(key, e);
-  }
-
-  usage(): CacheUsage {
-    return {
-      budget: this.budget,
-      resident: this.resident,
-      metadata: this.queueBytes.meta,
-      inFlight: this.loading.size,
-    };
   }
 
   /**

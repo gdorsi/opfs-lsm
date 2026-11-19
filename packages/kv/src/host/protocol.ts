@@ -1,6 +1,6 @@
 import type { WriterId } from "../check.js";
 import type { ErrorCode } from "../errors.js";
-import { reclaimLock, webLocks } from "../locks.js";
+import { reclaimLock, webLocks, withLock } from "../locks.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
 import type { Generation, Seq } from "../seq.js";
 
@@ -83,10 +83,7 @@ export type BusRow = { readonly seq: Seq; readonly record: ArrayBuffer };
  * reclaim already running. Without Web Locks it runs `fn` unprotected.
  */
 export function holdingFiles<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  const manager = webLocks();
-  if (!manager) return fn();
-  // The DOM lib types the callback's promise as the result, unwrapped at runtime.
-  return manager.request(reclaimLock(name), { mode: "shared" }, fn) as unknown as Promise<T>;
+  return withLock(reclaimLock(name), fn, "shared");
 }
 
 /**
