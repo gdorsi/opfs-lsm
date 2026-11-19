@@ -2,7 +2,7 @@
  * node bench/cli.ts <verb> [args]
  *
  *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed]
- *       [--max-peak-bytes N] [--compaction-memory-bytes N]
+ *       [--max-peak-bytes N] [--compaction-memory-bytes N] [--cache-bytes N]
  *   smoke [--check]         every workload × contender, size tiny, 1 rep, correctness and the byte budgets;
  *                           --check first applies the bundle-size budgets to the same build,
  *                           then checks that every access pattern has exactly one owner,
@@ -20,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { ownershipProblems, PATTERNS } from "./core/patterns.ts";
-import { SIZES, type RunRecord, type SizeName } from "./core/types.ts";
+import { SIZES, type KvOptions, type RunRecord, type SizeName } from "./core/types.ts";
 import { BENCH_DIR, buildBench, type BuildOutput } from "./driver/build.ts";
 import { BUDGETS, budgetProblems } from "./driver/budgets.ts";
 import { DATA_DIR, ensureTrace } from "./driver/data.ts";
@@ -48,6 +48,7 @@ async function main(): Promise<number> {
       timeout: { type: "string", default: "1800000" },
       "max-peak-bytes": { type: "string", default: "" },
       "compaction-memory-bytes": { type: "string", default: "" },
+      "cache-bytes": { type: "string", default: "" },
     },
   });
   switch (verb) {
@@ -65,8 +66,11 @@ async function main(): Promise<number> {
         timeoutMs: Number(values.timeout),
         smoke,
         check: smoke && values.check,
-        maxPeakBytes: bytesFlag("max-peak-bytes", values["max-peak-bytes"]),
-        compactionMemoryBytes: bytesFlag("compaction-memory-bytes", values["compaction-memory-bytes"]),
+        maxPeakBytes: bytesFlag("maxPeakBytes", "max-peak-bytes", values["max-peak-bytes"]).maxPeakBytes,
+        kv: {
+          ...bytesFlag("compactionMemoryBytes", "compaction-memory-bytes", values["compaction-memory-bytes"]),
+          ...bytesFlag("cacheBytes", "cache-bytes", values["cache-bytes"]),
+        },
       });
     }
     case "size":
@@ -99,7 +103,7 @@ async function run(o: {
   smoke: boolean;
   check: boolean;
   maxPeakBytes: number | undefined;
-  compactionMemoryBytes: number | undefined;
+  kv: KvOptions;
 }): Promise<number> {
   await ensureTrace();
   const built = await buildBench({ quiet: true });
@@ -121,7 +125,7 @@ async function run(o: {
       headless: o.headless,
       resultsFile,
       phaseTimeoutMs: o.timeoutMs,
-      compactionMemoryBytes: o.compactionMemoryBytes,
+      kv: o.kv,
       log: (line) => console.log(line),
     });
     const text = report(records, new Map(catalog.map((w) => [w.workload, w.title])));
@@ -142,11 +146,12 @@ async function run(o: {
 }
 
 /** Print the bundle-size table of a build. With `check`, false when a row is over its budget. */
-function bytesFlag(name: string, value: string | undefined): number | undefined {
-  if (!value) return undefined;
+/** `{ [key]: bytes }` when the flag is set, `{}` when it is not. */
+function bytesFlag<K extends string>(key: K, flag: string, value: string | undefined): { [P in K]?: number } {
+  if (!value) return {};
   const bytes = Number(value);
-  if (!(bytes > 0)) throw new Error(`--${name} must be a positive number of bytes`);
-  return bytes;
+  if (!(bytes > 0)) throw new Error(`--${flag} must be a positive number of bytes`);
+  return { [key]: bytes } as { [P in K]?: number };
 }
 
 function sizes(built: BuildOutput, check: boolean): boolean {

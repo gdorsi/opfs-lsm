@@ -38,9 +38,11 @@ export const BUDGETS: readonly Budget[] = [
 /**
  * One line per budget a run broke. A budget whose workload, contender and
  * size ran but whose number is missing is a problem too, so a renamed phase
- * cannot switch a budget off. A budget whose row did not run is skipped.
+ * cannot switch a budget off. A budget whose row did not run is skipped. The
+ * budgets hold for kv's default options, so a run that overrode one is not checked.
  */
 export function budgetProblems(m: Measures, budgets: readonly Budget[] = BUDGETS): string[] {
+  if (m.kvOptions.length > 0) return [];
   const problems: string[] = [];
   for (const b of budgets) {
     const { max, ...at } = b;

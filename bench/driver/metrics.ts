@@ -75,6 +75,8 @@ export type Measures = {
   /** Sorted by workload, size, phase order, contender, then metric. */
   readonly all: readonly Series[];
   get(at: At): Series | undefined;
+  /** Each set of kv options a run overrode, such as "cacheBytes 4194304". Empty when every run used the defaults. */
+  readonly kvOptions: readonly string[];
 };
 
 export type Direction = "higher" | "lower";
@@ -377,5 +379,10 @@ export function measure(records: readonly RunRecord[]): Measures {
   );
   const all = entries.map((e) => e.series);
   const byKey = new Map(all.map((s) => [keyOf(s.at), s]));
-  return { all, get: (at) => byKey.get(keyOf(at)) };
+  const kvOptions = new Set<string>();
+  for (const r of records) {
+    const overrides = Object.entries(r.kv ?? {});
+    if (!r.error && overrides.length > 0) kvOptions.add(overrides.map(([option, bytes]) => `${option} ${bytes}`).join(", "));
+  }
+  return { all, get: (at) => byKey.get(keyOf(at)), kvOptions: [...kvOptions] };
 }

@@ -241,6 +241,14 @@ export type MemoryPeaks = {
   readonly largestRendererBytes: number | null;
 };
 
+/** The public `openDb` options a run overrides on every kv it opens. Unset leaves the default. */
+export type KvOptions = {
+  /** `--compaction-memory-bytes`. */
+  readonly compactionMemoryBytes?: number;
+  /** `--cache-bytes`. */
+  readonly cacheBytes?: number;
+};
+
 /** One line of `bench/results/<stamp>.jsonl`. One run = one fresh Chrome profile. */
 export type RunRecord = {
   readonly workload: string;
@@ -251,6 +259,8 @@ export type RunRecord = {
   readonly rep: number;
   readonly params: Params;
   readonly host: HostInfo;
+  /** Present when the run overrode a kv option, so its numbers are not read as the defaults'. */
+  readonly kv?: KvOptions;
   readonly phases: readonly PhaseResult[];
   readonly memory?: MemoryPeaks;
   /** Set when the run failed (correctness, timeout, crash). Failed runs never feed a median. */
