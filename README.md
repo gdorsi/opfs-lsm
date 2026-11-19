@@ -16,7 +16,7 @@ opfs-lsm helps most when your app keeps its data in the browser and reads it on 
 Use another store in these cases:
 
 - **Your users run older browsers.** kv is [Baseline 2026](docs/browser-support.md): every major browser has run it since May 2026, when Chrome on Android added SharedWorker. Samsung Internet and Android WebView do not run it.
-- **Your app stores little and writes one record at a time.** IndexedDB opens in 0.3 ms against 5.0 ms for kv, and writes a single awaited record about as fast.
+- **Your app stores little and writes one record at a time.** IndexedDB opens in 0.3 ms against 3.9 ms for kv, and writes a single awaited record about as fast.
 - **You need SQL.** opfs-lsm has no query language. docstore reads only through the indexes you declare in its schema.
 
 ## Packages
@@ -32,8 +32,8 @@ Each adapter stores the data of one framework in opfs-lsm. Your app keeps callin
 
 ### Building blocks
 
-- **[`@opfs-lsm/docstore`](packages/docstore)** stores JSON documents in typed collections. You declare indexes in a versioned schema: sorted, array, text, and unique. Queries read through them in pages, and each collection has counts, snapshot reads, and a change feed. Example: [LinearLite on docstore](examples/linearlite-docstore).
-- **[`@opfs-lsm/kv`](packages/kv)** is the key-value store under every other package. Keys and values are bytes, kept in key order. It has batches, range scans, range deletes, counts, snapshot reads, read-modify-write, a change feed with a sequence number for every write, and a storage cap.
+- **[`@opfs-lsm/docstore`](packages/docstore)** stores JSON documents in typed collections. You declare indexes in a versioned schema: sorted, array, text, and unique. A Standard Schema validator checks the writes of a collection. Queries read through them in pages, and each collection has counts, snapshot reads, and a change feed. Example: [LinearLite on docstore](examples/linearlite-docstore).
+- **[`@opfs-lsm/kv`](packages/kv)** is the key-value store under every other package. Keys and values are bytes, kept in key order. It has batches, range scans, range deletes, counts, snapshot reads, read-modify-write, a change feed with a sequence number for every write, and a reserve that gives your app room to free space when the browser refuses a write.
 
 ## Set it up
 
