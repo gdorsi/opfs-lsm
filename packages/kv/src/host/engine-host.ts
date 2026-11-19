@@ -142,6 +142,11 @@ export class EngineHost {
     this.db(name).unwatch();
   }
 
+  /** Release the reserve of `name` for a tab whose WAL append the browser refused. */
+  async makeRoom(name: string): Promise<void> {
+    await this.db(name).refused();
+  }
+
   /** Delete every record and file of `name`. See `Db.dangerousDestroy`. */
   async destroy(name: string): Promise<void> {
     await this.db(name).destroy();
@@ -590,8 +595,12 @@ class HostedDb {
     }
   }
 
-  /** The browser refused a write of this database. True when the reserve was released for it. */
-  private async refused(): Promise<boolean> {
+  /**
+   * The browser refused a write of this database, the host's or a tab's.
+   * True when the reserve was released for it. Resolves once the file is
+   * gone, whoever removed it.
+   */
+  async refused(): Promise<boolean> {
     if (!this.watching?.reserveBytes) return false;
     const head = await this.head();
     return head !== undefined && this.onReserve({ kind: "refused", head });
@@ -629,11 +638,12 @@ class HostedDb {
    * Move the reserve by `event`, then by the outcome of each effect, in one
    * exclusive section: the file has one writer at a time, across hosts, and
    * a fill never overlaps a flush. True when it released the file. An event
-   * that changes nothing takes no lock.
+   * that changes nothing takes no lock, unless it is a refused write: a
+   * release in flight has the state ahead of the file.
    */
   private onReserve(event: ReserveEvent): Promise<boolean> {
     const first = step(this.reserve, event);
-    if (first.next === this.reserve && first.effect.kind === "none") return Promise.resolve(false);
+    if (event.kind !== "refused" && first.next === this.reserve && first.effect.kind === "none") return Promise.resolve(false);
     return this.exclusive(async () => {
       const fs = await this.folder();
       if (!fs) return false;
@@ -775,6 +785,10 @@ export function attachEngineHostPort(
         case "unwatch":
           host.unwatch(msg.name);
           return;
+        case "make-room":
+          await host.makeRoom(msg.name);
+          reply({ type: "make-room-ok", id: msg.id });
+          return;
         case "stats":
           reply({ type: "stats-ok", id: msg.id, stats: await host.stats(msg.name) });
           return;
@@ -807,6 +821,7 @@ export function createLocalIngestClient(host: EngineHost): IngestClient {
     ingest: (name, waitForCompaction) => host.ingest(name, waitForCompaction),
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
+    makeRoom: (name) => host.makeRoom(name),
     destroy: (name) => host.destroy(name),
     stats: (name) => host.stats(name),
     close: () => undefined,

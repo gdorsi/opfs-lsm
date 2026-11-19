@@ -38,6 +38,9 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
     unwatch(name) {
       port.postMessage({ type: "unwatch", name } satisfies ClientToHost);
     },
+    async makeRoom(name) {
+      await request({ type: "make-room", id: nextId++, name });
+    },
     async destroy(name) {
       await request({ type: "destroy", id: nextId++, name });
     },

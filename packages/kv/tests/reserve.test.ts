@@ -46,7 +46,7 @@ beforeEach(() => {
   name = `reserve-${++dbCount}`;
   fs = new MemoryFs();
   budget = new BudgetFs(fs, BUDGET);
-  host = new EngineHost(() => budget);
+  host = hostOf(budget);
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 
@@ -54,6 +54,11 @@ afterEach(async () => {
   for (const db of opened.splice(0)) await db.close();
   vi.restoreAllMocks();
 });
+
+/** A host on `folder` itself: a flush can outlive its test, and must not reach the next one's folder. */
+function hostOf(folder: BudgetFs, overrides: ConstructorParameters<typeof EngineHost>[1] = {}): EngineHost {
+  return new EngineHost(() => folder, overrides);
+}
 
 async function open(reserveBytes: number): Promise<Db> {
   const db = await openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1 << 30, reserveBytes });
@@ -329,7 +334,7 @@ describe("the reserve file", () => {
   });
 
   it("is written on a quiet database once it has been idle", async () => {
-    host = new EngineHost(() => budget, { idleFlushMs: 20 });
+    host = hostOf(budget, { idleFlushMs: 20 });
     await open(64 * KiB);
     expect(fs.publishedPaths()).toEqual([]);
     await until(() => budget.sizeOf(RESERVE_PATH) === 64 * KiB, "the reserve");

@@ -99,3 +99,49 @@ export class BudgetFs implements RemovableFs {
     };
   }
 }
+
+type Aborting = IDBTransaction & { _abort(errorName: string): void };
+
+/**
+ * Refuse the WAL appends of database `name` while `origin` has no room for
+ * them, the way Chromium and Firefox do at the limit: every `add` succeeds,
+ * then the transaction aborts with `QuotaExceededError`. A connection that
+ * saw such an abort starts no other write transaction, as Firefox did when
+ * measured. A seam over fake-indexeddb, with no change to the product. It
+ * charges the origin nothing: the WAL is small next to the run files.
+ * Returns the restore.
+ */
+export function refuseWalAppends(name: string, origin: { readonly free: number }): () => void {
+  const walName = `opfs-lsm-wal/${name}`;
+  const store = globalThis.IDBObjectStore.prototype;
+  const database = globalThis.IDBDatabase.prototype;
+  const { add } = store;
+  const { transaction } = database;
+  const groups = new WeakMap<IDBTransaction, { waiting: number; refused: boolean }>();
+  const spent = new WeakSet<IDBDatabase>();
+  database.transaction = function (this: IDBDatabase, ...args: Parameters<IDBDatabase["transaction"]>) {
+    if (spent.has(this) && args[1] === "readwrite") {
+      throw new DOMException("this connection saw a quota abort", "InvalidStateError");
+    }
+    return transaction.apply(this, args);
+  };
+  store.add = function (this: IDBObjectStore, value: unknown, key?: IDBValidKey) {
+    const req = add.call(this, value, key);
+    const tx = this.transaction;
+    if (tx.db.name !== walName || this.name !== "wal" || !(value instanceof ArrayBuffer)) return req;
+    const group = groups.get(tx) ?? { waiting: 0, refused: false };
+    groups.set(tx, group);
+    group.waiting += 1;
+    group.refused ||= value.byteLength > origin.free;
+    req.addEventListener("success", () => {
+      if (--group.waiting > 0 || !group.refused) return;
+      spent.add(tx.db);
+      (tx as Aborting)._abort("QuotaExceededError");
+    });
+    return req;
+  };
+  return () => {
+    store.add = add;
+    database.transaction = transaction;
+  };
+}

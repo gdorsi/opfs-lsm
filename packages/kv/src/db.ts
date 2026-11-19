@@ -191,6 +191,8 @@ export interface Db {
    * Read `keys` and write, in one IndexedDB transaction. `body` runs
    * synchronously with the current values, in the order of `keys`. No other
    * write can land between the reads and the commit, so there is no conflict.
+   * `body` runs again when the browser refuses the write for lack of space
+   * and kv tries it once more.
    */
   update<T>(
     keys: readonly Uint8Array[],
@@ -356,7 +358,11 @@ async function openStores(
   let heldDb: DbImpl | undefined;
   try {
     const tabFs = options.wrapFs?.(fs) ?? fs;
-    const wal = await TabWal.open(name, () => void heldDb?.closeFor("destroyed"));
+    const wal = await TabWal.open(
+      name,
+      () => void heldDb?.closeFor("destroyed"),
+      () => ingest.makeRoom(name),
+    );
     heldWal = wal;
     // Pairs the WAL with a manifest before the first read or write resolves.
     // The recorded manifest's runs are checked by the load, which opens them.
