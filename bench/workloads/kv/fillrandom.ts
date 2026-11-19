@@ -1,17 +1,17 @@
 import { defineWorkload } from "../../core/types.ts";
 import { permutation } from "../../page/model.ts";
-import { fillPhase, getIds, kvParams, settlePhase, uniform } from "../kv-lib.ts";
+import { fillPhase, getIds, kvParams, settlePhase, uniform, warmPhase } from "../kv-lib.ts";
 
 /**
  * db_bench order on one database: N/100 single puts each awaited on the empty
- * store (fillsync), random fill, reads before and after compaction settles
- * (LevelDB reports a gap between the two), misses, a cold open in a fresh tab
- * after the SharedWorker has exited, then deletes of a random tenth and the
- * space compaction gives back.
+ * store (fillsync), random fill, reads while compaction still runs, then reads
+ * and misses over warm pages once it has settled, a cold open in a fresh tab
+ * after the SharedWorker has exited, the same reads over that tab's cold
+ * pages, then deletes of a random tenth and the space compaction gives back.
  */
 export default defineWorkload({
   family: "kv",
-  title: "single awaited puts, random fill, random reads before and after compaction, misses, cold open, random deletes",
+  title: "single awaited puts, random fill, random reads during compaction, then warm, misses, cold open, cold reads, random deletes",
   owns: ["kv-single-put", "kv-random-fill", "kv-point-get", "kv-cold-open", "kv-delete"],
   params: (size) => kvParams(size),
   phases: [
@@ -36,6 +36,7 @@ export default defineWorkload({
       run: (ctx) => getIds(ctx, ctx.params.ops, uniform(ctx, ctx.params.entries)),
     },
     settlePhase(),
+    warmPhase(),
     {
       name: "readrandom",
       page: "same",
@@ -57,6 +58,12 @@ export default defineWorkload({
         await ctx.store(); // timed as "open"
         await getIds(ctx, 1, uniform(ctx, ctx.params.entries), "first get");
       },
+    },
+    {
+      name: "readrandom-cold",
+      page: "same",
+      timed: true,
+      run: (ctx) => getIds(ctx, ctx.params.ops, uniform(ctx, ctx.params.entries)),
     },
     {
       name: "deleterandom",

@@ -91,6 +91,23 @@ export function settlePhase(name = "settle"): Phase<"kv"> {
   };
 }
 
+/**
+ * Reads every key once, untimed, so the timed reads after it find every page
+ * in the tab's cache. Without it a read phase after a settle pays the page
+ * loads only in the runs where compaction rewrote the files after the last read.
+ */
+export function warmPhase(name = "warm"): Phase<"kv"> {
+  return {
+    name,
+    page: "same",
+    timed: false,
+    async run(ctx) {
+      const store = await ctx.store();
+      for (let from = 0; from < ctx.params.entries; from += 1_000) await store.range(ctx.model.key(from), undefined, 1_000);
+    },
+  };
+}
+
 // ---------------------------------------------------------------- YCSB
 
 export type YcsbLetter = "a" | "f";
