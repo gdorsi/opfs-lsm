@@ -269,7 +269,7 @@ export function blockBytes(
 }
 
 /** `buf[at, at + len)` compared with `key` from `from` on, like `compareBytes`. */
-function compareAt(buf: Uint8Array, at: number, len: number, key: Uint8Array, from: number): number {
+export function compareAt(buf: Uint8Array, at: number, len: number, key: Uint8Array, from: number): number {
   const keyLen = key.byteLength - from;
   const n = Math.min(len, keyLen);
   for (let i = 0; i < n; i++) {

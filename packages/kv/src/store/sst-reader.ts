@@ -8,6 +8,7 @@ import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page
 import {
   BlockEntries,
   blockBytes,
+  compareAt,
   findInBlock,
   readFooter,
   ReverseBlockEntries,
@@ -405,7 +406,7 @@ function findBlock(index: RunIndex, key: Uint8Array): number {
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     const from = mid === 0 ? 0 : sepEnd[mid - 1]!;
-    if (compareSep(sepBytes, from, sepEnd[mid]!, key) <= 0) lo = mid + 1;
+    if (compareAt(sepBytes, from, sepEnd[mid]! - from, key, 0) <= 0) lo = mid + 1;
     else hi = mid;
   }
   return lo - 1;
@@ -417,17 +418,8 @@ function blockBelow(index: RunIndex, key: Uint8Array): number {
 }
 
 function compareSepAt(index: RunIndex, block: number, key: Uint8Array): number {
-  return compareSep(index.sepBytes, block === 0 ? 0 : index.sepEnd[block - 1]!, index.sepEnd[block]!, key);
-}
-
-function compareSep(bytes: Uint8Array, from: number, to: number, key: Uint8Array): number {
-  const len = to - from;
-  const n = Math.min(len, key.byteLength);
-  for (let i = 0; i < n; i++) {
-    const d = bytes[from + i]! - key[i]!;
-    if (d !== 0) return d;
-  }
-  return len - key.byteLength;
+  const from = block === 0 ? 0 : index.sepEnd[block - 1]!;
+  return compareAt(index.sepBytes, from, index.sepEnd[block]! - from, key, 0);
 }
 
 function pageOfBlock(index: RunIndex, block: number): number {
