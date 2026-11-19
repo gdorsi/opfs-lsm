@@ -153,7 +153,7 @@ function readPath(doc: StoredDoc, path: Path): unknown {
 /** Up to this many entries on each side `diffEntries` compares keys byte by byte, with no map. At most 32, the width of its bit mask. */
 const SMALL_DIFF = 16;
 
-/** The entries of `after` to write, and the keys of `before` to remove, each in list order. The keys of one list are distinct. */
+/** The entries of `after` to write, and the keys of `before` to remove, each in list order. The keys of one list must be distinct, as those of `entriesOf` are. */
 export function diffEntries(
   before: readonly Entry[],
   after: readonly Entry[],

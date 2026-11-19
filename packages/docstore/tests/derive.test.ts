@@ -164,6 +164,32 @@ describe("diffEntries", () => {
   });
 });
 
+describe("the entries of one document", () => {
+  // diffEntries needs this: with a key twice in one list, its short route would remove a key the document still has.
+  it("have distinct keys, whatever the document repeats", () => {
+    const c = coll({
+      tags: { by: ["tags[]", "at"] },
+      tag: { by: "tags[]" },
+      at: { by: "at" },
+      both: { by: ["at", "title"] },
+      slug: { by: "at", unique: true },
+      search: { by: "at", text: "title" },
+    });
+    const scalar = fc.oneof(
+      fc.constantFrom<Scalar>(0, -0, 1, 0.5, "", "0", "1", "a", "a\0", "A", true, false, null),
+      fc.string({ maxLength: 2 }).filter((v) => v.isWellFormed()),
+      fc.integer({ min: -2, max: 2 }),
+    );
+    fc.assert(
+      fc.property(fc.array(scalar, { maxLength: 12 }), scalar, fc.constantFrom("", "a a", "A a"), (tags, at, title) => {
+        const keys = entries(c, { id: "1", tags, at, title }).map((e) => e.key.join(","));
+        expect(new Set(keys).size).toBe(keys.length);
+      }),
+      { numRuns: 2000 },
+    );
+  });
+});
+
 describe("diffEntries against a model", () => {
   const VALUES = [EMPTY, Uint8Array.of(1), Uint8Array.of(1, 2)];
   const hex = (key: Uint8Array) => Array.from(key, (b) => b.toString(16).padStart(2, "0")).join("");

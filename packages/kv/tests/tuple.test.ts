@@ -146,6 +146,12 @@ describe("encodeTuple", () => {
       expect(Array.from(encodeTuple(["a\0b", "ab"]))).toEqual([...stringField("a\0b"), ...stringField("ab")]);
     });
 
+    it("writes a short string from its start again when a late unit is not ASCII", () => {
+      for (const s of ["a\0b\0é", "\0\0\0日", "x".repeat(63) + "é", "\0".repeat(63) + "😀"]) {
+        expect(Array.from(encodeTuple(["ab", s, "cd"]))).toEqual([...stringField("ab"), ...stringField(s), ...stringField("cd")]);
+      }
+    });
+
     it("makes the start of stringPrefixBounds the tag and the escaped string, with no terminator", () => {
       fc.assert(
         fc.property(stringArb, prefixArb, (s, prefix) => {
