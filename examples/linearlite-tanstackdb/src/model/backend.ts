@@ -66,8 +66,8 @@ export interface Backend {
   watchTotal(filter: IssueFilter, emit: (total: number) => void): Unsubscribe;
   /** How deep windows of the list under `filter` start without reading the rows above. Undefined when they cannot: each such window is one query from the top. */
   anchor(filter: IssueFilter): Anchoring | undefined;
-  /** Calls `ask` when storage wants space and enough threads are cached to be worth clearing. */
-  onPressure(ask: () => Promise<void>): Unsubscribe;
+  /** Calls `ask` when the browser refused a write and enough threads are cached to be worth clearing. */
+  onStorageFull(ask: () => Promise<void>): Unsubscribe;
   /** Releases the collections. A database the caller opened and passed in stays open. */
   close(): Promise<void>;
 }

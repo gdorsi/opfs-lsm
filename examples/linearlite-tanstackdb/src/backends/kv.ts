@@ -31,7 +31,7 @@ type IssueQuery = Parameters<IssueDocs["count"]>[0];
  * (docstore README, "Limits").
  */
 const KV_BATCH_OPS = 10_000;
-/** Cached threads below which storage pressure asks nothing: the visible rows reload right after an eviction. */
+/** Cached threads below which a full storage asks nothing: the visible rows reload right after an eviction. */
 const MIN_EVICTION = 100;
 
 type Transact<T> = (ids: readonly string[], merge: (rows: ReadonlyArray<T | undefined>) => ReadonlyArray<object | null | undefined>) => Promise<void>;
@@ -108,9 +108,9 @@ export async function openKvBackend(db: Db, { hidden = () => false }: KvOptions 
             watchBase: (value, emit) => recountIssues(() => countBefore(issues, filter, value), emit),
           }
         : undefined,
-    // kv asks again at each flush while over the cap. With few threads cached there is little to free, so no alert.
-    onPressure: (ask) =>
-      db.onPressure(async () => {
+    // kv asks again after a flush while its reserve does not fit. With few threads cached there is little to free, so no alert.
+    onStorageFull: (ask) =>
+      db.onStorageFull(async () => {
         const cached = await docs.collection("bodies").queryIds({ limit: MIN_EVICTION + 1 });
         if (cached.ids.length > MIN_EVICTION) await ask();
       }),

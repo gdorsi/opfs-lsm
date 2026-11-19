@@ -1,12 +1,11 @@
 import type { FileWriter, RemovableFs } from "../../src/opfs/async-fs.js";
-import type { MemoryFs } from "../../src/testing.js";
 
 function quotaExceeded(): DOMException {
   return new DOMException("over the byte budget", "QuotaExceededError");
 }
 
 /**
- * A `MemoryFs` under an origin's byte limit, charged the way the browsers
+ * A folder under an origin's byte limit, charged the way the browsers
  * charge OPFS: a file's bytes count from the write that stages them, a write
  * past the limit fails with `QuotaExceededError` and leaves the target as
  * it was, and a remove gives the bytes back at once.
@@ -18,7 +17,7 @@ export class BudgetFs implements RemovableFs {
   refused = 0;
 
   constructor(
-    private readonly inner: MemoryFs,
+    private readonly inner: RemovableFs,
     /** The origin's limit. A test moves it to fill the origin or to free space elsewhere. */
     public limit: number,
   ) {}

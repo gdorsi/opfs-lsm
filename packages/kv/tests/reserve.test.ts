@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Db, StorageFull } from "../src/index.js";
+import { openDbWith } from "../src/db.js";
+import { ConstraintError, type Db, type StorageFull } from "../src/index.js";
 import { RESERVE_PATH } from "../src/host/reserve.js";
 import {
   createLocalIngestClient,
@@ -10,6 +11,7 @@ import {
   openHarnessDb,
   readStats,
   settle,
+  type IngestClient,
 } from "../src/testing.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { BudgetFs } from "./sim/byte-budget.js";
@@ -385,8 +387,21 @@ describe("the reserve file", () => {
   });
 });
 
-describe("reserveBytes 0", () => {
-  it("keeps no file, removes the one an earlier session left, retries nothing and calls no handler", async () => {
+describe("reserveBytes", () => {
+  it("must be an integer of at least 0", async () => {
+    for (const bad of [-1, 1.5, NaN, Infinity]) await expect(open(bad)).rejects.toThrow(ConstraintError);
+  });
+
+  it("is 24 MiB in openDb unless given, and 0 in openHarnessDb", async () => {
+    const policies: { reserveBytes: number }[] = [];
+    const local = createLocalIngestClient(host);
+    const client: IngestClient = { ...local, watch: (n, policy) => (policies.push(policy), local.watch(n, policy)) };
+    opened.push(await openDbWith({ name, fs, ingest: client }));
+    opened.push(await openHarnessDb({ name, fs, ingest: client }));
+    expect(policies.map((policy) => policy.reserveBytes)).toEqual([24 * MiB, 0]);
+  });
+
+  it("keeps no file at 0, removes the one an earlier session left, retries nothing and calls no handler", async () => {
     await flushOne(await open(64 * 1024), 0);
     for (const db of opened.splice(0)) await db.close();
     expect(budget.sizeOf(RESERVE_PATH)).toBe(64 * 1024);

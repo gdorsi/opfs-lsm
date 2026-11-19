@@ -18,7 +18,7 @@ import {
   CorruptDatabaseError,
   StorageUnavailableError,
 } from "./errors.js";
-import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
+import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull } from "./host/protocol.js";
 import { removeDatabase } from "./destroy.js";
@@ -76,9 +76,10 @@ export type OpenOptions = {
   /**
    * Bytes the SharedWorker keeps written in a reserve file, and removes when
    * the browser refuses a write, so the write and the flush and compaction
-   * that free space have room (docs/reserve.md). 0 keeps none, and never
-   * calls `onStorageFull`. When tabs differ, the host keeps the largest,
-   * until the last tab closes the database.
+   * that free space have room (docs/reserve.md). Default 24 MiB, an
+   * integer of at least 0. 0 keeps none, and never calls `onStorageFull`.
+   * When tabs differ, the host keeps the largest, until the last tab closes
+   * the database.
    */
   readonly reserveBytes?: number;
 };
@@ -333,6 +334,7 @@ export async function destroyDbWith(options: { readonly name: string; readonly f
 /** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
 export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   const name = checkDbName(options.name);
+  const reserveBytes = reserveOf(options.reserveBytes);
   // Started first, so the module loads while the rest of open runs.
   const engine = ensureEngine();
   // Awaited last: a throw before that must not leave its rejection unhandled.
@@ -342,13 +344,14 @@ export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   const parent = options.fs || !canUseBrowserOpfs() ? undefined : openParent();
   parent?.catch(() => undefined);
   // Held until the open resolves, so `destroyDb` never meets a half-done open (design.md, "Removing").
-  return withLock(openLock(name), () => openStores(name, options, caps, engine, parent), "shared");
+  return withLock(openLock(name), () => openStores(name, options, caps, reserveBytes, engine, parent), "shared");
 }
 
 async function openStores(
   name: DbName,
   options: OpenWithOptions,
   caps: MemtableCaps,
+  reserveBytes: number,
   engine: Promise<unknown>,
   parent: Promise<FileSystemDirectoryHandle> | undefined,
 ): Promise<Db> {
@@ -389,7 +392,7 @@ async function openStores(
     ingest.watch(name, {
       maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
       compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
-      reserveBytes: options.reserveBytes ?? 0,
+      reserveBytes,
     });
     // The host cannot flush without the module, so a page that cannot load it does not open.
     await engine;

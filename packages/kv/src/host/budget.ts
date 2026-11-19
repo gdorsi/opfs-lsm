@@ -1,3 +1,4 @@
+import { ConstraintError } from "../errors.js";
 import { TARGET_RUN_BYTES } from "../store/levels.js";
 
 const KiB = 1024;
@@ -9,6 +10,21 @@ export const DEFAULT_COMPACTION_MEMORY_BYTES = 32 * MiB;
 /** The app's `compactionMemoryBytes`, or the default unless it is positive. The tab normalizes it once, before it tells the host. */
 export function compactionMemoryOf(asked: number | undefined): number {
   return asked !== undefined && asked > 0 ? asked : DEFAULT_COMPACTION_MEMORY_BYTES;
+}
+
+/**
+ * What `openDb` keeps in the reserve file when the app sets no
+ * `reserveBytes`. A database filled to the limit needs room to flush its WAL
+ * and to compact before a delete frees a byte: the flush run and the
+ * compaction outputs are written before their inputs go.
+ */
+const DEFAULT_RESERVE_BYTES = 24 * MiB;
+
+/** The app's `reserveBytes`, or the default. `ConstraintError` unless it is an integer of at least 0. */
+export function reserveOf(asked: number | undefined): number {
+  const bytes = asked ?? DEFAULT_RESERVE_BYTES;
+  if (!Number.isSafeInteger(bytes) || bytes < 0) throw new ConstraintError("reserveBytes must be an integer of at least 0");
+  return bytes;
 }
 
 /**
