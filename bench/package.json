@@ -8,7 +8,8 @@
     "size": "node cli.ts size",
     "compare": "node cli.ts compare",
     "report": "node cli.ts report",
-    "check": "tsc -p tsconfig.json"
+    "check": "tsc -p tsconfig.json",
+    "test": "node --test \"driver/*.test.ts\""
   },
   "dependencies": {
     "@automerge/automerge-repo-storage-indexeddb": "2.6.0-alpha.5",

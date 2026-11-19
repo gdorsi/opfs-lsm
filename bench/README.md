@@ -10,13 +10,13 @@ pnpm bench yjs/ --contenders kv              # one contender
 pnpm bench:size                              # bundle sizes
 pnpm bench:smoke                             # everything at size tiny, 1 rep
 pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke, from one build
-node bench/cli.ts compare results/a.jsonl results/b.jsonl
+node bench/cli.ts compare results/a.jsonl results/b.jsonl [--all]
 node bench/cli.ts report results/a.jsonl
 ```
 
 Run `pnpm bench:smoke` first whenever the code under test changed. A full `pnpm bench` takes tens of minutes, and a broken path can run it into the 30-minute timeout; the smoke finds that in about a minute. Pass workload selectors as separate words, not one quoted variable: zsh does not split `$SEL`, so `pnpm bench $SEL` with `SEL="kv/ tracker/"` matches nothing.
 
-Results go to `bench/results/<time>-<cpu>.jsonl` (one record per run) and a Markdown table next to it. They are not committed, except a run whose numbers [docs/benchmarks.md](../docs/benchmarks.md) publishes: copy its `.jsonl` and `.md` to [docs/results/](../docs/results/) and link them under the table. To compare a change, run the same selection before and after on one machine and use `compare`. It calls a difference only when the min–max ranges of the two runs do not overlap.
+Results go to `bench/results/<time>-<cpu>.jsonl` (one record per run) and a Markdown table next to it. They are not committed, except a run whose numbers [docs/benchmarks.md](../docs/benchmarks.md) publishes: copy its `.jsonl` and `.md` to [docs/results/](../docs/results/) and link them under the table. To compare a change, run the same selection before and after on one machine and use `compare`. It compares every number both files hold: ops/s, wall time, the mean latency of each op, the main-thread cells, amplification and memory peaks. Each number is one value per run, shown as the median with its min–max range. `compare` calls a difference only when the ranges of the two files do not overlap, and it knows which way is better: more ops/s, less time or memory. It prints the rows with a difference and counts the rest. `--all` prints every row. A `†` marks a side whose runs fall into two clusters, so its median hides two states. `report` prints both clusters under the phase table, and the settled LSM layout in the amplification table.
 
 Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `google-chrome`.
 
@@ -183,7 +183,7 @@ A goal is one entry in its dataset's spec type (`datasets/tracker/types.ts`), wh
 cli.ts            run | smoke | size | compare | report
 core/             types, family interfaces, the goal contract, access patterns, histogram
 datasets/         one directory per goal dataset: types and goal spec, history, oracle, curation
-driver/           Vite build, static server, Chrome over CDP, plan, run loop, report, size
+driver/           Vite build, static server, Chrome over CDP, plan, run loop, metrics, report, size
 page/             the bench page: phase executor, data model, kv and IndexedDB helpers
 size/rows.ts      bundle-size rows and budgets
 contenders/       one file per contender, by family

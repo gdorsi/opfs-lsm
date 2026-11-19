@@ -7,7 +7,9 @@
  *                           --check first applies the bundle-size budgets to the same build,
  *                           then checks that every access pattern has exactly one owner
  *   size [--check]          bundle-size table; --check fails over a row's budget
- *   compare <a.jsonl> <b.jsonl>
+ *   compare <a.jsonl> <b.jsonl> [--all]
+ *                           every metric both files hold, B against A by the min–max ranges;
+ *                           --all also lists the rows with no measurable difference
  *   report <file.jsonl>
  *
  * A workload selector is "kv/" (a family) or "kv/fillrandom" (one workload).
@@ -21,7 +23,8 @@ import { SIZES, type RunRecord, type SizeName } from "./core/types.ts";
 import { BENCH_DIR, buildBench, type BuildOutput } from "./driver/build.ts";
 import { DATA_DIR, ensureTrace } from "./driver/data.ts";
 import { plan } from "./driver/plan.ts";
-import { amplification, compare, report } from "./driver/report.ts";
+import { measure } from "./driver/metrics.ts";
+import { compare, report } from "./driver/report.ts";
 import { readCatalog, runPlan } from "./driver/run.ts";
 import { serve } from "./driver/serve.ts";
 import { formatSizes, measureSizes } from "./driver/size.ts";
@@ -39,6 +42,7 @@ async function main(): Promise<number> {
       contenders: { type: "string", default: "" },
       headed: { type: "boolean", default: false },
       check: { type: "boolean", default: false },
+      all: { type: "boolean", default: false },
       timeout: { type: "string", default: "1800000" },
       "max-peak-bytes": { type: "string", default: "" },
       "compaction-memory-bytes": { type: "string", default: "" },
@@ -68,7 +72,7 @@ async function main(): Promise<number> {
     case "compare": {
       const [a, b] = positionals;
       if (!a || !b) throw new Error("compare needs two result files");
-      console.log(compare(readRecords(a), readRecords(b)));
+      console.log(compare(measure(readRecords(a)), measure(readRecords(b)), { all: values.all }));
       return 0;
     }
     case "report": {
@@ -163,27 +167,23 @@ function owners(catalog: Awaited<ReturnType<typeof readCatalog>>): boolean {
 
 /** Harness health: a kv footprint after writes must show counted WAL bytes. */
 function smokeChecks(records: readonly RunRecord[]): string[] {
+  const m = measure(records);
   const problems: string[] = [];
-  for (const r of records) {
-    r.phases.forEach((p, i) => {
-      if (!p.footprint?.kv) return;
-      const amp = amplification(r, i);
-      if (amp && amp.userIn > 0 && !(amp.wal > 0)) problems.push(`${r.workload} ${r.contender} ${p.name}: user bytes but no WAL bytes counted`);
-    });
+  for (const wal of m.all) {
+    if (wal.at.metric !== "amp:walBytes") continue;
+    const user = m.get({ ...wal.at, metric: "amp:userBytes" });
+    if (user && user.summary.min > 0 && !(wal.summary.min > 0)) {
+      problems.push(`${wal.at.workload} ${wal.at.contender} ${wal.at.phase}: user bytes but no WAL bytes counted`);
+    }
   }
   return problems;
 }
 
 /** Opt-in ceiling on the SharedWorker's peak: the sum of three peaks (an upper bound): JS heap in use, ArrayBuffer backing store, wasm memory. Chrome's backing counter does not include wasm memory (bench/probes/memory.ts). */
 function peakChecks(records: readonly RunRecord[], maxBytes: number): string[] {
-  const problems: string[] = [];
-  for (const r of records) {
-    const sw = r.memory?.sharedWorker;
-    if (!sw) continue;
-    const peak = sw.usedSize + (sw.backingStorageSize ?? 0) + (r.memory?.sharedWorkerWasmBytes ?? 0);
-    if (peak > maxBytes) problems.push(`${r.workload} ${r.contender} rep ${r.rep}: SharedWorker peak ${peak} B > --max-peak-bytes ${maxBytes}`);
-  }
-  return problems;
+  return measure(records)
+    .all.filter((s) => s.at.metric === "mem:sharedWorkerTotal" && s.summary.max > maxBytes)
+    .map((s) => `${s.at.workload} ${s.at.contender}: SharedWorker peak ${s.summary.max} B > --max-peak-bytes ${maxBytes}`);
 }
 
 function readRecords(file: string): RunRecord[] {
