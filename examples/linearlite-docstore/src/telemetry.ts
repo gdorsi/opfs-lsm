@@ -11,10 +11,6 @@ import {
 } from "@everr/otel-web";
 import type { ReadPath } from "./store.ts";
 
-/**
- * A timing the app measured, as one Everr event. `ms` is sent as `linearlite.duration_ms`. An attribute holds a number,
- * a flag or a read path, never a free string, so text the visitor typed cannot become one.
- */
 export type Kpi = {
   readonly name: `linearlite.${string}`;
   readonly ms: number;
@@ -48,7 +44,6 @@ if (endpoint) {
 
 export const record = ({ name, ms, attributes }: Kpi) => emit?.(name, { "linearlite.duration_ms": ms, ...attributes });
 
-/** Records an error the app caught, which `errors()` never sees. */
 export const report = (err: unknown) => {
   if (endpoint) captureError(err);
 };

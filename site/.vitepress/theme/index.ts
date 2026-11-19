@@ -14,7 +14,6 @@ export default {
     app.component("Adapters", Adapters);
     app.component("Benchmarks", Benchmarks);
     app.component("Illustration", Illustration);
-    // A chunk of its own, loaded in the browser only, so the SDK stays out of the server render and the first scripts.
     if (!import.meta.env.SSR && import.meta.env.VITE_EVERR_INGEST_ENDPOINT) void import("./telemetry.ts").then((t) => t.startTelemetry(app));
   },
 } satisfies Theme;

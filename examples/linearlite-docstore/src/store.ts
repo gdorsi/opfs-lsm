@@ -18,7 +18,6 @@ export async function openStore(name: string): Promise<Store> {
   return { db, issues: issuesOf(docs), details: detailsOf(docs) };
 }
 
-/** Which of the four reads of the README's "Reads" table serves a list. */
 export type ReadPath = "index" | "ranges" | "scan" | "search";
 
 /** The list under one filter, as stored when it is asked. It reads nothing until then. */

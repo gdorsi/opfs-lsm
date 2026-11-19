@@ -1,7 +1,6 @@
 import { captureError, errors, interactions, network, pageviews, performance, WebSDK } from "@everr/otel-web";
 import type { App } from "vue";
 
-/** Sends the site's browser signals to Everr. The demo in the home page's frame reports itself, as its own service. */
 export function startTelemetry(app: App): void {
   new WebSDK({
     endpoint: import.meta.env.VITE_EVERR_INGEST_ENDPOINT,
