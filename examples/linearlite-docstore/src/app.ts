@@ -47,7 +47,7 @@ export function createApp(store: Store) {
       return { total, at };
     });
     void Promise.all([shown.rows, counted]).then(([r, c]) => {
-      if (label && mine === run) post({ type: "filter", label, rowsMs: r.at - from, total: c.total, totalMs: c.at - from });
+      if (label && mine === run) post({ type: "filter", label, path: shown.path, rowsMs: r.at - from, total: c.total, totalMs: c.at - from });
     }, failed);
     return shown.rows;
   }

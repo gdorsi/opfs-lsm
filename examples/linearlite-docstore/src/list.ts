@@ -1,5 +1,5 @@
 import { DEFAULT_FILTER, type Filter, type Issue } from "./model.ts";
-import { keeps, orderOf, viewOf, type Store, type View } from "./store.ts";
+import { keeps, orderOf, viewOf, type ReadPath, type Store, type View } from "./store.ts";
 
 export const ROW = 40;
 const PAGE = 50;
@@ -123,9 +123,10 @@ export function createList(store: Store) {
 
     /**
      * Reads the list under `next`, from its first row or, with `stay`, from the rows in view now. `rows` resolves with
-     * how many rows the first page read has and when the store returned them; `total` with the list's size.
+     * how many rows the first page read has and when the store returned them; `total` with the list's size. `path`
+     * names the read.
      */
-    show(next: Filter, stay = false): { rows: Promise<{ rows: number; at: number }>; total: Promise<number> } {
+    show(next: Filter, stay = false): { rows: Promise<{ rows: number; at: number }>; total: Promise<number>; path: ReadPath } {
       filter = next;
       keep = keeps(next);
       order = orderOf(next);
@@ -155,7 +156,7 @@ export function createList(store: Store) {
         });
         return { rows: docs[0]!.length, at };
       });
-      return { rows: read, total: counted };
+      return { rows: read, total: counted, path: from.path };
     },
 
     /**
