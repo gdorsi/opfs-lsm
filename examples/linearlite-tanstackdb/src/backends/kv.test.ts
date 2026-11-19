@@ -112,6 +112,16 @@ describe("the kv backend", () => {
       dirty: { title: 1000, status: 1000 },
       pending: true,
     };
+    const state: SyncState = {
+      id: "sync",
+      format: 4,
+      epoch: null,
+      cursors: { issues: 1, bodies: 2, comments: 3 },
+      head: 3,
+      online: true,
+      caughtUp: { issues: true, bodies: false, comments: true },
+      evict: "asked",
+    };
 
     it("stores a row as it is, with the sort keys of an issue, `dirty` and `pending`", async () => {
       await backend.transact("issues", [edited], (_, row) => row);
@@ -129,16 +139,6 @@ describe("the kv backend", () => {
       await backend.transact("bodies", [body], (_, row) => row);
       assert.deepEqual((await backend.read("bodies", ["edited"]))[0], body);
 
-      const state: SyncState = {
-        id: "sync",
-        format: 4,
-        epoch: null,
-        cursors: { issues: 1, bodies: 2, comments: 3 },
-        head: 3,
-        online: true,
-        caughtUp: { issues: true, bodies: false, comments: true },
-        evict: "asked",
-      };
       await backend.transact("sync", [state], (_, row) => row);
       assert.deepEqual((await backend.read("sync", ["sync"]))[0], state);
     });
@@ -161,7 +161,7 @@ describe("the kv backend", () => {
         assert.equal((await backend.read("issues", [id]))[0], undefined, what);
       }
       await assert.rejects(
-        backend.transact("sync", [{ id: "sync" }], () => ({ id: "sync", evict: "later" }) as never),
+        backend.transact("sync", [{ id: "sync" }], () => ({ ...state, evict: "later" }) as never),
         (e) => e instanceof DocStoreError && e.code === "invalid",
       );
       assert.equal((await backend.read("sync", ["sync"]))[0]!.evict, "asked", "the stored sync row is untouched");
