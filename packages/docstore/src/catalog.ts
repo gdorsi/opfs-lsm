@@ -9,7 +9,7 @@
 import { CorruptDatabaseError } from "@opfs-lsm/kv";
 import { isObject } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { indexPrefix, rowPrefix, type CollectionId, type IndexId, type ScanTarget } from "./keys.js";
+import { fromUtf8, indexPrefix, rowPrefix, utf8, type CollectionId, type IndexId, type ScanTarget } from "./keys.js";
 import type { AnySchema, IndexInfo } from "./schema.js";
 
 /** Bumped when stored bytes change meaning. */
@@ -159,9 +159,6 @@ function sameSpec(a: IndexSpec, b: IndexSpec): boolean {
       return b.kind === "text" && a.text === b.text;
   }
 }
-
-const utf8 = new TextEncoder();
-const fromUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /** A catalog of another format is a "schema" error: this library cannot read it. A wrong shape is corruption. */
 export function parseCatalog(bytes: Uint8Array): StoredCatalog {

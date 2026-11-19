@@ -2,7 +2,7 @@ import { CorruptDatabaseError, type Entry } from "@opfs-lsm/kv";
 import { encodeTuple } from "@opfs-lsm/kv/tuple";
 import type { BoundCollection, IndexPlan, Path } from "./catalog.js";
 import { DocStoreError } from "./errors.js";
-import { MAX_KEY_BYTES, bytesEqual, keyString, parseId, textValue, type DocId } from "./keys.js";
+import { MAX_KEY_BYTES, bytesEqual, fromUtf8, keyString, parseId, textValue, utf8, type DocId } from "./keys.js";
 import type { JsonDoc, Scalar } from "./schema.js";
 
 declare const storedBrand: unique symbol;
@@ -20,9 +20,6 @@ export type EncodedDoc = {
   readonly bytes: Uint8Array;
   readonly doc: StoredDoc;
 };
-
-const utf8 = new TextEncoder();
-const fromUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /** Parsing the text, not the bytes, skips a decode. The two agree because `JSON.stringify` escapes lone surrogates. */
 export function encodeDoc(doc: JsonDoc): EncodedDoc {
