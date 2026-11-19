@@ -94,6 +94,23 @@ describe("LZ4 runs", () => {
     }
   });
 
+  it("hand a get a value that owns its buffer, whichever codec the run has", async () => {
+    await ensureEngine();
+    const rows = mixedRows();
+    for (const codec of ["raw", "lz4"] as const) {
+      const reader = readerOfBytes((await encodeRun(rows, codec)).body);
+      const value = async () => {
+        const e = await untilHit(() => reader.get(key(1)));
+        return e?.kind === "put" ? e.value : undefined;
+      };
+      const first = (await value())!;
+      const want = hash(first);
+      expect(`${codec}: offset ${first.byteOffset}, buffer ${first.buffer.byteLength}`).toBe(`${codec}: offset 0, buffer ${first.byteLength}`);
+      first.fill(0xee);
+      expect(hash((await value())!)).toBe(want);
+    }
+  });
+
   it("read back an empty run", async () => {
     const packed = (await encodeRun([], "lz4")).body;
     expect(decodeSst(packed)).toEqual([]);

@@ -98,7 +98,8 @@ function gone(v: { readonly kind: "put" | "del"; readonly seq: Seq }, through: S
 
 /**
  * `mem` is the row from the key-ordered mem store, or undefined on miss.
- * Levels are newest-first. Returned bytes are a fresh Uint8Array. A memtable
+ * Levels are newest-first. Returned bytes are a fresh Uint8Array: a copy of
+ * the memtable row's value, or the one copy a run's get made. A memtable
  * row needs no mark check: the memtable removed the rows its own marks
  * cover, and the installed marks stop below every row it holds.
  */
@@ -113,7 +114,7 @@ export function pointGet(
   const hit = latestSstEntry(levels, key);
   if (hit instanceof Miss) return hit;
   if (!hit || gone(hit, throughAt(marks, key))) return undefined;
-  return hit.kind === "put" ? new Uint8Array(hit.value) : undefined;
+  return hit.kind === "put" ? hit.value : undefined;
 }
 
 /** Every key read, or one Miss for all the bytes they lack. */

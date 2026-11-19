@@ -102,6 +102,32 @@ describe("view snapshot", () => {
   });
 });
 
+describe("the bytes a get hands out", () => {
+  it("own their buffer, and changing them changes no later read", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", maxWalBytes: 1 << 30 });
+    await db.put(enc.encode("run"), enc.encode("in a run"));
+    await ingest(db);
+    await db.put(enc.encode("mem"), enc.encode("in the memtable"));
+    const reads: [string, (key: Uint8Array) => Promise<Uint8Array | undefined>][] = [
+      ["get", (key) => db.get(key)],
+      ["view get", (key) => db.view((snap) => snap.get(key))],
+      ["update", (key) => db.update([key], ([value]) => value)],
+      ["rangeJoin", (key) => db.view(async (snap) => (await snap.rangeJoin({ start: key, limit: 1 }, () => key))[0]!.joined)],
+    ];
+    for (const [what, read] of reads) {
+      for (const [key, want] of [["run", "in a run"], ["mem", "in the memtable"]] as const) {
+        const got = (await read(enc.encode(key)))!;
+        expect(`${what} ${key}: ${dec.decode(got)}, offset ${got.byteOffset}, buffer ${got.buffer.byteLength}`).toBe(
+          `${what} ${key}: ${want}, offset 0, buffer ${want.length}`,
+        );
+        got.fill(0);
+        expect(`${what} ${key}: ${dec.decode((await read(enc.encode(key)))!)}`).toBe(`${what} ${key}: ${want}`);
+      }
+    }
+    await db.close();
+  });
+});
+
 describe("reverse range", () => {
   const key = (i: number) => enc.encode(`k${String(i).padStart(5, "0")}`);
   const keysOf = async (rows: AsyncIterable<{ key: Uint8Array; value: Uint8Array }>) => {
