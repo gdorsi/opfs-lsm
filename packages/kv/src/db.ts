@@ -262,20 +262,11 @@ export function prefixBound(prefix: Uint8Array): {
 }
 
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
-type DbInternals = {
-  readonly name: DbName;
-  readonly wal: TabWal;
-  readonly fs: ReadFs;
-  readonly ingest: IngestClient;
-  /** Flush the memtable now and wait for the compaction it starts. */
-  readonly flush: () => Promise<{ generation: number }>;
-};
-
-const internals = new WeakMap<Db, DbInternals>();
+type DbInternals = Pick<DbImpl, "name" | "wal" | "fs" | "ingestClient" | "flush">;
 
 /** Undefined for a Db not opened by `openDbWith`. */
 export function dbInternals(db: Db): DbInternals | undefined {
-  return internals.get(db);
+  return db instanceof DbImpl ? db : undefined;
 }
 
 export async function openDb(options: OpenOptions): Promise<Db> {
@@ -388,7 +379,6 @@ async function openStores(
       options.rowPostMs,
     );
     heldDb = db;
-    internals.set(db, { name, wal, fs: tabFs, ingest, flush: () => db.flush(true) });
     await db.boot(recovering);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
     ingest.watch(name, {
@@ -532,10 +522,10 @@ class DbImpl implements Db {
   constructor(
     readonly name: DbName,
     readonly writerId: WriterId,
-    private readonly wal: TabWal,
-    private readonly fs: ReadFs,
+    readonly wal: TabWal,
+    readonly fs: ReadFs,
     private readonly cache: PageCache,
-    private readonly ingestClient: IngestClient,
+    readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
     private readonly maxBytes: number | "quota" | undefined,
