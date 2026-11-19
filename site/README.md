@@ -89,11 +89,12 @@ The remote installation is https://app.everr.dev. Its ingest endpoint is `https:
 
    The same records show in https://app.everr.dev under the services `opfs-lsm-site` and `opfs-lsm-demo`.
 
-To send a local run to the remote installation, set both variables in the shell and use a key whose origins include the local server's origin.
+To send a local run to the remote installation, set both variables in the shell and serve the build from an origin of the key. The key in use also allows `http://localhost:4173`, the port of `pnpm docs:preview`. Such a run is a production build, so its records carry `production`. Set `VITE_EVERR_SERVICE_VERSION` to tell them apart.
 
 ### Verification status
 
 | Environment | Status |
 |---|---|
 | Local collector | Verified on 2026-11-19 with a production build in headless Chrome. Both services sent page views, clicks, web vitals and one `exception` per thrown error. The demo sent `linearlite.open`, `linearlite.write`, `linearlite.filter` and `linearlite.first_rows` with the values it posted to the page. |
-| Production | Not yet verified. It needs the two repository variables and a deploy. |
+| Remote installation | Verified on 2026-11-19 from a production build served at `http://localhost:4173`, an origin of the public key. Both services sent their browser signals, and the four demo events carried the values the demo posted to the page. |
+| Production | Not yet verified. The two repository variables are set. It needs a deploy from `main`. |
