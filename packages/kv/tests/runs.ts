@@ -2,7 +2,7 @@ import { pumpMerge } from "../src/host/compact.js";
 import { MemoryFs } from "../src/opfs/memory-fs.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import type { Entry } from "../src/index.js";
-import { entryOf, untilHit, type LayerCursor, type LayerEntry } from "../src/store/cursor.js";
+import { entryOf, untilHit, valueOf, type LayerCursor, type LayerEntry } from "../src/store/cursor.js";
 import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.js";
 import { NO_MARKS } from "../src/store/marks.js";
 import type { ScanStep } from "../src/store/read.js";
@@ -18,13 +18,18 @@ export function readerOfBytes(buf: Uint8Array, cache = new PageCache()): SstRead
   return new SstReader(bytesFile(buf), cache, sstKeyRange(buf));
 }
 
+/** `e` with its value as an array of its own, wherever its cursor left it. */
+function withValue(e: LayerEntry): LayerEntry {
+  return e.kind === "put" ? { key: e.key, kind: e.kind, value: valueOf(e), seq: e.seq } : { key: e.key, kind: e.kind, seq: e.seq };
+}
+
 /** Every entry left in `cursor`, waiting out its misses. */
 export async function drain(cursor: LayerCursor): Promise<LayerEntry[]> {
   const out: LayerEntry[] = [];
   for (;;) {
     const e = await untilHit(() => cursor.peek());
     if (!e) return out;
-    out.push(e);
+    out.push(withValue(e));
     cursor.next();
   }
 }

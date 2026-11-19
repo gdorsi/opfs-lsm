@@ -41,6 +41,11 @@ function offsetTableBytes(count: number): number {
   return count > 1 ? 2 * Math.floor((count - 1) / OFFSET_STRIDE) : 0;
 }
 
+/** The u64 seq at `o`, read as two u32 halves, which is exact below 2^53 and allocates no BigInt. */
+export function seqAt(view: DataView, o: number): Seq {
+  return asSeq(view.getUint32(o, true) + view.getUint32(o + 4, true) * 2 ** 32);
+}
+
 /** `seq` is the WAL seq that wrote the entry. Seqs start at 1. */
 export type SstEntry =
   | {
@@ -158,10 +163,8 @@ export class RecordWalker {
     this.o = o;
   }
 
-  /** Read as two u32 halves, which is exact below 2^53 and allocates no BigInt. */
   seq(): Seq {
-    const { view, seqAt } = this;
-    return asSeq(view.getUint32(seqAt, true) + view.getUint32(seqAt + 4, true) * 2 ** 32);
+    return seqAt(this.view, this.seqAt);
   }
 
   key(): Uint8Array {
@@ -180,12 +183,16 @@ export class RecordWalker {
     return this.buf.slice(this.valAt, this.valAt + this.valLen);
   }
 
-  /** The record as a scan entry: views into the block, except a key split by the block prefix. */
+  /** The record as a scan entry: a copy of the key, and the value left where it is in the block. */
   inPlace(): LayerEntry {
-    const { buf, keyAt, keyLen, valAt } = this;
-    const key = this.prefixLen === 0 ? buf.subarray(keyAt, keyAt + keyLen) : this.key();
-    const seq = this.seq();
-    return this.tag === TAG_PUT ? { key, kind: "put", value: buf.subarray(valAt, valAt + this.valLen), seq } : { key, kind: "del", seq };
+    return {
+      key: this.key(),
+      kind: this.tag === TAG_PUT ? "put" : "del",
+      seq: this.seq(),
+      block: this.buf,
+      valueAt: this.valAt,
+      valueLength: this.valLen,
+    };
   }
 
   private len(): number {

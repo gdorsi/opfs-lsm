@@ -1,6 +1,6 @@
 import { CorruptDatabaseError } from "../errors.js";
-import { asSeq } from "../seq.js";
 import type { LayerEntry } from "./cursor.js";
+import { seqAt } from "./sst.js";
 
 /**
  * Scans one data block, framed as the run's block index frames it, and returns
@@ -42,10 +42,10 @@ export function* unpackHits(hits: Uint8Array): Generator<LayerEntry> {
     if (o + 16 > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
     const keyLen = view.getUint32(o, true);
     const valueLen = view.getUint32(o + 4, true);
-    const seq = asSeq(Number(view.getBigUint64(o + 8, true)));
+    const seq = seqAt(view, o + 8);
     o += 16;
     if (o + keyLen + valueLen > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
-    yield { key: hits.subarray(o, o + keyLen), kind: "put", value: hits.subarray(o + keyLen, o + keyLen + valueLen), seq };
+    yield { key: hits.slice(o, o + keyLen), kind: "put", seq, block: hits, valueAt: o + keyLen, valueLength: valueLen };
     o += keyLen + valueLen;
   }
 }

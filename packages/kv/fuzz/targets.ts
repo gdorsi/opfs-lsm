@@ -19,7 +19,7 @@ import { compareBytes } from "../src/bytes.js";
 import { CommitError, CorruptDatabaseError } from "../src/errors.js";
 import { decodeOps } from "../src/idb/wal.js";
 import { crc32 } from "../src/store/crc32.js";
-import { Miss, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
+import { Miss, valueOf, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
 import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { lz4DecompressJs } from "../src/store/lz4.js";
 import { PageCache } from "../src/store/page-cache.js";
@@ -175,7 +175,7 @@ async function drainBounded(what: string, cursor: LayerCursor, max: number): Pro
       continue;
     }
     if (!e) return out;
-    out.push(e);
+    out.push(e.kind === "put" ? { key: e.key, kind: e.kind, value: valueOf(e), seq: e.seq } : { key: e.key, kind: e.kind, seq: e.seq });
     if (out.length > max) throw new RuleBroken(`${what} yielded more than ${max} entries`);
     cursor.next();
   }

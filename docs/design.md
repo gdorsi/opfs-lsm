@@ -228,8 +228,8 @@ order. Bloom filters play no part in a scan.
 source filters on its own, one block at a time, and only the hits are copied out. A newer source
 that holds the key with a non-matching value or a tombstone drops the older hit.
 
-A scan reads keys and values in place in the block bytes, which are never written once read,
-and copies an entry only when it yields it. A key the block prefix splits is assembled.
+A scan copies each key out of its block once, and that copy is the one it yields. A value stays
+in place in the block bytes, which are never written once read, until the scan yields its entry.
 `count(range)` runs the same merge and filters, `limit` included, and returns how many entries
 the scan would yield.
 
