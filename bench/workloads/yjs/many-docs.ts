@@ -8,7 +8,7 @@ export default defineWorkload({
   family: "yjs",
   title: "many small notes: write each through persistence, then cold load every note",
   owns: ["yjs-many-docs"],
-  params: (size) => ({ entries: { tiny: 20, small: 500, large: 5_000 }[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 1, ops: 0, seed: 1 }),
+  params: (size) => ({ entries: { tiny: 20, small: 500, large: 5_000 }[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 1, ops: 0 }),
   phases: [
     {
       name: "persist",

@@ -24,7 +24,6 @@ function countBy<T>(items: Iterable<T>, key: (t: T) => string | undefined): Map<
 export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
   title: "tracker: a task-tracker workspace aged by its history, then 11 screens' worth of goals, cold, first and warm",
   owns: ["doc-ingest", "doc-read-during-sync", "doc-edit", "doc-reread"],
-  seed: 1,
   entries: { tiny: WORKSPACES.tiny.issues, small: WORKSPACES.small.issues, large: WORKSPACES.large.issues },
   history: trackerHistory,
   txOp: (tx) => tx.kind,

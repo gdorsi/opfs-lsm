@@ -4,13 +4,13 @@
  * workload.
  */
 import type { KvStore } from "../core/families.ts";
-import type { Params, Phase, PhaseContext, SizeName } from "../core/types.ts";
+import type { Phase, PhaseContext, SizeName, WorkloadParams } from "../core/types.ts";
 import { permutation, zipfian } from "../page/model.ts";
 
 type Ctx = PhaseContext<"kv">;
 
 /** LevelDB's setup: 16-byte keys, 100-byte values compressible to about half. */
-export function kvParams(size: SizeName, over: Partial<Params> = {}): Params {
+export function kvParams(size: SizeName, over: Partial<WorkloadParams> = {}): WorkloadParams {
   const entries = { tiny: 1_000, small: 100_000, large: 1_000_000 }[size];
   return {
     entries,
@@ -19,7 +19,6 @@ export function kvParams(size: SizeName, over: Partial<Params> = {}): Params {
     compressibility: 0.5,
     batch: 1_000,
     ops: Math.min(entries, 100_000),
-    seed: 1,
     ...over,
   };
 }

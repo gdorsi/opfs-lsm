@@ -36,7 +36,7 @@ export default defineWorkload({
   family: "yjs",
   title: "editing trace, one update per keystroke through persistence, the last keys typed at one per frame, then cold opens before and after settle",
   owns: ["yjs-trace"],
-  params: () => ({ entries: 1, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 1, ops: 0, seed: 1 }),
+  params: () => ({ entries: 1, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 1, ops: 0 }),
   phases: [
     fetchTracePhase<"yjs">(),
     {

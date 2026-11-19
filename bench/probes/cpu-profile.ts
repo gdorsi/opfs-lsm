@@ -16,7 +16,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
-import type { PhaseReply, PhaseRequest, SizeName } from "../core/types.ts";
+import { DEFAULT_SEED, type PhaseReply, type PhaseRequest, type SizeName } from "../core/types.ts";
 import { BENCH_DIR, buildBench } from "../driver/build.ts";
 import { launchChrome } from "../driver/chrome.ts";
 import { DATA_DIR, ensureTrace } from "../driver/data.ts";
@@ -106,7 +106,7 @@ await buildBench({ quiet: true, minify: false });
 const server = await serve({ "/": path.join(BENCH_DIR, ".out"), "/data/": DATA_DIR });
 try {
   const catalog = await readCatalog(server.origin, true);
-  const [run] = plan(catalog, { workloads: [workload], contenders: [values.contender!], size: values.size as SizeName, reps: 1 });
+  const [run] = plan(catalog, { workloads: [workload], contenders: [values.contender!], size: values.size as SizeName, reps: 1, seed: DEFAULT_SEED });
   if (!run) throw new Error(`nothing to run for ${workload} on ${values.contender}`);
   if (run.phases.some(({ page }) => page === "other")) throw new Error(`${workload} runs a phase in a second tab, which this probe does not open`);
   const names = catalog.find((w) => w.workload === workload)!.phases.map((p) => p.name);
@@ -128,7 +128,7 @@ try {
         await chrome.sharedWorkersGone(15_000);
         tab = await chrome.openTab(url);
       }
-      const req: PhaseRequest = { workload: run.workload, contender: run.contender, size: run.size, rep: 0, phase, round: 0, dbName: "bench", carry };
+      const req: PhaseRequest = { workload: run.workload, contender: run.contender, size: run.size, rep: 0, phase, round: 0, seed: run.seed, dbName: "bench", carry };
       if (phase !== target) {
         carry = (await tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, 1_800_000)).carry;
         continue;

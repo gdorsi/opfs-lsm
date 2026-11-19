@@ -77,6 +77,8 @@ export type Measures = {
   get(at: At): Series | undefined;
   /** Each set of kv options a run overrode, such as "cacheBytes 4194304". Empty when every run used the defaults. */
   readonly kvOptions: readonly string[];
+  /** The distinct seeds of the runs without an error, ascending. */
+  readonly seeds: readonly number[];
 };
 
 export type Direction = "higher" | "lower";
@@ -386,5 +388,6 @@ export function measure(records: readonly RunRecord[]): Measures {
     const overrides = Object.entries(r.kv ?? {});
     if (!r.error && overrides.length > 0) kvOptions.add(overrides.map(([option, bytes]) => `${option} ${bytes}`).join(", "));
   }
-  return { all, get: (at) => byKey.get(keyOf(at)), kvOptions: [...kvOptions] };
+  const seeds = [...new Set(records.filter((r) => !r.error).map((r) => r.params.seed))].sort((x, y) => x - y);
+  return { all, get: (at) => byKey.get(keyOf(at)), kvOptions: [...kvOptions], seeds };
 }

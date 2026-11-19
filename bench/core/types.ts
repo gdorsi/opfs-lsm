@@ -36,8 +36,15 @@ export type Params = {
   readonly batch: number;
   /** Ops in a timed read or mixed phase. */
   readonly ops: number;
+  /** The run's `--seed`. Every op stream, history and curated binding derives from it. */
   readonly seed: number;
 };
+
+/** The seed of a run without `--seed`. The published tables and the byte budgets are for this seed. */
+export const DEFAULT_SEED = 1;
+
+/** A workload's sizing. The seed is the run's, so a workload cannot pin one. */
+export type WorkloadParams = Omit<Params, "seed"> & { readonly seed?: never };
 
 // ---------------------------------------------------------------- contender
 
@@ -102,7 +109,7 @@ export type Workload<F extends Family> = {
   readonly title: string;
   /** The access patterns this workload is the one owner of. */
   readonly owns: readonly Pattern[];
-  readonly params: (size: SizeName) => Params;
+  readonly params: (size: SizeName) => WorkloadParams;
   /** Run only these contenders (bare names, e.g. "kv"). Default: every contender of the family. */
   readonly contenders?: readonly string[];
   readonly phases: readonly Phase<F>[];
@@ -289,6 +296,7 @@ export type PhaseRequest = {
   readonly rep: number;
   readonly phase: number;
   readonly round: number;
+  readonly seed: number;
   readonly dbName: string;
   readonly carry: string | undefined;
 };
