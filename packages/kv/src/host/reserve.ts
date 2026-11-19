@@ -83,10 +83,11 @@ export function step(state: Reserve, event: ReserveEvent): Moved {
     case "unknown":
       switch (event.kind) {
         case "settle":
+          // No tab wants a reserve: whatever an earlier session left goes, unseen.
+          if (event.target === 0) return { next: { kind: "held", bytes: 0 }, effect: { kind: "remove" } };
           return { next: state, effect: { kind: "inspect", head: event.head, target: event.target } };
         case "found":
           if (event.bytes === event.target) return { next: { kind: "held", bytes: event.bytes }, effect: NONE };
-          if (event.target === 0) return { next: { kind: "held", bytes: 0 }, effect: { kind: "remove" } };
           return {
             next: { kind: "held", bytes: event.bytes },
             effect: { kind: "fill", head: event.head, target: event.target },

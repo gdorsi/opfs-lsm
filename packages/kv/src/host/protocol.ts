@@ -35,30 +35,29 @@ export type HostStats = {
   };
 };
 
-/** What a tab tells the host when it opens a database. The host uses the smallest figure of each. */
+/** What a tab tells the host when it opens a database, until the last tab closes it. */
 export type WatchPolicy = {
-  /** The tab's `maxWalBytes`. */
+  /** The tab's `maxWalBytes`. The host uses the smallest. */
   readonly maxWalBytes: number;
-  /** The tab's `compactionMemoryBytes`, which sets the host's `hostBudget`. */
+  /** The tab's `compactionMemoryBytes`, which sets the host's `hostBudget`. The host uses the smallest. */
   readonly compactionMemoryBytes: number;
-  /** The tab's `maxBytes`. Absent: this tab asks for no cap. */
-  readonly maxBytes?: number | "quota" | undefined;
+  /** The tab's `reserveBytes`. The host keeps the largest. */
+  readonly reserveBytes: number;
 };
 
-/** What the host measured over `maxBytes`. See `Db.onPressure`. */
-export type Pressure = {
-  /** Bytes of the run files the recorded manifest lists: what this database can free. */
+/** What `Db.onStorageFull` is told. */
+export type StorageFull = {
+  /** Bytes of the run files the recorded manifest lists: what this database holds on disk. */
   readonly bytes: number;
-  /** The smallest numeric `maxBytes` any tab passed since the database was last closed by all; with `"quota"`, 90% of the origin's quota. */
-  readonly maxBytes: number;
-  /** Bytes to free to come back to 4/5 of `maxBytes`. With `"quota"` it counts the whole origin and can pass `bytes`. */
+  /** The reserve's size: the bytes to free across the origin before the reserve fits again. */
   readonly need: number;
 };
 
 /**
  * What goes on `layersChannel`: a tab posts the records it appends, the host posts `ingest` for a new generation
- * and `pressure` for an offer over `maxBytes`. The tab holding `pressureLock` posts `pressure-pull` when it takes
- * the lock, for the open offer, and `pressure-done` when its handlers settle.
+ * and `full` for an offer, after the browser refused a write. The tab holding `fullLock` posts `full-pull` when it
+ * takes the lock, for the open offer. `full-done` answers an offer: the holder posts it when its handlers settle,
+ * and a handle with no handler when no handle holds the lock.
  * A build that does not know a kind catches up from the WAL, so a new shape takes a new kind.
  */
 export type BusMessage =
@@ -71,8 +70,8 @@ export type BusMessage =
       readonly bytes: number;
     }
   | { readonly kind: "ingest" }
-  | { readonly kind: "pressure"; readonly pressure: Pressure }
-  | { readonly kind: "pressure-pull" | "pressure-done" };
+  | { readonly kind: "full"; readonly full: StorageFull }
+  | { readonly kind: "full-pull" | "full-done" };
 
 export type BusRow = { readonly seq: Seq; readonly record: ArrayBuffer };
 
@@ -115,7 +114,7 @@ export type ClientToHost =
       readonly name: string;
       readonly maxWalBytes: number;
       readonly compactionMemoryBytes: number;
-      readonly maxBytes?: number | "quota" | undefined;
+      readonly reserveBytes: number;
     }
   | { readonly type: "unwatch"; readonly name: string }
   | { readonly type: "destroy"; readonly id: number; readonly name: string }
@@ -147,7 +146,7 @@ export type IngestClient = {
    * Have the host ingest `name` on its own once the WAL waiting for ingest
    * passes `policy.maxWalBytes`, starting with what is already waiting,
    * hold its flushes and compactions to `policy.compactionMemoryBytes`, and
-   * offer pressure over `policy.maxBytes`.
+   * keep a reserve of `policy.reserveBytes`.
    */
   watch(name: string, policy: WatchPolicy): void;
   /** This tab no longer needs the host to watch `name`. */

@@ -606,7 +606,7 @@ describe("destroyDb", () => {
     await expect(compactHost(host, name)).rejects.toBeInstanceOf(ClosedError);
     await expect(host.stats(name)).rejects.toBeInstanceOf(ClosedError);
     await expect(host.destroy(name)).rejects.toBeInstanceOf(ClosedError);
-    host.watch(name, { maxWalBytes: 1, compactionMemoryBytes: 32 << 20, maxBytes: 1 });
+    host.watch(name, { maxWalBytes: 1, compactionMemoryBytes: 32 << 20, reserveBytes: 1 });
     host.unwatch(name);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(await walDatabases()).not.toContain(`opfs-lsm-wal/${name}`);

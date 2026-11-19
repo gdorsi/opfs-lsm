@@ -42,14 +42,14 @@ type Row = readonly [what: string, state: Reserve, event: ReserveEvent, next: Re
 const rows: readonly Row[] = [
   ["unknown, a settle: look at the file", UNKNOWN, settle(5), UNKNOWN, { kind: "inspect", head: seq(5), target: T }],
   ["unknown, the file has the target size", UNKNOWN, found(T), held(T), NONE],
-  ["unknown, no file and none wanted", UNKNOWN, found(0, 0), held(0), NONE],
-  ["unknown, a file left and none wanted: remove it", UNKNOWN, found(T, 0), held(0), { kind: "remove" }],
+  ["unknown, a settle and no reserve wanted: remove what an earlier session left", UNKNOWN, settle(5, 0), held(0), { kind: "remove" }],
   ["unknown, no file: fill", UNKNOWN, found(0), held(0), fill(9)],
   ["unknown, a smaller file: rewrite", UNKNOWN, found(T / 2), held(T / 2), fill(9)],
   ["unknown, a larger file: rewrite", UNKNOWN, found(2 * T), held(2 * T), fill(9)],
   ["unknown, a refused write: release what an earlier session left", UNKNOWN, refused, offered(9), { kind: "release" }],
 
   ["held at the target, a settle", held(T), settle(5), held(T), NONE],
+  ["no file and none wanted, a settle", held(0), settle(5, 0), held(0), NONE],
   ["held under the target, a settle: rewrite larger", held(T / 2), settle(5), held(T / 2), fill(5)],
   ["held over the target, a settle", held(2 * T), settle(5), held(2 * T), NONE],
   ["held, the fill landed", held(0), filled, held(T), NONE],
