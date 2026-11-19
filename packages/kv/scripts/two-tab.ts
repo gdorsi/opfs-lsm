@@ -288,34 +288,28 @@ async function waitForDebugger(port: number): Promise<string> {
   throw new Error(`devtools not ready: ${last}`);
 }
 
-/** One DevTools command; resolves with its result. */
-function cdp(wsUrl: string, method: string, params: object): Promise<{ targetId?: string }> {
+function openTarget(wsUrl: string, url: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     const timer = setTimeout(() => {
       ws.close();
-      reject(new Error(`devtools ${method} timeout`));
+      reject(new Error("devtools target timeout"));
     }, 10_000);
-    ws.addEventListener("open", () => ws.send(JSON.stringify({ id: 1, method, params })));
+    ws.addEventListener("open", () => ws.send(JSON.stringify({ id: 1, method: "Target.createTarget", params: { url } })));
     ws.addEventListener("message", (ev) => {
       const msg = JSON.parse(String(ev.data)) as { id?: number; error?: { message?: string }; result?: { targetId?: string } };
       if (msg.id !== 1) return;
       clearTimeout(timer);
       ws.close();
-      if (msg.error) reject(new Error(msg.error.message ?? `devtools ${method} failed`));
-      else resolve(msg.result ?? {});
+      if (msg.error) reject(new Error(msg.error.message ?? "devtools target failed"));
+      else if (!msg.result?.targetId) reject(new Error("devtools did not return a target id"));
+      else resolve(msg.result.targetId);
     });
     ws.addEventListener("error", () => {
       clearTimeout(timer);
       reject(new Error("devtools socket error"));
     });
   });
-}
-
-async function openTarget(wsUrl: string, url: string): Promise<string> {
-  const { targetId } = await cdp(wsUrl, "Target.createTarget", { url });
-  if (!targetId) throw new Error("devtools did not return a target id");
-  return targetId;
 }
 
 /** A DevTools session on one page that stays open, so a frozen page stays frozen, and that keeps why the page was not restored from the back/forward cache. */
