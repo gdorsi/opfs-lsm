@@ -56,26 +56,33 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
     const url = `${opts.origin}/index.html${query}`;
     let tab = await chrome.openTab(url);
     let carry: string | undefined;
-    for (const [phase, page] of run.pages.entries()) {
-      if (page === "fresh" && phase > 0) {
-        await tab.evaluate("__bench.closeStore()", 60_000);
-        await tab.close();
-        await chrome.sharedWorkersGone(15_000); // the kv host must be gone, or "cold" is warm
-        tab = await chrome.openTab(url);
+    const freshTab = async () => {
+      await tab.evaluate("__bench.closeStore()", 60_000);
+      await tab.close();
+      await chrome.sharedWorkersGone(15_000); // the kv host must be gone, or "cold" is warm
+      tab = await chrome.openTab(url);
+    };
+    for (const [phase, { page, rounds }] of run.phases.entries()) {
+      const results: PhaseResult[] = [];
+      for (let round = 0; round < rounds; round++) {
+        if (round > 0 || (page === "fresh" && phase > 0)) await freshTab();
+        const req: PhaseRequest = {
+          workload: run.workload,
+          contender: run.contender,
+          size: run.size,
+          rep: run.rep,
+          phase,
+          round,
+          dbName: "bench",
+          carry,
+        };
+        const reply = await tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, opts.phaseTimeoutMs);
+        carry = reply.carry;
+        meta = { durability: reply.durability, fastPath: reply.fastPath, params: reply.params };
+        results.push(reply.result);
       }
-      const req: PhaseRequest = {
-        workload: run.workload,
-        contender: run.contender,
-        size: run.size,
-        rep: run.rep,
-        phase,
-        dbName: "bench",
-        carry,
-      };
-      const reply = await tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, opts.phaseTimeoutMs);
-      carry = reply.carry;
-      meta = { durability: reply.durability, fastPath: reply.fastPath, params: reply.params };
-      phases.push(reply.result);
+      const [first, ...later] = results;
+      phases.push(later.length > 0 ? { ...first!, laterRounds: later } : first!);
     }
     memory = await chrome.memory();
     await tab.evaluate("__bench.closeStore()", 60_000);

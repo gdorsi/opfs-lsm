@@ -5,7 +5,7 @@
  * Every per-run statistic comes from `measure` (metrics.ts): a median with its
  * min–max range over the runs. Latency percentiles pool every run's histogram.
  */
-import { merge, quantile } from "../core/histogram.ts";
+import { merge, opsOf, quantile, samplesOf } from "../core/histogram.ts";
 import type { HeapPeak, RunRecord } from "../core/types.ts";
 import { describe, measure, versus, type At, type Measures, type Metric, type Series } from "./metrics.ts";
 
@@ -107,11 +107,8 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
       if (!phases[0]!.timed) continue;
       const rate = get(row, "rate");
       const wall = get(row, "wall");
-      const opNames = Object.keys(phases[0]!.latency).sort(
-        (a, b) => (phases[0]!.latency[b]?.n ?? 0) - (phases[0]!.latency[a]?.n ?? 0),
-      );
-      opNames.forEach((op, i) => {
-        const h = merge(phases.map((ph) => ph.latency[op]).filter((x) => x !== undefined));
+      const pooled = new Map(opsOf(phases[0]!).map((op) => [op, merge(phases.flatMap((ph) => samplesOf(ph, op)))]));
+      [...pooled].sort((a, b) => b[1].n - a[1].n).forEach(([op, h], i) => {
         const head = i === 0 ? `| ${row.name} | ${row.contender} | ${phases.length} | ${cell(rate)} | ${cell(wall)} ` : "| | | | | ";
         out.push(`${head}| ${op} | ${Math.round(h.n / phases.length)} | ${fmtUs(quantile(h, 0.5))} | ${fmtUs(quantile(h, 0.99))} | ${fmtUs(quantile(h, 0.999))} | ${fmtUs(h.maxUs)} |`);
       });

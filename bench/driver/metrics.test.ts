@@ -219,6 +219,17 @@ suite("footprints", () => {
     ]);
     assert.deepEqual(series(m, "amp:userBytes", "settle")!.values, [15]);
   });
+
+  test("after a phase with rounds, user bytes are those of its last round, whose tab goes on", () => {
+    const reopen = phase("reopen", { page: "fresh", userBytes: 5 });
+    const m = measure([
+      run([
+        { ...reopen, laterRounds: [{ ...reopen, userBytes: 7 }] },
+        phase("settle", { timed: false, ops: 0, userBytes: 10, footprint: base }),
+      ]),
+    ]);
+    assert.deepEqual(series(m, "amp:userBytes", "settle")!.values, [17]);
+  });
 });
 
 suite("memory", () => {
@@ -234,5 +245,27 @@ suite("memory", () => {
     const s = m.get({ workload: "kv/test", size: "small", contender: "kv/kv", metric: "mem:sharedWorkerTotal" })!;
     assert.deepEqual(s.values, [60]);
     assert.equal(m.get({ workload: "kv/test", size: "small", contender: "kv/kv", metric: "mem:tabTotal" }), undefined);
+  });
+});
+
+suite("rounds", () => {
+  const cold = (ms: number, n = 1) => ({ cold: hist(n, ms * 1000 * n) });
+  const first = phase("goal", { page: "fresh", wallMs: 40, ops: 20, latency: cold(4) });
+  const later = [phase("goal", { page: "fresh", wallMs: 9, ops: 1, latency: cold(8) }), phase("goal", { page: "fresh", wallMs: 9, ops: 1, latency: cold(6) })];
+  const m = measure([run([{ ...first, laterRounds: later }])]);
+
+  test("an op's mean pools its samples over every round", () => {
+    assert.equal(series(m, "mean:cold", "goal")!.values[0], 6);
+  });
+
+  test("wall and rate stay the first round's, as in a record without rounds", () => {
+    const alone = measure([run([first])]);
+    assert.deepEqual(series(m, "wall", "goal")!.values, series(alone, "wall", "goal")!.values);
+    assert.deepEqual(series(m, "rate", "goal")!.values, series(alone, "rate", "goal")!.values);
+  });
+
+  test("an op only a later round timed still has a series", () => {
+    const only = measure([run([{ ...first, laterRounds: [phase("goal", { latency: { open: hist(1, 3000) } })] }])]);
+    assert.equal(series(only, "mean:open", "goal")!.values[0], 3);
   });
 });

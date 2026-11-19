@@ -65,7 +65,7 @@ async function catalog(): Promise<Catalog> {
       family,
       title: w.title,
       owns: w.owns,
-      phases: w.phases.map((p) => ({ name: p.name, page: p.page })),
+      phases: w.phases.map((p) => ({ name: p.name, page: p.page, rounds: p.page === "fresh" ? (p.rounds ?? 1) : 1 })),
       contenders: contenders
         .filter((c) => c.family === family && (!w.contenders || w.contenders.some((n) => c.id === `${family}/${n}`)))
         .map((c) => c.id)
@@ -122,9 +122,10 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
   const ctx: PhaseContext<Family> = {
     params,
     size: req.size,
+    round: req.round,
     store: store as PhaseContext<Family>["store"],
     model,
-    rng: rng(seedOf(req.workload, req.phase, req.rep, params.seed)),
+    rng: rng(seedOf(req.workload, req.phase, req.rep, params.seed, ...(req.round > 0 ? [req.round] : []))),
     time,
     bytes(n) {
       userBytes += n;
