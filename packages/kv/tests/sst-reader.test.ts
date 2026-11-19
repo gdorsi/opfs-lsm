@@ -185,6 +185,21 @@ describe("lazy sst reader", () => {
       });
     }
 
+    it("returns exactly the keys inside bounds that fall on, between and across block edges, both ways", async () => {
+      const reader = coldRun(new Reads());
+      for (let i = 400; i < 700; i += 7) {
+        for (const start of [entries[i]!.key, cat(entries[i]!.key, Uint8Array.of(0))]) {
+          for (const width of [0, 1, 13, 160]) {
+            for (const endExclusive of [entries[i + width]!.key, cat(entries[i + width]!.key, Uint8Array.of(0))]) {
+              const want = entries.filter((e) => compareBytes(e.key, start) >= 0 && compareBytes(e.key, endExclusive) < 0);
+              expect((await drain(reader.cursor({ start, endExclusive }))).map(show)).toEqual(want.map(show));
+              expect((await drain(reader.cursor({ start, endExclusive }, true))).map(show)).toEqual(want.reverse().map(show));
+            }
+          }
+        }
+      }
+    });
+
     it("reads no page past the one a short scan ends in", async () => {
       const bounds = { start: utf("k000010"), endExclusive: utf("k000020") };
       const scanned = new Reads();

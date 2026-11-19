@@ -178,12 +178,15 @@ export class SstReader {
     let take: (() => LayerEntry | undefined) | undefined;
     let cur: LayerEntry | undefined | null = null;
     let ahead: ReadAhead | undefined;
+    // Whether the block the cursor is in may hold a key past `stopAt`. The
+    // separators tell, so only the block the scan ends in compares its keys.
+    let mayPass = false;
     const peek = (): LayerEntry | undefined | Miss => {
       if (cur !== null) return cur;
       for (;;) {
         const e = take?.();
         if (e) {
-          cur = stopAt && stop(e.key, stopAt) ? undefined : e;
+          cur = mayPass && stop(e.key, stopAt!) ? undefined : e;
           return cur;
         }
         take = undefined;
@@ -218,6 +221,14 @@ export class SstReader {
         const offset = index.blockStart[b]! - index.blockStart[index.pageFirst[p]!]!;
         const length = index.blockStart[b + 1]! - index.blockStart[b]!;
         if (length < 4) throw new CorruptDatabaseError("sst block OOB");
+        // Every key of block `b` is at or after its separator and before the next block's.
+        mayPass =
+          !!stopAt &&
+          (reverse
+            ? compareSepAt(index, b, stopAt) < 0
+            : b + 1 < blockCount
+              ? compareSepAt(index, b + 1, stopAt) > 0
+              : compareBytes(index.last, stopAt) >= 0);
         take = open(
           () => blockBytes(page.buf, page.view, 0, { offset, length }, meta.codec),
           seek,
