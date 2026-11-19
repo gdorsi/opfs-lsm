@@ -299,7 +299,8 @@ describe("maxBytes", () => {
           for (let j = i; j < i + 25; j++) tx.put(keyOf(j), crypto.getRandomValues(new Uint8Array(VALUE)));
         });
       }
-      await until(() => calls.length === 1, "an offer after the failed flush");
+      // A later failed flush may offer again, so wait for the first.
+      await until(() => calls.length >= 1, "an offer after the failed flush");
       expect(calls[0]).toEqual({ bytes: await runBytes(), maxBytes: await runBytes(), need: expect.any(Number) });
       expect(calls[0]!.need).toBeGreaterThanOrEqual(20 * KiB);
     });
