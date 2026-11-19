@@ -259,7 +259,7 @@ export type RunRecord = {
   readonly rep: number;
   readonly params: Params;
   readonly host: HostInfo;
-  /** Present when the run overrode a kv option, so its numbers are not read as the defaults'. */
+  /** Present when the run overrode a kv option and its contender's store is kv, so its numbers are not read as the defaults'. */
   readonly kv?: KvOptions;
   readonly phases: readonly PhaseResult[];
   readonly memory?: MemoryPeaks;
@@ -296,5 +296,7 @@ export type PhaseReply = {
   readonly carry: string;
   readonly durability: Durability;
   readonly fastPath: string;
+  /** The contender's `engine`: its store is kv, so the run's kv options applied to it. */
+  readonly engine: boolean;
   readonly params: Params;
 };

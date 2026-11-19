@@ -69,7 +69,7 @@ async function main(): Promise<number> {
         maxPeakBytes: bytesFlag("maxPeakBytes", "max-peak-bytes", values["max-peak-bytes"]).maxPeakBytes,
         kv: {
           ...bytesFlag("compactionMemoryBytes", "compaction-memory-bytes", values["compaction-memory-bytes"]),
-          ...bytesFlag("cacheBytes", "cache-bytes", values["cache-bytes"]),
+          ...bytesFlag("cacheBytes", "cache-bytes", values["cache-bytes"], KV_MIN_CACHE_BYTES),
         },
       });
     }
@@ -132,7 +132,9 @@ async function run(o: {
     writeFileSync(resultsFile.replace(/\.jsonl$/, ".md"), text + "\n");
     console.log("\n" + text);
     const problems = records.filter((r) => r.error).map((r) => `${r.workload} ${r.contender}: ${r.error}`);
-    problems.push(...budgetProblems(measure(records)));
+    const measured = measure(records);
+    if (measured.kvOptions.length > 0) console.log(`\nThe byte budgets were not checked: kv opened with ${measured.kvOptions.join(", and with ")}.`);
+    problems.push(...budgetProblems(measured));
     if (o.smoke) problems.push(...smokeChecks(records));
     if (o.maxPeakBytes !== undefined) problems.push(...peakChecks(records, o.maxPeakBytes));
     if (problems.length > 0) {
@@ -145,15 +147,18 @@ async function run(o: {
   }
 }
 
-/** Print the bundle-size table of a build. With `check`, false when a row is over its budget. */
+/** kv raises a smaller `cacheBytes` to this, so a record of less would name a cache the run did not have. */
+const KV_MIN_CACHE_BYTES = 1024 * 1024;
+
 /** `{ [key]: bytes }` when the flag is set, `{}` when it is not. */
-function bytesFlag<K extends string>(key: K, flag: string, value: string | undefined): { [P in K]?: number } {
+function bytesFlag<K extends string>(key: K, flag: string, value: string | undefined, min = 1): { [P in K]?: number } {
   if (!value) return {};
   const bytes = Number(value);
-  if (!(bytes > 0)) throw new Error(`--${flag} must be a positive number of bytes`);
+  if (!Number.isInteger(bytes) || bytes < min) throw new Error(`--${flag} must be a whole number of bytes, at least ${min}`);
   return { [key]: bytes } as { [P in K]?: number };
 }
 
+/** Print the bundle-size table of a build. With `check`, false when a row is over its budget. */
 function sizes(built: BuildOutput, check: boolean): boolean {
   const rows = measureSizes(built);
   console.log(formatSizes(rows));

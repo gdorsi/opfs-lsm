@@ -44,7 +44,7 @@ export async function runPlan(runs: readonly PlannedRun[], opts: RunOptions): Pr
 
 async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
   const phases: PhaseResult[] = [];
-  let meta: Pick<RunRecord, "durability" | "fastPath" | "params"> | undefined;
+  let meta: Pick<PhaseReply, "durability" | "fastPath" | "engine" | "params"> | undefined;
   let chromeVersion = "unknown";
   let memory: MemoryPeaks | undefined;
   let error: string | undefined;
@@ -77,7 +77,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
         };
         const reply = await tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, opts.phaseTimeoutMs);
         carry = reply.carry;
-        meta = { durability: reply.durability, fastPath: reply.fastPath, params: reply.params };
+        meta = { durability: reply.durability, fastPath: reply.fastPath, engine: reply.engine, params: reply.params };
         results.push(reply.result);
       }
       const [first, ...later] = results;
@@ -99,7 +99,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
     rep: run.rep,
     params: meta?.params ?? { entries: 0, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: 0 },
     host: hostInfo(chromeVersion, opts.headless),
-    ...(Object.keys(opts.kv).length > 0 ? { kv: opts.kv } : {}),
+    ...(meta?.engine && Object.keys(opts.kv).length > 0 ? { kv: opts.kv } : {}),
     phases,
     ...(memory ? { memory } : {}),
     ...(error !== undefined ? { error } : {}),

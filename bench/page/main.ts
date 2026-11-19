@@ -170,6 +170,7 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
     carry: JSON.stringify({ model: model.carry(), extra: ctx.carry }),
     durability: contender.durability,
     fastPath: contender.fastPath,
+    engine: contender.engine,
     params,
   };
 }
