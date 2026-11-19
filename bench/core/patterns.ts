@@ -13,6 +13,7 @@ export const PATTERNS = {
   "kv-random-fill": "kv: batched random ingest, flush and compaction, W-Amp",
   "kv-point-get": "kv: point gets while compaction runs, then gets that hit and miss over warm pages",
   "kv-cold-open": "kv: opening the store in a fresh tab, the first get, then gets over its cold pages",
+  "kv-second-tab": "kv: a second tab opening a store the first tab holds, then reading what the first tab just wrote",
   "kv-delete": "kv: batched random deletes, and the space compaction gives back",
   "kv-seq-fill": "kv: sequential ingest",
   "kv-scan": "kv: a full ordered scan, and seeks followed by 10 or 100 nexts",

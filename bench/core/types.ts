@@ -63,9 +63,11 @@ export function defineContender<F extends Family>(c: Contender<F>): Contender<F>
 
 /**
  * Where a phase runs. "fresh" closes the tab, waits until every SharedWorker
- * has exited, then opens a new tab: a cold page over warm OS storage.
+ * has exited, then opens a new tab: a cold page over warm OS storage. "other"
+ * runs in the tab that did not run the previous phase, opening it on first
+ * use and leaving the first tab open with its store.
  */
-export type PageMode = "same" | "fresh";
+export type PageMode = "same" | "fresh" | "other";
 
 type PhaseBase<F extends Family> = {
   /** db_bench-style name, printed in the report ("fillrandom", "readrandom"). */
@@ -84,7 +86,7 @@ type PhaseBase<F extends Family> = {
 };
 
 export type Phase<F extends Family> =
-  | (PhaseBase<F> & { readonly page: "same" })
+  | (PhaseBase<F> & { readonly page: "same" | "other" })
   | (PhaseBase<F> & {
       readonly page: "fresh";
       /**

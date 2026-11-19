@@ -54,6 +54,7 @@ try {
   const catalog = await readCatalog(server.origin, true);
   const runs = plan(catalog, { workloads: selected, contenders: values.contenders ? values.contenders.split(",") : [], size, reps: 1 });
   for (const run of runs) {
+    if (run.phases.some(({ page }) => page === "other")) throw new Error(`${run.workload} runs a phase in a second tab, which this probe does not open`);
     if (!run.workload.startsWith("fate/")) throw new Error(`${run.workload} is not a fate workload`);
     console.error(`${run.workload} ${run.contender} ${size}`);
     const names = catalog.find((w) => w.workload === run.workload)!.phases.map((p) => p.name);

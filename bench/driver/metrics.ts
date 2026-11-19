@@ -117,9 +117,11 @@ function amplification(s: Sample): Record<AmpField, number> | undefined {
   const p = phaseOf(s);
   const fp = p?.footprint;
   if (!p || !fp) return undefined;
+  // kv counts WAL bytes per tab and file bytes per host, so the bytes a second tab wrote have no one denominator.
   let userIn = 0;
   for (let i = s.index; i >= 0; i--) {
     const q = s.run.phases[i]!;
+    if (q.page === "other") userIn = NaN;
     // A later phase runs in the tab of the last round, so that round's writes are the ones its counters hold.
     userIn += (i < s.index ? (q.laterRounds?.at(-1) ?? q) : q).userBytes;
     if (q.page === "fresh") break;

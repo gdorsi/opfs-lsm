@@ -124,6 +124,7 @@ try {
   const [run] = plan(catalog, { workloads: [workload], contenders: ["kv/kv"], size, reps: 1 });
   if (!run) throw new Error(`nothing to run for ${workload}`);
   if (run.phases.some(({ page }, phase) => phase > 0 && page === "fresh")) throw new Error(`${workload} opens a fresh page, so it has no one SharedWorker to watch`);
+  if (run.phases.some(({ page }) => page === "other")) throw new Error(`${workload} runs a phase in a second tab, which this probe does not open`);
   const phaseNames = catalog.find((w) => w.workload === workload)!.phases.map((p) => p.name);
 
   const chrome = await launchChrome({ headless: true, onProgress: () => {} });
