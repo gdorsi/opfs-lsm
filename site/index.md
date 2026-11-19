@@ -294,14 +294,11 @@ const db = await openDb({ name: "app" });
 
 ### Quota management
 
-Your app picks what to drop before the browser refuses writes
+A reserve takes the write the browser refuses, and your app picks what to drop
 
 ```ts
-const db = await openDb({
-  name: "app",
-  maxBytes: "quota",
-});
-db.onPressure(({ need }) => evict(need));
+const db = await openDb({ name: "app" });
+db.onStorageFull(({ need }) => evict(need));
 ```
 
 </div>

@@ -321,24 +321,25 @@ await db.view(async (snap) => {
 
 ## Storage quota
 
-The WAL and the SST files count against the origin's storage quota. Open with `maxBytes`, and the SharedWorker asks an `onPressure` handler to free space. kv never removes a row itself, and a write never waits or fails because of the cap.
+The WAL and the SST files count against the origin's storage quota. kv keeps a reserve file of `reserveBytes`. When the browser refuses a write, the SharedWorker deletes the file, the write runs again, and an `onStorageFull` handler is asked to free space. kv never removes a row itself.
 
 ```ts
-// offer when usage passes 90% of the origin's quota
-await openDb({ name: "log", maxBytes: "quota" });
-// offer when this database's SST files pass 64 MiB
-await openDb({ name: "log", maxBytes: 64 * 1024 * 1024 });
-await openDb({ name: "log", maxBytes: 0 });
+// a 24 MiB reserve
+await openDb({ name: "log" });
+await openDb({ name: "log", reserveBytes: 64 * 1024 * 1024 });
+// no reserve: a refused write fails, and onStorageFull is never called
+await openDb({ name: "log", reserveBytes: 0 });
+await openDb({ name: "log", reserveBytes: -1 });
 // throws ConstraintError
 ```
 
-Here keys start with a timestamp, so the handler drops the oldest rows. `need` is what to free to get back to 4/5 of the cap, and with `"quota"` it counts the whole origin, so free at most half of `bytes`.
+Here keys start with a timestamp, so the handler drops the oldest rows. `bytes` is the size of the SST files. `need` is the size of the reserve to write back. Something else in the origin may hold the space, so free at most half of `bytes`.
 
 ```ts
-const db = await openDb({ name: "log", maxBytes: "quota" });
+const db = await openDb({ name: "log" });
 // Register in the turn openDb resolves. With no handler, kv logs
-// a warning and the database keeps growing.
-db.onPressure(async ({ bytes, need }) => {
+// a warning and the next refused write fails.
+db.onStorageFull(async ({ bytes, need }) => {
   const goal = Math.min(need, bytes / 2);
   let freed = 0;
   for await (const { key, value } of db.range()) {
@@ -354,9 +355,9 @@ db.onPressure(async ({ bytes, need }) => {
 });
 ```
 
-The offer comes back after a flush while too little was freed, so make the handler safe to run again. [Size cap](../../docs/size-cap.md) covers how kv measures and which tab answers.
+The deleted reserve is the room the handler's writes need: a delete frees space only once a flush and a compaction hold it. kv then writes the reserve again, and asks again while it does not fit, so make the handler safe to run again. [Reserve](../../docs/reserve.md) covers the states and which tab answers.
 
-**Note.** If the origin runs out anyway, flushes fail with `StorageFullError`. The acked writes stay in the WAL, and the SharedWorker flushes again after another 1 MiB of writes or the next `openDb`.
+**Note.** While the reserve is gone and the origin is still full, `put`, `delete`, `batch` and `update` reject with `StorageFullError` after one more try, and `update` runs its body again for that try. Flushes fail with the same error. The acked writes stay in the WAL, and the SharedWorker flushes again after another 1 MiB of writes or the next `openDb`.
 
 ## Destroy
 
@@ -419,9 +420,9 @@ dec(await tabB.get(key)); // => "world"
 | `cacheBytes` | 256 MiB, at least 1 MiB | SST pages, Bloom filters and block indexes this tab caches. |
 | `memtableBytes` | 16 MiB, at least 1 MiB | Unflushed rows this tab holds. At the limit a write waits for a flush ([Backpressure](../../docs/design.md#backpressure)). |
 | `compactionMemoryBytes` | 32 MiB, at least 8 MiB | Memory the SharedWorker spends to flush and compact ([Memory budget](../../docs/design.md#memory-budget)). |
-| `maxBytes` | none | `"quota"`, or SST bytes to stay under. See [Storage quota](#storage-quota). |
+| `reserveBytes` | 24 MiB | Bytes the SharedWorker keeps in a file and gives back when the browser refuses a write. 0 keeps none. See [Storage quota](#storage-quota). |
 
-When tabs pass different values, the SharedWorker uses the smallest `compactionMemoryBytes` and `maxBytes` until the last tab closes the database.
+When tabs pass different values, the SharedWorker uses the smallest `compactionMemoryBytes` and the largest `reserveBytes` until the last tab closes the database.
 
 ## Errors
 
@@ -439,7 +440,7 @@ try {
 | Class | `code` | When | What to do |
 | --- | --- | --- | --- |
 | `StorageUnavailableError` | `unavailable` | No SharedWorker or OPFS, the wasm engine did not load, or IndexedDB did not open. `cause` holds the browser's error. | Retry `openDb`, or reload the page. |
-| `StorageFullError` | `quota` | The origin is out of quota, so a flush fails. No `Db` method throws it, but `ingest(db)` does. | Free space. See [Storage quota](#storage-quota). |
+| `StorageFullError` | `quota` | The origin is out of quota and the reserve is gone, so a write or a flush fails. `cause` holds the browser's error for a write. | Free space. See [Storage quota](#storage-quota). |
 | `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone. kv changes nothing. | Do not retry. `destroyDb(name)` removes it. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
 | `ConstraintError` | `constraint` | A name, key, value, batch or range is invalid or over a limit. | Fix the call. |

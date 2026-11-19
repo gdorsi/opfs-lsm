@@ -41,7 +41,8 @@ OPFS  opfs-lsm/<name>/
   ├── m/<generation, 16 digits>.mft    manifests
   ├── l0/<firstSeq>-<lastSeq>.sst      flushed runs, may overlap
   ├── l1/c<generation>.<i>.sst         compacted runs, disjoint within a level
-  └── l2/...
+  ├── l2/...
+  └── reserve                          bytes the host gives back when a write is refused
 ```
 
 * A **seq** is the position of a batch in the log. Seqs start at 1 and have no gaps, except
@@ -81,17 +82,16 @@ start is not below its end, fails with `CommitError`.
 
 ### Append
 
-`put`, `delete` and `batch` append by group commit. A tab has at most one group-commit
-transaction open. The append that opens it and the appends issued synchronously after it join it, and
-appends that arrive while it commits form the next group. A group is one `readwrite`
-transaction over `wal`:
+`put`, `delete` and `batch` append by group commit. A tab has at most one group-commit transaction
+open. The append that opens it and the appends issued synchronously after it join it, and appends
+that arrive while it commits form the next group. A group is one `readwrite` transaction over `wal`:
 
 1. `add` each record of the group, in call order, with no key. The key generator of the store
    assigns each its seq.
 2. Commit in a microtask, without waiting for the results of the adds.
 
 The records are the only writes. A group commits or aborts as a whole, and a failed group fails
-every write in it.
+every write in it. A group the browser refuses for space is added once more (see [Reserve](#reserve)).
 
 Nothing stores the head, the seq of the last committed batch. It is the last key in `wal`, or
 `ingestedThrough` when no record is past it. Only recovery and destroy move the head past the
@@ -272,11 +272,11 @@ left can hold a version it covers. Each flush and each compaction install retire
 marks against its new runs, and a mark step (see [Planning](#planning)) rewrites the runs that
 hold a mark back, so its rows leave the disk.
 
-## Size cap
+## Reserve
 
-`openDb({ maxBytes })` asks the database to stay under a size. kv measures and asks: it never
-removes a row or writes to the WAL for the cap, and a write never waits for it or fails because of
-it. How the host measures and which tab answers is in [size-cap.md](size-cap.md).
+`openDb({ reserveBytes })` sets the size of `reserve`, 24 MiB unless given. When the browser
+refuses a write, the host removes the file, the write runs again, and `db.onStorageFull` asks a
+tab to free space. kv never removes a row itself. The steps are in [reserve.md](reserve.md).
 
 ## Multi-tab coordination
 

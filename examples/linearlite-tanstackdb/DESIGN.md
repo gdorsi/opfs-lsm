@@ -141,16 +141,16 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
   reloads, and a failed request is asked again the next time the ids are seen. A detail view opened on an issue
   without a body does the same for its one id, with backoff. Rare hole: a comment pulled in the instant between the
   server reading a thread for `/api/detail` and the body being written is dropped, and shows once it changes.
-- **Eviction.** The database opens with `maxBytes: "quota"`, so kv asks for space when the origin passes 90% of
-  its storage quota (`?maxBytes=<bytes>` sets a byte cap instead, to see it happen). Only the leader answers, and it
-  answers at once by setting `evict: "asked"` in the shared sync row; nothing is cleared yet. Every tab then shows an
-  alert that says cached descriptions and comments will be removed from this device, with one confirm button. A
+- **Eviction.** kv keeps a reserve file, releases it when the browser refuses a write, and asks for space through
+  `db.onStorageFull` (to see it happen, set a custom storage quota in Chrome DevTools, under Application, Storage).
+  Only the leader answers, and it answers at once by setting `evict: "asked"` in the shared sync row; nothing is
+  cleared yet. Every tab then shows an alert that says cached descriptions and comments will be removed from this device, with one confirm button. A
   confirm in any tab moves the row from `asked` to `confirmed`, which wakes the leader. Between two pages, right
   after a push, the leader then clears `bodies` and `comments` and sets `evict: "idle"`: later changes still arrive for the threads that load
   again, and the screen preloads the ones in view. Issues stay. While a body or comment has an unsent edit nothing is
   cleared, and the confirmation waits for the next push. An edit to a body or comment made in the instant between
-  that check and the clear is lost. kv offers again at each flush while still over the cap; the alert is raised only when more than 100 threads
-  are cached, so it does not come back for the few rows the screen reloads.
+  that check and the clear is lost. kv asks again after a flush while its reserve still does not fit; the alert is
+  raised only when more than 100 threads are cached, so it does not come back for the few rows the screen reloads.
 - **Pull order on a first sync.** Pages come in version order. The seed stamps versions newest `modified` first,
   so the first page is the default view's top rows: the list's window fills from the first slice and then holds
   its 100 rows, and every later row sorts past it and stays out of memory. A real server's history arrives in

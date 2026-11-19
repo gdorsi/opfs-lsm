@@ -574,16 +574,16 @@ await todos4.query({ index: "byTitle" });
 
 ## Storage quota
 
-Documents and index entries count against the origin's storage quota. Open kv with `maxBytes: "quota"` and answer its offers, as kv's [Storage quota](../kv/README.md#storage-quota) explains.
+Documents and index entries count against the origin's storage quota. Answer kv's `onStorageFull`, as kv's [Storage quota](../kv/README.md#storage-quota) explains.
 
 ```ts
-const kv = await openDb({ name: "app", maxBytes: "quota" });
+const kv = await openDb({ name: "app" });
 const store = await openDocStore(kv, schema);
 // a cache your app can fetch again
 const users = store.collection("users");
 
-kv.onPressure(async () => {
-	// an offer can come back before the space is free, so skip an
+kv.onStorageFull(async () => {
+	// kv can ask again before the space is free, so skip an
 	// empty collection. Clearing one still sends every changes
 	// listener a gap.
 	if ((await users.queryIds({ limit: 1 })).ids.length > 0)
