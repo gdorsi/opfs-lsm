@@ -40,8 +40,9 @@ export default ({ command }: { command: string }) => {
     title: "opfs-lsm",
     description: "A key-value store for the browser, on OPFS and IndexedDB.",
     base,
-    // The landing page is always dark. This sets it before the first paint, as the default theme's own script does.
-    head: [["script", {}, `${JSON.stringify([base, `${base}index.html`])}.includes(location.pathname) && document.documentElement.classList.add("dark")`]],
+    // The landing page is always dark and has no navbar. This sets both before the first paint. The default theme
+    // adds `hide-nav` only after it hydrates, which moves the painted page up by the navbar's height.
+    head: [["script", {}, `${JSON.stringify([base, `${base}index.html`])}.includes(location.pathname) && document.documentElement.classList.add("dark", "hide-nav")`]],
     srcDir: "..",
     srcExclude,
     rewrites,
