@@ -774,11 +774,14 @@ button.alpha-tag:focus-visible,
   height: min(400px, 45svh);
 }
 
+/* The screen has the app's own dark background (`--bg` in the app's stylesheet), so the frame is the app's color
+   before the app draws. */
 .demo-screen {
   position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
+  background: #0e0f12;
 }
 
 .demo-screen[data-expanded] {
@@ -786,16 +789,21 @@ button.alpha-tag:focus-visible,
   inset: 0;
   z-index: 100;
   height: auto;
-  background: var(--vp-c-bg);
 }
 
+/* The app goes out of sight at once and comes back with a fade, once it has something to draw. */
 .demo-frame {
   display: block;
   flex: 1;
   min-height: 0;
   width: 100%;
   border: 0;
-  background: var(--vp-c-bg);
+  opacity: 0;
+}
+
+.demo-frame[data-shown] {
+  opacity: 1;
+  transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 /* Full screen: Close, and the app's name. */
@@ -895,8 +903,8 @@ button.alpha-tag:focus-visible,
   outline-offset: 2px;
 }
 
-/* On a wide screen, while the app starts, a chip at the frame's foot says so. It goes without a fade, so it never
-   overlaps the toast that takes its place. */
+/* On a wide screen, until the app's first message, a chip at the frame's foot says so. It goes without a fade, so
+   it never overlaps the toast that takes its place. */
 .demo-status {
   position: absolute;
   left: 50%;

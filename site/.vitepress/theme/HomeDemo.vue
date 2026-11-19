@@ -7,7 +7,8 @@ import type { Visit } from "./demo.ts";
 /**
  * LinearLite in a browser frame. The app is the static build of `examples/linearlite-docstore`, served next to the site.
  * It measures itself and posts each timing here (`examples/linearlite-docstore/src/protocol.ts` lists the messages). This
- * component keeps the visit those messages tell, and a toast over the frame says it.
+ * component keeps the visit those messages tell, and a toast over the frame says it. The toast stays through a reload,
+ * until the app's next message replaces it.
  *
  * On a touch screen or a narrow one the frame is a preview the page scrolls past: the app inside it takes no input,
  * so a swipe over it scrolls the page, not the app's list. Tapping it opens the app full screen.
@@ -22,6 +23,11 @@ const src = ref<string>();
 
 const frame = ref<HTMLIFrameElement>();
 const visit = ref<Visit>({ kind: "waiting" });
+/**
+ * Whether the frame shows the app. Off until the app has something to draw, at the start and after each reload,
+ * because the frame would otherwise paint the empty document and the app's shell without its rows.
+ */
+const shown = ref(false);
 /** A filter's time, shown over the visit's message for a few seconds. */
 const filter = ref<{ label: string; ms: number }>();
 let filterTimer: ReturnType<typeof setTimeout> | undefined;
@@ -48,8 +54,9 @@ function onMessage(e: MessageEvent) {
   const m = e.data;
   switch (m.type) {
     case "opened":
-      // With issues stored, the app is still reading its first rows: the visit stays loading until `first-rows`.
+      // With issues stored, the app is still reading its first rows: the frame stays hidden until `first-rows`.
       if (m.issues > 0) break;
+      shown.value = true;
       if (writeOnEmpty) {
         writeOnEmpty = false;
         post({ type: "generate", count: count.value });
@@ -64,6 +71,7 @@ function onMessage(e: MessageEvent) {
       enter({ kind: "written", count: m.count, writeMs: m.writeMs });
       break;
     case "first-rows":
+      shown.value = true;
       enter(wrote ? { kind: "reopened", ms: m.ms } : { kind: "returning", ms: m.ms });
       break;
     case "filter":
@@ -77,20 +85,21 @@ function onMessage(e: MessageEvent) {
       reload();
       break;
     case "failed":
+      shown.value = true;
       enter({ kind: "failed", message: m.message });
       break;
   }
 }
 
 function reload() {
-  enter({ kind: "loading" });
+  shown.value = false;
   frame.value?.contentWindow?.location.reload();
 }
 
 /** A first visit again: the app deletes its issues and reloads, and the page writes them anew. */
 function startOver() {
   writeOnEmpty = true;
-  enter({ kind: "loading" });
+  shown.value = false;
   post({ type: "delete" });
 }
 
@@ -181,7 +190,6 @@ onMounted(() => {
   addEventListener("keydown", onKey);
   whenIdle(() => {
     if (!mounted) return;
-    enter({ kind: "loading" });
     src.value = withBase(`/demo/index.html?count=${count.value}&theme=dark`);
   });
 });
@@ -194,7 +202,7 @@ onBeforeUnmount(() => {
   if (expanded.value) lock(false);
 });
 
-const starting = computed(() => visit.value.kind === "waiting" || visit.value.kind === "loading");
+const starting = computed(() => visit.value.kind === "waiting");
 </script>
 
 <template>
@@ -225,6 +233,7 @@ const starting = computed(() => visit.value.kind === "waiting" || visit.value.ki
           ref="frame"
           class="demo-frame"
           :src="src"
+          :data-shown="shown ? '' : undefined"
           :inert="compact && !expanded ? '' : undefined"
           title="LinearLite, an issue tracker running on opfs-lsm with no server"
         />

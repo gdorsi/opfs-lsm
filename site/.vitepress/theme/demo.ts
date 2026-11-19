@@ -3,10 +3,8 @@
  * milliseconds.
  */
 export type Visit =
-  /** Before the frame's `src` is set: the page waits for idle. */
+  /** Before the app's first message: the page waits for idle, then the app opens. */
   | { kind: "waiting" }
-  /** The app is opening. */
-  | { kind: "loading" }
   /** The app opened with no issue and nothing to write: it shows its own Generate button. */
   | { kind: "empty" }
   | { kind: "writing"; written: number; total: number }
