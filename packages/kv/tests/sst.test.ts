@@ -45,6 +45,15 @@ describe("sst", () => {
     expect(await untilHit(() => reader.get(utf("b")))).toEqual({ kind: "del", key: utf("b"), seq: 2 ** 40 });
   });
 
+  it("reads a seq exactly up to the largest safe integer, in a get and in a scan", async () => {
+    const seqs = [1, 2 ** 32 - 1, 2 ** 32, 2 ** 32 + 1, 2 ** 40 + 5, 2 ** 53 - 2, Number.MAX_SAFE_INTEGER];
+    const key = (i: number) => utf(`k${i}`);
+    const reader = readerOfBytes(encodeSstRef(seqs.map((seq, i) => ({ kind: "put" as const, key: key(i), value: utf("v"), seq }))));
+    const got = await Promise.all(seqs.map((_, i) => untilHit(() => reader.get(key(i)))));
+    expect(got.map((e) => e?.seq)).toEqual(seqs);
+    expect((await drain(reader.cursor())).map((e) => e.seq)).toEqual(seqs);
+  });
+
   it("rejects a footer whose version is not 1", async () => {
     const body = encodeSstRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);

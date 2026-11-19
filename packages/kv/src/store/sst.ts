@@ -41,6 +41,11 @@ function offsetTableBytes(count: number): number {
   return count > 1 ? 2 * Math.floor((count - 1) / OFFSET_STRIDE) : 0;
 }
 
+/** The u64 seq at `o`, read as two u32 halves, which is exact below 2^53 and allocates no BigInt. */
+export function seqAt(view: DataView, o: number): Seq {
+  return asSeq(view.getUint32(o, true) + view.getUint32(o + 4, true) * 2 ** 32);
+}
+
 /** `seq` is the WAL seq that wrote the entry. Seqs start at 1. */
 export type SstEntry =
   | {
@@ -159,7 +164,7 @@ export class RecordWalker {
   }
 
   seq(): Seq {
-    return asSeq(Number(this.view.getBigUint64(this.seqAt, true)));
+    return seqAt(this.view, this.seqAt);
   }
 
   key(): Uint8Array {
@@ -173,22 +178,21 @@ export class RecordWalker {
     return k;
   }
 
+  /** A copy of the value that owns its buffer. */
   value(): Uint8Array {
     return this.buf.slice(this.valAt, this.valAt + this.valLen);
   }
 
-  /** The record as a scan entry: views into the block, except a key split by the block prefix. */
+  /** The record as a scan entry: a copy of the key, and the value left where it is in the block. */
   inPlace(): LayerEntry {
-    const { buf, keyAt, keyLen, valAt } = this;
-    const key = this.prefixLen === 0 ? buf.subarray(keyAt, keyAt + keyLen) : this.key();
-    const seq = this.seq();
-    return this.tag === TAG_PUT ? { key, kind: "put", value: buf.subarray(valAt, valAt + this.valLen), seq } : { key, kind: "del", seq };
-  }
-
-  entry(): SstEntry {
-    const key = this.key();
-    const seq = this.seq();
-    return this.tag === TAG_PUT ? { kind: "put", key, value: this.value(), seq } : { kind: "del", key, seq };
+    return {
+      key: this.key(),
+      kind: this.tag === TAG_PUT ? "put" : "del",
+      seq: this.seq(),
+      block: this.buf,
+      valueAt: this.valAt,
+      valueLength: this.valLen,
+    };
   }
 
   private len(): number {
@@ -322,7 +326,9 @@ function seekInBlock(w: RecordWalker, key: Uint8Array): number {
 
 /**
  * The record for `key` in one block, or undefined. Checks the block prefix
- * once, then compares suffixes in place and copies out only the match.
+ * once, then compares suffixes in place and copies out only the value, which
+ * the caller owns. The entry's key is `key` itself: a match has the same
+ * bytes.
  */
 export function findInBlock(b: BlockBytes, key: Uint8Array): SstEntry | undefined {
   const w = RecordWalker.ofBlock(b);
@@ -331,7 +337,9 @@ export function findInBlock(b: BlockBytes, key: Uint8Array): SstEntry | undefine
   for (let i = 0; i < p; i++) if (w.buf[w.prefixAt + i] !== key[i]) return undefined;
   if (seekSuffix(w, key) === 0) return undefined;
   w.next();
-  return compareAt(w.buf, w.keyAt, w.keyLen, key, p) === 0 ? w.entry() : undefined;
+  if (compareAt(w.buf, w.keyAt, w.keyLen, key, p) !== 0) return undefined;
+  const seq = w.seq();
+  return w.tag === TAG_PUT ? { kind: "put", key, value: w.value(), seq } : { kind: "del", key, seq };
 }
 
 /**

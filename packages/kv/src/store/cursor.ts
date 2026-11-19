@@ -1,18 +1,45 @@
 import { compareBytes, containsAll } from "../bytes.js";
+import type { Entry } from "../db.js";
 import type { Seq } from "../seq.js";
 
-/**
- * The key and value may be views into a run's block bytes, which are never
- * written once read, so a read copies them only when it hands them out.
- */
-export type LayerEntry = {
+type Version = {
   readonly key: Uint8Array;
   readonly kind: "put" | "del";
-  /** Present iff kind === "put". */
-  readonly value?: Uint8Array;
   /** The WAL seq that wrote the entry. */
   readonly seq: Seq;
 };
+
+/**
+ * Where a version's bytes are. A memtable row lends its own key and value, so
+ * a read copies both to hand them out. A record of a run has a key copied
+ * out of its block, which nothing else holds, and a value still in `block`,
+ * which is never written once read: a read that keeps the entry copies the
+ * value once, and a read that skips it copies none.
+ */
+export type LayerEntry =
+  | (Version & {
+      /** Present iff kind === "put". */
+      readonly value?: Uint8Array;
+      readonly block?: undefined;
+    })
+  | (Version & {
+      readonly block: Uint8Array;
+      /** The value is `block[valueAt, valueAt + valueLength)`, empty for a delete. */
+      readonly valueAt: number;
+      readonly valueLength: number;
+    });
+
+/** A put's value, to read where it is. */
+export function valueOf(e: LayerEntry): Uint8Array {
+  return e.block ? e.block.subarray(e.valueAt, e.valueAt + e.valueLength) : e.value!;
+}
+
+/** A put as a read hands it out: a key and a value that own their buffers. */
+export function entryOf(e: LayerEntry): Entry {
+  return e.block
+    ? { key: e.key, value: e.block.slice(e.valueAt, e.valueAt + e.valueLength) }
+    : { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) };
+}
 
 export type ScanBounds = {
   readonly start?: Uint8Array;
@@ -85,7 +112,7 @@ export function filterCursor(cursor: LayerCursor, patterns: readonly Uint8Array[
     peek() {
       for (;;) {
         const e = cursor.peek();
-        if (!e || e instanceof Miss || (e.kind === "put" && containsAll(e.value!, patterns))) return e;
+        if (!e || e instanceof Miss || (e.kind === "put" && containsAll(valueOf(e), patterns))) return e;
         cursor.next();
       }
     },

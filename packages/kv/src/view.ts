@@ -2,11 +2,10 @@ import { checkKey } from "./check.js";
 import { ClosedError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { entryCursor, Miss, untilHit, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, entryOf, Miss, untilHit, type LayerEntry, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,
-  entriesOf,
   liveStep,
   matchingStep,
   pointGet,
@@ -50,9 +49,10 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 /**
  * `range` over memtable `rows` already cut to `bounds` and the levels under
  * them, one entry at a time: every live put, or with `valueContains` only
- * the matching ones. `limit` is left to the caller.
+ * the matching ones, and no more than `limit`. It is a sync step and not an
+ * async iterator, so `range`, `count` and `rangeJoin` wait only on a miss.
  */
-function scanStep(
+export function scanStep(
   rows: readonly MemRow[],
   levels: readonly RunLevel[],
   at: Marks,
@@ -61,31 +61,127 @@ function scanStep(
 ): ScanStep {
   const patterns = range?.valueContains;
   const reverse = range?.reverse ?? false;
-  return patterns && patterns.length > 0
-    ? matchingStep(rows, levels, patterns, at, bounds, reverse)
-    : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse);
+  const step =
+    patterns && patterns.length > 0
+      ? matchingStep(rows, levels, patterns, at, bounds, reverse)
+      : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse);
+  const limit = range?.limit;
+  if (limit === undefined) return step;
+  let n = 0;
+  return () => {
+    if (!(n < limit)) return undefined;
+    const e = step();
+    if (e && !(e instanceof Miss)) n++;
+    return e;
+  };
 }
 
-/** The entries `range` yields over memtable `rows` already cut to `bounds` and the levels under them. */
-export function scanLayers(
-  rows: readonly MemRow[],
-  levels: readonly RunLevel[],
-  at: Marks,
-  bounds: ScanBounds | undefined,
-  range: Range | undefined,
-): AsyncGenerator<Entry> {
-  return entriesOf(scanStep(rows, levels, at, bounds, range), range?.limit);
-}
+/** What a `range` iterator asks of the handle or view it reads. */
+type ScanHost = {
+  /**
+   * Runs at the first `next()`: checks the host is open, builds the scan, and
+   * takes the layers last, so nothing can throw while it holds them.
+   */
+  start(): { readonly step: ScanStep; readonly release: () => void };
+  /** Throws when the host closed. Runs before each entry is handed out. */
+  check(): void;
+  /** Runs when the scan threw. Throws `ClosedError` in its place when the handle closed. */
+  failed(): void;
+};
 
-/** How many entries `scanLayers` would yield, without copying them. */
-export function countLayers(
-  rows: readonly MemRow[],
-  levels: readonly RunLevel[],
-  at: Marks,
-  bounds: ScanBounds | undefined,
-  range: Range | undefined,
-): Promise<number> {
-  return countOf(scanStep(rows, levels, at, bounds, range), range?.limit);
+type Step = IteratorResult<Entry, undefined>;
+
+/** What an async generator's iterator inherits: `Symbol.asyncIterator`, and `Symbol.asyncDispose` where the engine has it. */
+const ASYNC_ITERATOR: object = Object.getPrototypeOf(Object.getPrototypeOf((async function* () {}).prototype));
+
+/**
+ * The async iterator of a `range`, written by hand because an async generator
+ * spends several promise turns on every entry. A `next()` whose entry is in
+ * memory resolves in the call itself. It keeps what a generator promises a
+ * caller: calls are answered in the order they were made, a `return()` or a
+ * failed read ends the scan and frees its layers once, and nothing is taken
+ * before the first `next()`. A `throw()` ends it as a failed read does.
+ * `return()` ignores its argument.
+ */
+export function rangeScan(host: ScanHost): AsyncIterableIterator<Entry, undefined> {
+  /** Set from the first `next()` until the scan ends. */
+  let scan: { readonly step: ScanStep; readonly release: () => void } | undefined;
+  let ended = false;
+  /** The last call still waiting for bytes. A call made meanwhile runs after it. */
+  let tail: Promise<unknown> | undefined;
+
+  function finish(): Step {
+    ended = true;
+    const release = scan?.release;
+    scan = undefined;
+    release?.();
+    return { value: undefined, done: true };
+  }
+
+  function fail(err: unknown): never {
+    finish();
+    host.failed();
+    throw err;
+  }
+
+  function emit(e: LayerEntry | undefined): Step {
+    if (!e) return finish();
+    host.check();
+    return { value: entryOf(e), done: false };
+  }
+
+  async function afterMiss(step: ScanStep, miss: Miss): Promise<Step> {
+    try {
+      return emit(await untilHit(step, miss));
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  function advance(): Step | Promise<Step> {
+    if (ended) return { value: undefined, done: true };
+    try {
+      const { step } = (scan ??= host.start());
+      const e = step();
+      return e instanceof Miss ? afterMiss(step, e) : emit(e);
+    } catch (err) {
+      return fail(err);
+    }
+  }
+
+  /** Runs `op` now, or after the calls that wait for bytes. A call that waits is the one the next runs after. */
+  function run(op: () => Step | Promise<Step>): Promise<Step> {
+    let result: Promise<Step>;
+    if (tail) result = tail.then(op, op);
+    else {
+      let now: Step | Promise<Step>;
+      try {
+        now = op();
+      } catch (err) {
+        return Promise.reject(err);
+      }
+      if (!(now instanceof Promise)) return Promise.resolve(now);
+      result = now;
+    }
+    tail = result;
+    const settled = () => {
+      if (tail === result) tail = undefined;
+    };
+    result.then(settled, settled);
+    return result;
+  }
+
+  const iterator: AsyncIterableIterator<Entry, undefined> = Object.create(ASYNC_ITERATOR);
+  iterator.next = () => run(advance);
+  iterator.return = () => run(finish);
+  // As a generator paused at a yield: the error passes through the scan's own handling. One not started, or over, only rejects.
+  iterator.throw = (err) =>
+    run(() => {
+      if (scan) fail(err);
+      ended = true;
+      throw err;
+    });
+  return iterator;
 }
 
 /**
@@ -136,10 +232,14 @@ export class ViewSnapshotImpl implements ViewSnapshot {
       const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
       const keys: Uint8Array[] = [];
       const owners: typeof out = [];
-      for await (const entry of scanLayers(this.rows.range(bounds), this.levels, this.at, bounds, range)) {
-        const hit = { entry, joined: undefined };
+      const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
+      for (;;) {
+        let e = step();
+        if (e instanceof Miss) e = await untilHit(step, e);
+        if (!e) break;
+        const hit = { entry: entryOf(e), joined: undefined };
         out.push(hit);
-        const key = keyOf(entry);
+        const key = keyOf(hit.entry);
         if (key === undefined) continue;
         keys.push(checkKey(key));
         owners.push(hit);
@@ -163,7 +263,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     const bounds = boundsOf(range);
     const release = this.hold();
     try {
-      return await countLayers(this.rows.range(bounds), this.levels, this.at, bounds, range);
+      return await countOf(scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range));
     } catch (err) {
       this.handleOpen();
       throw err;
@@ -172,20 +272,16 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     }
   }
 
-  async *range(range?: Range): AsyncIterable<Entry> {
-    this.ensureOpen();
-    const bounds = boundsOf(range);
-    const release = this.hold();
-    try {
-      for await (const entry of scanLayers(this.rows.range(bounds), this.levels, this.at, bounds, range)) {
+  range(range?: Range): AsyncIterable<Entry> {
+    return rangeScan({
+      start: () => {
         this.ensureOpen();
-        yield entry;
-      }
-    } catch (err) {
-      this.handleOpen();
-      throw err;
-    } finally {
-      release();
-    }
+        const bounds = boundsOf(range);
+        const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
+        return { step, release: this.hold() };
+      },
+      check: () => this.ensureOpen(),
+      failed: this.handleOpen,
+    });
   }
 }

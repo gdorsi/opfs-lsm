@@ -30,25 +30,21 @@ export type BloomFilter = {
   readonly hashCount: number;
 };
 
-function bitLen(bits: Uint8Array): number {
-  return bits.byteLength * 8;
-}
-
-function getBit(bits: Uint8Array, i: number): boolean {
-  const idx = i >>> 3;
-  return ((bits[idx] ?? 0) & (1 << (i & 7))) !== 0;
-}
-
-function bloomIndex(h1: number, h2: number, i: number, m: number): number {
-  return ((h1 + Math.imul(i, h2)) >>> 0) % m;
-}
-
+/**
+ * Probe i tests bit `(h1 + i * h2) mod 2^32 mod m`, as the encoder set it.
+ * `h` holds that sum and `m` the bit count, both as u32: with a `>>> 0` on
+ * each operand V8 takes the remainder of two integers. Without it the
+ * remainder is of two doubles, which costs several times the rest of the probe.
+ */
 export function bloomMightContain(filter: BloomFilter, key: Uint8Array): boolean {
-  const m = bitLen(filter.bits);
-  const h1 = fnv1a(key);
-  const h2 = mix(h1) | 1;
+  const { bits } = filter;
+  const m = (bits.byteLength * 8) >>> 0;
+  let h = fnv1a(key);
+  const h2 = mix(h) | 1;
   for (let i = 0; i < filter.hashCount; i++) {
-    if (!getBit(filter.bits, bloomIndex(h1, h2, i, m))) return false;
+    const bit = h % m;
+    if (((bits[bit >>> 3] ?? 0) & (1 << (bit & 7))) === 0) return false;
+    h = (h + h2) >>> 0;
   }
   return true;
 }

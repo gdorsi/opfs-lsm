@@ -16,74 +16,7 @@ import type { Seq } from "../seq.js";
 import { coversRun, NO_MARKS, throughAt, type Marks } from "./marks.js";
 import type { SstEntry } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
-import type { Entry } from "../db.js";
 import { levelOf } from "./levels.js";
-
-type HeapItem = { key: Uint8Array; source: number };
-
-function heapLess(a: HeapItem, b: HeapItem): boolean {
-  const c = compareBytes(a.key, b.key);
-  if (c !== 0) return c < 0;
-  return a.source < b.source;
-}
-
-function heapGreater(a: HeapItem, b: HeapItem): boolean {
-  const c = compareBytes(a.key, b.key);
-  if (c !== 0) return c > 0;
-  return a.source < b.source;
-}
-
-/** Binary heap. Order is `less`: key, then newer source (smaller index). */
-class MinHeap {
-  private readonly items: HeapItem[] = [];
-
-  constructor(private readonly less: (a: HeapItem, b: HeapItem) => boolean) {}
-
-  get length(): number {
-    return this.items.length;
-  }
-
-  peek(): HeapItem | undefined {
-    return this.items[0];
-  }
-
-  push(item: HeapItem): void {
-    const a = this.items;
-    a.push(item);
-    let i = a.length - 1;
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (!this.less(a[i]!, a[p]!)) break;
-      const tmp = a[p]!;
-      a[p] = a[i]!;
-      a[i] = tmp;
-      i = p;
-    }
-  }
-
-  pop(): HeapItem | undefined {
-    const a = this.items;
-    if (a.length === 0) return undefined;
-    const top = a[0]!;
-    const last = a.pop()!;
-    if (a.length === 0) return top;
-    a[0] = last;
-    let i = 0;
-    while (true) {
-      const l = i * 2 + 1;
-      const r = l + 1;
-      let m = i;
-      if (l < a.length && this.less(a[l]!, a[m]!)) m = l;
-      if (r < a.length && this.less(a[r]!, a[m]!)) m = r;
-      if (m === i) break;
-      const tmp = a[m]!;
-      a[m] = a[i]!;
-      a[i] = tmp;
-      i = m;
-    }
-    return top;
-  }
-}
 
 /**
  * The rule every read applies to the newest version of a key, once the
@@ -98,7 +31,8 @@ function gone(v: { readonly kind: "put" | "del"; readonly seq: Seq }, through: S
 
 /**
  * `mem` is the row from the key-ordered mem store, or undefined on miss.
- * Levels are newest-first. Returned bytes are a fresh Uint8Array. A memtable
+ * Levels are newest-first. Returned bytes are a fresh Uint8Array: a copy of
+ * the memtable row's value, or the one copy a run's get made. A memtable
  * row needs no mark check: the memtable removed the rows its own marks
  * cover, and the installed marks stop below every row it holds.
  */
@@ -113,7 +47,7 @@ export function pointGet(
   const hit = latestSstEntry(levels, key);
   if (hit instanceof Miss) return hit;
   if (!hit || gone(hit, throughAt(marks, key))) return undefined;
-  return hit.kind === "put" ? new Uint8Array(hit.value) : undefined;
+  return hit.kind === "put" ? hit.value : undefined;
 }
 
 /** Every key read, or one Miss for all the bytes they lack. */
@@ -259,56 +193,138 @@ export function runLevels(
   return out;
 }
 
-/** The newest entry for one key and the source it came from. */
-type Winner = { readonly entry: LayerEntry; readonly source: number };
-
 /**
- * A heap merge of `cursors`, newest (smallest index) first, one key at a
- * time. `next` is sync until a cursor misses, and a miss leaves the merge
- * where it was. The sources a step moved are re-peeked together at the
- * start of the next step, the first step peeks every source, so a cold
- * merge gathers every source's miss into one parallel round of reads.
+ * A merge of `cursors`, newest (smallest index) first, one key at a time.
+ * The sources that wait on an entry sit in a binary heap of source numbers,
+ * ordered by that entry's key and then by the newer source. `next` is sync
+ * until a cursor misses, and a miss leaves the merge where it was. The
+ * sources a step moved are peeked together at the start of the next step,
+ * the first step peeks every source, so a cold merge gathers every source's
+ * miss into one parallel round of reads.
  */
 class Merge {
-  private readonly heap: MinHeap;
-  private pending: number[];
+  /** The source of the entry `next` returned last. */
+  source = -1;
+  /** `heads[s]` is the entry source `s` waits on while it is in `heap`. */
+  private readonly heads: LayerEntry[];
+  private readonly heap: number[];
+  private size = 0;
+  /** The sources the last step moved, which the next step peeks. */
+  private readonly moved: number[];
+  private movedCount: number;
+  /** -1 when the merge runs backward, so the largest key sorts first. */
+  private readonly sign: number;
 
   constructor(
     private readonly cursors: readonly LayerCursor[],
     reverse: boolean,
   ) {
-    this.heap = new MinHeap(reverse ? heapGreater : heapLess);
-    this.pending = cursors.map((_, i) => i);
+    this.heads = new Array<LayerEntry>(cursors.length);
+    this.heap = cursors.map(() => 0);
+    this.moved = cursors.map((_, i) => i);
+    this.movedCount = cursors.length;
+    this.sign = reverse ? -1 : 1;
   }
 
-  next(): Maybe<Winner | undefined> {
-    const { cursors, heap } = this;
-    if (this.pending.length > 0) {
-      let misses: Miss[] | undefined;
-      let waiting: number[] | undefined;
-      for (const source of this.pending) {
-        const e = cursors[source]!.peek();
-        if (e instanceof Miss) {
-          (misses ??= []).push(e);
-          (waiting ??= []).push(source);
-        } else if (e) {
-          heap.push({ key: e.key, source });
+  next(): Maybe<LayerEntry | undefined> {
+    const { cursors, heads, heap, moved } = this;
+    let top = -1;
+    if (this.movedCount === 1) {
+      // Only the last winner moved, which is the usual step. While its next
+      // entry still sorts before every waiting source it never enters the
+      // heap, so a source that wins again costs one comparison.
+      const s = moved[0]!;
+      const e = cursors[s]!.peek();
+      if (e instanceof Miss) return e;
+      this.movedCount = 0;
+      if (e) {
+        heads[s] = e;
+        const c = this.size === 0 ? -1 : this.sign * compareBytes(e.key, heads[heap[0]!]!.key);
+        if (c < 0) {
+          cursors[s]!.next();
+          this.movedCount = 1;
+          this.source = s;
+          return e;
+        }
+        if (c === 0 && s < heap[0]!) top = s;
+        else {
+          top = heap[0]!;
+          this.sink(s);
         }
       }
-      this.pending = waiting ?? [];
+    } else if (this.movedCount > 1) {
+      let misses: Miss[] | undefined;
+      let waiting = 0;
+      for (let i = 0; i < this.movedCount; i++) {
+        const s = moved[i]!;
+        const e = cursors[s]!.peek();
+        if (e instanceof Miss) {
+          (misses ??= []).push(e);
+          moved[waiting++] = s;
+        } else if (e) {
+          heads[s] = e;
+          this.push(s);
+        }
+      }
+      this.movedCount = waiting;
       if (misses) return allMissed(misses);
     }
-    const top = heap.pop();
-    if (!top) return undefined;
-    const entry = cursors[top.source]!.peek() as LayerEntry;
-    cursors[top.source]!.next();
-    this.pending.push(top.source);
-    while (heap.length > 0 && compareBytes(heap.peek()!.key, entry.key) === 0) {
-      const dup = heap.pop()!;
-      cursors[dup.source]!.next();
-      this.pending.push(dup.source);
+    if (top < 0) {
+      if (this.size === 0) return undefined;
+      top = this.pop();
     }
-    return { entry, source: top.source };
+    const entry = heads[top]!;
+    cursors[top]!.next();
+    moved[this.movedCount++] = top;
+    // Every older source that holds the same key steps past it.
+    while (this.size > 0 && compareBytes(heads[heap[0]!]!.key, entry.key) === 0) {
+      const dup = this.pop();
+      cursors[dup]!.next();
+      moved[this.movedCount++] = dup;
+    }
+    this.source = top;
+    return entry;
+  }
+
+  /** Whether source `a` sorts before source `b`: by key, then the newer source. */
+  private before(a: number, b: number): boolean {
+    const c = this.sign * compareBytes(this.heads[a]!.key, this.heads[b]!.key);
+    return c !== 0 ? c < 0 : a < b;
+  }
+
+  private push(s: number): void {
+    const { heap } = this;
+    let i = this.size++;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (!this.before(s, heap[parent]!)) break;
+      heap[i] = heap[parent]!;
+      i = parent;
+    }
+    heap[i] = s;
+  }
+
+  private pop(): number {
+    const { heap } = this;
+    const first = heap[0]!;
+    const last = heap[--this.size]!;
+    if (this.size > 0) this.sink(last);
+    return first;
+  }
+
+  /** Puts `s` in place of the first source and moves it down to where it sorts. */
+  private sink(s: number): void {
+    const { heap, size } = this;
+    let i = 0;
+    for (;;) {
+      let child = 2 * i + 1;
+      if (child >= size) break;
+      if (child + 1 < size && this.before(heap[child + 1]!, heap[child]!)) child++;
+      if (!this.before(heap[child]!, s)) break;
+      heap[i] = heap[child]!;
+      i = child;
+    }
+    heap[i] = s;
   }
 }
 
@@ -328,9 +344,9 @@ export function liveStep(cursors: readonly LayerCursor[], marks: Marks, reverse 
   const merge = new Merge(cursors, reverse);
   return () => {
     for (;;) {
-      const w = merge.next();
-      if (w instanceof Miss || !w) return w;
-      if (!gone(w.entry, throughAt(marks, w.entry.key))) return w.entry;
+      const e = merge.next();
+      if (e instanceof Miss || !e) return e;
+      if (!gone(e, throughAt(marks, e.key))) return e;
     }
   };
 }
@@ -361,19 +377,20 @@ export function matchingStep(
     reverse,
   );
   /** A match whose check against the newer sources missed, checked again on the next call. */
-  let held: Winner | undefined;
+  let held: LayerEntry | undefined;
   return () => {
     for (;;) {
-      const w = held ?? merge.next();
-      if (w instanceof Miss || !w) return w;
+      const entry = held ?? merge.next();
+      if (entry instanceof Miss || !entry) return entry;
       held = undefined;
-      const { entry, source } = w;
+      // The merge moves only in `next`, so a held match still has its source.
+      const { source } = merge;
       if (source > 0) {
         const i = lowerBoundKeys(rows, entry.key);
         if (i < rows.length && compareBytes(rows[i]!.key, entry.key) === 0) continue;
         const newer = shadowed(levels, source - 1, entry.key);
         if (newer instanceof Miss) {
-          held = w;
+          held = entry;
           return newer;
         }
         if (newer) continue;
@@ -383,26 +400,15 @@ export function matchingStep(
   };
 }
 
-/** Copies of the entries of `step`, up to `limit`. Awaits only on a miss. */
-export async function* entriesOf(step: ScanStep, limit?: number): AsyncGenerator<Entry> {
-  for (let n = 0; limit === undefined || n < limit; n++) {
-    let e = step();
-    if (e instanceof Miss) e = await untilHit(step, e);
-    if (!e) return;
-    yield { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) };
-  }
-}
-
-/** How many entries `step` has, up to `limit`, read without copying one. Awaits only on a miss. */
-export async function countOf(step: ScanStep, limit?: number): Promise<number> {
+/** How many entries `step` has, read without copying one. Awaits only on a miss. */
+export async function countOf(step: ScanStep): Promise<number> {
   let n = 0;
-  while (limit === undefined || n < limit) {
+  for (;;) {
     let e = step();
     if (e instanceof Miss) e = await untilHit(step, e);
-    if (!e) break;
+    if (!e) return n;
     n++;
   }
-  return n;
 }
 
 /** Whether a level before `level` holds `key`. */

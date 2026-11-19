@@ -33,17 +33,11 @@ import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js"
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
 import { loadGeneration, manifestFromCopy, type RunMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
-import { pointGet, readKeys, runLevels, type RunLevel } from "./store/read.js";
+import { countOf, pointGet, readKeys, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
-import {
-  ViewSnapshotImpl,
-  boundsOf,
-  countLayers,
-  scanLayers,
-  type ViewSnapshot,
-} from "./view.js";
+import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type ViewSnapshot } from "./view.js";
 import {
   ChangeBus,
   type ChangeEvent,
@@ -1058,7 +1052,7 @@ class DbImpl implements Db {
     const at = this.point();
     this.retain(layers);
     try {
-      return await countLayers(this.mem.range(bounds), layers.levels, at, bounds, range);
+      return await countOf(scanStep(this.mem.range(bounds), layers.levels, at, bounds, range));
     } catch (err) {
       this.ensureOpen();
       throw err;
@@ -1067,23 +1061,19 @@ class DbImpl implements Db {
     }
   }
 
-  async *range(range?: Range): AsyncIterable<Entry> {
-    this.ensureOpen();
-    const bounds = boundsOf(range);
-    const layers = this.installed;
-    const at = this.point();
-    this.retain(layers);
-    try {
-      for await (const entry of scanLayers(this.mem.range(bounds), layers.levels, at, bounds, range)) {
+  range(range?: Range): AsyncIterable<Entry> {
+    return rangeScan({
+      start: () => {
         this.ensureOpen();
-        yield entry;
-      }
-    } catch (err) {
-      this.ensureOpen();
-      throw err;
-    } finally {
-      this.release(layers);
-    }
+        const bounds = boundsOf(range);
+        const layers = this.installed;
+        const step = scanStep(this.mem.range(bounds), layers.levels, this.point(), bounds, range);
+        this.retain(layers);
+        return { step, release: () => this.release(layers) };
+      },
+      check: () => this.ensureOpen(),
+      failed: () => this.ensureOpen(),
+    });
   }
 
   async view<T>(body: (snap: ViewSnapshot) => Promise<T> | T): Promise<T> {

@@ -90,7 +90,10 @@ export class SstReader {
     this.runId = cache.nextRunId();
   }
 
-  /** Misses at most twice on a cold run: layout, then the page. */
+  /**
+   * Misses at most twice on a cold run: layout, then the page. A put's value
+   * is a copy the caller owns, so no cache page is reachable from it.
+   */
   get(key: Uint8Array): Maybe<SstEntry | undefined> {
     const meta = this.meta();
     if (meta instanceof Miss) return meta;
