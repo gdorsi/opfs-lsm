@@ -26,7 +26,7 @@
  */
 import path from "node:path";
 import { parseArgs } from "node:util";
-import type { PhaseReply, PhaseRequest, SizeName } from "../core/types.ts";
+import { DEFAULT_SEED, type PhaseReply, type PhaseRequest, type SizeName } from "../core/types.ts";
 import { BENCH_DIR, buildBench } from "../driver/build.ts";
 import { launchChrome } from "../driver/chrome.ts";
 import { DATA_DIR } from "../driver/data.ts";
@@ -52,7 +52,7 @@ const server = await serve({ "/": path.join(BENCH_DIR, ".out"), "/data/": DATA_D
 const rows: Row[] = [];
 try {
   const catalog = await readCatalog(server.origin, true);
-  const runs = plan(catalog, { workloads: selected, contenders: values.contenders ? values.contenders.split(",") : [], size, reps: 1 });
+  const runs = plan(catalog, { workloads: selected, contenders: values.contenders ? values.contenders.split(",") : [], size, reps: 1, seed: DEFAULT_SEED });
   for (const run of runs) {
     if (run.phases.some(({ page }) => page === "other")) throw new Error(`${run.workload} runs a phase in a second tab, which this probe does not open`);
     if (!run.workload.startsWith("fate/")) throw new Error(`${run.workload} is not a fate workload`);
@@ -70,7 +70,7 @@ try {
           await chrome.sharedWorkersGone(15_000);
           tab = await chrome.openTab(url);
         }
-        const req: PhaseRequest = { workload: run.workload, contender: run.contender, size, rep: 0, phase, round: 0, dbName: "bench", carry };
+        const req: PhaseRequest = { workload: run.workload, contender: run.contender, size, rep: 0, phase, round: 0, seed: run.seed, dbName: "bench", carry };
         const reply = await tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, 1_800_000);
         carry = reply.carry;
         const taken = await tab.evaluate<Taken>("Promise.resolve(__fateStorage.take())", 60_000);

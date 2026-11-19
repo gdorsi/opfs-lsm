@@ -14,7 +14,7 @@ The suite in `bench/` runs each workload in headless Chrome against every conten
 
 ## How to get to it (user POV)
 
-- Run `pnpm bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed]` from the repo root. A selector is a family (`kv/`) or one workload (`kv/fillrandom`). No selector runs everything. The defaults are `--size small` and `--reps 5`.
+- Run `pnpm bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed] [--seed N]` from the repo root. A selector is a family (`kv/`) or one workload (`kv/fillrandom`). No selector runs everything. The defaults are `--size small` and `--reps 5`.
 - Run `pnpm bench:smoke` for the CI smoke.
 - Results land in `bench/results/<stamp>-<host>.jsonl` with a `.md` report beside them. Both are gitignored.
 - Compare two result files with `node bench/cli.ts compare a.jsonl b.jsonl`. Reprint one with `node bench/cli.ts report a.jsonl`.

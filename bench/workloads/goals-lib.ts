@@ -57,7 +57,7 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
     timed: true,
     async run(ctx) {
       const store = await storeOf(ctx);
-      live = { history: d.history(ctx.size, d.seed), oracle: d.oracle() };
+      live = { history: d.history(ctx.size, ctx.params.seed), oracle: d.oracle() };
       const { during, every, read } = d.duringLoad;
       let n = 0;
       let matched = 0;
@@ -110,7 +110,7 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
       ctx.carry.liveLogicalBytes = oracle.liveBytes();
       const goals: Record<string, { bindings: readonly JsonRow[]; expected: Json[] }> = {};
       for (const [goal, meta] of Object.entries(d.goals)) {
-        const bindings = meta.curate(oracle, picker(seedOf(d.seed, goal)));
+        const bindings = meta.curate(oracle, picker(seedOf(ctx.params.seed, goal)));
         ctx.check(bindings.length >= 1 && bindings.length <= COLD_ROUNDS, `${goal}: ${bindings.length} bindings`);
         goals[goal] = { bindings, expected: bindings.map((b) => oracle.goals[goal]!(b)) };
       }
@@ -169,7 +169,7 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
     family,
     title: d.title,
     owns: [...d.owns, ...Object.values(d.goals).map((g) => g.owns)],
-    params: (size) => ({ entries: d.entries[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: d.seed }),
+    params: (size) => ({ entries: d.entries[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0 }),
     phases: [replay, settle, recent, prepare, ...Object.keys(d.goals).map(goal), reread],
   });
 }

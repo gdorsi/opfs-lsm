@@ -7,7 +7,7 @@
  *
  * To raise a budget, state in the commit what made the engine write more.
  */
-import type { SizeName } from "../core/types.ts";
+import { DEFAULT_SEED, type SizeName } from "../core/types.ts";
 import type { Measures } from "./metrics.ts";
 
 export type Budget = {
@@ -39,10 +39,11 @@ export const BUDGETS: readonly Budget[] = [
  * One line per budget a run broke. A budget whose workload, contender and
  * size ran but whose number is missing is a problem too, so a renamed phase
  * cannot switch a budget off. A budget whose row did not run is skipped. The
- * budgets hold for kv's default options, so a run that overrode one is not checked.
+ * budgets hold for kv's default options and the default seed, so a run that
+ * changed either is not checked.
  */
 export function budgetProblems(m: Measures, budgets: readonly Budget[] = BUDGETS): string[] {
-  if (m.kvOptions.length > 0) return [];
+  if (m.kvOptions.length > 0 || m.seeds.some((s) => s !== DEFAULT_SEED)) return [];
   const problems: string[] = [];
   for (const b of budgets) {
     const { max, ...at } = b;

@@ -41,7 +41,7 @@ export interface Oracle<S extends GoalSpecMap, Tx> {
   liveBytes(): number;
 }
 
-/** Deterministic binding choice, seeded per (dataset, goal): the same for every rep and contender. */
+/** Deterministic binding choice, seeded per (run seed, goal): the same for every rep and contender. */
 export type Picker = {
   /**
    * `n` distinct items whose cost is nearest the `q` quantile of all costs,
@@ -77,7 +77,6 @@ export type Dataset<S extends GoalSpecMap, Tx, O extends Oracle<S, Tx>> = {
   readonly title: string;
   /** The patterns its history phases own (replay, recent, reread); each goal adds its own. */
   readonly owns: readonly Pattern[];
-  readonly seed: number;
   /** The main entity's count per size, for the setup line. */
   readonly entries: Readonly<Record<SizeName, number>>;
   /** Deterministic in (size, seed). */

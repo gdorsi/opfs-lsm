@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
-import type { PhaseReply, PhaseRequest, SizeName } from "../core/types.ts";
+import { DEFAULT_SEED, type PhaseReply, type PhaseRequest, type SizeName } from "../core/types.ts";
 import { BENCH_DIR, buildBench } from "../driver/build.ts";
 import { launchChrome } from "../driver/chrome.ts";
 import { DATA_DIR, ensureTrace } from "../driver/data.ts";
@@ -121,7 +121,7 @@ await buildBench({ quiet: true });
 const server = await serve({ "/": path.join(BENCH_DIR, ".out"), "/data/": DATA_DIR });
 try {
   const catalog = await readCatalog(server.origin, true);
-  const [run] = plan(catalog, { workloads: [workload], contenders: ["kv/kv"], size, reps: 1 });
+  const [run] = plan(catalog, { workloads: [workload], contenders: ["kv/kv"], size, reps: 1, seed: DEFAULT_SEED });
   if (!run) throw new Error(`nothing to run for ${workload}`);
   if (run.phases.some(({ page }, phase) => phase > 0 && page === "fresh")) throw new Error(`${workload} opens a fresh page, so it has no one SharedWorker to watch`);
   if (run.phases.some(({ page }) => page === "other")) throw new Error(`${workload} runs a phase in a second tab, which this probe does not open`);
@@ -137,7 +137,7 @@ try {
     let worker: string | undefined;
     let carry: string | undefined;
     for (const [phase, name] of phaseNames.entries()) {
-      const req: PhaseRequest = { workload: run.workload, contender: run.contender, size: run.size, rep: 0, phase, round: 0, dbName: "bench", carry };
+      const req: PhaseRequest = { workload: run.workload, contender: run.contender, size: run.size, rep: 0, phase, round: 0, seed: run.seed, dbName: "bench", carry };
       let done = false;
       const reply = tab.evaluate<PhaseReply>(`__bench.runPhase(${JSON.stringify(req)})`, 1_800_000);
       void reply.finally(() => (done = true)).catch(() => {});

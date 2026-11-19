@@ -1,9 +1,10 @@
 /**
  * node bench/cli.ts <verb> [args]
  *
- *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed]
+ *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed] [--seed N]
  *       [--max-peak-bytes N] [--compaction-memory-bytes N] [--cache-bytes N]
- *   smoke [--check]         every workload × contender, size tiny, 1 rep, correctness and the byte budgets;
+ *   smoke [--check] [--seed N]
+ *                           every workload × contender, size tiny, 1 rep, correctness and the byte budgets;
  *                           --check first applies the bundle-size budgets to the same build,
  *                           then checks that every access pattern has exactly one owner,
  *                           and also runs the byte-budget rows above size tiny
@@ -16,13 +17,15 @@
  *                           --check fails when the page differs, and needs no Chrome or build
  *
  * A workload selector is "kv/" (a family) or "kv/fillrandom" (one workload).
+ * --seed (default 1) seeds every op stream, history and curated binding; the
+ * byte budgets hold for the default seed only.
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { ownershipProblems, PATTERNS } from "./core/patterns.ts";
-import { SIZES, type KvOptions, type RunRecord, type SizeName } from "./core/types.ts";
+import { DEFAULT_SEED, SIZES, type KvOptions, type RunRecord, type SizeName } from "./core/types.ts";
 import { TABLES } from "./docs-tables.ts";
 import { BENCH_DIR, buildBench, type BuildOutput } from "./driver/build.ts";
 import { BUDGETS, budgetProblems } from "./driver/budgets.ts";
@@ -54,6 +57,7 @@ async function main(): Promise<number> {
       "max-peak-bytes": { type: "string", default: "" },
       "compaction-memory-bytes": { type: "string", default: "" },
       "cache-bytes": { type: "string", default: "" },
+      seed: { type: "string", default: String(DEFAULT_SEED) },
     },
   });
   switch (verb) {
@@ -67,6 +71,7 @@ async function main(): Promise<number> {
         contenders: values.contenders ? values.contenders.split(",") : [],
         size,
         reps: smoke ? 1 : Number(values.reps),
+        seed: seedFlag(values.seed),
         headless: !values.headed,
         timeoutMs: Number(values.timeout),
         smoke,
@@ -105,6 +110,7 @@ async function run(o: {
   contenders: string[];
   size: SizeName;
   reps: number;
+  seed: number;
   headless: boolean;
   timeoutMs: number;
   smoke: boolean;
@@ -119,8 +125,8 @@ async function run(o: {
   try {
     const catalog = await readCatalog(server.origin, o.headless);
     if (o.check && !owners(catalog)) return 1;
-    const runs = plan(catalog, { workloads: o.workloads, contenders: o.contenders, size: o.size, reps: o.reps });
-    if (o.check) runs.push(...budgetRuns(catalog, o.size));
+    const runs = plan(catalog, { workloads: o.workloads, contenders: o.contenders, size: o.size, reps: o.reps, seed: o.seed });
+    if (o.check && o.seed === DEFAULT_SEED) runs.push(...budgetRuns(catalog, o.size));
     mkdirSync(RESULTS_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     // Named by CPU, not hostname: published runs are committed under docs/results/.
@@ -141,6 +147,7 @@ async function run(o: {
     const problems = records.filter((r) => r.error).map((r) => `${r.workload} ${r.contender}: ${r.error}`);
     const measured = measure(records);
     if (measured.kvOptions.length > 0) console.log(`\nThe byte budgets were not checked: kv opened with ${measured.kvOptions.join(", and with ")}.`);
+    else if (measured.seeds.some((s) => s !== DEFAULT_SEED)) console.log(`\nThe byte budgets were not checked: they hold for seed ${DEFAULT_SEED}, and the runs used seed ${measured.seeds.join(", ")}.`);
     problems.push(...budgetProblems(measured));
     if (o.smoke) problems.push(...smokeChecks(records));
     if (o.maxPeakBytes !== undefined) problems.push(...peakChecks(records, o.maxPeakBytes));
@@ -156,6 +163,12 @@ async function run(o: {
 
 /** kv raises a smaller figure to these, so a record of less would name an option the run did not have. */
 const KV_MIN_BYTES: Required<KvOptions> = { compactionMemoryBytes: 8 * 1024 * 1024, cacheBytes: 1024 * 1024 };
+
+function seedFlag(value: string): number {
+  const seed = Number(value);
+  if (!/^\d+$/.test(value) || seed > 0xffff_ffff) throw new Error(`--seed must be a whole number from 0 to ${0xffff_ffff}`);
+  return seed;
+}
 
 /** `{ [key]: bytes }` when the flag is set, `{}` when it is not. */
 function bytesFlag<K extends string>(key: K, flag: string, value: string | undefined, min = 1): { [P in K]?: number } {
@@ -186,10 +199,10 @@ function owners(catalog: Awaited<ReturnType<typeof readCatalog>>): boolean {
   return false;
 }
 
-/** One run of each budget row above the size the smoke already runs. */
+/** One run of each budget row above the size the smoke already runs, on the seed the budgets hold for. */
 function budgetRuns(catalog: Awaited<ReturnType<typeof readCatalog>>, ran: SizeName): PlannedRun[] {
   const rows = new Map(BUDGETS.filter((b) => b.size !== ran).map((b) => [`${b.workload} ${b.contender} ${b.size}`, b]));
-  return [...rows.values()].flatMap((b) => plan(catalog, { workloads: [b.workload], contenders: [b.contender], size: b.size, reps: 1 }));
+  return [...rows.values()].flatMap((b) => plan(catalog, { workloads: [b.workload], contenders: [b.contender], size: b.size, reps: 1, seed: DEFAULT_SEED }));
 }
 
 /** Harness health: a kv footprint after writes must show counted WAL bytes. */

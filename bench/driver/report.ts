@@ -6,7 +6,7 @@
  * min–max range over the runs. Latency percentiles pool every run's histogram.
  */
 import { merge, opsOf, quantile, samplesOf } from "../core/histogram.ts";
-import type { HeapPeak, RunRecord } from "../core/types.ts";
+import { DEFAULT_SEED, type HeapPeak, type RunRecord } from "../core/types.ts";
 import { describe, measure, versus, type At, type Measures, type Metric, type Series } from "./metrics.ts";
 
 type Stat = { median: number; min: number; max: number; n: number };
@@ -89,6 +89,7 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
     const h = ok.host;
     out.push(`${h.chrome}${h.headless ? " headless" : ""}, ${h.os}, ${h.cpu} × ${h.cores}, node ${h.node}, git ${h.gitSha}, load ${h.loadAvg1}`);
     for (const options of measures.kvOptions) out.push(`kv opened with ${options}`);
+    if (measures.seeds.some((s) => s !== DEFAULT_SEED)) out.push(`seed ${measures.seeds.join(", ")}, not the default ${DEFAULT_SEED}`);
   }
   for (const rows of groups(records).values()) {
     const first = rows[0]!.runs[0]!;
@@ -235,6 +236,8 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
   for (const [side, m] of [["A", a], ["B", b]] as const) {
     for (const options of m.kvOptions) out.push(`${side} opened kv with ${options}`);
   }
+  const seeds = (m: Measures) => m.seeds.join(", ") || "–";
+  if (seeds(a) !== seeds(b)) out.push(`A ran on seed ${seeds(a)} and B on seed ${seeds(b)}, so this compares two inputs, not a before and after`);
   if (out.length > 0) out.push("");
   if (rows.length > 0) {
     out.push("| workload | size | phase | contender | metric | A | B | verdict |", "|---|---|---|---|---|---:|---:|---|", ...rows);

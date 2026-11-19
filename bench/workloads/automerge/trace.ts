@@ -38,7 +38,7 @@ export default defineWorkload({
   family: "automerge",
   title: "editing trace through automerge-repo, 100 keystrokes per change, the last keys typed at one per frame, then cold opens before and after settle",
   owns: ["automerge-trace"],
-  params: () => ({ entries: 1, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: PER_CHANGE, ops: 0, seed: 1 }),
+  params: () => ({ entries: 1, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: PER_CHANGE, ops: 0 }),
   phases: [
     fetchTracePhase<"automerge">(),
     {

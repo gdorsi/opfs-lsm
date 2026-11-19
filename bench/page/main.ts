@@ -89,7 +89,7 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
   const contender = await load(contenderModules, req.contender);
   const phase = workload.phases[req.phase];
   if (!phase) throw new Error(`${req.workload} has no phase ${req.phase}`);
-  const params = workload.params(req.size);
+  const params = { ...workload.params(req.size), seed: req.seed };
 
   const carried = req.carry === undefined ? undefined : (JSON.parse(req.carry) as { model: string; extra: Record<string, unknown> });
   const model = createModel(params, carried?.model);

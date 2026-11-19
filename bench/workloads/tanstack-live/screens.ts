@@ -120,7 +120,7 @@ const phases: Phase<"tanstack-live">[] = [
     async run(ctx) {
       const store = await ctx.store();
       const oracle = new TrackerOracle();
-      for (const tx of trackerHistory(ctx.size, TRACKER.seed).load) {
+      for (const tx of trackerHistory(ctx.size, ctx.params.seed).load) {
         if (tx.kind !== "import") break;
         oracle.apply(tx);
         const t = screenTx(tx);
@@ -143,11 +143,11 @@ const phases: Phase<"tanstack-live">[] = [
     async run(ctx) {
       const oracle = new TrackerOracle();
       const syncs: Tx[] = [];
-      for (const tx of trackerHistory(ctx.size, TRACKER.seed).load) {
+      for (const tx of trackerHistory(ctx.size, ctx.params.seed).load) {
         if (tx.kind === "import") oracle.apply(tx);
         else syncs.push(tx);
       }
-      const bindings = Object.fromEntries(SCREENS.map((s) => [s, TRACKER.goals[s].curate(oracle, picker(seedOf(TRACKER.seed, s)))[0]!])) as unknown as Record<Screen, JsonRow>;
+      const bindings = Object.fromEntries(SCREENS.map((s) => [s, TRACKER.goals[s].curate(oracle, picker(seedOf(ctx.params.seed, s)))[0]!])) as unknown as Record<Screen, JsonRow>;
       const answers = (): Expected => Object.fromEntries(SCREENS.map((s) => [s, oracle.goals[s](bindings[s] as never) as Json])) as Expected;
       const first = answers();
       const after = new Map<number, Expected>();
@@ -203,6 +203,6 @@ export default defineWorkload({
   family: "tanstack-live",
   title: `TanStack DB live queries on the tracker: ${SCREENS.length} screens to their first answer in a fresh tab, then sync batches without and with the screens open`,
   owns: ["tanstack-live-open", "tanstack-live-upkeep"],
-  params: (size) => ({ entries: TRACKER.entries[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: TRACKER.seed }),
+  params: (size) => ({ entries: TRACKER.entries[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0 }),
   phases,
 });

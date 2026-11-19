@@ -5,7 +5,7 @@
  * disk and cores.
  */
 import { appendFileSync } from "node:fs";
-import type { Catalog, KvOptions, MemoryPeaks, PhaseReply, PhaseRequest, PhaseResult, RunRecord } from "../core/types.ts";
+import { DEFAULT_SEED, type Catalog, type KvOptions, type MemoryPeaks, type PhaseReply, type PhaseRequest, type PhaseResult, type RunRecord } from "../core/types.ts";
 import { launchChrome, type Tab } from "./chrome.ts";
 import { hostInfo } from "./host.ts";
 import type { PlannedRun } from "./plan.ts";
@@ -38,7 +38,7 @@ export async function runPlan(runs: readonly PlannedRun[], opts: RunOptions): Pr
     appendFileSync(opts.resultsFile, JSON.stringify(record) + "\n");
     records.push(record);
     const status = record.error ? `FAIL ${record.error.split("\n")[0]}` : summarize(record.phases);
-    opts.log(`[${i + 1}/${runs.length}] ${run.workload} ${run.contender} ${run.size} rep ${run.rep}: ${status}`);
+    opts.log(`[${i + 1}/${runs.length}] ${run.workload} ${run.contender} ${run.size} rep ${run.rep}${run.seed === DEFAULT_SEED ? "" : ` seed ${run.seed}`}: ${status}`);
   }
   return records;
 }
@@ -72,6 +72,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
         rep: run.rep,
         phase,
         round,
+        seed: run.seed,
         dbName: "bench",
         carry,
       };
@@ -94,7 +95,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
     fastPath: meta?.fastPath ?? "",
     size: run.size,
     rep: run.rep,
-    params: meta?.params ?? { entries: 0, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: 0 },
+    params: meta?.params ?? { entries: 0, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: run.seed },
     host: hostInfo(chromeVersion, opts.headless),
     ...(meta?.engine && Object.keys(opts.kv).length > 0 ? { kv: opts.kv } : {}),
     phases: rounds.flatMap(([first, ...later]) => (!first ? [] : later.length > 0 ? [{ ...first, laterRounds: later }] : [first])),

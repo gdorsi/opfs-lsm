@@ -7,7 +7,7 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RunRecord, SizeName } from "../core/types.ts";
+import { DEFAULT_SEED, type RunRecord, type SizeName } from "../core/types.ts";
 import { describe, measure, versus, type Measures, type Metric, type Series } from "./metrics.ts";
 import { readRecords } from "./records.ts";
 
@@ -59,8 +59,9 @@ export type Published = {
 
 /**
  * docs/results/<stamp>.jsonl. Throws when a run has uncommitted changes in its
- * tree, unless the stamp is in LEGACY_DIRTY, and when a run overrode a kv
- * option: the page publishes what an app gets by default.
+ * tree, unless the stamp is in LEGACY_DIRTY, when a run overrode a kv
+ * option, and when a run used a seed other than the default: the page
+ * publishes what an app gets by default, on the inputs the budgets hold for.
  */
 export function readPublished(stamp: string, dir = RESULTS_DIR): Published {
   const all = readRecords(path.join(dir, `${stamp}.jsonl`));
@@ -73,6 +74,8 @@ export function readPublished(stamp: string, dir = RESULTS_DIR): Published {
   if (measures.kvOptions.length > 0) {
     throw new Error(`${stamp}: a run opened kv with ${measures.kvOptions[0]}. Publish a run with kv's default options.`);
   }
+  const seed = measures.seeds.find((s) => s !== DEFAULT_SEED);
+  if (seed !== undefined) throw new Error(`${stamp}: a run used seed ${seed}. Publish a run on the default seed ${DEFAULT_SEED}.`);
   return { measures, runs: records };
 }
 

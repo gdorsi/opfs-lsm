@@ -48,6 +48,10 @@ test("a run that overrode a kv option is not held to budgets set with the defaul
   assert.deepEqual(problems([run([settle("settle", 9000)], { kv: { cacheBytes: 4_194_304 } })]), []);
 });
 
+test("a run on a seed other than the default is not held to budgets set on the default seed", () => {
+  assert.deepEqual(problems([run([settle("settle", 9000)], { params: { ...run([]).params, seed: 7 } })]), []);
+});
+
 test("a budget whose workload, contender or size did not run is skipped", () => {
   assert.deepEqual(problems([run([settle("settle", 9000)], { size: "small" })]), []);
   assert.deepEqual(problems([run([settle("settle", 9000)], { contender: "kv/idb" })]), []);

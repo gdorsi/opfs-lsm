@@ -283,6 +283,18 @@ suite("rounds", () => {
   });
 });
 
+suite("seeds", () => {
+  const seeded = (seed: number, over: Partial<RunRecord> = {}) => run([atRate(1)], { params: { ...run([]).params, seed }, ...over });
+
+  test("each seed of a successful run is listed once, in ascending order", () => {
+    assert.deepEqual(measure([seeded(7), seeded(1), seeded(7)]).seeds, [1, 7]);
+  });
+
+  test("a failed run's seed is not listed", () => {
+    assert.deepEqual(measure([seeded(1), seeded(7, { error: "timeout" })]).seeds, [1]);
+  });
+});
+
 suite("kv options", () => {
   test("each set of overrides is listed once, and default runs list none", () => {
     assert.deepEqual(measure([run([atRate(1)])]).kvOptions, []);
