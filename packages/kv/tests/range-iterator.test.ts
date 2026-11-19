@@ -234,6 +234,67 @@ describe.each(scans)("%s as an async iterator", (_what, scan) => {
     expect(l0().filter((p) => inputs.includes(p))).toEqual([]);
   });
 
+  it("ends on a throw() with the caller's error, lets go of its runs, and is done afterwards", async () => {
+    const { db, l0, inputs } = await seeded();
+    const { it: iter, finish } = await scan(db);
+    await iter.next();
+    await compact(db);
+    expect(l0()).toEqual(expect.arrayContaining(inputs));
+
+    const err = new Error("from the caller");
+    await expect(iter.throw!(err)).rejects.toBe(err);
+    await expect(iter.throw!(err)).rejects.toBe(err);
+    expect((await iter.next()).done).toBe(true);
+    await finish();
+    await ingest(db);
+    expect(l0().filter((p) => inputs.includes(p))).toEqual([]);
+  });
+
+  it("is done after a throw() before the first next(), and took no run", async () => {
+    const { db, l0, inputs } = await seeded();
+    const { it: iter, finish } = await scan(db);
+    const err = new Error("from the caller");
+    await expect(iter.throw!(err)).rejects.toBe(err);
+    expect((await iter.next()).done).toBe(true);
+    await finish();
+    await compact(db);
+    await ingest(db);
+    expect(l0().filter((p) => inputs.includes(p))).toEqual([]);
+  });
+
+  it("passes the error thrown into a generator that delegates to it, and lets go of its runs", async () => {
+    const { db, l0, inputs } = await seeded();
+    const { it: iter, finish } = await scan(db);
+    const outer = (async function* () {
+      yield* { [Symbol.asyncIterator]: () => iter };
+    })();
+    expect(show((await outer.next()).value!)).toBe(want[0]);
+    const err = new Error("from the caller");
+    await expect(outer.throw(err)).rejects.toBe(err);
+    expect((await iter.next()).done).toBe(true);
+    await finish();
+    await compact(db);
+    await ingest(db);
+    expect(l0().filter((p) => inputs.includes(p))).toEqual([]);
+  });
+
+  it("inherits what a generator's iterator does: it is its own iterable, and disposing it returns", async () => {
+    const { db, l0, inputs } = await seeded();
+    const { it: iter, finish } = await scan(db);
+    const generated = (async function* () {})();
+    const inherited = Object.getPrototypeOf(Object.getPrototypeOf(Object.getPrototypeOf(generated)));
+    expect(Object.getPrototypeOf(iter)).toBe(inherited);
+    expect((iter as AsyncIterableIterator<Entry>)[Symbol.asyncIterator]()).toBe(iter);
+
+    await iter.next();
+    await (iter as unknown as AsyncDisposable)[Symbol.asyncDispose]();
+    expect((await iter.next()).done).toBe(true);
+    await finish();
+    await compact(db);
+    await ingest(db);
+    expect(l0().filter((p) => inputs.includes(p))).toEqual([]);
+  });
+
   it("rejects with the read's error, lets go of its runs, and is done afterwards", async () => {
     const { db, writer, folder, l0, inputs } = await seeded(true);
     const { it: iter, finish } = await scan(db);

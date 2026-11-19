@@ -91,14 +91,17 @@ type ScanHost = {
 
 type Step = IteratorResult<Entry, undefined>;
 
+/** What an async generator's iterator inherits: `Symbol.asyncIterator`, and `Symbol.asyncDispose` where the engine has it. */
+const ASYNC_ITERATOR: object = Object.getPrototypeOf(Object.getPrototypeOf((async function* () {}).prototype));
+
 /**
  * The async iterator of a `range`, written by hand because an async generator
  * spends several promise turns on every entry. A `next()` whose entry is in
  * memory resolves in the call itself. It keeps what a generator promises a
  * caller: calls are answered in the order they were made, a `return()` or a
  * failed read ends the scan and frees its layers once, and nothing is taken
- * before the first `next()`. It has no `throw()`, which `for await` never
- * calls, and `return()` ignores its argument.
+ * before the first `next()`. A `throw()` ends it as a failed read does.
+ * `return()` ignores its argument.
  */
 export function rangeScan(host: ScanHost): AsyncIterableIterator<Entry, undefined> {
   /** Set from the first `next()` until the scan ends. */
@@ -168,13 +171,17 @@ export function rangeScan(host: ScanHost): AsyncIterableIterator<Entry, undefine
     return result;
   }
 
-  return {
-    [Symbol.asyncIterator]() {
-      return this;
-    },
-    next: () => run(advance),
-    return: () => run(finish),
-  };
+  const iterator: AsyncIterableIterator<Entry, undefined> = Object.create(ASYNC_ITERATOR);
+  iterator.next = () => run(advance);
+  iterator.return = () => run(finish);
+  // As a generator paused at a yield: the error passes through the scan's own handling. One not started, or over, only rejects.
+  iterator.throw = (err) =>
+    run(() => {
+      if (scan) fail(err);
+      ended = true;
+      throw err;
+    });
+  return iterator;
 }
 
 /**
