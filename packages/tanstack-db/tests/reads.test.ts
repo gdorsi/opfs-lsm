@@ -5,7 +5,7 @@
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { defineSchema, openDocStore, type Collection, type CollectionSnapshot } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore, type Collection, type CollectionSnapshot } from "@opfs-lsm/docstore";
 import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import { and, count, createCollection, createLiveQueryCollection, eq, ilike, inArray } from "@tanstack/db";
@@ -13,14 +13,13 @@ import { docstoreCollectionOptions } from "../src/index.ts";
 
 type Issue = { id: string; deleted: boolean; status: number; modified: number; title: string };
 
-const schema = defineSchema<{ issues: Issue }>()({
+const schema = defineSchema({
   version: 1,
   collections: {
-    issues: {
-      byModified: { by: ["deleted", "modified"] },
-      byStatus: { by: ["deleted", "status", "modified"] },
-      search: { by: ["deleted", "modified"], text: "title" },
-    },
+    issues: collection<Issue>()
+      .index("byModified", ["deleted", "modified"])
+      .index("byStatus", ["deleted", "status", "modified"])
+      .text("search", ["deleted", "modified"], "title"),
   },
 });
 

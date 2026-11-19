@@ -1,6 +1,6 @@
 import type { Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
-import { defineSchema, openDocStore } from "../src/index.js";
+import { collection, defineSchema, openDocStore } from "../src/index.js";
 import { schema, type Doc, type Docs } from "./docs.js";
 import { codeOf, freshName, openKv } from "./harness.js";
 
@@ -32,10 +32,10 @@ describe("indexes", () => {
   it("lists only the indexes of this handle's schema when the stored catalog holds more", async () => {
     const name = freshName();
     type Row = { id: string; a?: number; b?: number };
-    const v1 = defineSchema<{ rows: Row }>()({ version: 1, collections: { rows: { byA: { by: "a" } } } });
-    const v2 = defineSchema<{ rows: Row }>()({
+    const v1 = defineSchema({ version: 1, collections: { rows: collection<Row>().index("byA", "a") } });
+    const v2 = defineSchema({
       version: 2,
-      collections: { rows: { byA: { by: "a" }, byB: { by: "b", unique: true } } },
+      collections: { rows: collection<Row>().index("byA", "a").unique("byB", "b") },
     });
     const kvNew = await openKv(name);
     const kvOld = await openKv(name);
@@ -143,8 +143,8 @@ describe("view", () => {
   it("runs the body once, and throws schema without running it for a collection the stored catalog lacks", async () => {
     const name = freshName();
     type Note = { id: string };
-    const both = defineSchema<{ docs: Doc; notes: Note }>()({ version: 1, collections: { docs: {}, notes: {} } });
-    const only = defineSchema<{ docs: Doc }>()({ version: 2, collections: { docs: {} }, drop: ["notes"] });
+    const both = defineSchema({ version: 1, collections: { docs: collection<Doc>(), notes: collection<Note>() } });
+    const only = defineSchema({ version: 2, collections: { docs: collection<Doc>() }, drop: ["notes"] });
     const kvOld = await openKv(name);
     const kvNew = await openKv(name);
     open.push(kvOld, kvNew);

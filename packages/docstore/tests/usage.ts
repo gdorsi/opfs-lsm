@@ -1,4 +1,4 @@
-import { defineSchema, type DocStore, type IndexInfo, type Query } from "../src/index.js";
+import { collection, defineSchema, type DocStore, type IndexInfo, type Query } from "../src/index.js";
 
 type Todo = {
   id: string;
@@ -8,18 +8,17 @@ type Todo = {
   titleSort: string;
 };
 
-export const todoSchema = defineSchema<{ todos: Todo }>()({
+export const todoSchema = defineSchema({
   version: 1,
   collections: {
-    todos: {
-      byCreated: { by: "createdAt" },
-      byTitle: { by: "titleSort" },
-      search: { by: "createdAt", text: "title" },
-    },
+    todos: collection<Todo>()
+      .index("byCreated", "createdAt")
+      .index("byTitle", "titleSort")
+      .text("search", "createdAt", "title"),
   },
 });
 
-type TodoQuery = Query<Todo, (typeof todoSchema)["collections"]["todos"]>;
+type TodoQuery = Query<Todo, (typeof todoSchema)["collections"]["todos"]["indexes"]>;
 declare const cursor: import("../src/index.js").Cursor | undefined;
 
 export const todoQueries: TodoQuery[] = [
@@ -41,28 +40,30 @@ export const todoQueries: TodoQuery[] = [
 ];
 
 // @ts-expect-error not a field of Todo
-defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { x: { by: "tite" } } } });
+defineSchema({ version: 1, collections: { todos: collection<Todo>().index("x", "tite") } });
 // @ts-expect-error text must be a string field
-defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { s: { by: "createdAt", text: "done" } } } });
-// @ts-expect-error every collection of the type map must be declared
-defineSchema<{ todos: Todo }>()({ version: 1, collections: {} });
-// @ts-expect-error only collections of the type map can be declared, empty or not
-defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: {}, drafts: {} } });
+defineSchema({ version: 1, collections: { todos: collection<Todo>().text("s", "createdAt", "done") } });
+// @ts-expect-error a collection is declared with collection()
+defineSchema({ version: 1, collections: { todos: {} } });
+// @ts-expect-error an index name is declared once
+collection<Todo>().index("x", "createdAt").unique("x", "titleSort");
+// @ts-expect-error the same name, as a text index
+collection<Todo>().index("x", "createdAt").text("x", "createdAt", "title");
 
-const withEmpty = defineSchema<{ drafts: Todo; todos: Todo }>()({
+const withEmpty = defineSchema({
   version: 1,
-  collections: { drafts: {}, todos: { byCreated: { by: "createdAt" } } },
+  collections: { drafts: collection<Todo>(), todos: collection<Todo>().index("byCreated", "createdAt") },
 });
-export const emptyKeepsOthers: Query<Todo, (typeof withEmpty)["collections"]["todos"]> = { index: "byCreated", gte: 0 };
+export const emptyKeepsOthers: Query<Todo, (typeof withEmpty)["collections"]["todos"]["indexes"]> = { index: "byCreated", gte: 0 };
 // @ts-expect-error a collection declared with no indexes has none to query
-export const emptyHasNone: Query<Todo, (typeof withEmpty)["collections"]["drafts"]> = { index: "byCreated" };
+export const emptyHasNone: Query<Todo, (typeof withEmpty)["collections"]["drafts"]["indexes"]> = { index: "byCreated" };
 
 type HasDate = { id: string; at: Date };
 // @ts-expect-error a Date does not survive JSON
-defineSchema<{ events: HasDate }>();
+collection<HasDate>();
 type HasBytes = { id: string; data: Uint8Array };
 // @ts-expect-error a Uint8Array does not survive JSON
-defineSchema<{ blobs: HasBytes }>();
+collection<HasBytes>();
 
 export async function misuse(store: DocStore<typeof todoSchema>): Promise<void> {
   // @ts-expect-error not a collection of the schema
@@ -98,19 +99,18 @@ export async function snapshotsAndChanges(store: DocStore<typeof todoSchema>): P
 
 type Note = { id: string; owner: string; slug: string; tags: string[]; updatedAt: number; body: string };
 
-const notesSchema = defineSchema<{ notes: Note }>()({
+const notesSchema = defineSchema({
   version: 3,
   collections: {
-    notes: {
-      bySlug: { by: "slug", unique: true },
-      byOwnerUpdated: { by: ["owner", "updatedAt"] },
-      byTag: { by: ["tags[]", "updatedAt"] },
-      search: { by: ["owner", "updatedAt"], text: "body" },
-    },
+    notes: collection<Note>()
+      .unique("bySlug", "slug")
+      .index("byOwnerUpdated", ["owner", "updatedAt"])
+      .index("byTag", ["tags[]", "updatedAt"])
+      .text("search", ["owner", "updatedAt"], "body"),
   },
 });
 
-type NoteQuery = Query<Note, (typeof notesSchema)["collections"]["notes"]>;
+type NoteQuery = Query<Note, (typeof notesSchema)["collections"]["notes"]["indexes"]>;
 declare const since: number;
 
 export const noteQueries: NoteQuery[] = [
@@ -148,20 +148,14 @@ export async function entryValues(store: DocStore<typeof notesSchema>): Promise<
 }
 
 // @ts-expect-error [] marks an array field, and owner is a string
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { m: { by: "owner[]" } } } });
+defineSchema({ version: 1, collections: { notes: collection<Note>().index("m", "owner[]") } });
 // @ts-expect-error an array field needs the [] mark
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { m: { by: "tags" } } } });
+defineSchema({ version: 1, collections: { notes: collection<Note>().index("m", "tags") } });
 // @ts-expect-error only the first field may be an array
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { m: { by: ["updatedAt", "tags[]"] } } } });
+defineSchema({ version: 1, collections: { notes: collection<Note>().index("m", ["updatedAt", "tags[]"]) } });
 // @ts-expect-error a text index cannot start with an array field
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { t: { by: "tags[]", text: "body" } } } });
-// @ts-expect-error a text index cannot be unique
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { t: { by: "updatedAt", text: "body", unique: true } } } });
-// @ts-expect-error uniqe is not an option
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { by: "slug", uniqe: true } } } });
-// @ts-expect-error on is the old name of by
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { on: "slug" } } } });
+defineSchema({ version: 1, collections: { notes: collection<Note>().text("t", "tags[]", "body") } });
 // @ts-expect-error a misspelled field inside a list
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { by: ["owner", "updatedAtt"] } } } });
+defineSchema({ version: 1, collections: { notes: collection<Note>().index("u", ["owner", "updatedAtt"]) } });
 // @ts-expect-error an empty list of fields
-defineSchema<{ notes: Note }>()({ version: 1, collections: { notes: { u: { by: [] } } } });
+defineSchema({ version: 1, collections: { notes: collection<Note>().index("u", []) } });

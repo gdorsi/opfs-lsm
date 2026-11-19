@@ -1,4 +1,4 @@
-import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection } from "@tanstack/db";
 import { defineContender } from "../../core/types.ts";
@@ -7,17 +7,16 @@ import { kvCommon, openKv } from "../../page/kv.ts";
 import { liveOps, type Collections, type Modify } from "../../page/tanstack-live.ts";
 
 /** One docstore index per screen, each ending in the field the screen sorts by, so a live query reads its window in order. */
-const schema = defineSchema<{ users: User; projects: Project; labels: Label; issues: Issue }>()({
+const schema = defineSchema({
   version: 1,
   collections: {
-    users: {},
-    projects: {},
-    labels: {},
-    issues: {
-      byProjectStatus: { by: ["projectId", "status", "updatedAt"] },
-      byAssignee: { by: ["assigneeId", "status", "updatedAt"] },
-      byUpdated: { by: "updatedAt" },
-    },
+    users: collection<User>(),
+    projects: collection<Project>(),
+    labels: collection<Label>(),
+    issues: collection<Issue>()
+      .index("byProjectStatus", ["projectId", "status", "updatedAt"])
+      .index("byAssignee", ["assigneeId", "status", "updatedAt"])
+      .index("byUpdated", "updatedAt"),
   },
 });
 

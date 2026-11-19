@@ -16,8 +16,13 @@ import { DocStoreError } from "../src/errors.js";
 import type { IndexId } from "../src/keys.js";
 
 type Collections = Record<string, Record<string, object>>;
+
+/** The declarations `collection()` makes of the index maps the tests write. */
+const declarations = (collections: object) => Object.fromEntries(Object.entries(collections).map(([name, indexes]) => [name, { indexes }]));
+const normalize = (decl: { readonly version: number; readonly collections: object; readonly drop?: unknown }) =>
+  normalizeSchema({ ...decl, collections: declarations(decl.collections) } as never);
 const declare = (version: number, collections: Collections, drop?: string[]) =>
-  normalizeSchema(drop ? { version, collections, drop } : { version, collections });
+  normalize(drop ? { version, collections, drop } : { version, collections });
 
 function open(stored: StoredCatalog | undefined, version: number, collections: Collections, drop?: string[]): StoredCatalog {
   return reconcile(stored, declare(version, collections, drop)) ?? stored!;
@@ -217,7 +222,7 @@ describe("bind", () => {
 });
 
 describe("normalizeSchema", () => {
-  it.each<[string, unknown]>([
+  it.each<[string, { readonly version: number; readonly collections: object; readonly drop?: unknown }]>([
     ["a version below 1", { version: 0, collections: {} }],
     ["a fractional version", { version: 1.5, collections: {} }],
     ["a collection name with a dash", { version: 1, collections: { "a-b": {} } }],
@@ -244,17 +249,25 @@ describe("normalizeSchema", () => {
     ["a dropped name with a dash", { version: 1, collections: {}, drop: ["a-b"] }],
     ["a collection both declared and dropped", { version: 1, collections: { a: {} }, drop: ["a"] }],
   ])("refuses %s with code schema", (_, decl) => {
-    expect(codeOf(() => normalizeSchema(decl as never))).toBe("schema");
+    expect(codeOf(() => normalize(decl))).toBe("schema");
   });
 
   it("names the option it does not know and the ones it does", () => {
     const decl = { version: 1, collections: { a: { x: { by: "b", uniqe: true } } } };
-    expect(() => normalizeSchema(decl as never)).toThrow(/"uniqe".*by, unique, text/);
+    expect(() => normalize(decl)).toThrow(/"uniqe".*by, unique, text/);
   });
 
   it("says by is missing when an index has none", () => {
     const decl = { version: 1, collections: { a: { x: { unique: true } } } };
-    expect(() => normalizeSchema(decl as never)).toThrow(/by is required/);
+    expect(() => normalize(decl)).toThrow(/by is required/);
+  });
+
+  it.each<[string, unknown]>([
+    ["the index map of the old API", { x: { by: "b" } }],
+    ["null", null],
+    ["a string", "a"],
+  ])("refuses %s in place of a collection() declaration", (_, coll) => {
+    expect(() => normalizeSchema({ version: 1, collections: { a: coll } } as never)).toThrow(/not made by collection\(\)/);
   });
 
   it("stores an array field without its mark, as the first field of a multi index", () => {

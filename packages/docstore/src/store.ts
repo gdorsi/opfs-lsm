@@ -33,9 +33,9 @@ import {
   type CollectionId,
   type IndexId,
 } from "./keys.js";
-import type { AnySchema, CollectionName, DocOf, IndexInfo, IndexesOf } from "./schema.js";
+import type { CollectionName, DocOf, IndexInfo, IndexesOf, Schema } from "./schema.js";
 
-export interface DocStore<S extends AnySchema> {
+export interface DocStore<S extends Schema> {
   /** A typed handle. Operations on a collection the stored catalog lacks throw "schema". */
   collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>>;
   /** Resolves when this handle's background backfills and sweeps have finished. */
@@ -49,7 +49,7 @@ export interface DocStore<S extends AnySchema> {
  * using it for `changes`, `ingest` and other layers. Keys starting with
  * 0x64 belong to this package.
  */
-export async function openDocStore<S extends AnySchema>(kv: Db, schema: S): Promise<DocStore<S>> {
+export async function openDocStore<S extends Schema>(kv: Db, schema: S): Promise<DocStore<S>> {
   const declared = normalizeSchema(schema);
   // A plain read first: the readwrite transaction runs only when the catalog has to change.
   const read = await kv.get(CATALOG_KEY);
@@ -105,7 +105,7 @@ const NO_CATALOG = new Uint8Array(0);
 
 const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
 
-class DocStoreImpl<S extends AnySchema> implements DocStore<S>, StoreCore {
+class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
   private readonly jobs = new Map<string, Promise<void>>();
   /** What each declared collection's handle reports as `indexes`. */
   private readonly indexInfo: ReadonlyMap<string, ReadonlyMap<string, IndexInfo>>;

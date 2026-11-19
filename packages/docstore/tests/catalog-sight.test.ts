@@ -1,16 +1,16 @@
 import type { Db } from "@opfs-lsm/kv";
 import { destroyHarnessDb } from "@opfs-lsm/kv/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { defineSchema, openDocStore } from "../src/index.js";
+import { collection, defineSchema, openDocStore } from "../src/index.js";
 import { CATALOG_KEY } from "../src/keys.js";
 import { codeOf, freshName, gate, openKv, recording } from "./harness.js";
 
 type Todo = { id: string; title?: string; done?: boolean };
 
-const v1 = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byTitle: { by: "title" } } } });
-const v2 = defineSchema<{ todos: Todo }>()({ version: 2, collections: { todos: { byTitle: { by: "title" }, byDone: { by: "done" } } } });
-const byDone = defineSchema<{ todos: Todo }>()({ version: 1, collections: { todos: { byDone: { by: "done" } } } });
-const other = defineSchema<{ notes: { id: string } }>()({ version: 1, collections: { notes: {} } });
+const v1 = defineSchema({ version: 1, collections: { todos: collection<Todo>().index("byTitle", "title") } });
+const v2 = defineSchema({ version: 2, collections: { todos: collection<Todo>().index("byTitle", "title").index("byDone", "done") } });
+const byDone = defineSchema({ version: 1, collections: { todos: collection<Todo>().index("byDone", "done") } });
+const other = defineSchema({ version: 1, collections: { notes: collection<{ id: string }>() } });
 
 const open: Db[] = [];
 afterEach(async () => {

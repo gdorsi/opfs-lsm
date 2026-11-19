@@ -1,4 +1,4 @@
-import { defineSchema } from "@opfs-lsm/docstore";
+import { collection, defineSchema } from "@opfs-lsm/docstore";
 
 export const STATUS_LABELS = ["Backlog", "Todo", "In Progress", "Done", "Canceled"] as const;
 export const PRIORITY_LABELS = ["Urgent", "High", "Medium", "Low", "No priority"] as const;
@@ -25,16 +25,15 @@ export type Detail = { id: string; description: string; comments: Comment[] };
  * lists every issue by `modified`. `byStatus` and `byPriority` hold both codes, so a filter on one or both is a
  * set of ranges, each counted from its entries.
  */
-export const schema = defineSchema<{ issues: Issue; details: Detail }>()({
+export const schema = defineSchema({
   version: 2,
   collections: {
-    issues: {
-      byModified: { by: "modified", text: "title" },
-      byCreated: { by: "created" },
-      byStatus: { by: ["status", "priority", "modified"] },
-      byPriority: { by: ["priority", "status", "modified"] },
-    },
-    details: {},
+    issues: collection<Issue>()
+      .text("byModified", "modified", "title")
+      .index("byCreated", "created")
+      .index("byStatus", ["status", "priority", "modified"])
+      .index("byPriority", ["priority", "status", "modified"]),
+    details: collection<Detail>(),
   },
 });
 

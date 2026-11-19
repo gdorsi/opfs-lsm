@@ -1,4 +1,4 @@
-import { defineSchema, openDocStore, type Cursor, type DocStore, type Scalar } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore, type Cursor, type DocStore, type Scalar } from "@opfs-lsm/docstore";
 import type { Db } from "@opfs-lsm/kv";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, type Collection } from "@tanstack/db";
@@ -9,14 +9,21 @@ import type { IssueFilter, SortField } from "../model/filter.ts";
 import { ORDER } from "../model/query.ts";
 import { recount, type Pause } from "./recount.ts";
 
-const indexes = Object.fromEntries(Object.entries(STORES).map(([name, store]) => [name, store.indexes])) as {
-  [N in keyof typeof STORES]: (typeof STORES)[N]["indexes"];
-};
-
-/** The indexes are in `STORES`; the reads each issue index serves are in DESIGN.md, "Indexes". */
-export const schema = defineSchema<{ issues: StoredIssue; bodies: Body; comments: Comment; sync: SyncState }>()({
+/** The reads each issue index serves are in DESIGN.md, "Indexes". */
+export const schema = defineSchema({
   version: 5,
-  collections: indexes,
+  collections: {
+    issues: collection<StoredIssue>()
+      .index("byCreated", ["deleted", "created"])
+      .index("byTitle", ["deleted", "title"])
+      .index("byPriority", ["deleted", "priority", "priorityOrder"])
+      .text("byStatus", ["deleted", "status", "statusOrder"], "title")
+      .text("search", ["deleted", "modified"], "title")
+      .index("pending", "pending"),
+    bodies: collection<Body>().index("pending", "pending"),
+    comments: collection<Comment>().index("byIssue", "issue_id").index("pending", "pending"),
+    sync: collection<SyncState>(),
+  },
   drop: ["outbox"],
 });
 

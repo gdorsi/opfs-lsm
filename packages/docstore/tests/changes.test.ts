@@ -1,7 +1,7 @@
 import { ingest } from "@opfs-lsm/kv/testing";
 import { ClosedError, type Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defineSchema, openDocStore, type CollectionChange } from "../src/index.js";
+import { collection, defineSchema, openDocStore, type CollectionChange } from "../src/index.js";
 import { concat } from "../src/keys.js";
 import { schema, type Doc, type Docs } from "./docs.js";
 import { freshName, openKv, openKvWithoutBus, storedPrefix, wrap } from "./harness.js";
@@ -96,9 +96,9 @@ describe("changes", () => {
 
   it("ignores the entries of the indexes and the other collections", async () => {
     type Other = { id: string; x?: number };
-    const two = defineSchema<{ docs: Doc; other: Other }>()({
+    const two = defineSchema({
       version: 1,
-      collections: { docs: { one: { by: "a" }, tags: { by: "tags[]" } }, other: { byX: { by: "x" } } },
+      collections: { docs: collection<Doc>().index("one", "a").index("tags", "tags[]"), other: collection<Other>().index("byX", "x") },
     });
     const kv = await openKv(freshName());
     open.push(kv);
@@ -162,10 +162,10 @@ describe("changes", () => {
 
   it("sends no gap for catalog writes that leave the collection's id alone", async () => {
     type Row = { id: string; a?: number; b?: number };
-    const v1 = defineSchema<{ rows: Row }>()({ version: 1, collections: { rows: { byA: { by: "a" } } } });
-    const v2 = defineSchema<{ rows: Row }>()({
+    const v1 = defineSchema({ version: 1, collections: { rows: collection<Row>().index("byA", "a") } });
+    const v2 = defineSchema({
       version: 2,
-      collections: { rows: { byA: { by: "a" }, byB: { by: "b" } } },
+      collections: { rows: collection<Row>().index("byA", "a").index("byB", "b") },
     });
     const name = freshName();
     const kvA = await openKv(name);
@@ -187,8 +187,8 @@ describe("changes", () => {
   it("sends a gap for a dropped collection, nothing while it is gone, and follows it when a later schema declares it again", async () => {
     type Note = { id: string; body?: string };
     const withNotes = (version: number) =>
-      defineSchema<{ docs: Doc; notes: Note }>()({ version, collections: { docs: {}, notes: { byBody: { by: "body" } } } });
-    const withoutNotes = defineSchema<{ docs: Doc }>()({ version: 2, collections: { docs: {} }, drop: ["notes"] });
+      defineSchema({ version, collections: { docs: collection<Doc>(), notes: collection<Note>().index("byBody", "body") } });
+    const withoutNotes = defineSchema({ version: 2, collections: { docs: collection<Doc>() }, drop: ["notes"] });
     const name = freshName();
     const kvA = await openKv(name);
     const kvB = await openKv(name);

@@ -8,7 +8,7 @@ pnpm add @opfs-lsm/docstore @opfs-lsm/kv
 
 ```ts
 import { openDb } from "@opfs-lsm/kv";
-import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 
 type Todo = {
 	id: string;
@@ -17,9 +17,11 @@ type Todo = {
 	createdAt: number;
 	tags: string[]
 };
-const schema = defineSchema<{ todos: Todo }>()({
+const schema = defineSchema({
 	version: 1,
-	collections: { todos: { open: { by: ["done", "createdAt"] } } },
+	collections: {
+		todos: collection<Todo>().index("open", ["done", "createdAt"]),
+	},
 });
 const kv = await openDb({ name: "app" });
 const store = await openDocStore(kv, schema);
@@ -37,23 +39,30 @@ await todos.query({ index: "open", eq: [false] });
 
 ## Schemas
 
-A schema names each collection and its indexes. The rest of this page uses this one.
+A schema names each collection, with its document type and its indexes. The rest of this page uses this one.
 
 ```ts
 type User = { id: string; email?: string };
-const schema = defineSchema<{ todos: Todo; users: User }>()({
+const schema = defineSchema({
 	version: 1,
 	// an integer of at least 1. Bump it on every change to
 	// collections
 	collections: {
-		todos: {
-			open: { by: ["done", "createdAt"] },        // sorted
-			byTag: { by: "tags[]" },                    // multi
-			search: { by: "createdAt", text: "title" }, // text
-		},
-		users: { byEmail: { by: "email", unique: true } }, // unique
+		todos: collection<Todo>()
+			.index("open", ["done", "createdAt"])  // sorted
+			.index("byTag", "tags[]")              // multi
+			.text("search", "createdAt", "title"), // text
+		users: collection<User>().unique("byEmail", "email"), // unique
 	},
 });
+```
+
+`collection<T>()` starts a declaration. `index`, `unique` and `text` each take the index name, then `by`: a field, or a list of fields. `text` takes the string field to search as its third argument. Each call returns a new declaration, so you can share a base.
+
+```ts
+const base = collection<Todo>().index("open", ["done", "createdAt"]);
+const withSearch = base.text("search", "createdAt", "title");
+// base is unchanged
 ```
 
 You open and close `kv` yourself, and other layers can keep using it.
@@ -75,12 +84,12 @@ A document is a JSON object with a string `id`. Declare its type with `type`, be
 
 ```ts
 interface Card { id: string }
-defineSchema<{ cards: Card }>(); // type error
-defineSchema<{ // type error, and so are Map, Uint8Array,
+collection<Card>(); // type error
+collection<{ // type error, and so are Map, Uint8Array,
 	// and classes
-	events: { id: string; at: Date }
+	id: string; at: Date
 }>();
-defineSchema<{ events: { id: string; at: number } }>(); // ok
+collection<{ id: string; at: number }>(); // ok
 ```
 
 The store keeps `JSON.stringify(doc)` and returns its `JSON.parse`. Indexes read that stored form too.
@@ -504,13 +513,10 @@ await load();
 Open compares the declared `version` with the stored one, in one kv transaction. A higher version stores the new schema, builds new indexes, and sweeps the keys of removed ones.
 
 ```ts
-const v2 = defineSchema<{ todos: Todo; users: User }>()({
+const v2 = defineSchema({
 	version: 2,
 	collections: {
-		todos: {
-			...schema.collections.todos,
-			byCreated: { by: "createdAt" }
-		},
+		todos: schema.collections.todos.index("byCreated", "createdAt"),
 		users: schema.collections.users,
 	},
 });
@@ -524,7 +530,7 @@ await todos.put(todo);
 To delete a collection and its documents, name it in `drop`. A collection you only leave out keeps its documents for a later schema.
 
 ```ts
-const v3 = defineSchema<{ todos: Todo }>()({
+const v3 = defineSchema({
 	version: 3,
 	collections: { todos: v2.collections.todos },
 	drop: ["users"],
@@ -540,7 +546,7 @@ await users.get("u1");
 ```ts
 await openDocStore(kv, schema);
 // a lower version uses the stored catalog unchanged
-await openDocStore(kv, { ...v3, collections: { todos: {} } });
+await openDocStore(kv, { ...v3, collections: { todos: collection<Todo>() } });
 // throws DocStoreError "schema"
 // the same version must declare the stored indexes, and drop
 // nothing still stored
@@ -554,13 +560,10 @@ await todos.putMany([
 	{ ...todo, id: "d2" }
 ]);
 // same title
-const v4 = defineSchema<{ todos: Todo }>()({
+const v4 = defineSchema({
 	version: 4,
 	collections: {
-		todos: {
-			...v3.collections.todos,
-			byTitle: { by: "title", unique: true }
-		}
+		todos: v3.collections.todos.unique("byTitle", "title"),
 	},
 });
 const todos4 = (await openDocStore(kv, v4)).collection("todos");

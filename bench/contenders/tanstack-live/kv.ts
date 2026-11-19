@@ -1,4 +1,4 @@
-import { defineSchema, openDocStore } from "@opfs-lsm/docstore";
+import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection } from "@tanstack/db";
 import { defineContender } from "../../core/types.ts";
@@ -6,9 +6,9 @@ import type { Issue, Label, Project, User } from "../../datasets/tracker/types.t
 import { kvCommon, openKv } from "../../page/kv.ts";
 import { createIndexes, liveOps, writeHeld, type Collections } from "../../page/tanstack-live.ts";
 
-const schema = defineSchema<{ users: User; projects: Project; labels: Label; issues: Issue }>()({
+const schema = defineSchema({
   version: 1,
-  collections: { users: {}, projects: {}, labels: {}, issues: {} },
+  collections: { users: collection<User>(), projects: collection<Project>(), labels: collection<Label>(), issues: collection<Issue>() },
 });
 
 export default defineContender({
