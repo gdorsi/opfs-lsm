@@ -73,8 +73,8 @@ async function main(): Promise<number> {
         check: smoke && values.check,
         maxPeakBytes: bytesFlag("maxPeakBytes", "max-peak-bytes", values["max-peak-bytes"]).maxPeakBytes,
         kv: {
-          ...bytesFlag("compactionMemoryBytes", "compaction-memory-bytes", values["compaction-memory-bytes"]),
-          ...bytesFlag("cacheBytes", "cache-bytes", values["cache-bytes"], KV_MIN_CACHE_BYTES),
+          ...bytesFlag("compactionMemoryBytes", "compaction-memory-bytes", values["compaction-memory-bytes"], KV_MIN_BYTES.compactionMemoryBytes),
+          ...bytesFlag("cacheBytes", "cache-bytes", values["cache-bytes"], KV_MIN_BYTES.cacheBytes),
         },
       });
     }
@@ -154,8 +154,8 @@ async function run(o: {
   }
 }
 
-/** kv raises a smaller `cacheBytes` to this, so a record of less would name a cache the run did not have. */
-const KV_MIN_CACHE_BYTES = 1024 * 1024;
+/** kv raises a smaller figure to these, so a record of less would name an option the run did not have. */
+const KV_MIN_BYTES: Required<KvOptions> = { compactionMemoryBytes: 8 * 1024 * 1024, cacheBytes: 1024 * 1024 };
 
 /** `{ [key]: bytes }` when the flag is set, `{}` when it is not. */
 function bytesFlag<K extends string>(key: K, flag: string, value: string | undefined, min = 1): { [P in K]?: number } {
