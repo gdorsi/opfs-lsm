@@ -16,7 +16,7 @@
   "scripts": {
     "build": "pnpm -r run build",
     "check:readme": "node scripts/check-readme.mjs",
-    "check:docs": "node scripts/check-docs.mjs",
+    "check:docs": "node scripts/check-docs.mjs && node bench/cli.ts docs --check",
     "docs:dev": "pnpm --filter @opfs-lsm/site dev",
     "docs:build": "pnpm --filter @opfs-lsm/site build",
     "docs:preview": "pnpm --filter @opfs-lsm/site preview",

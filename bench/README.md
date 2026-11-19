@@ -12,13 +12,27 @@ pnpm bench:smoke                             # everything at size tiny, 1 rep
 pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke and the byte budgets, from one build
 node bench/cli.ts compare results/a.jsonl results/b.jsonl [--all]
 node bench/cli.ts report results/a.jsonl
+node bench/cli.ts docs [--check]             # rewrite the results tables of docs/benchmarks.md; --check only compares
 ```
 
 Run `pnpm bench:smoke` first whenever the code under test changed. A full `pnpm bench` takes tens of minutes, and a broken path can run it into the 30-minute timeout; the smoke finds that in about a minute. Pass workload selectors as separate words, not one quoted variable: zsh does not split `$SEL`, so `pnpm bench $SEL` with `SEL="kv/ tracker/"` matches nothing.
 
-Results go to `bench/results/<time>-<cpu>.jsonl` (one record per run) and a Markdown table next to it. They are not committed, except a run whose numbers [docs/benchmarks.md](../docs/benchmarks.md) publishes: copy its `.jsonl` and `.md` to [docs/results/](../docs/results/) and link them under the table. To compare a change, run the same selection before and after on one machine and use `compare`. It compares every number both files hold: ops/s, wall time, the mean latency of each op, the main-thread cells, amplification and memory peaks. Each number is one value per run, shown as the median with its min–max range. `compare` calls a difference only when the ranges of the two files do not overlap, and it knows which way is better: more ops/s, less time or memory. A file with one run per row has no range, so it never shows a difference. When a file's runs overrode a kv option, `compare` says so above the table. It prints the rows with a difference and counts the rest. `--all` prints every row. A `†` marks a side whose runs fall into two clusters, so its median hides two states. `report` prints both clusters under the phase table, and the settled LSM layout in the amplification table.
+Results go to `bench/results/<time>-<cpu>.jsonl` (one record per run) and a Markdown table next to it. They are not committed, except a run whose numbers [docs/benchmarks.md](../docs/benchmarks.md) publishes, which goes to [docs/results/](../docs/results/). To compare a change, run the same selection before and after on one machine and use `compare`. It compares every number both files hold: ops/s, wall time, the mean latency of each op, the main-thread cells, amplification and memory peaks. Each number is one value per run, shown as the median with its min–max range. `compare` calls a difference only when the ranges of the two files do not overlap, and it knows which way is better: more ops/s, less time or memory. A file with one run per row has no range, so it never shows a difference. When a file's runs overrode a kv option, `compare` says so above the table. It prints the rows with a difference and counts the rest. `--all` prints every row. A `†` marks a side whose runs fall into two clusters, so its median hides two states. `report` prints both clusters under the phase table, and the settled LSM layout in the amplification table.
 
 Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `google-chrome`.
+
+## Publishing a run
+
+The results tables of [docs/benchmarks.md](../docs/benchmarks.md) are generated. Each sits between `<!-- bench:table <id> -->` and `<!-- /bench:table -->`. `docs-tables.ts` names the run each table reads and the series each cell takes. A cell is the median of one series. A ratio comes from the same comparison `compare` makes, and gets a `‡` when the min–max ranges of the two overlap. A `†` marks a cell whose runs fall into two clusters. Under each table the command writes the run counts, the Chrome version, the CPU, the load average, the commit and a link to the full results.
+
+To publish a run:
+
+1. Run the benchmark from a clean tree. `docs` refuses a run that recorded `-dirty`.
+2. Copy its `.jsonl` and `.md` from `bench/results/` to [docs/results/](../docs/results/).
+3. Set the table's `file` in `docs-tables.ts` to the new stamp.
+4. Run `node bench/cli.ts docs`, and commit the page with the run.
+
+A new row or table is an entry in `docs-tables.ts` and, for a table, a pair of markers in the page. The command fails on a marker with no table, a table with no marker, and a cell with no series. `docs --check` needs no Chrome and no build. `pnpm check:docs` runs it, so CI fails when a table differs from its run. The Bundle size table does not come from a result file, so it stays by hand.
 
 ## Families
 
@@ -191,7 +205,8 @@ A goal is one entry in its dataset's spec type (`datasets/tracker/types.ts`), wh
 ## Layout
 
 ```
-cli.ts            run | smoke | size | compare | report
+cli.ts            run | smoke | size | compare | report | docs
+docs-tables.ts    the results tables of docs/benchmarks.md: the run and the series of each cell
 core/             types, family interfaces, the goal contract, access patterns, histogram
 datasets/         one directory per goal dataset: types and goal spec, history, oracle, curation
 driver/           Vite build, static server, Chrome over CDP, plan, run loop, metrics, report, size
