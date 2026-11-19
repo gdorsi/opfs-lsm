@@ -144,7 +144,8 @@ PushOp = { stream, id, fields: Record<string, unknown>, clocks: Clocks, create?:
 - **Eviction.** kv keeps a reserve file, releases it when the browser refuses a write, and asks for space through
   `db.onStorageFull` (to see it happen, set a custom storage quota in Chrome DevTools, under Application, Storage).
   Only the leader answers, and it answers at once by setting `evict: "asked"` in the shared sync row; nothing is
-  cleared yet. Every tab then shows an alert that says cached descriptions and comments will be removed from this device, with one confirm button. A
+  cleared yet. Every tab then shows an alert that says cached descriptions and comments will be removed from this
+  device, with one confirm button. A
   confirm in any tab moves the row from `asked` to `confirmed`, which wakes the leader. Between two pages, right
   after a push, the leader then clears `bodies` and `comments` and sets `evict: "idle"`: later changes still arrive for the threads that load
   again, and the screen preloads the ones in view. Issues stay. While a body or comment has an unsent edit nothing is

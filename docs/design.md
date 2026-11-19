@@ -274,9 +274,9 @@ hold a mark back, so its rows leave the disk.
 
 ## Reserve
 
-`openDb({ reserveBytes })` sets the size of `reserve`, 24 MiB unless given. When the browser
-refuses a write, the host removes the file, the write runs again, and `db.onStorageFull` asks a
-tab to free space. kv never removes a row itself. The steps are in [reserve.md](reserve.md).
+`openDb({ reserveBytes })` sets the size of `reserve`, 24 MiB unless given, and 0 keeps no file. When
+the browser refuses a write, the host removes the file, the write runs again, and `db.onStorageFull`
+asks a tab to free space. kv never removes a row itself. The steps are in [reserve.md](reserve.md).
 
 ## Multi-tab coordination
 

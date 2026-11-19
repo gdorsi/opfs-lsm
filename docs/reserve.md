@@ -37,7 +37,7 @@ nothing.
 | any | the last tab closes the database | unknown | |
 
 A fill the browser refuses leaves the file as it was, so a held file that is too small stays. An
-offered database gets no fill and no second offer: the handlers still need the room. An answer
+offered database gets no fill, and no second offer from a settle: the handlers still need the room. An answer
 counts only once a flush holds what the handlers wrote. Handlers that wrote nothing start no
 flush, so the host asks them again at most once per settle, and never because of their own
 answer. A new host starts at unknown.
