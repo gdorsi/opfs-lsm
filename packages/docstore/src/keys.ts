@@ -13,7 +13,7 @@
  * every key that continues a prefix, an id included.
  */
 import type { Entry, Range } from "@opfs-lsm/kv";
-import { decodeTuple, encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
+import { asciiAt, decodeTuple, encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
 import { DocStoreError } from "./errors.js";
 import type { Cursor, QueryInput, Scalar } from "./schema.js";
 
@@ -78,9 +78,9 @@ export function idBytes(id: DocId): Uint8Array {
   return utf8Bytes(id);
 }
 
-/** The id whose UTF-8 is `bytes`. */
-export function idOf(bytes: Uint8Array): string {
-  return fromUtf8.decode(bytes);
+/** The id whose UTF-8 is `bytes` from `from` on. */
+export function idOf(bytes: Uint8Array, from = 0): string {
+  return asciiAt(bytes, from, bytes.length) ?? fromUtf8.decode(from ? bytes.subarray(from) : bytes);
 }
 
 export function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -232,22 +232,24 @@ function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [
   return [lower, upper];
 }
 
+/** Where the id starts in an entry's key. A unique entry's id is its value. */
+function idStart(target: ScanTarget, key: Uint8Array): number {
+  return target.kind === "rows" ? target.prefix.length : skipTuple(key, target.arity, target.prefix.length);
+}
+
 export function entryId(target: ScanTarget, key: Uint8Array, value: Uint8Array): Uint8Array {
-  switch (target.kind) {
-    case "rows":
-      return key.subarray(target.prefix.length);
-    case "unique":
-      return value;
-    case "sorted":
-    case "text":
-      return key.subarray(skipTuple(key, target.arity, target.prefix.length));
-  }
+  return target.kind === "unique" ? value : key.subarray(idStart(target, key));
+}
+
+/** `idOf(entryId(...))` without the subarray. */
+export function entryIdString(target: ScanTarget, key: Uint8Array, value: Uint8Array): string {
+  return target.kind === "unique" ? idOf(value) : idOf(key, idStart(target, key));
 }
 
 export function decodeEntries(target: ScanTarget, entries: readonly Entry[], eqLength: number): { id: string; values: Scalar[] }[] {
   if (target.kind === "rows") {
     return entries.map(({ key }) => {
-      const id = idOf(key.subarray(target.prefix.length));
+      const id = idOf(key, target.prefix.length);
       return { id, values: [id] };
     });
   }
@@ -255,7 +257,7 @@ export function decodeEntries(target: ScanTarget, entries: readonly Entry[], eqL
   const { values: eqValues, end: from } = decodeTuple(entries[0]!.key, eqLength, target.prefix.length);
   return entries.map(({ key, value }) => {
     const { values, end } = decodeTuple(key, target.arity - eqLength, from);
-    return { id: idOf(target.kind === "unique" ? value : key.subarray(end)), values: eqValues.concat(values) };
+    return { id: target.kind === "unique" ? idOf(value) : idOf(key, end), values: eqValues.concat(values) };
   });
 }
 

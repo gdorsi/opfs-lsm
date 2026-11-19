@@ -8,6 +8,24 @@ export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length;
 }
 
+/** `compareBytes` of two keys whose first `from` bytes are equal. */
+export function compareFrom(a: Uint8Array, b: Uint8Array, from: number): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = from; i < n; i++) {
+    const d = a[i]! - b[i]!;
+    if (d !== 0) return d;
+  }
+  return a.length - b.length;
+}
+
+/** How many leading bytes `a` and `b` share. */
+export function sharedPrefix(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i;
+}
+
 /** Smallest key strictly after every key that starts with `prefix`. */
 export function successor(prefix: Uint8Array): Uint8Array | undefined {
   const out = new Uint8Array(prefix);

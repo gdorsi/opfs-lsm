@@ -2,7 +2,7 @@ import { CorruptDatabaseError, type Entry, type Range, type ViewSnapshot } from 
 import { readableTarget, type BoundCollection } from "./catalog.js";
 import { decodeDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { concat, decodeEntries, encodeCursor, entryId, idBytes, idOf, parseId, scanPlan } from "./keys.js";
+import { concat, decodeEntries, encodeCursor, entryId, entryIdString, idBytes, parseId, scanPlan } from "./keys.js";
 import type { Cursor, EntryPage, EntryValues, IdPage, IndexEntry, JsonDoc, Page, Query, QueryInput } from "./schema.js";
 
 /** Reads of one collection from one kv snapshot. */
@@ -45,10 +45,11 @@ function trimPage<H>(hits: H[], keyOf: (hit: H) => Uint8Array, limit: number | u
   return { next: encodeCursor(keyOf(hits[limit - 1]!)) };
 }
 
-async function collect(entries: AsyncIterable<Entry>): Promise<Entry[]> {
-  const out: Entry[] = [];
-  for await (const e of entries) out.push(e);
-  return out;
+const noJoin = () => undefined;
+
+/** Every entry of `range`, read in one call: a `range` iterator spends a promise turn on each entry. */
+async function collect(snap: ViewSnapshot, range: Range): Promise<Entry[]> {
+  return (await snap.rangeJoin(range, noJoin)).map((hit) => hit.entry);
 }
 
 /** What a point read needs of kv: a `Db` and a view snapshot both fit. */
@@ -95,7 +96,7 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
   async query(q: Query<T, Ix>): Promise<Page<T>> {
     const { target, range, limit } = this.plan(q, 1);
     if (target.kind === "rows") {
-      const page = await collect(this.snap.range(range));
+      const page = await collect(this.snap, range);
       const next = trimPage(page, (h) => h.key, limit);
       return { docs: page.map((h) => decodeDoc(h.value) as unknown as T), ...next };
     }
@@ -110,16 +111,16 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
 
   async queryIds(q: Query<T, Ix>): Promise<IdPage> {
     const { target, range, limit } = this.plan(q, 1);
-    const page = await collect(this.snap.range(range));
+    const page = await collect(this.snap, range);
     const next = trimPage(page, (h) => h.key, limit);
-    return { ids: page.map((h) => idOf(entryId(target, h.key, h.value))), ...next };
+    return { ids: page.map((h) => entryIdString(target, h.key, h.value)), ...next };
   }
 
   async queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPage<EntryValues<T, Ix, I>>> {
     const { target, range, limit } = this.plan(q, 1);
-    const page = await collect(this.snap.range(range));
+    const page = await collect(this.snap, range);
     const next = trimPage(page, (h) => h.key, limit);
     const entries = decodeEntries(target, page, (q as QueryInput).eq?.length ?? 0);
     return { entries: entries as IndexEntry<EntryValues<T, Ix, I>>[], ...next };

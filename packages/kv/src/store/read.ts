@@ -1,4 +1,4 @@
-import { compareBytes } from "../bytes.js";
+import { compareBytes, compareFrom, sharedPrefix } from "../bytes.js";
 import type { MemRow, MemRows } from "./memtable.js";
 import {
   allMissed,
@@ -215,9 +215,14 @@ class Merge {
   /** -1 when the merge runs backward, so the largest key sorts first. */
   private readonly sign: number;
 
+  /**
+   * `skip` is how many leading bytes every key of every cursor shares, so
+   * no compare reads them: the keys of one index query repeat its prefix.
+   */
   constructor(
     private readonly cursors: readonly LayerCursor[],
     reverse: boolean,
+    private readonly skip: number,
   ) {
     this.heads = new Array<LayerEntry>(cursors.length);
     this.heap = cursors.map(() => 0);
@@ -239,7 +244,7 @@ class Merge {
       this.movedCount = 0;
       if (e) {
         heads[s] = e;
-        const c = this.size === 0 ? -1 : this.sign * compareBytes(e.key, heads[heap[0]!]!.key);
+        const c = this.size === 0 ? -1 : this.sign * compareFrom(e.key, heads[heap[0]!]!.key, this.skip);
         if (c < 0) {
           cursors[s]!.next();
           this.movedCount = 1;
@@ -277,7 +282,7 @@ class Merge {
     cursors[top]!.next();
     moved[this.movedCount++] = top;
     // Every older source that holds the same key steps past it.
-    while (this.size > 0 && compareBytes(heads[heap[0]!]!.key, entry.key) === 0) {
+    while (this.size > 0 && compareFrom(heads[heap[0]!]!.key, entry.key, this.skip) === 0) {
       const dup = this.pop();
       cursors[dup]!.next();
       moved[this.movedCount++] = dup;
@@ -288,7 +293,7 @@ class Merge {
 
   /** Whether source `a` sorts before source `b`: by key, then the newer source. */
   private before(a: number, b: number): boolean {
-    const c = this.sign * compareBytes(this.heads[a]!.key, this.heads[b]!.key);
+    const c = this.sign * compareFrom(this.heads[a]!.key, this.heads[b]!.key, this.skip);
     return c !== 0 ? c < 0 : a < b;
   }
 
@@ -328,6 +333,11 @@ class Merge {
   }
 }
 
+/** How many leading bytes every key inside `bounds` shares: a key between two keys starts with what both start with. */
+function boundsPrefix(bounds: ScanBounds | undefined): number {
+  return bounds?.start && bounds.endExclusive ? sharedPrefix(bounds.start, bounds.endExclusive) : 0;
+}
+
 /**
  * A scan's next live put, or undefined at its end. Sync until a cursor
  * misses; after a Miss, call it again once the Miss is ready and it goes on
@@ -340,8 +350,8 @@ export type ScanStep = () => Maybe<LayerEntry | undefined>;
  * cursor runs backward and so does the merge. Tombstones and covered
  * versions are skipped.
  */
-export function liveStep(cursors: readonly LayerCursor[], marks: Marks, reverse = false): ScanStep {
-  const merge = new Merge(cursors, reverse);
+export function liveStep(cursors: readonly LayerCursor[], marks: Marks, reverse = false, bounds?: ScanBounds): ScanStep {
+  const merge = new Merge(cursors, reverse, boundsPrefix(bounds));
   return () => {
     for (;;) {
       const e = merge.next();
@@ -375,6 +385,7 @@ export function matchingStep(
   const merge = new Merge(
     [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse, marks))],
     reverse,
+    boundsPrefix(bounds),
   );
   /** A match whose check against the newer sources missed, checked again on the next call. */
   let held: LayerEntry | undefined;

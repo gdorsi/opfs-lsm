@@ -93,7 +93,7 @@ export function followCollection<T extends JsonDoc>(
         case "put":
         case "del":
           if (prefix && hasPrefix(op.key, prefix)) {
-            changes.push(docChange<T>(idOf(op.key.subarray(prefix.length)), op.type === "put" ? op.value : undefined));
+            changes.push(docChange<T>(idOf(op.key, prefix.length), op.type === "put" ? op.value : undefined));
           } else if (bytesEqual(op.key, CATALOG_KEY)) {
             const next = op.type === "put" ? collectionIdIn(op.value, name) : undefined;
             if (next === id) continue;

@@ -88,6 +88,19 @@ describe("encodeTuple", () => {
     );
   });
 
+  it("round-trips strings of every length up to 70 with a non-ASCII character or U+0000 at any place", () => {
+    for (let length = 0; length <= 70; length++) {
+      const ascii = Array.from({ length }, (_, i) => String.fromCharCode(0x21 + (i % 90))).join("");
+      expect(decodeTuple(encodeTuple([ascii, 1])).values).toEqual([ascii, 1]);
+      for (let at = 0; at < length; at++) {
+        for (const other of ["\u0000", "\u0080", "é", "😀"]) {
+          const s = ascii.slice(0, at) + other + ascii.slice(at + 1);
+          expect(decodeTuple(encodeTuple([s, 1])).values).toEqual([s, 1]);
+        }
+      }
+    }
+  });
+
   it("orders null, false, true, numbers ascending with -0 equal to 0, then strings", () => {
     const values: TupleValue[] = [null, false, true, -Number.MAX_VALUE, -1, -0.5, 0, 0.5, 1, Number.MAX_VALUE, "", "a"];
     const keys = values.map((v) => encodeTuple([v]));
