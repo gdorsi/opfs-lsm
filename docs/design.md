@@ -230,8 +230,8 @@ source filters on its own, one block at a time, and only the hits are copied out
 that holds the key with a non-matching value or a tombstone drops the older hit.
 
 A key and a value stay in place in the block bytes, which are never written once read, until
-the scan yields their entry, so an entry it drops, counts or passes over for `offset` is never
-copied. `count(range)` runs the same merge and filters, `offset` and `limit` included.
+the scan yields their entry. An entry it drops, counts or passes over for `offset` copies no
+value, and a key only when it waits in the merge through several compares. `count(range)` runs the same merge and filters, `offset` and `limit` included.
 
 Every read judges the versions it finds in runs against one read point: the marks of the
 installed generation joined with those of the memtable, taken in the same turn as the layers it

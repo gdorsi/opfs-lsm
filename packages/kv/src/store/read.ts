@@ -21,7 +21,7 @@ import { levelOf } from "./levels.js";
 
 /**
  * The rule every read applies to the newest version of a key, once the
- * memtable, the level order or the merge heap chose it: the version is gone
+ * memtable, the level order or the merge chose it: the version is gone
  * when it is a delete or a mark covers it. A covered newest version means
  * every older one is covered too, since they have the same key and smaller
  * seqs.

@@ -28,7 +28,7 @@ export const PATTERNS = {
   "doc-index-count": "documents: a count over an index prefix, no row read",
   "doc-scattered-page": "documents: an index page whose rows are scattered in key order, joined N:1 and M:N to names",
   "doc-drained-range": "documents: an index range a bulk edit just emptied, above the settled levels",
-  "doc-deep-window": "documents: a full window 90% deep into an ordered list, with no offset in the index",
+  "doc-deep-window": "documents: a full window 90% deep into an ordered list, reached with an offset",
   "doc-key-hops": "documents: two unique-key hops, then a 1:N child range joined to authors",
   "doc-child-count": "documents: a child count per row of a page, over an IN-list ordered by another field",
   "doc-multi-entry": "documents: a filter through a multi-entry (array) index",

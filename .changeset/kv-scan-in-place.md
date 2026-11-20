@@ -2,7 +2,7 @@
 "@opfs-lsm/kv": minor
 ---
 
-A scan leaves each record of a run in its block until it yields the entry, and the merge compares keys there. An entry that `count` counts, that a newer version or a tombstone drops, or that `offset` passes over is no longer copied. The merge keeps its waiting sources in a short sorted list instead of a binary heap, and remembers which sources tie on a key, so two versions of one key are compared once.
+A scan leaves each record of a run in its block until it yields the entry, and the merge compares keys there. An entry that `count` counts, that a newer version or a tombstone drops, or that `offset` passes over no longer copies its value, and copies its key only when it waits in the merge through several compares. The merge keeps its waiting sources in a short sorted list instead of a binary heap, and remembers which sources tie on a key, so two versions of one key are compared once.
 
 `Range.offset` is new: `range`, `count` and `rangeJoin` pass over that many entries before the first one, and `limit` counts from there.
 

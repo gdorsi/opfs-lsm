@@ -9,13 +9,17 @@ type Version = {
   readonly seq: Seq;
 };
 
+/** The prefix of a record whose block shares none. */
+export const NO_PREFIX = new Uint8Array(0);
+
 /**
  * A record of a run, read where it is in `block`, which is never written once
  * read. Its key is `prefix`, the bytes every key of its block starts with,
  * then the `suffixLength` bytes at `suffixAt`. `key` copies them out the
- * first time it is asked, and the compares read them in place, so a scan that
- * counts, skips or drops the record copies nothing, and one that keeps it
- * copies the key and the value once each.
+ * first time it is asked, and the compares read them in place until the
+ * record waits through a second one, so a scan that counts, skips or drops
+ * the record copies no value and seldom a key, and one that keeps it copies
+ * the key and the value once each.
  */
 export class BlockEntry {
   /** The copy `key` made. Null once another record was compared with this one, see `waits`. */

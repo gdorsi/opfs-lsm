@@ -1,6 +1,6 @@
 import { CorruptDatabaseError } from "../errors.js";
 import { asSeq, type Seq } from "../seq.js";
-import { BlockEntry } from "./cursor.js";
+import { BlockEntry, NO_PREFIX } from "./cursor.js";
 import { lz4Decompress } from "./lz4.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
@@ -24,7 +24,6 @@ const CODECS: readonly SstCodec[] = ["raw", "lz4"];
 
 const TAG_PUT = 1;
 const TAG_DEL = 2;
-const NO_PREFIX = new Uint8Array(0);
 
 /**
  * A block stores the offset of every `OFFSET_STRIDE`th record after

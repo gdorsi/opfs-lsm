@@ -73,9 +73,9 @@ export class PointReader<T extends JsonDoc> {
   }
 
   /** One kv read for every row, parsed from the stored bytes with no copy between. */
-  getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
+  async getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
     const keys = ids.map((id) => concat(this.coll.rows.prefix, idBytes(parseId(id))));
-    return this.snap.getMany(keys, decodeDoc) as Promise<unknown> as Promise<(T | undefined)[]>;
+    return (await this.snap.getMany(keys, decodeDoc)) as unknown as (T | undefined)[];
   }
 }
 
@@ -101,7 +101,10 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
       const next = trimPage(page, (h) => h.key, limit);
       return { docs: page.map((h) => decodeDoc(h.value) as unknown as T), ...next };
     }
-    const hits = await this.snap.rangeJoin(range, (h) => concat(target.rowPrefix, entryId(target, h.key, h.value)), decodeDoc);
+    // The entry past `limit` only says a next page exists, so its document is not read.
+    let left = limit ?? Number.POSITIVE_INFINITY;
+    const rowOf = (h: Entry) => (left-- > 0 ? concat(target.rowPrefix, entryId(target, h.key, h.value)) : undefined);
+    const hits = await this.snap.rangeJoin(range, rowOf, decodeDoc);
     const next = trimPage(hits, (h) => h.entry.key, limit);
     const docs = hits.map(({ joined }) => {
       if (!joined) throw new CorruptDatabaseError(`an index entry of "${this.coll.name}" points at a missing document`);

@@ -1,5 +1,5 @@
 import { CorruptDatabaseError } from "../errors.js";
-import { BlockEntry } from "./cursor.js";
+import { BlockEntry, NO_PREFIX } from "./cursor.js";
 
 /**
  * Scans one data block, framed as the run's block index frames it, and returns
@@ -7,8 +7,6 @@ import { BlockEntry } from "./cursor.js";
  * seq, key, value` records. `patterns` is each pattern as a u32 length then its bytes.
  */
 type BlockScanner = (framed: Uint8Array, lz4: boolean, patterns: Uint8Array) => Uint8Array;
-
-const NO_PREFIX = new Uint8Array(0);
 
 /** Set once the wasm engine loads. Without it a run is scanned through its cursor. */
 let wasmScanner: BlockScanner | undefined;
