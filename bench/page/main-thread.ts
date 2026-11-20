@@ -52,12 +52,15 @@ function smallestStep(vsyncs: readonly number[]): number {
  * timestamps rAF passes in. They stay steady through a block, so their steps show the display's frame
  * interval, until a long block makes Chrome skip vsyncs and every step grows. The interval is the smallest
  * step of the calibration before the run and of the run itself: a median over the run reads 33.3 ms
- * when most frames are late, and a run with one frame has no step at all.
+ * when most frames are late, and a run with one frame has no step at all. Throws when neither has a step.
  */
 export function summarize(durations: readonly number[], stamps: readonly number[], vsyncs: readonly number[], calibrated = Infinity): MainThread {
   const gaps = stamps.slice(1).map((t, i) => Math.max(0, t - stamps[i]!));
   const found = Math.min(calibrated, smallestStep(vsyncs));
-  const frameIntervalMs = Number.isFinite(found) ? found : 0;
+  if (!Number.isFinite(found)) {
+    throw new Error("a mainThread phase saw no frame interval: the tab painted too few frames (hidden or throttled), so its dropped frames cannot be counted");
+  }
+  const frameIntervalMs = found;
   return {
     longTasks: durations.length,
     longestMs: Math.max(0, ...durations),
@@ -65,7 +68,7 @@ export function summarize(durations: readonly number[], stamps: readonly number[
     frames: vsyncs.length,
     frameIntervalMs,
     longestFrameMs: Math.max(0, ...gaps),
-    droppedFrames: frameIntervalMs === 0 ? 0 : gaps.reduce((n, g) => n + Math.max(0, Math.round(g / frameIntervalMs) - 1), 0),
+    droppedFrames: gaps.reduce((n, g) => n + Math.max(0, Math.round(g / frameIntervalMs) - 1), 0),
   };
 }
 

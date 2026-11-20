@@ -18,7 +18,7 @@ test("the frame interval is the smallest step, so a run where most frames are la
 
 test("one frame in the run still has an interval from the calibration", () => {
   const stamps = [0, 70];
-  assert.equal(summarize([], stamps, [50]).droppedFrames, 0);
+  assert.throws(() => summarize([], stamps, [50]), /no frame interval/);
   const s = summarize([], stamps, [50], 17);
   assert.equal(s.frameIntervalMs, 17);
   assert.equal(s.droppedFrames, 3);
@@ -28,8 +28,7 @@ test("a step in the run smaller than the calibration wins", () => {
   assert.equal(summarize([], [0, 10, 20], [0, 8, 17], 17).frameIntervalMs, 8);
 });
 
-test("with no calibration and no steps nothing is dropped", () => {
-  const s = summarize([], [0, 500], [10]);
-  assert.equal(s.frameIntervalMs, 0);
-  assert.equal(s.droppedFrames, 0);
+test("with no calibration and no steps the measurement fails instead of reporting no drops", () => {
+  assert.throws(() => summarize([], [0, 500], [10]), /no frame interval/);
+  assert.throws(() => summarize([], [0, 500], []), /no frame interval/);
 });
