@@ -58,8 +58,8 @@ OPFS  opfs-lsm/<name>/
 
 ### WAL records
 
-Each acked `put`, `delete` or `batch` with ops is one record in the `wal` store. An `update` that
-writes is one or two (see [Append](#append)). A batch with no ops writes nothing and resolves with
+Each acked `put`, `delete` or `batch` with ops is one record in the `wal` store. An `update` is
+at most two (see [Append](#append)). A batch with no ops writes nothing and resolves with
 the `appliedThrough` of its tab. The key is the seq. The value is one `ArrayBuffer`: an optional
 header, then the ops of the batch back to back:
 
@@ -109,7 +109,7 @@ a row whose header names `appliedThrough + 1`. The row takes that seq only if no
 since the read. Failing that, the update runs in one transaction that reads the tail, applies it to
 the memtable, runs `body` and adds the batch at `head + 1`, which no writer can beat. So does an
 update issued while an append of its handle is in flight, or whose `body` wrote nothing. After a row
-loses, the handle appends no such row until one of those transactions finds the tail empty. A handle
+loses, the handle appends no such row until one of those transactions writes with an empty tail. A handle
 runs its updates one at a time, in call order.
 
 The commit point is the `complete` event of the transaction, at the default IndexedDB

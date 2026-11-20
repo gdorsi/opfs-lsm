@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { prefixBound, type Db, type Range, type ViewSnapshot } from "../src/index.js";
+import { ClosedError, prefixBound, type Db, type Range, type ViewSnapshot } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { checkBatch, checkDbName } from "../src/check.js";
 import { TabWal } from "../src/idb/wal.js";
@@ -210,6 +210,22 @@ describe("update", () => {
     expect(lost).toHaveLength(2);
     stop();
     await db.close();
+  });
+
+  it("rejects with ClosedError and writes nothing when the handle closes before the body runs again", async () => {
+    const fs = new MemoryFs();
+    const db = await open("w", fs);
+    await unheard("n", "1");
+    let runs = 0;
+    const update = db.update([utf("n")], ([cur], tx) => {
+      runs += 1;
+      if (runs === 1) queueMicrotask(() => void db.close());
+      tx.put(utf("copy"), cur ?? utf("none"));
+    });
+    await expect(update).rejects.toBeInstanceOf(ClosedError);
+    const reopened = await open("r", fs);
+    expect(await reopened.get(utf("copy"))).toBeUndefined();
+    await reopened.close();
   });
 
   it("reads an ingested key in a tab that has not loaded the SST yet", async () => {

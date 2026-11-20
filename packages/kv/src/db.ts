@@ -950,6 +950,7 @@ class DbImpl implements Db {
     const out = await this.retrying(async () => {
       for (;;) {
         await warm?.();
+        this.ensureOpen();
         let missing: Generation | undefined;
         let miss: Miss | undefined;
         const appended = await this.wal
