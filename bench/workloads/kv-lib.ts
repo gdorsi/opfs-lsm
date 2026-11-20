@@ -52,12 +52,12 @@ export async function getIds(ctx: Ctx, ops: number, pick: () => number, op = "ge
 }
 
 /** Ordered scan of `limit` values from id `from`, each verified; checks ascending, contiguous live ids. */
-export async function scan(ctx: Ctx, store: KvStore, from: number, limit: number, op: string, count = limit): Promise<number> {
-  const values = await ctx.time(op, 0, () => store.range(ctx.model.key(from), undefined, limit), count);
+export async function scan(ctx: Ctx, store: KvStore, from: number, limit: number, op: string, count = limit, offset = 0): Promise<number> {
+  const values = await ctx.time(op, 0, () => store.range(ctx.model.key(from), undefined, limit, offset), count);
   let prev = -1;
   for (const v of values) {
     const id = ctx.model.verifyAny(v);
-    ctx.check(id > prev && id >= from, `scan out of order: ${id} after ${prev}`);
+    ctx.check(id > prev && id >= from + offset, `scan out of order: ${id} after ${prev}`);
     prev = id;
   }
   return values.length;

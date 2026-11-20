@@ -4,7 +4,7 @@ import { kvCommon, openKv } from "../../page/kv.ts";
 export default defineContender({
   family: "kv",
   durability: "idb-default",
-  fastPath: "openDb (SharedWorker host); putMany = one db.batch; range = db.range; update = db.update",
+  fastPath: "openDb (SharedWorker host); putMany = one db.batch; getMany = db.getMany; range = db.range, with its offset; count = db.count; update = db.update",
   engine: true,
   async open(name) {
     const db = await openKv(name);
@@ -21,11 +21,13 @@ export default defineContender({
         });
       },
       get: (key) => db.get(key),
-      async range(start, endExclusive, limit) {
+      getMany: (keys) => db.getMany(keys),
+      async range(start, endExclusive, limit, offset = 0) {
         const values: Uint8Array[] = [];
-        for await (const e of db.range({ start, ...(endExclusive ? { endExclusive } : {}), limit })) values.push(e.value);
+        for await (const e of db.range({ start, ...(endExclusive ? { endExclusive } : {}), limit, offset })) values.push(e.value);
         return values;
       },
+      count: (start, endExclusive) => db.count({ start, endExclusive }),
       update: (key, f) =>
         db.update([key], ([old], tx) => {
           tx.put(key, f(old));
