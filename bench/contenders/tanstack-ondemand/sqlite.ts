@@ -8,14 +8,20 @@ import type { OnDemandStore, Todo } from "../../core/families.ts";
 import { defineContender } from "../../core/types.ts";
 import { onDemandOps } from "../../page/tanstack.ts";
 
-/** Opens the collection; `relaxed` sets `synchronous=OFF` first, so a commit stays atomic but does not wait for the disk. */
+type Database = Awaited<ReturnType<typeof openBrowserWASQLiteOPFSDatabase>>;
+
+/** `relaxed` sets `synchronous=OFF`, so a commit stays atomic but does not wait for the disk. */
+export async function tuneSqlite(database: Database, relaxed: boolean): Promise<void> {
+  if (!relaxed) return;
+  await database.execute("PRAGMA synchronous = OFF");
+  const [mode] = await database.execute<{ synchronous: number }>("PRAGMA synchronous");
+  if (mode?.synchronous !== 0) throw new Error(`PRAGMA synchronous is ${JSON.stringify(mode)}, want 0`);
+}
+
+/** Opens the collection on a database tuned by `tuneSqlite`. */
 export async function openSqlite(name: string, relaxed: boolean): Promise<OnDemandStore> {
   const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tanstack-${name}.sqlite` });
-  if (relaxed) {
-    await database.execute("PRAGMA synchronous = OFF");
-    const [mode] = await database.execute<{ synchronous: number }>("PRAGMA synchronous");
-    if (mode?.synchronous !== 0) throw new Error(`PRAGMA synchronous is ${JSON.stringify(mode)}, want 0`);
-  }
+  await tuneSqlite(database, relaxed);
   const persistence = createBrowserWASQLitePersistence({ database });
   const todos = createCollection(
     persistedCollectionOptions<Todo, string>({

@@ -1,4 +1,5 @@
 import { openBrowserWASQLiteOPFSDatabase } from "@tanstack/browser-db-sqlite-persistence";
+import type { TrackerStore } from "../../core/families.ts";
 import { defineContender } from "../../core/types.ts";
 import { LIMITS, OPEN, STATUSES, type EntityName, type Event, type IssueCard, type IssueRef, type Priority, type Status } from "../../datasets/tracker/types.ts";
 
@@ -57,138 +58,146 @@ const insertSql = (entity: EntityName) => {
 };
 const INSERT_LABELS = "INSERT INTO issue_labels (issueId, labelId) SELECT json_extract(i.value, '$.id'), l.value FROM json_each(?) AS i, json_each(json_extract(i.value, '$.labelIds')) AS l";
 
+/** Opens the store; `relaxed` sets `synchronous=OFF` first, so a commit stays atomic but does not wait for the disk. */
+export async function openSqlite(name: string, relaxed: boolean): Promise<TrackerStore> {
+  const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tracker-${name}.sqlite` });
+  const sql = <T>(text: string, params: readonly unknown[] = []) => database.execute<T>(text, params);
+  if (relaxed) {
+    await sql("PRAGMA synchronous = OFF");
+    const [mode] = await sql<{ synchronous: number }>("PRAGMA synchronous");
+    if (mode?.synchronous !== 0) throw new Error(`PRAGMA synchronous is ${JSON.stringify(mode)}, want 0`);
+  }
+  // Like an app's migration check: the schema statements run on the first open only, not on every fresh page.
+  const [version] = await sql<{ user_version: number }>("PRAGMA user_version");
+  if (!version?.user_version) {
+    for (const statement of SCHEMA) await sql(statement);
+    await sql("PRAGMA user_version = 1");
+  }
+
+  async function write(e: Event): Promise<void> {
+    if (e.op === "delete") {
+      if (e.entity === "issues") await sql("DELETE FROM issue_labels WHERE issueId = ?", [e.id]);
+      await sql(`DELETE FROM ${e.entity} WHERE id = ?`, [e.id]);
+      return;
+    }
+    if (e.op === "patch") {
+      const { labelIds, ...fields } = e.set as Record<string, unknown> & { labelIds?: readonly string[] };
+      const cols = Object.keys(fields);
+      if (cols.length > 0) await sql(`UPDATE ${e.entity} SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`, [...cols.map((c) => fields[c]), e.id]);
+      if (labelIds) {
+        await sql("DELETE FROM issue_labels WHERE issueId = ?", [e.id]);
+        await sql(INSERT_LABELS, [JSON.stringify([{ id: e.id, labelIds }])]);
+      }
+    }
+  }
+
+  const statusPage = async ({ projectId, status }: { projectId: string; status: Status }) =>
+    (await sql<CardRow>(`SELECT ${CARD} FROM issues i ${JOINS} WHERE i.projectId = ? AND i.status = ? ORDER BY i.updatedAt DESC LIMIT ${LIMITS.page}`, [projectId, status])).map(card);
+
+  return {
+    async apply(tx) {
+      await sql("BEGIN");
+      try {
+        const events = tx.events;
+        for (let at = 0; at < events.length; ) {
+          const e = events[at]!;
+          if (e.op !== "create") {
+            await write(e);
+            at++;
+            continue;
+          }
+          let end = at + 1;
+          while (end < events.length && events[end]!.op === "create" && events[end]!.entity === e.entity) end++;
+          const rows = JSON.stringify(events.slice(at, end).map((x) => (x as Event & { op: "create" }).row));
+          await sql(insertSql(e.entity), [rows]);
+          if (e.entity === "issues") await sql(INSERT_LABELS, [rows]);
+          at = end;
+        }
+        await sql("COMMIT");
+      } catch (err) {
+        await sql("ROLLBACK");
+        throw err;
+      }
+    },
+    goals: {
+      async statusCounts({ projectId }) {
+        const rows = await sql<{ status: Status; n: number }>("SELECT status, count(*) AS n FROM issues WHERE projectId = ? GROUP BY status", [projectId]);
+        const n = new Map(rows.map((r) => [r.status, Number(r.n)]));
+        return STATUSES.map((s) => n.get(s) ?? 0);
+      },
+      statusPage,
+      drainedPage: statusPage,
+      deepWindow: async ({ projectId, offset }) =>
+        (await sql<IssueRef>(`SELECT ${REF} FROM issues i JOIN projects p ON p.id = i.projectId WHERE i.projectId = ? ORDER BY i.number DESC LIMIT ${LIMITS.page} OFFSET ?`, [projectId, offset])).map(ref),
+      async issueThread({ projectKey, number }) {
+        const [issues, comments] = await Promise.all([
+          sql<CardRow & { description: string }>(`SELECT ${CARD}, i.description AS description FROM issues i ${JOINS} WHERE p.key = ? AND i.number = ?`, [projectKey, number]),
+          sql<{ id: string; author: string; body: string; createdAt: number }>(
+            `SELECT c.id AS id, u.name AS author, c.body AS body, c.createdAt AS createdAt FROM comments c JOIN users u ON u.id = c.authorId
+             WHERE c.issueId = (SELECT i.id FROM issues i JOIN projects p ON p.id = i.projectId WHERE p.key = ? AND i.number = ?) ORDER BY c.createdAt`,
+            [projectKey, number],
+          ),
+        ]);
+        const issue = issues[0];
+        if (!issue) return null;
+        return {
+          issue: { ...card(issue), description: issue.description },
+          comments: comments.map((c) => ({ id: c.id, author: c.author, body: c.body, createdAt: Number(c.createdAt) })),
+        };
+      },
+      triagePage: async ({ projectId }) =>
+        (
+          await sql<IssueRef & { status: Status; priority: number; comments: number }>(
+            `SELECT ${REF}, i.status AS status, i.priority AS priority, (SELECT count(*) FROM comments c WHERE c.issueId = i.id) AS comments
+             FROM issues i JOIN projects p ON p.id = i.projectId WHERE i.projectId = ? AND i.status IN (${OPEN_SQL})
+             ORDER BY i.priority, i.createdAt LIMIT ${LIMITS.page}`,
+            [projectId],
+          )
+        ).map((r) => ({ ...ref(r), status: r.status, priority: Number(r.priority) as Priority, comments: Number(r.comments) })),
+      labelPage: async ({ projectId, labelId }) =>
+        (
+          await sql<CardRow>(
+            `SELECT ${CARD} FROM issue_labels lab JOIN issues i ON i.id = lab.issueId ${JOINS}
+             WHERE lab.labelId = ? AND i.projectId = ? AND i.status IN (${OPEN_SQL}) ORDER BY i.updatedAt DESC LIMIT ${LIMITS.page}`,
+            [labelId, projectId],
+          )
+        ).map(card),
+      myIssues: async ({ userId }) =>
+        (
+          await sql<CardRow>(`SELECT ${CARD} FROM issues i ${JOINS} WHERE i.assigneeId = ? AND i.status IN (${OPEN_SQL}) ORDER BY i.updatedAt DESC LIMIT ${LIMITS.page}`, [
+            userId,
+          ])
+        ).map(card),
+      recentActivity: async () => (await sql<CardRow>(`SELECT ${CARD} FROM issues i ${JOINS} ORDER BY i.updatedAt DESC LIMIT ${LIMITS.page}`)).map(card),
+      assigneeLoad: async ({ projectId }) =>
+        (
+          await sql<{ name: string; open: number }>(
+            `SELECT u.name AS name, count(*) AS open FROM issues i JOIN users u ON u.id = i.assigneeId
+             WHERE i.projectId = ? AND i.status IN (${OPEN_SQL}) GROUP BY i.assigneeId ORDER BY open DESC, u.name LIMIT ${LIMITS.load}`,
+            [projectId],
+          )
+        ).map((r) => ({ name: r.name, open: Number(r.open) })),
+      search: async ({ projectId, text }) =>
+        (
+          await sql<IssueRef>(
+            `SELECT ${REF} FROM issues i JOIN projects p ON p.id = i.projectId WHERE i.projectId = ? AND instr(i.title, ?) > 0 ORDER BY i.updatedAt DESC LIMIT ${LIMITS.search}`,
+            [projectId, text],
+          )
+        ).map(ref),
+    },
+    settle: async () => {},
+    stats: async () => undefined,
+    close: async () => {
+      await database.close?.();
+    },
+  };
+}
+
 export default defineContender({
   family: "tracker",
   durability: "sqlite-full",
   fastPath:
     "wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated worker, opened by @tanstack/browser-db-sqlite-persistence; normalized tables, issue_labels junction, 9 secondary indexes; one SQL statement per goal (two for a thread); a batch = one transaction, creates as one json_each INSERT per table",
   engine: false,
-  async open(name) {
-    const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tracker-${name}.sqlite` });
-    const sql = <T>(text: string, params: readonly unknown[] = []) => database.execute<T>(text, params);
-    // Like an app's migration check: the schema statements run on the first open only, not on every fresh page.
-    const [version] = await sql<{ user_version: number }>("PRAGMA user_version");
-    if (!version?.user_version) {
-      for (const statement of SCHEMA) await sql(statement);
-      await sql("PRAGMA user_version = 1");
-    }
-
-    async function write(e: Event): Promise<void> {
-      if (e.op === "delete") {
-        if (e.entity === "issues") await sql("DELETE FROM issue_labels WHERE issueId = ?", [e.id]);
-        await sql(`DELETE FROM ${e.entity} WHERE id = ?`, [e.id]);
-        return;
-      }
-      if (e.op === "patch") {
-        const { labelIds, ...fields } = e.set as Record<string, unknown> & { labelIds?: readonly string[] };
-        const cols = Object.keys(fields);
-        if (cols.length > 0) await sql(`UPDATE ${e.entity} SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`, [...cols.map((c) => fields[c]), e.id]);
-        if (labelIds) {
-          await sql("DELETE FROM issue_labels WHERE issueId = ?", [e.id]);
-          await sql(INSERT_LABELS, [JSON.stringify([{ id: e.id, labelIds }])]);
-        }
-      }
-    }
-
-    const statusPage = async ({ projectId, status }: { projectId: string; status: Status }) =>
-      (await sql<CardRow>(`SELECT ${CARD} FROM issues i ${JOINS} WHERE i.projectId = ? AND i.status = ? ORDER BY i.updatedAt DESC LIMIT ${LIMITS.page}`, [projectId, status])).map(card);
-
-    return {
-      async apply(tx) {
-        await sql("BEGIN");
-        try {
-          const events = tx.events;
-          for (let at = 0; at < events.length; ) {
-            const e = events[at]!;
-            if (e.op !== "create") {
-              await write(e);
-              at++;
-              continue;
-            }
-            let end = at + 1;
-            while (end < events.length && events[end]!.op === "create" && events[end]!.entity === e.entity) end++;
-            const rows = JSON.stringify(events.slice(at, end).map((x) => (x as Event & { op: "create" }).row));
-            await sql(insertSql(e.entity), [rows]);
-            if (e.entity === "issues") await sql(INSERT_LABELS, [rows]);
-            at = end;
-          }
-          await sql("COMMIT");
-        } catch (err) {
-          await sql("ROLLBACK");
-          throw err;
-        }
-      },
-      goals: {
-        async statusCounts({ projectId }) {
-          const rows = await sql<{ status: Status; n: number }>("SELECT status, count(*) AS n FROM issues WHERE projectId = ? GROUP BY status", [projectId]);
-          const n = new Map(rows.map((r) => [r.status, Number(r.n)]));
-          return STATUSES.map((s) => n.get(s) ?? 0);
-        },
-        statusPage,
-        drainedPage: statusPage,
-        deepWindow: async ({ projectId, offset }) =>
-          (await sql<IssueRef>(`SELECT ${REF} FROM issues i JOIN projects p ON p.id = i.projectId WHERE i.projectId = ? ORDER BY i.number DESC LIMIT ${LIMITS.page} OFFSET ?`, [projectId, offset])).map(ref),
-        async issueThread({ projectKey, number }) {
-          const [issues, comments] = await Promise.all([
-            sql<CardRow & { description: string }>(`SELECT ${CARD}, i.description AS description FROM issues i ${JOINS} WHERE p.key = ? AND i.number = ?`, [projectKey, number]),
-            sql<{ id: string; author: string; body: string; createdAt: number }>(
-              `SELECT c.id AS id, u.name AS author, c.body AS body, c.createdAt AS createdAt FROM comments c JOIN users u ON u.id = c.authorId
-               WHERE c.issueId = (SELECT i.id FROM issues i JOIN projects p ON p.id = i.projectId WHERE p.key = ? AND i.number = ?) ORDER BY c.createdAt`,
-              [projectKey, number],
-            ),
-          ]);
-          const issue = issues[0];
-          if (!issue) return null;
-          return {
-            issue: { ...card(issue), description: issue.description },
-            comments: comments.map((c) => ({ id: c.id, author: c.author, body: c.body, createdAt: Number(c.createdAt) })),
-          };
-        },
-        triagePage: async ({ projectId }) =>
-          (
-            await sql<IssueRef & { status: Status; priority: number; comments: number }>(
-              `SELECT ${REF}, i.status AS status, i.priority AS priority, (SELECT count(*) FROM comments c WHERE c.issueId = i.id) AS comments
-               FROM issues i JOIN projects p ON p.id = i.projectId WHERE i.projectId = ? AND i.status IN (${OPEN_SQL})
-               ORDER BY i.priority, i.createdAt LIMIT ${LIMITS.page}`,
-              [projectId],
-            )
-          ).map((r) => ({ ...ref(r), status: r.status, priority: Number(r.priority) as Priority, comments: Number(r.comments) })),
-        labelPage: async ({ projectId, labelId }) =>
-          (
-            await sql<CardRow>(
-              `SELECT ${CARD} FROM issue_labels lab JOIN issues i ON i.id = lab.issueId ${JOINS}
-               WHERE lab.labelId = ? AND i.projectId = ? AND i.status IN (${OPEN_SQL}) ORDER BY i.updatedAt DESC LIMIT ${LIMITS.page}`,
-              [labelId, projectId],
-            )
-          ).map(card),
-        myIssues: async ({ userId }) =>
-          (
-            await sql<CardRow>(`SELECT ${CARD} FROM issues i ${JOINS} WHERE i.assigneeId = ? AND i.status IN (${OPEN_SQL}) ORDER BY i.updatedAt DESC LIMIT ${LIMITS.page}`, [
-              userId,
-            ])
-          ).map(card),
-        recentActivity: async () => (await sql<CardRow>(`SELECT ${CARD} FROM issues i ${JOINS} ORDER BY i.updatedAt DESC LIMIT ${LIMITS.page}`)).map(card),
-        assigneeLoad: async ({ projectId }) =>
-          (
-            await sql<{ name: string; open: number }>(
-              `SELECT u.name AS name, count(*) AS open FROM issues i JOIN users u ON u.id = i.assigneeId
-               WHERE i.projectId = ? AND i.status IN (${OPEN_SQL}) GROUP BY i.assigneeId ORDER BY open DESC, u.name LIMIT ${LIMITS.load}`,
-              [projectId],
-            )
-          ).map((r) => ({ name: r.name, open: Number(r.open) })),
-        search: async ({ projectId, text }) =>
-          (
-            await sql<IssueRef>(
-              `SELECT ${REF} FROM issues i JOIN projects p ON p.id = i.projectId WHERE i.projectId = ? AND instr(i.title, ?) > 0 ORDER BY i.updatedAt DESC LIMIT ${LIMITS.search}`,
-              [projectId, text],
-            )
-          ).map(ref),
-      },
-      settle: async () => {},
-      stats: async () => undefined,
-      close: async () => {
-        await database.close?.();
-      },
-    };
-  },
+  open: (name) => openSqlite(name, false),
 });

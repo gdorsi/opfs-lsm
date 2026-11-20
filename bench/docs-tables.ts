@@ -120,7 +120,7 @@ export const TABLES: readonly Table[] = [
     workload: "tanstack-ondemand/queries",
     columns: [
       { head: "Workload" },
-      { head: "SQLite", at: "tanstack-ondemand/sqlite" },
+      { head: "SQLite", at: "tanstack-ondemand/sqlite-relaxed" },
       { head: "opfs-lsm", at: "tanstack-ondemand/kv" },
       { head: "", ratio: { of: "opfs-lsm", over: "SQLite" } },
     ],
@@ -139,7 +139,7 @@ export const TABLES: readonly Table[] = [
     columns: [
       { head: "Goal" },
       { head: "Dexie", at: "tracker/dexie" },
-      { head: "SQLite on OPFS", at: "tracker/sqlite" },
+      { head: "SQLite on OPFS", at: "tracker/sqlite-relaxed" },
       { head: "docstore", at: "tracker/docstore" },
       { head: "docstore vs SQLite", ratio: { of: "docstore", over: "SQLite on OPFS" } },
     ],
@@ -155,7 +155,7 @@ export const TABLES: readonly Table[] = [
     columns: [
       { head: "Writes" },
       { head: "Dexie", at: "tracker/dexie" },
-      { head: "SQLite on OPFS", at: "tracker/sqlite" },
+      { head: "SQLite on OPFS", at: "tracker/sqlite-relaxed" },
       { head: "docstore", at: "tracker/docstore" },
       { head: "docstore vs SQLite", ratio: { of: "docstore", over: "SQLite on OPFS" } },
     ],
@@ -176,7 +176,7 @@ export const TABLES: readonly Table[] = [
       { head: "IndexedDB, eager", at: "tanstack-live/indexeddb" },
       { head: "docstore, eager", at: "tanstack-live/kv" },
       { head: "docstore, on demand", at: "tanstack-live/kv-ondemand" },
-      { head: "SQLite, on demand", at: "tanstack-live/sqlite" },
+      { head: "SQLite, on demand", at: "tanstack-live/sqlite-relaxed" },
       { head: "on demand, docstore vs SQLite", ratio: { of: "docstore, on demand", over: "SQLite, on demand" } },
     ],
     rows: [
