@@ -29,7 +29,7 @@ import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
-import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
+import type { OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
 import { loadGeneration, manifestFromCopy, type RunMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
@@ -90,35 +90,21 @@ type StorageFullHandler = (full: StorageFull) => Promise<void>;
 const MIN_MEMORY_BUDGET = 1024 * 1024;
 
 /**
- * Where the run files live and who flushes them. An fs comes with the client
- * of the host that publishes to it. Without one the fs is OPFS, and the client
- * is the package SharedWorker's unless one is given.
+ * What an open runs on: where this tab reads the run files, who flushes
+ * them, and the handle's settings. `openDb` passes the browser's, and
+ * `@opfs-lsm/kv/testing` builds one from a test's options.
  */
-export type Backing =
-  | { readonly fs: AsyncFs; readonly ingest: IngestClient }
-  | { readonly fs?: undefined; readonly ingest?: IngestClient };
-
-/** Open options for tests and benches, on top of the public ones. */
-export type OpenKnobs = {
-  /** Stable writer id (tests / debugging). Default: random UUID. */
-  readonly writerId?: string;
-  /**
-   * Flush the WAL into an L0 run once the records waiting for ingest hold this
-   * many key and value bytes. It counts every op as written, so overwrites and
-   * deletes bound the WAL as much as new keys do, whatever the batch sizes.
-   * The host counts the appends tabs announce, and measures the WAL whenever a
-   * tab opens the database, so ingest does not depend on any tab staying open
-   * or responsive. When tabs pass different limits, the host uses the smallest.
-   */
-  readonly maxWalBytes?: number;
-  /** Replaces `ROW_POST_MS`. At 0 every row is posted when it lands, so a simulation owns all the timing. */
-  readonly rowPostMs?: number;
-  /** Wraps the fs this tab reads runs through. `openHarnessDb` passes a `CountingFs`, so `readStats` can count the tab's IO. */
-  readonly wrapFs?: (fs: ReadFs) => ReadFs;
+export type OpenParts = {
+  readonly fs: ReadFs;
+  readonly ingest: IngestClient;
+  /** Close `ingest` with the handle. */
+  readonly ownsIngestClient: boolean;
+  readonly writerId: WriterId;
+  /** See `ROW_POST_MS`. */
+  readonly rowPostMs: number;
+  /** See `DEFAULT_MAX_WAL_BYTES`. The host uses the smallest limit across tabs. */
+  readonly maxWalBytes: number;
 };
-
-/** What `openDbWith` takes. `openHarnessDb` in `@opfs-lsm/kv/testing` builds it. */
-export type OpenWithOptions = OpenOptions & OpenKnobs & Backing;
 
 export type Range = {
   /** Inclusive. Bounds are in key order whichever way `reverse` points. */
@@ -256,7 +242,7 @@ export interface Db {
   dangerousDestroy(): Promise<void>;
 }
 
-function canUseBrowserOpfs(): boolean {
+export function canUseBrowserOpfs(): boolean {
   return (
     typeof SharedWorker !== "undefined" &&
     typeof navigator !== "undefined" &&
@@ -282,32 +268,34 @@ export function prefixBound(prefix: Uint8Array): {
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
 type DbInternals = Pick<DbImpl, "name" | "wal" | "fs" | "ingestClient" | "flush">;
 
-/** Undefined for a Db not opened by `openDbWith`. */
+/** Undefined for a Db this package did not open. */
 export function dbInternals(db: Db): DbInternals | undefined {
   return db instanceof DbImpl ? db : undefined;
 }
 
 export async function openDb(options: OpenOptions): Promise<Db> {
-  return openDbWith(options);
+  return openOn(options, () => {
+    // `opfs-lsm/` names no database, so its lookup runs while the lock is requested.
+    const parent = canUseBrowserOpfs() ? openParent() : undefined;
+    parent?.catch(() => undefined);
+    return (name) => {
+      if (!parent) throw new StorageUnavailableError(NEEDS_BROWSER);
+      return {
+        fs: openBrowserReadFs(name, parent),
+        ingest: workerIngest(name),
+        ownsIngestClient: true,
+        writerId: newWriterId(),
+        rowPostMs: ROW_POST_MS,
+        maxWalBytes: DEFAULT_MAX_WAL_BYTES,
+      };
+    };
+  });
 }
 
-/**
- * The fs and ingest client for `name`: the backing's, else OPFS under
- * `parent` and the package SharedWorker.
- */
-function connect(
-  name: DbName,
-  backing: Backing,
-  parent: Promise<FileSystemDirectoryHandle> | undefined,
-): { readonly fs: ReadFs; readonly ingest: IngestClient; readonly ownsIngestClient: boolean } {
-  if (backing.fs) return { fs: backing.fs, ingest: backing.ingest, ownsIngestClient: false };
-  if (!parent) {
-    throw new StorageUnavailableError(
-      "openDb needs SharedWorker and navigator.storage.getDirectory",
-    );
-  }
-  const fs = openBrowserReadFs(name, parent);
-  if (backing.ingest) return { fs, ingest: backing.ingest, ownsIngestClient: false };
+export const NEEDS_BROWSER = "openDb needs SharedWorker and navigator.storage.getDirectory";
+
+/** A client of the package SharedWorker for `name`. The handle that takes it closes it. */
+export function workerIngest(name: DbName): IngestClient {
   // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
   // only emit a worker chunk for this exact shape. Built in a helper, Vite
   // treated it as a plain asset and inlined the unbundled entry as a
@@ -316,7 +304,7 @@ function connect(
     new URL("./host/shared-worker.js", import.meta.url),
     { type: "module", name: `opfs-lsm:${name}` },
   );
-  return { fs, ingest: createPortIngestClient(worker.port), ownsIngestClient: true };
+  return createPortIngestClient(worker.port);
 }
 
 /**
@@ -344,8 +332,15 @@ export async function destroyDbWith(options: { readonly name: string; readonly f
   await removeDatabase(name, fs ? async () => fs : () => findRemovableBrowserFs(name));
 }
 
-/** Full open path used by `openDb` and `@opfs-lsm/kv/testing`. */
-export async function openDbWith(options: OpenWithOptions): Promise<Db> {
+/**
+ * The open path of `openDb` and `@opfs-lsm/kv/testing`. `prepare` runs once
+ * the options are checked, before the open lock is requested, and the
+ * function it returns builds the parts under the lock.
+ */
+export async function openOn(
+  options: OpenOptions,
+  prepare: () => (name: DbName) => OpenParts,
+): Promise<Db> {
   const name = checkDbName(options.name);
   const reserveBytes = reserveOf(options.reserveBytes);
   // Started first, so the module loads while the rest of open runs.
@@ -353,27 +348,24 @@ export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   // Awaited last: a throw before that must not leave its rejection unhandled.
   engine.catch(() => undefined);
   const caps = memtableCaps(options.memtableBytes);
-  // `opfs-lsm/` names no database, so its lookup runs while the lock is requested.
-  const parent = options.fs || !canUseBrowserOpfs() ? undefined : openParent();
-  parent?.catch(() => undefined);
+  const connect = prepare();
   // Held until the open resolves, so `destroyDb` never meets a half-done open (design.md, "Removing").
-  return withLock(openLock(name), () => openStores(name, options, caps, reserveBytes, engine, parent), "shared");
+  return withLock(openLock(name), () => openStores(name, options, caps, reserveBytes, engine, connect(name)), "shared");
 }
 
 async function openStores(
   name: DbName,
-  options: OpenWithOptions,
+  options: OpenOptions,
   caps: MemtableCaps,
   reserveBytes: number,
   engine: Promise<unknown>,
-  parent: Promise<FileSystemDirectoryHandle> | undefined,
+  parts: OpenParts,
 ): Promise<Db> {
-  const { fs, ingest, ownsIngestClient } = connect(name, options, parent);
+  const { fs: tabFs, ingest, ownsIngestClient } = parts;
   // What the catch below closes: the Db once it exists, else the WAL and an owned port.
   let heldWal: TabWal | undefined;
   let heldDb: DbImpl | undefined;
   try {
-    const tabFs = options.wrapFs?.(fs) ?? fs;
     const wal = await TabWal.open(
       name,
       () => void heldDb?.closeFor("destroyed"),
@@ -384,26 +376,25 @@ async function openStores(
     // The recorded manifest's runs are checked by the load, which opens them.
     const recovering = reconcile(wal, tabFs, "recorded");
     recovering.catch(() => undefined);
-    const writerId = (options.writerId ?? newWriterId()) as WriterId;
     const cache = new PageCache(
       Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
     );
     const db = new DbImpl(
       name,
-      writerId,
+      parts.writerId,
       wal,
       tabFs,
       cache,
       ingest,
       ownsIngestClient,
       caps,
-      options.rowPostMs,
+      parts.rowPostMs,
     );
     heldDb = db;
     await db.boot(recovering);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
     ingest.watch(name, {
-      maxWalBytes: Math.min(options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES, caps.soft),
+      maxWalBytes: Math.min(parts.maxWalBytes, caps.soft),
       compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
       reserveBytes,
     });
@@ -477,7 +468,7 @@ const OPEN_CONCURRENCY = 16;
  * writes"). The cost of a post is per message, and a tab that awaits each
  * put lands many rows in this time.
  */
-const ROW_POST_MS = 4;
+export const ROW_POST_MS = 4;
 
 /** A page nobody looks at. The browser slows its timers, and can stop them. */
 function pageHidden(): boolean {
@@ -551,7 +542,7 @@ class DbImpl implements Db {
     readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
-    private readonly rowPostMs = ROW_POST_MS,
+    private readonly rowPostMs: number,
   ) {
     this.pressure = new Backpressure(
       caps,

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ingest, MemoryFs, openHarnessDb, readStats, __resetMemoryFsForTests } from "../src/testing.js";
+import { ingest, MemoryFs, openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
 import { TabWal, encodeOps } from "../src/idb/wal.js";
+import { watchWalGroups } from "./wal-groups.js";
 
 const NAME = "group-commit";
 const IDB = `opfs-lsm-wal/${NAME}`;
@@ -45,9 +46,10 @@ afterEach(() => {
 describe("WAL group commit", () => {
   it("writes appends issued in one turn as one transaction, one seq each, in call order", async () => {
     const wal = await TabWal.open(checkDbName(NAME));
+    const groups = watchWalGroups();
     const seqs = await Promise.all([1, 2, 3, 4, 5].map((i) => wal.append(encodeOps(put(i)))));
     expect(seqs).toEqual([1, 2, 3, 4, 5]);
-    expect(wal.groupSizes).toEqual([undefined, undefined, 1]);
+    expect(groups).toEqual([5]);
     const tail = await wal.tail(0);
     expect(tail.records.map((r) => text(r.ops[0]!.key))).toEqual(["k1", "k2", "k3", "k4", "k5"]);
     wal.close();
@@ -65,13 +67,14 @@ describe("WAL group commit", () => {
 
   it("groups the appends that arrive while a group commits into the next one", async () => {
     const wal = await TabWal.open(checkDbName(NAME));
+    const groups = watchWalGroups();
     const first = wal.append(encodeOps(put(1)));
     await Promise.resolve();
     await new Promise((r) => setTimeout(r, 0));
     const rest = [2, 3, 4].map((i) => wal.append(encodeOps(put(i))));
     expect(await Promise.all([first, ...rest])).toEqual([1, 2, 3, 4]);
     // The first group's commit started at the end of its turn, so the rest form a group of 3.
-    expect(wal.groupSizes).toEqual([1, 1]);
+    expect(groups).toEqual([1, 3]);
     wal.close();
   });
 
@@ -126,10 +129,11 @@ describe("WAL group commit", () => {
     db.changes((event) => {
       if (event.kind === "append") seen.push(event.seq);
     });
+    const groups = watchWalGroups();
     const seqs = await Promise.all(Array.from({ length: 8 }, (_, i) => db.put(utf(`k${i}`), utf(`v${i}`))));
     expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(seen).toEqual(seqs);
-    expect((await readStats(db)).tab.walGroupSizes).toEqual([undefined, undefined, undefined, 1]);
+    expect(groups).toEqual([8]);
     await db.close();
   });
 

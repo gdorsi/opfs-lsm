@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openDbWith } from "../src/db.js";
+import { openDbWith } from "../src/harness.js";
 import { ConstraintError, type Db, type StorageFull } from "../src/index.js";
 import { RESERVE_PATH } from "../src/host/reserve.js";
 import {

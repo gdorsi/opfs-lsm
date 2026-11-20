@@ -105,7 +105,6 @@ describe("readStats", () => {
 
     const stats = await readStats(db);
     expect(stats.tab.walAppends).toBe(4);
-    expect(stats.tab.walGroupSizes).toEqual([4]);
     expect(stats.tab.walBytes).toBe(walBytes);
     expect(stats.host.flushes).toBe(4);
     expect(stats.host.foldedBytes).toBeGreaterThanOrEqual(folded);

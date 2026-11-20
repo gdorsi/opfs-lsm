@@ -529,15 +529,10 @@ export class IdBWal {
  * memtable in memory. Ack = transaction complete.
  */
 export class TabWal extends IdBWal {
-  /** WAL records this handle committed. Test and bench only. */
+  /** WAL records this handle committed. `readStats` in `@opfs-lsm/kv/testing` reports it, and the bench reads it from an `openDb` handle. */
   appendedRecords = 0;
   /** Encoded bytes of those records. */
   appendedBytes = 0;
-  /**
-   * Committed groups by size: entry i counts groups of 2^i to 2^(i+1) - 1
-   * records. Test and bench only.
-   */
-  groupSizes: number[] = [];
   /** The group whose transaction is open, from its creation to its end. */
   private open: Group | undefined = undefined;
   /** Appends that arrived after `open` went inactive: the next group. */
@@ -725,8 +720,6 @@ export class TabWal extends IdBWal {
     for (const entry of entries) this.join(group, entry);
     txDone(tx).then(
       () => {
-        const bucket = 31 - Math.clz32(group.adds.length);
-        this.groupSizes[bucket] = (this.groupSizes[bucket] ?? 0) + 1;
         for (const { entry } of group.adds) {
           this.appendedRecords += 1;
           this.appendedBytes += entry.record.byteLength;
