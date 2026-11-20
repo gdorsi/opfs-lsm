@@ -183,7 +183,7 @@ Every run record carries peaks sampled every 100 ms over CDP: `Runtime.getHeapUs
 kv answers reads on the tab's main thread, while IndexedDB works in the browser process, so latency alone hides what kv costs a frame. A phase with `mainThread: true` records the tab's main thread while it runs:
 
 - **Long tasks**, from the `longtask` observer: their count, the longest, and blocked ms. Blocked ms sums each task's time past 50 ms, the Total Blocking Time rule.
-- **Frames**, from `requestAnimationFrame`: their count, frame ms, the longest frame, and dropped frames. Frame ms is the display's interval, the median step of the vsync timestamps Chrome passes to the callbacks. Dropped frames sums `round(gap / frame ms) - 1` over the gaps.
+- **Frames**, from `requestAnimationFrame`: their count, frame ms, the longest frame, and dropped frames. Frame ms is the display's interval: the smallest step of the vsync timestamps Chrome passes to the callbacks, over a few idle frames before the phase and the frames of the phase. A median over the phase would read 33.3 ms when most frames are late, and hide the drops. Dropped frames sums `round(gap / frame ms) - 1` over the gaps.
 
 The long task observer cannot see a block of 17 to 50 ms, which still drops frames. So 0 long tasks means nothing without 0 dropped frames next to it. A gap is the time between two callbacks running (`performance.now()`), not between their timestamps, which stay at 16.7 ms steps through a block under about 40 ms.
 

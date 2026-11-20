@@ -180,7 +180,7 @@ export type Footprint = {
 /**
  * The tab's main thread during a phase. Long tasks are the ones over 50 ms, and
  * blockedMs sums each one's time past 50 ms. Frames are requestAnimationFrame
- * callbacks. frameIntervalMs is the median step of their vsync timestamps, and
+ * callbacks. frameIntervalMs is the smallest step of their vsync timestamps, from idle frames before the phase and the frames of the phase, and
  * droppedFrames sums round(gap / frameIntervalMs) - 1 over the gaps between
  * the times the callbacks ran, which catches blocks too short for a long task.
  */
