@@ -31,6 +31,7 @@ const vars = computed(() => ({
   "--compact-width": `${size.value.compact[0]}px`,
 }));
 let scene: { render(props: Record<string, unknown>): void; unmount(): void } | undefined;
+let near: IntersectionObserver | undefined;
 
 // The player. The scene plays from `jump` and reports each chapter it starts; `clock` holds the playing chapter and
 // when it started, read by the timeline every frame, and `current` the same chapter for the page.
@@ -72,14 +73,25 @@ onMounted(async () => {
     onMotion();
     motion.addEventListener("change", onMotion);
   }
-  const { mount } = await import("../../stageshow/mount.tsx");
-  if (!host.value) return;
-  scene = mount(host.value, props.name);
-  render();
+  // The scenes and React are loaded when the stage is within a screen of the viewport, so a page that opens above
+  // it does not pay for them at its start.
+  near = new IntersectionObserver(
+    async (entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      near?.disconnect();
+      const { mount } = await import("../../stageshow/mount.tsx");
+      if (!host.value) return;
+      scene = mount(host.value, props.name);
+      render();
+    },
+    { rootMargin: "100% 0px" },
+  );
+  near.observe(host.value!);
 });
 watch([dark, run, jump], render);
 onBeforeUnmount(() => {
   motion?.removeEventListener("change", onMotion);
+  near?.disconnect();
   scene?.unmount();
 });
 </script>
