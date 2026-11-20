@@ -7,12 +7,12 @@
  */
 import { readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { build, type Plugin } from "vite";
 import wasm from "vite-plugin-wasm";
 import { SIZE_ROWS } from "../size/rows.ts";
+import { BENCH_DIR } from "./paths.ts";
 
-export const BENCH_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+export { BENCH_DIR };
 const OUT_DIR = path.join(BENCH_DIR, ".out");
 
 /** Static imports of each emitted chunk, from the bundler's own metadata. */

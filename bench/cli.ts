@@ -27,9 +27,10 @@ import { parseArgs } from "node:util";
 import { ownershipProblems, PATTERNS } from "./core/patterns.ts";
 import { DEFAULT_SEED, SIZES, type KvOptions, type RunRecord, type SizeName } from "./core/types.ts";
 import { TABLES } from "./docs-tables.ts";
-import { BENCH_DIR, buildBench, type BuildOutput } from "./driver/build.ts";
+import type { BuildOutput } from "./driver/build.ts";
 import { BUDGETS, budgetProblems } from "./driver/budgets.ts";
 import { DATA_DIR, ensureTrace } from "./driver/data.ts";
+import { BENCH_DIR } from "./driver/paths.ts";
 import { PAGE, readPublished, renderDocs, staleTables } from "./driver/docs.ts";
 import { plan, type PlannedRun } from "./driver/plan.ts";
 import { measure } from "./driver/metrics.ts";
@@ -40,6 +41,11 @@ import { serve } from "./driver/serve.ts";
 import { formatSizes, measureSizes } from "./driver/size.ts";
 
 const RESULTS_DIR = path.join(BENCH_DIR, "results");
+
+/** Vite loads only for the commands that build, so `docs`, `report` and `compare` run without it. */
+async function build(): Promise<BuildOutput> {
+  return (await import("./driver/build.ts")).buildBench({ quiet: true });
+}
 
 async function main(): Promise<number> {
   const [verb, ...rest] = process.argv.slice(2);
@@ -84,7 +90,7 @@ async function main(): Promise<number> {
       });
     }
     case "size":
-      return sizes(await buildBench({ quiet: true }), values.check) ? 0 : 1;
+      return sizes(await build(), values.check) ? 0 : 1;
     case "compare": {
       const [a, b] = positionals;
       if (!a || !b) throw new Error("compare needs two result files");
@@ -119,7 +125,7 @@ async function run(o: {
   kv: KvOptions;
 }): Promise<number> {
   await ensureTrace();
-  const built = await buildBench({ quiet: true });
+  const built = await build();
   if (o.check && !sizes(built, true)) return 1;
   const server = await serve({ "/": path.join(BENCH_DIR, ".out"), "/data/": DATA_DIR });
   try {
