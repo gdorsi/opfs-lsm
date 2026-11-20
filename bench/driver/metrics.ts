@@ -344,7 +344,14 @@ export function versus(a: Series, b: Series): Verdict {
 
 const keyOf = (at: At) => [at.workload, at.size, at.contender, at.phase ?? "", at.metric].join("\0");
 
-/** Every series the records hold. Failed runs are skipped. Throws when a run has two phases of one name. */
+/** The seed and kv overrides a run had, in one string: runs of one series must share it. */
+const configOf = (r: RunRecord) => `seed ${r.params.seed}, kv ${Object.entries(r.kv ?? {}).sort().map(([option, bytes]) => `${option} ${bytes}`).join(" ") || "defaults"}`;
+
+/**
+ * Every series the records hold. Failed runs are skipped. Throws when a run has two phases of one name, and when the runs
+ * of one workload, size and contender differ in seed or kv options: a series is the values of one configuration, and
+ * medians over two would be of neither.
+ */
 export function measure(records: readonly RunRecord[]): Measures {
   const groups = new Map<string, RunRecord[]>();
   for (const r of records) {
@@ -353,8 +360,10 @@ export function measure(records: readonly RunRecord[]): Measures {
     if (dup) throw new Error(`${r.workload} ${r.contender}: two phases are named "${dup.name}"`);
     const key = `${r.workload}\0${r.size}\0${r.contender}`;
     const group = groups.get(key);
-    if (group) group.push(r);
-    else groups.set(key, [r]);
+    if (!group) groups.set(key, [r]);
+    else if (configOf(group[0]!) !== configOf(r)) {
+      throw new Error(`${r.workload} ${r.contender} ${r.size}: runs with ${configOf(group[0]!)} and with ${configOf(r)}. Measure each configuration apart.`);
+    } else group.push(r);
   }
 
   const entries: { series: Series; order: number }[] = [];

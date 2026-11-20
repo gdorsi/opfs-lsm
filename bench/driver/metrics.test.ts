@@ -319,11 +319,19 @@ suite("seeds", () => {
   const seeded = (seed: number, over: Partial<RunRecord> = {}) => run([atRate(1)], { params: { ...run([]).params, seed }, ...over });
 
   test("each seed of a successful run is listed once, in ascending order", () => {
-    assert.deepEqual(measure([seeded(7), seeded(1), seeded(7)]).seeds, [1, 7]);
+    assert.deepEqual(measure([seeded(7), seeded(1, { contender: "kv/idb" }), seeded(7)]).seeds, [1, 7]);
   });
 
   test("a failed run's seed is not listed", () => {
     assert.deepEqual(measure([seeded(1), seeded(7, { error: "timeout" })]).seeds, [1]);
+  });
+
+  test("runs of one series on two seeds are not pooled", () => {
+    assert.throws(() => measure([seeded(1), seeded(2)]), /seed 1, kv defaults and with seed 2, kv defaults/);
+  });
+
+  test("a failed run on another seed does not stop the rest", () => {
+    assert.deepEqual(series(measure([seeded(1), seeded(2, { error: "boom" }), seeded(1)]), "rate")!.values, [1000, 1000]);
   });
 });
 
@@ -331,6 +339,10 @@ suite("kv options", () => {
   test("each set of overrides is listed once, and default runs list none", () => {
     assert.deepEqual(measure([run([atRate(1)])]).kvOptions, []);
     const small = { kv: { cacheBytes: 4_194_304 } };
-    assert.deepEqual(measure([run([atRate(1)], small), run([atRate(1)], small), run([atRate(1)])]).kvOptions, ["cacheBytes 4194304"]);
+    assert.deepEqual(measure([run([atRate(1)], small), run([atRate(1)], small), run([atRate(1)], { contender: "kv/idb" })]).kvOptions, ["cacheBytes 4194304"]);
+  });
+
+  test("runs of one series with and without an override are not pooled", () => {
+    assert.throws(() => measure([run([atRate(1)], { kv: { cacheBytes: 4_194_304 } }), run([atRate(1)])]), /kv cacheBytes 4194304 and with seed 1, kv defaults/);
   });
 });
