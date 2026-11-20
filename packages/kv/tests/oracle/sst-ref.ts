@@ -353,7 +353,7 @@ function walkBlock(b: BlockBytes): SstEntry[] {
   const out: SstEntry[] = new Array(w.count);
   for (let i = 0; i < w.count; i++) {
     w.next();
-    const key = w.key();
+    const key = w.inPlace().key;
     const seq = w.seq();
     out[i] = w.tag === TAG_PUT ? { kind: "put", key, value: w.value(), seq } : { kind: "del", key, seq };
   }

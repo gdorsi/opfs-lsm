@@ -1,6 +1,6 @@
 import { CorruptDatabaseError } from "../errors.js";
 import { asSeq, type Seq } from "../seq.js";
-import type { LayerEntry } from "./cursor.js";
+import { BlockEntry, NO_PREFIX } from "./cursor.js";
 import { lz4Decompress } from "./lz4.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
@@ -42,7 +42,7 @@ function offsetTableBytes(count: number): number {
 }
 
 /** The u64 seq at `o`, read as two u32 halves, which is exact below 2^53 and allocates no BigInt. */
-export function seqAt(view: DataView, o: number): Seq {
+function seqAt(view: DataView, o: number): Seq {
   return asSeq(view.getUint32(o, true) + view.getUint32(o + 4, true) * 2 ** 32);
 }
 
@@ -167,15 +167,14 @@ export class RecordWalker {
     return seqAt(this.view, this.seqAt);
   }
 
-  key(): Uint8Array {
-    const { buf, prefixLen, keyAt, keyLen } = this;
-    if (prefixLen === 0) return buf.slice(keyAt, keyAt + keyLen);
-    // The record's own bytes always sit before its suffix, so one slice
-    // copies the suffix at the right place, then the prefix overwrites the
-    // head. Two block copies beat a byte loop and a fresh subarray per key.
-    const k = buf.slice(keyAt - prefixLen, keyAt + keyLen);
-    k.set((this.prefix ??= buf.subarray(this.prefixAt, this.prefixAt + prefixLen)));
-    return k;
+  /** The block's prefix as one view, made once for all its records. */
+  private prefixBytes(): Uint8Array {
+    return (this.prefix ??= this.prefixLen === 0 ? NO_PREFIX : this.buf.subarray(this.prefixAt, this.prefixAt + this.prefixLen));
+  }
+
+  /** Whether the record is a put. */
+  isPut(): boolean {
+    return this.tag === TAG_PUT;
   }
 
   /** A copy of the value that owns its buffer. */
@@ -183,16 +182,23 @@ export class RecordWalker {
     return this.buf.slice(this.valAt, this.valAt + this.valLen);
   }
 
-  /** The record as a scan entry: a copy of the key, and the value left where it is in the block. */
-  inPlace(): LayerEntry {
-    return {
-      key: this.key(),
-      kind: this.tag === TAG_PUT ? "put" : "del",
-      seq: this.seq(),
-      block: this.buf,
-      valueAt: this.valAt,
-      valueLength: this.valLen,
-    };
+  /** The value where it is in the block, for a reader that keeps none of it. */
+  valueInPlace(): Uint8Array {
+    return this.buf.subarray(this.valAt, this.valAt + this.valLen);
+  }
+
+  /** The record as a scan entry: its key and its value left where they are in the block. */
+  inPlace(): BlockEntry {
+    return new BlockEntry(
+      this.buf,
+      this.tag === TAG_PUT ? "put" : "del",
+      this.seqAt,
+      this.valAt,
+      this.valLen,
+      this.prefixBytes(),
+      this.keyAt,
+      this.keyLen,
+    );
   }
 
   private len(): number {
@@ -325,28 +331,25 @@ function seekInBlock(w: RecordWalker, key: Uint8Array): number {
 }
 
 /**
- * The record for `key` in one block, or undefined. Checks the block prefix
- * once, then compares suffixes in place and copies out only the value, which
- * the caller owns. The entry's key is `key` itself: a match has the same
- * bytes.
+ * A walker that has just read the record for `key` in one block, or
+ * undefined. Checks the block prefix once, then compares suffixes in place,
+ * and copies nothing: the caller takes what it needs from the walker.
  */
-export function findInBlock(b: BlockBytes, key: Uint8Array): SstEntry | undefined {
+export function findInBlock(b: BlockBytes, key: Uint8Array): RecordWalker | undefined {
   const w = RecordWalker.ofBlock(b);
   const p = w.prefixLen;
   if (key.byteLength < p) return undefined;
   for (let i = 0; i < p; i++) if (w.buf[w.prefixAt + i] !== key[i]) return undefined;
   if (seekSuffix(w, key) === 0) return undefined;
   w.next();
-  if (compareAt(w.buf, w.keyAt, w.keyLen, key, p) !== 0) return undefined;
-  const seq = w.seq();
-  return w.tag === TAG_PUT ? { kind: "put", key, value: w.value(), seq } : { kind: "del", key, seq };
+  return compareAt(w.buf, w.keyAt, w.keyLen, key, p) === 0 ? w : undefined;
 }
 
 /**
  * A step through the records of one block in key order, from the first key at
  * or after `seek`, each as `RecordWalker.inPlace` gives it.
  */
-export function blockEntries(b: BlockBytes, seek?: Uint8Array): () => LayerEntry | undefined {
+export function blockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry | undefined {
   const w = RecordWalker.ofBlock(b);
   let left = seek ? seekInBlock(w, seek) : w.count;
   return () => {
@@ -358,7 +361,7 @@ export function blockEntries(b: BlockBytes, seek?: Uint8Array): () => LayerEntry
 }
 
 /** Like `blockEntries`, from the last record below `seek` down. */
-export function reverseBlockEntries(b: BlockBytes, seek?: Uint8Array): () => LayerEntry | undefined {
+export function reverseBlockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry | undefined {
   const w = RecordWalker.ofBlock(b);
   const first = w.o;
   const below = seek ? w.count - seekInBlock(w, seek) : w.count;

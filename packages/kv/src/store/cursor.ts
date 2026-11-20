@@ -1,6 +1,6 @@
-import { compareBytes, containsAll } from "../bytes.js";
+import { compareBytes, compareFrom, containsAll } from "../bytes.js";
 import type { Entry } from "../db.js";
-import type { Seq } from "../seq.js";
+import { asSeq, type Seq } from "../seq.js";
 
 type Version = {
   readonly key: Uint8Array;
@@ -9,12 +9,135 @@ type Version = {
   readonly seq: Seq;
 };
 
+/** The prefix of a record whose block shares none. */
+export const NO_PREFIX = new Uint8Array(0);
+
+/**
+ * A record of a run, read where it is in `block`, which is never written once
+ * read. Its key is `prefix`, the bytes every key of its block starts with,
+ * then the `suffixLength` bytes at `suffixAt`. `key` copies them out the
+ * first time it is asked, and the compares read them in place until the
+ * record waits through a second one, so a scan that counts, skips or drops
+ * the record copies no value and seldom a key, and one that keeps it copies
+ * the key and the value once each.
+ */
+export class BlockEntry {
+  /** The copy `key` made. Null once another record was compared with this one, see `waits`. */
+  private copied: Uint8Array | null | undefined = undefined;
+
+  constructor(
+    readonly block: Uint8Array,
+    readonly kind: "put" | "del",
+    /** Where the record's u64 seq is in `block`. */
+    private readonly seqAt: number,
+    /** The value is `block[valueAt, valueAt + valueLength)`, empty for a delete. */
+    readonly valueAt: number,
+    readonly valueLength: number,
+    /** A view of `block`, shared by every record of it. */
+    private readonly prefix: Uint8Array,
+    private readonly suffixAt: number,
+    private readonly suffixLength: number,
+  ) {}
+
+  /**
+   * The WAL seq that wrote the entry, read as two u32 halves, which is exact
+   * below 2^53. Read when asked: a scan needs it only under a range delete.
+   */
+  get seq(): Seq {
+    const { block, seqAt: o } = this;
+    const low = (block[o]! | (block[o + 1]! << 8) | (block[o + 2]! << 16)) + block[o + 3]! * 2 ** 24;
+    const high = (block[o + 4]! | (block[o + 5]! << 8) | (block[o + 6]! << 16)) + block[o + 7]! * 2 ** 24;
+    return asSeq(low + high * 2 ** 32);
+  }
+
+  /** A copy that owns its buffer, made once. */
+  get key(): Uint8Array {
+    let k = this.copied;
+    if (!k) {
+      const { block, prefix, suffixAt } = this;
+      // The record's own bytes always sit before its suffix, so one slice
+      // copies the suffix to its place and leaves room for the prefix.
+      k = block.slice(suffixAt - prefix.length, suffixAt + this.suffixLength);
+      if (prefix.length > 0) k.set(prefix);
+      this.copied = k;
+    }
+    return k;
+  }
+
+  /**
+   * Whether a record was compared with this one before. A record a merge
+   * keeps waiting is compared with every record that passes it, so from the
+   * second on its key is worth a copy, which compares faster than two blocks.
+   */
+  private waits(): boolean {
+    if (this.copied !== undefined) return true;
+    this.copied = null;
+    return false;
+  }
+
+  /** `compareFrom(this.key, key, from)`, on the bytes in the block. */
+  compareKey(key: Uint8Array, from: number): number {
+    const { block, prefix } = this;
+    const length = prefix.length + this.suffixLength;
+    const n = Math.min(length, key.length);
+    let i = from;
+    for (const end = Math.min(prefix.length, n); i < end; i++) {
+      const d = prefix[i]! - key[i]!;
+      if (d !== 0) return d;
+    }
+    const shift = this.suffixAt - prefix.length;
+    for (; i < n; i++) {
+      const d = block[shift + i]! - key[i]!;
+      if (d !== 0) return d;
+    }
+    return length - key.length;
+  }
+
+  /** `compareFrom(this.key, other.key, from)`, with no copy of this key and none of the other's the first time it is asked. */
+  compareEntry(other: BlockEntry, from: number): number {
+    if (other.waits()) return this.compareKey(other.key, from);
+    const aPrefix = this.prefix.length;
+    const bPrefix = other.prefix.length;
+    const aLength = aPrefix + this.suffixLength;
+    const bLength = bPrefix + other.suffixLength;
+    const n = Math.min(aLength, bLength);
+    // Byte i of a key is `prefix[i]` inside the prefix and `block[shift + i]` past it.
+    const aShift = this.suffixAt - aPrefix;
+    const bShift = other.suffixAt - bPrefix;
+    let i = from;
+    for (const end = Math.min(aPrefix, bPrefix, n); i < end; i++) {
+      const d = this.prefix[i]! - other.prefix[i]!;
+      if (d !== 0) return d;
+    }
+    // Where only the longer prefix still runs.
+    const a = aPrefix > bPrefix ? this.prefix : this.block;
+    const b = bPrefix > aPrefix ? other.prefix : other.block;
+    const aAt = aPrefix > bPrefix ? 0 : aShift;
+    const bAt = bPrefix > aPrefix ? 0 : bShift;
+    for (const end = Math.min(Math.max(aPrefix, bPrefix), n); i < end; i++) {
+      const d = a[aAt + i]! - b[bAt + i]!;
+      if (d !== 0) return d;
+    }
+    for (; i < n; i++) {
+      const d = this.block[aShift + i]! - other.block[bShift + i]!;
+      if (d !== 0) return d;
+    }
+    return aLength - bLength;
+  }
+
+  /** How many leading bytes of `key` every record of this block shares with it, at most the block's prefix. */
+  prefixShared(key: Uint8Array): number {
+    const { prefix } = this;
+    const n = Math.min(prefix.length, key.length);
+    let i = 0;
+    while (i < n && prefix[i] === key[i]) i++;
+    return i;
+  }
+}
+
 /**
  * Where a version's bytes are. A memtable row lends its own key and value, so
- * a read copies both to hand them out. A record of a run has a key copied
- * out of its block, which nothing else holds, and a value still in `block`,
- * which is never written once read: a read that keeps the entry copies the
- * value once, and a read that skips it copies none.
+ * a read copies both to hand them out. A record of a run is a `BlockEntry`.
  */
 export type LayerEntry =
   | (Version & {
@@ -22,12 +145,14 @@ export type LayerEntry =
       readonly value?: Uint8Array;
       readonly block?: undefined;
     })
-  | (Version & {
-      readonly block: Uint8Array;
-      /** The value is `block[valueAt, valueAt + valueLength)`, empty for a delete. */
-      readonly valueAt: number;
-      readonly valueLength: number;
-    });
+  | BlockEntry;
+
+/** `compareFrom(a.key, b.key, from)`, without copying the key of a run's record. */
+export function compareEntries(a: LayerEntry, b: LayerEntry, from: number): number {
+  if (a.block) return b.block ? a.compareEntry(b, from) : a.compareKey(b.key, from);
+  if (b.block) return -b.compareKey(a.key, from);
+  return compareFrom(a.key, b.key, from);
+}
 
 /** A put's value, to read where it is. */
 export function valueOf(e: LayerEntry): Uint8Array {

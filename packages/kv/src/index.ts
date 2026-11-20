@@ -7,6 +7,7 @@ export {
   type BatchTx,
   type KeyBounds,
   type DeleteRangeOptions,
+  type Decode,
   type Entry,
   type Range,
   type ViewSnapshot,

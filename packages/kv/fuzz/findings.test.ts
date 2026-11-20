@@ -8,8 +8,7 @@ import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { readFooter } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef } from "../tests/oracle/sst-ref.js";
-import { untilHit } from "../src/store/cursor.js";
-import { mergeRuns } from "../tests/runs.js";
+import { mergeRuns, runGet } from "../tests/runs.js";
 import { bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
 import { loadWasm, withoutWasm, type FlatEngine } from "./wasm.js";
 import { NO_MARKS } from "../src/store/marks.js";
@@ -40,7 +39,7 @@ const range = { smallest: entries[0]!.key, largest: entries[entries.length - 1]!
 /** A tab's get of `key` from run bytes `buf`, as `SstReader` does it. */
 async function tabGet(buf: Uint8Array, key: Uint8Array) {
   const reader = new SstReader(bytesFile(buf), new PageCache(), range);
-  return untilHit(() => reader.get(key));
+  return runGet(reader, key);
 }
 
 /**

@@ -223,6 +223,8 @@ describe("malformed queries", () => {
     ["a non-string id bound", { gt: 1 }],
     ["limit 0", { index: "one", limit: 0 }],
     ["a fractional limit", { limit: 1.5 }],
+    ["a negative offset", { index: "one", offset: -1 }],
+    ["a fractional offset", { offset: 0.5 }],
   ])("throws query for %s, from query, queryIds and count", async (_, q) => {
     const { c } = await docs();
     expect(await codeOf(c.query(asQuery(q)))).toBe("query");

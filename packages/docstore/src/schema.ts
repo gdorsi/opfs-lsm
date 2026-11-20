@@ -218,6 +218,8 @@ type PageOptions = {
   readonly limit?: number | undefined;
   /** The `next` of the previous page. */
   readonly after?: Cursor | undefined;
+  /** Results to pass over before the first, counted from `after`. Each costs a step of the scan and reads no document. */
+  readonly offset?: number | undefined;
   /** Descending order of the same range. */
   readonly reverse?: boolean | undefined;
 };
@@ -264,5 +266,6 @@ export type QueryInput = {
   readonly match?: string | undefined;
   readonly limit?: number | undefined;
   readonly after?: Cursor | undefined;
+  readonly offset?: number | undefined;
   readonly reverse?: boolean | undefined;
 };

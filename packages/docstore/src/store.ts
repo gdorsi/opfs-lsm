@@ -1,4 +1,4 @@
-import { prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry } from "@opfs-lsm/kv";
+import { prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry, type ViewSnapshot } from "@opfs-lsm/kv";
 import { tupleBounds } from "@opfs-lsm/kv/tuple";
 import {
   bind,
@@ -82,8 +82,8 @@ export interface StoreCore {
   readonly kv: Db;
   /** The collection in this handle's catalog, for a point read outside a snapshot. */
   collectionNow(name: string): Promise<BoundCollection>;
-  /** The collection in the catalog `bytes`, which a kv snapshot read. */
-  collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection;
+  /** The collection in the catalog that `snap` holds. */
+  collectionAt(snap: ViewSnapshot, name: string): Promise<BoundCollection>;
   /** One kv `update`, planned against this handle's catalog and planned again whenever the stored catalog differs. */
   write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R>;
   clear(name: string): Promise<void>;
@@ -197,8 +197,12 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     return Promise.all(builds);
   }
 
-  collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection {
-    return collectionOf(this.boundIn(bytes), name);
+  async collectionAt(snap: ViewSnapshot, name: string): Promise<BoundCollection> {
+    // Read where it is stored: every query asks, and the catalog is nearly always the one already bound.
+    const [bound] = await snap.getMany([CATALOG_KEY], (bytes) =>
+      sameCatalog(bytes, this.bound.bytes) ? this.bound : this.boundIn(bytes.slice()),
+    );
+    return collectionOf(bound ?? this.boundIn(undefined), name);
   }
 
   async write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R> {

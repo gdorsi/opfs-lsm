@@ -26,6 +26,7 @@ import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import type { KeyRange, SstEntry } from "../src/store/sst.js";
 import { decodeSst } from "../tests/oracle/sst-ref.js";
+import { ownedEntry } from "../tests/runs.js";
 
 export class RuleBroken extends Error {
   constructor(message: string) {
@@ -220,7 +221,7 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
       }
     };
     const gets: ReadResult["gets"] = [];
-    for (const key of probe.keys) gets.push(await one("SstReader.get", () => settleBounded("SstReader.get", () => reader.get(key))));
+    for (const key of probe.keys) gets.push(await one("SstReader.get", () => settleBounded("SstReader.get", () => ownedEntry(reader.get(key), key))));
     const scan = await one("SstReader.cursor", () => drainBounded("SstReader.cursor", reader.cursor(), max));
     const mid = probe.keys[probe.keys.length >> 1];
     const seek = await one("SstReader.cursor (seek)", () =>

@@ -2,12 +2,12 @@ import { pumpMerge } from "../src/host/compact.js";
 import { MemoryFs } from "../src/opfs/memory-fs.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import type { Entry } from "../src/index.js";
-import { entryOf, untilHit, valueOf, type LayerCursor, type LayerEntry } from "../src/store/cursor.js";
+import { entryOf, Miss, untilHit, valueOf, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
 import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.js";
 import { NO_MARKS } from "../src/store/marks.js";
 import type { ScanStep } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
-import type { EncodedRun, SstCodec } from "../src/store/sst.js";
+import type { EncodedRun, RecordWalker, SstCodec, SstEntry } from "../src/store/sst.js";
 import { sstKeyRange } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 
@@ -21,6 +21,17 @@ export function cacheUsage(cache: PageCache) {
 /** A lazy reader over a run held in memory, routed by the range its manifest entry would record. */
 export function readerOfBytes(buf: Uint8Array, cache = new PageCache()): SstReader {
   return new SstReader(bytesFile(buf), cache, sstKeyRange(buf));
+}
+
+/** What a run's `get` found, as an entry that owns its value. A Miss passes through. */
+export function ownedEntry(at: Maybe<RecordWalker | undefined>, key: Uint8Array): Maybe<SstEntry | undefined> {
+  if (at === undefined || at instanceof Miss) return at;
+  return at.isPut() ? { kind: "put", key, value: at.value(), seq: at.seq() } : { kind: "del", key, seq: at.seq() };
+}
+
+/** `reader.get(key)` once its bytes are loaded, as `ownedEntry` gives it. */
+export function runGet(reader: Pick<SstReader, "get">, key: Uint8Array): Promise<SstEntry | undefined> {
+  return untilHit(() => ownedEntry(reader.get(key), key));
 }
 
 /** `e` with its value as an array of its own, wherever its cursor left it. */

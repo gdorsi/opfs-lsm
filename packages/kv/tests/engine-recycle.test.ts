@@ -9,7 +9,6 @@ import {
   type MergeSpec,
 } from "../src/store/engine.js";
 import { NO_MARKS } from "../src/store/marks.js";
-import { untilHit } from "../src/store/cursor.js";
 import {
   __resetMemoryFsForTests,
   openHarnessDb,
@@ -19,7 +18,7 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../src/testing.js";
-import { drain, readerOfBytes } from "./runs.js";
+import { drain, readerOfBytes, runGet } from "./runs.js";
 
 const MiB = 1024 * 1024;
 const enc = new TextEncoder();
@@ -98,7 +97,7 @@ describe("recycleEngine", () => {
     recycleEngine(0);
     const freshForGet = engineMemory().wasmBytes;
     const reader = readerOfBytes(run);
-    const hit = await untilHit(() => reader.get(utf("big")));
+    const hit = await runGet(reader, utf("big"));
     expect(hit?.kind === "put" && hit.value.byteLength).toBe(3 * MiB);
     // The 3 MiB it unpacked went into the new instance. A hook that kept the old one would leave this at its fresh size.
     expect(engineMemory().wasmBytes).toBeGreaterThan(freshForGet + 2 * MiB);

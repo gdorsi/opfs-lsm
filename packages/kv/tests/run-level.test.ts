@@ -8,7 +8,7 @@ import type { SstEntry } from "../src/store/sst.js";
 import { encodeSstRef, sstKeyRange } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { PageCache } from "../src/store/page-cache.js";
-import { entries, readerOfBytes } from "./runs.js";
+import { entries, ownedEntry, readerOfBytes, runGet } from "./runs.js";
 import { coversRun, NO_MARKS, type Mark, type Marks } from "../src/store/marks.js";
 
 const enc = new TextEncoder();
@@ -90,9 +90,9 @@ describe("runLevels", () => {
     const show = (e: SstEntry | undefined) =>
       e && `${dec.decode(e.key)}:${e.kind}:${e.kind === "put" ? dec.decode(e.value) : ""}`;
     for (let i = -2; i < 125; i++) {
-      const all = await Promise.all(readers.map((r) => untilHit(() => r.get(key(i)))));
+      const all = await Promise.all(readers.map((r) => runGet(r, key(i))));
       const want = all.find((e) => e !== undefined);
-      expect(show(await untilHit(() => latestSstEntry(levels, key(i))))).toEqual(show(want));
+      expect(show(await untilHit(() => ownedEntry(latestSstEntry(levels, key(i)), key(i))))).toEqual(show(want));
     }
   });
 

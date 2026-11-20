@@ -105,7 +105,7 @@ The phases:
 | `statusCounts` | issues per status in a project | count over an index prefix, no row read |
 | `statusPage` | first 50 todo issues of a project, newest update first, with assignee and label names | index page whose rows are scattered in key order, joined N:1 and M:N |
 | `drainedPage` | the in-progress column of the project whose sprint just closed | index range a bulk edit just emptied, above the settled levels |
-| `deepWindow` | rows at 90% of a project's list by number | a deep window with no offset in the index |
+| `deepWindow` | rows at 90% of a project's list by number | a deep window, passed over with `offset` |
 | `issueThread` | issue `P3-1234` with its comments and their authors | two unique-key hops, then a 1:N child range joined to authors |
 | `triagePage` | first 50 open issues by priority, each with its comment count | a child count per row of a page, over an IN-list |
 | `labelPage` | first 50 open issues of a project with a label | a filter through a multi-entry index |

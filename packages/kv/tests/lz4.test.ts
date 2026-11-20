@@ -10,9 +10,10 @@ import { untilHit } from "../src/store/cursor.js";
 import type { SstEntry } from "../src/store/sst.js";
 import { decodeSst, sstKeyRange } from "./oracle/sst-ref.js";
 import type { SstReader } from "../src/store/sst-reader.js";
-import { drain, publish, readerOfBytes } from "./runs.js";
+import { drain, publish, readerOfBytes, runGet } from "./runs.js";
 import { MemoryFs } from "../src/testing.js";
 import { NO_MARKS } from "../src/store/marks.js";
+import { pointGet, RunLevel } from "../src/store/read.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -71,7 +72,7 @@ describe("LZ4 runs", () => {
     const b = readerOfBytes(packed);
     expect(sstKeyRange(packed)).toEqual(sstKeyRange(raw));
     const keys = Array.from({ length: 703 }, (_, i) => key(i - 1));
-    const gets = (r: SstReader) => Promise.all(keys.map((k) => untilHit(() => r.get(k))));
+    const gets = (r: SstReader) => Promise.all(keys.map((k) => runGet(r, k)));
     expect(show(await gets(b))).toEqual(show(await gets(a)));
     const scan = async (r: SstReader, start?: Uint8Array) => show(await drain(r.cursor(start ? { start } : undefined)));
     expect(await scan(b)).toEqual(await scan(a));
@@ -88,7 +89,7 @@ describe("LZ4 runs", () => {
     try {
       expect(show(decodeSst(packed))).toEqual(want);
       const reader = readerOfBytes(packed);
-      expect(show([await untilHit(() => reader.get(key(5)))])).toEqual(show([decodeSst(packed)[5]]));
+      expect(show([await runGet(reader, key(5))])).toEqual(show([decodeSst(packed)[5]]));
     } finally {
       useLz4Decoder(wasmDecoder);
     }
@@ -98,11 +99,8 @@ describe("LZ4 runs", () => {
     await ensureEngine();
     const rows = mixedRows();
     for (const codec of ["raw", "lz4"] as const) {
-      const reader = readerOfBytes((await encodeRun(rows, codec)).body);
-      const value = async () => {
-        const e = await untilHit(() => reader.get(key(1)));
-        return e?.kind === "put" ? e.value : undefined;
-      };
+      const levels = [new RunLevel([readerOfBytes((await encodeRun(rows, codec)).body)])];
+      const value = () => untilHit(() => pointGet(undefined, levels, key(1), NO_MARKS));
       const first = (await value())!;
       const want = hash(first);
       expect(`${codec}: offset ${first.byteOffset}, buffer ${first.buffer.byteLength}`).toBe(`${codec}: offset 0, buffer ${first.byteLength}`);
@@ -123,7 +121,7 @@ describe("LZ4 runs", () => {
     packed.fill(0xff, 4, 64);
     const get = () => {
       const reader = readerOfBytes(packed);
-      return untilHit(() => reader.get(key(1)));
+      return runGet(reader, key(1));
     };
     await expect(get()).rejects.toThrow(CorruptDatabaseError);
     const wasmDecoder = useLz4Decoder(lz4DecompressJs);

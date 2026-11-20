@@ -126,9 +126,10 @@ export function wrapViews(kv: Db, over: (snap: ViewSnapshot) => Partial<ViewSnap
         body({
           seq: snap.seq,
           get: (k) => snap.get(k),
+          getMany: snap.getMany.bind(snap),
           range: (r) => snap.range(r),
           count: (r) => snap.count(r),
-          rangeJoin: (r, keyOf) => snap.rangeJoin(r, keyOf),
+          rangeJoin: snap.rangeJoin.bind(snap),
           ...over(snap),
         }),
       ),

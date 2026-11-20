@@ -3,7 +3,7 @@ import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
 import { decodeDoc, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { CATALOG_KEY, bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
+import { bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
 import type { EntryPage, EntryValues, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
 import { PointReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
@@ -19,7 +19,7 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
 
   /** The stored document, or undefined. */
   get(id: string): Promise<T | undefined>;
-  /** In the order of `ids`. Each row is current when read; the set is not one snapshot. */
+  /** In the order of `ids`. One read: every row sees the same writes. */
   getMany(ids: readonly string[]): Promise<(T | undefined)[]>;
 
   /** Upsert. See `putMany`. */
@@ -85,7 +85,7 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
   queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPage<EntryValues<T, Ix, I>>>;
-  /** How many entries `query` would walk, stopping at `limit` if given. */
+  /** How many entries `query` would walk, from `offset` and stopping at `limit` if given. */
   count(q: Query<T, Ix>): Promise<number>;
 
   /**
@@ -346,7 +346,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
           },
         };
       }
-      const olds = await Promise.all(rowKeys.map((k) => this.store.kv.get(k)));
+      const olds = await this.store.kv.getMany(rowKeys);
       const { next, plan } = planModify(coll, this.encode, docIds, idbs, olds, fn);
       const left = next.flatMap((d, i) => (d === undefined ? [i] : []));
       return {
@@ -377,13 +377,10 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     return planChanges(coll, ids, docs, buildingUnique(coll) ? await this.priors(coll, ids) : undefined);
   }
 
-  private priors(coll: BoundCollection, ids: readonly DocId[]): Promise<Prior[]> {
-    return Promise.all(
-      ids.map(async (id) => {
-        const idb = idBytes(id);
-        return priorOf(coll, idb, await this.store.kv.get(concat(coll.rows.prefix, idb)));
-      }),
-    );
+  private async priors(coll: BoundCollection, ids: readonly DocId[]): Promise<Prior[]> {
+    const idbs = ids.map(idBytes);
+    const rows = await this.store.kv.getMany(idbs.map((idb) => concat(coll.rows.prefix, idb)));
+    return rows.map((bytes, i) => priorOf(coll, idbs[i]!, bytes));
   }
 
   clear(): Promise<void> {
@@ -410,7 +407,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
 
   view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R> {
     return this.store.kv.view(async (snap) =>
-      body(new SnapshotReader<T, Ix>(snap, this.store.collectionIn(await snap.get(CATALOG_KEY), this.name))),
+      body(new SnapshotReader<T, Ix>(snap, await this.store.collectionAt(snap, this.name))),
     );
   }
 

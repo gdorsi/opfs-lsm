@@ -111,6 +111,8 @@ describe("the bytes a get hands out", () => {
     const reads: [string, (key: Uint8Array) => Promise<Uint8Array | undefined>][] = [
       ["get", (key) => db.get(key)],
       ["view get", (key) => db.view((snap) => snap.get(key))],
+      ["getMany", async (key) => (await db.getMany([key]))[0]],
+      ["view getMany", (key) => db.view(async (snap) => (await snap.getMany([key]))[0])],
       ["update", (key) => db.update([key], ([value]) => value)],
       ["rangeJoin", (key) => db.view(async (snap) => (await snap.rangeJoin({ start: key, limit: 1 }, () => key))[0]!.joined)],
     ];
@@ -124,6 +126,51 @@ describe("the bytes a get hands out", () => {
         expect(`${what} ${key}: ${dec.decode((await read(enc.encode(key)))!)}`).toBe(`${what} ${key}: ${want}`);
       }
     }
+    await db.close();
+  });
+});
+
+describe("getMany", () => {
+  it("reads every key in the order asked, from runs and the memtable, and decodes in place", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", maxWalBytes: 1 << 30 });
+    await db.batch((tx) => {
+      tx.put(enc.encode("run"), enc.encode("in a run"));
+      tx.put(enc.encode("gone"), enc.encode("deleted later"));
+    });
+    await ingest(db);
+    await db.put(enc.encode("mem"), enc.encode("in the memtable"));
+    await db.delete(enc.encode("gone"));
+    const keys = ["mem", "missing", "run", "gone", "run"].map((k) => enc.encode(k));
+    const want = ["in the memtable", undefined, "in a run", undefined, "in a run"];
+    const text = (bytes: Uint8Array) => dec.decode(bytes);
+    const reads = [
+      async () => (await db.getMany(keys)).map((v) => v && text(v)),
+      () => db.getMany(keys, text),
+      () => db.view(async (snap) => (await snap.getMany(keys)).map((v) => v && text(v))),
+      () => db.view((snap) => snap.getMany(keys, text)),
+      () => db.view(async (snap) => (await snap.rangeJoin({}, (e) => e.key, text)).map((hit) => hit.joined)),
+    ];
+    for (const read of reads.slice(0, 4)) {
+      const got = await read();
+      expect(got).toEqual(want);
+      // A key with no value is an element, not a hole.
+      expect(Object.keys(got)).toHaveLength(keys.length);
+    }
+    expect(await reads[4]!()).toEqual(["in the memtable", "in a run"]);
+    expect(await db.getMany([])).toEqual([]);
+    await db.close();
+  });
+
+  it("reads a view's snapshot, not later writes", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", maxWalBytes: 1 << 30 });
+    await db.put(enc.encode("a"), enc.encode("1"));
+    const got = await db.view(async (snap) => {
+      await db.put(enc.encode("a"), enc.encode("2"));
+      await db.put(enc.encode("b"), enc.encode("x"));
+      return snap.getMany([enc.encode("a"), enc.encode("b")], (bytes) => dec.decode(bytes));
+    });
+    expect(got).toEqual(["1", undefined]);
+    expect(await db.getMany([enc.encode("a"), enc.encode("b")], (bytes) => dec.decode(bytes))).toEqual(["2", "x"]);
     await db.close();
   });
 });
@@ -181,6 +228,26 @@ describe("reverse range", () => {
       }
     }
     expect(rows).toBeGreaterThan(2_000);
+    await db.close();
+  });
+
+  it("passes over offset entries before the first, in both directions, in range and count", async () => {
+    const db = await seeded();
+    for (const b of bounds) {
+      const forward = await keysOf(db.range(b));
+      for (const reverse of [false, true]) {
+        const all = reverse ? [...forward].reverse() : forward;
+        for (const offset of [0, 1, 7, 400, 5_000]) {
+          for (const limit of limits) {
+            const range = { ...b, reverse, offset, ...(limit !== undefined ? { limit } : {}) };
+            const want = all.slice(offset, limit === undefined ? undefined : offset + limit);
+            expect(await keysOf(db.range(range))).toEqual(want);
+            expect(await db.count(range)).toBe(want.length);
+            expect(await db.view((snap) => snap.count(range))).toBe(want.length);
+          }
+        }
+      }
+    }
     await db.close();
   });
 

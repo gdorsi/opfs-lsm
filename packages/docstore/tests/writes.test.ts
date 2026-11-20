@@ -333,15 +333,15 @@ describe("modifyMany", () => {
     open.push(kv);
     let armed = true;
     const held = wrap(kv, {
-      get: async (key) => {
-        const value = await kv.get(key);
-        if (armed && new TextDecoder().decode(key).endsWith("limit")) {
+      getMany: (async (...args: Parameters<Db["getMany"]>) => {
+        const values = await kv.getMany(...args);
+        if (armed && args[0].some((key) => new TextDecoder().decode(key).endsWith("limit"))) {
           armed = false;
           await other.notes.put({ id: "limit", n: 5 });
           await kv.sync();
         }
-        return value;
-      },
+        return values;
+      }) as Db["getMany"],
     });
     const c = (await openDocStore(held, schema)).collection("notes");
     armed = false;

@@ -1,4 +1,4 @@
-import type { Db } from "@opfs-lsm/kv";
+import type { Db, ViewSnapshot } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDocStore } from "../src/index.js";
 import { schema } from "./docs.js";
@@ -19,14 +19,14 @@ describe("a query that started before a clear", () => {
     const pinned = new Promise<void>((r) => (started = r));
     let hold = false;
     const slow = wrapViews(kv, (snap) => ({
-      get: async (key) => {
+      getMany: (async (...args: Parameters<ViewSnapshot["getMany"]>) => {
         if (hold) {
           hold = false;
           started();
           await gate;
         }
-        return snap.get(key);
-      },
+        return snap.getMany(...args);
+      }) as ViewSnapshot["getMany"],
     }));
     const c = (await openDocStore(slow, schema)).collection("docs");
     await c.put({ id: "x", a: 1 });

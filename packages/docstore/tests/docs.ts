@@ -121,6 +121,14 @@ export async function checkQuery(
   expect((await c.query(query)).docs).toEqual(want.map((h) => h.doc));
   expect(await c.count(query)).toBe(want.length);
   expect(await c.count(asQuery({ ...q, limit: pageSize }))).toBe(Math.min(pageSize, want.length));
+  for (const offset of [1, pageSize]) {
+    const rest = want.slice(offset);
+    expect((await c.queryIds(asQuery({ ...q, offset }))).ids).toEqual(rest.map((h) => h.id));
+    const page = await c.query(asQuery({ ...q, offset, limit: pageSize }));
+    expect(page.docs).toEqual(rest.slice(0, pageSize).map((h) => h.doc));
+    expect(page.next !== undefined).toBe(rest.length > pageSize);
+    expect(await c.count(asQuery({ ...q, offset }))).toBe(rest.length);
+  }
 
   const paged: string[] = [];
   let pages = 0;
