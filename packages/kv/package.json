@@ -1,6 +1,6 @@
 {
   "name": "@opfs-lsm/kv",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Browser KV: shared IDB WAL + OPFS LSM (SST ingest)",
   "keywords": [
     "opfs",

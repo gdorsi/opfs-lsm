@@ -1,6 +1,6 @@
 {
   "name": "@opfs-lsm/yjs",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Yjs persistence on @opfs-lsm/kv, shaped like y-indexeddb",
   "keywords": [
     "yjs",

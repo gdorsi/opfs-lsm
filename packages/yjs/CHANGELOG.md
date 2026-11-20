@@ -1,5 +1,33 @@
 # @opfs-lsm/yjs
 
+## 0.3.0
+
+### Patch Changes
+
+- 16de687: A merge of a doc's stored updates now waits for the doc's own writes still in flight before it reads. Before, a merge that started while the WAL was behind (a burst of thousands of updates, then a second of quiet) deleted only the updates that had landed and left the rest stored next to the merged state. The next load replayed those before the merged state, without the updates they build on, and Yjs's handling of such updates is quadratic: one cold load took 17 s in the benchmark instead of 15 ms.
+- Updated dependencies [44be297]
+- Updated dependencies [830fa2a]
+- Updated dependencies [65a7368]
+- Updated dependencies [92dd1a4]
+- Updated dependencies [4ffe314]
+- Updated dependencies [a61d279]
+- Updated dependencies [206b371]
+- Updated dependencies [5163013]
+- Updated dependencies [578fbd7]
+- Updated dependencies [bfcee61]
+- Updated dependencies [e42c671]
+- Updated dependencies [02a506c]
+- Updated dependencies [802afdd]
+- Updated dependencies [c87f21f]
+- Updated dependencies [aaa559c]
+- Updated dependencies [cb12766]
+- Updated dependencies [eb1497d]
+- Updated dependencies [34430fb]
+- Updated dependencies [58de646]
+- Updated dependencies [41a7777]
+- Updated dependencies [51a92e6]
+  - @opfs-lsm/kv@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes

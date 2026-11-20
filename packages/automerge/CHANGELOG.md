@@ -1,5 +1,33 @@
 # @opfs-lsm/automerge
 
+## 0.3.0
+
+### Patch Changes
+
+- d05b833: A document id, a fate storage key or an Automerge storage key segment that starts with U+FEFF now comes back with it. Reads, queries and scans used to drop the leading U+FEFF, because the UTF-8 decoder treated it as a byte order mark, so `"\uFEFFa"` came back as `"a"`.
+- Updated dependencies [44be297]
+- Updated dependencies [830fa2a]
+- Updated dependencies [65a7368]
+- Updated dependencies [92dd1a4]
+- Updated dependencies [4ffe314]
+- Updated dependencies [a61d279]
+- Updated dependencies [206b371]
+- Updated dependencies [5163013]
+- Updated dependencies [578fbd7]
+- Updated dependencies [bfcee61]
+- Updated dependencies [e42c671]
+- Updated dependencies [02a506c]
+- Updated dependencies [802afdd]
+- Updated dependencies [c87f21f]
+- Updated dependencies [aaa559c]
+- Updated dependencies [cb12766]
+- Updated dependencies [eb1497d]
+- Updated dependencies [34430fb]
+- Updated dependencies [58de646]
+- Updated dependencies [41a7777]
+- Updated dependencies [51a92e6]
+  - @opfs-lsm/kv@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes
