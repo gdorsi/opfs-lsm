@@ -177,7 +177,7 @@ describe("a WAL append the browser refuses", () => {
     expect([await read(db, "a"), await read(db, "b"), await read(db, "c"), await read(db, "d")]).toEqual(["1", "2", "row", "4"]);
   });
 
-  it("runs the body of a refused update once more, on the values of the second read", async () => {
+  it("lands a refused update after the host released the reserve, without running its body again", async () => {
     const db = await openFlushed();
     fillOrigin();
     let runs = 0;
@@ -186,13 +186,41 @@ describe("a WAL append the browser refuses", () => {
       tx.put(utf("copy"), row!);
       return runs;
     });
-    expect(result).toBe(2);
+    expect(result).toBe(1);
     expect(await read(db, "copy")).toBe("row");
     expect(await walSeqs()).toEqual([1, 2]);
 
     fillOrigin();
     await expect(db.update([utf("first")], (_, tx) => tx.put(utf("lost"), utf("v")))).rejects.toBeInstanceOf(StorageFullError);
     expect(await read(db, "lost")).toBeUndefined();
+    expect(await walSeqs()).toEqual([1, 2]);
+  });
+
+  it("runs the body of an update again when the browser refuses its transaction, and only its last run counts", async () => {
+    const db = await openFlushed();
+    const release = host.makeRoom.bind(host);
+    let go!: () => void;
+    const held = new Promise<void>((resolve) => (go = resolve));
+    vi.spyOn(host, "makeRoom").mockImplementation(async (n) => {
+      await held;
+      await release(n);
+    });
+    fillOrigin();
+    let runs = 0;
+    let seen: string | undefined;
+    // With a put of this handle in flight, the update writes in a transaction of its own.
+    const put = db.put(utf("first"), utf("new"));
+    const update = db.update([utf("first")], ([row], tx) => {
+      runs += 1;
+      seen = dec.decode(row!);
+      tx.put(utf("copy"), row!);
+      return runs;
+    });
+    await vi.waitFor(() => expect(runs).toBe(1));
+    go();
+    await put;
+    expect(await update).toBe(2);
+    expect(await read(db, "copy")).toBe(seen);
   });
 
   it("holds the writes issued while it recovers, and lands them after it", async () => {

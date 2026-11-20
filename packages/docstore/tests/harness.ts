@@ -95,10 +95,12 @@ export function gate(kv: Db, method: "range" | "catalog-or-batch", free: number)
 
 export type UpdateRecord = { readonly reads: number; readonly puts: number; readonly deletes: number };
 
+/** What each `update` read and wrote, in the order they resolved. kv may run a body again, and only its last run counts. */
 export function recording(kv: Db): { readonly db: Db; readonly updates: UpdateRecord[] } {
   const updates: UpdateRecord[] = [];
-  const update: Db["update"] = (keys, body) =>
-    kv.update(keys, (values, tx) => {
+  const update: Db["update"] = async (keys, body) => {
+    let last: UpdateRecord | undefined;
+    const out = await kv.update(keys, (values, tx) => {
       const record = { reads: keys.length, puts: 0, deletes: 0 };
       const counted: BatchTx = {
         put: (k, v) => {
@@ -111,10 +113,13 @@ export function recording(kv: Db): { readonly db: Db; readonly updates: UpdateRe
         },
         deleteRange: (bounds, options) => tx.deleteRange(bounds, options),
       };
-      const out = body(values, counted);
-      updates.push(record);
-      return out;
+      const result = body(values, counted);
+      last = record;
+      return result;
     });
+    if (last) updates.push(last);
+    return out;
+  };
   return { db: wrap(kv, { update }), updates };
 }
 

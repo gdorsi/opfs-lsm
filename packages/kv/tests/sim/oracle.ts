@@ -60,6 +60,11 @@ export class Oracle {
   /** Record an acked batch. Returns its seq. An empty batch is not a log entry. */
   append(ops: readonly OracleOp[]): number {
     if (ops.length === 0) throw new Error("oracle: an empty batch has no seq");
+    return this.appendRow(ops);
+  }
+
+  /** Record a WAL row. Returns its seq. A row with no ops, one that lost the seq it was valid at, still takes one. */
+  appendRow(ops: readonly OracleOp[]): number {
     const seq = this.entries.length + 1;
     this.entries.push({ seq, ops: ops.map(copyOp) });
     for (const op of ops) {

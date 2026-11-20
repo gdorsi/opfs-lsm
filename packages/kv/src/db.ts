@@ -7,6 +7,7 @@ import {
   newWriterId,
   opsBytes,
   type BatchOp,
+  type CheckedKey,
   type CheckedOp,
   type DbName,
   type WriterId,
@@ -23,9 +24,9 @@ import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull } from "./host/protocol.js";
 import { removeDatabase } from "./destroy.js";
 import { fullLock, layersChannel, openLock, webLocks, withLock } from "./locks.js";
-import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
+import { TabWal, decodeOps, encodeOps, resolveOps, rowValid, type WalTail } from "./idb/wal.js";
 import { reconcileOpen } from "./recover.js";
-import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
+import { GENERATION_NONE, SEQ_ZERO, nextSeq, type Generation, type Seq } from "./seq.js";
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
@@ -188,11 +189,15 @@ export interface Db {
    */
   batch(build: (tx: BatchTx) => void): Promise<number>;
   /**
-   * Read `keys` and write, in one IndexedDB transaction. `body` runs
-   * synchronously with the current values, in the order of `keys`. No other
-   * write can land between the reads and the commit, so there is no conflict.
-   * `body` runs again when the browser refuses the write for lack of space
-   * and kv tries it once more.
+   * Read `keys` and write as one step: `body` runs synchronously with the
+   * values, in the order of `keys`, and its writes commit only if no other
+   * write landed since they were read. So there is no conflict to handle,
+   * and concurrent updates lose nothing. `body` usually runs once. It runs
+   * again when another write landed between its read and its commit, when
+   * it writes nothing, and when the browser refuses the write for lack of
+   * space: three times at most. Only its last run counts, so keep it free
+   * of side effects. The updates of one handle run one at a time, in call
+   * order.
    */
   update<T>(
     keys: readonly Uint8Array[],
@@ -532,6 +537,10 @@ class DbImpl implements Db {
   private answering = false;
   /** This handle has said once that no tab has a handler. */
   private warned = false;
+  /** Appends of this handle that have not joined the memtable yet. A read now would miss them. */
+  private appending = 0;
+  /** The last `update` of this handle. Each waits for the one before it. */
+  private updating: Promise<unknown> = Promise.resolve();
 
   constructor(
     readonly name: DbName,
@@ -893,10 +902,11 @@ class DbImpl implements Db {
   /**
    * Join this tab's committed record to the memtable and announce it before
    * the ack resolves. A gap means another tab appended first: catch up,
-   * which reads the record too.
+   * which reads the record too. A row with no ops lost its seq, and the
+   * transaction `write` runs next reads the tail, so it waits for no catch-up.
    */
   private async landed(seq: Seq, ops: readonly CheckedOp[], record: ArrayBuffer): Promise<void> {
-    if (this.applyRecord({ seq, ops: resolveOps(ops, seq) }) === "gap" && !this.closed) await this.sync();
+    if (this.applyRecord({ seq, ops: resolveOps(ops, seq) }) === "gap" && ops.length && !this.closed) await this.sync();
     this.pressure.landed();
     this.announce();
     this.broadcast({ seq, record }, opsBytes(ops));
@@ -1033,10 +1043,24 @@ class DbImpl implements Db {
     const ops = collectBatch(build);
     if (ops.length === 0) return this.mem.appliedThrough;
     if (this.pressure.full) await this.admit();
-    const record = encodeOps(ops);
-    const seq = await this.wal.append(record);
-    await this.landed(seq, ops, record);
-    return seq;
+    return this.commit(ops);
+  }
+
+  /**
+   * Append `ops` by group commit and land the row. With `validAt`, the row
+   * has its ops at that seq alone (`rowValid`): at any other it lands with
+   * none, here as in every other reader.
+   */
+  private async commit(ops: readonly CheckedOp[], validAt?: Seq): Promise<Seq> {
+    const record = encodeOps(ops, validAt);
+    this.appending++;
+    try {
+      const seq = await this.wal.append(record);
+      await this.landed(seq, rowValid(validAt, seq) ? ops : [], record);
+      return seq;
+    } finally {
+      this.appending--;
+    }
   }
 
   async update<T>(
@@ -1045,9 +1069,30 @@ class DbImpl implements Db {
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
-    // One set for the warm reads and the read inside the transaction, which cannot wait for a load.
+    const turn = this.updating.then(() => this.updateOnce(ks, body));
+    this.updating = turn.catch(() => undefined);
+    return turn;
+  }
+
+  /**
+   * One `update`, with no other of this handle running. It reads the
+   * memtable, runs `body`, and appends a row that is valid only at
+   * `appliedThrough + 1`, by group commit: one round trip. The row takes
+   * that seq exactly when no other write committed since the read, so then
+   * `body` saw the state just before its own write. Otherwise the row has no
+   * ops, and `write` runs `body` again inside a transaction, which cannot
+   * lose. `write` runs it alone when an append of this handle is in flight,
+   * whose row the memtable lacks, or when a read still waits for a page, and
+   * again when `body` wrote nothing, so that what it returns was read at the
+   * committed head.
+   */
+  private async updateOnce<T>(
+    ks: readonly CheckedKey[],
+    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+  ): Promise<T> {
+    // One set for the warm reads and the reads that cannot wait for a load.
     const held = new ReadSet();
-    const out = await this.write(() => {
+    const plan = () => {
       const values = held.attempt(() => readKeys(this.memRows(ks), ks, this.installed.levels, this.point()));
       if (values instanceof Miss) return held.keep(values);
       let result!: T;
@@ -1056,11 +1101,23 @@ class DbImpl implements Db {
         return result;
       });
       return { ops, result };
-    }, () => {
+    };
+    const warm = () => {
       const at = this.point();
       return this.settleInstalled((levels) => readKeys(this.memRows(ks), ks, levels, at), held);
-    });
-    return out.result;
+    };
+    if (this.pressure.full) await this.admit();
+    await warm();
+    this.ensureOpen();
+    // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.
+    if (!this.appending) {
+      const planned = plan();
+      if (!(planned instanceof Miss) && planned.ops.length) {
+        const validAt = nextSeq(this.mem.appliedThrough);
+        if (rowValid(validAt, await this.commit(planned.ops, validAt))) return planned.result;
+      }
+    }
+    return (await this.write(plan, warm)).result;
   }
 
   async count(range?: Range): Promise<number> {

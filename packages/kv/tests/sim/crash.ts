@@ -266,7 +266,7 @@ export function committedLog(ops: readonly DurableOp[]): Oracle {
   const seqs = [...rows.keys()].sort((a, b) => a - b);
   seqs.forEach((seq, i) => {
     if (seq !== i + 1) throw new Error(`committed seqs are not gapless: ${seqs.join(",")}`);
-    log.append(rows.get(seq)!);
+    log.appendRow(rows.get(seq)!);
   });
   return log;
 }

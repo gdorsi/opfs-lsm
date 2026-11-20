@@ -103,9 +103,10 @@ const ROW_VALID_AT = 4;
 /**
  * The verdict on a row (design.md, "WAL records"): a row with a header has
  * its ops at the seq the header names, and none at any other. It depends on
- * the row's bytes and its key alone, so every reader reaches it alike.
+ * the row's bytes and its key alone, so every reader reaches it alike:
+ * through `decodeOps`, or here for the tab that wrote the row.
  */
-function rowValid(validAt: Seq | undefined, seq: Seq): boolean {
+export function rowValid(validAt: Seq | undefined, seq: Seq): boolean {
   return validAt === undefined || validAt === seq;
 }
 
