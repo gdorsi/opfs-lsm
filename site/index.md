@@ -162,7 +162,7 @@ bench:
         versus: the task tracker, both on demand
         stores: [docstore, SQLite]
         setup: Four screens as live queries while the sync batches land
-        note: "Frames dropped over 426 batches with the screens open: 12 on docstore, 59 on SQLite. SQLite waits for each commit to be crash-safe, its default; docstore doesn't."
+        note: "Frames dropped over 426 batches with the screens open: 14 on docstore, 59 on SQLite. SQLite waits for each commit to be crash-safe, its default; docstore doesn't."
         rows:
           - { measure: "Opening the collections in a fresh tab", ours: 6.65 ms, theirs: 52.2 ms, ratio: 7.9× }
           - { measure: "A sync batch, four screens open", ours: 4.17 ms, theirs: 82.4 ms, ratio: 20× }

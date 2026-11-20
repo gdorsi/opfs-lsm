@@ -153,7 +153,7 @@ Medians of 5 runs per contender, in headless Chrome 157 on Apple M5 Max, load av
 † The runs of a marked cell form two clusters, so its median hides two states.
 <!-- /bench:table -->
 
-The todo column opens first, so it also starts the label list every screen shares, and the later screens find rows earlier joins loaded. Keeping four screens current adds about 2 ms to a batch on IndexedDB and on eager docstore, and 3.3 ms on docstore on demand. On SQLite it adds 63 ms. A [CPU profile](results/2026-11-16T22-25-41-apple-m2-pro-cpu-profile.txt) of that phase, from an earlier run, shows the tab idle two thirds of the time, waiting for SQLite's worker, and decoding the rows the worker sends back is the largest share of the rest. With no screen open, no contender dropped a frame.
+The todo column opens first, so it also starts the label list every screen shares, and the later screens find rows earlier joins loaded. Keeping four screens current adds about 2 ms to a batch on IndexedDB and on eager docstore, and 3.2 ms on docstore on demand. On SQLite it adds 63 ms. A [CPU profile](results/2026-11-16T22-25-41-apple-m2-pro-cpu-profile.txt) of that phase, from an earlier run, shows the tab idle two thirds of the time, waiting for SQLite's worker, and decoding the rows the worker sends back is the largest share of the rest. With no screen open, no contender dropped a frame.
 
 ## Bundle size
 
