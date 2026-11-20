@@ -52,7 +52,8 @@ export default defineWorkload({
         const span = Math.ceil(entries / 10);
         for (let i = 0; i < 200; i++) {
           const from = Math.floor(ctx.rng() * (entries - span + 1));
-          const n = await ctx.time("count", 0, () => store.count(ctx.model.key(from), ctx.model.key(from + span)));
+          const [lo, hi] = [ctx.model.key(from), ctx.model.key(from + span)];
+          const n = await ctx.time("count", 0, () => store.count(lo, hi));
           ctx.check(n === span, `count from ${from} saw ${n} of ${span} keys`);
         }
       },
@@ -80,7 +81,8 @@ export default defineWorkload({
         const store = await ctx.store();
         for (let i = 0; i < 200; i++) {
           const ids = Array.from({ length: PAGE }, () => Math.floor(ctx.rng() * ctx.params.entries));
-          const values = await ctx.time("getMany", 0, () => store.getMany(ids.map((id) => ctx.model.key(id))));
+          const keys = ids.map((id) => ctx.model.key(id));
+          const values = await ctx.time("getMany", 0, () => store.getMany(keys));
           ids.forEach((id, j) => ctx.model.verify(id, values[j]));
         }
       },
