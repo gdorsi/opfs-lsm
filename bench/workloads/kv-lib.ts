@@ -51,6 +51,16 @@ export async function getIds(ctx: Ctx, ops: number, pick: () => number, op = "ge
   }
 }
 
+/** Random gets of keys that fall between two stored keys, so a read cannot stop at the fence of the key range. Each must come back absent. */
+export async function getMisses(ctx: Ctx, ops: number, pick: () => number, op = "miss"): Promise<void> {
+  const store = await ctx.store();
+  for (let i = 0; i < ops; i++) {
+    const id = pick();
+    const got = await ctx.time(op, 0, () => store.get(ctx.model.missKey(id)));
+    ctx.check(got === undefined, `miss key after id ${id} is present`);
+  }
+}
+
 /** Ordered scan of `limit` values from id `from`, each verified; checks ascending live ids. With an `offset` the ids must be contiguous, and the first one is checked. */
 export async function scan(ctx: Ctx, store: KvStore, from: number, limit: number, op: string, count = limit, offset = 0): Promise<number> {
   const values = await ctx.time(op, 0, () => store.range(ctx.model.key(from), undefined, limit, offset), count);

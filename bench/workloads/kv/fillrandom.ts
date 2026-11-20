@@ -1,6 +1,6 @@
 import { defineWorkload } from "../../core/types.ts";
 import { permutation } from "../../page/model.ts";
-import { fillPhase, getIds, kvParams, settlePhase, uniform, warmPhase } from "../kv-lib.ts";
+import { fillPhase, getIds, getMisses, kvParams, settlePhase, uniform, warmPhase } from "../kv-lib.ts";
 
 /**
  * db_bench order on one database: N/100 single puts each awaited on the empty
@@ -47,7 +47,7 @@ export default defineWorkload({
       name: "readmissing",
       page: "same",
       timed: true,
-      run: (ctx) => getIds(ctx, ctx.params.ops, () => ctx.params.entries + Math.floor(ctx.rng() * ctx.params.entries), "miss"),
+      run: (ctx) => getMisses(ctx, ctx.params.ops, uniform(ctx, ctx.params.entries)),
     },
     {
       name: "coldopen",

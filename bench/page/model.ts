@@ -21,6 +21,8 @@ export class CorrectnessError extends Error {
 export type Model = {
   readonly params: Params;
   key(id: number): Uint8Array;
+  /** A key no write ever stores that sorts between `key(id)` and `key(id + 1)`: `key(id)` and one more byte (db_bench's missing keys). */
+  missKey(id: number): Uint8Array;
   /** Current version of `id`; 0 when absent. */
   version(id: number): number;
   /** Bump the version of `id` and return the new version (for workloads that build their own values). */
@@ -70,6 +72,12 @@ export function createModel(params: Params, carried?: string): Model {
     return k;
   };
 
+  const missKey = (id: number) => {
+    const k = new Uint8Array(keyBytes + 1);
+    k.set(key(id));
+    return k;
+  };
+
   const valueOf = (id: number, version: number) => {
     usable();
     const out = new Uint8Array(valueBytes);
@@ -96,6 +104,7 @@ export function createModel(params: Params, carried?: string): Model {
   const model: Model = {
     params,
     key,
+    missKey,
     version: (id) => v[id] ?? 0,
     bump(id) {
       grow(id);
