@@ -50,7 +50,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "framework-adapters",
-    file: "2026-11-20T12-08-28-apple-m5-max",
+    file: "2026-11-20T12-32-17-apple-m5-max",
     columns: [
       { head: "Framework" },
       { head: "Workload" },
@@ -98,7 +98,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "typing-reopening",
-    file: "2026-11-20T12-08-28-apple-m5-max",
+    file: "2026-11-20T12-32-17-apple-m5-max",
     columns: [
       { head: "" },
       { head: "y-indexeddb", at: { workload: "yjs/trace", contender: "yjs/y-indexeddb" } },
@@ -117,7 +117,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "on-demand-sqlite",
-    file: "2026-11-20T12-16-36-apple-m5-max",
+    file: "2026-11-20T12-40-24-apple-m5-max",
     workload: "tanstack-ondemand/queries",
     columns: [
       { head: "Workload" },
@@ -134,7 +134,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "goals",
-    file: "2026-11-20T12-22-21-apple-m5-max",
+    file: "2026-11-20T12-46-06-apple-m5-max",
     workload: "tracker/goals",
     unit: null,
     columns: [
@@ -151,7 +151,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "writes",
-    file: "2026-11-20T12-22-21-apple-m5-max",
+    file: "2026-11-20T12-46-06-apple-m5-max",
     workload: "tracker/goals",
     columns: [
       { head: "Writes" },
@@ -170,7 +170,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "live-queries",
-    file: "2026-11-20T12-27-19-apple-m5-max",
+    file: "2026-11-20T12-52-00-apple-m5-max",
     workload: "tanstack-live/screens",
     columns: [
       { head: "" },
