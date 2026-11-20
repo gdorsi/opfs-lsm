@@ -162,7 +162,8 @@ type YcsbOp =
 /**
  * A: the writes are blind single-key updates. F: each write reads and rewrites its key in one transaction. The op stream
  * (kind, key, the value a read must see and the next value a write stores) is built before the first call and every read
- * is checked after the last, so the calls run back to back.
+ * is checked after the last, so the calls run back to back. The function of a read-modify-write only records what it
+ * read: a contender may run it again, and its last run is the one that counts.
  */
 export function ycsbPhase(letter: YcsbLetter): Phase<"kv"> {
   return {

@@ -34,7 +34,7 @@ export type KvStore = Common & {
   range(start: Bytes, endExclusive: Bytes | undefined, limit: number, offset?: number): Promise<Bytes[]>;
   /** How many keys [start, endExclusive) holds. */
   count(start: Bytes, endExclusive: Bytes): Promise<number>;
-  /** Read-modify-write of one key in one transaction (YCSB F). */
+  /** Read-modify-write of one key that no other write gets inside (YCSB F). `f` may run more than once: its last run counts. */
   update(key: Bytes, f: (old: Bytes | undefined) => Bytes): Promise<void>;
 };
 
