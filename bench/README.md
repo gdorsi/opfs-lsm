@@ -1,6 +1,6 @@
 # Benchmarks
 
-`pnpm bench` runs every workload on every contender of its family in real headless Chrome. Each run gets a fresh browser profile. Runs are interleaved: rep 1 of every contender, then rep 2, with the contender order rotated each rep. The defaults are size `small` and 5 reps.
+`pnpm bench` runs every workload on every contender of its family in real headless Chrome. Each run gets a fresh browser profile. Runs are interleaved: rep 1 of every contender, then rep 2, with the contender order rotated each rep and, after as many reps as there are contenders, reversed, so no contender always follows the same other one. The defaults are size `small` and 5 reps.
 
 ```sh
 pnpm bench                                   # everything, size small, 5 reps
