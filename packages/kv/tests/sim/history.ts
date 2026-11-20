@@ -18,9 +18,11 @@ import { copyOp, Oracle, show, type OracleEntry, type OracleOp, type OracleRange
  *   ack, the writer sees its own write and every earlier one", "Append");
  * - after `sync()` or open resolves, `p >=` every seq acked before the call
  *   ("Seeing other tabs' writes"; open runs `sync`);
- * - an `update` reads exactly `fold(log[1..s-1])` when it commits at `s` ("No
- *   other write can land between the reads and the commit"), and when it
- *   writes nothing it still caught up inside its transaction;
+ * - an `update` reads exactly `fold(log[1..s-1])` when it commits at `s` ("its
+ *   writes commit only if no other write landed since they were read"), and
+ *   when it writes nothing it still caught up inside its transaction. A row
+ *   of it that took another seq than the one it is valid at has no ops
+ *   ("WAL records"), in the log as in every reader, and is not its commit;
  * - all reads in one `view` use one `p` ("pinned WAL head");
  * - a write acked before another is invoked has the smaller seq (the WAL
  *   serializes appends; seqs are the log order).
@@ -99,13 +101,14 @@ export class History {
     const sorted = [...this.commits].sort((a, b) => a.seq - b.seq);
     sorted.forEach((c, i) => {
       if (c.seq !== i + 1) throw new Error(`committed seqs are not gapless: ${sorted.map((x) => x.seq).join(",")}`);
-      oracle.append(c.ops);
+      oracle.appendRow(c.ops);
     });
     return oracle;
   }
 
+  /** The seq `op` committed its ops at. A row of it with no ops lost its seq and is not it. */
   seqOf(op: number): number | undefined {
-    return this.commits.find((c) => c.op === op)?.seq;
+    return this.commits.find((c) => c.op === op && c.ops.length > 0)?.seq;
   }
 
   /** The op that wrote `seq`. */

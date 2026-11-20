@@ -2,8 +2,9 @@ import { vi } from "vitest";
 
 /**
  * Sizes of the group commits that committed since the call, in commit order:
- * how many records each WAL transaction of `append` held. An `update` writes
- * its record under an explicit key and is not a group.
+ * how many records each WAL transaction of `append` held. An `update` that
+ * writes inside a transaction of its own adds its record under an explicit
+ * key and is not a group.
  */
 export function watchWalGroups(): number[] {
   const sizes: number[] = [];

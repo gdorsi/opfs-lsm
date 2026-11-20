@@ -345,10 +345,34 @@ describe("changes()", () => {
     await Promise.all(handles.map((db) => db.sync()));
     for (const read of reads) expect(await read.got, `seq ${read.seq} readable when announced`).toEqual(read.want);
 
-    const all = Array.from({ length: 30 }, (_, i) => i + 1);
+    // An update that another write beat leaves a row with no ops. It takes a seq, and is announced like any other.
+    const all = Array.from({ length: seqs(logs[0]!).length }, (_, i) => i + 1);
     expect(seqs(logs[0]!)).toEqual(all);
     expect(seqs(logs[1]!)).toEqual(all);
     expect(appends(logs[0]!)).toEqual(appends(logs[1]!));
+    expect(appends(logs[0]!).filter((e) => e.ops.length > 0)).toHaveLength(30);
+  });
+
+  it("announces the row of an update that another write beat as an append with no ops, once on each handle", async () => {
+    const writer = await track(openWithoutBus("w1"));
+    const other = await track(openWithoutBus("w2"));
+    const watcher = await track(openWithoutBus("w3"));
+    const logs = [writer, other, watcher].map(record);
+    const first = await other.put(b("k"), b("1"));
+    // `writer` has not heard of that put, so the row of its first run takes a seq it is not valid at.
+    const seen = await writer.update([b("k")], ([cur], tx) => {
+      tx.put(b("copy"), cur ?? b("none"));
+      return cur;
+    });
+    expect(seen).toEqual(b("1"));
+    await other.sync();
+    await watcher.sync();
+    const events = [
+      { kind: "append", seq: first, ops: [{ type: "put", key: b("k"), value: b("1") }] },
+      { kind: "append", seq: first + 1, ops: [] },
+      { kind: "append", seq: first + 2, ops: [{ type: "put", key: b("copy"), value: b("1") }] },
+    ];
+    for (const log of logs) expect(log).toEqual(events);
   });
 
   it("a handle that falls behind a flush gets one gap, then reads what the writer reads", async () => {

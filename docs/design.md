@@ -58,12 +58,13 @@ OPFS  opfs-lsm/<name>/
 
 ### WAL records
 
-Each acked `put`, `delete` or `batch` with ops, and each `update` that writes, is one record in
-the `wal` store. A batch with no ops writes nothing and resolves with the `appliedThrough` of
-its tab. The key is the seq. The value is one `ArrayBuffer` that holds the ops of the batch back
-to back:
+Each acked `put`, `delete` or `batch` with ops is one record in the `wal` store. An `update` is
+at most two (see [Append](#append)). A batch with no ops writes nothing and resolves with
+the `appliedThrough` of its tab. The key is the seq. The value is one `ArrayBuffer`: an optional
+header, then the ops of the batch back to back:
 
 ```layout
+| u8 4, u64 seq   the header: the seq the row is valid at     (optional)     |
 | u8 type         0 = put, 1 = delete, 3 = range delete                      |
 | u32 key length                                                             |
 | key             the start key, for a range delete                          |
@@ -77,8 +78,10 @@ to back:
 A writer that gives no `through` stores 2^53 − 1. The record's seq bounds it (see
 [Range deletes](#range-deletes)), so the stored value never needs the seq the record will get.
 
-A row that is not an `ArrayBuffer`, that ends inside an op, or that holds a range delete whose
-start is not below its end, fails with `CommitError`.
+A row with a header has its ops at the seq the header names, and none at any other: its bytes and
+its key decide, the same for every reader. A row that is not an `ArrayBuffer`, that ends inside an
+op, that holds a header after its first byte, or that holds a range delete whose start is not below
+its end, fails with `CommitError`, whatever its header names.
 
 ### Append
 
@@ -92,25 +95,28 @@ that arrive while it commits form the next group. A group is one `readwrite` tra
 
 The records are the only writes. A group commits or aborts as a whole, and a failed group fails
 every write in it. A group the browser refuses for space is added once more (see [Reserve](#reserve)).
+IndexedDB serializes `readwrite` transactions that share a store, so two tabs cannot take the same
+seq. An aborted transaction reverts the key generator, so committed seqs stay gapless.
 
 Nothing stores the head, the seq of the last committed batch. It is the last key in `wal`, or
-`ingestedThrough` when no record is past it. Only recovery and destroy move the head past the
-last key. The same transaction then drops every record, sets `ingestedThrough` to the new head,
-and adds and deletes a record at that seq, which moves the key generator to `head + 1`. A power
-loss that loses commits also loses what they did to the key generator, and this is what keeps
+`ingestedThrough` when no record is past it. Only recovery and destroy move the head past the last
+key: they add and delete a record at the new head, which moves the key generator to `head + 1`. A
+power loss that loses commits also loses what they did to the key generator, and this is what keeps
 the next append from taking a seq that a manifest already holds.
 
-IndexedDB serializes `readwrite` transactions that share a store, so two tabs cannot take the
-same seq. An aborted transaction reverts the key generator, so committed seqs stay gapless.
-
-`update(keys, body)` reads the tail, applies it to the memtable, runs the synchronous `body` and
-adds the batch at `head + 1`, all in one transaction. It cannot conflict with another writer.
+`update(keys, body)` runs the synchronous `body` on what its tab reads and appends, by group commit,
+a row whose header names `appliedThrough + 1`. The row takes that seq only if no write committed
+since the read. Failing that, the update runs in one transaction that reads the tail, applies it to
+the memtable, runs `body` and adds the batch at `head + 1`, which no writer can beat. So does an
+update issued while an append of its handle is in flight, or whose `body` wrote nothing. After a row
+loses, the handle appends no such row until one of those transactions writes with an empty tail. A handle
+runs its updates one at a time, in call order.
 
 The commit point is the `complete` event of the transaction, at the default IndexedDB
 durability. The writes of a group commit in seq order. A commit survives a tab crash. It may not
-survive a power loss. The caller's promise resolves after the record joins the memtable and is
-announced. If its seq is not the next one, another tab appended first, and the tab reads the tail
-before that. At the promise, the writer sees its own write and every earlier one.
+survive a power loss. The caller's promise resolves with its seq, after the record joins the memtable
+and is announced. If its seq is not the next one, another tab appended first, and the tab reads the
+tail before that. At the promise, the writer sees its own write and every earlier one.
 
 ### Reading the tail
 
@@ -118,8 +124,7 @@ before that. At the promise, the writer sees its own write and every earlier one
 `ingestedThrough`, then the head, then every record in `(after, head]`, where `after` is
 `max(since, ingestedThrough)` and `since` is the `appliedThrough` of the caller. An open starts
 at 0, so it replays the whole uningested WAL; the host flushes at `maxWalBytes`, so that replay
-is normally near the limit, but the tab's read path truncates nothing. Ingest reads the same
-range in `flushRunBytes` chunks.
+is normally near the limit, but the tab's read path truncates nothing.
 
 Seqs are gapless above `ingestedThrough`, and no tab has applied a seq past the head, so the head
 is past `after` only when `after + 1` is a key. One point read answers that, and the last key is
@@ -288,8 +293,7 @@ the key and value bytes of their ops. A row is posted when it commits, unless th
 the last 4 ms. Then it waits for the first commit past that time, a timer, or `close`, and one
 message carries every row that waited: a post costs per message, not per row. A hidden page
 posts every row when it commits, and what waits when it becomes hidden, because browsers slow
-and stop its timers. Every other tab applies the records in the order given. If one does not
-follow the `appliedThrough` of that tab, the tab reads the WAL tail instead.
+and stop its timers. Every other tab applies the records in the order given ([Memtable](#memtable)).
 
 A tab therefore sees the write of another tab a moment after its ack, and a few milliseconds
 later during a burst. `db.sync()` closes the gap: it reads the WAL tail and applies everything
@@ -326,8 +330,7 @@ on disk and the load succeeds. The host never waits for the lock, so no tab can 
 a compaction. A tab can only delay the removal of garbage.
 
 A try that finds a file missing under the lock has the host reconcile ([Recovery](#recovery)). After 8
-such tries the tab throws `CorruptDatabaseError`. On a healthy database, `sync`, `update` and
-appends always succeed, however compaction is scheduled.
+such tries the tab throws `CorruptDatabaseError`.
 
 A tab keeps its generation when a tail has a lower `ingestedThrough` than the installed one, or
 names a lower generation and is not ahead of its memtable: it was read before that generation was
@@ -379,9 +382,6 @@ For each run, under the exclusive section for the database, the host:
 The exclusive section is a promise chain in the host plus the Web Lock `opfs-lsm-ingest/<name>`,
 which covers two SharedWorkers that serve the same database. A compaction install can take the
 section between two runs.
-
-OPFS files are written with `createWritable` and `close`. The browser swaps the file into place
-on `close`, so a reader sees a file whole or not at all.
 
 ### L0 stop
 
@@ -546,7 +546,7 @@ operation, and stops when either is gone.
 ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
 
 * Every applied seq is announced once, in seq order, after reads can see it.
-* The promise of `put`, `delete` or `batch` resolves with its seq, after its record was announced.
+* An append can carry no ops: the row of an `update` that took another seq than its header names.
 * `gap` replaces the records that a handle skipped because a flush folded them before it read
   them, or because a repair recorded another generation. A listener reads again.
 * `closed` is the last event. Its `reason` is `"destroyed"` when the handle's WAL database was
@@ -601,8 +601,8 @@ read. It pairs the manifest with the WAL:
 
 * With `head` unchanged, `ingestedThrough` becomes `through` when `through` is at or past it, and
   the seqs above `through` are uningested again when the WAL holds all of them.
-* Otherwise every record is dropped and `ingestedThrough` moves to the new `head`. The database
-  is the manifest alone.
+* Otherwise every record is dropped, `head` moves up by at least one, and `ingestedThrough` moves
+  to it. The database is the manifest alone, and every tab still open is behind it and follows.
 
 The same transaction moves `head` past the highest `through` of any manifest on disk, and
 `topGeneration` past every manifest number seen.

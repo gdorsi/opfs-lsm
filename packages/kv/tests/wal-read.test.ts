@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
 import { TabWal, encodeOps, listUningested } from "../src/idb/wal.js";
+import { asSeq } from "../src/seq.js";
 import { advance } from "./advance.js";
 
 const NAME = "wal-read-test";
@@ -126,6 +127,67 @@ describe("WAL read", () => {
     const row = new Uint8Array([0, 10, 0, 0, 0, 1, 2]);
     await rawRow(1, row.buffer);
     await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: truncated");
+    wal.close();
+  });
+});
+
+describe("a row with a header", () => {
+  const all = { maxBytes: 1 << 30 };
+  /** `u8 4`, then the u64 seq. */
+  const header = (seq: bigint) => {
+    const out = new Uint8Array(9);
+    out[0] = 4;
+    new DataView(out.buffer).setBigUint64(1, seq, true);
+    return out;
+  };
+  const row = (...parts: Uint8Array[]) => new Uint8Array(parts.flatMap((part) => [...part])).buffer;
+  const k1 = new Uint8Array(encodeOps(put(1)));
+
+  it("has its ops at the seq the header names, for a tab and for a flush", async () => {
+    const wal = await seeded(1);
+    expect(await wal.append(encodeOps(put(2), asSeq(2)))).toBe(2);
+    expect(summary((await wal.tail(0)).records)).toEqual(["1:k1", "2:k2"]);
+    expect(summary(await listUningested(wal, all))).toEqual(["1:k1", "2:k2"]);
+    wal.close();
+  });
+
+  it("has no ops at any other seq, and still takes its seq", async () => {
+    const wal = await seeded(1);
+    expect(await wal.append(encodeOps(put(2), asSeq(1)))).toBe(2);
+    expect(await wal.append(encodeOps(put(3), asSeq(4)))).toBe(3);
+    expect(await wal.append(encodeOps(put(4)))).toBe(4);
+    expect(summary((await wal.tail(0)).records)).toEqual(["1:k1", "2:", "3:", "4:k4"]);
+    expect(summary(await listUningested(wal, all))).toEqual(["1:k1", "2:", "3:", "4:k4"]);
+    expect(summary((await wal.tail(2)).records)).toEqual(["3:", "4:k4"]);
+    wal.close();
+  });
+
+  it("is a corrupt row when the header is not first", async () => {
+    const wal = await TabWal.open(checkDbName(NAME));
+    await rawRow(1, row(k1, header(1n)));
+    await expect(wal.tail(0)).rejects.toThrow(/corrupt wal/);
+    await rawRow(1, row(header(1n), header(1n), k1));
+    await expect(wal.tail(0)).rejects.toThrow(/corrupt wal/);
+    wal.close();
+  });
+
+  it("is a corrupt row when the header is cut or names a seq past 2^53 - 1", async () => {
+    const wal = await TabWal.open(checkDbName(NAME));
+    await rawRow(1, row(header(1n).subarray(0, 5)));
+    await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: truncated");
+    await rawRow(1, row(header(2n ** 53n), k1));
+    await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: valid at");
+    wal.close();
+  });
+
+  it("fails on corrupt ops whether or not the header names its seq", async () => {
+    const wal = await TabWal.open(checkDbName(NAME));
+    const cut = k1.subarray(0, k1.byteLength - 1);
+    for (const validAt of [1n, 7n]) {
+      await rawRow(1, row(header(validAt), cut));
+      await expect(wal.tail(0)).rejects.toThrow("corrupt wal row: truncated");
+      await expect(listUningested(wal, all)).rejects.toThrow("corrupt wal row: truncated");
+    }
     wal.close();
   });
 });

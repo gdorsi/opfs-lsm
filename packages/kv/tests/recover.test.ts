@@ -69,8 +69,8 @@ function metaRaw(dbName: string, key: string): Promise<unknown> {
 
 /**
  * The state the "drops the WAL" case leaves: every row deleted, and
- * `ingestedThrough` at the last committed seq, which is what holds the head.
- * Nothing stores the head.
+ * `ingestedThrough` one past the last committed seq, which is what holds
+ * the head. Nothing stores the head.
  */
 async function droppedWal(): Promise<{ fs: MemoryFs; dbName: string }> {
   const wal = await walWith(4);
@@ -80,7 +80,7 @@ async function droppedWal(): Promise<{ fs: MemoryFs; dbName: string }> {
   await advance(wal, { through: 2, generation: 2 });
   await advance(wal, { through: 3, generation: 3 });
   expect((await reconcile(wal, fs, undefined)).generation).toBe(0);
-  expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
+  expect(await wal.meta()).toMatchObject({ head: 5, ingestedThrough: 5, generation: 0 });
   expect(await walRows(dbName)).toEqual([]);
   expect(await metaRaw(dbName, "head")).toBeUndefined();
   wal.close();
@@ -126,7 +126,7 @@ describe("advanceIngested", () => {
     await advance(wal, { through: 3, generation: 2 });
     // Seqs 1..2 are gone, so a manifest through 0 cannot be followed.
     expect(await adopt(wal, { expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 })).toBe(true);
-    expect(await wal.meta()).toMatchObject({ head: 3, ingestedThrough: 3, generation: 0 });
+    expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
     expect(await seqs(wal)).toEqual([]);
     wal.close();
   });
@@ -197,7 +197,7 @@ describe("reconcile", () => {
     wal.close();
   });
 
-  it("drops the WAL when the seqs between the manifest and it are gone", async () => {
+  it("drops the WAL when the seqs between the manifest and it are gone, and moves the head past the state it left", async () => {
     const wal = await walWith(4);
     const fs = new MemoryFs();
     await advance(wal, { through: 1, generation: 1 });
@@ -205,8 +205,9 @@ describe("reconcile", () => {
     await advance(wal, { through: 3, generation: 3 });
     // Only generation 0 is left: seqs 1..1 are gone from both stores.
     expect((await reconcile(wal, fs, undefined)).generation).toBe(0);
-    expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 0 });
+    expect(await wal.meta()).toMatchObject({ head: 5, ingestedThrough: 5, generation: 0 });
     expect(await seqs(wal)).toEqual([]);
+    expect(await wal.append(encodeOps(put(5)))).toBe(6);
     wal.close();
   });
 
@@ -465,8 +466,8 @@ describe("the next write after adopt empties the wal", () => {
       expect(text(await db.get(enc.encode("n")))).toBe("x");
       const report = await checkDatabase(fs, dbName);
       expect(report.problems).toEqual([]);
-      expect(report.head).toBe(5);
-      expect(report.ingestedThrough).toBe(4);
+      expect(report.head).toBe(6);
+      expect(report.ingestedThrough).toBe(5);
     } finally {
       await db.close();
       await deleteWal(dbName);
@@ -480,8 +481,8 @@ describe("the next write after adopt empties the wal", () => {
       expect(text(await db.get(enc.encode("n")))).toBe("x");
       const report = await checkDatabase(fs, dbName);
       expect(report.problems).toEqual([]);
-      expect(report.head).toBe(5);
-      expect(report.ingestedThrough).toBe(4);
+      expect(report.head).toBe(6);
+      expect(report.ingestedThrough).toBe(5);
     } finally {
       await db.close();
       await deleteWal(dbName);

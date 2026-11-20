@@ -76,8 +76,8 @@ export async function checkDatabase(fs: AsyncFs, name: string): Promise<Database
   const wal: { seq: number; ops: WalOp[] }[] = [];
   for (const { seq, raw } of rows) {
     try {
-      const ops = decodeWalRow(raw);
-      if (ops.length === 0) problems.push(`wal row ${seq} has no ops`);
+      const ops = decodeWalRow(raw, seq);
+      if (ops.length === 0 && !hasHeader(raw)) problems.push(`wal row ${seq} has no ops`);
       if (seq <= ingestedThrough) continue;
       wal.push({ seq, ops });
     } catch (err) {
@@ -333,17 +333,27 @@ export type WalOp =
   | { key: Uint8Array; value: Uint8Array | undefined }
   | { start: Uint8Array; endExclusive?: Uint8Array; through: number };
 
+const hasHeader = (raw: unknown) => raw instanceof ArrayBuffer && new Uint8Array(raw)[0] === 4;
+
 /**
- * design.md, "WAL records": per op, u8 type | u32 keyLen | key | put: u32
+ * The ops of the row at `seq`. design.md, "WAL records": an optional header,
+ * u8 4 | u64 seq, then per op, u8 type | u32 keyLen | key | put: u32
  * valueLen | value; a range delete: u8 3 | u32 startLen | start | u8 has end
- * | end: u32 endLen | end | u64 through.
+ * | end: u32 endLen | end | u64 through. A row whose header names another
+ * seq has no ops.
  */
-export function decodeWalRow(raw: unknown): WalOp[] {
+export function decodeWalRow(raw: unknown, seq: number): WalOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new Error("not an ArrayBuffer");
   const bytes = new Uint8Array(raw);
   const view = new DataView(raw);
   const ops: WalOp[] = [];
   let at = 0;
+  let validAt = seq;
+  if (hasHeader(raw)) {
+    if (bytes.byteLength < 9) throw new Error("truncated");
+    validAt = Number(view.getBigUint64(1, true));
+    at = 9;
+  }
   const take = (n: number) => {
     if (at + n > bytes.byteLength) throw new Error("truncated");
     const out = bytes.slice(at, at + n);
@@ -367,7 +377,7 @@ export function decodeWalRow(raw: unknown): WalOp[] {
       ops.push({ start: key, ...(end ? { endExclusive: end } : {}), through });
     } else throw new Error(`op type ${type}`);
   }
-  return ops;
+  return validAt === seq ? ops : [];
 }
 
 function span(keys: readonly number[]): string {

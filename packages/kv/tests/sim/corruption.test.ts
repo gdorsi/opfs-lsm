@@ -586,6 +586,30 @@ describe("open handles follow a repair to an older manifest", () => {
     expect(b).toEqual(fresh);
   });
 
+  it("when a handle has applied every seq the repair drops", async () => {
+    const name = `corrupt-${++dbs}`;
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const open = () => openHarnessDb({ name, fs, ingest: createLocalIngestClient(host) });
+    const a = await open();
+    await a.put(utf("a"), utf("1"));
+    await ingest(a);
+    await a.put(utf("b"), utf("2"));
+    await ingest(a);
+    await removeManifests(fs);
+    // Its open cannot load the recorded generation, so the host repairs, and the empty database stands in.
+    const fresh = await open();
+    const seen = await a.update([utf("b")], ([b], tx) => {
+      tx.put(utf("c"), utf("3"));
+      return str(b);
+    });
+    expect(seen, "an update reads what the repair left").toBeUndefined();
+    await fresh.sync();
+    expect(await reads(fresh)).toEqual([undefined, undefined, "3", undefined, undefined]);
+    expect(await reads(a)).toEqual(await reads(fresh));
+    for (const db of [a, fresh]) await db.close();
+  });
+
   it("when only a manifest below the installed ones is left", async () => {
     const [a, b, fresh] = await afterLosing(async (fs, first) => {
       await removeManifests(fs);

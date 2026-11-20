@@ -97,6 +97,18 @@ const EMPTY_RECORD = new ArrayBuffer(0);
 const OP_PUT = 0;
 const OP_DEL = 1;
 const OP_DELETE_RANGE = 3;
+/** A row's header, never an op: the type byte, then the `u64` seq the row is valid at. */
+const ROW_VALID_AT = 4;
+
+/**
+ * The verdict on a row (design.md, "WAL records"): a row with a header has
+ * its ops at the seq the header names, and none at any other. It depends on
+ * the row's bytes and its key alone, so every reader reaches it alike:
+ * through `decodeOps`, or here for the tab that wrote the row.
+ */
+export function rowValid(validAt: Seq | undefined, seq: Seq): boolean {
+  return validAt === undefined || validAt === seq;
+}
 
 /** A range delete asked for `asked` in the record at `seq` never covers its own batch. */
 function resolveThrough(asked: Seq, seq: Seq): Seq {
@@ -108,9 +120,11 @@ function resolveThrough(asked: Seq, seq: Seq): Seq {
  * records"). IndexedDB clones one buffer per row instead of an array of op
  * objects with a buffer per key and value. A range delete stores the
  * `through` its caller asked for; readers resolve it against the row's seq.
+ * With `validAt`, the row starts with the header that makes it valid at
+ * that seq only (`rowValid`).
  */
-export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
-  let size = 0;
+export function encodeOps(ops: readonly CheckedOp[], validAt?: Seq): ArrayBuffer {
+  let size = validAt === undefined ? 0 : 9;
   for (const op of ops) {
     size +=
       op.type === "deleteRange"
@@ -125,14 +139,21 @@ export function encodeOps(ops: readonly CheckedOp[]): ArrayBuffer {
     out.set(b, at + 4);
     at += 4 + b.byteLength;
   };
+  const u64 = (n: number) => {
+    view.setBigUint64(at, BigInt(n), true);
+    at += 8;
+  };
+  if (validAt !== undefined) {
+    view.setUint8(at++, ROW_VALID_AT);
+    u64(validAt);
+  }
   for (const op of ops) {
     if (op.type === "deleteRange") {
       view.setUint8(at++, OP_DELETE_RANGE);
       bytes(op.start);
       view.setUint8(at++, op.endExclusive ? 1 : 0);
       if (op.endExclusive) bytes(op.endExclusive);
-      view.setBigUint64(at, BigInt(op.through), true);
-      at += 8;
+      u64(op.through);
       continue;
     }
     view.setUint8(at++, op.type === "put" ? OP_PUT : OP_DEL);
@@ -149,7 +170,9 @@ export function resolveOps(ops: readonly CheckedOp[], seq: Seq): readonly Checke
 }
 
 /**
- * The ops of the row at `seq`. Keys and values are views into the row's
+ * The ops of the row at `seq`: none when its header names another seq
+ * (`rowValid`). The whole row is parsed first, so a corrupt row fails the
+ * same with or without a header. Keys and values are views into the row's
  * buffer, which nothing else holds. Exported for the decoder fuzz tests
  * (`packages/kv/fuzz/`).
  */
@@ -171,6 +194,17 @@ export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
     at += 4;
     return n;
   };
+  const seqOf = (what: string): Seq => {
+    const stored = take(8);
+    const n = new DataView(stored.buffer, stored.byteOffset, 8).getBigUint64(0, true);
+    if (n > BigInt(Number.MAX_SAFE_INTEGER)) throw new CommitError(`corrupt wal row: ${what}`);
+    return asSeq(Number(n));
+  };
+  let validAt: Seq | undefined;
+  if (bytes[0] === ROW_VALID_AT) {
+    at = 1;
+    validAt = seqOf("valid at");
+  }
   while (at < bytes.byteLength) {
     const type = view.getUint8(at);
     at += 1;
@@ -184,21 +218,19 @@ export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
       const hasEnd = take(1)[0]!;
       if (hasEnd > 1) throw new CommitError("corrupt wal row: end flag");
       const end = hasEnd === 1 ? (take(u32()) as CheckedKey) : undefined;
-      const stored = take(8);
-      const through = new DataView(stored.buffer, stored.byteOffset, 8).getBigUint64(0, true);
-      if (through > BigInt(Number.MAX_SAFE_INTEGER)) throw new CommitError("corrupt wal row: through");
+      const through = seqOf("through");
       if (end && compareBytes(key, end) >= 0) throw new CommitError("corrupt wal row: empty range");
       ops.push({
         type: "deleteRange",
         start: key,
         ...(end ? { endExclusive: end } : {}),
-        through: resolveThrough(asSeq(Number(through)), seq),
+        through: resolveThrough(through, seq),
       });
     } else {
       throw new CommitError(`corrupt wal op ${type}`);
     }
   }
-  return ops;
+  return rowValid(validAt, seq) ? ops : [];
 }
 
 /** How an open treats a database that does not exist. */
@@ -724,8 +756,9 @@ export class TabWal extends IdBWal {
  *   `through`: those seqs are uningested again.
  * - Otherwise no record can follow the manifest: the seqs between it and
  *   the WAL are gone from both stores, or `head` had to move past seqs
- *   the WAL never held. Every record is dropped and `ingestedThrough`
- *   moves to the new `head`: the database is the manifest alone.
+ *   the WAL never held. Every record is dropped, `head` moves up by at
+ *   least one, and `ingestedThrough` moves to it: the database is the
+ *   manifest alone, and no seq names both that state and the one before.
  * `head` never moves down, so a seq is never reused.
  */
 export async function adopt(wal: IdBWal, pairing: {
@@ -750,9 +783,14 @@ export async function adopt(wal: IdBWal, pairing: {
     head > through
       ? await reqToPromise(records.getAll(IDBKeyRange.bound(nextSeq(through), head)))
       : [];
-  const nextHead = asSeq(Math.max(head, through, floor));
+  const past = asSeq(Math.max(head, through, floor));
+  const follows = past === head && (through >= ingested || above.length === head - through);
+  // Dropping the records changes what the database reads, so the head moves
+  // too: a tab at the old head then reads the tail as one it is behind, and
+  // a row valid at the old `head + 1` (`rowValid`) never takes that seq.
+  const nextHead = follows ? head : asSeq(Math.max(past, nextSeq(head)));
   let nextIngested: Seq = through;
-  if (nextHead === head && (through >= ingested || above.length === head - through)) {
+  if (follows) {
     records.delete(IDBKeyRange.upperBound(Math.min(ingested, through)));
   } else {
     // No record can follow the manifest: drop them all, and start the

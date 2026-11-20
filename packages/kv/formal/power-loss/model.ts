@@ -339,10 +339,13 @@ export class Sys implements Disk {
     const fallback = this.v.fallBehindDestroy ? numbers : numbers.filter((n) => n > idb.destroyedTop);
     pick ??= fallback.map((n) => this.manifest(n)).find((m) => this.intact(m)) ?? ZERO;
     const floor = this.highestThrough(pick.through);
-    const nextHead = this.v.noHeadRaise ? head : Math.max(head, pick.through, floor);
+    const past = this.v.noHeadRaise ? head : Math.max(head, pick.through, floor);
     const nextTop = Math.max(idb.top, top, pick.gen);
     const above = [...idb.rows.keys()].filter((s) => s > pick.through && s <= head).length;
-    if (nextHead === head && (pick.through >= ingested || above === head - pick.through)) {
+    const follows = past === head && (pick.through >= ingested || above === head - pick.through);
+    // Dropping the rows changes the state, so the head moves by at least one.
+    const nextHead = follows || this.v.noHeadRaise ? head : Math.max(past, head + 1);
+    if (follows) {
       this.write({ store: "idb", label: `adopt ${pick.gen}`, deleteTo: Math.min(ingested, pick.through), ingested: pick.through, generation: pick.gen, top: nextTop });
     } else {
       // `passKeyGenerator`: the head moved past the rows, so the generator moves with it.

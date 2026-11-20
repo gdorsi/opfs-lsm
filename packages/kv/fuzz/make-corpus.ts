@@ -55,7 +55,8 @@ const cat = (...parts: (Uint8Array | number[])[]) => {
  * A database through four flushes (one L0 -> L1 compaction) and a reopen, as
  * the engine writes it. The range deletes cover no key their own flush
  * writes, so the runs, and the Rust seeds made from them, do not change with
- * them: one reaches the manifests' marks, one stays in the WAL.
+ * them: one reaches the manifests' marks, one stays in the WAL. The last
+ * WAL row is an `update`'s, so it starts with a header.
  */
 async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Array[]; walRows: Uint8Array[] }> {
   const fs = new MemoryFs();
@@ -74,6 +75,7 @@ async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Arr
   await db.put(utf("todo/9999"), utf('{"title":"left in the WAL"}'));
   await db.delete(utf("todo/0001"));
   await db.batch((tx) => tx.deleteRange({ start: utf("todo/0100") }, { through: 3 }));
+  await db.update([utf("todo/9999")], (_values, tx) => tx.put(utf("todo/9999"), utf('{"title":"updated in the WAL"}')));
   await db.close();
   db = await open();
   await db.close();
