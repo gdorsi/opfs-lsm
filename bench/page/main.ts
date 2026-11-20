@@ -21,6 +21,7 @@ import type {
   PhaseRequest,
   Workload,
 } from "../core/types.ts";
+import { BusyClock } from "./busy-clock.ts";
 import { measureMainThread } from "./main-thread.ts";
 import { CorrectnessError, createModel, rng, seedOf } from "./model.ts";
 
@@ -98,10 +99,18 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
   let userBytes = 0;
   const storeKey = `${req.contender}:${req.dbName}`;
 
+  const busy = new BusyClock();
+
   const time = async <T>(op: string, bytes: number, fn: () => Promise<T>, count = 1): Promise<T> => {
-    const t0 = performance.now();
-    const value = await fn();
-    const us = (performance.now() - t0) * 1000;
+    const t0 = busy.enter();
+    let value: T;
+    let t1: number;
+    try {
+      value = await fn();
+    } finally {
+      t1 = busy.exit();
+    }
+    const us = (t1 - t0) * 1000;
     let h = latency.get(op);
     if (!h) latency.set(op, (h = new Histogram()));
     h.record(us);
@@ -161,6 +170,7 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
       page: phase.page,
       timed: phase.timed,
       wallMs,
+      busyMs: busy.ms,
       ops,
       userBytes,
       latency: Object.fromEntries([...latency].map(([op, h]) => [op, h.snapshot()])),

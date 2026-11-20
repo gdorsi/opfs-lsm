@@ -137,7 +137,8 @@ export default defineWorkload({
           const next = new Map<string, Todo>();
           for (const i of picked.slice(k, k + TX_UPDATE)) next.set(todoId(i), todoRow(i, ctx.model.bump(i)));
           const bytes = [...next.values()].reduce((t, r) => t + rowBytes(r), 0);
-          await ctx.time("updateMany", bytes, () => store.updateMany([...next.keys()], (r) => next.get(r.id)!), next.size);
+          const ids = [...next.keys()];
+          await ctx.time("updateMany", bytes, () => store.updateMany(ids, (r) => next.get(r.id)!), next.size);
         }
         await held.release();
       }

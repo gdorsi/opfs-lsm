@@ -88,7 +88,8 @@ export default defineWorkload({
         const next = new Map<string, Todo>();
         for (const i of ids.subarray(k, k + TX_CHANGE)) next.set(row(i, 0).id, write(ctx, i));
         const bytes = [...next.values()].reduce((t, r) => t + rowBytes(r), 0);
-        await ctx.time("updateMany", bytes, () => store.updateMany([...next.keys()], (r) => next.get(r.id)!), next.size);
+        const changed = [...next.keys()];
+        await ctx.time("updateMany", bytes, () => store.updateMany(changed, (r) => next.get(r.id)!), next.size);
       }
     }),
     phase("delete", async (ctx, store) => {
@@ -96,7 +97,8 @@ export default defineWorkload({
       for (let k = 0; k < ids.length; k += TX_CHANGE) {
         const slice = [...ids.subarray(k, k + TX_CHANGE)];
         for (const i of slice) ctx.model.remove(i);
-        await ctx.time("deleteMany", slice.length * 13, () => store.deleteMany(slice.map((i) => row(i, 0).id)), slice.length);
+        const keys = slice.map((i) => row(i, 0).id);
+        await ctx.time("deleteMany", slice.length * 13, () => store.deleteMany(keys), slice.length);
       }
     }),
     check("check-after", true),

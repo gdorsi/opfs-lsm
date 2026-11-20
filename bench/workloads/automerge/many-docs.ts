@@ -5,6 +5,9 @@ import { countingAdapter } from "./trace.ts";
 type Note = { title: string; body: string };
 const EDITS = 20;
 
+/** The repo `persist` writes through, kept on the page for the untimed `export` that measures and closes it. */
+let session: { readonly repo: Repo; readonly urls: readonly string[] } | undefined;
+
 /** Many small notes (a title and a body typed in 20 changes), then a cold load of every note. */
 export default defineWorkload({
   family: "automerge",
@@ -28,11 +31,22 @@ export default defineWorkload({
           });
         }
         await ctx.time("flush", 0, () => repo.flush());
+        session = { repo, urls };
+        ctx.carry.urls = urls;
+      },
+    },
+    {
+      name: "export",
+      page: "same",
+      timed: false,
+      async run(ctx) {
+        if (!session) throw new Error("no repo: persist did not run on this page");
+        const { repo, urls } = session;
         let bytes = 0;
         for (const url of urls) bytes += (await repo.export((await repo.find(url as AutomergeUrl)).documentId))?.byteLength ?? 0;
-        ctx.carry.urls = urls;
         ctx.carry.liveLogicalBytes = bytes;
         await repo.shutdown();
+        session = undefined;
       },
     },
     { name: "settle", page: "same", timed: false, footprint: true, run: async (ctx) => (await ctx.store()).settle() },

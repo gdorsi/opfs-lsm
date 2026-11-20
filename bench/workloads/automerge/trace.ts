@@ -49,7 +49,7 @@ export default defineWorkload({
         const store = await ctx.store();
         const sink = { count: (n: number) => ctx.bytes(n) };
         const repo = new Repo({ storage: countingAdapter(store.adapter, (n) => sink.count(n)), network: [] });
-        const handle = repo.create<TextDoc>({ text: "" });
+        const handle = await ctx.time("create", 0, async () => repo.create<TextDoc>({ text: "" }), 0);
         session = Object.assign(sink, { repo, handle });
         const edits = ctx.carry.edits as number;
         const head = trace().slice(0, edits - typedKeys(ctx.size, edits));

@@ -46,7 +46,7 @@ export default defineWorkload({
       async run(ctx) {
         const store = await ctx.store();
         const doc = new Y.Doc();
-        const binding = await store.attach("trace", doc);
+        const binding = await ctx.time("attach", 0, () => store.attach("trace", doc), 0);
         const live = (session = { doc, binding, count: (n) => ctx.bytes(n) });
         doc.on("update", (u: Uint8Array) => live.count(u.byteLength));
         const edits = ctx.carry.edits as number;

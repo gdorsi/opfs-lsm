@@ -18,17 +18,18 @@ export default defineWorkload({
         const store = await ctx.store();
         let live = 0;
         for (let i = 0; i < ctx.params.entries; i++) {
+          let doc!: Y.Doc;
           await ctx.time("note", 0, async () => {
-            const doc = new Y.Doc();
+            doc = new Y.Doc();
             const binding = await store.attach(`note-${i}`, doc);
             doc.on("update", (u: Uint8Array) => ctx.bytes(u.byteLength));
             doc.getMap("meta").set("title", `note ${i}`);
             const body = doc.getText("body");
             for (let e = 0; e < EDITS; e++) body.insert(body.length, `line ${e} of note ${i}\n`);
             await binding.flush();
-            live += Y.encodeStateAsUpdate(doc).byteLength;
             await binding.detach();
           });
+          live += Y.encodeStateAsUpdate(doc).byteLength;
         }
         ctx.carry.liveLogicalBytes = live;
       },

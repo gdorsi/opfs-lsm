@@ -38,6 +38,10 @@ export async function putIds(ctx: Ctx, ids: ArrayLike<number>, op = "putMany"): 
   }
 }
 
+function sameBytes(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
+  return a === b || (a !== undefined && b !== undefined && a.byteLength === b.byteLength && a.every((x, i) => x === b[i]));
+}
+
 function ascending(n: number): Uint32Array {
   return Uint32Array.from({ length: n }, (_, i) => i);
 }
@@ -47,7 +51,8 @@ export async function getIds(ctx: Ctx, ops: number, pick: () => number, op = "ge
   const store = await ctx.store();
   for (let i = 0; i < ops; i++) {
     const id = pick();
-    ctx.model.verify(id, await ctx.time(op, 0, () => store.get(ctx.model.key(id))));
+    const key = ctx.model.key(id);
+    ctx.model.verify(id, await ctx.time(op, 0, () => store.get(key)));
   }
 }
 
@@ -56,14 +61,16 @@ export async function getMisses(ctx: Ctx, ops: number, pick: () => number, op = 
   const store = await ctx.store();
   for (let i = 0; i < ops; i++) {
     const id = pick();
-    const got = await ctx.time(op, 0, () => store.get(ctx.model.missKey(id)));
+    const key = ctx.model.missKey(id);
+    const got = await ctx.time(op, 0, () => store.get(key));
     ctx.check(got === undefined, `miss key after id ${id} is present`);
   }
 }
 
 /** Ordered scan of `limit` values from id `from`, each verified; checks ascending live ids. With an `offset` the ids must be contiguous, and the first one is checked. */
 export async function scan(ctx: Ctx, store: KvStore, from: number, limit: number, op: string, count = limit, offset = 0): Promise<number> {
-  const values = await ctx.time(op, 0, () => store.range(ctx.model.key(from), undefined, limit, offset), count);
+  const start = ctx.model.key(from);
+  const values = await ctx.time(op, 0, () => store.range(start, undefined, limit, offset), count);
   let prev = -1;
   for (const v of values) {
     const id = ctx.model.verifyAny(v);
@@ -142,17 +149,23 @@ export function ycsbPhase(letter: YcsbLetter): Phase<"kv"> {
         const read = ctx.rng() < YCSB[letter].read;
         const id = pick();
         if (read) {
-          ctx.model.verify(id, await ctx.time("read", 0, () => store.get(ctx.model.key(id))));
+          const key = ctx.model.key(id);
+          ctx.model.verify(id, await ctx.time("read", 0, () => store.get(key)));
         } else if (letter === "a") {
           const kv: [Uint8Array, Uint8Array] = [ctx.model.key(id), ctx.model.nextValue(id)];
           await ctx.time("update", keyBytes + valueBytes, () => store.putMany([kv]));
         } else {
+          const key = ctx.model.key(id);
+          const was = ctx.model.expected(id);
+          const next = ctx.model.nextValue(id);
+          let old: Uint8Array | undefined;
           await ctx.time("rmw", keyBytes + valueBytes, () =>
-            store.update(ctx.model.key(id), (old) => {
-              ctx.model.verify(id, old);
-              return ctx.model.nextValue(id);
+            store.update(key, (current) => {
+              old = current;
+              return next;
             }),
           );
+          ctx.check(sameBytes(old, was), `rmw of key ${id} read ${old === undefined ? "nothing" : "another value"}, want the value it last wrote`);
         }
       }
     },

@@ -6,7 +6,7 @@ import { describe, measure, versus, type Measures, type Metric } from "./metrics
 const hist = (n: number, sumUs: number): HistogramSnapshot => ({ n, sumUs, minUs: 0, maxUs: sumUs, buckets: [] });
 
 function phase(name: string, over: Partial<PhaseResult> = {}): PhaseResult {
-  return { name, page: "same", timed: true, wallMs: 1000, ops: 1000, userBytes: 0, latency: {}, ...over };
+  return { name, page: "same", timed: true, wallMs: 1000, busyMs: 1000, ops: 1000, userBytes: 0, latency: {}, ...over };
 }
 
 function run(phases: PhaseResult[], over: Partial<RunRecord> = {}): RunRecord {
@@ -25,7 +25,7 @@ function run(phases: PhaseResult[], over: Partial<RunRecord> = {}): RunRecord {
 }
 
 /** A phase of `kops` thousand ops per second. */
-const atRate = (kops: number) => phase("read", { ops: kops * 1000, wallMs: 1000 });
+const atRate = (kops: number) => phase("read", { ops: kops * 1000, wallMs: 1000, busyMs: 1000 });
 
 const series = (m: Measures, metric: Metric, name = "read") =>
   m.get({ workload: "kv/test", size: "small", contender: "kv/kv", phase: name, metric });
@@ -143,10 +143,11 @@ suite("versus", () => {
 suite("timed phases", () => {
   const open = phase("coldopen", {
     wallMs: 100,
+    busyMs: 80,
     ops: 1000,
     latency: { open: hist(1, 40_000), get: hist(1000, 50_000) },
   });
-  const m = measure([run([open]), run([{ ...open, wallMs: 120, latency: { open: hist(1, 60_000), get: hist(1000, 50_000) } }])]);
+  const m = measure([run([open]), run([{ ...open, wallMs: 120, busyMs: 100, latency: { open: hist(1, 60_000), get: hist(1000, 50_000) } }])]);
   const at = (metric: Metric) => series(m, metric, "coldopen");
 
   test("mean:<op> is the run's own sum over count, and mean:open is the store open", () => {
@@ -158,10 +159,8 @@ suite("timed phases", () => {
     assert.deepEqual(at("wall")!.values, [100, 120]);
   });
 
-  test("rate leaves the open out of the wall time", () => {
-    const [a, b] = at("rate")!.values;
-    assert.ok(Math.abs(a! - 1000 / 60 * 1000) < 1e-6);
-    assert.ok(Math.abs(b! - 1000 / 60 * 1000) < 1e-6);
+  test("rate divides ops by the busy time, which includes the open, and not by the wall time", () => {
+    assert.deepEqual(at("rate")!.values, [(1000 / 80) * 1000, (1000 / 100) * 1000]);
   });
 
   test("an untimed phase has no timing series", () => {
@@ -296,7 +295,7 @@ suite("memory", () => {
 
 suite("rounds", () => {
   const cold = (ms: number, n = 1) => ({ cold: hist(n, ms * 1000 * n) });
-  const first = phase("goal", { page: "fresh", wallMs: 40, ops: 20, latency: cold(4) });
+  const first = phase("goal", { page: "fresh", wallMs: 40, busyMs: 30, ops: 20, latency: cold(4) });
   const later = [phase("goal", { page: "fresh", wallMs: 9, ops: 1, latency: cold(8) }), phase("goal", { page: "fresh", wallMs: 9, ops: 1, latency: cold(6) })];
   const m = measure([run([{ ...first, laterRounds: later }])]);
 

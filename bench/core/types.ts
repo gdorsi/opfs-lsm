@@ -199,6 +199,12 @@ export type PhaseResult = {
   readonly page: PageMode;
   readonly timed: boolean;
   readonly wallMs: number;
+  /**
+   * Time with at least one `ctx.time` call in flight, the open included: the union of the calls' intervals, so nested or
+   * concurrent calls count once. What the phase's ops/s divides by. The rest of `wallMs` is the harness: op generation,
+   * checks, bookkeeping.
+   */
+  readonly busyMs: number;
   /** Ops done in the phase (entries, not calls), not counting the open. */
   readonly ops: number;
   readonly userBytes: number;
