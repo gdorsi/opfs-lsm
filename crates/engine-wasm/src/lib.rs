@@ -13,7 +13,7 @@ use alloc::{vec, vec::Vec};
 
 use core::cell::UnsafeCell;
 use engine_core::{
-    encode_run_into, lz4_unpack, Codec, Entry, MergeConfig, MergeError, MergeSession, RunEnd, SstError, Stop,
+    fold_run_into, lz4_unpack, Codec, EntryRef, MergeConfig, MergeError, MergeSession, RunEnd, SstError, Stop,
 };
 
 const TAG_PUT: u8 = 1;
@@ -167,21 +167,22 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn parse_entries(buf: &[u8]) -> Result<Vec<Entry>, i32> {
+/// The entry records of `buf`, their keys and values read where they are.
+fn parse_entries(buf: &[u8]) -> Result<Vec<EntryRef<'_>>, i32> {
     let mut r = Reader { buf, o: 0 };
     let mut out = Vec::new();
     while !r.done() {
         let tag = r.take(1).ok_or(TRUNCATED)?[0];
         let seq = r.u64().ok_or(TRUNCATED)?;
         let klen = r.u32().ok_or(TRUNCATED)?;
-        let key = r.take(klen).ok_or(TRUNCATED)?.to_vec();
+        let key = r.take(klen).ok_or(TRUNCATED)?;
         out.push(match tag {
             TAG_PUT => {
                 let vlen = r.u32().ok_or(TRUNCATED)?;
-                let value = r.take(vlen).ok_or(TRUNCATED)?.to_vec();
-                Entry::Put { key, value, seq }
+                let value = r.take(vlen).ok_or(TRUNCATED)?;
+                EntryRef::Put { key, value, seq }
             }
-            TAG_DEL => Entry::Del { key, seq },
+            TAG_DEL => EntryRef::Del { key, seq },
             _ => return Err(BAD_TAG),
         });
     }
@@ -214,7 +215,7 @@ pub unsafe extern "C" fn encode_sst(ptr: *const u8, len: usize, lz4: i32) -> i32
     finish(parse_entries(bytes(ptr, len)).map(|entries| {
         // The run is written after room for its head, so it is never copied.
         let mut out = vec![0u8; RUN_HEAD];
-        let end = encode_run_into(&entries, codec(lz4), &mut out);
+        let end = fold_run_into(&entries, codec(lz4), &mut out);
         out[..RUN_HEAD].copy_from_slice(&run_head(&end));
         out.extend_from_slice(&end.first_key);
         out.extend_from_slice(&end.last_key);

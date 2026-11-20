@@ -500,24 +500,23 @@ impl SstWriter {
     }
 }
 
-/// Stable sort by key. Flushes and merges hand over sorted entries, so the
-/// common case is the one pass that checks it. In-crate because core's
-/// driftsort is 5 kB of the module.
-fn sort_by_key(v: &mut [&Entry]) {
-    if v.windows(2).all(|w| w[0].key() <= w[1].key()) {
+/// Stable sort of entry numbers by `key`. In-crate because core's driftsort
+/// is 5 kB of the module.
+fn sort_by_key<'a>(v: &mut [u32], key: &impl Fn(u32) -> &'a [u8]) {
+    if v.windows(2).all(|w| key(w[0]) <= key(w[1])) {
         return;
     }
     let mut buf = v.to_vec();
-    merge_sort(v, &mut buf);
+    merge_sort(v, &mut buf, key);
 }
 
 /// Top-down merge sort of `v`, using `buf` (same length) as scratch.
-fn merge_sort<'a>(v: &mut [&'a Entry], buf: &mut [&'a Entry]) {
+fn merge_sort<'a>(v: &mut [u32], buf: &mut [u32], key: &impl Fn(u32) -> &'a [u8]) {
     let n = v.len();
     if n <= 16 {
         for i in 1..n {
             let mut j = i;
-            while j > 0 && v[j - 1].key() > v[j].key() {
+            while j > 0 && key(v[j - 1]) > key(v[j]) {
                 v.swap(j - 1, j);
                 j -= 1;
             }
@@ -525,16 +524,16 @@ fn merge_sort<'a>(v: &mut [&'a Entry], buf: &mut [&'a Entry]) {
         return;
     }
     let mid = n / 2;
-    merge_sort(&mut v[..mid], &mut buf[..mid]);
-    merge_sort(&mut v[mid..], &mut buf[mid..]);
-    if v[mid - 1].key() <= v[mid].key() {
+    merge_sort(&mut v[..mid], &mut buf[..mid], key);
+    merge_sort(&mut v[mid..], &mut buf[mid..], key);
+    if key(v[mid - 1]) <= key(v[mid]) {
         return;
     }
     buf[..n].copy_from_slice(v);
     let (mut i, mut j) = (0, mid);
     for slot in v.iter_mut() {
         // Ties take the left run, which keeps the sort stable.
-        if j == n || (i < mid && buf[i].key() <= buf[j].key()) {
+        if j == n || (i < mid && key(buf[i]) <= key(buf[j])) {
             *slot = buf[i];
             i += 1;
         } else {
@@ -544,18 +543,41 @@ fn merge_sort<'a>(v: &mut [&'a Entry], buf: &mut [&'a Entry]) {
     }
 }
 
-/// Encode SST version 1 (layout in `SstWriter::finish`) from entries in any
-/// order, appending the run to `out`. Equal keys keep their order in `entries`.
-pub fn encode_run_into(entries: &[Entry], codec: Codec, out: &mut Vec<u8>) -> RunEnd {
-    let mut sorted: Vec<&Entry> = entries.iter().collect();
-    sort_by_key(&mut sorted);
+/// What a run keeps of entries with one key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Duplicates {
+    All,
+    Last,
+}
+
+fn write_sorted(entries: &[EntryRef<'_>], keep: Duplicates, codec: Codec, out: &mut Vec<u8>) -> RunEnd {
+    let key = |i: u32| entries[i as usize].key();
+    let mut order: Vec<u32> = (0..entries.len() as u32).collect();
+    sort_by_key(&mut order, &key);
     let mut writer = SstWriter::new(codec);
-    for e in sorted {
-        if writer.push(e.into(), out).is_err() {
+    for (at, &i) in order.iter().enumerate() {
+        if keep == Duplicates::Last && order.get(at + 1).is_some_and(|&next| key(next) == key(i)) {
+            continue;
+        }
+        if writer.push(entries[i as usize], out).is_err() {
             unreachable!("sorted entries are in order");
         }
     }
     writer.finish(out)
+}
+
+/// Encode SST version 1 (layout in `SstWriter::finish`) from entries in any
+/// order, appending the run to `out`. Equal keys keep their order in `entries`.
+pub fn encode_run_into(entries: &[Entry], codec: Codec, out: &mut Vec<u8>) -> RunEnd {
+    let refs: Vec<EntryRef<'_>> = entries.iter().map(EntryRef::from).collect();
+    write_sorted(&refs, Duplicates::All, codec, out)
+}
+
+/// Fold writes into the run a flush publishes, appending it to `out`:
+/// `entries` in the order they were written, in any key order. The run holds
+/// each key once, as its last entry.
+pub fn fold_run_into(entries: &[EntryRef<'_>], codec: Codec, out: &mut Vec<u8>) -> RunEnd {
+    write_sorted(entries, Duplicates::Last, codec, out)
 }
 
 /// `encode_run_into` a new buffer.

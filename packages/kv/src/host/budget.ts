@@ -85,8 +85,8 @@ export type HostBudget = {
 /** The wasm module's memory when idle. */
 const MODULE_BYTES = 1 * MiB;
 /**
- * The footprint of a run of F op bytes in a flush. About 7F is wasm memory
- * (measured: a 1.75 MiB run peaks at 11.9 MiB, module included) and about 3F
+ * The footprint of a run of F op bytes in a flush, rounded up. About 5.4F is
+ * wasm memory (measured: a 1.75 MiB run peaks at 9.4 MiB, module included) and about 3F
  * is JS: the WAL records read, the folded entries and the copy of the result.
  */
 const FLUSH_COST = 10;
@@ -122,13 +122,13 @@ const YIELD_BYTES = 1 * MiB;
  * - F is 7/8 of min(T, B/16), T being the compaction output run (4 MiB). Wasm
  *   memory grows in steps at power-of-two input sizes, and a run's packed
  *   input is about 1.15F, so an F at 7/8 of a power of two stays under a
- *   step. A 2 MiB run peaks at 19.3 MiB where a 1.75 MiB run peaks at 11.9.
+ *   step. A 2 MiB run peaks at 16.1 MiB where a 1.75 MiB run peaks at 9.4.
  * - S is the cap, 49, unless the smallest window cannot fit that many.
  * - C is what the merge share has left per source, between 64 KiB and
  *   256 KiB, in steps of 32 KiB.
  * - The L0 stop is S - 1.
- * - Recycling at B/2 sits above what a flush or a merge needs alone (12 and
- *   8 MiB at the default) and below what they need together (19 MiB). It
+ * - Recycling at B/2 sits above what a flush or a merge needs alone (10 and
+ *   8 MiB at the default) and below what they need together (16.3 MiB). It
  *   fires after an overlap, not after every flush.
  *
  * A figure below the minimum counts as the minimum.

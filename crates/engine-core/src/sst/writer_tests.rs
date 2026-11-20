@@ -336,3 +336,29 @@ fn a_two_entry_run_has_the_documented_bytes() {
     assert_eq!((field(9), field(10) as u32), (1, MAGIC));
     assert_eq!(end, RunEnd { entries: 2, size: out.len(), first_key: b"ab".to_vec(), last_key: b"ac".to_vec() });
 }
+
+/// A fold is the run of each key's last entry, whatever came before it.
+#[test]
+fn a_fold_keeps_the_last_entry_of_each_key() {
+    for seed in 1..=120u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let mut written = entries(&mut rng);
+        for _ in 0..written.len() / 2 {
+            let key = written[rng.below(written.len())].key().to_vec();
+            let seq = rng.next();
+            written.push(if rng.chance(3) { Entry::Del { key, seq } } else { Entry::Put { key, value: rng.bytes(9), seq } });
+        }
+        let mut last = std::collections::BTreeMap::new();
+        for e in &written {
+            last.insert(e.key().to_vec(), e.clone());
+        }
+        let last: Vec<Entry> = last.into_values().collect();
+        let refs: Vec<EntryRef<'_>> = written.iter().map(EntryRef::from).collect();
+        for codec in [Codec::Raw, Codec::Lz4] {
+            let mut bytes = Vec::new();
+            let end = fold_run_into(&refs, codec, &mut bytes);
+            assert!(bytes == encode_sst(&last, codec), "seed {seed}: {codec:?} bytes differ");
+            assert_end(&end, &bytes, &last, &format!("seed {seed}"));
+        }
+    }
+}

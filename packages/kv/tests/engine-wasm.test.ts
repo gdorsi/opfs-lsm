@@ -94,10 +94,12 @@ describe("the end of a run", () => {
     }
   });
 
-  it.each(shapes)("a raw run of %s is the same bytes and the same end from wasm and from TypeScript", async (_name, entries) => {
+  it.each(shapes)("a raw run of %s is the same bytes and the same end from wasm and from TypeScript, with each key's last entry", async (_name, entries) => {
     await ensureEngine();
     const wasm = await encodeRun(entries, "raw");
-    const ts = encodeRunTs(entries);
+    // The engine keeps the last entry of a key; the reference writes what it is given.
+    const last = new Map(entries.map((e) => [e.key.join(), e]));
+    const ts = encodeRunTs(entries.filter((e) => last.get(e.key.join()) === e));
     expect(wasm.end).toEqual(ts.end);
     expect(wasm.body).toEqual(ts.body);
   });

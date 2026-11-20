@@ -29,8 +29,9 @@ result_len() -> u32
     session's WRITE they point into the session's own output buffer.
 
 encode_sst(ptr, len, lz4: i32) -> i32
-    Input: entry records (below). Result: one run record (below), the SST
-    and what the encoder knows about it.
+    Input: entry records (below) in the order they were written, in any
+    key order. Result: one run record (below): the SST, which holds each
+    key once as its last record, and what the encoder knows about it.
 
 lz4_decompress(ptr, len, size: u32) -> i32
     Input: one LZ4 block body. Result: exactly `size` bytes, or -10.

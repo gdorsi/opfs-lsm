@@ -675,7 +675,7 @@ of OPFS, independently.
 |---|---|---|
 | Append, memtable, point get, range merge, bloom checks | Tab main thread | TypeScript |
 | Unpack an LZ4 block, filter a scan inside a block | Tab main thread | wasm |
-| Fold the WAL into L0, encode SSTs | SharedWorker | TypeScript fold, wasm encode |
+| Fold the WAL into L0, encode SSTs | SharedWorker | wasm |
 | Compaction merge, CRC check | SharedWorker | wasm session, pumped by TypeScript |
 
 A tab reads in TypeScript so that a `get` never posts a message. The wasm module is required:

@@ -198,7 +198,7 @@ export function scanBlockContainsIn(engine: FlatEngine, framed: Uint8Array, lz4:
   );
 }
 
-/** `entries` as one run, encoded by `engine`. */
+/** `entries` as one run, encoded by `engine`: in any key order, and of the entries of one key the last is kept. */
 export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz4: boolean): EncodedRun {
   let size = 0;
   for (const e of entries) {
