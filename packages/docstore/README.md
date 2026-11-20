@@ -57,7 +57,7 @@ const schema = defineSchema({
 });
 ```
 
-`collection<T>()` starts a declaration. `index`, `unique` and `text` each take the index name, then `by`: a field, or a list of fields. `text` takes the string field to search as its third argument. Each call returns a new declaration, so you can share a base.
+`collection<T>()` starts a declaration. `index`, `unique` and `text` each take the index name, then `by`: a field, or a list of fields. `text` takes the string field to search as its third argument, and `index` can take `{ include }` ([Included fields](#included-fields)). Each call returns a new declaration, so you can share a base.
 
 ```ts
 const base = collection<Todo>().index("open", ["done", "createdAt"]);
@@ -283,6 +283,27 @@ await todos.queryIds({ index: "byTag", eq: ["home"] });
 // createdAt
 ```
 
+### Included fields
+
+`include` names top-level fields that each entry of a sorted or multi index also holds. `queryEntries` returns them without reading the documents, so a list that shows only those fields costs one range scan, not a scan and a read per row.
+
+```ts
+const withList = collection<Todo>().index("list", ["done", "createdAt"], {
+	include: ["title", "tags"],
+});
+// a store whose todos are withList
+await todos.queryEntries({ index: "list", eq: [false] });
+// => { entries: [
+//      { id: "c", values: [false, 2],
+//        fields: { title: "Call mom", tags: ["home", "home"] } },
+//      { id: "a", values: [false, 3],
+//        fields: { title: "Buy milk", tags: ["home", "shop"] } }] }
+// fields is typed Pick<Todo, "title" | "tags">. A field the
+// document lacks is left out, and the document still has its entry
+```
+
+**Note.** Each entry stores a copy of its fields, so the index takes more space, and a write that changes an included field rewrites the document's entries in that index. Include what a list shows, not the whole document. An included field can hold any JSON value. `index` takes up to 16 of them, `unique` and `text` take none.
+
 ### Text
 
 ```ts
@@ -418,7 +439,7 @@ await todos.count({ index: "open", limit: 1 });
 
 ### Entries
 
-An entry already holds the values its index orders by. `queryEntries` returns them with each id, typed from `by`, and reads no document.
+An entry already holds the values its index orders by. `queryEntries` returns them with each id, typed from `by`, and reads no document. An entry of an index with `include` also has `fields` ([Included fields](#included-fields)); other entries have no `fields` key.
 
 ```ts
 await todos.queryEntries({ index: "open", eq: [false] });
@@ -635,7 +656,7 @@ await todos4.query({ index: "byTitle" });
 // rebuild
 ```
 
-**Note.** `todos.indexes` follows this handle's schema. A query on an index that a newer schema redefined throws `"schema"`.
+**Note.** `todos.indexes` follows this handle's schema. A query on an index that a newer schema redefined throws `"schema"`. A changed `include` redefines its index, which is rebuilt like a new one.
 
 ## Storage quota
 
