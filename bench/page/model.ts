@@ -21,6 +21,8 @@ export class CorrectnessError extends Error {
 export type Model = {
   readonly params: Params;
   key(id: number): Uint8Array;
+  /** A key no write ever stores that sorts between `key(id)` and `key(id + 1)`: `key(id)` and one more byte (db_bench's missing keys). */
+  missKey(id: number): Uint8Array;
   /** Current version of `id`; 0 when absent. */
   version(id: number): number;
   /** Bump the version of `id` and return the new version (for workloads that build their own values). */
@@ -35,6 +37,8 @@ export type Model = {
   verify(id: number, got: Uint8Array | undefined): void;
   /** Throws unless `got` is the current value of some live key; returns its id. */
   verifyAny(got: Uint8Array): number;
+  /** The smallest live id at or after `from`; undefined when there is none. */
+  nextLive(from: number): number | undefined;
   /** One past the highest id ever written. */
   readonly end: number;
   liveKeys(): number;
@@ -70,6 +74,12 @@ export function createModel(params: Params, carried?: string): Model {
     return k;
   };
 
+  const missKey = (id: number) => {
+    const k = new Uint8Array(keyBytes + 1);
+    k.set(key(id));
+    return k;
+  };
+
   const valueOf = (id: number, version: number) => {
     usable();
     const out = new Uint8Array(valueBytes);
@@ -96,6 +106,7 @@ export function createModel(params: Params, carried?: string): Model {
   const model: Model = {
     params,
     key,
+    missKey,
     version: (id) => v[id] ?? 0,
     bump(id) {
       grow(id);
@@ -131,6 +142,10 @@ export function createModel(params: Params, carried?: string): Model {
         throw new CorrectnessError(`scan: id ${h.id} version ${h.version} is not live`);
       }
       return h.id;
+    },
+    nextLive(from) {
+      for (let id = from; id < end; id++) if (v[id] !== 0) return id;
+      return undefined;
     },
     get end() {
       return end;
@@ -203,12 +218,17 @@ export function permutation(n: number, next: () => number): Uint32Array {
   return p;
 }
 
+/** YCSB's ScrambledZipfianGenerator draws from this many items whatever the key count, with this zeta(ITEM_COUNT, 0.99). */
+const SCRAMBLED_ITEMS = 10_000_000_000;
+const SCRAMBLED_ZETAN = 26.46902820178302;
+
 /**
- * YCSB ScrambledZipfian over [0, n): zipfian with theta 0.99 over a large
- * item space, hashed into [0, n) so hot keys spread over the key space.
+ * YCSB ScrambledZipfian over [0, n): zipfian with theta 0.99 over 10^10 items, then FNV-hashed into
+ * [0, n) so hot keys spread over the key space. The skew is that of 10^10 items, not of n: the hottest
+ * key takes 1 / 26.47 of the draws (3.8%) at any n, where a zipfian over n items takes more, and more the smaller n is.
  */
 export function zipfian(n: number, next: () => number): () => number {
-  const z = zipfRaw(n, next);
+  const z = zipfRaw(SCRAMBLED_ITEMS, next, SCRAMBLED_ZETAN);
   return () => fnv64mod(z(), n);
 }
 
@@ -223,10 +243,10 @@ export function zipfianOf(n: number, next: () => number): () => number {
   return () => items[z()]!;
 }
 
-function zipfRaw(n: number, next: () => number): () => number {
+function zipfRaw(n: number, next: () => number, known?: number): () => number {
   const theta = 0.99;
-  let zetan = 0;
-  for (let i = 1; i <= n; i++) zetan += 1 / Math.pow(i, theta);
+  let zetan = known ?? 0;
+  if (known === undefined) for (let i = 1; i <= n; i++) zetan += 1 / Math.pow(i, theta);
   const zeta2 = 1 + 1 / Math.pow(2, theta);
   const alpha = 1 / (1 - theta);
   const eta = (1 - Math.pow(2 / n, 1 - theta)) / (1 - zeta2 / zetan);
@@ -239,11 +259,18 @@ function zipfRaw(n: number, next: () => number): () => number {
   };
 }
 
+const FNV_OFFSET_64 = 0xcbf29ce484222325n;
+const FNV_PRIME_64 = 1099511628211n;
+
+/** YCSB's Utils.fnvhash64 of the 8 bytes of `x`, least significant first, as a signed long's absolute value, mod `n`. */
 function fnv64mod(x: number, n: number): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < 4; i++) {
-    h ^= (x >>> (i * 8)) & 0xff;
-    h = Math.imul(h, 0x01000193) >>> 0;
+  let rest = BigInt(x);
+  let h = FNV_OFFSET_64;
+  for (let i = 0; i < 8; i++) {
+    h ^= rest & 0xffn;
+    rest >>= 8n;
+    h = BigInt.asUintN(64, h * FNV_PRIME_64);
   }
-  return h % n;
+  const signed = BigInt.asIntN(64, h);
+  return Number((signed < 0n ? -signed : signed) % BigInt(n));
 }

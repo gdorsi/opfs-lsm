@@ -20,19 +20,26 @@ export type HeapSample = {
   backingStorageSize?: number;
 };
 
-/** Installed in every SharedWorker (paused at start) and tab (new-document script) to find the wasm memories. */
+/**
+ * Installed in every worker (paused at start) and tab (new-document script) to find the wasm memories.
+ * An instance's memory is whichever of its exports is a WebAssembly.Memory: kv names it `memory`,
+ * wa-sqlite's minified build names it `pa`. Both `instantiate` and `instantiateStreaming` are wrapped.
+ */
 export const WASM_HOOK = `(() => {
   if (globalThis.__benchWasm) return;
   const refs = [];
   const Inst = WebAssembly.Instance;
   const note = (i) => {
-    const m = i && i.exports && i.exports.memory;
-    if (m instanceof WebAssembly.Memory) refs.push(new WeakRef(m));
+    for (const e of Object.values((i && i.exports) || {})) if (e instanceof WebAssembly.Memory) refs.push(new WeakRef(e));
     return i;
   };
   const instantiate = WebAssembly.instantiate;
   WebAssembly.instantiate = function (...a) {
     return instantiate.apply(this, a).then((r) => (note(r instanceof Inst ? r : r.instance), r));
+  };
+  const streaming = WebAssembly.instantiateStreaming;
+  if (streaming) WebAssembly.instantiateStreaming = function (...a) {
+    return streaming.apply(this, a).then((r) => (note(r.instance), r));
   };
   WebAssembly.Instance = new Proxy(Inst, { construct: (t, a, n) => note(Reflect.construct(t, a, n)) });
   globalThis.__benchWasm = () => {
@@ -115,12 +122,12 @@ export async function chromeMemory(profile: string): Promise<ProcessMemory[]> {
   );
 }
 
-export function combine(sharedWorker: PeakTracker, tabs: PeakTracker, largestRendererBytes: number | null): MemoryPeaks {
-  const sw = sharedWorker.peak();
+export function combine(workers: PeakTracker, tabs: PeakTracker, largestRendererBytes: number | null): MemoryPeaks {
+  const sw = workers.peak();
   const tab = tabs.peak();
   return {
-    sharedWorker: sw.heap,
-    sharedWorkerWasmBytes: sw.wasmBytes,
+    worker: sw.heap,
+    workerWasmBytes: sw.wasmBytes,
     tab: tab.heap,
     tabWasmBytes: tab.wasmBytes,
     largestRendererBytes,

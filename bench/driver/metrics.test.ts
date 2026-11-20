@@ -6,7 +6,7 @@ import { describe, measure, versus, type Measures, type Metric } from "./metrics
 const hist = (n: number, sumUs: number): HistogramSnapshot => ({ n, sumUs, minUs: 0, maxUs: sumUs, buckets: [] });
 
 function phase(name: string, over: Partial<PhaseResult> = {}): PhaseResult {
-  return { name, page: "same", timed: true, wallMs: 1000, ops: 1000, userBytes: 0, latency: {}, ...over };
+  return { name, page: "same", timed: true, wallMs: 1000, spanMs: 1000, ops: 1000, userBytes: 0, latency: {}, ...over };
 }
 
 function run(phases: PhaseResult[], over: Partial<RunRecord> = {}): RunRecord {
@@ -25,7 +25,7 @@ function run(phases: PhaseResult[], over: Partial<RunRecord> = {}): RunRecord {
 }
 
 /** A phase of `kops` thousand ops per second. */
-const atRate = (kops: number) => phase("read", { ops: kops * 1000, wallMs: 1000 });
+const atRate = (kops: number) => phase("read", { ops: kops * 1000, wallMs: 1000, spanMs: 1000 });
 
 const series = (m: Measures, metric: Metric, name = "read") =>
   m.get({ workload: "kv/test", size: "small", contender: "kv/kv", phase: name, metric });
@@ -143,10 +143,11 @@ suite("versus", () => {
 suite("timed phases", () => {
   const open = phase("coldopen", {
     wallMs: 100,
+    spanMs: 80,
     ops: 1000,
     latency: { open: hist(1, 40_000), get: hist(1000, 50_000) },
   });
-  const m = measure([run([open]), run([{ ...open, wallMs: 120, latency: { open: hist(1, 60_000), get: hist(1000, 50_000) } }])]);
+  const m = measure([run([open]), run([{ ...open, wallMs: 120, spanMs: 100, latency: { open: hist(1, 60_000), get: hist(1000, 50_000) } }])]);
   const at = (metric: Metric) => series(m, metric, "coldopen");
 
   test("mean:<op> is the run's own sum over count, and mean:open is the store open", () => {
@@ -158,10 +159,8 @@ suite("timed phases", () => {
     assert.deepEqual(at("wall")!.values, [100, 120]);
   });
 
-  test("rate leaves the open out of the wall time", () => {
-    const [a, b] = at("rate")!.values;
-    assert.ok(Math.abs(a! - 1000 / 60 * 1000) < 1e-6);
-    assert.ok(Math.abs(b! - 1000 / 60 * 1000) < 1e-6);
+  test("rate divides ops by the span of the timed calls, which includes the open, and not by the wall time", () => {
+    assert.deepEqual(at("rate")!.values, [(1000 / 80) * 1000, (1000 / 100) * 1000]);
   });
 
   test("an untimed phase has no timing series", () => {
@@ -281,14 +280,14 @@ suite("footprints", () => {
 suite("memory", () => {
   test("the SharedWorker total adds heap in use, backing store and wasm memory, with no phase", () => {
     const memory = {
-      sharedWorker: { usedSize: 10, totalSize: 99, backingStorageSize: 20, samples: 1 },
-      sharedWorkerWasmBytes: 30,
+      worker: { usedSize: 10, totalSize: 99, backingStorageSize: 20, samples: 1 },
+      workerWasmBytes: 30,
       tab: null,
       tabWasmBytes: null,
       largestRendererBytes: 500,
     };
     const m = measure([run([atRate(100)], { memory })]);
-    const s = m.get({ workload: "kv/test", size: "small", contender: "kv/kv", metric: "mem:sharedWorkerTotal" })!;
+    const s = m.get({ workload: "kv/test", size: "small", contender: "kv/kv", metric: "mem:workerTotal" })!;
     assert.deepEqual(s.values, [60]);
     assert.equal(m.get({ workload: "kv/test", size: "small", contender: "kv/kv", metric: "mem:tabTotal" }), undefined);
   });
@@ -296,7 +295,7 @@ suite("memory", () => {
 
 suite("rounds", () => {
   const cold = (ms: number, n = 1) => ({ cold: hist(n, ms * 1000 * n) });
-  const first = phase("goal", { page: "fresh", wallMs: 40, ops: 20, latency: cold(4) });
+  const first = phase("goal", { page: "fresh", wallMs: 40, spanMs: 30, ops: 20, latency: cold(4) });
   const later = [phase("goal", { page: "fresh", wallMs: 9, ops: 1, latency: cold(8) }), phase("goal", { page: "fresh", wallMs: 9, ops: 1, latency: cold(6) })];
   const m = measure([run([{ ...first, laterRounds: later }])]);
 
@@ -320,11 +319,19 @@ suite("seeds", () => {
   const seeded = (seed: number, over: Partial<RunRecord> = {}) => run([atRate(1)], { params: { ...run([]).params, seed }, ...over });
 
   test("each seed of a successful run is listed once, in ascending order", () => {
-    assert.deepEqual(measure([seeded(7), seeded(1), seeded(7)]).seeds, [1, 7]);
+    assert.deepEqual(measure([seeded(7), seeded(1, { contender: "kv/idb" }), seeded(7)]).seeds, [1, 7]);
   });
 
   test("a failed run's seed is not listed", () => {
     assert.deepEqual(measure([seeded(1), seeded(7, { error: "timeout" })]).seeds, [1]);
+  });
+
+  test("runs of one series on two seeds are not pooled", () => {
+    assert.throws(() => measure([seeded(1), seeded(2)]), /seed 1, kv defaults and with seed 2, kv defaults/);
+  });
+
+  test("a failed run on another seed does not stop the rest", () => {
+    assert.deepEqual(series(measure([seeded(1), seeded(2, { error: "boom" }), seeded(1)]), "rate")!.values, [1000, 1000]);
   });
 });
 
@@ -332,6 +339,10 @@ suite("kv options", () => {
   test("each set of overrides is listed once, and default runs list none", () => {
     assert.deepEqual(measure([run([atRate(1)])]).kvOptions, []);
     const small = { kv: { cacheBytes: 4_194_304 } };
-    assert.deepEqual(measure([run([atRate(1)], small), run([atRate(1)], small), run([atRate(1)])]).kvOptions, ["cacheBytes 4194304"]);
+    assert.deepEqual(measure([run([atRate(1)], small), run([atRate(1)], small), run([atRate(1)], { contender: "kv/idb" })]).kvOptions, ["cacheBytes 4194304"]);
+  });
+
+  test("runs of one series with and without an override are not pooled", () => {
+    assert.throws(() => measure([run([atRate(1)], { kv: { cacheBytes: 4_194_304 } }), run([atRate(1)])]), /kv cacheBytes 4194304 and with seed 1, kv defaults/);
   });
 });

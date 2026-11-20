@@ -100,8 +100,8 @@ const procs = (m: MemoryNow, pid?: number) => {
   return `browser ${mib(browser?.bytes ?? 0).trim()}, renderer[${r?.pid ?? pid}] ${r ? mib(r.bytes).trim() : "exited"}`;
 };
 const heap = (m: MemoryNow) =>
-  m.sharedWorker
-    ? `SW heap used ${mib(m.sharedWorker.usedSize).trim()} total ${mib(m.sharedWorker.totalSize).trim()} backing ${m.sharedWorker.backingStorageSize === undefined ? "n/a" : mib(m.sharedWorker.backingStorageSize).trim()}`
+  m.worker
+    ? `SW heap used ${mib(m.worker.usedSize).trim()} total ${mib(m.worker.totalSize).trim()} backing ${m.worker.backingStorageSize === undefined ? "n/a" : mib(m.worker.backingStorageSize).trim()}`
     : "SW heap n/a";
 
 async function profileMiB(chrome: Chrome): Promise<number> {

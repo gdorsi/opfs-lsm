@@ -44,13 +44,14 @@ export default defineWorkload({
       page: "same",
       timed: true,
       async run(ctx) {
+        const edits = ctx.carry.edits as number;
+        const head = trace().slice(0, edits - typedKeys(ctx.size, edits));
         const store = await ctx.store();
         const doc = new Y.Doc();
-        const binding = await store.attach("trace", doc);
+        const binding = await ctx.time("attach", 0, () => store.attach("trace", doc), 0);
         const live = (session = { doc, binding, count: (n) => ctx.bytes(n) });
         doc.on("update", (u: Uint8Array) => live.count(u.byteLength));
-        const edits = ctx.carry.edits as number;
-        for (const edit of trace().slice(0, edits - typedKeys(ctx.size, edits))) await ctx.time("edit", 0, async () => apply(doc, edit));
+        for (const edit of head) await ctx.time("edit", 0, async () => apply(doc, edit));
         await ctx.time("flush", 0, () => binding.flush());
       },
     },

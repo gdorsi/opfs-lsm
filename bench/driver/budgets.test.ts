@@ -8,7 +8,7 @@ const budget: Budget = { workload: "kv/test", contender: "kv/kv", size: "tiny", 
 
 function settle(name: string, diskBytes: number): PhaseResult {
   const footprint = { opfsBytes: diskBytes, idbEstimateBytes: 0, liveLogicalBytes: 1000 } as Footprint;
-  return { name, page: "same", timed: false, wallMs: 1, ops: 0, userBytes: 0, latency: {}, footprint };
+  return { name, page: "same", timed: false, wallMs: 1, spanMs: 1, ops: 0, userBytes: 0, latency: {}, footprint };
 }
 
 function run(phases: PhaseResult[], over: Partial<RunRecord> = {}): RunRecord {

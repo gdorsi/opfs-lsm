@@ -5,7 +5,7 @@
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { BENCH_DIR } from "./build.ts";
+import { BENCH_DIR } from "./paths.ts";
 
 export const DATA_DIR = path.join(BENCH_DIR, ".data");
 const COMMIT = "5994c3967077976ad79656a6bb933f0a6c24be96";

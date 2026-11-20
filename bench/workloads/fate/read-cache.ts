@@ -86,19 +86,22 @@ export default defineWorkload({
       }
     }),
     check("check-refresh", true),
-    phase(
-      "cold-load",
-      async (ctx, store) => {
+    {
+      name: "cold-load",
+      page: "fresh",
+      timed: true,
+      async run(ctx) {
+        const bytes = Array.from({ length: pages(ctx) }, (_, k) => pageBytes(ctx, k));
+        const store = await ctx.store();
         const { client } = worldFor(store.storage, ctx.model, { count: ctx.params.entries, serve: false });
         for (let k = 0; k < pages(ctx); k++) {
           const { from, to } = span(ctx, k);
-          await ctx.time("load", pageBytes(ctx, k), () => client.request(pageRequest(k) as never), to - from);
+          await ctx.time("load", bytes[k]!, () => client.request(pageRequest(k) as never), to - from);
           checkPage(client, k, ctx.params.entries, (i) => record(i, ctx.model.version(i)), ctx.check);
         }
         await ctx.time("flush", 0, () => client.persistence!.flush(), 0);
       },
-      { page: "fresh" },
-    ),
+    },
     check("check-cold", false),
   ],
 });

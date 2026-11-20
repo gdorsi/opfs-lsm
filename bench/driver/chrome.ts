@@ -50,7 +50,7 @@ export type Tab = {
 export type MemoryNow = {
   /** OS memory per Chrome process. Spare renderers come and go, so read the large ones, not the sum. */
   processes: ProcessMemory[];
-  sharedWorker: HeapSample | null;
+  worker: HeapSample | null;
   tab: HeapSample | null;
 };
 
@@ -60,10 +60,10 @@ export type Chrome = {
   readonly profile: string;
   /** Memory right now, not the peak since launch. */
   now(): Promise<MemoryNow>;
-  /** `HeapProfiler.collectGarbage` in every SharedWorker and tab. */
+  /** `HeapProfiler.collectGarbage` in every worker and tab. */
   collectGarbage(): Promise<void>;
   openTab(url: string): Promise<Tab>;
-  /** Peaks since launch: SharedWorker and tab JS heap, wasm memory, largest renderer process. Takes one last sample first. */
+  /** Peaks since launch: worker and tab JS heap, wasm memory, largest renderer process. Takes one last sample first. */
   memory(): Promise<MemoryPeaks>;
   /** Resolves once no shared_worker target is alive. */
   sharedWorkersGone(timeoutMs: number): Promise<void>;
@@ -136,14 +136,18 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
     const workerSessions = new Set<string>();
     const tabSessions = new Set<string>();
     let footprintPeak: number | null = null;
-    // Paused at start, so the hook is in place before kv's module script instantiates wasm.
+    // Paused at start, so the hook is in place before a worker's module script instantiates wasm.
+    // A SharedWorker comes from the browser-level auto-attach, a dedicated worker from its tab's (see openTab).
     cdp.on("Target.attachedToTarget", (p) => {
       const a = p as { sessionId: string; targetInfo: { type: string }; waitingForDebugger: boolean };
-      if (a.targetInfo.type !== "shared_worker") return;
+      if (a.targetInfo.type !== "shared_worker" && a.targetInfo.type !== "worker") return;
       workerSessions.add(a.sessionId);
       void (async () => {
-        await cdp.send("Runtime.evaluate", { expression: WASM_HOOK }, a.sessionId);
-        if (a.waitingForDebugger) await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
+        try {
+          await cdp.send("Runtime.evaluate", { expression: WASM_HOOK }, a.sessionId);
+        } finally {
+          if (a.waitingForDebugger) await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
+        }
       })().catch(() => workerSessions.delete(a.sessionId));
     });
     cdp.on("Target.detachedFromTarget", (p) => workerSessions.delete((p as { sessionId: string }).sessionId));
@@ -198,7 +202,7 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
           const [id] = ids;
           return id ? cdp.send<HeapSample>("Runtime.getHeapUsage", {}, id) : Promise.resolve(null);
         };
-        return { processes: await chromeMemory(profile), sharedWorker: await heap(workerSessions), tab: await heap(tabSessions) };
+        return { processes: await chromeMemory(profile), worker: await heap(workerSessions), tab: await heap(tabSessions) };
       },
       async collectGarbage() {
         for (const id of [...workerSessions, ...tabSessions]) await cdp.send("HeapProfiler.collectGarbage", {}, id);
@@ -212,6 +216,12 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
         const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true });
         await cdp.send("Runtime.enable", {}, sessionId);
         await cdp.send("Page.enable", {}, sessionId);
+        // Dedicated workers belong to their page: only the page's own session auto-attaches them.
+        await cdp.send(
+          "Target.setAutoAttach",
+          { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: "worker" }, { exclude: true }] },
+          sessionId,
+        );
         await cdp.send("Runtime.addBinding", { name: "__benchProgress" }, sessionId);
         await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: WASM_HOOK }, sessionId);
         tabSessions.add(sessionId);

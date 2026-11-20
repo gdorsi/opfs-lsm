@@ -180,7 +180,7 @@ export type Footprint = {
 /**
  * The tab's main thread during a phase. Long tasks are the ones over 50 ms, and
  * blockedMs sums each one's time past 50 ms. Frames are requestAnimationFrame
- * callbacks. frameIntervalMs is the median step of their vsync timestamps, and
+ * callbacks. frameIntervalMs is the smallest step of their vsync timestamps, from idle frames before the phase and the frames of the phase, and
  * droppedFrames sums round(gap / frameIntervalMs) - 1 over the gaps between
  * the times the callbacks ran, which catches blocks too short for a long task.
  */
@@ -199,6 +199,12 @@ export type PhaseResult = {
   readonly page: PageMode;
   readonly timed: boolean;
   readonly wallMs: number;
+  /**
+   * From the start of the phase's first `ctx.time` call to the end of its last, the open included when it is timed in the
+   * phase. What the phase's ops/s divides by. The gaps between calls count, so harness work between calls lowers the rate
+   * and a store's background work in those gaps is not free. The rest of `wallMs` is before the first call and after the last.
+   */
+  readonly spanMs: number;
   /** Ops done in the phase (entries, not calls), not counting the open. */
   readonly ops: number;
   readonly userBytes: number;
@@ -235,15 +241,18 @@ export type HeapPeak = {
   readonly samples: number;
 };
 
-/** Peaks over one Chrome run (all phases). The SharedWorker is the kv host; a tab peak is the largest of any tab. */
+/**
+ * Peaks over one Chrome run (all phases). A worker is the kv SharedWorker host or a dedicated worker (the SQLite
+ * contenders' wa-sqlite), and the peak is the largest of any worker; a tab peak is the largest of any tab.
+ */
 export type MemoryPeaks = {
-  readonly sharedWorker: HeapPeak | null;
-  /** Largest `memory.buffer.byteLength` of a wasm instance in the SharedWorker. Wasm memory never shrinks, so this is its peak. */
-  readonly sharedWorkerWasmBytes: number | null;
+  readonly worker: HeapPeak | null;
+  /** Largest `memory.buffer.byteLength` of a wasm instance in a worker. Wasm memory never shrinks, so this is its peak. */
+  readonly workerWasmBytes: number | null;
   readonly tab: HeapPeak | null;
   readonly tabWasmBytes: number | null;
   /**
-   * Peak memory of the single largest renderer process (the SharedWorker's or a tab's). On macOS it is `phys_footprint_peak`,
+   * Peak memory of the single largest renderer process (a worker's or a tab's). On macOS it is `phys_footprint_peak`,
    * the kernel's own peak since the process started, read before each tab closes and at the end of the run. Elsewhere it is
    * the largest RSS seen, read once a second.
    */

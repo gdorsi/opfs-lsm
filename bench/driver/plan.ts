@@ -1,7 +1,10 @@
 /**
  * Pure: catalog × selection → an interleaved run list. Reps are the outer
- * loop and the contender order rotates each rep (A B, B A, …), so warmup,
- * thermal drift and background noise favor no contender.
+ * loop and the contender order rotates each rep (A B C, B C A, C A B), then
+ * the next n reps run the rotations reversed (C B A, A C B, B A C), so
+ * warmup, thermal drift and background noise favor no contender and no
+ * contender always follows the same other one. Three contenders over six
+ * reps run all six orders.
  */
 import type { Catalog, PageMode, SizeName } from "../core/types.ts";
 
@@ -35,8 +38,10 @@ export function plan(catalog: Catalog, sel: Selection): PlannedRun[] {
       const contenders = w.contenders.filter(
         (c) => sel.contenders.length === 0 || sel.contenders.some((s) => c === s || c.endsWith(`/${s}`)),
       );
-      for (let i = 0; i < contenders.length; i++) {
-        const contender = contenders[(i + rep) % contenders.length]!;
+      const n = contenders.length;
+      const reversed = Math.floor(rep / n) % 2 === 1;
+      for (let i = 0; i < n; i++) {
+        const contender = contenders[((reversed ? n - 1 - i : i) + rep) % n]!;
         runs.push({ workload: w.workload, contender, size: sel.size, rep, seed: sel.seed, phases: w.phases.map(({ page, rounds }) => ({ page, rounds })) });
       }
     }

@@ -68,18 +68,14 @@ export default defineWorkload({
     }),
     phase("bulk-insert", async (ctx, store) => {
       const { entries, batch } = ctx.params;
-      for (let i = 1; i < entries; i += batch) {
-        const rows: Todo[] = [];
-        for (let j = i; j < Math.min(entries, i + batch); j++) rows.push(write(ctx, j));
-        await ctx.time("insertMany", rows.reduce((t, r) => t + rowBytes(r), 0), () => store.insertMany(rows), rows.length);
-      }
+      const batches: Todo[][] = [];
+      for (let i = 1; i < entries; i += batch) batches.push(Array.from({ length: Math.min(entries, i + batch) - i }, (_, j) => write(ctx, i + j)));
+      for (const rows of batches) await ctx.time("insertMany", rows.reduce((t, r) => t + rowBytes(r), 0), () => store.insertMany(rows), rows.length);
     }),
     phase("serial-insert", async (ctx, store) => {
       const { entries } = ctx.params;
-      for (let i = entries; i < entries + entries / 100; i++) {
-        const r = write(ctx, i);
-        await ctx.time("insert", rowBytes(r), () => store.insert(r));
-      }
+      const rows = Array.from({ length: entries / 100 }, (_, j) => write(ctx, entries + j));
+      for (const r of rows) await ctx.time("insert", rowBytes(r), () => store.insert(r));
     }),
     check("check-inserts", true),
     phase("update", async (ctx, store) => {
@@ -88,7 +84,8 @@ export default defineWorkload({
         const next = new Map<string, Todo>();
         for (const i of ids.subarray(k, k + TX_CHANGE)) next.set(row(i, 0).id, write(ctx, i));
         const bytes = [...next.values()].reduce((t, r) => t + rowBytes(r), 0);
-        await ctx.time("updateMany", bytes, () => store.updateMany([...next.keys()], (r) => next.get(r.id)!), next.size);
+        const changed = [...next.keys()];
+        await ctx.time("updateMany", bytes, () => store.updateMany(changed, (r) => next.get(r.id)!), next.size);
       }
     }),
     phase("delete", async (ctx, store) => {
@@ -96,7 +93,8 @@ export default defineWorkload({
       for (let k = 0; k < ids.length; k += TX_CHANGE) {
         const slice = [...ids.subarray(k, k + TX_CHANGE)];
         for (const i of slice) ctx.model.remove(i);
-        await ctx.time("deleteMany", slice.length * 13, () => store.deleteMany(slice.map((i) => row(i, 0).id)), slice.length);
+        const keys = slice.map((i) => row(i, 0).id);
+        await ctx.time("deleteMany", slice.length * 13, () => store.deleteMany(keys), slice.length);
       }
     }),
     check("check-after", true),

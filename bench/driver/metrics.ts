@@ -25,7 +25,7 @@ const MAIN_FIELDS = ["longTasks", "longestMs", "blockedMs", "longestFrameMs", "d
 const AMP_FIELDS = [
   "wampEngine", "wampTotal", "compaction", "readAmp", "spaceAmp", "walBytes", "flushBytes", "compactionBytes", "diskBytes", "userBytes", "liveBytes",
 ] as const;
-const MEM_FIELDS = ["sharedWorkerTotal", "tabTotal", "largestRenderer"] as const;
+const MEM_FIELDS = ["workerTotal", "tabTotal", "largestRenderer"] as const;
 
 type MainField = (typeof MAIN_FIELDS)[number];
 type AmpField = (typeof AMP_FIELDS)[number];
@@ -35,7 +35,7 @@ type MemField = (typeof MEM_FIELDS)[number];
 const APPROX_AMP_FIELDS: readonly AmpField[] = ["spaceAmp", "diskBytes", "userBytes", "liveBytes"];
 
 /**
- * rate          phase ops per second over the wall time minus the store open
+ * rate          phase ops per second over the span: first timed call start to last timed call end, gaps and the store open included
  * wall          phase wall ms
  * mean:<op>     the run's mean latency of one op, ms
  * main:<field>  the tab's main thread during the phase
@@ -203,7 +203,7 @@ const KINDS: { [K in Kind]: KindSpec } = {
     ids: (ss) => once(timed(ss).some((s) => (phaseOf(s)?.ops ?? 0) > 0)),
     value: (s) => {
       const p = phaseOf(s);
-      return p?.timed && p.ops > 0 ? (p.ops / (p.wallMs - (p.latency.open?.sumUs ?? 0) / 1000)) * 1000 : NaN;
+      return p?.timed && p.ops > 0 && p.spanMs > 0 ? (p.ops / p.spanMs) * 1000 : NaN;
     },
     unit: () => " ops/s",
     format: fmtN,
@@ -264,10 +264,10 @@ const KINDS: { [K in Kind]: KindSpec } = {
     value: ({ run }, f) => {
       const m = run.memory;
       if (!m) return NaN;
-      const peak = (heap: typeof m.sharedWorker, wasm: number | null) =>
+      const peak = (heap: typeof m.worker, wasm: number | null) =>
         heap ? heap.usedSize + (heap.backingStorageSize ?? 0) + (wasm ?? 0) : NaN;
       switch (f as MemField) {
-        case "sharedWorkerTotal": return peak(m.sharedWorker, m.sharedWorkerWasmBytes);
+        case "workerTotal": return peak(m.worker, m.workerWasmBytes);
         case "tabTotal": return peak(m.tab, m.tabWasmBytes);
         case "largestRenderer": return m.largestRendererBytes ?? NaN;
       }
@@ -344,7 +344,14 @@ export function versus(a: Series, b: Series): Verdict {
 
 const keyOf = (at: At) => [at.workload, at.size, at.contender, at.phase ?? "", at.metric].join("\0");
 
-/** Every series the records hold. Failed runs are skipped. Throws when a run has two phases of one name. */
+/** The seed and kv overrides a run had, in one string: runs of one series must share it. */
+const configOf = (r: RunRecord) => `seed ${r.params.seed}, kv ${Object.entries(r.kv ?? {}).sort().map(([option, bytes]) => `${option} ${bytes}`).join(" ") || "defaults"}`;
+
+/**
+ * Every series the records hold. Failed runs are skipped. Throws when a run has two phases of one name, and when the runs
+ * of one workload, size and contender differ in seed or kv options: a series is the values of one configuration, and
+ * medians over two would be of neither.
+ */
 export function measure(records: readonly RunRecord[]): Measures {
   const groups = new Map<string, RunRecord[]>();
   for (const r of records) {
@@ -353,8 +360,10 @@ export function measure(records: readonly RunRecord[]): Measures {
     if (dup) throw new Error(`${r.workload} ${r.contender}: two phases are named "${dup.name}"`);
     const key = `${r.workload}\0${r.size}\0${r.contender}`;
     const group = groups.get(key);
-    if (group) group.push(r);
-    else groups.set(key, [r]);
+    if (!group) groups.set(key, [r]);
+    else if (configOf(group[0]!) !== configOf(r)) {
+      throw new Error(`${r.workload} ${r.contender} ${r.size}: runs with ${configOf(group[0]!)} and with ${configOf(r)}. Measure each configuration apart.`);
+    } else group.push(r);
   }
 
   const entries: { series: Series; order: number }[] = [];
