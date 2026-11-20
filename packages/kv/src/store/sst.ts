@@ -24,6 +24,7 @@ const CODECS: readonly SstCodec[] = ["raw", "lz4"];
 
 const TAG_PUT = 1;
 const TAG_DEL = 2;
+const NO_PREFIX = new Uint8Array(0);
 
 /**
  * A block stores the offset of every `OFFSET_STRIDE`th record after
@@ -167,6 +168,11 @@ export class RecordWalker {
     return seqAt(this.view, this.seqAt);
   }
 
+  /** The block's prefix as one view, made once for all its records. */
+  private prefixBytes(): Uint8Array {
+    return (this.prefix ??= this.prefixLen === 0 ? NO_PREFIX : this.buf.subarray(this.prefixAt, this.prefixAt + this.prefixLen));
+  }
+
   key(): Uint8Array {
     const { buf, prefixLen, keyAt, keyLen } = this;
     if (prefixLen === 0) return buf.slice(keyAt, keyAt + keyLen);
@@ -174,7 +180,7 @@ export class RecordWalker {
     // copies the suffix at the right place, then the prefix overwrites the
     // head. Two block copies beat a byte loop and a fresh subarray per key.
     const k = buf.slice(keyAt - prefixLen, keyAt + keyLen);
-    k.set((this.prefix ??= buf.subarray(this.prefixAt, this.prefixAt + prefixLen)));
+    k.set(this.prefixBytes());
     return k;
   }
 
@@ -191,8 +197,7 @@ export class RecordWalker {
       this.seq(),
       this.valAt,
       this.valLen,
-      this.prefixAt,
-      this.prefixLen,
+      this.prefixBytes(),
       this.keyAt,
       this.keyLen,
     );

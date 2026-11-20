@@ -9,6 +9,8 @@ import { seqAt } from "./sst.js";
  */
 type BlockScanner = (framed: Uint8Array, lz4: boolean, patterns: Uint8Array) => Uint8Array;
 
+const NO_PREFIX = new Uint8Array(0);
+
 /** Set once the wasm engine loads. Without it a run is scanned through its cursor. */
 let wasmScanner: BlockScanner | undefined;
 
@@ -45,7 +47,7 @@ export function* unpackHits(hits: Uint8Array): Generator<BlockEntry> {
     const seq = seqAt(view, o + 8);
     o += 16;
     if (o + keyLen + valueLen > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
-    yield new BlockEntry(hits, "put", seq, o + keyLen, valueLen, o, 0, o, keyLen);
+    yield new BlockEntry(hits, "put", seq, o + keyLen, valueLen, NO_PREFIX, o, keyLen);
     o += keyLen + valueLen;
   }
 }

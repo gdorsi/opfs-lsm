@@ -3,7 +3,7 @@ import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
 import { decodeDoc, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { CATALOG_KEY, bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
+import { bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
 import type { EntryPage, EntryValues, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
 import { PointReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
@@ -407,7 +407,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
 
   view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R> {
     return this.store.kv.view(async (snap) =>
-      body(new SnapshotReader<T, Ix>(snap, this.store.collectionIn(await snap.get(CATALOG_KEY), this.name))),
+      body(new SnapshotReader<T, Ix>(snap, await this.store.collectionAt(snap, this.name))),
     );
   }
 

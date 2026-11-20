@@ -11,14 +11,15 @@ type Version = {
 
 /**
  * A record of a run, read where it is in `block`, which is never written once
- * read. Its key is the block's `prefixLength` bytes at `prefixAt`, then the
- * `suffixLength` bytes at `suffixAt`. `key` copies them out the first time it
- * is asked, and `compareKey` reads them in place, so a scan that counts,
- * skips or drops the record copies nothing, and one that keeps it copies the
- * key and the value once each.
+ * read. Its key is `prefix`, the bytes every key of its block starts with,
+ * then the `suffixLength` bytes at `suffixAt`. `key` copies them out the
+ * first time it is asked, and the compares read them in place, so a scan that
+ * counts, skips or drops the record copies nothing, and one that keeps it
+ * copies the key and the value once each.
  */
 export class BlockEntry {
-  private copied: Uint8Array | undefined = undefined;
+  /** The copy `key` made. Null once another record was compared with this one, see `waits`. */
+  private copied: Uint8Array | null | undefined = undefined;
 
   constructor(
     readonly block: Uint8Array,
@@ -28,8 +29,8 @@ export class BlockEntry {
     /** The value is `block[valueAt, valueAt + valueLength)`, empty for a delete. */
     readonly valueAt: number,
     readonly valueLength: number,
-    private readonly prefixAt: number,
-    private readonly prefixLength: number,
+    /** A view of `block`, shared by every record of it. */
+    private readonly prefix: Uint8Array,
     private readonly suffixAt: number,
     private readonly suffixLength: number,
   ) {}
@@ -37,29 +38,39 @@ export class BlockEntry {
   /** A copy that owns its buffer, made once. */
   get key(): Uint8Array {
     let k = this.copied;
-    if (k === undefined) {
-      const { block, prefixAt, prefixLength, suffixAt } = this;
+    if (!k) {
+      const { block, prefix, suffixAt } = this;
       // The record's own bytes always sit before its suffix, so one slice
       // copies the suffix to its place and leaves room for the prefix.
-      k = block.slice(suffixAt - prefixLength, suffixAt + this.suffixLength);
-      for (let i = 0; i < prefixLength; i++) k[i] = block[prefixAt + i]!;
+      k = block.slice(suffixAt - prefix.length, suffixAt + this.suffixLength);
+      if (prefix.length > 0) k.set(prefix);
       this.copied = k;
     }
     return k;
   }
 
+  /**
+   * Whether a record was compared with this one before. A record a merge
+   * keeps waiting is compared with every record that passes it, so from the
+   * second on its key is worth a copy, which compares faster than two blocks.
+   */
+  private waits(): boolean {
+    if (this.copied !== undefined) return true;
+    this.copied = null;
+    return false;
+  }
+
   /** `compareFrom(this.key, key, from)`, on the bytes in the block. */
   compareKey(key: Uint8Array, from: number): number {
-    const { block, prefixAt, prefixLength } = this;
-    const length = prefixLength + this.suffixLength;
+    const { block, prefix } = this;
+    const length = prefix.length + this.suffixLength;
     const n = Math.min(length, key.length);
-    const inPrefix = Math.min(prefixLength, n);
     let i = from;
-    for (; i < inPrefix; i++) {
-      const d = block[prefixAt + i]! - key[i]!;
+    for (const end = Math.min(prefix.length, n); i < end; i++) {
+      const d = prefix[i]! - key[i]!;
       if (d !== 0) return d;
     }
-    const shift = this.suffixAt - prefixLength;
+    const shift = this.suffixAt - prefix.length;
     for (; i < n; i++) {
       const d = block[shift + i]! - key[i]!;
       if (d !== 0) return d;
@@ -67,32 +78,33 @@ export class BlockEntry {
     return length - key.length;
   }
 
-  /** `compareFrom(this.key, other.key, from)`, on the bytes of both blocks. */
+  /** `compareFrom(this.key, other.key, from)`, with no copy of this key and none of the other's the first time it is asked. */
   compareEntry(other: BlockEntry, from: number): number {
-    const a = this.block;
-    const b = other.block;
-    const aPrefix = this.prefixLength;
-    const bPrefix = other.prefixLength;
+    if (other.waits()) return this.compareKey(other.key, from);
+    const aPrefix = this.prefix.length;
+    const bPrefix = other.prefix.length;
     const aLength = aPrefix + this.suffixLength;
     const bLength = bPrefix + other.suffixLength;
     const n = Math.min(aLength, bLength);
-    // Byte i of a key is at `prefixAt + i` inside the prefix and at `shift + i` past it.
+    // Byte i of a key is `prefix[i]` inside the prefix and `block[shift + i]` past it.
     const aShift = this.suffixAt - aPrefix;
     const bShift = other.suffixAt - bPrefix;
     let i = from;
     for (const end = Math.min(aPrefix, bPrefix, n); i < end; i++) {
-      const d = a[this.prefixAt + i]! - b[other.prefixAt + i]!;
+      const d = this.prefix[i]! - other.prefix[i]!;
       if (d !== 0) return d;
     }
     // Where only the longer prefix still runs.
-    const aAt = aPrefix > bPrefix ? this.prefixAt : aShift;
-    const bAt = bPrefix > aPrefix ? other.prefixAt : bShift;
+    const a = aPrefix > bPrefix ? this.prefix : this.block;
+    const b = bPrefix > aPrefix ? other.prefix : other.block;
+    const aAt = aPrefix > bPrefix ? 0 : aShift;
+    const bAt = bPrefix > aPrefix ? 0 : bShift;
     for (const end = Math.min(Math.max(aPrefix, bPrefix), n); i < end; i++) {
       const d = a[aAt + i]! - b[bAt + i]!;
       if (d !== 0) return d;
     }
     for (; i < n; i++) {
-      const d = a[aShift + i]! - b[bShift + i]!;
+      const d = this.block[aShift + i]! - other.block[bShift + i]!;
       if (d !== 0) return d;
     }
     return aLength - bLength;
@@ -100,10 +112,10 @@ export class BlockEntry {
 
   /** How many leading bytes of `key` every record of this block shares with it, at most the block's prefix. */
   prefixShared(key: Uint8Array): number {
-    const { block, prefixAt } = this;
-    const n = Math.min(this.prefixLength, key.length);
+    const { prefix } = this;
+    const n = Math.min(prefix.length, key.length);
     let i = 0;
-    while (i < n && block[prefixAt + i] === key[i]) i++;
+    while (i < n && prefix[i] === key[i]) i++;
     return i;
   }
 }
