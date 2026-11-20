@@ -26,7 +26,7 @@ export type SizeResult = {
 };
 
 export function measureSizes(build: BuildOutput): SizeResult[] {
-  const assetsDir = path.join(build.outDir, "assets");
+  const assetsDir = path.join(build.sizeDir, "assets");
   const names = readdirSync(assetsDir);
   const cache = new Map<string, Bytes3 & { text?: string }>();
   const sizeOf = (name: string) => {

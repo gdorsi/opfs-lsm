@@ -1,9 +1,9 @@
 /**
- * One Vite production build, two uses: the bench page the runner serves
- * (minified production code, no dev-server optimizer reloading mid-run),
- * and one entry per bundle-size row, whose emitted files size.ts measures.
- * A bundle that fails to emit or boot kv's SharedWorker therefore fails the
- * bench, not only the size table.
+ * Two Vite production builds with the same options: the bench page the
+ * runner serves (minified production code, no dev-server optimizer reloading
+ * mid-run), and one entry per bundle-size row, whose emitted files size.ts
+ * measures. The rows build apart from the page: a chunk they shared with it
+ * also held the test helpers the page imports, which no app downloads.
  */
 import { readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -18,6 +18,8 @@ const OUT_DIR = path.join(BENCH_DIR, ".out");
 /** Static imports of each emitted chunk, from the bundler's own metadata. */
 export type BuildOutput = {
   readonly outDir: string;
+  /** Where the size rows' files are. */
+  readonly sizeDir: string;
   /** Size row id → its entry chunk's file name. */
   readonly rowEntries: ReadonlyMap<string, string>;
   /** Chunk file name → statically imported chunk file names. */
@@ -52,14 +54,14 @@ export async function buildBench(opts: { quiet?: boolean; minify?: boolean } = {
     },
   };
 
-  await build({
+  const bundle = (outDir: string, input: Record<string, string>) => build({
     configFile: false,
     root: path.join(BENCH_DIR, "page"),
     logLevel: opts.quiet ? "warn" : "info",
     plugins: [wasm(), rows],
     worker: { format: "es", plugins: () => [wasm()] },
     build: {
-      outDir: OUT_DIR,
+      outDir,
       emptyOutDir: true,
       target: "es2022",
       minify: opts.minify ?? true,
@@ -67,22 +69,21 @@ export async function buildBench(opts: { quiet?: boolean; minify?: boolean } = {
       modulePreload: false,
       reportCompressedSize: false,
       chunkSizeWarningLimit: 4096,
-      rollupOptions: {
-        input: {
-          index: path.join(BENCH_DIR, "page/index.html"),
-          ...Object.fromEntries(SIZE_ROWS.map((r) => [`size-${r.id}`, `size-row:${r.id}`])),
-        },
-        preserveEntrySignatures: "strict",
-      },
+      rollupOptions: { input, preserveEntrySignatures: "strict" },
     },
   });
+  await bundle(OUT_DIR, { index: path.join(BENCH_DIR, "page/index.html") });
+  const sizeDir = path.join(OUT_DIR, "size");
+  await bundle(sizeDir, Object.fromEntries(SIZE_ROWS.map((r) => [`size-${r.id}`, `size-row:${r.id}`])));
 
   // Today's bug class: a worker or module inlined as a data: URL cannot resolve its imports.
-  for (const file of readdirSync(path.join(OUT_DIR, "assets"))) {
-    if (!file.endsWith(".js")) continue;
-    if (readFileSync(path.join(OUT_DIR, "assets", file), "utf8").includes("data:text/javascript")) {
-      throw new Error(`${file} inlines a module as a data: URL; its relative imports cannot resolve`);
+  for (const dir of [OUT_DIR, sizeDir]) {
+    for (const file of readdirSync(path.join(dir, "assets"))) {
+      if (!file.endsWith(".js")) continue;
+      if (readFileSync(path.join(dir, "assets", file), "utf8").includes("data:text/javascript")) {
+        throw new Error(`${file} inlines a module as a data: URL; its relative imports cannot resolve`);
+      }
     }
   }
-  return { outDir: OUT_DIR, rowEntries, staticImports };
+  return { outDir: OUT_DIR, sizeDir, rowEntries, staticImports };
 }

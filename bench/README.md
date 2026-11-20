@@ -10,7 +10,7 @@ pnpm bench yjs/ --contenders kv              # one contender
 pnpm bench kv/ --reps 5 --seed 7             # the same runs on another seed (default 1)
 pnpm bench:size                              # bundle sizes
 pnpm bench:smoke                             # everything at size tiny, 1 rep
-pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke and the byte budgets, from one build
+pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke and the byte budgets, from one run of the build
 node bench/cli.ts compare results/a.jsonl results/b.jsonl [--all]
 node bench/cli.ts report results/a.jsonl
 node bench/cli.ts docs [--check]             # rewrite the results tables of docs/benchmarks.md; --check only compares
@@ -193,7 +193,7 @@ Only phases that model a user interaction opt in, and they yield a macrotask bet
 
 ## Bundle size
 
-`pnpm bench:size` measures what Vite emits for each row in `size/rows.ts`: the import an app writes. "At import" is the entry chunk and its static imports. "After open" adds every file those load later: the SharedWorker chunk, its imports and the `.wasm`. Each file is compressed on its own (gzip -9, brotli 11). `--check` fails when a row is over its brotli budget, and CI runs it. The build also fails if any module is inlined as a `data:` URL, which is how Vite broke kv's SharedWorker before its URL was written inline in the constructor.
+`pnpm bench:size` measures what Vite emits for each row in `size/rows.ts`: the import an app writes. The rows are built apart from the bench page, so a chunk holds nothing the page imports for its own use. "At import" is the entry chunk and its static imports. "After open" adds every file those load later: the SharedWorker chunk, its imports and the `.wasm`. Each file is compressed on its own (gzip -9, brotli 11). `--check` fails when a row is over its brotli budget, and CI runs it. The build also fails if any module is inlined as a `data:` URL, which is how Vite broke kv's SharedWorker before its URL was written inline in the constructor.
 
 ## Adding a workload or contender
 
