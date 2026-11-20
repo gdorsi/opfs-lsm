@@ -7,7 +7,7 @@ pnpm --filter "@opfs-lsm/example-linearlite-docstore^..." build
 pnpm --filter @opfs-lsm/example-linearlite-docstore dev
 ```
 
-On first load it holds no issue. **Generate** makes 100,000 issues in a dedicated WebWorker (a background thread of the page) and writes them in transactions of 2,000. The Data menu at the end of the toolbar holds two more actions. **Generate more** appends as many again, with new ids, beside the issues already stored, and a bar along the toolbar's bottom edge shows its progress. **Delete the data** destroys the database and reloads the page. `?count=` changes how many, and `?db=` names the database.
+On first load it holds no issue. **Generate** makes 100,000 issues in a dedicated WebWorker (a background thread of the page), which hands them over in batches as it makes them. The page writes each batch in one transaction: 200 issues first, so the list has rows at once, then 2,000 at a time. The Data menu at the end of the toolbar holds two more actions. **Generate more** appends as many again, with new ids, beside the issues already stored, and a bar along the toolbar's bottom edge shows its progress. **Delete the data** destroys the database and reloads the page. `?count=` changes how many, and `?db=` names the database.
 
 ## Reads
 
@@ -38,7 +38,7 @@ Each edit of a title, a status or a priority is one `modify` of the issue. A new
 
 The list does not read again after a write. It listens to the collection's change feed (`changes`), which sends every written issue, from this tab or another. For each one the list takes the row out of its old place and puts it in its new one, and moves the total by one where the filter gains or loses the issue. The feed says what an issue is now, not what it was, so the list uses the copy it holds: a row it has read, or the open issue. When it holds none, as after a write from another tab to an issue it never read, it reads the rows in view again and counts from the index entries.
 
-Generated issues arrive through the same feed. While this tab writes them the list only adds them to its total, and it reads the rows in view once at the end.
+Generated issues arrive through the same feed. While this tab writes them the list adds them to its total, and it reads the rows in view again after each batch.
 
 ## Timings
 
@@ -46,7 +46,7 @@ The app times itself and posts each figure to the page that frames it (`src/prot
 
 - **Open and read first rows** starts once the kv wasm module is loaded, at the call that opens the database. It ends when the store returns the first 50 issues, before they are drawn. A first visit and a reload measure the same work: open kv, open the document store, read the page.
 - **Read a filtered page** starts when a filter, the sort or the search changes and ends when the store returns the first page of the new list, before it is drawn.
-- **Write** starts after the issues are generated and ends when the last transaction is acknowledged.
+- **Write** is the time the transactions took, each from its call to its acknowledgement. The worker generates the next batches meanwhile.
 
 ## Telemetry
 
@@ -70,6 +70,6 @@ Telemetry stores nothing in the browser. The SDK keeps its session id in memory,
 - `everr.timezone`
 - `browser.language`
 
-The page URL keeps its query, which holds only `db`, `count` and `theme`. When telemetry is on, the docs site removes every query parameter except `utm_*` from its own address before it frames the demo. Each request still reaches Everr's ingest from the visitor's IP address, as any web request does, and the records still carry the user agent, the page URL and the referrer.
+The page URL keeps its query, which holds only `db`, `count` and `theme`. The docs site frames the demo without a referrer, so the query of the site's own address does not reach it. Each request still reaches Everr's ingest from the visitor's IP address, as any web request does, and the records still carry the user agent, the page URL and the referrer.
 
 The docs site's README holds the configuration, the other events, why each attribute is removed, and the local and production setup, in [Telemetry](../../site/README.md#telemetry).

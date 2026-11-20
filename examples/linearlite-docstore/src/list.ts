@@ -108,6 +108,35 @@ export function createList(store: Store) {
     total!++;
   }
 
+  /** Reads the first page of the list under `next` through a new view, or with `stay` the pages in view now. */
+  function load(next: Filter, stay: boolean): { from: View; read: Promise<{ rows: number; at: number }> } {
+    filter = next;
+    keep = keeps(next);
+    order = orderOf(next);
+    const from = (view = viewOf(store, next));
+    tried = new Set();
+    const first = stay ? Math.floor(scrollTop / ROW / PAGE) : 0;
+    const last = stay ? Math.floor((scrollTop + height) / ROW / PAGE) : 0;
+    const pages = Array.from({ length: last - first + 1 }, (_, i) => first + i);
+    loading++;
+    const read = Promise.all(pages.map((page) => from.read(page * PAGE, PAGE)))
+      .finally(() => loading--)
+      .then((docs) => {
+        const at = performance.now();
+        if (view !== from) return { rows: docs[0]!.length, at };
+        rows = new Map(docs.flatMap((page, k) => page.map((doc, i): [number, Issue] => [(first + k) * PAGE + i, doc])));
+        for (const page of pages) tried.add(page);
+        if (!stay) {
+          total = undefined;
+          scrollTop = 0;
+          resets++;
+        }
+        render();
+        return { rows: docs[0]!.length, at };
+      });
+    return { from, read };
+  }
+
   return {
     subscribe(listener: () => void) {
       listeners.add(listener);
@@ -127,39 +156,23 @@ export function createList(store: Store) {
      * how many rows the first page read has and when the store returned them; `total` with the list's size.
      */
     show(next: Filter, stay = false): { rows: Promise<{ rows: number; at: number }>; total: Promise<number>; path: ReadPath } {
-      filter = next;
-      keep = keeps(next);
-      order = orderOf(next);
-      const from = (view = viewOf(store, next));
-      tried = new Set();
-      const first = stay ? Math.floor(scrollTop / ROW / PAGE) : 0;
-      const last = stay ? Math.floor((scrollTop + height) / ROW / PAGE) : 0;
-      const pages = Array.from({ length: last - first + 1 }, (_, i) => first + i);
-      const counted = from.total();
-      loading++;
-      const read = Promise.all(pages.map((page) => from.read(page * PAGE, PAGE))).then((docs) => {
-        const at = performance.now();
-        loading--;
-        if (view !== from) return { rows: docs[0]!.length, at };
-        rows = new Map(docs.flatMap((page, k) => page.map((doc, i): [number, Issue] => [(first + k) * PAGE + i, doc])));
-        for (const page of pages) tried.add(page);
-        if (!stay) {
-          total = undefined;
-          scrollTop = 0;
-          resets++;
-        }
+      const { from, read } = load(next, stay);
+      // The count walks the whole list, so it starts once the rows are read and does not hold them back.
+      const counted = read.then(() => from.total());
+      void counted.then((n) => {
+        if (view !== from) return;
+        total = n;
         render();
-        void counted.then(
-          (n) => {
-            if (view !== from) return;
-            total = n;
-            render();
-          },
-          reportedByCaller,
-        );
-        return { rows: docs[0]!.length, at };
-      });
+      }, reportedByCaller);
       return { rows: read, total: counted, path: from.path };
+    },
+
+    /**
+     * Reads the rows in view again and keeps the total, for a bulk write that `grow` counts. It does nothing while
+     * another read is on its way.
+     */
+    async refresh(): Promise<void> {
+      if (loading === 0) await load(filter, true).read;
     },
 
     /**

@@ -42,7 +42,18 @@ export default ({ command }: { command: string }) => {
     base,
     // The landing page is always dark and has no navbar. This sets both before the first paint. The default theme
     // adds `hide-nav` only after it hydrates, which moves the painted page up by the navbar's height.
-    head: [["script", {}, `${JSON.stringify([base, `${base}index.html`])}.includes(location.pathname) && document.documentElement.classList.add("dark", "hide-nav")`]],
+    // It also keeps what the demo's frame posts before the page's scripts run, for `HomeDemo.vue` to read.
+    head: [
+      [
+        "script",
+        {},
+        `if (${JSON.stringify([base, `${base}index.html`])}.includes(location.pathname)) {
+  document.documentElement.classList.add("dark", "hide-nav");
+  window.__demoMessages = [];
+  addEventListener("message", (e) => window.__demoMessages?.push(e));
+}`,
+      ],
+    ],
     srcDir: "..",
     srcExclude,
     rewrites,
@@ -67,6 +78,12 @@ export default ({ command }: { command: string }) => {
         linkRule(command === "build")(md);
         docRules(md);
       },
+    },
+    // An inline script waits for the stylesheets before it, and the parser waits for the script. With the stylesheets
+    // last in the head, the parser reaches the body, and the home page's demo frame, while they download.
+    transformHtml(html) {
+      const sheets = html.match(/<link rel="preload stylesheet"[^>]*>\n?/g) ?? [];
+      return sheets.reduce((page, sheet) => page.replace(sheet, ""), html).replace("</head>", `${sheets.join("")}</head>`);
     },
     transformPageData(page) {
       if (pageOf(page.filePath)?.route) page.frontmatter.outline ??= outlineOf(page.filePath);

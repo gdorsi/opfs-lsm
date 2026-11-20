@@ -15,11 +15,20 @@ import type { Visit } from "./demo.ts";
  */
 const SOURCE = "linearlite-demo";
 
+declare global {
+  interface Window {
+    __demoMessages?: MessageEvent[];
+  }
+}
+
 const { frontmatter } = useData();
 const countLabel = computed(() => String(frontmatter.value.demo.count));
 const count = computed(() => Number(countLabel.value.replace(/\D/g, "")));
-/** Unset until this page is idle, so the app does not share the main thread with the page's own start. */
-const src = ref<string>();
+/**
+ * In the server's HTML, so the app loads while the page's own scripts do. It can then post before this component
+ * listens: the page's head keeps those messages in `__demoMessages` (see `.vitepress/config.mts`).
+ */
+const src = computed(() => withBase(`/demo/index.html?count=${count.value}&theme=dark`));
 
 const frame = ref<HTMLIFrameElement>();
 const visit = ref<Visit>({ kind: "waiting" });
@@ -64,7 +73,7 @@ function onMessage(e: MessageEvent) {
       } else enter({ kind: "empty" });
       break;
     case "progress":
-      enter({ kind: "writing", written: m.phase === "writing" ? m.written : 0, total: m.total });
+      enter({ kind: "writing", written: m.written, total: m.total });
       break;
     case "generated":
       wrote = true;
@@ -101,20 +110,6 @@ function startOver() {
   writeOnEmpty = true;
   shown.value = false;
   post({ type: "delete" });
-}
-
-/**
- * Calls `then` once the page has loaded and the browser reports a whole idle period, or after three seconds. The
- * frame shares this page's main thread, so an app loaded sooner would be timed while the page mounts its figures.
- */
-function whenIdle(then: () => void) {
-  const deadline = performance.now() + 3000;
-  const wait = () => {
-    if (typeof requestIdleCallback !== "function") return void setTimeout(then, 300);
-    requestIdleCallback((idle) => (idle.timeRemaining() >= 40 || performance.now() > deadline ? then() : wait()), { timeout: 1000 });
-  };
-  if (document.readyState === "complete") wait();
-  else addEventListener("load", wait, { once: true });
 }
 
 /*
@@ -179,22 +174,18 @@ const onMedia = () => {
   if (!compact.value) close(false);
 };
 
-let mounted = false;
 onMounted(() => {
-  mounted = true;
   reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   media = matchMedia("(max-width: 639px), (pointer: coarse)");
   onMedia();
   media.addEventListener("change", onMedia);
   addEventListener("message", onMessage);
   addEventListener("keydown", onKey);
-  whenIdle(() => {
-    if (!mounted) return;
-    src.value = withBase(`/demo/index.html?count=${count.value}&theme=dark`);
-  });
+  const early = window.__demoMessages;
+  window.__demoMessages = undefined;
+  early?.forEach(onMessage);
 });
 onBeforeUnmount(() => {
-  mounted = false;
   media?.removeEventListener("change", onMedia);
   removeEventListener("message", onMessage);
   removeEventListener("keydown", onKey);
@@ -235,6 +226,7 @@ const starting = computed(() => visit.value.kind === "waiting");
           :src="src"
           :data-shown="shown ? '' : undefined"
           :inert="compact && !expanded ? '' : undefined"
+          referrerpolicy="no-referrer"
           title="LinearLite, an issue tracker running on opfs-lsm with no server"
         />
 

@@ -1984,3 +1984,28 @@ button.alpha-tag:focus-visible,
     transition: none;
   }
 }
+
+/* The sections under the hero are laid out and painted when they near the viewport. Until a section has been drawn
+   once, the page counts it at about its real height, so the scrollbar is near its final length. This clips what a
+   section draws outside its box. */
+.ad,
+.home-features,
+.illustration,
+.bench {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 500px;
+}
+
+.bench {
+  contain-intrinsic-size: auto 2000px;
+}
+
+/* The playing chapter's flag hangs under the timeline, so the figure's box reaches down to hold it. */
+.illustration.player {
+  padding-bottom: 32px;
+  margin-bottom: -32px;
+}
+
+.illustration.player.full {
+  margin-bottom: 40px;
+}

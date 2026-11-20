@@ -26,7 +26,7 @@ const COUNT = Number(params.get("count")) || 100_000;
 if (params.get("theme") === "dark") document.documentElement.dataset.theme = "dark";
 const n = (x: number) => x.toLocaleString("en-US");
 
-const width = (g: AppState["generating"]) => `${g?.phase === "writing" ? (g.written / g.count) * 100 : 0}%`;
+const width = (g: NonNullable<AppState["generating"]>) => `${(g.written / g.count) * 100}%`;
 
 /** The page. Until the database is open there is no `app`, and the page shows its frame only. */
 function Page({ app }: { app: App | undefined }) {
@@ -63,7 +63,7 @@ function Issues({ app }: { app: App }) {
         filter={filter}
         total={total}
         data={data}
-        progress={generating && !generating.first ? width(generating) : undefined}
+        progress={generating && !empty ? width(generating) : undefined}
         set={app.filter}
         create={() => setComposing(true)}
       />
@@ -71,7 +71,7 @@ function Issues({ app }: { app: App }) {
         <div className="empty">
           {generating ? (
             <div className="demo-progress">
-              <h2>{generating.phase === "generating" ? "Generating issues" : "Writing issues"}</h2>
+              <h2>Writing issues</h2>
               <p className="mono">
                 {n(generating.written)} of {n(generating.count)}
               </p>
