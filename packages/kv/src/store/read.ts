@@ -3,7 +3,6 @@ import type { MemRow } from "./memtable.js";
 import {
   allMissed,
   compareEntries,
-  compareEntryKey,
   entryCursor,
   filterCursor,
   lowerBoundKeys,
@@ -14,7 +13,7 @@ import {
   type Maybe,
   type ScanBounds,
 } from "./cursor.js";
-import { SEQ_ZERO, type Seq } from "../seq.js";
+import type { Seq } from "../seq.js";
 import { coversRun, NO_MARKS, throughAt, type Marks } from "./marks.js";
 import { RecordWalker } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
@@ -350,17 +349,6 @@ function marksIn(marks: Marks, bounds: ScanBounds | undefined): Marks {
   );
 }
 
-/** `throughAt(marks, e.key)`, without copying the key of a run's record. */
-function throughOf(marks: Marks, e: LayerEntry): Seq {
-  let max = SEQ_ZERO;
-  for (const m of marks) {
-    if (m.through > max && compareEntryKey(e, m.start) >= 0 && (!m.endExclusive || compareEntryKey(e, m.endExclusive) < 0)) {
-      max = m.through;
-    }
-  }
-  return max;
-}
-
 /**
  * A scan's next live put, or undefined at its end. Sync until a cursor
  * misses; after a Miss, call it again once the Miss is ready and it goes on
@@ -380,7 +368,7 @@ export function liveStep(cursors: readonly LayerCursor[], marks: Marks, reverse 
     for (;;) {
       const e = merge.next();
       if (e instanceof Miss || !e) return e;
-      if (e.kind === "put" && (inside.length === 0 || e.seq > throughOf(inside, e))) return e;
+      if (e.kind === "put" && (inside.length === 0 || e.seq > throughAt(inside, e.block ? e : e.key))) return e;
     }
   };
 }
@@ -431,7 +419,7 @@ export function matchingStep(
         }
         if (newer) continue;
       }
-      if (entry.kind === "put" && entry.seq > throughOf(inside, entry)) return entry;
+      if (entry.kind === "put" && entry.seq > throughAt(inside, entry.block ? entry : entry.key)) return entry;
     }
   };
 }

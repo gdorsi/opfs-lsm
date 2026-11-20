@@ -47,11 +47,9 @@ function trimPage<H>(hits: H[], keyOf: (hit: H) => Uint8Array, limit: number | u
   return { next: encodeCursor(keyOf(hits[limit - 1]!)) };
 }
 
-const noJoin = () => undefined;
-
 /** Every entry of `range`, read in one call: a `range` iterator spends a promise turn on each entry. */
-async function collect(snap: ViewSnapshot, range: Range): Promise<Entry[]> {
-  return (await snap.rangeJoin(range, noJoin)).map((hit) => hit.entry);
+function collect(snap: ViewSnapshot, range: Range): Promise<Entry[]> {
+  return snap.rangeValues(range, (value) => value.slice());
 }
 
 /** What a point read needs of kv: a `Db` and a view snapshot both fit. */

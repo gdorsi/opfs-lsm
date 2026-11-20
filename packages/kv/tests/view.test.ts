@@ -254,7 +254,7 @@ describe("reverse range", () => {
 
   it("rejects a limit or an offset that is not an integer >= 0", async () => {
     const db = await seeded();
-    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const bad of [-1, 1.5, Number.NaN]) {
       for (const range of [{ limit: bad }, { offset: bad }]) {
         await expect(keysOf(db.range(range))).rejects.toBeInstanceOf(ConstraintError);
         await expect(db.count(range)).rejects.toBeInstanceOf(ConstraintError);

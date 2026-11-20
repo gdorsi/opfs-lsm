@@ -1,4 +1,4 @@
-import type { Db, ViewSnapshot } from "@opfs-lsm/kv";
+import type { Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
 import { collection, defineSchema, openDocStore, type DocStore } from "../src/index.js";
 import { encodeCatalog, type StoredCatalog } from "../src/catalog.js";
@@ -170,11 +170,11 @@ describe("opening a schema", () => {
     const released = new Promise<void>((r) => (release = r));
     const reader = await openOn(
       wrapViews(readerKv, (snap) => ({
-        rangeJoin: (async (...args: Parameters<ViewSnapshot["rangeJoin"]>) => {
+        rangeValues: async (range, decode) => {
           scanning();
           await released;
-          return snap.rangeJoin(...args);
-        }) as ViewSnapshot["rangeJoin"],
+          return snap.rangeValues(range, decode);
+        },
       })),
       v1,
     );

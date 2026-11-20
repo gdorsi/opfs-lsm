@@ -44,11 +44,13 @@ export default defineContender({
       },
       async range(start, endExclusive, limit, offset = 0) {
         const s = store("readonly");
+        const boundFrom = (from: Uint8Array<ArrayBuffer>) =>
+          endExclusive ? IDBKeyRange.bound(from, k(endExclusive), false, true) : IDBKeyRange.lowerBound(from);
         let from = k(start);
         if (offset > 0) {
           // IndexedDB has no offset: a key cursor advances past the entries, then getAll reads from where it stopped.
           const at = await new Promise<IDBValidKey | undefined>((resolve, reject) => {
-            const req = s.openKeyCursor(IDBKeyRange.lowerBound(from));
+            const req = s.openKeyCursor(boundFrom(from));
             let moved = false;
             req.onerror = () => reject(req.error);
             req.onsuccess = () => {
@@ -60,8 +62,7 @@ export default defineContender({
           if (at === undefined) return [];
           from = new Uint8Array(at as ArrayBuffer);
         }
-        const bound = endExclusive ? IDBKeyRange.bound(from, k(endExclusive), false, true) : IDBKeyRange.lowerBound(from);
-        return request<Uint8Array[]>(s.getAll(bound, limit));
+        return request<Uint8Array[]>(s.getAll(boundFrom(from), limit));
       },
       count: (start, endExclusive) => request(store("readonly").count(IDBKeyRange.bound(k(start), k(endExclusive), false, true))),
       async update(key, f) {
