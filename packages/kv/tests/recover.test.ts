@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
 import { ClosedError, CorruptDatabaseError } from "../src/errors.js";
 import type { ChangeEvent } from "../src/index.js";
-import { TabWal, encodeOps, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { adopt, TabWal, encodeOps, listUningested, uningestedBytes } from "../src/idb/wal.js";
 import { advance } from "./advance.js";
-import { reconcile, recordEmpty } from "../src/recover.js";
+import { forgetDestroyed, recordDestroyed } from "../src/idb/destroyed.js";
+import { reconcile, reconcileOpen, recordEmpty } from "../src/recover.js";
+import { asGeneration, asSeq } from "../src/seq.js";
 import { crc32 } from "../src/store/crc32.js";
 import { decodeGeneration, publishGeneration, type GenerationMeta } from "../src/store/generation.js";
 import {
@@ -112,7 +114,7 @@ describe("advanceIngested", () => {
     const wal = await walWith(3);
     await advance(wal, { through: 2, generation: 1 });
     // Seqs 1 and 2 stay: a power loss can keep this commit and lose manifest 1.
-    expect(await wal.adopt({ expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 })).toBe(true);
+    expect(await adopt(wal, { expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 })).toBe(true);
     expect(await seqs(wal)).toEqual([1, 2, 3]);
     expect(await uningestedBytes(wal, 1 << 30)).toBe(3 * opsBytes(put(1)));
     wal.close();
@@ -123,7 +125,7 @@ describe("advanceIngested", () => {
     await advance(wal, { through: 2, generation: 1 });
     await advance(wal, { through: 3, generation: 2 });
     // Seqs 1..2 are gone, so a manifest through 0 cannot be followed.
-    expect(await wal.adopt({ expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 })).toBe(true);
+    expect(await adopt(wal, { expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 })).toBe(true);
     expect(await wal.meta()).toMatchObject({ head: 3, ingestedThrough: 3, generation: 0 });
     expect(await seqs(wal)).toEqual([]);
     wal.close();
@@ -164,7 +166,7 @@ describe("reconcile", () => {
     // IndexedDB kept seq 1 of 4; OPFS kept manifest 2 through 4.
     const wal = await walWith(1);
     const fs = new MemoryFs();
-    await wal.adopt({ expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 });
+    await adopt(wal, { expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 });
     await manifest(fs, 2, 4, ["l0/1-2.sst", "l0/3-4.sst"]);
     expect((await reconcile(wal, fs, "recorded")).generation).toBe(2);
     expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 2 });
@@ -175,7 +177,7 @@ describe("reconcile", () => {
   it("ignores a newer manifest the WAL still covers: a crash left it, and the WAL holds its seqs", async () => {
     const wal = await walWith(3);
     const fs = new MemoryFs();
-    await wal.adopt({ expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 });
+    await adopt(wal, { expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 });
     await manifest(fs, 1, 3, ["l0/1-3.sst"]);
     expect(await reconcile(wal, fs, "recorded")).toEqual({ generation: 0, top: 1, kept: true });
     expect(await seqs(wal)).toEqual([1, 2, 3]);
@@ -269,7 +271,7 @@ describe("reconcile", () => {
         await advance(wal, { through: 4, generation: 2 });
         const before = await wal.meta();
         expect(before.head).toBe(4);
-        expect(await wal.adopt({ expect: before, generation: 0, through, floor: through, top: 0 })).toBe(true);
+        expect(await adopt(wal, { expect: before, generation: 0, through, floor: through, top: 0 })).toBe(true);
         const after = await wal.meta();
         expect(after.head).toBeGreaterThanOrEqual(before.head);
         expect(after.head).toBeGreaterThanOrEqual(after.ingestedThrough);
@@ -310,8 +312,133 @@ describe("reconcile", () => {
     const wal = await walWith(1);
     const stale = await wal.meta();
     await wal.append(encodeOps(put(2)));
-    expect(await wal.adopt({ expect: stale, generation: 0, through: 0, floor: 0, top: 0 })).toBe(false);
+    expect(await adopt(wal, { expect: stale, generation: 0, through: 0, floor: 0, top: 0 })).toBe(false);
     expect(await wal.meta()).toEqual({ head: 2, ingestedThrough: 0, generation: undefined, top: 0, destroyedTop: 0 });
+    wal.close();
+  });
+});
+
+describe("reconcileOpen", () => {
+  /** What a host does when a tab asks, counted. */
+  function host(wal: TabWal, fs: MemoryFs) {
+    const asked = { times: 0 };
+    return { asked, repair: () => (asked.times++, reconcile(wal, fs, undefined).then(() => undefined)) };
+  }
+
+  it("records generation 0 on a database with nothing stored, without the host", async () => {
+    const wal = await walWith(0);
+    const fs = new MemoryFs();
+    const { asked, repair } = host(wal, fs);
+    expect(await reconcileOpen(wal, fs, repair)).toBe(false);
+    expect(await wal.meta()).toEqual({ head: 0, ingestedThrough: 0, generation: 0, top: 0, destroyedTop: 0 });
+    expect(asked.times).toBe(0);
+    wal.close();
+  });
+
+  it("records for a new database what reconcile records", async () => {
+    const tab = await walWith(0);
+    await reconcileOpen(tab, new MemoryFs(), () => Promise.reject(new Error("asked the host")));
+    const whole = await walWith(0);
+    await reconcile(whole, new MemoryFs(), "recorded");
+    const stored = async (wal: TabWal) => [
+      await walStore(wal.dbName, "readonly", (_, meta) => meta.getAllKeys()),
+      await walStore(wal.dbName, "readonly", (_, meta) => meta.getAll()),
+    ];
+    expect(await stored(tab)).toEqual(await stored(whole));
+    expect((await stored(tab))[0]).toEqual(["generation", "ingestedThrough", "topGeneration"]);
+    tab.close();
+    whole.close();
+  });
+
+  it("keeps a recorded generation and writes nothing, without the host", async () => {
+    const wal = await walWith(2);
+    const fs = new MemoryFs();
+    await manifest(fs, 1, 1, ["l0/1-1.sst"]);
+    await advance(wal, { through: 1, generation: 1 });
+    const before = await wal.meta();
+    const { asked, repair } = host(wal, fs);
+    expect(await reconcileOpen(wal, fs, repair)).toBe(true);
+    expect(await wal.meta()).toEqual(before);
+    expect(asked.times).toBe(0);
+    wal.close();
+  });
+
+  it("trusts the recorded manifest: a missing run is left to the load", async () => {
+    const wal = await walWith(1);
+    const fs = new MemoryFs();
+    await manifest(fs, 1, 1, ["l0/1-1.sst"]);
+    await advance(wal, { through: 1, generation: 1 });
+    await fs.remove("l0/1-1.sst");
+    const { asked, repair } = host(wal, fs);
+    expect(await reconcileOpen(wal, fs, repair)).toBe(true);
+    expect(asked.times).toBe(0);
+    wal.close();
+  });
+
+  it("asks the host when OPFS kept a manifest past the head", async () => {
+    const wal = await walWith(1);
+    const fs = new MemoryFs();
+    await adopt(wal, { expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 });
+    await manifest(fs, 2, 4, ["l0/1-2.sst", "l0/3-4.sst"]);
+    const { asked, repair } = host(wal, fs);
+    expect(await reconcileOpen(wal, fs, repair)).toBe(false);
+    expect(asked.times).toBe(1);
+    expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 4, generation: 2 });
+    wal.close();
+  });
+
+  it("asks the host when the WAL database is new and the folder holds a manifest", async () => {
+    const wal = await walWith(0);
+    const fs = new MemoryFs();
+    await manifest(fs, 1, 2, ["l0/1-2.sst"]);
+    const { asked, repair } = host(wal, fs);
+    expect(await reconcileOpen(wal, fs, repair)).toBe(false);
+    expect(asked.times).toBe(1);
+    expect(await wal.meta()).toMatchObject({ head: 2, ingestedThrough: 2, generation: 1 });
+    wal.close();
+  });
+
+  it("asks the host when destroyDb removed a database of this name", async () => {
+    const wal = await walWith(0);
+    const fs = new MemoryFs();
+    const floor = { head: asSeq(10), top: asGeneration(8) };
+    await recordDestroyed(wal.dbName, floor);
+    try {
+      const { asked, repair } = host(wal, fs);
+      expect(await reconcileOpen(wal, fs, repair)).toBe(false);
+      expect(asked.times).toBe(1);
+      expect(await wal.meta()).toMatchObject({ head: 10, ingestedThrough: 10, generation: 0, destroyedTop: 8 });
+    } finally {
+      await forgetDestroyed(wal.dbName, floor);
+      wal.close();
+    }
+  });
+
+  it("asks the host when another tab recorded first", async () => {
+    const wal = await walWith(0);
+    const fs = new MemoryFs();
+    const meta = wal.meta.bind(wal);
+    wal.meta = async () => {
+      const seen = await meta();
+      wal.meta = meta;
+      await reconcile(wal, fs, "recorded");
+      return seen;
+    };
+    const { asked, repair } = host(wal, fs);
+    expect(await reconcileOpen(wal, fs, repair)).toBe(false);
+    expect(asked.times).toBe(1);
+    expect(await wal.meta()).toMatchObject({ generation: 0 });
+    wal.close();
+  });
+
+  it("rejects with the host's refusal", async () => {
+    const wal = await walWith(0);
+    const fs = new MemoryFs();
+    await manifest(fs, 1, 2, ["l0/1-2.sst"]);
+    await flipByte(fs, "m/");
+    const { repair } = host(wal, fs);
+    await expect(reconcileOpen(wal, fs, repair)).rejects.toThrow(CorruptDatabaseError);
+    expect((await wal.meta()).generation).toBeUndefined();
     wal.close();
   });
 });

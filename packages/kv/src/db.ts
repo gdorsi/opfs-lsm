@@ -24,7 +24,7 @@ import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type Sto
 import { removeDatabase } from "./destroy.js";
 import { fullLock, layersChannel, openLock, webLocks, withLock } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
-import { reconcile, type Reconciled } from "./recover.js";
+import { reconcileOpen } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
@@ -374,7 +374,7 @@ async function openStores(
     heldWal = wal;
     // Pairs the WAL with a manifest before the first read or write resolves.
     // The recorded manifest's runs are checked by the load, which opens them.
-    const recovering = reconcile(wal, tabFs, "recorded");
+    const recovering = reconcileOpen(wal, tabFs, () => ingest.repair(name));
     recovering.catch(() => undefined);
     const cache = new PageCache(
       Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
@@ -844,12 +844,12 @@ class DbImpl implements Db {
    * recovery checks, and the tail applies when recovery wrote nothing.
    * Otherwise the tail is not one any more, and a sync reads again.
    */
-  async boot(recovering: Promise<Reconciled>): Promise<void> {
+  async boot(recovering: Promise<boolean>): Promise<void> {
     const reading = this.wal.tail(SEQ_ZERO, GENERATION_NONE).then(async (tail) => {
       await this.load(tail.generation, tail.ingestedThrough > SEQ_ZERO, tail.manifest);
       return tail;
     });
-    const [{ kept }, tail] = await Promise.all([recovering, reading.catch(() => undefined)]);
+    const [kept, tail] = await Promise.all([recovering, reading.catch(() => undefined)]);
     if (tail && kept && (await this.follow(tail)) === "done") return;
     if (this.loaded) this.release(this.loaded);
     this.loaded = undefined;
@@ -881,12 +881,12 @@ class DbImpl implements Db {
   /**
    * The recorded generation did not load. Usually a newer one replaced it
    * and the next tail names that one. After a power loss its manifest or
-   * runs can be gone for good: `reconcile` then records one that pairs
-   * with the WAL (design.md, "Recovery"). It changes nothing while
-   * IndexedDB names a generation other than the one found broken.
+   * runs can be gone for good: the host's `reconcile` then records one
+   * that pairs with the WAL (design.md, "Recovery"). It changes nothing
+   * while IndexedDB names a generation other than the one found broken.
    */
   private async repair(): Promise<void> {
-    await reconcile(this.wal, this.fs, undefined);
+    await this.ingestClient.repair(this.name);
     this.repaired = true;
   }
 

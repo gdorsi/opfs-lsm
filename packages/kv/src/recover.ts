@@ -1,7 +1,7 @@
 import { CorruptDatabaseError } from "./errors.js";
 import { forgetDestroyed, readDestroyed, type DestroyedFloor } from "./idb/destroyed.js";
 import type { IdBWal, WalMeta } from "./idb/wal.js";
-import { emptyWal } from "./idb/wal.js";
+import { adopt, emptyWal, recordNew } from "./idb/wal.js";
 import type { ReadFs } from "./opfs/async-fs.js";
 import { asGeneration, asSeq, GENERATION_NONE, nextSeq, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
 import {
@@ -105,9 +105,27 @@ export async function reconcile(
     // No seq any manifest on disk names is handed out again, so a manifest
     // that is not intact now never becomes intact with other writes.
     const floor = await highestThrough(fs, numbers, pick.through);
-    const adopted = await wal.adopt({ expect: meta, generation: pick.generation, through: pick.through, floor, top });
+    const adopted = await adopt(wal, { expect: meta, generation: pick.generation, through: pick.through, floor, top });
     return adopted ? { generation: pick.generation, top, kept: false } : undefined;
   });
+}
+
+/**
+ * `reconcile` for a tab's open, which trusts the recorded manifest: the load
+ * that follows opens its runs. True when that manifest stands and nothing was
+ * written. A tab writes one case itself, generation 0 for a database with
+ * nothing stored, so a first open waits for no host. Every other write is
+ * the host's: `repair` has it run `reconcile` in its exclusive section.
+ */
+export async function reconcileOpen(wal: IdBWal, fs: ReadFs, repair: () => Promise<void>): Promise<boolean> {
+  const [meta, numbers] = await Promise.all([wal.meta(), manifestNumbers(fs)]);
+  if (meta.generation !== undefined) {
+    if (!(await longerPrefix(fs, meta, numbers))) return true;
+  } else if (numbers.length === 0 && meta.head === SEQ_ZERO && !(await readDestroyed(wal.dbName))) {
+    if (await recordNew(wal, meta)) return false;
+  }
+  await repair();
+  return false;
 }
 
 /**
@@ -185,6 +203,16 @@ async function highestThrough(fs: ReadFs | undefined, numbers: readonly Generati
   return floor;
 }
 
+/** Rule 1: the newest intact manifest past the recorded one whose `through` is past the WAL head. */
+async function longerPrefix(fs: ReadFs, meta: WalMeta, numbers: readonly Generation[]): Promise<GenerationMeta | undefined> {
+  for (const n of numbers) {
+    if (meta.generation !== undefined && n <= meta.generation) break;
+    const m = await readManifest(fs, n);
+    if (m && m.through > meta.head && (await isIntact(fs, m))) return m;
+  }
+  return undefined;
+}
+
 /** The manifest to record instead of the recorded one, or undefined to keep it. */
 async function choose(
   fs: ReadFs,
@@ -193,11 +221,8 @@ async function choose(
   trusted: Trusted,
 ): Promise<GenerationMeta | undefined> {
   const recorded = meta.generation;
-  for (const n of numbers) {
-    if (recorded !== undefined && n <= recorded) break;
-    const m = await readManifest(fs, n);
-    if (m && m.through > meta.head && (await isIntact(fs, m))) return m;
-  }
+  const longer = await longerPrefix(fs, meta, numbers);
+  if (longer) return longer;
   if (recorded !== undefined) {
     if (trusted === "recorded" || trusted === recorded) return undefined;
     const m = await probeManifest(fs, recorded);

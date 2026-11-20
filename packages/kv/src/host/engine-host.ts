@@ -147,6 +147,11 @@ export class EngineHost {
     await this.db(name).refused();
   }
 
+  /** Record a manifest that pairs with the WAL of `name`. See `IngestClient.repair`. */
+  async repair(name: string): Promise<void> {
+    await this.db(name).repair();
+  }
+
   /** Delete every record and file of `name`. See `Db.dangerousDestroy`. */
   async destroy(name: string): Promise<void> {
     await this.db(name).destroy();
@@ -514,6 +519,22 @@ class HostedDb {
     }
   }
 
+  /**
+   * `reconcile` for a tab, with no generation trusted: the tab asks because
+   * the recorded one did not load, or because its open found a manifest to
+   * adopt.
+   */
+  async repair(): Promise<void> {
+    await this.exclusive(() =>
+      this.withStores(
+        async ({ wal, fs }) => {
+          this.trusted = (await reconcile(wal, fs, undefined)).generation;
+        },
+        () => Promise.reject(destroyed()),
+      ),
+    );
+  }
+
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
     return this.publishTurn(() => withLock(ingestLock(this.name), fn));
   }
@@ -792,6 +813,10 @@ export function attachEngineHostPort(
         case "stats":
           reply({ type: "stats-ok", id: msg.id, stats: await host.stats(msg.name) });
           return;
+        case "repair":
+          await host.repair(msg.name);
+          reply({ type: "repair-ok", id: msg.id });
+          return;
         case "destroy":
           await host.destroy(msg.name);
           reply({ type: "destroy-ok", id: msg.id });
@@ -822,6 +847,7 @@ export function createLocalIngestClient(host: EngineHost): IngestClient {
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
     makeRoom: (name) => host.makeRoom(name),
+    repair: (name) => host.repair(name),
     destroy: (name) => host.destroy(name),
     stats: (name) => host.stats(name),
     close: () => undefined,
