@@ -26,23 +26,13 @@ export function kvStorage(db: Db): StorageAdapterInterface {
       return chunks;
     },
     async removeRange(prefix) {
-      const keys: Uint8Array[] = [];
-      for await (const entry of db.range(prefixBound(encodeKey(prefix)))) {
-        keys.push(entry.key);
-      }
-      for (let i = 0; i < keys.length; i += REMOVE_BATCH) {
-        const slice = keys.slice(i, i + REMOVE_BATCH);
-        await db.batch((tx) => {
-          for (const key of slice) tx.delete(key);
-        });
-      }
+      await db.batch((tx) => tx.deleteRange(prefixBound(encodeKey(prefix))));
     },
     close() {
       return db.close();
     } };
 }
 
-const REMOVE_BATCH = 1000;
 const MAX_SEGMENT_BYTES = 65_535;
 
 const textEncoder = new TextEncoder();
