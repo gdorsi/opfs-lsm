@@ -3,8 +3,8 @@ import { compareCodePoints, compareScalar, compareTuple } from "./order.js";
 
 /** An index as the oracle reads it, written from the schema rules rather than from the stored layout. */
 export type ModelIndex =
-  | { readonly kind: "sorted" | "unique"; readonly on: readonly string[] }
-  | { readonly kind: "multi"; readonly on: readonly string[] }
+  | { readonly kind: "unique"; readonly on: readonly string[] }
+  | { readonly kind: "sorted" | "multi"; readonly on: readonly string[]; readonly include?: readonly string[] }
   | { readonly kind: "text"; readonly on: readonly string[]; readonly text: string };
 
 type Doc = { readonly id: string; readonly [key: string]: unknown };

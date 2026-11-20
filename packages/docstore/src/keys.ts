@@ -4,15 +4,18 @@
  *     catalog   64 00 00                      -> catalog JSON
  *     row       64 CC CC 00 <id>              -> document JSON
  *     sorted    64 CC CC II <v1>..<vn> <id>   -> empty
+ *     covering  64 CC CC II <v1>..<vn> <id>   -> {"f1":..,"fk":..} (UTF-8 JSON)
  *     unique    64 CC CC II <v1>..<vn>        -> <id>
  *     text      64 CC CC II <v1>..<vn> <id>   -> "w1 w2 ..." (lowercased words)
  *
  * CC CC is a collection id (u16be, 1..65535) and II an index id (1..255);
  * index id 00 is the rows. <id> is raw UTF-8. A value <v> is one field of
  * the tuple encoding of `@opfs-lsm/kv/tuple`, which also owns the bounds of
- * every key that continues a prefix, an id included.
+ * every key that continues a prefix, an id included. A covering entry is a
+ * sorted entry of an index that declares `include`: its value holds, in
+ * declared order, each included field its document has.
  */
-import type { Entry, Range } from "@opfs-lsm/kv";
+import type { Range } from "@opfs-lsm/kv";
 import { asciiAt, decodeTuple, encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
 import { DocStoreError } from "./errors.js";
 import type { Cursor, QueryInput, Scalar } from "./schema.js";
@@ -159,7 +162,7 @@ function matchPatterns(match: string): Uint8Array[] {
 export type ScanTarget =
   | { readonly kind: "rows"; readonly prefix: Uint8Array }
   | {
-      readonly kind: "sorted" | "unique" | "text";
+      readonly kind: "sorted" | "unique" | "text" | "covering";
       readonly prefix: Uint8Array;
       readonly rowPrefix: Uint8Array;
       readonly arity: number;
@@ -246,7 +249,12 @@ export function entryIdString(target: ScanTarget, key: Uint8Array, value: Uint8A
   return target.kind === "unique" ? idOf(value) : idOf(key, idStart(target, key));
 }
 
-export function decodeEntries(target: ScanTarget, entries: readonly Entry[], eqLength: number): { id: string; values: Scalar[] }[] {
+/** `value` is what `queryEntries` decoded of the entry's value: the id of a unique entry, the fields of a covering one. */
+export function decodeEntries(
+  target: ScanTarget,
+  entries: readonly { readonly key: Uint8Array; readonly value: unknown }[],
+  eqLength: number,
+): { id: string; values: Scalar[]; fields?: unknown }[] {
   if (target.kind === "rows") {
     return entries.map(({ key }) => {
       const id = idOf(key, target.prefix.length);
@@ -257,7 +265,8 @@ export function decodeEntries(target: ScanTarget, entries: readonly Entry[], eqL
   const { values: eqValues, end: from } = decodeTuple(entries[0]!.key, eqLength, target.prefix.length);
   return entries.map(({ key, value }) => {
     const { values, end } = decodeTuple(key, target.arity - eqLength, from);
-    return { id: target.kind === "unique" ? idOf(value) : idOf(key, end), values: eqValues.concat(values) };
+    const id = target.kind === "unique" ? (value as string) : idOf(key, end);
+    return target.kind === "covering" ? { id, values: eqValues.concat(values), fields: value } : { id, values: eqValues.concat(values) };
   });
 }
 

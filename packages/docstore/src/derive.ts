@@ -53,6 +53,13 @@ export function decodeDoc(bytes: Uint8Array): StoredDoc {
   return parsed as StoredDoc;
 }
 
+/** The value of a covering entry. */
+export function decodeFields(bytes: Uint8Array): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(fromUtf8.decode(bytes));
+  if (!isObject(parsed)) throw new CorruptDatabaseError("an index entry's fields are not a JSON object");
+  return parsed;
+}
+
 export function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -133,7 +140,7 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
   switch (spec.kind) {
     case "sorted":
       if (spec.unique) tail = undefined;
-      else value = EMPTY;
+      else value = spec.include ? fieldsValue(doc, spec.include) : EMPTY;
       break;
     case "text": {
       const text = readPath(doc, spec.text);
@@ -155,6 +162,13 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
   return out;
 }
 const EMPTY = new Uint8Array(0);
+
+function fieldsValue(doc: StoredDoc, include: readonly string[]): Uint8Array {
+  // No prototype, so a field named "__proto__" is copied like any other.
+  const fields: Record<string, unknown> = Object.create(null);
+  for (const f of include) if (Object.hasOwn(doc, f)) fields[f] = doc[f];
+  return utf8.encode(JSON.stringify(fields));
+}
 
 function readPath(doc: StoredDoc, path: Path): unknown {
   let v: unknown = doc;

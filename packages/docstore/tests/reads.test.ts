@@ -3,7 +3,7 @@ import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
 import { collection, defineSchema, openDocStore } from "../src/index.js";
 import { concat, rowPrefix, type CollectionId } from "../src/keys.js";
-import type { QueryInput, Scalar } from "../src/schema.js";
+import type { Json, QueryInput, Scalar } from "../src/schema.js";
 import { asQuery, checkQuery, datasetArb, queryArb, schema, type Doc, type DocQuery, type Docs } from "./docs.js";
 import { codeOf, freshName, openKv } from "./harness.js";
 import { stored } from "./oracle.js";
@@ -83,6 +83,111 @@ describe("queryEntries", () => {
     ]);
     expect((await c.queryEntries({ index: "uniq" })).entries).toEqual([{ id: "x", values: [9] }]);
     expect((await c.queryEntries({ index: "two", eq: ["r"] })).entries).toEqual([]);
+  });
+});
+
+describe("an index with include", () => {
+  type Issue = {
+    id: string;
+    project: string;
+    status: string;
+    updatedAt: number;
+    title?: string | undefined;
+    number?: number;
+    labels?: string[];
+    meta?: { readonly [key: string]: Json };
+  };
+  const plain = collection<Issue>().index("byProject", ["project", "updatedAt"]).index("byLabel", ["labels[]", "updatedAt"]);
+  const covering = defineSchema({
+    version: 1,
+    collections: {
+      plain: plain,
+      issues: plain
+        .index("list", ["project", "updatedAt"], { include: ["title", "number", "meta"] })
+        .index("labelled", ["labels[]", "updatedAt"], { include: ["title"] }),
+    },
+  });
+  const issues: Issue[] = [
+    { id: "a", project: "p", status: "open", updatedAt: 3, title: "Crash", number: 1, meta: { x: [1, null] } },
+    { id: "b", project: "p", status: "done", updatedAt: 1, title: "Typo", number: 2, labels: ["ui", "docs"] },
+    { id: "c", project: "p", status: "open", updatedAt: 2, number: 3, labels: ["ui"] },
+    { id: "d", project: "q", status: "open", updatedAt: 0, title: "Other", number: 4 },
+  ];
+
+  async function store() {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const s = await openDocStore(kv, covering);
+    await s.collection("issues").putMany(issues);
+    await s.collection("plain").putMany(issues);
+    return { issues: s.collection("issues"), plain: s.collection("plain") };
+  }
+
+  it("returns each entry's included fields the document has, in index order, under eq, a bound, reverse and paging", async () => {
+    const { issues: c } = await store();
+    expect((await c.queryEntries({ index: "list", eq: ["p"] })).entries).toStrictEqual([
+      { id: "b", values: ["p", 1], fields: { title: "Typo", number: 2 } },
+      { id: "c", values: ["p", 2], fields: { number: 3 } },
+      { id: "a", values: ["p", 3], fields: { title: "Crash", number: 1, meta: { x: [1, null] } } },
+    ]);
+    expect((await c.queryEntries({ index: "list", eq: ["p"], gte: 2, reverse: true })).entries.map((e) => e.fields)).toStrictEqual([
+      { title: "Crash", number: 1, meta: { x: [1, null] } },
+      { number: 3 },
+    ]);
+    const first = await c.queryEntries({ index: "list", limit: 2 });
+    expect(first.entries.map((e) => [e.id, e.fields.number])).toStrictEqual([["b", 2], ["c", 3]]);
+    const second = await c.queryEntries({ index: "list", limit: 2, after: first.next });
+    expect(second.entries.map((e) => [e.id, e.fields.number])).toStrictEqual([["a", 1], ["d", 4]]);
+    expect(second.next).toBeUndefined();
+  });
+
+  it("gives a multi index's entries the fields once per element", async () => {
+    const { issues: c } = await store();
+    expect((await c.queryEntries({ index: "labelled" })).entries).toStrictEqual([
+      { id: "b", values: ["docs", 1], fields: { title: "Typo" } },
+      { id: "b", values: ["ui", 1], fields: { title: "Typo" } },
+      { id: "c", values: ["ui", 2], fields: {} },
+    ]);
+  });
+
+  it("follows a put, a modify and a delete that change only an included field", async () => {
+    const { issues: c } = await store();
+    const fields = async () => (await c.queryEntries({ index: "list", eq: ["p"] })).entries.map((e) => [e.id, e.fields]);
+    await c.put({ ...issues[0]!, title: "Crash on start" });
+    await c.modify("c", (d) => ({ ...d, title: "Slow", number: 30 }));
+    await c.modify("b", (d) => ({ ...d, title: undefined }));
+    expect(await fields()).toStrictEqual([
+      ["b", { number: 2 }],
+      ["c", { title: "Slow", number: 30 }],
+      ["a", { title: "Crash on start", number: 1, meta: { x: [1, null] } }],
+    ]);
+    await c.delete("c");
+    expect((await fields()).map(([id]) => id)).toStrictEqual(["b", "a"]);
+    expect((await c.queryEntries({ index: "labelled" })).entries.map((e) => e.values)).toStrictEqual([["docs", 1], ["ui", 1]]);
+  });
+
+  it("gives no fields to the entries of an index without include, or to the rows", async () => {
+    const { issues: c } = await store();
+    for (const e of [
+      ...(await c.queryEntries({ index: "byProject" })).entries,
+      ...(await c.queryEntries({ index: "byLabel" })).entries,
+      ...(await c.queryEntries({})).entries,
+    ]) {
+      expect(Object.keys(e)).toStrictEqual(["id", "values"]);
+    }
+  });
+
+  it("answers query, queryIds and count as the same index without include does", async () => {
+    const { issues: c, plain } = await store();
+    const qs = [{ eq: ["p"] }, { eq: ["p"], gt: 1, reverse: true }, { limit: 2, offset: 1 }] as const;
+    // A cursor names its collection and index, so only whether one follows is compared.
+    const page = <P extends { next?: unknown }>({ next, ...rest }: P) => ({ ...rest, more: next !== undefined });
+    for (const q of qs) {
+      expect(page(await c.query({ index: "list", ...q }))).toStrictEqual(page(await plain.query({ index: "byProject", ...q })));
+      expect(page(await c.queryIds({ index: "list", ...q }))).toStrictEqual(page(await plain.queryIds({ index: "byProject", ...q })));
+      expect(await c.count({ index: "list", ...q })).toBe(await plain.count({ index: "byProject", ...q }));
+    }
+    expect((await c.query({ index: "labelled", eq: ["ui"] })).docs).toStrictEqual((await plain.query({ index: "byLabel", eq: ["ui"] })).docs);
   });
 });
 

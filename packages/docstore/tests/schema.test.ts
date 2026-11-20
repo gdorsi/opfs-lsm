@@ -87,7 +87,7 @@ describe("opening a schema", () => {
 
   it("refuses a stored catalog of another format", async () => {
     const kv = await kvOn(freshName());
-    await kv.put(CATALOG_KEY, encodeCatalog({ format: 2 } as unknown as StoredCatalog));
+    await kv.put(CATALOG_KEY, encodeCatalog({ format: 1 } as unknown as StoredCatalog));
     expect(await codeOf(openDocStore(kv, v1))).toBe("schema");
   });
 
@@ -198,6 +198,23 @@ describe("opening a schema", () => {
     await next.store.whenIdle();
     expect(await keysUnder(next.kv, titles)).toBe(0);
     expect((await storedCatalog(next.kv)).dropped).toEqual([]);
+  });
+
+  it("rebuilds an index whose include a newer version adds, changes or removes, over the rows written before", async () => {
+    const name = freshName();
+    const docs = rows(40);
+    await (await at(name, v1)).store.collection("todos").putMany(docs);
+    const byCreatedIn = (version: number, include?: readonly ["title" | "done", ...("title" | "done")[]]) =>
+      defineSchema({ version, collections: { todos: include ? base.index("list", "createdAt", { include }) : base.index("list", "createdAt") } });
+    const fieldsAt = async (version: number, include?: readonly ["title" | "done", ...("title" | "done")[]]) => {
+      const { store } = await at(name, byCreatedIn(version, include));
+      await store.whenIdle();
+      return (await store.collection("todos").queryEntries({ index: "list" })).entries.map((e) => ("fields" in e ? e.fields : "none"));
+    };
+    expect(await fieldsAt(2, ["title"])).toStrictEqual(docs.map((d) => ({ title: d.title })));
+    expect(await fieldsAt(3, ["done", "title"])).toStrictEqual(docs.map((d) => ({ done: d.done, title: d.title })));
+    expect(await fieldsAt(4)).toStrictEqual(docs.map(() => "none"));
+    expect(await fieldsAt(5, ["done"])).toStrictEqual(docs.map((d) => ({ done: d.done })));
   });
 
   it("keeps the rows of a collection a newer schema leaves out, for a later schema that declares it again", async () => {

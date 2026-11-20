@@ -135,6 +135,20 @@ describe("reconcile", () => {
     expect(c3.dropped).toEqual(failed.dropped);
   });
 
+  it("at a higher version redefines an index whose include was added, changed or removed, and keeps one whose include is the same", () => {
+    const steps: (readonly string[] | undefined)[] = [undefined, ["t"], ["t", "n"], ["n", "t"], ["n", "t"], undefined];
+    let c = open(undefined, 1, { c: { x: { by: "a" } } });
+    steps.slice(1).forEach((include, i) => {
+      const was = idOf(c, "c", "x");
+      const next = open(c, i + 2, { c: { x: include ? { by: "a", include } : { by: "a" } } });
+      expect(idOf(next, "c", "x") === was).toBe(include?.join() === steps[i]?.join());
+      c = next;
+    });
+    expect(codeOf(() => reconcile(c, declare(6, { c: { x: { by: "a", include: ["t"] } } })))).toBe("schema");
+    const covering = open(c, 7, { c: { x: { by: "a", include: ["t"] } } });
+    expect(parseCatalog(encodeCatalog(covering))).toEqual(covering);
+  });
+
   it("refuses a schema that needs an index id above 255", () => {
     const many = (path: string) => Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`i${i}`, { by: `${path}${i}` }]));
     const c1 = open(undefined, 1, { big: many("a") });
@@ -150,8 +164,9 @@ describe("stored bytes", () => {
 
   it("refuses a catalog of another format with schema, and a wrong shape as corrupt", () => {
     const c = open(undefined, 1, v1);
-    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 2 } as unknown as StoredCatalog)))).toBe("schema");
-    expect(() => parseCatalog(encodeCatalog({ format: 1 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
+    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 1 } as unknown as StoredCatalog)))).toBe("schema");
+    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 3 } as unknown as StoredCatalog)))).toBe("schema");
+    expect(() => parseCatalog(encodeCatalog({ format: 2 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
     expect(() => parseCatalog(new TextEncoder().encode("12345678not json"))).toThrow(CorruptDatabaseError);
   });
 });
@@ -245,6 +260,15 @@ describe("normalizeSchema", () => {
     ["the old on option", { version: 1, collections: { a: { x: { on: "b" } } } }],
     ["the old multi option", { version: 1, collections: { a: { x: { by: "b", multi: true } } } }],
     ["a misspelled option", { version: 1, collections: { a: { x: { by: "b", uniqe: true } } } }],
+    ["include on a unique index", { version: 1, collections: { a: { x: { by: "b", unique: true, include: ["c"] } } } }],
+    ["include on a text index", { version: 1, collections: { a: { x: { by: "b", text: "c", include: ["c"] } } } }],
+    ["include of a dotted path", { version: 1, collections: { a: { x: { by: "b", include: ["c.d"] } } } }],
+    ["include of an array field", { version: 1, collections: { a: { x: { by: "b", include: ["c[]"] } } } }],
+    ["include of an empty field", { version: 1, collections: { a: { x: { by: "b", include: [""] } } } }],
+    ["include of a repeated field", { version: 1, collections: { a: { x: { by: "b", include: ["c", "c"] } } } }],
+    ["include of no fields", { version: 1, collections: { a: { x: { by: "b", include: [] } } } }],
+    ["include of 17 fields", { version: 1, collections: { a: { x: { by: "b", include: Array.from({ length: 17 }, (_, i) => `f${i}`) } } } }],
+    ["include that is not a list", { version: 1, collections: { a: { x: { by: "b", include: "c" } } } }],
     ["a drop that is not an array", { version: 1, collections: {}, drop: "a" }],
     ["a dropped name with a dash", { version: 1, collections: {}, drop: ["a-b"] }],
     ["a collection both declared and dropped", { version: 1, collections: { a: {} }, drop: ["a"] }],
@@ -285,9 +309,22 @@ describe("normalizeSchema", () => {
     ]);
   });
 
+  it("describes the fields an index includes, and only on an index that includes some", () => {
+    const specs = declare(1, { c: { tags: { by: ["tags[]", "at"], include: ["title", "n"] }, one: { by: "a" } } }).collections.get("c")!;
+    expect([...describeIndexes(specs)]).toStrictEqual([
+      ["tags", { kind: "multi", by: ["tags[]", "at"], unique: false, include: ["title", "n"] }],
+      ["one", { kind: "sorted", by: ["a"], unique: false }],
+    ]);
+  });
+
+  it("accepts 16 included fields", () => {
+    const include = Array.from({ length: 16 }, (_, i) => `f${i}`);
+    expect(describeIndexes(declare(1, { c: { x: { by: "b", include } } }).collections.get("c")!).get("x")?.include).toEqual(include);
+  });
+
   it("opens a catalog stored before by existed without writing it again", () => {
     const stored = encodeCatalog({
-      format: 1,
+      format: 2,
       version: 1,
       nextCollectionId: 2,
       collections: {

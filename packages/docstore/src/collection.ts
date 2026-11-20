@@ -4,7 +4,7 @@ import { followCollection, type CollectionChange } from "./changes.js";
 import { decodeDoc, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
-import type { EntryPage, EntryValues, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
+import type { EntryPageOf, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
 import { PointReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
 
@@ -84,7 +84,7 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
    */
   queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
-  ): Promise<EntryPage<EntryValues<T, Ix, I>>>;
+  ): Promise<EntryPageOf<T, Ix, I>>;
   /** How many entries `query` would walk, from `offset` and stopping at `limit` if given. */
   count(q: Query<T, Ix>): Promise<number>;
 
@@ -397,7 +397,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
 
   queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
-  ): Promise<EntryPage<EntryValues<T, Ix, I>>> {
+  ): Promise<EntryPageOf<T, Ix, I>> {
     return this.view((snap) => snap.queryEntries(q));
   }
 

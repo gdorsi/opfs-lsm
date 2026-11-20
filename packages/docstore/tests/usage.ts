@@ -149,6 +149,41 @@ export async function entryValues(store: DocStore<typeof notesSchema>): Promise<
   return [byTag, bySlug, rows, search, wrong];
 }
 
+const coveringSchema = defineSchema({
+  version: 1,
+  collections: {
+    notes: collection<Note>()
+      .index("list", ["owner", "updatedAt"], { include: ["slug", "tags"] })
+      .index("byTag", ["tags[]", "updatedAt"], { include: ["slug"] })
+      .index("plain", "owner"),
+  },
+});
+
+export async function entryFields(store: DocStore<typeof coveringSchema>): Promise<unknown[]> {
+  const notes = store.collection("notes");
+  const list = (await notes.queryEntries({ index: "list", eq: ["ann"] })).entries;
+  const fields: Pick<Note, "slug" | "tags">[] = list.map((e) => e.fields);
+  const slugs: string[] = (await notes.view((snap) => snap.queryEntries({ index: "byTag" }))).entries.map((e) => e.fields.slug);
+  // @ts-expect-error body is not included
+  list.map((e) => e.fields.body);
+  // @ts-expect-error an index without include has no fields
+  (await notes.queryEntries({ index: "plain" })).entries.map((e) => e.fields);
+  // @ts-expect-error the rows have no fields
+  (await notes.queryEntries({})).entries.map((e) => e.fields);
+  return [fields, slugs];
+}
+
+// @ts-expect-error include takes fields of the document
+collection<Note>().index("x", "owner", { include: ["titel"] });
+// @ts-expect-error include takes top-level fields
+collection<{ id: string; a: number; m: { n: string } }>().index("x", "a", { include: ["m.n"] });
+// @ts-expect-error include takes at least one field
+collection<Note>().index("x", "owner", { include: [] });
+// @ts-expect-error a unique index takes no include
+collection<Note>().unique("x", "slug", { include: ["owner"] });
+// @ts-expect-error a text index takes no include
+collection<Note>().text("x", "owner", "body", { include: ["slug"] });
+
 // @ts-expect-error [] marks an array field, and owner is a string
 defineSchema({ version: 1, collections: { notes: collection<Note>().index("m", "owner[]") } });
 // @ts-expect-error an array field needs the [] mark
