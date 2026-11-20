@@ -30,7 +30,7 @@ const GOALS = [
 export const TABLES: readonly Table[] = [
   {
     id: "storage-calls",
-    file: "2026-11-20T12-02-50-apple-m5-max",
+    file: "2026-11-20T19-37-14-apple-m2-pro",
     columns: [
       { head: "Workload" },
       { head: "IndexedDB", at: "kv/idb" },

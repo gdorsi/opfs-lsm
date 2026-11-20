@@ -1,6 +1,6 @@
 # Benchmarks
 
-These tables compare opfs-lsm with the storage a web app would otherwise use: IndexedDB, the IndexedDB option of each framework, and SQLite on OPFS. [bench/README.md](../bench/README.md) describes each workload and how to run it. Under each table is the machine and the commit of its run. Every table here ran on an Apple M5 Max, but runs differ in load and commit, so compare numbers inside one table, not across two.
+These tables compare opfs-lsm with the storage a web app would otherwise use: IndexedDB, the IndexedDB option of each framework, and SQLite on OPFS. [bench/README.md](../bench/README.md) describes each workload and how to run it. Under each table is the machine and the commit of its run. Storage calls ran on an Apple M2 Pro and every other table on an Apple M5 Max, and runs differ in load and commit, so compare numbers inside one table, not across two.
 
 ## Storage calls
 
@@ -9,21 +9,21 @@ Each workload holds 100,000 entries with 16-byte keys and 100-byte values. The I
 <!-- bench:table storage-calls -->
 | Workload | IndexedDB | kv | |
 | --- | ---: | ---: | ---: |
-| Random writes, batches of 1,000 | 44.7k ops/s | 531k ops/s | 12× |
-| Random point reads | 20.4k ops/s | 686k ops/s | 34× |
-| Reads of missing keys | 22.8k ops/s | 1.45M ops/s | 63× |
-| Full ordered scan | 598k ops/s † | 3.29M ops/s | 5.5× |
-| Seeks of 100 keys | 4.61k ops/s | 22.7k ops/s | 4.9× |
-| Single put, awaited one at a time | 14.3k ops/s | 12.2k ops/s | 0.85× |
-| Read-modify-write in one transaction | 0.109 ms | 0.157 ms | 0.69× |
-| Opening the database in a fresh tab | 0.270 ms | 4.10 ms | 0.066× |
+| Random writes, batches of 1,000 | 26.1k ops/s | 390k ops/s | 15× |
+| Random point reads | 14.8k ops/s † | 424k ops/s | 29× |
+| Reads of missing keys | 13.4k ops/s † | 998k ops/s | 74× |
+| Full ordered scan | 376k ops/s | 1.84M ops/s | 4.9× |
+| Seeks of 100 keys | 3.03k ops/s | 14.4k ops/s | 4.7× |
+| Single put, awaited one at a time | 8.81k ops/s | 7.67k ops/s | 0.87× |
+| Read-modify-write in one transaction | 0.219 ms † | 0.290 ms | 0.75× |
+| Opening the database in a fresh tab | 0.412 ms | 4.92 ms | 0.084× |
 
-Medians of 5 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 2.2 to 3.3, commit 77b174fa. Full results: [2026-11-20T12-02-50-apple-m5-max](results/2026-11-20T12-02-50-apple-m5-max.md).
+Medians of 5 runs per contender, in headless Chrome 157 on Apple M2 Pro, load average 3.8 to 7.3, commit fe22956. Full results: [2026-11-20T19-37-14-apple-m2-pro](results/2026-11-20T19-37-14-apple-m2-pro.md).
 
 † The runs of a marked cell form two clusters, so its median hides two states.
 <!-- /bench:table -->
 
-The read-modify-writes are the YCSB F half of `kv/ycsb-a`, zipfian, timed one at a time: kv's is slower than IndexedDB's. Over the whole mix, half of it reads, the two are level, at 12.7k and 12.4k ops/s. The bench also measures YCSB A's blind updates, seeks of 10 keys and batched deletes. This table has no row for them.
+The read-modify-writes are the YCSB F half of `kv/ycsb-a`, zipfian, timed one at a time: kv's is slower than IndexedDB's. Over the whole mix, half of it reads, the two are level, at 6.60k and 6.74k ops/s. The bench also measures YCSB A's blind updates, seeks of 10 keys and batched deletes. This table has no row for them.
 
 ## Framework adapters
 
