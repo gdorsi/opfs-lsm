@@ -58,15 +58,19 @@ const insertSql = (entity: EntityName) => {
 };
 const INSERT_LABELS = "INSERT INTO issue_labels (issueId, labelId) SELECT json_extract(i.value, '$.id'), l.value FROM json_each(?) AS i, json_each(json_extract(i.value, '$.labelIds')) AS l";
 
-/** Opens the store; `relaxed` sets `synchronous=OFF` first, so a commit stays atomic but does not wait for the disk. */
+const CACHE_KIB = 256 * 1024;
+
+/** Opens the store with a 256 MiB page cache, as kv's `cacheBytes` default; `relaxed` also sets `synchronous=OFF`, so a commit stays atomic but does not wait for the disk. */
 export async function openSqlite(name: string, relaxed: boolean): Promise<TrackerStore> {
   const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tracker-${name}.sqlite` });
   const sql = <T>(text: string, params: readonly unknown[] = []) => database.execute<T>(text, params);
-  if (relaxed) {
-    await sql("PRAGMA synchronous = OFF");
-    const [mode] = await sql<{ synchronous: number }>("PRAGMA synchronous");
-    if (mode?.synchronous !== 0) throw new Error(`PRAGMA synchronous is ${JSON.stringify(mode)}, want 0`);
-  }
+  const pragma = async (key: string, value: number) => {
+    await sql(`PRAGMA ${key} = ${value}`);
+    const [row] = await sql<Record<string, number>>(`PRAGMA ${key}`);
+    if (row?.[key] !== value) throw new Error(`PRAGMA ${key} is ${JSON.stringify(row)}, want ${value}`);
+  };
+  await pragma("cache_size", -CACHE_KIB);
+  if (relaxed) await pragma("synchronous", 0);
   // Like an app's migration check: the schema statements run on the first open only, not on every fresh page.
   const [version] = await sql<{ user_version: number }>("PRAGMA user_version");
   if (!version?.user_version) {
@@ -197,7 +201,7 @@ export default defineContender({
   family: "tracker",
   durability: "sqlite-full",
   fastPath:
-    "wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated worker, opened by @tanstack/browser-db-sqlite-persistence; normalized tables, issue_labels junction, 9 secondary indexes; one SQL statement per goal (two for a thread); a batch = one transaction, creates as one json_each INSERT per table",
+    "wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated worker, opened by @tanstack/browser-db-sqlite-persistence, PRAGMA cache_size = -262144 (a 256 MiB page cache, as kv's cacheBytes); normalized tables, issue_labels junction, 9 secondary indexes; one SQL statement per goal (two for a thread); a batch = one transaction, creates as one json_each INSERT per table",
   engine: false,
   open: (name) => openSqlite(name, false),
 });

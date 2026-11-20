@@ -42,7 +42,7 @@ export default defineContender({
   family: "tanstack-live",
   durability: "sqlite-full",
   fastPath:
-    "persistedCollectionOptions with syncMode on-demand on createBrowserWASQLitePersistence (wa-sqlite, OPFSCoopSyncVFS, in a dedicated WebWorker), a collection per entity; createIndex on the issue fields the screens filter and sort by, and on id, which become SQLite expression indexes; a batch's changes to stored rows first hold those rows with a live query on their ids, then insert, update and delete with an array = one TanStack transaction = one SQLite transaction",
+    "persistedCollectionOptions with syncMode on-demand on createBrowserWASQLitePersistence (wa-sqlite, OPFSCoopSyncVFS, in a dedicated WebWorker), PRAGMA cache_size = -262144 (a 256 MiB page cache, as kv's cacheBytes), a collection per entity; createIndex on the issue fields the screens filter and sort by, and on id, which become SQLite expression indexes; a batch's changes to stored rows first hold those rows with a live query on their ids, then insert, update and delete with an array = one TanStack transaction = one SQLite transaction",
   engine: false,
   open: (name) => openSqlite(name, false),
 });
