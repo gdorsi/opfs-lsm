@@ -67,7 +67,7 @@ Yjs stores each update as it happens. automerge-repo saves a document at most ev
 
 ### On demand, against SQLite
 
-In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack/browser-db-sqlite-persistence`, which runs wa-sqlite on OPFS in a dedicated WebWorker. Its adapter is patched to send `LIMIT` and equality on numbers to SQLite, as [bench/README.md](../bench/README.md) describes. Both collections hold 100,000 rows and load only what a query asks for. SQLite runs with `synchronous=OFF` (atomic commits that do not wait for the disk, like IndexedDB's relaxed default under opfs-lsm); the full-sync variant is `tanstack-ondemand/sqlite` in the full run.
+In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack/browser-db-sqlite-persistence`, which runs wa-sqlite on OPFS in a dedicated WebWorker. Its adapter is patched to send `LIMIT` and equality on numbers to SQLite for filters made of equality and `in`, as [bench/README.md](../bench/README.md) describes. The page query filters with `gte` on `createdAt`, so SQLite still loads the owner's tail for it. Both collections hold 100,000 rows and load only what a query asks for. SQLite runs with `synchronous=OFF` (atomic commits that do not wait for the disk, like IndexedDB's relaxed default under opfs-lsm); the full-sync variant is `tanstack-ondemand/sqlite` in the full run.
 
 <!-- bench:table on-demand-sqlite -->
 | Workload | SQLite | opfs-lsm | |
