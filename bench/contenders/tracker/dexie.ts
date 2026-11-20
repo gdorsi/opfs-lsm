@@ -17,7 +17,7 @@ export default defineContender({
   family: "tracker",
   durability: "idb-default",
   fastPath:
-    "Dexie 4; a table per entity, compound indexes and *labelIds; where().between().reverse().limit(), count(), offset(); joins = bulkGet of distinct foreign keys; each goal in one read transaction; a batch = one rw transaction of bulkGet and bulkPut/bulkDelete",
+    "Dexie 4; a table per entity, compound indexes and *labelIds; where().between().reverse().limit(), count(), offset(), keys() for one key-only range read of the group-by; joins = bulkGet of distinct foreign keys; each goal in one read transaction; a batch = one rw transaction of bulkGet and bulkPut/bulkDelete",
   engine: false,
   async open(name) {
     const db = new Dexie(`dexie-${name}`);
@@ -164,15 +164,14 @@ export default defineContender({
         recentActivity: () => read(async () => cards(await issues.orderBy("updatedAt").reverse().limit(LIMITS.page).toArray())),
         assigneeLoad: ({ projectId }) =>
           read(async () => {
-            const people = await users.toArray();
-            const counts = await Promise.all(
-              people.map(async (u) => {
-                const per = await Promise.all(OPEN.map((s) => issues.where("[projectId+assigneeId+status]").equals([projectId, u.id, s]).count()));
-                return { name: u.name, open: per.reduce((a, b) => a + b, 0) };
-              }),
-            );
-            return counts
-              .filter((c) => c.open > 0)
+            const index = await issues.where("[projectId+assigneeId+status]").between([projectId, minKey, minKey], [projectId, maxKey, maxKey]).keys();
+            const open = new Map<string, number>();
+            for (const [, assigneeId, status] of index as unknown as [string, string, Issue["status"]][]) {
+              if ((OPEN as readonly string[]).includes(status)) open.set(assigneeId, (open.get(assigneeId) ?? 0) + 1);
+            }
+            const people = await users.bulkGet([...open.keys()]);
+            return people
+              .map((u) => ({ name: u!.name, open: open.get(u!.id)! }))
               .sort((a, b) => b.open - a.open || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
               .slice(0, LIMITS.load);
           }),
