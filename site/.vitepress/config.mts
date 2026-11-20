@@ -79,6 +79,12 @@ export default ({ command }: { command: string }) => {
         docRules(md);
       },
     },
+    // An inline script waits for the stylesheets before it, and the parser waits for the script. With the stylesheets
+    // last in the head, the parser reaches the body, and the home page's demo frame, while they download.
+    transformHtml(html) {
+      const sheets = html.match(/<link rel="preload stylesheet"[^>]*>\n?/g) ?? [];
+      return sheets.reduce((page, sheet) => page.replace(sheet, ""), html).replace("</head>", `${sheets.join("")}</head>`);
+    },
     transformPageData(page) {
       if (pageOf(page.filePath)?.route) page.frontmatter.outline ??= outlineOf(page.filePath);
     },
