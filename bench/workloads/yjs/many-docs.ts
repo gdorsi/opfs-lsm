@@ -1,7 +1,6 @@
 import * as Y from "yjs";
 import { defineWorkload } from "../../core/types.ts";
-
-const EDITS = 20;
+import { EDITS, noteBody, noteLine, noteTitle } from "../notes.ts";
 
 /** Many small notes (a Y.Map title and a Y.Text body typed in 20 transactions), then a cold load of every note. */
 export default defineWorkload({
@@ -23,9 +22,9 @@ export default defineWorkload({
             doc = new Y.Doc();
             const binding = await store.attach(`note-${i}`, doc);
             doc.on("update", (u: Uint8Array) => ctx.bytes(u.byteLength));
-            doc.getMap("meta").set("title", `note ${i}`);
+            doc.getMap("meta").set("title", noteTitle(i));
             const body = doc.getText("body");
-            for (let e = 0; e < EDITS; e++) body.insert(body.length, `line ${e} of note ${i}\n`);
+            for (let e = 0; e < EDITS; e++) body.insert(body.length, noteLine(i, e));
             await binding.flush();
             await binding.detach();
           });
@@ -44,7 +43,8 @@ export default defineWorkload({
         for (let i = 0; i < ctx.params.entries; i++) {
           const doc = new Y.Doc();
           const binding = await ctx.time("load", 0, () => store.attach(`note-${i}`, doc));
-          ctx.check(doc.getMap("meta").get("title") === `note ${i}` && doc.getText("body").toString().split("\n").length === EDITS + 1, `note ${i} did not load intact`);
+          ctx.check(doc.getMap("meta").get("title") === noteTitle(i), `note ${i}: title is ${String(doc.getMap("meta").get("title"))}`);
+          ctx.check(doc.getText("body").toString() === noteBody(i), `note ${i}: body differs from what was written`);
           await binding.detach();
         }
       },

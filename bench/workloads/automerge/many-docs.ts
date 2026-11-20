@@ -1,9 +1,9 @@
 import { Repo, splice, type AutomergeUrl } from "@automerge/react";
 import { defineWorkload } from "../../core/types.ts";
+import { EDITS, noteBody, noteLine, noteTitle } from "../notes.ts";
 import { countingAdapter } from "./trace.ts";
 
 type Note = { title: string; body: string };
-const EDITS = 20;
 
 /** The repo `persist` writes through, kept on the page for the untimed `export` that measures and closes it. */
 let session: { readonly repo: Repo; readonly urls: readonly string[] } | undefined;
@@ -25,8 +25,8 @@ export default defineWorkload({
         const urls: string[] = [];
         for (let i = 0; i < ctx.params.entries; i++) {
           await ctx.time("create", 0, async () => {
-            const h = repo.create<Note>({ title: `note ${i}`, body: "" });
-            for (let e = 0; e < EDITS; e++) h.change((d) => splice(d, ["body"], d.body.length, 0, `line ${e} of note ${i}\n`));
+            const h = repo.create<Note>({ title: noteTitle(i), body: "" });
+            for (let e = 0; e < EDITS; e++) h.change((d) => splice(d, ["body"], d.body.length, 0, noteLine(i, e)));
             urls.push(h.url);
           });
         }
@@ -60,7 +60,8 @@ export default defineWorkload({
         const urls = ctx.carry.urls as string[];
         for (const [i, url] of urls.entries()) {
           const doc = await ctx.time("load", 0, async () => (await repo.find<Note>(url as AutomergeUrl)).doc());
-          ctx.check(doc?.title === `note ${i}` && doc.body.split("\n").length === EDITS + 1, `note ${i} did not load intact`);
+          ctx.check(doc?.title === noteTitle(i), `note ${i}: title is ${doc?.title}`);
+          ctx.check(doc?.body === noteBody(i), `note ${i}: body differs from what was written`);
         }
       },
     },

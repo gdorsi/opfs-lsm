@@ -74,7 +74,7 @@ The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and value
   The settle runs in the `reopen` tab, and kv counts writes per tab, so these workloads report no W-Amp.
 
   The trace downloads once into `bench/.data/`.
-- `automerge/many-docs`, `yjs/many-docs`: many small notes written, then each loaded cold.
+- `automerge/many-docs`, `yjs/many-docs`: many small notes written, then each loaded cold and compared whole (title and body) with what was written, outside the timers.
 - `fate/read-cache`: a fate client saves lists of 100 issue-like records (about 200 B each) as separate requests, refreshes a tenth of the lists, then a new client on a fresh page loads every list from storage with a server that throws. Sizes are 1,000, 10,000 and 100,000 records. A save and a refresh time the request and `persistence.flush()` together, and the cold load ends with a timed `flush`, which writes the loaded records' last-use marks.
 - `tracker/goals`: a task-tracker workspace built from its history, then 11 goals, each on a fresh page; see [Goal workloads](#goal-workloads).
 - `tanstack-live/screens`: what TanStack DB live queries cost an app on the tracker dataset; see [Live queries](#live-queries).
