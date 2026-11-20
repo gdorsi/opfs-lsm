@@ -9,7 +9,7 @@ import {
   createLocalIngestClient,
   createPortIngestClient,
 } from "../src/testing.js";
-import { CorruptDatabaseError, OpfsLsmError } from "../src/errors.js";
+import { CorruptDatabaseError, OpfsLsmError, StorageUnavailableError } from "../src/errors.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 
 const enc = new TextEncoder();
@@ -51,6 +51,58 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     expect((err as OpfsLsmError).code).toBe("corrupt");
     client.close();
     port1.close();
+  });
+
+  /** A database whose flush OPFS kept and whose WAL database the browser threw away. */
+  async function flushedThenWalLost(): Promise<MemoryFs> {
+    const fs = new MemoryFs();
+    const db = await openHarnessDb({ name: "port-db", fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+    await db.put(utf("k"), utf("v"));
+    await ingestDb(db);
+    await db.close();
+    await deleteIdb("port-db");
+    return fs;
+  }
+
+  it("an open has the host repair over the port, and reads what the repair recorded", async () => {
+    const fs = await flushedThenWalLost();
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => fs));
+    const posted = vi.spyOn(port2, "postMessage");
+    const db = await openHarnessDb({ name: "port-db", fs, ingest: createPortIngestClient(port2) });
+    expect(posted.mock.calls.filter(([msg]) => (msg as { type: string }).type === "repair")).toHaveLength(1);
+    expect(await db.get(utf("k"))).toEqual(utf("v"));
+    expect(await db.put(utf("k2"), utf("v2"))).toBe(2);
+    await db.close();
+    port1.close();
+  });
+
+  it("an open rejects with the class of the host's refusal to repair", async () => {
+    const fs = await flushedThenWalLost();
+    const [name] = await fs.list("m");
+    const body = (await fs.read(`m/${name}`, 0, Number.POSITIVE_INFINITY))!.slice();
+    body[20]! ^= 1;
+    const w = await fs.create(`m/${name}`);
+    await w.write(body);
+    await w.finish();
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => fs));
+    const client = createPortIngestClient(port2);
+    await expect(openHarnessDb({ name: "port-db", fs, ingest: client })).rejects.toThrow(CorruptDatabaseError);
+    client.close();
+    port1.close();
+  });
+
+  it("answers a request it does not know, so a newer tab does not wait forever", async () => {
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => new MemoryFs()));
+    const reply = new Promise<{ type: string; id: number; code?: string }>((resolve) => {
+      port2.onmessage = (ev) => resolve(ev.data);
+    });
+    port2.postMessage({ type: "from-a-newer-build", id: 7, name: "port-db" });
+    expect(await reply).toMatchObject({ type: "err", id: 7, code: new StorageUnavailableError("").code });
+    port1.close();
+    port2.close();
   });
 
   it("ingests via port so a second writer sees SST data", async () => {

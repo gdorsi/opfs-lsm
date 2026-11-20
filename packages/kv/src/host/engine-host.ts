@@ -1,5 +1,5 @@
 import { checkDbName, type DbName } from "../check.js";
-import { ClosedError, codeOfError } from "../errors.js";
+import { ClosedError, codeOfError, StorageUnavailableError } from "../errors.js";
 import { IdBWal, uningestedBytes } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
@@ -822,8 +822,9 @@ export function attachEngineHostPort(
           reply({ type: "destroy-ok", id: msg.id });
           return;
         default: {
-          const _exhaustive: never = msg;
-          void _exhaustive;
+          const unknown: never = msg;
+          // A tab of a newer build: answer, so its request does not wait forever.
+          throw new StorageUnavailableError(`the SharedWorker does not serve "${(unknown as { type: string }).type}"`);
         }
       }
     } catch (err) {
