@@ -3,7 +3,7 @@
  * milliseconds.
  */
 export type Visit =
-  /** Before the app's first message: the page waits for idle, then the app opens. */
+  /** Before the app's first message. */
   | { kind: "waiting" }
   /** The app opened with no issue and nothing to write: it shows its own Generate button. */
   | { kind: "empty" }

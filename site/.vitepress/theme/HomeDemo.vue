@@ -18,7 +18,7 @@ const SOURCE = "linearlite-demo";
 const { frontmatter } = useData();
 const countLabel = computed(() => String(frontmatter.value.demo.count));
 const count = computed(() => Number(countLabel.value.replace(/\D/g, "")));
-/** Unset until this page is idle, so the app does not share the main thread with the page's own start. */
+/** Set once this component is mounted. */
 const src = ref<string>();
 
 const frame = ref<HTMLIFrameElement>();
@@ -103,20 +103,6 @@ function startOver() {
   post({ type: "delete" });
 }
 
-/**
- * Calls `then` once the page has loaded and the browser reports a whole idle period, or after three seconds. The
- * frame shares this page's main thread, so an app loaded sooner would be timed while the page mounts its figures.
- */
-function whenIdle(then: () => void) {
-  const deadline = performance.now() + 3000;
-  const wait = () => {
-    if (typeof requestIdleCallback !== "function") return void setTimeout(then, 300);
-    requestIdleCallback((idle) => (idle.timeRemaining() >= 40 || performance.now() > deadline ? then() : wait()), { timeout: 1000 });
-  };
-  if (document.readyState === "complete") wait();
-  else addEventListener("load", wait, { once: true });
-}
-
 /*
  * Preview and full screen. Moving the iframe in the document would reload the app, so full screen restyles its box
  * to cover the viewport instead. The box it leaves keeps its height, so the page under it doesn't move. Opening grows
@@ -179,22 +165,16 @@ const onMedia = () => {
   if (!compact.value) close(false);
 };
 
-let mounted = false;
 onMounted(() => {
-  mounted = true;
   reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   media = matchMedia("(max-width: 639px), (pointer: coarse)");
   onMedia();
   media.addEventListener("change", onMedia);
   addEventListener("message", onMessage);
   addEventListener("keydown", onKey);
-  whenIdle(() => {
-    if (!mounted) return;
-    src.value = withBase(`/demo/index.html?count=${count.value}&theme=dark`);
-  });
+  src.value = withBase(`/demo/index.html?count=${count.value}&theme=dark`);
 });
 onBeforeUnmount(() => {
-  mounted = false;
   media?.removeEventListener("change", onMedia);
   removeEventListener("message", onMessage);
   removeEventListener("keydown", onKey);
