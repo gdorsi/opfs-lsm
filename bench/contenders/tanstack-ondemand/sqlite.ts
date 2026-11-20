@@ -8,14 +8,9 @@ import type { OnDemandStore, Todo } from "../../core/families.ts";
 import { defineContender } from "../../core/types.ts";
 import { onDemandOps } from "../../page/tanstack.ts";
 
-/** Opens the collection; `relaxed` sets `synchronous=OFF` first, so a commit stays atomic but does not wait for the disk. */
-export async function openSqlite(name: string, relaxed: boolean): Promise<OnDemandStore> {
+/** Opens the collection with SQLite's default settings. */
+async function openSqlite(name: string): Promise<OnDemandStore> {
   const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tanstack-${name}.sqlite` });
-  if (relaxed) {
-    await database.execute("PRAGMA synchronous = OFF");
-    const [mode] = await database.execute<{ synchronous: number }>("PRAGMA synchronous");
-    if (mode?.synchronous !== 0) throw new Error(`PRAGMA synchronous is ${JSON.stringify(mode)}, want 0`);
-  }
   const persistence = createBrowserWASQLitePersistence({ database });
   const todos = createCollection(
     persistedCollectionOptions<Todo, string>({
@@ -48,5 +43,5 @@ export default defineContender({
   fastPath:
     "persistedCollectionOptions with syncMode on-demand on createBrowserWASQLitePersistence (wa-sqlite, OPFSCoopSyncVFS, in a dedicated WebWorker, single-tab coordinator); createIndex on owner, createdAt and id, which become SQLite expression indexes (one expression each, so a page by owner sorts that owner's rows); insert/update with an array = one TanStack transaction = one SQLite transaction",
   engine: false,
-  open: (name) => openSqlite(name, false),
+  open: openSqlite,
 });

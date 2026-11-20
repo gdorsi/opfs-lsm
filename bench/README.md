@@ -43,7 +43,7 @@ A new row or table is an entry in `docs-tables.ts` and, for a table, a pair of m
 |---|---|---|
 | `kv` | kv (`openDb`, SharedWorker host) | a hand-written IndexedDB key-value store: one object store, one transaction per batch with an explicit `commit()`, `getAll` pages for scans |
 | `tanstack` | `docstoreCollectionOptions` from `@opfs-lsm/tanstack-db` (`packages/tanstack-db`), eager, over a docstore collection with no indexes | TanStack DB's `indexedDBCollectionOptions`, eager, its only mode |
-| `tanstack-ondemand` | `docstoreCollectionOptions` with `syncMode: "on-demand"` over a docstore index on `[owner, createdAt]` | TanStack DB's `@tanstack/browser-db-sqlite-persistence` (wa-sqlite on OPFS), on-demand, with `createIndex` on `owner`, `createdAt` and `id` and the adapter patch described below; `sqlite` keeps SQLite's `synchronous=FULL`, `sqlite-relaxed` sets `synchronous=OFF` |
+| `tanstack-ondemand` | `docstoreCollectionOptions` with `syncMode: "on-demand"` over a docstore index on `[owner, createdAt]` | TanStack DB's `@tanstack/browser-db-sqlite-persistence` (wa-sqlite on OPFS), on-demand, with `createIndex` on `owner`, `createdAt` and `id` and the adapter patch described below |
 | `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | `KvPersistence` from `@opfs-lsm/yjs` (`packages/yjs`) | y-indexeddb |
 | `fate` | `kvStorage` from `@opfs-lsm/fate` (`packages/fate`) under fate's persistence | `createIndexedDBStorage` from `@nkzw/fate-indexeddb` under the same persistence |
