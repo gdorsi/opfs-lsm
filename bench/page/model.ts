@@ -37,6 +37,8 @@ export type Model = {
   verify(id: number, got: Uint8Array | undefined): void;
   /** Throws unless `got` is the current value of some live key; returns its id. */
   verifyAny(got: Uint8Array): number;
+  /** The smallest live id at or after `from`; undefined when there is none. */
+  nextLive(from: number): number | undefined;
   /** One past the highest id ever written. */
   readonly end: number;
   liveKeys(): number;
@@ -140,6 +142,10 @@ export function createModel(params: Params, carried?: string): Model {
         throw new CorrectnessError(`scan: id ${h.id} version ${h.version} is not live`);
       }
       return h.id;
+    },
+    nextLive(from) {
+      for (let id = from; id < end; id++) if (v[id] !== 0) return id;
+      return undefined;
     },
     get end() {
       return end;

@@ -67,17 +67,22 @@ export async function getMisses(ctx: Ctx, ops: number, pick: () => number, op = 
   }
 }
 
-/** Ordered scan of `limit` values from id `from`, each verified; checks ascending live ids. With an `offset` the ids must be contiguous, and the first one is checked. */
+/**
+ * Ordered scan of up to `limit` values from id `from`, past `offset` live ids, outside the timer checked against the
+ * model: every value is the next live id after the one before it, and the scan stops at `limit` or at the last live id, never earlier.
+ */
 export async function scan(ctx: Ctx, store: KvStore, from: number, limit: number, op: string, count = limit, offset = 0): Promise<number> {
   const start = ctx.model.key(from);
   const values = await ctx.time(op, 0, () => store.range(start, undefined, limit, offset), count);
-  let prev = -1;
+  let want = ctx.model.nextLive(from);
+  for (let skipped = 0; skipped < offset && want !== undefined; skipped++) want = ctx.model.nextLive(want + 1);
   for (const v of values) {
     const id = ctx.model.verifyAny(v);
-    ctx.check(id > prev && id >= from, `scan out of order: ${id} after ${prev}`);
-    if (offset > 0 && prev < 0) ctx.check(id === from + offset, `scan passed over ${id - from} entries, not ${offset}`);
-    prev = id;
+    ctx.check(id === want, `scan from ${from} past ${offset}: got id ${id}, want ${want}`);
+    want = ctx.model.nextLive(id + 1);
   }
+  ctx.check(values.length <= limit, `scan from ${from}: ${values.length} values for a limit of ${limit}`);
+  ctx.check(values.length === limit || want === undefined, `scan from ${from}: stopped after ${values.length} of ${limit} values, id ${want} is live`);
   return values.length;
 }
 
