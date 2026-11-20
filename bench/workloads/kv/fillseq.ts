@@ -1,5 +1,5 @@
 import { defineWorkload } from "../../core/types.ts";
-import { fillPhase, kvParams, scan, settlePhase } from "../kv-lib.ts";
+import { fillPhase, kvParams, scan, settlePhase, warmPhase } from "../kv-lib.ts";
 
 /** The page a count-free read asks for. */
 const PAGE = 50;
@@ -13,6 +13,7 @@ export default defineWorkload({
   phases: [
     fillPhase("fillseq", "seq"),
     settlePhase(),
+    warmPhase(),
     {
       name: "readseq",
       page: "same",
