@@ -60,8 +60,10 @@ const seq = await db.put(key, value);
 dec(await db.get(key));               // => "world"
 
 // Many keys in one read, in the order asked. With a decode
-// function a value is not copied: decode reads the stored bytes,
-// so it must not change them or keep them.
+// function a value is not copied: decode reads the stored bytes.
+// It must not change them or keep them, not even a subarray: they
+// are the bytes every later read sees, and kv does not check.
+// Decode to a string, a number or a parsed object and return that.
 await db.getMany([key, enc("missing")]);
 // => [Uint8Array, undefined]
 await db.getMany([key], (bytes) => dec(bytes)); // => ["world"]
@@ -162,6 +164,8 @@ db.range({ ...users, offset: 1, limit: 1 });
 // yields "user/2"
 ```
 
+`limit` and `offset` are integers of 0 or more. Anything else rejects with `ConstraintError`.
+
 ### `valueContains`
 
 ```ts
@@ -232,6 +236,8 @@ dec(posts[0]?.joined);    // => "Grace"
 // `joined` is undefined when keyOf returns undefined or the key
 // has no value. Writes that land meanwhile are not seen.
 ```
+
+`snap.rangeValues(range, decode)` returns every entry of a range in one call as `{ key, value }`, where `value` is what `decode` returns for the stored bytes. The rule of `getMany`'s `decode` applies.
 
 ## Snapshots
 

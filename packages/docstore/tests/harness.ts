@@ -130,6 +130,7 @@ export function wrapViews(kv: Db, over: (snap: ViewSnapshot) => Partial<ViewSnap
           range: (r) => snap.range(r),
           count: (r) => snap.count(r),
           rangeJoin: snap.rangeJoin.bind(snap),
+          rangeValues: snap.rangeValues.bind(snap),
           ...over(snap),
         }),
       ),

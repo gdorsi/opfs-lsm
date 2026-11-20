@@ -154,6 +154,11 @@ export function compareEntries(a: LayerEntry, b: LayerEntry, from: number): numb
   return compareFrom(a.key, b.key, from);
 }
 
+/** `compareBytes(e.key, key)`, without copying the key of a run's record. */
+export function compareEntryKey(e: LayerEntry, key: Uint8Array): number {
+  return e.block ? e.compareKey(key, 0) : compareBytes(e.key, key);
+}
+
 /** A put's value, to read where it is. */
 export function valueOf(e: LayerEntry): Uint8Array {
   return e.block ? e.block.subarray(e.valueAt, e.valueAt + e.valueLength) : e.value!;

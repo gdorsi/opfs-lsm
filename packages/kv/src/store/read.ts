@@ -3,6 +3,7 @@ import type { MemRow } from "./memtable.js";
 import {
   allMissed,
   compareEntries,
+  compareEntryKey,
   entryCursor,
   filterCursor,
   lowerBoundKeys,
@@ -13,22 +14,11 @@ import {
   type Maybe,
   type ScanBounds,
 } from "./cursor.js";
-import type { Seq } from "../seq.js";
+import { SEQ_ZERO, type Seq } from "../seq.js";
 import { coversRun, NO_MARKS, throughAt, type Marks } from "./marks.js";
 import { RecordWalker } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
 import { levelOf } from "./levels.js";
-
-/**
- * The rule every read applies to the newest version of a key, once the
- * memtable, the level order or the merge chose it: the version is gone
- * when it is a delete or a mark covers it. A covered newest version means
- * every older one is covered too, since they have the same key and smaller
- * seqs.
- */
-function gone(v: { readonly kind: "put" | "del"; readonly seq: Seq }, through: Seq): boolean {
-  return v.kind === "del" || v.seq <= through;
-}
 
 /**
  * The live put of `key`, where its bytes are, or undefined: a memtable row,
@@ -49,7 +39,13 @@ function livePut(
   return isLive(hit, throughAt(marks, key)) ? hit : undefined;
 }
 
-/** The rule of `gone`, for the record a run's get found. */
+/**
+ * The rule every read applies to the newest version of a key, once the
+ * memtable, the level order or the merge chose it: the version is live when
+ * it is a put no mark covers. A covered newest version means every older one
+ * is covered too, since they have the same key and smaller seqs. A scan
+ * applies it to its entries in place.
+ */
 function isLive(at: RecordWalker, through: Seq): boolean {
   return at.isPut() && at.seq() > through;
 }
@@ -345,6 +341,26 @@ function boundsPrefix(bounds: ScanBounds | undefined): number {
   return bounds?.start && bounds.endExclusive ? sharedPrefix(bounds.start, bounds.endExclusive) : 0;
 }
 
+/** The marks that can hold a key inside `bounds`. A scan judges by these alone, mostly none. */
+function marksIn(marks: Marks, bounds: ScanBounds | undefined): Marks {
+  const start = bounds?.start;
+  const end = bounds?.endExclusive;
+  return marks.filter(
+    (m) => (!end || compareBytes(m.start, end) < 0) && (!start || !m.endExclusive || compareBytes(start, m.endExclusive) < 0),
+  );
+}
+
+/** `throughAt(marks, e.key)`, without copying the key of a run's record. */
+function throughOf(marks: Marks, e: LayerEntry): Seq {
+  let max = SEQ_ZERO;
+  for (const m of marks) {
+    if (m.through > max && compareEntryKey(e, m.start) >= 0 && (!m.endExclusive || compareEntryKey(e, m.endExclusive) < 0)) {
+      max = m.through;
+    }
+  }
+  return max;
+}
+
 /**
  * A scan's next live put, or undefined at its end. Sync until a cursor
  * misses; after a Miss, call it again once the Miss is ready and it goes on
@@ -359,13 +375,12 @@ export type ScanStep = () => Maybe<LayerEntry | undefined>;
  */
 export function liveStep(cursors: readonly LayerCursor[], marks: Marks, reverse = false, bounds?: ScanBounds): ScanStep {
   const merge = new Merge(cursors, reverse, boundsPrefix(bounds));
-  // With no mark, the usual case, nothing asks for the key of an entry.
-  const unmarked = marks.length === 0;
+  const inside = marksIn(marks, bounds);
   return () => {
     for (;;) {
       const e = merge.next();
       if (e instanceof Miss || !e) return e;
-      if (unmarked ? e.kind === "put" : !gone(e, throughAt(marks, e.key))) return e;
+      if (e.kind === "put" && (inside.length === 0 || e.seq > throughOf(inside, e))) return e;
     }
   };
 }
@@ -396,6 +411,7 @@ export function matchingStep(
     reverse,
     boundsPrefix(bounds),
   );
+  const inside = marksIn(marks, bounds);
   /** A match whose check against the newer sources missed, checked again on the next call. */
   let held: LayerEntry | undefined;
   return () => {
@@ -415,7 +431,7 @@ export function matchingStep(
         }
         if (newer) continue;
       }
-      if (!gone(entry, throughAt(marks, entry.key))) return entry;
+      if (entry.kind === "put" && entry.seq > throughOf(inside, entry)) return entry;
     }
   };
 }

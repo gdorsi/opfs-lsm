@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ConstraintError } from "../src/index.js";
 import {
   openHarnessDb,
   __resetMemoryFsForTests,
@@ -246,6 +247,64 @@ describe("reverse range", () => {
             expect(await db.view((snap) => snap.count(range))).toBe(want.length);
           }
         }
+      }
+    }
+    await db.close();
+  });
+
+  it("rejects a limit or an offset that is not an integer >= 0", async () => {
+    const db = await seeded();
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      for (const range of [{ limit: bad }, { offset: bad }]) {
+        await expect(keysOf(db.range(range))).rejects.toBeInstanceOf(ConstraintError);
+        await expect(db.count(range)).rejects.toBeInstanceOf(ConstraintError);
+        await expect(db.view((snap) => snap.count(range))).rejects.toBeInstanceOf(ConstraintError);
+        await expect(db.view((snap) => snap.rangeValues(range, () => 0))).rejects.toBeInstanceOf(ConstraintError);
+      }
+    }
+    await db.close();
+  });
+
+  it("rangeValues hands each value of the range to decode, where range yields a copy", async () => {
+    const db = await seeded();
+    for (const b of bounds) {
+      for (const reverse of [false, true]) {
+        const range = { ...b, reverse, offset: 2, limit: 40 };
+        const got = await db.view((snap) => snap.rangeValues(range, (bytes) => dec.decode(bytes)));
+        expect(got.map((e) => `${dec.decode(e.key)}=${e.value}`)).toEqual(await keysOf(db.range(range)));
+        for (const e of got) expect(e.key.byteLength).toBe(e.key.buffer.byteLength);
+      }
+    }
+    await db.close();
+  });
+
+  it("scans under range deletes yield what point gets find, whichever bounds cut the deleted ranges", async () => {
+    const db = await seeded();
+    await db.batch((tx) => {
+      tx.deleteRange({ start: key(600), endExclusive: key(900) });
+      tx.deleteRange({ start: key(2950) });
+      tx.deleteRange({ start: key(0), endExclusive: key(3) });
+    });
+    // Unflushed, so the marks stay over the runs' versions.
+    await db.batch((tx) => {
+      for (let i = 700; i < 720; i++) tx.put(key(i), enc.encode(`back${i}`));
+      tx.put(key(1), enc.encode("again"));
+    });
+    const live: string[] = [];
+    const values = await db.getMany(Array.from({ length: 3000 }, (_, i) => key(i)));
+    values.forEach((v, i) => v && live.push(`${dec.decode(key(i))}=${dec.decode(v)}`));
+    expect(live.length).toBeGreaterThan(1_000);
+    const cuts = [...bounds, { start: key(650), endExclusive: key(710) }, { start: key(890), endExclusive: key(2960) }, { endExclusive: key(601) }];
+    for (const b of cuts) {
+      const lo = b.start ? dec.decode(b.start) : "";
+      const hi = b.endExclusive ? dec.decode(b.endExclusive) : "~";
+      const want = live.filter((row) => row.slice(0, 6) >= lo && row.slice(0, 6) < hi);
+      for (const reverse of [false, true]) {
+        const range = { ...b, reverse };
+        const ordered = reverse ? [...want].reverse() : want;
+        expect(await keysOf(db.range(range))).toEqual(ordered);
+        expect(await db.count(range)).toBe(want.length);
+        expect(await db.view((snap) => keysOf(snap.range(range)))).toEqual(ordered);
       }
     }
     await db.close();

@@ -96,13 +96,13 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
 
   async query(q: Query<T, Ix>): Promise<Page<T>> {
     const { target, range, limit } = this.plan(q, 1);
-    if (target.kind === "rows") {
-      const page = await collect(this.snap, range);
-      const next = trimPage(page, (h) => h.key, limit);
-      return { docs: page.map((h) => decodeDoc(h.value) as unknown as T), ...next };
-    }
-    // The entry past `limit` only says a next page exists, so its document is not read.
+    // The entry past `limit` only says a next page exists, so its document is not read or parsed.
     let left = limit ?? Number.POSITIVE_INFINITY;
+    if (target.kind === "rows") {
+      const page = await this.snap.rangeValues(range, (bytes) => (left-- > 0 ? decodeDoc(bytes) : undefined));
+      const next = trimPage(page, (h) => h.key, limit);
+      return { docs: page.map((h) => h.value as unknown as T), ...next };
+    }
     const rowOf = (h: Entry) => (left-- > 0 ? concat(target.rowPrefix, entryId(target, h.key, h.value)) : undefined);
     const hits = await this.snap.rangeJoin(range, rowOf, decodeDoc);
     const next = trimPage(hits, (h) => h.entry.key, limit);
