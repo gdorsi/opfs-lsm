@@ -38,6 +38,8 @@ Create worktrees inside `.claude/worktrees/` in the repository, never change cod
 
 `pnpm dev <site|example>` starts the docs site or an example app, or reuses the one this checkout already runs. The server keeps running after your session ends, and the command prints its URL and log file.
 
+`pnpm tunnel <site|example>` builds the app, serves the build and prints a public HTTPS address for it, to open the app on a phone or another machine. It runs until it is stopped, and it needs `cloudflared` on the PATH.
+
 ## docs/design.md
 
 [docs/design.md](docs/design.md) describes the kv engine as it is now: the formats on disk, the protocols, the invariants and the platform assumptions. Keep it a reference:

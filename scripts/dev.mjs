@@ -6,29 +6,14 @@
 // otherwise builds the app's workspace packages, starts the server detached, and prints its URL and log file.
 // Each checkout keeps its own servers under .scratch/dev/, so two worktrees never share one.
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fail, resolveApp, root } from "./apps.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const [app, action = "start"] = process.argv.slice(2);
 const START_TIMEOUT_MS = 240_000;
 
-function fail(message) {
-  console.error(message);
-  process.exit(1);
-}
-
-function resolveApp(name) {
-  if (name === "site") return { pkg: "@opfs-lsm/site", build: false };
-  const manifest = join(root, "examples", name ?? "", "package.json");
-  if (!name || !existsSync(manifest)) {
-    fail(`usage: pnpm dev <app> [start|stop|restart]\n<app> is one of: site, ${readdirSync(join(root, "examples")).join(", ")}`);
-  }
-  return { pkg: JSON.parse(readFileSync(manifest, "utf8")).name, build: true };
-}
-
-const { pkg, build } = resolveApp(app);
+const { pkg, site } = resolveApp(app, "pnpm dev <app> [start|stop|restart]");
 const dir = join(root, ".scratch", "dev");
 const statePath = join(dir, `${app}.json`);
 const logPath = join(dir, `${app}.log`);
@@ -111,7 +96,7 @@ async function start() {
 
   const log = openSync(logPath, "w");
   const env = { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" };
-  if (build) {
+  if (!site) {
     // Examples import the packages' dist, so build what this app depends on first.
     const built = spawnSync("pnpm", ["--filter", `${pkg}^...`, "run", "build"], { cwd: root, stdio: ["ignore", log, log], env });
     if (built.status !== 0) fail(`Building the packages ${app} uses failed. The log ends with:\n${tail()}\nlog: ${logPath}`);

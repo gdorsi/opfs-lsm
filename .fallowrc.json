@@ -25,7 +25,8 @@
   ],
   "ignoreBinaries": [
     "wasm-pack",
-    "agent-browser"
+    "agent-browser",
+    "cloudflared"
   ],
   "ignoreDependencies": [
     "lucide-react",
