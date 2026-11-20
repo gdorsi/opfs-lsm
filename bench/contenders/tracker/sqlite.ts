@@ -1,6 +1,7 @@
 import { openBrowserWASQLiteOPFSDatabase } from "@tanstack/browser-db-sqlite-persistence";
 import type { TrackerStore } from "../../core/families.ts";
 import { defineContender } from "../../core/types.ts";
+import { tuneSqlite } from "../tanstack-ondemand/sqlite.ts";
 import { LIMITS, OPEN, STATUSES, type EntityName, type Event, type IssueCard, type IssueRef, type Priority, type Status } from "../../datasets/tracker/types.ts";
 
 /** Columns per table. Issues' `labelIds` live in the `issue_labels` junction table. */
@@ -99,7 +100,7 @@ function statementsOf(events: readonly Event[]): [string, unknown[]][] {
     for (const [id, net] of nets) {
       if (net.drop) {
         gone.push(id);
-        unlabel.push(id);
+        if (entity === "issues") unlabel.push(id);
       }
       if (net.row) {
         rows.push(net.row);
@@ -126,19 +127,11 @@ function statementsOf(events: readonly Event[]): [string, unknown[]][] {
   return out;
 }
 
-const CACHE_KIB = 256 * 1024;
-
-/** Opens the store with a 256 MiB page cache, as kv's `cacheBytes` default; `relaxed` also sets `synchronous=OFF`, so a commit stays atomic but does not wait for the disk. */
+/** Opens the store with a 256 MiB page cache, as kv's `cacheBytes` default; `relaxed` also sets `synchronous=OFF`, so a commit does not wait for the disk. */
 export async function openSqlite(name: string, relaxed: boolean): Promise<TrackerStore> {
   const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tracker-${name}.sqlite` });
   const sql = <T>(text: string, params: readonly unknown[] = []) => database.execute<T>(text, params);
-  const pragma = async (key: string, value: number) => {
-    await sql(`PRAGMA ${key} = ${value}`);
-    const [row] = await sql<Record<string, number>>(`PRAGMA ${key}`);
-    if (row?.[key] !== value) throw new Error(`PRAGMA ${key} is ${JSON.stringify(row)}, want ${value}`);
-  };
-  await pragma("cache_size", -CACHE_KIB);
-  if (relaxed) await pragma("synchronous", 0);
+  await tuneSqlite(database, relaxed);
   // Like an app's migration check: the schema statements run on the first open only, not on every fresh page.
   const [version] = await sql<{ user_version: number }>("PRAGMA user_version");
   if (!version?.user_version) {
