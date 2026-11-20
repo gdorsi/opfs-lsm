@@ -20,6 +20,7 @@ export type SizeResult = {
   id: string;
   note: string;
   budget?: number;
+  importBudget?: number;
   atImport: Bytes3;
   afterOpen: Bytes3;
   files: { name: string; deferred: boolean; raw: number; brotli: number }[];
@@ -88,6 +89,7 @@ export function measureSizes(build: BuildOutput): SizeResult[] {
       id: row.id,
       note: row.note,
       ...(row.budget !== undefined ? { budget: row.budget } : {}),
+      ...(row.importBudget !== undefined ? { importBudget: row.importBudget } : {}),
       atImport: sum(atImportBases),
       afterOpen: sum(all),
       files: [...all].sort().map((name) => ({
@@ -100,18 +102,26 @@ export function measureSizes(build: BuildOutput): SizeResult[] {
   });
 }
 
+/** One line per budget a row is over, in bytes. */
+export function overBudget(rows: readonly SizeResult[]): string[] {
+  return rows.flatMap((r) => [
+    ...(r.budget !== undefined && r.afterOpen.brotli > r.budget ? [`${r.id} after open ${r.afterOpen.brotli} > ${r.budget} brotli`] : []),
+    ...(r.importBudget !== undefined && r.atImport.gzip > r.importBudget ? [`${r.id} at import ${r.atImport.gzip} > ${r.importBudget} gzip`] : []),
+  ]);
+}
+
 export function formatSizes(rows: readonly SizeResult[]): string {
   const kb = (n: number) => (n / 1000).toFixed(1);
   const lines = [
     "Bundle size, kB (1000 bytes). Each file compressed on its own. After open = + SharedWorker, wasm, lazy chunks.",
     "",
-    "| row | at import brotli | after open raw | after open gzip | after open brotli | budget |",
-    "|---|---:|---:|---:|---:|---:|",
+    "| row | at import gzip | its budget | at import brotli | after open raw | after open gzip | after open brotli | its budget |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|",
   ];
   for (const r of rows) {
-    const over = r.budget !== undefined && r.afterOpen.brotli > r.budget ? " OVER" : "";
+    const budget = (max: number | undefined, bytes: number) => (max === undefined ? "" : kb(max) + (bytes > max ? " OVER" : ""));
     lines.push(
-      `| ${r.id} | ${kb(r.atImport.brotli)} | ${kb(r.afterOpen.raw)} | ${kb(r.afterOpen.gzip)} | ${kb(r.afterOpen.brotli)} | ${r.budget === undefined ? "" : kb(r.budget) + over} |`,
+      `| ${r.id} | ${kb(r.atImport.gzip)} | ${budget(r.importBudget, r.atImport.gzip)} | ${kb(r.atImport.brotli)} | ${kb(r.afterOpen.raw)} | ${kb(r.afterOpen.gzip)} | ${kb(r.afterOpen.brotli)} | ${budget(r.budget, r.afterOpen.brotli)} |`,
     );
   }
   lines.push("");

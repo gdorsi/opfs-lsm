@@ -1,8 +1,10 @@
 /**
  * The bundle-size rows: the import an app writes to use each library. Each
  * row becomes an entry of the bench's Vite build; size.ts measures what the
- * bundler emitted for it. Budgets are brotli bytes after open (entry, its
+ * bundler emitted for it. `budget` is brotli bytes after open (entry, its
  * static imports, and everything they load later: workers, wasm).
+ * `importBudget` is gzip bytes at import: what the row adds to an app's
+ * main bundle, and what the main thread parses before the first `openDb`.
  */
 export type SizeRow = {
   readonly id: string;
@@ -12,6 +14,8 @@ export type SizeRow = {
   readonly kv?: true;
   /** Fail `bench:size --check` and `bench:smoke --check` when brotli-after-open exceeds this many bytes. */
   readonly budget?: number;
+  /** Fail the same checks when gzip-at-import exceeds this many bytes. */
+  readonly importBudget?: number;
 };
 
 export const SIZE_ROWS: readonly SizeRow[] = [
@@ -21,6 +25,7 @@ export const SIZE_ROWS: readonly SizeRow[] = [
     source: `export { openDb } from "@opfs-lsm/kv";`,
     note: "openDb: main-thread JS + SharedWorker + wasm",
     budget: 45_000,
+    importBudget: 19_500,
   },
   {
     id: "docstore",

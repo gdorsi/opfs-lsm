@@ -37,7 +37,7 @@ import { compare, report } from "./driver/report.ts";
 import { readRecords } from "./driver/records.ts";
 import { readCatalog, runPlan } from "./driver/run.ts";
 import { serve } from "./driver/serve.ts";
-import { formatSizes, measureSizes } from "./driver/size.ts";
+import { formatSizes, measureSizes, overBudget } from "./driver/size.ts";
 
 const RESULTS_DIR = path.join(BENCH_DIR, "results");
 
@@ -182,9 +182,9 @@ function bytesFlag<K extends string>(key: K, flag: string, value: string | undef
 function sizes(built: BuildOutput, check: boolean): boolean {
   const rows = measureSizes(built);
   console.log(formatSizes(rows));
-  const over = rows.filter((r) => r.budget !== undefined && r.afterOpen.brotli > r.budget);
+  const over = overBudget(rows);
   if (!check || over.length === 0) return true;
-  console.error(`over budget: ${over.map((r) => `${r.id} ${r.afterOpen.brotli} > ${r.budget}`).join(", ")}`);
+  console.error(`over budget: ${over.join(", ")}`);
   return false;
 }
 

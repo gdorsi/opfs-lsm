@@ -156,13 +156,13 @@ The todo column opens first, so it also starts the label list every screen share
 
 ## Bundle size
 
-Importing `@opfs-lsm/kv` adds **19.9 kB** of JavaScript to your main bundle (gzip, 59.0 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
+Importing `@opfs-lsm/kv` adds **19.2 kB** of JavaScript to your main bundle (gzip, 56.9 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
 
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
-| Main-thread JS | 19.9 kB | 59.0 kB | at import |
-| SharedWorker chunk | 13.5 kB | 40.9 kB | on the first `openDb` |
+| Main-thread JS | 19.2 kB | 56.9 kB | at import |
+| SharedWorker chunk | 13.5 kB | 41.2 kB | on the first `openDb` |
 | wasm engine | 16.5 kB | 36.3 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **49.9 kB** | **136.2 kB** | |
+| **Total after open** | **49.3 kB** | **134.4 kB** | |
 
-For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.2 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 30.0 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the after-open brotli total passes a budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).
+For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.2 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 30.1 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.5 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).
