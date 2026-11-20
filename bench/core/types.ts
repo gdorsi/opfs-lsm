@@ -200,11 +200,11 @@ export type PhaseResult = {
   readonly timed: boolean;
   readonly wallMs: number;
   /**
-   * Time with at least one `ctx.time` call in flight, the open included: the union of the calls' intervals, so nested or
-   * concurrent calls count once. What the phase's ops/s divides by. The rest of `wallMs` is the harness: op generation,
-   * checks, bookkeeping.
+   * From the start of the phase's first `ctx.time` call to the end of its last, the open included when it is timed in the
+   * phase. What the phase's ops/s divides by. The gaps between calls count, so harness work between calls lowers the rate
+   * and a store's background work in those gaps is not free. The rest of `wallMs` is before the first call and after the last.
    */
-  readonly busyMs: number;
+  readonly spanMs: number;
   /** Ops done in the phase (entries, not calls), not counting the open. */
   readonly ops: number;
   readonly userBytes: number;

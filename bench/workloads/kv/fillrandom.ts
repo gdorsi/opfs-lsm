@@ -20,12 +20,10 @@ export default defineWorkload({
       page: "same",
       timed: true,
       async run(ctx) {
-        const store = await ctx.store();
         const { keyBytes, valueBytes } = ctx.params;
-        for (const id of permutation(Math.max(100, ctx.params.entries / 100), ctx.rng)) {
-          const kv: [Uint8Array, Uint8Array] = [ctx.model.key(id), ctx.model.nextValue(id)];
-          await ctx.time("put", keyBytes + valueBytes, () => store.putMany([kv]));
-        }
+        const puts = Array.from(permutation(Math.max(100, ctx.params.entries / 100), ctx.rng), (id): [Uint8Array, Uint8Array] => [ctx.model.key(id), ctx.model.nextValue(id)]);
+        const store = await ctx.store();
+        for (const kv of puts) await ctx.time("put", keyBytes + valueBytes, () => store.putMany([kv]));
       },
     },
     fillPhase("fillrandom", "random"),
@@ -56,8 +54,7 @@ export default defineWorkload({
       timed: true,
       footprint: true,
       async run(ctx) {
-        await ctx.store(); // timed as "open"
-        await getIds(ctx, 1, uniform(ctx, ctx.params.entries), "first get");
+        await getIds(ctx, 1, uniform(ctx, ctx.params.entries), "first get"); // the store opens inside, timed as "open"
       },
     },
     {
@@ -71,14 +68,16 @@ export default defineWorkload({
       page: "same",
       timed: true,
       async run(ctx) {
-        const store = await ctx.store();
         const ids = permutation(ctx.params.entries, ctx.rng).subarray(0, Math.floor(ctx.params.entries / 10));
         const { batch, keyBytes } = ctx.params;
+        const batches: Uint8Array[][] = [];
         for (let i = 0; i < ids.length; i += batch) {
           const slice = ids.subarray(i, i + batch);
           for (const id of slice) ctx.model.remove(id);
-          await ctx.time("deleteMany", slice.length * keyBytes, () => store.deleteMany([...slice].map((id) => ctx.model.key(id))), slice.length);
+          batches.push([...slice].map((id) => ctx.model.key(id)));
         }
+        const store = await ctx.store();
+        for (const keys of batches) await ctx.time("deleteMany", keys.length * keyBytes, () => store.deleteMany(keys), keys.length);
       },
     },
     {

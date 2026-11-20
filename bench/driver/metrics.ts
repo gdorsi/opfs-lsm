@@ -35,7 +35,7 @@ type MemField = (typeof MEM_FIELDS)[number];
 const APPROX_AMP_FIELDS: readonly AmpField[] = ["spaceAmp", "diskBytes", "userBytes", "liveBytes"];
 
 /**
- * rate          phase ops per second over the busy time: the time a ctx.time call was in flight, the store open included
+ * rate          phase ops per second over the span: first timed call start to last timed call end, gaps and the store open included
  * wall          phase wall ms
  * mean:<op>     the run's mean latency of one op, ms
  * main:<field>  the tab's main thread during the phase
@@ -203,7 +203,7 @@ const KINDS: { [K in Kind]: KindSpec } = {
     ids: (ss) => once(timed(ss).some((s) => (phaseOf(s)?.ops ?? 0) > 0)),
     value: (s) => {
       const p = phaseOf(s);
-      return p?.timed && p.ops > 0 && p.busyMs > 0 ? (p.ops / p.busyMs) * 1000 : NaN;
+      return p?.timed && p.ops > 0 && p.spanMs > 0 ? (p.ops / p.spanMs) * 1000 : NaN;
     },
     unit: () => " ops/s",
     format: fmtN,

@@ -1,8 +1,10 @@
 import { defineWorkload } from "../../core/types.ts";
-import { fillPhase, kvParams, scan, settlePhase, warmPhase } from "../kv-lib.ts";
+import { fillPhase, kvParams, type Scan, scanAll, settlePhase, warmPhase } from "../kv-lib.ts";
 
 /** The page a count-free read asks for. */
 const PAGE = 50;
+/** The values one page of the full scan reads. */
+const READ_PAGE = 1_000;
 
 /** Ascending fill, then a full forward scan, random seeks of 10 and 100 keys, counts, pages an offset deep and reads of many keys. */
 export default defineWorkload({
@@ -19,27 +21,19 @@ export default defineWorkload({
       page: "same",
       timed: true,
       async run(ctx) {
-        const store = await ctx.store();
-        let total = 0;
-        for (let from = 0; from < ctx.params.entries; ) {
-          const n = await scan(ctx, store, from, 1_000, "range page");
-          if (n === 0) break;
-          total += n;
-          from += n;
-        }
-        ctx.check(total === ctx.params.entries, `readseq saw ${total} of ${ctx.params.entries} keys`);
+        const { entries } = ctx.params;
+        const pages = Array.from({ length: Math.ceil(entries / READ_PAGE) }, (_, i): Scan => ({ from: i * READ_PAGE, limit: READ_PAGE, op: "range page" }));
+        const total = (await scanAll(ctx, pages)).reduce((sum, n) => sum + n, 0);
+        ctx.check(total === entries, `readseq saw ${total} of ${entries} keys`);
       },
     },
     ...[10, 100].map((nexts) => ({
       name: `seekrandom-${nexts}`,
       page: "same" as const,
       timed: true,
-      async run(ctx: Parameters<typeof scan>[0]) {
-        const store = await ctx.store();
+      async run(ctx: Parameters<typeof scanAll>[0]) {
         const seeks = Math.ceil(ctx.params.ops / 10);
-        for (let i = 0; i < seeks; i++) {
-          await scan(ctx, store, Math.floor(ctx.rng() * ctx.params.entries), nexts, "seek", 1);
-        }
+        await scanAll(ctx, Array.from({ length: seeks }, () => ({ from: Math.floor(ctx.rng() * ctx.params.entries), limit: nexts, op: "seek", count: 1 })));
       },
     })),
     {
@@ -47,15 +41,16 @@ export default defineWorkload({
       page: "same",
       timed: true,
       async run(ctx) {
-        const store = await ctx.store();
         const { entries } = ctx.params;
         const span = Math.ceil(entries / 10);
-        for (let i = 0; i < 200; i++) {
+        const bounds = Array.from({ length: 200 }, () => {
           const from = Math.floor(ctx.rng() * (entries - span + 1));
-          const [lo, hi] = [ctx.model.key(from), ctx.model.key(from + span)];
-          const n = await ctx.time("count", 0, () => store.count(lo, hi));
-          ctx.check(n === span, `count from ${from} saw ${n} of ${span} keys`);
-        }
+          return { from, lo: ctx.model.key(from), hi: ctx.model.key(from + span) };
+        });
+        const store = await ctx.store();
+        const counts: number[] = [];
+        for (const { lo, hi } of bounds) counts.push(await ctx.time("count", 0, () => store.count(lo, hi)));
+        bounds.forEach(({ from }, i) => ctx.check(counts[i] === span, `count from ${from} saw ${counts[i]} of ${span} keys`));
       },
     },
     {
@@ -63,14 +58,10 @@ export default defineWorkload({
       page: "same",
       timed: true,
       async run(ctx) {
-        const store = await ctx.store();
         const { entries } = ctx.params;
         const offset = Math.ceil(entries / 100);
-        for (let i = 0; i < 200; i++) {
-          const from = Math.floor(ctx.rng() * (entries - offset - PAGE + 1));
-          const n = await scan(ctx, store, from, PAGE, "skip", 1, offset);
-          ctx.check(n === PAGE, `skip from ${from} read ${n} of ${PAGE} values`);
-        }
+        const skips = Array.from({ length: 200 }, () => ({ from: Math.floor(ctx.rng() * (entries - offset - PAGE + 1)), limit: PAGE, op: "skip", count: 1, offset }));
+        (await scanAll(ctx, skips)).forEach((n, i) => ctx.check(n === PAGE, `skip from ${skips[i]!.from} read ${n} of ${PAGE} values`));
       },
     },
     {
@@ -78,13 +69,14 @@ export default defineWorkload({
       page: "same",
       timed: true,
       async run(ctx) {
-        const store = await ctx.store();
-        for (let i = 0; i < 200; i++) {
+        const batches = Array.from({ length: 200 }, () => {
           const ids = Array.from({ length: PAGE }, () => Math.floor(ctx.rng() * ctx.params.entries));
-          const keys = ids.map((id) => ctx.model.key(id));
-          const values = await ctx.time("getMany", 0, () => store.getMany(keys));
-          ids.forEach((id, j) => ctx.model.verify(id, values[j]));
-        }
+          return { ids, keys: ids.map((id) => ctx.model.key(id)) };
+        });
+        const store = await ctx.store();
+        const got: (Uint8Array | undefined)[][] = [];
+        for (const { keys } of batches) got.push(await ctx.time("getMany", 0, () => store.getMany(keys)));
+        batches.forEach(({ ids }, i) => ids.forEach((id, j) => ctx.model.verify(id, got[i]![j])));
       },
     },
   ],

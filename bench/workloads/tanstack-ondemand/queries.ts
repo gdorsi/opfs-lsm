@@ -104,10 +104,10 @@ export default defineWorkload({
       checkRows(ctx, await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(0) }, want.length), want, "first query");
     }, { mainThread: true }),
     phase("query-owner", async (ctx, store) => {
-      for (let o = 0; o < OWNERS; o++) {
-        const want = ownerRows(ctx, o);
-        checkRows(ctx, await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(o) }, want.length), want, `owner ${o}`);
-      }
+      const wants = Array.from({ length: OWNERS }, (_, o) => ownerRows(ctx, o));
+      const got: (readonly Todo[])[] = [];
+      for (const [o, want] of wants.entries()) got.push(await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(o) }, want.length));
+      wants.forEach((want, o) => checkRows(ctx, got[o]!, want, `owner ${o}`));
     }, { mainThread: true }),
     phase("query-page", async (ctx, store) => {
       for (let k = 0; k < ctx.params.ops; k++) {
@@ -120,13 +120,20 @@ export default defineWorkload({
         ctx.check(got.every((r, j) => j === 0 || got[j - 1]!.createdAt < r.createdAt), `page of owner ${o} from ${from} is not ascending`);
       }
     }, { page: "fresh", mainThread: true }),
-    phase("query-ids", async (ctx, store) => {
-      for (let k = 0; k < ctx.params.ops; k++) {
-        const want = Array.from({ length: IDS }, () => Math.floor(ctx.rng() * ctx.model.end));
-        const unique = [...new Set(want)];
-        checkRows(ctx, await run(ctx, store, "ids", { kind: "ids", ids: unique.map(todoId) }, 1), unique, `ids ${unique[0]}…`);
-      }
-    }, { page: "fresh", mainThread: true }),
+    {
+      name: "query-ids",
+      page: "fresh",
+      timed: true,
+      mainThread: true,
+      async run(ctx) {
+        const wants = Array.from({ length: ctx.params.ops }, () => [...new Set(Array.from({ length: IDS }, () => Math.floor(ctx.rng() * ctx.model.end)))]);
+        const queries = wants.map((ids): TodoQuery => ({ kind: "ids", ids: ids.map(todoId) }));
+        const store = await ctx.store();
+        const got: (readonly Todo[])[] = [];
+        for (const q of queries) got.push(await run(ctx, store, "ids", q, 1));
+        wants.forEach((want, k) => checkRows(ctx, got[k]!, want, `ids ${want[0]}…`));
+      },
+    },
     phase("update", async (ctx, store) => {
       const perOwner = Math.ceil(ctx.params.entries / 10 / OWNERS);
       for (let o = 0; o < OWNERS; o++) {

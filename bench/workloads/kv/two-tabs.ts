@@ -23,8 +23,7 @@ export default defineWorkload({
       page: "other",
       timed: true,
       async run(ctx) {
-        await ctx.store(); // timed as "open"
-        await getIds(ctx, 1, uniform(ctx, ctx.params.entries), "first get");
+        await getIds(ctx, 1, uniform(ctx, ctx.params.entries), "first get"); // the store opens inside, timed as "open"
       },
     },
     {
@@ -46,8 +45,7 @@ export default defineWorkload({
         const reads = Math.min(ctx.params.ops, ids.length);
         let next = 0;
         const pick = () => ids[next++]!;
-        await getIds(ctx, 1, pick, "first get");
-        await getIds(ctx, reads - 1, pick);
+        await getIds(ctx, reads, pick, "get", "first get");
       },
     },
   ],

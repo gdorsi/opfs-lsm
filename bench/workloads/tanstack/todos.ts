@@ -68,18 +68,14 @@ export default defineWorkload({
     }),
     phase("bulk-insert", async (ctx, store) => {
       const { entries, batch } = ctx.params;
-      for (let i = 1; i < entries; i += batch) {
-        const rows: Todo[] = [];
-        for (let j = i; j < Math.min(entries, i + batch); j++) rows.push(write(ctx, j));
-        await ctx.time("insertMany", rows.reduce((t, r) => t + rowBytes(r), 0), () => store.insertMany(rows), rows.length);
-      }
+      const batches: Todo[][] = [];
+      for (let i = 1; i < entries; i += batch) batches.push(Array.from({ length: Math.min(entries, i + batch) - i }, (_, j) => write(ctx, i + j)));
+      for (const rows of batches) await ctx.time("insertMany", rows.reduce((t, r) => t + rowBytes(r), 0), () => store.insertMany(rows), rows.length);
     }),
     phase("serial-insert", async (ctx, store) => {
       const { entries } = ctx.params;
-      for (let i = entries; i < entries + entries / 100; i++) {
-        const r = write(ctx, i);
-        await ctx.time("insert", rowBytes(r), () => store.insert(r));
-      }
+      const rows = Array.from({ length: entries / 100 }, (_, j) => write(ctx, entries + j));
+      for (const r of rows) await ctx.time("insert", rowBytes(r), () => store.insert(r));
     }),
     check("check-inserts", true),
     phase("update", async (ctx, store) => {

@@ -58,8 +58,9 @@ export default defineWorkload({
         const store = await ctx.store();
         const repo = new Repo({ storage: store.adapter, network: [] });
         const urls = ctx.carry.urls as string[];
-        for (const [i, url] of urls.entries()) {
-          const doc = await ctx.time("load", 0, async () => (await repo.find<Note>(url as AutomergeUrl)).doc());
+        const docs: (Note | undefined)[] = [];
+        for (const url of urls) docs.push(await ctx.time("load", 0, async () => (await repo.find<Note>(url as AutomergeUrl)).doc()));
+        for (const [i, doc] of docs.entries()) {
           ctx.check(doc?.title === noteTitle(i), `note ${i}: title is ${doc?.title}`);
           ctx.check(doc?.body === noteBody(i), `note ${i}: body differs from what was written`);
         }

@@ -1,4 +1,5 @@
 import * as Y from "yjs";
+import type { YjsBinding } from "../../core/families.ts";
 import { defineWorkload } from "../../core/types.ts";
 import { EDITS, noteBody, noteLine, noteTitle } from "../notes.ts";
 
@@ -15,22 +16,23 @@ export default defineWorkload({
       timed: true,
       async run(ctx) {
         const store = await ctx.store();
-        let live = 0;
+        const docs: Y.Doc[] = [];
         for (let i = 0; i < ctx.params.entries; i++) {
           let doc!: Y.Doc;
+          let binding!: YjsBinding;
           await ctx.time("note", 0, async () => {
             doc = new Y.Doc();
-            const binding = await store.attach(`note-${i}`, doc);
+            binding = await store.attach(`note-${i}`, doc);
             doc.on("update", (u: Uint8Array) => ctx.bytes(u.byteLength));
             doc.getMap("meta").set("title", noteTitle(i));
             const body = doc.getText("body");
             for (let e = 0; e < EDITS; e++) body.insert(body.length, noteLine(i, e));
             await binding.flush();
-            await binding.detach();
           });
-          live += Y.encodeStateAsUpdate(doc).byteLength;
+          await ctx.time("detach", 0, () => binding.detach(), 0);
+          docs.push(doc);
         }
-        ctx.carry.liveLogicalBytes = live;
+        ctx.carry.liveLogicalBytes = docs.reduce((live, doc) => live + Y.encodeStateAsUpdate(doc).byteLength, 0);
       },
     },
     { name: "settle", page: "same", timed: false, footprint: true, run: async (ctx) => (await ctx.store()).settle() },
@@ -39,13 +41,15 @@ export default defineWorkload({
       page: "fresh",
       timed: true,
       async run(ctx) {
+        const docs = Array.from({ length: ctx.params.entries }, () => new Y.Doc());
         const store = await ctx.store();
-        for (let i = 0; i < ctx.params.entries; i++) {
-          const doc = new Y.Doc();
+        for (const [i, doc] of docs.entries()) {
           const binding = await ctx.time("load", 0, () => store.attach(`note-${i}`, doc));
+          await ctx.time("detach", 0, () => binding.detach(), 0);
+        }
+        for (const [i, doc] of docs.entries()) {
           ctx.check(doc.getMap("meta").get("title") === noteTitle(i), `note ${i}: title is ${String(doc.getMap("meta").get("title"))}`);
           ctx.check(doc.getText("body").toString() === noteBody(i), `note ${i}: body differs from what was written`);
-          await binding.detach();
         }
       },
     },

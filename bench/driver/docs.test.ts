@@ -14,7 +14,7 @@ const phase = (name: string, over: Partial<PhaseResult> = {}): PhaseResult => ({
   page: "same",
   timed: true,
   wallMs: 1000,
-  busyMs: 1000,
+  spanMs: 1000,
   ops: 1000,
   userBytes: 0,
   latency: {},
@@ -32,7 +32,7 @@ function run(contender: string, kops: number, over: Partial<RunRecord> = {}): Ru
     rep: 0,
     params: { entries: 1, keyBytes: 1, valueBytes: 1, compressibility: 0, batch: 1, ops: 1, seed: 1 },
     host: HOST,
-    phases: [phase("read", { ops: kops * 1000, wallMs: 1000, busyMs: 1000 })],
+    phases: [phase("read", { ops: kops * 1000, wallMs: 1000, spanMs: 1000 })],
     ...over,
   };
 }

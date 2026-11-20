@@ -14,7 +14,7 @@ function run(seed: number, kops: number): RunRecord {
     rep: 0,
     params: { entries: 1, keyBytes: 1, valueBytes: 1, compressibility: 0, batch: 1, ops: 1, seed },
     host: { chrome: "", headless: true, os: "", cpu: "", cores: 1, loadAvg1: 0, node: "", gitSha: "" },
-    phases: [{ name: "read", page: "same", timed: true, wallMs: 1000, busyMs: 1000, ops: kops * 1000, userBytes: 0, latency: {} }],
+    phases: [{ name: "read", page: "same", timed: true, wallMs: 1000, spanMs: 1000, ops: kops * 1000, userBytes: 0, latency: {} }],
   };
 }
 
