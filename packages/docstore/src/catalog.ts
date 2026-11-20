@@ -232,7 +232,8 @@ function isCollection(c: unknown): boolean {
 function isSpec(s: unknown): boolean {
   if (!isObject(s) || !isStrings(s["on"])) return false;
   if (s["kind"] === "sorted") {
-    return typeof s["unique"] === "boolean" && typeof s["multi"] === "boolean" && (s["include"] === undefined || isStrings(s["include"]));
+    const include = s["include"];
+    return typeof s["unique"] === "boolean" && typeof s["multi"] === "boolean" && (include === undefined || (isStrings(include) && !s["unique"]));
   }
   return s["kind"] === "text" && typeof s["text"] === "string";
 }

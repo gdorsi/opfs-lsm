@@ -1,8 +1,8 @@
-import { CorruptDatabaseError, type Decode, type Entry, type Range, type ViewSnapshot } from "@opfs-lsm/kv";
+import { CorruptDatabaseError, type Decode, type Entry, type ViewSnapshot } from "@opfs-lsm/kv";
 import { readableTarget, type BoundCollection } from "./catalog.js";
 import { decodeDoc, decodeFields } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { concat, decodeEntries, encodeCursor, entryId, entryIdString, idBytes, idOf, parseId, scanPlan, type ScanTarget } from "./keys.js";
+import { concat, decodeEntries, encodeCursor, entryId, idBytes, idOf, keyId, parseId, scanPlan, type ScanTarget } from "./keys.js";
 import type { Cursor, EntryPageOf, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
 
 /** Reads of one collection from one kv snapshot. */
@@ -45,11 +45,6 @@ function trimPage<H>(hits: H[], keyOf: (hit: H) => Uint8Array, limit: number | u
   if (limit === undefined || hits.length <= limit) return {};
   hits.length = limit;
   return { next: encodeCursor(keyOf(hits[limit - 1]!)) };
-}
-
-/** Every entry of `range`, read in one call: a `range` iterator spends a promise turn on each entry. */
-function collect(snap: ViewSnapshot, range: Range): Promise<Entry[]> {
-  return snap.rangeValues(range, (value) => value.slice());
 }
 
 const nothing = () => undefined;
@@ -124,9 +119,10 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
 
   async queryIds(q: Query<T, Ix>): Promise<IdPage> {
     const { target, range, limit } = this.plan(q, 1);
-    const page = await collect(this.snap, range);
+    const unique = target.kind === "unique";
+    const page = await this.snap.rangeValues(range, unique ? idOf : nothing);
     const next = trimPage(page, (h) => h.key, limit);
-    return { ids: page.map((h) => entryIdString(target, h.key, h.value)), ...next };
+    return { ids: page.map((h) => (unique ? (h.value as string) : keyId(target, h.key))), ...next };
   }
 
   async queryEntries<I extends (keyof Ix & string) | undefined = undefined>(

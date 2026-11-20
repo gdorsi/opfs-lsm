@@ -244,9 +244,9 @@ export function entryId(target: ScanTarget, key: Uint8Array, value: Uint8Array):
   return target.kind === "unique" ? value : key.subarray(idStart(target, key));
 }
 
-/** `idOf(entryId(...))` without the subarray. */
-export function entryIdString(target: ScanTarget, key: Uint8Array, value: Uint8Array): string {
-  return target.kind === "unique" ? idOf(value) : idOf(key, idStart(target, key));
+/** The id an entry's key ends in. A unique entry's key holds none. */
+export function keyId(target: ScanTarget, key: Uint8Array): string {
+  return idOf(key, idStart(target, key));
 }
 
 /** `value` is what `queryEntries` decoded of the entry's value: the id of a unique entry, the fields of a covering one. */

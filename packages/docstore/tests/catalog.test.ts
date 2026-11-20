@@ -169,6 +169,13 @@ describe("stored bytes", () => {
     expect(() => parseCatalog(encodeCatalog({ format: 2 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
     expect(() => parseCatalog(new TextEncoder().encode("12345678not json"))).toThrow(CorruptDatabaseError);
   });
+
+  it("refuses as corrupt a stored unique index that includes fields", () => {
+    const c = open(undefined, 1, { c: { x: { by: "a", include: ["t"] } } });
+    const x = c.collections["c"]!.indexes["x"]!;
+    const unique = { ...c, collections: { c: { ...c.collections["c"]!, indexes: { x: { ...x, spec: { ...x.spec, unique: true } } } } } };
+    expect(() => parseCatalog(encodeCatalog(unique as StoredCatalog))).toThrow(CorruptDatabaseError);
+  });
 });
 
 describe("transitions", () => {
