@@ -135,9 +135,11 @@ export function createList(store: Store) {
       const first = stay ? Math.floor(scrollTop / ROW / PAGE) : 0;
       const last = stay ? Math.floor((scrollTop + height) / ROW / PAGE) : 0;
       const pages = Array.from({ length: last - first + 1 }, (_, i) => first + i);
-      const counted = from.total();
       loading++;
-      const read = Promise.all(pages.map((page) => from.read(page * PAGE, PAGE))).then((docs) => {
+      const reading = Promise.all(pages.map((page) => from.read(page * PAGE, PAGE)));
+      // The count walks the whole list, so it starts once the rows are read and does not hold them back.
+      const counted = reading.then(() => from.total());
+      const read = reading.then((docs) => {
         const at = performance.now();
         loading--;
         if (view !== from) return { rows: docs[0]!.length, at };
