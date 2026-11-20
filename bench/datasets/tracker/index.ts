@@ -21,6 +21,17 @@ function countBy<T>(items: Iterable<T>, key: (t: T) => string | undefined): Map<
   return n;
 }
 
+/**
+ * The candidates of a page goal whose answer fills its page, `cost` being how many rows could answer it: a binding
+ * with fewer rows never reaches the LIMIT, and a merged top-N never cuts. When no candidate fills the page at this
+ * size, all of them stay.
+ */
+function filling<T>(items: Iterable<T>, cost: (t: T) => number, limit: number): T[] {
+  const all = [...items];
+  const full = all.filter((t) => cost(t) >= limit);
+  return full.length > 0 ? full : all;
+}
+
 export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
   title: "tracker: a task-tracker workspace aged by its history, then 11 screens' worth of goals, cold, first and warm",
   owns: ["doc-ingest", "doc-read-during-sync", "doc-edit", "doc-reread"],
@@ -43,13 +54,16 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
       curate: (o, pick) => {
         const todo = countBy(o.issues.values(), (i) => (i.status === "todo" ? i.projectId : undefined));
         return pick
-          .near(todo.keys(), { cost: (p) => todo.get(p)!, key: (p) => p, n: BINDINGS, q: 0.5 })
+          .near(filling(todo.keys(), (p) => todo.get(p)!, LIMITS.page), { cost: (p) => todo.get(p)!, key: (p) => p, n: BINDINGS, q: 0.5 })
           .map((projectId) => ({ projectId, status: "todo" as const }));
       },
     },
     drainedPage: {
       owns: "doc-drained-range",
-      curate: (o) => [{ projectId: o.drained ?? [...o.projects.keys()][0]!, status: "in_progress" }],
+      curate: (o) => {
+        if (o.drained === undefined) throw new Error("drainedPage: no bulk edit has emptied a list in this history");
+        return [{ projectId: o.drained, status: "in_progress" }];
+      },
     },
     deepWindow: {
       owns: "doc-deep-window",
@@ -76,7 +90,9 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
       owns: "doc-child-count",
       curate: (o, pick) => {
         const open = countBy(o.issues.values(), (i) => (isOpen(i.status) ? i.projectId : undefined));
-        return pick.near(open.keys(), { cost: (p) => open.get(p)!, key: (p) => p, n: BINDINGS, q: 0.5 }).map((projectId) => ({ projectId }));
+        return pick
+          .near(filling(open.keys(), (p) => open.get(p)!, LIMITS.page), { cost: (p) => open.get(p)!, key: (p) => p, n: BINDINGS, q: 0.5 })
+          .map((projectId) => ({ projectId }));
       },
     },
     labelPage: {
@@ -93,7 +109,7 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
           }
         }
         return pick
-          .near(pairs.values(), { cost: (p) => p.n, key: (p) => `${p.projectId}:${p.labelId}`, n: BINDINGS, q: 0.5 })
+          .near(filling(pairs.values(), (p) => p.n, LIMITS.page), { cost: (p) => p.n, key: (p) => `${p.projectId}:${p.labelId}`, n: BINDINGS, q: 0.5 })
           .map(({ projectId, labelId }) => ({ projectId, labelId }));
       },
     },
@@ -101,7 +117,9 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
       owns: "doc-in-list-top-n",
       curate: (o, pick) => {
         const open = countBy(o.issues.values(), (i) => (i.assigneeId !== null && isOpen(i.status) ? i.assigneeId : undefined));
-        return pick.near(open.keys(), { cost: (u) => open.get(u)!, key: (u) => u, n: BINDINGS, q: 0.5 }).map((userId) => ({ userId }));
+        return pick
+          .near(filling(open.keys(), (u) => open.get(u)!, LIMITS.page), { cost: (u) => open.get(u)!, key: (u) => u, n: BINDINGS, q: 0.5 })
+          .map((userId) => ({ userId }));
       },
     },
     recentActivity: {
@@ -130,7 +148,7 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
           candidates.set(`${issue.projectId}:${text}`, { projectId: issue.projectId, text, n });
         }
         return pick
-          .near(candidates.values(), { cost: (c) => c.n, key: (c) => `${c.projectId}:${c.text}`, n: BINDINGS, q: 0.5 })
+          .near(filling(candidates.values(), (c) => c.n, LIMITS.search), { cost: (c) => c.n, key: (c) => `${c.projectId}:${c.text}`, n: BINDINGS, q: 0.5 })
           .map(({ projectId, text }) => ({ projectId, text }));
       },
     },
