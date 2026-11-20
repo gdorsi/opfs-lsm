@@ -59,6 +59,73 @@ const insertSql = (entity: EntityName) => {
 };
 const INSERT_LABELS = "INSERT INTO issue_labels (issueId, labelId) SELECT json_extract(i.value, '$.id'), l.value FROM json_each(?) AS i, json_each(json_extract(i.value, '$.labelIds')) AS l";
 
+const updateSql = (entity: EntityName, cols: readonly string[]) =>
+  `UPDATE ${entity} SET ${cols.map((c) => `${c} = CASE WHEN json_type(p.value, '$.${c}') IS NULL THEN ${entity}.${c} ELSE json_extract(p.value, '$.${c}') END`).join(", ")} FROM json_each(?) AS p WHERE ${entity}.id = p.key`;
+
+type Row = Record<string, unknown> & { id: string; labelIds?: readonly string[] };
+type Net = { drop: boolean; row: Row | null; set: Record<string, unknown> };
+
+/**
+ * A batch as SQL: the events of one row fold into its final state, then each entity
+ * takes at most five statements (delete, unlabel, update, insert, label), however many events it holds.
+ * Entities are separate tables, so the order between them does not matter.
+ */
+function statementsOf(events: readonly Event[]): [string, unknown[]][] {
+  const byEntity = new Map<EntityName, Map<string, Net>>();
+  for (const e of events) {
+    const nets = byEntity.get(e.entity) ?? new Map<string, Net>();
+    byEntity.set(e.entity, nets);
+    const id = e.op === "create" ? e.row.id : e.id;
+    const net = nets.get(id) ?? { drop: false, row: null, set: {} };
+    nets.set(id, net);
+    if (e.op === "create") {
+      net.row = e.row as Row;
+      net.set = {};
+    } else if (e.op === "delete") {
+      net.drop = true;
+      net.row = null;
+      net.set = {};
+    } else if (net.row) net.row = { ...net.row, ...e.set };
+    else net.set = { ...net.set, ...e.set };
+  }
+  const out: [string, unknown[]][] = [];
+  for (const [entity, nets] of byEntity) {
+    const gone: string[] = [];
+    const unlabel: string[] = [];
+    const rows: Row[] = [];
+    const labelled: { id: string; labelIds: readonly string[] }[] = [];
+    const patches: Record<string, Record<string, unknown>> = {};
+    const cols = new Set<string>();
+    for (const [id, net] of nets) {
+      if (net.drop) {
+        gone.push(id);
+        unlabel.push(id);
+      }
+      if (net.row) {
+        rows.push(net.row);
+        if (entity === "issues") labelled.push({ id, labelIds: net.row.labelIds ?? [] });
+        continue;
+      }
+      const { labelIds, ...fields } = net.set as Record<string, unknown> & { labelIds?: readonly string[] };
+      if (labelIds) {
+        unlabel.push(id);
+        labelled.push({ id, labelIds });
+      }
+      if (Object.keys(fields).length > 0) {
+        patches[id] = fields;
+        for (const c of Object.keys(fields)) cols.add(c);
+      }
+    }
+    const ids = (list: readonly string[]) => [JSON.stringify(list)];
+    if (gone.length > 0) out.push([`DELETE FROM ${entity} WHERE id IN (SELECT value FROM json_each(?))`, ids(gone)]);
+    if (unlabel.length > 0) out.push(["DELETE FROM issue_labels WHERE issueId IN (SELECT value FROM json_each(?))", ids(unlabel)]);
+    if (cols.size > 0) out.push([updateSql(entity, [...cols]), [JSON.stringify(patches)]]);
+    if (rows.length > 0) out.push([insertSql(entity), [JSON.stringify(rows)]]);
+    if (labelled.length > 0) out.push([INSERT_LABELS, [JSON.stringify(labelled)]]);
+  }
+  return out;
+}
+
 const CACHE_KIB = 256 * 1024;
 
 /** Opens the store with a 256 MiB page cache, as kv's `cacheBytes` default; `relaxed` also sets `synchronous=OFF`, so a commit stays atomic but does not wait for the disk. */
@@ -79,23 +146,6 @@ export async function openSqlite(name: string, relaxed: boolean): Promise<Tracke
     await sql("PRAGMA user_version = 1");
   }
 
-  async function write(e: Event): Promise<void> {
-    if (e.op === "delete") {
-      if (e.entity === "issues") await sql("DELETE FROM issue_labels WHERE issueId = ?", [e.id]);
-      await sql(`DELETE FROM ${e.entity} WHERE id = ?`, [e.id]);
-      return;
-    }
-    if (e.op === "patch") {
-      const { labelIds, ...fields } = e.set as Record<string, unknown> & { labelIds?: readonly string[] };
-      const cols = Object.keys(fields);
-      if (cols.length > 0) await sql(`UPDATE ${e.entity} SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`, [...cols.map((c) => fields[c]), e.id]);
-      if (labelIds) {
-        await sql("DELETE FROM issue_labels WHERE issueId = ?", [e.id]);
-        await sql(INSERT_LABELS, [JSON.stringify([{ id: e.id, labelIds }])]);
-      }
-    }
-  }
-
   const statusPage = async ({ projectId, status }: { projectId: string; status: Status }) =>
     (await sql<CardRow>(`SELECT ${CARD} FROM issues i ${JOINS} WHERE i.projectId = ? AND i.status = ? ORDER BY i.updatedAt DESC LIMIT ${LIMITS.page}`, [projectId, status])).map(card);
 
@@ -103,21 +153,7 @@ export async function openSqlite(name: string, relaxed: boolean): Promise<Tracke
     async apply(tx) {
       await sql("BEGIN");
       try {
-        const events = tx.events;
-        for (let at = 0; at < events.length; ) {
-          const e = events[at]!;
-          if (e.op !== "create") {
-            await write(e);
-            at++;
-            continue;
-          }
-          let end = at + 1;
-          while (end < events.length && events[end]!.op === "create" && events[end]!.entity === e.entity) end++;
-          const rows = JSON.stringify(events.slice(at, end).map((x) => (x as Event & { op: "create" }).row));
-          await sql(insertSql(e.entity), [rows]);
-          if (e.entity === "issues") await sql(INSERT_LABELS, [rows]);
-          at = end;
-        }
+        for (const [text, params] of statementsOf(tx.events)) await sql(text, params);
         await sql("COMMIT");
       } catch (err) {
         await sql("ROLLBACK");
@@ -202,7 +238,7 @@ export default defineContender({
   family: "tracker",
   durability: "sqlite-full",
   fastPath:
-    "wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated worker, opened by @tanstack/browser-db-sqlite-persistence, PRAGMA cache_size = -262144 (a 256 MiB page cache, as kv's cacheBytes); normalized tables, issue_labels junction, 9 secondary indexes; one SQL statement per goal (two for a thread); a batch = one transaction, creates as one json_each INSERT per table",
+    "wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated worker, opened by @tanstack/browser-db-sqlite-persistence, PRAGMA cache_size = -262144 (a 256 MiB page cache, as kv's cacheBytes); normalized tables, issue_labels junction, 9 secondary indexes; one SQL statement per goal (two for a thread); a batch = one transaction, folded per row and run as at most five json_each statements per entity (delete, unlabel, UPDATE FROM, INSERT, label)",
   engine: false,
   open: (name) => openSqlite(name, false),
 });
