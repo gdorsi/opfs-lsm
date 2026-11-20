@@ -70,12 +70,12 @@ bench:
         stores: [kv, IndexedDB]
         setup: Medians of 5 runs, 100,000 entries
         rows:
-          - { measure: "Random writes, batches of 1,000", ours: 531k ops/s, theirs: 44.7k ops/s, ratio: 12× }
-          - { measure: "Random point reads", ours: 686k ops/s, theirs: 20.4k ops/s, ratio: 34× }
-          - { measure: "Reads of missing keys", ours: 1.45M ops/s, theirs: 22.8k ops/s, ratio: 63× }
-          - { measure: "Full ordered scan", ours: 3.29M ops/s, theirs: 598k ops/s, ratio: 5.5× }
-          - { measure: "Single put, awaited one at a time", ours: 12.2k ops/s, theirs: 14.3k ops/s, ratio: 0.85× }
-          - { measure: "Opening the database in a fresh tab", ours: 4.10 ms, theirs: 0.270 ms, ratio: 0.066× }
+          - { measure: "Random writes, batches of 1,000", ours: 390k ops/s, theirs: 26.1k ops/s, ratio: 15× }
+          - { measure: "Random point reads", ours: 424k ops/s, theirs: 14.8k ops/s, ratio: 29× }
+          - { measure: "Reads of missing keys", ours: 998k ops/s, theirs: 13.4k ops/s, ratio: 74× }
+          - { measure: "Full ordered scan", ours: 1.84M ops/s, theirs: 376k ops/s, ratio: 4.9× }
+          - { measure: "Single put, awaited one at a time", ours: 7.67k ops/s, theirs: 8.81k ops/s, ratio: 0.87× }
+          - { measure: "Opening the database in a fresh tab", ours: 4.92 ms, theirs: 0.412 ms, ratio: 0.084× }
       - title: Framework adapters
         versus: against each framework's IndexedDB option
         stores: [opfs-lsm, the IndexedDB option]
@@ -345,7 +345,7 @@ await db.view(async (snap) => {
 
 <div class="bench-foot">
 
-Runs on an Apple M5 Max, in headless Chrome 157.
+Runs in headless Chrome 157. Storage calls ran on an Apple M2 Pro, every other group on an Apple M5 Max.
 
 [Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
 

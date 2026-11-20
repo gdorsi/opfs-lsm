@@ -4,7 +4,7 @@ Neither storage API in the browser gives a fast database that every tab can shar
 
 ## IndexedDB is slow and has no change feed
 
-Every browser ships IndexedDB, and most libraries that keep data in the browser store it there. In the [benchmarks](benchmarks.md#storage-calls), it answers random point reads 34× slower than kv. It has no change feed, so an app that keeps several tabs in sync builds its own messaging between them. Its transactions also [commit on their own](https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction) as soon as no request is pending, so a transaction cannot wait for other work, such as a `fetch`.
+Every browser ships IndexedDB, and most libraries that keep data in the browser store it there. In the [benchmarks](benchmarks.md#storage-calls), it answers random point reads 29× slower than kv. It has no change feed, so an app that keeps several tabs in sync builds its own messaging between them. Its transactions also [commit on their own](https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction) as soon as no request is pending, so a transaction cannot wait for other work, such as a `fetch`.
 
 ## Neither OPFS API fits a shared database
 
