@@ -1,4 +1,4 @@
-import { compareBytes, compareFrom, containsAll } from "../bytes.js";
+import { compareFrom, containsAll } from "../bytes.js";
 import type { Entry } from "../db.js";
 import { asSeq, type Seq } from "../seq.js";
 
@@ -182,16 +182,34 @@ export interface LayerCursor {
   next(): void;
 }
 
+/**
+ * The first of the sorted `entries` whose key is not below `key`. Every entry
+ * between two bounds shares with `key` the bytes both bounds share with it,
+ * so a compare starts past them: keys with a long common prefix cost one
+ * pass over it, not one per step.
+ */
 export function lowerBoundKeys(
   entries: readonly { readonly key: Uint8Array }[],
   key: Uint8Array,
 ): number {
   let lo = 0;
   let hi = entries.length;
+  /** Bytes `key` shares with the entry below `lo`, and with the one at `hi`. */
+  let below = 0;
+  let above = 0;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (compareBytes(entries[mid]!.key, key) < 0) lo = mid + 1;
-    else hi = mid;
+    const k = entries[mid]!.key;
+    const n = Math.min(k.length, key.length);
+    let i = below < above ? below : above;
+    while (i < n && k[i] === key[i]) i++;
+    if (i < n ? k[i]! < key[i]! : k.length < key.length) {
+      lo = mid + 1;
+      below = i;
+    } else {
+      hi = mid;
+      above = i;
+    }
   }
   return lo;
 }

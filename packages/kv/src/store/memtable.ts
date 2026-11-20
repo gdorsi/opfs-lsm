@@ -38,10 +38,22 @@ function rowBytes(row: MemRow): number {
 function chunkFor(firsts: readonly Uint8Array[], key: Uint8Array): number {
   let lo = 1;
   let hi = firsts.length;
+  // As `lowerBoundKeys`: a compare starts past the bytes both bounds share with `key`.
+  let below = 0;
+  let above = 0;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (compareBytes(firsts[mid]!, key) <= 0) lo = mid + 1;
-    else hi = mid;
+    const k = firsts[mid]!;
+    const n = Math.min(k.length, key.length);
+    let i = below < above ? below : above;
+    while (i < n && k[i] === key[i]) i++;
+    if (i < n ? k[i]! < key[i]! : k.length <= key.length) {
+      lo = mid + 1;
+      below = i;
+    } else {
+      hi = mid;
+      above = i;
+    }
   }
   return lo - 1;
 }

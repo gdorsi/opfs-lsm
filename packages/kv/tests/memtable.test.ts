@@ -76,6 +76,34 @@ describe("Memtable", () => {
     }
   });
 
+  it("finds and orders keys that share long prefixes or are prefixes of each other", () => {
+    let seed = 5;
+    const rand = (n: number) => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return seed % n;
+    };
+    const stems = ["", "a", "collection/00000000/", "collection/00000000/index/", "collection/00000001/"];
+    const mem = new Memtable();
+    const model = new Map<string, MemRow>();
+    const keys: Uint8Array[] = [];
+    for (let seq = 1; seq <= 4000; seq++) {
+      const tail = Array.from({ length: rand(4) }, () => "ab\u00ff"[rand(3)]).join("") + (rand(3) === 0 ? "" : String(rand(900)));
+      const key = Uint8Array.from(stems[rand(stems.length)]! + tail, (c) => c.charCodeAt(0)) as CheckedKey;
+      keys.push(key);
+      mem.apply({ seq, ops: [{ type: "put", key, value: new Uint8Array(0) as CheckedValue }] });
+      model.set(key.join(), { key, seq, kind: "put", value: new Uint8Array(0) });
+    }
+    const want = sorted(model);
+    expect(want.length).toBeGreaterThan(1024);
+    expect(seqs(mem.range())).toEqual(seqs(want));
+    for (const key of keys) expect(mem.get(key)?.seq).toBe(model.get(key.join())!.seq);
+    for (let i = 0; i < 300; i++) {
+      const probe = Uint8Array.from([...keys[rand(keys.length)]!, ...(rand(2) ? [rand(256)] : [])]);
+      expect(mem.get(probe)?.seq).toBe(model.get(probe.join())?.seq);
+      expect(seqs(mem.range({ start: probe }))).toEqual(seqs(want.filter((r) => compareBytes(r.key, probe) >= 0)));
+    }
+  });
+
   it("counts the key, value and a fixed overhead of every live row", () => {
     const put = (key: string, value: string): CheckedOp => ({
       type: "put",
