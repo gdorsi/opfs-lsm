@@ -601,8 +601,8 @@ read. It pairs the manifest with the WAL:
 
 * With `head` unchanged, `ingestedThrough` becomes `through` when `through` is at or past it, and
   the seqs above `through` are uningested again when the WAL holds all of them.
-* Otherwise every record is dropped and `ingestedThrough` moves to the new `head`. The database
-  is the manifest alone.
+* Otherwise every record is dropped, `head` moves up by at least one, and `ingestedThrough` moves
+  to it. The database is the manifest alone, and every tab still open is behind it and follows.
 
 The same transaction moves `head` past the highest `through` of any manifest on disk, and
 `topGeneration` past every manifest number seen.

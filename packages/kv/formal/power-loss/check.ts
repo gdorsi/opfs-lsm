@@ -334,6 +334,7 @@ function sourceSync(): string[] {
   need("idb/wal.ts", /headOf\(tx, ingestedThrough\)[\s\S]*headOf\(tx, through\)[\s\S]*headOf\(tx, through\)/, "recovery and ingest look for the head past ingestedThrough");
   need("idb/wal.ts", /nextIngested = nextHead;\s*records\.delete\(IDBKeyRange\.upperBound\(head\)\);/, "an adopt that drops the records sets ingestedThrough to the new head, which is what holds it");
   need("idb/wal.ts", /if \(nextHead > head\) passKeyGenerator\(records, nextHead\);/, "adopt moves the key generator with the head, so no append takes a seq at or below it");
+  need("idb/wal.ts", /const nextHead = follows \? head : asSeq\(Math\.max\(past, nextSeq\(head\)\)\);/, "an adopt that drops the records moves the head by at least one, so no seq names the state before the drop and the state after");
   need("idb/wal.ts", /group\.tx\.objectStore\(WAL_STORE\)\.add\(entry\.record\)/, "an append takes the seq the key generator hands out");
   need("idb/wal.ts", /const seq = nextSeq\(tail\.head\);\s*const record = encodeOps\(decision\.ops\);\s*tx\.objectStore\(WAL_STORE\)\.add\(record, seq\);/, "update appends at the explicit key head + 1");
   need("idb/wal.ts", /if \(head > now\.head\) passKeyGenerator\(records, head\);\s*meta\.put\(head, META_INGESTED\);/, "destroy moves the key generator with the head, and ingestedThrough holds the head");

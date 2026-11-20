@@ -755,8 +755,9 @@ export class TabWal extends IdBWal {
  *   `through`: those seqs are uningested again.
  * - Otherwise no record can follow the manifest: the seqs between it and
  *   the WAL are gone from both stores, or `head` had to move past seqs
- *   the WAL never held. Every record is dropped and `ingestedThrough`
- *   moves to the new `head`: the database is the manifest alone.
+ *   the WAL never held. Every record is dropped, `head` moves up by at
+ *   least one, and `ingestedThrough` moves to it: the database is the
+ *   manifest alone, and no seq names both that state and the one before.
  * `head` never moves down, so a seq is never reused.
  */
 export async function adopt(wal: IdBWal, pairing: {
@@ -781,9 +782,14 @@ export async function adopt(wal: IdBWal, pairing: {
     head > through
       ? await reqToPromise(records.getAll(IDBKeyRange.bound(nextSeq(through), head)))
       : [];
-  const nextHead = asSeq(Math.max(head, through, floor));
+  const past = asSeq(Math.max(head, through, floor));
+  const follows = past === head && (through >= ingested || above.length === head - through);
+  // Dropping the records changes what the database reads, so the head moves
+  // too: a tab at the old head then reads the tail as one it is behind, and
+  // a row valid at the old `head + 1` (`rowValid`) never takes that seq.
+  const nextHead = follows ? head : asSeq(Math.max(past, nextSeq(head)));
   let nextIngested: Seq = through;
-  if (nextHead === head && (through >= ingested || above.length === head - through)) {
+  if (follows) {
     records.delete(IDBKeyRange.upperBound(Math.min(ingested, through)));
   } else {
     // No record can follow the manifest: drop them all, and start the
