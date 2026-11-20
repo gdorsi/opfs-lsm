@@ -5,6 +5,7 @@ import { decodeSst, encodeSstRef, sstGet, SST_BLOCK_TARGET } from "./oracle/sst-
 import { pointGet, runLevels } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { SstReader } from "../src/store/sst-reader.js";
+import { SST_FOOTER_BYTES } from "../src/store/sst.js";
 import { bytesFile, drain, readerOfBytes, runGet } from "./runs.js";
 import { NO_MARKS } from "../src/store/marks.js";
 
@@ -31,7 +32,7 @@ describe("sst", () => {
     const body = encodeSstRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     expect(view.getUint32(0, true)).toBe(1); // first block's record count
-    expect(view.getUint32(body.byteLength - 8, true)).toBe(1); // version
+    expect(view.getUint32(body.byteLength - 8, true)).toBe(2); // version
     expect(view.getUint32(body.byteLength - 4, true)).toBe(0x4f4c5354); // magic
   });
 
@@ -54,13 +55,13 @@ describe("sst", () => {
     expect((await drain(reader.cursor())).map((e) => e.seq)).toEqual(seqs);
   });
 
-  it("rejects a footer whose version is not 1", async () => {
+  it("rejects a footer whose version is not 2", async () => {
     const body = encodeSstRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    view.setUint32(body.byteLength - 8, 7, true);
-    expect(() => decodeSst(body)).toThrow(/unsupported sst version 7/);
+    view.setUint32(body.byteLength - 8, 1, true);
+    expect(() => decodeSst(body)).toThrow(/unsupported sst version 1/);
     const reader = new SstReader(bytesFile(body), new PageCache(), undefined);
-    await expect(runGet(reader, utf("a"))).rejects.toThrow(/unsupported sst version 7/);
+    await expect(runGet(reader, utf("a"))).rejects.toThrow(/unsupported sst version 1/);
   });
 
   it("round-trips puts and deletes", () => {
@@ -92,7 +93,7 @@ describe("sst", () => {
     }));
     const body = encodeSstRef(entries, 256);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    expect(view.getUint32(body.byteLength - 40, true)).toBeGreaterThan(1); // blockCount
+    expect(view.getUint32(body.byteLength - SST_FOOTER_BYTES + 4, true)).toBeGreaterThan(1); // blockCount
     expect(decodeSst(body)).toHaveLength(200);
   });
 
@@ -115,22 +116,19 @@ describe("sst", () => {
   });
 
   it("get finds what a full decode holds, for every key and gap", async () => {
-    const { encodeRun } = await import("../src/store/engine.js");
     const rows = Array.from({ length: 900 }, (_, i) =>
       i % 7 === 3
         ? { kind: "del" as const, key: utf(`k${String(i * 2).padStart(5, "0")}`), seq: i + 1 }
         : { kind: "put" as const, key: utf(`k${String(i * 2).padStart(5, "0")}`), value: utf("v".repeat(i % 50)), seq: i + 1 },
     );
-    const runs = [encodeSstRef(rows), (await encodeRun(rows, "lz4")).body];
+    const body = encodeSstRef(rows);
     const probes = [utf(""), utf("a"), utf("b"), utf("c"), utf("k"), utf("z")];
     for (let i = 0; i <= 1800; i++) probes.push(utf(`k${String(i).padStart(5, "0")}`), utf(`k${String(i).padStart(5, "0")}x`));
     const show = (e: ReturnType<typeof sstGet>) =>
       e && `${new TextDecoder().decode(e.key)}:${e.kind}:${e.seq}:${e.kind === "put" ? e.value.byteLength : ""}`;
-    for (const body of runs) {
-      const all = decodeSst(body);
-      const reader = readerOfBytes(body);
-      for (const k of probes) expect(show(await runGet(reader, k))).toBe(show(sstGet(all, k)));
-    }
+    const all = decodeSst(body);
+    const reader = readerOfBytes(body);
+    for (const k of probes) expect(show(await runGet(reader, k))).toBe(show(sstGet(all, k)));
   });
 
   it("newest run wins and a tombstone hides the older put", async () => {

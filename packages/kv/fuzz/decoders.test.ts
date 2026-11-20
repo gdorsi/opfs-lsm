@@ -7,14 +7,12 @@ import { encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
 import {
   checkDecodeSst,
-  checkLz4,
   checkManifest,
   checkRunRead,
   checkWalRow,
   encodeWalRow,
   expectedRead,
   fixManifestCrc,
-  framedBlocks,
   repairSst,
   tally,
   type ReadProbe,
@@ -54,16 +52,16 @@ afterAll(() => {
   if (env.KV_FUZZ_REPORT) console.log([...tally].map(([k, n]) => `${k}: ${n}`).join("\n"));
 });
 
-type Codec = "raw" | "lz4";
+type Encoder = "reference" | "wasm";
 const runArb = fc.record({
   entries: entriesArb,
-  codec: fc.constantFrom<Codec>("raw", "lz4"),
+  encoder: fc.constantFrom<Encoder>("reference", "wasm"),
   blockTarget: fc.constantFrom(64, 512, 4096),
 });
 
-/** A run as the engine writes it: TypeScript raw blocks of any target, or wasm LZ4. */
-async function encodeRun(r: { entries: SstEntry[]; codec: Codec; blockTarget: number }): Promise<Uint8Array> {
-  return r.codec === "raw" ? encodeSstRef(r.entries, r.blockTarget) : encodeWasmRun(r.entries, "lz4").then((run) => run.body);
+/** A run from the reference writer, with blocks of any target, or from the engine's wasm encoder. */
+async function encodeRun(r: { entries: SstEntry[]; encoder: Encoder; blockTarget: number }): Promise<Uint8Array> {
+  return r.encoder === "reference" ? encodeSstRef(r.entries, r.blockTarget) : encodeWasmRun(r.entries).then((run) => run.body);
 }
 
 /** Probe keys: every key of the run, and a few that it lacks. */
@@ -80,7 +78,7 @@ const extraKeys = fc.array(fc.string({ unit: fc.constantFrom(..."ab/0129".split(
 
 describe("decoder properties (fast-check)", () => {
   it(
-    "a tab reads an intact run exactly, with the wasm decoders and with the JS ones",
+    "a tab reads an intact run exactly, with and without the wasm block scan",
     async () => {
       await expect(
         fc.assert(
@@ -177,24 +175,6 @@ describe("decoder properties (fast-check)", () => {
     },
     TIMEOUT,
   );
-
-  it(
-    "the TypeScript LZ4 decoder returns exactly size bytes or throws CorruptDatabaseError",
-    async () => {
-      await expect(
-        fc.assert(
-          fc.asyncProperty(lz4BlockArb, mutationsArb, fc.integer({ min: -64, max: 64 }), async (b, ms, dsize) => {
-            const block = await lz4Block(b);
-            const src = applyMutations(block.subarray(4), ms, block);
-            const size = new DataView(block.buffer, block.byteOffset).getUint32(0, true);
-            await checkLz4(src, Math.max(0, size + (ms.length === 1 ? 0 : dsize)));
-          }),
-          params,
-        ),
-      ).resolves.toBeUndefined();
-    },
-    TIMEOUT,
-  );
 });
 
 /** The marks of a manifest at `through`: range deletes from records at or below it. */
@@ -244,12 +224,3 @@ const walRowArb: fc.Arbitrary<RowOp[]> = fc.array(
 
 /** The seq in a row's header, or no header. Small seqs sit below the `through` of most range deletes. */
 const validAtArb = fc.option(fc.oneof(fc.nat({ max: 8 }), fc.maxSafeNat()), { nil: undefined });
-
-/** Entries and which of their LZ4 blocks to take. */
-const lz4BlockArb = fc.record({ entries: entriesArb.filter((e) => e.length > 0), pick: fc.nat() });
-
-/** One framed LZ4 block (u32 size, then LZ4 bytes) of a wasm-encoded run. */
-async function lz4Block(b: { entries: SstEntry[]; pick: number }): Promise<Uint8Array> {
-  const blocks = framedBlocks((await encodeWasmRun(b.entries, "lz4")).body);
-  return blocks[b.pick % blocks.length]!;
-}

@@ -6,7 +6,7 @@
  * Space-Amp of every run, and its one write would land in a timed phase.
  * `compactionMemoryBytes` and `cacheBytes`, only when the run asks for them.
  * `openDb` rejects when the wasm engine does not load, so every run measures
- * LZ4 L2 runs.
+ * the wasm engine.
  */
 import { openDb, type Db } from "@opfs-lsm/kv";
 import { readStats, settle, type KvStats } from "@opfs-lsm/kv/testing";

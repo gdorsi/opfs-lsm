@@ -4,7 +4,6 @@ import {
   encodeRun,
   ensureEngine,
   flatEngine,
-  lz4DecompressIn,
   scanBlockContainsIn,
 } from "../src/store/engine.js";
 import { CorruptDatabaseError } from "../src/errors.js";
@@ -88,15 +87,15 @@ describe("the end of a run", () => {
 
   it.each(shapes)("a run of %s reports the size and key range the file holds, from wasm and from TypeScript", async (_name, entries) => {
     await ensureEngine();
-    for (const run of [await encodeRun(entries, "raw"), await encodeRun(entries, "lz4"), encodeRunTs(entries)]) {
+    for (const run of [await encodeRun(entries), encodeRunTs(entries)]) {
       expectReportMatchesFile(run);
       expect(run.end.range === undefined).toBe(entries.length === 0);
     }
   });
 
-  it.each(shapes)("a raw run of %s is the same bytes and the same end from wasm and from TypeScript, with each key's last entry", async (_name, entries) => {
+  it.each(shapes)("a run of %s is the same bytes and the same end from wasm and from TypeScript, with each key's last entry", async (_name, entries) => {
     await ensureEngine();
-    const wasm = await encodeRun(entries, "raw");
+    const wasm = await encodeRun(entries);
     // The engine keeps the last entry of a key; the reference writes what it is given.
     const last = new Map(entries.map((e) => [e.key.join(), e]));
     const ts = encodeRunTs(entries.filter((e) => last.get(e.key.join()) === e));
@@ -106,7 +105,7 @@ describe("the end of a run", () => {
 
   it("is keys of their own, not views of the bytes the call returned", async () => {
     await ensureEngine();
-    const run = await encodeRun([put("alpha"), put("omega")], "raw");
+    const run = await encodeRun([put("alpha"), put("omega")]);
     const { smallest, largest } = run.end.range!;
     expect(smallest.buffer).not.toBe(run.body.buffer);
     expect(largest.buffer).not.toBe(run.body.buffer);
@@ -176,7 +175,6 @@ describe("engine status codes", () => {
         result_ptr: () => 0,
         result_len: () => 0,
         encode_sst: fail,
-        lz4_decompress: fail,
         scan_block_contains: fail,
         merge_open: fail,
       },
@@ -185,22 +183,21 @@ describe("engine status codes", () => {
 
   it("turns a negative status into CorruptDatabaseError", () => {
     const engine = flatEngine(stub(-4));
-    expect(() => lz4DecompressIn(engine, new Uint8Array(4), 8)).toThrow(CorruptDatabaseError);
-    expect(() => scanBlockContainsIn(engine, new Uint8Array(4), false, new Uint8Array(0))).toThrow(CorruptDatabaseError);
+    expect(() => scanBlockContainsIn(engine, new Uint8Array(4), new Uint8Array(0))).toThrow(CorruptDatabaseError);
   });
 
-  it("turns -11 into an error naming the operation and input size", () => {
-    const engine = flatEngine(stub(-11));
-    const run = () => lz4DecompressIn(engine, new Uint8Array(40), 8);
+  it("turns -10 into an error naming the operation and input size", () => {
+    const engine = flatEngine(stub(-10));
+    const run = () => scanBlockContainsIn(engine, new Uint8Array(40), new Uint8Array(0));
     expect(run).toThrow(EngineOutOfMemoryError);
     expect(run).not.toThrow(CorruptDatabaseError);
-    expect(run).toThrow(/lz4_decompress.*40 bytes/);
+    expect(run).toThrow(/scan_block_contains.*40 bytes/);
   });
 
   it("reports a refused input region as an out of memory error", () => {
     const instance = stub(0);
     (instance.exports as unknown as { input_ptr: () => number }).input_ptr = () => 0;
-    expect(() => lz4DecompressIn(flatEngine(instance), new Uint8Array(40), 8)).toThrow(EngineOutOfMemoryError);
+    expect(() => scanBlockContainsIn(flatEngine(instance), new Uint8Array(40), new Uint8Array(0))).toThrow(EngineOutOfMemoryError);
   });
 });
 

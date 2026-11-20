@@ -50,7 +50,6 @@ describe("the wasm engine's session", () => {
     dropTombstones: false,
     marks: NO_MARKS,
     targetBytes: 4 * 1024 * 1024,
-    codec: "raw",
     chunkBytes: 64 * 1024,
     tailBytes: 64 * 1024,
     yieldBytes: 1024 * 1024,

@@ -3,19 +3,18 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns } from "../src/store/block-scan.js";
 import { encodeRunIn, scanBlockContainsIn } from "../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../src/store/generation.js";
-import { lz4Decompress } from "../src/store/lz4.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import { readFooter } from "../src/store/sst.js";
+import { readFooter, SST_FOOTER_BYTES } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { mergeRuns, runGet } from "../tests/runs.js";
-import { bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
-import { loadWasm, withoutWasm, type FlatEngine } from "./wasm.js";
+import { blocksOf, bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
+import { loadWasm, type FlatEngine } from "./wasm.js";
 import { NO_MARKS } from "../src/store/marks.js";
 
 /**
  * Bugs the decoder fuzzing found, each reduced to one input and kept as a
- * regression test that states the rule. The Rust side keeps KB1 and KB2 in
+ * regression test that states the rule. The Rust side keeps KB2 in
  * crates/engine-core/tests/corrupt_inputs.rs, and R1 and R2 are in
  * tests/sim/corruption.test.ts.
  */
@@ -33,7 +32,7 @@ const entries = Array.from({ length: 40 }, (_, i) => ({
   value: utf(`value ${i}`),
   seq: i + 1,
 }));
-const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - 44, 44);
+const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - SST_FOOTER_BYTES, SST_FOOTER_BYTES);
 const range = { smallest: entries[0]!.key, largest: entries[entries.length - 1]!.key };
 
 /** A tab's get of `key` from run bytes `buf`, as `SstReader` does it. */
@@ -61,23 +60,6 @@ async function corruptWithinBounds(what: string, fn: () => unknown): Promise<voi
 }
 
 describe("decoder bugs the fuzzers found", () => {
-  // KB1, tab path. An LZ4 block's u32 uncompressed size was allocated before
-  // it was decoded: `lz4_flex::block::decompress` does `vec![0; size]` in wasm,
-  // `lz4DecompressJs` did `new Uint8Array(size)`. Tabs check no CRC, so one
-  // corrupt size in an L2+ run grew the tab's wasm memory by up to 4 GiB,
-  // for good (wasm memory never shrinks). Found by "a tab reads any mutation
-  // of a run" and the scan_block_contains cargo-fuzz target. Both decoders
-  // now refuse a size past 255 times the compressed bytes first.
-  it("KB1: a corrupt LZ4 block size does not size an allocation (wasm)", async () => {
-    await expect(corruptWithinBounds("lz4Decompress (wasm)", () => lz4Decompress(new Uint8Array([0x10, 0x41]), 0x08000000))).resolves.toBeUndefined();
-  });
-
-  it("KB1: a corrupt LZ4 block size does not size an allocation (TypeScript)", async () => {
-    await expect(
-      withoutWasm(() => corruptWithinBounds("lz4Decompress (TypeScript)", () => lz4Decompress(new Uint8Array([0x10, 0x41]), 0x08000000))),
-    ).resolves.toBeUndefined();
-  });
-
   // KT1, tab path. `bloomMightContain` loops `hashCount` times, and
   // `readFooter` took the count from the footer unchecked. On a saturated
   // filter each get of a key in range costs ~30 ns per round: a corrupt
@@ -141,7 +123,7 @@ describe("decoder bugs the fuzzers found", () => {
   // does. The checks are now `key_len > end - o`, with `o <= end`.
   it("KW1: scan_block_contains does not panic on a varint near 2^32", () => {
     const block = new Uint8Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3]);
-    expect(() => scanBlockContainsIn(wasm, block, false, packPatterns([]))).not.toThrow(WebAssembly.RuntimeError);
+    expect(() => scanBlockContainsIn(wasm, block, packPatterns([]))).not.toThrow(WebAssembly.RuntimeError);
   });
 
   // KW2, SharedWorker with wasm. The module threw the Rust error as a bare
@@ -167,25 +149,44 @@ describe("wasm traps", () => {
     const block = new Uint8Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3]);
     for (let i = 0; i < 5_000; i++) {
       try {
-        scanBlockContainsIn(wasm, block, false, packPatterns([]));
+        scanBlockContainsIn(wasm, block, packPatterns([]));
       } catch {
         // KW1 panicked here.
       }
     }
-    expect(decodeSst(encodeRunIn(wasm, entries, false).body)).toHaveLength(entries.length);
+    expect(decodeSst(encodeRunIn(wasm, entries).body)).toHaveLength(entries.length);
   });
 
-  // A trap that is not a panic on input: wasm memory cannot grow to 4 GiB.
-  // The engine replaces the instance, so one trap never poisons later calls.
+  // A trap that is not a panic on input: the instance's memory cannot grow.
+  // The engine replaces the instance and asks the new one, so one trap
+  // never poisons later calls.
   it("KW3: after a trap the engine replaces the instance and keeps answering", async () => {
     vi.resetModules();
     const engine = await import("../src/store/engine.js");
-    const lz4 = await import("../src/store/lz4.js");
-    const errors = await import("../src/errors.js");
+    const scan = await import("../src/store/block-scan.js");
     await import("../src/testing.js");
-    await engine.ensureEngine();
-    const src = new Uint8Array(17_000_000);
-    expect(() => lz4.lz4Decompress(src, 0xfffffff0)).toThrow(errors.CorruptDatabaseError);
+    const instantiate = WebAssembly.instantiate.bind(WebAssembly);
+    let memory: WebAssembly.Memory | undefined;
+    const spy = vi.spyOn(WebAssembly, "instantiate").mockImplementation((async (module: WebAssembly.Module, imports?: WebAssembly.Imports) => {
+      const instance = await instantiate(module, imports);
+      memory = instance.exports.memory as WebAssembly.Memory;
+      return instance;
+    }) as typeof WebAssembly.instantiate);
+    try {
+      await engine.ensureEngine();
+    } finally {
+      spy.mockRestore();
+    }
+    const scanBlock = scan.blockScanner()!;
+    const block = blocksOf(encodeSstRef([{ kind: "put", key: utf("big"), value: new Uint8Array(3 << 20).fill(7), seq: 1 }]))[0]!;
+    // A scan with no hit leaves the block's input region in place, then the memory takes every page wasm32 allows.
+    expect(scanBlock(block, packPatterns([utf("absent")]))).toHaveLength(0);
+    memory!.grow(65_536 - memory!.buffer.byteLength / 65_536);
+
+    const hits = scan.unpackHits(scanBlock(block, packPatterns([])));
+    expect([...hits].map((h) => h.key)).toEqual([utf("big")]);
+    expect(engine.engineMemory()).toMatchObject({ wasmPeakBytes: 2 ** 32 });
+    expect(engine.engineMemory().wasmBytes).toBeLessThan(2 ** 28);
     expect(decodeSst((await engine.encodeRun(entries)).body)).toHaveLength(entries.length);
     vi.resetModules();
   });

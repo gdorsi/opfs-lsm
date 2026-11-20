@@ -4,15 +4,15 @@
  * of the input length, so one mutation applies to any input.
  */
 import fc from "fast-check";
-import type { SstEntry } from "../src/store/sst.js";
+import { SST_FOOTER_BYTES, type SstEntry } from "../src/store/sst.js";
 
 export type Mutation =
   | { readonly kind: "flip"; readonly at: number; readonly bit: number }
   | { readonly kind: "truncate"; readonly at: number }
   | { readonly kind: "extend"; readonly bytes: Uint8Array }
-  /** Overwrite a u32 with a large value: a length or count field inflated. `field` 0-7 aims at that footer field. */
+  /** Overwrite a u32 with a large value: a length or count field inflated. `field` 0-6 aims at that footer field. */
   | { readonly kind: "inflate"; readonly at: number; readonly field: number; readonly value: number }
-  /** Add a small delta to a u32: a count or offset off by a little. `field` 0-7 aims at that footer field. */
+  /** Add a small delta to a u32: a count or offset off by a little. `field` 0-6 aims at that footer field. */
   | { readonly kind: "nudge"; readonly at: number; readonly field: number; readonly delta: number }
   /** Overwrite five bytes with a varint near 2^32. */
   | { readonly kind: "varint"; readonly at: number }
@@ -23,8 +23,8 @@ export type Mutation =
 
 /** Unbiased: fast-check otherwise favours 0 and 1, the ends of the input. */
 const frac = fc.noBias(fc.double({ min: 0, max: 1, maxExcluded: true, noNaN: true }));
-/** A footer field (0-7), or -1 for anywhere in the input. */
-const field = fc.oneof(fc.constant(-1), fc.integer({ min: 0, max: 7 }));
+/** A footer field (0-6), or -1 for anywhere in the input. */
+const field = fc.oneof(fc.constant(-1), fc.integer({ min: 0, max: 6 }));
 
 const mutationArb: fc.Arbitrary<Mutation> = fc.oneof(
   fc.record({ kind: fc.constant("flip" as const), at: frac, bit: fc.integer({ min: 0, max: 7 }) }),
@@ -66,14 +66,14 @@ function applyMutation(buf: Uint8Array, m: Mutation, other: Uint8Array): Uint8Ar
     case "inflate": {
       if (len < 4) return buf;
       const out = buf.slice();
-      const at = m.field >= 0 && len >= 44 ? len - 44 + 4 * m.field : pos(m.at, 4);
+      const at = m.field >= 0 && len >= SST_FOOTER_BYTES ? len - SST_FOOTER_BYTES + 4 * m.field : pos(m.at, 4);
       new DataView(out.buffer).setUint32(at, m.value >>> 0, true);
       return out;
     }
     case "nudge": {
       if (len < 4) return buf;
       const out = buf.slice();
-      const at = m.field >= 0 && len >= 44 ? len - 44 + 4 * m.field : pos(m.at, 4);
+      const at = m.field >= 0 && len >= SST_FOOTER_BYTES ? len - SST_FOOTER_BYTES + 4 * m.field : pos(m.at, 4);
       const view = new DataView(out.buffer);
       view.setUint32(at, (view.getUint32(at, true) + m.delta) >>> 0, true);
       return out;

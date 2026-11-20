@@ -13,15 +13,15 @@
 //! a source, the last duplicate wins, across block, read and run boundaries.
 //!
 //! What it holds, whatever the inputs' size: per source about `chunk_bytes` of
-//! framed blocks (more only for a block, or a run's bloom and index, that is
-//! larger), one unpacked block and two entries; for the output, one open block, a bloom
-//! hash and an index row per key and block of the open run, and up to
-//! `chunk_bytes` plus one block of bytes not yet written.
+//! blocks (more only for a block, or a run's bloom and index, that is larger)
+//! and two entries; for the output, one open block, a bloom hash and an index
+//! row per key and block of the open run, and up to `chunk_bytes` plus one
+//! block of bytes not yet written.
 
 use crate::crc32::{crc32, crc32_combine, Crc32};
 use crate::sst::{
-    entry_size, lz4_size_fits, read_footer, read_u32, BlockWalk, Codec, Entry, EntryRef, Layout, OutOfOrder, Record,
-    RunEnd, SstError, SstWriter, BLOCK_TARGET, FOOTER_BYTES,
+    entry_size, read_footer, read_u32, BlockWalk, EntryRef, Layout, OutOfOrder, Record, RunEnd, SstError, SstWriter,
+    BLOCK_TARGET, FOOTER_BYTES,
 };
 use alloc::collections::TryReserveError;
 use alloc::vec::Vec;
@@ -41,7 +41,6 @@ pub struct MergeConfig {
     pub drop_tombstones: bool,
     /// Close an output run once its entries' `entry_size`s reach this.
     pub target_bytes: usize,
-    pub codec: Codec,
     /// About how much of each source to hold, and how many output bytes to
     /// gather before a `Write`.
     pub chunk_bytes: usize,
@@ -130,7 +129,7 @@ pub struct MergeSession {
     target_bytes: usize,
     chunk_bytes: usize,
     yield_bytes: usize,
-    /// Framed input bytes opened since the pump began.
+    /// Input block bytes opened since the pump began.
     consumed: usize,
     stage: Stage,
 }
@@ -199,7 +198,7 @@ impl MergeSession {
             heap,
             pending,
             demands,
-            writer: SstWriter::new(config.codec),
+            writer: SstWriter::new(),
             out,
             output: Output::Filling { size: 0 },
             ended: RunEnd { entries: 0, size: 0, first_key: Vec::new(), last_key: Vec::new() },
@@ -577,13 +576,10 @@ enum Ask {
     Fed { at: usize, len: usize },
 }
 
-/// The block being walked.
-enum Open {
-    None,
-    /// A raw block, walked where it sits: `chunk[chunk_pos..chunk_pos + len]`.
-    InChunk { len: usize, walk: BlockWalk },
-    /// An LZ4 block unpacked into `unpacked[..len]`.
-    Unpacked { len: usize, walk: BlockWalk },
+/// The block being walked, where it sits: `chunk[chunk_pos..chunk_pos + len]`.
+struct Open {
+    len: usize,
+    walk: BlockWalk,
 }
 
 enum Got {
@@ -603,12 +599,11 @@ struct Reader {
     tail_bytes: usize,
 
     // The current run, from its footer and index.
-    codec: Codec,
     data_len: usize,
     entry_count: usize,
     entries_seen: usize,
-    /// Framed length of each data block, in file order. Blocks are
-    /// contiguous from offset 0, so their offsets are running sums.
+    /// Length of each data block, in file order. Blocks are contiguous
+    /// from offset 0, so their offsets are running sums.
     blocks: Vec<u32>,
     /// Blocks asked for, arrived in `chunk`, and opened, in that order.
     requested: usize,
@@ -618,12 +613,11 @@ struct Reader {
     next_offset: usize,
 
     /// Arrived bytes still needed are `chunk[chunk_pos..chunk_len]`: the
-    /// blocks from the open raw one, or from the next to open, to `arrived`.
+    /// blocks from the open one, or from the next to open, to `arrived`.
     chunk: Vec<u8>,
     chunk_pos: usize,
     chunk_len: usize,
-    unpacked: Vec<u8>,
-    open: Open,
+    open: Option<Open>,
 
     // The run's CRC covers its data and then its meta, but the meta is read
     // first: the data's CRC streams in as blocks arrive and the two combine.
@@ -642,8 +636,6 @@ impl Reader {
         let chunk_bytes = config.chunk_bytes.max(1);
         let mut chunk = Vec::new();
         grow(&mut chunk, chunk_bytes)?;
-        let mut unpacked = Vec::new();
-        unpacked.try_reserve_exact(2 * BLOCK_TARGET)?;
         Ok(Reader {
             index,
             runs: list,
@@ -652,7 +644,6 @@ impl Reader {
             ask: Ask::Idle,
             chunk_bytes,
             tail_bytes: config.tail_bytes.max(FOOTER_BYTES),
-            codec: Codec::Raw,
             data_len: 0,
             entry_count: 0,
             entries_seen: 0,
@@ -664,8 +655,7 @@ impl Reader {
             chunk,
             chunk_pos: 0,
             chunk_len: 0,
-            unpacked,
-            open: Open::None,
+            open: None,
             crc_data: Crc32::new(),
             data_fed: 0,
             crc_meta: 0,
@@ -722,21 +712,15 @@ impl Reader {
     /// The next record of the open block into `slot`, or false once no block
     /// is open.
     fn walk(&mut self, slot: &mut Slot) -> Result<bool, MergeError> {
-        let (block, walk) = match &mut self.open {
-            Open::None => return Ok(false),
-            Open::InChunk { len, walk } => (&self.chunk[self.chunk_pos..self.chunk_pos + *len], walk),
-            Open::Unpacked { len, walk } => (&self.unpacked[..*len], walk),
-        };
-        match walk.next(block)? {
+        let Some(Open { len, walk }) = &mut self.open else { return Ok(false) };
+        match walk.next(&self.chunk[self.chunk_pos..self.chunk_pos + *len])? {
             Some(record) => {
                 slot.fill(&record)?;
                 Ok(true)
             }
             None => {
-                if let Open::InChunk { len, .. } = self.open {
-                    self.chunk_pos += len;
-                }
-                self.open = Open::None;
+                self.chunk_pos += *len;
+                self.open = None;
                 Ok(false)
             }
         }
@@ -744,15 +728,8 @@ impl Reader {
 
     fn open_block(&mut self, consumed: &mut usize) -> Result<(), MergeError> {
         let len = self.blocks[self.opened] as usize;
-        let framed = &self.chunk[self.chunk_pos..self.chunk_pos + len];
-        self.open = match self.codec {
-            Codec::Raw => Open::InChunk { len, walk: BlockWalk::new(framed)? },
-            Codec::Lz4 => {
-                let n = unpack_lz4(framed, &mut self.unpacked)?;
-                self.chunk_pos += len;
-                Open::Unpacked { len: n, walk: BlockWalk::new(&self.unpacked[..n])? }
-            }
-        };
+        let walk = BlockWalk::new(&self.chunk[self.chunk_pos..self.chunk_pos + len])?;
+        self.open = Some(Open { len, walk });
         self.opened += 1;
         *consumed += len;
         Ok(())
@@ -818,7 +795,6 @@ impl Reader {
         let index = &meta[layout.index_start - layout.data_len..layout.index_end - layout.data_len];
         index_blocks(index, layout.block_count, layout.data_len, &mut self.blocks)?;
 
-        self.codec = layout.codec;
         self.data_len = layout.data_len;
         self.entry_count = layout.entry_count;
         self.entries_seen = 0;
@@ -912,7 +888,7 @@ impl Reader {
     }
 }
 
-/// The framed length of each block, from the index rows
+/// The length of each block, from the index rows
 ///   u32 len | first key | u32 len | last key | u32 offset | u32 length
 /// Blocks must tile the data region from 0, which a run written by
 /// `SstWriter` always does, so a block's offset is the sum before it.
@@ -959,49 +935,9 @@ fn index_blocks(index: &[u8], count: usize, data_len: usize, blocks: &mut Vec<u3
     Ok(())
 }
 
-/// Unpack a framed LZ4 block (u32 size, then LZ4 bytes) into `buf`, which
-/// keeps its capacity. Returns the unpacked length.
-fn unpack_lz4(framed: &[u8], buf: &mut Vec<u8>) -> Result<usize, MergeError> {
-    if framed.len() < 4 {
-        return Err(SstError::Truncated.into());
-    }
-    let size = read_u32(framed, 0) as usize;
-    let src = &framed[4..];
-    if !lz4_size_fits(src.len(), size) {
-        return Err(SstError::BadBlock.into());
-    }
-    if size > buf.len() {
-        grow(buf, size)?;
-    }
-    match lz4_flex::block::decompress_into(src, &mut buf[..size]) {
-        Ok(n) if n == size => Ok(size),
-        _ => Err(SstError::BadBlock.into()),
-    }
-}
-
 /// Make `buf` `len` bytes long without aborting when memory runs out.
 fn grow(buf: &mut Vec<u8>, len: usize) -> Result<(), MergeError> {
     buf.try_reserve_exact(len.saturating_sub(buf.len()))?;
     buf.resize(len, 0);
     Ok(())
-}
-
-/// One data block of a run, framed as the block index frames it, decoded the
-/// way a session reads it.
-pub fn decode_block(framed: &[u8], codec: Codec) -> Result<Vec<Entry>, SstError> {
-    let mut buf = Vec::new();
-    let block = match codec {
-        Codec::Raw => framed,
-        Codec::Lz4 => match unpack_lz4(framed, &mut buf) {
-            Ok(n) => &buf[..n],
-            Err(MergeError::Corrupt(e)) => return Err(e),
-            Err(_) => return Err(SstError::BadBlock),
-        },
-    };
-    let mut walk = BlockWalk::new(block)?;
-    let mut out = Vec::new();
-    while let Some(record) = walk.next(block)? {
-        out.push(record.entry());
-    }
-    Ok(out)
 }

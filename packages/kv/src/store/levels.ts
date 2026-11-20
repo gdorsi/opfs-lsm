@@ -1,7 +1,7 @@
 import { compareBytes } from "../bytes.js";
 import type { GenerationMeta, RunMeta } from "./generation.js";
 import { retireMarks } from "./marks.js";
-import type { KeyRange, SstCodec } from "./sst.js";
+import type { KeyRange } from "./sst.js";
 
 /**
  * Leveled layout. A generation lists the L0 runs newest first, then each
@@ -15,17 +15,6 @@ const LEVEL_RATIO = 10;
 const L1_TARGET_BYTES = 40 * 1024 * 1024;
 /** Compaction cuts its output into runs of about this size. */
 export const TARGET_RUN_BYTES = 4 * 1024 * 1024;
-
-/**
- * L0 and L1 hold the recent writes and stay raw to keep reading them fast.
- * An LZ4 block costs a decompress on every read. A get pays about 70% more
- * and a 256-row page about 25% more. Runs from L2 down hold nearly all the
- * data, so LZ4 saves the most memory there. Encode cost is not the reason.
- * A 4.3 MB flush run encodes in about the same time raw or LZ4.
- */
-export function codecForLevel(level: number): SstCodec {
-  return level >= 2 ? "lz4" : "raw";
-}
 
 export type CompactionPlan = {
   /**

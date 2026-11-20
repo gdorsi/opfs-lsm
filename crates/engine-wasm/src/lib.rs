@@ -12,21 +12,19 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 
 use core::cell::UnsafeCell;
-use engine_core::{
-    fold_run_into, lz4_unpack, Codec, EntryRef, MergeConfig, MergeError, MergeSession, RunEnd, SstError, Stop,
-};
+use engine_core::{fold_run_into, EntryRef, MergeConfig, MergeError, MergeSession, RunEnd, SstError, Stop};
 
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 
 const TRUNCATED: i32 = -5;
 const BAD_TAG: i32 = -6;
-const OUT_OF_MEMORY: i32 = -11;
-const PATTERNS_TRUNCATED: i32 = -12;
-const SESSION_OPEN: i32 = -13;
-const OUT_OF_ORDER: i32 = -14;
-const NO_SESSION: i32 = -15;
-const UNFED: i32 = -16;
+const OUT_OF_MEMORY: i32 = -10;
+const PATTERNS_TRUNCATED: i32 = -11;
+const SESSION_OPEN: i32 = -12;
+const OUT_OF_ORDER: i32 = -13;
+const NO_SESSION: i32 = -14;
+const UNFED: i32 = -15;
 
 const NEED: i32 = 1;
 const WRITE: i32 = 2;
@@ -84,8 +82,7 @@ fn error_code(e: SstError) -> i32 {
         SstError::BadTag(_) => BAD_TAG,
         SstError::TrailingGarbage => -7,
         SstError::CountMismatch => -8,
-        SstError::BadCodec(_) => -9,
-        SstError::BadBlock => -10,
+        SstError::BadBlock => -9,
         SstError::OutOfOrder => OUT_OF_ORDER,
     }
 }
@@ -98,14 +95,6 @@ fn run_head(end: &RunEnd) -> [u8; RUN_HEAD] {
         slot.copy_from_slice(&(n as u32).to_le_bytes());
     }
     head
-}
-
-fn codec(lz4: i32) -> Codec {
-    if lz4 != 0 {
-        Codec::Lz4
-    } else {
-        Codec::Raw
-    }
 }
 
 unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
@@ -211,11 +200,11 @@ pub extern "C" fn result_len() -> u32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn encode_sst(ptr: *const u8, len: usize, lz4: i32) -> i32 {
+pub unsafe extern "C" fn encode_sst(ptr: *const u8, len: usize) -> i32 {
     finish(parse_entries(bytes(ptr, len)).map(|entries| {
         // The run is written after room for its head, so it is never copied.
         let mut out = vec![0u8; RUN_HEAD];
-        let end = fold_run_into(&entries, codec(lz4), &mut out);
+        let end = fold_run_into(&entries, &mut out);
         out[..RUN_HEAD].copy_from_slice(&run_head(&end));
         out.extend_from_slice(&end.first_key);
         out.extend_from_slice(&end.last_key);
@@ -224,18 +213,7 @@ pub unsafe extern "C" fn encode_sst(ptr: *const u8, len: usize, lz4: i32) -> i32
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn lz4_decompress(ptr: *const u8, len: usize, size: u32) -> i32 {
-    finish(lz4_unpack(bytes(ptr, len), size as usize).map_err(error_code))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn scan_block_contains(
-    ptr: *const u8,
-    len: usize,
-    lz4: i32,
-    pat_ptr: *const u8,
-    pat_len: usize,
-) -> i32 {
+pub unsafe extern "C" fn scan_block_contains(ptr: *const u8, len: usize, pat_ptr: *const u8, pat_len: usize) -> i32 {
     let mut r = Reader {
         buf: bytes(pat_ptr, pat_len),
         o: 0,
@@ -247,12 +225,12 @@ pub unsafe extern "C" fn scan_block_contains(
         };
         pats.push(p);
     }
-    finish(engine_core::scan_block_contains(bytes(ptr, len), codec(lz4), &pats).map_err(error_code))
+    finish(engine_core::scan_block_contains(bytes(ptr, len), &pats).map_err(error_code))
 }
 
 /// Open the module's merge session. Input: source list, then the marks block
-/// the session copies. Fails with -13 while a session is open, -5 for a
-/// malformed list, -1 for a run shorter than a footer, and -11 when its
+/// the session copies. Fails with -12 while a session is open, -5 for a
+/// malformed list, -1 for a run shorter than a footer, and -10 when its
 /// working set cannot be reserved.
 #[no_mangle]
 pub unsafe extern "C" fn merge_open(
@@ -260,7 +238,6 @@ pub unsafe extern "C" fn merge_open(
     len: usize,
     drop_tombstones: i32,
     target_bytes: f64,
-    lz4: i32,
     chunk_bytes: u32,
     tail_bytes: u32,
     yield_bytes: u32,
@@ -289,7 +266,6 @@ pub unsafe extern "C" fn merge_open(
         drop_tombstones: drop_tombstones != 0,
         // `as` saturates, so Number.MAX_SAFE_INTEGER becomes usize::MAX.
         target_bytes: target_bytes as usize,
-        codec: codec(lz4),
         chunk_bytes: chunk_bytes as usize,
         tail_bytes: tail_bytes as usize,
         yield_bytes: yield_bytes as usize,

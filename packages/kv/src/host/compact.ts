@@ -13,7 +13,6 @@ import {
   type RunMeta,
 } from "../store/generation.js";
 import {
-  codecForLevel,
   levelRunPath,
   planCompaction,
   replaceRuns,
@@ -86,7 +85,6 @@ async function writeStep(
       dropTombstones: plan.bottom,
       marks: base.marks,
       targetBytes: TARGET_RUN_BYTES,
-      codec: codecForLevel(plan.outputLevel),
       chunkBytes: budget.chunkBytes,
       tailBytes: budget.tailBytes,
       yieldBytes: budget.yieldBytes,

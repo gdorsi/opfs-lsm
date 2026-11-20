@@ -28,19 +28,15 @@ result_len() -> u32
     The bytes produced by the last successful operation. After a merge
     session's WRITE they point into the session's own output buffer.
 
-encode_sst(ptr, len, lz4: i32) -> i32
+encode_sst(ptr, len) -> i32
     Input: entry records (below) in the order they were written, in any
     key order. Result: one run record (below): the SST, which holds each
     key once as its last record, and what the encoder knows about it.
 
-lz4_decompress(ptr, len, size: u32) -> i32
-    Input: one LZ4 block body. Result: exactly `size` bytes, or -10.
-
-scan_block_contains(ptr, len, lz4: i32, pat_ptr, pat_len) -> i32
-    Input: one framed data block as the SST block index frames it (with
-    the u32 size prefix when `lz4`), and a pattern list. Both live in the
-    input region; `pat_ptr` may point anywhere inside it. Result: hit
-    records in key order.
+scan_block_contains(ptr, len, pat_ptr, pat_len) -> i32
+    Input: one data block, the bytes the SST block index names, and a
+    pattern list. Both live in the input region; `pat_ptr` may point
+    anywhere inside it. Result: hit records in key order.
 ```
 
 ### Merge session
@@ -50,14 +46,14 @@ window of each input instead of the whole input. A module holds at most
 one session.
 
 ```text
-merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64, lz4: i32,
+merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64,
            chunk_bytes, tail_bytes, yield_bytes) -> i32
     Input: source list (below), newest source first, then the base
     manifest's marks block, which the session copies without checking it:
     the host encoded it, and a malformed block traps. Reserves the working
     set: about `chunk_bytes` per source plus the output buffer. Returns 0,
-    -13 while a session is open, -5 for a malformed list, -1 for a run
-    shorter than a footer, or -11 when the working set cannot be reserved.
+    -12 while a session is open, -5 for a malformed list, -1 for a run
+    shorter than a footer, or -10 when the working set cannot be reserved.
 
 merge_pump() -> i32
     Merge until the host has to act, always between two keys. Returns
@@ -68,7 +64,7 @@ merge_pump() -> i32
                  of the run was in a WRITE.
       4 YIELD    about `yield_bytes` of input were merged; result empty.
       5 DONE     result empty. Every run's CRC matched.
-    or a negative error code. -16 (UNFED) means a demand was not fed yet
+    or a negative error code. -15 (UNFED) means a demand was not fed yet
     and leaves the session as it was; any other error is final, every later
     pump returns it, and no output of the session may be installed.
 
@@ -90,9 +86,9 @@ plus a read-ahead for each source holding less than half a chunk.
 
 A source is runs read back to back as one key-ordered stream. Across
 sources the newest wins; within a source the last duplicate of a key wins,
-across block and run boundaries. A source whose keys go back fails with -14.
+across block and run boundaries. A source whose keys go back fails with -13.
 Output runs are cut at key boundaries once their entries, sized as entry
-records (below), reach `target_bytes`, and written with `lz4`'s codec.
+records (below), reach `target_bytes`.
 A winner whose seq is at or below the highest `through` among the marks
 that hold its key is dropped, delete or put.
 
@@ -129,28 +125,28 @@ when the run is complete.
 ## Error codes
 
 ```text
--1  TOO_SHORT          -5  TRUNCATED           -9  BAD_CODEC          -13  SESSION_OPEN
--2  BAD_MAGIC          -6  BAD_TAG            -10  BAD_BLOCK (incl. LZ4) -14  OUT_OF_ORDER
--3  BAD_VERSION        -7  TRAILING_GARBAGE   -11  OUT_OF_MEMORY       -15  NO_SESSION
--4  CRC_MISMATCH       -8  COUNT_MISMATCH     -12  PATTERNS_TRUNCATED  -16  UNFED
+-1  TOO_SHORT          -5  TRUNCATED           -9  BAD_BLOCK           -13  OUT_OF_ORDER
+-2  BAD_MAGIC          -6  BAD_TAG            -10  OUT_OF_MEMORY       -14  NO_SESSION
+-3  BAD_VERSION        -7  TRAILING_GARBAGE   -11  PATTERNS_TRUNCATED  -15  UNFED
+-4  CRC_MISMATCH       -8  COUNT_MISMATCH     -12  SESSION_OPEN
 -99 other
 ```
 
 The loader maps any negative status to `CorruptDatabaseError`, except
-`-11`, which it reports as an out of memory error naming the operation
-and the input size, and -13, -15 and -16, which are host bugs, not corrupt data.
+`-10`, which it reports as an out of memory error naming the operation
+and the input size, and -12, -14 and -15, which are host bugs, not corrupt data.
 
 ## Memory
 
 The Rust module allocates dynamically. `input_ptr` grows a reused input
 buffer, and an operation allocates what it needs through the module's
-allocator. Outside a merge session it never returns -11; running out of
+allocator. Outside a merge session it never returns -10; running out of
 memory inside an operation aborts, which the loader sees as a
 `WebAssembly.RuntimeError` and answers by replacing the instance and
 throwing. A merge session
 reserves its working set in `merge_open` and grows its input buffers (for
 a block, a run's bloom and index, or an entry larger than any before)
-without aborting, so it returns -11 instead. The output writer's per-run
+without aborting, so it returns -10 instead. The output writer's per-run
 state (one bloom hash per key and one index row per block of the open
 run) still grows with the run, bounded by `target_bytes`, and running
 out of memory there aborts as it does outside a session.

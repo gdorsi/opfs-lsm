@@ -3,6 +3,7 @@ import { CommitError, CorruptDatabaseError } from "../../src/errors.js";
 import { type Db } from "../../src/index.js";
 import { encodeRun, ensureEngine } from "../../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../../src/store/generation.js";
+import { SST_FOOTER_BYTES } from "../../src/store/sst.js";
 import {
   openHarnessDb,
   ingest,
@@ -17,7 +18,7 @@ import { NO_MARKS } from "../../src/store/marks.js";
 /**
  * End-to-end corruption (docs/research/corruption-hardening-test-suite.md,
  * techniques 7 and 10). One database file is corrupted: a run of L0, L1 or
- * L2 (LZ4), the recorded manifest, a leftover manifest, a WAL row, or a WAL
+ * L2, the recorded manifest, a leftover manifest, a WAL row, or a WAL
  * `meta` row. Then a fresh tab and host open it and get, scan, write, flush,
  * compact and reopen. Each step is recorded as one outcome, and the rules
  * are checked:
@@ -92,7 +93,7 @@ async function standard(): Promise<Fixture> {
 }
 
 /**
- * One LZ4 run in L2, as compaction writes deep runs, recorded by a manifest
+ * One run in L2, as compaction writes deep runs, recorded by a manifest
  * whose `through` covers its seqs. IndexedDB starts empty, and recovery
  * records the manifest (design.md, "Recovery", rule 3).
  */
@@ -107,7 +108,7 @@ async function deep(): Promise<Fixture> {
     state.set(k, v);
     return { kind: "put" as const, key: utf(k), value: utf(v), seq: i + 1 };
   });
-  const { body, end } = await encodeRun(entries, "lz4");
+  const { body, end } = await encodeRun(entries);
   const path = "l2/c1.0.sst";
   await put(fs, path, body);
   await put(fs, "m/0000000000000001.mft", encodeGeneration({ generation: 1, runs: [{ path, ...end, marksThrough: 300 }], through: 300, marks: NO_MARKS }));
@@ -243,7 +244,7 @@ const refused = (o: Outcome | undefined) => o === "corrupt";
 describe("a healthy database", () => {
   it("passes every step (the harness is right)", async () => {
     expect(await run("none: healthy", standard, async () => undefined)).toEqual(HEALTHY);
-    expect(await run("none: healthy, one L2 LZ4 run", deep, async () => undefined)).toEqual(HEALTHY);
+    expect(await run("none: healthy, one L2 run", deep, async () => undefined)).toEqual(HEALTHY);
   });
 
   it("the standard fixture has L0 and L1 runs, a WAL tail, and checks clean", async () => {
@@ -285,7 +286,7 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
   it("L0, the index offset field inflated", async () => {
     const r = await run("L0 run: footer index offset inflated", standard, async (f) =>
       corruptFile(f.fs, await l0(f), (b) => {
-        new DataView(b.buffer).setUint32(b.byteLength - 44 + 20, 0x7fffffff, true);
+        new DataView(b.buffer).setUint32(b.byteLength - SST_FOOTER_BYTES + 20, 0x7fffffff, true);
         return b;
       }),
     );
@@ -297,15 +298,14 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
   // footer's block count made a tab allocate 2^24 x 8 bytes before it read
   // the index. `readFooter` now refuses a count the index cannot hold.
   it("L0, the footer's block count high byte flipped", async () => {
-    const r = await run("L0 run: block count bit 24 flipped", standard, async (f) => corruptFile(f.fs, await l0(f), flipAt((n) => n - 44 + 7, 0x01)));
+    const r = await run("L0 run: block count bit 24 flipped", standard, async (f) => corruptFile(f.fs, await l0(f), flipAt((n) => n - SST_FOOTER_BYTES + 7, 0x01)));
     expect(crashes(r)).toEqual([]);
     expect(wrongAnswers(r)).toEqual([]);
   });
 
-  it("L2 (LZ4), a flipped byte in a compressed block: the unpack fails as corrupt", async () => {
-    const r = await run("L2 LZ4 run: data byte flipped", deep, async (f) => corruptFile(f.fs, await l2(f), flipAt(() => 200)));
+  it("L2, a flipped data byte", async () => {
+    const r = await run("L2 run: data byte flipped", deep, async (f) => corruptFile(f.fs, await l2(f), flipAt(() => 200)));
     expect(crashes(r)).toEqual([]);
-    expect(r.get).toBe("corrupt");
   });
 
   // KW2: with wasm, compaction's decode threw the Rust error as a bare

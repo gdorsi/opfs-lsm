@@ -8,8 +8,8 @@ import {
   type GenerationMeta,
   type RunMeta,
 } from "../../src/store/generation.js";
-import { codecForLevel, levelOf } from "../../src/store/levels.js";
-import { readFooter, type SstEntry } from "../../src/store/sst.js";
+import { levelOf } from "../../src/store/levels.js";
+import type { SstEntry } from "../../src/store/sst.js";
 import { decodeSst } from "../oracle/sst-ref.js";
 import { show, type OracleEntry } from "./oracle.js";
 
@@ -213,10 +213,8 @@ async function checkRun(
   }
   if (run.bytes !== buf.byteLength) bad(`manifest says ${run.bytes} bytes, file has ${buf.byteLength}`);
   let entries: SstEntry[];
-  let codec: string;
   try {
     entries = decodeSst(buf);
-    codec = readFooter(buf, buf.byteLength).codec;
   } catch (err) {
     bad((err as Error).message);
     return undefined;
@@ -258,7 +256,6 @@ async function checkRun(
       const out = entries.find((e) => (e.seq ?? 0) < lo || (e.seq ?? 0) > hi);
       if (out) bad(`${show(out.key)} has seq ${out.seq} outside the name's ${lo}-${hi}`);
     }
-    if (codec !== "raw") bad(`L0 codec ${codec}`);
   } else if (level !== undefined) {
     const m = LEVEL_NAME.exec(path);
     if (!m) {
@@ -266,8 +263,6 @@ async function checkRun(
     } else {
       if (Number(m[2]) > generation) bad(`written by generation ${m[2]}, after recorded ${generation}`);
     }
-    const want = codecForLevel(level);
-    if (codec !== want) bad(`codec ${codec}, level ${level} uses ${want}`);
   } else {
     bad("path names no level");
   }

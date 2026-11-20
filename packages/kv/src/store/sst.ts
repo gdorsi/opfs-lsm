@@ -1,12 +1,11 @@
 import { CorruptDatabaseError } from "../errors.js";
 import { asSeq, type Seq } from "../seq.js";
 import { BlockEntry, NO_PREFIX } from "./cursor.js";
-import { lz4Decompress } from "./lz4.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 const SST_MAGIC = 0x4f4c5354;
-const VERSION = 1;
-export const SST_FOOTER_BYTES = 44;
+const VERSION = 2;
+export const SST_FOOTER_BYTES = 40;
 /**
  * The most Bloom hashes a footer may name. The encoder writes 7; a get
  * loops once per hash, so a corrupt count must not set its cost.
@@ -14,13 +13,6 @@ export const SST_FOOTER_BYTES = 44;
 const MAX_BLOOM_HASHES = 32;
 /** The smallest index entry: two u32 key lengths, offset and length. */
 const MIN_INDEX_ENTRY_BYTES = 16;
-
-/**
- * How a run stores its data blocks. An LZ4 block is a u32 uncompressed
- * length followed by LZ4 block-format bytes.
- */
-export type SstCodec = "raw" | "lz4";
-const CODECS: readonly SstCodec[] = ["raw", "lz4"];
 
 const TAG_PUT = 1;
 const TAG_DEL = 2;
@@ -105,8 +97,8 @@ export class RecordWalker {
   ) {}
 
   /**
-   * One unpacked block: u32 count, varint prefix length, prefix, then
-   * records. `end` is where the offset table starts.
+   * One block: u32 count, varint prefix length, prefix, then records. `end`
+   * is where the offset table starts.
    */
   static ofBlock(b: BlockBytes): RecordWalker {
     const count = b.view.getUint32(b.start, true);
@@ -226,11 +218,10 @@ export type SstFooter = {
   indexStart: number;
   /** Where the footer starts, which is also where the index ends. */
   indexEnd: number;
-  codec: SstCodec;
 };
 
 /**
- * Footer is 8 u32 fields, then CRC, version, and magic. Rejects any other
+ * Footer is 7 u32 fields, then CRC, version, and magic. Rejects any other
  * version. `tail` is the last `tail.byteLength` bytes of a `fileSize`-byte run.
  */
 export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
@@ -242,20 +233,18 @@ export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
   if (version !== VERSION) throw new CorruptDatabaseError(`unsupported sst version ${version}`);
   const at = tail.byteLength - SST_FOOTER_BYTES;
   const field = (i: number) => view.getUint32(at + 4 * i, true);
-  const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen, codecId] =
-    [0, 1, 2, 3, 4, 5, 6, 7].map(field) as [number, number, number, number, number, number, number, number];
+  const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen] =
+    [0, 1, 2, 3, 4, 5, 6].map(field) as [number, number, number, number, number, number, number];
   const footer = fileSize - SST_FOOTER_BYTES;
   if (indexOffset !== bloomOffset + bloomLen || indexOffset + indexLen !== footer) {
     throw new CorruptDatabaseError("sst footer sections OOB");
   }
-  const codec = CODECS[codecId];
-  if (!codec) throw new CorruptDatabaseError(`unsupported sst codec ${codecId}`);
   if (bloomHashCount > MAX_BLOOM_HASHES) throw new CorruptDatabaseError(`sst bloom hash count ${bloomHashCount}`);
   if (blockCount * MIN_INDEX_ENTRY_BYTES > indexLen) throw new CorruptDatabaseError("sst block count past the index");
-  return { entryCount, blockCount, dataLen: bloomOffset, bloomHashCount, indexStart: indexOffset, indexEnd: footer, codec };
+  return { entryCount, blockCount, dataLen: bloomOffset, bloomHashCount, indexStart: indexOffset, indexEnd: footer };
 }
 
-/** One block's unpacked bytes: a u32 record count at `start`, then records up to `end`. */
+/** One block's bytes: a u32 record count at `start`, then records up to `end`. */
 export type BlockBytes = { buf: Uint8Array; view: DataView; start: number; end: number };
 
 export function blockBytes(
@@ -263,15 +252,11 @@ export function blockBytes(
   view: DataView,
   dataStart: number,
   ix: { readonly offset: number; readonly length: number },
-  codec: SstCodec,
 ): BlockBytes {
   const start = dataStart + ix.offset;
   const end = start + ix.length;
   if (end > buf.byteLength || ix.length < 4) throw new CorruptDatabaseError("sst block OOB");
-  if (codec === "raw") return { buf, view, start, end };
-  const block = lz4Decompress(buf.subarray(start + 4, end), view.getUint32(start, true));
-  if (block.byteLength < 4) throw new CorruptDatabaseError("sst block too short");
-  return { buf: block, view: new DataView(block.buffer), start: 0, end: block.byteLength };
+  return { buf, view, start, end };
 }
 
 /** `buf[at, at + len)` compared with `key` from `from` on, like `compareBytes`. */

@@ -15,13 +15,11 @@ import {
   type BlockBytes,
   type KeyRange,
   type RecordWalker,
-  type SstCodec,
 } from "./sst.js";
 
 /**
- * Bytes of one cache page: whole adjacent blocks, so `page.subarray` hands
- * a block to the decoder without a copy. A block larger than this gets a
- * page of its own.
+ * Bytes of one cache page: whole adjacent blocks, so a block is read where
+ * it sits in its page. A block larger than this gets a page of its own.
  */
 export const PAGE_TARGET = 32 * 1024;
 /** Pages a scan asks for past the one it enters, at most: 1 MiB, the longest span one read covers. */
@@ -62,7 +60,6 @@ type RunIndex = {
 type RunLayout = {
   readonly bloom: BloomFilter;
   readonly index: RunIndex;
-  readonly codec: SstCodec;
   readonly entryCount: number;
 };
 
@@ -108,13 +105,13 @@ export class SstReader {
     if (page instanceof Miss) return page;
     const at = index.blockStart[b]! - index.blockStart[index.pageFirst[p]!]!;
     const length = index.blockStart[b + 1]! - index.blockStart[b]!;
-    return findInBlock(blockBytes(page.buf, page.view, 0, { offset: at, length }, meta.codec), key);
+    return findInBlock(blockBytes(page.buf, page.view, 0, { offset: at, length }), key);
   }
 
   /** Every entry in `bounds`, in key order, or from the largest key down with `reverse`. */
   cursor(bounds?: ScanBounds, reverse = false): LayerCursor {
     const entriesOf = reverse ? reverseBlockEntries : blockEntries;
-    return this.blocks(bounds, reverse, (block, seek) => entriesOf(block(), seek));
+    return this.blocks(bounds, reverse, entriesOf);
   }
 
   /**
@@ -128,8 +125,8 @@ export class SstReader {
     if (!scan) return filterCursor(this.cursor(bounds, reverse), patterns);
     const packed = packPatterns(patterns);
     const outside = reverse ? isAtOrAbove : isBelow;
-    return this.blocks(bounds, reverse, (_block, seek, framed, lz4) => {
-      const hits = unpackHits(scan(framed, lz4, packed));
+    return this.blocks(bounds, reverse, (block, seek) => {
+      const hits = unpackHits(scan(block.buf.subarray(block.start, block.end), packed));
       const walk = reverse ? [...hits].reverse().values() : hits;
       return () => {
         for (let h = walk.next(); !h.done; h = walk.next()) {
@@ -149,21 +146,15 @@ export class SstReader {
   /**
    * A cursor over the blocks that may hold keys in `bounds`, in key order or
    * from the last block back. Entering a block calls `open` with its bytes,
-   * as decoded bytes on demand and as stored, and the returned function
-   * yields that block's entries. `seek` is where the first block starts:
-   * `start`, or `endExclusive` going back.
+   * and the returned function yields that block's entries. `seek` is where
+   * the first block starts: `start`, or `endExclusive` going back.
    * Scans admit pages to probation. Only entering a block can miss, and a
    * miss leaves the cursor where it was.
    */
   private blocks(
     bounds: ScanBounds | undefined,
     reverse: boolean,
-    open: (
-      block: () => BlockBytes,
-      seek: Uint8Array | undefined,
-      framed: Uint8Array,
-      lz4: boolean,
-    ) => () => BlockEntry | undefined,
+    open: (block: BlockBytes, seek: Uint8Array | undefined) => () => BlockEntry | undefined,
   ): LayerCursor {
     const start = bounds?.start;
     const end = bounds?.endExclusive;
@@ -225,7 +216,6 @@ export class SstReader {
         const { page } = at;
         const offset = index.blockStart[b]! - index.blockStart[index.pageFirst[p]!]!;
         const length = index.blockStart[b + 1]! - index.blockStart[b]!;
-        if (length < 4) throw new CorruptDatabaseError("sst block OOB");
         // Every key of block `b` is at or after its separator and before the next block's.
         mayPass =
           !!stopAt &&
@@ -234,12 +224,7 @@ export class SstReader {
             : b + 1 < blockCount
               ? compareSepAt(index, b + 1, stopAt) > 0
               : compareBytes(index.last, stopAt) >= 0);
-        take = open(
-          () => blockBytes(page.buf, page.view, 0, { offset, length }, meta.codec),
-          seek,
-          page.buf.subarray(offset, offset + length),
-          meta.codec === "lz4",
-        );
+        take = open(blockBytes(page.buf, page.view, 0, { offset, length }), seek);
         shared = -1;
         b += step;
         seek = undefined;
@@ -336,7 +321,7 @@ async function openMeta(file: RunFile): Promise<Sized<RunLayout>> {
     index.sepEnd.byteLength +
     index.blockStart.byteLength +
     index.pageFirst.byteLength;
-  return { value: { bloom, index, codec: f.codec, entryCount: f.entryCount }, bytes };
+  return { value: { bloom, index, entryCount: f.entryCount }, bytes };
 }
 
 /**

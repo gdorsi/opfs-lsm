@@ -9,7 +9,6 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 engine-core = { path = ".." }
 
 # Not a member of the root workspace: it needs nightly and libFuzzer.

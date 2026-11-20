@@ -8,7 +8,7 @@ import { encodeRunIn, openMergeIn, type MergeCore, type MergeSpec } from "../src
 import { publishGeneration, type RunMeta } from "../src/store/generation.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { openMergeTs } from "./oracle/merge-ts.js";
-import type { SstCodec, SstEntry } from "../src/store/sst.js";
+import { SST_FOOTER_BYTES, type SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeRunRef, entryRecordSize, sstKeyRange } from "./oracle/sst-ref.js";
 import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
@@ -20,8 +20,7 @@ import { NO_MARKS, throughAt, type Mark, type Marks } from "../src/store/marks.j
  * The TypeScript merge session against the wasm one, both pumped by the
  * compaction driver over the same runs. Small and odd windows split reads,
  * blocks and runs everywhere. Both must give the newest-wins fold of their
- * inputs, cut into runs at the same keys; their raw runs must be the same
- * bytes.
+ * inputs, cut into runs at the same keys and written in the same bytes.
  *
  *   KV_MERGE_CASES=3000 KV_MERGE_SEED=7 pnpm exec vitest run tests/merge-session.test.ts
  */
@@ -58,9 +57,9 @@ type Source = { readonly runs: readonly Uint8Array[]; readonly entries: readonly
 
 /**
  * Entries in key order with duplicates of a key next to each other, cut into
- * runs anywhere, also between two duplicates. Runs are raw or LZ4, and some
- * are empty. An LZ4 run comes from the engine's encoder, which keeps the last
- * duplicate, so only a raw run holds a key twice.
+ * runs anywhere, also between two duplicates. Runs come from the reference
+ * writer or the engine's encoder, and some are empty. The engine's encoder
+ * keeps the last duplicate, so only a reference run holds a key twice.
  */
 function source(r: Rng, seq: { next: number }): Source {
   const entries: SstEntry[] = [];
@@ -84,7 +83,7 @@ function source(r: Rng, seq: { next: number }): Source {
     from = cut;
   }
   if (r.chance(0.1)) pieces.splice(r.below(pieces.length + 1), 0, []);
-  const runs = pieces.map((p) => (r.chance(0.5) ? encodeRunRef(p).body : encodeRunIn(wasm, p, true).body));
+  const runs = pieces.map((p) => (r.chance(0.5) ? encodeRunRef(p).body : encodeRunIn(wasm, p).body));
   return { runs, entries };
 }
 
@@ -180,9 +179,8 @@ async function makeCase(r: Rng): Promise<Case> {
     sources: sources.map((s) => s.runs.map((run) => run.byteLength)),
     dropTombstones: r.chance(0.5),
     targetBytes: r.pick([1, 40, 120, 1000, 64 * 1024, Number.MAX_SAFE_INTEGER]),
-    codec: r.pick<SstCodec>(["raw", "lz4"]),
     chunkBytes: r.pick([1, 37, 512, 4096, 64 * 1024]),
-    tailBytes: r.pick([0, 44, 45, 100, 1000, 4096, 128 * 1024]),
+    tailBytes: r.pick([0, SST_FOOTER_BYTES, SST_FOOTER_BYTES + 1, 100, 1000, 4096, 128 * 1024]),
     yieldBytes: r.pick([1, 1000, Number.MAX_SAFE_INTEGER]),
     marks: r.chance(0.5) ? NO_MARKS : randomMarks(r, seq.next),
   };
@@ -191,7 +189,7 @@ async function makeCase(r: Rng): Promise<Case> {
 
 describe("the TypeScript and wasm merge sessions, through the compaction driver", () => {
   it(
-    "merge the same runs to the newest-wins fold, cut at the same keys, raw runs the same bytes",
+    "merge the same runs to the newest-wins fold, cut at the same keys, in the same bytes",
     async () => {
       const r = rng(SEED);
       for (let c = 0; c < CASES; c++) {
@@ -206,10 +204,8 @@ describe("the TypeScript and wasm merge sessions, through the compaction driver"
             expect(run.meta.range).toEqual(sstKeyRange(run.body));
           }
         }
-        if (spec.codec === "raw") {
-          expect(w.runs.length).toBe(ts.runs.length);
-          for (const [i, run] of w.runs.entries()) expect(same(run.body, ts.runs[i]!.body)).toBe(true);
-        }
+        expect(w.runs.length).toBe(ts.runs.length);
+        for (const [i, run] of w.runs.entries()) expect(same(run.body, ts.runs[i]!.body)).toBe(true);
       }
     },
     120_000,
@@ -241,7 +237,7 @@ describe("the TypeScript and wasm merge sessions, through the compaction driver"
 
 describe("what a CRC cannot catch, both sessions refuse", () => {
   const puts = (...keys: string[]): SstEntry[] => keys.map((k, i) => ({ kind: "put", key: utf(k), value: utf("v"), seq: i + 1 }));
-  const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - 44, 44);
+  const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - SST_FOOTER_BYTES, SST_FOOTER_BYTES);
 
   /** What each session ends with over one source of `runs`: the error it threw, or "done". */
   async function ends(runs: Uint8Array[]): Promise<unknown[]> {
@@ -253,7 +249,6 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
-      codec: "raw",
       chunkBytes: 64,
       tailBytes: 64,
       yieldBytes: Number.MAX_SAFE_INTEGER,
@@ -269,11 +264,11 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
   /** A run with no data blocks, which no encoder writes (an empty run gets one empty block): bloom bits, no index, a footer. */
   function blockless(): Uint8Array {
     const bloom = 8;
-    const run = new Uint8Array(bloom + 44);
+    const run = new Uint8Array(bloom + SST_FOOTER_BYTES);
     const f = footer(run);
-    [0, 0, 0, bloom, 7, bloom, 0, 0].forEach((v, i) => f.setUint32(4 * i, v, true));
-    f.setUint32(36, 1, true);
-    f.setUint32(40, 0x4f4c5354, true);
+    [0, 0, 0, bloom, 7, bloom, 0].forEach((v, i) => f.setUint32(4 * i, v, true));
+    f.setUint32(32, 2, true);
+    f.setUint32(36, 0x4f4c5354, true);
     fixSstCrc(run);
     return run;
   }
@@ -286,29 +281,27 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
-      codec: "raw",
       chunkBytes: 16,
       tailBytes,
       yieldBytes: Number.MAX_SAFE_INTEGER,
     });
     for (const [label, open] of [["ts", openMergeTs], ["wasm", openWasm]] as const) {
-      for (const tailBytes of [44, 60]) expect((await merge(fs, open, intact(tailBytes), [["in/blockless.sst"]], label)).runs).toEqual([]);
+      for (const tailBytes of [SST_FOOTER_BYTES, 60]) expect((await merge(fs, open, intact(tailBytes), [["in/blockless.sst"]], label)).runs).toEqual([]);
     }
 
-    const runs = [blockless(), encodeRunRef([]).body, encodeRunRef(puts("a", "b", "c")).body, encodeRunIn(wasm, puts("a", "b", "c"), true).body];
+    const runs = [blockless(), encodeRunRef([]).body, encodeRunRef(puts("a", "b", "c")).body, encodeRunIn(wasm, puts("a", "b", "c")).body];
     for (const run of runs) {
       for (let at = 0; at < run.byteLength; at++) {
         const bad = run.slice();
         bad[at]! ^= 0x10;
         const fs = new MemoryFs();
         await publish(fs, "in/0.0.sst", bad);
-        for (const tailBytes of [44, 45, run.byteLength - 1, run.byteLength]) {
+        for (const tailBytes of [SST_FOOTER_BYTES, SST_FOOTER_BYTES + 1, run.byteLength - 1, run.byteLength]) {
           const spec: MergeSpec = {
             sources: [[bad.byteLength]],
             dropTombstones: false,
             marks: NO_MARKS,
             targetBytes: Number.MAX_SAFE_INTEGER,
-            codec: "raw",
             chunkBytes: 16,
             tailBytes,
             yieldBytes: Number.MAX_SAFE_INTEGER,
@@ -354,7 +347,6 @@ describe("a session's protocol, in both sessions", () => {
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
-      codec: "raw",
       chunkBytes: 1024,
       tailBytes: 1024,
       yieldBytes: Number.MAX_SAFE_INTEGER,
@@ -393,7 +385,6 @@ describe("a session's protocol, in both sessions", () => {
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
-      codec: "raw",
       chunkBytes: 1024,
       tailBytes: 1024,
       yieldBytes: Number.MAX_SAFE_INTEGER,
@@ -441,7 +432,6 @@ describe("the compaction driver", () => {
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: 200,
-      codec: "lz4",
       chunkBytes: 300,
       tailBytes: 100,
       yieldBytes: 1000,

@@ -3,8 +3,7 @@
  * The module is required: the engine writes and merges runs only through it,
  * so a context where it does not load cannot flush.
  */
-import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
-import { useLz4Decoder } from "./lz4.js";
+import type { EncodedRun, RunEnd, SstEntry } from "./sst.js";
 import { useBlockScanner } from "./block-scan.js";
 import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
@@ -17,8 +16,8 @@ export class EngineOutOfMemoryError extends Error {
   }
 }
 
-const OUT_OF_MEMORY = -11;
-const SESSION_OPEN = -13;
+const OUT_OF_MEMORY = -10;
+const SESSION_OPEN = -12;
 /** What each status of the module means, by `-code`. An empty entry is not a corruption status: 0, out of memory, a host bug. */
 const STATUS_NAMES = [
   "",
@@ -30,7 +29,6 @@ const STATUS_NAMES = [
   "bad tag",
   "trailing garbage",
   "count mismatch",
-  "bad codec",
   "bad block",
   "",
   "patterns truncated",
@@ -40,8 +38,8 @@ const STATUS_NAMES = [
 /** The host broke the session protocol: a bug, not corrupt data. */
 const HOST_BUGS: Record<number, string> = {
   [SESSION_OPEN]: "a session is open",
-  [-15]: "no session",
-  [-16]: "a demand was not fed",
+  [-14]: "no session",
+  [-15]: "a demand was not fed",
 };
 
 const NEED = 1;
@@ -57,19 +55,9 @@ export type EngineExports = {
   input_ptr(len: number): number;
   result_ptr(): number;
   result_len(): number;
-  encode_sst(ptr: number, len: number, lz4: number): number;
-  lz4_decompress(ptr: number, len: number, size: number): number;
-  scan_block_contains(ptr: number, len: number, lz4: number, patPtr: number, patLen: number): number;
-  merge_open(
-    ptr: number,
-    len: number,
-    drop: number,
-    target: number,
-    lz4: number,
-    chunkBytes: number,
-    tailBytes: number,
-    yieldBytes: number,
-  ): number;
+  encode_sst(ptr: number, len: number): number;
+  scan_block_contains(ptr: number, len: number, patPtr: number, patLen: number): number;
+  merge_open(ptr: number, len: number, drop: number, target: number, chunkBytes: number, tailBytes: number, yieldBytes: number): number;
   merge_pump(): number;
   merge_feed(source: number, len: number): number;
   merge_close(): number;
@@ -97,7 +85,6 @@ export type MergeSpec = {
    * length and the value.
    */
   readonly targetBytes: number;
-  readonly codec: SstCodec;
   /** About how much of each source to hold, and the most a `write` carries. */
   readonly chunkBytes: number;
   /** How much of a run's end to read first, for its footer and index. */
@@ -138,9 +125,9 @@ export interface MergeCore {
  * this file is the only place that packs and unpacks them. Results are
  * copied out of wasm memory once, so they stay valid after later calls.
  *
- * What a tab calls on its reads, `lz4DecompressIn` and `scanBlockContainsIn`,
- * and what only the host calls, `encodeRunIn` and `openMergeIn`, are
- * functions over the engine, so a bundle carries only the side it runs.
+ * What a tab calls on its reads, `scanBlockContainsIn`, and what only the
+ * host calls, `encodeRunIn` and `openMergeIn`, are functions over the
+ * engine, so a bundle carries only the side it runs.
  */
 export type FlatEngine = {
   readonly ex: EngineExports;
@@ -177,29 +164,21 @@ export function flatEngine(instance: WebAssembly.Instance): FlatEngine {
   return { ex, call, memoryBytes: () => ex.memory.buffer.byteLength, sessionOpen: false };
 }
 
-/** `src`, an LZ4 block of `size` bytes, decompressed by `engine`. */
-export function lz4DecompressIn(engine: FlatEngine, src: Uint8Array, size: number): Uint8Array {
-  return engine.call("lz4_decompress", src.byteLength, (into) => into.set(src), (ptr) =>
-    engine.ex.lz4_decompress(ptr, src.byteLength, size),
-  );
-}
-
-/** The hits of `patterns` in one framed block, as `engine` packs them. */
-export function scanBlockContainsIn(engine: FlatEngine, framed: Uint8Array, lz4: boolean, patterns: Uint8Array): Uint8Array {
+/** The hits of `patterns` in one block, as `engine` packs them. */
+export function scanBlockContainsIn(engine: FlatEngine, block: Uint8Array, patterns: Uint8Array): Uint8Array {
   return engine.call(
     "scan_block_contains",
-    framed.byteLength + patterns.byteLength,
+    block.byteLength + patterns.byteLength,
     (into) => {
-      into.set(framed);
-      into.set(patterns, framed.byteLength);
+      into.set(block);
+      into.set(patterns, block.byteLength);
     },
-    (ptr) =>
-      engine.ex.scan_block_contains(ptr, framed.byteLength, lz4 ? 1 : 0, ptr + framed.byteLength, patterns.byteLength),
+    (ptr) => engine.ex.scan_block_contains(ptr, block.byteLength, ptr + block.byteLength, patterns.byteLength),
   );
 }
 
 /** `entries` as one run, encoded by `engine`: in any key order, and of the entries of one key the last is kept. */
-export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz4: boolean): EncodedRun {
+export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[]): EncodedRun {
   let size = 0;
   for (const e of entries) {
     size += 1 + 8 + 4 + e.key.byteLength + (e.kind === "put" ? 4 + e.value.byteLength : 0);
@@ -225,7 +204,7 @@ export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz
         }
       }
     },
-    (ptr) => engine.ex.encode_sst(ptr, size, lz4 ? 1 : 0),
+    (ptr) => engine.ex.encode_sst(ptr, size),
   );
   return readRun(out);
 }
@@ -265,7 +244,6 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
     len,
     spec.dropTombstones ? 1 : 0,
     spec.targetBytes,
-    spec.codec === "lz4" ? 1 : 0,
     spec.chunkBytes,
     spec.tailBytes,
     spec.yieldBytes,
@@ -351,7 +329,7 @@ function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
 /**
  * Names a status. Set where the host first asks for the module: its
  * operations decode whole runs and drive sessions, so the bundle of a tab,
- * whose two calls fail only on a bad block, leaves the names out.
+ * whose one call fails only on a bad block, leaves the names out.
  */
 let named: ((op: string, code: number) => Error) | undefined;
 
@@ -418,20 +396,19 @@ function loadEngine(): Promise<void> {
   return initOnce;
 }
 
-let readHooks = false;
+let scanHook = false;
 
 /**
- * Load the module, then route block decoding and scanning through it. Only
- * the tab reads blocks, so the host loads through `loadEngine` and its bundle
- * leaves out both hooks.
+ * Load the module, then route block scans through it. Only the tab scans
+ * blocks, so the host loads through `loadEngine` and its bundle leaves out
+ * the hook.
  */
 export async function ensureEngine(): Promise<void> {
   await loadEngine();
-  if (readHooks) return;
-  readHooks = true;
-  // They read `engine` at each call: it is replaced when the instance is.
-  useLz4Decoder((src, size) => onEngine("sst lz4 block corrupt", () => lz4DecompressIn(engine!, src, size)));
-  useBlockScanner((framed, lz4, patterns) => onEngine("sst block corrupt", () => scanBlockContainsIn(engine!, framed, lz4, patterns)));
+  if (scanHook) return;
+  scanHook = true;
+  // It reads `engine` at each call: it is replaced when the instance is.
+  useBlockScanner((block, patterns) => onEngine("sst block corrupt", () => scanBlockContainsIn(engine!, block, patterns)));
 }
 
 /**
@@ -513,7 +490,7 @@ export function engineMemory(): EngineMemory {
  * back, and the dropped one's memory returns once it is collected. Skipped
  * while a merge session is open, since the session lives in the old
  * instance. Nothing holds a view of the old memory across an await: results
- * are copies, and the decoder hooks read `engine` at each call.
+ * are copies, and the scan hook reads `engine` at each call.
  */
 export function recycleEngine(maxBytes: number): boolean {
   if (!engine || !wasmModule || engine.sessionOpen || engine.memoryBytes() <= maxBytes) return false;
@@ -540,13 +517,10 @@ export function __restartEngineForTests(): void {
  * A run of `entries` with what the encoder reports at its end: the size and
  * the key range the manifest records.
  */
-export async function encodeRun(
-  entries: readonly SstEntry[],
-  codec: SstCodec = "raw",
-): Promise<EncodedRun> {
+export async function encodeRun(entries: readonly SstEntry[]): Promise<EncodedRun> {
   const wasm = await loaded();
   try {
-    return encodeRunIn(wasm, entries, codec === "lz4");
+    return encodeRunIn(wasm, entries);
   } catch (err) {
     afterTrap(err);
     throw err;

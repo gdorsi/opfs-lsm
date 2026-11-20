@@ -7,7 +7,7 @@ import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.j
 import { NO_MARKS } from "../src/store/marks.js";
 import type { ScanStep } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
-import type { EncodedRun, RecordWalker, SstCodec, SstEntry } from "../src/store/sst.js";
+import type { EncodedRun, RecordWalker, SstEntry } from "../src/store/sst.js";
 import { sstKeyRange } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 
@@ -84,7 +84,6 @@ export async function mergeRuns(
   options: {
     readonly dropTombstones?: boolean;
     readonly targetBytes?: number;
-    readonly codec?: SstCodec;
     readonly open?: (spec: MergeSpec) => MergeCore | Promise<MergeCore>;
   } = {},
 ): Promise<{ runs: EncodedRun[] }> {
@@ -97,7 +96,6 @@ export async function mergeRuns(
     dropTombstones: options.dropTombstones ?? false,
     marks: NO_MARKS,
     targetBytes: options.targetBytes ?? Number.MAX_SAFE_INTEGER,
-    codec: options.codec ?? "raw",
     chunkBytes: 64 * 1024,
     tailBytes: 128 * 1024,
     yieldBytes: 1024 * 1024,

@@ -2,9 +2,8 @@
 //! `cargo test`. Valid runs from the encoder are mutated (bit flips,
 //! truncation, extension, inflated length fields, splices of two runs), with
 //! and without a rewritten CRC, and fed to `decode_sst`,
-//! `scan_block_contains`, the session's block decoder and a merge session
-//! through the checks in `support/corrupt.rs`, the same ones the `cargo fuzz`
-//! targets run.
+//! `scan_block_contains`, `decode_block` and a merge session through the
+//! checks in `support/corrupt.rs`, the same ones the `cargo fuzz` targets run.
 //!
 //! `ENGINE_PROP_CASES` sets the cases per property (default 300).
 //! `ENGINE_PROP_SEED` replays one seed. A failure prints the seed and the
@@ -16,7 +15,7 @@
 
 mod support;
 
-use engine_core::{decode_sst, encode_sst, scan_block_contains, Codec, Entry};
+use engine_core::{decode_sst, encode_sst, Entry};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use support::corrupt::{self, fix_crc, sample_entries, FOOTER_BYTES};
@@ -49,7 +48,7 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOC: Counting = Counting;
 
 /// No single allocation may pass this while decoding a case. Valid runs here
-/// are under 64 KiB, and an LZ4 block unpacks to at most 255 times its size.
+/// are under 64 KiB.
 const ALLOC_LIMIT: usize = 64 << 20;
 
 /// The largest single allocation `f` makes.
@@ -124,15 +123,14 @@ fn for_each_case(salt: u64, make: impl Fn(&mut Rng) -> Vec<u8>, check: impl Fn(&
 }
 
 /// A valid run of random shape: key count, key and value sizes, tombstones,
-/// codec, and sometimes one record over the 4 KiB block target.
-fn valid_run(rng: &mut Rng) -> (Vec<u8>, Codec) {
-    let codec = if rng.chance(2) { Codec::Lz4 } else { Codec::Raw };
+/// and sometimes one record over the 4 KiB block target.
+fn valid_run(rng: &mut Rng) -> Vec<u8> {
     let n = [0, 1, 3, 20, 200][rng.below(5)];
     let mut entries = sample_entries(n, rng.below(1000) as u64);
     if rng.chance(4) {
         entries.push(Entry::Put { key: b"zz/big".to_vec(), value: vec![b'v'; 5000 + rng.below(3000)], seq: 9 });
     }
-    (encode_sst(&entries, codec), codec)
+    encode_sst(&entries)
 }
 
 /// One mutation of `buf`, picked at random: a bit flip, a truncation, an
@@ -158,7 +156,7 @@ fn mutate(rng: &mut Rng, buf: &mut Vec<u8>) {
         }
         3 if len >= 4 => {
             // A length field inflated: aim at the footer half the time.
-            let at = if rng.chance(2) && len >= FOOTER_BYTES { len - FOOTER_BYTES + 4 * rng.below(8) } else { rng.below(len - 3) };
+            let at = if rng.chance(2) && len >= FOOTER_BYTES { len - FOOTER_BYTES + 4 * rng.below(7) } else { rng.below(len - 3) };
             let v: u32 = [u32::MAX, u32::MAX / 2, 0x0100_0000, len as u32 * 2, rng.next() as u32][rng.below(5)];
             buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
         }
@@ -174,7 +172,7 @@ fn mutate(rng: &mut Rng, buf: &mut Vec<u8>) {
             buf[at..at + n].fill(fill);
         }
         _ => {
-            let (other, _) = valid_run(rng);
+            let other = valid_run(rng);
             let cut = rng.below(len + 1);
             let from = rng.below(other.len() + 1);
             buf.truncate(cut);
@@ -185,7 +183,7 @@ fn mutate(rng: &mut Rng, buf: &mut Vec<u8>) {
 
 /// A mutated run, its CRC rewritten half the time.
 fn mutated_run(rng: &mut Rng) -> Vec<u8> {
-    let (mut buf, _) = valid_run(rng);
+    let mut buf = valid_run(rng);
     for _ in 0..=rng.below(2) {
         mutate(rng, &mut buf);
     }
@@ -207,7 +205,7 @@ fn decode_sst_rejects_every_change_the_crc_covers() {
     for_each_case(
         2,
         |rng| {
-            let (orig, _) = valid_run(rng);
+            let orig = valid_run(rng);
             let mut buf = orig.clone();
             mutate(rng, &mut buf);
             // Flag unchanged inputs so the check skips them.
@@ -230,22 +228,22 @@ fn scan_block_contains_survives_mutated_blocks() {
     for_each_case(
         3,
         |rng| {
-            let (buf, codec) = valid_run(rng);
-            let blocks = corrupt::framed_blocks(&buf);
-            let mut framed = if blocks.is_empty() { vec![] } else { blocks[rng.below(blocks.len())].to_vec() };
+            let buf = valid_run(rng);
+            let blocks = corrupt::blocks_of(&buf);
+            let mut block = if blocks.is_empty() { vec![] } else { blocks[rng.below(blocks.len())].to_vec() };
             for _ in 0..=rng.below(2) {
-                mutate(rng, &mut framed);
+                mutate(rng, &mut block);
             }
             let pattern: &[u8] = [&b""[..], b" hot", b"\"n\":1", b"zz"][rng.below(4)];
-            let mut out = vec![codec as u8, pattern.len() as u8];
+            let mut out = vec![pattern.len() as u8];
             out.extend_from_slice(pattern);
-            out.extend_from_slice(&framed);
+            out.extend_from_slice(&block);
             out
         },
         |case| {
-            let (codec, pattern, framed) = corrupt::scan_case(case).unwrap();
+            let (pattern, block) = corrupt::scan_case(case).unwrap();
             let patterns: Vec<&[u8]> = if pattern.is_empty() { vec![] } else { vec![&pattern] };
-            corrupt::check_scan(framed, codec, &patterns);
+            corrupt::check_scan(block, &patterns);
         },
     );
 }
@@ -254,12 +252,11 @@ fn scan_block_contains_survives_mutated_blocks() {
 /// that split one key-ordered stream, one of them sometimes mutated.
 fn session_source(rng: &mut Rng) -> Vec<Vec<u8>> {
     if !rng.chance(3) {
-        return vec![if rng.chance(3) { mutated_run(rng) } else { valid_run(rng).0 }];
+        return vec![if rng.chance(3) { mutated_run(rng) } else { valid_run(rng) }];
     }
-    let codec = if rng.chance(2) { Codec::Lz4 } else { Codec::Raw };
     let entries = sample_entries([0, 3, 20, 200][rng.below(4)], rng.below(1000) as u64);
     let cut = rng.below(entries.len() + 1);
-    let mut runs = vec![encode_sst(&entries[..cut], codec), encode_sst(&entries[cut..], codec)];
+    let mut runs = vec![encode_sst(&entries[..cut]), encode_sst(&entries[cut..])];
     if rng.chance(4) {
         let i = rng.below(2);
         mutate(rng, &mut runs[i]);
@@ -276,7 +273,7 @@ fn a_merge_session_fails_on_a_corrupt_input_and_folds_valid_ones() {
         6,
         |rng| {
             let sources: Vec<Vec<Vec<u8>>> = (0..rng.below(4) + 1).map(|_| session_source(rng)).collect();
-            let flags = rng.below(16) as u8;
+            let flags = rng.below(8) as u8;
             corrupt::encode_session_case(&sources, flags, rng.below(8) as u8, rng.next() as u8, rng.next() as u8)
         },
         |case| {
@@ -287,26 +284,21 @@ fn a_merge_session_fails_on_a_corrupt_input_and_folds_valid_ones() {
 }
 
 #[test]
-fn the_session_block_decoder_survives_mutated_blocks() {
+fn decode_block_survives_mutated_blocks() {
     for_each_case(
         7,
         |rng| {
-            let (buf, codec) = valid_run(rng);
-            let blocks = corrupt::framed_blocks(&buf);
-            let mut framed = if blocks.is_empty() { vec![] } else { blocks[rng.below(blocks.len())].to_vec() };
+            let buf = valid_run(rng);
+            let blocks = corrupt::blocks_of(&buf);
+            let mut block = if blocks.is_empty() { vec![] } else { blocks[rng.below(blocks.len())].to_vec() };
             if !rng.chance(4) {
                 for _ in 0..=rng.below(2) {
-                    mutate(rng, &mut framed);
+                    mutate(rng, &mut block);
                 }
             }
-            let mut out = vec![codec as u8];
-            out.extend_from_slice(&framed);
-            out
+            block
         },
-        |case| {
-            let (codec, framed) = corrupt::block_case(case).unwrap();
-            corrupt::check_block(framed, codec);
-        },
+        corrupt::check_block,
     );
 }
 
@@ -314,12 +306,11 @@ fn the_session_block_decoder_survives_mutated_blocks() {
 fn valid_runs_decode_and_scan_to_what_was_written() {
     for_each_case(
         5,
-        |rng| valid_run(rng).0,
+        valid_run,
         |buf| {
             let entries = decode_sst(buf).expect("a valid run decodes");
             corrupt::check_decode(buf);
-            let codec = if corrupt::footer(buf).unwrap().codec == 1 { Codec::Lz4 } else { Codec::Raw };
-            assert_eq!(encode_sst(&entries, codec), buf, "decode then encode gives back the same bytes");
+            assert_eq!(encode_sst(&entries), buf, "decode then encode gives back the same bytes");
         },
     );
 }
@@ -328,27 +319,13 @@ fn valid_runs_decode_and_scan_to_what_was_written() {
 /// different answer than it decodes to fails `check_scan`.
 #[test]
 fn the_wrapper_run_decodes_a_block_as_the_engine_writes_it() {
-    let run = corrupt::sample_run(20, 3, Codec::Raw);
-    let framed = corrupt::framed_blocks(&run)[0].to_vec();
-    let wrapped = corrupt::wrap_block(&framed, Codec::Raw, corrupt::u32_at(&framed, 0).unwrap());
+    let run = corrupt::sample_run(20, 3);
+    let block = corrupt::blocks_of(&run)[0].to_vec();
+    let wrapped = corrupt::wrap_block(&block, corrupt::u32_at(&block, 0).unwrap());
     assert_eq!(decode_sst(&wrapped).unwrap(), decode_sst(&run).unwrap());
 }
 
 // --- Regressions: inputs the fuzzers found.
-
-/// KB1: an LZ4 block's u32 uncompressed size sized a zeroed buffer before
-/// a byte is decoded (`lz4_flex::block::decompress(src, size)` in
-/// `scan_block_contains` and `decode_sst`, and `lz4_decompress_js`). A tab
-/// reads LZ4 blocks with no CRC check, so one corrupt size grew the wasm
-/// memory by up to 4 GiB, and wasm memory never shrinks.
-/// `lz4_unpack` refuses a size past LZ4's largest ratio (255 to 1) first.
-#[test]
-fn kb1_an_lz4_block_size_does_not_size_an_allocation() {
-    let framed = [0xff, 0xff, 0xff, 0x7f, 0x10, 0x41];
-    let (out, largest) = largest_alloc(|| scan_block_contains(&framed, Codec::Lz4, &[]));
-    assert!(out.is_err());
-    assert!(largest <= ALLOC_LIMIT, "allocated {largest} bytes for a 6-byte block");
-}
 
 /// KB2: `decode_sst` reserved the footer's `entry_count` entries
 /// (`Vec::with_capacity(entry_count)` in `decode_blocks`) before it read a
@@ -359,7 +336,7 @@ fn kb1_an_lz4_block_size_does_not_size_an_allocation() {
 /// bytes).
 #[test]
 fn kb2_the_footer_entry_count_does_not_size_an_allocation() {
-    let mut run = corrupt::sample_run(3, 1, Codec::Raw);
+    let mut run = corrupt::sample_run(3, 1);
     let at = run.len() - FOOTER_BYTES;
     run[at..at + 4].copy_from_slice(&0x0400_0000u32.to_le_bytes());
     fix_crc(&mut run);
