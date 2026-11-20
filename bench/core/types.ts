@@ -241,15 +241,18 @@ export type HeapPeak = {
   readonly samples: number;
 };
 
-/** Peaks over one Chrome run (all phases). The SharedWorker is the kv host; a tab peak is the largest of any tab. */
+/**
+ * Peaks over one Chrome run (all phases). A worker is the kv SharedWorker host or a dedicated worker (the SQLite
+ * contenders' wa-sqlite), and the peak is the largest of any worker; a tab peak is the largest of any tab.
+ */
 export type MemoryPeaks = {
-  readonly sharedWorker: HeapPeak | null;
-  /** Largest `memory.buffer.byteLength` of a wasm instance in the SharedWorker. Wasm memory never shrinks, so this is its peak. */
-  readonly sharedWorkerWasmBytes: number | null;
+  readonly worker: HeapPeak | null;
+  /** Largest `memory.buffer.byteLength` of a wasm instance in a worker. Wasm memory never shrinks, so this is its peak. */
+  readonly workerWasmBytes: number | null;
   readonly tab: HeapPeak | null;
   readonly tabWasmBytes: number | null;
   /**
-   * Peak memory of the single largest renderer process (the SharedWorker's or a tab's). On macOS it is `phys_footprint_peak`,
+   * Peak memory of the single largest renderer process (a worker's or a tab's). On macOS it is `phys_footprint_peak`,
    * the kernel's own peak since the process started, read before each tab closes and at the end of the run. Elsewhere it is
    * the largest RSS seen, read once a second.
    */

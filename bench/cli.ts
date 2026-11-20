@@ -219,11 +219,11 @@ function smokeChecks(records: readonly RunRecord[]): string[] {
   return problems;
 }
 
-/** Opt-in ceiling on the SharedWorker's peak: the sum of three peaks (an upper bound): JS heap in use, ArrayBuffer backing store, wasm memory. Chrome's backing counter does not include wasm memory (bench/probes/memory.ts). */
+/** Opt-in ceiling on the worker's peak (the kv SharedWorker or a SQLite contender's dedicated worker): the sum of three peaks (an upper bound): JS heap in use, ArrayBuffer backing store, wasm memory. Chrome's backing counter does not include wasm memory (bench/probes/memory.ts). */
 function peakChecks(records: readonly RunRecord[], maxBytes: number): string[] {
   return measure(records)
-    .all.filter((s) => s.at.metric === "mem:sharedWorkerTotal" && s.summary.max > maxBytes)
-    .map((s) => `${s.at.workload} ${s.at.contender}: SharedWorker peak ${s.summary.max} B > --max-peak-bytes ${maxBytes}`);
+    .all.filter((s) => s.at.metric === "mem:workerTotal" && s.summary.max > maxBytes)
+    .map((s) => `${s.at.workload} ${s.at.contender}: worker peak ${s.summary.max} B > --max-peak-bytes ${maxBytes}`);
 }
 
 /** Write the generated tables into docs/benchmarks.md. With `check`, only say which tables differ. */

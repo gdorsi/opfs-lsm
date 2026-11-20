@@ -163,7 +163,7 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
     if (memRows.length > 0) {
       out.push(
         "",
-        "| memory peak (MB) | contender | runs | SharedWorker used | total | backing | wasm | tab used | total | backing | wasm | largest renderer |",
+        "| memory peak (MB) | contender | runs | worker used | total | backing | wasm | tab used | total | backing | wasm | largest renderer |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
       );
       for (const row of memRows) {
@@ -175,7 +175,7 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
         const heap = (pick: (m: NonNullable<(typeof mems)[number]>) => HeapPeak | null, field: keyof HeapPeak) =>
           col((m) => pick(m)?.[field]);
         out.push(
-          `| | ${row.contender} | ${mems.length} | ${heap((m) => m.sharedWorker, "usedSize")} | ${heap((m) => m.sharedWorker, "totalSize")} | ${heap((m) => m.sharedWorker, "backingStorageSize")} | ${col((m) => m.sharedWorkerWasmBytes ?? undefined)} | ${heap((m) => m.tab, "usedSize")} | ${heap((m) => m.tab, "totalSize")} | ${heap((m) => m.tab, "backingStorageSize")} | ${col((m) => m.tabWasmBytes ?? undefined)} | ${cell(get(row, "mem:largestRenderer", false), "n/a")} |`,
+          `| | ${row.contender} | ${mems.length} | ${heap((m) => m.worker, "usedSize")} | ${heap((m) => m.worker, "totalSize")} | ${heap((m) => m.worker, "backingStorageSize")} | ${col((m) => m.workerWasmBytes ?? undefined)} | ${heap((m) => m.tab, "usedSize")} | ${heap((m) => m.tab, "totalSize")} | ${heap((m) => m.tab, "backingStorageSize")} | ${col((m) => m.tabWasmBytes ?? undefined)} | ${cell(get(row, "mem:largestRenderer", false), "n/a")} |`,
         );
       }
       out.push("", "Sampled every 100 ms with `Runtime.getHeapUsage`, so a peak shorter than that can be missed. `n/a`: Chrome did not report the counter. Largest renderer is the biggest single renderer process: on macOS `phys_footprint_peak`, the kernel's own peak, read before each tab closes and at the end of the run; elsewhere the largest RSS seen, read once a second.");

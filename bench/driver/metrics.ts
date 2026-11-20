@@ -25,7 +25,7 @@ const MAIN_FIELDS = ["longTasks", "longestMs", "blockedMs", "longestFrameMs", "d
 const AMP_FIELDS = [
   "wampEngine", "wampTotal", "compaction", "readAmp", "spaceAmp", "walBytes", "flushBytes", "compactionBytes", "diskBytes", "userBytes", "liveBytes",
 ] as const;
-const MEM_FIELDS = ["sharedWorkerTotal", "tabTotal", "largestRenderer"] as const;
+const MEM_FIELDS = ["workerTotal", "tabTotal", "largestRenderer"] as const;
 
 type MainField = (typeof MAIN_FIELDS)[number];
 type AmpField = (typeof AMP_FIELDS)[number];
@@ -264,10 +264,10 @@ const KINDS: { [K in Kind]: KindSpec } = {
     value: ({ run }, f) => {
       const m = run.memory;
       if (!m) return NaN;
-      const peak = (heap: typeof m.sharedWorker, wasm: number | null) =>
+      const peak = (heap: typeof m.worker, wasm: number | null) =>
         heap ? heap.usedSize + (heap.backingStorageSize ?? 0) + (wasm ?? 0) : NaN;
       switch (f as MemField) {
-        case "sharedWorkerTotal": return peak(m.sharedWorker, m.sharedWorkerWasmBytes);
+        case "workerTotal": return peak(m.worker, m.workerWasmBytes);
         case "tabTotal": return peak(m.tab, m.tabWasmBytes);
         case "largestRenderer": return m.largestRendererBytes ?? NaN;
       }
