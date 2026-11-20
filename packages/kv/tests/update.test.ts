@@ -175,6 +175,43 @@ describe("update", () => {
     await db.close();
   });
 
+  it("writes no more rows that lose while another handle keeps writing, and commits like a put again once it stops", async () => {
+    const db = await open("a", new MemoryFs());
+    await db.put(utf("n"), utf("1"));
+    const lost: number[] = [];
+    const stop = db.changes((e) => {
+      if (e.kind === "append" && e.ops.length === 0) lost.push(e.seq);
+    });
+    const { count, bump } = counter();
+
+    await unheard("other", "0");
+    expect(await bump(db)).toBe(2);
+    expect(count.runs, "the update the other write beat runs again").toBe(2);
+    expect(lost).toHaveLength(1);
+
+    for (const i of upTo(3)) {
+      await unheard("other", String(i));
+      expect(await bump(db)).toBe(2 + i);
+    }
+    expect(count.runs, "each update after it runs once").toBe(5);
+    expect(lost, "and writes no row that would lose").toHaveLength(1);
+
+    // The other handle stopped. One update finds that out, and the next commits like a put.
+    await bump(db);
+    const groups = watchWalGroups();
+    expect(await bump(db)).toBe(7);
+    expect(count.runs).toBe(7);
+    expect(groups).toEqual([1]);
+
+    // So a write of the other handle beats it once more.
+    await unheard("other", "9");
+    expect(await bump(db)).toBe(8);
+    expect(count.runs).toBe(9);
+    expect(lost).toHaveLength(2);
+    stop();
+    await db.close();
+  });
+
   it("reads an ingested key in a tab that has not loaded the SST yet", async () => {
     const fs = new MemoryFs();
     const writer = await openHarnessDb({ name: NAME, writerId: "w", fs, forceMemory: true, maxWalBytes });

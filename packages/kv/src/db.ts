@@ -541,6 +541,8 @@ class DbImpl implements Db {
   private appending = 0;
   /** The last `update` of this handle. Each waits for the one before it. */
   private updating: Promise<unknown> = Promise.resolve();
+  /** A row of an `update` of this handle lost its seq, and no transaction of one has found the tail empty since. */
+  private beaten = false;
 
   constructor(
     readonly name: DbName,
@@ -1084,7 +1086,9 @@ class DbImpl implements Db {
    * lose. `write` runs it alone when an append of this handle is in flight,
    * whose row the memtable lacks, or when a read still waits for a page, and
    * again when `body` wrote nothing, so that what it returns was read at the
-   * committed head.
+   * committed head. It also runs it alone after a row lost (`beaten`): while
+   * another tab keeps writing, every row would lose, and cost a round trip
+   * more than the transaction alone.
    */
   private async updateOnce<T>(
     ks: readonly CheckedKey[],
@@ -1110,14 +1114,18 @@ class DbImpl implements Db {
     await warm();
     this.ensureOpen();
     // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.
-    if (!this.appending) {
+    const next = nextSeq(this.mem.appliedThrough);
+    if (!this.appending && !this.beaten) {
       const planned = plan();
       if (!(planned instanceof Miss) && planned.ops.length) {
-        const validAt = nextSeq(this.mem.appliedThrough);
-        if (rowValid(validAt, await this.commit(planned.ops, validAt))) return planned.result;
+        if (rowValid(next, await this.commit(planned.ops, next))) return planned.result;
+        this.beaten = true;
       }
     }
-    return (await this.write(plan, warm)).result;
+    const out = await this.write(plan, warm);
+    // The transaction took the seq this update started at: no other write is in the way.
+    if (out.seq === next) this.beaten = false;
+    return out.result;
   }
 
   async count(range?: Range): Promise<number> {

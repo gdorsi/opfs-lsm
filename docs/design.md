@@ -108,7 +108,8 @@ the next append from taking a seq that a manifest already holds.
 a row whose header names `appliedThrough + 1`. The row takes that seq only if no write committed
 since the read. Failing that, the update runs in one transaction that reads the tail, applies it to
 the memtable, runs `body` and adds the batch at `head + 1`, which no writer can beat. So does an
-update issued while an append of its handle is in flight, or whose `body` wrote nothing. A handle
+update issued while an append of its handle is in flight, or whose `body` wrote nothing. After a row
+loses, the handle appends no such row until one of those transactions finds the tail empty. A handle
 runs its updates one at a time, in call order.
 
 The commit point is the `complete` event of the transaction, at the default IndexedDB
@@ -329,8 +330,7 @@ on disk and the load succeeds. The host never waits for the lock, so no tab can 
 a compaction. A tab can only delay the removal of garbage.
 
 A try that finds a file missing under the lock has the host reconcile ([Recovery](#recovery)). After 8
-such tries the tab throws `CorruptDatabaseError`. On a healthy database, `sync`, `update` and
-appends always succeed, however compaction is scheduled.
+such tries the tab throws `CorruptDatabaseError`.
 
 A tab keeps its generation when a tail has a lower `ingestedThrough` than the installed one, or
 names a lower generation and is not ahead of its memtable: it was read before that generation was

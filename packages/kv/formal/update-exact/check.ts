@@ -12,7 +12,10 @@
  *
  * An update appends a row valid only at `appliedThrough + 1` (`rowValid`).
  * At any other seq the row has no ops, and the update runs again inside a
- * transaction that reads the tail first. Properties, in every state:
+ * transaction that reads the tail first. An update may also take that
+ * transaction from the start, at any time: the product does when an append
+ * of its handle is in flight, or after a row of the handle lost, and no
+ * property may depend on that rule. Properties, in every state:
  * - UpdateExact: the body of each update row that has its ops read the
  *   state just before that row's seq;
  * - PrefixExact: a tab's memtable is the state after its `appliedThrough`;
@@ -142,7 +145,7 @@ function land(s: State, tab: Tab, seq: number, live: boolean, v: Variant): void 
   }
 }
 
-type Action = { readonly tab: number; readonly type: "hear" | "put" | "putCommits" | "putLands" | "update" | "stamp" | "rowCommits" | "rowLands" | "transaction" | "written" } | { readonly tab: -1; readonly type: "drop" };
+type Action = { readonly tab: number; readonly type: "hear" | "put" | "putCommits" | "putLands" | "update" | "updateAlone" | "stamp" | "rowCommits" | "rowLands" | "transaction" | "written" } | { readonly tab: -1; readonly type: "drop" };
 
 function enabled(s: State): Action[] {
   const out: Action[] = [];
@@ -152,7 +155,11 @@ function enabled(s: State): Action[] {
     if (tab.put === "queued") out.push({ tab: i, type: "putCommits" });
     if (typeof tab.put === "number") out.push({ tab: i, type: "putLands" });
     const at = tab.update.at;
-    if (at === "idle" && tab.updatesLeft > 0) out.push({ tab: i, type: "update" });
+    if (at === "idle" && tab.updatesLeft > 0) {
+      // With an append of its own in flight, a tab's memtable lacks that row: only the transaction.
+      if (tab.put === "idle") out.push({ tab: i, type: "update" });
+      out.push({ tab: i, type: "updateAlone" });
+    }
     if (at === "read") out.push({ tab: i, type: "stamp" });
     if (at === "queued") out.push({ tab: i, type: "rowCommits" });
     if (at === "committed") out.push({ tab: i, type: "rowLands" });
@@ -196,14 +203,14 @@ function step(s: State, a: Action, v: Variant): string {
       land(s, tab, tab.put as number, true, v);
       tab.put = "idle";
       return `${who}: the put lands`;
-    case "update":
+    case "updateAlone":
       tab.updatesLeft--;
       tab.runs = 0;
-      if (tab.put !== "idle") {
-        tab.update = { at: "transaction" };
-        return `${who} calls update with a put in flight: it waits for a transaction`;
-      }
-      tab.runs++;
+      tab.update = { at: "transaction" };
+      return `${who} calls update, which appends no row first: it waits for a transaction`;
+    case "update":
+      tab.updatesLeft--;
+      tab.runs = 1;
       if (v.stampAfterAwait) {
         tab.update = { at: "read", basedOn: tab.state };
         return `${who} calls update: body reads ${named(tab.state)}`;
@@ -360,8 +367,8 @@ function sourceSync(): string[] {
   need("db.ts", /const seq = await this\.wal\.append\(record\);\s*await this\.landed\(seq, rowValid\(validAt, seq\) \? ops : \[\], record\);/, "the writer lands its row with the ops rowValid gives it");
   need(
     "db.ts",
-    /await warm\(\);\s*this\.ensureOpen\(\);\s*(?:\/\/[^\n]*\n\s*)*if \(!this\.appending\) \{\s*const planned = plan\(\);\s*if \(!\(planned instanceof Miss\) && planned\.ops\.length\) \{\s*const validAt = nextSeq\(this\.mem\.appliedThrough\);\s*if \(rowValid\(validAt, await this\.commit\(planned\.ops, validAt\)\)\) return planned\.result;\s*\}\s*\}\s*return \(await this\.write\(plan, warm\)\)\.result;/,
-    "update reads, runs body and takes appliedThrough + 1 with no await in between, resolves only when rowValid holds, and runs the transaction otherwise",
+    /await warm\(\);\s*this\.ensureOpen\(\);\s*(?:\/\/[^\n]*\n\s*)*const next = nextSeq\(this\.mem\.appliedThrough\);\s*if \(!this\.appending && !this\.beaten\) \{\s*const planned = plan\(\);\s*if \(!\(planned instanceof Miss\) && planned\.ops\.length\) \{\s*if \(rowValid\(next, await this\.commit\(planned\.ops, next\)\)\) return planned\.result;\s*this\.beaten = true;\s*\}\s*\}\s*const out = await this\.write\(plan, warm\);/,
+    "update takes appliedThrough + 1, reads and runs body with no await in between, appends no row with an append of its handle in flight, resolves only when rowValid holds, and runs the transaction otherwise",
   );
   need("db.ts", /const turn = this\.updating\.then\(\(\) => this\.updateOnce\(ks, body\)\);\s*this\.updating = turn\.catch\(\(\) => undefined\);/, "the updates of one handle run one at a time");
   need("db.ts", /=== "gap" && ops\.length && !this\.closed\) await this\.sync\(\);/, "a row that lands with no ops waits for no catch-up");
