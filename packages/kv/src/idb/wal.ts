@@ -339,17 +339,25 @@ async function readRecords(
 }
 
 /**
+ * What an op counts toward a flush chunk at least. The encoder keeps a few
+ * dozen bytes per entry whatever its size, so a chunk of tiny ops would
+ * otherwise cost far more memory than its op bytes say.
+ */
+const FLUSH_MIN_OP_BYTES = 32;
+
+/**
  * The oldest records with `after < seq <= head` whose op bytes fit in
  * `maxBytes`, and at least one. It reads one record first, then sizes each
  * read from the bytes per record so far, so a WAL of large records is never
  * read far past the cap. A record that would not fit is read and left for the
- * next call.
+ * next call. An op counts as at least `minOpBytes`.
  */
 async function readRecordsUpTo(
   wal: IDBObjectStore,
   after: Seq,
   head: Seq,
   maxBytes: number,
+  minOpBytes = 0,
 ): Promise<WalRecord[]> {
   const records: WalRecord[] = [];
   let bytes = 0;
@@ -363,7 +371,7 @@ async function readRecordsUpTo(
     for (const [i, value] of values.entries()) {
       const at = asSeq(lo + i);
       const ops = decodeOps(value, at);
-      const size = opsBytes(ops);
+      const size = Math.max(opsBytes(ops), ops.length * minOpBytes);
       if (records.length > 0 && bytes + size > maxBytes) return records;
       records.push({ seq: at, ops });
       bytes += size;
@@ -853,7 +861,7 @@ export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number>
 /**
  * The records with seq > ingestedThrough, ascending: only the oldest ones
  * whose op bytes fit in `maxBytes`, and at least one: a record larger than
- * the cap comes alone.
+ * the cap comes alone. An op counts as at least `FLUSH_MIN_OP_BYTES`.
  */
 export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: number }): Promise<WalRecord[]> {
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
@@ -862,7 +870,7 @@ export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: nu
   const through = await metaSeq(meta, META_INGESTED);
   const head = await headOf(tx, through);
   const store = tx.objectStore(WAL_STORE);
-  const records = await readRecordsUpTo(store, through, head, limit.maxBytes);
+  const records = await readRecordsUpTo(store, through, head, limit.maxBytes, FLUSH_MIN_OP_BYTES);
   await done;
   return records;
 }

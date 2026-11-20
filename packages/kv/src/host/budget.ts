@@ -86,8 +86,11 @@ export type HostBudget = {
 const MODULE_BYTES = 1 * MiB;
 /**
  * The footprint of a run of F op bytes in a flush, rounded up. About 5.4F is
- * wasm memory (measured: a 1.75 MiB run peaks at 9.4 MiB, module included) and about 3F
- * is JS: the WAL records read, the folded entries and the copy of the result.
+ * wasm memory (measured: a 1.75 MiB run of 116-byte ops peaks at 9.4 MiB, module
+ * included) and about 3F is JS: the WAL records read, the folded entries and
+ * the copy of the result. Smaller ops cost more, because the encoder keeps a
+ * few dozen bytes per entry: the same run peaks at 18 MiB with 40-byte ops.
+ * A flush chunk counts an op as at least 32 bytes, which keeps it there.
  */
 const FLUSH_COST = 10;
 /** The block buffers and slots a merge session keeps per source, besides the source's window. */
