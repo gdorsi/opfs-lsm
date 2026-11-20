@@ -164,9 +164,9 @@ describe("decoder properties (fast-check)", () => {
     async () => {
       await expect(
         fc.assert(
-          fc.asyncProperty(walRowArb, walRowArb, mutationsArb, fc.boolean(), async (ops, other, ms, mutate) => {
-            const orig = encodeWalRow(ops);
-            const buf = mutate ? applyMutations(orig, ms, encodeWalRow(other)) : orig;
+          fc.asyncProperty(walRowArb, walRowArb, validAtArb, mutationsArb, fc.boolean(), async (ops, other, validAt, ms, mutate) => {
+            const orig = encodeWalRow(ops, validAt);
+            const buf = mutate ? applyMutations(orig, ms, encodeWalRow(other, validAt)) : orig;
             await checkWalRow(buf.slice().buffer);
           }),
           params,
@@ -241,6 +241,9 @@ const walRowArb: fc.Arbitrary<RowOp[]> = fc.array(
   ),
   { minLength: 1, maxLength: 6 },
 );
+
+/** The seq in a row's header, or no header. Small seqs sit below the `through` of most range deletes. */
+const validAtArb = fc.option(fc.oneof(fc.nat({ max: 8 }), fc.maxSafeNat()), { nil: undefined });
 
 /** Entries and which of their LZ4 blocks to take. */
 const lz4BlockArb = fc.record({ entries: entriesArb.filter((e) => e.length > 0), pick: fc.nat() });

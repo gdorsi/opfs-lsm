@@ -256,7 +256,7 @@ export function committedLog(ops: readonly DurableOp[]): Oracle {
         if (typeof m.key === "number") rows.delete(m.key);
         continue;
       }
-      rows.set(m.key as number, decodeWalRow(m.value).map((o): OracleOp => {
+      rows.set(m.key as number, decodeWalRow(m.value, m.key as number).map((o): OracleOp => {
         if ("start" in o) return { type: "deleteRange", ...o };
         return o.value === undefined ? { type: "del", key: o.key } : { type: "put", key: o.key, value: o.value };
       }));

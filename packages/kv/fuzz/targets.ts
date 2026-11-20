@@ -306,42 +306,74 @@ export async function checkManifest(buf: Uint8Array, changed: boolean): Promise<
 /** A seq past every safe `through`, at which a range delete decodes to the `through` it stored. */
 const SEQ_PAST_EVERY_THROUGH = 2 ** 53;
 
+/** The ops of the row `raw` at `seq`, or undefined when the row is corrupt. */
+function rowOps(raw: unknown, seq: number): ReturnType<typeof decodeOps> | undefined {
+  try {
+    return decodeOps(raw, seq);
+  } catch (err) {
+    if (err instanceof CommitError && /corrupt wal/.test(err.message)) return undefined;
+    throw new RuleBroken(`decodeOps threw ${describe(err)}, not CommitError("corrupt wal ...")`);
+  }
+}
+
+function rowBytes(ops: ReturnType<typeof decodeOps>): Uint8Array {
+  return encodeWalRow(
+    ops.map((op): RowOp => {
+      switch (op.type) {
+        case "put":
+          return { put: op.key, value: op.value };
+        case "del":
+          return { del: op.key };
+        case "deleteRange":
+          return { deleteRange: op.start, ...(op.endExclusive ? { end: op.endExclusive } : {}), through: op.through };
+      }
+    }),
+  );
+}
+
+const sameBytes = (a: Uint8Array, b: Uint8Array) => a.byteLength === b.byteLength && a.every((x, i) => x === b[i]);
+
+/** The type byte and the u64 seq of a row's header. */
+const ROW_HEADER_BYTES = 9;
+
 /**
  * A WAL row (`decodeOps`). Rows have no checksum: a changed row may decode
  * to other ops. It must throw only `CommitError("corrupt wal ...")`
  * (design.md, "WAL records"), and what it decodes must encode back to the
  * same bytes, so the decoder never invents or drops a byte. At any seq, a
- * range delete's `through` decodes below that seq.
+ * range delete's `through` decodes below that seq. A header changes one
+ * thing: at the seq it names the row has the ops that follow the header,
+ * and at any other seq it has none. A row is corrupt at every seq or at none.
  */
 export async function checkWalRow(raw: unknown): Promise<void> {
   await bounded("decodeOps", () => {
-    let ops: ReturnType<typeof decodeOps>;
-    try {
-      ops = decodeOps(raw, SEQ_PAST_EVERY_THROUGH);
-    } catch (err) {
-      if (err instanceof CommitError && /corrupt wal/.test(err.message)) return;
-      throw new RuleBroken(`decodeOps threw ${describe(err)}, not CommitError("corrupt wal ...")`);
-    }
-    const back = encodeWalRow(
-      ops.map((op): RowOp => {
-        switch (op.type) {
-          case "put":
-            return { put: op.key, value: op.value };
-          case "del":
-            return { del: op.key };
-          case "deleteRange":
-            return { deleteRange: op.start, ...(op.endExclusive ? { end: op.endExclusive } : {}), through: op.through };
-        }
-      }),
-    );
-    const bytes = new Uint8Array(raw as ArrayBuffer);
-    if (back.byteLength !== bytes.byteLength || back.some((b, i) => b !== bytes[i])) {
-      throw new RuleBroken("decodeOps returned ops that do not encode back to the row");
-    }
-    for (const op of decodeOps(raw, 5)) {
-      if (op.type === "deleteRange" && op.through > 4) throw new RuleBroken("a range delete reaches its own record");
-    }
+    const row = raw instanceof ArrayBuffer ? new Uint8Array(raw) : undefined;
+    if (!row || row[0] !== 4 || row.byteLength < ROW_HEADER_BYTES) return checkOps(raw);
+    const validAt = new DataView(row.buffer).getBigUint64(1, true);
+    const rest = row.slice(ROW_HEADER_BYTES);
+    // A seq past 2^53 - 1, or a second header: corrupt at every seq.
+    const refused = validAt > BigInt(Number.MAX_SAFE_INTEGER) || rest[0] === 4;
+    const seq = refused ? 5 : Number(validAt);
+    const there = rowOps(raw, seq);
+    const elsewhere = rowOps(raw, seq + 1);
+    const alone = refused ? undefined : rowOps(rest.buffer, seq);
+    if (!there !== !elsewhere || !there !== !alone) throw new RuleBroken("a header changed whether the row is corrupt");
+    if (!there || !elsewhere || !alone) return;
+    if (elsewhere.length > 0) throw new RuleBroken("a row has ops at a seq its header does not name");
+    if (!sameBytes(rowBytes(there), rowBytes(alone))) throw new RuleBroken("a header changed the ops of its row");
+    checkOps(rest.buffer);
   });
+}
+
+function checkOps(raw: unknown): void {
+  const ops = rowOps(raw, SEQ_PAST_EVERY_THROUGH);
+  if (!ops) return;
+  if (!sameBytes(rowBytes(ops), new Uint8Array(raw as ArrayBuffer))) {
+    throw new RuleBroken("decodeOps returned ops that do not encode back to the row");
+  }
+  for (const op of decodeOps(raw, 5)) {
+    if (op.type === "deleteRange" && op.through > 4) throw new RuleBroken("a range delete reaches its own record");
+  }
 }
 
 export type RowOp =
@@ -349,9 +381,9 @@ export type RowOp =
   | { readonly del: Uint8Array }
   | { readonly deleteRange: Uint8Array; readonly end?: Uint8Array; readonly through: number };
 
-/** A WAL row in the format of design.md, "WAL records", written by the harness. */
-export function encodeWalRow(ops: readonly RowOp[]): Uint8Array {
-  let size = 0;
+/** A WAL row in the format of design.md, "WAL records", written by the harness. With `validAt`, it starts with the header. */
+export function encodeWalRow(ops: readonly RowOp[], validAt?: number): Uint8Array {
+  let size = validAt === undefined ? 0 : ROW_HEADER_BYTES;
   for (const op of ops) {
     if ("deleteRange" in op) size += 1 + 4 + op.deleteRange.byteLength + 1 + (op.end ? 4 + op.end.byteLength : 0) + 8;
     else size += "put" in op ? 9 + op.put.byteLength + op.value.byteLength : 5 + op.del.byteLength;
@@ -364,6 +396,11 @@ export function encodeWalRow(ops: readonly RowOp[]): Uint8Array {
     out.set(b, o + 4);
     o += 4 + b.byteLength;
   };
+  if (validAt !== undefined) {
+    out[o++] = 4;
+    view.setBigUint64(o, BigInt(validAt), true);
+    o += 8;
+  }
   for (const op of ops) {
     if ("deleteRange" in op) {
       out[o++] = 3;
