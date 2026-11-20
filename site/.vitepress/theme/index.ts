@@ -24,7 +24,7 @@ export default {
     } catch {}
     if (!import.meta.env.VITE_EVERR_INGEST_ENDPOINT) return;
     if ((navigator as { globalPrivacyControl?: boolean }).globalPrivacyControl === true || navigator.doNotTrack === "1") return;
-    // Before the home page sets the demo frame's address, so a click id such as `fbclid` is not in its referrer either.
+    // A click id such as `fbclid` leaves the address bar before the SDK reads it. The demo's frame sends no referrer.
     const url = new URL(location.href);
     url.search = new URLSearchParams([...url.searchParams].filter(([key]) => key.startsWith("utm_"))).toString();
     if (url.href !== location.href) history.replaceState(history.state, "", url);

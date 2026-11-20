@@ -30,7 +30,7 @@ Each app posts its batches itself, through the SDK's `send` option, and first re
 
 The screen size, the timezone and the language add little to debugging, and together with the user agent they tell many visitors apart. The visitor id lasts one page load, as the session id does, so it would only count each page load as a new visitor. The SDK sets the screen size, the timezone and the language once, as resource attributes that its `beforeSend` hook cannot change, so the removal runs on the OTLP payload.
 
-When telemetry is on, the site removes every query parameter except `utm_*` from the address bar before the SDK starts and before the home page can load the demo frame. A click id such as `fbclid` or `gclid` then does not reach the landing URL, the page URL or the demo's referrer. The demo keeps its own query, which holds only `db`, `count` and `theme`.
+When telemetry is on, the site removes every query parameter except `utm_*` from the address bar before the SDK starts. A click id such as `fbclid` or `gclid` then does not reach the landing URL or the page URL. The home page frames the demo with `referrerpolicy="no-referrer"`, because the frame loads before the site's scripts run, so the click id does not reach the demo either. The demo keeps its own query, which holds only `db`, `count` and `theme`.
 
 Two limits remain. Each request reaches Everr's ingest from the visitor's IP address, as any web request does. The records still carry the user agent, the page URL and the referrer.
 
@@ -62,7 +62,7 @@ The `docs` workflow ([`.github/workflows/docs.yml`](../.github/workflows/docs.ym
 | `linearlite.filter` | Demo | The `filter` message | `linearlite.duration_ms` for the first page, `linearlite.total_duration_ms` for the count, `linearlite.total`, `linearlite.read_path` (`index`, `ranges`, `scan` or `search`) |
 | `linearlite.write` | Demo | The `generated` message | `linearlite.duration_ms`, `linearlite.generate_duration_ms`, `linearlite.count` |
 
-The demo's README defines each timing, in [Timings](../examples/linearlite-docstore/README.md#timings). Every record of the demo also carries `linearlite.framed`, `linearlite.navigation` (the frame's navigation type, such as `navigate` or `reload`), `linearlite.device.cores` and `linearlite.device.memory_gb`. The SDK adds these to every record of both services: the session id, the page URL, the referrer, the landing URL with its UTM parameters and the user agent. For the demo in the frame, the referrer is the URL of the page around it.
+The demo's README defines each timing, in [Timings](../examples/linearlite-docstore/README.md#timings). Every record of the demo also carries `linearlite.framed`, `linearlite.navigation` (the frame's navigation type, such as `navigate` or `reload`), `linearlite.device.cores` and `linearlite.device.memory_gb`. The SDK adds these to every record of both services: the session id, the page URL, the referrer, the landing URL with its UTM parameters and the user agent. The demo in the frame has no referrer.
 
 No record holds text a visitor typed. The demo's search text stays in the `filter` message to the page, and a KPI attribute cannot hold a free string. Page URLs are sent with their query, and neither app puts visitor input in one.
 

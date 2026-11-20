@@ -15,11 +15,20 @@ import type { Visit } from "./demo.ts";
  */
 const SOURCE = "linearlite-demo";
 
+declare global {
+  interface Window {
+    __demoMessages?: MessageEvent[];
+  }
+}
+
 const { frontmatter } = useData();
 const countLabel = computed(() => String(frontmatter.value.demo.count));
 const count = computed(() => Number(countLabel.value.replace(/\D/g, "")));
-/** Set once this component is mounted. */
-const src = ref<string>();
+/**
+ * In the server's HTML, so the app loads while the page's own scripts do. It can then post before this component
+ * listens: the page's head keeps those messages in `__demoMessages` (see `.vitepress/config.mts`).
+ */
+const src = computed(() => withBase(`/demo/index.html?count=${count.value}&theme=dark`));
 
 const frame = ref<HTMLIFrameElement>();
 const visit = ref<Visit>({ kind: "waiting" });
@@ -172,7 +181,9 @@ onMounted(() => {
   media.addEventListener("change", onMedia);
   addEventListener("message", onMessage);
   addEventListener("keydown", onKey);
-  src.value = withBase(`/demo/index.html?count=${count.value}&theme=dark`);
+  const early = window.__demoMessages;
+  window.__demoMessages = undefined;
+  early?.forEach(onMessage);
 });
 onBeforeUnmount(() => {
   media?.removeEventListener("change", onMedia);
@@ -215,6 +226,7 @@ const starting = computed(() => visit.value.kind === "waiting");
           :src="src"
           :data-shown="shown ? '' : undefined"
           :inert="compact && !expanded ? '' : undefined"
+          referrerpolicy="no-referrer"
           title="LinearLite, an issue tracker running on opfs-lsm with no server"
         />
 

@@ -42,7 +42,18 @@ export default ({ command }: { command: string }) => {
     base,
     // The landing page is always dark and has no navbar. This sets both before the first paint. The default theme
     // adds `hide-nav` only after it hydrates, which moves the painted page up by the navbar's height.
-    head: [["script", {}, `${JSON.stringify([base, `${base}index.html`])}.includes(location.pathname) && document.documentElement.classList.add("dark", "hide-nav")`]],
+    // It also keeps what the demo's frame posts before the page's scripts run, for `HomeDemo.vue` to read.
+    head: [
+      [
+        "script",
+        {},
+        `if (${JSON.stringify([base, `${base}index.html`])}.includes(location.pathname)) {
+  document.documentElement.classList.add("dark", "hide-nav");
+  window.__demoMessages = [];
+  addEventListener("message", (e) => window.__demoMessages?.push(e));
+}`,
+      ],
+    ],
     srcDir: "..",
     srcExclude,
     rewrites,
