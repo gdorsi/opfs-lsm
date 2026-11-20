@@ -8,25 +8,14 @@ import type { OnDemandStore, Todo } from "../../core/families.ts";
 import { defineContender } from "../../core/types.ts";
 import { onDemandOps } from "../../page/tanstack.ts";
 
-type Database = Awaited<ReturnType<typeof openBrowserWASQLiteOPFSDatabase>>;
-
-const CACHE_KIB = 256 * 1024;
-
-/** Sets the page cache to 256 MiB, as kv's `cacheBytes` default, and with `relaxed` `synchronous=OFF`, so a commit does not wait for the disk. */
-export async function tuneSqlite(database: Database, relaxed: boolean): Promise<void> {
-  const pragma = async (key: string, value: number) => {
-    await database.execute(`PRAGMA ${key} = ${value}`);
-    const [row] = await database.execute<Record<string, number>>(`PRAGMA ${key}`);
-    if (row?.[key] !== value) throw new Error(`PRAGMA ${key} is ${JSON.stringify(row)}, want ${value}`);
-  };
-  await pragma("cache_size", -CACHE_KIB);
-  if (relaxed) await pragma("synchronous", 0);
-}
-
-/** Opens the collection on a database tuned by `tuneSqlite`. */
+/** Opens the collection; `relaxed` sets `synchronous=OFF` first, so a commit stays atomic but does not wait for the disk. */
 export async function openSqlite(name: string, relaxed: boolean): Promise<OnDemandStore> {
   const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tanstack-${name}.sqlite` });
-  await tuneSqlite(database, relaxed);
+  if (relaxed) {
+    await database.execute("PRAGMA synchronous = OFF");
+    const [mode] = await database.execute<{ synchronous: number }>("PRAGMA synchronous");
+    if (mode?.synchronous !== 0) throw new Error(`PRAGMA synchronous is ${JSON.stringify(mode)}, want 0`);
+  }
   const persistence = createBrowserWASQLitePersistence({ database });
   const todos = createCollection(
     persistedCollectionOptions<Todo, string>({
@@ -57,7 +46,7 @@ export default defineContender({
   family: "tanstack-ondemand",
   durability: "sqlite-full",
   fastPath:
-    "persistedCollectionOptions with syncMode on-demand on createBrowserWASQLitePersistence (wa-sqlite, OPFSCoopSyncVFS, in a dedicated WebWorker, single-tab coordinator), PRAGMA cache_size = -262144 (a 256 MiB page cache, as kv's cacheBytes); createIndex on owner, createdAt and id, which become SQLite expression indexes (one expression each, so a page by owner sorts that owner's rows); insert/update with an array = one TanStack transaction = one SQLite transaction",
+    "persistedCollectionOptions with syncMode on-demand on createBrowserWASQLitePersistence (wa-sqlite, OPFSCoopSyncVFS, in a dedicated WebWorker, single-tab coordinator); createIndex on owner, createdAt and id, which become SQLite expression indexes (one expression each, so a page by owner sorts that owner's rows); insert/update with an array = one TanStack transaction = one SQLite transaction",
   engine: false,
   open: (name) => openSqlite(name, false),
 });

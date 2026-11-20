@@ -1,7 +1,6 @@
 import { openBrowserWASQLiteOPFSDatabase } from "@tanstack/browser-db-sqlite-persistence";
 import type { TrackerStore } from "../../core/families.ts";
 import { defineContender } from "../../core/types.ts";
-import { tuneSqlite } from "../tanstack-ondemand/sqlite.ts";
 import { LIMITS, OPEN, STATUSES, type EntityName, type Event, type IssueCard, type IssueRef, type Priority, type Status } from "../../datasets/tracker/types.ts";
 
 /** Columns per table. Issues' `labelIds` live in the `issue_labels` junction table. */
@@ -127,11 +126,10 @@ function statementsOf(events: readonly Event[]): [string, unknown[]][] {
   return out;
 }
 
-/** Opens the store with a 256 MiB page cache, as kv's `cacheBytes` default; `relaxed` also sets `synchronous=OFF`, so a commit does not wait for the disk. */
-export async function openSqlite(name: string, relaxed: boolean): Promise<TrackerStore> {
+/** Opens the store with SQLite's default settings. */
+async function openSqlite(name: string): Promise<TrackerStore> {
   const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tracker-${name}.sqlite` });
   const sql = <T>(text: string, params: readonly unknown[] = []) => database.execute<T>(text, params);
-  await tuneSqlite(database, relaxed);
   // Like an app's migration check: the schema statements run on the first open only, not on every fresh page.
   const [version] = await sql<{ user_version: number }>("PRAGMA user_version");
   if (!version?.user_version) {
@@ -231,7 +229,7 @@ export default defineContender({
   family: "tracker",
   durability: "sqlite-full",
   fastPath:
-    "wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated worker, opened by @tanstack/browser-db-sqlite-persistence, PRAGMA cache_size = -262144 (a 256 MiB page cache, as kv's cacheBytes); normalized tables, issue_labels junction, 9 secondary indexes; one SQL statement per goal (two for a thread); a batch = one transaction, folded per row and run as at most five json_each statements per entity (delete, unlabel, UPDATE FROM, INSERT, label)",
+    "wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated worker, opened by @tanstack/browser-db-sqlite-persistence, SQLite's default settings; normalized tables, issue_labels junction, 9 secondary indexes; one SQL statement per goal (two for a thread); a batch = one transaction, folded per row and run as at most five json_each statements per entity (delete, unlabel, UPDATE FROM, INSERT, label)",
   engine: false,
-  open: (name) => openSqlite(name, false),
+  open: openSqlite,
 });
