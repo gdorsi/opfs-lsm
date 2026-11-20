@@ -364,7 +364,7 @@ For each run, under the exclusive section for the database, the host:
 1. Reconciles (see [Recovery](#recovery)). The recorded generation is `G`, and the highest
    manifest number in use is `top`.
 2. Reads the WAL records above `ingestedThrough`, oldest first, up to `flushRunBytes`. A run
-   takes at least one record.
+   takes at least one record, and an op counts as at least 32 bytes.
 3. Folds them to the last op per key, in key order, keeping the seq of each op, and drops each
    op that a range delete of the same records covers.
 4. Writes `l0/<first>-<last>.sst`, unless no op is left.
@@ -675,7 +675,7 @@ of OPFS, independently.
 |---|---|---|
 | Append, memtable, point get, range merge, bloom checks | Tab main thread | TypeScript |
 | Unpack an LZ4 block, filter a scan inside a block | Tab main thread | wasm |
-| Fold the WAL into L0, encode SSTs | SharedWorker | TypeScript fold, wasm encode |
+| Fold the WAL into L0, encode SSTs | SharedWorker | TypeScript applies range deletes, wasm sorts and encodes |
 | Compaction merge, CRC check | SharedWorker | wasm session, pumped by TypeScript |
 
 A tab reads in TypeScript so that a `get` never posts a message. The wasm module is required:

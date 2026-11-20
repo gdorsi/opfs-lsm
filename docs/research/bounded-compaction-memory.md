@@ -122,7 +122,7 @@ B = W0 + 10F + S(2C + K)
 
 - B is `compactionMemoryBytes`, T is the output run target (4 MiB), and W0 is
   the module's memory when idle (1.06 MiB on a fresh instance).
-- F is the flush run size in op bytes. A flush costs about 10F: roughly 7F in
+- F is the flush run size in op bytes. A flush costs at most 10F: roughly 5.4F in
   wasm and 3F in JS (the WAL records, the folded entries and the copy of the
   result).
 - S is the number of sources a step reads, C is the window it holds per
@@ -137,11 +137,19 @@ them.
 
 | flush alone, F (MiB) | 0.875 | 1.0 | 1.75 | 2.0 | 3.5 | 4.0 |
 |---|---:|---:|---:|---:|---:|---:|
-| wasm after repeated flushes (MiB) | 6.5 | 10.1 | 11.9 | 19.3 | 22.8 | 36.9 |
+| wasm after repeated flushes (MiB) | 5.3 | 8.6 | 9.4 | 16.1 | 17.8 | 30.8 |
 
 Wasm memory grows in steps at power-of-two input sizes, and the packed input
 is 1.15F. An F at 7/8 of a power of two stays just under a step: 1.75 MiB
-costs 11.9 MiB and 2 MiB costs 19.3. That is why `F = 7/8 · min(T, B/16)`.
+costs 9.4 MiB and 2 MiB costs 16.1. That is why `F = 7/8 · min(T, B/16)`.
+
+Smaller ops cost more wasm memory per op byte, because the encoder keeps a
+few dozen bytes per entry. A flush chunk counts an op as at least 32 bytes,
+so a chunk holds at most F/32 ops. With that floor, a 1.75 MiB chunk of
+distinct keys peaks at 10.5 MiB with 20-byte ops, 17.2 with 32-byte ops,
+18.1 with 40-byte ops and 16.0 with 64-byte ops. A chunk that rewrites 100
+keys peaks at 7.0 MiB or less at every op size, since every write is copied
+into wasm before the losers are dropped.
 
 | merge alone, S = 49 | C = 64 KiB | C = 128 KiB | C = 256 KiB |
 |---|---:|---:|---:|
@@ -153,14 +161,14 @@ windows with a 128 KiB tail peak at 11.3 MiB, so `tailBytes` never exceeds
 
 | flush and merge overlapped | S | C | F | wasm peak (MiB) |
 |---|---:|---:|---:|---:|
-| B = 16 MiB | 44 | 64 KiB | 0.875 MiB | 9.8 |
-| B = 32 MiB | 49 | 128 KiB | 1.75 MiB | 18.8 |
-| B = 64 MiB | 49 | 256 KiB | 3.5 MiB | 36.1 |
-| the 256 KiB window at B = 32 MiB | 49 | 256 KiB | 1.75 MiB | 25.1 |
+| B = 16 MiB | 44 | 64 KiB | 0.875 MiB | 9.6 |
+| B = 32 MiB | 49 | 128 KiB | 1.75 MiB | 16.3 |
+| B = 64 MiB | 49 | 256 KiB | 3.5 MiB | 31.2 |
+| the 256 KiB window at B = 32 MiB | 49 | 256 KiB | 1.75 MiB | 22.8 |
 
 Add the JS side, `S·C` of reads in flight and about 3F of flush, and the
-overlap totals 15.2, 30.2 and 58.8 MiB at 16, 32 and 64 MiB: 95%, 94% and
-92% of B. The 256 KiB window at 32 MiB would total 42.6 MiB, 1.3 times B.
+overlap totals 15.0, 27.7 and 53.9 MiB at 16, 32 and 64 MiB: 94%, 87% and
+84% of B. The 256 KiB window at 32 MiB would total 40.3 MiB, 1.3 times B.
 The JS terms are estimates, not measurements.
 
 The first draft capped S at 16 and counted a flush as 3F. The flush costs
@@ -171,8 +179,8 @@ The sweep chose S = 49. Budgeting that many sources at the default needs a
 128 KiB window.
 
 Past 64 MiB nothing grows but the recycle threshold, B/2. At 32 MiB it is 16
-MiB: above the 11.9 MiB a flush needs alone and the 8.2 MiB a merge needs
-alone, below the 18.8 MiB of an overlap. It fires after an overlap and not
+MiB: above the 9.4 MiB a flush needs alone and the 8.2 MiB a merge needs
+alone, just below the 16.3 MiB of an overlap. It fires after an overlap and not
 after every flush.
 
 All of this assumes the browser keeps pending `createWritable` writes on disk.

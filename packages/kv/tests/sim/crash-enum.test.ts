@@ -249,16 +249,17 @@ describe("power loss: every (IndexedDB prefix, OPFS prefix) pair", () => {
 });
 
 /**
- * With 6 op bytes per L0 run, the first flush of five records is three runs
- * (1-2, 3-4, 5), each recorded by its own manifest and IndexedDB commit. The
- * second flush then makes the fourth L0 run, which starts a compaction.
+ * With 64 bytes per L0 run and each tiny op counted as 32, the first flush of
+ * five records is three runs (1-2, 3-4, 5), each recorded by its own manifest
+ * and IndexedDB commit. The second flush then makes the fourth L0 run, which
+ * starts a compaction.
  */
 const CHUNKED: Step[] = [
   put("a", "a1"), put("b", "b1"), put("c", "c1"), put("a", "a2"), del("b"), ingest,
   put("d", "d1"), ingest,
   reopen, put("e", "e1"), ingest,
 ];
-const CHUNK_BYTES = 6;
+const CHUNK_BYTES = 64;
 
 describe("a flush that spans several L0 runs", () => {
   it("is cut into the runs the cap says", async () => {

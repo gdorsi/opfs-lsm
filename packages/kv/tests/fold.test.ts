@@ -1,10 +1,12 @@
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import type { CheckedKey, CheckedOp, CheckedValue } from "../src/check.js";
 import { asSeq } from "../src/seq.js";
+import { encodeRun, ensureEngine } from "../src/store/engine.js";
 import { foldRecords } from "../src/store/fold.js";
 import type { WalRecord } from "../src/store/memtable.js";
+import { decodeSst } from "./oracle/sst-ref.js";
 
 const key = (...bytes: number[]) => new Uint8Array(bytes) as CheckedKey;
 const value = (...bytes: number[]) => new Uint8Array(bytes) as CheckedValue;
@@ -90,10 +92,11 @@ function reference(records: readonly WalRecord[]) {
   return { entries, marks };
 }
 
-function observed(records: readonly WalRecord[]) {
+/** What a flush publishes: the entries of the run the fold encodes to, and its marks. */
+async function observed(records: readonly WalRecord[]) {
   const folded = foldRecords(records);
   return {
-    entries: folded.entries.map((e) => ({
+    entries: decodeSst((await encodeRun(folded.entries)).body).map((e) => ({
       kind: e.kind,
       key: [...e.key],
       ...(e.kind === "put" ? { value: [...e.value] } : {}),
@@ -108,18 +111,20 @@ function observed(records: readonly WalRecord[]) {
   };
 }
 
-describe("foldRecords", () => {
-  it("matches a replay of every op under every mark", () => {
-    fc.assert(
-      fc.property(fc.array(fc.array(draftArb, { maxLength: 6 }), { maxLength: SEQS }), (batches) => {
+describe("the run a WAL chunk folds to", () => {
+  beforeAll(ensureEngine);
+
+  it("matches a replay of every op under every mark", async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.array(fc.array(draftArb, { maxLength: 6 }), { maxLength: SEQS }), async (batches) => {
         const records = toRecords(batches);
-        expect(observed(records)).toEqual(reference(records));
+        expect(await observed(records)).toEqual(reference(records));
       }),
       { numRuns: 500 },
     );
   });
 
-  it("keeps the later of two writes to a key in one record", () => {
+  it("keeps the later of two writes to a key in one record", async () => {
     const records: WalRecord[] = [
       {
         seq: asSeq(1),
@@ -130,19 +135,19 @@ describe("foldRecords", () => {
         ],
       },
     ];
-    expect(observed(records).entries).toEqual([{ kind: "put", key: [1], value: [2], seq: 1 }]);
+    expect((await observed(records)).entries).toEqual([{ kind: "put", key: [1], value: [2], seq: 1 }]);
   });
 
-  it("tells keys apart that differ in length or in a high byte", () => {
+  it("tells keys apart that differ in length or in a high byte", async () => {
     const keys = [key(), key(0), key(0, 0), key(255), key(255, 255), key(128), key(0x80, 0x01)];
     const records: WalRecord[] = keys.map((k, i) => ({
       seq: asSeq(i + 1),
       ops: [{ type: "put", key: k, value: value(i) }],
     }));
-    expect(observed(records).entries.map((e) => e.seq)).toEqual([1, 2, 3, 6, 7, 4, 5]);
+    expect((await observed(records)).entries.map((e) => e.seq)).toEqual([1, 2, 3, 6, 7, 4, 5]);
   });
 
-  it("folds a key longer than one string chunk", () => {
+  it("folds long keys that differ in their last byte", async () => {
     const long = (last: number) => new Uint8Array(10_000).fill(7).fill(last, 9_999) as CheckedKey;
     const records: WalRecord[] = [1, 2, 3].map((seq) => ({
       seq: asSeq(seq),
@@ -151,14 +156,14 @@ describe("foldRecords", () => {
         { type: "put", key: long(8), value: value(seq) },
       ],
     }));
-    const { entries } = observed(records);
+    const { entries } = await observed(records);
     expect(entries.map((e) => [e.key[9_999], e.seq])).toEqual([
       [8, 3],
       [9, 3],
     ]);
   });
 
-  it("tells long keys apart wherever they differ, at the edges of a string chunk and across two lengths", () => {
+  it("tells long keys apart wherever they differ, and across lengths", async () => {
     const same = (length: number) => new Uint8Array(length).fill(7) as CheckedKey;
     const keys = [same(4_096), same(4_097), same(10_000)];
     for (const at of [0, 1, 4_095, 4_096, 4_097, 8_191, 8_192, 9_999]) keys.push(same(10_000).fill(9, at, at + 1) as CheckedKey);
@@ -167,7 +172,7 @@ describe("foldRecords", () => {
       seq: asSeq(i + 1),
       ops: [{ type: "put", key: k, value: value(i) }],
     }));
-    const { entries } = observed(records);
+    const { entries } = await observed(records);
     expect(entries.length).toBe(keys.length);
     for (const e of entries) {
       expect(e.seq).toBe(keys.length + 1 + keys.findIndex((k) => compareBytes(k, e.key) === 0));

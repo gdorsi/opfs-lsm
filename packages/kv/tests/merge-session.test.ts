@@ -59,7 +59,8 @@ type Source = { readonly runs: readonly Uint8Array[]; readonly entries: readonly
 /**
  * Entries in key order with duplicates of a key next to each other, cut into
  * runs anywhere, also between two duplicates. Runs are raw or LZ4, and some
- * are empty.
+ * are empty. An LZ4 run comes from the engine's encoder, which keeps the last
+ * duplicate, so only a raw run holds a key twice.
  */
 function source(r: Rng, seq: { next: number }): Source {
   const entries: SstEntry[] = [];
