@@ -325,7 +325,7 @@ Under the lock, no removal can run, so the manifest and every run of the recorde
 on disk and the load succeeds. The host never waits for the lock, so no tab can stall a flush or
 a compaction. A tab can only delay the removal of garbage.
 
-A try that finds a file missing under the lock reconciles (see [Recovery](#recovery)). After 8
+A try that finds a file missing under the lock has the host reconcile ([Recovery](#recovery)). After 8
 such tries the tab throws `CorruptDatabaseError`. On a healthy database, `sync`, `update` and
 appends always succeed, however compaction is scheduled.
 
@@ -623,12 +623,12 @@ it opened, so `destroyDb` can run next.
 
 ### Who reconciles
 
-* `openDb`, while it reads the tail and loads its generation. It applies that tail only when
-  reconcile wrote nothing, and reads again otherwise. A tab writes only after its open reconciled.
-* `sync` and appends, when the recorded generation does not load under the reclaim lock.
-* The host, at the start of every flush and compaction install, under the exclusive section. It
-  reconciles again before a sweep, except one in a pass that installed nothing: that sweep only
-  runs for the generation the host last checked.
+* The host, under the exclusive section: at each flush and compaction install, when a tab asks,
+  and before a sweep, except one in a pass that installed nothing: that sweep only runs for the
+  generation the host last checked.
+* `openDb` checks while it reads the tail and loads its generation. It records generation 0 for a
+  database with nothing stored, and asks the host for every other write. It applies that tail
+  only when nothing was written, and reads again otherwise. A tab writes only after this check.
 
 ## Crash behavior
 

@@ -119,6 +119,7 @@ export type ClientToHost =
   | { readonly type: "unwatch"; readonly name: string }
   | { readonly type: "make-room"; readonly id: number; readonly name: string }
   | { readonly type: "destroy"; readonly id: number; readonly name: string }
+  | { readonly type: "repair"; readonly id: number; readonly name: string }
   | { readonly type: "stats"; readonly id: number; readonly name: string };
 
 export type HostToClient =
@@ -136,7 +137,8 @@ export type HostToClient =
     }
   | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats }
   | { readonly type: "make-room-ok"; readonly id: number }
-  | { readonly type: "destroy-ok"; readonly id: number };
+  | { readonly type: "destroy-ok"; readonly id: number }
+  | { readonly type: "repair-ok"; readonly id: number };
 
 export type IngestClient = {
   /**
@@ -159,6 +161,12 @@ export type IngestClient = {
    * and at once when the host keeps none.
    */
   makeRoom(name: string): Promise<void>;
+  /**
+   * Have the host record a manifest that pairs with the WAL of `name`
+   * (design.md, "Recovery"), for a tab whose open or load found that the
+   * recorded one does not. Resolves once it is recorded.
+   */
+  repair(name: string): Promise<void>;
   /** Delete every file and WAL record of `name`. See `Db.dangerousDestroy`. */
   destroy(name: string): Promise<void>;
   /** Host counters for `name`. Test and bench only. */

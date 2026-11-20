@@ -1,5 +1,5 @@
 import { checkDbName, type DbName } from "../check.js";
-import { ClosedError, codeOfError } from "../errors.js";
+import { ClosedError, codeOfError, StorageUnavailableError } from "../errors.js";
 import { IdBWal, uningestedBytes } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
@@ -145,6 +145,11 @@ export class EngineHost {
   /** Release the reserve of `name` for a tab whose WAL append the browser refused. */
   async makeRoom(name: string): Promise<void> {
     await this.db(name).refused();
+  }
+
+  /** Record a manifest that pairs with the WAL of `name`. See `IngestClient.repair`. */
+  async repair(name: string): Promise<void> {
+    await this.db(name).repair();
   }
 
   /** Delete every record and file of `name`. See `Db.dangerousDestroy`. */
@@ -514,6 +519,22 @@ class HostedDb {
     }
   }
 
+  /**
+   * `reconcile` for a tab, with no generation trusted: the tab asks because
+   * the recorded one did not load, or because its open found a manifest to
+   * adopt.
+   */
+  async repair(): Promise<void> {
+    await this.exclusive(() =>
+      this.withStores(
+        async ({ wal, fs }) => {
+          this.trusted = (await reconcile(wal, fs, undefined)).generation;
+        },
+        () => Promise.reject(destroyed()),
+      ),
+    );
+  }
+
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
     return this.publishTurn(() => withLock(ingestLock(this.name), fn));
   }
@@ -792,13 +813,18 @@ export function attachEngineHostPort(
         case "stats":
           reply({ type: "stats-ok", id: msg.id, stats: await host.stats(msg.name) });
           return;
+        case "repair":
+          await host.repair(msg.name);
+          reply({ type: "repair-ok", id: msg.id });
+          return;
         case "destroy":
           await host.destroy(msg.name);
           reply({ type: "destroy-ok", id: msg.id });
           return;
         default: {
-          const _exhaustive: never = msg;
-          void _exhaustive;
+          const unknown: never = msg;
+          // A tab of a newer build: answer, so its request does not wait forever.
+          throw new StorageUnavailableError(`the SharedWorker does not serve "${(unknown as { type: string }).type}"`);
         }
       }
     } catch (err) {
@@ -822,6 +848,7 @@ export function createLocalIngestClient(host: EngineHost): IngestClient {
     watch: (name, policy) => host.watch(name, policy),
     unwatch: (name) => host.unwatch(name),
     makeRoom: (name) => host.makeRoom(name),
+    repair: (name) => host.repair(name),
     destroy: (name) => host.destroy(name),
     stats: (name) => host.stats(name),
     close: () => undefined,

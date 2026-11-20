@@ -41,6 +41,9 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
     async makeRoom(name) {
       await request({ type: "make-room", id: nextId++, name });
     },
+    async repair(name) {
+      await request({ type: "repair", id: nextId++, name });
+    },
     async destroy(name) {
       await request({ type: "destroy", id: nextId++, name });
     },

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChangeEvent } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
 import { checkDbName } from "../src/check.js";
-import { TabWal } from "../src/idb/wal.js";
+import { adopt, TabWal } from "../src/idb/wal.js";
 
 const NAME = "wal-append-test";
 const IDB = `opfs-lsm-wal/${NAME}`;
@@ -23,7 +23,7 @@ function wipe(): Promise<void> {
 async function raiseHead(head: number): Promise<void> {
   const wal = await TabWal.open(checkDbName(NAME));
   const meta = await wal.meta();
-  expect(await wal.adopt({ expect: meta, generation: meta.generation ?? 0, through: meta.ingestedThrough, floor: head, top: meta.top })).toBe(true);
+  expect(await adopt(wal, { expect: meta, generation: meta.generation ?? 0, through: meta.ingestedThrough, floor: head, top: meta.top })).toBe(true);
   wal.close();
 }
 

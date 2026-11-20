@@ -465,63 +465,6 @@ export class IdBWal {
   async meta(): Promise<WalMeta> {
     return readMeta(this.db.transaction([WAL_STORE, META_STORE], "readonly"));
   }
-
-  /**
-   * Pair the WAL with manifest `generation`, whose runs hold the log
-   * through seq `through` (design.md, "Recovery"). `head` moves up to at
-   * least `floor`, and `topGeneration` to at least `top`. Writes nothing and
-   * returns false unless `meta` still reads `expect`. Then, in one
-   * transaction:
-   * - `through` at or past `ingestedThrough`: the manifest holds every
-   *   folded seq, and the WAL records above it follow it.
-   *   `ingestedThrough` moves to `through`.
-   * - `through` below it, and the WAL still holds every seq above
-   *   `through`: those seqs are uningested again.
-   * - Otherwise no record can follow the manifest: the seqs between it and
-   *   the WAL are gone from both stores, or `head` had to move past seqs
-   *   the WAL never held. Every record is dropped and `ingestedThrough`
-   *   moves to the new `head`: the database is the manifest alone.
-   * `head` never moves down, so a seq is never reused.
-   */
-  async adopt(pairing: {
-    readonly expect: WalMeta;
-    readonly generation: Generation;
-    readonly through: Seq;
-    readonly floor: Seq;
-    readonly top: Generation;
-  }): Promise<boolean> {
-    const { expect, generation, through, floor, top } = pairing;
-    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
-    const done = txDone(tx);
-    const meta = tx.objectStore(META_STORE);
-    const wal = tx.objectStore(WAL_STORE);
-    const now = await readMeta(tx);
-    if (!sameMeta(now, expect)) {
-      await done;
-      return false;
-    }
-    const { head, ingestedThrough: ingested, top: knownTop } = now;
-    const above =
-      head > through
-        ? await reqToPromise(wal.getAll(IDBKeyRange.bound(nextSeq(through), head)))
-        : [];
-    const nextHead = asSeq(Math.max(head, through, floor));
-    let nextIngested: Seq = through;
-    if (nextHead === head && (through >= ingested || above.length === head - through)) {
-      wal.delete(IDBKeyRange.upperBound(Math.min(ingested, through)));
-    } else {
-      // No record can follow the manifest: drop them all, and start the
-      // WAL past every seq handed out.
-      nextIngested = nextHead;
-      wal.delete(IDBKeyRange.upperBound(head));
-    }
-    if (nextHead > head) passKeyGenerator(wal, nextHead);
-    meta.put(nextIngested, META_INGESTED);
-    meta.put(generation, META_GENERATION);
-    meta.put(Math.max(knownTop, top, generation), META_TOP);
-    await done;
-    return true;
-  }
 }
 
 /**
@@ -529,15 +472,10 @@ export class IdBWal {
  * memtable in memory. Ack = transaction complete.
  */
 export class TabWal extends IdBWal {
-  /** WAL records this handle committed. Test and bench only. */
+  /** WAL records this handle committed. `readStats` in `@opfs-lsm/kv/testing` reports it, and the bench reads it from an `openDb` handle. */
   appendedRecords = 0;
   /** Encoded bytes of those records. */
   appendedBytes = 0;
-  /**
-   * Committed groups by size: entry i counts groups of 2^i to 2^(i+1) - 1
-   * records. Test and bench only.
-   */
-  groupSizes: number[] = [];
   /** The group whose transaction is open, from its creation to its end. */
   private open: Group | undefined = undefined;
   /** Appends that arrived after `open` went inactive: the next group. */
@@ -725,8 +663,6 @@ export class TabWal extends IdBWal {
     for (const entry of entries) this.join(group, entry);
     txDone(tx).then(
       () => {
-        const bucket = 31 - Math.clz32(group.adds.length);
-        this.groupSizes[bucket] = (this.groupSizes[bucket] ?? 0) + 1;
         for (const { entry } of group.adds) {
           this.appendedRecords += 1;
           this.appendedBytes += entry.record.byteLength;
@@ -765,6 +701,82 @@ export class TabWal extends IdBWal {
     if (entries.length > 0) this.commitGroup(entries);
     else if (this.closing) this.db.close();
   }
+}
+
+/**
+ * Pair the WAL with manifest `generation`, whose runs hold the log
+ * through seq `through` (design.md, "Recovery"). `head` moves up to at
+ * least `floor`, and `topGeneration` to at least `top`. Writes nothing and
+ * returns false unless `meta` still reads `expect`. Then, in one
+ * transaction:
+ * - `through` at or past `ingestedThrough`: the manifest holds every
+ *   folded seq, and the WAL records above it follow it.
+ *   `ingestedThrough` moves to `through`.
+ * - `through` below it, and the WAL still holds every seq above
+ *   `through`: those seqs are uningested again.
+ * - Otherwise no record can follow the manifest: the seqs between it and
+ *   the WAL are gone from both stores, or `head` had to move past seqs
+ *   the WAL never held. Every record is dropped and `ingestedThrough`
+ *   moves to the new `head`: the database is the manifest alone.
+ * `head` never moves down, so a seq is never reused.
+ */
+export async function adopt(wal: IdBWal, pairing: {
+  readonly expect: WalMeta;
+  readonly generation: Generation;
+  readonly through: Seq;
+  readonly floor: Seq;
+  readonly top: Generation;
+}): Promise<boolean> {
+  const { expect, generation, through, floor, top } = pairing;
+  const tx = wal.db.transaction([WAL_STORE, META_STORE], "readwrite");
+  const done = txDone(tx);
+  const meta = tx.objectStore(META_STORE);
+  const records = tx.objectStore(WAL_STORE);
+  const now = await readMeta(tx);
+  if (!sameMeta(now, expect)) {
+    await done;
+    return false;
+  }
+  const { head, ingestedThrough: ingested, top: knownTop } = now;
+  const above =
+    head > through
+      ? await reqToPromise(records.getAll(IDBKeyRange.bound(nextSeq(through), head)))
+      : [];
+  const nextHead = asSeq(Math.max(head, through, floor));
+  let nextIngested: Seq = through;
+  if (nextHead === head && (through >= ingested || above.length === head - through)) {
+    records.delete(IDBKeyRange.upperBound(Math.min(ingested, through)));
+  } else {
+    // No record can follow the manifest: drop them all, and start the
+    // WAL past every seq handed out.
+    nextIngested = nextHead;
+    records.delete(IDBKeyRange.upperBound(head));
+  }
+  if (nextHead > head) passKeyGenerator(records, nextHead);
+  meta.put(nextIngested, META_INGESTED);
+  meta.put(generation, META_GENERATION);
+  meta.put(Math.max(knownTop, top, generation), META_TOP);
+  await done;
+  return true;
+}
+
+/**
+ * Record generation 0 in a WAL database that records none and holds no
+ * record: what `adopt` writes there for the empty manifest. Writes nothing
+ * and returns false unless `meta` still reads `expect`.
+ */
+export async function recordNew(wal: IdBWal, expect: WalMeta): Promise<boolean> {
+  const tx = wal.db.transaction([WAL_STORE, META_STORE], "readwrite");
+  const done = txDone(tx);
+  const same = sameMeta(await readMeta(tx), expect);
+  if (same) {
+    const meta = tx.objectStore(META_STORE);
+    meta.put(expect.ingestedThrough, META_INGESTED);
+    meta.put(GENERATION_NONE, META_GENERATION);
+    meta.put(expect.top, META_TOP);
+  }
+  await done;
+  return same;
 }
 
 /**

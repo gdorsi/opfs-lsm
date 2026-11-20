@@ -295,7 +295,7 @@ export class Sys implements Disk {
     return floor;
   }
 
-  /** `reconcile` in src/recover.ts, with `IdBWal.adopt`. */
+  /** `reconcile` in src/recover.ts, with `adopt` in src/idb/wal.ts. */
   reconcile(): { gen: number; top: number } {
     const idb = this.wal();
     const { ingested, generation } = idb;

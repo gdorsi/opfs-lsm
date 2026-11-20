@@ -193,7 +193,7 @@ Only phases that model a user interaction opt in, and they yield a macrotask bet
 
 ## Bundle size
 
-`pnpm bench:size` measures what Vite emits for each row in `size/rows.ts`: the import an app writes. The rows are built apart from the bench page, so a chunk holds nothing the page imports for its own use. "At import" is the entry chunk and its static imports. "After open" adds every file those load later: the SharedWorker chunk, its imports and the `.wasm`. Each file is compressed on its own (gzip -9, brotli 11). `--check` fails when a row is over its brotli budget, and CI runs it. The build also fails if any module is inlined as a `data:` URL, which is how Vite broke kv's SharedWorker before its URL was written inline in the constructor.
+`pnpm bench:size` measures what Vite emits for each row in `size/rows.ts`: the import an app writes. The rows are built apart from the bench page, so a chunk holds nothing the page imports for its own use. "At import" is the entry chunk and its static imports. "After open" adds every file those load later: the SharedWorker chunk, its imports and the `.wasm`. Each file is compressed on its own (gzip -9, brotli 11). `--check` fails when a row is over a budget, and CI runs it. A row can have two: brotli bytes after open, and gzip bytes at import, which is what the row adds to an app's main bundle. The build also fails if any module is inlined as a `data:` URL, which is how Vite broke kv's SharedWorker before its URL was written inline in the constructor.
 
 ## Adding a workload or contender
 
