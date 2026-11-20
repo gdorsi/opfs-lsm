@@ -24,7 +24,8 @@ export type ChangeOp =
  * order, whichever path brought the record: this handle's write, another
  * tab's BroadcastChannel message, or a catch-up from the WAL. The event
  * fires once the state that includes the seq is readable, and a write's
- * promise resolves after its record was announced.
+ * promise resolves after its record was announced. An `append` can carry
+ * no ops: the record of an `update` that ran again after another write.
  */
 export type ChangeEvent =
   | { readonly kind: "append"; readonly seq: number; readonly ops: readonly ChangeOp[] }

@@ -5,7 +5,9 @@ probes. The machine ran other work during every measurement, so absolute times a
 comparison below alternates its variants call by call inside one run, which cancels that noise.
 
 Status: the explicit commit is implemented, for `update` and for `put`, `delete` and `batch`
-(see [Plain put and batch](#plain-put-and-batch)). The one-round-trip `update` is not.
+(see [Plain put and batch](#plain-put-and-batch)). The one-round-trip `update` is implemented in
+another form than the one probed here: the row carries the seq it is valid at, and nothing aborts
+(see [design.md](../design.md#append)). A `body` must be free of side effects.
 
 ## Question
 

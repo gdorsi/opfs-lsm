@@ -99,18 +99,20 @@ await db.batch(() => {});
 
 ## Read-modify-write
 
-`update` reads `keys` and writes in one IndexedDB transaction, so no other tab's write lands in between.
+`update` reads `keys` and writes as one step: its writes commit only if no other write landed since the read, from this tab or another. Concurrent updates lose nothing, and there is no conflict to handle.
 
 ```ts
 const count = await db.update([enc("count")], ([current], tx) => {
   // Runs synchronously with the current values, in the order of
-  // `keys`. No await in here.
+  // `keys`. No await in here, and no side effects.
   const next = Number(dec(current) ?? 0) + 1;
   tx.put(enc("count"), enc(String(next)));
   return next;
 });
 count; // => 1
 ```
+
+The body usually runs once, and the update costs what a `put` costs. It runs again when another write landed between its read and its commit, when it writes nothing, and when the browser refuses the write for lack of space: three times at most. Only its last run counts: what it wrote and what it returned. So keep it free of side effects, such as a counter outside the database or a network call. The updates of one handle run one at a time, in call order.
 
 ## Range scans
 
@@ -261,7 +263,8 @@ const stop = db.changes((event) => {
   switch (event.kind) {
     case "append":
       // one per WAL record, from any tab, once each, in seq order
-      // op.type is "put", "del" or "deleteRange"
+      // op.type is "put", "del" or "deleteRange". ops is empty for
+      // an update that ran again: the record its first run wrote
       for (const op of event.ops) console.log(op.type);
       break;
     case "gap":
@@ -383,7 +386,7 @@ db.onStorageFull(async ({ bytes, need }) => {
 
 The deleted reserve is the room the handler's writes need: a delete frees space only once a flush and a compaction hold it. kv then writes the reserve again, and asks again while it does not fit, so make the handler safe to run again. [Reserve](../../docs/reserve.md) covers the states and which tab answers.
 
-**Note.** While the reserve is gone and the origin is still full, `put`, `delete`, `batch` and `update` reject with `StorageFullError` after one more try, and `update` runs its body again for that try. Flushes fail with the same error. The acked writes stay in the WAL, and the SharedWorker flushes again after another 1 MiB of writes or the next `openDb`.
+**Note.** While the reserve is gone and the origin is still full, `put`, `delete`, `batch` and `update` reject with `StorageFullError` after one more try, and `update` may run its body again for that try. Flushes fail with the same error. The acked writes stay in the WAL, and the SharedWorker flushes again after another 1 MiB of writes or the next `openDb`.
 
 ## Destroy
 
