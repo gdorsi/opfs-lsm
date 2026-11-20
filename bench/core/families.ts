@@ -28,8 +28,12 @@ export type KvStore = Common & {
   putMany(entries: readonly (readonly [Bytes, Bytes])[]): Promise<void>;
   deleteMany(keys: readonly Bytes[]): Promise<void>;
   get(key: Bytes): Promise<Bytes | undefined>;
-  /** Values of keys in [start, endExclusive), ascending, at most `limit`. */
-  range(start: Bytes, endExclusive: Bytes | undefined, limit: number): Promise<Bytes[]>;
+  /** One read for every key, in the order asked. */
+  getMany(keys: readonly Bytes[]): Promise<(Bytes | undefined)[]>;
+  /** Values of keys in [start, endExclusive), ascending, at most `limit`, past the first `offset`. */
+  range(start: Bytes, endExclusive: Bytes | undefined, limit: number, offset?: number): Promise<Bytes[]>;
+  /** How many keys [start, endExclusive) holds. */
+  count(start: Bytes, endExclusive: Bytes): Promise<number>;
   /** Read-modify-write of one key in one transaction (YCSB F). */
   update(key: Bytes, f: (old: Bytes | undefined) => Bytes): Promise<void>;
 };

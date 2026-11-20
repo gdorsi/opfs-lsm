@@ -10,7 +10,7 @@ pnpm bench yjs/ --contenders kv              # one contender
 pnpm bench kv/ --reps 5 --seed 7             # the same runs on another seed (default 1)
 pnpm bench:size                              # bundle sizes
 pnpm bench:smoke                             # everything at size tiny, 1 rep
-pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke and the byte budgets, from one build
+pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke and the byte budgets, from one run of the build
 node bench/cli.ts compare results/a.jsonl results/b.jsonl [--all]
 node bench/cli.ts report results/a.jsonl
 node bench/cli.ts docs [--check]             # rewrite the results tables of docs/benchmarks.md; --check only compares
@@ -59,7 +59,7 @@ The SQLite contenders run TanStack's adapter with a patch, [`patches/@tanstack__
 The kv workloads follow RocksDB's db_bench and YCSB. Keys are 16 bytes and values 100 bytes, half compressible (LevelDB's setup). Sizes are `tiny` 1,000 entries, `small` 100,000 and `large` 1,000,000.
 
 - `kv/fillrandom`: N/100 single puts, each awaited, on the empty store (db_bench's fillsync); a random fill; random reads while compaction still runs (`readrandom-unsettled`); after the settle and one untimed scan of every key, random reads and reads of missing keys over warm pages (`readrandom`, `readmissing`); a cold open (5 fresh tabs, each opening the db and getting one random key, so a run has 5 samples of each); the same random reads in the last of them, which loads each page once (`readrandom-cold`); then deletes of a random tenth, with the space before and after compaction. `readrandom-unsettled` races compaction, so its runs can form two clusters: when compaction ends early, the phase pays the page loads of the new files. The deletes run in the cold-open tab, whose counters start there, so the W-Amp on that settle divides compaction bytes by the delete keys alone: read its Space-Amp and disk bytes, not its W-Amp.
-- `kv/fillseq`: ascending fill, a full scan, random seeks of 10 and 100 keys.
+- `kv/fillseq`: ascending fill, a full scan, random seeks of 10 and 100 keys, counts of a tenth of the keys, pages of 50 values an offset deep, and reads of 50 scattered keys in one call.
 - `kv/ycsb-a`: YCSB A (50% reads, 50% blind updates), then after a settle YCSB F (50% reads, 50% read-modify-writes in one transaction), zipfian, as in YCSB's workload files. Pebble uses the same letters for different mixes.
 - `kv/two-tabs`: a random fill and a settle in the first tab, which keeps the store open. `open-second` times the second tab opening the store while the first tab holds it (op `open`), then its first get. The first tab then overwrites a random tenth of the keys. `read-second` times the second tab reading those keys back (up to `ops` of them), and every value must be the new one, so a stale read fails the run. Its first get (`first get`) pays the catch-up with the first tab's writes. On kv both tabs share one SharedWorker host. IndexedDB opens one connection per tab.
 - `kv/compaction-memory`: 20 rounds of N random puts into a 4N key pool, settle, then checked reads. Run it for the memory peaks below, not for throughput.
@@ -193,7 +193,7 @@ Only phases that model a user interaction opt in, and they yield a macrotask bet
 
 ## Bundle size
 
-`pnpm bench:size` measures what Vite emits for each row in `size/rows.ts`: the import an app writes. "At import" is the entry chunk and its static imports. "After open" adds every file those load later: the SharedWorker chunk, its imports and the `.wasm`. Each file is compressed on its own (gzip -9, brotli 11). `--check` fails when a row is over its brotli budget, and CI runs it. The build also fails if any module is inlined as a `data:` URL, which is how Vite broke kv's SharedWorker before its URL was written inline in the constructor.
+`pnpm bench:size` measures what Vite emits for each row in `size/rows.ts`: the import an app writes. The rows are built apart from the bench page, so a chunk holds nothing the page imports for its own use. "At import" is the entry chunk and its static imports. "After open" adds every file those load later: the SharedWorker chunk, its imports and the `.wasm`. Each file is compressed on its own (gzip -9, brotli 11). `--check` fails when a row is over its brotli budget, and CI runs it. The build also fails if any module is inlined as a `data:` URL, which is how Vite broke kv's SharedWorker before its URL was written inline in the constructor.
 
 ## Adding a workload or contender
 

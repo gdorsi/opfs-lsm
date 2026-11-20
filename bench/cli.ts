@@ -5,7 +5,7 @@
  *       [--max-peak-bytes N] [--compaction-memory-bytes N] [--cache-bytes N]
  *   smoke [--check] [--seed N]
  *                           every workload × contender, size tiny, 1 rep, correctness and the byte budgets;
- *                           --check first applies the bundle-size budgets to the same build,
+ *                           --check first applies the bundle-size budgets to the size rows' build,
  *                           then checks that every access pattern has exactly one owner,
  *                           and also runs the byte-budget rows above size tiny
  *   size [--check]          bundle-size table; --check fails over a row's budget

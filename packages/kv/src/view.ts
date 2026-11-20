@@ -1,14 +1,13 @@
 import { checkKey } from "./check.js";
-import { ClosedError } from "./errors.js";
+import { ClosedError, ConstraintError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { entryCursor, entryOf, Miss, untilHit, type LayerEntry, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, entryOf, Miss, untilHit, valueOf, type LayerEntry, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,
   liveStep,
   matchingStep,
-  pointGet,
   readKeys,
   type RunLevel,
   type ScanStep,
@@ -37,6 +36,11 @@ export interface ViewSnapshot {
   range(range?: Range): AsyncIterable<Entry>;
   /** How many entries `range` would yield, `limit` included, without copying them. */
   count(range?: Range): Promise<number>;
+  /**
+   * Every entry of `range` in one call, each value as `decode` makes it from the bytes where
+   * they are stored. `decode` runs once per entry, in scan order.
+   */
+  rangeValues<T>(range: Range, decode: Decode<T>): Promise<{ key: Uint8Array; value: T }[]>;
   /**
    * Scan `range` and join each entry to the value at `keyOf(entry)`, as an
    * index entry joins its row. The scan and the reads see the snapshot, so a
@@ -79,14 +83,16 @@ export function scanStep(
       : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse, bounds);
   const limit = range?.limit ?? Number.POSITIVE_INFINITY;
   let skip = range?.offset ?? 0;
-  if (limit === Number.POSITIVE_INFINITY && !(skip > 0)) return step;
+  // A whole number or Infinity, which has no remainder to compare.
+  for (const n of [limit, skip]) if (!(n >= 0) || n % 1 > 0) throw new ConstraintError(`limit and offset must be integers >= 0: got ${n}`);
+  if (limit === Number.POSITIVE_INFINITY && skip === 0) return step;
   let n = 0;
   return () => {
+    if (!(n < limit)) return undefined;
     for (; skip > 0; skip--) {
       const e = step();
       if (!e || e instanceof Miss) return e;
     }
-    if (!(n < limit)) return undefined;
     const e = step();
     if (e && !(e instanceof Miss)) n++;
     return e;
@@ -230,64 +236,76 @@ export class ViewSnapshotImpl implements ViewSnapshot {
   }
 
   async get(key: Uint8Array): Promise<Uint8Array | undefined> {
-    this.ensureOpen();
-    const k = checkKey(key);
-    const row = this.rows.get(k);
-    try {
-      return await untilHit(() => pointGet(row, this.levels, k, this.at));
-    } catch (err) {
-      this.handleOpen();
-      throw err;
-    }
+    return (await this.getMany<Uint8Array>([key]))[0];
   }
 
   async getMany<T>(keys: readonly Uint8Array[], decode?: Decode<T>): Promise<(T | undefined)[]> {
     this.ensureOpen();
-    const ks = keys.map(checkKey);
-    const mems = ks.map((k) => this.rows.get(k));
-    const read = () => readKeys(mems, ks, this.levels, this.at, decode);
     try {
-      const first = read();
-      return first instanceof Miss ? await untilHit(read, first) : first;
+      return await this.read(keys.map(checkKey), decode);
     } catch (err) {
       this.handleOpen();
       throw err;
     }
   }
 
-  async rangeJoin<T>(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined, decode?: Decode<T>): Promise<Joined<T>[]> {
+  /** `getMany` past its checks: `keys` are checked and the caller answers for the snapshot being open. */
+  private async read<T>(keys: readonly Uint8Array[], decode: Decode<T> | undefined): Promise<(T | undefined)[]> {
+    const mems = keys.map((k) => this.rows.get(k));
+    const read = () => readKeys(mems, keys, this.levels, this.at, decode);
+    const first = read();
+    return first instanceof Miss ? untilHit(read, first) : first;
+  }
+
+  /**
+   * What `each` makes of every entry of `range`, in scan order and once each, then what `after`
+   * makes of that. Holds the readers until `after` settles.
+   */
+  private async scan<R, O = R[]>(range: Range, each: (e: LayerEntry) => R, after?: (out: R[]) => Promise<O>): Promise<O> {
     this.ensureOpen();
     const bounds = boundsOf(range);
     const release = this.hold();
     try {
-      const out: { entry: Entry; joined: T | undefined }[] = [];
-      const keys: Uint8Array[] = [];
-      const owners: typeof out = [];
+      const out: R[] = [];
       const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
       for (;;) {
         let e = step();
         if (e instanceof Miss) e = await untilHit(step, e);
-        if (!e) break;
-        const hit = { entry: entryOf(e), joined: undefined };
-        out.push(hit);
-        const key = keyOf(hit.entry);
-        if (key === undefined) continue;
-        keys.push(checkKey(key));
-        owners.push(hit);
+        if (!e) return await (after ? after(out) : (out as O));
+        out.push(each(e));
       }
-      // One read for every key, so the pages they lack load together.
-      const mems = keys.map((k) => this.rows.get(k));
-      const read = () => readKeys(mems, keys, this.levels, this.at, decode);
-      const first = read();
-      const values = first instanceof Miss ? await untilHit(read, first) : first;
-      values.forEach((value, i) => (owners[i]!.joined = value));
-      return out;
     } catch (err) {
       this.handleOpen();
       throw err;
     } finally {
       release();
     }
+  }
+
+  rangeJoin<T>(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined, decode?: Decode<T>): Promise<Joined<T>[]> {
+    const keys: Uint8Array[] = [];
+    const owners: { entry: Entry; joined: T | undefined }[] = [];
+    return this.scan(
+      range,
+      (e) => {
+        const hit = { entry: entryOf(e), joined: undefined };
+        const key = keyOf(hit.entry);
+        if (key !== undefined) {
+          keys.push(checkKey(key));
+          owners.push(hit);
+        }
+        return hit;
+      },
+      async (out) => {
+        // One read for every key, so the pages they lack load together.
+        (await this.read(keys, decode)).forEach((value, i) => (owners[i]!.joined = value));
+        return out;
+      },
+    );
+  }
+
+  rangeValues<T>(range: Range, decode: Decode<T>): Promise<{ key: Uint8Array; value: T }[]> {
+    return this.scan(range, (e) => ({ key: e.block ? e.key : new Uint8Array(e.key), value: decode(valueOf(e)) }));
   }
 
   async count(range?: Range): Promise<number> {

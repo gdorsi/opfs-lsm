@@ -5,7 +5,7 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns, unpackHits } from "../src/store/block-scan.js";
 import { valueOf, type LayerEntry } from "../src/store/cursor.js";
 import { encodeRun as encodeWasmRun, lz4DecompressIn, openMergeIn, scanBlockContainsIn, type MergeSpec } from "../src/store/engine.js";
-import { lz4DecompressJs } from "../src/store/lz4.js";
+import { lz4DecompressJs } from "../tests/oracle/lz4-js.js";
 import { openMergeTs } from "../tests/oracle/merge-ts.js";
 import { blockBytes, blockEntries, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef } from "../tests/oracle/sst-ref.js";

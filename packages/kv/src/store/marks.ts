@@ -1,7 +1,7 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { asSeq, SEQ_ZERO, type Seq } from "../seq.js";
-import type { ScanBounds } from "./cursor.js";
+import type { BlockEntry, ScanBounds } from "./cursor.js";
 
 /**
  * The marks: which rows range deletes removed, as a flat unordered list. A
@@ -35,14 +35,19 @@ export type Marks = readonly Mark[];
 
 export const NO_MARKS: Marks = [];
 
-/** The highest `through` of the marks holding `key`, 0 when none. */
-export function throughAt(marks: Marks, key: Uint8Array): Seq {
+/** `compareBytes(key, bound)`, on a run's record where it is. */
+function compareTo(key: Uint8Array | BlockEntry, bound: Uint8Array): number {
+  return key instanceof Uint8Array ? compareBytes(key, bound) : key.compareKey(bound, 0);
+}
+
+/** The highest `through` of the marks holding `key`, 0 when none. A run's record is compared in place. */
+export function throughAt(marks: Marks, key: Uint8Array | BlockEntry): Seq {
   let max = SEQ_ZERO;
   for (const m of marks) {
     if (
       m.through > max &&
-      compareBytes(key, m.start) >= 0 &&
-      (!m.endExclusive || compareBytes(key, m.endExclusive) < 0)
+      compareTo(key, m.start) >= 0 &&
+      (!m.endExclusive || compareTo(key, m.endExclusive) < 0)
     ) {
       max = m.through;
     }

@@ -4,7 +4,7 @@
  * so a context where it does not load cannot flush.
  */
 import type { EncodedRun, RunEnd, SstCodec, SstEntry } from "./sst.js";
-import { lz4DecompressJs, useLz4Decoder } from "./lz4.js";
+import { useLz4Decoder } from "./lz4.js";
 import { useBlockScanner } from "./block-scan.js";
 import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
@@ -235,6 +235,7 @@ export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[], lz
  * throws: the host takes turns (`inMergeSlot`).
  */
 export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
+  named = nameStatus;
   const { ex } = engine;
   let words = 1;
   let inputBytes = 0;
@@ -347,8 +348,19 @@ function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
   };
 }
 
+/**
+ * Names a status. Set where the host first asks for the module: its
+ * operations decode whole runs and drive sessions, so the bundle of a tab,
+ * whose two calls fail only on a bad block, leaves the names out.
+ */
+let named: ((op: string, code: number) => Error) | undefined;
+
 function statusError(op: string, code: number, inputBytes: number): Error {
   if (code === OUT_OF_MEMORY) return new EngineOutOfMemoryError(op, inputBytes);
+  return named?.(op, code) ?? new CorruptDatabaseError(`${op}: corrupt (status ${code})`);
+}
+
+function nameStatus(op: string, code: number): Error {
   const bug = HOST_BUGS[code];
   if (bug) return new Error(`${op}: ${bug} (status ${code})`);
   return new CorruptDatabaseError(`${op}: ${STATUS_NAMES[-code] || "corrupt"} (status ${code})`);
@@ -411,34 +423,38 @@ let readHooks = false;
 /**
  * Load the module, then route block decoding and scanning through it. Only
  * the tab reads blocks, so the host loads through `loadEngine` and its bundle
- * leaves out both hooks and the JS decoder.
+ * leaves out both hooks.
  */
 export async function ensureEngine(): Promise<void> {
   await loadEngine();
   if (readHooks) return;
   readHooks = true;
   // They read `engine` at each call: it is replaced when the instance is.
-  useLz4Decoder((src, size) => {
+  useLz4Decoder((src, size) => onEngine("sst lz4 block corrupt", () => lz4DecompressIn(engine!, src, size)));
+  useBlockScanner((framed, lz4, patterns) => onEngine("sst block corrupt", () => scanBlockContainsIn(engine!, framed, lz4, patterns)));
+}
+
+/**
+ * `run`, and once more after a trap: the fresh instance says whether the
+ * block is corrupt or the old instance was spent.
+ */
+function onEngine<T>(what: string, run: () => T): T {
+  try {
+    return run();
+  } catch (err) {
+    if (!afterTrap(err)) throw corrupt(err, what);
     try {
-      return lz4DecompressIn(engine!, src, size);
-    } catch (err) {
-      if (!afterTrap(err)) throw corrupt(err, "sst lz4 block corrupt");
-      // The JS decoder says whether the block is corrupt or the module is wrong.
-      return lz4DecompressJs(src, size);
+      return run();
+    } catch (again) {
+      afterTrap(again);
+      throw corrupt(again, what);
     }
-  });
-  useBlockScanner((framed, lz4, patterns) => {
-    try {
-      return scanBlockContainsIn(engine!, framed, lz4, patterns);
-    } catch (err) {
-      afterTrap(err);
-      throw corrupt(err, "sst block corrupt");
-    }
-  });
+  }
 }
 
 /** The loaded engine. */
 async function loaded(): Promise<FlatEngine> {
+  named = nameStatus;
   await loadEngine();
   return engine!;
 }
