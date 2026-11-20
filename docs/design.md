@@ -674,7 +674,7 @@ of OPFS, independently.
 | Work | Thread | Language |
 |---|---|---|
 | Append, memtable, point get, range merge, bloom checks | Tab main thread | TypeScript |
-| Unpack an LZ4 block, filter a scan inside a block | Tab main thread | wasm |
+| Filter a scan inside a block | Tab main thread | wasm |
 | Fold the WAL into L0, encode SSTs | SharedWorker | TypeScript applies range deletes, wasm sorts and encodes |
 | Compaction merge, CRC check | SharedWorker | wasm session, pumped by TypeScript |
 
