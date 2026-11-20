@@ -14,6 +14,7 @@ import {
   reverseBlockEntries,
   type BlockBytes,
   type KeyRange,
+  type RecordWalker,
   type SstCodec,
 } from "./sst.js";
 
@@ -91,10 +92,10 @@ export class SstReader {
   }
 
   /**
-   * The record for `key`, where it is in its page. Misses at most twice on a
-   * cold run: layout, then the page.
+   * The record for `key`, where it is in its page, as `findInBlock` gives
+   * it. Misses at most twice on a cold run: layout, then the page.
    */
-  get(key: Uint8Array): Maybe<BlockEntry | undefined> {
+  get(key: Uint8Array): Maybe<RecordWalker | undefined> {
     const meta = this.meta();
     if (meta instanceof Miss) return meta;
     const { index } = meta;

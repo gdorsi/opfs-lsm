@@ -8,8 +8,6 @@ import {
   lowerBoundKeys,
   Miss,
   untilHit,
-  valueOf,
-  type BlockEntry,
   type LayerCursor,
   type LayerEntry,
   type Maybe,
@@ -17,6 +15,7 @@ import {
 } from "./cursor.js";
 import type { Seq } from "../seq.js";
 import { coversRun, NO_MARKS, throughAt, type Marks } from "./marks.js";
+import { RecordWalker } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
 import { levelOf } from "./levels.js";
 
@@ -32,27 +31,37 @@ function gone(v: { readonly kind: "put" | "del"; readonly seq: Seq }, through: S
 }
 
 /**
- * The live put of `key`, where its bytes are, or undefined. `mem` is the row
- * from the key-ordered mem store, or undefined on miss. Levels are
- * newest-first. A memtable row needs no mark check: the memtable removed the
- * rows its own marks cover, and the installed marks stop below every row it
- * holds.
+ * The live put of `key`, where its bytes are, or undefined: a memtable row,
+ * or the walker a run's get left on the record. `mem` is the row from the
+ * key-ordered mem store, or undefined on miss. Levels are newest-first. A
+ * memtable row needs no mark check: the memtable removed the rows its own
+ * marks cover, and the installed marks stop below every row it holds.
  */
 function livePut(
   mem: MemRow | undefined,
   levels: readonly RunLevel[],
   key: Uint8Array,
   marks: Marks,
-): Maybe<LayerEntry | undefined> {
+): Maybe<MemRow | RecordWalker | undefined> {
   if (mem) return mem.kind === "put" ? mem : undefined;
   const hit = latestSstEntry(levels, key);
-  if (hit instanceof Miss) return hit;
-  return hit && !gone(hit, throughAt(marks, key)) ? hit : undefined;
+  if (hit === undefined || hit instanceof Miss) return hit;
+  return isLive(hit, throughAt(marks, key)) ? hit : undefined;
 }
 
-/** A copy of a put's value that owns its buffer. */
-function valueCopy(e: LayerEntry): Uint8Array {
-  return e.block ? e.block.slice(e.valueAt, e.valueAt + e.valueLength) : new Uint8Array(e.value!);
+/** The rule of `gone`, for the record a run's get found. */
+function isLive(at: RecordWalker, through: Seq): boolean {
+  return at.isPut() && at.seq() > through;
+}
+
+/** A found put's value: a copy that owns its buffer, or what `decode` makes of the bytes where they are stored. */
+function valueOfPut<T>(put: MemRow | RecordWalker, decode: ((value: Uint8Array) => T) | undefined): T {
+  if (put instanceof RecordWalker) return runValue(put, decode);
+  return decode ? decode(put.value!) : (new Uint8Array(put.value!) as T);
+}
+
+function runValue<T>(at: RecordWalker, decode: ((value: Uint8Array) => T) | undefined): T {
+  return decode ? decode(at.valueInPlace()) : (at.value() as T);
 }
 
 /** The value of `key` as a fresh Uint8Array, or undefined. See `livePut`. */
@@ -62,8 +71,8 @@ export function pointGet(
   key: Uint8Array,
   marks: Marks,
 ): Maybe<Uint8Array | undefined> {
-  const e = livePut(mem, levels, key, marks);
-  return e === undefined || e instanceof Miss ? e : valueCopy(e);
+  const put = livePut(mem, levels, key, marks);
+  return put === undefined || put instanceof Miss ? put : valueOfPut<Uint8Array>(put, undefined);
 }
 
 /**
@@ -79,19 +88,19 @@ export function readKeys<T = Uint8Array>(
   at: Marks,
   decode?: (value: Uint8Array) => T,
 ): Maybe<(T | undefined)[]> {
-  const found = new Array<LayerEntry | undefined>(keys.length);
+  const found = new Array<MemRow | RecordWalker | undefined>(keys.length);
   let misses: Miss[] | undefined;
   for (let i = 0; i < keys.length; i++) {
-    const e = livePut(mems[i], levels, keys[i]!, at);
-    if (e instanceof Miss) (misses ??= []).push(e);
-    else found[i] = e;
+    const put = livePut(mems[i], levels, keys[i]!, at);
+    if (put instanceof Miss) (misses ??= []).push(put);
+    else found[i] = put;
   }
   if (misses) return allMissed(misses);
   // Pushed, not assigned by index: a key with no value must be an element, not a hole.
   const values: (T | undefined)[] = [];
   for (let i = 0; i < keys.length; i++) {
-    const e = found[i];
-    values.push(e === undefined ? undefined : decode ? decode(valueOf(e)) : (valueCopy(e) as T));
+    const put = found[i];
+    values.push(put === undefined ? undefined : valueOfPut(put, decode));
   }
   return values;
 }
@@ -104,7 +113,7 @@ export function readKeys<T = Uint8Array>(
 export function latestSstEntry(
   levels: readonly RunLevel[],
   key: Uint8Array,
-): Maybe<BlockEntry | undefined> {
+): Maybe<RecordWalker | undefined> {
   for (const level of levels) {
     const hit = level.get(key);
     if (hit) return hit;
@@ -144,7 +153,7 @@ export class RunLevel {
     return lo;
   }
 
-  get(key: Uint8Array): Maybe<BlockEntry | undefined> {
+  get(key: Uint8Array): Maybe<RecordWalker | undefined> {
     const r = this.seek("largest", key);
     if (r >= this.runs.length || compareBytes(this.runs[r]!.range.smallest, key) > 0) return undefined;
     return this.runs[r]!.get(key);

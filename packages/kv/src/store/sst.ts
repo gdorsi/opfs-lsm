@@ -43,7 +43,7 @@ function offsetTableBytes(count: number): number {
 }
 
 /** The u64 seq at `o`, read as two u32 halves, which is exact below 2^53 and allocates no BigInt. */
-export function seqAt(view: DataView, o: number): Seq {
+function seqAt(view: DataView, o: number): Seq {
   return asSeq(view.getUint32(o, true) + view.getUint32(o + 4, true) * 2 ** 32);
 }
 
@@ -184,9 +184,19 @@ export class RecordWalker {
     return k;
   }
 
+  /** Whether the record is a put. */
+  isPut(): boolean {
+    return this.tag === TAG_PUT;
+  }
+
   /** A copy of the value that owns its buffer. */
   value(): Uint8Array {
     return this.buf.slice(this.valAt, this.valAt + this.valLen);
+  }
+
+  /** The value where it is in the block, for a reader that keeps none of it. */
+  valueInPlace(): Uint8Array {
+    return this.buf.subarray(this.valAt, this.valAt + this.valLen);
   }
 
   /** The record as a scan entry: its key and its value left where they are in the block. */
@@ -194,7 +204,7 @@ export class RecordWalker {
     return new BlockEntry(
       this.buf,
       this.tag === TAG_PUT ? "put" : "del",
-      this.seq(),
+      this.seqAt,
       this.valAt,
       this.valLen,
       this.prefixBytes(),
@@ -333,17 +343,18 @@ function seekInBlock(w: RecordWalker, key: Uint8Array): number {
 }
 
 /**
- * The record for `key` in one block, where it is, or undefined. Checks the
- * block prefix once, then compares suffixes in place, and copies nothing.
+ * A walker that has just read the record for `key` in one block, or
+ * undefined. Checks the block prefix once, then compares suffixes in place,
+ * and copies nothing: the caller takes what it needs from the walker.
  */
-export function findInBlock(b: BlockBytes, key: Uint8Array): BlockEntry | undefined {
+export function findInBlock(b: BlockBytes, key: Uint8Array): RecordWalker | undefined {
   const w = RecordWalker.ofBlock(b);
   const p = w.prefixLen;
   if (key.byteLength < p) return undefined;
   for (let i = 0; i < p; i++) if (w.buf[w.prefixAt + i] !== key[i]) return undefined;
   if (seekSuffix(w, key) === 0) return undefined;
   w.next();
-  return compareAt(w.buf, w.keyAt, w.keyLen, key, p) === 0 ? w.inPlace() : undefined;
+  return compareAt(w.buf, w.keyAt, w.keyLen, key, p) === 0 ? w : undefined;
 }
 
 /**

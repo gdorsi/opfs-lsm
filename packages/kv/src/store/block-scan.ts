@@ -1,6 +1,5 @@
 import { CorruptDatabaseError } from "../errors.js";
 import { BlockEntry } from "./cursor.js";
-import { seqAt } from "./sst.js";
 
 /**
  * Scans one data block, framed as the run's block index frames it, and returns
@@ -44,10 +43,10 @@ export function* unpackHits(hits: Uint8Array): Generator<BlockEntry> {
     if (o + 16 > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
     const keyLen = view.getUint32(o, true);
     const valueLen = view.getUint32(o + 4, true);
-    const seq = seqAt(view, o + 8);
+    const seqAt = o + 8;
     o += 16;
     if (o + keyLen + valueLen > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
-    yield new BlockEntry(hits, "put", seq, o + keyLen, valueLen, NO_PREFIX, o, keyLen);
+    yield new BlockEntry(hits, "put", seqAt, o + keyLen, valueLen, NO_PREFIX, o, keyLen);
     o += keyLen + valueLen;
   }
 }

@@ -1,6 +1,6 @@
 import { compareBytes, compareFrom, containsAll } from "../bytes.js";
 import type { Entry } from "../db.js";
-import type { Seq } from "../seq.js";
+import { asSeq, type Seq } from "../seq.js";
 
 type Version = {
   readonly key: Uint8Array;
@@ -24,8 +24,8 @@ export class BlockEntry {
   constructor(
     readonly block: Uint8Array,
     readonly kind: "put" | "del",
-    /** The WAL seq that wrote the entry. */
-    readonly seq: Seq,
+    /** Where the record's u64 seq is in `block`. */
+    private readonly seqAt: number,
     /** The value is `block[valueAt, valueAt + valueLength)`, empty for a delete. */
     readonly valueAt: number,
     readonly valueLength: number,
@@ -34,6 +34,17 @@ export class BlockEntry {
     private readonly suffixAt: number,
     private readonly suffixLength: number,
   ) {}
+
+  /**
+   * The WAL seq that wrote the entry, read as two u32 halves, which is exact
+   * below 2^53. Read when asked: a scan needs it only under a range delete.
+   */
+  get seq(): Seq {
+    const { block, seqAt: o } = this;
+    const low = (block[o]! | (block[o + 1]! << 8) | (block[o + 2]! << 16)) + block[o + 3]! * 2 ** 24;
+    const high = (block[o + 4]! | (block[o + 5]! << 8) | (block[o + 6]! << 16)) + block[o + 7]! * 2 ** 24;
+    return asSeq(low + high * 2 ** 32);
+  }
 
   /** A copy that owns its buffer, made once. */
   get key(): Uint8Array {
