@@ -11,7 +11,7 @@ export const SOURCE = "linearlite-demo";
 export type FromDemo =
   | { readonly type: "opened"; readonly ms: number; readonly issues: number }
   | { readonly type: "first-rows"; readonly ms: number }
-  | { readonly type: "progress"; readonly phase: "generating" | "writing"; readonly written: number; readonly total: number }
+  | { readonly type: "progress"; readonly written: number; readonly total: number }
   | { readonly type: "generated"; readonly count: number; readonly generateMs: number; readonly writeMs: number }
   | { readonly type: "filter"; readonly label: string; readonly path: ReadPath; readonly rowsMs: number; readonly total: number | undefined; readonly totalMs: number | undefined }
   | { readonly type: "deleted" }

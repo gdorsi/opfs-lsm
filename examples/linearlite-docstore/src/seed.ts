@@ -43,16 +43,15 @@ export function generateDetail(issue: Issue): Detail {
   return { id: issue.id, description: text(2, 6), comments: comments.sort((a, b) => a.created - b.created) };
 }
 
-/** `count` issues created in the year before 1 November 2026. The same seed gives the same issues. */
-export function generate(count: number, seed = 1): Issue[] {
+/** `count` issues created in the year before 1 November 2026, one at a time. The same seed gives the same issues in the same order. */
+export function* generate(count: number, seed = 1): Generator<Issue> {
   const { r, pick, sentence, uuid } = source(seed);
   const title = () => sentence(3, 8);
   const now = Date.UTC(2026, 10, 1);
   const year = 365 * 24 * 3600 * 1000;
-  const issues: Issue[] = [];
   for (let i = 0; i < count; i++) {
     const created = now - Math.floor(r() * year);
-    issues.push({
+    yield {
       id: uuid(),
       title: title(),
       status: pick(CODES),
@@ -60,7 +59,6 @@ export function generate(count: number, seed = 1): Issue[] {
       username: pick(NAMES),
       created,
       modified: created + Math.floor(r() * (now - created)),
-    });
+    };
   }
-  return issues;
 }

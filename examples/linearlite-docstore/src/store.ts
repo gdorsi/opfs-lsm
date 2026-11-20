@@ -1,7 +1,7 @@
 import { openDocStore, type Cursor, type DocStore } from "@opfs-lsm/docstore";
 import { openDb, type Db } from "@opfs-lsm/kv";
 import { CODES, schema, type Code, type Detail, type Filter, type Issue } from "./model.ts";
-import type { SeedMessage } from "./seed-worker.ts";
+import type { SeedMessage, SeedRequest } from "./seed-worker.ts";
 import { generateDetail } from "./seed.ts";
 
 type Docs = DocStore<typeof schema>;
@@ -196,47 +196,68 @@ export async function detailOf({ details }: Store, issue: Issue): Promise<Detail
   return made;
 }
 
-function seed(count: number, from: number, onChunk: (issues: number) => void): Promise<{ issues: Issue[]; generateMs: number }> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./seed-worker.ts", import.meta.url), { type: "module" });
-    const issues: Issue[] = [];
-    worker.onerror = (e) => reject(new Error(e.message));
-    worker.onmessage = (e: MessageEvent<SeedMessage>) => {
-      if ("issues" in e.data) {
-        for (const issue of e.data.issues) issues.push(issue);
-        onChunk(issues.length);
-        return;
-      }
-      worker.terminate();
-      resolve({ issues, generateMs: e.data.generateMs });
-    };
-    worker.postMessage({ count, seed: from });
-  });
-}
-
 /** Issues per `putMany`, which is one kv transaction. kv takes 8 MiB per transaction and counts 256 bytes per key. */
 const BATCH = 2000;
+/** The first transaction is small, so the list has rows after a few milliseconds of writing. */
+const FIRST = 200;
+
+/** Generates `count` issues in a dedicated WebWorker and yields each batch as it arrives. Returns the time generating took. */
+async function* seed(count: number, from: number): AsyncGenerator<Issue[], number> {
+  const worker = new Worker(new URL("./seed-worker.ts", import.meta.url), { type: "module" });
+  const arrived: SeedMessage[] = [];
+  let failure: Error | undefined;
+  let wake = () => {};
+  worker.onerror = (e) => {
+    failure = new Error(e.message);
+    wake();
+  };
+  worker.onmessage = (e: MessageEvent<SeedMessage>) => {
+    arrived.push(e.data);
+    wake();
+  };
+  worker.postMessage({ count, seed: from, first: FIRST, batch: BATCH } satisfies SeedRequest);
+  try {
+    for (;;) {
+      if (failure) throw failure;
+      const message = arrived.shift();
+      if (!message) await new Promise<void>((resolve) => (wake = resolve));
+      else if ("done" in message) return message.generateMs;
+      else yield message.issues;
+    }
+  } finally {
+    worker.terminate();
+  }
+}
 
 /**
- * Generates `count` issues in a dedicated WebWorker and writes them. Each issue is its document plus an entry in
- * every index. `writeMs` ends when the last write is acknowledged. The ids follow from `from`, the generator's seed,
- * so two calls with different seeds write different issues.
+ * Writes `count` generated issues, each batch as the worker hands it over, and calls `written` after each with the
+ * number stored so far. Each issue is its document plus an entry in every index. `writeMs` is the time the writes
+ * took, from each call to its acknowledgement. The ids follow from `from`, the generator's seed, so two calls with
+ * different seeds write different issues.
  */
 export async function writeIssues(
   { issues }: Store,
   count: number,
   from: number,
-  progress: (phase: "generating" | "writing", written: number) => void,
+  written: (issues: number) => Promise<void>,
 ): Promise<{ generateMs: number; writeMs: number }> {
-  progress("generating", 0);
-  const { issues: rows, generateMs } = await seed(count, from, (n) => progress("generating", n));
-  progress("writing", 0);
-  const t0 = performance.now();
-  for (let at = 0; at < rows.length; at += BATCH) {
-    await issues.putMany(rows.slice(at, at + BATCH));
-    progress("writing", Math.min(rows.length, at + BATCH));
+  const batches = seed(count, from);
+  let writeMs = 0;
+  let stored = 0;
+  try {
+    for (;;) {
+      const next = await batches.next();
+      if (next.done) return { generateMs: next.value, writeMs };
+      const t0 = performance.now();
+      await issues.putMany(next.value);
+      writeMs += performance.now() - t0;
+      stored += next.value.length;
+      await written(stored);
+    }
+  } finally {
+    // Ends the generator, which stops its worker, when a write fails before the last batch.
+    await batches.return(0);
   }
-  return { generateMs, writeMs: performance.now() - t0 };
 }
 
 export type Draft = Pick<Issue, "title" | "status" | "priority"> & { readonly description: string };

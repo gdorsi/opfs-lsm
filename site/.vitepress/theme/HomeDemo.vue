@@ -73,7 +73,7 @@ function onMessage(e: MessageEvent) {
       } else enter({ kind: "empty" });
       break;
     case "progress":
-      enter({ kind: "writing", written: m.phase === "writing" ? m.written : 0, total: m.total });
+      enter({ kind: "writing", written: m.written, total: m.total });
       break;
     case "generated":
       wrote = true;

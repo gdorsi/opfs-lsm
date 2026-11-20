@@ -4,10 +4,10 @@ import { failed, post } from "./protocol.ts";
 import { createIssue, detailOf, editIssue, writeIssues, type Draft, type Store } from "./store.ts";
 
 /** A run of generated issues: the first ones into the empty database, or more beside the ones it holds. */
-export type Generating = { readonly first: boolean; readonly phase: "generating" | "writing"; readonly written: number; readonly count: number };
+export type Generating = { readonly written: number; readonly count: number };
 
 export type AppState = {
-  /** The database holds no issue, so the list makes way for the Generate button. */
+  /** The database holds no issue, so the list makes way for the Generate button. It ends with the first issues written. */
   readonly empty: boolean;
   readonly generating: Generating | undefined;
   readonly filter: Filter;
@@ -147,23 +147,25 @@ export function createApp(store: Store) {
       createIssue(store, id, draft).catch(failed);
     },
 
-    /** Writes `count` generated issues: the first ones into the empty database, or more beside the ones it holds. */
+    /**
+     * Writes `count` generated issues: the first ones into the empty database, or more beside the ones it holds. The
+     * list shows them from the first batch on, and reads the rows in view again after each batch.
+     */
     async generate(count: number) {
       if (state.generating) return;
-      const first = state.empty;
-      set({ generating: { first, phase: "generating", written: 0, count } });
+      set({ generating: { written: 0, count } });
       try {
         appending = true;
         // The first issues are always the same ones. Later ones come from a seed of their own, so their ids are new.
-        const seed = first ? 1 : crypto.getRandomValues(new Uint32Array(1))[0]! || 2;
-        const { generateMs, writeMs } = await writeIssues(store, count, seed, (phase, written) => {
-          set({ generating: { first, phase, written, count } });
-          post({ type: "progress", phase, written, total: count });
+        const seed = state.empty ? 1 : crypto.getRandomValues(new Uint32Array(1))[0]! || 2;
+        const { generateMs, writeMs } = await writeIssues(store, count, seed, async (written) => {
+          set({ generating: { written, count }, empty: false });
+          post({ type: "progress", written, total: count });
+          await list.refresh();
         });
         appending = false;
         post({ type: "generated", count, generateMs, writeMs });
-        if (first) set({ empty: false });
-        await show(undefined, !first);
+        await show(undefined, true);
       } finally {
         appending = false;
         set({ generating: undefined });
