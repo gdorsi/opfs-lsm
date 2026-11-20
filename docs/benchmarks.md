@@ -4,7 +4,7 @@ These tables compare opfs-lsm with the storage a web app would otherwise use: In
 
 ## Storage calls
 
-Each workload holds 100,000 entries with 16-byte keys and 100-byte values. The rows from `kv/fillrandom` have more runs than the others, because a run makes only 1,000 single puts, too few for 10 runs to agree. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. A rate counts only the time spent inside the storage calls, opening the store included, not the bench's own work between them. A read of a missing key looks up a key that falls between two stored keys. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md).
+Each workload holds 100,000 entries with 16-byte keys and 100-byte values. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. A rate counts only the time spent inside the storage calls, opening the store included, not the bench's own work between them. A read of a missing key looks up a key that falls between two stored keys. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md).
 
 <!-- bench:table storage-calls -->
 | Workload | IndexedDB | kv | |

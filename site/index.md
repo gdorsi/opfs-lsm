@@ -68,7 +68,7 @@ bench:
       - title: Storage calls
         versus: kv against IndexedDB
         stores: [kv, IndexedDB]
-        setup: Medians of 10 or 21 runs, 100,000 entries
+        setup: Medians of 5 runs, 100,000 entries
         rows:
           - { measure: "Random writes, batches of 1,000", ours: 637k ops/s, theirs: 42.9k ops/s, ratio: 15× }
           - { measure: "Random point reads", ours: 1.06M ops/s, theirs: 20.5k ops/s, ratio: 52× }
@@ -345,7 +345,7 @@ await db.view(async (snap) => {
 
 <div class="bench-foot">
 
-Runs on an Apple M5 Max, the task tracker on an Apple M2 Pro, in headless Chrome 157.
+Runs on an Apple M5 Max, in headless Chrome 157.
 
 [Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
 
