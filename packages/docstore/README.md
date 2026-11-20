@@ -302,7 +302,7 @@ await todos.queryEntries({ index: "list", eq: [false] });
 // document lacks is left out, and the document still has its entry
 ```
 
-**Note.** Each entry stores a copy of its fields, so the index takes more space, and a write that changes an included field rewrites the document's entries in that index. Include what a list shows, not the whole document. An included field can hold any JSON value. `index` takes up to 16 of them, `unique` and `text` take none.
+**Note.** Each entry stores a copy of its fields, so the index takes more space, and a write that changes an included field rewrites the document's entries in that index. Include what a list shows, not the whole document. An included field can hold any JSON value. `index` takes up to 16 of them, `unique` and `text` take none. The included fields of one document may take at most 1 MiB in one index, counted once per entry: a larger document is one the index cannot hold.
 
 ### Text
 

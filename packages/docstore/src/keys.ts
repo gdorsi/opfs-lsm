@@ -12,8 +12,8 @@
  * index id 00 is the rows. <id> is raw UTF-8. A value <v> is one field of
  * the tuple encoding of `@opfs-lsm/kv/tuple`, which also owns the bounds of
  * every key that continues a prefix, an id included. A covering entry is a
- * sorted entry of an index that declares `include`: its value holds, in
- * declared order, each included field its document has.
+ * sorted entry of an index that declares `include`: its value holds each
+ * included field its document has.
  */
 import type { Range } from "@opfs-lsm/kv";
 import { asciiAt, decodeTuple, encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";

@@ -129,7 +129,10 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPageOf<T, Ix, I>> {
     const { target, range, limit } = this.plan(q, 1);
-    const page = await this.snap.rangeValues(range, ENTRY_VALUE[target.kind]);
+    // As in `query`, the entry past `limit` is not decoded.
+    let left = limit ?? Number.POSITIVE_INFINITY;
+    const decode = ENTRY_VALUE[target.kind];
+    const page = await this.snap.rangeValues(range, (bytes) => (left-- > 0 ? decode(bytes) : undefined));
     const next = trimPage(page, (h) => h.key, limit);
     const entries = decodeEntries(target, page, (q as QueryInput).eq?.length ?? 0);
     return { entries, ...next } as EntryPageOf<T, Ix, I>;

@@ -1,11 +1,11 @@
-import { CorruptDatabaseError, type Db } from "@opfs-lsm/kv";
+import { CorruptDatabaseError, prefixBound, type Db } from "@opfs-lsm/kv";
 import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
 import { collection, defineSchema, openDocStore } from "../src/index.js";
 import { concat, rowPrefix, type CollectionId } from "../src/keys.js";
 import type { Json, QueryInput, Scalar } from "../src/schema.js";
 import { asQuery, checkQuery, datasetArb, queryArb, schema, type Doc, type DocQuery, type Docs } from "./docs.js";
-import { codeOf, freshName, openKv } from "./harness.js";
+import { codeOf, freshName, openKv, storedPrefix } from "./harness.js";
 import { stored } from "./oracle.js";
 
 const open: Db[] = [];
@@ -175,6 +175,20 @@ describe("an index with include", () => {
     ]) {
       expect(Object.keys(e)).toStrictEqual(["id", "values"]);
     }
+  });
+
+  it("throws CorruptDatabaseError for an entry whose value is not a JSON object, and only when that entry is on the page", async () => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const c = (await openDocStore(kv, covering)).collection("issues");
+    await c.putMany(issues.slice(0, 2));
+    const keys: Uint8Array[] = [];
+    for await (const e of kv.range(prefixBound(await storedPrefix(kv, "issues", "list")))) keys.push(e.key);
+    await kv.put(keys[1]!, new TextEncoder().encode("[1]"));
+    const first = await c.queryEntries({ index: "list", limit: 1 });
+    expect(first.entries.map((e) => e.id)).toStrictEqual(["b"]);
+    expect(first.next).toBeDefined();
+    await expect(c.queryEntries({ index: "list" })).rejects.toThrow(CorruptDatabaseError);
   });
 
   it("answers query, queryIds and count as the same index without include does", async () => {

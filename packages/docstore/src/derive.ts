@@ -72,11 +72,18 @@ function unindexable(v: unknown): Unindexable["why"] | undefined {
 }
 
 const MAX_ENTRIES_PER_INDEX = 1_000;
+/**
+ * The included fields of one document in one index, counted once per entry.
+ * A write and a backfill step each put a document's entries in one kv batch,
+ * so without a bound one large field could pass kv's batch limit and leave an
+ * index building for good.
+ */
+const MAX_FIELDS_BYTES = 1024 * 1024;
 
 /** Why one document cannot be in one index. A missing path is not here: it means "not in this index". */
 export type Unindexable = {
   readonly path: string;
-  readonly why: "not-scalar" | "lone-surrogate" | "text-not-string" | "key-too-long" | "too-many-entries";
+  readonly why: "not-scalar" | "lone-surrogate" | "text-not-string" | "key-too-long" | "too-many-entries" | "fields-too-large";
 };
 
 const NONE: Entry[] = [];
@@ -149,6 +156,10 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
       value = textValue(text);
       break;
     }
+  }
+
+  if (value.length * (firsts?.length ?? 1) > MAX_FIELDS_BYTES && spec.kind === "sorted" && spec.include) {
+    return { path: spec.include.join(","), why: "fields-too-large" };
   }
 
   const prefix = plan.target.prefix;
