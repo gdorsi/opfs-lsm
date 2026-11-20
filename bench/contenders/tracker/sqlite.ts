@@ -23,8 +23,9 @@ const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS comments (id TEXT PRIMARY KEY, issueId TEXT NOT NULL, authorId TEXT NOT NULL, body TEXT NOT NULL, createdAt INTEGER NOT NULL)",
   "CREATE INDEX IF NOT EXISTS issues_project_status ON issues (projectId, status, updatedAt)",
   "CREATE UNIQUE INDEX IF NOT EXISTS issues_number ON issues (projectId, number)",
-  "CREATE INDEX IF NOT EXISTS issues_triage ON issues (projectId, status, priority, createdAt)",
-  "CREATE INDEX IF NOT EXISTS issues_assignee ON issues (assigneeId, status, updatedAt)",
+  // Sort keys before status: an IN over several statuses reads in sort order, filters status inside the index, and LIMIT stops at the page.
+  "CREATE INDEX IF NOT EXISTS issues_triage ON issues (projectId, priority, createdAt, status)",
+  "CREATE INDEX IF NOT EXISTS issues_assignee ON issues (assigneeId, updatedAt, status)",
   "CREATE INDEX IF NOT EXISTS issues_project_assignee ON issues (projectId, assigneeId, status)",
   "CREATE INDEX IF NOT EXISTS issues_updated ON issues (updatedAt)",
   "CREATE INDEX IF NOT EXISTS issues_project_updated ON issues (projectId, updatedAt)",
