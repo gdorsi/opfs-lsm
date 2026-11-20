@@ -143,8 +143,11 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
       if (a.targetInfo.type !== "shared_worker" && a.targetInfo.type !== "worker") return;
       workerSessions.add(a.sessionId);
       void (async () => {
-        await cdp.send("Runtime.evaluate", { expression: WASM_HOOK }, a.sessionId);
-        if (a.waitingForDebugger) await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
+        try {
+          await cdp.send("Runtime.evaluate", { expression: WASM_HOOK }, a.sessionId);
+        } finally {
+          if (a.waitingForDebugger) await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
+        }
       })().catch(() => workerSessions.delete(a.sessionId));
     });
     cdp.on("Target.detachedFromTarget", (p) => workerSessions.delete((p as { sessionId: string }).sessionId));
