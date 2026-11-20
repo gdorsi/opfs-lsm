@@ -12,7 +12,7 @@ type Database = Awaited<ReturnType<typeof openBrowserWASQLiteOPFSDatabase>>;
 
 const CACHE_KIB = 256 * 1024;
 
-/** Sets the page cache to 256 MiB, as kv's `cacheBytes` default, and with `relaxed` `synchronous=OFF`, so a commit stays atomic but does not wait for the disk. */
+/** Sets the page cache to 256 MiB, as kv's `cacheBytes` default, and with `relaxed` `synchronous=OFF`, so a commit does not wait for the disk. */
 export async function tuneSqlite(database: Database, relaxed: boolean): Promise<void> {
   const pragma = async (key: string, value: number) => {
     await database.execute(`PRAGMA ${key} = ${value}`);

@@ -14,7 +14,7 @@ function persisted<T extends { id: string }>(id: string, persistence: ReturnType
   return createCollection(persistedCollectionOptions<T, string>({ id, getKey: (r) => r.id, persistence, schemaVersion: 1, syncMode: "on-demand" }));
 }
 
-/** Opens the collections; `relaxed` sets `synchronous=OFF` first, so a commit stays atomic but does not wait for the disk. */
+/** Opens the collections; `relaxed` sets `synchronous=OFF` first, so a commit does not wait for the disk. */
 export async function openSqlite(name: string, relaxed: boolean): Promise<LiveStore> {
   const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tanstack-live-${name}.sqlite` });
   await tuneSqlite(database, relaxed);
