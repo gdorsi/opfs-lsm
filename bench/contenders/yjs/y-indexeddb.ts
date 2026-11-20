@@ -1,16 +1,29 @@
 import { IndexeddbPersistence } from "y-indexeddb";
+import type * as Y from "yjs";
 import { defineContender } from "../../core/types.ts";
 import type { YjsBinding } from "../../core/families.ts";
 
-/** y-indexeddb has no flush: a readwrite transaction on its store completes after every update written before it. */
-function flushOf(persistence: IndexeddbPersistence): () => Promise<void> {
-  return () =>
-    new Promise((resolve, reject) => {
+/**
+ * y-indexeddb has no flush: a readwrite transaction on its store completes after every update written before it.
+ * Like kv's flush, it costs nothing when no update came since the last one.
+ */
+function flushOf(persistence: IndexeddbPersistence, doc: Y.Doc): () => Promise<void> {
+  let dirty = false;
+  let barrier: Promise<void> = Promise.resolve();
+  doc.on("update", (_update: Uint8Array, origin: unknown) => {
+    if (origin !== persistence) dirty = true;
+  });
+  return () => {
+    if (!dirty) return barrier;
+    dirty = false;
+    barrier = new Promise((resolve, reject) => {
       const tx = persistence.db!.transaction("updates", "readwrite");
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error ?? new Error("IndexedDB transaction aborted"));
     });
+    return barrier;
+  };
 }
 
 export default defineContender({
@@ -25,7 +38,7 @@ export default defineContender({
         const dbName = `${name}/${docName}`;
         const persistence = new IndexeddbPersistence(dbName, doc);
         await persistence.whenSynced;
-        const flush = flushOf(persistence);
+        const flush = flushOf(persistence, doc);
         const binding: YjsBinding = {
           flush,
           async detach() {
