@@ -218,12 +218,17 @@ export function permutation(n: number, next: () => number): Uint32Array {
   return p;
 }
 
+/** YCSB's ScrambledZipfianGenerator draws from this many items whatever the key count, with this zeta(ITEM_COUNT, 0.99). */
+const SCRAMBLED_ITEMS = 10_000_000_000;
+const SCRAMBLED_ZETAN = 26.46902820178302;
+
 /**
- * YCSB ScrambledZipfian over [0, n): zipfian with theta 0.99 over a large
- * item space, hashed into [0, n) so hot keys spread over the key space.
+ * YCSB ScrambledZipfian over [0, n): zipfian with theta 0.99 over 10^10 items, then FNV-hashed into
+ * [0, n) so hot keys spread over the key space. The skew is that of 10^10 items, not of n: the hottest
+ * key takes 1 / 26.47 of the draws (3.8%) at any n, where a zipfian over n items takes more, and more the smaller n is.
  */
 export function zipfian(n: number, next: () => number): () => number {
-  const z = zipfRaw(n, next);
+  const z = zipfRaw(SCRAMBLED_ITEMS, next, SCRAMBLED_ZETAN);
   return () => fnv64mod(z(), n);
 }
 
@@ -238,10 +243,10 @@ export function zipfianOf(n: number, next: () => number): () => number {
   return () => items[z()]!;
 }
 
-function zipfRaw(n: number, next: () => number): () => number {
+function zipfRaw(n: number, next: () => number, known?: number): () => number {
   const theta = 0.99;
-  let zetan = 0;
-  for (let i = 1; i <= n; i++) zetan += 1 / Math.pow(i, theta);
+  let zetan = known ?? 0;
+  if (known === undefined) for (let i = 1; i <= n; i++) zetan += 1 / Math.pow(i, theta);
   const zeta2 = 1 + 1 / Math.pow(2, theta);
   const alpha = 1 / (1 - theta);
   const eta = (1 - Math.pow(2 / n, 1 - theta)) / (1 - zeta2 / zetan);
@@ -254,11 +259,18 @@ function zipfRaw(n: number, next: () => number): () => number {
   };
 }
 
+const FNV_OFFSET_64 = 0xcbf29ce484222325n;
+const FNV_PRIME_64 = 1099511628211n;
+
+/** YCSB's Utils.fnvhash64 of the 8 bytes of `x`, least significant first, as a signed long's absolute value, mod `n`. */
 function fnv64mod(x: number, n: number): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < 4; i++) {
-    h ^= (x >>> (i * 8)) & 0xff;
-    h = Math.imul(h, 0x01000193) >>> 0;
+  let rest = BigInt(x);
+  let h = FNV_OFFSET_64;
+  for (let i = 0; i < 8; i++) {
+    h ^= rest & 0xffn;
+    rest >>= 8n;
+    h = BigInt.asUintN(64, h * FNV_PRIME_64);
   }
-  return h % n;
+  const signed = BigInt.asIntN(64, h);
+  return Number((signed < 0n ? -signed : signed) % BigInt(n));
 }
