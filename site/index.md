@@ -281,7 +281,7 @@ for await (const { key, value } of db.range({ limit: 50 })) {
 The wasm engine loads in parallel with the open, outside your main bundle
 
 ```ts
-// 19.7 kB gzip in your main bundle
+// 20.2 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
 // the SharedWorker loads here, but you
 // can already do everything without it

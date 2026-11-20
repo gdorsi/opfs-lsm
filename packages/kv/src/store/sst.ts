@@ -173,17 +173,6 @@ export class RecordWalker {
     return (this.prefix ??= this.prefixLen === 0 ? NO_PREFIX : this.buf.subarray(this.prefixAt, this.prefixAt + this.prefixLen));
   }
 
-  key(): Uint8Array {
-    const { buf, prefixLen, keyAt, keyLen } = this;
-    if (prefixLen === 0) return buf.slice(keyAt, keyAt + keyLen);
-    // The record's own bytes always sit before its suffix, so one slice
-    // copies the suffix at the right place, then the prefix overwrites the
-    // head. Two block copies beat a byte loop and a fresh subarray per key.
-    const k = buf.slice(keyAt - prefixLen, keyAt + keyLen);
-    k.set(this.prefixBytes());
-    return k;
-  }
-
   /** Whether the record is a put. */
   isPut(): boolean {
     return this.tag === TAG_PUT;
